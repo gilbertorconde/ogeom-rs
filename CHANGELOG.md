@@ -41,6 +41,30 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A face whose boundary runs out and back along itself meshes closed.**
+  - On DoomCube 350 solid 711, a cylinder face lies between a circle and a
+    spline edge. The spline rises to the circle, runs 0.54 µm past it
+    along the axis for 2.1 mm, then lies on it to 1e-7 for 2.3 mm, out to
+    the vertex they share. Its stated tolerance is 1.5 µm. In the chart
+    the face's ring crosses itself at any chord. The triangulation refused
+    the crossing segments as constraints and lost the boundary points the
+    plane and the B-spline face across those edges keep, so the solid's
+    mesh had 27 edges open.
+  - A face still crossing itself after its edges are drawn finer gets one
+    last pass at the same chords. Each crossing cuts its ring into two
+    loops. Where one loop is a strip no wider than the widest tolerance of
+    the face's edges, measured on the surface, it is a tail: it comes out
+    of the ring and is drawn as a strip of triangles zipped across it, at
+    its edges' points. The rest is triangulated as before. It is kept only
+    where it no longer crosses itself. Faces that do not cross, and faces
+    whose rings come out whole when drawn finer, are drawn as before.
+  - Solid 711 now meshes closed. Its cylinder face's exact area of
+    3.446354 meshes to 3.450894; the strip adds 8.2e-4 of that. A sector
+    of a cylinder built in code, whose wall holds such a face between a
+    face above the circle and one below the spline, meshes closed at
+    chords 0.1 and 0.01. Its volume matches the closed form to 2.3e-3 and
+    2.9e-4, and each wall face's area matches its exact area to 4.3e-4 and
+    1.0e-4.
 - **A face's mesh no longer folds off its face where an edge bends in the
   chart and not in space.**
   - An edge is drawn at points chosen along its curve in space, the same

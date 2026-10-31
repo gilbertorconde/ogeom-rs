@@ -86,6 +86,7 @@ pub fn triangulate_face_kept(
         Some(&nothing),
         None,
         Some(kept),
+        Pass::Agreeing,
         tol,
     )?;
     if verdict != Verdict::Short {
@@ -134,16 +135,18 @@ impl FaceMeshCache {
 
 /// The key a face's mesh is kept under: see [`FaceMeshCache`]. `finer` is
 /// the shared chord map the face is drawn to, or `None` where it works out
-/// its own from its content alone.
+/// its own from its content alone; `pass` is whether the face is drawn
+/// again if it comes up short.
 fn mesh_key(
     model: &Model,
     face: &Shape,
     deflection: Deflection,
     finer: Option<&EdgeChords>,
+    pass: Pass,
     tol: Tolerances,
 ) -> Option<Vec<u8>> {
     let mut key = ogeom_topo::face_content(model, face)?;
-    key.extend_from_slice(format!("{deflection:?}{tol:?}").as_bytes());
+    key.extend_from_slice(format!("{deflection:?}{tol:?}{pass:?}").as_bytes());
     match finer {
         None => key.push(b'o'),
         Some(finer) => {
@@ -165,6 +168,10 @@ fn mesh_key(
 }
 
 /// [`triangulate_reporting_from`], through `kept` where there is one.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the pass's settings, each passed through once"
+)]
 fn reporting_kept(
     model: &Model,
     face: &Shape,
@@ -172,18 +179,19 @@ fn reporting_kept(
     finer: Option<&EdgeChords>,
     prepared: Option<Trimming>,
     kept: Option<&FaceMeshCache>,
+    pass: Pass,
     tol: Tolerances,
 ) -> OgeomResult<(Triangulation, Verdict)> {
     let Some(kept) = kept else {
-        return triangulate_reporting_from(model, face, deflection, finer, prepared, tol);
+        return triangulate_reporting_from(model, face, deflection, finer, prepared, pass, tol);
     };
-    let key = mesh_key(model, face, deflection, finer, tol);
+    let key = mesh_key(model, face, deflection, finer, pass, tol);
     if let Some(key) = &key
         && let Some(found) = kept.get(key)
     {
         return Ok(found);
     }
-    let found = triangulate_reporting_from(model, face, deflection, finer, prepared, tol)?;
+    let found = triangulate_reporting_from(model, face, deflection, finer, prepared, pass, tol)?;
     if let Some(key) = key {
         kept.put(key, found.clone());
     }
@@ -200,6 +208,17 @@ enum Verdict {
     Short,
 }
 
+/// Whether a pass over a face is the last it gets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pass {
+    /// Drawn again at finer chords if it comes up short: a boundary drawn
+    /// coarsely enough to cross itself is drawn finer, not taken apart.
+    Agreeing,
+    /// Not drawn again: a ring still crossing itself sheds its tails (see
+    /// [`crate::tails`]) if that leaves it whole.
+    Last,
+}
+
 /// One face, with the finer edge chords the whole shape agreed on.
 ///
 /// `None` means this face is being meshed on its own and may work out its
@@ -212,7 +231,8 @@ fn triangulate_with(
     kept: Option<&FaceMeshCache>,
     tol: Tolerances,
 ) -> OgeomResult<Triangulation> {
-    let (mesh, verdict) = reporting_kept(model, face, deflection, finer, None, kept, tol)?;
+    let (mesh, verdict) =
+        reporting_kept(model, face, deflection, finer, None, kept, Pass::Last, tol)?;
     if verdict == Verdict::Short && mesh.triangles.is_empty() {
         ogeom_bail!(
             NotDone,
@@ -273,7 +293,7 @@ fn triangulate_reporting(
     finer: Option<&EdgeChords>,
     tol: Tolerances,
 ) -> OgeomResult<(Triangulation, Verdict)> {
-    triangulate_reporting_from(model, face, deflection, finer, None, tol)
+    triangulate_reporting_from(model, face, deflection, finer, None, Pass::Agreeing, tol)
 }
 
 /// A face's rings walked ahead of drawing, and the chord its edges want
@@ -344,6 +364,70 @@ fn rim_holds(
     Ok(rows)
 }
 
+/// The widest tolerance of a face's edges and vertices: how far apart two
+/// stretches of its boundary may stand and be one.
+fn widest_tolerance(model: &Model, face: &Shape) -> OgeomResult<f64> {
+    let mut widest = 0.0_f64;
+    for kind in [ShapeType::Edge, ShapeType::Vertex] {
+        for shape in ogeom_topo::explore_unique(model, face, kind)? {
+            widest = widest.max(model.tolerance_of(&shape)?.map_or(0.0, |t| t.get()));
+        }
+    }
+    Ok(widest)
+}
+
+/// `planar` with each tail's strip added, wound to meet the region across
+/// the chord at the tail's mouth; `None` where the region does not hold
+/// that chord.
+fn with_strips(mut planar: PlanarMesh, strips: &[crate::tails::Strip]) -> Option<PlanarMesh> {
+    let key = |p: Point2| (p.x.to_bits(), p.y.to_bits());
+    let mut index: ogeom_core::FastMap<(u64, u64), u32> = ogeom_core::FastMap::default();
+    for (i, &(u, v)) in planar.parameters.iter().enumerate() {
+        index.insert(key(Point2::new(u, v)), u32::try_from(i).ok()?);
+    }
+    let mut sides: ogeom_core::FastSet<(u32, u32)> = ogeom_core::FastSet::default();
+    for t in &planar.triangles {
+        for k in 0..3 {
+            sides.insert((t[k], t[(k + 1) % 3]));
+        }
+    }
+    for strip in strips {
+        let (from, to) = (
+            *index.get(&key(strip.mouth.0))?,
+            *index.get(&key(strip.mouth.1))?,
+        );
+        // The strip walks its mouth from `to` back to `from`; the region
+        // must walk it the other way.
+        let turned = if sides.contains(&(from, to)) {
+            false
+        } else if sides.contains(&(to, from)) {
+            true
+        } else {
+            return None;
+        };
+        for triangle in &strip.triangles {
+            let mut corners = [0_u32; 3];
+            for (corner, p) in corners.iter_mut().zip(triangle) {
+                *corner = match index.get(&key(*p)) {
+                    Some(&i) => i,
+                    None => {
+                        let i = u32::try_from(planar.parameters.len()).ok()?;
+                        planar.parameters.push((p.x, p.y));
+                        index.insert(key(*p), i);
+                        i
+                    }
+                };
+            }
+            planar.triangles.push(if turned {
+                [corners[0], corners[2], corners[1]]
+            } else {
+                corners
+            });
+        }
+    }
+    Some(planar)
+}
+
 /// How a drum or a cone is drawn between its rims.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Rows {
@@ -389,6 +473,7 @@ fn triangulate_reporting_from(
     deflection: Deflection,
     finer: Option<&EdgeChords>,
     prepared: Option<Trimming>,
+    pass: Pass,
     tol: Tolerances,
 ) -> OgeomResult<(Triangulation, Verdict)> {
     deflection.validate()?;
@@ -455,13 +540,31 @@ fn triangulate_reporting_from(
         ));
     }
     let phase = Instant::now();
-    let planar = triangulate_region(
-        &uv,
-        surface,
-        deflection,
-        rim_holds(model, face, deflection, tol)?,
-        tol,
-    )?;
+    let rows = rim_holds(model, face, deflection, tol)?;
+    let mut planar = triangulate_region(&uv, surface, deflection, rows, tol)?;
+    // A ring that crosses itself where it runs out and back along its own
+    // way bounds nothing over that stretch: the tail comes off and is drawn
+    // as a strip at its edges' points, where the rest triangulates whole.
+    let mut drawn = None;
+    if planar.crossed
+        && pass == Pass::Last
+        && let Some(peeled) = crate::tails::peel(
+            &uv,
+            surface,
+            &placement,
+            widest_tolerance(model, face)?,
+            tol,
+        )?
+    {
+        let again = triangulate_region(&peeled.rings, surface, deflection, rows, tol)?;
+        if !again.crossed
+            && let Some(joined) = with_strips(again, &peeled.strips)
+        {
+            planar = joined;
+            drawn = Some(peeled.rings);
+        }
+    }
+    let drawn = drawn.as_ref().unwrap_or(&uv);
     let region_ms = phase.elapsed().as_secs_f64() * 1e3;
     let phase = Instant::now();
 
@@ -491,15 +594,16 @@ fn triangulate_reporting_from(
     // surface by that sag. Its edges want a chord under the width, which
     // is [`face_chords`]' first move; it is asked here so the whole-shape
     // pass tells the neighbours to draw those edges finer too.
-    let boundary: usize = uv.iter().map(Vec::len).sum();
-    let narrow = narrow_chord(surface, &uv, deflection, tol)
+    let boundary: usize = drawn.iter().map(Vec::len).sum();
+    let narrow = narrow_chord(surface, drawn, deflection, tol)
         .is_some_and(|want| !edges_already_at(model, face, finer, want));
-    let crossed = narrow || planar.crossed || planar.triangles.len() + 4 < boundary + 2 * uv.len();
+    let crossed =
+        narrow || planar.crossed || planar.triangles.len() + 4 < boundary + 2 * drawn.len();
     if *MESH_DEBUG_REFINE {
         eprintln!(
             "SHORT {} triangles against {boundary} boundary points in {} rings: crossed {crossed} (boundary pass {})",
             planar.triangles.len(),
-            uv.len(),
+            drawn.len(),
             planar.crossed
         );
     }
@@ -786,9 +890,10 @@ fn own_answer(
 /// The first pass draws each face at the caller's chord on top of the
 /// narrow faces' asks; a face whose boundary crossed itself folds finer
 /// chords into the agreement, and only the faces touching an edge whose
-/// chord changed are drawn again. The whole-shape mesh welds these, and the
-/// stored tessellation keeps them face by face: the same meshes, drawn
-/// once.
+/// chord changed are drawn again. A face still short after that is drawn
+/// once more at the same chords as its last pass ([`Pass::Last`]). The
+/// whole-shape mesh welds these, and the stored tessellation keeps them
+/// face by face: the same meshes, drawn once.
 pub(crate) fn face_meshes(
     read_model: &Model,
     faces: &[Shape],
@@ -800,7 +905,13 @@ pub(crate) fn face_meshes(
         mut finer,
         mut computed,
         mut changed,
+        short,
+        mut drawn,
     } = first_pass(read_model, faces, deflection, kept, tol)?;
+    let mut still = vec![false; faces.len()];
+    for index in short {
+        still[index] = true;
+    }
     // Every face across a changed edge is drawn again at the new chords,
     // and asked again whether its rings crossed: a narrow strip drawn whole
     // with both its rims coarse can cross once one rim is drawn finer by
@@ -831,11 +942,13 @@ pub(crate) fn face_meshes(
                     Some(&finer),
                     None,
                     kept,
+                    Pass::Agreeing,
                     tol,
                 )
             });
         let mut short: Vec<usize> = Vec::new();
         for (index, one) in again.into_iter().zip(redone) {
+            still[index] = matches!(one, Ok((_, Verdict::Short)));
             computed[index] = match one {
                 Ok((mesh, Verdict::Short)) if mesh.triangles.is_empty() => {
                     Err(ogeom_core::ogeom_err!(
@@ -852,7 +965,31 @@ pub(crate) fn face_meshes(
                 Err(e) => Err(e),
             };
         }
+        drawn = finer.clone();
         changed = refine_short(read_model, faces, &short, &mut finer, deflection, tol)?;
+    }
+    // A face still short is drawn once more at the chords it was drawn to,
+    // as its last pass. The chords stay as they are, and so do its
+    // neighbours. Its mesh is taken only where that pass comes out whole.
+    let last: Vec<usize> = (0..faces.len()).filter(|&i| still[i]).collect();
+    let redone: Vec<OgeomResult<(Triangulation, Verdict)>> =
+        ogeom_core::parallel::map_ordered(&last, |_, &index| {
+            ogeom_core::progress::checkpoint()?;
+            reporting_kept(
+                read_model,
+                &faces[index],
+                deflection,
+                Some(&drawn),
+                None,
+                kept,
+                Pass::Last,
+                tol,
+            )
+        });
+    for (index, one) in last.into_iter().zip(redone) {
+        if let Ok((mesh, Verdict::Whole)) = one {
+            computed[index] = Ok(mesh);
+        }
     }
     Ok((computed, finer))
 }
@@ -913,6 +1050,10 @@ struct FirstPass {
     finer: EdgeChords,
     computed: Vec<OgeomResult<Triangulation>>,
     changed: ogeom_core::FastSet<u32>,
+    /// The faces that came up short.
+    short: Vec<usize>,
+    /// The chords the meshes were drawn to, before the short faces'.
+    drawn: EdgeChords,
 }
 
 /// Every face drawn once at the caller's deflection, each saying whether
@@ -966,7 +1107,16 @@ fn first_pass(
         ogeom_core::parallel::map_ordered(&jobs, |_, (face, slot)| {
             ogeom_core::progress::checkpoint()?;
             let trim = slot.lock().ok().and_then(|mut held| held.take());
-            reporting_kept(read_model, face, deflection, Some(&finer), trim, cache, tol)
+            reporting_kept(
+                read_model,
+                face,
+                deflection,
+                Some(&finer),
+                trim,
+                cache,
+                Pass::Agreeing,
+                tol,
+            )
         });
     let mut computed: Vec<OgeomResult<Triangulation>> = Vec::with_capacity(faces.len());
     let mut crossed: Vec<usize> = Vec::new();
@@ -991,11 +1141,14 @@ fn first_pass(
     // must still draw the edges the walk held finer at that chord, or the
     // two sides of one of them disagree. Only an edge whose chord
     // *changed* sends its faces back.
+    let drawn = finer.clone();
     let changed = refine_short(read_model, faces, &crossed, &mut finer, deflection, tol)?;
     Ok(FirstPass {
         finer,
         computed,
         changed,
+        short: crossed,
+        drawn,
     })
 }
 
@@ -4460,7 +4613,7 @@ fn add_interior_points(
 
 /// Whether segments `a..b` and `c..d` cross properly: at a point interior
 /// to both, neither touching the other's end.
-fn segments_cross(a: Point2, b: Point2, c: Point2, d: Point2) -> bool {
+pub(crate) fn segments_cross(a: Point2, b: Point2, c: Point2, d: Point2) -> bool {
     let orient =
         |p: Point2, q: Point2, r: Point2| (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
     let (o1, o2) = (orient(a, b, c), orient(a, b, d));

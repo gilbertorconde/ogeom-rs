@@ -10,6 +10,7 @@ pub mod attach;
 pub mod discretize;
 pub mod hatch;
 pub mod simplify;
+mod tails;
 pub mod triangulate;
 
 pub use attach::{Tessellated, polyline_of, tessellate, triangulation_of};

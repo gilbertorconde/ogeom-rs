@@ -312,16 +312,18 @@ asks nothing of the solid it returns, so a mesh passing through itself comes
 back a solid crossing itself there; with recognition the conversion is
 refused, naming where.
 
-**A face whose rims touch within a micron meshes open.** One solid of the
-DoomCube 350 assembly has a cylinder face between a circle and a spline edge
-that dips to within half a micron of it and touches it: its ring crosses
-itself in the chart at any chord, the crossing segments are refused as
-constraints, and the face loses boundary points its neighbours keep (27
-edges open). Clipping such a ring ear by ear closes the mesh but folds about
-half the face's area (4 of 7 square millimetres) and hides from the mesh
-conversion the faces it withdraws because they mesh open; it was not kept.
-A face this degenerate wants healing (the spline edge projected onto the
-cylinder, or the sliver removed) before it is meshed.
+**A face whose ring runs back along itself is meshed, not healed.** Where a
+face's boundary runs out along a path and back along it within the widest
+tolerance of its edges (a spline edge rising to a circle and running on
+along it to the vertex they share, a hair past it in the chart), the ring
+crosses itself at any chord. On its last pass the mesher takes the tail out
+of the ring and draws it as a strip at its edges' points
+(`ogeom-mesh/src/tails.rs`), and the rest triangulates whole. The model
+keeps the tail: the face still bounds a stretch of no width between two
+edges its neighbours do not share with each other, and `fix_shape` strips
+such a pair only where no other face walks either edge. A tail whose way
+back leaves the way out across a segment wider than that tolerance is left
+crossing, as is a ring that crosses itself anywhere else.
 
 ### Speed
 
