@@ -63,6 +63,26 @@ bump may break the API and a patch bump may not.
     and side rounds) are valid; cut and common add up to Steiner's volume,
     and the drill less the box and the common to the drill, to 1e-9.
 
+- **A boolean splits a face's edge where a section ends on it at a stop
+  it shares with a crossing on the other face.**
+  - Crossings along a section closer than the merge floor are one stop.
+    One standing farther than the confusion distance from the kept stop
+    was dropped with its crossings. Where the kept stop crosses nothing of
+    a dropped crossing's face, the strand on that face still ends at the
+    stop, beside that edge, and the edge was left whole.
+  - An oblique drill through a block bored along x, with its axis through
+    the bore's seam line and its seam in the plane of the two: the drill's
+    seam crosses the bore's seam on the bore's wall. In the stress drill
+    case at seed 11 (a block with two crossing bores) the fitted section of
+    the two walls, at a tolerance of 1.5e-5, crosses the two seams 1e-6
+    apart; the drill's crossing was kept, the bore's dropped, and cut,
+    common and the drill less the part were refused.
+  - Such a crossing now splits its edge at the foot of the kept stop on
+    it, as long as no crossing the kept stop speaks for lies on that face.
+  - Measured: three such drills through a 20 mm block bored at radius 4
+    are valid; cut and common add up to 8000 − 320π, and the drill less the
+    part and the common to the drill, to 1e-9.
+
 - **A boolean ends a section's stretch along a face's edge at the edge's
   own vertex.**
   - Where a section runs along a boundary edge, the stretch the edge

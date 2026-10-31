@@ -11,7 +11,7 @@ use ogeom::algo::{
 };
 use ogeom::core::Tolerances;
 use ogeom::geom::SurfaceGeometry;
-use ogeom::math::{Direction, Frame, Point};
+use ogeom::math::{Direction, Frame, Point, Vector};
 use ogeom::mesh::Deflection;
 use ogeom::topo::{Model, Shape, ShapeType, explore_unique};
 
@@ -147,5 +147,74 @@ fn a_solid_halved_square_to_its_seam_keeps_one_round_face_per_half() {
                 "{name}"
             );
         }
+    }
+}
+
+/// An oblique drill through a block bored along x, its axis through the
+/// bore's seam line and its own seam in the plane of the two: the drill's
+/// seam crosses the bore's seam on the bore's wall, and the fitted section
+/// of the two walls crosses both seams there a hair apart, one stop for
+/// both. The bore's seam splits where the section ends on it. Cut, common
+/// and the drill less the part are valid; cut and common add up to the
+/// block less the bore, and the drill less the part and the common to the
+/// drill, each to 1e-9.
+#[test]
+fn a_drill_whose_seam_crosses_a_bores_seam_on_its_wall_cuts_fills_and_is_cut() {
+    let mut model = Model::new();
+    let solid = block(&mut model, (0.0, 0.0, 0.0), (20.0, 20.0, 20.0));
+    let along_x = Frame::new(Point::new(-1.0, 10.0, 10.0), Direction::X, Direction::Y, T).unwrap();
+    let bore = make_cylinder(&mut model, along_x, 4.0, 22.0, T)
+        .unwrap()
+        .shape;
+    let part = ogeom::boolean::cut(&mut model, &solid, &bore, T)
+        .unwrap()
+        .shape;
+    let whole = 8000.0 - PI * 16.0 * 20.0;
+    for (at, axis, r) in [
+        (
+            7.763_932,
+            (
+                -0.516_069_391_835_847_4,
+                0.214_606_892_380_357_3,
+                -0.829_226_304_788_4,
+            ),
+            1.140_487_494_759_118_4,
+        ),
+        (10.0, (0.3, 0.4, -0.866), 1.5),
+        (6.0, (-0.6, -0.2, 0.7746), 1.0),
+    ] {
+        let d = Vector::new(axis.0, axis.1, axis.2).normalized(T).unwrap();
+        let across = d.cross(Vector::new(1.0, 0.0, 0.0)).normalized(T).unwrap();
+        let seam = Direction::new(d.cross(across), T).unwrap();
+        let start = Point::new(at, 14.0, 10.0) - d * 17.0;
+        let frame = Frame::new(start, Direction::new(d, T).unwrap(), seam, T).unwrap();
+        let drill = make_cylinder(&mut model, frame, r, 34.0, T).unwrap().shape;
+        let mut shares = Vec::new();
+        for (name, made) in [
+            ("cut", ogeom::boolean::cut(&mut model, &part, &drill, T)),
+            (
+                "common",
+                ogeom::boolean::common(&mut model, &part, &drill, T),
+            ),
+            (
+                "drill less the part",
+                ogeom::boolean::cut(&mut model, &drill, &part, T),
+            ),
+        ] {
+            let made = made.unwrap_or_else(|e| panic!("at x = {at}, {name}: {e}"));
+            let diagnosis = check(&model, &made.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "at x = {at}, {name}: {diagnosis}");
+            shares.push(volume(&model, &made.shape));
+        }
+        let (cut, common, rest) = (shares[0], shares[1], shares[2]);
+        let drilled = PI * r * r * 34.0;
+        assert!(
+            (cut + common - whole).abs() < whole * 1e-9,
+            "at x = {at}: cut {cut} + common {common} against {whole}"
+        );
+        assert!(
+            (rest + common - drilled).abs() < drilled * 1e-9,
+            "at x = {at}: drill less the part {rest} + common {common} against {drilled}"
+        );
     }
 }

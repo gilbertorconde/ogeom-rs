@@ -6211,7 +6211,15 @@ fn fill(
                 })
             });
             #[allow(clippy::type_complexity)]
-            let edge_hits: Vec<(EdgeKey, f64, f64, f64, Option<(bool, usize)>, f64)> = hits
+            let edge_hits: Vec<(
+                EdgeKey,
+                f64,
+                f64,
+                f64,
+                Option<(bool, usize)>,
+                f64,
+                usize,
+            )> = hits
                 .iter()
                 .map(|(side, node, on_b, on_a, honesty, crossed, spread)| {
                     let across = crossed.then(|| {
@@ -6221,7 +6229,7 @@ fn fill(
                             (true, section.face_a)
                         }
                     });
-                    (*node, *on_b, *on_a, *honesty, across, *spread)
+                    (*node, *on_b, *on_a, *honesty, across, *spread, *side)
                 })
                 .collect();
             trim_ts.extend(hits.iter().map(|(_, _, _, on_a, _, _, _)| *on_a));
@@ -6324,7 +6332,7 @@ fn fill(
                     if let Some(edges) = apart_on {
                         let close = both.max(tol.confusion() * 1e2);
                         let mut best: Option<(f64, f64)> = None;
-                        for (node, _, on_a, _, _, _) in &edge_hits {
+                        for (node, _, on_a, ..) in &edge_hits {
                             if !shared(edges, *node)
                                 || best.is_some_and(|(bd, _)| (on_a - at).abs() >= bd)
                             {
@@ -6417,8 +6425,10 @@ fn fill(
             // parametric tolerance) is the same point: its crossings split
             // their edges at the kept stop too. One further off is dropped
             // with its crossings, which would split their edges where no
-            // strand ends.
-            let mut speaks_for: Vec<(f64, f64)> = Vec::with_capacity(trim_ts.len());
+            // strand ends, unless the kept stop crosses nothing of that
+            // crossing's face: the strand on that face ends at the kept stop
+            // all the same, and the face's edge splits at the stop's foot.
+            let mut speaks_for: Vec<(f64, f64, bool)> = Vec::with_capacity(trim_ts.len());
             {
                 let floor = (honest(section.tolerance, tol) * 3.0).max(tol.confusion() * 10.0);
                 let mut kept: Vec<f64> = Vec::with_capacity(trim_ts.len());
@@ -6431,10 +6441,8 @@ fn fill(
                         kept.push(*t);
                         held = Some(at);
                     }
-                    if let (Some(&first), Some(h)) = (kept.last(), held)
-                        && h.distance(at) <= tol.confusion()
-                    {
-                        speaks_for.push((*t, first));
+                    if let (Some(&first), Some(h)) = (kept.last(), held) {
+                        speaks_for.push((*t, first, h.distance(at) > tol.confusion()));
                     }
                 }
                 trim_ts = kept;
@@ -6783,17 +6791,23 @@ fn fill(
                 kept_stops.extend([lo, hi]);
                 // Keep the paves that end a kept interval: those are where edges
                 // genuinely split.
-                for (node, on_edge, on_section, honesty, across, spread) in &edge_hits {
-                    let s = speaks_for
+                let speaker = |on_section: f64| {
+                    speaks_for
                         .iter()
-                        .find(|(t, _)| (t - on_section).abs() <= tol.parametric())
-                        .map_or(*on_section, |&(_, first)| first);
+                        .find(|(t, ..)| (t - on_section).abs() <= tol.parametric())
+                        .map_or((on_section, false), |&(_, first, moved)| (first, moved))
+                };
+                for (node, on_edge, on_section, honesty, across, spread, side) in &edge_hits {
+                    let (s, moved) = speaker(*on_section);
                     let near = |x: f64| {
                         (s - x).abs() <= tol.parametric()
                             || (section.closed
                                 && ((s + (domain.1 - domain.0)) - x).abs() <= tol.parametric())
                     };
-                    if near(lo) || near(hi) {
+                    if !(near(lo) || near(hi)) {
+                        continue;
+                    }
+                    if !moved {
                         paves.push((
                             *node,
                             Pave {
@@ -6803,7 +6817,43 @@ fn fill(
                                 spread: *spread,
                             },
                         ));
+                        continue;
                     }
+                    // The kept stop's own crossings on this face, or those
+                    // standing on it, end the strand here already.
+                    if edge_hits.iter().any(|(_, _, other, .., other_side)| {
+                        other_side == side && speaker(*other) == (s, false)
+                    }) {
+                        continue;
+                    }
+                    let own = if *side == 0 {
+                        &ga.faces[section.face_a]
+                    } else {
+                        &gb.faces[section.face_b]
+                    };
+                    let Some(e) = own.edges.iter().find(|e| e.node == *node) else {
+                        continue;
+                    };
+                    let at = section
+                        .curve
+                        .point_at(at_param(s, domain, section.closed), tol)?;
+                    let foot = ogeom_algo::project_on_curve(e.drawn().0, at, 64, tol)?;
+                    if *DEBUG_WIRE {
+                        eprintln!(
+                            "PAVE s{si}: side {side} edge {} crossing at {on_section:.6} handed to the stop at {s:.6}, {:.2e} off",
+                            node.index(),
+                            foot.distance
+                        );
+                    }
+                    paves.push((
+                        *node,
+                        Pave {
+                            t: onto_range(e.onto_curve(foot.parameter), &e.curve, e.crange, tol),
+                            honesty: honesty.max(foot.distance),
+                            across: *across,
+                            spread: *spread,
+                        },
+                    ));
                 }
                 // Split at section/section crossings inside the kept interval,
                 // so every face sees the same subdivision.
