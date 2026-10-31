@@ -568,7 +568,11 @@ fn triangulate_reporting_from(
     // The chord is met where the mesh says it is. The grid holds each row
     // and column to it, and a cell's middle can stand off by both sides'
     // sags together: each triangle's middle, lifted onto the surface, is
-    // measured against the triangle's plane, where the face stands.
+    // measured against the triangle's plane, where the face stands, and
+    // against the triangle's own middle along the surface's normal there.
+    // The plane alone is blind to a sliver laid along a line the surface
+    // bends under: its plane holds the curve its corners lie on, and its
+    // middle stands inside the bend by most of the bend's sag.
     if mesh.deflection_met && !matches!(surface.kind(), ogeom_geom::SurfaceKind::Plane) {
         let chord = deflection.chord * placement.scale_factor().abs();
         for t in &mesh.triangles {
@@ -582,7 +586,16 @@ fn triangulate_reporting_from(
             let Ok(on) = surface.point_at(middle.0, middle.1, tol) else {
                 continue;
             };
-            if (placement.apply(on) - pa).dot(normal).abs() > chord + tol.confusion() {
+            let on = placement.apply(on);
+            let mut off = (on - pa).dot(normal).abs();
+            if let Ok(across) = surface.normal_at(middle.0, middle.1, tol)
+                && let Ok(across) = placement.apply_vector(across.vector()).normalized(tol)
+            {
+                let centre =
+                    Point::from_vector((pa.to_vector() + pb.to_vector() + pc.to_vector()) / 3.0);
+                off = off.max((on - centre).dot(across).abs());
+            }
+            if off > chord + tol.confusion() {
                 mesh.deflection_met = false;
                 break;
             }
