@@ -43,6 +43,35 @@ bump may break the API and a patch bump may not.
     them. `ogeom_mesh::face_boundary_in_chart_met` draws a face's rings
     where every edge keeps to the chord, and says where one cannot.
 
+- **A mesh region grown for a fit kind from points clicked on it, its
+  rounded rim peeled: `ogeom_algo::fit::grow`.**
+  - `grow(mesh, index, seeds, kind, &GrowOptions, tol)` returns a `Grown`:
+    the region's triangles, its fit as an `AnyFit` (the kind's `Fit` for a
+    `FitKind` of plane, sphere, cylinder, cone or torus), the mesh vertices
+    the fit measured, a `SeedReport` per seed and the rings peeled.
+  - A seed starts at the triangle nearest it, from the region a plane
+    grows there within the normal limit for a curved kind. The region
+    grows across edges by neighbours whose vertices lie within a
+    prediction interval of the model and whose normals lie within
+    `normal_limit` of its own, refitting at every doubling, until a pass
+    against the latest fit admits none. The interval is the cutoff's `k`
+    sigmas, measured with the fit's degrees of freedom by Student's t and
+    widened by the fit's own uncertainty at the point, so a model a small
+    region determines poorly turns no triangle away for its own error. A
+    bore stops at its end faces and a plane at its edges, however the mesh
+    runs on across them.
+  - Later seeds join where their neighbourhoods agree with the grown fit;
+    one that does not is left out and reported with its offset and angle.
+  - `peel` takes the rim off ring by ring while the rim's normals turn
+    away from the model by more than the noise could: the turn summed over
+    the rim is a weighted sum of its vertices' residuals, tested against
+    the same interval, so a ring of plain noise is peeled as rarely as a
+    point of plain noise is cut off.
+  - `GrowOptions` holds the `Cutoff` (3σ by default), the normal limit
+    (π/6 by default), `peel`, a triangle cap, what the fit holds fixed and
+    the material's side. Refusals are by name; the region and its fit are
+    the same bit for bit on any thread count.
+
 ## [0.13.1] - 2026-11-01
 
 An additive release: measuring scans. `algo::fit` fits planes, spheres,
