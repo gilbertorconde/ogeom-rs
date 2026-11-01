@@ -119,6 +119,34 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Two walls leaning a hair apart fuse where they cross beside an edge.**
+  - A box whose wall leans 1e-5 or 1e-4 radians off a cube's wall,
+    crossing it a micron under the cube's top edge or over its bottom one,
+    was refused by the fuse ("a contact over a region of faces not
+    recognised as coincident is refused"). The strip of the cube's wall
+    between the crossing and the edge stands within rounding of the other
+    wall at every point asked. The cube's edges bounding the strip lie on
+    that wall from the crossing on, but an edge was carried onto the other
+    face only from a section's own ends, and a section of two planes is an
+    unbounded line. On the attempt that settles such pieces from both
+    sides, a section line now also ends where it crosses a line edge, so
+    the other wall's matching strip is split off and one of the two is
+    kept. The volumes are the closed forms' to within the weld distance
+    over the band where the walls stand within it of each other. The
+    first attempt, and so every result it gives, is unchanged.
+  - The pads pushed into a slab converted from a single-precision mesh are
+    measured by the result's exact volume against the mesh's exact
+    measure, moved by how far the converted slab's faces stand off the
+    mesh's triangles inside the pad and outside it, triangle by triangle.
+    The doubt is that standoff over the band of each triangle standing
+    within it of one of the pad's planes. The tessellation measured
+    before stands on vertices welded up to 1e-5 off their faces' planes
+    and missed by 2e-5 to 2.1e-4 with the pad through the whole slab. All
+    180 cases of the 15 row-count sets at both depths, three drafts and
+    both coplanar distances now pass, where 167 did: within 6e-8 at
+    drafts of 0.00002 and 0.00005, and within the top facets' band at
+    0.00001 (at most 3.4e-5, against that case's doubt of 1.3e-4).
+
 - **A table keyed by handles walks in the same order in every process.**
   - `FastMap` and `FastSet` hash with a fixed seed so that their order
     depends only on what was put in them. A handle's hash also took in

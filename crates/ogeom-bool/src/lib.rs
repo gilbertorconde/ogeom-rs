@@ -3286,11 +3286,22 @@ const GRAZE_REACH: f64 = 10.0;
 /// [`GRAZE_REACH`] confusions, is the rest of the section: carried as a
 /// contact it splits the other face as the section would, and both sides
 /// share it as the edge it is.
+///
+/// With `crossings`, on the retries run again once every other has refused
+/// a piece read on the other solid (see [`settled`]), a section line of two
+/// planes also ends where it crosses an edge of either face. Two walls leaning a hair apart
+/// cross a few microns inside one's edge, and the strip between stands
+/// within rounding of the other wall: the edges bounding the strip lie on
+/// that wall from the crossing on, and carried there they split the other
+/// wall's matching strip off, so the two are read as one contact and one
+/// of them kept. Every earlier attempt leaves the edges where they are, so
+/// whatever those resolve is resolved as before.
 fn graze_contacts(
     ga: &GSolid,
     gb: &GSolid,
     sections: &[SectionRec],
     contacts: &[ContactRec],
+    crossings: bool,
     tol: Tolerances,
 ) -> OgeomResult<Vec<ContactRec>> {
     let reach = tol.confusion() * GRAZE_REACH;
@@ -3327,6 +3338,24 @@ fn graze_contacts(
                         && c.target_face == target_face
                 };
                 let reached = near.max(e.standoff);
+                // A section line whose ends stand off the edge may still
+                // leave the owner face across it: the crossing is then its
+                // one end there, the other staying out of reach, and its
+                // middle is read an edge's length along from the crossing.
+                let (ends, middle) = match crossings
+                    .then(|| lines_crossing(&section.curve, &e.curve, tol))
+                    .transpose()?
+                    .flatten()
+                {
+                    Some((at, along)) if ends.iter().all(|p| e.bound.distance_to(*p) > reached) => {
+                        let length = e
+                            .curve
+                            .point_at(e.crange.0, tol)?
+                            .distance(e.curve.point_at(e.crange.1, tol)?);
+                        ([at, ends[1]], at + along * length)
+                    }
+                    _ => (ends, middle),
+                };
                 if ends.iter().all(|p| e.bound.distance_to(*p) > reached)
                     || contacts.iter().chain(&out).any(held)
                 {
@@ -3443,6 +3472,30 @@ fn graze_contacts(
         }
     }
     Ok(out)
+}
+
+/// Where two lines come nearest each other, on the first, with the first's
+/// unit direction: `None` unless both are lines and they are not parallel.
+fn lines_crossing(
+    first: &Curve,
+    second: &Curve,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Point, ogeom_math::Vector)>> {
+    if !matches!(first, Curve::Line(_)) || !matches!(second, Curve::Line(_)) {
+        return Ok(None);
+    }
+    let (p, q) = (first.point_at(0.0, tol)?, second.point_at(0.0, tol)?);
+    let (u, v) = (
+        first.point_at(1.0, tol)? - p,
+        second.point_at(1.0, tol)? - q,
+    );
+    let across = u.cross(v);
+    let square = across.dot(across);
+    if square <= 0.0 {
+        return Ok(None);
+    }
+    let s = (q - p).cross(v).dot(across) / square;
+    Ok(Some((p + u * s, u / u.magnitude())))
 }
 
 /// The boundary edges a tangential contact runs along, carried onto the
@@ -5763,7 +5816,7 @@ fn fill(
             .iter()
             .fold(w.widest_section, |widest, s| widest.max(s.tolerance));
     });
-    let grazed = graze_contacts(ga, gb, &sections, &contacts, tol)?;
+    let grazed = graze_contacts(ga, gb, &sections, &contacts, FROM_CROSSINGS.get(), tol)?;
     contacts.extend(grazed);
     let touched = tangent_contacts(ga, gb, &tangents, &contacts, tol)?;
     contacts.extend(touched);
@@ -10183,6 +10236,12 @@ thread_local! {
     /// [`settled`]). Off but for the last attempt. Read once per boolean
     /// on the calling thread.
     static AT_STATED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether a section line also ends where it crosses an edge, for the
+    /// edges it carries onto the other face (see [`graze_contacts`]). Off
+    /// but for the retries run again once every other has refused a piece
+    /// read on the other solid's boundary. Read once per boolean on the
+    /// calling thread.
+    static FROM_CROSSINGS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// An operation run once, and where it refuses, again in three steps. Where
@@ -10201,7 +10260,7 @@ thread_local! {
 /// the ten the welding run states its own vertices to), so a sliver any
 /// thicker is never lost to the retry.
 ///
-/// Last, at the given confusion, with contacts read at the radii their
+/// Then, at the given confusion, with contacts read at the radii their
 /// curves hold to rather than at the loose width a fitted curve is
 /// measured within: a fitted curve leaving an exact one tangentially
 /// leaves a lune between them wider than those radii, which is geometry.
@@ -10212,6 +10271,14 @@ thread_local! {
 /// edge; a fitted section's hug width welds only a face it leaves a strand
 /// on; and a piece thinner than the classification band is read by the
 /// other solid's edges bounding it ([`thin_by_strands`]).
+///
+/// Last, where the refusal was a piece on the other solid's boundary and
+/// every retry refused too, the same retries again with the edges a
+/// section line crosses carried onto the other face from the crossing on
+/// ([`graze_contacts`]): a strip of one wall between such a crossing and
+/// its edge, standing on another wall a hair's angle off it, is then split
+/// off both and read as one contact. What the retries without them
+/// resolve is resolved as before.
 fn settled(
     model: &mut Model,
     tol: Tolerances,
@@ -10232,9 +10299,36 @@ fn settled(
     }
     SETTLE_FROM_BOTH_SIDES.set(true);
     let _reset = Reset;
+    if let Some(built) = retried(model, tol, &refusal, &mut attempt)? {
+        return Ok(built);
+    }
+    if refusal.to_string().contains("no coincident partner face") {
+        struct Plain;
+        impl Drop for Plain {
+            fn drop(&mut self) {
+                FROM_CROSSINGS.set(false);
+            }
+        }
+        FROM_CROSSINGS.set(true);
+        let _plain = Plain;
+        if let Some(built) = retried(model, tol, &refusal, &mut attempt)? {
+            return Ok(built);
+        }
+    }
+    Err(refusal)
+}
+
+/// The retries [`settled`] runs after a first attempt refused with
+/// `refusal`, each in turn, and the first result one of them keeps.
+fn retried(
+    model: &mut Model,
+    tol: Tolerances,
+    refusal: &ogeom_core::OgeomError,
+    attempt: &mut impl FnMut(&mut Model, Tolerances) -> OgeomResult<Built>,
+) -> OgeomResult<Option<Built>> {
     if refusal.to_string().contains("no coincident partner face") {
         match attempt(model, tol) {
-            Ok(built) => return Ok(built),
+            Ok(built) => return Ok(Some(built)),
             Err(ogeom_core::OgeomError::Cancelled) => {
                 return Err(ogeom_core::OgeomError::Cancelled);
             }
@@ -10251,7 +10345,7 @@ fn settled(
         PROBE_AT_CENTRE.set(true);
         let _clear = Clear;
         match attempt(model, tol) {
-            Ok(built) => return Ok(built),
+            Ok(built) => return Ok(Some(built)),
             Err(ogeom_core::OgeomError::Cancelled) => {
                 return Err(ogeom_core::OgeomError::Cancelled);
             }
@@ -10266,7 +10360,7 @@ fn settled(
             continue;
         };
         match attempt(model, wider) {
-            Ok(built) if welded_within(model, &built.shape, limit)? => return Ok(built),
+            Ok(built) if welded_within(model, &built.shape, limit)? => return Ok(Some(built)),
             Err(ogeom_core::OgeomError::Cancelled) => {
                 return Err(ogeom_core::OgeomError::Cancelled);
             }
@@ -10285,14 +10379,14 @@ fn settled(
         #[cfg(feature = "test-hooks")]
         work::add(|w| w.stated_retries += 1);
         match attempt(model, tol) {
-            Ok(built) => return Ok(built),
+            Ok(built) => return Ok(Some(built)),
             Err(ogeom_core::OgeomError::Cancelled) => {
                 return Err(ogeom_core::OgeomError::Cancelled);
             }
             Err(_) => {}
         }
     }
-    Err(refusal)
+    Ok(None)
 }
 
 /// Whether every edge and vertex of `shape` states a tolerance within

@@ -1980,3 +1980,76 @@ fn a_drill_tangent_under_a_plate_through_a_slot_corner_cuts() {
         "common {v_common} against {want}"
     );
 }
+
+/// A box whose wall leans a hundred-thousandth or a ten-thousandth of a
+/// radian off a cube's wall, the two crossing a micron inside the cube's
+/// top or bottom edge. The strip of the cube's wall between the crossing
+/// and the edge stands within rounding of the leaning wall over its whole
+/// width, and reads on it wherever it is asked. The cube's edges bounding
+/// the strip lie on the leaning wall from the crossing on, and split it
+/// there: the two strips are one contact, and the operations keep one of
+/// them as they keep one face of a coincident pair. Each volume is the
+/// closed form's to within the weld distance over the band where the two
+/// walls stand within it of each other.
+#[test]
+fn boxes_whose_walls_lean_a_hair_apart_cut_and_fuse_to_their_closed_forms() {
+    let weld = T.confusion() * 1e2;
+    for (lean, crossing) in [(1e-5_f64, 9.999), (-1e-5, 0.001), (1e-4, 9.999)] {
+        // The box spans five along its leaning x, its wall through
+        // (10, y, crossing), and overhangs the cube by two every other way.
+        let make = |model: &mut Model| {
+            let a = cube(model, (0.0, 0.0, 0.0), 10.0);
+            let across = ogeom::math::Vector::new(lean.cos(), 0.0, -lean.sin());
+            let up = ogeom::math::Vector::new(lean.sin(), 0.0, lean.cos());
+            let origin = Point::new(10.0, -2.0, crossing) - across * 5.0 - up * (crossing + 2.0);
+            let frame = Frame::new(
+                origin,
+                Direction::new(up, T).unwrap(),
+                Direction::new(across, T).unwrap(),
+                T,
+            )
+            .unwrap();
+            let b = ogeom::algo::make_box(model, frame, (5.0, 14.0, 14.0), T)
+                .unwrap()
+                .shape;
+            (a, b)
+        };
+        // The cube between the box's two walls, less the wedge of the box
+        // beyond the cube's wall on the side the wall leans out.
+        let beyond = if lean > 0.0 {
+            10.0 - crossing
+        } else {
+            crossing
+        };
+        let common = 10.0 * (50.0 / lean.cos() - lean.abs().tan() * beyond * beyond / 2.0);
+        // The band on the cube's wall, ten long, where the two walls stand
+        // within the weld of each other. A strip kept for its partner moves
+        // the volume by at most the weld over it.
+        let band = 10.0 * 2.0 * weld / lean.abs();
+        for (op, expected) in [
+            ("fuse", 1000.0 + 980.0 - common),
+            ("common", common),
+            ("cut", 1000.0 - common),
+        ] {
+            let mut model = Model::new();
+            let (a, b) = make(&mut model);
+            let got = match op {
+                "fuse" => ogeom::boolean::fuse(&mut model, &a, &b, T),
+                "common" => ogeom::boolean::common(&mut model, &a, &b, T),
+                _ => ogeom::boolean::cut(&mut model, &a, &b, T),
+            }
+            .unwrap_or_else(|e| panic!("{lean} {crossing} {op}: {e}"))
+            .shape;
+            let m = measured(&model, &got);
+            assert!(
+                m.valid,
+                "{lean} {crossing} {op}: check reports the result invalid"
+            );
+            assert!(
+                (m.volume - expected).abs() <= weld * band,
+                "{lean} {crossing} {op}: volume {} against {expected}",
+                m.volume
+            );
+        }
+    }
+}

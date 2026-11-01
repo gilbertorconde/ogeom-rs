@@ -3555,6 +3555,112 @@ fn clip_to_convex(subject: &[(f64, f64)], window: &[(f64, f64)]) -> Vec<(f64, f6
     out
 }
 
+/// `polygon`, each corner carrying a value that varies linearly over it,
+/// kept where `inside` is not negative; `inside` is affine.
+fn clip_by(polygon: &[(Vector, f64)], inside: impl Fn(Vector) -> f64) -> Vec<(Vector, f64)> {
+    let mut out = Vec::new();
+    for k in 0..polygon.len() {
+        let (p, q) = (polygon[k], polygon[(k + 1) % polygon.len()]);
+        let (sp, sq) = (inside(p.0), inside(q.0));
+        if sp >= 0.0 {
+            out.push(p);
+        }
+        if (sp >= 0.0) != (sq >= 0.0) {
+            let t = sp / (sp - sq);
+            out.push((p.0 + (q.0 - p.0) * t, p.1 + (q.1 - p.1) * t));
+        }
+    }
+    out
+}
+
+/// The area of a planar `polygon` seen along `normal`, and the integral of
+/// its corners' linear value over it.
+fn area_and_integral(polygon: &[(Vector, f64)], normal: Vector) -> (f64, f64) {
+    let (mut area, mut integral) = (0.0, 0.0);
+    for k in 1..polygon.len().saturating_sub(1) {
+        let (a, b, c) = (polygon[0], polygon[k], polygon[k + 1]);
+        let piece = (b.0 - a.0).cross(c.0 - a.0).dot(normal) / 2.0;
+        area += piece;
+        integral += piece * (a.1 + b.1 + c.1) / 3.0;
+    }
+    (area, integral)
+}
+
+/// How far the volume a solid converted from `mesh` encloses stands from
+/// the mesh's, inside the convex prism `halves` bounds and in all, with
+/// the doubt on the first.
+///
+/// Each face of `solid` lies on a plane its vertices, the mesh's points,
+/// stand off by up to its tolerance. The solid's volume runs round each
+/// face's own chart, the mesh's triangles projected on the face's plane.
+/// Between a triangle and its projection lies a sliver whose volume is the
+/// integral of the corners' height off the plane over the projection,
+/// exactly, as the height is linear. The part inside the prism is that integral over
+/// the projection clipped to the prism, except where a point of the sliver
+/// and its foot on the plane lie either side of one of the prism's planes:
+/// there the foot stands within the sliver's height, times how far the
+/// plane faces along the face's normal, of the prism's plane, and the
+/// doubt is that band's area times the height. A face leaning off the
+/// prism's wall by a small angle has a wide band, one crossing it square a
+/// band of nothing.
+fn standoff_inside(
+    model: &Model,
+    solid: &Shape,
+    mesh: &Triangulation,
+    halves: &[(Vector, f64)],
+    local: impl Fn(Point) -> Vector,
+) -> (f64, f64, f64) {
+    let mut faces = Vec::new();
+    for face in explore_unique(model, solid, ShapeType::Face).unwrap() {
+        let (on, normal) = ogeom::algo::face_normal(model, &face, T).unwrap();
+        let points: Vec<Point> = explore_unique(model, &face, ShapeType::Vertex)
+            .unwrap()
+            .iter()
+            .map(|v| model.node(v).unwrap().data().as_vertex().unwrap().point)
+            .collect();
+        faces.push((local(on), normal, points));
+    }
+    let (mut inside, mut whole, mut doubt) = (0.0, 0.0, 0.0);
+    for triangle in &mesh.triangles {
+        let corners = triangle.map(|i| mesh.positions[i as usize]);
+        let facing = (corners[1] - corners[0]).cross(corners[2] - corners[0]);
+        // The face holding all three corners as vertices that faces the
+        // triangle's way the most. The conversion keeps the mesh's points
+        // as its vertices, so a corner is a vertex to rounding.
+        let (on, normal, _) = faces
+            .iter()
+            .filter(|(_, _, points)| {
+                corners
+                    .iter()
+                    .all(|c| points.iter().any(|p| p.distance(*c) < 1e-9))
+            })
+            .max_by(|a, b| facing.dot(a.1).total_cmp(&facing.dot(b.1)))
+            .filter(|(_, normal, _)| facing.dot(*normal) > 0.0)
+            .expect("each triangle lies on a face that keeps its corners");
+        let corners = corners.map(&local);
+        let heights = corners.map(|p| (p - *on).dot(*normal));
+        let foot: Vec<(Vector, f64)> = (0..3)
+            .map(|i| (corners[i] - *normal * heights[i], heights[i]))
+            .collect();
+        let high = heights.iter().fold(0.0_f64, |m, h| m.max(h.abs()));
+        // The face lies below a corner that stands above it.
+        whole -= area_and_integral(&foot, *normal).1;
+        let mut within = foot.clone();
+        for &(m, at) in halves {
+            within = clip_by(&within, |p| at - m.dot(p));
+        }
+        inside -= area_and_integral(&within, *normal).1;
+        for &(m, at) in halves {
+            let reach = high * m.dot(*normal).abs();
+            let band = clip_by(&clip_by(&foot, |p| at + reach - m.dot(p)), |p| {
+                m.dot(p) - at + reach
+            });
+            doubt += high * area_and_integral(&band, *normal).0.abs();
+        }
+    }
+    (inside, whole, doubt)
+}
+
 /// A slab drafted inward from its top by `draft` times the depth to the
 /// power one and a half, one corner rounded in `counts` segments row by
 /// row, tessellated and rounded to `f32` a hundred millimetres from the
@@ -3566,22 +3672,19 @@ fn clip_to_convex(subject: &[(f64, f64)], window: &[(f64, f64)]) -> Vec<(f64, f6
 ///
 /// The pad fused back, in common with the slab and cut from it must each
 /// be valid, with a volume within `2e-5` cubic millimetres of one measured
-/// from the mesh alone, plus the doubt the converted slab carries where the
-/// pad's floor crosses it. Where rows that lean alike merge into one face
-/// on a fitted plane, its vertices stand off the plane by up to their
-/// tolerance; a face the floor splits is tessellated on those vertices in
-/// pieces, not whole, and its volume moves by up to how far they stand off
-/// the plane times its area. That sum over the faces the floor crosses is
-/// the doubt, returned; faces holding their vertices to rounding carry
-/// none. The slab's volume is its triangles' signed
+/// from the mesh alone, moved by how far the converted slab's faces stand
+/// off the mesh inside the pad or outside it, plus the doubt that leaves
+/// ([`standoff_inside`]). The slab's volume is its triangles' signed
 /// tetrahedra, the pad's its lid's area times its depth, and their common
 /// part the integral down the pad of the lid clipped by the slab's
 /// section, which between two rows is the polygon through the edges
 /// joining them (Simpson's rule, two thousand steps a band); the fuse and
-/// the cut are what is left of the three. A result's volume is its own
-/// tessellation's, which must close: on planes the tessellation stands on
-/// the result's vertices, where the exact integral runs round each face's
-/// own chart and so differs by what the vertices' tolerances allow.
+/// the cut are what is left of the three. A result's volume is its exact
+/// one, run round each face's own chart.
+///
+/// Where rows that lean alike merge into one face on a fitted plane, its
+/// vertices stand off the plane by up to their tolerance. That standoff
+/// times the area of each face the pad's floor crosses is returned.
 fn pad_on_a_drafted_slab(
     depth: f64,
     draft: f64,
@@ -3753,10 +3856,23 @@ fn pad_on_a_drafted_slab(
             doubt += off * area;
         }
     }
+    let mut halves = vec![
+        (Vector::new(0.0, 0.0, 1.0), top),
+        (Vector::new(0.0, 0.0, -1.0), -floor),
+    ];
+    for i in 0..window.len() {
+        let (a, b) = (window[i], window[(i + 1) % window.len()]);
+        let out = Vector::new(b.1 - a.1, a.0 - b.0, 0.0)
+            .normalized(T)
+            .unwrap();
+        halves.push((out, out.x * a.0 + out.y * a.1));
+    }
+    let (inside, whole, standoff_doubt) = standoff_inside(&model, &slab, &mesh, &halves, local);
+    let outside = whole - inside;
     for (name, expected) in [
-        ("fuse", slab_volume + pad_volume - common_volume),
-        ("common", common_volume),
-        ("cut", slab_volume - common_volume),
+        ("fuse", slab_volume + pad_volume - common_volume + outside),
+        ("common", common_volume + inside),
+        ("cut", slab_volume - common_volume + outside),
     ] {
         let made = match name {
             "fuse" => ogeom::boolean::fuse(&mut model, &slab, &pad, T),
@@ -3775,11 +3891,15 @@ fn pad_on_a_drafted_slab(
         if !tessellated.triangles.is_empty() && !tessellated.is_closed() {
             return Err(format!("depth {depth}: {name}: its tessellation is open"));
         }
-        let v = signed(&tessellated);
-        if (v - expected).abs() > 2e-5 + doubt {
+        let v = if tessellated.triangles.is_empty() {
+            0.0
+        } else {
+            volume_properties(&model, &made, fine, T).unwrap().mass
+        };
+        if (v - expected).abs() > 2e-5 + standoff_doubt {
             return Err(format!(
                 "depth {depth}: {name}: volume {v}, measured {expected}, off by {:.2e}, \
-                 the slab's doubt {doubt:.2e}",
+                 the standoff's doubt {standoff_doubt:.2e}",
                 v - expected
             ));
         }
@@ -3938,7 +4058,11 @@ fn pads_into_slabs_drafted_under_a_thousandth_with_uniform_rows_cut_and_fuse() {
 /// a sliver a quarter of a micron wide between its own edge and the
 /// section, the section's end vertex widened to most of a micron where it
 /// was welded higher up: the sliver's two sides are two edges, not one,
-/// and the wall above keeps its corner.
+/// and the wall above keeps its corner. With the pad through the whole
+/// slab, the merged corner faces' pieces outside the pad's walls carry
+/// their fitted planes' standoff, which the slab's own faces account for:
+/// the results come out within a few hundredths of a micron of the mesh's
+/// measure moved by it.
 #[test]
 fn pads_into_slabs_drafted_under_a_thousandth_with_differing_rows_cut_and_fuse() {
     let mut failed = Vec::new();
@@ -3957,6 +4081,10 @@ fn pads_into_slabs_drafted_under_a_thousandth_with_differing_rows_cut_and_fuse()
         (0.0001, [8, 9, 9, 5, 4, 5, 5], 3.0),
         (0.0001, [6, 6, 6, 4, 8, 7, 5], 3.0),
         (0.00005, [8, 8, 8, 7, 7, 6, 5], 3.0),
+        (0.00005, [8, 8, 8, 7, 7, 6, 5], 10.0),
+        (0.00005, [7, 7, 7, 6, 6, 6, 5], 10.0),
+        (0.00005, [8, 9, 9, 5, 4, 5, 5], 10.0),
+        (0.00005, [6, 6, 6, 4, 8, 7, 5], 10.0),
     ] {
         match pad_on_a_drafted_slab(depth, draft, counts, false) {
             Err(e) => failed.push(format!("{draft} {counts:?}: {e}")),
@@ -4007,7 +4135,12 @@ fn pads_into_a_slab_drafted_a_hundred_thousandth_with_rows_kept_cut_and_fuse() {
 /// where it crosses them a micron apart along it. The section's piece kept
 /// on the slab's face ends on the slab's edge, and the pad's edge splits
 /// there too: the pad's wall is split along the section, and the sliver
-/// between it and the corner edge is read on its own.
+/// between it and the corner edge is read on its own. With the pad through
+/// the whole slab, its walls carry vertices of the slab's merged corner
+/// column welded onto them up to a hundredth of a micron off their planes,
+/// and a top facet stands within the weld distance of its wall over most
+/// of its height: the volumes are the mesh's, moved by the slab's
+/// standoff, to within that band's doubt.
 #[test]
 fn pads_into_a_slab_drafted_a_hundred_thousandth_cut_and_fuse() {
     let mut failed = Vec::new();
@@ -4017,8 +4150,11 @@ fn pads_into_a_slab_drafted_a_hundred_thousandth_cut_and_fuse() {
         ([4; 7], 3.0),
         ([8; 7], 3.0),
         ([5, 6, 7, 7, 8, 8, 8], 10.0),
+        ([8; 7], 10.0),
         ([7, 7, 7, 6, 6, 6, 5], 3.0),
+        ([7, 7, 7, 6, 6, 6, 5], 10.0),
         ([8, 5, 9, 9, 5, 8, 7], 3.0),
+        ([8, 5, 9, 9, 5, 8, 7], 10.0),
     ] {
         if let Err(e) = pad_on_a_drafted_slab(depth, 0.00001, counts, false) {
             failed.push(format!("{counts:?}: {e}"));
@@ -4032,7 +4168,9 @@ fn pads_into_a_slab_drafted_a_hundred_thousandth_cut_and_fuse() {
 /// coplanar distances. A probe of a pad's wall stands tens of microns off
 /// the slab's facets that lean along it, and every ray from it meets a
 /// facet's edge or runs along a facet: its winding number against the
-/// slab's faces says which side it is on.
+/// slab's faces says which side it is on. One set is also pushed through
+/// the whole slab, where the pad's walls carry the merged corner faces'
+/// vertices.
 #[test]
 fn pads_into_slabs_drafted_hundred_thousandths_with_falling_rows_cut_and_fuse() {
     let mut failed = Vec::new();
@@ -4049,6 +4187,9 @@ fn pads_into_slabs_drafted_hundred_thousandths_with_falling_rows_cut_and_fuse() 
                 failed.push(format!("{draft} {counts:?} {rows_kept}: {e}"));
             }
         }
+    }
+    if let Err(e) = pad_on_a_drafted_slab(10.0, 0.00002, [6, 6, 6, 4, 8, 7, 5], false) {
+        failed.push(format!("0.00002 [6, 6, 6, 4, 8, 7, 5] at depth 10: {e}"));
     }
     assert!(failed.is_empty(), "{failed:#?}");
 }
