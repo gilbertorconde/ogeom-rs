@@ -11,6 +11,34 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-01
+
+A minor release. The API grows and changes in a few places:
+`ThreeMfObject` gains `role`, `colours` and `volumes`, so building one with a
+struct literal needs the new fields, and an ASCII PLY whose element count
+is not a number is refused instead of read wrongly. `docs/SCOPE.md` now
+admits scans: inspection, editing and reverse engineering of point clouds
+and scan meshes.
+
+Scans start here. `mesh::Bvh` and `mesh::PointIndex` answer nearest, ball and
+ray queries over a mesh or a cloud exactly as brute force would, and the
+readers take binary PLY, point clouds in PLY and XYZ/PTS, OBJ materials and
+textures, and 3MF colours, textures and volume roles.
+
+Several booleans, blends and conversions that came out valid but wrong now
+come out right or are refused by name: a slab drilled through a sphere's
+pole, a face blend crossing a chamfer or a wedge between its faces, a
+fillet on a slanted drum, a fuse whose section fit swung between samples.
+Face blends are judged by a new stress scenario against an independent
+rolling-ball oracle (912 of 960 rounded, none wrong), chain and drill stress
+pass in full, and fillet stress rounds every case it is given. Fillets
+round over narrow strips and older rounds and carry a ball across a change
+of what it rests on; pipes are exact round sharp corners beside arcs for any
+planar profile. `solid_from_mesh` gives one result whatever order a mesh
+lists its triangles in, and every real-assembly part converts back valid.
+Booleans in a chain run about a third fewer cycles, and STEP reads about a
+fifth fewer; the STEP reader keeps pcurves stated in the file's units.
+
 ### Added
 
 - **Scan and colour formats: binary PLY, point clouds, XYZ/PTS, OBJ
@@ -10134,7 +10162,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.5...v0.12.0
 [0.11.5]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.4...v0.11.5
 [0.11.4]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.3...v0.11.4
