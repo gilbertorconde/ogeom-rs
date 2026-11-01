@@ -392,7 +392,7 @@ fn turning_bound(a: &Form, b: &Form) -> f64 {
 /// no narrower than the widest of the ends. Where both are straight the
 /// gap is affine in `f` and its length widest at an end, so the ends
 /// measured as sampling measures them are the answer.
-pub(super) fn closed_gap(
+pub(crate) fn closed_gap(
     (curve, range): (&Curve, (f64, f64)),
     (pcurve, pcurve_range): (&PlanarCurve, (f64, f64)),
     surface: &SurfaceGeometry,

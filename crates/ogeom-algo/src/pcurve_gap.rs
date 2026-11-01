@@ -12,6 +12,7 @@ use ogeom_math::{Point, Transform, Vector};
 use ogeom_topo::{EdgeRepr, Model, Shape, ShapeType};
 
 mod closed;
+pub(crate) use closed::closed_gap;
 
 /// How much wider than the gap it was measured from an edge's tolerance is
 /// recorded: a millionth.

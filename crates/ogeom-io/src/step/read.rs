@@ -278,6 +278,8 @@ type BuiltEdge = (Shape, Curve, (f64, f64), bool);
 /// Deriving one is a pure function of a curve, its range and a surface (no
 /// model, no order), and it is most of the time spent building solids. So
 /// it is done for a whole solid at once, off the walk that attaches it.
+/// An `off` within the confusion distance is only known to be within it:
+/// the edge is widened only past it.
 enum PreparedPcurve {
     /// The file stated it, and it stands `off` from the curve once lifted,
     /// within what the edge's own tolerance allows.
@@ -4848,10 +4850,17 @@ fn derive_pcurve(
     tol: Tolerances,
 ) -> PreparedPcurve {
     // A pcurve that does not evaluate over the edge's range states no gap
-    // here; the face that uses it fails on it there.
+    // here; the face that uses it fails on it there. With nothing stated,
+    // the gap is only asked whether it passes the confusion distance, and
+    // by how much where it does; with the file's own to weigh it against,
+    // it is the bound they are held to.
     let lifted = |pcurve: &PlanarCurve| {
-        ogeom_algo::pcurve_fit::lifted_gap((curve, range), (pcurve, range), surface, false, tol)
-            .unwrap_or(0.0)
+        let gap = if stated.is_empty() {
+            ogeom_algo::pcurve_fit::lifted_gap_past_confusion
+        } else {
+            ogeom_algo::pcurve_fit::lifted_gap
+        };
+        gap((curve, range), (pcurve, range), surface, false, tol).unwrap_or(0.0)
     };
     let nearest = nearest_stated(curve, range, surface, stated, tol);
     // One that follows the curve exactly needs nothing derived beside it.
@@ -4934,7 +4943,8 @@ fn derive_pcurve(
 }
 
 /// The file's pcurve nearest the curve once lifted, with how far it
-/// stands. One that does not evaluate over the edge's range, or whose
+/// stands; within the confusion distance, only known to be within it. One
+/// that does not evaluate over the edge's range, or whose
 /// image leaves the surface's chart along a direction that does not close,
 /// is left out.
 ///
@@ -4969,7 +4979,7 @@ fn nearest_stated(
             if !within_chart(&shifted, range, surface, tol) {
                 continue;
             }
-            let Ok(off) = ogeom_algo::pcurve_fit::lifted_gap(
+            let Ok(off) = ogeom_algo::pcurve_fit::lifted_gap_past_confusion(
                 (curve, range),
                 (&shifted, range),
                 surface,

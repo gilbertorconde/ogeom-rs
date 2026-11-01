@@ -472,7 +472,21 @@ tolerance (`pcurve_gap/closed.rs`), within rounding of what its sampling
 measures; the chain then costs 22 percent fewer cycles at 200 steps and
 17 at 361, and 80 percent of the gaps the stress suite measures are
 answered so. Still sampled: B-spline pcurves, the chart traces of
-oblique sections, helices and any gap past the tolerance. Where the assembly around the faces set aside does not close (the
+oblique sections, helices and any gap past the tolerance. A STEP read
+measures the pcurves it derives with the same forms where it acts on the
+gap only past the confusion distance
+(`pcurve_fit::lifted_gap_past_confusion`): the Voron 2.4 assembly reads
+in 23 percent fewer cycles at one thread. Still sampled there: the
+derived pcurve's gap where the file states pcurves of its own, which
+bounds the ones kept.
+Measured and not landed: the classifier draws a
+cylinder wall's rings at the full chord though its pcurves are straight
+in the chart, about 15 percent of `boolean_drill` and of a step of the
+chain and 40 percent of `offset_part`; drawn at the fewest points the
+walk's period choices (rings placed by the mean of their points) put a
+NIST part's wall a period apart in places, so the fewer points are not
+the same rings. Boxing the section against each edge before crossing
+them rejects almost no pair on the benches. Where the assembly around the faces set aside does not close (the
 sew welds a shared vertex, a seam join reaches a shared edge, a strand would
 widen a shared vertex), the boolean runs again over every face; converted
 slabs with tolerant vertices take that path.

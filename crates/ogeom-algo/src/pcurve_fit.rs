@@ -933,6 +933,46 @@ pub fn lifted_gap(
     Ok(widest)
 }
 
+/// [`lifted_gap`] where it exceeds the confusion distance; within it, the
+/// answer is only known to be within it.
+///
+/// A line, a circle or an ellipse against a line, a circle or an ellipse on
+/// a plane, or an iso line of a cylinder, a cone, a sphere or a torus, is
+/// answered in closed form where that stands within the confusion distance
+/// ([`crate::pcurve_gap::pcurve_gap`]'s forms). Within it the sampling
+/// compares every point with the same fraction's point of the curve, so
+/// its answer is the widest of the direct gaps it read: no wider than the
+/// widest over the range, which the closed form bounds, and no narrower
+/// than the gap at the ends, which the bound is within rounding of.
+///
+/// # Errors
+///
+/// As [`lifted_gap`].
+pub fn lifted_gap_past_confusion(
+    curve: (&Curve, (f64, f64)),
+    pcurve: (&PlanarCurve, (f64, f64)),
+    surface: &SurfaceGeometry,
+    paced: bool,
+    tol: Tolerances,
+) -> OgeomResult<f64> {
+    let stated = tol.confusion();
+    let Some((gap, margin)) = crate::pcurve_gap::closed_gap(curve, pcurve, surface, stated, tol)
+    else {
+        return lifted_gap(curve, pcurve, surface, paced, tol);
+    };
+    if cfg!(debug_assertions) {
+        let sampled = lifted_gap(curve, pcurve, surface, paced, tol);
+        assert!(
+            sampled
+                .as_ref()
+                .is_ok_and(|s| (gap - s).abs() <= margin && *s <= stated),
+            "closed-form lifted gap {gap:e} (within {margin:e}) against sampled {sampled:?}, \
+             stated {stated:e}"
+        );
+    }
+    Ok(gap)
+}
+
 /// Re-project the samples a stalled projection left behind.
 ///
 /// Where a chart collapses (a spline patch whose whole `v = 0` row is a
@@ -1426,5 +1466,53 @@ mod tests {
             error >= worst,
             "and the widest miss between the samples is reported: {error:.3e} for {worst:.3e}"
         );
+    }
+
+    /// A circle on a plane against its image moved across the plane: by a
+    /// hair under the confusion distance it is answered in closed form,
+    /// within rounding of the sampled gap; by a micron, past it, it is
+    /// the sampled gap itself, which the edge is widened by.
+    #[test]
+    fn a_gap_past_the_confusion_distance_is_measured_as_sampling_measures_it() {
+        use ogeom_core::Tolerances;
+        use ogeom_geom::{Circle2d, CircleCurve, PlaneSurface};
+        use ogeom_math::{Circle, Circle2, Direction2, Frame, Frame2, Plane, Vector2};
+        const T: Tolerances = Tolerances::millimetres();
+        let plane: super::SurfaceGeometry = PlaneSurface::new(Plane::new(Frame::WORLD)).into();
+        let curve: super::Curve =
+            CircleCurve::new(Circle::new(Frame::WORLD, 4.0, T).unwrap()).into();
+        let range = (0.0, core::f64::consts::TAU);
+        for (shift, past) in [(0.5e-7, false), (1e-6, true)] {
+            let frame = Frame2::new(
+                Point2::new(shift, 0.0),
+                Direction2::new(Vector2::new(1.0, 0.0), T).unwrap(),
+            );
+            let image: super::PlanarCurve =
+                Circle2d::new(Circle2::new(frame, 4.0, T).unwrap()).into();
+            let sampled =
+                super::lifted_gap((&curve, range), (&image, range), &plane, false, T).unwrap();
+            let answered = super::lifted_gap_past_confusion(
+                (&curve, range),
+                (&image, range),
+                &plane,
+                false,
+                T,
+            )
+            .unwrap();
+            if past {
+                assert_eq!(
+                    answered.to_bits(),
+                    sampled.to_bits(),
+                    "{answered:e} {sampled:e}"
+                );
+            } else {
+                // The closed form's rounding margin for numbers of size 4.
+                assert!(
+                    answered <= T.confusion() && (answered - shift).abs() <= 1e-12,
+                    "{answered:e}"
+                );
+                assert!((sampled - shift).abs() <= 1e-12, "{sampled:e}");
+            }
+        }
     }
 }

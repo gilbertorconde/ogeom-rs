@@ -239,6 +239,18 @@ bump may break the API and a patch bump may not.
   percent fewer cycles (17 percent at 361 steps), to the same faces and
   volumes.
 
+- **A STEP read measures the pcurves it derives in closed form for the
+  common analytic pairs.** Each pcurve the reader derives or compares with
+  the file's own was lifted through its surface at 257 samples and its
+  peaks searched, though a file without pcurves only asks whether the gap
+  passes the confusion distance. The new
+  `ogeom_algo::pcurve_fit::lifted_gap_past_confusion` answers the pairs
+  `edge_pcurve_gap` reads in closed form where the gap stands within the
+  confusion distance, compared with the sampling in debug builds, and is
+  used wherever the reader acts on the gap only past that distance. The
+  Voron 2.4 assembly reads in 23 percent fewer cycles at one thread, to the
+  same solids.
+
 ### Fixed
 
 - **A STEP file's pcurves are read in its own units, and at another pace
