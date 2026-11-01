@@ -13,6 +13,39 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A concave edge round carried across a change of what the ball
+  holds.**
+  - Where the ball rounding a concave seam beside a narrow strip rests on
+    the strip's far edge over only part of the crease, `fillet_edge` and
+    `fillet_edges` refused it by name ("the ball comes down on that face",
+    "the ball runs past that edge's end"). The round is now a chain of
+    bands, one per piece of the run, meeting tangent on the section where
+    the ball holds three things at once. On each piece the ball holds a
+    face on each side, its centre on the line a radius off both planes; a
+    face and an edge of the other face, on the ellipse where the plane a
+    radius off the face meets the cylinder a radius about the edge; or a
+    face and a corner of the other face, on the circle where that plane
+    meets the sphere a radius about the corner, its band's arcs all ending
+    on the corner. Each switch is read in closed form: the contact on a
+    face reaching its edge, the ball's angle round an edge reaching the
+    face's normal, the contact on an edge reaching its end, the ball
+    coming square to the next edge out of a corner.
+  - Every piece is held to the same proofs as a run on one edge: its
+    sections do not cross, its contacts stay on their faces and edges,
+    and its balls lie in free space. A seam run on to where its strip
+    widens past the setback adds `0.0976148` against the pieces' swept
+    sections `0.0976154`, and the round of a box's corner over a plate
+    `0.00148631` against `0.00148645`, each within what the bands'
+    stand-off from the balls moves it.
+  - Where the ball comes onto the face beyond the far edge it rests on,
+    it touches neither of the edge's faces on that side and rounds the
+    corner between the face it touches and the face beyond, another
+    seam's round: that is refused by name, as is a ball resting on far
+    edges of both faces at once.
+  - Two of the stress run's 35 blend refusals at seeds 1 to 8 now round
+    (seed 3 case 33, seed 8 case 46), and seed 2 case 54 rounds alone;
+    nothing else in `blend`, `fillet` or `faceblend` changed.
+
 - **`StepReport` counts the file's pcurves kept and derived.**
   - `pcurves_kept` and `pcurves_derived` count each face's use of an edge
     whose pcurve the file states: kept as stated, or derived because the

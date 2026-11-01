@@ -205,13 +205,13 @@ pub(crate) struct Rolled {
 /// A planar face's plane as a point and its outward unit normal, and its
 /// boundary as straight segments; `None` where it is curved or bounded by
 /// anything else.
-struct Flat {
-    origin: Point,
-    normal: Vector,
-    sides: Vec<[Point; 2]>,
+pub(crate) struct Flat {
+    pub(crate) origin: Point,
+    pub(crate) normal: Vector,
+    pub(crate) sides: Vec<[Point; 2]>,
 }
 
-fn flat(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<Flat>> {
+pub(crate) fn flat(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<Flat>> {
     let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
         return Ok(None);
     };
@@ -239,7 +239,7 @@ fn flat(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<Flat
 }
 
 /// A unit basis of the plane square to `normal`.
-fn basis(normal: Vector) -> (Vector, Vector) {
+pub(crate) fn basis(normal: Vector) -> (Vector, Vector) {
     let helper = if normal.x.abs() < 0.9 {
         Vector::new(1.0, 0.0, 0.0)
     } else {
@@ -252,7 +252,7 @@ fn basis(normal: Vector) -> (Vector, Vector) {
 
 /// Whether `p`, in the plane of `sides`, lies inside the region they
 /// bound, read by the parity of the sides a ray along `e1` crosses.
-fn inside(sides: &[[Point; 2]], p: Point, (e1, e2): (Vector, Vector)) -> bool {
+pub(crate) fn inside(sides: &[[Point; 2]], p: Point, (e1, e2): (Vector, Vector)) -> bool {
     let at = |q: Point| ((q - p).dot(e1), (q - p).dot(e2));
     let mut odd = false;
     for [a, b] in sides {
@@ -267,7 +267,7 @@ fn inside(sides: &[[Point; 2]], p: Point, (e1, e2): (Vector, Vector)) -> bool {
     odd
 }
 
-fn segment_distance(p: Point, [a, b]: [Point; 2]) -> f64 {
+pub(crate) fn segment_distance(p: Point, [a, b]: [Point; 2]) -> f64 {
     let ab = b - a;
     let l2 = ab.dot(ab);
     let t = if l2 > 0.0 {
@@ -279,7 +279,7 @@ fn segment_distance(p: Point, [a, b]: [Point; 2]) -> f64 {
 }
 
 /// The distance from `p` to a planar face.
-fn face_distance(face: &Flat, p: Point) -> f64 {
+pub(crate) fn face_distance(face: &Flat, p: Point) -> f64 {
     let height = (p - face.origin).dot(face.normal);
     let foot = p - face.normal * height;
     if inside(&face.sides, foot, basis(face.normal)) {
@@ -294,7 +294,7 @@ fn face_distance(face: &Flat, p: Point) -> f64 {
 /// Whether some stretch of the segment `side` lies inside the simple
 /// polygon `ring` in the plane square to `normal`, more than `margin` from
 /// its boundary.
-fn enters(ring: &[Point], normal: Vector, [p, q]: [Point; 2], margin: f64) -> bool {
+pub(crate) fn enters(ring: &[Point], normal: Vector, [p, q]: [Point; 2], margin: f64) -> bool {
     let frame = basis(normal);
     let sides: Vec<[Point; 2]> = (0..ring.len())
         .map(|i| [ring[i], ring[(i + 1) % ring.len()]])
@@ -333,25 +333,34 @@ fn enters(ring: &[Point], normal: Vector, [p, q]: [Point; 2], margin: f64) -> bo
     false
 }
 
+/// A concave edge's round that rests on the far edge of a narrow face
+/// beside it: along the whole crease, or carried across changes of what
+/// the ball holds.
+pub(crate) enum Run {
+    Rolled(Rolled),
+    Carried(crate::carried::Carried),
+}
+
 /// The run of a ball of `radius` rounding the concave straight `edge`
 /// while it rests on the far edge of the narrow planar face beside it;
-/// `None` where the edge is not of that kind.
+/// `None` where the edge is not of that kind. Where it does not rest on
+/// that edge over the whole crease, the run is carried across the changes
+/// of what it holds ([`crate::carried`]).
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`] naming why, where the ball does rest on
 /// such a far edge but no sound round of this kind exists: the ball comes
-/// down on a face either side of that edge or runs past its end along the
-/// crease, touches its own face off that face, comes within its radius of
-/// another face, or its sections cross; and whatever reading the solid
-/// reports.
+/// onto the face beyond that edge or rests on far edges on both sides,
+/// touches its own face off that face, comes within its radius of another
+/// face, or its sections cross; and whatever reading the solid reports.
 pub(crate) fn rolled_run(
     model: &Model,
     solid: &Shape,
     edge: &Shape,
     radius: f64,
     tol: Tolerances,
-) -> OgeomResult<Option<Rolled>> {
+) -> OgeomResult<Option<Run>> {
     let Some(seat) = seat_of(model, solid, edge, tol)? else {
         return Ok(None);
     };
@@ -361,7 +370,7 @@ pub(crate) fn rolled_run(
     let mut named: Option<OgeomError> = None;
     for narrow in 0..2 {
         match across(model, solid, edge, &seat, narrow, radius, tol) {
-            Ok(Some(run)) => return Ok(Some(run)),
+            Ok(Some(run)) => return Ok(Some(Run::Rolled(run))),
             Ok(None) => {}
             Err(e @ OgeomError::Construction(_)) => {
                 named.get_or_insert(e);
@@ -369,7 +378,13 @@ pub(crate) fn rolled_run(
             Err(e) => return Err(e),
         }
     }
-    named.map_or(Ok(None), Err)
+    let Some(named) = named else {
+        return Ok(None);
+    };
+    match crate::carried::carried_run(model, solid, edge, &seat, radius, tol)? {
+        Some(run) => Ok(Some(Run::Carried(run))),
+        None => Err(named),
+    }
 }
 
 /// The far edge the ball meets crossing face `narrow` from the middle of
@@ -411,7 +426,7 @@ fn far_edge(
 }
 
 /// A face's placed surface, with its outward sign.
-fn host(
+pub(crate) fn host(
     model: &Model,
     face: &Shape,
     tol: Tolerances,
@@ -559,7 +574,7 @@ fn across(
                 return Err(refuse(if at_start {
                     "the ball comes down on that face along the crease"
                 } else if at_end {
-                    "the ball comes onto the face beyond that edge along the crease"
+                    crate::carried::BEYOND
                 } else {
                     "the ball does not rest on that edge over the whole crease"
                 }));
@@ -867,10 +882,13 @@ pub(crate) fn rolled_fillet(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
-    let Some(run) = rolled_run(model, solid, edge, radius, tol)? else {
-        return Ok(None);
-    };
-    rolled_band(model, solid, edge, &run, radius, tol).map(Some)
+    match rolled_run(model, solid, edge, radius, tol)? {
+        None => Ok(None),
+        Some(Run::Rolled(run)) => rolled_band(model, solid, edge, &run, radius, tol).map(Some),
+        Some(Run::Carried(run)) => {
+            crate::carried::carried_band(model, solid, edge, &run, radius, tol).map(Some)
+        }
+    }
 }
 
 /// The fill of a run found by [`rolled_run`], applied to the solid.

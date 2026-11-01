@@ -1666,14 +1666,18 @@ pub(crate) enum Rail {
     Plane(Point, Vector),
     /// A line through a point, with its unit direction.
     Line(Point, Vector),
+    /// A point every arc of the band ends on: the band's border there
+    /// collapses to it.
+    Point(Point),
 }
 
 impl Rail {
-    /// The foot of `p` on the rail's plane or line.
+    /// The foot of `p` on the rail's plane, line or point.
     fn foot(self, p: Point) -> Point {
         match self {
             Self::Plane(origin, normal) => p - normal * (p - origin).dot(normal),
             Self::Line(origin, along) => origin + along * (p - origin).dot(along),
+            Self::Point(at) => at,
         }
     }
 }
@@ -2166,6 +2170,469 @@ pub(crate) fn build_held_band(
     ];
     faces.extend(caps);
     apply_wedge(model, solid, edge, &faces, additive, tol)
+}
+
+/// [`build_held_band`] over a chain of runs, each starting where the one
+/// before ends: each run's band fitted through its own stations and held
+/// to its own rails, consecutive bands sharing the arc they meet on, one
+/// leg per host from the crease to every run's rail on it, and caps in the
+/// chain's two end arcs' planes. A rail on a [`Rail::Point`] collapses to
+/// that point: the band's border there is a degenerate edge, and the leg
+/// passes through the point. The wedge is fused on: a chain rounds a
+/// concave crease.
+#[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
+#[allow(clippy::too_many_lines, reason = "one wedge, assembled end to end")]
+pub(crate) fn build_chain_band(
+    model: &mut Model,
+    solid: &Shape,
+    edge: Option<&Shape>,
+    runs: &[crate::march::MarchedBlend],
+    exact: &[ExactBand<'_>],
+    guide: &Curve,
+    hosts: [(&SurfaceGeometry, f64); 2],
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    use ogeom_geom::Surface as _;
+    let [(first, sign_first), (second, sign_second)] = hosts;
+    let fit_target = band_fit_target(tol);
+    let count = runs.len();
+    if count == 0 || exact.len() != count {
+        ogeom_bail!(Construction, "a chain of bands has no runs to build");
+    }
+    // The plane of a station's arc, which holds both touch points exactly.
+    let arc_plane =
+        |run: &crate::march::MarchedBlend, at: usize| -> OgeomResult<ogeom_math::Plane> {
+            let centre = run.spine[at];
+            let a = (run.touch_first[at] - centre) / radius;
+            let b = (run.touch_second[at] - centre) / radius;
+            let n = a.cross(b);
+            let m = n.magnitude();
+            if m <= tol.angular() {
+                ogeom_bail!(Construction, "a chain band's section has no plane");
+            }
+            Ok(ogeom_math::Plane::through(
+                centre,
+                ogeom_math::Direction::new(n / m, tol)?,
+            ))
+        };
+
+    // Each run's band: fitted, its border rows on its rails, its end rows
+    // in their arcs' planes with their ends on the exact touch points.
+    struct Band {
+        net: Vec<Point>,
+        k: usize,
+        l: usize,
+        u_knots: ogeom_math::KnotVector,
+        v_knots: ogeom_math::KnotVector,
+        geometry: SurfaceGeometry,
+        id: ogeom_topo::SurfaceId,
+        u_dom: (f64, f64),
+        v_dom: (f64, f64),
+    }
+    let mut bands: Vec<Band> = Vec::with_capacity(count);
+    for (run, exact) in runs.iter().zip(exact) {
+        let n = run.len();
+        let fitted = fit_open_band(run, radius, [false, false], tol)?;
+        let (u_knots, v_knots) = (fitted.u_knots().clone(), fitted.v_knots().clone());
+        let (k, l, mut net) = {
+            let grid = fitted.grid();
+            let net: Vec<Point> = grid.points().iter().map(|w| (*w).point()).collect();
+            (grid.u_count(), grid.v_count(), net)
+        };
+        for (i, rail) in [(0, exact.rails[0]), (k - 1, exact.rails[1])] {
+            for j in 0..l {
+                net[i * l + j] = rail.foot(net[i * l + j]);
+            }
+        }
+        for (j, station) in [(0, 0), (l - 1, n - 1)] {
+            let plane = arc_plane(run, station)?;
+            for i in 0..k {
+                let p = net[i * l + j];
+                net[i * l + j] = p - plane.normal().vector() * plane.signed_distance_to(p);
+            }
+            net[j] = run.touch_first[station];
+            net[(k - 1) * l + j] = run.touch_second[station];
+        }
+        let surface = ogeom_geom::BSplineSurface::new(
+            u_knots.clone(),
+            v_knots.clone(),
+            &ogeom_math::ControlGrid::new(net.clone(), k, l)?,
+            tol,
+        )?;
+        let ((u0, u1), (v0, v1)) = surface.domain();
+        let along = (n * 4).max(16);
+        let mut worst: f64 = 0.0;
+        for b in 0..=along {
+            #[allow(clippy::cast_precision_loss)]
+            let v = v0 + (v1 - v0) * (b as f64) / (along as f64);
+            for a in 0..=32 {
+                let u = u0 + (u1 - u0) * f64::from(a) / 32.0;
+                worst = worst.max((exact.off)(surface.point_at(u, v, tol)?));
+            }
+        }
+        if worst > fit_target {
+            ogeom_bail!(
+                NotDone,
+                "the blend surface stands {worst} off the ball's envelope against a target \
+                 of {fit_target}"
+            );
+        }
+        let geometry: SurfaceGeometry = surface.into();
+        let (u_dom, v_dom) = geometry.domain();
+        let id = model.geometry_mut().add_surface(geometry.clone());
+        bands.push(Band {
+            net,
+            k,
+            l,
+            u_knots,
+            v_knots,
+            geometry,
+            id,
+            u_dom,
+            v_dom,
+        });
+    }
+    // Consecutive bands share their arc, read on the same parameter across.
+    for pair in bands.windows(2) {
+        let (a, b) = (pair[0].u_dom, pair[1].u_dom);
+        if (a.0 - b.0).abs() > tol.confusion() || (a.1 - b.1).abs() > tol.confusion() {
+            ogeom_bail!(
+                Construction,
+                "a chain's bands do not share their parameter across"
+            );
+        }
+    }
+    let point_at = |b: usize, i: usize, j: usize| -> Point { bands[b].net[i * bands[b].l + j] };
+
+    // The crease's ends: where it crosses the chain's end arcs' planes.
+    let plane0 = arc_plane(&runs[0], 0)?;
+    let last = &runs[count - 1];
+    let plane1 = arc_plane(last, last.len() - 1)?;
+    let apex_on = |plane: &ogeom_math::Plane, near: f64| -> OgeomResult<f64> {
+        let mut t = near;
+        for _ in 0..40 {
+            let f = plane.signed_distance_to(guide.point_at(t, tol)?);
+            if f.abs() <= tol.confusion() * 0.01 {
+                return Ok(t);
+            }
+            let df = plane.normal().vector().dot(guide.d1_at(t, tol)?);
+            if df.abs() <= 1e-12 {
+                break;
+            }
+            t -= f / df;
+        }
+        ogeom_bail!(
+            Construction,
+            "the crease does not cross a run-out cap's section plane"
+        );
+    };
+    let t0 = apex_on(&plane0, runs[0].along[0])?;
+    let t1 = apex_on(&plane1, last.along[last.len() - 1])?;
+    if t1 <= t0 {
+        ogeom_bail!(Construction, "the run-out caps cross; nothing to blend");
+    }
+    let apex0 = guide.point_at(t0, tol)?;
+    let apex1 = guide.point_at(t1, tol)?;
+    let va0 = ogeom_algo::make_vertex(model, apex0).shape;
+    let va1 = ogeom_algo::make_vertex(model, apex1).shape;
+
+    // The rails' vertices at each boundary between runs, the chain's two
+    // ends included: one per side, shared across a run whose rail on that
+    // side is a point.
+    let rail_point = |b: usize, side: usize| -> Point {
+        let (run, j) = if b < count {
+            (b, 0)
+        } else {
+            (count - 1, bands[count - 1].l - 1)
+        };
+        let i = if side == 0 { 0 } else { bands[run].k - 1 };
+        point_at(run, i, j)
+    };
+    let mut corners: Vec<[Shape; 2]> = Vec::with_capacity(count + 1);
+    for b in 0..=count {
+        let mut pair = Vec::with_capacity(2);
+        for side in [0, 1] {
+            let shared = b > 0 && matches!(exact[b - 1].rails[side], Rail::Point(_));
+            let vertex = if shared {
+                corners[b - 1][side].clone()
+            } else {
+                let v = ogeom_algo::make_vertex(model, rail_point(b, side)).shape;
+                model.widen(&v, ogeom_core::Tolerance::new(fit_target)?)?;
+                v
+            };
+            pair.push(vertex);
+        }
+        corners.push([pair[0].clone(), pair[1].clone()]);
+    }
+
+    let border = |b: usize, i: usize| -> OgeomResult<Curve> {
+        let band = &bands[b];
+        let control: Vec<Point> = (0..band.l).map(|j| point_at(b, i, j)).collect();
+        Ok(Curve::BSpline(ogeom_geom::BSplineCurve::new(
+            band.v_knots.clone(),
+            control,
+            tol,
+        )?))
+    };
+    let iso_arc = |b: usize, j: usize| -> OgeomResult<Curve> {
+        let band = &bands[b];
+        let control: Vec<Point> = (0..band.k).map(|i| point_at(b, i, j)).collect();
+        Ok(Curve::BSpline(ogeom_geom::BSplineCurve::new(
+            band.u_knots.clone(),
+            control,
+            tol,
+        )?))
+    };
+    let row_line = |u_dom: (f64, f64), v: f64| -> OgeomResult<PlanarCurve> {
+        Ok(ogeom_geom::Line2d::over(
+            ogeom_math::Axis2::new(Point2::new(0.0, v), ogeom_math::Direction2::X),
+            u_dom.0 - 1.0,
+            u_dom.1 + 1.0,
+        )?
+        .into())
+    };
+    let column_line = |v_dom: (f64, f64), u: f64| -> OgeomResult<PlanarCurve> {
+        Ok(ogeom_geom::Line2d::over(
+            ogeom_math::Axis2::new(Point2::new(u, 0.0), ogeom_math::Direction2::Y),
+            v_dom.0 - 1.0,
+            v_dom.1 + 1.0,
+        )?
+        .into())
+    };
+
+    // The arcs at every boundary: the chain's ends off their own bands,
+    // and each shared arc off the band after it, owning how far the band
+    // before it stands off it too.
+    let mut arcs: Vec<Shape> = Vec::with_capacity(count + 1);
+    for b in 0..=count {
+        let (run, j) = if b < count {
+            (b, 0)
+        } else {
+            (count - 1, bands[count - 1].l - 1)
+        };
+        let curve = iso_arc(run, j)?;
+        let shape = ogeom_algo::make_edge_between(
+            model,
+            curve.clone(),
+            bands[run].u_dom,
+            &corners[b][0],
+            &corners[b][1],
+            tol,
+        )?
+        .shape;
+        let station = if b < count { 0 } else { runs[run].len() - 1 };
+        let centre = runs[run].spine[station];
+        let (lo, hi) = curve.domain();
+        let mut off: f64 = 0.0;
+        for s in 0..=64 {
+            let t = lo + (hi - lo) * f64::from(s) / 64.0;
+            let p = curve.point_at(t, tol)?;
+            off = off.max((p.distance(centre) - radius).abs() * 2.0);
+            if b > 0 && b < count {
+                let before = &bands[b - 1];
+                let q = before.geometry.point_at(t, before.v_dom.1, tol)?;
+                off = off.max(p.distance(q));
+            }
+        }
+        widen_edge(model, &shape, off)?;
+        arcs.push(shape);
+    }
+
+    // Each band's two rails, a degenerate edge where its rail is a point.
+    let collapsed = |model: &mut Model, at: &Shape| -> OgeomResult<Shape> {
+        let mut data = ogeom_topo::EdgeData::new();
+        data.degenerate = true;
+        model.add_edge(data, &[at.clone(), at.clone()])
+    };
+    let mut rails: Vec<[Shape; 2]> = Vec::with_capacity(count);
+    for b in 0..count {
+        let mut pair = Vec::with_capacity(2);
+        for side in [0, 1] {
+            let (from, to) = (&corners[b][side], &corners[b + 1][side]);
+            let shape = if matches!(exact[b].rails[side], Rail::Point(_)) {
+                collapsed(model, from)?
+            } else {
+                let i = if side == 0 { 0 } else { bands[b].k - 1 };
+                let shape = ogeom_algo::make_edge_between(
+                    model,
+                    border(b, i)?,
+                    bands[b].v_dom,
+                    from,
+                    to,
+                    tol,
+                )?
+                .shape;
+                widen_edge(model, &shape, fit_target)?;
+                shape
+            };
+            pair.push(shape);
+        }
+        rails.push([pair[0].clone(), pair[1].clone()]);
+    }
+
+    // Every band's chart images, and the band faces.
+    let mut faces: Vec<Shape> = Vec::new();
+    let mut band_faces: Vec<Shape> = Vec::with_capacity(count);
+    for b in 0..count {
+        let band = &bands[b];
+        for (side, u) in [(0, band.u_dom.0), (1, band.u_dom.1)] {
+            ogeom_algo::attach_pcurve(
+                model,
+                &rails[b][side],
+                column_line(band.v_dom, u)?,
+                band.id,
+                ogeom_topo::Location::identity(),
+                band.v_dom,
+            )?;
+        }
+        for (arc, v) in [(&arcs[b], band.v_dom.0), (&arcs[b + 1], band.v_dom.1)] {
+            ogeom_algo::attach_pcurve(
+                model,
+                arc,
+                row_line(band.u_dom, v)?,
+                band.id,
+                ogeom_topo::Location::identity(),
+                band.u_dom,
+            )?;
+        }
+        let wire = ogeom_algo::make_wire(
+            model,
+            &[
+                arcs[b].clone(),
+                rails[b][1].clone(),
+                arcs[b + 1].reversed(),
+                rails[b][0].reversed(),
+            ],
+            tol,
+        )?
+        .shape;
+        let face =
+            ogeom_algo::make_face_on(model, band.id, std::slice::from_ref(&wire), tol)?.shape;
+        let mid_u = f64::midpoint(band.u_dom.0, band.u_dom.1);
+        let mid_v = f64::midpoint(band.v_dom.0, band.v_dom.1);
+        let p = band.geometry.point_at(mid_u, mid_v, tol)?;
+        let (du, dv) = band.geometry.d1_at(mid_u, mid_v, tol)?;
+        let towards_centre = (touching_ball(&runs[b].spine, p) - p).dot(du.cross(dv)) > 0.0;
+        band_faces.push(if towards_centre {
+            face
+        } else {
+            face.reversed()
+        });
+    }
+
+    // The crease over the chain, and the connectors at its two ends.
+    let apex_edge =
+        ogeom_algo::make_edge_between(model, guide.clone(), (t0, t1), &va0, &va1, tol)?.shape;
+    let end_point = |b: usize, side: usize| rail_point(b, side);
+    let mut connectors: Vec<[Shape; 2]> = Vec::with_capacity(2);
+    for (b, plane, apex) in [(0, plane0, (&va0, apex0)), (count, plane1, (&va1, apex1))] {
+        let mut pair = Vec::with_capacity(2);
+        for (side, host) in [(0, first), (1, second)] {
+            pair.push(section_connector(
+                model,
+                host,
+                plane,
+                apex,
+                (&corners[b][side], end_point(b, side)),
+                radius,
+                fit_target,
+                tol,
+            )?);
+        }
+        connectors.push([pair[0].clone(), pair[1].clone()]);
+    }
+
+    // The legs: each host's own surface between the crease and every rail
+    // on it, closed at the chain's ends by the connectors. The ring runs
+    // the crease forward, then back along the rails, and is walked back
+    // where the rail stands to the crease's right about the host's normal.
+    let middle = count / 2;
+    let mid = runs[middle].len() / 2;
+    let crease_mid = guide.point_at(runs[middle].along[mid], tol)?;
+    let crease_dir = guide.d1_at(runs[middle].along[mid], tol)?;
+    let mut legs: Vec<Shape> = Vec::with_capacity(2);
+    for (side, host) in [(0, first), (1, second)] {
+        let mut edges = vec![apex_edge.clone(), connectors[1][side].clone()];
+        for b in (0..count).rev() {
+            if !matches!(exact[b].rails[side], Rail::Point(_)) {
+                edges.push(rails[b][side].reversed());
+            }
+        }
+        edges.push(connectors[0][side].reversed());
+        let (touch, (u, v)) = if side == 0 {
+            (runs[middle].touch_first[mid], runs[middle].on_first[mid])
+        } else {
+            (runs[middle].touch_second[mid], runs[middle].on_second[mid])
+        };
+        let (du, dv) = host.d1_at(u, v, tol)?;
+        if du.cross(dv).dot(crease_dir.cross(touch - crease_mid)) < 0.0 {
+            edges = edges.iter().rev().map(Shape::reversed).collect();
+        }
+        legs.push(face_from_edges(model, host.clone(), &edges, tol)?);
+    }
+
+    // The caps in the chain's end arcs' planes, bounded by connector, arc,
+    // connector, facing out of the chain.
+    let cap = |model: &mut Model,
+               plane: ogeom_math::Plane,
+               edges: &[Shape],
+               [p, q, r]: [Point; 3],
+               outward: Vector|
+     -> OgeomResult<Shape> {
+        let reach = (radius * 4.0).max(1.0);
+        let surface: SurfaceGeometry =
+            ogeom_geom::PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
+        let turn = (q - p).cross(r - p).dot(plane.normal().vector());
+        let edges: Vec<Shape> = if turn < 0.0 {
+            edges.iter().rev().map(Shape::reversed).collect()
+        } else {
+            edges.to_vec()
+        };
+        let face = face_from_edges(model, surface, &edges, tol)?;
+        if plane.normal().vector().dot(outward) > 0.0 {
+            Ok(face)
+        } else {
+            Ok(face.reversed())
+        }
+    };
+    let cap0 = cap(
+        model,
+        plane0,
+        &[
+            connectors[0][0].clone(),
+            arcs[0].clone(),
+            connectors[0][1].reversed(),
+        ],
+        [apex0, end_point(0, 0), end_point(0, 1)],
+        -guide.d1_at(t0, tol)?,
+    )?;
+    let cap1 = cap(
+        model,
+        plane1,
+        &[
+            connectors[1][0].clone(),
+            arcs[count].clone(),
+            connectors[1][1].reversed(),
+        ],
+        [apex1, end_point(count, 0), end_point(count, 1)],
+        guide.d1_at(t1, tol)?,
+    )?;
+
+    // Fused on: each leg faces against its host.
+    let orient = |face: Shape, host_sign: f64| -> Shape {
+        if -host_sign > 0.0 {
+            face
+        } else {
+            face.reversed()
+        }
+    };
+    faces.push(orient(legs[0].clone(), sign_first));
+    faces.push(orient(legs[1].clone(), sign_second));
+    faces.extend(band_faces);
+    faces.push(cap0);
+    faces.push(cap1);
+    apply_wedge(model, solid, edge, &faces, true, tol)
 }
 
 /// Two tenths of a micron at unit scale: what the march's own stations

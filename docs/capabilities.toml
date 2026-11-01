@@ -998,12 +998,21 @@ cylinder a radius about the edge, the band fitted through the balls' arcs \
 to the marched band's target with its rails on the face's plane and the \
 edge's line, where over the whole crease the ball rests on that edge \
 alone, its contact moving one way along it, touches the face within it, \
-comes within its radius of no other face and its sections do not cross; \
-it is refused by name where the ball comes down on the strip or onto the \
-face beyond the far edge along the crease (no round changing from one \
-kind of contact to the other is built), runs past the far edge's end \
-(round a corner of the strip), or leaves either face, and in a request \
-where the edge shares a face or a vertex with another of its edges. It \
+comes within its radius of no other face and its sections do not cross. \
+Where the ball changes what it holds partway, the round is a chain of \
+such bands meeting tangent on the section where the ball holds three \
+things at once, each piece the ball's holding a face on each side (the \
+cylinder between the planes), a face and an edge of the other face (the \
+ellipse), or a face and a corner of the other face (the circle a radius \
+over the face and a radius from the corner, its band's arcs all ending \
+on the corner): it comes down on a strip that widens past its setback, \
+narrows onto the other face's far edge, or rolls round a corner of a \
+triangular strip onto its next edge, under the same conditions on every \
+piece. It is refused by name where the ball comes onto the face beyond \
+a far edge along the crease (it then rounds the corner between that face \
+and the one it touches, another seam's round), rests on far edges of \
+both faces at once, or leaves either face, and in a request where the \
+edge shares a face or a vertex with another of its edges. It \
 refuses also where it runs off a \
 face anywhere along an edge of a request that shares a face or a vertex \
 with another of its edges; an edge sharing neither runs off a face \
@@ -1027,6 +1036,8 @@ tests = [
     "crates/ogeom-fillet/tests/concave.rs::a_round_rolls_on_the_far_edge_of_a_strip_narrower_than_its_setback",
     "crates/ogeom-fillet/tests/concave.rs::a_round_rolls_on_a_far_edge_parallel_to_the_face_it_touches",
     "crates/ogeom-fillet/tests/concave.rs::a_round_rolling_on_a_far_edge_refuses_where_the_ball_leaves_it",
+    "crates/ogeom-fillet/tests/concave.rs::a_round_rolls_onto_a_strip_that_widens_past_its_setback",
+    "crates/ogeom-fillet/tests/concave.rs::a_round_rolls_round_the_corner_of_a_narrow_triangle",
     "crates/ogeom-fillet/tests/marched_blend.rs::a_cylinder_square_on_a_plane_rounds_the_same_on_patches",
     "crates/ogeom-fillet/tests/marched_blend.rs::a_straight_seat_between_two_patches_runs_off_their_ends",
 ]

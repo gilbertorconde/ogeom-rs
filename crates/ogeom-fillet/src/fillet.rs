@@ -50,8 +50,11 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 /// far edge is straight and convex (the seam where two solids are fused
 /// at a slant), the ball touches the other face and rests on that far
 /// edge, and where it does so alone over the whole crease, clear of every
-/// other face, the round is the band fitted through those balls' arcs. One
-/// thing differs: where the edge ends against a neighbouring blend, this
+/// other face, the round is the band fitted through those balls' arcs.
+/// Where it rests there over part of the crease, coming down on a face
+/// either side or rolling round a corner of the strip onto its next edge,
+/// the round is a chain of such bands meeting tangent where the ball
+/// changes what it holds. One thing differs: where the edge ends against a neighbouring blend, this
 /// blend stops flush there instead of running on through it. Three such
 /// flush blends and their vertex are what
 /// [`round_vertex`](crate::round_vertex) closes.
@@ -66,7 +69,9 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 /// length, or the ball sets back past the far side of a face into the
 /// material, or past it all along the edge where no strip is taken off and
 /// no far edge holds the ball as above; naming why where the ball rests
-/// on such a far edge but leaves it, or another face, along the crease.
+/// on such a far edge but comes onto the face beyond it, rests on far
+/// edges either side at once, or leaves a face or comes within its radius
+/// of another along the crease.
 pub fn fillet_edge(
     model: &mut Model,
     solid: &Shape,

@@ -228,21 +228,29 @@ solids are fused at a slant), the ball touches the other face and rests
 on the far edge, its centre on the ellipse where the plane a radius off
 that face meets the cylinder a radius about the edge, and where it rests
 on that edge alone over the whole crease the round is the band through
-its arcs (`rolled.rs`). Of the 11 stress blend refusals of that kind at
-seeds 1 to 4, three round alone (seed 1 cases 12 and 48, seed 4 case 31)
-and two of those in their requests. The rest are refused by name: the
-ball comes down on the strip along the crease (seed 3 cases 4, 32 and
-33) or onto the face beyond the far edge (seed 3 cases 17 and 54), its
-contact runs off the face it touches (seed 1 case 36, seed 4 case 48),
-or it runs past the far edge's end round a corner of a triangular strip
-(seed 2 case 54). Owed: the run carried across those changes. Onto the
-strip it goes on as the cylinder between the two planes, tangent to the
-band where the ellipse meets that cylinder's axis, the band's rail
-turning there from the far edge onto the strip; round a corner of the
-strip the centre runs on the circle a radius about the corner; beyond
-the far edge the ball rounds the seam between the other face and the
-face beyond, another edge's round. Seed 1 case 12 rounds alone, but
-another edge of its request shares a face with it. Within a request, the ball also refuses where its contact
+its arcs (`rolled.rs`). Where the ball changes what it holds along the
+crease, the round is a chain of bands meeting tangent where it holds
+three things at once (`carried.rs`): a face on each side (the cylinder
+between the planes), a face and the other face's edge (the ellipse), or a
+face and the other face's corner (the circle over the face about the
+corner). Of the 11 stress blend refusals of that kind at seeds 1 to 4,
+five round alone: seed 1 cases 12 and 48 and seed 4 case 31 on the edge
+all along, seed 3 case 33 from one strip's far edge down onto both faces
+and onto the other's far edge, and seed 2 case 54 from the far edge round
+the triangular strip's corner. Seed 8 case 46 rounds in its request, edge
+to corner to edge. The rest are refused by name. In seed 3 cases 17, 32
+and 54 the ball comes onto the face beyond the far edge, where it touches
+neither of the edge's faces on that side and rounds the corner between
+the face it touches and the face beyond: that is the round of the seam
+between those two, which the request does not name, and needs that seam
+in the request with a corner closing the vertex where the seams meet
+(seed 3 case 32 also starts where its strip's end edge turns the ball's
+sections back). In seed 1 case 36 and seed 3 case 4 the ball rests on
+the far edges of both faces at once, its centre on the quartic where the
+cylinders a radius about the two edges meet, which has no closed-form
+piece here. In seed 4 case 48 the ball's contact on the face it touches
+runs over a concave seam of that face onto the face beyond. Seed 1 case
+12 rounds alone, but another edge of its request shares a face with it. Within a request, the ball also refuses where its contact
 runs off a face anywhere along an edge that shares a face or a vertex
 with another of the request (4 refusals): the band's contacts are checked
 against its neighbours' and an off-face contact holds none to check. Owed:

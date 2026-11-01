@@ -4,6 +4,7 @@
 pub mod analyse;
 mod between;
 pub mod bridge;
+mod carried;
 pub mod chamfer;
 mod consumed;
 pub mod corner;
