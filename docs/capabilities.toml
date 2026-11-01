@@ -531,17 +531,19 @@ keeping a config-file interpreter would be an application affordance."""
 
 [[capability]]
 id = "mesh.tessellation"
-title = "Triangulating shapes to a stated deflection, deterministically, in parallel"
+title = "Triangulating shapes to a stated deflection by chord and angle alone, with no length cap, deterministically, in parallel"
 crate = "ogeom-mesh"
 verdict = "covered"
 symbols = [
     "ogeom_mesh::triangulate", "ogeom_mesh::triangulate_with_chords",
     "ogeom_mesh::triangulate_face",
-    "ogeom_mesh::Deflection", "ogeom_mesh::tessellate",
+    "ogeom_mesh::Deflection", "ogeom_mesh::Deflection::curvature_only",
+    "ogeom_mesh::tessellate",
 ]
 tests = [
     "crates/ogeom-mesh/src/triangulate.rs",
     "crates/ogeom/tests/foundations.rs::parallel_tessellation_is_bit_identical",
+    "crates/ogeom/tests/imported_corpus.rs::every_closed_corpus_solid_meshes_closed_drawn_by_curvature_alone",
 ]
 
 [[capability]]
