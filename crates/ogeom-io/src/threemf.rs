@@ -21,6 +21,8 @@ use ogeom_math::{Point, Vector};
 use ogeom_topo::Triangulation;
 use std::fmt::Write as _;
 
+use crate::image::{Image, Wrap};
+use crate::mesh_formats::MeshColours;
 use crate::xml;
 
 /// One mesh in the package, with the name the item carries.
@@ -184,7 +186,7 @@ fn archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
 
 /// The ZIP checksum: CRC-32, reflected, polynomial `0xEDB8_8320`, a byte at
 /// a time through its table.
-fn crc32(data: &[u8]) -> u32 {
+pub(crate) fn crc32(data: &[u8]) -> u32 {
     const TABLE: [u32; 256] = {
         let mut table = [0_u32; 256];
         let mut i = 0_u32;
@@ -476,6 +478,74 @@ pub struct ThreeMfObject {
     /// The object's colour as the file writes it (sRGB, RGBA in `[0, 1]`),
     /// where every triangle carries the same one.
     pub colour: Option<[f64; 4]>,
+    /// What the object is for, as the metadata of the package names its
+    /// role; [`ObjectRole::Model`] where nothing does.
+    pub role: ObjectRole,
+    /// The colours of the mesh as the file writes them (sRGB, RGBA in
+    /// `[0, 1]`): from colour groups, base materials or textures sampled
+    /// at each corner's coordinates. Given where every triangle has one.
+    pub colours: Option<MeshColours>,
+    /// The volumes the mesh is made of, in order, each a run of its
+    /// triangles: one per mesh the object's components flatten, or per
+    /// triangle range the package's metadata divides a mesh into. Together
+    /// they cover every triangle of [`ThreeMfObject::mesh`].
+    pub volumes: Vec<ThreeMfVolume>,
+}
+
+/// What a volume is for, as the metadata a package's writer keeps names
+/// its role.
+///
+/// The core specification has no word for this. Tools that prepare a model
+/// for printing write it in their own vocabulary: as metadata of an object
+/// in the model (`<metadata name="…">`), or in configuration parts under
+/// `Metadata/` (`*.config`) that describe each object's volumes by an
+/// attribute or a `key`/`value` pair. Those are read by name, whatever
+/// namespace prefix the name carries: a `volume_type` or `subtype` of
+/// `ModelPart`/`normal_part`, `ParameterModifier`/`modifier_part`,
+/// `NegativeVolume`/`negative_part`, `SupportBlocker` or `SupportEnforcer`
+/// (case, underscores and hyphens aside); and the flags `modifier`,
+/// `infill_mesh` and `cutting_mesh` (a modifier), `anti_overhang_mesh` (a
+/// support blocker) and `support_mesh` (a support enforcer) set true.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObjectRole {
+    /// Part of what is to be made.
+    Model,
+    /// A volume that changes how the parts it overlaps are made, and is
+    /// not made itself.
+    Modifier,
+    /// A volume where no support is to be generated.
+    SupportBlocker,
+    /// A volume where support is to be generated.
+    SupportEnforcer,
+    /// A volume cut out of the parts it overlaps.
+    NegativeVolume,
+    /// A role the metadata names that is none of these, as written.
+    Other(String),
+}
+
+impl ObjectRole {
+    fn describe(&self) -> String {
+        match self {
+            Self::Model => "a part".to_owned(),
+            Self::Modifier => "a modifier".to_owned(),
+            Self::SupportBlocker => "a support blocker".to_owned(),
+            Self::SupportEnforcer => "a support enforcer".to_owned(),
+            Self::NegativeVolume => "a negative volume".to_owned(),
+            Self::Other(role) => format!("of role {role}"),
+        }
+    }
+}
+
+/// One volume of an object: a run of the object's triangles, and what it
+/// is for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreeMfVolume {
+    /// The volume's name, from the metadata or else its mesh object.
+    pub name: Option<String>,
+    /// What the volume is for.
+    pub role: ObjectRole,
+    /// Its triangles, as indices into the object's mesh.
+    pub triangles: std::ops::Range<usize>,
 }
 
 /// What [`read_3mf`] found.
@@ -511,8 +581,19 @@ const UNDERSTOOD: [&str; 2] = [PRODUCTION, MATERIAL];
 /// flattening brings together within the confusion tolerance are welded.
 ///
 /// A uniform object colour is kept, from a base material or a colour
-/// group; colours that vary across the triangles are dropped with a
-/// warning, as are texture and composite properties.
+/// group. Colours that vary across the triangles are read into
+/// [`ThreeMfObject::colours`] where every triangle has one: from colour
+/// groups and base materials, and from textures (PNG or JPEG parts of the
+/// package) sampled by the nearest texel at each corner's coordinates,
+/// tiled as the texture's `tilestyleu` and `tilestylev` say (`none` read as
+/// `clamp`). Composite materials and multi-properties are passed over with
+/// a warning, and so is a texture that cannot be decoded.
+///
+/// The roles of objects and volumes (modifiers, support blockers and
+/// enforcers, negative volumes) are read from the metadata of the package
+/// as [`ObjectRole`] lays out, and each object's [`ThreeMfObject::volumes`]
+/// says which of its triangles each volume is. A configuration part that
+/// cannot be read is a warning.
 ///
 /// # Errors
 ///
@@ -556,14 +637,76 @@ pub fn read_3mf(bytes: &[u8], tol: Tolerances) -> OgeomResult<ThreeMfImport> {
         parts.insert(key, part);
     }
 
+    // Textures, each decoded once; one that cannot be is a warning, and
+    // the triangles it colours go without.
+    let mut budget = crate::image::Budget::new();
+    for part in parts.values_mut() {
+        for def in part.textures.values_mut() {
+            let decoded = match find(&def.path) {
+                None => Err(format!("the package has no texture part {}", def.path)),
+                Some(entry) => contents(bytes, entry)
+                    .and_then(|raw| budget.decode(&raw))
+                    .map_err(|e| format!("the texture {} could not be decoded: {e}", def.path)),
+            };
+            match decoded {
+                Ok(image) => def.image = Some(image),
+                Err(warning) => warnings.push(warning),
+            }
+        }
+    }
+    // The configuration parts a writer keeps beside the model: read for the
+    // roles of the volumes, and passed over with a warning if malformed.
+    let mut config: FastMap<u32, ConfigObject> = FastMap::default();
+    for entry in &entries {
+        let key = part_key(&entry.name);
+        if !(key.starts_with("metadata/") && key.ends_with(".config")) {
+            continue;
+        }
+        let read = contents(bytes, entry).and_then(|raw| match std::str::from_utf8(&raw) {
+            Ok(text) => parse_config(text),
+            Err(_) => ogeom_bail!(Construction, "it is not UTF-8"),
+        });
+        match read {
+            Ok(objects) => {
+                for (id, object) in objects {
+                    let held = config.entry(id).or_default();
+                    held.pairs.extend(object.pairs);
+                    held.volumes.extend(object.volumes);
+                }
+            }
+            Err(e) => warnings.push(format!(
+                "the configuration part {} could not be read: {e}",
+                entry.name
+            )),
+        }
+    }
+
+    let context = Context {
+        parts: &parts,
+        start: part_key(&start),
+        config: &config,
+    };
     let root = &parts[&part_key(&start)];
     let scale = root.scale;
     let mut objects = Vec::with_capacity(root.build.len());
     for item in &root.build {
         let path = item.path.clone().unwrap_or_else(|| start.clone());
-        let mut flat = Flat::default();
-        flatten(&parts, &path, item.object, item.transform, &mut flat, 0)?;
         let top = object(&parts, &path, item.object)?;
+        let outer = Tag {
+            name: None,
+            role: ObjectRole::Model,
+        };
+        let role = context.tag(&path, item.object, top, &outer).role;
+        let mut flat = Flat::default();
+        flatten(
+            &context,
+            &path,
+            item.object,
+            item.transform,
+            &mut flat,
+            0,
+            &outer,
+        )?;
         let name = top.name.clone();
         let label = name
             .clone()
@@ -574,20 +717,24 @@ pub fn read_3mf(bytes: &[u8], tol: Tolerances) -> OgeomResult<ThreeMfImport> {
             ObjectType::Surface => warnings.push(format!("{label} is a surface, not a solid")),
             ObjectType::Other => warnings.push(format!("{label} is of type other, not a part")),
         }
+        if role != ObjectRole::Model {
+            warnings.push(format!("{label} is {}, not a part", role.describe()));
+        }
         if flat.skipped_properties {
             warnings.push(format!(
-                "{label} carries textures or composite materials; they are not read"
+                "{label} carries composite materials or multiple properties; they are not read"
             ));
         }
+        if flat.undecoded {
+            warnings.push(format!(
+                "{label} is textured with an image that could not be decoded"
+            ));
+        }
+        let several = flat.colours.len() > 1;
         let colour = match flat.colours.as_slice() {
             [] => None,
             [only] => *only,
-            _ => {
-                warnings.push(format!(
-                    "{label} carries several colours; the per-triangle colours are dropped"
-                ));
-                resolve_colour(parts.get(&part_key(&path)), top.pid, top.pindex)
-            }
+            _ => resolve_colour(parts.get(&part_key(&path)), top.pid, top.pindex),
         };
         if flat.degenerate > 0 {
             warnings.push(format!(
@@ -595,12 +742,47 @@ pub fn read_3mf(bytes: &[u8], tol: Tolerances) -> OgeomResult<ThreeMfImport> {
                 flat.degenerate
             ));
         }
-        let mesh = flat.into_mesh(scale, tol.confusion());
+        let Welded {
+            mesh,
+            corners,
+            volumes,
+        } = flat.into_mesh(scale, tol.confusion());
+        let coloured = corners.iter().filter(|c| c.is_some()).count();
+        let colours = match corners.into_iter().collect::<Option<Vec<_>>>() {
+            Some(corners) if !corners.is_empty() => Some(MeshColours::from_corners(
+                &mesh.triangles,
+                mesh.positions.len(),
+                corners,
+            )),
+            _ => {
+                if coloured > 0 || several {
+                    warnings.push(format!(
+                        "{label} carries several colours and not every triangle has one; the per-triangle colours are dropped"
+                    ));
+                }
+                None
+            }
+        };
+        for volume in &volumes {
+            if volume.role != ObjectRole::Model && volume.role != role {
+                let named = volume
+                    .name
+                    .as_ref()
+                    .map_or_else(String::new, |n| format!(" {n}"));
+                warnings.push(format!(
+                    "{label} holds the volume{named}, {}; its triangles are in the mesh",
+                    volume.role.describe()
+                ));
+            }
+        }
         objects.push(ThreeMfObject {
             name,
             object_type: top.object_type,
             mesh,
             colour,
+            role,
+            colours,
+            volumes,
         });
     }
     Ok(ThreeMfImport { objects, warnings })
@@ -710,8 +892,9 @@ enum Content {
     Mesh {
         positions: Vec<Point>,
         triangles: Vec<[u32; 3]>,
-        /// Each triangle's property, `(group, index)`, where it names one.
-        properties: Vec<Option<(u32, u32)>>,
+        /// Each triangle's property, `(group, index at each corner)`,
+        /// where it names one.
+        properties: Vec<Option<(u32, [u32; 3])>>,
     },
     Components(Vec<Reference>),
 }
@@ -722,15 +905,39 @@ struct ObjectDef {
     pid: Option<u32>,
     pindex: Option<u32>,
     content: Content,
+    /// The `(name, value)` pairs of the object's metadata group.
+    metadata: Vec<(String, String)>,
+}
+
+/// A property group of a model part.
+enum Group {
+    /// Colours by index: a colour group, or base materials' display
+    /// colours.
+    Colours(Vec<[f64; 4]>),
+    /// Texture coordinates by index into the texture of that id.
+    Texture {
+        texture: u32,
+        coords: Vec<(f64, f64)>,
+    },
+    /// A group this reader does not read: composites, multi-properties.
+    Unread,
+}
+
+/// A `texture2d`: the image part it names, how it tiles, and the image
+/// once decoded.
+struct TextureDef {
+    path: String,
+    wrap: [Wrap; 2],
+    image: Option<Image>,
 }
 
 /// One model part: its objects, property groups and build.
 struct Part {
     scale: f64,
     objects: FastMap<u32, ObjectDef>,
-    /// Colour groups and base materials by id; `None` for a property
-    /// group this reader does not read.
-    groups: FastMap<u32, Option<Vec<[f64; 4]>>>,
+    /// Property groups by id.
+    groups: FastMap<u32, Group>,
+    textures: FastMap<u32, TextureDef>,
     build: Vec<Reference>,
 }
 
@@ -775,12 +982,13 @@ fn parse_part(text: &str, path: &str, warnings: &mut Vec<String>) -> OgeomResult
         scale: 1.0,
         objects: FastMap::default(),
         groups: FastMap::default(),
+        textures: FastMap::default(),
         build: Vec::new(),
     };
     // Where the reader is: the element names from the model down.
     let mut stack: Vec<(bool, String)> = Vec::new();
     let mut current: Option<(u32, ObjectDef)> = None;
-    let mut group: Option<(u32, Vec<[f64; 4]>)> = None;
+    let mut group: Option<(u32, Group)> = None;
     while let Some(event) = reader.next()? {
         let start = match event {
             xml::Event::End => {
@@ -791,9 +999,9 @@ fn parse_part(text: &str, path: &str, warnings: &mut Vec<String>) -> OgeomResult
                                 part.objects.insert(id, def);
                             }
                         }
-                        (_, "basematerials" | "colorgroup") => {
-                            if let Some((id, colours)) = group.take() {
-                                part.groups.insert(id, Some(colours));
+                        (_, "basematerials" | "colorgroup" | "texture2dgroup") => {
+                            if let Some((id, g)) = group.take() {
+                                part.groups.insert(id, g);
                             }
                         }
                         _ => {}
@@ -845,6 +1053,7 @@ fn parse_part(text: &str, path: &str, warnings: &mut Vec<String>) -> OgeomResult
                         pid: number(&start, "pid")?,
                         pindex: number(&start, "pindex")?,
                         content: Content::Components(Vec::new()),
+                        metadata: Vec::new(),
                     },
                 ));
             }
@@ -871,7 +1080,18 @@ fn parse_part(text: &str, path: &str, warnings: &mut Vec<String>) -> OgeomResult
             (CORE, "triangle", _) => {
                 if let Some((_, def)) = current.as_mut() {
                     let pid = number(&start, "pid")?.or(def.pid);
-                    let index = number(&start, "p1")?.or(def.pindex);
+                    let first = number(&start, "p1")?;
+                    // The second and third corners take the first's property
+                    // unless they name their own.
+                    let corner = |name: &str, p1: u32| {
+                        first
+                            .and(start.get(name))
+                            .and_then(|t| t.trim().parse().ok())
+                            .unwrap_or(p1)
+                    };
+                    let index = first
+                        .or(def.pindex)
+                        .map(|p1| [p1, corner("p2", p1), corner("p3", p1)]);
                     if let Content::Mesh {
                         triangles,
                         properties,
@@ -897,25 +1117,88 @@ fn parse_part(text: &str, path: &str, warnings: &mut Vec<String>) -> OgeomResult
             }
             (CORE, "item", _) => part.build.push(reference(&start)?),
             (CORE, "basematerials", _) | (MATERIAL, "colorgroup", _) => {
-                group = Some((required(&start, "id")?, Vec::new()));
+                group = Some((required(&start, "id")?, Group::Colours(Vec::new())));
             }
             (CORE, "base", _) => {
-                if let Some((_, colours)) = group.as_mut() {
+                if let Some((_, Group::Colours(colours))) = group.as_mut() {
                     colours.push(parse_colour(
                         start.get("displaycolor").unwrap_or("#FFFFFF"),
                     )?);
                 }
             }
             (MATERIAL, "color", _) => {
-                if let Some((_, colours)) = group.as_mut() {
+                if let Some((_, Group::Colours(colours))) = group.as_mut() {
                     colours.push(parse_colour(start.get("color").unwrap_or("#FFFFFF"))?);
+                }
+            }
+            (MATERIAL, "texture2d", _) => {
+                let wrap = |name: &str| match start.get(name).unwrap_or("wrap") {
+                    "mirror" => Wrap::Mirror,
+                    "clamp" | "none" => Wrap::Clamp,
+                    _ => Wrap::Repeat,
+                };
+                if let Some(id) = number::<u32>(&start, "id")? {
+                    part.textures.insert(
+                        id,
+                        TextureDef {
+                            path: start.get("path").unwrap_or("").to_owned(),
+                            wrap: [wrap("tilestyleu"), wrap("tilestylev")],
+                            image: None,
+                        },
+                    );
+                }
+            }
+            // A texture group that does not hold together is one this
+            // reader does not read, not a reason to refuse the package.
+            (MATERIAL, "texture2dgroup", _) => {
+                if let Some(id) = number::<u32>(&start, "id")? {
+                    let texture = start.get("texid").and_then(|t| t.trim().parse().ok());
+                    group = Some((
+                        id,
+                        texture.map_or(Group::Unread, |texture| Group::Texture {
+                            texture,
+                            coords: Vec::new(),
+                        }),
+                    ));
+                }
+            }
+            (MATERIAL, "tex2coord", _) => {
+                if let Some((_, g @ Group::Texture { .. })) = group.as_mut() {
+                    let at = |name: &str| {
+                        start
+                            .get(name)
+                            .and_then(|t| t.trim().parse::<f64>().ok())
+                            .filter(|x| x.is_finite())
+                    };
+                    match (at("u"), at("v"), &mut *g) {
+                        (Some(u), Some(v), Group::Texture { coords, .. }) => coords.push((u, v)),
+                        _ => *g = Group::Unread,
+                    }
                 }
             }
             (MATERIAL, _, _) => {
                 // Textures, composites and multi-properties: their ids are
                 // known, so a triangle naming one is reported, not failed.
                 if let Some(id) = number::<u32>(&start, "id")? {
-                    part.groups.insert(id, None);
+                    part.groups.insert(id, Group::Unread);
+                }
+                if !start.empty {
+                    reader.skip()?;
+                    continue;
+                }
+            }
+            (CORE, "metadatagroup", _)
+                if current.is_some() && stack.last().is_some_and(|(c, n)| *c && n == "object") => {}
+            (CORE, "metadata", _)
+                if current.is_some()
+                    && stack
+                        .last()
+                        .is_some_and(|(c, n)| *c && n == "metadatagroup") =>
+            {
+                let name = start.get("name").unwrap_or("").to_owned();
+                let value = reader.text().into_owned();
+                if let Some((_, def)) = current.as_mut() {
+                    def.metadata.push((name, value));
                 }
                 if !start.empty {
                     reader.skip()?;
@@ -998,8 +1281,10 @@ fn object<'p>(parts: &'p FastMap<String, Part>, path: &str, id: u32) -> OgeomRes
 /// A colour a property names: `None` for none, or for a group this reader
 /// does not read.
 fn resolve_colour(part: Option<&Part>, pid: Option<u32>, index: Option<u32>) -> Option<[f64; 4]> {
-    let group = part?.groups.get(&pid?)?.as_ref()?;
-    group.get(index? as usize).copied()
+    match part?.groups.get(&pid?)? {
+        Group::Colours(colours) => colours.get(index? as usize).copied(),
+        _ => None,
+    }
 }
 
 /// The meshes of one build item, gathered as they flatten.
@@ -1007,40 +1292,286 @@ fn resolve_colour(part: Option<&Part>, pid: Option<u32>, index: Option<u32>) -> 
 struct Flat {
     positions: Vec<Point>,
     triangles: Vec<[u32; 3]>,
-    /// Every distinct colour a triangle carries, `None` among them for a
-    /// triangle that carries none.
+    /// Every distinct colour a triangle's first corner carries, `None`
+    /// among them for a triangle that carries none.
     colours: Vec<Option<[f64; 4]>>,
+    /// Each triangle's colour at its three corners, where it has one.
+    corners: Vec<Option<[[f64; 4]; 3]>>,
+    /// Each triangle's volume, an index into `volumes`.
+    volume_of: Vec<usize>,
+    volumes: Vec<(Option<String>, ObjectRole)>,
     skipped_properties: bool,
+    /// Textures a triangle names that could not be decoded.
+    undecoded: bool,
     degenerate: usize,
 }
 
 /// Components nest; past this depth a reference is taken to contain itself.
 const DEPTH: usize = 64;
 
+/// What the package's configuration parts say of one object of the start
+/// part: its own `(key, value)` pairs, and its volumes'.
+#[derive(Default)]
+struct ConfigObject {
+    pairs: Vec<(String, String)>,
+    volumes: Vec<ConfigVolume>,
+}
+
+/// A volume a configuration part describes: a range of the object's mesh
+/// triangles, first and last inclusive, or a component's object id.
+#[derive(Default)]
+struct ConfigVolume {
+    triangles: Option<(usize, usize)>,
+    object: Option<u32>,
+    pairs: Vec<(String, String)>,
+}
+
+/// The role and name a volume carries down from what encloses it.
+#[derive(Clone)]
+struct Tag {
+    name: Option<String>,
+    role: ObjectRole,
+}
+
+impl Tag {
+    /// This tag, overridden by what `pairs` say.
+    fn with(&self, pairs: &[(String, String)]) -> Self {
+        Self {
+            name: value_of(pairs, "name")
+                .map(str::to_owned)
+                .or_else(|| self.name.clone()),
+            role: role_of(pairs).unwrap_or_else(|| self.role.clone()),
+        }
+    }
+}
+
+/// A key without its namespace prefix, lower-cased.
+fn bare_key(key: &str) -> String {
+    key.rsplit(':').next().unwrap_or(key).to_ascii_lowercase()
+}
+
+fn value_of<'a>(pairs: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    pairs
+        .iter()
+        .find(|(k, _)| bare_key(k) == key)
+        .map(|(_, v)| v.as_str())
+}
+
+/// The role `(key, value)` pairs name, by the vocabulary [`ObjectRole`]
+/// lists: a type first, then a flag.
+fn role_of(pairs: &[(String, String)]) -> Option<ObjectRole> {
+    let squashed = |v: &str| {
+        v.chars()
+            .filter(|c| !matches!(c, '_' | '-' | ' '))
+            .collect::<String>()
+            .to_ascii_lowercase()
+    };
+    for key in ["volume_type", "subtype"] {
+        if let Some(value) = value_of(pairs, key) {
+            return Some(match squashed(value).as_str() {
+                "modelpart" | "normalpart" | "model" | "part" => ObjectRole::Model,
+                "parametermodifier" | "modifierpart" | "modifier" => ObjectRole::Modifier,
+                "negativevolume" | "negativepart" => ObjectRole::NegativeVolume,
+                "supportblocker" => ObjectRole::SupportBlocker,
+                "supportenforcer" => ObjectRole::SupportEnforcer,
+                _ => ObjectRole::Other(value.to_owned()),
+            });
+        }
+    }
+    let set = |key: &str| {
+        value_of(pairs, key)
+            .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+    };
+    if set("modifier") || set("infill_mesh") || set("cutting_mesh") {
+        return Some(ObjectRole::Modifier);
+    }
+    if set("anti_overhang_mesh") {
+        return Some(ObjectRole::SupportBlocker);
+    }
+    if set("support_mesh") {
+        return Some(ObjectRole::SupportEnforcer);
+    }
+    None
+}
+
+/// Read a configuration part: its `object` elements by id, each with the
+/// `key`/`value` metadata it holds and the `volume` or `part` elements in
+/// it, whose own attributes count as pairs too.
+fn parse_config(text: &str) -> OgeomResult<FastMap<u32, ConfigObject>> {
+    let mut reader = xml::Reader::new(text);
+    let mut objects: FastMap<u32, ConfigObject> = FastMap::default();
+    let mut depth = 0_usize;
+    // The open object, the depth it opened at, and its open volume.
+    let mut object: Option<(u32, usize, ConfigObject)> = None;
+    let mut volume: Option<(usize, ConfigVolume)> = None;
+    while let Some(event) = reader.next()? {
+        let start = match event {
+            xml::Event::End => {
+                if volume.as_ref().is_some_and(|(d, _)| *d == depth)
+                    && let (Some((_, v)), Some((_, _, o))) = (volume.take(), object.as_mut())
+                {
+                    o.volumes.push(v);
+                }
+                if object.as_ref().is_some_and(|(_, d, _)| *d == depth)
+                    && let Some((id, _, o)) = object.take()
+                {
+                    let held = objects.entry(id).or_default();
+                    held.pairs.extend(o.pairs);
+                    held.volumes.extend(o.volumes);
+                }
+                depth = depth.saturating_sub(1);
+                continue;
+            }
+            xml::Event::Start(start) => start,
+        };
+        depth += 1;
+        let pairs = |start: &xml::Start<'_>| -> Vec<(String, String)> {
+            start
+                .attributes
+                .iter()
+                .map(|(_, k, v)| ((*k).to_owned(), v.clone().into_owned()))
+                .collect()
+        };
+        match start.local {
+            "object" if object.is_none() && depth == 2 => {
+                if let Some(id) = number::<u32>(&start, "id")? {
+                    object = Some((id, depth, ConfigObject::default()));
+                }
+            }
+            "volume" | "part" if object.is_some() && volume.is_none() => {
+                let first = number::<usize>(&start, "firstid")?;
+                let last = number::<usize>(&start, "lastid")?;
+                volume = Some((
+                    depth,
+                    ConfigVolume {
+                        triangles: first.zip(last),
+                        object: number(&start, "id")?,
+                        pairs: pairs(&start),
+                    },
+                ));
+            }
+            "metadata" => {
+                let key = start.get("key").or_else(|| start.get("name"));
+                let value = match start.get("value") {
+                    Some(v) => v.to_owned(),
+                    None => reader.text().into_owned(),
+                };
+                if let Some(key) = key {
+                    let pair = (key.to_owned(), value);
+                    match (volume.as_mut(), object.as_mut()) {
+                        (Some((_, v)), _) => v.pairs.push(pair),
+                        (None, Some((_, _, o))) => o.pairs.push(pair),
+                        (None, None) => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(objects)
+}
+
+/// What flattening reads besides the parts: the package's configuration of
+/// the start part's objects.
+struct Context<'p> {
+    parts: &'p FastMap<String, Part>,
+    start: String,
+    config: &'p FastMap<u32, ConfigObject>,
+}
+
+impl Context<'_> {
+    /// The configuration of object `id` of the part at `path`: only the
+    /// start part's objects are configured.
+    fn config(&self, path: &str, id: u32) -> Option<&ConfigObject> {
+        (part_key(path) == self.start)
+            .then(|| self.config.get(&id))
+            .flatten()
+    }
+
+    /// The tag of the object `id` at `path`, under `inherited`.
+    fn tag(&self, path: &str, id: u32, def: &ObjectDef, inherited: &Tag) -> Tag {
+        let mut tag = inherited.clone();
+        if let Some(config) = self.config(path, id) {
+            tag.role = role_of(&config.pairs).unwrap_or(tag.role);
+        }
+        if let Some(role) = role_of(&def.metadata) {
+            tag.role = role;
+        }
+        tag
+    }
+}
+
+/// The colour of a triangle at its corners, from the group its property
+/// names: `Ok(None)` for no colour, `Err(())` for a group or texture that
+/// is not read.
+fn corner_colours(
+    part: Option<&Part>,
+    pid: u32,
+    index: [u32; 3],
+) -> Result<Option<[[f64; 4]; 3]>, bool> {
+    let Some(part) = part else {
+        return Ok(None);
+    };
+    match part.groups.get(&pid) {
+        None => Ok(None),
+        Some(Group::Unread) => Err(false),
+        Some(Group::Colours(colours)) => Ok(index
+            .iter()
+            .map(|&i| colours.get(i as usize).copied())
+            .collect::<Option<Vec<_>>>()
+            .map(|c| [c[0], c[1], c[2]])),
+        Some(Group::Texture { texture, coords }) => {
+            let Some(def) = part.textures.get(texture) else {
+                return Ok(None);
+            };
+            let Some(image) = def.image.as_ref() else {
+                return Err(true);
+            };
+            Ok(index
+                .iter()
+                .map(|&i| {
+                    coords
+                        .get(i as usize)
+                        .map(|&(u, v)| image.sample(u, v, def.wrap))
+                })
+                .collect::<Option<Vec<_>>>()
+                .map(|c| [c[0], c[1], c[2]]))
+        }
+    }
+}
+
 fn flatten(
-    parts: &FastMap<String, Part>,
+    context: &Context<'_>,
     path: &str,
     id: u32,
     placed: Affine,
     flat: &mut Flat,
     depth: usize,
+    inherited: &Tag,
 ) -> OgeomResult<()> {
     if depth > DEPTH {
         ogeom_bail!(Construction, "the object {id} in {path} contains itself");
     }
+    let parts = context.parts;
     let def = object(parts, path, id)?;
     let part = parts.get(&part_key(path));
+    let tag = context.tag(path, id, def, inherited);
+    let config = context.config(path, id);
     match &def.content {
         Content::Components(components) => {
             for c in components {
                 let inner = c.path.as_deref().unwrap_or(path);
+                let child = config
+                    .and_then(|cfg| cfg.volumes.iter().find(|v| v.object == Some(c.object)))
+                    .map_or_else(|| tag.clone(), |v| tag.with(&v.pairs));
                 flatten(
-                    parts,
+                    context,
                     inner,
                     c.object,
                     placed.after(c.transform),
                     flat,
                     depth + 1,
+                    &child,
                 )?;
             }
         }
@@ -1054,7 +1585,17 @@ fn flatten(
             flat.positions
                 .extend(positions.iter().map(|p| placed.point(*p)));
             let mirrored = placed.mirrors();
-            for (triangle, property) in triangles.iter().zip(properties) {
+            let ranges: Vec<(usize, usize, Tag)> = config
+                .map(|cfg| {
+                    cfg.volumes
+                        .iter()
+                        .filter_map(|v| v.triangles.map(|(a, b)| (a, b, tag.with(&v.pairs))))
+                        .collect()
+                })
+                .unwrap_or_default();
+            // The volume the last triangle went to, by range, in this mesh.
+            let mut open: Option<Option<usize>> = None;
+            for (k, (triangle, property)) in triangles.iter().zip(properties).enumerate() {
                 if triangle.iter().any(|&v| v as usize >= count) {
                     ogeom_bail!(
                         Construction,
@@ -1068,30 +1609,61 @@ fn flatten(
                 }
                 let triangle = if mirrored { [a, c, b] } else { [a, b, c] };
                 flat.triangles.push(triangle.map(|v| base + v));
+                let range = ranges.iter().position(|(a, b, _)| (*a..=*b).contains(&k));
+                if open != Some(range) {
+                    let volume = range.map_or(&tag, |r| &ranges[r].2);
+                    flat.volumes.push((
+                        volume.name.clone().or_else(|| def.name.clone()),
+                        volume.role.clone(),
+                    ));
+                    open = Some(range);
+                }
+                flat.volume_of.push(flat.volumes.len() - 1);
                 let colour = match property {
                     Some((pid, index)) => match part.and_then(|p| p.groups.get(pid)) {
-                        Some(Some(group)) => group.get(*index as usize).copied(),
-                        Some(None) => {
+                        Some(Group::Colours(group)) => group.get(index[0] as usize).copied(),
+                        Some(Group::Unread) => {
                             flat.skipped_properties = true;
                             None
                         }
-                        None => None,
+                        _ => None,
                     },
                     None => None,
                 };
                 if !flat.colours.contains(&colour) {
                     flat.colours.push(colour);
                 }
+                let corners = match property {
+                    Some((pid, index)) => match corner_colours(part, *pid, *index) {
+                        Ok(c) => c,
+                        Err(undecoded) => {
+                            flat.undecoded |= undecoded;
+                            None
+                        }
+                    },
+                    None => None,
+                };
+                // A mirrored triangle is rewound; its corners go with it.
+                flat.corners
+                    .push(corners.map(|[p, q, r]| if mirrored { [p, r, q] } else { [p, q, r] }));
             }
         }
     }
     Ok(())
 }
 
+/// A welded build item: the mesh, each kept triangle's corner colours, and
+/// its volumes as runs of the kept triangles.
+struct Welded {
+    mesh: Triangulation,
+    corners: Vec<Option<[[f64; 4]; 3]>>,
+    volumes: Vec<ThreeMfVolume>,
+}
+
 impl Flat {
     /// The mesh, scaled to millimetres, coincident vertices welded, and a
     /// normal at each vertex from the triangles around it.
-    fn into_mesh(self, scale: f64, weld: f64) -> Triangulation {
+    fn into_mesh(self, scale: f64, weld: f64) -> Welded {
         let positions: Vec<Point> = self
             .positions
             .iter()
@@ -1140,11 +1712,33 @@ impl Flat {
             });
             remap.push(index);
         }
-        let triangles: Vec<[u32; 3]> = self
-            .triangles
-            .iter()
-            .map(|t| t.map(|v| remap[v as usize]))
-            .filter(|[a, b, c]| a != b && b != c && c != a)
+        let mut triangles: Vec<[u32; 3]> = Vec::with_capacity(self.triangles.len());
+        let mut corners = Vec::with_capacity(self.triangles.len());
+        let mut volume_of = Vec::with_capacity(self.triangles.len());
+        for (k, t) in self.triangles.iter().enumerate() {
+            let [a, b, c] = t.map(|v| remap[v as usize]);
+            if a != b && b != c && c != a {
+                triangles.push([a, b, c]);
+                corners.push(self.corners[k]);
+                volume_of.push(self.volume_of[k]);
+            }
+        }
+        let mut cursor = 0;
+        let volumes = self
+            .volumes
+            .into_iter()
+            .enumerate()
+            .map(|(v, (name, role))| {
+                let start = cursor;
+                while volume_of.get(cursor) == Some(&v) {
+                    cursor += 1;
+                }
+                ThreeMfVolume {
+                    name,
+                    role,
+                    triangles: start..cursor,
+                }
+            })
             .collect();
         let mut normals = vec![Vector::ZERO; kept.len()];
         for triangle in &triangles {
@@ -1161,12 +1755,304 @@ impl Flat {
                 if m > 0.0 { n / m } else { Vector::Z }
             })
             .collect();
-        Triangulation {
-            parameters: vec![(0.0, 0.0); kept.len()],
-            positions: kept,
-            normals,
-            triangles,
-            deflection_met: true,
+        Welded {
+            mesh: Triangulation {
+                parameters: vec![(0.0, 0.0); kept.len()],
+                positions: kept,
+                normals,
+                triangles,
+                deflection_met: true,
+            },
+            corners,
+            volumes,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::cast_possible_truncation,
+        reason = "test code"
+    )]
+    use super::*;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    const TYPES: &str = r#"<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>"#;
+    const RELS: &str = r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="r0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>"#;
+
+    /// The vertices and twelve outward triangles of a unit cube at `x`,
+    /// each triangle's extra attributes from `property(t)`.
+    fn cube(x: f64, property: impl Fn(usize) -> String) -> String {
+        let mut out = String::from("<mesh><vertices>");
+        for k in 0..8 {
+            let (dx, dy, dz) = (k & 1, (k >> 1) & 1, (k >> 2) & 1);
+            out.push_str(&format!(
+                r#"<vertex x="{}" y="{dy}" z="{dz}"/>"#,
+                x + f64::from(dx)
+            ));
+        }
+        out.push_str("</vertices><triangles>");
+        let faces = [
+            [0, 2, 3, 1],
+            [4, 5, 7, 6],
+            [0, 1, 5, 4],
+            [2, 6, 7, 3],
+            [0, 4, 6, 2],
+            [1, 3, 7, 5],
+        ];
+        for (f, [a, b, c, d]) in faces.iter().enumerate() {
+            for (k, [p, q, r]) in [[a, b, c], [a, c, d]].iter().enumerate() {
+                out.push_str(&format!(
+                    r#"<triangle v1="{p}" v2="{q}" v3="{r}" {}/>"#,
+                    property(2 * f + k)
+                ));
+            }
+        }
+        out.push_str("</triangles></mesh>");
+        out
+    }
+
+    fn model(resources: &str, build: &str) -> String {
+        format!(
+            r#"<?xml version="1.0"?><model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02" xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06"><resources>{resources}</resources><build>{build}</build></model>"#
+        )
+    }
+
+    fn package(parts: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut all: Vec<(&str, &[u8])> = vec![
+            ("[Content_Types].xml", TYPES.as_bytes()),
+            ("_rels/.rels", RELS.as_bytes()),
+        ];
+        all.extend_from_slice(parts);
+        archive(&all)
+    }
+
+    /// One mesh of two cubes, the second a modifier by the triangle range
+    /// the configuration part gives it.
+    #[test]
+    fn a_modifier_volume_reports_its_role_by_triangle_range() {
+        let mut mesh = cube(0.0, |_| String::new());
+        let second = cube(5.0, |_| String::new());
+        // Merge the second cube's vertices and triangles into the first.
+        let (v2, t2) = second
+            .trim_start_matches("<mesh><vertices>")
+            .trim_end_matches("</triangles></mesh>")
+            .split_once("</vertices><triangles>")
+            .unwrap();
+        let t2 = (0..8).rev().fold(t2.to_owned(), |t, k| {
+            t.replace(&format!("\"{k}\""), &format!("\"#{}\"", k + 8))
+        });
+        let t2 = t2.replace("\"#", "\"");
+        mesh = mesh.replace("</vertices>", &format!("{v2}</vertices>"));
+        mesh = mesh.replace("</triangles>", &format!("{t2}</triangles>"));
+        let model = model(
+            &format!(r#"<object id="1" type="model" name="bracket">{mesh}</object>"#),
+            r#"<item objectid="1"/>"#,
+        );
+        let config = r#"<?xml version="1.0"?><config><object id="1"><metadata type="object" key="name" value="bracket"/>
+<volume firstid="0" lastid="11"><metadata type="volume" key="name" value="body"/><metadata type="volume" key="volume_type" value="ModelPart"/></volume>
+<volume firstid="12" lastid="23"><metadata type="volume" key="name" value="denser"/><metadata type="volume" key="volume_type" value="ParameterModifier"/></volume>
+</object></config>"#;
+        let bytes = package(&[
+            ("3D/3dmodel.model", model.as_bytes()),
+            ("Metadata/model.config", config.as_bytes()),
+        ]);
+        let import = read_3mf(&bytes, T).unwrap();
+        let object = &import.objects[0];
+        assert_eq!(object.role, ObjectRole::Model);
+        assert_eq!(
+            object.volumes,
+            vec![
+                ThreeMfVolume {
+                    name: Some("body".into()),
+                    role: ObjectRole::Model,
+                    triangles: 0..12,
+                },
+                ThreeMfVolume {
+                    name: Some("denser".into()),
+                    role: ObjectRole::Modifier,
+                    triangles: 12..24,
+                },
+            ]
+        );
+        assert!(
+            object.mesh.triangles[12..]
+                .iter()
+                .flatten()
+                .all(|&v| object.mesh.positions[v as usize].x >= 5.0)
+        );
+        assert!(
+            import.warnings.iter().any(|w| w.contains("a modifier")),
+            "{:?}",
+            import.warnings
+        );
+        // Without the configuration, the same mesh is one volume, a part.
+        let plain = package(&[("3D/3dmodel.model", model.as_bytes())]);
+        let import = read_3mf(&plain, T).unwrap();
+        assert_eq!(import.objects[0].volumes.len(), 1);
+        assert_eq!(import.objects[0].volumes[0].triangles, 0..24);
+        assert!(import.warnings.is_empty(), "{:?}", import.warnings);
+    }
+
+    /// An assembly whose components live in a part of their own, the
+    /// configuration naming each component by its object id and the
+    /// subtype attribute giving its role; and an object whose own metadata
+    /// makes it a support enforcer.
+    #[test]
+    fn component_and_object_roles_read_by_name() {
+        let parts = model(
+            &format!(
+                r#"<object id="2" type="model">{}</object><object id="3" type="model">{}</object>"#,
+                cube(0.0, |_| String::new()),
+                cube(0.25, |_| String::new()),
+            ),
+            "",
+        );
+        let root = model(
+            &format!(
+                r#"<object id="1" type="model" name="assembly"><components><component p:path="/3D/Objects/parts.model" objectid="2"/><component p:path="/3D/Objects/parts.model" objectid="3"/></components></object>
+<object id="4" type="model" name="tower"><metadatagroup><metadata name="tool:support_mesh" preserve="1">True</metadata></metadatagroup>{}</object>"#,
+                cube(9.0, |_| String::new())
+            ),
+            r#"<item objectid="1"/><item objectid="4"/>"#,
+        );
+        let config = r#"<?xml version="1.0"?><config><object id="1"><metadata key="name" value="assembly"/>
+<part id="2" subtype="normal_part"><metadata key="name" value="housing"/></part>
+<part id="3" subtype="negative_part"><metadata key="name" value="bore"/></part></object>
+<plate><metadata key="plater_id" value="1"/></plate></config>"#;
+        let bytes = package(&[
+            ("3D/3dmodel.model", root.as_bytes()),
+            ("3D/Objects/parts.model", parts.as_bytes()),
+            ("Metadata/model_settings.config", config.as_bytes()),
+        ]);
+        let import = read_3mf(&bytes, T).unwrap();
+        let (assembly, tower) = (&import.objects[0], &import.objects[1]);
+        let roles: Vec<_> = assembly
+            .volumes
+            .iter()
+            .map(|v| (v.name.as_deref(), v.role.clone(), v.triangles.clone()))
+            .collect();
+        assert_eq!(
+            roles,
+            vec![
+                (Some("housing"), ObjectRole::Model, 0..12),
+                (Some("bore"), ObjectRole::NegativeVolume, 12..24),
+            ]
+        );
+        assert_eq!(tower.role, ObjectRole::SupportEnforcer);
+        assert_eq!(tower.volumes[0].role, ObjectRole::SupportEnforcer);
+        assert!(
+            import
+                .warnings
+                .iter()
+                .any(|w| w.contains("tower is a support enforcer"))
+        );
+        // An unknown role is kept as written.
+        assert_eq!(
+            role_of(&[("subtype".into(), "fuzzy_skin_part".into())]),
+            Some(ObjectRole::Other("fuzzy_skin_part".into()))
+        );
+        assert_eq!(
+            role_of(&[("modifier".into(), "1".into())]),
+            Some(ObjectRole::Modifier)
+        );
+        assert_eq!(role_of(&[("name".into(), "x".into())]), None);
+    }
+
+    /// A colour group named at each corner, and a texture group sampled at
+    /// each corner, come back as the colours the file gives.
+    #[test]
+    fn colour_groups_and_textures_read_as_mesh_colours() {
+        let texels = [[255, 0, 0, 255], [0, 0, 255, 255]];
+        let png = crate::image::encode_png(2, 1, &texels);
+        let resources = format!(
+            r##"<m:colorgroup id="5"><m:color color="#FF0000"/><m:color color="#00FF0080"/></m:colorgroup>
+<m:texture2d id="6" path="/3D/Textures/two.png" contenttype="image/png" tilestyleu="clamp"/>
+<m:texture2dgroup id="7" texid="6"><m:tex2coord u="0.25" v="0.5"/><m:tex2coord u="0.75" v="0.5"/></m:texture2dgroup>
+<object id="1" type="model" name="painted">{}</object><object id="2" type="model" name="textured">{}</object>"##,
+            cube(0.0, |t| format!(r#"pid="5" p1="{}" p2="1" p3="0""#, t % 2)),
+            cube(3.0, |t| format!(r#"pid="7" p1="{}""#, t / 6)),
+        );
+        let model = model(&resources, r#"<item objectid="1"/><item objectid="2"/>"#);
+        let bytes = package(&[
+            ("3D/3dmodel.model", model.as_bytes()),
+            ("3D/Textures/two.png", &png),
+        ]);
+        let import = read_3mf(&bytes, T).unwrap();
+        assert!(import.warnings.is_empty(), "{:?}", import.warnings);
+        let red = [1.0, 0.0, 0.0, 1.0];
+        let green = [0.0, 1.0, 0.0, 128.0 / 255.0];
+        let painted = &import.objects[0];
+        let Some(MeshColours::PerCorner(corners)) = &painted.colours else {
+            panic!("{:?}", painted.colours);
+        };
+        assert_eq!(corners[0], [red, green, red]);
+        assert_eq!(corners[1], [green, green, red]);
+        let textured = &import.objects[1];
+        let Some(MeshColours::PerTriangle(faces)) = &textured.colours else {
+            panic!("{:?}", textured.colours);
+        };
+        assert!(faces[..6].iter().all(|c| *c == red));
+        assert!(faces[6..].iter().all(|c| *c == [0.0, 0.0, 1.0, 1.0]));
+        assert_eq!(textured.colour, None);
+
+        // The texture part missing, the mesh still reads, uncoloured, and
+        // says why.
+        let bytes = package(&[("3D/3dmodel.model", model.as_bytes())]);
+        let import = read_3mf(&bytes, T).unwrap();
+        assert!(import.objects[1].colours.is_none());
+        assert!(
+            import
+                .warnings
+                .iter()
+                .any(|w| w.contains("no texture part"))
+        );
+    }
+
+    /// Cut short or damaged anywhere, a package is refused or read, never
+    /// a panic; a malformed configuration part is only a warning.
+    #[test]
+    fn hostile_packages_never_panic() {
+        let model = model(
+            &format!(
+                r#"<object id="1" type="model">{}</object>"#,
+                cube(0.0, |_| String::new())
+            ),
+            r#"<item objectid="1"/>"#,
+        );
+        let bytes = package(&[
+            ("3D/3dmodel.model", model.as_bytes()),
+            (
+                "Metadata/a.config",
+                b"<config><object id=\"x\"><volume firstid=\"q\"/>",
+            ),
+        ]);
+        let import = read_3mf(&bytes, T).unwrap();
+        assert!(
+            import
+                .warnings
+                .iter()
+                .any(|w| w.contains("configuration part"))
+        );
+        assert_eq!(import.objects[0].mesh.triangles.len(), 12);
+        for cut in 0..bytes.len() {
+            assert!(read_3mf(&bytes[..cut], T).is_err(), "cut at {cut}");
+        }
+        let mut seed = 0x9e37_79b9_u32;
+        for _ in 0..2000 {
+            let mut noisy = bytes.clone();
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let at = seed as usize % noisy.len();
+            noisy[at] ^= (seed >> 8) as u8 | 1;
+            let _ = read_3mf(&noisy, T);
+        }
+        for garbage in [&b""[..], b"PK\x05\x06", b"\x89PNG\r\n\x1a\n"] {
+            assert!(read_3mf(garbage, T).is_err());
         }
     }
 }

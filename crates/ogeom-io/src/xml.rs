@@ -128,6 +128,17 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
+    /// The character data that follows the element just opened, up to the
+    /// next tag, trimmed and with its entity escapes resolved.
+    pub(crate) fn text(&self) -> Cow<'a, str> {
+        if self.owed_end {
+            return Cow::Borrowed("");
+        }
+        let rest = &self.text[self.at..];
+        let end = memchr(b'<', rest.as_bytes()).unwrap_or(rest.len());
+        unescape(rest[..end].trim())
+    }
+
     fn skip_past(&mut self, marker: &str) -> OgeomResult<()> {
         match self.text[self.at..].find(marker) {
             Some(i) => {

@@ -320,107 +320,70 @@ pub fn write_ply(export: &ExportMesh<'_>) -> String {
 
 // --- reading -----------------------------------------------------------------
 
-/// Read an OBJ into a triangulation.
-///
-/// Vertices, faces and vertex normals; everything else (materials, groups,
-/// texture coordinates, smoothing) is a statement about *rendering* a mesh
-/// rather than about the mesh, and is skipped rather than half-honoured. A
-/// face of more than three vertices is fanned from its first, which is what
-/// a convex polygon means and what OBJ writers emit.
-///
-/// Indices may be negative, which in OBJ counts back from the end, and may
-/// carry the `v/vt/vn` triple, of which the first field is the position.
-///
-/// # Errors
-///
-/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if an
-/// index names a vertex that is not there, or a coordinate does not parse.
-pub fn read_obj(text: &str) -> ogeom_core::OgeomResult<Triangulation> {
-    let mut positions: Vec<ogeom_math::Point> = Vec::new();
-    let mut normals: Vec<ogeom_math::Vector> = Vec::new();
-    let mut triangles: Vec<[u32; 3]> = Vec::new();
-    let mut normal_of: Vec<Option<usize>> = Vec::new();
+pub use crate::obj::{ObjImport, read_obj, read_obj_file, read_obj_with_materials};
+pub use crate::ply::{PlyImport, read_ply_bytes, write_ply_binary};
 
-    for line in text.lines() {
-        let line = line.split('#').next().unwrap_or("").trim();
-        let mut fields = line.split_whitespace();
-        match fields.next() {
-            Some("v") => {
-                let coords = triple(&mut fields, "a vertex")?;
-                positions.push(ogeom_math::Point::new(coords[0], coords[1], coords[2]));
-                normal_of.push(None);
+/// The colours a mesh read carries, in the most compact form that says
+/// exactly what the file said.
+///
+/// A file colours a mesh at the corners of its triangles, or at its
+/// vertices, or per face. Where every corner meeting at a vertex has the
+/// same colour, they are given per vertex; else, where each triangle's
+/// three corners agree, per triangle; else per corner.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MeshColours {
+    /// One RGBA colour per vertex of the mesh.
+    PerVertex(Vec<[f64; 4]>),
+    /// One RGBA colour per triangle.
+    PerTriangle(Vec<[f64; 4]>),
+    /// Three RGBA colours per triangle, at its corners in order.
+    PerCorner(Vec<[[f64; 4]; 3]>),
+}
+
+impl MeshColours {
+    /// The colour at corner `corner` (0, 1 or 2) of triangle `triangle` of
+    /// `mesh`, whichever form the colours take; `None` past the end.
+    #[must_use]
+    pub fn at(&self, mesh: &Triangulation, triangle: usize, corner: usize) -> Option<[f64; 4]> {
+        match self {
+            Self::PerVertex(colours) => {
+                let vertex = *mesh.triangles.get(triangle)?.get(corner)?;
+                colours.get(vertex as usize).copied()
             }
-            Some("vn") => {
-                let coords = triple(&mut fields, "a normal")?;
-                normals.push(ogeom_math::Vector::new(coords[0], coords[1], coords[2]));
-            }
-            Some("f") => {
-                let mut corners: Vec<(usize, Option<usize>)> = Vec::new();
-                for field in fields {
-                    corners.push(corner(field, positions.len(), normals.len())?);
-                }
-                if corners.len() < 3 {
-                    ogeom_core::ogeom_bail!(
-                        Construction,
-                        "a face of {} corners is not a face",
-                        corners.len()
-                    );
-                }
-                for i in 1..corners.len() - 1 {
-                    let fan = [corners[0], corners[i], corners[i + 1]];
-                    let mut indices = [0_u32; 3];
-                    for (k, (vertex, normal)) in fan.iter().enumerate() {
-                        if let Some(n) = normal {
-                            normal_of[*vertex] = Some(*n);
-                        }
-                        indices[k] = u32::try_from(*vertex).unwrap_or(u32::MAX);
+            Self::PerTriangle(colours) => (corner < 3).then(|| colours.get(triangle).copied())?,
+            Self::PerCorner(colours) => colours.get(triangle)?.get(corner).copied(),
+        }
+    }
+
+    /// The compact form of colours given at every corner of `triangles`,
+    /// over a mesh of `vertex_count` vertices.
+    pub(crate) fn from_corners(
+        triangles: &[[u32; 3]],
+        vertex_count: usize,
+        corners: Vec<[[f64; 4]; 3]>,
+    ) -> Self {
+        let mut per_vertex: Vec<Option<[f64; 4]>> = vec![None; vertex_count];
+        let mut agree = true;
+        'corners: for (triangle, colours) in triangles.iter().zip(&corners) {
+            for (&v, colour) in triangle.iter().zip(colours) {
+                match per_vertex.get_mut(v as usize) {
+                    Some(slot @ None) => *slot = Some(*colour),
+                    Some(Some(held)) if held == colour => {}
+                    _ => {
+                        agree = false;
+                        break 'corners;
                     }
-                    triangles.push(indices);
                 }
             }
-            _ => {}
         }
-    }
-    if positions.is_empty() {
-        ogeom_core::ogeom_bail!(Construction, "the file carries no vertices");
-    }
-    // A vertex whose normal the file did not give takes the average of the
-    // triangles it belongs to, the same answer the writer would have had.
-    let mut resolved = vec![ogeom_math::Vector::ZERO; positions.len()];
-    for (i, held) in normal_of.iter().enumerate() {
-        if let Some(n) = held.and_then(|n| normals.get(n)) {
-            resolved[i] = *n;
+        if agree && let Some(vertex) = per_vertex.into_iter().collect::<Option<Vec<_>>>() {
+            return Self::PerVertex(vertex);
         }
-    }
-    for triangle in &triangles {
-        let [a, b, c] = triangle.map(|i| positions[i as usize]);
-        let face = (b - a).cross(c - a);
-        for index in triangle {
-            let slot = &mut resolved[*index as usize];
-            if held_is_unset(slot) {
-                *slot += face;
-            }
+        if corners.iter().all(|[a, b, c]| a == b && b == c) {
+            return Self::PerTriangle(corners.into_iter().map(|[a, _, _]| a).collect());
         }
+        Self::PerCorner(corners)
     }
-    let normals = resolved
-        .into_iter()
-        .map(|n| {
-            let m = n.magnitude();
-            if m > 0.0 {
-                n / m
-            } else {
-                ogeom_math::Vector::Z
-            }
-        })
-        .collect::<Vec<_>>();
-    let parameters = vec![(0.0, 0.0); positions.len()];
-    Ok(Triangulation {
-        positions,
-        normals,
-        parameters,
-        triangles,
-        deflection_met: true,
-    })
 }
 
 /// Whether a normal slot is still waiting to be accumulated into.
@@ -429,208 +392,21 @@ pub fn read_obj(text: &str) -> ogeom_core::OgeomResult<Triangulation> {
 /// at zero and grows by the faces around it. Telling them apart by length is
 /// enough, and it means a file that gives *some* normals keeps them while
 /// the rest are worked out.
-fn held_is_unset(slot: &ogeom_math::Vector) -> bool {
+pub(crate) fn held_is_unset(slot: &ogeom_math::Vector) -> bool {
     !(0.999..=1.001).contains(&slot.magnitude())
 }
 
-/// Three floats off an iterator.
-fn triple<'a>(
-    fields: &mut impl Iterator<Item = &'a str>,
-    what: &str,
-) -> ogeom_core::OgeomResult<[f64; 3]> {
-    let mut out = [0.0; 3];
-    for slot in &mut out {
-        let Some(field) = fields.next() else {
-            ogeom_core::ogeom_bail!(Construction, "{what} needs three coordinates");
-        };
-        let Ok(value) = field.parse::<f64>() else {
-            ogeom_core::ogeom_bail!(
-                Construction,
-                "{what} carries {field}, which is not a number"
-            );
-        };
-        *slot = value;
-    }
-    Ok(out)
-}
-
-/// One OBJ face corner: `v`, `v/vt`, `v//vn` or `v/vt/vn`, one-based, and
-/// negative counting back from the end.
-fn corner(
-    field: &str,
-    vertices: usize,
-    normals: usize,
-) -> ogeom_core::OgeomResult<(usize, Option<usize>)> {
-    let mut parts = field.split('/');
-    let resolve = |text: &str, count: usize| -> Option<usize> {
-        let index = text.parse::<isize>().ok()?;
-        let zero = if index > 0 {
-            usize::try_from(index).ok()?.checked_sub(1)?
-        } else if index < 0 {
-            count.checked_sub(usize::try_from(-index).ok()?)?
-        } else {
-            return None;
-        };
-        (zero < count).then_some(zero)
-    };
-    let Some(vertex) = parts.next().and_then(|t| resolve(t, vertices)) else {
-        ogeom_core::ogeom_bail!(
-            Construction,
-            "a face names vertex {field}, which is not there"
-        );
-    };
-    let _texture = parts.next();
-    let normal = parts.next().and_then(|t| resolve(t, normals));
-    Ok((vertex, normal))
-}
-
-/// Read an ASCII PLY into a triangulation.
+/// Read a PLY into a triangulation.
 ///
-/// The element order the header declares, the properties it names, and the
-/// faces' own vertex lists. Binary PLY is refused by name: its header says
-/// `format binary_little_endian` and this reads `format ascii`, which is
-/// what every writer here emits and what the format's own text dialect is.
+/// The mesh of [`read_ply_bytes`], which reads every encoding: text, and
+/// binary of either byte order. A file without faces reads as its
+/// vertices alone.
 ///
 /// # Errors
 ///
-/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
-/// header is not a PLY header, the format is binary, the body does not
-/// match what the header promised, or a face names a vertex that is not
-/// there.
+/// As [`read_ply_bytes`].
 pub fn read_ply(text: &str) -> ogeom_core::OgeomResult<Triangulation> {
-    let mut lines = text.lines();
-    if lines.next().map(str::trim) != Some("ply") {
-        ogeom_core::ogeom_bail!(Construction, "this is not a PLY file");
-    }
-    // The header: element counts and, per element, its properties in order.
-    let mut counts: Vec<(String, usize, Vec<String>)> = Vec::new();
-    for line in lines.by_ref() {
-        let line = line.trim();
-        let mut fields = line.split_whitespace();
-        match fields.next() {
-            Some("format") => {
-                let kind = fields.next().unwrap_or("");
-                if kind != "ascii" {
-                    ogeom_core::ogeom_bail!(
-                        Construction,
-                        "this PLY is {kind}; the text dialect is what is read here"
-                    );
-                }
-            }
-            Some("element") => {
-                let name = fields.next().unwrap_or("").to_string();
-                let count = fields
-                    .next()
-                    .and_then(|t| t.parse::<usize>().ok())
-                    .unwrap_or(0);
-                counts.push((name, count, Vec::new()));
-            }
-            Some("property") => {
-                if let Some((_, _, properties)) = counts.last_mut() {
-                    let last = line.split_whitespace().last().unwrap_or("");
-                    properties.push(last.to_string());
-                }
-            }
-            Some("end_header") => break,
-            _ => {}
-        }
-    }
-
-    let mut positions: Vec<ogeom_math::Point> = Vec::new();
-    let mut normals: Vec<ogeom_math::Vector> = Vec::new();
-    let mut triangles: Vec<[u32; 3]> = Vec::new();
-    let mut body = lines.filter(|l| !l.trim().is_empty());
-    for (name, count, properties) in &counts {
-        for _ in 0..*count {
-            let Some(line) = body.next() else {
-                ogeom_core::ogeom_bail!(
-                    Construction,
-                    "the header promised {count} of {name} and the body ran out"
-                );
-            };
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            if name == "vertex" {
-                let read = |what: &str| -> Option<f64> {
-                    let at = properties.iter().position(|p| p == what)?;
-                    fields.get(at)?.parse::<f64>().ok()
-                };
-                let (Some(x), Some(y), Some(z)) = (read("x"), read("y"), read("z")) else {
-                    ogeom_core::ogeom_bail!(Construction, "a vertex is missing a coordinate");
-                };
-                positions.push(ogeom_math::Point::new(x, y, z));
-                normals.push(match (read("nx"), read("ny"), read("nz")) {
-                    (Some(a), Some(b), Some(c)) => ogeom_math::Vector::new(a, b, c),
-                    _ => ogeom_math::Vector::ZERO,
-                });
-            } else if name == "face" {
-                let Some(count) = fields.first().and_then(|t| t.parse::<usize>().ok()) else {
-                    ogeom_core::ogeom_bail!(Construction, "a face does not say how many corners");
-                };
-                let corners: Vec<u32> = fields
-                    .iter()
-                    .skip(1)
-                    .take(count)
-                    .filter_map(|t| t.parse::<u32>().ok())
-                    .collect();
-                if corners.len() != count {
-                    ogeom_core::ogeom_bail!(
-                        Construction,
-                        "a face of {count} corners lists {} of them",
-                        corners.len()
-                    );
-                }
-                for i in 1..corners.len().saturating_sub(1) {
-                    triangles.push([corners[0], corners[i], corners[i + 1]]);
-                }
-            }
-        }
-    }
-    if positions.is_empty() {
-        ogeom_core::ogeom_bail!(Construction, "the file carries no vertices");
-    }
-    if let Some(past) = triangles
-        .iter()
-        .flatten()
-        .find(|&&v| v as usize >= positions.len())
-    {
-        ogeom_core::ogeom_bail!(
-            Construction,
-            "a face names vertex {past}, past the {} the file has",
-            positions.len()
-        );
-    }
-    // Normals the file did not give come from the triangles, as in OBJ.
-    let mut resolved = normals;
-    resolved.resize(positions.len(), ogeom_math::Vector::ZERO);
-    for triangle in &triangles {
-        let [a, b, c] = triangle.map(|i| positions[i as usize]);
-        let face = (b - a).cross(c - a);
-        for index in triangle {
-            let slot = &mut resolved[*index as usize];
-            if held_is_unset(slot) {
-                *slot += face;
-            }
-        }
-    }
-    let normals = resolved
-        .into_iter()
-        .map(|n| {
-            let m = n.magnitude();
-            if m > 0.0 {
-                n / m
-            } else {
-                ogeom_math::Vector::Z
-            }
-        })
-        .collect::<Vec<_>>();
-    let parameters = vec![(0.0, 0.0); positions.len()];
-    Ok(Triangulation {
-        positions,
-        normals,
-        parameters,
-        triangles,
-        deflection_met: true,
-    })
+    Ok(read_ply_bytes(text.as_bytes())?.mesh())
 }
 
 // --- VRML --------------------------------------------------------------------

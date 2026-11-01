@@ -99,6 +99,13 @@ foldhash = { version = "0.2", default-features = false }
 indexmap = "2"
 smallvec = { version = "1", features = ["union", "const_generics"] }
 
+# --- images ---
+# Baseline and progressive JPEG decoding for the textures meshes carry, pure
+# Rust with no dependency of its own beyond `zune-core`. Used without its
+# SIMD paths, so decoding a hostile file stays in safe code. PNG is decoded
+# in `ogeom-io` itself, over the inflater the 3MF reader already needs.
+zune-jpeg = { version = "0.5", default-features = false, features = ["std"] }
+
 # --- diagnostics ---
 thiserror = "2"
 # `performance.now()` behind `ogeom-core`'s `web` feature, for timings in a

@@ -254,7 +254,7 @@ fn read_mesh(path: &str) -> Result<Triangulation, String> {
     let read = match extension.as_str() {
         "stl" => ogeom::io::read(&bytes, TOL),
         "obj" => ogeom::io::mesh_formats::read_obj(&text()),
-        "ply" => ogeom::io::mesh_formats::read_ply(&text()),
+        "ply" => ogeom::io::read_ply_bytes(&bytes).map(|import| import.mesh()),
         "3mf" => ogeom::io::read_3mf(&bytes, TOL).map(|import| {
             let mut all = Triangulation::new();
             for object in &import.objects {

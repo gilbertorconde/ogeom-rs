@@ -20,25 +20,34 @@
 
 pub(crate) mod bodies;
 pub mod brep;
+pub mod cloud;
 pub mod dxf;
 pub mod iges;
+pub(crate) mod image;
 pub(crate) mod inflate;
 pub(crate) mod inversion;
 pub mod json;
 pub mod mesh_formats;
 pub mod native;
+mod obj;
 pub(crate) mod pcurves;
+mod ply;
 pub mod step;
 pub mod stl;
 pub mod threemf;
 pub mod vrml;
 pub(crate) mod xml;
 
+pub use cloud::{PointCloud, Scalar, XyzColumn, read_pts, read_xyz, write_xyz};
 pub use iges::{IgesImport, IgesReport, read_iges, read_iges_file, write_iges};
 pub use mesh_formats::{
-    ExportMesh, ImportedMesh, read_glb, read_gltf, write_glb, write_obj, write_ply,
+    ExportMesh, ImportedMesh, MeshColours, ObjImport, PlyImport, read_glb, read_gltf, read_obj,
+    read_obj_file, read_obj_with_materials, read_ply, read_ply_bytes, write_glb, write_obj,
+    write_ply, write_ply_binary,
 };
 pub use step::{StepImport, StepReport, UntrimmedFace, WarningSummary, read_step, write_step};
 pub use stl::{Encoding, StlMesh, read, read_with_quantum, write};
-pub use threemf::{ObjectType, ThreeMfImport, ThreeMfObject, read_3mf, write_3mf};
+pub use threemf::{
+    ObjectRole, ObjectType, ThreeMfImport, ThreeMfObject, ThreeMfVolume, read_3mf, write_3mf,
+};
 pub use vrml::read_vrml;

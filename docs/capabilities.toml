@@ -1751,6 +1751,75 @@ symbols = [
 tests = ["crates/ogeom/tests/gltf_reading.rs", "crates/ogeom/tests/exchange.rs"]
 
 [[capability]]
+id = "io.ply"
+title = "PLY in text and both binary byte orders: meshes and point clouds, with normals, colours and named scalar properties"
+crate = "ogeom-io"
+verdict = "covered"
+symbols = [
+    "ogeom_io::read_ply_bytes", "ogeom_io::write_ply_binary", "ogeom_io::PlyImport",
+    "ogeom_io::PointCloud", "ogeom_io::Scalar",
+]
+tests = [
+    "crates/ogeom-io/src/ply.rs::binary_ply_round_trips_a_mesh_and_a_cloud",
+    "crates/ogeom-io/src/ply.rs::every_encoding_and_list_type_reads_alike",
+    "crates/ogeom-io/src/ply.rs::truncated_and_hostile_ply_is_refused_by_name",
+    "crates/ogeom/tests/exchange.rs::obj_and_ply_come_back_as_the_mesh_they_were",
+]
+
+[[capability]]
+id = "io.text-clouds"
+title = "XYZ and PTS text point clouds, columns named or read by their count"
+crate = "ogeom-io"
+verdict = "covered"
+symbols = ["ogeom_io::read_xyz", "ogeom_io::read_pts", "ogeom_io::write_xyz", "ogeom_io::XyzColumn"]
+tests = [
+    "crates/ogeom-io/src/cloud.rs::an_xyz_cloud_round_trips_with_its_header",
+    "crates/ogeom-io/src/cloud.rs::unnamed_columns_are_read_by_their_count",
+    "crates/ogeom-io/src/cloud.rs::a_pts_reads_every_scan_and_holds_each_to_its_count",
+    "crates/ogeom-io/src/cloud.rs::garbage_and_truncation_are_refused_by_name",
+]
+
+[[capability]]
+id = "io.obj-materials"
+title = "OBJ colours: material libraries' diffuse colours, PNG and JPEG textures sampled at each corner, per-vertex colours"
+crate = "ogeom-io"
+verdict = "covered"
+symbols = [
+    "ogeom_io::read_obj_with_materials", "ogeom_io::read_obj_file", "ogeom_io::ObjImport",
+    "ogeom_io::MeshColours",
+]
+tests = [
+    "crates/ogeom-io/src/obj.rs::a_textured_cube_reads_its_face_colours",
+    "crates/ogeom-io/src/obj.rs::kd_colours_faces_without_a_texture",
+    "crates/ogeom-io/src/obj.rs::hostile_materials_and_textures_never_panic",
+    "crates/ogeom/tests/exchange.rs::a_textured_obj_on_disk_reads_its_texture_colours",
+]
+
+[[capability]]
+id = "io.3mf-colours-and-roles"
+title = "3MF colours from colour groups, base materials and textures, and the roles of objects and volumes"
+crate = "ogeom-io"
+verdict = "partial"
+restriction = """Colour groups, base materials and texture groups read at
+each triangle's corners, textures (PNG or JPEG parts) sampled by the
+nearest texel and tiled as the texture says, `none` read as `clamp`.
+Composite materials and multi-properties are passed over with a warning.
+Roles (part, modifier, support blocker, support enforcer, negative volume,
+or another as written) are read by name from objects' metadata and from
+the configuration parts under `Metadata/`, by triangle range or by
+component; a role kept in any other form is not seen, and the volume reads
+as a part. A volume's triangles stay in its object's mesh, the volumes
+saying which they are."""
+symbols = ["ogeom_io::ThreeMfObject", "ogeom_io::ObjectRole", "ogeom_io::ThreeMfVolume"]
+tests = [
+    "crates/ogeom-io/src/threemf.rs::a_modifier_volume_reports_its_role_by_triangle_range",
+    "crates/ogeom-io/src/threemf.rs::component_and_object_roles_read_by_name",
+    "crates/ogeom-io/src/threemf.rs::colour_groups_and_textures_read_as_mesh_colours",
+    "crates/ogeom-io/src/threemf.rs::hostile_packages_never_panic",
+    "crates/ogeom/tests/exchange.rs::per_triangle_colours_and_supports_are_read_with_a_warning",
+]
+
+[[capability]]
 id = "doc.colour-values"
 title = "Colour values and their names"
 crate = "ogeom-doc"

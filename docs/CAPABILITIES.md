@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 78 |
-| `partial` | 7 |
+| `covered` | 81 |
+| `partial` | 8 |
 | `divergent` | 6 |
 
-91 capabilities. Ratchet: `unreviewed_max = 0`.
+95 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -150,6 +150,17 @@ edge to grow to, and a gap the recovered edges do not bridge.
 
 ### ogeom-io
 
+- **io.3mf-colours-and-roles**: 3MF colours from colour groups, base materials and textures, and the roles of objects and volumes · `partial`
+  - *restriction:* Colour groups, base materials and texture groups read at
+each triangle's corners, textures (PNG or JPEG parts) sampled by the
+nearest texel and tiled as the texture says, `none` read as `clamp`.
+Composite materials and multi-properties are passed over with a warning.
+Roles (part, modifier, support blocker, support enforcer, negative volume,
+or another as written) are read by name from objects' metadata and from
+the configuration parts under `Metadata/`, by triangle range or by
+component; a role kept in any other form is not seen, and the volume reads
+as a part. A volume's triangles stay in its object's mesh, the volumes
+saying which they are.
 - **io.iges**: IGES, both directions: solids as manifold B-rep, sheets as trimmed surfaces, surface files sewn, units converted · `partial`
   - *restriction:* The core entity set reads and writes, and eight round-trip cases hold it to measured volumes: planes, a periodic
 cylinder wall with its seam, a doubly periodic torus, a seam-only sphere, a
@@ -228,7 +239,10 @@ reference to a natively kept definition are refused by name, as is every
 reference in a deck read from text.
 - **io.mesh-formats**: The mesh exchange formats: STL, OBJ, PLY, glTF/GLB, 3MF, with welding on import · `covered`
 - **io.native-format**: The native shape interchange format, versioned, with location and triangulation sets · `covered`
+- **io.obj-materials**: OBJ colours: material libraries' diffuse colours, PNG and JPEG textures sampled at each corner, per-vertex colours · `covered`
+- **io.ply**: PLY in text and both binary byte orders: meshes and point clouds, with normals, colours and named scalar properties · `covered`
 - **io.step**: STEP, both directions: solids and sheets, assemblies, colours, validation properties, semantic and presentation PMI · `covered`
+- **io.text-clouds**: XYZ and PTS text point clouds, columns named or read by their count · `covered`
 - **io.vrml**: VRML scenes · `covered`
 
 ### ogeom-math
@@ -276,4 +290,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 115b571284ccbbf1 -->
+<!-- ledger-checksum: 3e6e4951f3253f62 -->

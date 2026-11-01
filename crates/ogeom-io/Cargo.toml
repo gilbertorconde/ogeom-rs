@@ -34,6 +34,8 @@ ogeom-intersect.workspace = true
 ogeom-mesh.workspace = true
 # Constructive solids read as the booleans their trees name.
 ogeom-bool.workspace = true
+# Textures an OBJ or a 3MF colours its mesh with may be JPEG.
+zune-jpeg.workspace = true
 
 [dev-dependencies]
 # The round trip is only worth testing against shapes something really built,

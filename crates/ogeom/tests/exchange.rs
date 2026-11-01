@@ -50,9 +50,15 @@ fn obj_and_ply_come_back_as_the_mesh_they_were() {
     let read = ogeom::io::mesh_formats::read_ply(&written).unwrap();
     assert_eq!(read.positions.len(), mesh.positions.len());
     assert!((volume(&read) - 6000.0).abs() < 1e-6);
-    // A binary PLY is refused by name rather than mis-parsed.
-    let binary = written.replace("format ascii 1.0", "format binary_little_endian 1.0");
-    assert!(ogeom::io::mesh_formats::read_ply(&binary).is_err());
+    // The binary encoding carries the same mesh: positions bit for bit.
+    let cloud = ogeom::io::PointCloud::new(mesh.positions.clone());
+    let binary = ogeom::io::write_ply_binary(&cloud, &mesh.triangles).unwrap();
+    let back = ogeom::io::read_ply_bytes(&binary).unwrap().mesh();
+    assert_eq!(back.positions, mesh.positions);
+    assert_eq!(back.triangles, mesh.triangles);
+    // A binary header over a text body is refused rather than mis-read.
+    let mislabelled = written.replace("format ascii 1.0", "format binary_little_endian 1.0");
+    assert!(ogeom::io::mesh_formats::read_ply(&mislabelled).is_err());
     // So is a face naming a vertex the file does not have.
     let astray = "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\n\
                   property float y\nproperty float z\nelement face 1\n\
@@ -227,8 +233,9 @@ fn components_and_units_flatten_to_millimetres() {
     assert!((signed_volume(&pair.mesh) - 2.0 * inch3).abs() < 1e-6 * inch3);
 }
 
-/// A mesh painted in more than one colour keeps its geometry and drops the
-/// colours with a warning. A support structure is read, and said to be one.
+/// A mesh painted in more than one colour keeps its geometry and its
+/// colours, one per triangle. A support structure is read, and said to be
+/// one.
 #[test]
 fn per_triangle_colours_and_supports_are_read_with_a_warning() {
     let import = ogeom::io::read_3mf(&corpus_bytes("threemf_painted_sphere.3mf"), T).unwrap();
@@ -243,12 +250,19 @@ fn per_triangle_colours_and_supports_are_read_with_a_warning() {
     let v = signed_volume(&sphere.mesh);
     assert!(v > 0.98 * full && v < full, "{v} against {full}");
     assert_eq!(prop.object_type, ogeom::io::ObjectType::Support);
-    assert!(
-        import
-            .warnings
-            .iter()
-            .any(|w| w.contains("several colours"))
-    );
+    let Some(ogeom::io::MeshColours::PerTriangle(colours)) = &sphere.colours else {
+        panic!("a colour per triangle: {:?}", sphere.colours);
+    };
+    assert_eq!(colours.len(), sphere.mesh.triangles.len());
+    let mut distinct: Vec<[f64; 4]> = Vec::new();
+    for c in colours {
+        if !distinct.contains(c) {
+            distinct.push(*c);
+        }
+    }
+    assert_eq!(distinct.len(), 2, "{distinct:?}");
+    assert!(distinct.contains(&sphere.colour.unwrap()));
+    assert!(!import.warnings.iter().any(|w| w.contains("colours")));
     assert!(import.warnings.iter().any(|w| w.contains("support")));
 }
 
@@ -272,4 +286,32 @@ fn zip64_and_classic_forms_of_one_package_read_the_same() {
         zip64.objects[0].mesh.positions
     );
     assert_eq!(classic.objects[0].colour, zip64.objects[0].colour);
+}
+
+/// An OBJ on disk reads its material library and its JPEG texture from
+/// beside it, and each square takes the colour of the half of the texture
+/// its coordinates fall in. JPEG is lossy, so the colours are held to
+/// within the few levels its quantisation moves a flat block.
+#[test]
+fn a_textured_obj_on_disk_reads_its_texture_colours() {
+    let path = format!(
+        "{}/../../tests/corpus/obj_two_tiles.obj",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let import = ogeom::io::read_obj_file(&path).unwrap();
+    assert!(import.warnings.is_empty(), "{:?}", import.warnings);
+    assert_eq!(import.mesh.triangles.len(), 4);
+    let Some(ogeom::io::MeshColours::PerTriangle(colours)) = &import.colours else {
+        panic!("a colour per triangle: {:?}", import.colours);
+    };
+    let near =
+        |a: [f64; 4], b: [f64; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 4.0 / 255.0);
+    for (t, colour) in colours.iter().enumerate() {
+        let expected = if t < 2 {
+            [1.0, 0.0, 0.0, 1.0]
+        } else {
+            [0.0, 0.0, 1.0, 1.0]
+        };
+        assert!(near(*colour, expected), "triangle {t}: {colour:?}");
+    }
 }

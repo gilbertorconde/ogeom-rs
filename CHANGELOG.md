@@ -13,6 +13,42 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Scan and colour formats: binary PLY, point clouds, XYZ/PTS, OBJ
+  materials and textures, 3MF colours and volume roles.**
+  - `ogeom_io::read_ply_bytes` reads PLY as text and as binary of either
+    byte order, into a `PlyImport`: the vertex element whole as a
+    `PointCloud` (position, normal, colour, and every other scalar
+    property by name), the faces fanned into triangles from lists of any
+    count and index type, and face colours. A file without faces is a
+    point cloud. `write_ply_binary` writes a cloud, or a mesh over one, as
+    little-endian binary PLY with its normals, colours and named scalars;
+    positions go as `double`, so they come back bit for bit.
+  - `ogeom_io::PointCloud` holds points with an optional normal and colour
+    per point and any number of named `Scalar`s. `read_xyz` and `read_pts`
+    read text clouds separated by spaces, commas or semicolons, the columns
+    named by the caller (`XyzColumn`), by a header line, or else by their
+    count; a count that leaves the reading open is refused by name.
+    `write_xyz` writes one with a header that `read_xyz` reads back.
+  - `ogeom_io::read_obj_with_materials` and `read_obj_file` read an OBJ's
+    material libraries: a triangle takes its material's texture at each
+    corner's coordinates, or else its `Kd`, and where no material colours
+    the mesh, the colours `v` records append. Textures are PNG, decoded in
+    the crate over its own inflater, or JPEG, through `zune-jpeg`, a new
+    dependency (pure Rust, MIT, Apache-2.0 or Zlib).
+  - `ogeom_io::read_3mf` reads colour groups, base materials and texture
+    groups at each triangle's corners into the new
+    `ThreeMfObject::colours`, and the roles of objects and volumes
+    (`ObjectRole`: model, modifier, support blocker, support enforcer,
+    negative volume, or another as written) from objects' metadata and the
+    package's configuration parts, by name. `ThreeMfObject::volumes` says
+    which triangles each volume is (`ThreeMfVolume`).
+  - Colours come back as `MeshColours`, per vertex, per triangle or per
+    corner, whichever is the most compact form that says exactly what the
+    file said.
+  - Hostile input is refused by name before it is allocated for: every
+    PLY count is held to the bytes left, and a texture to 16 384 texels a
+    side and a file's textures to as many texels together.
+
 - **Spatial indexes over meshes and point clouds: `Bvh` and `PointIndex`.**
   - `ogeom_mesh::Bvh` is a hierarchy over a mesh's triangles, built with a
     binned surface-area heuristic from a `Triangulation` (`Bvh::build`) or
@@ -234,6 +270,16 @@ bump may break the API and a patch bump may not.
     fit of 2e-4, and meets both faces within a tenth of a degree.
 
 ### Changed
+
+- **`read_ply` reads binary PLY.** It is now the mesh of
+  `read_ply_bytes`; a binary file it refused by name before is read. An
+  element count that is not a number, which it took as zero and so read
+  the next element from that element's data, is refused by name.
+- **`ThreeMfObject` has three more fields** (`role`, `colours`,
+  `volumes`): code that builds one by a struct literal must give them.
+  Per-triangle colours are no longer dropped with a warning when every
+  triangle has one; a texture group is read rather than reported.
+  `read_obj` is re-exported at the crate root beside `read_ply`.
 
 - **A chain of booleans reads each result from what was kept of its
   operand.** A boolean's result was read whole by the next boolean: every

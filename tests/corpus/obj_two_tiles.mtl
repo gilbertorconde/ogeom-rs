@@ -1,0 +1,3 @@
+newmtl tiles
+Kd 1 1 1
+map_Kd obj_two_tiles.jpg
