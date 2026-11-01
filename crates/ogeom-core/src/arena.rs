@@ -139,11 +139,17 @@ impl<T> PartialEq for Key<T> {
     }
 }
 impl<T> Eq for Key<T> {}
+/// The hash leaves the scope out. A scope is drawn from a process-wide
+/// counter, so it is a different number for the same document depending on
+/// how many arenas the process filled before, on which threads; hashed, it
+/// would reorder every table keyed by handles with it, and a stage that walks
+/// one would answer differently from one run to the next. Equality still
+/// compares the scope, so keys of two arenas never merge in a table: at
+/// worst they share a bucket.
 impl<T> Hash for Key<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.index.hash(state);
         self.generation.hash(state);
-        self.scope.hash(state);
     }
 }
 impl<T> PartialOrd for Key<T> {
@@ -754,6 +760,27 @@ mod scope_tests {
         set.insert(here);
         set.insert(there);
         assert_eq!(set.len(), 2, "two documents' handles collided in a map");
+    }
+
+    #[test]
+    fn a_table_of_keys_walks_in_the_same_order_whatever_the_scope() {
+        // Two arenas filled alike stand for one document built in two
+        // processes: the same slots, different identifiers. A table of their
+        // keys must walk in the same slot order, or whatever walks it
+        // depends on what else the process built first.
+        use crate::collections::FastSet;
+        let walk = |skip: usize| {
+            for _ in 0..skip {
+                Arena::<u8>::new().insert(0);
+            }
+            let mut a: Arena<u32> = Arena::new();
+            let set: FastSet<Key<u32>> = (0..200_u32).map(|i| a.insert(i)).collect();
+            set.iter().map(|k| k.index()).collect::<Vec<_>>()
+        };
+        let first = walk(0);
+        for skip in [1, 2, 3, 17, 1000] {
+            assert_eq!(walk(skip), first, "{skip} arenas filled before");
+        }
     }
 
     #[test]

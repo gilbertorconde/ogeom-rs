@@ -119,6 +119,21 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A table keyed by handles walks in the same order in every process.**
+  - `FastMap` and `FastSet` hash with a fixed seed so that their order
+    depends only on what was put in them. A handle's hash also took in
+    its arena's identifier, which comes from a process-wide count, so a
+    table of handles walked in a different order depending on how many
+    arenas the process had filled before, and on which threads. The hash
+    now leaves the identifier out; equality still compares it, so handles
+    of two documents never merge in one table. No answer of the stress
+    scenarios (seeds 7 and 3, every case's volumes, faces and edges)
+    depended on that order: they come out the same even with a randomly
+    seeded hasher.
+  - A test runs a boolean, a fillet and a mesh conversion in two child
+    processes, at one thread and at three, and compares their native
+    bytes with those of the parent process.
+
 - **A section beside a pole of a compound's ball, or beside a plane, is
   charted clear of the pole.**
   - The boolean restates a ball or a sphere face on a chart whose poles

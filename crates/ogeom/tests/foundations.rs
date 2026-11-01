@@ -310,3 +310,118 @@ fn a_parallel_step_read_is_bit_identical() {
         "the imported model's bytes must not depend on the thread count"
     );
 }
+
+/// A rounded box drilled by a drum standing on the top plane along the line
+/// where the top and side planes would meet, which the rounds have taken
+/// away; the box joined to a block that half overlaps it; and the box
+/// converted from its mesh back to a solid, all written as one native file.
+fn rounded_box_ops() -> String {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 14.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = ogeom::topo::explore_unique(&model, &block, ogeom::topo::ShapeType::Edge).unwrap();
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 2.0, T)
+        .unwrap()
+        .shape;
+    let radius = 2.1;
+    let frame = Frame::new(
+        Point::new(0.0, -2.6, 10.0 + radius),
+        ogeom::math::Direction::Y,
+        -ogeom::math::Direction::Z,
+        T,
+    )
+    .unwrap();
+    let drill = ogeom::algo::make_cylinder(&mut model, frame, radius, 19.2, T)
+        .unwrap()
+        .shape;
+    let cut = ogeom::boolean::cut(&mut model, &rounded, &drill, T)
+        .unwrap()
+        .shape;
+    let common = ogeom::boolean::common(&mut model, &rounded, &drill, T)
+        .unwrap()
+        .shape;
+    let rest = ogeom::boolean::cut(&mut model, &drill, &rounded, T)
+        .unwrap()
+        .shape;
+    let other = ogeom::algo::make_box(
+        &mut model,
+        Frame::new(
+            Point::new(10.0, 7.0, 5.0),
+            ogeom::math::Direction::Z,
+            ogeom::math::Direction::X,
+            T,
+        )
+        .unwrap(),
+        (15.0, 15.0, 15.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let fused = ogeom::boolean::fuse(&mut model, &rounded, &other, T)
+        .unwrap()
+        .shape;
+    let mesh = ogeom::mesh::triangulate(&model, &rounded, Deflection::with_chord(0.05).unwrap(), T)
+        .unwrap();
+    let converted = ogeom::algo::solid_from_mesh(
+        &mut model,
+        &mesh,
+        &ogeom::algo::MeshSolidOptions::default(),
+        T,
+    )
+    .unwrap()
+    .shape;
+    ogeom::io::native::write(
+        &model,
+        &[rounded, cut, common, rest, fused, converted],
+        ogeom::io::native::WriteOptions::default(),
+    )
+    .unwrap()
+}
+
+/// A boolean, a fillet and a conversion answer to the byte in two processes
+/// of their own, one at one thread and one at three, and as they do in this
+/// one. Anything keyed by an address, or read from the process's own state,
+/// can move between processes and nowhere else.
+///
+/// The children are this test binary run on this test alone, told by the
+/// environment to write the answer and stop.
+#[test]
+fn the_answer_is_the_same_in_another_process() {
+    const CHILD: &str = "OGEOM_FOUNDATIONS_CHILD";
+    const MARK: &str = "---- the answer ----";
+    if std::env::var_os(CHILD).is_some() {
+        println!("{MARK}\n{}{MARK}", rounded_box_ops());
+        return;
+    }
+    let here = rounded_box_ops();
+    let exe = std::env::current_exe().unwrap();
+    for threads in ["1", "3"] {
+        let out = std::process::Command::new(&exe)
+            .args([
+                "--exact",
+                "the_answer_is_the_same_in_another_process",
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .env(CHILD, "1")
+            .env("OGEOM_THREADS", threads)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "the child at {threads} threads failed"
+        );
+        let text = String::from_utf8(out.stdout).unwrap();
+        let answer = text
+            .split(MARK)
+            .nth(1)
+            .and_then(|s| s.strip_prefix('\n'))
+            .expect("the child wrote no answer");
+        assert!(
+            answer == here,
+            "the answer at {threads} threads in another process differs from this one's"
+        );
+    }
+}
