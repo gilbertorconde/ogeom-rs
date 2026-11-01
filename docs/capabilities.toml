@@ -720,9 +720,9 @@ title = "Signed distances from many points to a mesh or a shape's own faces, fac
 crate = "ogeom-algo"
 verdict = "covered"
 symbols = [
-    "ogeom_algo::distance::to_mesh", "ogeom_algo::distance::to_shape",
-    "ogeom_algo::distance::DistanceOptions", "ogeom_algo::distance::Closest",
-    "ogeom_algo::distance::MeshFeature", "ogeom_algo::distance::ShapeFeature",
+    "ogeom_algo::to_mesh", "ogeom_algo::to_shape",
+    "ogeom_algo::DistanceOptions", "ogeom_algo::Closest",
+    "ogeom_algo::MeshFeature", "ogeom_algo::ShapeFeature",
 ]
 tests = [
     "crates/ogeom-algo/tests/distance.rs",
