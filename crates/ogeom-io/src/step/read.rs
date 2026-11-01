@@ -5209,21 +5209,25 @@ fn repaced(
 ) -> Vec<PlanarCurve> {
     // A straight spline of two points (a line the file paces other than
     // by length) is the line through them, at whatever pace it runs.
+    let straight = match pcurve {
+        PlanarCurve::BSpline(spline) if spline.knots().degree() == 1 && !spline.is_rational() => {
+            match spline.control_points() {
+                [from, to] => Some((from.point(), to.point())),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
     let line;
-    let pcurve = match pcurve {
-        PlanarCurve::BSpline(spline)
-            if spline.knots().degree() == 1
-                && !spline.is_rational()
-                && let [from, to] = spline.control_points() =>
-        {
-            let (from, to) = (from.point(), to.point());
+    let pcurve = match straight {
+        Some((from, to)) => {
             let Ok(segment) = ogeom_geom::Line2d::segment(from, to, tol) else {
                 return Vec::new();
             };
             line = PlanarCurve::from(segment);
             &line
         }
-        _ => pcurve,
+        None => pcurve,
     };
     let span = range.1 - range.0;
     // The parameter of the pcurve's point nearest `w`, for the kinds that
