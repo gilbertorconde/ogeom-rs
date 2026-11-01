@@ -251,9 +251,15 @@ impl Triangulation {
     /// what closure counts. No positions move and none are added.
     #[must_use]
     pub fn border_stitched(&self, reach: f64) -> Self {
+        self.border_stitched_with_sources(reach).0
+    }
+
+    /// As [`Self::border_stitched`], retaining the source triangle of every output triangle.
+    #[must_use]
+    pub fn border_stitched_with_sources(&self, reach: f64) -> (Self, Vec<usize>) {
         use ogeom_core::FastMap;
         if !reach.is_finite() || reach <= 0.0 {
-            return self.clone();
+            return (self.clone(), (0..self.triangles.len()).collect());
         }
         let uses = edge_uses(&self.triangles);
         let border_edges: Vec<(u32, u32)> = uses
@@ -262,7 +268,7 @@ impl Triangulation {
             .map(|(&e, _)| e)
             .collect();
         if border_edges.is_empty() {
-            return self.clone();
+            return (self.clone(), (0..self.triangles.len()).collect());
         }
         let mut border_vertices: Vec<u32> =
             border_edges.iter().flat_map(|&(a, b)| [a, b]).collect();
@@ -312,7 +318,7 @@ impl Triangulation {
             splits.insert((a, b), on.into_iter().map(|(_, v)| v).collect());
         }
         if splits.is_empty() {
-            return self.clone();
+            return (self.clone(), (0..self.triangles.len()).collect());
         }
 
         let mut out = Self::new();
@@ -320,35 +326,78 @@ impl Triangulation {
         out.positions = self.positions.clone();
         out.normals = self.normals.clone();
         out.parameters = self.parameters.clone();
-        for t in &self.triangles {
-            // The triangle's ring with any split points inserted, fanned from
-            // its first corner.
-            let mut ring: Vec<u32> = Vec::with_capacity(6);
-            let mut any = false;
+        let mut sources = Vec::new();
+        for (source, t) in self.triangles.iter().enumerate() {
+            // Split each original side from the opposite corner. A fan from
+            // the ring's first vertex would leave its incident sides unsplit
+            // and emit collinear triangles along them.
+            let mut pieces = vec![*t];
             for i in 0..3 {
                 let (a, b) = (t[i], t[(i + 1) % 3]);
-                ring.push(a);
                 if let Some(vs) = splits.get(&(a.min(b), a.max(b))) {
-                    any = true;
-                    if a < b {
-                        ring.extend(vs.iter().copied());
-                    } else {
-                        ring.extend(vs.iter().rev().copied());
+                    // At a narrow corner a vertex can be within reach of two
+                    // sides. Insert it only on the nearest: inserting it on
+                    // both turns the polygon back through the same vertex.
+                    let vs: Vec<_> = vs
+                        .iter()
+                        .copied()
+                        .filter(|v| !t.contains(v))
+                        .filter(|&v| {
+                            (0..3)
+                                .filter_map(|k| {
+                                    let (x, y) = (t[k], t[(k + 1) % 3]);
+                                    if !splits
+                                        .get(&(x.min(y), x.max(y)))
+                                        .is_some_and(|vs| vs.contains(&v))
+                                    {
+                                        return None;
+                                    }
+                                    let (px, py, p) = (
+                                        self.positions[x as usize],
+                                        self.positions[y as usize],
+                                        self.positions[v as usize],
+                                    );
+                                    let d = py - px;
+                                    let along = (p - px).dot(d) / d.dot(d);
+                                    Some((k, (px + d * along).distance(p)))
+                                })
+                                .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))
+                                .is_some_and(|(nearest, _)| nearest == i)
+                        })
+                        .collect();
+                    if vs.is_empty() {
+                        continue;
                     }
+                    let mut chain = vec![a];
+                    if a < b {
+                        chain.extend(vs.iter().copied());
+                    } else {
+                        chain.extend(vs.iter().rev().copied());
+                    }
+                    chain.push(b);
+                    let Some(at) = pieces
+                        .iter()
+                        .position(|piece| (0..3).any(|k| piece[k] == a && piece[(k + 1) % 3] == b))
+                    else {
+                        panic!(
+                            "source triangle {source}: original side {a}->{b} is missing from current pieces {pieces:?}"
+                        );
+                    };
+                    let piece = pieces.remove(at);
+                    let Some(&opposite) = piece.iter().find(|&&v| v != a && v != b) else {
+                        panic!(
+                            "source triangle {source}: piece {piece:?} has no corner opposite side {a}->{b}"
+                        );
+                    };
+                    pieces.extend(chain.windows(2).map(|side| [side[0], side[1], opposite]));
                 }
             }
-            if !any {
-                out.triangles.push(*t);
-                continue;
-            }
-            for i in 1..ring.len() - 1 {
-                let tri = [ring[0], ring[i], ring[i + 1]];
-                if tri[0] != tri[1] && tri[1] != tri[2] && tri[2] != tri[0] {
-                    out.triangles.push(tri);
-                }
+            for tri in pieces {
+                out.triangles.push(tri);
+                sources.push(source);
             }
         }
-        out
+        (out, sources)
     }
 
     /// This mesh with its folds cancelled and its cracks sealed: the last
@@ -366,47 +415,7 @@ impl Triangulation {
     #[must_use]
     pub fn sealed(&self, width: f64) -> Self {
         use ogeom_core::FastMap;
-        let mut out = self.clone();
-        // Folds: the triangles on each set of three vertices, in order.
-        let mut keyed: Vec<([u32; 3], usize)> = out
-            .triangles
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                let mut key = *t;
-                key.sort_unstable();
-                (key, i)
-            })
-            .collect();
-        keyed.sort_unstable();
-        let mut drop = vec![false; out.triangles.len()];
-        let mut open: Vec<usize> = Vec::new();
-        for group in keyed.chunk_by(|x, y| x.0 == y.0) {
-            if group.len() < 2 {
-                continue;
-            }
-            open.clear();
-            for &(_, i) in group {
-                let t = out.triangles[i];
-                let reverse = open.iter().position(|&j| {
-                    let u = out.triangles[j];
-                    (0..3).any(|k| [u[k], u[(k + 2) % 3], u[(k + 1) % 3]] == t)
-                });
-                match reverse {
-                    Some(at) => {
-                        drop[open.remove(at)] = true;
-                        drop[i] = true;
-                    }
-                    None => open.push(i),
-                }
-            }
-        }
-        let mut index = 0;
-        out.triangles.retain(|_| {
-            let keep = !drop[index];
-            index += 1;
-            keep
-        });
+        let mut out = self.without_folds_with_sources().0;
         if !width.is_finite() || width <= 0.0 {
             return out;
         }
@@ -487,6 +496,49 @@ impl Triangulation {
             }
         }
         out
+    }
+
+    /// Cancel opposite triangles on the same vertices, retaining each survivor's source.
+    /// No positions move and no crack is filled.
+    #[must_use]
+    pub fn without_folds_with_sources(&self) -> (Self, Vec<usize>) {
+        let mut keyed: Vec<([u32; 3], usize)> = self
+            .triangles
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let mut key = *t;
+                key.sort_unstable();
+                (key, i)
+            })
+            .collect();
+        keyed.sort_unstable();
+        let mut drop = vec![false; self.triangles.len()];
+        let mut open: Vec<usize> = Vec::new();
+        for group in keyed.chunk_by(|x, y| x.0 == y.0) {
+            if group.len() < 2 {
+                continue;
+            }
+            open.clear();
+            for &(_, i) in group {
+                let t = self.triangles[i];
+                let reverse = open.iter().position(|&j| {
+                    let u = self.triangles[j];
+                    (0..3).any(|k| [u[k], u[(k + 2) % 3], u[(k + 1) % 3]] == t)
+                });
+                match reverse {
+                    Some(at) => {
+                        drop[open.remove(at)] = true;
+                        drop[i] = true;
+                    }
+                    None => open.push(i),
+                }
+            }
+        }
+        let sources: Vec<_> = (0..self.triangles.len()).filter(|&i| !drop[i]).collect();
+        let mut out = self.clone();
+        out.triangles = sources.iter().map(|&i| self.triangles[i]).collect();
+        (out, sources)
     }
 
     /// Append another mesh, shifting its indices.
@@ -922,6 +974,45 @@ mod tests {
             "the fold is cancelled"
         );
         assert!(unfolded.is_closed());
+        let (unfolded, sources) = folded.without_folds_with_sources();
+        assert_eq!(sources.len(), unfolded.triangles.len());
+        for (triangle, source) in unfolded.triangles.iter().zip(sources) {
+            assert_eq!(*triangle, folded.triangles[source]);
+        }
+    }
+
+    /// A split on any of the three sides must create two nonzero triangles,
+    /// including the sides incident to the first corner.
+    #[test]
+    fn stitching_splits_each_side_and_retains_triangle_sources() {
+        for [a, b, c] in [[0, 1, 2], [1, 2, 0], [2, 0, 1]] {
+            let mut mesh = over(
+                &[
+                    Point::new(0.0, 0.0, 0.0),
+                    Point::new(2.0, 0.0, 0.0),
+                    Point::new(0.0, 2.0, 0.0),
+                ],
+                &[[0, 1, 2]],
+            );
+            mesh.positions.push(Point::midpoint(
+                mesh.positions[a as usize],
+                mesh.positions[b as usize],
+            ));
+            // The neighbour is in another plane, already split at position 3.
+            mesh.positions.push(Point::new(0.0, 0.0, 2.0));
+            mesh.triangles.extend([[b, 3, 4], [3, a, 4]]);
+            let (split, sources) = mesh.border_stitched_with_sources(1e-9);
+            assert_eq!(split.triangles.len(), 4);
+            assert_eq!(sources.iter().filter(|&&i| i == 0).count(), 2);
+            for (t, source) in split.triangles.iter().zip(sources) {
+                let [pa, pb, pc] = t.map(|i| split.positions[i as usize]);
+                assert!((pb - pa).cross(pc - pa).magnitude() > 0.0);
+                if source == 0 {
+                    assert!(t.contains(&3) && t.contains(&c));
+                    assert!((pb - pa).cross(pc - pa).z > 0.0);
+                }
+            }
+        }
     }
 
     /// The sliver crack of the tetrahedron above, moved up to 2e7 from the
