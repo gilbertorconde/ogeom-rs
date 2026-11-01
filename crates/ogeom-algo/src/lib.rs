@@ -25,6 +25,7 @@ pub mod measure;
 pub mod medial;
 pub mod medial_graph;
 pub mod mesh_solid;
+pub mod orient;
 pub mod out_and_back;
 pub mod pcurve_fit;
 pub mod pcurve_gap;

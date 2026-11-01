@@ -13,6 +13,37 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Face directions, axes of revolution, principal frames and open rims of
+  a mesh: `ogeom_algo::orient`.**
+  - `face_directions` reads the directions a mesh's flat faces face, each a
+    `FaceDirection` with its area and the RMS angle its triangles spread
+    about it, largest first. Normals are smoothed across the edges that are
+    not creases, binned on the sphere with a direction and its antipode as
+    one, and each peak is followed to where the area gathers; a peak is
+    kept only where it holds more area within the resolution than in the
+    ring out to three times it, so a cylinder's swept normals give none. A
+    direction is the area-weighted mean of its triangles' own normals:
+    exact for exact faces, unbiased by a scan's noise, and drafted faces
+    within the resolution are averaged with the face they leave.
+  - `Directions` sets the resolution, the crease angle, the rounds of
+    smoothing and a `Cutoff` that decides how far past the resolution a
+    direction reaches for triangles only smoothing put within it: a noisy
+    face's scatter is taken in, and a fillet's triangles that smoothing drew
+    towards a face are not.
+  - `axis_of_revolution` finds the axis a mesh's walls turn about and the
+    share of its area on walls pointing at it (`Revolution`): the direction
+    the walls' normals are most nearly perpendicular to, and the line their
+    normal lines meet, by least squares, so walls of any radius serve.
+  - `principal_frame` is the frame of the area's exact second moments, its
+    axes from the greatest spread to the least and pointing where the area
+    reaches further; spreads or third moments within what moving the
+    vertices by the confusion distance could change fall back to the world
+    axes and senses.
+  - `open_rims` chains the edges one triangle uses into rims (`Rim`), each
+    with the vector area of the face that would close it, pointing out of
+    the mesh through the opening, its centre, its flatness and whether it
+    closes.
+
 - **Best fits of primitives to point sets, with residuals.**
   - `ogeom_algo::fit::{plane, sphere, cylinder, cone, torus, circle3,
     line3}` fit to points in space, and `circle2` and `line2` to points in

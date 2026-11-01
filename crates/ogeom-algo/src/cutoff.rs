@@ -71,6 +71,40 @@ impl Cutoff {
             Self::Distance(d) => d,
         }
     }
+
+    /// As [`Cutoff::threshold`], each residual counting by its weight: the
+    /// RMS and the median of a distribution of weight rather than of
+    /// count, so a fit over triangles weighs them by area. Equal weights
+    /// give the unweighted threshold.
+    pub(crate) fn threshold_weighted(self, kept: &[(f64, f64)]) -> f64 {
+        let total: f64 = kept.iter().map(|(_, w)| w).sum();
+        if kept.is_empty() || total.is_nan() || total <= 0.0 {
+            return f64::INFINITY;
+        }
+        match self {
+            Self::All => f64::INFINITY,
+            Self::Sigma(k) => k * (kept.iter().map(|(r, w)| w * r * r).sum::<f64>() / total).sqrt(),
+            Self::Median(k) => {
+                let mut sizes: Vec<(f64, f64)> = kept.iter().map(|(r, w)| (r.abs(), *w)).collect();
+                sizes.sort_by(|p, q| p.0.total_cmp(&q.0));
+                let half = total * 0.5;
+                let mut below = 0.0;
+                for (i, (size, w)) in sizes.iter().enumerate() {
+                    below += w;
+                    if below > half {
+                        return k * size;
+                    }
+                    if below == half {
+                        return k * sizes
+                            .get(i + 1)
+                            .map_or(*size, |next| f64::midpoint(*size, next.0));
+                    }
+                }
+                k * sizes.last().map_or(0.0, |s| s.0)
+            }
+            Self::Distance(d) => d,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -85,6 +119,29 @@ mod tests {
         assert!((Cutoff::Sigma(2.0).threshold(&kept) - 2.0 * rms).abs() < 1e-15);
         assert!((Cutoff::Median(3.0).threshold(&kept) - 7.5).abs() < 1e-15);
         assert!((Cutoff::Distance(0.5).threshold(&kept) - 0.5).abs() < 1e-15);
+    }
+
+    #[test]
+    fn equal_weights_give_the_unweighted_threshold_and_weights_move_it() {
+        let kept = [3.0, -4.0, 1.0, -2.0];
+        let even: Vec<(f64, f64)> = kept.iter().map(|r| (*r, 0.5)).collect();
+        for rule in [
+            Cutoff::Sigma(2.0),
+            Cutoff::Median(3.0),
+            Cutoff::Distance(0.5),
+        ] {
+            let (a, b) = (rule.threshold(&kept), rule.threshold_weighted(&even));
+            assert!((a - b).abs() <= 1e-15 * a, "{rule:?}: {a} and {b}");
+        }
+        let odd = [(1.0, 1.0), (2.0, 1.0), (9.0, 1.0)];
+        assert!((Cutoff::Median(1.0).threshold_weighted(&odd) - 2.0).abs() < 1e-15);
+        // The large residual weighs as much as the others together and
+        // more: the median moves to it, and the RMS follows.
+        let heavy = [(1.0, 1.0), (2.0, 1.0), (9.0, 3.0)];
+        assert!((Cutoff::Median(1.0).threshold_weighted(&heavy) - 9.0).abs() < 1e-15);
+        let rms = ((1.0 + 4.0 + 3.0 * 81.0) / 5.0_f64).sqrt();
+        assert!((Cutoff::Sigma(1.0).threshold_weighted(&heavy) - rms).abs() < 1e-14);
+        assert!(Cutoff::All.threshold_weighted(&heavy).is_infinite());
     }
 
     #[test]

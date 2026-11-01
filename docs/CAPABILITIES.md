@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 82 |
+| `covered` | 83 |
 | `partial` | 8 |
 | `divergent` | 6 |
 
-96 capabilities. Ratchet: `unreviewed_max = 0`.
+97 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -30,6 +30,7 @@ per module. Each verdict cites the symbols and tests that back it, and
 - **algo.global-properties**: Volume, area, mass, centroid and principal moments of shapes · `covered`
 - **algo.history**: Every operation emits history: what was generated, modified, deleted · `covered`
 - **algo.medial-axis**: The medial axis of a planar region · `covered`
+- **algo.mesh-orientation**: Face directions, axes of revolution, principal frames and open rims of a mesh · `covered`
 - **algo.nurbs-conversion**: Converting a shape's geometry to NURBS form · `covered`
 - **algo.place-copy**: Copying and transforming shapes, rigidly or generally, sharing what can be shared · `covered`
 - **algo.point-projection**: Projecting a point onto a curve or a surface, nearest first, all minima found · `covered`
@@ -291,4 +292,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 4b4114fcd3062d34 -->
+<!-- ledger-checksum: 90278063f6c69930 -->

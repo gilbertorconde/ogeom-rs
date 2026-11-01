@@ -694,6 +694,23 @@ tests = [
 ]
 
 [[capability]]
+id = "algo.mesh-orientation"
+title = "Face directions, axes of revolution, principal frames and open rims of a mesh"
+crate = "ogeom-algo"
+verdict = "covered"
+symbols = [
+    "ogeom_algo::face_directions", "ogeom_algo::axis_of_revolution",
+    "ogeom_algo::principal_frame", "ogeom_algo::open_rims",
+    "ogeom_algo::Directions", "ogeom_algo::FaceDirection",
+    "ogeom_algo::Revolution", "ogeom_algo::Rim",
+]
+tests = [
+    "crates/ogeom-algo/tests/orient.rs",
+    "crates/ogeom-algo/src/orient.rs",
+    "crates/ogeom/tests/orient_corpus.rs",
+]
+
+[[capability]]
 id = "algo.place-copy"
 title = "Copying and transforming shapes, rigidly or generally, sharing what can be shared"
 crate = "ogeom-algo"
