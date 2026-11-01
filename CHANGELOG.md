@@ -11,6 +11,15 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-11-01
+
+An additive release for scan inspection. `algo::distance` measures many
+points against a mesh or a shape's exact surfaces, signed by the closest
+feature's pseudonormal and, with a facing limit, reading a thin wall's own
+side; `mesh::Bvh` gains nearest queries over the triangles a filter keeps.
+`algo::fit::grow` grows a mesh region for a fit kind from clicked points,
+refitting as it grows and peeling a scan's rounded rims.
+
 ### Added
 
 - **Signed distances from many points to a mesh or a shape, facing-aware:
@@ -10286,7 +10295,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.13.2...HEAD
+[0.13.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.11.5...v0.12.0
