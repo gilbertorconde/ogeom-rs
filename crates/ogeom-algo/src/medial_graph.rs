@@ -1049,77 +1049,38 @@ fn build(
         }
     }
 
-    // Branch points: nearby triples merged, then solved exactly.
-    let mut nodes: Vec<Node> = Vec::new();
+    // Branch points: each triple solved on its own, then the solutions that
+    // land on one point merged. Merging the sampled centres first, by a few
+    // sampling steps, would fuse two true branch points nearer each other
+    // than that (a neck's reflex corners just off a block's centre), and
+    // no point stands equidistant from the fused sites: both were lost.
     let merge = spacing * 4.0;
+    let mut nodes: Vec<Node> = Vec::new();
     for (at, labels) in triples {
-        if let Some(node) = nodes
-            .iter_mut()
-            .find(|n| !n.boundary && n.at.distance(at) <= merge)
+        // A centre naming only sites of a branch point found near it is
+        // that branch point again.
+        if nodes
+            .iter()
+            .any(|n| n.at.distance(at) <= merge && labels.iter().all(|s| n.sites.contains(s)))
         {
-            for s in labels {
-                if !node.sites.contains(&s) {
-                    node.sites.push(s);
+            continue;
+        }
+        let Some(node) = branch_point(sites, &labels, at, merge, spacing, tolerance, tol)? else {
+            continue;
+        };
+        if let Some(found) = nodes
+            .iter_mut()
+            .find(|n| n.at.distance(node.at) <= tolerance)
+        {
+            for s in node.sites {
+                if !found.sites.contains(&s) {
+                    found.sites.push(s);
                 }
             }
             continue;
         }
-        nodes.push(Node {
-            at,
-            sites: labels,
-            boundary: false,
-        });
+        nodes.push(node);
     }
-    for node in &mut nodes {
-        // A branch point touching an arc the region lies inside may be the
-        // arc's own centre, where the arc's distance has no gradient for
-        // Newton to follow: tried first, and kept where every site stands
-        // at one distance from it.
-        let centre_of = node.sites.iter().find_map(|&s| match sites[s].kind {
-            SiteKind::Arc {
-                centre,
-                sweep,
-                radius,
-                ..
-            } if sweep > 0.0 && centre.distance(node.at) <= merge => Some((centre, radius)),
-            _ => None,
-        });
-        if let Some((centre, radius)) = centre_of {
-            let mut agrees = true;
-            for &s in &node.sites {
-                agrees &= (sites[s].distance(centre, tol)? - radius).abs() <= tol.confusion();
-            }
-            if agrees {
-                node.at = centre;
-                continue;
-            }
-        }
-        node.at = solve_node(sites, &node.sites, node.at, spacing, tol)?;
-    }
-    // A branch point is only where its sites truly stand at one distance:
-    // a centre beside a branch can name a third site a sampling's width
-    // farther, and no point near it is equidistant from all three. The
-    // sites farther than the nearest are dropped, and a point left with
-    // fewer than three is no branch point.
-    let mut solved: Vec<Node> = Vec::with_capacity(nodes.len());
-    for mut node in nodes {
-        let mut distances = Vec::with_capacity(node.sites.len());
-        for &s in &node.sites {
-            distances.push((s, sites[s].distance(node.at, tol)?));
-        }
-        let nearest = distances.iter().map(|d| d.1).fold(f64::INFINITY, f64::min);
-        node.sites = distances
-            .iter()
-            .filter(|(_, d)| *d <= nearest + tol.confusion() * 10.0)
-            .map(|(s, _)| *s)
-            .collect();
-        let whole_circle = node.sites.len() == 1
-            && matches!(sites[node.sites[0]].kind, SiteKind::Arc { sweep, .. } if sweep >= core::f64::consts::TAU - 1e-9);
-        if node.sites.len() >= 3 || whole_circle {
-            solved.push(node);
-        }
-    }
-    let mut nodes = solved;
     // A full circle holds its own centre, equidistant from all of it.
     for (s, site) in sites.iter().enumerate() {
         if let SiteKind::Arc {
@@ -1367,6 +1328,77 @@ fn circumcentre(a: Point2, b: Point2, c: Point2) -> Option<Point2> {
         (a2 * (b.y - c.y) + b2 * (c.y - a.y) + c2 * (a.y - b.y)) / d,
         (a2 * (c.x - b.x) + b2 * (a.x - c.x) + c2 * (b.x - a.x)) / d,
     ))
+}
+
+/// The branch point the sites `labels` of one sampled centre `at` name,
+/// solved exactly, with the sites that truly stand nearest there.
+///
+/// `None` where they meet in no branch point: a centre beside a branch can
+/// name a third site a sampling's width farther, and no point near it is
+/// equidistant from all three, so the sites farther than the nearest are
+/// dropped and a point left with fewer than three is no branch point; nor
+/// is one that another site of the boundary comes nearer to than its own.
+fn branch_point(
+    sites: &[Site],
+    labels: &[usize],
+    at: Point2,
+    merge: f64,
+    spacing: f64,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Node>> {
+    // A branch point touching an arc the region lies inside may be the
+    // arc's own centre, where the arc's distance has no gradient for Newton
+    // to follow: tried first, and kept where every site stands at one
+    // distance from it.
+    let centre_of = labels.iter().find_map(|&s| match sites[s].kind {
+        SiteKind::Arc {
+            centre,
+            sweep,
+            radius,
+            ..
+        } if sweep > 0.0 && centre.distance(at) <= merge => Some((centre, radius)),
+        _ => None,
+    });
+    let mut point = None;
+    if let Some((centre, radius)) = centre_of {
+        let mut agrees = true;
+        for &s in labels {
+            agrees &= (sites[s].distance(centre, tol)? - radius).abs() <= tol.confusion();
+        }
+        if agrees {
+            point = Some(centre);
+        }
+    }
+    let point = match point {
+        Some(centre) => centre,
+        None => solve_node(sites, labels, at, spacing, tol)?,
+    };
+    let mut distances = Vec::with_capacity(labels.len());
+    for &s in labels {
+        distances.push((s, sites[s].distance(point, tol)?));
+    }
+    let nearest = distances.iter().map(|d| d.1).fold(f64::INFINITY, f64::min);
+    let kept: Vec<usize> = distances
+        .iter()
+        .filter(|(_, d)| *d <= nearest + tol.confusion() * 10.0)
+        .map(|(s, _)| *s)
+        .collect();
+    let whole_circle = kept.len() == 1
+        && matches!(sites[kept[0]].kind, SiteKind::Arc { sweep, .. } if sweep >= core::f64::consts::TAU - 1e-9);
+    if kept.len() < 3 && !whole_circle {
+        return Ok(None);
+    }
+    for (s, site) in sites.iter().enumerate() {
+        if !labels.contains(&s) && site.distance(point, tol)? < nearest - tolerance {
+            return Ok(None);
+        }
+    }
+    Ok(Some(Node {
+        at: point,
+        sites: kept,
+        boundary: false,
+    }))
 }
 
 /// The point equidistant from a branch point's sites, by Newton from the

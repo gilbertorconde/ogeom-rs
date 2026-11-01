@@ -2140,6 +2140,7 @@ fn trimming_rings(
     // pole row, or its own translate a period over the other way.
     for (ring, anchors) in rings.iter_mut().zip(ring_anchors.iter_mut()) {
         close_wound_ring(ring, anchors, surface, tol);
+        snap_chart_junctions(ring, surface, tol);
     }
 
     // Points closer than the triangulator's own resolution make it refuse
@@ -2645,6 +2646,79 @@ fn remove_spikes(ring: &mut Vec<Point2>, anchors: &mut Vec<Option<Point>>, reach
         anchors.remove(first);
         ring.remove(second);
         anchors.remove(second);
+    }
+}
+
+/// A boundary vertex within numerical precision of a nonincident side must
+/// be represented on that side in the chart. Otherwise a tangency becomes a
+/// microscopic crossing and the CDT refuses one of the constraints. Anchors
+/// stay unchanged: this only agrees the chart's combinatorial junction.
+fn snap_chart_junctions(ring: &mut [Point2], surface: &SurfaceGeometry, tol: Tolerances) {
+    let original = ring.to_vec();
+    if original.len() < 3 {
+        return;
+    }
+    // Index both axes: a seam can have thousands of samples at one u, even
+    // when u is the chart's longer axis. Query the sparser band at each point.
+    let indexed: Vec<_> = original.iter().map(|p| Point2::new(p.y, p.x)).collect();
+    let x_bands = RingBands::over(std::slice::from_ref(&indexed));
+    let y_bands = RingBands::over(std::slice::from_ref(&original));
+    if x_bands.bands.is_empty() || y_bands.bands.is_empty() {
+        return;
+    }
+    for (i, p) in original.iter().copied().enumerate() {
+        let nearest = junction_candidates(&x_bands, &y_bands, p, tol.parametric())
+            .iter()
+            .flatten()
+            .map(|&k| k as usize)
+            .filter(|&k| k != i && (k + 1) % original.len() != i)
+            .filter_map(|k| {
+                let (a, b) = (original[k], original[(k + 1) % original.len()]);
+                let (dx, dy) = (b.x - a.x, b.y - a.y);
+                let l2 = dx * dx + dy * dy;
+                if l2 == 0.0 {
+                    return None;
+                }
+                let along = ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2;
+                if !(0.0 < along && along < 1.0) {
+                    return None;
+                }
+                let q = Point2::new(a.x + dx * along, a.y + dy * along);
+                let distance = p.distance(q);
+                (distance > 0.0 && distance <= tol.parametric()).then_some((q, distance))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((q, _)) = nearest
+            && let (Ok(at), Ok(on)) = (
+                surface.point_at(p.x, p.y, tol),
+                surface.point_at(q.x, q.y, tol),
+            )
+            && at.distance(on) <= tol.confusion()
+        {
+            ring[i] = q;
+        }
+    }
+}
+
+/// Any side within `reach` of a point overlaps its band on both axes. Either
+/// axis is complete; choose the one with fewer entries to keep dense seams
+/// from turning the junction search into an all-pairs walk.
+fn junction_candidates<'a>(
+    x: &'a RingBands,
+    y: &'a RingBands,
+    p: Point2,
+    reach: f64,
+) -> &'a [Vec<u32>] {
+    let range = |bands: &RingBands, height: f64| {
+        let first = RingBands::band_of(height - reach, bands.low, bands.step, bands.bands.len());
+        let last = RingBands::band_of(height + reach, bands.low, bands.step, bands.bands.len());
+        first..=last
+    };
+    let (xs, ys) = (&x.bands[range(x, p.x)], &y.bands[range(y, p.y)]);
+    if xs.iter().map(Vec::len).sum::<usize>() <= ys.iter().map(Vec::len).sum::<usize>() {
+        xs
+    } else {
+        ys
     }
 }
 
@@ -5544,6 +5618,106 @@ mod tests {
     }
 
     use approx::assert_relative_eq;
+
+    #[test]
+    fn chart_tangency_retains_both_lobes_and_all_boundary_sides() {
+        let tol = Tolerances::millimetres();
+        let frame = ogeom_math::Frame::new(
+            Point::ORIGIN,
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            tol,
+        )
+        .unwrap();
+        let plane: SurfaceGeometry =
+            ogeom_geom::PlaneSurface::new(ogeom_math::Plane::new(frame)).into();
+        for offset in [-1e-12, 0.0, 1e-12] {
+            let mut ring = vec![
+                Point2::new(0.0, 0.0),
+                Point2::new(0.0, 10.0),
+                Point2::new(1.0, 10.0),
+                Point2::new(offset, 5.0),
+                Point2::new(1.0, 0.0),
+            ];
+            snap_chart_junctions(&mut ring, &plane, tol);
+            assert_eq!(ring[3], Point2::new(0.0, 5.0));
+            let mesh = triangulate_region(
+                &[ring],
+                &plane,
+                Deflection::with_chord(0.1).unwrap(),
+                Rows::Ends,
+                tol,
+            )
+            .unwrap();
+            assert_eq!(mesh.triangles.len(), 2);
+            let triangles: Vec<_> = mesh
+                .triangles
+                .iter()
+                .map(|t| t.map(|i| mesh.parameters[i as usize]))
+                .collect();
+            for expected in [
+                [(0.0, 0.0), (0.0, 5.0), (1.0, 0.0)],
+                [(0.0, 5.0), (0.0, 10.0), (1.0, 10.0)],
+            ] {
+                assert!(
+                    triangles
+                        .iter()
+                        .any(|t| expected.iter().all(|p| t.contains(p))),
+                    "{triangles:?}"
+                );
+            }
+        }
+        let mut separate = vec![
+            Point2::new(0.0, 0.0),
+            Point2::new(0.0, 10.0),
+            Point2::new(1.0, 10.0),
+            Point2::new(2.0 * tol.parametric(), 5.0),
+            Point2::new(1.0, 0.0),
+        ];
+        let before = separate.clone();
+        snap_chart_junctions(&mut separate, &plane, tol);
+        assert_eq!(separate, before, "a resolvable gap must stay separate");
+    }
+    #[test]
+    fn chart_junction_candidates_stay_bounded_on_dense_seams() {
+        let samples = 1024;
+        for transpose in [false, true] {
+            let mut ring = Vec::new();
+            for side in 0..4 {
+                for i in 0..samples {
+                    let t = i as f64 / samples as f64;
+                    let p = match side {
+                        0 => Point2::new(10.0 * t, 0.0),
+                        1 => Point2::new(10.0, t),
+                        2 => Point2::new(10.0 * (1.0 - t), 1.0),
+                        _ => Point2::new(0.0, 1.0 - t),
+                    };
+                    ring.push(if transpose { Point2::new(p.y, p.x) } else { p });
+                }
+            }
+            let swapped: Vec<_> = ring.iter().map(|p| Point2::new(p.y, p.x)).collect();
+            let x = RingBands::over(&[swapped]);
+            let y = RingBands::over(std::slice::from_ref(&ring));
+            let mut visited = 0;
+            for (i, &p) in ring.iter().enumerate() {
+                let candidates: Vec<_> = junction_candidates(&x, &y, p, 1e-9)
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .collect();
+                // Both incident sides must be found, including band boundaries.
+                let current = u32::try_from(i).unwrap();
+                let previous = u32::try_from((i + ring.len() - 1) % ring.len()).unwrap();
+                assert!(candidates.contains(&current));
+                assert!(candidates.contains(&previous));
+                visited += candidates.len();
+            }
+            // Count work rather than wall time: one axis would visit over a
+            // million entries on either the horizontal or vertical seam.
+            assert!(visited < 32 * ring.len(), "visited {visited} sides");
+        }
+    }
+
     use ogeom_algo::make_box;
     use ogeom_math::Frame;
     use ogeom_topo::explore_unique;
