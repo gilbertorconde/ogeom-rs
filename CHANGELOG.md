@@ -11,15 +11,6 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
-## [0.13.1] - 2026-11-01
-
-An additive release: measuring scans. `algo::fit` fits planes, spheres,
-cylinders, cones, tori, circles and lines to point sets and always answers,
-with residuals, RMS and the signed form, an iterated sigma cut-off and held
-parameters; `algo::Cutoff` is shared by the fits and the scan tools to come.
-`algo::orient` finds a mesh's face directions, its axis of revolution, its
-principal frame and its open rims.
-
 ### Added
 
 - **Signed distances from many points to a mesh or a shape, facing-aware:
@@ -51,6 +42,17 @@ principal frame and its open rims.
     point among the triangles a filter keeps, equal to brute force over
     them. `ogeom_mesh::face_boundary_in_chart_met` draws a face's rings
     where every edge keeps to the chord, and says where one cannot.
+
+## [0.13.1] - 2026-11-01
+
+An additive release: measuring scans. `algo::fit` fits planes, spheres,
+cylinders, cones, tori, circles and lines to point sets and always answers,
+with residuals, RMS and the signed form, an iterated sigma cut-off and held
+parameters; `algo::Cutoff` is shared by the fits and the scan tools to come.
+`algo::orient` finds a mesh's face directions, its axis of revolution, its
+principal frame and its open rims.
+
+### Added
 
 - **Face directions, axes of revolution, principal frames and open rims of
   a mesh: `ogeom_algo::orient`.**
