@@ -365,3 +365,45 @@ fn a_washers_axis_is_one_closed_branch_between_its_circles() {
         assert!((min - least).abs() < 1e-3, "least clearance {min}");
     }
 }
+
+/// Two 10 × 10 blocks on a neck 1 wide, centred on them. At each block's
+/// centre two true branch points stand 0.025 apart: (5, 5), equidistant
+/// from the block's left, bottom and top, and (5.025, 5), equidistant from
+/// its bottom, top and the neck's two reflex corners. Both must survive as
+/// branch points, however fine the sampling that tells them apart.
+#[test]
+fn branch_points_closer_than_the_sampling_stay_apart() {
+    for low in [4.5, 3.3, 4.0] {
+        let high = low + 1.0;
+        let mut model = Model::new();
+        let pieces = polygon(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, low),
+            (20.0, low),
+            (20.0, 0.0),
+            (30.0, 0.0),
+            (30.0, 10.0),
+            (20.0, 10.0),
+            (20.0, high),
+            (10.0, high),
+            (10.0, 10.0),
+            (0.0, 10.0),
+        ]);
+        let face = face_of(&mut model, std::slice::from_ref(&pieces));
+        let graph = check_axis(&model, &face, &pieces, 1e-9);
+        // The neck's midline at clearance 0.5.
+        let neck = Point::new(15.0, low + 0.5, 0.0);
+        assert!(
+            graph.branches.iter().enumerate().any(|(b, branch)| {
+                (0..=200).any(|k| {
+                    let t =
+                        branch.range.0 + (branch.range.1 - branch.range.0) * f64::from(k) / 200.0;
+                    branch.curve.point_at(t, T).unwrap().distance(neck) < 1e-6
+                        && (graph.clearance_at(b, t, T).unwrap() - 0.5).abs() < 1e-9
+                })
+            }),
+            "neck at {low}: the axis runs along the neck"
+        );
+    }
+}
