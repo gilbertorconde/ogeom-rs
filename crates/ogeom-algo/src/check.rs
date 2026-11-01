@@ -1029,7 +1029,7 @@ fn spanned_past(
     if length * scale > tolerance {
         return Ok(None);
     }
-    let Some(gap) = crate::pcurve_gap::edge_pcurve_gap(model, edge, tol)? else {
+    let Some(gap) = crate::pcurve_gap::edge_pcurve_gap_sampled(model, edge, tol)? else {
         return Ok(None);
     };
     // Below the confusion tolerance a gap and a length are rounding: an

@@ -225,6 +225,20 @@ bump may break the API and a patch bump may not.
   the chain 8 percent fewer cycles (12 percent at 361 steps), to the same
   faces and volumes.
 
+- **An edge's gap to its pcurves is read in closed form for the common
+  analytic pairs.** `edge_pcurve_gap` sampled every pcurve at 257 points
+  and searched the widest peaks, though most edges are a line or a circle
+  whose image is the same curve. A line, a circle or an ellipse against a
+  line, a circle or an ellipse on a plane, or an iso line of a cylinder, a
+  cone, a sphere or a torus, is now answered from the two curves' forms
+  where the answer stands within the edge's tolerance: the ends' gap for
+  two straight ones, a bound within rounding of the ends' gap for two
+  turning ones, compared with the sampling in debug builds. Any other pair,
+  a bound wider than the ends and any gap past the tolerance are sampled
+  as before. Along the chain of 200 holes and bosses the boolean costs 22
+  percent fewer cycles (17 percent at 361 steps), to the same faces and
+  volumes.
+
 ### Fixed
 
 - **A STEP file's pcurves are read in its own units, and at another pace

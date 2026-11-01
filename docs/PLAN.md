@@ -464,12 +464,15 @@ Taking the faces' reads is under 2 percent of that at 200 steps: the
 edges' holders are rebuilt in the solid's own order from each face's walk
 as a fresh read builds them. Still linear along the chain: those holders,
 `side`, the history copies, the shells' closed check and each new face's
-rim walk (`explore_unique` per face; a plain walk saves 2 percent). The
-largest cost of a step is fixed: `edge_pcurve_gap` on its section edges,
-about 18 percent, 257 samples and four golden-section searches for a
-circle or a line whose image on a plane or a cylinder is the same curve;
-a closed-form bound proving such a gap within the edge's tolerance is the
-next lever. Where the assembly around the faces set aside does not close (the
+rim walk (`explore_unique` per face; a plain walk saves 2 percent).
+`edge_pcurve_gap` answers a line, a circle or an ellipse against a line,
+a circle or an ellipse on a plane, or an iso line of a cylinder, a cone,
+a sphere or a torus, in closed form where that stands within the edge's
+tolerance (`pcurve_gap/closed.rs`), within rounding of what its sampling
+measures; the chain then costs 22 percent fewer cycles at 200 steps and
+17 at 361, and 80 percent of the gaps the stress suite measures are
+answered so. Still sampled: B-spline pcurves, the chart traces of
+oblique sections, helices and any gap past the tolerance. Where the assembly around the faces set aside does not close (the
 sew welds a shared vertex, a seam join reaches a shared edge, a strand would
 widen a shared vertex), the boolean runs again over every face; converted
 slabs with tolerant vertices take that path.

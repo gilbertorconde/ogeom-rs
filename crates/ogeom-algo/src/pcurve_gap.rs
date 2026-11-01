@@ -11,6 +11,8 @@ use ogeom_geom::{Curve, Curve2d as _, Curve3d as _, PlanarCurve, Surface as _, S
 use ogeom_math::{Point, Transform, Vector};
 use ogeom_topo::{EdgeRepr, Model, Shape, ShapeType};
 
+mod closed;
+
 /// How much wider than the gap it was measured from an edge's tolerance is
 /// recorded: a millionth.
 const MARGIN: f64 = 1e-6;
@@ -28,10 +30,39 @@ const MARGIN: f64 = 1e-6;
 /// step, this measures where the pcurve lies, as `check` does: an iso line
 /// run the other way round a closed rim stands on the rim.
 ///
+/// A line, a circle or an ellipse against a line, a circle or an ellipse
+/// on a plane, or an iso line of a cylinder, a cone, a sphere or a torus,
+/// is answered in closed form where that stands within `stated`: within
+/// rounding of what the sampling measures.
+///
 /// # Errors
 ///
 /// If the curve or the pcurve cannot be evaluated over its range.
 pub fn pcurve_gap(
+    curve: (&Curve, (f64, f64)),
+    pcurve: (&PlanarCurve, (f64, f64)),
+    surface: &SurfaceGeometry,
+    stated: f64,
+    tol: Tolerances,
+) -> OgeomResult<f64> {
+    let Some((gap, margin)) = closed::closed_gap(curve, pcurve, surface, stated, tol) else {
+        return sampled_gap(curve, pcurve, surface, stated, tol);
+    };
+    if cfg!(debug_assertions) {
+        let sampled = sampled_gap(curve, pcurve, surface, stated, tol);
+        assert!(
+            sampled
+                .as_ref()
+                .is_ok_and(|s| (gap - s).abs() <= margin && *s <= stated),
+            "closed-form pcurve gap {gap:e} (within {margin:e}) against sampled {sampled:?}, \
+             stated {stated:e}"
+        );
+    }
+    Ok(gap)
+}
+
+/// [`pcurve_gap`] by sampling alone.
+pub(crate) fn sampled_gap(
     (curve, range): (&Curve, (f64, f64)),
     (pcurve, pcurve_range): (&PlanarCurve, (f64, f64)),
     surface: &SurfaceGeometry,
@@ -292,6 +323,33 @@ pub(crate) fn nearest_point_on_stretch(
 /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the edge
 /// or its geometry is not in `model`; as [`pcurve_gap`].
 pub fn edge_pcurve_gap(model: &Model, edge: &Shape, tol: Tolerances) -> OgeomResult<Option<f64>> {
+    edge_gap_by(model, edge, tol, pcurve_gap)
+}
+
+/// [`edge_pcurve_gap`] by sampling alone, for a reader of the gap below the
+/// stated tolerance, where the closed form is only known to be within
+/// rounding of it.
+pub(crate) fn edge_pcurve_gap_sampled(
+    model: &Model,
+    edge: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    edge_gap_by(model, edge, tol, sampled_gap)
+}
+
+/// [`edge_pcurve_gap`], each pcurve's gap measured by `gap`.
+pub(crate) fn edge_gap_by(
+    model: &Model,
+    edge: &Shape,
+    tol: Tolerances,
+    mut gap: impl FnMut(
+        (&Curve, (f64, f64)),
+        (&PlanarCurve, (f64, f64)),
+        &SurfaceGeometry,
+        f64,
+        Tolerances,
+    ) -> OgeomResult<f64>,
+) -> OgeomResult<Option<f64>> {
     let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
         ogeom_core::ogeom_bail!(Dangling, "an edge is not in this model");
     };
@@ -342,7 +400,7 @@ pub fn edge_pcurve_gap(model: &Model, edge: &Shape, tol: Tolerances) -> OgeomRes
             let Some(pcurve) = model.geometry().pcurve(id) else {
                 ogeom_core::ogeom_bail!(Dangling, "an edge names a pcurve not in this model");
             };
-            widest = widest.max(pcurve_gap(
+            widest = widest.max(gap(
                 (curve, *range),
                 (pcurve, pcurve_range),
                 surface,
