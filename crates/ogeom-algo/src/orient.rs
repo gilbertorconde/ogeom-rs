@@ -565,13 +565,13 @@ fn third_vertex(tri: [u32; 3], a: u32, b: u32) -> Option<u32> {
 
 /// The triangles that use an edge: how many, and the first two.
 #[derive(Debug, Clone, Copy)]
-struct Uses {
-    count: u32,
-    first: u32,
-    second: u32,
+pub(crate) struct Uses {
+    pub(crate) count: u32,
+    pub(crate) first: u32,
+    pub(crate) second: u32,
 }
 
-fn key(a: u32, b: u32) -> (u32, u32) {
+pub(crate) fn key(a: u32, b: u32) -> (u32, u32) {
     (a.min(b), a.max(b))
 }
 
@@ -584,7 +584,7 @@ fn as_index(t: usize) -> u32 {
     t
 }
 
-fn edge_uses(triangles: &[[u32; 3]]) -> FastMap<(u32, u32), Uses> {
+pub(crate) fn edge_uses(triangles: &[[u32; 3]]) -> FastMap<(u32, u32), Uses> {
     let mut uses: FastMap<(u32, u32), Uses> = FastMap::default();
     uses.reserve(triangles.len() * 3 / 2 + 3);
     for (t, tri) in triangles.iter().enumerate() {
@@ -608,7 +608,7 @@ fn edge_uses(triangles: &[[u32; 3]]) -> FastMap<(u32, u32), Uses> {
     uses
 }
 
-fn check_indices(mesh: &Triangulation) -> OgeomResult<()> {
+pub(crate) fn check_indices(mesh: &Triangulation) -> OgeomResult<()> {
     let count = mesh.positions.len();
     if let Some(t) = mesh
         .triangles

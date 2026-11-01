@@ -322,7 +322,7 @@ pub fn line2(
 
 /// The kinds of shape, as the fitting machinery tells them apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
+pub(super) enum Kind {
     Plane,
     Line3,
     Line2,
@@ -471,7 +471,7 @@ fn free(kind: Kind, fixed: &FitFixed) -> [bool; PARAMETERS] {
 }
 
 /// The fewest points that determine the fit.
-fn needed(kind: Kind, fixed: &FitFixed) -> usize {
+pub(super) fn needed(kind: Kind, fixed: &FitFixed) -> usize {
     let held = fixed.direction.is_some();
     match kind {
         Kind::Plane => {
@@ -492,6 +492,212 @@ fn needed(kind: Kind, fixed: &FitFixed) -> usize {
             let count = free(kind, fixed).iter().filter(|on| **on).count();
             count.div_ceil(kind.components()).max(1)
         }
+    }
+}
+
+/// A fitted surface asked about any point: its residual there, signed as
+/// the fit signed its own, and the direction that residual grows in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Model {
+    kind: Kind,
+    state: State,
+    /// −1 where the material is outside the shape, so the residual and the
+    /// normal are the material's; 1 otherwise.
+    sense: f64,
+    /// Whether the fit knew the material's side, or for a plane, its normal
+    /// was turned by the normals the fit was given.
+    oriented: bool,
+    /// The parameters the fit moved.
+    free: [bool; PARAMETERS],
+    /// The inverse of the fit's normal matrix over the parameters it moved,
+    /// over its kept points: the parameters' covariance in units of the
+    /// noise's variance. Zero until [`Model::measured_over`].
+    spread: [[f64; PARAMETERS]; PARAMETERS],
+}
+
+impl Model {
+    fn sided<S>(kind: Kind, state: State, fit: &Fit<S>) -> Self {
+        Self {
+            kind,
+            state,
+            sense: if fit.side == Some(Side::Outside) {
+                -1.0
+            } else {
+                1.0
+            },
+            oriented: fit.side.is_some(),
+            free: [false; PARAMETERS],
+            spread: [[0.0; PARAMETERS]; PARAMETERS],
+        }
+    }
+
+    /// A plane fitted with normals: its normal faces them.
+    pub(super) fn plane(fit: &Fit<Plane>) -> Self {
+        Self {
+            kind: Kind::Plane,
+            state: State::about(fit.shape.origin(), fit.shape.normal()),
+            sense: 1.0,
+            oriented: true,
+            free: [false; PARAMETERS],
+            spread: [[0.0; PARAMETERS]; PARAMETERS],
+        }
+    }
+
+    pub(super) fn sphere(fit: &Fit<Sphere>) -> Self {
+        let s = &fit.shape;
+        let state = State {
+            radius: s.radius(),
+            ..State::about(s.centre(), Direction::Z)
+        };
+        Self::sided(Kind::Sphere, state, fit)
+    }
+
+    pub(super) fn cylinder(fit: &Fit<Cylinder>) -> Self {
+        let c = &fit.shape;
+        let state = State {
+            radius: c.radius(),
+            ..State::about(c.frame().origin(), c.frame().z())
+        };
+        Self::sided(Kind::Cylinder, state, fit)
+    }
+
+    pub(super) fn cone(fit: &Fit<Cone>) -> Self {
+        let c = &fit.shape;
+        let state = State {
+            radius: c.reference_radius(),
+            second: c.half_angle(),
+            ..State::about(c.frame().origin(), c.frame().z())
+        };
+        Self::sided(Kind::Cone, state, fit)
+    }
+
+    pub(super) fn torus(fit: &Fit<Torus>) -> Self {
+        let t = &fit.shape;
+        let state = State {
+            radius: t.minor_radius(),
+            second: t.major_radius(),
+            ..State::about(t.centre(), t.frame().z())
+        };
+        Self::sided(Kind::Torus, state, fit)
+    }
+
+    /// The point's residual, signed as the fit's residuals are.
+    pub(super) fn residual(&self, p: Point) -> f64 {
+        self.sense * residual(self.kind, &self.state, p)
+    }
+
+    /// The unit direction the point's residual grows in: the material's
+    /// outward normal where the model is oriented.
+    pub(super) fn normal(&self, p: Point) -> Vector {
+        outward(self.kind, &self.state, p) * self.sense
+    }
+
+    /// Whether [`Model::normal`] has the material's sense rather than an
+    /// arbitrary one.
+    pub(super) const fn oriented(&self) -> bool {
+        self.oriented
+    }
+
+    /// The model with the spread of its parameters measured over the
+    /// points its fit kept, `fixed` as the fit held it.
+    ///
+    /// The normal matrix is inverted over its eigenvalues above the
+    /// rounding floor, as the fit's own steps are: a direction the points
+    /// do not determine is one the fit did not move either.
+    pub(super) fn measured_over(
+        mut self,
+        points: &[Point],
+        used: &[bool],
+        fixed: &FitFixed,
+    ) -> Self {
+        let free = if self.kind == Kind::Plane {
+            let mut on = [false; PARAMETERS];
+            on[ALONG] = true;
+            let tilt = fixed.direction.is_none();
+            on[TILT[0]] = tilt;
+            on[TILT[1]] = tilt;
+            on
+        } else {
+            free(self.kind, fixed)
+        };
+        let index: Vec<usize> = (0..PARAMETERS).filter(|k| free[*k]).collect();
+        let size = index.len();
+        self.free = free;
+        self.spread = [[0.0; PARAMETERS]; PARAMETERS];
+        if size == 0 {
+            return self;
+        }
+        let frame = basis(self.kind, &self.state);
+        let mut normal = nalgebra::DMatrix::<f64>::zeros(size, size);
+        for (p, keep) in points.iter().zip(used) {
+            if !*keep {
+                continue;
+            }
+            let (rows, count) = self.rows(frame, *p);
+            for (_, d) in &rows[..count] {
+                for (i, &ki) in index.iter().enumerate() {
+                    for (j, &kj) in index.iter().enumerate() {
+                        normal[(i, j)] += d[ki] * d[kj];
+                    }
+                }
+            }
+        }
+        let eigen = nalgebra::SymmetricEigen::new(normal);
+        let largest = eigen.eigenvalues.iter().copied().fold(0.0, f64::max);
+        #[allow(clippy::cast_precision_loss, reason = "a handful of parameters")]
+        let floor = largest * f64::EPSILON * size as f64;
+        for (k, value) in eigen.eigenvalues.iter().enumerate() {
+            if *value > floor {
+                let v = eigen.eigenvectors.column(k);
+                for (i, &ki) in index.iter().enumerate() {
+                    for (j, &kj) in index.iter().enumerate() {
+                        self.spread[ki][kj] += v[i] * v[j] / value;
+                    }
+                }
+            }
+        }
+        self
+    }
+
+    /// How many parameters the fit moved.
+    pub(super) fn parameters(&self) -> usize {
+        self.free.iter().filter(|on| **on).count()
+    }
+
+    /// How much the fit's own uncertainty moves its residual at `p`, in
+    /// units of the noise's variance: the residual of a point the fit did
+    /// not see varies as the noise's variance times one plus this.
+    pub(super) fn leverage(&self, p: Point) -> f64 {
+        let (rows, count) = self.rows(basis(self.kind, &self.state), p);
+        let mut sum = 0.0;
+        for (_, d) in &rows[..count] {
+            for i in 0..PARAMETERS {
+                if !self.free[i] {
+                    continue;
+                }
+                for j in 0..PARAMETERS {
+                    if self.free[j] {
+                        sum += d[i] * self.spread[i][j] * d[j];
+                    }
+                }
+            }
+        }
+        sum
+    }
+
+    /// A point's distances and their derivatives, a plane's included: its
+    /// point moved along its normal and its normal tilted.
+    fn rows(&self, frame: [Vector; 3], p: Point) -> ([(f64, [f64; PARAMETERS]); 2], usize) {
+        if self.kind != Kind::Plane {
+            return distances(self.kind, &self.state, frame, p);
+        }
+        let [e1, e2, a] = frame;
+        let w = p - self.state.origin;
+        let mut d = [0.0; PARAMETERS];
+        d[TILT[0]] = w.dot(e1);
+        d[TILT[1]] = w.dot(e2);
+        d[ALONG] = -1.0;
+        ([(w.dot(a), d), (0.0, [0.0; PARAMETERS])], 1)
     }
 }
 
@@ -1642,6 +1848,60 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// A plane's leverage at a point is the closed form of linear least
+    /// squares: `1/n` for its offset and `wᵀ S⁻¹ w` for its tilt, `w` the
+    /// point's offset from the centroid across the plane and `S` the
+    /// points' scatter there.
+    #[test]
+    #[allow(clippy::cast_precision_loss, reason = "a few points")]
+    fn a_planes_leverage_is_the_closed_form() {
+        let points: Vec<Point> = (0..7)
+            .flat_map(|i| (0..5).map(move |j| (i, j)))
+            .map(|(i, j)| {
+                let (x, y) = (f64::from(i) * 0.7, f64::from(j) * 1.3 - 0.4);
+                Point::new(x, y, 0.01 * f64::from((i * 3 + j * 5) % 7) - 0.03)
+            })
+            .collect();
+        let normals = vec![Vector::Z; points.len()];
+        let options = FitOptions {
+            normals: Some(&normals),
+            ..FitOptions::default()
+        };
+        let fit = plane(&points, &options, T).unwrap();
+        let model = Model::plane(&fit).measured_over(&points, &fit.used, &FitFixed::default());
+        assert_eq!(model.parameters(), 3);
+
+        let n = fit.shape.normal().vector();
+        let e1 = fit.shape.normal().any_perpendicular().vector();
+        let e2 = n.cross(e1);
+        let count = points.len() as f64;
+        let centroid = points
+            .iter()
+            .fold(Vector::ZERO, |sum, p| sum + p.to_vector())
+            / count;
+        let across = |p: Point| {
+            let w = p.to_vector() - centroid;
+            (w.dot(e1), w.dot(e2))
+        };
+        let (mut a, mut b, mut c) = (0.0, 0.0, 0.0);
+        for p in &points {
+            let (u, v) = across(*p);
+            a += u * u;
+            b += u * v;
+            c += v * v;
+        }
+        let det = a.mul_add(c, -(b * b));
+        for p in [Point::new(9.0, -4.0, 0.2), Point::new(2.1, 2.2, 0.0)] {
+            let (u, v) = across(p);
+            let closed = 1.0 / count + (c * u * u - 2.0 * b * u * v + a * v * v) / det;
+            let got = model.leverage(p);
+            assert!(
+                (got - closed).abs() <= 1e-12 * closed,
+                "{got} against {closed}"
+            );
         }
     }
 }

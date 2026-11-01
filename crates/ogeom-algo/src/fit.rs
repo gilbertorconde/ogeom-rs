@@ -39,13 +39,22 @@
 //! cylinder, the cone, the torus, the circle or the line that comes nearest
 //! them, with every point's residual ([`plane`], [`sphere`], [`cylinder`],
 //! [`cone`], [`torus`], [`circle3`], [`line3`], [`circle2`], [`line2`]).
+//!
+//! # Regions
+//!
+//! On a mesh, which points belong to the surface is itself the question:
+//! [`grow`] takes clicks on a surface, grows the region of the mesh a kind
+//! of surface covers around them, and fits it.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::BSplineCurve;
 use ogeom_math::{KnotVector, Point};
 
+mod grow;
 mod primitive;
+mod tails;
 
+pub use grow::{AnyFit, FitKind, GrowOptions, Grown, SeedReport, grow};
 pub use primitive::{
     Fit, FitFixed, FitOptions, Side, circle2, circle3, cone, cylinder, line2, line3, plane, sphere,
     torus,
