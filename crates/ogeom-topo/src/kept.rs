@@ -178,6 +178,37 @@ impl KeptReads {
         })
     }
 
+    /// Every read of type `T` that `same` accepts, kept for any shape
+    /// against the geometry as `edits` counts it, the shape kept latest
+    /// first.
+    pub(crate) fn all<T: Any + Send + Sync>(
+        &self,
+        edits: u64,
+        same: impl Fn(&T) -> bool,
+    ) -> Vec<Arc<T>> {
+        let shapes = self.lock();
+        shapes
+            .iter()
+            .rev()
+            .filter(|k| k.edits == edits)
+            .flat_map(|k| k.reads.iter())
+            .filter_map(|read| {
+                let read = Arc::clone(read).downcast::<T>().ok()?;
+                same(&read).then_some(read)
+            })
+            .collect()
+    }
+
+    /// The nodes below each shape anything is kept for against the
+    /// geometry as `edits` counts it.
+    pub(crate) fn sets(&self, edits: u64) -> Vec<Arc<NodeSet>> {
+        self.lock()
+            .iter()
+            .filter(|k| k.edits == edits)
+            .map(|k| Arc::clone(&k.below))
+            .collect()
+    }
+
     /// The nodes kept as below `shape`, where anything is kept for it.
     pub(crate) fn below(&self, shape: &Shape, edits: u64) -> Option<Arc<NodeSet>> {
         self.lock()
@@ -261,6 +292,27 @@ impl NodeSet {
         !was
     }
 
+    /// Add every index of `other`.
+    pub(crate) fn union_with(&mut self, other: &Self) {
+        let Some(last) = other.words.len().checked_sub(1) else {
+            return;
+        };
+        if self.words.is_empty() {
+            self.first = other.first;
+        } else if other.first < self.first {
+            let grow = self.first - other.first;
+            self.words.splice(0..0, core::iter::repeat_n(0, grow));
+            self.first = other.first;
+        }
+        let offset = other.first - self.first;
+        if offset + last >= self.words.len() {
+            self.words.resize(offset + last + 1, 0);
+        }
+        for (word, theirs) in self.words[offset..].iter_mut().zip(&other.words) {
+            *word |= theirs;
+        }
+    }
+
     /// Whether `index` is in the set.
     pub(crate) fn contains(&self, index: u32) -> bool {
         let at = index as usize / 64;
@@ -284,6 +336,27 @@ mod tests {
         assert!(!set.insert(70));
         for i in 0..7000 {
             assert_eq!(set.contains(i), put.contains(&i), "{i}");
+        }
+    }
+
+    #[test]
+    fn a_node_set_joined_to_another_holds_what_either_held() {
+        let sets: [&[u32]; 4] = [&[700, 6400], &[7, 64, 63], &[], &[90_000, 1]];
+        for a in sets {
+            for b in sets {
+                let mut joined = NodeSet::default();
+                let mut other = NodeSet::default();
+                for &i in a {
+                    joined.insert(i);
+                }
+                for &i in b {
+                    other.insert(i);
+                }
+                joined.union_with(&other);
+                for i in (0..7000).chain([90_000]) {
+                    assert_eq!(joined.contains(i), a.contains(&i) || b.contains(&i), "{i}");
+                }
+            }
         }
     }
 }

@@ -176,3 +176,133 @@ fn a_solid_edited_in_place_is_read_as_it_stands_by_the_next_boolean() {
         assert_eq!(passed_through(&read, &plate, &again.shape), expected);
     }
 }
+
+/// The cells of a 19 by 19 grid 10 apart on a plate 200 square, in an
+/// order drawn from a fixed seed.
+fn shuffled_cells() -> Vec<(u32, u32)> {
+    let mut cells: Vec<(u32, u32)> = (0..19).flat_map(|i| (0..19).map(move |j| (i, j))).collect();
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    for k in (1..cells.len()).rev() {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let pick = usize::try_from(state >> 33).unwrap() % (k + 1);
+        cells.swap(k, pick);
+    }
+    cells
+}
+
+/// A plate 200 square and 10 thick, then `steps` booleans on it in turn,
+/// each on the result of the one before: a hole of radius 1.5 cut through
+/// and a boss of radius 2.5 standing 5 above the top fused on, by turns,
+/// each in a cell of its own. `each` is handed the model, the result and
+/// the step's processor time after every step.
+fn chain(steps: usize, mut each: impl FnMut(&Model, &Shape, usize, f64)) {
+    let mut model = Model::new();
+    let mut part = make_box(&mut model, Frame::WORLD, (200.0, 200.0, 10.0), T)
+        .unwrap()
+        .shape;
+    for (step, &(i, j)) in shuffled_cells().iter().take(steps).enumerate() {
+        let (x, y) = (10.0 + 10.0 * f64::from(i), 10.0 + 10.0 * f64::from(j));
+        let hole = step % 2 == 0;
+        let tool = if hole {
+            pin(&mut model, Point::new(x, y, -5.0))
+        } else {
+            let frame = Frame::new(Point::new(x, y, 5.0), Direction::Z, Direction::X, T).unwrap();
+            make_cylinder(&mut model, frame, 2.5, 10.0, T)
+                .unwrap()
+                .shape
+        };
+        let (built, took) = cpu_time(|| {
+            if hole {
+                ogeom::boolean::cut(&mut model, &part, &tool, T)
+            } else {
+                ogeom::boolean::fuse(&mut model, &part, &tool, T)
+            }
+        });
+        part = built.unwrap().shape;
+        each(&model, &part, step, took.as_secs_f64());
+    }
+}
+
+/// Each step's processor time along a chain of 200 holes and bosses,
+/// reported every 20 steps with the faces the part holds then.
+#[test]
+#[ignore = "heavy"]
+fn a_chain_of_booleans_s_time_per_step_is_reported() {
+    let steps = std::env::var("OGEOM_CHAIN_STEPS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(200);
+    // Once untimed, so the timed run starts on a warm core.
+    chain(steps, |_, _, _, _| {});
+    let mut window = Vec::new();
+    let mut total = 0.0;
+    chain(steps, |model, part, step, took| {
+        window.push(took);
+        total += took;
+        if window.len() == 20 || step + 1 == steps {
+            window.sort_by(f64::total_cmp);
+            let faces = explore_unique(model, part, ShapeType::Face).unwrap().len();
+            eprintln!(
+                "chain steps {:>3}..{:>3}: {faces:>4} faces, median {:.2} ms, least {:.2} ms",
+                step + 1 - window.len(),
+                step,
+                window[window.len() / 2] * 1e3,
+                window[0] * 1e3
+            );
+            window.clear();
+        }
+    });
+    eprintln!("chain of {steps}: {:.3} s", total);
+}
+
+/// Along a chain of booleans, each result is read with the faces it shares
+/// with its operand taken from what was kept of the operand's read, and
+/// each read so taken is the one a fresh read gives: the reads are compared
+/// on every step.
+#[test]
+fn a_chain_of_booleans_reads_each_result_as_a_fresh_read_would() {
+    let (faces, taken) = ogeom::algo::derived::derived_reads_checked(|| {
+        let mut faces = 0;
+        chain(80, |model, part, _, _| {
+            faces = explore_unique(model, part, ShapeType::Face).unwrap().len();
+        });
+        faces
+    });
+    // The plate's 6 faces, a wall per hole, a wall and a top per boss.
+    assert_eq!(faces, 6 + 40 + 80);
+    assert!(taken > 0);
+}
+
+/// A solid a boolean made, edited in place before the next boolean, is
+/// read as it stands: a vertex of the hole beside the corner pin, a hole
+/// the first cut passed through from the plate, widened until its wall
+/// reaches the pin, takes the wall into the corner cut; nothing read of
+/// the plate before the edit is taken for it.
+#[test]
+fn a_result_edited_in_place_is_read_as_it_stands_by_the_next_boolean() {
+    let editors: [fn(&mut Model, &Shape); 2] = [widen_vertex, widen_in_node];
+    let (mut model, plate, corner) = plate_and_corner(8, 70);
+    let far = pin(&mut model, Point::new(75.0, 75.0, -5.0));
+    let holed = ogeom::boolean::cut(&mut model, &plate, &far, T)
+        .unwrap()
+        .shape;
+    let mut unedited = model.clone();
+    let (cut, taken) = ogeom::algo::derived::derived_reads_checked(|| {
+        ogeom::boolean::cut(&mut unedited, &holed, &corner, T).unwrap()
+    });
+    assert!(taken > 0);
+    let untouched = passed_through(&unedited, &holed, &cut.shape);
+    for edit in editors {
+        let mut edited = model.clone();
+        for vertex in nearest_hole_vertices(&edited, &holed) {
+            edit(&mut edited, &vertex);
+        }
+        let (cut, _) = ogeom::algo::derived::derived_reads_checked(|| {
+            ogeom::boolean::cut(&mut edited, &holed, &corner, T).unwrap()
+        });
+        let through = passed_through(&edited, &holed, &cut.shape);
+        assert!(through < untouched, "{through} of {untouched}");
+    }
+}

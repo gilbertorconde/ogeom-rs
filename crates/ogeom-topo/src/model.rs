@@ -1178,11 +1178,63 @@ impl Model {
         if keep && self.node(shape).is_some() {
             let below = match reads.below(shape, edits) {
                 Some(below) => below,
-                None => std::sync::Arc::new(self.indices_below(shape)),
+                None => std::sync::Arc::new(self.indices_below_kept(shape, &reads.sets(edits))),
             };
             reads.keep(shape, edits, below, std::sync::Arc::clone(&found), same);
         }
         Ok(found)
+    }
+
+    /// Every read of type `T` kept now, for any shape, that `same`
+    /// accepts, the shape kept latest first: what [`Model::kept_read`]
+    /// would hand back for its shape. Each was read from its shape's nodes
+    /// as they stand, so a part of one that depends only on the nodes below
+    /// a face holds for that face in any shape holding it.
+    #[must_use]
+    pub fn kept_reads<T: std::any::Any + Send + Sync>(
+        &self,
+        same: impl Fn(&T) -> bool,
+    ) -> Vec<std::sync::Arc<T>> {
+        self.nodes.reads.all(self.geometry.edits(), same)
+    }
+
+    /// The node index of `shape` and of every node below it, with every
+    /// node of each set in `kept` that holds one of them.
+    ///
+    /// A node in a set kept for a shape has every node below it in that
+    /// set: none of them has changed since the set was made, as a change
+    /// forgets it, and no node's index is handed out again. The walk stops
+    /// there and takes the set whole; what it takes beyond `shape` only
+    /// forgets a read sooner.
+    fn indices_below_kept(&self, shape: &Shape, kept: &[std::sync::Arc<NodeSet>]) -> NodeSet {
+        if kept.is_empty() {
+            return self.indices_below(shape);
+        }
+        let mut below = NodeSet::default();
+        let mut joined = vec![false; kept.len()];
+        let mut stack = vec![shape.node()];
+        below.insert(shape.node().index());
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.nodes.get(id) else {
+                continue;
+            };
+            for child in node.children() {
+                let index = child.node().index();
+                if !below.insert(index) {
+                    continue;
+                }
+                match kept.iter().position(|set| set.contains(index)) {
+                    Some(at) => joined[at] = true,
+                    None => stack.push(child.node()),
+                }
+            }
+        }
+        for (set, joined) in kept.iter().zip(joined) {
+            if joined {
+                below.union_with(set);
+            }
+        }
+        below
     }
 
     /// The node index of `shape` and of every node below it.
@@ -2829,6 +2881,31 @@ mod tests {
         let after = kept_walk(&model, &shell);
         assert!(after.2);
         assert_ne!(after.0, before.0);
+    }
+
+    /// A read kept for a shape holding a shape already kept takes the
+    /// nodes kept below that one without walking them, and is read again
+    /// after an edit below either part.
+    #[test]
+    fn a_kept_read_beside_another_is_read_again_after_an_edit_below_any_part() {
+        let mut built = Model::new();
+        let face = square(&mut built);
+        let other = square(&mut built);
+        let shell = built.add_shell(&[face.clone(), other.clone()]).unwrap();
+        for edited in [&face, &other] {
+            let mut model = built.clone();
+            assert!(kept_walk(&model, &face).2);
+            assert!(kept_walk(&model, &shell).2);
+            assert!(!kept_walk(&model, &shell).2);
+            let edits = model.geometry.edits();
+            let kept = model.nodes.reads.below(&shell, edits).unwrap();
+            let walked = model.indices_below(&shell);
+            let all: Vec<u32> = model.nodes.iter().map(|(id, _)| id.index()).collect();
+            assert!(all.iter().all(|&i| !walked.contains(i) || kept.contains(i)));
+            let vertex = explore_unique(&model, edited, ShapeType::Vertex).unwrap()[0].clone();
+            let _ = model.node_mut(&vertex);
+            assert!(kept_walk(&model, &shell).2);
+        }
     }
 
     #[test]

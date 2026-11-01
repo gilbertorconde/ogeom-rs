@@ -82,7 +82,9 @@ impl Aside {
     }
 }
 
-/// One face as the setting aside reads it.
+/// One face as the setting aside reads it: all of it read from the nodes
+/// below the face, so it holds for the face in any solid holding it.
+#[derive(Clone)]
 struct Read {
     face: Shape,
     /// The face's box widened by its margin.
@@ -91,12 +93,21 @@ struct Read {
     unmoved: bool,
     plane: bool,
     /// A plane's wires as walked, where it has holes.
-    rings: Option<Rings>,
+    rings: Option<std::sync::Arc<Rings>>,
+    /// The edges its wires walk, in turn, where `rings` does not hold them.
+    walk: std::sync::Arc<[EdgeKey]>,
+}
+
+impl Read {
+    /// The edges the face's wires walk, in turn.
+    fn walked(&self) -> &[EdgeKey] {
+        self.rings.as_ref().map_or(&self.walk, |rings| &rings.keys)
+    }
 }
 
 /// A face's wires as walked: each one's edges and the vertices they end
 /// on.
-#[derive(Default)]
+#[derive(Default, PartialEq)]
 struct Rings {
     keys: Vec<EdgeKey>,
     ends: Vec<TShapeId>,
@@ -142,11 +153,86 @@ struct Holders {
     uses: u32,
     /// How many times each face holding it walks it.
     walks: [u32; 2],
+    /// Whether the edge has no length: a pole or an apex.
+    degenerate: bool,
 }
 
 impl Holders {
     fn held(&self) -> &[u32] {
         &self.faces[..usize::from(self.count.min(2))]
+    }
+
+    /// The edge `node` and its ends read, walked by no face yet.
+    fn of(model: &Model, node: &TShape) -> Self {
+        let mut own = 0.0_f64;
+        let mut degenerate = false;
+        if let Some(e) = node.data().as_edge() {
+            own = e.tolerance.get();
+            degenerate = e.degenerate;
+        }
+        let ends = node.children();
+        let mut loosest_end = 0.0_f64;
+        for vertex in ends {
+            if let Some(v) = model.node(vertex).and_then(|n| n.data().as_vertex()) {
+                loosest_end = loosest_end.max(v.tolerance.get());
+            }
+        }
+        let reach = own.max(loosest_end);
+        let closed = match ends {
+            [_] => true,
+            [first, last] => first.node() == last.node(),
+            _ => false,
+        };
+        Self {
+            faces: [u32::MAX; 2],
+            count: 0,
+            closed,
+            margin: reach,
+            doubt: (own * 2.0).max(loosest_end + own),
+            uses: if degenerate { u32::MAX } else { 0 },
+            walks: [0, 0],
+            degenerate,
+        }
+    }
+
+    /// What this edge's own read holds, walked by no face yet: the same in
+    /// every solid holding the edge.
+    fn unwalked(&self) -> Self {
+        Self {
+            faces: [u32::MAX; 2],
+            count: 0,
+            uses: if self.degenerate { u32::MAX } else { 0 },
+            walks: [0, 0],
+            ..*self
+        }
+    }
+
+    /// The edge walked once more, by face `index`.
+    fn walk(&mut self, index: u32) {
+        // A pole stands at the most, which it keeps.
+        self.uses = self.uses.saturating_add(1);
+        // A seam is walked twice by its one face.
+        if self.count == 0 || self.held().last() != Some(&index) {
+            if self.count < 2 {
+                self.faces[usize::from(self.count)] = index;
+            }
+            self.count = self.count.saturating_add(1);
+        }
+        if let Some(slot) = self.held().iter().position(|&f| f == index) {
+            self.walks[slot] += 1;
+        }
+    }
+
+    /// Whether two reads of an edge agree in everything.
+    fn same(&self, other: &Self) -> bool {
+        self.faces == other.faces
+            && self.count == other.count
+            && self.closed == other.closed
+            && self.margin.to_bits() == other.margin.to_bits()
+            && self.doubt.to_bits() == other.doubt.to_bits()
+            && self.uses == other.uses
+            && self.walks == other.walks
+            && self.degenerate == other.degenerate
     }
 }
 
@@ -164,6 +250,8 @@ pub(crate) struct Solid {
     closed: bool,
     /// The tolerances it was read at.
     tol: Tolerances,
+    /// Each face's place among `faces`, found when first asked.
+    places: std::sync::OnceLock<FastMap<SameKey, u32>>,
 }
 
 impl Solid {
@@ -231,22 +319,97 @@ const KEPT_FACES: usize = 64;
 
 /// [`read_solid`], kept in the model for a solid of many faces whose every
 /// face keeps its box: the next boolean on the solid unchanged reads it
-/// back.
+/// back. A solid read for the first time takes the read of each face it
+/// shares with a solid whose read is kept (an operand of the boolean that
+/// made it) from that read.
 fn kept_solid(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<std::sync::Arc<Solid>> {
     model.kept_read(
         solid,
         |read: &Solid| read.tol == tol,
         || {
-            let (read, boxed) = read_solid(model, solid, tol)?;
+            let kept = model.kept_reads(|read: &Solid| read.tol == tol);
+            let (read, boxed, taken) = read_solid(model, solid, tol, &kept)?;
+            if taken > 0 {
+                ogeom_algo::derived::note_derived(taken);
+                if ogeom_algo::derived::checks_derived_reads() {
+                    let (fresh, fresh_boxed, _) = read_solid(model, solid, tol, &[])?;
+                    assert!(
+                        boxed == fresh_boxed && read.same(&fresh),
+                        "a solid's read taken from kept reads differs from its fresh read"
+                    );
+                }
+            }
             let keep = boxed && read.faces.len() >= KEPT_FACES;
             Ok((read, keep))
         },
     )
 }
 
+impl Solid {
+    /// The read of `face` among this solid's faces, as the solid holds it.
+    fn read_of(&self, face: &Shape) -> Option<&Read> {
+        let places = self.places.get_or_init(|| {
+            self.faces
+                .iter()
+                .enumerate()
+                .map(|(i, r)| {
+                    (
+                        SameKey(r.face.clone()),
+                        u32::try_from(i).unwrap_or(u32::MAX),
+                    )
+                })
+                .collect()
+        });
+        let read = self
+            .faces
+            .get(*places.get(&SameKey(face.clone()))? as usize)?;
+        (read.face == *face).then_some(read)
+    }
+
+    /// Whether two reads of a solid agree in everything, the order the
+    /// faces holding each edge are kept in included.
+    fn same(&self, other: &Self) -> bool {
+        self.faces.len() == other.faces.len()
+            && self.faces.iter().zip(&other.faces).all(|(a, b)| {
+                a.face == b.face
+                    && a.bound == b.bound
+                    && a.unmoved == b.unmoved
+                    && a.plane == b.plane
+                    && a.rings.as_deref() == b.rings.as_deref()
+                    && a.walked() == b.walked()
+            })
+            && self.holders.len() == other.holders.len()
+            && self
+                .holders
+                .iter()
+                .zip(other.holders.iter())
+                .all(|((ka, a), (kb, b))| ka == kb && a.same(b))
+            && self.bound == other.bound
+            && self.lumps == other.lumps
+            && self.closed == other.closed
+            && self.tol == other.tol
+    }
+}
+
 /// One solid read: its faces, the faces holding each edge, and its box;
-/// and whether every face's box was the one the model keeps for it.
-fn read_solid(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<(Solid, bool)> {
+/// whether every face's box was the one the model keeps for it; and how
+/// many faces' reads were taken from `kept`.
+///
+/// A face that a solid in `kept` holds as this one does is read as that
+/// solid read it, and its edges as that solid read them: what is kept
+/// for a solid was read from its nodes as they stand, and a face's read
+/// and an edge's own read depend on nothing above them. Every face's box
+/// was kept then, and is kept still: it is forgotten only where a node
+/// below the face changes, which forgets what is kept for the solid too.
+/// The faces are walked in this solid's order either way, so what is read
+/// of each edge, and the order the edges are kept in, are those of a
+/// fresh read.
+fn read_solid(
+    model: &Model,
+    solid: &Shape,
+    tol: Tolerances,
+    kept: &[std::sync::Arc<Solid>],
+) -> OgeomResult<(Solid, bool, usize)> {
     let found = explore_unique(model, solid, ShapeType::Face)?;
     let mut faces = Vec::with_capacity(found.len());
     // A closed solid has about one and a half edges per face.
@@ -254,7 +417,27 @@ fn read_solid(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<(Sol
         FastMap::with_capacity_and_hasher(found.len() * 2, Default::default());
     let mut whole = Aabb::EMPTY;
     let mut boxed = true;
+    let mut taken = 0;
     for (index, face) in found.into_iter().enumerate() {
+        let index = u32::try_from(index).unwrap_or(u32::MAX);
+        if let Some((source, read)) = kept
+            .iter()
+            .find_map(|source| Some((source, source.read_of(&face)?)))
+        {
+            for key in read.walked() {
+                let Some(own) = source.holders.get(key) else {
+                    ogeom_core::ogeom_bail!(Construction, "a kept read lacks an edge it walks");
+                };
+                holders
+                    .entry(*key)
+                    .or_insert_with(|| own.unwalked())
+                    .walk(index);
+            }
+            whole = whole.union(&read.bound);
+            faces.push(read.clone());
+            taken += 1;
+            continue;
+        }
         let Some(face_node) = model.node(&face) else {
             ogeom_core::ogeom_bail!(Dangling, "face is not in this model");
         };
@@ -279,10 +462,10 @@ fn read_solid(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<(Sol
         if !exact {
             margin += ogeom_mesh::Deflection::default().chord;
         }
-        let index = u32::try_from(index).unwrap_or(u32::MAX);
         // A plane with holes keeps its wires as walked, for the holes it
-        // may leave out.
+        // may leave out; any other face, the edges it walks.
         let mut rings = (plane && face_node.children().len() > 1).then(Rings::default);
+        let mut walk = Vec::new();
         for wire in face_node.children() {
             let wire = placed_wire(&face, wire);
             let (k0, v0) = rings
@@ -290,54 +473,19 @@ fn read_solid(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<(Sol
                 .map_or((0, 0), |r| (r.keys.len(), r.ends.len()));
             for_each_wire_edge(model, &wire, |edge, node| {
                 let key = EdgeKey::of(edge);
-                if let Some(rings) = &mut rings {
-                    rings.keys.push(key);
-                    rings.ends.extend(node.children().iter().map(Shape::node));
+                match &mut rings {
+                    Some(rings) => {
+                        rings.keys.push(key);
+                        rings.ends.extend(node.children().iter().map(Shape::node));
+                    }
+                    None => walk.push(key),
                 }
                 // Each edge and its ends read the first time a face walks it.
-                let held = holders.entry(key).or_insert_with(|| {
-                    let mut own = 0.0_f64;
-                    let mut degenerate = false;
-                    if let Some(e) = node.data().as_edge() {
-                        own = e.tolerance.get();
-                        degenerate = e.degenerate;
-                    }
-                    let ends = node.children();
-                    let mut loosest_end = 0.0_f64;
-                    for vertex in ends {
-                        if let Some(v) = model.node(vertex).and_then(|n| n.data().as_vertex()) {
-                            loosest_end = loosest_end.max(v.tolerance.get());
-                        }
-                    }
-                    let reach = own.max(loosest_end);
-                    let closed = match ends {
-                        [_] => true,
-                        [first, last] => first.node() == last.node(),
-                        _ => false,
-                    };
-                    Holders {
-                        faces: [index, u32::MAX],
-                        count: 0,
-                        closed,
-                        margin: reach,
-                        doubt: (own * 2.0).max(loosest_end + own),
-                        uses: if degenerate { u32::MAX } else { 0 },
-                        walks: [0, 0],
-                    }
-                });
+                let held = holders
+                    .entry(key)
+                    .or_insert_with(|| Holders::of(model, node));
                 margin = margin.max(held.margin);
-                // A pole stands at the most, which it keeps.
-                held.uses = held.uses.saturating_add(1);
-                // A seam is walked twice by its one face.
-                if held.count == 0 || held.held().last() != Some(&index) {
-                    if held.count < 2 {
-                        held.faces[usize::from(held.count)] = index;
-                    }
-                    held.count = held.count.saturating_add(1);
-                }
-                if let Some(slot) = held.held().iter().position(|&f| f == index) {
-                    held.walks[slot] += 1;
-                }
+                held.walk(index);
             })?;
             if let Some(rings) = &mut rings {
                 rings
@@ -362,7 +510,8 @@ fn read_solid(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<(Sol
             bound,
             unmoved,
             plane,
-            rings,
+            rings: rings.map(std::sync::Arc::new),
+            walk: walk.into(),
         });
     }
     // Each lump's box, from its faces' boxes as read.
@@ -401,8 +550,10 @@ fn read_solid(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<(Sol
             lumps,
             closed,
             tol,
+            places: std::sync::OnceLock::new(),
         },
         boxed,
+        taken,
     ))
 }
 
@@ -461,7 +612,11 @@ impl Reach {
         }) else {
             return false;
         };
-        ogeom_algo::classify_in_solid_exact(model, &walls.shape, point, tol)
+        // The boundary the general fuse classifies against, at its chord,
+        // its shells checked closed as `classify_in_solid_exact` checks
+        // them: prepared once for every face asked here and for the fuse.
+        ogeom_algo::SolidBoundary::of_kept(model, &walls.shape, tol.confusion() * 1e4, false, tol)
+            .and_then(|boundary| boundary.holds(model, point, tol))
             .is_ok_and(|c| c == ogeom_algo::Containment::Out)
     }
 }

@@ -416,6 +416,8 @@ struct PreparedFace {
     /// Where the face can be, padded past anything its bound could miss: a
     /// point outside is not on it, and a ray missing it does not cross it.
     bound: Aabb,
+    /// The face's own box, that `bound` pads.
+    own: Aabb,
     /// How far off the surface a point still lies on the face: the face's
     /// own tolerance, never under the confusion distance.
     reach: f64,
@@ -810,9 +812,13 @@ pub struct SolidBoundary {
 
 /// A solid's faces prepared, with what is drawn of them as points and
 /// rays come near.
+///
+/// Everything prepared of a face depends only on the nodes below it, the
+/// chord and the tolerances, so a solid prepared beside a kept one holding
+/// the same face shares it, with what has been drawn of it.
 #[derive(Debug)]
 struct Prepared {
-    faces: Vec<PreparedFace>,
+    faces: Vec<std::sync::Arc<PreparedFace>>,
     /// The tolerances the boundary was prepared at, which its kept rays
     /// are cast at.
     tol: Tolerances,
@@ -828,6 +834,46 @@ struct Prepared {
     /// Its faces meshed at [`Prepared::winding_chord`], or `None` where
     /// they would not mesh.
     winding: std::sync::OnceLock<Option<std::sync::Arc<crate::winding::WindingMesh>>>,
+    /// Each face's place among `faces`, found when first asked.
+    places: std::sync::OnceLock<ogeom_core::FastMap<ogeom_topo::SameKey, u32>>,
+}
+
+impl Prepared {
+    /// The face prepared among these, as the solid holds it.
+    fn face_of(&self, face: &Shape) -> Option<&std::sync::Arc<PreparedFace>> {
+        let places = self.places.get_or_init(|| {
+            self.faces
+                .iter()
+                .enumerate()
+                .map(|(i, f)| {
+                    let at = u32::try_from(i).unwrap_or(u32::MAX);
+                    (ogeom_topo::SameKey(f.face.clone()), at)
+                })
+                .collect()
+        });
+        let at = *places.get(&ogeom_topo::SameKey(face.clone()))?;
+        let prepared = self.faces.get(at as usize)?;
+        (prepared.face == *face).then_some(prepared)
+    }
+
+    /// Whether two preparations agree in everything prepared up front.
+    fn same(&self, other: &Self) -> bool {
+        self.faces.len() == other.faces.len()
+            && self.faces.iter().zip(&other.faces).all(|(a, b)| {
+                a.face == b.face
+                    && a.surface == b.surface
+                    && a.bound == b.bound
+                    && a.own == b.own
+                    && a.reach.to_bits() == b.reach.to_bits()
+            })
+            && self.tol == other.tol
+            && self.bound == other.bound
+            && self.centre == other.centre
+            && self.diagonal.to_bits() == other.diagonal.to_bits()
+            && self.ring_chord.to_bits() == other.ring_chord.to_bits()
+            && self.checked == other.checked
+            && self.solid == other.solid
+    }
 }
 
 /// The fewest faces a solid has for its prepared boundary to be kept in
@@ -865,7 +911,9 @@ impl SolidBoundary {
     /// `closed` says the caller has found the shells closed, kept in the
     /// model for a solid of many faces: a later boundary of the solid
     /// unchanged, at the same chord and tolerances, shares the faces
-    /// prepared and the rings drawn of them.
+    /// prepared and the rings drawn of them. A solid prepared for the first
+    /// time shares each face it holds as a solid kept so holds it (a
+    /// boolean's result, the faces it passed through from its operand).
     ///
     /// The rings are drawn at the tolerances a point is asked about at,
     /// the first time one comes near: the boundary is to be asked at
@@ -891,8 +939,24 @@ impl SolidBoundary {
                     && (p.checked || !check_closed)
             },
             || {
-                let (prepared, boxed) =
-                    Self::prepared(model, solid, ring_chord, check_closed, tol)?;
+                // The faces of a solid prepared and kept at this chord and
+                // these tolerances, however its shells were checked.
+                let kept = model.kept_reads(|p: &Prepared| {
+                    p.ring_chord.to_bits() == ring_chord.to_bits() && p.tol == tol
+                });
+                let (prepared, boxed, taken) =
+                    Self::prepared(model, solid, ring_chord, check_closed, tol, &kept)?;
+                if taken > 0 {
+                    crate::derived::note_derived(taken);
+                    if crate::derived::checks_derived_reads() {
+                        let (fresh, fresh_boxed, _) =
+                            Self::prepared(model, solid, ring_chord, check_closed, tol, &[])?;
+                        assert!(
+                            boxed == fresh_boxed && prepared.same(&fresh),
+                            "a boundary prepared from kept faces differs from its fresh one"
+                        );
+                    }
+                }
                 let keep = boxed && prepared.faces.len() >= KEPT_FACES;
                 Ok((prepared, keep))
             },
@@ -919,19 +983,25 @@ impl SolidBoundary {
         check_closed: bool,
         tol: Tolerances,
     ) -> OgeomResult<Self> {
-        let (prepared, _) = Self::prepared(model, solid, ring_chord, check_closed, tol)?;
+        let (prepared, _, _) = Self::prepared(model, solid, ring_chord, check_closed, tol, &[])?;
         Ok(Self::sharing(std::sync::Arc::new(prepared)))
     }
 
-    /// The faces of `solid` prepared, and whether every face's box was
-    /// the one the model keeps for it.
+    /// The faces of `solid` prepared; whether every face's box was the one
+    /// the model keeps for it; and how many faces were taken from `kept`.
+    ///
+    /// `kept` are faces prepared at the same chord and tolerances, kept
+    /// for solids whose nodes stand as they were read: a face one of them
+    /// holds as this solid does is shared with it, as it would be prepared
+    /// again.
     fn prepared(
         model: &Model,
         solid: &Shape,
         ring_chord: f64,
         check_closed: bool,
         tol: Tolerances,
-    ) -> OgeomResult<(Prepared, bool)> {
+        kept: &[std::sync::Arc<Prepared>],
+    ) -> OgeomResult<(Prepared, bool, usize)> {
         let kind = model.kind_of(solid)?;
         // A compound of solids bounds their union: each lump's shells are
         // boundary, and a ray counts the crossings of all of them.
@@ -963,7 +1033,7 @@ impl SolidBoundary {
         let faces = ogeom_topo::explore_unique(model, solid, ShapeType::Face)?;
         // One prepared face per face, in face order: its box, and what a
         // point or a ray coming near it reads of it then.
-        let prepare = |face: &Shape| -> OgeomResult<(PreparedFace, Aabb)> {
+        let prepare = |face: &Shape| -> OgeomResult<std::sync::Arc<PreparedFace>> {
             ogeom_core::progress::checkpoint()?;
             let Some(node) = model.node(face) else {
                 ogeom_bail!(Dangling, "face is not in this model");
@@ -985,28 +1055,39 @@ impl SolidBoundary {
             let bound = own.expanded(
                 ring_chord + data.tolerance.get() + tol.confusion() * 1e2 + own.diagonal() * 0.02,
             );
-            Ok((
-                PreparedFace {
-                    placed: std::sync::OnceLock::new(),
-                    face: face.clone(),
-                    rings: std::sync::OnceLock::new(),
-                    fine_rings: std::sync::OnceLock::new(),
-                    surface: data.surface,
-                    bound,
-                    reach: tol.confusion().max(data.tolerance.get()),
-                    rim: std::sync::OnceLock::new(),
-                },
+            Ok(std::sync::Arc::new(PreparedFace {
+                placed: std::sync::OnceLock::new(),
+                face: face.clone(),
+                rings: std::sync::OnceLock::new(),
+                fine_rings: std::sync::OnceLock::new(),
+                surface: data.surface,
+                bound,
                 own,
-            ))
+                reach: tol.confusion().max(data.tolerance.get()),
+                rim: std::sync::OnceLock::new(),
+            }))
         };
         // Where every face keeps its box, preparing is a read per face. A
         // face without one is bounded from its geometry, which is the cost
         // worth spreading over threads.
         let boxed = faces.iter().all(|face| model.face_bounds(face).is_some());
+        let shared: Vec<Option<std::sync::Arc<PreparedFace>>> = faces
+            .iter()
+            .map(|face| kept.iter().find_map(|k| k.face_of(face)).cloned())
+            .collect();
+        let taken = shared.iter().flatten().count();
+        let each = |face: &Shape, shared: &Option<std::sync::Arc<PreparedFace>>| match shared {
+            Some(shared) => Ok(std::sync::Arc::clone(shared)),
+            None => prepare(face),
+        };
         let prepared = if boxed {
-            faces.iter().map(prepare).collect::<OgeomResult<Vec<_>>>()?
+            faces
+                .iter()
+                .zip(&shared)
+                .map(|(face, shared)| each(face, shared))
+                .collect::<OgeomResult<Vec<_>>>()?
         } else {
-            ogeom_core::parallel::map_ordered(&faces, |_, face| prepare(face))
+            ogeom_core::parallel::map_ordered(&faces, |i, face| each(face, &shared[i]))
                 .into_iter()
                 .collect::<OgeomResult<Vec<_>>>()?
         };
@@ -1016,11 +1097,10 @@ impl SolidBoundary {
         // are the shape's.
         let bound = prepared
             .iter()
-            .fold(Aabb::EMPTY, |bound, (_, own)| bound.union(own));
+            .fold(Aabb::EMPTY, |bound, face| bound.union(&face.own));
         let (Some(centre), diagonal) = (bound.centre(), bound.diagonal()) else {
             ogeom_bail!(Construction, "the boundary bounds nothing");
         };
-        let prepared = prepared.into_iter().map(|(face, _)| face).collect();
         Ok((
             Prepared {
                 faces: prepared,
@@ -1032,8 +1112,10 @@ impl SolidBoundary {
                 checked: check_closed,
                 solid: solid.clone(),
                 winding: std::sync::OnceLock::new(),
+                places: std::sync::OnceLock::new(),
             },
             boxed,
+            taken,
         ))
     }
 

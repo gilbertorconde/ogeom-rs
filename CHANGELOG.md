@@ -208,6 +208,23 @@ bump may break the API and a patch bump may not.
     2e-4. The band stands the radius from the ball's centres within its
     fit of 2e-4, and meets both faces within a tenth of a degree.
 
+### Changed
+
+- **A chain of booleans reads each result from what was kept of its
+  operand.** A boolean's result was read whole by the next boolean: every
+  face walked for the setting aside and prepared afresh for the
+  classifier. A solid read for the first time now takes each face it
+  shares with a solid whose read the model keeps (the new
+  `Model::kept_reads`) from that read, the classifier's rings drawn
+  included, and reads only the faces the boolean made; the reads are
+  compared with fresh ones in debug builds and under
+  `ogeom_algo::derived::derived_reads_checked`. The setting aside's check
+  that a tool's face lies outside the solid uses the boundary the general
+  fuse prepares, kept, rather than its own. Along a chain of 200 holes and
+  bosses into a plate a step at 306 faces takes 1.31 ms rather than 1.48,
+  the chain 8 percent fewer cycles (12 percent at 361 steps), to the same
+  faces and volumes.
+
 ### Fixed
 
 - **A STEP file's pcurves are read in its own units, and at another pace

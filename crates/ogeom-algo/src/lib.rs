@@ -13,6 +13,7 @@ mod chart_cross;
 pub mod check;
 pub mod classify;
 pub mod convert;
+pub mod derived;
 pub mod extend;
 pub mod fit;
 pub mod history;

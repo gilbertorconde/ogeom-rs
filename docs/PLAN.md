@@ -449,10 +449,27 @@ forgets it. A corner hole into a plate of 582 faces costs about 1.5 times
 the same hole into one of 22 (heavy test `local_boolean`, bound 2.0).
 Still linear in the solid: `side`, the history copies and the shells of
 the faces passed through, about 0.4 ms at one thread on the 582-face
-plate, and the first boolean on a solid reads all of it. A solid made by a
-boolean is read whole by the next one; deriving its read from the
-operand's kept read and the faces made is the lever for a chain of
-booleans. Where the assembly around the faces set aside does not close (the
+plate, and the first boolean on a solid reads all of it. A solid read for
+the first time takes each face it shares with a solid whose read is kept
+from that read (`Model::kept_reads`): a boolean's result takes the faces
+it passed through from its operand's setting aside and prepared boundary,
+rings drawn included, and reads only the faces made; the nodes below it
+are walked down to the nodes a kept read holds. The setting aside asks
+whether a face of the tool lies outside the solid of the boundary the
+general fuse classifies against, prepared once. Along a chain of 200
+holes and bosses into a plate (heavy test `local_boolean`) a step at 306
+faces costs 1.31 ms against 1.48, the chain 8 percent fewer cycles and 12
+percent at 361 steps, to the same result; at 66 faces nothing changes.
+Taking the faces' reads is under 2 percent of that at 200 steps: the
+edges' holders are rebuilt in the solid's own order from each face's walk
+as a fresh read builds them. Still linear along the chain: those holders,
+`side`, the history copies, the shells' closed check and each new face's
+rim walk (`explore_unique` per face; a plain walk saves 2 percent). The
+largest cost of a step is fixed: `edge_pcurve_gap` on its section edges,
+about 18 percent, 257 samples and four golden-section searches for a
+circle or a line whose image on a plane or a cylinder is the same curve;
+a closed-form bound proving such a gap within the edge's tolerance is the
+next lever. Where the assembly around the faces set aside does not close (the
 sew welds a shared vertex, a seam join reaches a shared edge, a strand would
 widen a shared vertex), the boolean runs again over every face; converted
 slabs with tolerant vertices take that path.
