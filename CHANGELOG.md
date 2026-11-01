@@ -13,6 +13,31 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Spatial indexes over meshes and point clouds: `Bvh` and `PointIndex`.**
+  - `ogeom_mesh::Bvh` is a hierarchy over a mesh's triangles, built with a
+    binned surface-area heuristic from a `Triangulation` (`Bvh::build`) or
+    from a shape's triangulation (`Bvh::of_shape`). It answers the nearest
+    point within a distance (`nearest`), every triangle within a ball
+    (`within_ball`), the first hit along a ray from the front or from
+    either side (`ray`), every hit along one (`hits_along`), and every
+    triangle whose box passes a test (`triangles_where`). `nearest_many`
+    and `rays` answer batches on the kernel's workers, in input order.
+  - `ogeom_mesh::PointIndex` is a k-d tree over a point cloud: `nearest`,
+    `k_nearest`, `within_ball` and `nearest_many`.
+  - Every answer is the one brute force gives over the same data, bit for
+    bit, ties going to the lowest index: a node is skipped only when the
+    query's own floating-point operations, applied to its box, rule out
+    everything in it. Rays are watertight: the hit test takes the exact
+    signs of the ray's orientation against each sheared edge, so a ray
+    through an edge or a vertex cannot slip between the triangles there.
+  - Over a closed mesh of a million triangles, at one and eight threads:
+    the build takes 0.55 s, and a million nearest-point queries 0.97 s and
+    0.22 s.
+  - `docs/SCOPE.md` admits scans: inspection, editing and reverse
+    engineering of point clouds and scan meshes. The triangle hierarchy
+    `outside/crates/ogeom-select` carried is this one now; its picking
+    stays outside and builds on it.
+
 - **A pipe shell of any planar face round a sharp corner beside an arc,
   exactly.**
   - `make_pipe_shell` swept a face other than a disc centred on the spine

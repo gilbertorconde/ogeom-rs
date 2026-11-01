@@ -1,6 +1,6 @@
 [package]
 name = "ogeom-select"
-description = "Spatial acceleration, picking and selection"
+description = "Picking and selection"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

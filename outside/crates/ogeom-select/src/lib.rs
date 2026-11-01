@@ -1,6 +1,6 @@
-//! Spatial acceleration and selection.
+//! Picking and selection.
 //!
-//! BVH construction over tessellated and analytic geometry; ray picking with
+//! Ray picking over the kernel's triangle hierarchy (`ogeom_mesh::Bvh`) with
 //! sub-shape granularity; rectangle and polygon selection; depth sorting; level of
 //! detail; and a stable mapping from a triangle back to the topological entity that
 //! produced it.

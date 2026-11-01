@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 77 |
+| `covered` | 78 |
 | `partial` | 7 |
 | `divergent` | 6 |
 
-90 capabilities. Ratchet: `unreviewed_max = 0`.
+91 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -38,7 +38,7 @@ per module. Each verdict cites the symbols and tests that back it, and
 - **algo.shape-distance**: Distance, proximity and overlap between whole shapes, and self-intersection · `covered`
 - **algo.solid-from-mesh**: A solid from a triangle mesh: coplanar triangles merged into planar faces, curved regions recognized as cylinders, cones, spheres and tori · `covered`
 - **algo.spatial-acceleration**: Generic bounding-volume hierarchies · `divergent`
-  - *reasoning:* Acceleration structures here are internal to the algorithms that need them (sewing's cell filter, the classifier's bounds, the distance walk's pruning) rather than a public generic BVH container library. The one consumer that wants a standing BVH over triangles is picking, which is outside the kernel (outside/crates/ogeom-select carries it). If a kernel algorithm ever needs a shared BVH, promoting select's is the move.
+  - *reasoning:* No generic BVH container library: the kernel's standing indexes are keyed on what a caller asks of a mesh or a cloud (mesh.spatial-index), and the acceleration structures inside its algorithms (sewing's cell filter, the classifier's bounds, the distance walk's pruning) stay internal to them, sized and keyed for their one question. Picking, outside the kernel (outside/crates/ogeom-select), builds on mesh.spatial-index's triangle hierarchy.
 - **algo.validity**: Diagnosing a shape's validity, by entity, with named problems · `covered`
 
 ### ogeom-bool
@@ -249,6 +249,7 @@ reference in a deck read from text.
 
 - **mesh.editing**: Editing triangulations: connectivity, welding, decimation, boundary loops · `covered`
 - **mesh.hatching**: Hatching faces: iso and free-direction line families clipped to the trim · `covered`
+- **mesh.spatial-index**: Spatial indexes over meshes and point clouds: nearest point, ball and ray queries, batched in parallel, equal to brute force · `covered`
 - **mesh.tessellation**: Triangulating shapes to a stated deflection, deterministically, in parallel · `covered`
 
 ### ogeom-offset
@@ -275,4 +276,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 6d0cd4e03315655b -->
+<!-- ledger-checksum: 115b571284ccbbf1 -->

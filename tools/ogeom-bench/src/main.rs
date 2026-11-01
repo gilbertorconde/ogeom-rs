@@ -182,6 +182,10 @@ fn benchmarks() -> Vec<Bench> {
         ("iges_read", Box::new(iges_read)),
         ("weld_1m", Box::new(weld_1m)),
         ("stl_read_1m", Box::new(stl_read_1m)),
+        ("bvh_build_1m", Box::new(bvh_build_1m)),
+        ("bvh_nearest_1m", Box::new(bvh_nearest_1m)),
+        ("bvh_rays_1m", Box::new(bvh_rays_1m)),
+        ("points_nearest_1m", Box::new(points_nearest_1m)),
     ]
 }
 
@@ -1094,6 +1098,79 @@ fn stl_read_1m() -> Option<Stats> {
     Some(time(|| {
         let mesh = ogeom::io::read(&bytes, T).unwrap();
         std::hint::black_box(mesh.triangles.len());
+    }))
+}
+
+/// A million points scattered about the torus of [`torus_soup`], a few
+/// tenths of a millimetre either side of it as a scan's noise and its
+/// distance from a reference sit, in a fixed sequence for each seed.
+fn about_the_torus(count: u32, seed: u64) -> Vec<Point> {
+    let mut state = seed;
+    let mut unit = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        #[allow(clippy::cast_precision_loss)]
+        let u = (state >> 11) as f64 / (1_u64 << 53) as f64;
+        u
+    };
+    (0..count)
+        .map(|_| {
+            let u = std::f64::consts::TAU * unit();
+            let v = std::f64::consts::TAU * unit();
+            let off = 10.0 + 0.5 * (2.0 * unit() - 1.0);
+            let r = 40.0 + off * v.cos();
+            Point::new(r * u.cos(), r * u.sin(), off * v.sin())
+        })
+        .collect()
+}
+
+/// Building a triangle hierarchy over a million triangles.
+fn bvh_build_1m() -> Option<Stats> {
+    let mesh = torus_soup().welded(T);
+    Some(time(|| {
+        let bvh = ogeom::mesh::Bvh::build(&mesh).unwrap();
+        std::hint::black_box(bvh.triangle_count());
+    }))
+}
+
+/// A million nearest-point queries against a million triangles.
+fn bvh_nearest_1m() -> Option<Stats> {
+    let bvh = ogeom::mesh::Bvh::build(&torus_soup().welded(T)).ok()?;
+    let points = about_the_torus(1_000_000, 0x2545_f491_4f6c_dd1d);
+    Some(time(|| {
+        let hits = bvh.nearest_many(&points, f64::INFINITY);
+        std::hint::black_box(hits.len());
+    }))
+}
+
+/// A million rays, each from a point about the torus along the tube's
+/// normal there, either side counting.
+fn bvh_rays_1m() -> Option<Stats> {
+    let bvh = ogeom::mesh::Bvh::build(&torus_soup().welded(T)).ok()?;
+    let origins = about_the_torus(1_000_000, 0x2545_f491_4f6c_dd1d);
+    let directions: Vec<Vector> = origins
+        .iter()
+        .map(|p| {
+            let radial = Vector::new(p.x, p.y, 0.0);
+            let core = Point::ORIGIN + radial * (40.0 / radial.magnitude());
+            *p - core
+        })
+        .collect();
+    Some(time(|| {
+        let hits = bvh.rays(&origins, &directions, 5.0, true).unwrap();
+        std::hint::black_box(hits.len());
+    }))
+}
+
+/// A million nearest-point queries against a cloud of a million points.
+fn points_nearest_1m() -> Option<Stats> {
+    let cloud =
+        ogeom::mesh::PointIndex::build(&about_the_torus(1_000_000, 0x9e37_79b9_7f4a_7c15)).ok()?;
+    let queries = about_the_torus(1_000_000, 0x2545_f491_4f6c_dd1d);
+    Some(time(|| {
+        let found = cloud.nearest_many(&queries, f64::INFINITY);
+        std::hint::black_box(found.len());
     }))
 }
 

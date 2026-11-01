@@ -15,8 +15,8 @@
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{Aabb, Frame, Point, Point2, Vector};
-use ogeom_mesh::{Deflection, polyline_of_edge, triangulate_face};
-use ogeom_topo::{Filter, Model, Shape, ShapeType, explore, explore_unique};
+use ogeom_mesh::{Bvh, Deflection, polyline_of_edge, triangulate_face};
+use ogeom_topo::{Filter, Model, Shape, ShapeType, Triangulation, explore, explore_unique};
 
 /// What kind of sub-shape a hit resolved to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,19 +88,6 @@ struct VertexRecord {
     at: Point,
 }
 
-#[derive(Debug, Clone)]
-struct BvhNode {
-    bounds: Aabb,
-    /// Leaf: range into `order`. Interior: children indices.
-    content: BvhContent,
-}
-
-#[derive(Debug, Clone)]
-enum BvhContent {
-    Leaf(usize, usize),
-    Split(usize, usize),
-}
-
 /// One face's draft reading: the signed angle range against the pull.
 #[derive(Debug, Clone)]
 pub struct FaceDraft {
@@ -132,13 +119,9 @@ pub struct Pickable {
     owner: Vec<u32>,
     edges: Vec<EdgeRecord>,
     vertices: Vec<VertexRecord>,
-    nodes: Vec<BvhNode>,
-    /// Triangle indices as the BVH leaves order them.
-    order: Vec<u32>,
+    /// The kernel's triangle hierarchy over the flat arrays.
+    bvh: Bvh,
 }
-
-/// How many triangles a BVH leaf holds before it splits.
-const LEAF_SIZE: usize = 8;
 
 impl Pickable {
     /// Flatten a shape for picking at the given deflection.
@@ -218,7 +201,17 @@ impl Pickable {
             }
         }
 
-        let (nodes, order) = build_bvh(&positions, &triangles);
+        let mesh = Triangulation {
+            positions,
+            triangles,
+            ..Triangulation::new()
+        };
+        let bvh = Bvh::build(&mesh)?;
+        let Triangulation {
+            positions,
+            triangles,
+            ..
+        } = mesh;
         Ok(Self {
             positions,
             triangles,
@@ -226,8 +219,7 @@ impl Pickable {
             owner,
             edges,
             vertices,
-            nodes,
-            order,
+            bvh,
         })
     }
 
@@ -370,40 +362,15 @@ impl Pickable {
     pub fn faces_near(&self, ray: Ray, slack: f64) -> Vec<bool> {
         let mut near = vec![false; self.faces.len()];
         let length = ray.direction.magnitude();
-        if !length.is_finite() || length <= 0.0 || self.nodes.is_empty() {
+        if !length.is_finite() || length <= 0.0 {
             return near;
         }
         let direction = ray.direction / length;
-        let mut stack = vec![0_usize];
-        while let Some(at) = stack.pop() {
-            let node = &self.nodes[at];
-            if !ray_touches_box(&ray.origin, &direction, &node.bounds.expanded(slack)) {
-                continue;
-            }
-            match node.content {
-                BvhContent::Split(left, right) => {
-                    stack.push(left);
-                    stack.push(right);
-                }
-                BvhContent::Leaf(start, end) => {
-                    for &index in &self.order[start..end] {
-                        let triangle = index as usize;
-                        let owner = self.owner[triangle] as usize;
-                        if near[owner] {
-                            continue;
-                        }
-                        let bounds = self.triangles[triangle]
-                            .iter()
-                            .fold(Aabb::EMPTY, |acc, &k| {
-                                acc.with_point(self.positions[k as usize])
-                            })
-                            .expanded(slack);
-                        if ray_touches_box(&ray.origin, &direction, &bounds) {
-                            near[owner] = true;
-                        }
-                    }
-                }
-            }
+        let touched = self
+            .bvh
+            .triangles_where(|b| ray_touches_box(&ray.origin, &direction, &b.expanded(slack)));
+        for triangle in touched {
+            near[self.owner[triangle as usize] as usize] = true;
         }
         near
     }
@@ -430,42 +397,23 @@ impl Pickable {
         }
         let direction = ray.direction / length;
 
-        let mut hits = Vec::new();
-        if !self.nodes.is_empty() {
-            let mut stack = vec![0_usize];
-            while let Some(at) = stack.pop() {
-                let node = &self.nodes[at];
-                if !ray_touches_box(&ray.origin, &direction, &node.bounds) {
-                    continue;
-                }
-                match node.content {
-                    BvhContent::Split(left, right) => {
-                        stack.push(left);
-                        stack.push(right);
-                    }
-                    BvhContent::Leaf(start, end) => {
-                        for &index in &self.order[start..end] {
-                            let triangle = index as usize;
-                            if let Some(mask) = allowed
-                                && !mask
-                                    .get(self.owner[triangle] as usize)
-                                    .copied()
-                                    .unwrap_or(false)
-                            {
-                                continue;
-                            }
-                            let [a, b, c] =
-                                self.triangles[triangle].map(|k| self.positions[k as usize]);
-                            if let Some(t) = ray_triangle(&ray.origin, &direction, a, b, c) {
-                                let position = ray.origin + direction * t;
-                                hits.push((t, triangle, position));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        hits.sort_by(|x, y| x.0.total_cmp(&y.0));
+        // Every crossing past the origin, front or back, nearest first and
+        // ties in triangle order.
+        let mut hits: Vec<(f64, usize, Point)> = self
+            .bvh
+            .hits_along(ray.origin, direction, f64::INFINITY, true)
+            .into_iter()
+            .filter(|hit| hit.distance > 0.0)
+            .map(|hit| (hit.distance, hit.triangle as usize))
+            .filter(|&(_, triangle)| {
+                allowed.is_none_or(|mask| {
+                    mask.get(self.owner[triangle] as usize)
+                        .copied()
+                        .unwrap_or(false)
+                })
+            })
+            .map(|(t, triangle)| (t, triangle, ray.origin + direction * t))
+            .collect();
         // A ray along a triangulation diagonal strikes both triangles of
         // one face at one depth; the pick reports the face once.
         hits.dedup_by(|next, held| {
@@ -857,86 +805,6 @@ impl PickHierarchy {
     }
 }
 
-/// Build the BVH: median split on the longest axis of the centroid bounds.
-fn build_bvh(positions: &[Point], triangles: &[[u32; 3]]) -> (Vec<BvhNode>, Vec<u32>) {
-    let mut order: Vec<u32> = (0..triangles.len())
-        .map(|i| u32::try_from(i).unwrap_or(u32::MAX))
-        .collect();
-    let mut nodes = Vec::new();
-    if triangles.is_empty() {
-        return (nodes, order);
-    }
-    let centroid = |i: u32| -> Point {
-        let [a, b, c] = triangles[i as usize].map(|k| positions[k as usize]);
-        Point::new(
-            (a.x + b.x + c.x) / 3.0,
-            (a.y + b.y + c.y) / 3.0,
-            (a.z + b.z + c.z) / 3.0,
-        )
-    };
-    let bounds_of = |slice: &[u32]| -> Aabb {
-        slice.iter().fold(Aabb::EMPTY, |acc, &i| {
-            triangles[i as usize]
-                .iter()
-                .fold(acc, |acc, &k| acc.with_point(positions[k as usize]))
-        })
-    };
-
-    // An explicit stack of (range, parent slot) builds the tree without
-    // recursion; each pending range claims its node index up front so the
-    // parent can point at it.
-    let mut pending = vec![(0_usize, order.len())];
-    let mut slots: Vec<Option<(usize, bool)>> = vec![None];
-    while let Some(((start, end), slot)) = pending.pop().zip(slots.pop()) {
-        let index = nodes.len();
-        if let Some((parent, right)) = slot
-            && let BvhContent::Split(l, r) = &mut nodes[parent].content
-        {
-            if right {
-                *r = index;
-            } else {
-                *l = index;
-            }
-        }
-        let bounds = bounds_of(&order[start..end]);
-        if end - start <= LEAF_SIZE {
-            nodes.push(BvhNode {
-                bounds,
-                content: BvhContent::Leaf(start, end),
-            });
-            continue;
-        }
-        // Median split along the widest centroid spread.
-        let size = bounds.size();
-        let axis = if size.x >= size.y && size.x >= size.z {
-            0
-        } else if size.y >= size.z {
-            1
-        } else {
-            2
-        };
-        let key = |i: u32| -> f64 {
-            let c = centroid(i);
-            match axis {
-                0 => c.x,
-                1 => c.y,
-                _ => c.z,
-            }
-        };
-        order[start..end].sort_by(|&a, &b| key(a).total_cmp(&key(b)));
-        let mid = start + (end - start) / 2;
-        nodes.push(BvhNode {
-            bounds,
-            content: BvhContent::Split(0, 0),
-        });
-        pending.push((mid, end));
-        slots.push(Some((index, true)));
-        pending.push((start, mid));
-        slots.push(Some((index, false)));
-    }
-    (nodes, order)
-}
-
 /// Whether a ray touches an axis-aligned box: the slab test.
 fn ray_touches_box(origin: &Point, direction: &Vector, bounds: &Aabb) -> bool {
     let (Some(low), Some(high)) = (bounds.low(), bounds.high()) else {
@@ -967,31 +835,6 @@ fn ray_touches_box(origin: &Point, direction: &Vector, bounds: &Aabb) -> bool {
         }
     }
     true
-}
-
-/// Möller–Trumbore, front and back faces alike; `None` off the triangle or
-/// behind the origin.
-fn ray_triangle(origin: &Point, direction: &Vector, a: Point, b: Point, c: Point) -> Option<f64> {
-    let e1 = b - a;
-    let e2 = c - a;
-    let h = direction.cross(e2);
-    let det = e1.dot(h);
-    if det.abs() < 1e-14 {
-        return None;
-    }
-    let inv = 1.0 / det;
-    let s = *origin - a;
-    let u = s.dot(h) * inv;
-    if !(0.0..=1.0).contains(&u) {
-        return None;
-    }
-    let q = s.cross(e1);
-    let v = direction.dot(q) * inv;
-    if v < 0.0 || u + v > 1.0 {
-        return None;
-    }
-    let t = e2.dot(q) * inv;
-    (t > 0.0).then_some(t)
 }
 
 /// Distance from a ray's carrier line to a point.

@@ -6,8 +6,9 @@ case.
 ## The rule
 
 ogeom is a complete solid-modelling kernel with its data exchange, and nothing
-else. One area goes beyond what a modelling kernel usually offers: turning
-meshes into solids (see [below](#the-one-addition-meshes-into-solids)).
+else. Two areas go beyond what a modelling kernel usually offers: turning
+meshes into solids (see [below](#the-one-addition-meshes-into-solids)), and
+inspecting and editing scans (see [below](#the-second-addition-scans)).
 
 Four areas are in scope:
 
@@ -81,9 +82,42 @@ building the solid from the result. An application can then correct an
 automatic conversion. The selection and the interface for it belong to the
 application.
 
-Still out of scope: scans. Noisy or incomplete point data needs denoising,
-hole filling and registration, which are a discipline of their own. Reading
-design intent back out of topology is out of scope too.
+Scans are the second addition, [below](#the-second-addition-scans). Reading
+design intent back out of topology is still out of scope.
+
+## The second addition: scans
+
+ogeom takes point clouds and dense scan meshes as inputs to geometry, not
+only to conversion.
+
+What is in:
+
+- **inspection**: fitting surfaces and features to scan points, distances
+  between a scan and a mesh or a shape, registering one onto another, and
+  sections through a scan;
+- **editing**: cutting, filling holes, smoothing, offsetting and decimating a
+  scan mesh, and booleans between meshes;
+- **reverse engineering**: the steps from a scan to a solid, of which turning
+  meshes into solids ([above](#the-one-addition-meshes-into-solids)) is the
+  last;
+- the spatial indexes all of these stand on: a hierarchy over a mesh's
+  triangles (`Bvh`) and a tree over a cloud's points (`PointIndex`).
+
+Why: the same reason as for meshes. A scan is noisy, incomplete point data,
+and every question asked of it (how far is this from the model, where is
+this bore, what is left if this region is cut away) is a geometric
+computation. The kernel already holds the geometry those questions are
+asked against. An application left to answer them itself would need a
+second geometry library beside the kernel.
+
+The same standard holds. Every result is a computation the kernel can
+repeat and measure: a fit reports its residuals, a distance is the distance
+to the stated mesh, and a query answers exactly what brute force over the
+same data would. No learned model proposes a correspondence, a fit or a
+repair.
+
+What stays out: rendering a scan, and the interface for picking in it.
+Those belong to visualization, like the rest of selection.
 
 ## Code that is out of scope: `outside/`
 

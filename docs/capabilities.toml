@@ -1495,12 +1495,13 @@ id = "algo.spatial-acceleration"
 title = "Generic bounding-volume hierarchies"
 crate = "ogeom-algo"
 verdict = "divergent"
-reasoning = """Acceleration structures here are internal to the algorithms \
-that need them (sewing's cell filter, the classifier's bounds, the distance \
-walk's pruning) rather than a public generic BVH container library. The one \
-consumer that wants a standing BVH over triangles is picking, which is \
-outside the kernel (outside/crates/ogeom-select carries it). If a kernel \
-algorithm ever needs a shared BVH, promoting select's is the move."""
+reasoning = """No generic BVH container library: the kernel's standing \
+indexes are keyed on what a caller asks of a mesh or a cloud \
+(mesh.spatial-index), and the acceleration structures inside its \
+algorithms (sewing's cell filter, the classifier's bounds, the distance \
+walk's pruning) stay internal to them, sized and keyed for their one \
+question. Picking, outside the kernel (outside/crates/ogeom-select), builds \
+on mesh.spatial-index's triangle hierarchy."""
 
 [[capability]]
 id = "geom.local-properties"
@@ -1599,6 +1600,20 @@ symbols = [
     "ogeom_algo::MedialBranch", "ogeom_algo::MedialVertex", "ogeom_algo::MedialSite",
 ]
 tests = ["crates/ogeom-algo/tests/medial.rs", "crates/ogeom-algo/tests/medial_graph.rs"]
+
+[[capability]]
+id = "mesh.spatial-index"
+title = "Spatial indexes over meshes and point clouds: nearest point, ball and ray queries, batched in parallel, equal to brute force"
+crate = "ogeom-mesh"
+verdict = "covered"
+symbols = [
+    "ogeom_mesh::Bvh", "ogeom_mesh::Hit",
+    "ogeom_mesh::PointIndex", "ogeom_mesh::Neighbour",
+]
+tests = [
+    "crates/ogeom-mesh/src/bvh.rs",
+    "crates/ogeom-mesh/src/point_index.rs",
+]
 
 [[capability]]
 id = "mesh.hatching"

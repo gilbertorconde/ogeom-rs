@@ -24,7 +24,7 @@ cd outside && cargo test --workspace
 |---|---|
 | `ogeom-sketch` | 2D geometric constraint solving. No conventional CAD kernel ships this; each application built on one supplies its own. Its module doc said so before it moved. |
 | `ogeom-recognize` | Feature recognition (reading design intent back out of raw topology) and machining process planning. Recognition is a discipline of its own; process planning is not geometry at all. |
-| `ogeom-select` | BVH picking, marquee selection, and the draft and thickness analyses built on them. Selection belongs to visualization, which is out of scope. |
+| `ogeom-select` | Ray picking, marquee selection, and the draft and thickness analyses built on them. Selection belongs to visualization, which is out of scope. Its triangle hierarchy is not here any more: it is the kernel's `ogeom_mesh::Bvh`, which picking builds on. |
 
 ## Maintenance
 
@@ -40,3 +40,6 @@ To bring something back into the kernel, go through `docs/SCOPE.md` first:
 argue the scope change in writing, then move the code. Mesh-to-b-rep with
 canonical surface recognition came back this way: `docs/SCOPE.md` admits it,
 and the kernel's `solid_from_mesh` replaced the crate that held it here.
+The triangle hierarchy `ogeom-select` was built on came back the same way,
+when `docs/SCOPE.md` admitted scan inspection: it is `ogeom_mesh::Bvh` now,
+and the picking that uses it stayed here.
