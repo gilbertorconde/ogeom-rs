@@ -29,6 +29,7 @@ mod corners;
 mod evolving;
 mod inside_turn;
 mod meeting;
+mod mitred_arcs;
 mod open_lines;
 mod open_skinned;
 mod placement;
@@ -46,9 +47,11 @@ pub use placement::{PipeContact, PipePlacement, place_on_spine};
 /// [`make_pipe_shell`] of the disc standing square to its start under the
 /// rotation-minimizing frame, its sharp corners mitred, wherever that is
 /// exact: legs meeting tangent are the cylinders and torus segments they
-/// sweep, fused on the sections they share, and straight legs are mitred
-/// on the planes halving their corners. The history generates the solid
-/// from the spine.
+/// sweep, fused on the sections they share, straight legs are mitred
+/// on the planes halving their corners, and a corner between two lines or
+/// turning in the plane of the arcs beside it is the legs' union with
+/// their straight run-ons outside the turn, cut on the plane halving it.
+/// The history generates the solid from the spine.
 ///
 /// # Errors
 ///
@@ -5378,6 +5381,24 @@ fn centre_of(model: &Model, profile: &Shape, tol: Tolerances) -> OgeomResult<Poi
     Ok(Point::from_vector(sum / n))
 }
 
+/// One edge of a spine of lines and arcs: where it starts, its heading at
+/// either end, and the motion that carries the section down it.
+struct Leg {
+    start: Point,
+    heading: (Vector, Vector),
+    motion: Transform,
+    along: LegKind,
+}
+
+/// How a [`Leg`] carries its section: by its displacement, or about the
+/// arc's axis (through its centre, turning the way the walk does) by its
+/// angle.
+#[derive(Clone, Copy)]
+enum LegKind {
+    Line(Vector),
+    Arc(ogeom_math::Axis, f64),
+}
+
 /// The pipe along a spine of lines and circular arcs meeting tangent to
 /// one another, built exactly: down a line the section is extruded, round
 /// an arc it is revolved about the arc's axis (the rotation-minimizing
@@ -5406,18 +5427,6 @@ fn exact_legs(
     };
     if edges.is_empty() || (!solid && edges.len() > 1) {
         return Ok(None);
-    }
-    // Each leg: where it starts and ends, its heading at either end, and
-    // the motion that carries the section down it.
-    struct Leg {
-        start: Point,
-        heading: (Vector, Vector),
-        motion: Transform,
-        along: LegKind,
-    }
-    enum LegKind {
-        Line(Vector),
-        Arc(ogeom_math::Axis, f64),
     }
     let mut legs = Vec::with_capacity(edges.len());
     for edge in &edges {
@@ -5464,7 +5473,8 @@ fn exact_legs(
         });
     }
     // Legs meet tangent, or all are straight and their corners are mitred
-    // exactly below; any other corner is mitred by the general path.
+    // exactly below, or a disc turns corners in the planes of the arcs
+    // beside them; any other corner is mitred by the general path.
     let cornered = legs.windows(2).any(|pair| {
         let (x, y) = (pair[0].heading.1, pair[1].heading.0);
         x.cross(y).magnitude() > tol.angular() * x.magnitude() * y.magnitude() || x.dot(y) <= 0.0
@@ -5479,6 +5489,7 @@ fn exact_legs(
             .collect();
         return match lines {
             Some(lines) if solid && !frenet => mitred_lines(model, profile, spine, &lines, tol),
+            None if solid && !frenet => mitred_arcs::mitred_arcs(model, profile, spine, &legs, tol),
             _ => Ok(None),
         };
     }
@@ -5658,11 +5669,13 @@ fn mitred_lines(
 /// each wall is sheared onto it; where a leg is curved the two legs' walls
 /// end on the crossing of their generators (each profile point's own path
 /// down either leg, run straight on past the corner), which is exact where
-/// the corner turns in the leg's plane. Where it turns a curved leg out of
-/// its plane the generators miss, and the spine is swept in pieces instead:
-/// each side runs on straight past the corner, is trimmed by the mitre
-/// plane, and the pieces are fused, the difference between their sections
-/// standing as a face of the mitre plane.
+/// the corner turns in the leg's plane; there a disc centred on an open
+/// spine is the union of its legs' cylinders and tori and their straight
+/// run-ons outside the turn, cut on the mitre plane. Where it turns a
+/// curved leg out of its plane the generators miss, and the spine is swept
+/// in pieces instead: each side runs on straight past the corner, is
+/// trimmed by the mitre plane, and the pieces are fused, the difference
+/// between their sections standing as a face of the mitre plane.
 ///
 /// # Errors
 ///

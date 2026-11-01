@@ -279,17 +279,13 @@ fn a_pipe_round_a_sharp_corner_onto_an_arc_is_the_pipe_shell_of_its_disc() {
     assert!(c.distance(d) < 1e-9, "{c:?} against {d:?}");
 }
 
-/// What the pipe shell sweeps only as a skin is refused by name, with
-/// the function that takes a tolerance for it: a corner turning in an
-/// arc's plane, a sharp corner past an arc (the straight run then mitred
-/// against the skinned one), a free-form edge. A tube wider than an arc
-/// bends is refused as before.
+/// What the pipe shell sweeps only as a skin, or does not sweep, is
+/// refused by name, with the function that takes a tolerance for it: a
+/// free-form edge. A tube wider than an arc bends, and a leg shorter than
+/// the reach of the crossing inside its corner, are refused as before.
 #[test]
 fn a_pipe_along_a_wire_refuses_what_it_does_not_sweep_exactly_by_name() {
     let mut model = Model::new();
-    let turned = line_arc_line(&mut model, true);
-    let err = make_pipe(&mut model, &turned, 0.5, T).unwrap_err();
-    assert!(err.to_string().contains("not swept exactly"), "{err}");
     let (a, b) = (Point::ORIGIN, Point::new(0.0, 0.0, 5.0));
     let (va, vb) = (
         make_vertex(&mut model, a).shape,
@@ -300,23 +296,338 @@ fn a_pipe_along_a_wire_refuses_what_it_does_not_sweep_exactly_by_name() {
     let up = make_edge_between(&mut model, segment.into(), range, &va, &vb, T)
         .unwrap()
         .shape;
-    let frame = Frame::new(Point::new(0.0, 0.0, 8.0), Direction::Y, -Direction::Z, T).unwrap();
-    let arc = CircleCurve::new(Circle::new(frame, 3.0, T).unwrap());
-    let vc = make_vertex(&mut model, arc.point_at(PI / 2.0, T).unwrap()).shape;
-    let round = make_edge_between(&mut model, arc.into(), (0.0, PI / 2.0), &vb, &vc, T)
-        .unwrap()
-        .shape;
-    let in_plane = make_wire(&mut model, &[up.clone(), round], T)
-        .unwrap()
-        .shape;
-    let err = make_pipe(&mut model, &in_plane, 0.5, T).unwrap_err();
-    assert!(err.to_string().contains("not swept exactly"), "{err}");
     let free = free_form_after_line(&mut model, &up, &vb);
     let err = make_pipe(&mut model, &free, 0.5, T).unwrap_err();
     assert!(err.to_string().contains("make_pipe_skinned"), "{err}");
     let tight = line_arc_line(&mut model, false);
     let err = make_pipe(&mut model, &tight, 3.0, T).unwrap_err();
     assert!(err.to_string().contains("swallows its spine"), "{err}");
+    let short = planar_path(
+        &mut model,
+        &[
+            Step::Line(0.3),
+            Step::Turn(PI / 2.0),
+            Step::Arc(3.0, PI / 2.0),
+        ],
+    );
+    let err = make_pipe(&mut model, &short, 0.5, T).unwrap_err();
+    assert!(
+        err.to_string().contains("shorter than its corner's reach"),
+        "{err}"
+    );
+}
+
+/// One step of a path drawn in the `xy` plane from the origin heading `+x`:
+/// a line of a length, an arc of a radius through a signed angle (positive
+/// to the left), tangent to what comes before, or a sharp turn through a
+/// signed angle on the spot.
+#[derive(Debug, Clone, Copy)]
+enum Step {
+    Line(f64),
+    Arc(f64, f64),
+    Turn(f64),
+}
+
+/// The wire `steps` draw.
+fn planar_path(model: &mut Model, steps: &[Step]) -> Shape {
+    let mut at = Point::ORIGIN;
+    let mut heading = 0.0_f64;
+    let mut from = make_vertex(model, at).shape;
+    let mut edges = Vec::new();
+    for step in steps {
+        match *step {
+            Step::Turn(angle) => heading += angle,
+            Step::Line(length) => {
+                let to = at + Vector::new(heading.cos(), heading.sin(), 0.0) * length;
+                let end = make_vertex(model, to).shape;
+                let segment = LineCurve::segment(at, to, T).unwrap();
+                let range = segment.domain();
+                edges.push(
+                    make_edge_between(model, segment.into(), range, &from, &end, T)
+                        .unwrap()
+                        .shape,
+                );
+                (at, from) = (to, end);
+            }
+            Step::Arc(radius, angle) => {
+                let left = Vector::new(-heading.sin(), heading.cos(), 0.0);
+                let centre = at + left * (radius * angle.signum());
+                let axis = if angle > 0.0 {
+                    Direction::Z
+                } else {
+                    -Direction::Z
+                };
+                let frame =
+                    Frame::new(centre, axis, Direction::new(at - centre, T).unwrap(), T).unwrap();
+                let arc = CircleCurve::new(Circle::new(frame, radius, T).unwrap());
+                let to = arc.point_at(angle.abs(), T).unwrap();
+                let end = make_vertex(model, to).shape;
+                edges.push(
+                    make_edge_between(model, arc.into(), (0.0, angle.abs()), &from, &end, T)
+                        .unwrap()
+                        .shape,
+                );
+                (at, from, heading) = (to, end, heading + angle);
+            }
+        }
+    }
+    make_wire(model, &edges, T).unwrap().shape
+}
+
+/// `p` turned about `c` through `angle`, in the plane.
+fn turned(p: (f64, f64), c: (f64, f64), angle: f64) -> (f64, f64) {
+    let (x, y) = (p.0 - c.0, p.1 - c.1);
+    let (s, k) = angle.sin_cos();
+    (c.0 + x * k - y * s, c.1 + x * s + y * k)
+}
+
+/// Inside a corner turning left through `turn` from the leg `into` onto the
+/// leg `out_of`, where the paths of the section's point offset `inside`
+/// into the turn cross: how far back along the first leg and on along the
+/// second, each along the point's own path. The corner stands at the
+/// origin heading `+x`; Newton's method from the crossing two lines would
+/// have, on the two path lengths.
+fn crossing_inside(into: Step, out_of: Step, turn: f64, inside: f64) -> (f64, f64) {
+    let (ahead, left) = ((turn.cos(), turn.sin()), (-turn.sin(), turn.cos()));
+    let start = (inside * left.0, inside * left.1);
+    let back = |a: f64| match into {
+        Step::Arc(radius, angle) => {
+            let s = angle.signum();
+            turned(
+                (0.0, inside),
+                (0.0, s * radius),
+                -s * a / (radius - s * inside),
+            )
+        }
+        _ => (-a, inside),
+    };
+    let on = |b: f64| match out_of {
+        Step::Arc(radius, angle) => {
+            let s = angle.signum();
+            let centre = (s * radius * left.0, s * radius * left.1);
+            turned(start, centre, s * b / (radius - s * inside))
+        }
+        _ => (start.0 + b * ahead.0, start.1 + b * ahead.1),
+    };
+    let miss = |a: f64, b: f64| {
+        let (p, q) = (back(a), on(b));
+        (p.0 - q.0, p.1 - q.1)
+    };
+    let guess = inside * (turn / 2.0).tan();
+    let (mut a, mut b) = (guess, guess);
+    for _ in 0..100 {
+        let h = 1e-7;
+        let f = miss(a, b);
+        let (fa, fb) = (miss(a + h, b), miss(a, b + h));
+        let (j11, j21) = ((fa.0 - f.0) / h, (fa.1 - f.1) / h);
+        let (j12, j22) = ((fb.0 - f.0) / h, (fb.1 - f.1) / h);
+        let det = j11 * j22 - j12 * j21;
+        let (da, db) = ((f.0 * j22 - j12 * f.1) / det, (j11 * f.1 - j21 * f.0) / det);
+        (a, b) = (a - da, b - db);
+        if da.abs().max(db.abs()) < 1e-15 {
+            break;
+        }
+    }
+    (a, b)
+}
+
+/// The volume of the wedge a disc of radius `r` reaches past the plane
+/// square to its spine, cut on a plane leaning `alpha` from that one:
+/// each point at distance `ρ` outside the axis runs `ρ tan α` on, over the
+/// half disc, `tan α ∫₀ʳ 2ρ √(r² - ρ²) dρ`.
+fn mitre_wedge(r: f64, alpha: f64) -> f64 {
+    2.0 / 3.0 * r * r * r * alpha.tan()
+}
+
+/// Simpson's rule for `f` over `[lo, hi]` in `n` (even) intervals.
+fn simpson(f: impl Fn(f64) -> f64, lo: f64, hi: f64, n: u32) -> f64 {
+    let h = (hi - lo) / f64::from(n);
+    let inner: f64 = (1..n)
+        .map(|k| f(lo + h * f64::from(k)) * if k % 2 == 1 { 4.0 } else { 2.0 })
+        .sum();
+    (f(lo) + f(hi) + inner) * h / 3.0
+}
+
+/// The volume of the mitred pipe of radius `r` down `steps`, as the pipe
+/// shell sweeps it. Under the rotation-minimizing frame of a path in one
+/// plane a point of the disc at offset `ρ` to the left of the spine runs
+/// the path offset by `ρ` (a line's length, an arc's `(R ∓ ρ)` times its
+/// angle), so a slice of the pipe at height `w` is the strip the offsets
+/// `|ρ| ≤ √(r² - w²)` sweep, and the volume is `∫ ℓ(ρ) 2√(r² - ρ²) dρ`
+/// over `[-r, r]`, `ℓ(ρ)` the length of the offset path. At a corner
+/// turning through `θ` the offset path outside the turn runs straight on
+/// to the plane halving it, `|ρ| tan(θ/2)` along either leg; inside, it
+/// stops where its two legs' paths cross. Integrated with `ρ = r sin u`,
+/// smooth on either side of the spine, by Simpson's rule.
+fn generators_volume(steps: &[Step], r: f64) -> f64 {
+    let length = |rho: f64| -> f64 {
+        let mut total = 0.0;
+        for (i, step) in steps.iter().enumerate() {
+            total += match *step {
+                Step::Line(length) => length,
+                Step::Arc(radius, angle) => (radius - angle.signum() * rho) * angle.abs(),
+                Step::Turn(turn) => {
+                    // Mirrored, where it turns right, to turn left.
+                    let m = turn.signum();
+                    let mirrored = |s: Step| match s {
+                        Step::Arc(radius, angle) => Step::Arc(radius, angle * m),
+                        other => other,
+                    };
+                    let inside = rho * m;
+                    if inside <= 0.0 {
+                        2.0 * inside.abs() * (turn.abs() / 2.0).tan()
+                    } else {
+                        let (a, b) = crossing_inside(
+                            mirrored(steps[i - 1]),
+                            mirrored(steps[i + 1]),
+                            turn.abs(),
+                            inside,
+                        );
+                        -(a + b)
+                    }
+                }
+            };
+        }
+        total
+    };
+    let slice = |u: f64| {
+        let c = u.cos();
+        length(r * u.sin()) * 2.0 * r * r * c * c
+    };
+    simpson(slice, -PI / 2.0, 0.0, 20_000) + simpson(slice, 0.0, PI / 2.0, 20_000)
+}
+
+/// A sharp corner turning in an arc's plane, between a line and an arc
+/// either way round, or between two arcs, and a sharp corner past an arc,
+/// are swept exactly: each leg the cylinder or torus segment it sweeps,
+/// the two legs' cuts on the plane halving each corner one curve (no face
+/// of that plane is left), the only planes the two ends. The volume is the
+/// generators' (see [`generators_volume`]): Pappus's down each leg, the
+/// wedges outside each turn, `⅔ r³ tan(θ/2)` each, added, and the legs'
+/// overlap inside it taken off. The pipe shell of the disc is that solid.
+#[test]
+fn a_pipe_round_a_corner_in_an_arc_s_plane_is_its_tori_and_cylinders() {
+    use Step::{Arc, Line, Turn};
+    let r = 0.5;
+    // The wedge's closed form against its integral, and a corner between
+    // two lines under the generators' volume: the wedges outside the turn
+    // and the overlap inside it cancel, leaving `π r²` times the legs'
+    // length.
+    for alpha in [0.1, PI / 6.0, PI / 4.0, 1.2] {
+        let integral = simpson(
+            |u: f64| {
+                let (s, c) = u.sin_cos();
+                r * s * alpha.tan() * 2.0 * r * c * r * c
+            },
+            0.0,
+            PI / 2.0,
+            20_000,
+        );
+        let wedge = mitre_wedge(r, alpha);
+        assert!(
+            (integral - wedge).abs() < wedge * 1e-13,
+            "{integral} against {wedge}"
+        );
+        let lines = [Line(4.0), Turn(2.0 * alpha), Line(3.0)];
+        let v = generators_volume(&lines, r);
+        let want = PI * r * r * 7.0;
+        assert!((v - want).abs() < want * 1e-13, "{v} against {want}");
+    }
+    let paths: [&[Step]; 7] = [
+        &[Line(5.0), Turn(PI / 3.0), Arc(3.0, PI / 2.0)],
+        &[Line(5.0), Turn(PI / 3.0), Arc(3.0, -PI / 2.0)],
+        &[Arc(3.0, PI / 2.0), Turn(PI / 3.0), Line(5.0)],
+        &[Arc(3.0, PI / 2.0), Turn(-PI / 3.0), Line(5.0)],
+        &[Arc(3.0, PI / 2.0), Turn(-PI / 2.0), Arc(4.0, PI / 2.0)],
+        &[
+            Line(5.0),
+            Arc(3.0, PI / 2.0),
+            Line(5.0),
+            Turn(PI / 2.0),
+            Line(5.0),
+        ],
+        &[
+            Line(4.0),
+            Turn(PI / 4.0),
+            Arc(2.0, PI / 2.0),
+            Turn(-PI / 3.0),
+            Line(3.0),
+            Arc(1.5, -PI / 2.0),
+            Turn(PI / 2.0),
+            Arc(2.5, PI / 3.0),
+            Line(2.0),
+        ],
+    ];
+    for steps in paths {
+        let mut model = Model::new();
+        let spine = planar_path(&mut model, steps);
+        let pipe = make_pipe(&mut model, &spine, r, T)
+            .unwrap_or_else(|e| panic!("{steps:?}: {e}"))
+            .shape;
+        let found = check(&model, &pipe, T).unwrap();
+        assert!(found.is_valid(), "{steps:?}: {found}");
+        assert!(analytic_only(&model, &pipe), "{steps:?}");
+        let radii: Vec<f64> = steps
+            .iter()
+            .filter_map(|s| match s {
+                Arc(radius, _) => Some(*radius),
+                _ => None,
+            })
+            .collect();
+        let mut planes = 0;
+        for face in explore_unique(&model, &pipe, ShapeType::Face).unwrap() {
+            let Some(NodeData::Face(d)) = model.node(&face).map(|n| n.data()) else {
+                panic!("a face holds no data");
+            };
+            match model.geometry().surface(d.surface) {
+                Some(ogeom::geom::SurfaceGeometry::Torus(t)) => {
+                    let t = t.torus();
+                    assert!((t.minor_radius() - r).abs() < 1e-12, "{steps:?}");
+                    assert!(
+                        radii
+                            .iter()
+                            .any(|radius| (t.major_radius() - radius).abs() < 1e-12),
+                        "{steps:?}: a torus of radius {}",
+                        t.major_radius()
+                    );
+                }
+                Some(ogeom::geom::SurfaceGeometry::Cylinder(c)) => {
+                    assert!((c.cylinder().radius() - r).abs() < 1e-12, "{steps:?}");
+                }
+                _ => planes += 1,
+            }
+        }
+        assert_eq!(planes, 2, "{steps:?}: a cut on a mitre plane left a face");
+        let (v, _, exact) = measure(&model, &pipe);
+        assert!(exact, "{steps:?}");
+        let want = generators_volume(steps, r);
+        assert!(
+            (v - want).abs() < want * 1e-9,
+            "{steps:?}: {v} against {want}"
+        );
+
+        let profile = disc(&mut model, Point::ORIGIN, Direction::X, r);
+        let shell = make_pipe_shell(&mut model, &profile, &spine, false, 1e-2, T)
+            .unwrap()
+            .shape;
+        assert!(analytic_only(&model, &shell), "{steps:?}");
+        let (w, _, exact_shell) = measure(&model, &shell);
+        assert!(exact_shell);
+        assert!((v - w).abs() < want * 1e-12, "{steps:?}: {v} against {w}");
+    }
+
+    // Past an arc in the `xz` plane, a corner between two lines turning
+    // out of it: Pappus's `π r²` times the spine's length, `16 + 3π/2`.
+    let mut model = Model::new();
+    let spine = line_arc_line(&mut model, true);
+    let pipe = make_pipe(&mut model, &spine, r, T).unwrap().shape;
+    let found = check(&model, &pipe, T).unwrap();
+    assert!(found.is_valid(), "{found}");
+    assert!(analytic_only(&model, &pipe));
+    let (v, _, exact) = measure(&model, &pipe);
+    assert!(exact);
+    let want = PI * r * r * (16.0 + 1.5 * PI);
+    assert!((v - want).abs() < want * 1e-12, "{v} against {want}");
 }
 
 /// The line `up` to `(0, 0, 5)` and on from its end `top`, tangent to

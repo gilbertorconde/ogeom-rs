@@ -13,6 +13,32 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A pipe round a sharp corner beside an arc, exactly.**
+  - `make_pipe` along a wire of lines and arcs refused a sharp corner
+    turning in an arc's plane, and any sharp corner on a wire with an arc,
+    with "not swept exactly", and `make_pipe_shell` swept the disc there
+    as a skin. Where every corner beside an arc turns in that arc's plane,
+    the pipe of a disc centred on the spine is now built exactly: the
+    union of each leg's cylinder or torus segment and, at each corner, the
+    two legs' straight run-ons outside the turn cut on the plane halving
+    it. The rotation-minimizing frame turns the section there as the
+    reflection in that plane does, so the two run-ons are mirror images
+    and their cuts one half ellipse, and no face of the plane is left.
+    Inside the turn the legs meet where each rim point's paths down the
+    two legs cross, where the pipe shell ends its walls.
+  - The volume is `∫ ℓ(ρ) 2√(r² - ρ²) dρ`, `ℓ(ρ)` the length of the
+    path offset `ρ` in the spine's plane: Pappus's down each leg, plus a
+    wedge of `⅔ r³ tan(θ/2)` outside each turn on either leg, less the
+    legs' overlap inside it. A line into a quarter arc of radius 3 at a
+    sixth of a turn, at `r = 0.5`, is `7.627202670550` against that
+    integral's `7.627202670550`; a path of five legs and three corners
+    `8.604576162238` against `8.604576162543`. The skin at `1e-4` was
+    `7.6271977`.
+  - A corner that turns an arc out of its plane, or turns in it so
+    tightly that a rim point's paths inside it miss, is mitred in pieces
+    as before; a leg shorter than its corner's reach is refused by name as
+    before, and a free-form edge is still `make_pipe_skinned`'s.
+
 - **A concave edge round carried across a change of what the ball
   holds.**
   - Where the ball rounding a concave seam beside a narrow strip rests on
