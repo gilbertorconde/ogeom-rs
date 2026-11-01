@@ -5755,6 +5755,150 @@ mod tests {
         );
     }
 
+    /// The segments a full circle of radius `r` takes at chord `c`: the
+    /// sag of a segment spanning `θ` is `r (1 − cos(θ/2))`, so the circle
+    /// wants `π / acos(1 − c/r)` of them, and the bisection reaches it from
+    /// its floor of two by halving every segment alike.
+    fn circle_segments(r: f64, c: f64) -> usize {
+        let wanted = std::f64::consts::PI / (1.0 - c / r).acos();
+        let mut n = Deflection::default().min_segments;
+        #[allow(clippy::cast_precision_loss, reason = "a segment count")]
+        while (n as f64) < wanted {
+            n *= 2;
+        }
+        n
+    }
+
+    /// No triangle is longer for want of a length cap: a box is two
+    /// triangles a face whether it is a 20 mm cube or a bar a thousand
+    /// millimetres long and a tenth across, and every one of them has area
+    /// and faces out with its face.
+    #[test]
+    fn a_box_is_two_triangles_a_face_however_long_its_faces() {
+        let deflection = Deflection::curvature_only(0.01, 0.5).unwrap();
+        for size in [(20.0, 20.0, 20.0), (1000.0, 0.1, 0.1)] {
+            let mut model = Model::new();
+            let built = make_box(&mut model, Frame::WORLD, size, T).unwrap();
+            let mesh = triangulate(&model, &built.shape, deflection, T).unwrap();
+            assert_eq!(mesh.triangle_count(), 12, "{size:?}");
+            assert!(mesh.is_closed(), "{size:?}");
+            // Two triangles on each face of the box, exact to rounding.
+            assert_relative_eq!(
+                mesh.volume(),
+                size.0 * size.1 * size.2,
+                max_relative = 1e-12
+            );
+            for face in explore_unique(&model, &built.shape, ShapeType::Face).unwrap() {
+                assert_faces_out(&triangulate_face(&model, &face, deflection, T).unwrap());
+            }
+        }
+    }
+
+    /// Every triangle has area and turns the way the surface's normals
+    /// at its corners do.
+    fn assert_faces_out(mesh: &Triangulation) {
+        for t in &mesh.triangles {
+            let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+            let along = t
+                .iter()
+                .map(|&i| mesh.normals[i as usize])
+                .fold(Vector::ZERO, |sum, n| sum + n);
+            let normal = (b - a).cross(c - a);
+            assert!(normal.magnitude() > 0.0, "a triangle with no area");
+            assert!(normal.dot(along) > 0.0, "a triangle turned over");
+        }
+    }
+
+    /// A cylinder of radius 10 at a chord of a hundredth: each rim takes
+    /// the segments the chord asks, the side two triangles a segment and
+    /// each cap the triangulation of its polygon, at a height of 20 and of
+    /// 2000 alike.
+    #[test]
+    fn a_cylinder_takes_the_segments_its_chord_asks_at_any_height() {
+        let (r, c) = (10.0, 0.01);
+        let n = circle_segments(r, c);
+        // π / acos(0.999) = 70.24: seventy-one segments would do, and the
+        // halving from two reaches 128.
+        assert_eq!(n, 128);
+        let deflection = Deflection::curvature_only(c, 0.5).unwrap();
+        for height in [20.0, 2000.0] {
+            let mut model = Model::new();
+            let built = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, r, height, T).unwrap();
+            let mesh = triangulate(&model, &built.shape, deflection, T).unwrap();
+            assert!(mesh.is_closed(), "height {height}");
+            assert_eq!(
+                mesh.triangle_count(),
+                2 * n + 2 * (n - 2),
+                "height {height}"
+            );
+            let mut counts: Vec<usize> = explore_unique(&model, &built.shape, ShapeType::Face)
+                .unwrap()
+                .iter()
+                .map(|face| {
+                    let drawn = triangulate_face(&model, face, deflection, T).unwrap();
+                    assert_faces_out(&drawn);
+                    drawn.triangle_count()
+                })
+                .collect();
+            counts.sort_unstable();
+            assert_eq!(counts, [n - 2, n - 2, 2 * n], "height {height}");
+        }
+    }
+
+    /// A tube a twentieth of a millimetre thick: each cap is an annulus far
+    /// longer round than across, drawn as its two polygons' triangulation,
+    /// one triangle per boundary point, none of them folded. Its side is
+    /// ruled between the rims, so the mesh encloses exactly the prism on
+    /// the two polygons.
+    #[test]
+    fn a_thin_annulus_is_its_outline_s_triangulation() {
+        use ogeom_geom::Curve3d as _;
+        let (outer, inner, height, c) = (10.05, 10.0, 5.0, 0.01);
+        let n = circle_segments(inner, c);
+        assert_eq!(n, circle_segments(outer, c));
+        let mut model = Model::new();
+        let ring = |model: &mut Model, frame: Frame, radius: f64| {
+            let circle = ogeom_math::Circle::new(frame, radius, T).unwrap();
+            let curve: ogeom_geom::Curve = ogeom_geom::CircleCurve::new(circle).into();
+            let domain = curve.domain();
+            ogeom_algo::make_edge(model, curve, domain, T)
+                .unwrap()
+                .shape
+        };
+        let down =
+            Frame::from_axes(Point::ORIGIN, Direction::X, -Direction::Y, -Direction::Z, T).unwrap();
+        let rim = ring(&mut model, Frame::WORLD, outer);
+        let hole = ring(&mut model, down, inner);
+        let plane = ogeom_math::Plane::new(Frame::WORLD);
+        let surface: SurfaceGeometry =
+            ogeom_geom::PlaneSurface::over(plane, (-20.0, 20.0), (-20.0, 20.0))
+                .unwrap()
+                .into();
+        let cap =
+            ogeom_algo::make_face_with_pcurves(&mut model, surface, &[vec![rim], vec![hole]], T)
+                .unwrap()
+                .shape;
+        let tube =
+            ogeom_algo::make_prism(&mut model, &cap, Vector::new(0.0, 0.0, height), T).unwrap();
+
+        let deflection = Deflection::curvature_only(c, 0.5).unwrap();
+        let mesh = triangulate(&model, &tube.shape, deflection, T).unwrap();
+        assert!(mesh.is_closed());
+        #[allow(clippy::cast_precision_loss, reason = "a segment count")]
+        let polygons = n as f64 / 2.0 * (std::f64::consts::TAU / n as f64).sin();
+        // The prism on the two inscribed polygons, exact to rounding.
+        assert_relative_eq!(
+            mesh.volume(),
+            polygons * (outer * outer - inner * inner) * height,
+            max_relative = 1e-9
+        );
+        for face in explore_unique(&model, &tube.shape, ShapeType::Face).unwrap() {
+            let drawn = triangulate_face(&model, &face, deflection, T).unwrap();
+            assert_faces_out(&drawn);
+            assert_eq!(drawn.triangle_count(), 2 * n);
+        }
+    }
+
     #[test]
     fn welding_is_what_closes_the_mesh() {
         // Without it each face brings its own copy of every boundary vertex, so

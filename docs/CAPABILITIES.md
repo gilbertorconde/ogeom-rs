@@ -268,7 +268,7 @@ reference in a deck read from text.
 - **mesh.editing**: Editing triangulations: connectivity, welding, decimation, boundary loops · `covered`
 - **mesh.hatching**: Hatching faces: iso and free-direction line families clipped to the trim · `covered`
 - **mesh.spatial-index**: Spatial indexes over meshes and point clouds: nearest point, ball and ray queries, batched in parallel, equal to brute force · `covered`
-- **mesh.tessellation**: Triangulating shapes to a stated deflection, deterministically, in parallel · `covered`
+- **mesh.tessellation**: Triangulating shapes to a stated deflection by chord and angle alone, with no length cap, deterministically, in parallel · `covered`
 
 ### ogeom-offset
 
@@ -294,4 +294,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: b2deacd82efae263 -->
+<!-- ledger-checksum: b93fad6a3f96c7df -->

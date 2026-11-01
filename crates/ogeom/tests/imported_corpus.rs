@@ -70,6 +70,48 @@ fn the_corpus_heals_and_every_part_measures() {
     }
 }
 
+/// Every corpus solid whose shells close meshes closed when drawn at a
+/// hundredth of a millimetre by the chord and the angle alone, the
+/// tessellation a scan is measured against, and none of its triangles
+/// is without area.
+#[test]
+#[ignore = "heavy"]
+fn every_closed_corpus_solid_meshes_closed_drawn_by_curvature_alone() {
+    let deflection = ogeom::mesh::Deflection::curvature_only(1e-2, 0.5).unwrap();
+    let dir = format!("{}/../../tests/corpus", env!("CARGO_MANIFEST_DIR"));
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.ends_with(".step") || name.ends_with(".stp"))
+        .collect();
+    names.sort();
+    let mut closed = 0;
+    for name in names {
+        let import = ogeom::io::read_step(&corpus(&name), T).unwrap();
+        let model = import.document.model();
+        for solid in &import.solids {
+            let shells = explore_unique(model, solid, ShapeType::Shell).unwrap();
+            if !shells
+                .iter()
+                .all(|s| ogeom::algo::is_shell_closed(model, s).unwrap())
+            {
+                continue;
+            }
+            closed += 1;
+            let mesh = ogeom::mesh::triangulate(model, solid, deflection, T).unwrap();
+            assert!(mesh.is_closed(), "{name}: the mesh is open");
+            for t in &mesh.triangles {
+                let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+                assert!(
+                    (b - a).cross(c - a).magnitude() > 0.0,
+                    "{name}: a triangle with no area"
+                );
+            }
+        }
+    }
+    assert!(closed > 0, "the corpus has closed solids");
+}
+
 /// A boolean over imported geometry, history checked: the operations run
 /// on the world's parts, not only on this kernel's own.
 #[test]

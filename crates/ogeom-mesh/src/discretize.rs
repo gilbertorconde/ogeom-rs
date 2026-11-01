@@ -24,6 +24,15 @@ use ogeom_geom::{Curve, Curve3d};
 use ogeom_math::Point;
 
 /// How finely to approximate a curve.
+///
+/// Only the chord and the angle subdivide; there is no cap on a segment's or
+/// a triangle's length. A straight edge is drawn as its two ends and a planar
+/// face as the triangulation of its outline, however long either is. A
+/// curved edge or face is subdivided until it meets both tolerances. Inside
+/// a curved face the grid the tolerances chose may also be spread so that
+/// no cell is many times longer than it is wide: a ratio of that grid's own
+/// spacing, which keeps the triangles between its rows from bridging
+/// columns, not a length.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Deflection {
     /// The greatest allowed distance from the polyline to the curve.
@@ -86,6 +95,28 @@ impl Deflection {
             chord,
             ..Self::default()
         })
+    }
+
+    /// A deflection held to `chord` and `angular` alone, with the default
+    /// segment bounds.
+    ///
+    /// The tessellation a measurement is taken against: flat faces stay as
+    /// few triangles as their outlines allow, and curved ones are drawn to
+    /// the chord. Every deflection subdivides this way (see [`Deflection`]);
+    /// this names both tolerances and checks them.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if `chord` or
+    /// `angular` is not finite and positive.
+    pub fn curvature_only(chord: f64, angular: f64) -> OgeomResult<Self> {
+        let deflection = Self {
+            chord,
+            angular,
+            ..Self::default()
+        };
+        deflection.validate()?;
+        Ok(deflection)
     }
 
     /// A deflection scaled to a model of the given size.

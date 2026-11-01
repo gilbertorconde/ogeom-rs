@@ -46,6 +46,22 @@ bump may break the API and a patch bump may not.
     100k samples, to within a micron and 1e-5 rad. Every answer is the
     same at any thread count.
 
+- **`Deflection::curvature_only(chord, angular)`.** A checked deflection
+  held to the chord and the angle alone, for the tessellation a scan is
+  measured against. Tessellation has no length cap, by this constructor or
+  any other: a straight edge is its two ends and a planar face its
+  outline's triangulation however long, and only a curved edge or face is
+  subdivided, to the chord and the angle. Meshes are unchanged.
+  - A 20 mm cube and a bar 1000 mm long and 0.1 mm across mesh to 12
+    triangles, every one with area and facing out.
+  - A cylinder of radius 10 at chord 0.01 takes 128 segments a rim, the
+    halving from two past `π / acos(1 − c/r)` = 70.24, and 4n − 4
+    triangles at a height of 20 or 2000.
+  - A planar annulus 0.05 mm across is one triangle per outline point, and
+    its tube encloses the prism on its two polygons to 1e-9.
+  - Every corpus solid whose shells close meshes closed at chord 0.01,
+    with no triangle without area.
+
 ## [0.13.2] - 2026-11-01
 
 An additive release for scan inspection. `algo::distance` measures many
