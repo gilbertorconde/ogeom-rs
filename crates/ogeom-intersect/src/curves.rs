@@ -1610,13 +1610,14 @@ fn general_3d(
     // the first curve lying wholly in such a stretch seeds nothing: a
     // section along an edge would otherwise run thousands of polishes for
     // crossings that are all discarded.
+    let segments_b = Segments::of(&sb);
     let feet: Vec<Option<(f64, f64)>> = sa
         .points
         .iter()
-        .map(|p| foot_via_samples(b, &sb, *p, tol))
+        .map(|p| foot_via_samples(b, &sb, &segments_b, *p, tol))
         .collect();
     let overlaps = if hugging_runs(&feet, options.gap).contains(&true) {
-        shared_support_3d(a, b, &sa, &sb, &feet, options, tol)
+        shared_support_3d(a, b, &sa, (&sb, &segments_b), &feet, options, tol)
     } else {
         Vec::new()
     };
@@ -1649,7 +1650,7 @@ fn general_3d(
             })
             .collect()
     };
-    let (boxes_a, boxes_b) = (boxes(&sa), boxes(&sb));
+    let (boxes_a, boxes_b) = (boxes(&sa), &segments_b.boxes);
     let apart = |x: &(Point, Point), y: &(Point, Point)| {
         x.0.x - y.1.x > reach
             || y.0.x - x.1.x > reach
@@ -1802,7 +1803,7 @@ fn general_3d(
     let cap = 4.0 * (gap * extent).sqrt();
     for c in &mut crossings {
         let ends = valley_ends_3d(a, c.on_a, gap, tol, &|q| {
-            distance_to_curve_3d(b, &sb, q, tol)
+            distance_to_curve_3d(b, &sb, &segments_b, q, tol)
         });
         let valley = valley_span_3d(a, c, &ends, tol);
         if valley > gap * 8.0 && valley <= cap {
@@ -1840,23 +1841,107 @@ fn contact_between_3d(
     })
 }
 
+/// A sampled curve's segments boxed, for the scans for a point's nearest
+/// segment: a segment whose box stands further from the point than the
+/// nearest found so far, past the rounding of either distance, is not
+/// nearer, and is passed over without changing what the scan finds.
+struct Segments {
+    boxes: Vec<(Point, Point)>,
+    /// The largest coordinate among the samples.
+    size: f64,
+    /// The segment last found nearest, which the next scan starts from.
+    last: core::cell::Cell<usize>,
+}
+
+impl Segments {
+    fn of(s: &Sampled<Point>) -> Self {
+        let boxes = s
+            .points
+            .windows(2)
+            .map(|w| {
+                (
+                    Point::new(w[0].x.min(w[1].x), w[0].y.min(w[1].y), w[0].z.min(w[1].z)),
+                    Point::new(w[0].x.max(w[1].x), w[0].y.max(w[1].y), w[0].z.max(w[1].z)),
+                )
+            })
+            .collect();
+        let size = s.points.iter().fold(0.0_f64, |m, p| {
+            m.max(p.x.abs()).max(p.y.abs()).max(p.z.abs())
+        });
+        Self {
+            boxes,
+            size,
+            last: core::cell::Cell::new(0),
+        }
+    }
+
+    /// Whether the box of the segment ending at sample `j` stands further
+    /// from `p` than `nearest` by more than rounding. A segment's distance
+    /// is formed from its ends and `p` in a few dozen rounded operations,
+    /// each off by at most half an ulp of the largest coordinate, and the
+    /// box's distance in a few more; no segment so boxed measures nearer.
+    fn beyond(&self, j: usize, p: Point, nearest: f64) -> bool {
+        const ROUNDING: f64 = 64.0 * f64::EPSILON;
+        let (lo, hi) = self.boxes[j - 1];
+        let out = |x: f64, l: f64, h: f64| (l - x).max(x - h).max(0.0);
+        let off = ogeom_math::Vector::new(
+            out(p.x, lo.x, hi.x),
+            out(p.y, lo.y, hi.y),
+            out(p.z, lo.z, hi.z),
+        );
+        let size = self.size.max(p.x.abs()).max(p.y.abs()).max(p.z.abs());
+        off.magnitude() > ROUNDING.mul_add(size, nearest)
+    }
+}
+
 /// The foot of a point on the second curve, seeded from its sampled
 /// polyline's nearest segment: the parameter and the distance there.
 fn foot_via_samples(
     b: &Curve,
     sb: &Sampled<Point>,
+    segments: &Segments,
     p: Point,
     tol: Tolerances,
 ) -> Option<(f64, f64)> {
+    let approach = |j: usize| segments_approach_3d((p, p), (sb.points[j - 1], sb.points[j]));
+    // The segment nearest the last point asked about bounds the nearest
+    // to this one, which the scan then finds in the same order as ever.
+    let hint = segments.last.get();
+    let mut bound = if hint >= 1 && hint < sb.points.len() {
+        approach(hint).2
+    } else {
+        f64::INFINITY
+    };
     let mut seed = (f64::INFINITY, 0.0);
     for j in 1..sb.points.len() {
-        let (_, tb, gap) = segments_approach_3d((p, p), (sb.points[j - 1], sb.points[j]));
+        if segments.beyond(j, p, bound) {
+            continue;
+        }
+        let (_, tb, gap) = approach(j);
         if gap < seed.0 {
             seed = (
                 gap,
                 sb.parameters[j - 1] + (sb.parameters[j] - sb.parameters[j - 1]) * tb,
             );
+            bound = bound.min(gap);
+            segments.last.set(j);
         }
+    }
+    if cfg!(debug_assertions) {
+        let mut every = (f64::INFINITY, 0.0);
+        for j in 1..sb.points.len() {
+            let (_, tb, gap) = segments_approach_3d((p, p), (sb.points[j - 1], sb.points[j]));
+            if gap < every.0 {
+                every = (
+                    gap,
+                    sb.parameters[j - 1] + (sb.parameters[j] - sb.parameters[j - 1]) * tb,
+                );
+            }
+        }
+        assert!(
+            every.0.to_bits() == seed.0.to_bits() && every.1.to_bits() == seed.1.to_bits(),
+            "boxed scan found {seed:?}, every segment {every:?}"
+        );
     }
     if !seed.0.is_finite() {
         return None;
@@ -1894,14 +1979,14 @@ fn shared_support_3d(
     a: &Curve,
     b: &Curve,
     sa: &Sampled<Point>,
-    sb: &Sampled<Point>,
+    (sb, segments_b): (&Sampled<Point>, &Segments),
     feet: &[Option<(f64, f64)>],
     options: CurveCurveOptions,
     tol: Tolerances,
 ) -> Vec<Overlap> {
     let hugs = |t: f64| -> Option<(f64, f64)> {
         let p = a.point_at(t, tol).ok()?;
-        let (s, gap) = foot_via_samples(b, sb, p, tol)?;
+        let (s, gap) = foot_via_samples(b, sb, segments_b, p, tol)?;
         (gap <= options.gap).then_some((s, gap))
     };
     let within = |i: usize| feet[i].is_some_and(|(_, gap)| gap <= options.gap);
@@ -2226,9 +2311,18 @@ fn segments_cross_2d(a: (Point2, Point2), b: (Point2, Point2)) -> Option<(f64, f
 
 /// The distance from `p` to the curve `b`, through its samples and a local
 /// polish on the nearest segment's parameter span.
-fn distance_to_curve_3d(b: &Curve, sb: &Sampled<Point>, p: Point, tol: Tolerances) -> f64 {
+fn distance_to_curve_3d(
+    b: &Curve,
+    sb: &Sampled<Point>,
+    segments: &Segments,
+    p: Point,
+    tol: Tolerances,
+) -> f64 {
     let mut best = (0_usize, f64::INFINITY);
     for i in 1..sb.points.len() {
+        if segments.beyond(i, p, best.1) {
+            continue;
+        }
         let (q0, q1) = (sb.points[i - 1], sb.points[i]);
         let d = q1 - q0;
         let len2 = d.dot(d);
@@ -3372,5 +3466,54 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// A point's nearest segment of a sampled curve, found by the boxed
+    /// scan, is the one every segment measured finds, to the bit: from
+    /// points on the curve, beside it, at its centre and far off, asked in
+    /// an order that leaves the last segment found far from the next.
+    #[test]
+    fn the_boxed_nearest_segment_is_the_one_every_segment_finds() {
+        let frame = Frame::new(
+            Point::new(120.0, -40.0, 7.5),
+            ogeom_math::Direction::new(ogeom_math::Vector::new(0.2, -0.3, 1.0), T).unwrap(),
+            ogeom_math::Direction::new(ogeom_math::Vector::new(1.0, 0.0, 0.2), T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let curve: Curve = CircleCurve::new(Circle::new(frame, 6.0, T).unwrap()).into();
+        let sampled = sample_3d(&curve, 64, T);
+        let segments = Segments::of(&sampled);
+        let every = |p: Point| {
+            let mut seed = (f64::INFINITY, 0.0);
+            for j in 1..sampled.points.len() {
+                let (_, tb, gap) =
+                    segments_approach_3d((p, p), (sampled.points[j - 1], sampled.points[j]));
+                if gap < seed.0 {
+                    let (a, b) = (sampled.parameters[j - 1], sampled.parameters[j]);
+                    seed = (gap, a + (b - a) * tb);
+                }
+            }
+            seed
+        };
+        for k in 0..97 {
+            let t = f64::from(k * 37 % 97) / 97.0 * core::f64::consts::TAU;
+            let on = curve.point_at(t, T).unwrap();
+            for p in [
+                on,
+                on + ogeom_math::Vector::new(0.0, 0.0, 1e-9),
+                frame.origin(),
+                on + ogeom_math::Vector::new(50.0, 3.0, -8.0),
+            ] {
+                let found = foot_via_samples(&curve, &sampled, &segments, p, T);
+                let seed = every(p);
+                let expected = foot_on_3d(&curve, p, seed.1, T);
+                assert_eq!(
+                    found.map(|(s, g)| (s.to_bits(), g.to_bits())),
+                    expected.map(|(s, g)| (s.to_bits(), g.to_bits())),
+                    "at {p:?}"
+                );
+            }
+        }
     }
 }

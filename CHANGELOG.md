@@ -251,6 +251,16 @@ bump may break the API and a patch bump may not.
   Voron 2.4 assembly reads in 23 percent fewer cycles at one thread, to the
   same solids.
 
+- **A crossing of two curves in space finds each sample's nearest segment
+  without measuring every segment.** The sampled crossing (sections against
+  edges, overlaps along an edge) measured every segment of the second
+  curve from every sample of the first. A segment whose box stands further
+  from the sample than the nearest found so far, past rounding, is now
+  passed over, the scan starting from the last sample's nearest; it finds
+  the same segment, checked against the full scan in debug builds.
+  `fillet_box_all` costs 26 percent fewer cycles and `boolean_marched` 9
+  percent, to the same result.
+
 ### Fixed
 
 - **A STEP file's pcurves are read in its own units, and at another pace

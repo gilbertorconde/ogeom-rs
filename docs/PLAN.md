@@ -479,7 +479,10 @@ gap only past the confusion distance
 in 23 percent fewer cycles at one thread. Still sampled there: the
 derived pcurve's gap where the file states pcurves of its own, which
 bounds the ones kept.
-Measured and not landed: the classifier draws a
+The sampled curve crossing in space passes over a segment whose box
+stands further from a sample than its nearest so far
+(`curves::Segments`): `fillet_box_all` 26 percent fewer cycles,
+`boolean_marched` 9. Measured and not landed: the classifier draws a
 cylinder wall's rings at the full chord though its pcurves are straight
 in the chart, about 15 percent of `boolean_drill` and of a step of the
 chain and 40 percent of `offset_part`; drawn at the fewest points the
