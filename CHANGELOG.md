@@ -119,6 +119,27 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A section beside a pole of a compound's ball, or beside a plane, is
+  charted clear of the pole.**
+  - The boolean restates a ball or a sphere face on a chart whose poles
+    stand clear of the other operand. A compound operand was taken as no
+    ball and no solid, so its members kept their charts, and a sphere
+    face was charted clear of the other's curved surfaces only, where a
+    whole ball was charted clear of its planes as well. A torus and a ball
+    that do not meet, fused into a compound and cut by a ball whose section
+    circle passes 1.7e-4 from the small ball's pole (stress chain seed 10,
+    case 29), and a ball and a cone fused and cut by a box whose plane
+    passes 1.4e-4 from the fused ball face's pole (seed 11, case 62), were
+    refused ("a branch passing beside a chart's pole fits nothing yet").
+    Each member of a compound is now charted as an operand is, and a plane
+    beside a sphere face's pole, not through it, turns the face's chart as
+    it turns a ball's; the new chart's axis is still the candidate standing
+    furthest from the curved walls, among those whose poles stand clear of
+    the planes too. Both cut; the cut and the common add up to the fused
+    solid, and what the ball gives the first tool is the lens of the two
+    balls, to 1e-7. Chain stress at seeds 1 to 12 with 100 cases per part
+    passes all 3600 cases.
+
 - **A drill a hair off touching a face cuts as the touching drill does.**
   - A drum whose wall runs along a plane of the other solid, raised
     through it or lowered short of it by no more than the confusion

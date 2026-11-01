@@ -28,13 +28,23 @@ tolerance, or passes within it of one of the face's poles between its ends,
 is refused ("a section through a sphere chart's pole is not resolved"): the
 image cannot follow the half turn of longitude at the pole, and the
 arrangement read it on the far side of the chart. Before the boolean,
-`ball_chart.rs` restates a whole ball or a trimmed sphere face on a chart
-whose poles stand clear, so the section meets no pole; a band whose two
-loops go round the new axis takes a seam between them, its loop edges cut
-where the seam crosses them. The face is left on its own chart, and the
-section refused, where the rechart cannot run: a face with one new pole
-inside whose loop round it the seam meridian crosses at no vertex, a face
-placed inside its solid, and a face with an edge that has no curve in space.
+`ball_chart.rs` restates a whole ball or a trimmed sphere face, an operand
+or a member of a compound one, on a chart whose poles stand clear of the
+other operand's surfaces and of its planes other than one through a pole,
+so the section meets no pole; a band whose two loops go round the new axis
+takes a seam between them, its loop edges cut where the seam crosses them.
+The face is left on its own chart, and the section refused, where the
+rechart cannot run: a face with one new pole inside whose loop round it the
+seam meridian crosses at no vertex, a face placed inside its solid, a face
+with an edge that has no curve in space, and a face whose trim holds no
+pole of its chart (a rounded box's corner whose chart's pole stands beside
+the other operand's plane outside the corner). Recharting such a face on
+the face path as it stands splits rounded corners differently and once
+left a face crossing another.
+A section passing a hair beside the pole of a face left on its chart is
+refused the same way ("a branch passing beside a chart's pole fits nothing
+yet"): its image fitted between the samples holds, but the arrangement does
+not yet split and classify the piece it bounds round the pole rightly.
 What would clear them: cut the loop at the seam as the band's is cut, or
 march the section through the pole, breaking its image at the pole sample
 so each piece has an image of its own.
@@ -141,20 +151,6 @@ its agreement with its own curve by the dropped piece's length, and the
 exact volume integral then gives the face up to the mesh. The fuse should
 carry the short piece into the long one, across the closed section's
 join, which a piece's range does not yet pass.
-
-**A section passing beside a ball's pole in a chain.** Of the chain stress
-scenario's 3600 cases at seeds 1 to 12 with 100 cases per part, 2 are
-refused. Seed 10's `chain/primitives/29`, a torus and a ball fused and cut
-by a ball, and seed 11's `chain/primitives/62` are refused by name ("a
-branch passing beside a chart's pole fits nothing yet"). In seed 10's
-case the cutting ball's section circle passes 1.7e-4 from the small
-ball's pole. The image fitted at fixed parameters through samples crowded
-into the swing beside the pole runs off the chart between them, and the
-marched pair misses its trace by 0.011. Fitted with its error read between
-the samples, the image holds to 8.7e-7, but the cut then comes out with a
-face `check` reads as turned inward, and the cut and the common miss the
-fused solid by 15.7: the piece bounded by an image winding round the pole
-a hair from it is not yet split and classified rightly.
 
 ### Fillets and blends
 

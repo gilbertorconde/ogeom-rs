@@ -15,7 +15,8 @@
 //! or, for a band whose two loops go round the new axis, where the seam
 //! crosses each loop once: its trim edges take fitted images in the new
 //! chart, and an edge the band's seam crosses is cut there, in every face
-//! of the solid that holds it.
+//! of the solid that holds it. A compound operand is taken member by
+//! member.
 
 use ogeom_algo::{Built, History, make_sphere};
 use ogeom_core::{OgeomError, OgeomResult, Tolerances};
@@ -24,7 +25,7 @@ use ogeom_geom::{PlanarCurve, SurfaceGeometry, Transformable};
 use ogeom_math::{Direction, Frame, Point, Point2, Vector};
 use ogeom_topo::{EdgeRepr, Model, NodeData, Orientation, Shape, ShapeType, explore_unique};
 
-/// How close a pole may come to the other operand's curved surfaces, as a
+/// How close a pole may come to the other operand's surfaces, as a
 /// fraction of the ball's radius, before the chart is turned. A section a
 /// thousandth and a half of the radius beside a pole is already marched
 /// across the chart's collapse and snapped onto the pole.
@@ -41,11 +42,11 @@ struct Ball {
     x: Vector,
 }
 
-/// `run` on the operands, where either is a whole ball with a pole on or
-/// beside the other's curved surfaces, with that ball first charted about
-/// an axis whose poles stand clear; the history then runs from the
-/// operands as given. Where that refuses, and otherwise, `run` on the
-/// operands as given.
+/// `run` on the operands, where either is or holds a whole ball or a sphere
+/// face with a pole on or beside the other's surfaces, with that ball or
+/// face first charted about an axis whose poles stand clear; the history
+/// then runs from the operands as given. Where that refuses, and
+/// otherwise, `run` on the operands as given.
 pub(crate) fn with_poles_clear(
     model: &mut Model,
     a: &Shape,
@@ -80,108 +81,124 @@ fn turned(
     let mut any = false;
     let (mut ta, mut tb) = (a.clone(), b.clone());
     for (operand, other) in [(&mut ta, b), (&mut tb, a)] {
-        let Some(ball) = whole_ball(model, operand, tol)? else {
-            if let Some((made, history)) = faces_turned(model, operand, other, tol)? {
-                before = before.then(&history);
-                *operand = made;
-                any = true;
-            }
-            continue;
-        };
-        let walls = curved_surfaces_of(model, other, tol)?;
-        let flats = planes_of(model, other, tol)?;
-        let clearance = |p: Point| -> f64 {
-            let curved = walls
-                .iter()
-                .filter_map(|s| ogeom_algo::project_on_surface(s, p, 8, tol).ok())
-                .map(|found| found.distance)
-                .fold(f64::INFINITY, f64::min);
-            // A plane through the pole cuts a meridian, split there exactly;
-            // one a hair beside it cuts a small circle round the pole, whose
-            // image the chart cannot hold.
-            flats
-                .iter()
-                .map(|plane| plane.distance_to(p))
-                .filter(|d| *d > tol.confusion())
-                .fold(curved, f64::min)
-        };
-        let poles = |axis: Vector| {
-            clearance(ball.centre + axis * ball.radius)
-                .min(clearance(ball.centre - axis * ball.radius))
-        };
-        if poles(ball.axis) > ball.radius * TOUCHING {
-            continue;
+        if let Some((made, history)) = operand_turned(model, operand, other, tol)? {
+            before = before.then(&history);
+            *operand = made;
+            any = true;
         }
-        // Candidate axes in the ball's own frame: its other two axes, the
-        // diagonals of each pair, and the four diagonals of the cube. The
-        // one whose nearer pole stands furthest from the other's surfaces.
-        let candidates = candidate_axes(ball.x, ball.axis);
-        let x = ball.x;
-        let y = ball.axis.cross(ball.x);
-        let mut best: Option<(f64, Vector)> = None;
-        for candidate in candidates {
-            let Ok(axis) = candidate.normalized(tol) else {
-                continue;
-            };
-            let score = poles(axis);
-            if best.is_none_or(|(s, _)| score > s) {
-                best = Some((score, axis));
-            }
-        }
-        let Some((score, axis)) = best else {
-            continue;
-        };
-        if score <= ball.radius * TOUCHING {
-            continue;
-        }
-        // The seam on the side of the new axis that stands furthest from
-        // the other's surfaces, read at the seam's point on the equator.
-        let across = if axis.cross(x).magnitude() > 0.5 {
-            x
-        } else {
-            y
-        };
-        let Ok(u) = axis.cross(across).normalized(tol) else {
-            continue;
-        };
-        let w = axis.cross(u);
-        let seam = [u, -u, w, -w]
-            .into_iter()
-            .map(|d| (clearance(ball.centre + d * ball.radius), d))
-            .fold(None, |kept: Option<(f64, Vector)>, (c, d)| match kept {
-                Some((k, _)) if k >= c => kept,
-                _ => Some((c, d)),
-            })
-            .map_or(u, |(_, d)| d);
-        let frame = Frame::new(
-            ball.centre,
-            Direction::new(axis, tol)?,
-            Direction::new(seam, tol)?,
-            tol,
-        )?;
-        let made = make_sphere(model, frame, ball.radius, tol)?.shape;
-        let Some(face) = explore_unique(model, &made, ShapeType::Face)?
-            .first()
-            .cloned()
-        else {
-            continue;
-        };
-        before.modify(&ball.solid, made.clone());
-        for shell in explore_unique(model, &ball.solid, ShapeType::Shell)? {
-            for new_shell in explore_unique(model, &made, ShapeType::Shell)? {
-                before.modify(&shell, new_shell);
-            }
-        }
-        before.modify(&ball.face, face);
-        for kind in [ShapeType::Edge, ShapeType::Vertex] {
-            for sub in explore_unique(model, &ball.solid, kind)? {
-                before.delete(&sub);
-            }
-        }
-        *operand = made;
-        any = true;
     }
     Ok(any.then_some((ta, tb, before)))
+}
+
+/// `operand` with its ball, or its sphere faces, charted clear of `other`
+/// as [`turned`] states, and the history from `operand`; `None` where
+/// nothing needs it. A compound is taken member by member, each placed as
+/// the compound places it.
+fn operand_turned(
+    model: &mut Model,
+    operand: &Shape,
+    other: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Shape, History)>> {
+    if model.kind_of(operand)? == ShapeType::Compound {
+        let mut before = History::new();
+        let mut any = false;
+        let mut members = Vec::new();
+        for member in model.children_of(operand)? {
+            if let Some((made, history)) = operand_turned(model, &member, other, tol)? {
+                before = before.then(&history);
+                members.push(made);
+                any = true;
+            } else {
+                members.push(member);
+            }
+        }
+        if !any {
+            return Ok(None);
+        }
+        let made = model.add_compound(&members)?;
+        before.modify(operand, made.clone());
+        return Ok(Some((made, before)));
+    }
+    let Some(ball) = whole_ball(model, operand, tol)? else {
+        return faces_turned(model, operand, other, tol);
+    };
+    let walls = walls_of(model, other, tol)?;
+    let clearance = |p: Point| clearance_of(&walls, p, tol);
+    let poles = |axis: Vector| {
+        clearance(ball.centre + axis * ball.radius).min(clearance(ball.centre - axis * ball.radius))
+    };
+    if poles(ball.axis) > ball.radius * TOUCHING {
+        return Ok(None);
+    }
+    // Candidate axes in the ball's own frame: its other two axes, the
+    // diagonals of each pair, and the four diagonals of the cube. The
+    // one whose nearer pole stands furthest from the other's surfaces.
+    let candidates = candidate_axes(ball.x, ball.axis);
+    let x = ball.x;
+    let y = ball.axis.cross(ball.x);
+    let mut best: Option<(f64, Vector)> = None;
+    for candidate in candidates {
+        let Ok(axis) = candidate.normalized(tol) else {
+            continue;
+        };
+        let score = poles(axis);
+        if best.is_none_or(|(s, _)| score > s) {
+            best = Some((score, axis));
+        }
+    }
+    let Some((score, axis)) = best else {
+        return Ok(None);
+    };
+    if score <= ball.radius * TOUCHING {
+        return Ok(None);
+    }
+    // The seam on the side of the new axis that stands furthest from
+    // the other's surfaces, read at the seam's point on the equator.
+    let across = if axis.cross(x).magnitude() > 0.5 {
+        x
+    } else {
+        y
+    };
+    let Ok(u) = axis.cross(across).normalized(tol) else {
+        return Ok(None);
+    };
+    let w = axis.cross(u);
+    let seam = [u, -u, w, -w]
+        .into_iter()
+        .map(|d| (clearance(ball.centre + d * ball.radius), d))
+        .fold(None, |kept: Option<(f64, Vector)>, (c, d)| match kept {
+            Some((k, _)) if k >= c => kept,
+            _ => Some((c, d)),
+        })
+        .map_or(u, |(_, d)| d);
+    let frame = Frame::new(
+        ball.centre,
+        Direction::new(axis, tol)?,
+        Direction::new(seam, tol)?,
+        tol,
+    )?;
+    let made = make_sphere(model, frame, ball.radius, tol)?.shape;
+    let Some(face) = explore_unique(model, &made, ShapeType::Face)?
+        .first()
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    let mut before = History::new();
+    before.modify(&ball.solid, made.clone());
+    for shell in explore_unique(model, &ball.solid, ShapeType::Shell)? {
+        for new_shell in explore_unique(model, &made, ShapeType::Shell)? {
+            before.modify(&shell, new_shell);
+        }
+    }
+    before.modify(&ball.face, face);
+    for kind in [ShapeType::Edge, ShapeType::Vertex] {
+        for sub in explore_unique(model, &ball.solid, kind)? {
+            before.delete(&sub);
+        }
+    }
+    Ok(Some((made, before)))
 }
 
 /// The ball `shape` is, where it is a solid of one face on a sphere with no
@@ -246,15 +263,8 @@ fn whole_ball(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Opti
     }))
 }
 
-/// The curved surfaces of `shape`'s faces, placed in world space. A plane
-/// through a pole is left out: its section with the ball is a circle split
-/// at the pole with exact pcurves on both sides, and the ball's own chart
-/// arranges it as it stands.
-fn curved_surfaces_of(
-    model: &Model,
-    shape: &Shape,
-    tol: Tolerances,
-) -> OgeomResult<Vec<SurfaceGeometry>> {
+/// The surfaces of `shape`'s faces, placed in world space.
+fn walls_of(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Vec<SurfaceGeometry>> {
     let mut out = Vec::new();
     for face in explore_unique(model, shape, ShapeType::Face)? {
         let Some(NodeData::Face(data)) = model.node(&face).map(|n| n.data()) else {
@@ -263,32 +273,28 @@ fn curved_surfaces_of(
         let Some(surface) = model.geometry().surface(data.surface) else {
             continue;
         };
-        if matches!(surface, SurfaceGeometry::Plane(_)) {
-            continue;
-        }
         out.push(surface.transformed(&face.transform(model.datums())?, tol)?);
     }
     Ok(out)
 }
 
-/// The planes of `shape`'s faces, placed in world space.
-fn planes_of(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Vec<ogeom_math::Plane>> {
-    let mut out = Vec::new();
-    for face in explore_unique(model, shape, ShapeType::Face)? {
-        let Some(NodeData::Face(data)) = model.node(&face).map(|n| n.data()) else {
-            continue;
-        };
-        let Some(surface @ SurfaceGeometry::Plane(_)) = model.geometry().surface(data.surface)
-        else {
-            continue;
-        };
-        if let SurfaceGeometry::Plane(placed) =
-            surface.transformed(&face.transform(model.datums())?, tol)?
-        {
-            out.push(placed.plane());
-        }
-    }
-    Ok(out)
+/// How far `p`, a pole, stands from `walls`: the nearest of its distances
+/// to their curved surfaces, and to their planes other than one through
+/// it. A plane through the pole cuts a meridian, split there exactly; one
+/// a hair beside it cuts a small circle round the pole, whose image the
+/// chart cannot hold.
+fn clearance_of(walls: &[SurfaceGeometry], p: Point, tol: Tolerances) -> f64 {
+    walls
+        .iter()
+        .filter_map(|wall| match wall {
+            SurfaceGeometry::Plane(plane) => {
+                Some(plane.plane().distance_to(p)).filter(|d| *d > tol.confusion())
+            }
+            _ => ogeom_algo::project_on_surface(wall, p, 8, tol)
+                .ok()
+                .map(|found| found.distance),
+        })
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// Candidate axes in a ball's own frame (`x` and its axis `z`): its three
@@ -344,7 +350,7 @@ type Split = (Shape, Vec<Shape>);
 type Started = (Vec<Shape>, Shape, Vec<Split>);
 
 /// `solid` with each sphere face whose pole stands on or beside `other`'s
-/// curved surfaces restated on a chart whose poles stand clear, and what
+/// surfaces restated on a chart whose poles stand clear, and what
 /// became of the shapes it replaced; `None` where no face needs it or none
 /// can be restated, or the restated solid does not hold.
 ///
@@ -448,7 +454,7 @@ fn rigid_faces_turned(
                 let walls = match &walls {
                     Some(w) => w,
                     None => walls.insert(
-                        curved_surfaces_of(model, other, tol)?
+                        walls_of(model, other, tol)?
                             .iter()
                             .map(|w| w.transformed(&to_local, tol))
                             .collect::<OgeomResult<_>>()?,
@@ -718,19 +724,17 @@ fn face_turned(
     walls: &[SurfaceGeometry],
     tol: Tolerances,
 ) -> OgeomResult<Option<(Shape, Vec<Split>)>> {
-    let clearance = |p: Point| -> f64 {
-        walls
-            .iter()
-            .filter_map(|s| ogeom_algo::project_on_surface(s, p, 8, tol).ok())
-            .map(|found| found.distance)
-            .fold(f64::INFINITY, f64::min)
-    };
-    let (centre, radius) = (pinned.sphere.centre(), pinned.sphere.radius());
-    if pinned
-        .poles
+    // The curved walls rank the candidate axes, as for a face no plane
+    // stands beside; the planes, a pole beside which turns the chart as a
+    // curved wall's does, only bar an axis whose pole they pass beside.
+    let (flats, curved): (Vec<SurfaceGeometry>, Vec<SurfaceGeometry>) = walls
         .iter()
-        .all(|&p| clearance(p) > radius * TOUCHING)
-    {
+        .cloned()
+        .partition(|w| matches!(w, SurfaceGeometry::Plane(_)));
+    let clearance = |p: Point| clearance_of(&curved, p, tol);
+    let (centre, radius) = (pinned.sphere.centre(), pinned.sphere.radius());
+    let beside = |p: Point| clearance_of(walls, p, tol) <= radius * TOUCHING;
+    if !pinned.poles.iter().any(|&p| beside(p)) {
         return Ok(None);
     }
     let mut trim: Vec<Point> = Vec::new();
@@ -750,6 +754,12 @@ fn face_turned(
         };
         let ends = [centre + axis * radius, centre - axis * radius];
         if ends.iter().any(|&p| near_trim(p) <= radius * CLEAR_OF_TRIM) {
+            continue;
+        }
+        if ends
+            .iter()
+            .any(|&p| clearance_of(&flats, p, tol) <= radius * TOUCHING)
+        {
             continue;
         }
         let score = clearance(ends[0]).min(clearance(ends[1]));
