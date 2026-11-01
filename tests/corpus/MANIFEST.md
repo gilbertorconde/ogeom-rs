@@ -491,3 +491,15 @@ whole. The wedge's torus meets the junction's drafted wall all but
 tangentially. The reproducer for a section whose fit swung between two
 samples: it stated a tolerance of 0.156, and the fuse came out a valid
 solid of 0.1191 where the junction alone is 0.1368.
+
+## drum_in_inches_and_degrees.step
+
+Authored for this project (written by hand, then committed): a drum an inch
+round and two inches tall in inches and degrees, every edge dressed as a
+`SURFACE_CURVE` or `SEAM_CURVE` with the pcurves its faces take, the way a
+foreign exporter writes them: the wall's in degrees round and inches up
+(the seam's second side at 360), each cap's a circle an inch round, the
+bottom cap's frame facing down and turned 30 degrees so its circle runs the
+other way round from its edge's and a twelfth of a turn on. The reproducer
+for pcurves read without the file's units. Its volume is π·25.4²·50.8 mm³.
+This repository's own licence (LGPL-2.1-only).

@@ -275,4 +275,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 510ebcfef4464cd3 -->
+<!-- ledger-checksum: 5dd4887c53632096 -->

@@ -13,6 +13,11 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`StepReport` counts the file's pcurves kept and derived.**
+  - `pcurves_kept` and `pcurves_derived` count each face's use of an edge
+    whose pcurve the file states: kept as stated, or derived because the
+    file's stood farther from the edge.
+
 - **`fillet_faces` rounds every corner two faces share.**
   - Where the faces' surfaces share a direction or an axis and cross in
     more than one corner the ball touches both faces in (the walls of two
@@ -118,6 +123,25 @@ bump may break the API and a patch bump may not.
     fit of 2e-4, and meets both faces within a tenth of a degree.
 
 ### Fixed
+
+- **A STEP file's pcurves are read in its own units, and at another pace
+  than their curve's.**
+  - The reader kept a file's pcurve only where it lifted onto its edge as
+    written, so a file in inches or degrees had most of its pcurves
+    derived instead, and so did a pcurve its writer ran the other way
+    round from its curve or over a parameter of its own. Each pcurve is
+    now restated in millimetres and radians, each surface parameter by
+    its own unit as ISO 10303-42 parameterizes the surface (a plane's two
+    lengths, a cylinder's or cone's angle and length, a sphere's or
+    torus's two angles, a spline's own), and its parameter carried onto
+    the curve's. One that still misses is tried read at the affine map of
+    the curve's parameter that puts it on the edge's ends: a circle either
+    way round and turned, an ellipse turned by half turns, a line at any
+    pace, a spline over its own domain either way. Each is held to the
+    same bound as before. A drum in inches and degrees, its bottom cap's
+    circle stated the other way round and turned, keeps all five of its
+    pcurves where it kept two; a box and a drum whose pcurve lines run at
+    half their curves' pace keep every pcurve where they kept none.
 
 - **Two walls leaning a hair apart fuse where they cross beside an edge.**
   - A box whose wall leans 1e-5 or 1e-4 radians off a cube's wall,

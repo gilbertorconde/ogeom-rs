@@ -80,6 +80,13 @@ pub struct StepReport {
     /// refused id whose face never finished building has nothing to act on
     /// and stays in the warnings alone.
     pub untrimmed_faces: Vec<UntrimmedFace>,
+    /// Edges on faces whose pcurve the file states and the reader kept: it
+    /// follows the edge's curve, once lifted, as closely as a derived one.
+    /// Each face's use of an edge counts once.
+    pub pcurves_kept: usize,
+    /// Edges on faces whose pcurve the file states but the reader derived
+    /// instead, the file's standing farther from the edge's curve.
+    pub pcurves_derived: usize,
 }
 
 /// One kind of imperfect import, counted rather than repeated.
@@ -307,7 +314,8 @@ struct Reader<'a> {
     callout_index: FastMap<u64, usize>,
     /// `(face, edge)` → the pcurve already derived for it, from the parallel
     /// pass at the head of each solid.
-    pcurves: FastMap<(u64, u64), PreparedPcurve>,
+    /// The flag says whether the file stated a pcurve for it.
+    pcurves: FastMap<(u64, u64), (PreparedPcurve, bool)>,
     /// Edge → the pieces it was cut into where its curve runs through a
     /// pole of a face it bounds, each under a key of its own that stands in
     /// for the edge's id wherever a face's bound names it.
@@ -1461,7 +1469,8 @@ impl<'a> Reader<'a> {
         let Ok(args) = self.args(edge_id, "EDGE_CURVE") else {
             return out;
         };
-        let Ok(instance) = self.instance(ref_at(args, 3)) else {
+        let curve_id = ref_at(args, 3);
+        let Ok(instance) = self.instance(curve_id) else {
             return out;
         };
         let Some(dressed) = instance
@@ -1500,7 +1509,131 @@ impl<'a> Reader<'a> {
                 out.push(curve);
             }
         }
+        // Restated in this kernel's units where the file's are known; a
+        // pcurve that has no image here at the same parameters stays as
+        // written.
+        if !out.is_empty()
+            && let (Some(chart), Some(pace)) =
+                (self.chart_units(surface_id), self.curve_units(curve_id))
+        {
+            for pcurve in &mut out {
+                if let Some(restated) =
+                    in_kernel_units(pcurve, chart, pace, self.angle_scale, self.tol)
+                {
+                    *pcurve = restated;
+                }
+            }
+        }
         out
+    }
+
+    /// How a surface's parameters here follow the file's: this kernel's `u`
+    /// and `v` per file unit of each, as ISO 10303-42 parameterizes the
+    /// surface. A plane's are lengths; a cylinder's and a cone's `u` is an
+    /// angle and `v` a length along the axis; a sphere's and a torus's are
+    /// both angles; a spline's are its own; a revolution's are the angle
+    /// round its axis and its curve's parameter; an extrusion's are its
+    /// curve's parameter and a length along its vector. `None` for a
+    /// surface whose chart here is not the file's stretched along each
+    /// direction (a line swept into a plane, whose sweep may lean on it).
+    fn chart_units(&mut self, id: u64) -> Option<(f64, f64)> {
+        let (keyword, args) = {
+            let instance = self.instance(id).ok()?;
+            if [
+                "B_SPLINE_SURFACE",
+                "B_SPLINE_SURFACE_WITH_KNOTS",
+                "BEZIER_SURFACE",
+                "UNIFORM_SURFACE",
+                "QUASI_UNIFORM_SURFACE",
+            ]
+            .into_iter()
+            .any(|k| instance.part(k).is_some())
+            {
+                return Some((1.0, 1.0));
+            }
+            (
+                instance.keyword(),
+                instance
+                    .parts
+                    .first()
+                    .map_or(&[][..], |(_, a)| a.as_slice()),
+            )
+        };
+        let (length, angle) = (self.report.scale_mm, self.angle_scale);
+        match keyword {
+            "PLANE" => Some((length, length)),
+            "CYLINDRICAL_SURFACE" | "CONICAL_SURFACE" => Some((angle, length)),
+            "SPHERICAL_SURFACE" | "TOROIDAL_SURFACE" | "DEGENERATE_TOROIDAL_SURFACE" => {
+                Some((angle, angle))
+            }
+            "OFFSET_SURFACE" | "RECTANGULAR_TRIMMED_SURFACE" | "CURVE_BOUNDED_SURFACE" => {
+                self.chart_units(ref_at(args, 1))
+            }
+            "SURFACE_OF_REVOLUTION" => Some((angle, self.curve_units(ref_at(args, 1))?)),
+            "SURFACE_OF_LINEAR_EXTRUSION" => {
+                let along = self.curve_units(ref_at(args, 1))?;
+                let vector = self.args(ref_at(args, 2), "VECTOR").ok()?;
+                let magnitude = vector.get(2).and_then(Arg::number).unwrap_or(1.0);
+                let direction = self.direction(vector[1].reference()?).ok()?;
+                let across = magnitude * length;
+                // The reader takes a circle swept along its axis for the
+                // cylinder it is, whose heights run along the circle's
+                // axis, with the sweep or against it.
+                match self.surface(id).ok()?? {
+                    SurfaceGeometry::Cylinder(c) => {
+                        let z = c.cylinder().frame().z();
+                        Some((along, across.copysign(direction.vector().dot(z.vector()))))
+                    }
+                    SurfaceGeometry::Extrusion(_) => Some((along, across)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// How a curve's parameter here follows the file's: this kernel's per
+    /// file unit, as ISO 10303-42 parameterizes the curve. A line's runs
+    /// by its vector, a length; a circle's and an ellipse's are angles; a
+    /// hyperbola's and a spline's are their own; a parabola's here is the
+    /// distance along its axis's normal, twice its focal length per file
+    /// unit. `None` for a curve not read that way.
+    fn curve_units(&mut self, id: u64) -> Option<f64> {
+        let (keyword, args) = {
+            let instance = self.instance(id).ok()?;
+            if [
+                "B_SPLINE_CURVE",
+                "B_SPLINE_CURVE_WITH_KNOTS",
+                "BEZIER_CURVE",
+                "UNIFORM_CURVE",
+                "QUASI_UNIFORM_CURVE",
+            ]
+            .into_iter()
+            .any(|k| instance.part(k).is_some())
+            {
+                return Some(1.0);
+            }
+            (
+                instance.keyword(),
+                instance
+                    .parts
+                    .first()
+                    .map_or(&[][..], |(_, a)| a.as_slice()),
+            )
+        };
+        let length = self.report.scale_mm;
+        match keyword {
+            "LINE" => {
+                let vector = self.args(ref_at(args, 2), "VECTOR").ok()?;
+                Some(vector.get(2).and_then(Arg::number).unwrap_or(1.0) * length)
+            }
+            "CIRCLE" | "ELLIPSE" => Some(self.angle_scale),
+            "HYPERBOLA" => Some(1.0),
+            "PARABOLA" => Some(2.0 * args.get(2).and_then(Arg::number)? * length),
+            "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" | "TRIMMED_CURVE"
+            | "OFFSET_CURVE_3D" => self.curve_units(ref_at(args, 1)),
+            _ => None,
+        }
     }
 
     /// A curve in a surface's parameters, its coordinates as written: a
@@ -2822,13 +2955,22 @@ impl<'a> Reader<'a> {
         // already derived it. The fallbacks below serve the faces no pass
         // covered: a face reached outside a solid walk, or one whose
         // preparation refused.
-        let prepared = match self.pcurves.remove(&(face_id, edge_id)) {
+        let (prepared, offered) = match self.pcurves.remove(&(face_id, edge_id)) {
             Some(prepared) => prepared,
             None => {
                 let stated = self.stated_pcurves(face_id, edge_id);
-                derive_pcurve(curve, range, surface, &stated, self.tol)
+                let offered = !stated.is_empty();
+                (
+                    derive_pcurve(curve, range, surface, &stated, self.tol),
+                    offered,
+                )
             }
         };
+        if matches!(prepared, PreparedPcurve::Stated { .. }) {
+            self.report.pcurves_kept += 1;
+        } else if offered {
+            self.report.pcurves_derived += 1;
+        }
         let (pcurve, off) = match prepared {
             PreparedPcurve::Exact { curve, off } | PreparedPcurve::Stated { curve, off } => {
                 (crate::pcurves::over_range(&curve, range), off)
@@ -3104,7 +3246,8 @@ impl<'a> Reader<'a> {
             )
         });
         for (job, pcurve) in jobs.iter().zip(derived) {
-            self.pcurves.insert((job.face, job.edge), pcurve);
+            self.pcurves
+                .insert((job.face, job.edge), (pcurve, !job.stated.is_empty()));
         }
     }
 
@@ -4754,12 +4897,40 @@ fn derive_pcurve(
         PreparedPcurve::Fitted { off, worst_off, .. } => Some(off.max(*worst_off)),
         PreparedPcurve::Stated { .. } | PreparedPcurve::Refused(_) => None,
     };
-    match (nearest, allowed) {
-        (Some((curve, off)), Some(allowed)) if off <= 2.0f64.mul_add(allowed, tol.confusion()) => {
-            PreparedPcurve::Stated { curve, off }
-        }
-        _ => derived,
+    let Some(allowed) = allowed else {
+        return derived;
+    };
+    let bound = 2.0f64.mul_add(allowed, tol.confusion());
+    if let Some((curve, off)) = nearest
+        && off <= bound
+    {
+        return PreparedPcurve::Stated { curve, off };
     }
+    // The file may state the boundary at another pace or phase than its
+    // curve's: a conic its frame runs the other way round, a line or a
+    // spline over a parameter of its own. Each read at the map of the
+    // curve's parameter that puts it on the edge's ends is the same
+    // boundary, and is held to the same bound.
+    let ends = match &derived {
+        PreparedPcurve::Exact { curve: image, .. }
+        | PreparedPcurve::Fitted { curve: image, .. } => image
+            .point_at(range.0, tol)
+            .ok()
+            .zip(image.point_at(range.1, tol).ok()),
+        PreparedPcurve::Stated { .. } | PreparedPcurve::Refused(_) => None,
+    };
+    if let Some(ends) = ends {
+        let repaced: Vec<PlanarCurve> = stated
+            .iter()
+            .flat_map(|pcurve| repaced(pcurve, range, ends, tol))
+            .collect();
+        if let Some((curve, off)) = nearest_stated(curve, range, surface, &repaced, tol)
+            && off <= bound
+        {
+            return PreparedPcurve::Stated { curve, off };
+        }
+    }
+    derived
 }
 
 /// The file's pcurve nearest the curve once lifted, with how far it
@@ -4851,6 +5022,269 @@ fn period_shifted(pcurve: &PlanarCurve, delta: f64) -> Option<PlanarCurve> {
         }
         _ => None,
     }
+}
+
+/// A file's pcurve in this kernel's parameters: its chart's coordinates
+/// stretched from the file's units, `u` by `su` and `v` by `sv`, and its
+/// parameter carried onto the edge's curve's here, which runs `pace` per
+/// file unit. A conic as read already runs in radians, `angle` per file
+/// unit; a line and a spline run in the file's own. `None` where no curve
+/// here states the image at the curve's parameters: a conic paced unlike
+/// its curve or stretched unevenly.
+fn in_kernel_units(
+    pcurve: &PlanarCurve,
+    (su, sv): (f64, f64),
+    pace: f64,
+    angle: f64,
+    tol: Tolerances,
+) -> Option<PlanarCurve> {
+    let own = match pcurve {
+        PlanarCurve::Circle(_) | PlanarCurve::Ellipse(_) => angle,
+        _ => 1.0,
+    };
+    if su == 1.0 && sv == 1.0 && own == pace {
+        return Some(pcurve.clone());
+    }
+    match pcurve {
+        PlanarCurve::Line(l) => {
+            // Stretched, the line runs `speed` along its new direction per
+            // unit of its parameter; at the curve's `t` it stands at
+            // `t·own/pace` along that parameter. The speed is the stretch
+            // itself along an axis, so a line in the file's own pace comes
+            // out at exactly this kernel's.
+            let axis = l.axis();
+            let d = axis.direction.vector();
+            let along = ogeom_math::Vector2::new(d.x * su, d.y * sv);
+            let speed = if su == sv || d.y == 0.0 {
+                su.abs()
+            } else if d.x == 0.0 {
+                sv.abs()
+            } else {
+                along.magnitude()
+            };
+            let origin = ogeom_math::Point2::new(axis.location.x * su, axis.location.y * sv);
+            let line =
+                ogeom_math::Axis2::new(origin, ogeom_math::Direction2::new(along, tol).ok()?);
+            let (lo, hi) = l.domain();
+            let stretched: PlanarCurve = ogeom_geom::Line2d::over(line, lo * speed, hi * speed)
+                .ok()?
+                .into();
+            paced(&stretched, speed * own / pace, 0.0, tol)
+        }
+        PlanarCurve::Circle(_) | PlanarCurve::Ellipse(_) => {
+            if own != pace {
+                return None;
+            }
+            pcurve.stretched(su, sv, tol).ok()
+        }
+        PlanarCurve::BSpline(_) => {
+            let stretched = pcurve.stretched(su, sv, tol).ok()?;
+            paced(&stretched, own / pace, 0.0, tol)
+        }
+        _ => None,
+    }
+}
+
+/// A pcurve read at an affine map of the curve's parameter: at `t`, the
+/// point `pcurve` has at `a·t + b`. Exact for each kind it answers: a line
+/// (straight at any pace, a line of its own at a pace of one either way), a
+/// spline (its knots carried back through the map), a circle at a pace of
+/// one either way (its frame turned by the phase), and an ellipse the same
+/// at a phase of whole half turns, the only ones its frame turns through
+/// with its axes as they are. `None` for anything else.
+fn paced(pcurve: &PlanarCurve, a: f64, b: f64, tol: Tolerances) -> Option<PlanarCurve> {
+    use ogeom_geom::Reversible as _;
+    if !a.is_finite() || !b.is_finite() || a == 0.0 {
+        return None;
+    }
+    if a == 1.0 && b == 0.0 {
+        return Some(pcurve.clone());
+    }
+    // Where the map sends each end of the pcurve's own domain, in order.
+    let back = |lo: f64, hi: f64| {
+        let (x, y) = ((lo - b) / a, (hi - b) / a);
+        (x.min(y), x.max(y))
+    };
+    match pcurve {
+        PlanarCurve::Line(l) => {
+            let axis = l.axis();
+            let (lo, hi) = l.domain();
+            let (from, to) = back(lo, hi);
+            if a.abs() == 1.0 {
+                let direction = if a > 0.0 {
+                    axis.direction
+                } else {
+                    axis.direction.reversed()
+                };
+                let line = ogeom_math::Axis2::new(axis.point_at(b), direction);
+                return ogeom_geom::Line2d::over(line, from, to)
+                    .ok()
+                    .map(Into::into);
+            }
+            let at = |t: f64| axis.point_at(a.mul_add(t, b));
+            let knots = KnotVector::new(vec![from, from, to, to], 1).ok()?;
+            ogeom_geom::BSpline2d::new(knots, vec![at(from), at(to)], tol)
+                .ok()
+                .map(Into::into)
+        }
+        PlanarCurve::BSpline(spline) => {
+            let mut knots: Vec<f64> = spline.knots().knots().iter().map(|k| (k - b) / a).collect();
+            let mut control = spline.control_points().to_vec();
+            if a < 0.0 {
+                knots.reverse();
+                control.reverse();
+            }
+            let knots = KnotVector::new(knots, spline.knots().degree()).ok()?;
+            ogeom_geom::BSpline2d::rational(knots, control)
+                .ok()
+                .map(Into::into)
+        }
+        PlanarCurve::Circle(c) if a.abs() == 1.0 => {
+            // At `τ` the circle stands at angle `σ·τ` in its frame, `σ`
+            // the way it runs; at `a·t + b` that is `σ·a·t + σ·b`.
+            let sense = if c.is_reversed() { -1.0 } else { 1.0 };
+            let circle = c.circle();
+            let frame = circle.frame();
+            let (sin, cos) = (sense * b).sin_cos();
+            let (x, y) = (frame.x().vector(), frame.y().vector());
+            let turned = ogeom_math::Frame2::from_axes(
+                frame.origin(),
+                ogeom_math::Direction2::new(x * cos + y * sin, tol).ok()?,
+                ogeom_math::Direction2::new(y * cos - x * sin, tol).ok()?,
+                tol,
+            )
+            .ok()?;
+            let out: PlanarCurve = ogeom_geom::Circle2d::new(
+                ogeom_math::Circle2::new(turned, circle.radius(), tol).ok()?,
+            )
+            .into();
+            Some(if sense * a < 0.0 { out.reversed() } else { out })
+        }
+        PlanarCurve::Ellipse(e) if a.abs() == 1.0 => {
+            let half_turns = (b / core::f64::consts::PI).round();
+            if core::f64::consts::PI * half_turns != b {
+                return None;
+            }
+            let sense = if e.is_reversed() { -1.0 } else { 1.0 };
+            let ellipse = e.ellipse();
+            let frame = ellipse.frame();
+            let frame = if half_turns.rem_euclid(2.0) == 0.0 {
+                frame
+            } else {
+                ogeom_math::Frame2::from_axes(
+                    frame.origin(),
+                    frame.x().reversed(),
+                    frame.y().reversed(),
+                    tol,
+                )
+                .ok()?
+            };
+            let out: PlanarCurve = ogeom_geom::Ellipse2d::new(
+                ogeom_math::Ellipse2::new(
+                    frame,
+                    ellipse.major_radius(),
+                    ellipse.minor_radius(),
+                    tol,
+                )
+                .ok()?,
+            )
+            .into();
+            Some(if sense * a < 0.0 { out.reversed() } else { out })
+        }
+        _ => None,
+    }
+}
+
+/// The ways a file's pcurve may follow the edge's curve at another pace or
+/// phase than the curve's own, each read at an affine map of the curve's
+/// parameter that puts its ends where `ends` stand in the chart (the
+/// edge's ends there, from a pcurve derived for it): forward and reversed
+/// at the curve's own pace, and a line at the pace its two ends ask for, a
+/// spline over its own domain either way.
+fn repaced(
+    pcurve: &PlanarCurve,
+    range: (f64, f64),
+    ends: (ogeom_math::Point2, ogeom_math::Point2),
+    tol: Tolerances,
+) -> Vec<PlanarCurve> {
+    // A straight spline of two points (a line the file paces other than
+    // by length) is the line through them, at whatever pace it runs.
+    let line;
+    let pcurve = match pcurve {
+        PlanarCurve::BSpline(spline)
+            if spline.knots().degree() == 1
+                && !spline.is_rational()
+                && let [from, to] = spline.control_points() =>
+        {
+            let (from, to) = (from.point(), to.point());
+            let Ok(segment) = ogeom_geom::Line2d::segment(from, to, tol) else {
+                return Vec::new();
+            };
+            line = PlanarCurve::from(segment);
+            &line
+        }
+        _ => pcurve,
+    };
+    let span = range.1 - range.0;
+    // The parameter of the pcurve's point nearest `w`, for the kinds that
+    // have it in closed form.
+    let foot = |w: ogeom_math::Point2| -> Option<f64> {
+        match pcurve {
+            PlanarCurve::Line(l) => {
+                let axis = l.axis();
+                Some((w - axis.location).dot(axis.direction.vector()))
+            }
+            PlanarCurve::Circle(c) => {
+                let frame = c.circle().frame();
+                let r = w - frame.origin();
+                let angle = r.dot(frame.y().vector()).atan2(r.dot(frame.x().vector()));
+                Some(if c.is_reversed() { -angle } else { angle })
+            }
+            PlanarCurve::Ellipse(e) => {
+                let ellipse = e.ellipse();
+                let frame = ellipse.frame();
+                let r = w - frame.origin();
+                let angle = (r.dot(frame.y().vector()) / ellipse.minor_radius())
+                    .atan2(r.dot(frame.x().vector()) / ellipse.major_radius());
+                Some(if e.is_reversed() { -angle } else { angle })
+            }
+            _ => None,
+        }
+    };
+    let mut maps: Vec<(f64, f64)> = Vec::new();
+    match pcurve {
+        PlanarCurve::BSpline(spline) => {
+            let (lo, hi) = spline.domain();
+            let rate = (hi - lo) / span;
+            maps.push((rate, rate.mul_add(-range.0, lo)));
+            maps.push((-rate, rate.mul_add(range.0, hi)));
+        }
+        PlanarCurve::Line(_) | PlanarCurve::Circle(_) | PlanarCurve::Ellipse(_) => {
+            let Some(start) = foot(ends.0) else {
+                return Vec::new();
+            };
+            for a in [1.0_f64, -1.0] {
+                let b = a.mul_add(-range.0, start);
+                // An ellipse's frame turns only by whole half turns.
+                let b = if matches!(pcurve, PlanarCurve::Ellipse(_)) {
+                    core::f64::consts::PI * (b / core::f64::consts::PI).round()
+                } else {
+                    b
+                };
+                maps.push((a, b));
+            }
+            if let PlanarCurve::Line(_) = pcurve
+                && let Some(end) = foot(ends.1)
+            {
+                let rate = (end - start) / span;
+                maps.push((rate, rate.mul_add(-range.0, start)));
+            }
+        }
+        _ => {}
+    }
+    maps.into_iter()
+        .filter_map(|(a, b)| paced(pcurve, a, b, tol))
+        .collect()
 }
 
 /// Whether a pcurve's image over a range stays inside the surface's chart
@@ -5364,6 +5798,73 @@ mod tests {
     use super::*;
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// A pcurve read at an affine map of the parameter is the same curve
+    /// at the mapped parameter, for each kind and each way round: a line
+    /// at a pace of one and at another, a circle reversed and turned, an
+    /// ellipse turned a half turn, a spline reversed and slowed. Rounding
+    /// in the turned frame's sines is all that stands between the two.
+    #[test]
+    fn a_pcurve_paced_is_the_same_curve_at_the_mapped_parameter() {
+        use ogeom_math::{Direction2, Frame2, Point2};
+        let frame = Frame2::new(Point2::new(1.0, -2.0), Direction2::from_angle(0.3));
+        let curves: Vec<PlanarCurve> = vec![
+            ogeom_geom::Line2d::over(
+                ogeom_math::Axis2::new(Point2::new(0.5, 1.0), Direction2::from_angle(1.1)),
+                -10.0,
+                10.0,
+            )
+            .unwrap()
+            .into(),
+            ogeom_geom::Circle2d::new(ogeom_math::Circle2::new(frame, 2.0, T).unwrap()).into(),
+            ogeom_geom::Ellipse2d::new(ogeom_math::Ellipse2::new(frame, 3.0, 1.0, T).unwrap())
+                .into(),
+            ogeom_geom::BSpline2d::new(
+                KnotVector::new(vec![0.0, 0.0, 0.0, 2.0, 5.0, 5.0, 5.0], 2).unwrap(),
+                vec![
+                    Point2::new(0.0, 0.0),
+                    Point2::new(1.0, 3.0),
+                    Point2::new(4.0, 2.0),
+                    Point2::new(6.0, -1.0),
+                ],
+                T,
+            )
+            .unwrap()
+            .into(),
+        ];
+        let pi = core::f64::consts::PI;
+        let maps: [&[(f64, f64)]; 4] = [
+            &[(1.0, 2.5), (-1.0, 0.75), (0.4, -1.0)],
+            &[(1.0, 0.7), (-1.0, 0.7), (-1.0, -2.0)],
+            &[(1.0, pi), (-1.0, pi), (-1.0, 0.0)],
+            &[(0.5, 1.0), (-2.0, 4.0)],
+        ];
+        for (curve, maps) in curves.iter().zip(maps) {
+            for &(a, b) in maps {
+                let paced = paced(curve, a, b, T).unwrap();
+                let (lo, hi) = curve.domain();
+                let ((from, to), at) = if curve.is_periodic() {
+                    ((0.0, 6.0), 6)
+                } else {
+                    let (x, y) = ((lo - b) / a, (hi - b) / a);
+                    ((x.min(y), x.max(y)), 8)
+                };
+                for i in 0..=at {
+                    let t = from + (to - from) * f64::from(i) / f64::from(at);
+                    let want = curve.point_at(a.mul_add(t, b), T).unwrap();
+                    let got = paced.point_at(t, T).unwrap();
+                    assert!(
+                        got.distance(want) <= 1e-12,
+                        "{curve:?} at {a}·t + {b}, t = {t}: {got:?} against {want:?}"
+                    );
+                }
+            }
+        }
+        // An ellipse turns only by whole half turns, a conic only at a pace
+        // of one.
+        assert!(paced(&curves[2], 1.0, 0.5, T).is_none());
+        assert!(paced(&curves[1], 2.0, 0.0, T).is_none());
+    }
 
     /// An edge's window between the feet of vertices standing on the
     /// curve short of its ends: taken in the curve's order, refused where

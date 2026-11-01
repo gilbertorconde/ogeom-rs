@@ -271,11 +271,20 @@ distance should widen only where many fits press, or for the pressing
 region alone.
 
 **STEP pcurves the file cannot state exactly.** The reader keeps a file's
-pcurve where its lifted gap is within twice the projection's. A pcurve the
-file cannot state in the curve's parameter (a reversed or left-handed conic,
-a trig or offset trace, a curve written as a spline conversion) is derived on
-reading. A foreign file's pcurves are read without its length or angle unit,
-so one in inches or degrees fails the gap test and is derived.
+pcurve where its lifted gap is within twice the projection's, restated in
+this kernel's units (the file's length and plane angle units, applied to
+each surface parameter as ISO 10303-42 parameterizes the surface) and,
+where the file states it at another pace or phase than its curve's, read
+at the affine map of the curve's parameter that puts it on the edge's
+ends: a conic either way round and turned, a line at any pace, a spline
+over its own domain either way. Still derived: a trig or offset trace and
+a pcurve of a curve written as a spline conversion, none of which STEP
+states at a linear map of the curve's parameter; an ellipse turned other
+than by half turns; a conic on a chart stretched unevenly; and pcurves on
+a line swept into a plane or on a surface replica, whose charts here are
+not the file's stretched along each direction. The writer still leaves out
+a reversed conic pcurve: written forward, it would ask other readers to
+take a pcurve at another pace than its curve.
 
 **Edges through a pole on reading.** Both readers cut an edge through a pole
 of a face it bounds (a sphere's pole, a cone's apex, a patch's collapsed side)

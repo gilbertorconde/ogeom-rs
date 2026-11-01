@@ -188,3 +188,131 @@ fn pcurves_written_with_their_edges_come_back_as_written() {
         );
     }
 }
+
+fn corpus(name: &str) -> String {
+    let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
+    std::fs::read_to_string(path).expect("the corpus file is committed")
+}
+
+/// A drum an inch round and two tall, written in inches and degrees with
+/// every pcurve its faces take: the wall's in degrees round and inches up
+/// (its seam's second side at 360), each cap's a circle an inch round, and
+/// the bottom cap's running the other way round from its edge's circle and
+/// a twelfth of a turn on, as the cap's frame faces down and is turned. Every
+/// one is kept, the solid is valid with the drum's volume, and written back
+/// out in millimetres the pcurves the writer states come back kept too.
+#[test]
+fn pcurves_in_inches_and_degrees_are_kept() {
+    let text = corpus("drum_in_inches_and_degrees.step");
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let report = &import.report;
+    assert_eq!(report.scale_mm, 25.4);
+    // The wall takes three edges, each cap one.
+    assert_eq!(
+        (report.pcurves_kept, report.pcurves_derived),
+        (5, 0),
+        "every stated pcurve is kept"
+    );
+    let [solid] = import.solids.as_slice() else {
+        panic!("{} solids", import.solids.len());
+    };
+    let model = import.document.model();
+    let diagnosis = ogeom::algo::check(model, solid, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let fine = Deflection::with_chord(1e-4).unwrap();
+    let volume = |model: &Model, solid| {
+        ogeom::algo::volume_properties(model, solid, fine, T)
+            .unwrap()
+            .mass
+    };
+    let drum = core::f64::consts::PI * 25.4 * 25.4 * 50.8;
+    // A chord of 1e-4 mm on a 25.4 mm circle leaves the caps' polygons
+    // short of the disc by under 1e-5 of it.
+    let read = volume(model, solid);
+    assert!((read - drum).abs() <= drum * 1e-5, "{read} against {drum}");
+
+    let text = ogeom::io::write_step(&import.document, T).unwrap();
+    let again = ogeom::io::read_step(&text, T).unwrap();
+    let [back] = again.solids.as_slice() else {
+        panic!("{} solids came back", again.solids.len());
+    };
+    let back_model = again.document.model();
+    assert!(ogeom::algo::check(back_model, back, T).unwrap().is_valid());
+    assert!(again.report.pcurves_kept > 0, "the writer states pcurves");
+    assert_eq!(again.report.pcurves_derived, 0, "and each comes back kept");
+    let (same, total) = pcurves::kept((model, solid), (back_model, back), T);
+    assert_eq!(same, total, "the pcurves come back as read");
+    // The same geometry and the same trims, meshed at the same chord.
+    let after = volume(back_model, back);
+    assert!(
+        (after - read).abs() <= read * 1e-9,
+        "{read} out, {after} back"
+    );
+}
+
+/// A box and a drum written with their pcurves, each pcurve line's vector
+/// then doubled: the file states every boundary at half the pace of its
+/// edge's curve, as a writer does that runs its pcurves over a parameter
+/// of their own. Each is the same boundary at another pace, and is kept.
+#[test]
+fn pcurves_at_another_pace_than_their_curve_are_kept() {
+    let mut model = Model::new();
+    let parts = [
+        ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 10.0, 5.0), T)
+            .unwrap()
+            .shape,
+        ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 3.0, 5.0, T)
+            .unwrap()
+            .shape,
+    ];
+    for shape in parts {
+        let mut document = ogeom::doc::Document::over(model.clone());
+        document.add_part("part", shape.clone());
+        let text = ogeom::io::write_step(&document, T).unwrap();
+        let written = ogeom::io::read_step(&text, T).unwrap().report.pcurves_kept;
+        assert!(written > 0, "the writer states pcurves");
+        // The ids of the chart's directions: two components.
+        let planar: Vec<String> = text
+            .lines()
+            .filter(|l| l.contains("=DIRECTION('',(") && l.matches(',').count() == 2)
+            .map(|l| l[..l.find('=').unwrap()].to_owned())
+            .collect();
+        let mut doubled = 0;
+        let paced: String = text
+            .lines()
+            .map(|line| {
+                if line.contains("=VECTOR('',")
+                    && planar.iter().any(|id| line.contains(&format!(",{id},")))
+                {
+                    doubled += 1;
+                    format!("{},2.0);\n", &line[..line.rfind(',').unwrap()])
+                } else {
+                    format!("{line}\n")
+                }
+            })
+            .collect();
+        assert!(doubled > 0, "the fixture paced its pcurve lines");
+        let import = ogeom::io::read_step(&paced, T).unwrap();
+        assert_eq!(
+            (import.report.pcurves_kept, import.report.pcurves_derived),
+            (written, 0),
+            "every pcurve is kept at its pace"
+        );
+        let [solid] = import.solids.as_slice() else {
+            panic!("{} solids", import.solids.len());
+        };
+        let back = import.document.model();
+        assert!(ogeom::algo::check(back, solid, T).unwrap().is_valid());
+        let fine = Deflection::with_chord(1e-3).unwrap();
+        let before = ogeom::algo::volume_properties(&model, &shape, fine, T)
+            .unwrap()
+            .mass;
+        let after = ogeom::algo::volume_properties(back, solid, fine, T)
+            .unwrap()
+            .mass;
+        assert!(
+            (after - before).abs() <= before * 1e-9,
+            "{before} out, {after} back"
+        );
+    }
+}
