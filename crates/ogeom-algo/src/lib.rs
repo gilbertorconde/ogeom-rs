@@ -13,6 +13,7 @@ mod chart_cross;
 pub mod check;
 pub mod classify;
 pub mod convert;
+mod cutoff;
 pub mod derived;
 pub mod extend;
 pub mod fit;
@@ -66,6 +67,7 @@ pub use convert::{
     CurveRestatement, SurfaceRestatement, baked_shape, baked_where_placed,
     general_transformed_shape, normals_oppose, restate_geometry, to_nurbs, to_nurbs_within,
 };
+pub use cutoff::Cutoff;
 pub use extend::{Extension, extend_face};
 pub use fit::{Spacing, approximate, approximate_within, interpolate};
 pub use history::{Built, History, on_own_nodes, on_own_nodes_with, unshare};

@@ -677,6 +677,23 @@ symbols = [
 tests = ["crates/ogeom-geom/src/fit.rs", "crates/ogeom-algo/src/fit.rs"]
 
 [[capability]]
+id = "algo.primitive-fits"
+title = "Best fits of planes, spheres, cylinders, cones, tori, circles and lines to points, with residuals"
+crate = "ogeom-algo"
+verdict = "covered"
+symbols = [
+    "ogeom_algo::plane", "ogeom_algo::sphere", "ogeom_algo::cylinder",
+    "ogeom_algo::cone", "ogeom_algo::torus", "ogeom_algo::circle3",
+    "ogeom_algo::line3", "ogeom_algo::circle2", "ogeom_algo::line2",
+    "ogeom_algo::FitOptions", "ogeom_algo::Fit", "ogeom_algo::Cutoff",
+]
+tests = [
+    "crates/ogeom-algo/tests/primitive_fits.rs",
+    "crates/ogeom-algo/src/fit/primitive.rs",
+    "crates/ogeom-algo/src/cutoff.rs",
+]
+
+[[capability]]
 id = "algo.place-copy"
 title = "Copying and transforming shapes, rigidly or generally, sharing what can be shared"
 crate = "ogeom-algo"

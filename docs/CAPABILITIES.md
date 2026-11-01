@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 81 |
+| `covered` | 82 |
 | `partial` | 8 |
 | `divergent` | 6 |
 
-95 capabilities. Ratchet: `unreviewed_max = 0`.
+96 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -33,6 +33,7 @@ per module. Each verdict cites the symbols and tests that back it, and
 - **algo.nurbs-conversion**: Converting a shape's geometry to NURBS form · `covered`
 - **algo.place-copy**: Copying and transforming shapes, rigidly or generally, sharing what can be shared · `covered`
 - **algo.point-projection**: Projecting a point onto a curve or a surface, nearest first, all minima found · `covered`
+- **algo.primitive-fits**: Best fits of planes, spheres, cylinders, cones, tori, circles and lines to points, with residuals · `covered`
 - **algo.primitives**: The primitive solids: box, wedge, cylinder, cone, sphere, torus, half-space, prism, revolution · `covered`
 - **algo.sewing**: Sewing faces into shells along coincident edges, or across a gap asked for, with spatial acceleration · `covered`
 - **algo.shape-distance**: Distance, proximity and overlap between whole shapes, and self-intersection · `covered`
@@ -290,4 +291,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 3e6e4951f3253f62 -->
+<!-- ledger-checksum: 4b4114fcd3062d34 -->

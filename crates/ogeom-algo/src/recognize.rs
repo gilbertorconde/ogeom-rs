@@ -23,7 +23,7 @@
 //! what the verification measures.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
-use ogeom_math::{Cone, Cylinder, Direction, Frame, Plane, Point, Sphere, Torus, Vector};
+use ogeom_math::{Axis, Cone, Cylinder, Direction, Frame, Plane, Point, Sphere, Torus, Vector};
 
 /// A canonical surface a set of samples was recognized as.
 #[derive(Debug, Clone, PartialEq)]
@@ -859,7 +859,7 @@ pub(crate) fn worst_deviation(candidate: &Canonical, points: &[Point]) -> f64 {
         .fold(0.0, f64::max)
 }
 
-fn centroid(points: &[Point]) -> Vector {
+pub(crate) fn centroid(points: &[Point]) -> Vector {
     let mut sum = Vector::ZERO;
     for p in points {
         sum += p.to_vector();
@@ -873,7 +873,7 @@ fn centroid(points: &[Point]) -> Vector {
 }
 
 /// The eigenvector of a 3×3 symmetric matrix for its smallest eigenvalue.
-fn smallest_direction(m: nalgebra::Matrix3<f64>) -> Vector {
+pub(crate) fn smallest_direction(m: nalgebra::Matrix3<f64>) -> Vector {
     let eigen = nalgebra::SymmetricEigen::new(m);
     let mut best = 0;
     for i in 1..3 {
@@ -885,7 +885,7 @@ fn smallest_direction(m: nalgebra::Matrix3<f64>) -> Vector {
     Vector::new(v[0], v[1], v[2])
 }
 
-fn covariance(vectors: impl Iterator<Item = Vector>) -> nalgebra::Matrix3<f64> {
+pub(crate) fn covariance(vectors: impl Iterator<Item = Vector>) -> nalgebra::Matrix3<f64> {
     let mut m = nalgebra::Matrix3::zeros();
     for v in vectors {
         let n = nalgebra::Vector3::new(v.x, v.y, v.z);
@@ -1131,7 +1131,10 @@ pub(crate) fn ruled_about(
 /// A circle through points in space: its plane from their covariance, its
 /// centre and radius from an algebraic fit in that plane, and the rms of
 /// how far the points miss it.
-fn circle_through(points: &[Point], tol: Tolerances) -> Option<(Point, Direction, f64, f64)> {
+pub(crate) fn circle_through(
+    points: &[Point],
+    tol: Tolerances,
+) -> Option<(Point, Direction, f64, f64)> {
     let c = centroid(points);
     let normal = Direction::new(
         smallest_direction(covariance(points.iter().map(|p| p.to_vector() - c))),
@@ -1171,6 +1174,27 @@ fn circle_through(points: &[Point], tol: Tolerances) -> Option<(Point, Direction
     )]
     let rms = (miss / points.len() as f64).sqrt();
     Some((centre, normal, radius, rms))
+}
+
+/// The circle the points trace in the half-plane through the axis (their
+/// distance from it against their height along it from `base`): its
+/// centre's distance and height, and its radius. A torus about the axis
+/// is that circle swept round it.
+pub(crate) fn profile_circle(pts: &[Point], base: Point, axis: Axis) -> Option<(f64, f64, f64)> {
+    let d = axis.direction.vector();
+    let mut m = nalgebra::Matrix3::<f64>::zeros();
+    let mut b = nalgebra::Vector3::<f64>::zeros();
+    for p in pts {
+        let w = *p - base;
+        let h = w.dot(d);
+        let rho = (w - d * h).magnitude();
+        let row = nalgebra::Vector3::new(2.0 * rho, 2.0 * h, 1.0);
+        m += row * row.transpose();
+        b += row * rho.mul_add(rho, h * h);
+    }
+    let x = m.lu().solve(&b)?;
+    let r2 = x[2] + x[0].mul_add(x[0], x[1] * x[1]);
+    (r2 > 0.0).then(|| (x[0], x[1], r2.sqrt()))
 }
 
 pub(crate) fn fit_torus(

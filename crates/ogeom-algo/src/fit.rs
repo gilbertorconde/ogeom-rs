@@ -32,10 +32,24 @@
 //! concentrates until the target is met, and reports the error it actually
 //! reached. The machinery lives in [`ogeom_geom::fit`], where the intersector's
 //! approximation stage shares it.
+//!
+//! # Primitives
+//!
+//! The other half of fitting measured points: the plane, the sphere, the
+//! cylinder, the cone, the torus, the circle or the line that comes nearest
+//! them, with every point's residual ([`plane`], [`sphere`], [`cylinder`],
+//! [`cone`], [`torus`], [`circle3`], [`line3`], [`circle2`], [`line2`]).
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::BSplineCurve;
 use ogeom_math::{KnotVector, Point};
+
+mod primitive;
+
+pub use primitive::{
+    Fit, FitFixed, FitOptions, Side, circle2, circle3, cone, cylinder, line2, line3, plane, sphere,
+    torus,
+};
 
 /// How to spread parameters over the points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -1236,7 +1236,8 @@ fn fitted(
             Some(axis) => {
                 let d = axis.direction.vector();
                 let base = on_line(axis, centroid);
-                let (major, height, minor) = profile_circle(pts, base, axis).ok_or(none.clone())?;
+                let (major, height, minor) =
+                    recognize::profile_circle(pts, base, axis).ok_or(none.clone())?;
                 let like = Canonical::Torus(
                     Torus::new(
                         Frame::about(base + d * height, axis.direction),
@@ -1306,27 +1307,6 @@ fn distance_from_line(axis: Axis, p: Point) -> f64 {
     let d = axis.direction.vector();
     let w = p - axis.location;
     (w - d * w.dot(d)).magnitude()
-}
-
-/// The circle the points trace in the half-plane through the axis (their
-/// distance from it against their height along it from `base`): its
-/// centre's distance and height, and its radius. A torus about the axis
-/// is that circle swept round it.
-fn profile_circle(pts: &[Point], base: Point, axis: Axis) -> Option<(f64, f64, f64)> {
-    let d = axis.direction.vector();
-    let mut m = nalgebra::Matrix3::<f64>::zeros();
-    let mut b = nalgebra::Vector3::<f64>::zeros();
-    for p in pts {
-        let w = *p - base;
-        let h = w.dot(d);
-        let rho = (w - d * h).magnitude();
-        let row = nalgebra::Vector3::new(2.0 * rho, 2.0 * h, 1.0);
-        m += row * row.transpose();
-        b += row * rho.mul_add(rho, h * h);
-    }
-    let x = m.lu().solve(&b)?;
-    let r2 = x[2] + x[0].mul_add(x[0], x[1] * x[1]);
-    (r2 > 0.0).then(|| (x[0], x[1], r2.sqrt()))
 }
 
 /// Least squares on a residual over the points, from `y`: Gauss-Newton
