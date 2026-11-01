@@ -15,6 +15,7 @@ pub mod classify;
 pub mod convert;
 mod cutoff;
 pub mod derived;
+pub mod distance;
 pub mod extend;
 pub mod fit;
 pub mod history;

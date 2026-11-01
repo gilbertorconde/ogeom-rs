@@ -17,7 +17,10 @@
 //!
 //! - **nearest and ball**: the closest point on a triangle is clamped into the
 //!   triangle's own box before its distance is taken, so each axis gap to it
-//!   is at least the computed gap to any box that holds the triangle;
+//!   is at least the computed gap to any box that holds the triangle. A
+//!   filtered nearest query passes over the triangles its filter refuses
+//!   before measuring them, and a box's gap bounds the triangles it holds
+//!   that pass as it bounds them all;
 //! - **ray**: the ray is sheared onto the `z` axis and every vertex
 //!   transformed by the same operations the box corners are, so the computed
 //!   vertices of a triangle lie within the box's computed sheared bounds. A
@@ -202,16 +205,52 @@ impl Bvh {
     /// triangle index among equally near ones. `max` may be infinite.
     #[must_use]
     pub fn nearest(&self, p: Point, max: f64) -> Option<Hit> {
-        self.nearest_with(p, max, &mut Vec::new())
+        self.nearest_with(p, max, &mut Vec::new(), |_| true)
     }
 
     /// [`Bvh::nearest`] for each point, in parallel, answers in point order.
     #[must_use]
     pub fn nearest_many(&self, points: &[Point], max: f64) -> Vec<Option<Hit>> {
-        batched(points, |&p| p, |&p, stack| self.nearest_with(p, max, stack))
+        batched(
+            points,
+            |&p| p,
+            |&p, stack| self.nearest_with(p, max, stack, |_| true),
+        )
     }
 
-    fn nearest_with(&self, p: Point, max: f64, stack: &mut Vec<(u32, f64)>) -> Option<Hit> {
+    /// [`Bvh::nearest`] among the triangles `keep` accepts: the point on
+    /// them nearest `p`, no farther than `max`, the lowest triangle index
+    /// among equally near ones. The answer is brute force's over the kept
+    /// triangles alone, however the tree holds the others.
+    #[must_use]
+    pub fn nearest_where(&self, p: Point, max: f64, keep: impl Fn(u32) -> bool) -> Option<Hit> {
+        self.nearest_with(p, max, &mut Vec::new(), keep)
+    }
+
+    /// [`Bvh::nearest_where`] for each point, in parallel, answers in point
+    /// order. `keep` is asked with the point's index and a triangle.
+    #[must_use]
+    pub fn nearest_many_where(
+        &self,
+        points: &[Point],
+        max: f64,
+        keep: impl Fn(usize, u32) -> bool + Sync,
+    ) -> Vec<Option<Hit>> {
+        let queries: Vec<usize> = (0..points.len()).collect();
+        batched(
+            &queries,
+            |&i| points[i],
+            |&i, stack| self.nearest_with(points[i], max, stack, |t| keep(i, t)),
+        )
+    }
+
+    fn nearest_with(
+        &self,
+        p: Point,
+        max: f64,
+        stack: &mut Vec<(u32, f64)>,
+        keep: impl Fn(u32) -> bool,
+    ) -> Option<Hit> {
         let p = [p.x, p.y, p.z];
         let reach = max * max;
         if self.nodes.is_empty() || !p.iter().all(|c| c.is_finite()) || max.is_nan() || max < 0.0 {
@@ -236,6 +275,9 @@ impl Bvh {
                 let first = node.first as usize;
                 for slot in first..first + node.count as usize {
                     let triangle = self.order[slot];
+                    if !keep(triangle) {
+                        continue;
+                    }
                     let (_, _, d2) = closest(p, &self.corners[slot]);
                     let better = match best {
                         None => d2 <= bound,
@@ -1247,6 +1289,78 @@ pub(crate) mod tests {
         }
         // Each kind found something often enough to have been tested.
         assert!(found.iter().all(|&n| n > 25_000), "{found:?}");
+    }
+
+    /// A filtered nearest query answers as brute force over the triangles
+    /// the filter keeps, bit for bit, singly and batched at any thread
+    /// count: filters keeping every other triangle, the triangles facing
+    /// one way, or none.
+    #[test]
+    fn filtered_nearest_equals_brute_force_over_the_kept_triangles() {
+        let mut rng = Seeded(0x00f1_17e2);
+        let mut checked = 0_usize;
+        for round in 0..6 {
+            let mesh = if round % 2 == 0 {
+                torus(14 + u32::try_from(rng.below(10)).unwrap(), 8, &mut rng)
+            } else {
+                soup(150 + rng.below(250), &mut rng)
+            };
+            let bvh = Bvh::build(&mesh).unwrap();
+            let corners = corners_of(&mesh);
+            let facing: Vec<P> = corners
+                .iter()
+                .map(|[a, b, c]| {
+                    let (u, v) = (sub(*b, *a), sub(*c, *a));
+                    [
+                        u[1] * v[2] - u[2] * v[1],
+                        u[2] * v[0] - u[0] * v[2],
+                        u[0] * v[1] - u[1] * v[0],
+                    ]
+                })
+                .collect();
+            let points: Vec<Point> = (0..4000).map(|_| rng.point(-3.5, 3.5)).collect();
+            let aims: Vec<P> = (0..points.len())
+                .map(|_| {
+                    let d = direction(&mut rng);
+                    [d.x, d.y, d.z]
+                })
+                .collect();
+            let max = if round < 3 { f64::INFINITY } else { 1.0 };
+            let filters: [&(dyn Fn(usize, u32) -> bool + Sync); 3] = [
+                &|_, t| t % 2 == 1,
+                &|i, t| dot(facing[t as usize], aims[i]) > 0.0,
+                &|_, _| false,
+            ];
+            for keep in filters {
+                let brute: Vec<Option<Hit>> = points
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &p)| {
+                        let kept: Vec<usize> = (0..corners.len())
+                            .filter(|&t| keep(i, u32::try_from(t).unwrap()))
+                            .collect();
+                        let picked: Vec<[P; 3]> = kept.iter().map(|&t| corners[t]).collect();
+                        brute_nearest(&picked, p, max).map(|hit| Hit {
+                            triangle: u32::try_from(kept[hit.triangle as usize]).unwrap(),
+                            ..hit
+                        })
+                    })
+                    .collect();
+                let single: Vec<Option<Hit>> = points
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &p)| bvh.nearest_where(p, max, |t| keep(i, t)))
+                    .collect();
+                assert_eq!(single, brute);
+                for threads in [1, 3, 8] {
+                    ogeom_core::parallel::set_threads(threads);
+                    assert_eq!(bvh.nearest_many_where(&points, max, keep), brute);
+                }
+                ogeom_core::parallel::set_threads(0);
+                checked += brute.iter().filter(|h| h.is_some()).count();
+            }
+        }
+        assert!(checked > 20_000, "{checked}");
     }
 
     /// The batch queries answer exactly as the single ones, in input order,

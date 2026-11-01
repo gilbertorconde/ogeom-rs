@@ -711,6 +711,21 @@ tests = [
 ]
 
 [[capability]]
+id = "algo.signed-distance"
+title = "Signed distances from many points to a mesh or a shape's own faces, facing-aware"
+crate = "ogeom-algo"
+verdict = "covered"
+symbols = [
+    "ogeom_algo::distance::to_mesh", "ogeom_algo::distance::to_shape",
+    "ogeom_algo::distance::DistanceOptions", "ogeom_algo::distance::Closest",
+    "ogeom_algo::distance::MeshFeature", "ogeom_algo::distance::ShapeFeature",
+]
+tests = [
+    "crates/ogeom-algo/tests/distance.rs",
+    "crates/ogeom-mesh/src/bvh.rs",
+]
+
+[[capability]]
 id = "algo.place-copy"
 title = "Copying and transforming shapes, rigidly or generally, sharing what can be shared"
 crate = "ogeom-algo"

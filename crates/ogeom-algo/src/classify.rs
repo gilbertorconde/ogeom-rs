@@ -367,7 +367,12 @@ pub fn classify_in_solid_exact(
     point: Point,
     tol: Tolerances,
 ) -> OgeomResult<Containment> {
-    classify_in_solid_exact_banded(model, solid, point, tol.confusion() * 1e4, tol)
+    classify_in_solid_exact_banded(model, solid, point, exact_ring_chord(tol), tol)
+}
+
+/// The ring chord [`classify_in_solid_exact`] prepares a boundary at.
+pub(crate) fn exact_ring_chord(tol: Tolerances) -> f64 {
+    tol.confusion() * 1e4
 }
 
 /// [`classify_in_solid_exact`] with the boundary band under the caller's

@@ -65,7 +65,7 @@ pub struct ShapeDistance {
 }
 
 /// One element of a shape, with its geometry carried into world space.
-enum Element {
+pub(crate) enum Element {
     Vertex(Shape, Point),
     Edge(Shape, Box<Curve>),
     Face(Shape, Box<Prepared>),
@@ -75,8 +75,8 @@ enum Element {
 /// with its placement and rings for the trim test. Parameters on a
 /// transformed surface need not match the rings, which live in the stored
 /// surface's parameter space, so the trim question is always asked locally.
-struct Prepared {
-    world: SurfaceGeometry,
+pub(crate) struct Prepared {
+    pub(crate) world: SurfaceGeometry,
     local: SurfaceGeometry,
     to_local: Transform,
     rings: Vec<Vec<Point2>>,
@@ -126,6 +126,11 @@ impl PointDistance {
     /// resolve.
     pub fn of(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Self> {
         Ok(Self(elements(model, shape, tol)?))
+    }
+
+    /// The vertices, then the edges, then the faces.
+    pub(crate) fn elements(&self) -> &[Element] {
+        &self.0
     }
 
     /// The least distance from `p` to the shape's boundary and a point of it
@@ -712,19 +717,52 @@ fn approach(
 /// placement that scales. Too near the boundary counts as outside: the edge
 /// pairs own that candidate and answer it exactly.
 fn inside_trim(face: &Prepared, world_point: Point, tol: Tolerances) -> OgeomResult<bool> {
+    Ok(trim_side(face, None, RING_CHORD, world_point, tol)? == Trim::Inside)
+}
+
+/// Where a point on a face's surface stands against its trim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Trim {
+    /// Inside the trim, farther than the rings' band from it.
+    Inside,
+    /// Outside it, as far.
+    Outside,
+    /// Within the band, where the rings cannot tell.
+    Band,
+}
+
+/// Where `world_point`, on `face`'s surface, stands against rings drawn
+/// within `chord` of the face's edges: the face's own rings at
+/// [`RING_CHORD`] where `rings` is `None`. The band is the chord and the
+/// confusion distance, in space.
+pub(crate) fn trim_side(
+    face: &Prepared,
+    rings: Option<&[Vec<Point2>]>,
+    chord: f64,
+    world_point: Point,
+    tol: Tolerances,
+) -> OgeomResult<Trim> {
+    let rings = rings.unwrap_or(&face.rings);
     let local = face.to_local.apply(world_point);
     let projection = project_on_surface(&face.local, local, 32, tol)?;
     let (u, v) = projection.parameters;
     let at = Point2::new(u, v);
-    let band = parametric_band(&face.local, (u, v), tol.confusion() + RING_CHORD, tol);
-    if band.meets_rings(&face.rings, at) {
-        return Ok(false);
+    let band = parametric_band(&face.local, (u, v), tol.confusion() + chord, tol);
+    if band.meets_rings(rings, at) {
+        return Ok(Trim::Band);
     }
-    Ok(inside_boundary(&face.rings, at))
+    Ok(if inside_boundary(rings, at) {
+        Trim::Inside
+    } else {
+        Trim::Outside
+    })
 }
 
 /// The rings' polylining error, spatially: the trim test's uncertainty band.
-const RING_CHORD: f64 = 1e-3;
+pub(crate) const RING_CHORD: f64 = 1e-3;
+
+/// The rings' greatest turn across one segment, in radians.
+pub(crate) const RING_ANGULAR: f64 = 0.05;
 
 /// Every element of a shape, with world-space geometry.
 fn elements(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Vec<Element>> {
@@ -770,7 +808,7 @@ fn elements(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Vec<El
     }
     let ring_deflection = Deflection {
         chord: RING_CHORD,
-        angular: 0.05,
+        angular: RING_ANGULAR,
         ..Deflection::default()
     };
     for face in explore_unique(model, shape, ShapeType::Face)? {

@@ -1466,6 +1466,24 @@ pub fn face_boundary_in_chart(
     drawn_boundary(model, face, deflection, true, tol)
 }
 
+/// [`face_boundary_in_chart`] where every edge's polyline honours the
+/// deflection, and `None` where one reached [`Deflection::max_segments`]
+/// first: rings that keep within the chord are what a point can be placed
+/// against at that chord.
+///
+/// # Errors
+///
+/// As [`face_boundary`].
+pub fn face_boundary_in_chart_met(
+    model: &Model,
+    face: &Shape,
+    deflection: Deflection,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<Vec<Point2>>>> {
+    let drawn = drawn_trimming(model, face, deflection, true, tol)?;
+    Ok(drawn.met.then_some(drawn.rings))
+}
+
 /// [`face_boundary`], or with `in_chart` [`face_boundary_in_chart`].
 fn drawn_boundary(
     model: &Model,
@@ -1474,6 +1492,16 @@ fn drawn_boundary(
     in_chart: bool,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Vec<Point2>>> {
+    Ok(drawn_trimming(model, face, deflection, in_chart, tol)?.rings)
+}
+
+fn drawn_trimming(
+    model: &Model,
+    face: &Shape,
+    deflection: Deflection,
+    in_chart: bool,
+    tol: Tolerances,
+) -> OgeomResult<Trimming> {
     deflection.validate()?;
     if model.kind_of(face)? != ShapeType::Face {
         ogeom_bail!(Construction, "expected a face");
@@ -1488,7 +1516,7 @@ fn drawn_boundary(
         ogeom_bail!(Dangling, "face refers to a surface not in this model");
     };
 
-    Ok(trimming_rings(
+    trimming_rings(
         model,
         face,
         data.surface,
@@ -1497,8 +1525,7 @@ fn drawn_boundary(
         &EdgeChords::new(),
         in_chart,
         tol,
-    )?
-    .rings)
+    )
 }
 
 /// The chord each edge is to be drawn to, by edge node index, where a face

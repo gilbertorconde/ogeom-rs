@@ -22,6 +22,36 @@ principal frame and its open rims.
 
 ### Added
 
+- **Signed distances from many points to a mesh or a shape, facing-aware:
+  `ogeom_algo::distance`.**
+  - `to_mesh` measures each point to a mesh through its `Bvh` and reads the
+    side from the angle-weighted pseudonormal of the closest face, edge or
+    vertex, positive outside, so points beside a closed mesh's edges and
+    corners never read the wrong side. Corners that share a position weld,
+    so a mesh written with its vertices repeated per face reads as the
+    surface it draws.
+  - `to_shape` measures to a B-rep's own surfaces, curves and points, not a
+    tessellation. A face's foot is placed against its trim, and where the
+    trim's rings cannot tell (within their polylining of the boundary) it
+    is placed again against rings drawn finer, down to the confusion
+    distance, while it is the nearest candidate. The side is the face's
+    oriented normal at a face foot, the sum of the faces' normals at an
+    edge, and the solid's own classification at a vertex.
+  - `DistanceOptions` sets the farthest distance answered (`None` beyond
+    it), whether distances are signed, and a facing limit: with the
+    points' own normals, only surface turned within the limit of a point's
+    normal is measured to, so a point scanned on one side of a thin wall
+    reads that side. On a mesh the answer is the nearest of the facing
+    triangles, exactly what brute force over them finds.
+  - Each answer is a `Closest`: the signed distance, the closest point, the
+    feature it lies on (`MeshFeature` or `ShapeFeature`) and the unit
+    normal the sign was read from. Points are answered in parallel, in
+    their order, the same at any thread count.
+  - `Bvh::nearest_where` and `Bvh::nearest_many_where` find the nearest
+    point among the triangles a filter keeps, equal to brute force over
+    them. `ogeom_mesh::face_boundary_in_chart_met` draws a face's rings
+    where every edge keeps to the chord, and says where one cannot.
+
 - **Face directions, axes of revolution, principal frames and open rims of
   a mesh: `ogeom_algo::orient`.**
   - `face_directions` reads the directions a mesh's flat faces face, each a

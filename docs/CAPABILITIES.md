@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 83 |
+| `covered` | 84 |
 | `partial` | 8 |
 | `divergent` | 6 |
 
-97 capabilities. Ratchet: `unreviewed_max = 0`.
+98 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -38,6 +38,7 @@ per module. Each verdict cites the symbols and tests that back it, and
 - **algo.primitives**: The primitive solids: box, wedge, cylinder, cone, sphere, torus, half-space, prism, revolution · `covered`
 - **algo.sewing**: Sewing faces into shells along coincident edges, or across a gap asked for, with spatial acceleration · `covered`
 - **algo.shape-distance**: Distance, proximity and overlap between whole shapes, and self-intersection · `covered`
+- **algo.signed-distance**: Signed distances from many points to a mesh or a shape's own faces, facing-aware · `covered`
 - **algo.solid-from-mesh**: A solid from a triangle mesh: coplanar triangles merged into planar faces, curved regions recognized as cylinders, cones, spheres and tori · `covered`
 - **algo.spatial-acceleration**: Generic bounding-volume hierarchies · `divergent`
   - *reasoning:* No generic BVH container library: the kernel's standing indexes are keyed on what a caller asks of a mesh or a cloud (mesh.spatial-index), and the acceleration structures inside its algorithms (sewing's cell filter, the classifier's bounds, the distance walk's pruning) stay internal to them, sized and keyed for their one question. Picking, outside the kernel (outside/crates/ogeom-select), builds on mesh.spatial-index's triangle hierarchy.
@@ -292,4 +293,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 90278063f6c69930 -->
+<!-- ledger-checksum: 1f21bde6d5c70f59 -->

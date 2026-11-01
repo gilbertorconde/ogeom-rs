@@ -29,7 +29,7 @@ pub use point_index::{Neighbour, PointIndex};
 pub use simplify::{Simplified, Target, simplify};
 pub use triangulate::{
     EdgeChords, FaceMesh, FaceMeshCache, edge_chords_for, face_boundary, face_boundary_in_chart,
-    face_meshes_for, inside_boundary, inside_boundary_with, open_chart_ring, polyline_of_edge,
-    triangulate, triangulate_face, triangulate_face_kept, triangulate_face_with,
-    triangulate_with_chords, triangulate_with_face_meshes,
+    face_boundary_in_chart_met, face_meshes_for, inside_boundary, inside_boundary_with,
+    open_chart_ring, polyline_of_edge, triangulate, triangulate_face, triangulate_face_kept,
+    triangulate_face_with, triangulate_with_chords, triangulate_with_face_meshes,
 };
