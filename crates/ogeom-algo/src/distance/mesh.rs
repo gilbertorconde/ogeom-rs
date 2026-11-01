@@ -31,8 +31,19 @@ pub fn to_mesh(
     normals: Option<&[Vector]>,
     options: &DistanceOptions,
 ) -> OgeomResult<Vec<Option<Closest<MeshFeature>>>> {
+    to_mesh_with(index, &Pseudonormals::of(index), points, normals, options)
+}
+
+/// As [`to_mesh`], with the mesh's normals already gathered from `index`,
+/// for a caller that measures to the same mesh many times.
+pub(crate) fn to_mesh_with(
+    index: &Bvh,
+    pseudo: &Pseudonormals,
+    points: &[Point],
+    normals: Option<&[Vector]>,
+    options: &DistanceOptions,
+) -> OgeomResult<Vec<Option<Closest<MeshFeature>>>> {
     let facing = options.checked(points.len(), normals)?;
-    let pseudo = Pseudonormals::of(index);
     let hits = match (facing, normals) {
         (Some(cos), Some(normals)) => {
             let wanted: Vec<Option<Vector>> = normals.iter().map(|&n| unit(n)).collect();
@@ -49,7 +60,7 @@ pub fn to_mesh(
 
 /// A mesh's normals at its faces, edges and vertices, the corners welded
 /// where their positions are equal.
-struct Pseudonormals {
+pub(crate) struct Pseudonormals {
     /// Each triangle's unit normal, zero for a degenerate one.
     face: Vec<Vector>,
     /// Each triangle's edges' pseudonormals, edge `k` from corner `k`: the
@@ -72,7 +83,7 @@ fn key(p: Point) -> [u64; 3] {
 }
 
 impl Pseudonormals {
-    fn of(index: &Bvh) -> Self {
+    pub(crate) fn of(index: &Bvh) -> Self {
         let count = index.triangle_count();
         let triangles: Vec<[Point; 3]> = (0..count)
             .filter_map(|t| index.triangle(u32::try_from(t).ok()?))

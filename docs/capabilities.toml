@@ -730,6 +730,19 @@ tests = [
 ]
 
 [[capability]]
+id = "algo.rigid-registration"
+title = "Rigid registration: closed-form absolute orientation, point-to-plane ICP onto a mesh with free motions, and symmetry planes"
+crate = "ogeom-algo"
+verdict = "covered"
+symbols = [
+    "ogeom_algo::absolute_orientation", "ogeom_algo::icp",
+    "ogeom_algo::symmetry_plane", "ogeom_algo::Icp",
+    "ogeom_algo::Starts", "ogeom_algo::Registration",
+    "ogeom_algo::FreeMotion", "ogeom_algo::SymmetryFit",
+]
+tests = ["crates/ogeom-algo/tests/register.rs"]
+
+[[capability]]
 id = "algo.place-copy"
 title = "Copying and transforming shapes, rigidly or generally, sharing what can be shared"
 crate = "ogeom-algo"

@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 84 |
+| `covered` | 85 |
 | `partial` | 8 |
 | `divergent` | 6 |
 
-98 capabilities. Ratchet: `unreviewed_max = 0`.
+99 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -36,6 +36,7 @@ per module. Each verdict cites the symbols and tests that back it, and
 - **algo.point-projection**: Projecting a point onto a curve or a surface, nearest first, all minima found · `covered`
 - **algo.primitive-fits**: Best fits of planes, spheres, cylinders, cones, tori, circles and lines to points, with residuals, and a mesh region grown for one from clicks, its rounded rim peeled · `covered`
 - **algo.primitives**: The primitive solids: box, wedge, cylinder, cone, sphere, torus, half-space, prism, revolution · `covered`
+- **algo.rigid-registration**: Rigid registration: closed-form absolute orientation, point-to-plane ICP onto a mesh with free motions, and symmetry planes · `covered`
 - **algo.sewing**: Sewing faces into shells along coincident edges, or across a gap asked for, with spatial acceleration · `covered`
 - **algo.shape-distance**: Distance, proximity and overlap between whole shapes, and self-intersection · `covered`
 - **algo.signed-distance**: Signed distances from many points to a mesh or a shape's own faces, facing-aware · `covered`
@@ -293,4 +294,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 0c6776b3a96e55df -->
+<!-- ledger-checksum: b2deacd82efae263 -->

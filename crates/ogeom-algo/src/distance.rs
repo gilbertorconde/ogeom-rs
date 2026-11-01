@@ -49,6 +49,7 @@ use ogeom_math::{Point, Vector};
 use ogeom_topo::Shape;
 
 pub use mesh::to_mesh;
+pub(crate) use mesh::{Pseudonormals, to_mesh_with};
 pub use shape::to_shape;
 
 #[cfg(doc)]

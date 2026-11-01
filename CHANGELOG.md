@@ -11,6 +11,41 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **Rigid registration: `ogeom_algo::register`.**
+  - `absolute_orientation(pairs, weights)` is the closed form: the unit
+    quaternion of the largest eigenvalue of the pairs' weighted
+    cross-covariance matrix, so a coplanar or noisy set never gets a
+    reflection. Noise-free pairs are carried to within 1e-12 of their
+    size where they spread off a line by more than 2e-4 of their length,
+    and collinear ones exactly.
+  - `icp(source, normals, index, &Icp)` registers points onto a mesh
+    through its `Bvh`, point to plane by default: each round pairs the
+    moved samples with their nearest points (within `max_distance`, and
+    with `facing_limit` on the triangles facing the sample's own normal),
+    keeps the pairs within the `Cutoff` (three times the median distance
+    by default) and solves the increment about the kept samples' centroid
+    with `nalgebra`'s symmetric eigen-decomposition, its rotation applied
+    exactly. `Starts` runs from the identity, from the 24 rotations
+    matching the samples' principal axes with the mesh's, or from given
+    transforms; the start whose capped mean distance over every sample is
+    least wins. `sample` takes a seeded subset of the points.
+  - A `Registration` holds the transform, the RMS, the inliers, whether it
+    converged, the score, and the `FreeMotion`s the pairs do not hold:
+    the normal matrix's eigenvectors whose eigenvalues are within the
+    largest times `(σ/r)²`, the noise over the samples' radius, split
+    into slides and spins. A flat selection reports two slides and a spin.
+  - `symmetry_plane(points, normals, index, seeds, &Icp)` reflects the
+    samples in each seed plane, registers the reflection back onto the
+    mesh, and bisects each sample and its registered image, until the
+    plane stops moving; a `SymmetryFit` holds the plane, the mirror
+    residual and the samples matched.
+  - A scan displaced by up to 30° and a tenth of its diagonal registers
+    back to within a nanometre noise-free and, with 0.02 mm of noise on
+    100k samples, to within a micron and 1e-5 rad. Every answer is the
+    same at any thread count.
+
 ## [0.13.2] - 2026-11-01
 
 An additive release for scan inspection. `algo::distance` measures many

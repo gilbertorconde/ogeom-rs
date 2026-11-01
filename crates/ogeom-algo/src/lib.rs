@@ -38,6 +38,7 @@ pub mod proximity;
 pub mod recognize;
 mod recognize_patch;
 mod recognize_swept;
+pub mod register;
 mod seam_columns;
 mod self_cross;
 pub mod sew;
