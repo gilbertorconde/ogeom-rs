@@ -5412,6 +5412,7 @@ fn exact_legs(
     profile: &Shape,
     spine: &Shape,
     frenet: bool,
+    tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     use ogeom_geom::{Curve, Curve3d as _};
@@ -5473,8 +5474,9 @@ fn exact_legs(
         });
     }
     // Legs meet tangent, or all are straight and their corners are mitred
-    // exactly below, or a disc turns corners in the planes of the arcs
-    // beside them; any other corner is mitred by the general path.
+    // exactly below, or a face turns corners in the planes of the arcs
+    // beside them, a disc as its legs' union and any other face as its
+    // walls; any other corner is mitred by the general path.
     let cornered = legs.windows(2).any(|pair| {
         let (x, y) = (pair[0].heading.1, pair[1].heading.0);
         x.cross(y).magnitude() > tol.angular() * x.magnitude() * y.magnitude() || x.dot(y) <= 0.0
@@ -5489,7 +5491,12 @@ fn exact_legs(
             .collect();
         return match lines {
             Some(lines) if solid && !frenet => mitred_lines(model, profile, spine, &lines, tol),
-            None if solid && !frenet => mitred_arcs::mitred_arcs(model, profile, spine, &legs, tol),
+            None if solid && !frenet => {
+                match mitred_arcs::mitred_arcs(model, profile, spine, &legs, tol)? {
+                    Some(built) => Ok(Some(built)),
+                    None => open_lines::face_legs(model, profile, spine, tolerance, tol),
+                }
+            }
             _ => Ok(None),
         };
     }
@@ -5671,7 +5678,10 @@ fn mitred_lines(
 /// down either leg, run straight on past the corner), which is exact where
 /// the corner turns in the leg's plane; there a disc centred on an open
 /// spine is the union of its legs' cylinders and tori and their straight
-/// run-ons outside the turn, cut on the mitre plane. Where it turns a
+/// run-ons outside the turn, cut on the mitre plane, and any other face on
+/// an open spine of lines and arcs is the solid its rings' closed-form
+/// walls bound, each cut on the mitre plane outside the turn and on the
+/// crossing of its points' paths inside it. Where it turns a
 /// curved leg out of its plane the generators miss, and the spine is swept
 /// in pieces instead: each side runs on straight past the corner, is
 /// trimmed by the mitre plane, and the pieces are fused, the difference
@@ -6609,7 +6619,7 @@ fn law_loft(
                 && centred_circle(model, ring, &stations[0], tol)?
             {
                 let disc = disc_of(model, profile, ring, &stations[0], tol)?;
-                exact_legs(model, &disc, spine, false, tol)?
+                exact_legs(model, &disc, spine, false, tolerance, tol)?
             } else {
                 None
             };
@@ -7346,7 +7356,7 @@ fn pipe_shell_law(
     let frenet = matches!(law, PipeLaw::Frenet);
     let classic = matches!(law, PipeLaw::RotationMinimizing | PipeLaw::Frenet);
 
-    if classic && let Some(exact) = exact_legs(model, profile, spine, frenet, tol)? {
+    if classic && let Some(exact) = exact_legs(model, profile, spine, frenet, tolerance, tol)? {
         return Ok(exact);
     }
     let stations = shell_stations(model, spine, tol)?;

@@ -13,6 +13,33 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A pipe shell of any planar face round a sharp corner beside an arc,
+  exactly.**
+  - `make_pipe_shell` swept a face other than a disc centred on the spine
+    (a square, square tubing, a rectangle off the spine, a rounded slot)
+    as a skin down a wire of lines and arcs with a sharp corner turning in
+    an arc's plane. Under the rotation-minimizing frame with mitres it is
+    now built exactly: each ring's walls are the planes, cylinders, cones
+    and tori its edges sweep down each leg, and with the face at either
+    end they are sewn into the solid.
+  - Outside the turn each leg's walls run on straight and are cut on the
+    plane halving the corner. The turn there is the reflection in that
+    plane after the one in the plane square to the leg, which fixes the
+    leg's end section, so each point's two run-ons are mirror images and
+    cross on the plane whatever the section's shape: no face of the plane
+    is left. Inside the turn each edge's two walls are cut on the curve
+    where its points' two paths cross, a conic held exactly for a straight
+    edge and a curve fitted within the stated tolerance for a curved one.
+  - The volume is `∫ ℓ(ρ) c(ρ) dρ`, `c(ρ)` the section's chord at offset
+    `ρ`: Pappus's down each leg, the wedges outside each turn, less the
+    overlap inside. A square of side 0.8 along a line into a quarter arc of
+    radius 3 at a sixth of a turn is `6.215319771678` against
+    `6.215319771680`; the skin at `1e-6` was `6.2153203`.
+  - Where the paths inside a turn miss, an arc bends round an axis the
+    section reaches, a leg is shorter than its corners' reach, or the
+    walls do not close into one valid solid, the corner is left to the
+    general sweep as before.
+
 - **A pipe round a sharp corner beside an arc, exactly.**
   - `make_pipe` along a wire of lines and arcs refused a sharp corner
     turning in an arc's plane, and any sharp corner on a wire with an arc,

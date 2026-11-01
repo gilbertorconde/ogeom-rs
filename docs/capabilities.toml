@@ -1150,7 +1150,17 @@ whose sections share a plane is that plane. A spine of lines and arcs \
 meeting tangent is swept exactly: each line leg an extrusion of the \
 section, each arc leg its revolution about the arc's axis, the legs fused, \
 so every wall is the plane, drum, cone, ball or torus its profile edge \
-sweeps. `make_helical_sweep` is the screw motion of a profile in a plane \
+sweeps. Round sharp corners turning in the planes of the arcs beside \
+them, with the default mitres, any planar face, holes and all (square \
+tubing, a rectangle off the spine, a rounded slot), is swept exactly too: \
+each edge's walls are those closed forms down each leg, outside a turn \
+run on straight and cut on the plane halving the corner, where the two \
+legs' run-ons are mirror images whatever the section's shape, and inside \
+it cut on the curve where each point's two paths cross, a conic held \
+exactly for a straight edge and a curve fitted within the stated \
+tolerance for a curved one. Where the paths inside a turn miss, or an \
+arc bends round an axis the section reaches, the general sweep takes \
+the corner. `make_helical_sweep` is the screw motion of a profile in a plane \
 through the axis, cylindrical or tapered, either hand: every point runs \
 its own helix and the walls are fitted through those images in quarter \
 turns. `make_pipe_shell_evolving` scales and twists the section linearly \

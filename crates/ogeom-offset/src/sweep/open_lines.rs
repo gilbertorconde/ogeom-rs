@@ -1,5 +1,6 @@
 //! An open wire swept down an open spine of lines and arcs, as one sheet,
-//! or round a closed one, as one ring.
+//! or round a closed one, as one ring; and a planar face down an open
+//! one, as the solid its rings' walls and its two ends bound.
 //!
 //! An open wire bounds no face, so there is no solid to fuse round a
 //! corner and take the walls of. The sheet is built from its walls. The
@@ -76,8 +77,8 @@ use ogeom_topo::{
 
 use super::inside_turn::InsideTurn;
 use super::{
-    DOUBLED_BACK, PipeCorners, PipeLaw, SpineStation, frenet_normals, law_normals, realized_rings,
-    rmf_normals, spine_curve_of, wire_ends,
+    DOUBLED_BACK, PipeCorners, PipeLaw, SpineStation, frenet_normals, law_normals,
+    realized_profile_wound, realized_rings, rmf_normals, spine_curve_of, wire_ends,
 };
 
 /// How a leg carries the section: down a line by its displacement, or
@@ -258,6 +259,139 @@ fn placed_stations(model: &Model, spine: &Shape, legs: &[Leg]) -> OgeomResult<Ve
     Ok(stations)
 }
 
+/// A planar face swept down an open spine of lines and arcs round sharp
+/// corners under the rotation-minimizing frame, mitred, exactly: each of
+/// its rings sweeps the walls an open wire's sheet is built of, and with
+/// the face where the spine starts and its image where it ends they bound
+/// the solid. The walls of a profile edge are its closed forms down each
+/// leg, a plane, cylinder, cone or torus where the edge is a line or an
+/// arc; outside a turn each leg's walls run on straight and are cut on the
+/// plane halving the corner, where the two run-ons are mirror images, and
+/// inside a turn each edge's two walls are cut on the one curve its
+/// points' two paths cross on (see [`InsideTurn`]).
+///
+/// `None` where the spine closes, the profile does not stand square to the
+/// spine at its start, an arc bends round an axis the section reaches, or
+/// the walls do not close into one valid solid: where a corner turns an
+/// arc out of its plane, a point's paths inside a turn miss each other or
+/// cross past a leg's end, a leg is shorter than its corners' reach, or a
+/// curved edge's meeting holds to no fit within `tolerance`. The general
+/// sweep takes those.
+pub(super) fn face_legs(
+    model: &mut Model,
+    profile: &Shape,
+    spine: &Shape,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let legs = placed_legs(model, spine, tol)?;
+    let (Some(first), Some(end)) = (legs.first().copied(), legs.last().copied()) else {
+        return Ok(None);
+    };
+    if end.end.distance(first.start) <= tol.confusion() * 100.0 {
+        return Ok(None);
+    }
+    let Some(plane) = ogeom_algo::find_plane(model, profile, tol)? else {
+        return Ok(None);
+    };
+    if plane_square_at_start(&plane, first.start, first.heading_in, tol).is_err() {
+        return Ok(None);
+    }
+    let rings = explore(model, profile, Filter::OfType(ShapeType::Wire))?;
+    match walled_solid(model, profile, spine, legs, &rings, tolerance, tol) {
+        Err(ogeom_core::OgeomError::Construction(_)) => Ok(None),
+        other => other,
+    }
+}
+
+/// The solid the walls each of `rings` sweeps down `legs` bound with the
+/// face `profile` at either end, mitred; `None` where an arc bends round an
+/// axis the section reaches, or the pieces do not sew into one closed
+/// shell bounding a valid solid that does not run into itself.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+/// where [`Sweep`] refuses the legs or their walls.
+fn walled_solid(
+    model: &mut Model,
+    profile: &Shape,
+    spine: &Shape,
+    legs: Vec<Leg>,
+    rings: &[Shape],
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let Some(outer) = rings.first() else {
+        return Ok(None);
+    };
+    let sweep = Sweep::new(
+        model,
+        outer,
+        legs,
+        false,
+        PipeCorners::Mitre,
+        tolerance,
+        tol,
+    )?;
+    // Each arc leg revolves its section about the arc's axis: the
+    // section must lie wholly on the spine's side of it, or the walls
+    // pass through the axis and into each other.
+    let hull = hull_points(model, outer, tol)?;
+    for (leg, motion) in sweep.legs.iter().zip(&sweep.carried) {
+        let Along::Arc(axis, _) = leg.along else {
+            continue;
+        };
+        let up = axis.direction.vector();
+        let flat = |v: Vector| v - up * v.dot(up);
+        let radial = flat(leg.start - axis.location);
+        let toward = radial / radial.magnitude();
+        if hull
+            .iter()
+            .any(|p| flat(motion.apply(*p) - axis.location).dot(toward) <= tol.confusion())
+        {
+            return Ok(None);
+        }
+    }
+    let mut faces = Vec::new();
+    for ring in rings {
+        faces.extend(sweep.walls(model, ring)?);
+    }
+    let last = sweep.legs.len() - 1;
+    faces.push(realized_profile_wound(
+        model,
+        profile,
+        &Transform::IDENTITY,
+        Some(sweep.legs[0].heading_in),
+        tol,
+    )?);
+    faces.push(realized_profile_wound(
+        model,
+        profile,
+        &sweep.carried_end[last],
+        Some(sweep.legs[last].heading_out),
+        tol,
+    )?);
+    let sewn = sew_within(model, &faces, tol.confusion(), tol)?;
+    let [shell] = sewn.shells.as_slice() else {
+        return Ok(None);
+    };
+    if !ogeom_algo::is_shell_closed(model, shell)? || !sewn.edges_walked_one_way(model)?.is_empty()
+    {
+        return Ok(None);
+    }
+    let solid = ogeom_algo::make_solid(model, std::slice::from_ref(shell))?.shape;
+    if !check(model, &solid, tol)?.is_valid()
+        || !check_self_intersection(model, &solid, tol)?.is_empty()
+    {
+        return Ok(None);
+    }
+    let mut history = History::new();
+    history.generate(spine, solid.clone());
+    history.generate(profile, solid.clone());
+    Ok(Some(Built::new(solid, history)))
+}
+
 /// Sweep an open wire down an open spine of lines and arcs, or round a
 /// closed one, under the rotation-minimizing frame, each corner mitred or
 /// rounded; see the module documentation. The sheet faces the way the
@@ -309,170 +443,11 @@ pub(super) fn open_wire_legs(
         );
     }
     let first = legs[0];
-    let (carried, turns) = carried_down(&legs, tol)?;
-    // The motion carrying the profile to each leg's end.
-    let carried_end: Vec<Transform> = legs
-        .iter()
-        .zip(&carried)
-        .map(|(leg, motion)| leg.motion() * *motion)
-        .collect();
-    let hull = hull_points(model, profile, tol)?;
-    // The frame carried once round a closed spine comes home turned by the
-    // loop's holonomy, but for a spine turning in one plane, or as such
-    // turns cancel; the sheet closes onto itself only where it comes home
-    // unturned, every point of the section where it set out. How far a
-    // point is moved is convex in the point, so the hull's points bound
-    // it.
-    if closed {
-        let home = carried_end[carried_end.len() - 1];
-        if hull
-            .iter()
-            .any(|p| home.apply(*p).distance(*p) > tol.confusion())
-        {
-            ogeom_bail!(
-                Construction,
-                "the rotation-minimizing frame comes home turned round this \
-                 closed spine, so an open wire's sheet round it would not \
-                 close onto itself"
-            );
-        }
-    }
-    let width = {
-        let bounds = shape_bounds(model, profile, tol)?;
-        match (bounds.low(), bounds.high()) {
-            (Some(a), Some(b)) => a.distance(b),
-            _ => ogeom_bail!(Construction, "the profile has no extent"),
-        }
-    };
-    let straight = |i: usize| matches!(legs[i].along, Along::Line(_));
+    let sweep = Sweep::new(model, profile, legs, closed, corners, tolerance, tol)?;
+    let faces = sweep.walls(model, profile)?;
+    let (legs, carried, carried_end) = (&sweep.legs, &sweep.carried, &sweep.carried_end);
+    let (turns, rounded) = (&sweep.turns, &sweep.rounded);
     let last = legs.len() - 1;
-    // Whether each corner is rounded: a corner that turns nothing has no
-    // round, and is cut on the plane square to both legs.
-    let rounded: Vec<bool> = (0..last)
-        .map(|k| corners == PipeCorners::Round && turns[k].is_some())
-        .collect();
-    // How far the section reaches outside and inside each turning corner:
-    // its farthest points from the corner's axis on either side, in the
-    // plane square to the leg there.
-    let mut inside_turns: Vec<Option<InsideTurn>> = vec![None; last];
-    for k in 0..last {
-        let Some((axis, angle)) = turns[k] else {
-            continue;
-        };
-        let (d, next) = (legs[k].heading_out, legs[k + 1].heading_in);
-        let outward = unit(d * next.dot(d) - next);
-        let (mut outside, mut inside) = (0.0_f64, 0.0_f64);
-        for p in &hull {
-            let alpha = (carried_end[k].apply(*p) - axis.location).dot(outward);
-            outside = outside.max(alpha);
-            inside = inside.max(-alpha);
-        }
-        // A point inside the turn crosses into the other leg's wall on the
-        // legs themselves. Two lines are mirror images in the plane halving
-        // the corner and meet on it; against an arc the walls meet where
-        // the two paths of each point cross, which they do only where the
-        // corner turns in the arc's plane.
-        if inside > tol.confusion() && !(straight(k) && straight(k + 1)) {
-            let up = axis.direction.vector();
-            let arcs = [k, k + 1].map(|j| match legs[j].along {
-                Along::Arc(arc, _) => Some(arc),
-                Along::Line(_) => None,
-            });
-            if arcs
-                .iter()
-                .flatten()
-                .any(|arc| arc.direction.vector().cross(up).magnitude() > tol.angular())
-            {
-                ogeom_bail!(
-                    Construction,
-                    "an open wire reaches inside a corner that turns an arc out of \
-                     its plane: a point's paths down the two legs pass each other \
-                     without meeting, so the legs' walls leave a gap no sheet \
-                     closes"
-                );
-            }
-            inside_turns[k] = Some(InsideTurn::new(
-                legs[k].end,
-                up,
-                (d, next),
-                arcs.map(|arc| arc.map(|arc| arc.location)),
-            ));
-        }
-        // A round corner is told from its square end by the arc its
-        // section's farthest point outside the turn sweeps, and by the
-        // depth the plane halving the corner cuts its farthest point inside
-        // the turn short. A section within the confusion distance of the
-        // axis on a side has nothing on that side; past it, an arc or a
-        // depth within that distance is no curve or cut the kernel holds.
-        let held = |reach: f64, run: f64| reach <= tol.confusion() || run > tol.confusion();
-        if rounded[k]
-            && (!held(outside, outside * angle) || !held(inside, inside * (angle / 2.0).tan()))
-        {
-            ogeom_bail!(
-                Construction,
-                "a round corner turns so little that its round or its cut lies \
-                 within the confusion distance of its square end; a mitred \
-                 corner sweeps it"
-            );
-        }
-    }
-
-    // Each corner's plane halving it, its normal heading on down the spine:
-    // where each leg starts and where it ends.
-    let cuts: Vec<(Cut, Cut)> = (0..legs.len())
-        .map(|i| {
-            (
-                (i > 0).then(|| {
-                    (
-                        legs[i].start,
-                        unit(legs[i - 1].heading_out + legs[i].heading_in),
-                    )
-                }),
-                (i < last).then(|| {
-                    (
-                        legs[i].end,
-                        unit(legs[i].heading_out + legs[i + 1].heading_in),
-                    )
-                }),
-            )
-        })
-        .collect();
-    let sweep = Sweep {
-        legs: &legs,
-        carried: &carried,
-        carried_end: &carried_end,
-        turns: &turns,
-        cuts: &cuts,
-        rounded: &rounded,
-        inside: &inside_turns,
-        width,
-        tolerance,
-        tol,
-    };
-
-    let mut faces: Vec<Shape> = Vec::new();
-    if inside_turns.iter().all(Option::is_none) {
-        for i in 0..legs.len() {
-            faces.extend(sweep.leg_faces(model, profile, i, [None, None])?);
-        }
-    } else {
-        // Each edge of the profile, cut where it crosses a turn's axis,
-        // sweeps on its own: inside a corner against an arc its two legs'
-        // walls are cut on the one curve where they meet.
-        for piece in sweep.profile_pieces(model, profile)? {
-            let mut meetings: Vec<Option<(Shape, Point)>> = Vec::with_capacity(last);
-            for k in 0..last {
-                meetings.push(sweep.meeting_edge(model, &piece, k)?);
-            }
-            for i in 0..legs.len() {
-                let trims = [
-                    i.checked_sub(1).and_then(|k| meetings[k].clone()),
-                    meetings.get(i).cloned().flatten(),
-                ];
-                faces.extend(sweep.leg_faces(model, &piece.wire, i, trims)?);
-            }
-        }
-    }
 
     // The sheet's boundary: the profile where the spine starts and its image
     // where it ends, and the paths of the profile's two ends.
@@ -564,19 +539,19 @@ fn halved(leg: &Leg) -> (Leg, Leg) {
     )
 }
 
-/// An open wire's sweep down its legs, the corners read: what each leg
+/// A section's sweep down its legs, the corners read: what each leg
 /// carries the profile by, how each corner turns and is cut, and the
 /// corners against an arc the section reaches inside.
-struct Sweep<'a> {
-    legs: &'a [Leg],
+struct Sweep {
+    legs: Vec<Leg>,
     /// The motion carrying the profile to each leg's start, and to its
     /// end.
-    carried: &'a [Transform],
-    carried_end: &'a [Transform],
-    turns: &'a [Turn],
-    cuts: &'a [(Cut, Cut)],
-    rounded: &'a [bool],
-    inside: &'a [Option<InsideTurn>],
+    carried: Vec<Transform>,
+    carried_end: Vec<Transform>,
+    turns: Vec<Turn>,
+    cuts: Vec<(Cut, Cut)>,
+    rounded: Vec<bool>,
+    inside: Vec<Option<InsideTurn>>,
     /// The profile's extent, the run-on past a mitred end's farthest
     /// crossing.
     width: f64,
@@ -599,7 +574,200 @@ struct ProfilePiece {
 /// at the corner the cut takes off.
 type Trim = Option<(Shape, Point)>;
 
-impl Sweep<'_> {
+impl Sweep {
+    /// The sweep of the wire `profile` down `legs`, which close on
+    /// themselves where `closed`, its corners as `corners` asks.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+    /// where the frame comes home turned round a closed spine, the section
+    /// reaches inside a corner that turns an arc out of its plane, or a
+    /// round corner turns too little to be told from its square end.
+    fn new(
+        model: &mut Model,
+        profile: &Shape,
+        legs: Vec<Leg>,
+        closed: bool,
+        corners: PipeCorners,
+        tolerance: f64,
+        tol: Tolerances,
+    ) -> OgeomResult<Self> {
+        let unit = |v: Vector| v / v.magnitude();
+        let (carried, turns) = carried_down(&legs, tol)?;
+        // The motion carrying the profile to each leg's end.
+        let carried_end: Vec<Transform> = legs
+            .iter()
+            .zip(&carried)
+            .map(|(leg, motion)| leg.motion() * *motion)
+            .collect();
+        let hull = hull_points(model, profile, tol)?;
+        // The frame carried once round a closed spine comes home turned by the
+        // loop's holonomy, but for a spine turning in one plane, or as such
+        // turns cancel; the sheet closes onto itself only where it comes home
+        // unturned, every point of the section where it set out. How far a
+        // point is moved is convex in the point, so the hull's points bound
+        // it.
+        if closed {
+            let home = carried_end[carried_end.len() - 1];
+            if hull
+                .iter()
+                .any(|p| home.apply(*p).distance(*p) > tol.confusion())
+            {
+                ogeom_bail!(
+                    Construction,
+                    "the rotation-minimizing frame comes home turned round this \
+                     closed spine, so an open wire's sheet round it would not \
+                     close onto itself"
+                );
+            }
+        }
+        let width = {
+            let bounds = shape_bounds(model, profile, tol)?;
+            match (bounds.low(), bounds.high()) {
+                (Some(a), Some(b)) => a.distance(b),
+                _ => ogeom_bail!(Construction, "the profile has no extent"),
+            }
+        };
+        let straight = |i: usize| matches!(legs[i].along, Along::Line(_));
+        let last = legs.len() - 1;
+        // Whether each corner is rounded: a corner that turns nothing has no
+        // round, and is cut on the plane square to both legs.
+        let rounded: Vec<bool> = (0..last)
+            .map(|k| corners == PipeCorners::Round && turns[k].is_some())
+            .collect();
+        // How far the section reaches outside and inside each turning corner:
+        // its farthest points from the corner's axis on either side, in the
+        // plane square to the leg there.
+        let mut inside_turns: Vec<Option<InsideTurn>> = vec![None; last];
+        for k in 0..last {
+            let Some((axis, angle)) = turns[k] else {
+                continue;
+            };
+            let (d, next) = (legs[k].heading_out, legs[k + 1].heading_in);
+            let outward = unit(d * next.dot(d) - next);
+            let (mut outside, mut inside) = (0.0_f64, 0.0_f64);
+            for p in &hull {
+                let alpha = (carried_end[k].apply(*p) - axis.location).dot(outward);
+                outside = outside.max(alpha);
+                inside = inside.max(-alpha);
+            }
+            // A point inside the turn crosses into the other leg's wall on the
+            // legs themselves. Two lines are mirror images in the plane halving
+            // the corner and meet on it; against an arc the walls meet where
+            // the two paths of each point cross, which they do only where the
+            // corner turns in the arc's plane.
+            if inside > tol.confusion() && !(straight(k) && straight(k + 1)) {
+                let up = axis.direction.vector();
+                let arcs = [k, k + 1].map(|j| match legs[j].along {
+                    Along::Arc(arc, _) => Some(arc),
+                    Along::Line(_) => None,
+                });
+                if arcs
+                    .iter()
+                    .flatten()
+                    .any(|arc| arc.direction.vector().cross(up).magnitude() > tol.angular())
+                {
+                    ogeom_bail!(
+                        Construction,
+                        "an open wire reaches inside a corner that turns an arc out of \
+                         its plane: a point's paths down the two legs pass each other \
+                         without meeting, so the legs' walls leave a gap no sheet \
+                         closes"
+                    );
+                }
+                inside_turns[k] = Some(InsideTurn::new(
+                    legs[k].end,
+                    up,
+                    (d, next),
+                    arcs.map(|arc| arc.map(|arc| arc.location)),
+                ));
+            }
+            // A round corner is told from its square end by the arc its
+            // section's farthest point outside the turn sweeps, and by the
+            // depth the plane halving the corner cuts its farthest point inside
+            // the turn short. A section within the confusion distance of the
+            // axis on a side has nothing on that side; past it, an arc or a
+            // depth within that distance is no curve or cut the kernel holds.
+            let held = |reach: f64, run: f64| reach <= tol.confusion() || run > tol.confusion();
+            if rounded[k]
+                && (!held(outside, outside * angle) || !held(inside, inside * (angle / 2.0).tan()))
+            {
+                ogeom_bail!(
+                    Construction,
+                    "a round corner turns so little that its round or its cut lies \
+                     within the confusion distance of its square end; a mitred \
+                     corner sweeps it"
+                );
+            }
+        }
+
+        // Each corner's plane halving it, its normal heading on down the spine:
+        // where each leg starts and where it ends.
+        let cuts: Vec<(Cut, Cut)> = (0..legs.len())
+            .map(|i| {
+                (
+                    (i > 0).then(|| {
+                        (
+                            legs[i].start,
+                            unit(legs[i - 1].heading_out + legs[i].heading_in),
+                        )
+                    }),
+                    (i < last).then(|| {
+                        (
+                            legs[i].end,
+                            unit(legs[i].heading_out + legs[i + 1].heading_in),
+                        )
+                    }),
+                )
+            })
+            .collect();
+        Ok(Self {
+            legs,
+            carried,
+            carried_end,
+            turns,
+            cuts,
+            rounded,
+            inside: inside_turns,
+            width,
+            tolerance,
+            tol,
+        })
+    }
+
+    /// The walls the wire `profile` sweeps down the legs: each leg's, run
+    /// on and cut on the planes halving mitred corners, with the rounds of
+    /// rounded ones, and inside a corner against an arc each edge's two
+    /// legs' walls cut on the one curve where they meet.
+    fn walls(&self, model: &mut Model, profile: &Shape) -> OgeomResult<Vec<Shape>> {
+        let (legs, last) = (&self.legs, self.legs.len() - 1);
+        let mut faces: Vec<Shape> = Vec::new();
+        if self.inside.iter().all(Option::is_none) {
+            for i in 0..legs.len() {
+                faces.extend(self.leg_faces(model, profile, i, [None, None])?);
+            }
+        } else {
+            // Each edge of the profile, cut where it crosses a turn's axis,
+            // sweeps on its own: inside a corner against an arc its two legs'
+            // walls are cut on the one curve where they meet.
+            for piece in self.profile_pieces(model, profile)? {
+                let mut meetings: Vec<Option<(Shape, Point)>> = Vec::with_capacity(last);
+                for k in 0..last {
+                    meetings.push(self.meeting_edge(model, &piece, k)?);
+                }
+                for i in 0..legs.len() {
+                    let trims = [
+                        i.checked_sub(1).and_then(|k| meetings[k].clone()),
+                        meetings.get(i).cloned().flatten(),
+                    ];
+                    faces.extend(self.leg_faces(model, &piece.wire, i, trims)?);
+                }
+            }
+        }
+        Ok(faces)
+    }
+
     /// Where the profile point `p`'s paths down the legs either side of
     /// corner `k` meet, where it lies inside a corner against an arc.
     ///

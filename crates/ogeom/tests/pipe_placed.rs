@@ -448,6 +448,42 @@ fn simpson(f: impl Fn(f64) -> f64, lo: f64, hi: f64, n: u32) -> f64 {
     (f(lo) + f(hi) + inner) * h / 3.0
 }
 
+/// The length of the path the point of the section offset `rho` to the
+/// left of the spine runs down `steps`: a line's length, an arc's
+/// `(R ∓ ρ)` times its angle, and at a corner turning through `θ`,
+/// `|ρ| tan(θ/2)` along either leg outside the turn, or back to where its
+/// two legs' paths cross inside it.
+fn offset_length(steps: &[Step], rho: f64) -> f64 {
+    let mut total = 0.0;
+    for (i, step) in steps.iter().enumerate() {
+        total += match *step {
+            Step::Line(length) => length,
+            Step::Arc(radius, angle) => (radius - angle.signum() * rho) * angle.abs(),
+            Step::Turn(turn) => {
+                // Mirrored, where it turns right, to turn left.
+                let m = turn.signum();
+                let mirrored = |s: Step| match s {
+                    Step::Arc(radius, angle) => Step::Arc(radius, angle * m),
+                    other => other,
+                };
+                let inside = rho * m;
+                if inside <= 0.0 {
+                    2.0 * inside.abs() * (turn.abs() / 2.0).tan()
+                } else {
+                    let (a, b) = crossing_inside(
+                        mirrored(steps[i - 1]),
+                        mirrored(steps[i + 1]),
+                        turn.abs(),
+                        inside,
+                    );
+                    -(a + b)
+                }
+            }
+        };
+    }
+    total
+}
+
 /// The volume of the mitred pipe of radius `r` down `steps`, as the pipe
 /// shell sweeps it. Under the rotation-minimizing frame of a path in one
 /// plane a point of the disc at offset `ρ` to the left of the spine runs
@@ -460,36 +496,7 @@ fn simpson(f: impl Fn(f64) -> f64, lo: f64, hi: f64, n: u32) -> f64 {
 /// stops where its two legs' paths cross. Integrated with `ρ = r sin u`,
 /// smooth on either side of the spine, by Simpson's rule.
 fn generators_volume(steps: &[Step], r: f64) -> f64 {
-    let length = |rho: f64| -> f64 {
-        let mut total = 0.0;
-        for (i, step) in steps.iter().enumerate() {
-            total += match *step {
-                Step::Line(length) => length,
-                Step::Arc(radius, angle) => (radius - angle.signum() * rho) * angle.abs(),
-                Step::Turn(turn) => {
-                    // Mirrored, where it turns right, to turn left.
-                    let m = turn.signum();
-                    let mirrored = |s: Step| match s {
-                        Step::Arc(radius, angle) => Step::Arc(radius, angle * m),
-                        other => other,
-                    };
-                    let inside = rho * m;
-                    if inside <= 0.0 {
-                        2.0 * inside.abs() * (turn.abs() / 2.0).tan()
-                    } else {
-                        let (a, b) = crossing_inside(
-                            mirrored(steps[i - 1]),
-                            mirrored(steps[i + 1]),
-                            turn.abs(),
-                            inside,
-                        );
-                        -(a + b)
-                    }
-                }
-            };
-        }
-        total
-    };
+    let length = |rho: f64| offset_length(steps, rho);
     let slice = |u: f64| {
         let c = u.cos();
         length(r * u.sin()) * 2.0 * r * r * c * c
@@ -628,6 +635,307 @@ fn a_pipe_round_a_corner_in_an_arc_s_plane_is_its_tori_and_cylinders() {
     assert!(exact);
     let want = PI * r * r * (16.0 + 1.5 * PI);
     assert!((v - want).abs() < want * 1e-12, "{v} against {want}");
+}
+
+/// The face in the plane `x = 0` bounded by the polygon through `corners`,
+/// each `(y, z)`, less the polygon through `hole` where it has one.
+fn polygon_profile(model: &mut Model, corners: &[(f64, f64)], hole: &[(f64, f64)]) -> Shape {
+    let mut rings = Vec::new();
+    for ring in [corners, hole] {
+        if ring.is_empty() {
+            continue;
+        }
+        let points: Vec<Point> = ring.iter().map(|&(y, z)| Point::new(0.0, y, z)).collect();
+        rings.push(make_polygon(model, &points, true, T).unwrap().shape);
+    }
+    let plane = Plane::new(Frame::about(Point::ORIGIN, Direction::X));
+    make_face(model, PlaneSurface::new(plane).into(), &rings, T)
+        .unwrap()
+        .shape
+}
+
+/// The rounded slot in the plane `x = 0`: the half discs of radius `rho`
+/// about `(y0, z)` and `(y1, z)`, `y0 < y1`, joined by the lines along `y`
+/// tangent to both.
+fn slot_profile(model: &mut Model, (y0, y1): (f64, f64), z: f64, rho: f64) -> Shape {
+    let at = |y: f64, z: f64| Point::new(0.0, y, z);
+    let corners = [
+        at(y1, z - rho),
+        at(y1, z + rho),
+        at(y0, z + rho),
+        at(y0, z - rho),
+    ];
+    let v: Vec<Shape> = corners
+        .iter()
+        .map(|p| make_vertex(model, *p).shape)
+        .collect();
+    // Each end half a turn about its centre, from its lower point round the
+    // outside to its upper one, and back.
+    let half = |model: &mut Model, centre: Point, from: Direction, a: &Shape, b: &Shape| {
+        let frame = Frame::new(centre, Direction::X, from, T).unwrap();
+        let arc = CircleCurve::new(Circle::new(frame, rho, T).unwrap());
+        make_edge_between(model, arc.into(), (0.0, PI), a, b, T)
+            .unwrap()
+            .shape
+    };
+    let line = |model: &mut Model, i: usize, j: usize| {
+        let s = LineCurve::segment(corners[i], corners[j], T).unwrap();
+        let range = s.domain();
+        make_edge_between(model, s.into(), range, &v[i], &v[j], T)
+            .unwrap()
+            .shape
+    };
+    let edges = [
+        half(model, at(y1, z), -Direction::Z, &v[0], &v[1]),
+        line(model, 1, 2),
+        half(model, at(y0, z), Direction::Z, &v[2], &v[3]),
+        line(model, 3, 0),
+    ];
+    let ring = make_wire(model, &edges, T).unwrap().shape;
+    let plane = Plane::new(Frame::about(Point::ORIGIN, Direction::X));
+    make_face(model, PlaneSurface::new(plane).into(), &[ring], T)
+        .unwrap()
+        .shape
+}
+
+/// Each sharp corner of `steps`: where it stands and the unit normal of
+/// the plane halving it.
+fn mitre_planes(steps: &[Step]) -> Vec<(Point, Vector)> {
+    let (mut at, mut heading) = ((0.0_f64, 0.0_f64), 0.0_f64);
+    let mut out = Vec::new();
+    for step in steps {
+        match *step {
+            Step::Line(length) => {
+                at = (at.0 + length * heading.cos(), at.1 + length * heading.sin());
+            }
+            Step::Arc(radius, angle) => {
+                let s = angle.signum();
+                let centre = (
+                    at.0 - s * radius * heading.sin(),
+                    at.1 + s * radius * heading.cos(),
+                );
+                at = turned(at, centre, angle);
+                heading += angle;
+            }
+            Step::Turn(angle) => {
+                let halving = heading + angle / 2.0;
+                out.push((
+                    Point::new(at.0, at.1, 0.0),
+                    Vector::new(halving.cos(), halving.sin(), 0.0),
+                ));
+                heading += angle;
+            }
+        }
+    }
+    out
+}
+
+/// A span of offsets `(lo, hi)` and the section's chord length over it.
+type Piece<'a> = (f64, f64, &'a dyn Fn(f64) -> f64);
+
+/// The volume a section sweeps down `steps` in the rotation-minimizing
+/// frame, mitred: as for the disc (see [`generators_volume`]) a slice at
+/// height `w` is the strip its offsets there sweep, so the volume is
+/// `∫ ℓ(ρ) c(ρ) dρ`, `c(ρ)` the length of the section's chord at offset
+/// `ρ` along the turns' axis. Down each leg that is Pappus's area times the
+/// path of the section's centroid; outside each turn the wedges
+/// `∫ 2|ρ| tan(θ/2) c(ρ) dρ` are added, and inside it the legs' overlap
+/// taken off. `pieces` covers the chord's span, each `(lo, hi, c)` with
+/// `c` smooth on it after `ρ = lo + (hi - lo)(1 - cos u)/2`, which tames
+/// a chord's square root at either end. Each is split at the spine, where
+/// `ℓ` has a kink.
+fn chord_volume(steps: &[Step], pieces: &[Piece<'_>]) -> f64 {
+    let mut total = 0.0;
+    for &(lo, hi, chord) in pieces {
+        let mut spans = vec![(lo, hi)];
+        if lo < 0.0 && hi > 0.0 {
+            spans = vec![(lo, 0.0), (0.0, hi)];
+        }
+        for (a, b) in spans {
+            let slice = |u: f64| {
+                let rho = a + (b - a) * (1.0 - u.cos()) / 2.0;
+                offset_length(steps, rho) * chord(rho) * (b - a) * u.sin() / 2.0
+            };
+            total += simpson(slice, 0.0, PI, 4_000);
+        }
+    }
+    total
+}
+
+/// A square, a rectangle off the spine and lying off the turns' plane,
+/// square tubing and a rounded slot, each swept by the pipe shell round sharp
+/// corners turning in an arc's plane, are each leg's closed-form walls
+/// mitred exactly: the solid is valid, every face a plane, cylinder, cone
+/// or torus, no face lies on a plane halving a corner (the two legs' cuts
+/// there are one curve), and the volume is the generators' integral (see
+/// [`chord_volume`]). For the square that integral is checked against
+/// Pappus's closed form and the wedges' down a line corner.
+#[test]
+fn a_pipe_shell_of_any_planar_face_round_a_corner_in_an_arc_s_plane_is_exact() {
+    use Step::{Arc, Line, Turn};
+    let a = 0.4;
+    let square: &dyn Fn(f64) -> f64 = &|_| 2.0 * a;
+    // Down two lines the wedges outside and the overlap inside cancel:
+    // the square's area times the legs' length.
+    for theta in [0.3, PI / 3.0, PI / 2.0, 2.0] {
+        let lines = [Line(4.0), Turn(theta), Line(3.0)];
+        let v = chord_volume(&lines, &[(-a, a, square)]);
+        let want = 4.0 * a * a * 7.0;
+        assert!((v - want).abs() < want * 1e-12, "{v} against {want}");
+    }
+    // Round a line into an arc of radius `R` turning `φ`, the square's
+    // Pappus volume `4a² (L + Rφ)`, its wedges outside, `a³ tan(θ/2)` on
+    // either leg, and less its overlap inside.
+    let (length, radius, phi, theta) = (5.0, 3.0, PI / 2.0, PI / 3.0);
+    let steps = [Line(length), Turn(theta), Arc(radius, phi)];
+    let overlap = simpson(
+        |rho: f64| {
+            let (back, on) = crossing_inside(Line(length), Arc(radius, phi), theta, rho);
+            (back + on) * 2.0 * a
+        },
+        0.0,
+        a,
+        4_000,
+    );
+    let closed =
+        4.0 * a * a * (length + radius * phi) + 2.0 * a * a * a * (theta / 2.0).tan() - overlap;
+    let v = chord_volume(&steps, &[(-a, a, square)]);
+    assert!((v - closed).abs() < closed * 1e-11, "{v} against {closed}");
+
+    let (y0, y1, rho) = (-0.3, 0.45, 0.25);
+    let cap =
+        |centre: f64| move |y: f64| 2.0 * (rho * rho - (y - centre) * (y - centre)).max(0.0).sqrt();
+    let (left_cap, right_cap) = (cap(y0), cap(y1));
+    let middle = |_: f64| 2.0 * rho;
+    let rectangle = |_: f64| 0.6;
+    let (b, wall) = (0.3, |_: f64| 2.0 * (0.4 - 0.3));
+    type Profile = fn(&mut Model) -> Shape;
+    let profiles: [(&str, Profile, Vec<Piece<'_>>); 4] = [
+        (
+            "square",
+            |m| {
+                polygon_profile(
+                    m,
+                    &[(-0.4, -0.4), (0.4, -0.4), (0.4, 0.4), (-0.4, 0.4)],
+                    &[],
+                )
+            },
+            vec![(-a, a, square)],
+        ),
+        (
+            "rectangle",
+            |m| {
+                polygon_profile(
+                    m,
+                    &[(0.15, -0.1), (0.85, -0.1), (0.85, 0.5), (0.15, 0.5)],
+                    &[],
+                )
+            },
+            vec![(0.15, 0.85, &rectangle)],
+        ),
+        (
+            "tube",
+            |m| {
+                polygon_profile(
+                    m,
+                    &[(-0.4, -0.4), (0.4, -0.4), (0.4, 0.4), (-0.4, 0.4)],
+                    &[(-0.3, -0.3), (-0.3, 0.3), (0.3, 0.3), (0.3, -0.3)],
+                )
+            },
+            vec![(-a, -b, square), (-b, b, &wall), (b, a, square)],
+        ),
+        (
+            "slot",
+            |m| slot_profile(m, (-0.3, 0.45), 0.1, 0.25),
+            vec![
+                (y0 - rho, y0, &left_cap),
+                (y0, y1, &middle),
+                (y1, y1 + rho, &right_cap),
+            ],
+        ),
+    ];
+    let paths: [&[Step]; 5] = [
+        &[Line(5.0), Turn(PI / 3.0), Arc(3.0, PI / 2.0)],
+        &[Line(5.0), Turn(-PI / 3.0), Arc(3.0, -PI / 2.0)],
+        &[Arc(3.0, PI / 2.0), Turn(PI / 3.0), Line(5.0)],
+        &[Arc(3.0, PI / 2.0), Turn(-PI / 2.0), Arc(4.0, PI / 2.0)],
+        &[
+            Line(4.0),
+            Turn(PI / 4.0),
+            Arc(2.5, PI / 2.0),
+            Turn(-PI / 3.0),
+            Line(3.0),
+            Arc(2.0, -PI / 2.0),
+            Turn(PI / 2.0),
+            Line(4.0),
+        ],
+    ];
+    use ogeom::geom::SurfaceGeometry as S;
+    for (name, build, pieces) in &profiles {
+        for steps in paths {
+            let mut model = Model::new();
+            let spine = planar_path(&mut model, steps);
+            let profile = build(&mut model);
+            let solid = make_pipe_shell(&mut model, &profile, &spine, false, 1e-6, T)
+                .unwrap_or_else(|e| panic!("{name} {steps:?}: {e}"))
+                .shape;
+            let found = check(&model, &solid, T).unwrap();
+            assert!(found.is_valid(), "{name} {steps:?}: {found}");
+            let mitres = mitre_planes(steps);
+            for face in explore_unique(&model, &solid, ShapeType::Face).unwrap() {
+                let Some(NodeData::Face(d)) = model.node(&face).map(|n| n.data()) else {
+                    panic!("a face holds no data");
+                };
+                let surface = model.geometry().surface(d.surface);
+                assert!(
+                    matches!(
+                        surface,
+                        Some(S::Plane(_) | S::Cylinder(_) | S::Cone(_) | S::Torus(_))
+                    ),
+                    "{name} {steps:?}: a face is {surface:?}"
+                );
+                if let Some(plane) = find_plane(&model, &face, T).unwrap() {
+                    let n = plane.normal().vector();
+                    assert!(
+                        !mitres.iter().any(|(at, h)| {
+                            n.cross(*h).magnitude() < 1e-9 && plane.distance_to(*at) < 1e-9
+                        }),
+                        "{name} {steps:?}: a cut on a mitre plane left a face"
+                    );
+                }
+            }
+            let (v, _, exact) = measure(&model, &solid);
+            assert!(exact, "{name} {steps:?}");
+            let want = chord_volume(steps, pieces);
+            // A line's walls meet on conics held exactly. A curved edge's
+            // meet on a fitted curve, each edge held to its tolerance `δ`:
+            // by `V = ⅓ ∮ (x - c)·n dA` a face's boundary moved by `δ` along
+            // its length `ℓ` moves the volume by at most `δ ℓ R/3`, `R` the
+            // solid's reach from `c`, the middle of its bounds, for each of
+            // the edge's two faces.
+            let reach = {
+                let b = ogeom::algo::shape_bounds(&model, &solid, T).unwrap();
+                b.low().unwrap().distance(b.high().unwrap()) / 2.0
+            };
+            let mut slack = 0.0;
+            if *name == "slot" {
+                for edge in explore_unique(&model, &solid, ShapeType::Edge).unwrap() {
+                    let held = model.tolerance_of(&edge).unwrap().map_or(0.0, |t| t.get());
+                    if held > T.confusion() {
+                        let length =
+                            ogeom::algo::linear_properties(&model, &edge, Deflection::default(), T)
+                                .unwrap()
+                                .mass;
+                        slack += held * length * reach * 2.0 / 3.0;
+                    }
+                }
+            }
+            assert!(
+                (v - want).abs() < want * 1e-11 + slack,
+                "{name} {steps:?}: {v} against {want}, {slack} allowed"
+            );
+        }
+    }
 }
 
 /// The line `up` to `(0, 0, 5)` and on from its end `top`, tangent to
