@@ -221,7 +221,7 @@ impl Editable {
     }
 
     /// Join anew the faces on every edge that three or more of them use.
-    fn rejoin_crowded_edges(&mut self) {
+    pub(super) fn rejoin_crowded_edges(&mut self) {
         let mut edges: Vec<(u64, u32)> = Vec::new();
         for (f, &live) in self.live.iter().enumerate() {
             if live {
@@ -251,7 +251,7 @@ impl Editable {
 
 /// `to`, or where a move from `from` towards it is shortened to end no
 /// farther than `most` from `from` as computed, and whether it was.
-fn capped(from: Point, to: Point, most: f64) -> (Point, bool) {
+pub(super) fn capped(from: Point, to: Point, most: f64) -> (Point, bool) {
     let d = to - from;
     let length = d.magnitude();
     if length <= most {

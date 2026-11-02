@@ -34,8 +34,8 @@ pub use discretize::{
     is_straight_planar,
 };
 pub use editable::{
-    Cap, Component, CutReport, Editable, Fairing, Fill, FillReport, OPTIMAL_UP_TO, PASSES, Rim,
-    RimId, Side, Smooth, SmoothReport,
+    Cap, Component, CutReport, Editable, Fairing, Fill, FillReport, OFFSET_EDGE_ANGLE,
+    OFFSET_FARTHEST, OPTIMAL_UP_TO, OffsetReport, PASSES, Rim, RimId, Side, Smooth, SmoothReport,
 };
 pub use hatch::hatch_face;
 pub use planar::{Edge2, Loop2, region};
