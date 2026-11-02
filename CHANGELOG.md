@@ -91,6 +91,28 @@ bump may break the API and a patch bump may not.
   - Every corpus solid whose shells close meshes closed at chord 0.01,
     with no triangle without area.
 
+### Fixed
+
+- **`fit::grow` grows over the whole of a noise-free single-precision
+  mesh.** (#617)
+  - On exact facets stored as `f32`, as a mesh read from an `f32` file is,
+    the fit's sigma is the coordinates' rounding alone, and the gate of
+    `t σ √(n/(n−p))` turned away the vertices whose rounding fell past it.
+    A closed cylinder of radius 10, 64 facets round and 24 rows up, grew
+    over 288 of its 3072 side triangles, and 144 to 576 when moved before
+    rounding; a box face peeled one or two rings of a flat, or grew over
+    509 of its 2592 triangles.
+  - Where every coordinate is a single-precision number, no threshold is
+    below the rounding's: a vertex is near where its residual is within
+    its own coordinates' rounding along the normal, `Σ |nᵢ| ½ulp(xᵢ)`,
+    plus the cutoff's sigmas of the fit's error from the region's
+    rounding, `k ½ulp(m) √h` at the region's largest coordinate `m` and
+    the point's leverage `h`; the gate and the peeling test are at least
+    `k ½ulp(m)`. The cylinder grows whole, f32 or f64 trigonometry and
+    moved or not, its radius within 2e-8 unmoved, and the box face whole with no
+    ring peeled. A mesh with any coordinate off single precision is gated
+    as before.
+
 ## [0.13.2] - 2026-11-01
 
 An additive release for scan inspection. `algo::distance` measures many
