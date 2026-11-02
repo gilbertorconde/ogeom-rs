@@ -46,6 +46,32 @@ bump may break the API and a patch bump may not.
     vertices and faired in 14 s of processor time, within 0.009 of a tube
     of radius 3.
 
+- **DXF drawings written as their entities: `dxf::write_dxf_entities(&DxfOut
+  { unit, layers, items })`.** (#639)
+  - R2000 (AC1015) ASCII: `LINE`, `ARC`, `CIRCLE`, `ELLIPSE`, `LWPOLYLINE`
+    with its bulges, `SPLINE` (control points, knots and weights, or fit
+    points) and `TEXT`, each item on a named layer, continuous or dashed,
+    with the unit as `$INSUNITS` (millimetres, inches or none). A curve is
+    the `DxfCurve` the reader returns, so what is read writes back as itself.
+  - The file carries what a strict reader asks for: HEADER (`$ACADVER`,
+    `$DWGCODEPAGE`, `$INSUNITS`, `$MEASUREMENT`, `$HANDSEED`), an empty
+    CLASSES, all nine tables (layer `0`, the `ByBlock`, `ByLayer`,
+    `CONTINUOUS` and `DASHED` linetypes, the `Standard` text and dimension
+    styles, the `ACAD` application, the model and paper space block
+    records), both spaces' blocks, and the root dictionary with
+    `ACAD_GROUP`; every table, entry, block, entity and object has a handle
+    and names its owner.
+  - Numbers go out in their shortest exact form, so every entity reads back
+    within 1e-9 (angles pass through degrees). Text outside printable ASCII
+    is written as `\U+XXXX`, so it reads back in any code page.
+  - A layer name DXF does not allow, an item on no layer, a non-finite
+    number, a zero radius, an ellipse ratio outside (0, 1], a knot vector
+    that does not match its control points, or a control character in a
+    text is refused by name.
+  - `read_dxf_entities` now reads `TEXT` into `DxfEntities::texts`, its
+    `\U+XXXX` escapes decoded; a struct literal of `DxfEntities` now
+    needs the new field. `write_dxf` is unchanged, byte for byte.
+
 ## [0.14.2] - 2026-11-02
 
 An additive release that starts mesh editing, with two fixes. `mesh::Editable`

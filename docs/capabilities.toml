@@ -1908,6 +1908,23 @@ tests = ["crates/ogeom/tests/iges_roundtrip.rs",
 ]
 
 [[capability]]
+id = "io.dxf"
+title = "DXF drawings, both directions: lines, arcs, circles, ellipses, bulged polylines, splines and text, with units and layers"
+crate = "ogeom-io"
+verdict = "covered"
+symbols = [
+    "ogeom_io::read_dxf_entities", "ogeom_io::write_dxf_entities",
+    "ogeom_io::read_dxf", "ogeom_io::write_dxf", "ogeom_io::DxfOut",
+]
+tests = [
+    "crates/ogeom-io/tests/dxf.rs::every_entity_written_reads_back_as_itself",
+    "crates/ogeom-io/tests/dxf.rs::a_bulge_reads_back_as_the_arc_it_was_made_from",
+    "crates/ogeom-io/tests/dxf.rs::the_r2000_file_holds_every_section_table_and_handle_a_strict_reader_needs",
+    "crates/ogeom-io/tests/dxf.rs::circles_arcs_and_bulged_closed_polylines_read_as_written",
+    "crates/ogeom/tests/exchange.rs::a_drawing_written_as_dxf_reads_back_layer_by_layer",
+]
+
+[[capability]]
 id = "io.vrml"
 title = "VRML scenes"
 crate = "ogeom-io"
