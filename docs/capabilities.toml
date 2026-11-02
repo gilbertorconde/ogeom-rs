@@ -1854,6 +1854,21 @@ tests = [
 ]
 
 [[capability]]
+id = "algo.volume-difference"
+title = "The volume between a scan and its solid on a grid: nodes read by exact parity against the scan and against the solid, those in the solid's mesh band against its true surfaces; holes filled and doubted, differences joined into missing and excess regions with volume, depth, layer or lump, and the shallower than a cell dropped"
+crate = "ogeom-algo"
+verdict = "covered"
+symbols = [
+    "ogeom_algo::volume_difference", "ogeom_algo::Region", "ogeom_algo::Material",
+    "ogeom_algo::Form", "ogeom_mesh::Line", "ogeom_mesh::Lies",
+]
+tests = [
+    "crates/ogeom/tests/volume_difference.rs",
+    "crates/ogeom/tests/volume_difference.rs::a_million_triangle_scan_in_bounded_time",
+    "crates/ogeom/tests/volume_difference.rs::a_million_triangle_scan_of_a_curved_solid_in_bounded_time",
+]
+
+[[capability]]
 id = "mesh.smoothing-curvature"
 title = "Feature-preserving smoothing of an editable mesh onto local least-squares quadrics, creases kept by normal angle, moves capped and blended into a region; mean, Gaussian and principal curvatures with their directions at each vertex of a mesh"
 crate = "ogeom-mesh"

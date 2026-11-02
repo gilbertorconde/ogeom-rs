@@ -13,6 +13,40 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **The volume between a scan and its solid: `algo::volume_difference(mesh,
+  model, shape, cell, tol) -> Vec<Region { side: Missing | Excess, volume,
+  depth, kind: Layer | Lump, bounds, unsure }>`.** (#592)
+  - Space over both bodies is cut into cells `cell` wide and each read at
+    its centre: against the scan by the exact parity of its crossings along
+    `x` (`mesh::Line`, shared with `mesh::hollow`), against the solid by
+    the same parity on its mesh at a sixteenth of a cell, and, within that
+    chord of the mesh, by `SolidBoundary::holds` on its true surfaces. In
+    the solid and out of the scan is missing material; the reverse,
+    excess.
+  - A scan with holes is closed by flat fills on its rims. A differing
+    node whose nearest point on the closed scan is a fill takes the
+    solid's side; nodes within a cell of a fill are doubtful, and a region
+    within a cell of a doubtful node, or shallower than two cells, is
+    `unsure`. Vertices at one position are made one first, so loose
+    triangles read as the surface they make.
+  - Differing nodes are joined across faces, edges and corners. A region's
+    depth is the farthest a vertex of either surface near it lies from the
+    other surface: a boss reads its height, a pocket its depth. A region
+    shallower than a cell is below the resolution and dropped, which keeps
+    a scan's noise out. A region is a `Layer` where `V ≥ 4 d³`, the square
+    slab of its volume and depth having more area on its faces than round
+    its sides, otherwise a `Lump`. Answers are the same on any thread
+    count.
+  - Measured: a boss of radius 2 and height 3 on a scan reads one excess
+    lump 3 deep; its volume error, averaged over seven cells about each
+    width, is 2.44, 1.29, 0.43 and 0.23 at cells 0.4, 0.2, 0.1 and 0.05
+    (0.6 % of the boss at 0.05). A pocket in the scan reads one missing
+    lump as deep as the pocket, a face standing 0.3 off one layer 0.3 deep
+    of the slab's exact volume, a hole in the boss's top makes it unsure,
+    and noise of three quarters of a cell reports nothing. A scan of 1.0 M
+    triangles with a bump against a block reads in 0.76 s at 8.8 M nodes; a
+    sphere's of 1.36 M triangles against the sphere in 1.4 s.
+
 - **Scattered points fitted over a seed surface, refined to a tolerance:
   `fit::fit_surface_scattered_over(points, seed: &SurfaceGeometry,
   &ScatteredOptions { degree, spans, most, fairing, target }, tol) ->

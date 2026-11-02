@@ -20,6 +20,7 @@ pub mod discretize;
 pub mod editable;
 pub mod hatch;
 pub mod hollow;
+pub mod parity;
 pub mod planar;
 pub mod point_index;
 pub mod section;
@@ -43,6 +44,7 @@ pub use editable::{
 };
 pub use hatch::hatch_face;
 pub use hollow::{Grid, Hollowed, hollow};
+pub use parity::{Lies, Line};
 pub use planar::{Edge2, Loop2, region};
 pub use point_index::{Neighbour, PointIndex};
 pub use section::{Chain, Section, section, sections};
