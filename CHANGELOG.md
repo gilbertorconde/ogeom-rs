@@ -11,6 +11,23 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-03
+
+A minor release: `mesh::Target` gains the `Verified` variant and
+`mesh::Simplified` a `deviation` field, and the DXF reader's
+`DxfEntities` gains `texts`, so exhaustive matches and struct literals of
+these need updating.
+
+Editing scan meshes. An `Editable` mesh fills its holes, exactly
+triangulated and faired flat or curved, smooths without rounding its
+creases and reads its curvature, and offsets with its folds repaired.
+`mesh::boolean` takes exact booleans between closed meshes and with
+solids, every decision by exact predicates; `mesh::hollow` and
+`mesh::thicken` make walls; decimation can be verified both ways against
+its source; and `boolean::cut_by_mesh_region` cuts a solid by a break
+marked on a scan, keeping the solid's own faces exact. DXF drawings are
+written as their entities, R2000 with units and layers.
+
 ### Added
 
 - **Cutting a solid by a break surface marked on a mesh, for repair
@@ -10961,7 +10978,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.14.2...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.14.2...v0.15.0
 [0.14.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.13.2...v0.14.0
