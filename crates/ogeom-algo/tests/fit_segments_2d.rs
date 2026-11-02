@@ -482,4 +482,3 @@ fn random_chains_hold_the_bound() {
         }
     }
 }
-

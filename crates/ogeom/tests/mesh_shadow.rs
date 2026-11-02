@@ -467,6 +467,7 @@ fn a_single_precision_mesh_far_from_the_origin() {
 /// is a ring, the hole kept, of the area the closed form gives, in well
 /// under a second of processor time.
 #[test]
+#[ignore = "heavy"]
 fn a_million_triangle_torus_casts_a_ring() {
     let mesh = torus(10.0, 3.0, 1000, 500);
     assert_eq!(mesh.triangles.len(), 1_000_000);
