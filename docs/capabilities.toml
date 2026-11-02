@@ -901,6 +901,17 @@ symbols = ["ogeom_bool::make_periodic"]
 tests = ["crates/ogeom/tests/boolean_options.rs"]
 
 [[capability]]
+id = "bool.cut-by-mesh-region"
+title = "Cutting a solid by a break surface marked on a mesh: the break extended over its average plane clear of the solid, holes closed, thickened into a slab and cut away, one side kept, the solid's faces left on their own surfaces"
+crate = "ogeom-bool"
+verdict = "covered"
+symbols = ["ogeom_bool::cut_by_mesh_region", "ogeom_mesh::Side"]
+tests = [
+    "crates/ogeom/tests/cut_by_mesh_region.rs",
+    "crates/ogeom/tests/cut_by_mesh_region.rs::a_block_through_a_synthetic_fracture_gives_the_piece_above_it",
+]
+
+[[capability]]
 id = "bool.glue"
 title = "Gluing shapes along known-coincident boundaries"
 crate = "ogeom-bool"

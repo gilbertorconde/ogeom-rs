@@ -44,6 +44,7 @@ mod bins;
 mod box_tree;
 mod defeature;
 mod half_space;
+mod mesh_region;
 mod seam_join;
 mod seated;
 mod section_face;
@@ -55,6 +56,7 @@ pub mod work;
 
 pub use ball_chart::TOUCHING as POLE_TOUCHING;
 pub use defeature::remove_faces;
+pub use mesh_region::cut_by_mesh_region;
 pub use section_face::section_face;
 pub use self_union::self_union;
 
