@@ -153,7 +153,7 @@ pub fn boolean(a: &Triangulation, b: &Triangulation, op: BoolKind) -> OgeomResul
     .map_err(|_| ogeom_core::ogeom_err!(Invariant, "two operands made other than two"))?;
     let ops = [first?, second?];
     for o in &ops {
-        o.check_embedded()?;
+        o.check_embedded(0)?;
     }
     for o in &ops {
         o.check_wound()?;
@@ -229,6 +229,26 @@ pub fn boolean_with_shape(
 ) -> OgeomResult<MeshBoolean> {
     let solid = crate::triangulate(model, shape, Deflection::with_chord(chord)?, tol)?;
     boolean(mesh, &solid, op)
+}
+
+/// Check that `mesh` bounds a solid as [`boolean`] asks of an operand:
+/// closed, 2-manifold, no degenerate triangle, wound outward, and meeting
+/// itself only where triangles share corners, that last tested only on the
+/// pairs holding a triangle numbered `first` or after. Returns the mesh's
+/// hierarchy.
+///
+/// # Errors
+///
+/// As [`boolean`] for an operand, named `name` in the messages.
+pub(crate) fn check_solid(
+    mesh: &Triangulation,
+    name: &'static str,
+    first: usize,
+) -> OgeomResult<Bvh> {
+    let operand = Operand::new(mesh, 0, name)?;
+    operand.check_embedded(first)?;
+    operand.check_wound()?;
+    Ok(operand.bvh)
 }
 
 /// One operand, checked and indexed.
@@ -405,9 +425,10 @@ impl<'a> Operand<'a> {
     }
 
     /// No two triangles meet but where they share corners: along their
-    /// common edge, or at their common vertex.
-    fn check_embedded(&self) -> OgeomResult<()> {
-        let chunks: Vec<std::ops::Range<usize>> = (0..self.tris.len())
+    /// common edge, or at their common vertex. Only pairs holding a
+    /// triangle numbered `first` or after are tested.
+    fn check_embedded(&self, first: usize) -> OgeomResult<()> {
+        let chunks: Vec<std::ops::Range<usize>> = (first..self.tris.len())
             .step_by(CHUNK)
             .map(|s| s..(s + CHUNK).min(self.tris.len()))
             .collect();
@@ -416,7 +437,8 @@ impl<'a> Operand<'a> {
                 let a = &self.tris[t];
                 let (lo, hi) = Self::bounds(a);
                 for u in self.near(lo, hi) {
-                    if u as usize <= t {
+                    let u_at = u as usize;
+                    if u_at == t || (u_at >= first && u_at < t) {
                         continue;
                     }
                     let b = Tri {

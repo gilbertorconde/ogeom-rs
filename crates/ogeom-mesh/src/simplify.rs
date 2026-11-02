@@ -386,7 +386,7 @@ impl State {
                 if best.is_some_and(|(current, ..)| cost >= current) {
                     continue;
                 }
-                if self.would_fold(a, b, at) {
+                if self.would_fold(a, b, at) || !self.keeps_manifold(a, b) {
                     continue;
                 }
                 best = Some((cost, a, b, at));
@@ -422,6 +422,37 @@ impl State {
             }
         }
         false
+    }
+
+    /// Whether merging two vertices keeps the faces about them a manifold:
+    /// the vertices they both neighbour are those across the edge between
+    /// them, and no two faces would be left on the same three vertices.
+    ///
+    /// A third neighbour in common joins two edges into one with four
+    /// faces; two faces on the same three vertices, as when a tetrahedron
+    /// collapses, close over each other. Neither is a coarser surface.
+    fn keeps_manifold(&self, a: u32, b: u32) -> bool {
+        let mut across = Vec::new();
+        for index in self.around.get(&a).into_iter().flatten() {
+            let t = self.triangles[*index];
+            if self.live[*index] && t.contains(&b) {
+                across.extend(t.iter().filter(|&&w| w != a && w != b));
+            }
+        }
+        across.sort_unstable();
+        across.dedup();
+        let (ring_a, ring_b) = (self.ring(a), self.ring(b));
+        let common = ring_a.iter().filter(|w| ring_b.binary_search(w).is_ok());
+        if !common.copied().eq(across.iter().copied()) {
+            return false;
+        }
+        let face = |v: u32, x: u32, y: u32| {
+            self.around.get(&v).into_iter().flatten().any(|&index| {
+                let t = self.triangles[index];
+                self.live[index] && t.contains(&x) && t.contains(&y)
+            })
+        };
+        !(across.len() == 2 && face(a, across[0], across[1]) && face(b, across[0], across[1]))
     }
 
     /// A triangle's normal, optionally with one collapse applied.
@@ -612,7 +643,7 @@ impl State {
                 continue;
             }
             let (_, at) = self.mean_cost(lo, hi);
-            if self.would_fold(hi, lo, at) {
+            if self.would_fold(hi, lo, at) || !self.keeps_manifold(lo, hi) {
                 continue;
             }
             self.collapse(hi, lo, at);
@@ -763,6 +794,48 @@ mod tests {
             done.collapsed
         );
         assert!(done.mesh.volume() > 0.0, "and it turned inside out");
+    }
+
+    #[test]
+    fn a_collapse_that_would_join_two_edges_into_one_is_not_made() {
+        // A double pyramid on a triangle with two of its corners close
+        // together: merging those two leaves each pole's three faces on two
+        // vertices, every edge of the pair under four faces.
+        let mut mesh = Triangulation::new();
+        mesh.positions = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(0.01, 0.0, 0.0),
+            Point::new(0.0, 1.0, 0.0),
+            Point::new(0.0, 0.3, 1.0),
+            Point::new(0.0, 0.3, -1.0),
+        ];
+        mesh.triangles = vec![
+            [3, 0, 1],
+            [3, 1, 2],
+            [3, 2, 0],
+            [4, 1, 0],
+            [4, 2, 1],
+            [4, 0, 2],
+        ];
+        for target in [Target::Triangles(4), Target::Error(1.0)] {
+            let done = simplify(&mesh, target, T).unwrap();
+            let mut uses: FastMap<(u32, u32), usize> = FastMap::default();
+            let mut sets = FastSet::default();
+            for t in &done.mesh.triangles {
+                let mut set = *t;
+                set.sort_unstable();
+                assert!(sets.insert(set), "two faces on {set:?} after {target:?}");
+                for k in 0..3 {
+                    let (a, b) = (t[k], t[(k + 1) % 3]);
+                    *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+                }
+            }
+            assert!(
+                uses.values().all(|&n| n == 2),
+                "an edge without two faces after {target:?}: {uses:?}"
+            );
+            assert!(done.mesh.volume() > 0.0);
+        }
     }
 
     #[test]
