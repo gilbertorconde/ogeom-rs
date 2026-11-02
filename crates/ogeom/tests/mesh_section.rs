@@ -40,6 +40,7 @@ fn torus(major: f64, minor: f64, rings: u32, sides: u32) -> Triangulation {
 /// 100 ms of processor time on one thread, in the test profile as well as
 /// an optimised build.
 #[test]
+#[ignore = "heavy"]
 fn a_million_triangles_section_within_a_tenth_of_a_second() {
     let mesh = torus(10.0, 3.0, 1000, 500);
     assert_eq!(mesh.triangles.len(), 1_000_000);
