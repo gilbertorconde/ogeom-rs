@@ -1,16 +1,22 @@
 //! DXF: 2D drawings, the interchange the field expects.
 //!
 //! Reading takes a drawing's curves as written ([`read_dxf_entities`]: lines,
-//! arcs, circles, ellipses, splines and bulged polylines, with the units and
-//! which layers are dashed), or as polylines ([`read_dxf`]).
+//! arcs, circles, ellipses, splines, bulged polylines and text, with the
+//! units and which layers are dashed), or as polylines ([`read_dxf`]).
 //!
-//! R12 ASCII, the most widely readable dialect: a TABLES section declaring
-//! the two linetypes and two layers a technical drawing needs, then one
-//! `POLYLINE` per curve. Visible curves go on the `VISIBLE` layer with
-//! continuous lines; hidden curves on `HIDDEN`, dashed. The writer takes
-//! bare polylines rather than a drawing type, so anything that produces 2D
+//! Writing takes the same entities ([`write_dxf_entities`]: R2000, with the
+//! unit and named layers), or bare polylines ([`write_dxf`]). The polyline
+//! writer is R12 ASCII, the most widely readable dialect: a TABLES section
+//! declaring the two linetypes and two layers a technical drawing needs,
+//! then one `POLYLINE` per curve. Visible curves go on the `VISIBLE` layer
+//! with continuous lines; hidden curves on `HIDDEN`, dashed. It takes bare
+//! polylines rather than a drawing type, so anything that produces 2D
 //! curves (the hidden-line projector, a section outline, a sketch) writes
 //! without this crate knowing where they came from.
+
+mod entities_out;
+
+pub use entities_out::{DxfItem, DxfLayer, DxfOut, DxfShape, DxfUnit, write_dxf_entities};
 
 use ogeom_math::{Point2, Vector2};
 use std::fmt::Write as _;
@@ -216,6 +222,30 @@ pub struct DxfEntities {
     pub unit_mm: Option<f64>,
     /// The ENTITIES section's curves, in file order.
     pub entities: Vec<DxfEntity>,
+    /// The ENTITIES section's `TEXT`s, in file order.
+    pub texts: Vec<DxfLabel>,
+}
+
+/// A line of text: where it sits, how tall, at what angle, and what it says.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DxfText {
+    /// The start of its baseline (the first alignment point).
+    pub at: Point2,
+    /// The height of its capitals.
+    pub height: f64,
+    /// The baseline's direction, radians counter-clockwise from x.
+    pub angle: f64,
+    /// The string, with `\U+XXXX` escapes read as the characters they name.
+    pub text: String,
+}
+
+/// A text, and the layer it was drawn on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DxfLabel {
+    /// Group 8, as written (`"0"` when absent).
+    pub layer: String,
+    /// The text.
+    pub text: DxfText,
 }
 
 /// One entity: the curve, and where it was drawn.
@@ -390,7 +420,9 @@ fn dashed(linetype: &str) -> bool {
 /// bulges; a `POLYLINE` header's own point is its elevation, not a
 /// vertex. An entity whose extrusion is `(0, 0, -1)` is seen from below,
 /// and its planar coordinates are mirrored in x to the drawing's own view.
-/// Blocks, inserts, text, dimensions and hatches are skipped.
+/// `TEXT` is read into [`DxfEntities::texts`]; seen from below, its point
+/// and baseline are mirrored like a curve's. Blocks, inserts, multiline
+/// text, dimensions and hatches are skipped.
 ///
 /// # Errors
 ///
@@ -561,6 +593,27 @@ pub fn read_dxf_entities(text: &str) -> ogeom_core::OgeomResult<DxfEntities> {
                     end_angle,
                 }
             }
+            "TEXT" => {
+                let (Some(at), Some(height)) = (record.point(10, 20), record.real(40)) else {
+                    continue;
+                };
+                let angle = record.real(50).unwrap_or(0.0).to_radians();
+                out.texts.push(DxfLabel {
+                    layer,
+                    text: DxfText {
+                        at: flip(at),
+                        height,
+                        // The mirror of direction (cos a, sin a) is (-cos a, sin a).
+                        angle: if from_below {
+                            core::f64::consts::PI - angle
+                        } else {
+                            angle
+                        },
+                        text: unescape(record.text(1).unwrap_or("")),
+                    },
+                });
+                continue;
+            }
             "ELLIPSE" | "SPLINE" if from_below => ogeom_core::ogeom_bail!(
                 Construction,
                 "a {} seen from below (extrusion 0, 0, -1) is not read yet",
@@ -649,6 +702,30 @@ pub fn read_dxf_entities(text: &str) -> ogeom_core::OgeomResult<DxfEntities> {
         });
     }
     Ok(out)
+}
+
+/// A DXF string with each `\U+XXXX` read as the character it names; any
+/// other backslash stays as written.
+fn unescape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("\\U+") {
+        out.push_str(&rest[..at]);
+        let code = rest
+            .get(at + 3..at + 7)
+            .filter(|h| h.bytes().all(|b| b.is_ascii_hexdigit()))
+            .and_then(|h| u32::from_str_radix(h, 16).ok())
+            .and_then(char::from_u32);
+        if let Some(c) = code {
+            out.push(c);
+            rest = &rest[at + 7..];
+        } else {
+            out.push('\\');
+            rest = &rest[at + 1..];
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// A polyline from its vertices and flags, mirrored in x when seen from

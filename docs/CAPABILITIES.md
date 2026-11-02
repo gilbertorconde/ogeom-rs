@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 92 |
+| `covered` | 93 |
 | `partial` | 8 |
 | `divergent` | 6 |
 
-106 capabilities. Ratchet: `unreviewed_max = 0`.
+107 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -168,6 +168,7 @@ the configuration parts under `Metadata/`, by triangle range or by
 component; a role kept in any other form is not seen, and the volume reads
 as a part. A volume's triangles stay in its object's mesh, the volumes
 saying which they are.
+- **io.dxf**: DXF drawings, both directions: lines, arcs, circles, ellipses, bulged polylines, splines and text, with units and layers · `covered`
 - **io.iges**: IGES, both directions: solids as manifold B-rep, sheets as trimmed surfaces, surface files sewn, units converted · `partial`
   - *restriction:* The core entity set reads and writes, and eight round-trip cases hold it to measured volumes: planes, a periodic
 cylinder wall with its seam, a doubly periodic torus, a seam-only sphere, a
@@ -301,4 +302,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: a431347b0ecd11a4 -->
+<!-- ledger-checksum: 58119e0254253077 -->
