@@ -11,6 +11,31 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **Sections of a triangle mesh by a plane: `ogeom_mesh::section`, and a
+  stack of them by `ogeom_mesh::sections`.** (#580)
+  - The answer is a `Section`: its `chains`, each a `Chain` of `points`, a
+    unit `outward` direction in the plane at each, and whether it is
+    `closed`; the triangles lying in the plane, `coplanar`; and the cut
+    edges not crossed once each way, `unlinked`.
+  - Each vertex's side is decided once, by the exact orientation predicate
+    against three points spanning the plane, and every triangle reads its
+    corners from that table, so chains neither break nor double at
+    vertices or edges in the plane. A vertex in the plane counts as above
+    it: the section is the one the plane gives moved a hair against its
+    normal. A cut through such a vertex is the vertex itself, once.
+  - Chains are welded by vertex index through the edges two triangles
+    share, closed where the mesh is, and run with the material on the left
+    seen from the normal's side. `outward` is the triangles' unit normals
+    projected into the plane, summed over the cuts either side of a point.
+  - An edge of three or more triangles, or of two wound against each
+    other, is listed in `unlinked`, and the chains end on it.
+  - `sections` cuts the plane moved by each offset, in parallel, in the
+    offsets' order.
+  - A torus of 1 M triangles sections in 6.2 ms of processor time on one
+    thread, 16 planes in 72 ms.
+
 ## [0.14.0] - 2026-11-02
 
 A minor release: `fit::FitKind` and `fit::AnyFit` are now

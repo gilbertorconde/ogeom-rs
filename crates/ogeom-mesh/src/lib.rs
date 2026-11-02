@@ -7,13 +7,15 @@
 //! need.
 //!
 //! Also the spatial indexes over meshes and point clouds that inspection
-//! asks of them: [`Bvh`] over triangles and [`PointIndex`] over points.
+//! asks of them: [`Bvh`] over triangles and [`PointIndex`] over points,
+//! and the sections of a mesh by planes ([`section()`]).
 
 pub mod attach;
 pub mod bvh;
 pub mod discretize;
 pub mod hatch;
 pub mod point_index;
+pub mod section;
 pub mod simplify;
 mod tails;
 pub mod triangulate;
@@ -26,6 +28,7 @@ pub use discretize::{
 };
 pub use hatch::hatch_face;
 pub use point_index::{Neighbour, PointIndex};
+pub use section::{Chain, Section, section, sections};
 pub use simplify::{Simplified, Target, simplify};
 pub use triangulate::{
     EdgeChords, FaceMesh, FaceMeshCache, edge_chords_for, face_boundary, face_boundary_in_chart,

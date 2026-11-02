@@ -1698,6 +1698,20 @@ tests = [
 ]
 
 [[capability]]
+id = "mesh.section"
+title = "Sections of a triangle mesh by a plane or a stack of planes: polylines welded through shared edges, carrying the material side, with exact side tests and non-manifold edges reported"
+crate = "ogeom-mesh"
+verdict = "covered"
+symbols = [
+    "ogeom_mesh::section", "ogeom_mesh::sections",
+    "ogeom_mesh::Chain", "ogeom_mesh::Section",
+]
+tests = [
+    "crates/ogeom-mesh/src/section.rs",
+    "crates/ogeom/tests/mesh_section.rs::a_million_triangles_section_within_a_tenth_of_a_second",
+]
+
+[[capability]]
 id = "mesh.hatching"
 title = "Hatching faces: iso and free-direction line families clipped to the trim"
 crate = "ogeom-mesh"
