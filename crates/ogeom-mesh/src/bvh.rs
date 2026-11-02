@@ -94,7 +94,7 @@ const LEAF_MOST: usize = 8;
 const BINS: usize = 16;
 
 /// How many queries a batch hands a worker at a time.
-const BATCH: usize = 256;
+pub(crate) const BATCH: usize = 256;
 
 impl Bvh {
     /// Build the hierarchy over a mesh's triangles.
