@@ -234,6 +234,12 @@ const NONE: u32 = u32::MAX;
 /// model a small region determines poorly turns no triangle away for its
 /// own error.
 ///
+/// Where every coordinate of the mesh is a single-precision number, no gate
+/// is below what rounding to it could do: a vertex is near within its own
+/// coordinates' rounding along the model's normal, plus the cutoff's sigmas
+/// of the fit's error from the region's rounding, so a noise-free `f32`
+/// mesh grows whole however its rounding fell.
+///
 /// The model is refitted from the last fit whenever the region has doubled
 /// since, and once more whenever no neighbour joins, every neighbour refused
 /// before asked again; growth ends when a whole pass against the latest fit
@@ -408,6 +414,9 @@ struct Surface<'a> {
     across: Vec<[u32; 3]>,
     fan_start: Vec<usize>,
     fan: Vec<u32>,
+    /// Whether every coordinate is a single-precision number, as a mesh
+    /// read from an `f32` file's are.
+    single: bool,
 }
 
 impl<'a> Surface<'a> {
@@ -468,6 +477,10 @@ impl<'a> Surface<'a> {
                 *slot += 1;
             }
         }
+        let single = mesh
+            .positions
+            .iter()
+            .all(|p| [p.x, p.y, p.z].iter().all(|&x| is_single(x)));
         Self {
             mesh,
             normal,
@@ -476,6 +489,7 @@ impl<'a> Surface<'a> {
             across,
             fan_start,
             fan,
+            single,
         }
     }
 
@@ -561,6 +575,34 @@ impl<'a> Surface<'a> {
     }
 }
 
+/// Whether `x` is a single-precision number.
+fn is_single(x: f64) -> bool {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the round trip is the test"
+    )]
+    let narrow = x as f32;
+    f64::from(narrow) == x
+}
+
+/// The most rounding to single precision moves a number of `x`'s size:
+/// half the gap from there to the next single-precision number up, which
+/// is the wider gap about it.
+fn half_ulp(x: f64) -> f64 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the size of a single-precision coordinate, or past the largest"
+    )]
+    let size = x.abs() as f32;
+    let up = f64::from(size.next_up());
+    let gap = if up.is_finite() {
+        up - f64::from(size)
+    } else {
+        f64::from(size) - f64::from(size.next_down())
+    };
+    0.5 * gap
+}
+
 fn as_index(t: usize) -> u32 {
     #[allow(
         clippy::cast_possible_truncation,
@@ -577,6 +619,11 @@ struct Gate {
     model: Model,
     threshold: f64,
     cos_limit: f64,
+    /// For a single-precision mesh, the most rounding moved a coordinate
+    /// of the region's size; zero otherwise.
+    quantum: f64,
+    /// How many sigmas of the noise the cutoff keeps.
+    sigmas: f64,
 }
 
 impl Gate {
@@ -589,19 +636,34 @@ impl Gate {
     /// is as rare as `k` sigmas of a known noise. A few points then admit
     /// as much as their noise could, and many admit `k σ`. No threshold is
     /// below the confusion distance, within which points are one.
-    fn of(fit: &AnyFit, points: &[Point], options: &GrowOptions, tol: Tolerances) -> Self {
+    ///
+    /// On a single-precision mesh, no threshold is below the rounding's
+    /// either. Rounding moves each coordinate by at most `q`, half the gap
+    /// between single-precision numbers at the region's size, so it moves a
+    /// residual along a unit normal by a sigma of at most `q`: the
+    /// threshold is at least as many of those sigmas as the cutoff keeps of
+    /// the fit's own.
+    fn of(
+        fit: &AnyFit,
+        points: &[Point],
+        single: bool,
+        options: &GrowOptions,
+        tol: Tolerances,
+    ) -> Self {
         let model = fit
             .model()
             .measured_over(points, fit.used(), &options.fixed);
-        let threshold = match options.cutoff {
-            Cutoff::All => f64::INFINITY,
-            Cutoff::Distance(d) => d,
-            cutoff @ (Cutoff::Sigma(_) | Cutoff::Median(_)) => {
+        let (mut threshold, mut quantum, mut sigmas) = (f64::INFINITY, 0.0, 0.0);
+        match options.cutoff {
+            Cutoff::All => {}
+            Cutoff::Distance(d) => threshold = d,
+            cutoff @ (Cutoff::Sigma(k) | Cutoff::Median(k)) => {
                 let kept = fit.used().iter().filter(|u| **u).count();
                 let dof = kept.saturating_sub(model.parameters());
                 let base = fit.threshold(cutoff);
                 let rms = fit.sigma();
-                if dof == 0 {
+                sigmas = if rms > 0.0 { base / rms } else { k };
+                threshold = if dof == 0 {
                     f64::INFINITY
                 } else if rms > 0.0 {
                     #[allow(
@@ -609,16 +671,26 @@ impl Gate {
                         reason = "point counts are far below 2^52"
                     )]
                     let unbiased = rms * (kept as f64 / dof as f64).sqrt();
-                    tails::t_at_normal(base / rms, dof) * unbiased
+                    tails::t_at_normal(sigmas, dof) * unbiased
                 } else {
                     0.0
+                };
+                if single {
+                    let size = points
+                        .iter()
+                        .flat_map(|p| [p.x, p.y, p.z])
+                        .fold(0.0, |m: f64, x| m.max(x.abs()));
+                    quantum = half_ulp(size);
+                    threshold = threshold.max(sigmas * quantum);
                 }
             }
-        };
+        }
         Self {
             model,
             threshold: threshold.max(tol.confusion()),
             cos_limit: options.normal_limit.cos(),
+            quantum,
+            sigmas,
         }
     }
 
@@ -626,9 +698,23 @@ impl Gate {
     /// fit's own uncertainty moves its residual there: the prediction
     /// interval of a point the fit did not see, so a model a small region
     /// determines poorly turns no triangle away for its own error.
+    ///
+    /// On a single-precision mesh, a point is near at least where its
+    /// residual is within what rounding alone could have moved it: its own
+    /// coordinates' rounding, along the normal, at most, and the fit's
+    /// error from the region's rounding, as many sigmas of it as the
+    /// cutoff keeps.
     fn near(&self, p: Point) -> bool {
         let r = self.model.residual(p);
-        r.abs() <= self.threshold * (1.0 + self.model.leverage(p)).sqrt()
+        let leverage = self.model.leverage(p);
+        let mut bound = self.threshold * (1.0 + leverage).sqrt();
+        if self.quantum > 0.0 {
+            let n = self.model.normal(p);
+            let own =
+                n.x.abs() * half_ulp(p.x) + n.y.abs() * half_ulp(p.y) + n.z.abs() * half_ulp(p.z);
+            bound = bound.max(own + self.sigmas * self.quantum * leverage.sqrt());
+        }
+        r.abs() <= bound
     }
 
     fn admits(&self, surface: &Surface<'_>, t: u32) -> bool {
@@ -679,7 +765,7 @@ impl Grower<'_, '_> {
             self.tol,
         )?;
         self.vertices = vertices;
-        let gate = Gate::of(&fit, &points, self.options, self.tol);
+        let gate = Gate::of(&fit, &points, self.surface.single, self.options, self.tol);
         self.gate = Some(gate);
         self.fit = Some(fit);
         Ok(gate)

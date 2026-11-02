@@ -548,3 +548,154 @@ fn a_click_beside_an_edge_grows_on_its_own_side() {
     let wall = b.in_region(&grown, WALL);
     assert!(wall as f64 >= 0.95 * b.count(WALL) as f64, "{wall}");
 }
+
+const SIDE: u8 = 0;
+const END: u8 = 1;
+
+/// A closed cylinder of radius 10 mm and height 30 mm, 64 facets round and
+/// 24 rows up, its side (`SIDE`) closed by two fans (`END`), with no noise:
+/// every vertex is where `place` puts the point at an angle and a height,
+/// then stored as single precision, as a mesh read from an `f32` file is.
+fn single_cylinder(place: impl Fn(usize, f64) -> Point) -> Builder {
+    let (around, rows, height) = (64, 24, 30.0);
+    let mut b = Builder::default();
+    let rings: Vec<Vec<u32>> = (0..=rows)
+        .map(|k| {
+            let z = height * k as f64 / rows as f64;
+            (0..around).map(|i| b.vertex(place(i, z))).collect()
+        })
+        .collect();
+    band(&mut b, &rings, |p| Vector::new(p.x, p.y, 0.0), SIDE);
+    for (ring, z, up) in [
+        (&rings[0], 0.0, -Vector::Z),
+        (&rings[rows], height, Vector::Z),
+    ] {
+        let centre = b.vertex(Point::new(0.0, 0.0, z));
+        for i in 0..around {
+            b.triangle([centre, ring[i], ring[(i + 1) % around]], up, END);
+        }
+    }
+    b.positions = b.positions.iter().map(|p| single(*p)).collect();
+    b
+}
+
+/// `p` with each coordinate rounded to single precision.
+fn single(p: Point) -> Point {
+    let round = |x: f64| f64::from(x as f32);
+    Point::new(round(p.x), round(p.y), round(p.z))
+}
+
+/// The mesh as built, with no placement and no noise.
+fn exact(b: &Builder) -> Triangulation {
+    Triangulation {
+        positions: b.positions.clone(),
+        triangles: b.triangles.clone(),
+        ..Triangulation::new()
+    }
+}
+
+#[test]
+fn a_noise_free_single_precision_cylinder_grows_over_its_whole_side() {
+    let r = 10.0;
+    let wide = single_cylinder(|i, z| {
+        let a = TAU * i as f64 / 64.0;
+        Point::new(r * a.cos(), r * a.sin(), z)
+    });
+    let narrow = single_cylinder(|i, z| {
+        let a = core::f32::consts::TAU * i as f32 / 64.0;
+        Point::new(
+            f64::from(10.0_f32 * a.cos()),
+            f64::from(10.0_f32 * a.sin()),
+            z,
+        )
+    });
+    // Moved off the origin before rounding, the same cylinder rounds
+    // another way.
+    for (name, b) in [("f64 trig", wide), ("f32 trig", narrow)] {
+        for shift in [0.0, 1.9, 517.1] {
+            let by = Vector::new(shift, -0.5 * shift, 0.25 * shift);
+            let mesh = Triangulation {
+                positions: b.positions.iter().map(|p| single(*p + by)).collect(),
+                ..exact(&b)
+            };
+            let seed = Point::new(r, 0.0, 15.0) + by;
+            let grown = grown(&mesh, &[seed], FitKind::Cylinder, &GrowOptions::default());
+            let side = b.in_region(&grown, SIDE);
+            assert!(
+                side as f64 >= 0.95 * b.count(SIDE) as f64,
+                "{name}, shifted {shift}: {side} of the side's {} triangles",
+                b.count(SIDE)
+            );
+            assert_eq!(
+                b.in_region(&grown, END),
+                0,
+                "{name}, shifted {shift}: an end joined"
+            );
+            let AnyFit::Cylinder(fit) = &grown.fit else {
+                panic!("{name}, shifted {shift}: not a cylinder");
+            };
+            let error = fit.shape.radius() - r;
+            assert!(
+                error.abs() <= 0.05,
+                "{name}, shifted {shift}: radius off by {error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_noise_free_single_precision_box_face_and_ball_grow_whole_and_peel_nothing() {
+    let a = 5.0;
+    let cube = rounded_cube(a, 0.5, 40);
+    let ball = rounded_cube(a, a, 40);
+    for shift in [0.0, 1.9, 13.3, 101.7] {
+        let placed =
+            Transform::translation(Vector::new(shift, -0.5 * shift, 0.25 * shift)) * placement();
+        let rounded = |b: &Builder| Triangulation {
+            positions: b
+                .positions
+                .iter()
+                .map(|p| single(placed.apply(*p)))
+                .collect(),
+            ..exact(b)
+        };
+
+        let mesh = rounded(&cube);
+        let seed = placed.apply(Point::new(0.3, -0.2, a));
+        for peel in [false, true] {
+            let options = GrowOptions {
+                peel,
+                ..GrowOptions::default()
+            };
+            let face = grown(&mesh, &[seed], FitKind::Plane, &options);
+            assert_eq!(
+                cube.in_region(&face, FLAT),
+                cube.count(FLAT),
+                "shifted {shift}, peel {peel}: the flat is not whole"
+            );
+            assert_eq!(
+                cube.in_region(&face, ROUND),
+                0,
+                "shifted {shift}, peel {peel}"
+            );
+            assert_eq!(face.peeled_rings, 0, "shifted {shift}, peel {peel}");
+        }
+
+        let mesh = rounded(&ball);
+        let seed = placed.apply(Point::new(0.0, 0.0, a));
+        let grown = grown(&mesh, &[seed], FitKind::Sphere, &GrowOptions::default());
+        assert_eq!(
+            grown.triangles.len(),
+            mesh.triangles.len(),
+            "shifted {shift}: the ball is not whole"
+        );
+        let AnyFit::Sphere(fit) = &grown.fit else {
+            panic!("not a sphere");
+        };
+        let error = fit.shape.radius() - a;
+        assert!(
+            error.abs() <= 1e-4,
+            "shifted {shift}: radius off by {error}"
+        );
+    }
+}
