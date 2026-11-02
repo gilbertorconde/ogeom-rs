@@ -13,6 +13,40 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Feature-preserving smoothing of an editable mesh, and mesh curvature:
+  `Editable::smooth(&Smooth { size, max_move, keep_edges, region })` and
+  `mesh::curvature(mesh, size)`.** (#586)
+  - About each vertex, a quadric height field over its tangent plane is
+    fitted by weighted least squares to the `NEIGHBOURS` (100) vertices
+    nearest it within `size`, weighted `(1 − (d/r)²)²` out to the first
+    vertex left out. The frame's normal is the weighted mean of the
+    vertices' face normals; the fit has linear terms, so its tilt does not
+    bias the surface found.
+  - Smoothing projects every vertex along that normal onto its quadric,
+    all from the positions a pass starts from, in `PASSES` (2) passes. No
+    vertex ends farther than `max_move` from where it started, as
+    computed. With `keep_edges`, only neighbours whose normals turn from
+    the vertex's by no more than the angle count, so creases stay sharp.
+    A `region` blends in, each vertex's move scaled by its distance to the
+    nearest vertex outside over `size`. Non-manifold vertices stay put,
+    and edges of three or more faces are joined again as they then stand.
+    `SmoothReport` gives the largest and RMS move and how many vertices
+    `max_move` held back.
+  - Curvature reads the same quadric's shape operator: mean, Gaussian,
+    principal curvatures and their directions, positive where the surface
+    bends away from its outward normal; `None` for a vertex with no face
+    or a neighbourhood that fixes no quadric.
+  - A ball of radius 10 under noise of σ = 0.02 per axis, smoothed at
+    size 1, keeps its fitted radius within 0.12 µm while the spread of its
+    radii falls from 0.0199 to 0.0041. A noisy cube smoothed with a 30°
+    `keep_edges` keeps its edges within 0.85° of square and its faces
+    flatten from 0.020 to 0.0045 off their planes; without it the edges
+    round over by 11°. Curvature reads a sphere within 0.17 % at a tenth
+    of its radius, a cylinder's `1/r` within 0.47 % and its zero within
+    1e-6, and a torus's closed-form principal curvatures within 7.4e-4.
+  - Results are the same at any thread count. Five million triangles are
+    smoothed in 56 s and their curvature read in 27 s of processor time.
+
 - **Hole filling on an editable mesh: `Editable::fill(rim, &Fill {
   fairing, refine })`.** (#585)
   - A rim is named by a `RimId`, its lowest-numbered half-edge, which

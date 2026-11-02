@@ -1792,6 +1792,21 @@ tests = [
 ]
 
 [[capability]]
+id = "mesh.smoothing-curvature"
+title = "Feature-preserving smoothing of an editable mesh onto local least-squares quadrics, creases kept by normal angle, moves capped and blended into a region; mean, Gaussian and principal curvatures with their directions at each vertex of a mesh"
+crate = "ogeom-mesh"
+verdict = "covered"
+symbols = [
+    "ogeom_mesh::Editable", "ogeom_mesh::Smooth", "ogeom_mesh::SmoothReport",
+    "ogeom_mesh::PASSES", "ogeom_mesh::curvature", "ogeom_mesh::Curvature",
+    "ogeom_mesh::NEIGHBOURS",
+]
+tests = [
+    "crates/ogeom/tests/mesh_smooth.rs",
+    "crates/ogeom/tests/mesh_smooth.rs::five_million_triangles_smoothed",
+]
+
+[[capability]]
 id = "mesh.hatching"
 title = "Hatching faces: iso and free-direction line families clipped to the trim"
 crate = "ogeom-mesh"

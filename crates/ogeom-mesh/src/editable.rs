@@ -56,9 +56,11 @@ use ogeom_topo::Triangulation;
 
 pub mod cut;
 pub mod fill;
+pub mod smooth;
 
 pub use cut::{Cap, CutReport, Side};
 pub use fill::{Fairing, Fill, FillReport, OPTIMAL_UP_TO};
+pub use smooth::{PASSES, Smooth, SmoothReport};
 
 /// No half-edge, face or vertex.
 const NONE: u32 = u32::MAX;

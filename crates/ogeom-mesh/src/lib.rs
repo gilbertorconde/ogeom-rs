@@ -10,10 +10,11 @@
 //! asks of them: [`Bvh`] over triangles and [`PointIndex`] over points,
 //! the sections of a mesh by planes ([`section()`]), and the shadow it casts
 //! on one ([`shadow()`]), traced by the exact planar region engine in
-//! [`planar`].
+//! [`planar`], and its curvature at each vertex ([`curvature()`]).
 
 pub mod attach;
 pub mod bvh;
+pub mod curvature;
 pub mod discretize;
 pub mod editable;
 pub mod hatch;
@@ -27,12 +28,14 @@ pub mod triangulate;
 
 pub use attach::{Tessellated, polyline_of, tessellate, triangulation_of};
 pub use bvh::{Bvh, Hit};
+pub use curvature::{Curvature, NEIGHBOURS, curvature};
 pub use discretize::{
     Deflection, Polyline, discretize, discretize_on_surface, discretize_planar, is_straight,
     is_straight_planar,
 };
 pub use editable::{
-    Cap, Component, CutReport, Editable, Fairing, Fill, FillReport, OPTIMAL_UP_TO, Rim, RimId, Side,
+    Cap, Component, CutReport, Editable, Fairing, Fill, FillReport, OPTIMAL_UP_TO, PASSES, Rim,
+    RimId, Side, Smooth, SmoothReport,
 };
 pub use hatch::hatch_face;
 pub use planar::{Edge2, Loop2, region};
