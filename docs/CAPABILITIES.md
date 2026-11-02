@@ -269,7 +269,7 @@ reference in a deck read from text.
 
 ### ogeom-mesh
 
-- **mesh.editing**: Editing triangulations: half-edges with stable numbers and source vertices, components, rims, face removal and flips, non-manifold input split and reported, welding, decimation · `covered`
+- **mesh.editing**: Editing triangulations: half-edges with stable numbers and source vertices, components, rims, face removal and flips, non-manifold input split and reported, welding, decimation verified both ways · `covered`
 - **mesh.hatching**: Hatching faces: iso and free-direction line families clipped to the trim · `covered`
 - **mesh.hole-filling**: Filling a rim of an editable mesh: triangulated with the least largest bend then the least area, exactly up to 500 edges and ear-clipped on its plane beyond, refined to the mesh's spacing, faired curved or flat, closed and manifold about the patch, touching holes parted at their shared point · `covered`
 - **mesh.offset**: Offsetting an editable mesh by a distance with sharp edges and corners kept by least squares over corner-angle-weighted face normals, moves capped, folds repaired by pushing overshooting vertices onto the offset planes and collapsing folded faces while staying a manifold, and a region stepped behind a closed wall · `covered`
@@ -304,4 +304,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 919c7c1e73c5b295 -->
+<!-- ledger-checksum: 5239ab0f2df11023 -->
