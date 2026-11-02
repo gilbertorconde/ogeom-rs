@@ -732,6 +732,20 @@ tests = [
 ]
 
 [[capability]]
+id = "algo.wall-thickness"
+title = "Wall thickness at many points of a mesh or a shape's own faces, by rays or by medial balls"
+crate = "ogeom-algo"
+verdict = "covered"
+symbols = [
+    "ogeom_algo::thickness", "ogeom_algo::thickness_of_shape",
+    "ogeom_algo::Thickness", "ogeom_algo::Method",
+]
+tests = [
+    "crates/ogeom-algo/tests/thickness.rs",
+    "crates/ogeom-algo/src/thickness.rs",
+]
+
+[[capability]]
 id = "algo.rigid-registration"
 title = "Rigid registration: closed-form absolute orientation, point-to-plane ICP onto a mesh with free motions, and symmetry planes"
 crate = "ogeom-algo"

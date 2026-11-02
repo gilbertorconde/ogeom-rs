@@ -59,7 +59,9 @@ pub fn to_shape(
             },
             _ => None,
         };
-        target.closest(model, p, wanted, options, tol)
+        let faces = wanted.map(|(m, cos)| move |n: Vector| n.dot(m) >= cos);
+        let faces = faces.as_ref().map(|f| f as &dyn Fn(Vector) -> bool);
+        target.closest(model, p, faces, options, tol)
     });
     answers.into_iter().collect()
 }
@@ -68,7 +70,7 @@ pub fn to_shape(
 type Rings = Vec<Vec<Point2>>;
 
 /// A shape's elements gathered once, with what each point asks of them.
-struct Target {
+pub(crate) struct Target {
     elements: PointDistance,
     /// Each element's box, widened by the confusion distance.
     bounds: Vec<Aabb>,
@@ -88,15 +90,22 @@ struct Target {
 /// One candidate: its unsigned distance, its point, its element, and the
 /// normal its side is read from.
 #[derive(Debug, Clone, Copy)]
-struct Found {
-    distance: f64,
-    point: Point,
+pub(crate) struct Found {
+    pub(crate) distance: f64,
+    pub(crate) point: Point,
     element: usize,
     normal: Vector,
 }
 
 impl Target {
-    fn of(model: &Model, shape: &Shape, sign: bool, tol: Tolerances) -> OgeomResult<Self> {
+    /// The shape's elements gathered, with its boundary prepared for
+    /// classifying where `sign` asks for signed distances.
+    pub(crate) fn of(
+        model: &Model,
+        shape: &Shape,
+        sign: bool,
+        tol: Tolerances,
+    ) -> OgeomResult<Self> {
         let elements = PointDistance::of(model, shape, tol)?;
         let list = elements.elements();
         let mut places: ogeom_core::FastMap<SameKey, usize> = ogeom_core::FastMap::default();
@@ -186,14 +195,14 @@ impl Target {
         &self,
         model: &Model,
         p: Point,
-        wanted: Option<(Vector, f64)>,
+        faces: Option<&dyn Fn(Vector) -> bool>,
         options: &DistanceOptions,
         tol: Tolerances,
     ) -> OgeomResult<Option<Closest<ShapeFeature>>> {
         if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
             return Ok(None);
         }
-        let Some(found) = self.nearest(model, p, wanted, options.max, tol)? else {
+        let Some(found) = self.nearest(model, p, faces, options.max, tol)? else {
             return Ok(None);
         };
         let element = &self.elements.elements()[found.element];
@@ -223,14 +232,16 @@ impl Target {
         }))
     }
 
-    /// The nearest candidate within `max` that faces as `wanted` asks:
-    /// elements taken nearest box first and passed over once their box is
-    /// farther than the best so far, which changes only the time.
-    fn nearest(
+    /// The nearest candidate within `max` whose face's unit normal there
+    /// `faces` accepts, where there is a filter (for an edge or a vertex,
+    /// the normal of any face holding it): elements taken nearest box first
+    /// and passed over once their box is farther than the best so far,
+    /// which changes only the time.
+    pub(crate) fn nearest(
         &self,
         model: &Model,
         p: Point,
-        wanted: Option<(Vector, f64)>,
+        faces: Option<&dyn Fn(Vector) -> bool>,
         max: f64,
         tol: Tolerances,
     ) -> OgeomResult<Option<Found>> {
@@ -250,10 +261,8 @@ impl Target {
                 distance < held.distance || (distance == held.distance && element < held.element)
             }
         };
-        let faces = |normals: &[Vector]| match wanted {
-            None => true,
-            Some((m, cos)) => normals.iter().any(|n| n.dot(m) >= cos),
-        };
+        let kept = |normals: &[Vector]| faces.is_none_or(|faces| normals.iter().any(|&n| faces(n)));
+        let sum = |normals: Vec<Vector>| normals.into_iter().fold(Vector::ZERO, |a, n| a + n);
         let mut banded: Vec<Found> = Vec::new();
         for (gap, i) in order {
             if best.is_some_and(|held| gap > held.distance) {
@@ -266,12 +275,12 @@ impl Target {
                         continue;
                     }
                     let normals = self.normals_at(i, *q, tol)?;
-                    if faces(&normals) {
+                    if kept(&normals) {
                         best = Some(Found {
                             distance,
                             point: *q,
                             element: i,
-                            normal: normals.into_iter().fold(Vector::ZERO, |a, n| a + n),
+                            normal: sum(normals),
                         });
                     }
                 }
@@ -281,12 +290,12 @@ impl Target {
                         continue;
                     }
                     let normals = self.normals_at(i, foot.point, tol)?;
-                    if faces(&normals) {
+                    if kept(&normals) {
                         best = Some(Found {
                             distance: foot.distance,
                             point: foot.point,
                             element: i,
-                            normal: normals.into_iter().fold(Vector::ZERO, |a, n| a + n),
+                            normal: sum(normals),
                         });
                     }
                 }
@@ -300,7 +309,7 @@ impl Target {
                     let Some(normal) = self.normal(i, foot.parameters, tol) else {
                         continue;
                     };
-                    if !faces(&[normal]) {
+                    if !faces.is_none_or(|faces| faces(normal)) {
                         continue;
                     }
                     let found = Found {

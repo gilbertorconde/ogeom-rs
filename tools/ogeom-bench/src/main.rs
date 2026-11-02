@@ -186,6 +186,8 @@ fn benchmarks() -> Vec<Bench> {
         ("bvh_nearest_1m", Box::new(bvh_nearest_1m)),
         ("bvh_rays_1m", Box::new(bvh_rays_1m)),
         ("points_nearest_1m", Box::new(points_nearest_1m)),
+        ("thickness_rays_1m", Box::new(thickness_rays_1m)),
+        ("thickness_balls_1m", Box::new(thickness_balls_1m)),
     ]
 }
 
@@ -1172,6 +1174,66 @@ fn points_nearest_1m() -> Option<Stats> {
         let found = cloud.nearest_many(&queries, f64::INFINITY);
         std::hint::black_box(found.len());
     }))
+}
+
+/// A torus 2 thick: the tubes of radius 10 and 8 about a core of radius
+/// 40, each 1000 by 250 quads, half a million triangles, the inner wound
+/// inward; with each vertex's outward normal, along its tube's radius.
+fn torus_shell() -> (Triangulation, Vec<Vector>) {
+    let (around, across) = (1000_u32, 250_u32);
+    let mut mesh = Triangulation::new();
+    let mut normals = Vec::new();
+    for (tube, out) in [(10.0, 1.0), (8.0, -1.0)] {
+        let first = u32::try_from(mesh.positions.len()).unwrap();
+        for i in 0..around {
+            for j in 0..across {
+                let u = std::f64::consts::TAU * f64::from(i) / f64::from(around);
+                let v = std::f64::consts::TAU * f64::from(j) / f64::from(across);
+                let r = 40.0 + tube * v.cos();
+                mesh.positions
+                    .push(Point::new(r * u.cos(), r * u.sin(), tube * v.sin()));
+                normals.push(Vector::new(v.cos() * u.cos(), v.cos() * u.sin(), v.sin()) * out);
+            }
+        }
+        let at = |i: u32, j: u32| first + (i % around) * across + j % across;
+        for i in 0..around {
+            for j in 0..across {
+                let (a, b, c, d) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+                if out > 0.0 {
+                    mesh.triangles.extend([[a, b, c], [a, c, d]]);
+                } else {
+                    mesh.triangles.extend([[a, c, b], [a, d, c]]);
+                }
+            }
+        }
+    }
+    (mesh, normals)
+}
+
+/// The wall thickness at every vertex of a million-triangle torus shell,
+/// along the tube's normal there.
+fn thickness_at_torus_vertices(method: ogeom::algo::thickness::Method) -> Option<Stats> {
+    let (mesh, normals) = torus_shell();
+    let bvh = ogeom::mesh::Bvh::build(&mesh).ok()?;
+    let options = ogeom::algo::Thickness {
+        method,
+        ..ogeom::algo::Thickness::default()
+    };
+    Some(time(|| {
+        let walls = ogeom::algo::thickness(&bvh, &mesh.positions, &normals, &options).unwrap();
+        std::hint::black_box(walls.len());
+    }))
+}
+
+/// Rays along the normal at each of a million-triangle torus shell's
+/// vertices.
+fn thickness_rays_1m() -> Option<Stats> {
+    thickness_at_torus_vertices(ogeom::algo::thickness::Method::Ray { cone: 0.0, rays: 1 })
+}
+
+/// Medial balls at each of a million-triangle torus shell's vertices.
+fn thickness_balls_1m() -> Option<Stats> {
+    thickness_at_torus_vertices(ogeom::algo::thickness::Method::Sphere)
 }
 
 /// The value recorded for `key` in a baseline: a `"key": number` line.
