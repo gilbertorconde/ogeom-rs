@@ -41,6 +41,7 @@ mod recognize_patch;
 mod recognize_swept;
 pub mod register;
 mod seam_columns;
+pub mod segments_2d;
 mod self_cross;
 pub mod sew;
 pub mod sweep;
@@ -105,6 +106,7 @@ pub use project_plane::{ProjectedCurve, project_edge_onto_plane};
 pub use proximity::{ClosestPair, PointDistance, ShapeDistance, distance_between_shapes};
 pub use recognize::{Canonical, Recognized, recognize_points};
 pub use seam_columns::join_seam_columns;
+pub use segments_2d::{Segment2, Segments, fit_segments_2d};
 pub use self_cross::{SelfCrossing, self_crossings};
 pub use sew::{
     Agreement, Sewn, agreeing_orientation, make_wire_unordered, order_edges, sew, sew_around,

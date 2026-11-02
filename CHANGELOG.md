@@ -76,6 +76,37 @@ bump may break the API and a patch bump may not.
     sample's signed distance checked an eighth inside the band, which by
     the distance's 1-Lipschitz bound puts the whole piece in it; a loop
     that fails is returned as the polygon of the band's middle.
+- **Lines and arcs fitted to a 2D polyline within a tolerance:
+  `ogeom_algo::fit_segments_2d`.** (#596)
+  - `Segments { tolerance, corners, axis_snap, min_bow, closed }` gives a
+    chain of `Segment2 { piece, range, sigma }`: each piece a
+    `Piece2::Line` or `Piece2::Arc`, a closed loop one circle holds a
+    `Piece2::Circle`, with the input points it holds and their RMS
+    distance from it. Consecutive pieces meet end to end, and a closed
+    chain's last meets its first.
+  - The tolerance is a hard bound: every input point is checked against
+    its own piece, the segment or the arc, after fitting. A joint that
+    breaks it moves to a safer point, and a run no joint lets hold is
+    returned as the polyline through its points.
+  - The count is the fewest for the reaches the fit finds. From every
+    point a line reaches exactly as far as any line can, by the narrowest
+    strip about the points, and a circle as far as its least-squares fit
+    holds them; a walk over those reaches is minimal, and a closed loop is
+    walked from every start within one run. No split into lines alone has
+    fewer pieces.
+  - Arcs next to lines are refitted tangent to them where the tangent arc
+    still holds its points. With `corners`, pieces meet where their
+    curves cross, so a corner a scan rounds off within the tolerance
+    comes back sharp; a fillet wider than the tolerance stays an arc.
+    `min_bow` takes arcs bowing less than it as lines, and `axis_snap`
+    turns lines near an axis onto it where they still hold their points.
+  - A slot scanned with noise of 0.02 gives two lines and two tangent arcs
+    with radii within 0.1 % and each piece's sigma within 7 % of the
+    noise: 716 points in 7 ms. The work grows as the
+    points times the points in a run, 0.3 s for 7 k points of the same
+    slot.
+  - The segmentation core `fit_outline` shares is unchanged, and so are
+    its results.
 
 ## [0.14.0] - 2026-11-02
 

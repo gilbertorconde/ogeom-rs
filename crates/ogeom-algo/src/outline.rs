@@ -520,7 +520,7 @@ fn distance_to_segment(p: Point2, a: Point2, b: Point2) -> f64 {
 
 /// A curve a piece runs along, in its direction of travel.
 #[derive(Debug, Clone, Copy)]
-enum Path {
+pub(crate) enum Path {
     /// `at + t along`, `along` a unit vector.
     Line { at: Point2, along: Vector2 },
     /// `centre + radius (cos t, sin t)`, `t` rising if counter-clockwise.
@@ -566,7 +566,7 @@ impl Path {
     }
 
     /// The nearest point of the path's curve.
-    fn foot(self, p: Point2) -> Option<Point2> {
+    pub(crate) fn foot(self, p: Point2) -> Option<Point2> {
         match self {
             Self::Line { at, along } => Some(at + along * (p - at).dot(along)),
             Self::Circle { centre, radius, .. } => {
@@ -601,7 +601,7 @@ impl Path {
 }
 
 /// Where two paths' curves cross.
-fn meet(a: Path, b: Path) -> Vec<Point2> {
+pub(crate) fn meet(a: Path, b: Path) -> Vec<Point2> {
     match (a, b) {
         (Path::Line { at: p, along: u }, Path::Line { at: q, along: v }) => {
             let den = u.cross(v);
