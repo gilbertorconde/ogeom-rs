@@ -556,14 +556,19 @@ tests = ["crates/ogeom-topo/src/tessellation.rs"]
 
 [[capability]]
 id = "mesh.editing"
-title = "Editing triangulations: connectivity, welding, decimation, boundary loops"
+title = "Editing triangulations: half-edges with stable numbers and source vertices, components, rims, face removal and flips, non-manifold input split and reported, welding, decimation"
 crate = "ogeom-mesh"
 verdict = "covered"
 symbols = [
     "ogeom_mesh::simplify", "ogeom_mesh::Simplified", "ogeom_mesh::face_boundary",
     "ogeom_io::ImportedMesh",
+    "ogeom_mesh::Editable", "ogeom_mesh::Component", "ogeom_mesh::Rim",
 ]
-tests = ["crates/ogeom-mesh/src/simplify.rs"]
+tests = [
+    "crates/ogeom-mesh/src/simplify.rs",
+    "crates/ogeom-mesh/src/editable.rs",
+    "crates/ogeom/tests/mesh_editable.rs::five_million_triangles_build_and_read_back",
+]
 
 # --- ogeom-hlr ------------------------------------------------------------
 

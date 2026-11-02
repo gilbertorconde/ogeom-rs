@@ -11,6 +11,31 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **An indexed mesh held for editing: `ogeom_mesh::Editable`.** (#583)
+  - Half-edges over a `Triangulation`, built by `Editable::from(mesh,
+    weld)` and read back by `to_triangulation`. With `weld` zero a manifold
+    mesh reads back with the same vertices and the same triangles in the
+    same order; with `weld` positive each vertex joins the lowest-numbered
+    kept vertex within it, found through a grid.
+  - `components` gives each connected piece's faces, box and area;
+    `rims` each loop of open edges, with its length and span, the greatest
+    distance across it; `is_closed` and `non_manifold` say where the mesh
+    is not a closed manifold.
+  - Non-manifold input is kept. Three or more faces on an edge are joined
+    in turn about it where the space between two lies behind both, so two
+    bodies sharing an edge each close; two faces running an edge the same
+    way are not joined. A point several fans of faces meet, as a bowtie's
+    centre, is split into a vertex per fan.
+  - `remove_faces` and `flip_faces` relink only the faces about the
+    points they touch, splitting any pinch they leave, so what remains is
+    a manifold. Face and vertex numbers are stable through edits, and
+    `source_vertex` maps every vertex, and every copy split off one, to
+    the source vertex it came from.
+  - Five million triangles build in 0.5 s of processor time on one
+    thread, welded in 1.7 s, and read back in 26 ms.
+
 ## [0.14.1] - 2026-11-02
 
 An additive release: sections and sheets from scans. `mesh::section` cuts a
