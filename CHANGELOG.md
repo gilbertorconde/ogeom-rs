@@ -107,6 +107,37 @@ bump may break the API and a patch bump may not.
     slot.
   - The segmentation core `fit_outline` shares is unchanged, and so are
     its results.
+- **Construction geometry: named points, axes, curves and bounded surfaces
+  a product carries, written to STEP and read back.** (#594)
+  - `Document::add_construction(product, name, geometry)` takes an
+    `ogeom_doc::ConstructionGeometry`: a `Point`, an `Axis` (a frame), a
+    `Curve` over a finite `range`, or a `Surface` over a finite `u` and
+    `v` window. `construction()` and `construction_of(product)` list them.
+    They take part in undo and persist in the native document format.
+  - `write_step` writes a product's items in a
+    `GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION` holding a
+    `GEOMETRIC_CURVE_SET`, or, where one is a surface, a
+    `GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_REPRESENTATION` holding a
+    `GEOMETRIC_SET`. Axes are items of the representation itself. The
+    representation is tied to the product's own through a
+    `SHAPE_REPRESENTATION_RELATIONSHIP`, beside its solids and sheets, or
+    it is the product's own representation when the part holds no body.
+    Each item carries its name: a `CARTESIAN_POINT`, an
+    `AXIS2_PLACEMENT_3D`, a `TRIMMED_CURVE` trimmed at its end points and,
+    where the file states the curve's own parameter, at its parameters,
+    and a `RECTANGULAR_TRIMMED_SURFACE`. Units are millimetres and
+    radians. A part may now hold construction geometry and no body,
+    over an empty compound.
+  - `read_step` reads every such representation's geometric sets and axes
+    into the document, under the product the representation belongs to,
+    or under a part of its own where no product reaches it. A file holding
+    construction geometry and no body now reads. An element that does not
+    read, or is not bounded, is a warning.
+  - A point, a trimmed line, a circular arc, a B-spline curve, a bounded
+    plane and an axis go out beside a box and come back within 1e-9, each
+    by its name. Seven NIST test parts that carry wireframe now read it: 1
+    to 107 items each, with no new warnings. Documents without
+    construction geometry write the same bytes as before.
 
 ## [0.14.0] - 2026-11-02
 

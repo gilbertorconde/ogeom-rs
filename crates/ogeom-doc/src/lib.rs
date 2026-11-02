@@ -2,7 +2,7 @@
 //!
 //! Parts, assemblies and instances with placements; colours and materials per shape
 //! and per sub-shape; layers; names and user properties; PMI and GD&T (dimensions,
-//! tolerances, datums, annotations); validation properties; transactional undo and
+//! tolerances, datums, annotations); construction geometry; validation properties; transactional undo and
 //! redo; and the native persistence format.
 //!
 //! Instancing leans directly on the location chain (`docs/DATA_MODEL.md` §2): an
@@ -14,6 +14,7 @@
 //! particular design, and compatibility with anyone's file format, are not.
 
 pub mod attributes;
+pub mod construction;
 pub mod pmi;
 pub mod structure;
 pub mod view;
@@ -22,6 +23,7 @@ pub use attributes::{
     Layer, LayerId, Material, MaterialId, Property, PropertyValue, Texture, TextureId,
     TextureMapping, ValidationProperties,
 };
+pub use construction::{Construction, ConstructionGeometry};
 pub use pmi::{
     Annotated, Callout, Datum, DatumTarget, DatumTargetKind, Dimension, GeometricTolerance,
     MeasureKind, Pmi,

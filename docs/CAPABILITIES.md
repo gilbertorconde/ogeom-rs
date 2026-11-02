@@ -248,7 +248,7 @@ reference in a deck read from text.
 - **io.native-format**: The native shape interchange format, versioned, with location and triangulation sets · `covered`
 - **io.obj-materials**: OBJ colours: material libraries' diffuse colours, PNG and JPEG textures sampled at each corner, per-vertex colours · `covered`
 - **io.ply**: PLY in text and both binary byte orders: meshes and point clouds, with normals, colours and named scalar properties · `covered`
-- **io.step**: STEP, both directions: solids and sheets, assemblies, colours, validation properties, semantic and presentation PMI · `covered`
+- **io.step**: STEP, both directions: solids and sheets, construction geometry, assemblies, colours, validation properties, semantic and presentation PMI · `covered`
 - **io.text-clouds**: XYZ and PTS text point clouds, columns named or read by their count · `covered`
 - **io.vrml**: VRML scenes · `covered`
 
@@ -299,4 +299,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: d79641673d5ede34 -->
+<!-- ledger-checksum: bfb40eac83e67ff2 -->

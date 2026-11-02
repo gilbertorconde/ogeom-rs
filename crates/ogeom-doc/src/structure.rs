@@ -124,6 +124,7 @@ pub struct Document {
     texture_of: FastMap<TShapeId, crate::attributes::TextureId>,
     views: Vec<crate::view::View>,
     notes: Vec<crate::view::Note>,
+    construction: Vec<crate::construction::Construction>,
     /// Document states an undo can return to, oldest first, and how far
     /// back through them the caller currently stands.
     history: Vec<State>,
@@ -159,6 +160,7 @@ struct State {
     texture_of: FastMap<TShapeId, crate::attributes::TextureId>,
     views: Vec<crate::view::View>,
     notes: Vec<crate::view::Note>,
+    construction: Vec<crate::construction::Construction>,
 }
 
 impl Document {
@@ -559,6 +561,64 @@ impl Document {
         &self.notes
     }
 
+    /// Add a construction item to `product`; its index is its place in
+    /// [`Document::construction`].
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if `product`
+    /// is not in this document;
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a
+    /// coordinate is not finite, or a curve's range or a surface's window is
+    /// empty or not finite.
+    pub fn add_construction(
+        &mut self,
+        product: ProductId,
+        name: impl Into<String>,
+        geometry: crate::construction::ConstructionGeometry,
+    ) -> OgeomResult<usize> {
+        use crate::construction::ConstructionGeometry as G;
+        if self.get(product).is_none() {
+            ogeom_bail!(Dangling, "the product is not in this document");
+        }
+        let stretch = |(lo, hi): (f64, f64)| lo.is_finite() && hi.is_finite() && lo < hi;
+        let finite = |p: ogeom_math::Point| p.x.is_finite() && p.y.is_finite() && p.z.is_finite();
+        let sound = match &geometry {
+            G::Point(p) => finite(*p),
+            G::Axis(frame) => finite(frame.origin()),
+            G::Curve { range, .. } => stretch(*range),
+            G::Surface { u, v, .. } => stretch(*u) && stretch(*v),
+        };
+        if !sound {
+            ogeom_bail!(
+                Construction,
+                "a construction item's coordinates, range or window are not finite and increasing"
+            );
+        }
+        self.construction.push(crate::construction::Construction {
+            name: name.into(),
+            geometry,
+            product,
+        });
+        Ok(self.construction.len() - 1)
+    }
+
+    /// The construction items, in order.
+    #[must_use]
+    pub fn construction(&self) -> &[crate::construction::Construction] {
+        &self.construction
+    }
+
+    /// The construction items `product` carries, in order.
+    pub fn construction_of(
+        &self,
+        product: ProductId,
+    ) -> impl Iterator<Item = &crate::construction::Construction> {
+        self.construction
+            .iter()
+            .filter(move |item| item.product == product)
+    }
+
     fn state(&self) -> State {
         State {
             products: self.products.clone(),
@@ -575,6 +635,7 @@ impl Document {
             texture_of: self.texture_of.clone(),
             views: self.views.clone(),
             notes: self.notes.clone(),
+            construction: self.construction.clone(),
         }
     }
 
@@ -594,6 +655,7 @@ impl Document {
         self.texture_of = state.texture_of;
         self.views = state.views;
         self.notes = state.notes;
+        self.construction = state.construction;
     }
 
     /// Colour a shape: a whole part's shape or one sub-shape of it.

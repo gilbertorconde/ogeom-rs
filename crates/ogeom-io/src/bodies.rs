@@ -34,6 +34,34 @@ pub(crate) fn bodies_of(
     format: &str,
     wireframe: bool,
 ) -> OgeomResult<Bodies> {
+    let bodies = bodies_within(model, shape, format, wireframe)?;
+    if bodies.solids.is_empty()
+        && bodies.shells.is_empty()
+        && bodies.faces.is_empty()
+        && bodies.wires.is_empty()
+        && bodies.vertices.is_empty()
+    {
+        ogeom_bail!(
+            Construction,
+            "a part's shape holds no solid, shell, face{} to write as {format}",
+            if wireframe { ", wire or point" } else { "" }
+        );
+    }
+    Ok(bodies)
+}
+
+/// [`bodies_of`], where a shape holding nothing at all is no error: a part
+/// whose content is all construction geometry.
+///
+/// # Errors
+///
+/// As [`bodies_of`], save for the empty shape.
+pub(crate) fn bodies_within(
+    model: &Model,
+    shape: &Shape,
+    format: &str,
+    wireframe: bool,
+) -> OgeomResult<Bodies> {
     let mut bodies = Bodies {
         solids: Vec::new(),
         shells: Vec::new(),
@@ -56,22 +84,11 @@ pub(crate) fn bodies_of(
             kind @ (ShapeType::Wire | ShapeType::Edge | ShapeType::Vertex) => ogeom_bail!(
                 Construction,
                 "a part's shape holds a free {}, which {format} export does not write: \
-                 it writes solids, shells and faces, not wireframe",
+                 it writes solids, shells and faces, not wireframe \
+                 (a document carries free points and curves as construction geometry)",
                 format!("{kind:?}").to_lowercase(),
             ),
         }
-    }
-    if bodies.solids.is_empty()
-        && bodies.shells.is_empty()
-        && bodies.faces.is_empty()
-        && bodies.wires.is_empty()
-        && bodies.vertices.is_empty()
-    {
-        ogeom_bail!(
-            Construction,
-            "a part's shape holds no solid, shell, face{} to write as {format}",
-            if wireframe { ", wire or point" } else { "" }
-        );
     }
     Ok(bodies)
 }
