@@ -11,6 +11,23 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-02
+
+A minor release: `fit::FitKind` and `fit::AnyFit` are now
+`#[non_exhaustive]`, so a match on either needs a wildcard arm, and
+`GrowOptions` gains `crease_limit`, so building one with a struct literal
+needs `..GrowOptions::default()`.
+
+Aligning and comparing scans. `algo::register` registers a scan onto a mesh
+by point-to-plane ICP from one start or many, solves absolute orientation in
+closed form and finds a part's symmetry plane, reporting the motions the
+data leaves free. `algo::thickness` reads a wall's thickness by rays or by
+inscribed balls, on meshes and on exact B-reps. `fit::grow` traces a rim
+circle or a crease line along a mesh's sharp edges from a click, and grows
+over the whole of a noise-free single-precision mesh as it does over a
+scan. `Deflection::curvature_only` names the deflection a measuring
+reference is drawn with: flat faces stay whole.
+
 ### Added
 
 - **A rim circle or a crease line traced from a click: `FitKind::Circle3`
@@ -10435,7 +10452,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.13.2...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.13.2...v0.14.0
 [0.13.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.12.0...v0.13.0
