@@ -21,6 +21,7 @@ ogeom-intersect.workspace = true
 ogeom-mesh.workspace = true
 indexmap.workspace = true
 smallvec.workspace = true
+spade.workspace = true
 
 [features]
 # Counts of the work a boolean does, read by the workspace's own tests.

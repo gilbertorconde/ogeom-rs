@@ -13,6 +13,40 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Cutting a solid by a break surface marked on a mesh, for repair
+  pieces: `boolean::cut_by_mesh_region(model, shape, mesh, region: &[bool],
+  offset, keep: Side, tol) -> Built`.** (#591)
+  - The flagged triangles are the break. Seen along their average normal
+    (the sum of their area vectors) each must face that way, and the rims
+    must neither cross nor touch; the triangles covering a point of the
+    average plane then number the times the rims wind about it, so the
+    break is one height over the plane. The plane is triangulated between
+    the rims and a rectangle clear of the shape's box, the rims' edges as
+    constraints, and the triangles the rims wind about nothing (outside the
+    break and in its holes) are lifted linearly from the rims to the plane:
+    the extended sheet is one graph, which cannot cross itself.
+  - The sheet is thickened by `offset` to each side with `mesh::thicken`,
+    built into a solid with `solid_from_mesh` and cut from the shape with
+    the B-rep boolean, so the slab `2 * offset` thick is removed and the
+    kept piece's mating face stands `offset` off the break. The slab's walls
+    stand off the shape's box by its diagonal, past what the offset can
+    move them, so the shape's faces are cut only by the break and keep
+    their surfaces. `Side::Above` keeps the side the break's faces face.
+    Each piece is read by a ray along the normal from its vertex farthest
+    from the sheet.
+  - Refused by name: an empty region, one folding back over itself or
+    whose rims cross seen along its normal, one not wound alike, and one
+    that does not separate the shape.
+  - A block of 10 cut by a square patch inside it at `z = 4` with an offset
+    of 0.25 is the block above 4.25 or below 3.75 to 1e-9, six planes, its
+    far cap carried over whole; a hole in the patch is closed. A cylinder of
+    radius 5 cut by a patch of a cylinder of radius 12 crossing it holds
+    the quadrature's 397.555 to 0.0125, within the facets' sag. A block
+    through a synthetic fracture of 3 200 triangles, waved and noisy to
+    0.05, with an offset of 0.005, holds the expected volume to 3.5e-7 of
+    it, its mating face's vertices 0.0049 to 0.0052 off the fracture, in
+    5.4 s.
+
 - **Hollowing and thickening meshes: `mesh::hollow(mesh, wall, &Grid {
   cell }, tol) -> Hollowed { mesh, first_cavity_triangle, shells, cell,
   deviation }` and `mesh::thicken(mesh, distance, side: Thicken) ->

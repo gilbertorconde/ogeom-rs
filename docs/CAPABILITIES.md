@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 97 |
+| `covered` | 98 |
 | `partial` | 8 |
 | `divergent` | 6 |
 
-111 capabilities. Ratchet: `unreviewed_max = 0`.
+112 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -52,6 +52,7 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 - **bool.booleans**: The boolean operations: cut, fuse, common, section and split, exact and fuzzy, with argument checking · `covered`
 - **bool.cells**: The cells builder: arbitrary take/remove over the fused arrangement · `covered`
+- **bool.cut-by-mesh-region**: Cutting a solid by a break surface marked on a mesh: the break extended over its average plane clear of the solid, holes closed, thickened into a slab and cut away, one side kept, the solid's faces left on their own surfaces · `covered`
 - **bool.defeaturing**: Removing a set of faces from a solid by extending and re-intersecting its neighbours · `partial`
   - *restriction:* Inner-loop features (bores, bosses, pockets whose rim is a
 surviving face's inner wire) remove in full generality: wire surgery, no
@@ -306,4 +307,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 10c5d42d5e706f24 -->
+<!-- ledger-checksum: 5213ca22cb897ac6 -->
