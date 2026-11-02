@@ -49,6 +49,7 @@ pub mod text;
 pub mod thickness;
 pub mod tight;
 pub mod traced;
+pub mod volume_difference;
 mod winding;
 
 pub use build::{
@@ -116,3 +117,4 @@ pub use sweep::{make_prism, make_prism_tapered, make_revolution};
 pub use text::make_text;
 pub use thickness::{Thickness, thickness, thickness_of_shape};
 pub use tight::{face_bounds, tight_bounds};
+pub use volume_difference::{Form, Material, Region, volume_difference};

@@ -65,6 +65,7 @@ use ogeom_topo::Triangulation;
 
 use crate::Bvh;
 use crate::boolean::check_solid;
+use crate::parity::{Lies, Line};
 use crate::simplify::{Deviation, Target, simplify};
 
 /// The share of a grid edge's length a crossing is held from either end.
@@ -235,24 +236,6 @@ fn shells(mesh: &Triangulation) -> usize {
         .count()
 }
 
-/// Where a node lies against the part.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Lies {
-    Inside,
-    Outside,
-    On,
-}
-
-/// A triangle the line through a row of nodes crosses.
-struct Crossing {
-    corners: [P3; 3],
-    /// The triangle's extent along the line.
-    low: f64,
-    high: f64,
-    /// The sign of its normal along the line.
-    facing: Sign,
-}
-
 /// The grid: its first node, spacing and node counts.
 struct Lattice {
     origin: P3,
@@ -267,42 +250,6 @@ struct Lattice {
 
 fn coords(p: Point) -> P3 {
     [p.x, p.y, p.z]
-}
-
-/// The sign of `a - b`, exactly.
-fn order(a: f64, b: f64) -> Sign {
-    if a > b {
-        Sign::Positive
-    } else if a < b {
-        Sign::Negative
-    } else {
-        Sign::Zero
-    }
-}
-
-/// Whether the line along `x` through `(y, z)` crosses the triangle, moved
-/// by `(ε, ε²)` in `(y, z)`, `ε` infinitesimal; if so, the sign of the
-/// triangle's normal along `x`.
-fn crosses(p: &[P3; 3], y: f64, z: f64) -> Option<Sign> {
-    let flat = p.map(|c| [c[1], c[2]]);
-    let facing = Exact::orient2d(flat[0], flat[1], flat[2]);
-    if facing.is_zero() {
-        return None;
-    }
-    for k in 0..3 {
-        let (a, b) = (p[k], p[(k + 1) % 3]);
-        let mut o = Exact::orient2d(flat[k], flat[(k + 1) % 3], [y, z]);
-        if o.is_zero() {
-            o = order(a[2], b[2]);
-        }
-        if o.is_zero() {
-            o = order(b[1], a[1]);
-        }
-        if o != facing {
-            return None;
-        }
-    }
-    Some(facing)
 }
 
 /// How many nodes of a grid fit `extent` at `cell`, the last at or past it.
@@ -374,50 +321,9 @@ impl Lattice {
     /// Where each node of row `j` of layer `k` lies against the part.
     fn row(&self, bvh: &Bvh, j: u32, k: u32) -> Vec<Lies> {
         let [_, y, z] = self.at(0, j, k);
-        let mut crossings = Vec::new();
-        for t in bvh.triangles_where(|b| match (b.low(), b.high()) {
-            (Some(l), Some(h)) => l.y <= y && y <= h.y && l.z <= z && z <= h.z,
-            _ => false,
-        }) {
-            let Some(corners) = bvh.triangle(t).map(|c| c.map(coords)) else {
-                continue;
-            };
-            if let Some(facing) = crosses(&corners, y, z) {
-                let xs = corners.map(|c| c[0]);
-                crossings.push(Crossing {
-                    corners,
-                    low: xs[0].min(xs[1]).min(xs[2]),
-                    high: xs[0].max(xs[1]).max(xs[2]),
-                    facing,
-                });
-            }
-        }
+        let line = Line::through(bvh, y, z);
         (0..self.count[0])
-            .map(|i| {
-                let node = self.at(i, j, k);
-                let x = node[0];
-                let mut ahead = 0_u32;
-                for c in &crossings {
-                    if x < c.low {
-                        ahead += 1;
-                    } else if x <= c.high {
-                        // The node's side of the plane is the crossing's
-                        // side of the node along the line, times its facing.
-                        let s = Exact::orient3d(c.corners[0], c.corners[1], c.corners[2], node);
-                        if s.is_zero() {
-                            return Lies::On;
-                        }
-                        if s == c.facing {
-                            ahead += 1;
-                        }
-                    }
-                }
-                if ahead % 2 == 1 {
-                    Lies::Inside
-                } else {
-                    Lies::Outside
-                }
-            })
+            .map(|i| line.lies(self.at(i, j, k)[0]))
             .collect()
     }
 

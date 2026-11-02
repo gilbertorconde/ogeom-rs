@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 98 |
+| `covered` | 99 |
 | `partial` | 8 |
 | `divergent` | 6 |
 
-112 capabilities. Ratchet: `unreviewed_max = 0`.
+113 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -46,6 +46,7 @@ per module. Each verdict cites the symbols and tests that back it, and
 - **algo.spatial-acceleration**: Generic bounding-volume hierarchies · `divergent`
   - *reasoning:* No generic BVH container library: the kernel's standing indexes are keyed on what a caller asks of a mesh or a cloud (mesh.spatial-index), and the acceleration structures inside its algorithms (sewing's cell filter, the classifier's bounds, the distance walk's pruning) stay internal to them, sized and keyed for their one question. Picking, outside the kernel (outside/crates/ogeom-select), builds on mesh.spatial-index's triangle hierarchy.
 - **algo.validity**: Diagnosing a shape's validity, by entity, with named problems · `covered`
+- **algo.volume-difference**: The volume between a scan and its solid on a grid: nodes read by exact parity against the scan and against the solid, those in the solid's mesh band against its true surfaces; holes filled and doubted, differences joined into missing and excess regions with volume, depth, layer or lump, and the shallower than a cell dropped · `covered`
 - **algo.wall-thickness**: Wall thickness at many points of a mesh or a shape's own faces, by rays or by medial balls · `covered`
 
 ### ogeom-bool
@@ -307,4 +308,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 8e0cc3d8e356638f -->
+<!-- ledger-checksum: cfc4bd7f1b328da9 -->
