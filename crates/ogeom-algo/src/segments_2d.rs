@@ -596,19 +596,10 @@ impl Chain<'_> {
         }
     }
 
-    /// The middle point of run `k`, by index, in run `of`'s numbering.
-    fn middle(&self, k: usize, of: usize) -> usize {
+    /// The middle point of run `k`, by index.
+    const fn middle(&self, k: usize) -> usize {
         let run = self.runs[k];
-        let n = self.period;
-        let mid = run.first + (run.last - run.first) / 2;
-        let m = self.runs.len();
-        if self.closed && k == m - 1 && of == 0 {
-            mid - n
-        } else if self.closed && k == 0 && of == m - 1 {
-            mid + n
-        } else {
-            mid
-        }
+        run.first + (run.last - run.first) / 2
     }
 
     /// The stretch about the middle of run `k` that the piece holds
@@ -617,17 +608,25 @@ impl Chain<'_> {
     fn window(&self, k: usize, piece: &Piece2) -> Option<(usize, usize)> {
         let m = self.runs.len();
         let holds = |i: usize| distance_to_piece(self.ring[i], piece) <= self.tolerance;
-        let mid = self.middle(k, k);
+        let mid = self.middle(k);
         if !holds(mid) {
             return None;
         }
-        let lower = if self.closed || k > 0 {
-            self.middle((k + m - 1) % m, k)
+        // On a closed loop the run before the first is numbered a turn
+        // back, and the run after the last a turn on: with two runs, the
+        // one neighbour is both.
+        let n = self.period;
+        let lower = if self.closed && k == 0 {
+            self.middle(m - 1) - n
+        } else if k > 0 {
+            self.middle(k - 1)
         } else {
             self.runs[0].first
         };
-        let upper = if self.closed || k + 1 < m {
-            self.middle((k + 1) % m, k)
+        let upper = if self.closed && k + 1 == m {
+            self.middle(0) + n
+        } else if k + 1 < m {
+            self.middle(k + 1)
         } else {
             self.runs[m - 1].last
         };

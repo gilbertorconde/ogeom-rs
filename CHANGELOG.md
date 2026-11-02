@@ -59,6 +59,24 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`fit_segments_2d` fits a closed loop of two pieces.** (#635)
+  - A closed chain the fewest runs split in two, such as a half circle
+    closed along its diameter, came back as the polyline through its
+    points, one line per point. Each piece holds the points about its
+    run's middle out to the middles of the runs either side, and with
+    two runs the one neighbour lies on both sides: before the first run
+    across the loop's close, after it within the same turn. Both sides
+    were taken across the close, so the two stretches never overlapped,
+    the joint between the runs found no point both pieces hold, and both
+    runs fell back to polylines.
+  - The neighbour after the last run is now the only one numbered a turn
+    on, and the one before the first the only one a turn back. The "D"
+    gives an arc of radius 10 sweeping π and a line of 20 along its
+    diameter, meeting at (±10, 0), with and without `corners`; a lens of
+    two arcs gives the two arcs, meeting where they cross.
+  - Loops of three runs or more, open chains and `fit_outline` give the
+    same results as before.
+
 - **`thickness_of_shape` reads the wall at points on a solid's edges and
   vertices.** (#633)
   - A point a single-precision mesh puts on a tube's rim, 6.2e-7 off the
