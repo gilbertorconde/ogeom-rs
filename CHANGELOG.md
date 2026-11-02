@@ -57,6 +57,31 @@ bump may break the API and a patch bump may not.
     report none. Five million triangles cut and capped in 0.6 s of
     processor time.
 
+### Fixed
+
+- **`thickness_of_shape` reads the wall at points on a solid's edges and
+  vertices.** (#633)
+  - A point a single-precision mesh puts on a tube's rim, 6.2e-7 off the
+    outer wall and so past its tolerance, lies on the end face only, in
+    the band of its trim. Its ray, cast along the wall's normal, crossed
+    the wall at 6.2e-7 and read that as the wall, where the tube is 2 mm
+    thick; a ball shrank to the same. Where a point lies in the band of a
+    face's trim, the faces holding its nearest point on the shape are now
+    its own as well, and the rim reads 2 by rays and by balls.
+  - A ball at an edge or a corner of a solid turned off the axes, with no
+    facing limit, met the face or edge running from the point through its
+    centre, edge-on by all but rounding, and shrank to nothing: a 3 mm
+    box read 3.6e-7 at an edge and a cylinder 2.4e-7 on its seam at the
+    rim. A ball now passes over the point's own faces, and the edges and
+    vertices only they hold, where they are nearest its centre on its
+    radius from the point, and reads 3 and 8.
+  - A ball whose wall is thicker than `max` read `max`, not none: the
+    face the point lies on, touching every ball at the point, counted as
+    bounding it. A rod 8 across read 7 with walls to 7; it reads none, as
+    the documentation and the mesh path say and as a ray reads.
+  - Points inside a face, clear of its trim, read as before, bit for bit,
+    where their wall is within `max`.
+
 ## [0.14.1] - 2026-11-02
 
 An additive release: sections and sheets from scans. `mesh::section` cuts a

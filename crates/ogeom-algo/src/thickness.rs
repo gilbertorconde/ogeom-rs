@@ -62,7 +62,14 @@
 //! are passed over too: a ball that touches a corner of a faceted surface
 //! would otherwise be cut by the facets meeting there. On a shape the faces
 //! the point lies on are passed over at the ray's start only, so the far
-//! side of a curved face that folds back is still met.
+//! side of a curved face that folds back is still met. Those are the faces
+//! that hold the point within their tolerance, and where it lies in the
+//! band of a face's trim, as a point read off an edge in single precision
+//! does, the faces that hold its nearest point on the shape: it is on the
+//! edge to within the band, and on the faces meeting there. A ball passes
+//! over those faces, and the edges and vertices they alone hold, where they
+//! are nearest its centre on its radius from the point: at the point
+//! itself, or edge-on through the centre, as the ray passed over them.
 
 mod shape;
 

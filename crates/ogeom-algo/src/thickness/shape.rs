@@ -1,12 +1,14 @@
 //! Wall thickness against a shape's own surfaces.
 
+use std::sync::OnceLock;
+
 use ogeom_core::{OgeomResult, parallel};
 use ogeom_math::{Point, Vector};
 use ogeom_topo::{Model, Shape};
 
 use super::{Method, Thickness, inward, meets, spread, through};
-use crate::classify::{SolidBoundary, exact_ring_chord};
-use crate::distance::Target;
+use crate::classify::{Containment, SolidBoundary, exact_ring_chord};
+use crate::distance::{Passed, Target};
 
 /// The wall thickness at each point of `shape`, a solid or a shell,
 /// measured into the material against the point's outward normal on the
@@ -43,14 +45,11 @@ pub fn thickness_of_shape(
     let sin = options.checked(points.len(), normals.len())?;
     let tol = options.tol;
     let boundary = SolidBoundary::of_closed(model, shape, exact_ring_chord(tol), tol)?;
-    let target = match options.method {
-        Method::Sphere => Some(Target::of(model, shape, false, tol)?),
-        Method::Ray { .. } => None,
-    };
     let walls = Walls {
         model,
+        shape,
         boundary: &boundary,
-        target: target.as_ref(),
+        target: OnceLock::new(),
         sin,
         options,
     };
@@ -64,21 +63,57 @@ pub fn thickness_of_shape(
 /// A shape measured against, with what every point asks of it.
 struct Walls<'a> {
     model: &'a Model,
+    shape: &'a Shape,
     boundary: &'a SolidBoundary,
-    /// The shape's elements, for a sphere's nearest points.
-    target: Option<&'a Target>,
+    /// The shape's elements, for nearest points, gathered when first asked.
+    target: OnceLock<OgeomResult<Target>>,
     sin: f64,
     options: &'a Thickness,
 }
 
 impl Walls<'_> {
+    fn target(&self) -> OgeomResult<&Target> {
+        let tol = self.options.tol;
+        match self
+            .target
+            .get_or_init(|| Target::of(self.model, self.shape, false, tol))
+        {
+            Ok(target) => Ok(target),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
+    /// The faces `p` lies on: those that hold it, and where one holds it
+    /// in the band of its trim, those that hold its nearest point on the
+    /// shape. A point in the band is on the face only to within the band,
+    /// and as much on the faces meeting it there, which hold the point of
+    /// the shape it stands for even where it stands off their surfaces by
+    /// more than their tolerance.
+    fn own(&self, p: Point) -> OgeomResult<Vec<Shape>> {
+        let tol = self.options.tol;
+        let held = self.boundary.faces_holding(self.model, p, tol)?;
+        let banded = held.iter().any(|(_, at)| *at == Containment::On);
+        let mut on: Vec<Shape> = held.into_iter().map(|(face, _)| face).collect();
+        if banded
+            && let Some(found) =
+                self.target()?
+                    .nearest(self.model, p, None, None, f64::INFINITY, tol)?
+        {
+            for face in self.boundary.faces_at(self.model, found.point, tol)? {
+                if !on.iter().any(|held| held.is_same(&face)) {
+                    on.push(face);
+                }
+            }
+        }
+        Ok(on)
+    }
+
     /// The wall at `p`, inward along the unit `u`.
     fn at(&self, p: Point, u: Vector) -> OgeomResult<Option<f64>> {
-        let tol = self.options.tol;
-        let on = self.boundary.faces_at(self.model, p, tol)?;
+        let on = self.own(p)?;
         let max = self.options.max;
-        match (self.options.method, self.target) {
-            (Method::Ray { cone, rays }, _) => {
+        match self.options.method {
+            Method::Ray { cone, rays } => {
                 let mut least: Option<f64> = None;
                 for k in 0..rays {
                     let v = spread(u, cone, rays, k);
@@ -90,11 +125,10 @@ impl Walls<'_> {
                 }
                 Ok(least)
             }
-            (Method::Sphere, Some(target)) => {
+            Method::Sphere => {
                 let ray = self.ray(p, u, max, &on)?;
-                self.sphere(target, p, u, ray)
+                self.sphere(p, u, ray, &on)
             }
-            (Method::Sphere, None) => Ok(None),
         }
     }
 
@@ -109,14 +143,19 @@ impl Walls<'_> {
     ///
     /// Each step finds the surface nearest the centre within the ball and
     /// shrinks to the ball through it, until the nearest surface is within
-    /// the confusion distance of the ball.
+    /// the confusion distance of the ball. Of the faces `p` lies on, `on`,
+    /// and the edges and vertices they alone hold, one whose nearest point
+    /// lies on the ball's radius from `p` is passed over: there the ray
+    /// along it passed over it too, as `p`'s own at its start, or edge-on
+    /// where it holds the centre.
     fn sphere(
         &self,
-        target: &Target,
         p: Point,
         u: Vector,
         ray: Option<f64>,
+        on: &[Shape],
     ) -> OgeomResult<Option<f64>> {
+        let target = self.target()?;
         let tol = self.options.tol;
         let mut radius = match ray {
             Some(length) => length / 2.0,
@@ -125,9 +164,12 @@ impl Walls<'_> {
         };
         let mut bounded = ray.is_some();
         let faces = |n: Vector| meets(n, u, self.sin);
+        let passed = Passed { faces: on, from: p };
         loop {
             let centre = p + u * radius;
-            let Some(found) = target.nearest(self.model, centre, Some(&faces), radius, tol)? else {
+            let Some(found) =
+                target.nearest(self.model, centre, Some(&faces), Some(&passed), radius, tol)?
+            else {
                 break;
             };
             bounded = true;
