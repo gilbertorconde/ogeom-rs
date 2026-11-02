@@ -11,6 +11,17 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-11-02
+
+An additive release that starts mesh editing, with two fixes. `mesh::Editable`
+holds a mesh for editing, half-edges over it, its components, rims and
+non-manifold points, each vertex keeping the source vertex it came from;
+`Editable::cut` cuts it by a plane and caps every closed loop flat, rings
+and nested shells included, bridging rim gaps up to a width.
+`thickness_of_shape` reads the wall at points on a solid's edges, corners
+and seams instead of a false zero, and `fit_segments_2d` fits a closed loop
+of one arc and one line as those two pieces.
+
 ### Added
 
 - **An indexed mesh held for editing: `ogeom_mesh::Editable`.** (#583)
@@ -10680,7 +10691,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.14.2...HEAD
+[0.14.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.13.2...v0.14.0
 [0.13.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.13.1...v0.13.2
