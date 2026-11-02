@@ -11,6 +11,45 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **Scattered points fitted over a seed surface, refined to a tolerance:
+  `fit::fit_surface_scattered_over(points, seed: &SurfaceGeometry,
+  &ScatteredOptions { degree, spans, most, fairing, target }, tol) ->
+  ScatteredFit`.** (#597)
+  - Each point takes the parameters of its nearest point on the seed: a
+    plane, cylinder, cone, sphere or torus in closed form over the whole
+    surface, anything else (a previous fit included) through the
+    projector. A periodic direction is cut at the widest gap the points
+    leave round it, so a band across the seed's seam stays in one piece,
+    and the parameters are scaled onto the unit square. A band round a
+    cylinder, a cap on a sphere and a sheet that folds over every plane fit
+    where `fit_surface_scattered`'s principal plane folds them.
+  - The net is fitted with `fit_surface_scattered_at`'s thin-plate fairing,
+    and every distance is to a point's nearest point on the fit.
+    `Target::Tolerance(d)` splits, a round at a time, the span of the cell
+    worst missed (a point beyond `d`) along `u`, `v` or both, keeping the
+    try Mallows' criterion scores best (squared distances plus twice the
+    noise's variance per control, the variance from the median distance),
+    within the `most` span bounds. Refinement ends `Met`, `Bounds`, `Noise`
+    (no split takes off more than noise would) or `Strays` (only points
+    beyond the noise their cell shows reaches over the cloud miss).
+  - `ScatteredFit` carries the surface, each point's parameters on it,
+    `sigma` (the root mean square distance), `cross_sigma` (each point's
+    distance to the fit of the other half of the points, which stands well
+    above `sigma` where the net follows the noise), the worst point's index
+    and distance, the spans and why refinement ended.
+  - Measured on noisy clouds (σ = 0.02 mm, tolerance 0.1 mm): a 120° band
+    of a radius-20 cylinder across the seed's seam, over a seed 1 mm small,
+    off axis and tilted, comes within 0.045 mm of the true cylinder over
+    the whole fit; a 40° cap of a radius-25 sphere within 0.013 mm at the
+    points; a wavy band three quarters round a cylinder within 0.060 mm,
+    gaining spans along the waves only (17 by 2); a bump on a plane adds
+    knots only over the bump, a point planted 0.4 mm off is named the worst
+    and left a stray. A tolerance inside the noise's reach refines a wavy
+    band to `sigma` 0.0200 and `cross_sigma` 0.0207 and stops; a 24 by 24
+    net on 3000 points reads `sigma` 0.018 against `cross_sigma` 0.054.
+
 ## [0.15.0] - 2026-11-03
 
 A minor release: `mesh::Target` gains the `Verified` variant and
