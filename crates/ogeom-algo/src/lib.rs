@@ -44,6 +44,7 @@ mod self_cross;
 pub mod sew;
 pub mod sweep;
 pub mod text;
+pub mod thickness;
 pub mod tight;
 pub mod traced;
 mod winding;
@@ -109,4 +110,5 @@ pub use sew::{
 };
 pub use sweep::{make_prism, make_prism_tapered, make_revolution};
 pub use text::make_text;
+pub use thickness::{Thickness, thickness, thickness_of_shape};
 pub use tight::{face_bounds, tight_bounds};

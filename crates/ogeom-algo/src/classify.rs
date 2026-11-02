@@ -1297,6 +1297,107 @@ impl SolidBoundary {
         Ok(true)
     }
 
+    /// The distance from `from` along the unit `along` to the first face
+    /// the ray meets within `max`, past the faces `from` lies on, `on`, at
+    /// its start; `None` where it meets none.
+    ///
+    /// A face is met where the ray crosses its surface inside its trim, or
+    /// within the rings' band of its boundary, at an angle to the surface
+    /// whose sine is larger than `sin`: a crossing at no larger an angle,
+    /// and a surface the ray runs in, are passed over. A face of `on` met
+    /// again further along is met.
+    ///
+    /// # Errors
+    ///
+    /// As [`classify_in_solid_exact`].
+    pub(crate) fn first_crossing(
+        &self,
+        model: &Model,
+        (from, along): (Point, Vector),
+        max: f64,
+        on: &[Shape],
+        sin: f64,
+        tol: Tolerances,
+    ) -> OgeomResult<Option<f64>> {
+        let Prepared {
+            faces,
+            centre,
+            diagonal,
+            ring_chord,
+            ..
+        } = &*self.prepared;
+        let ring_chord = *ring_chord;
+        let ring_deflection = Deflection {
+            chord: ring_chord,
+            angular: 0.05,
+            ..Deflection::default()
+        };
+        let reach = tol.confusion();
+        // Past the far side of the boundary's box, nothing is met.
+        let length = max.min(from.distance(*centre) + diagonal + 1.0);
+        if length.is_nan() || length <= 0.0 {
+            return Ok(None);
+        }
+        let to = from + along * length;
+        let mut first: Option<f64> = None;
+        for (prepared, rays) in faces.iter().zip(&self.rays) {
+            if !segment_meets(&prepared.bound, from, to) {
+                continue;
+            }
+            let at_start = on.iter().any(|face| prepared.face.is_same(face));
+            let (surface, inverse) = prepared.placed(model)?;
+            let (start, end) = (inverse.apply(from), inverse.apply(to));
+            // The segment's parameter runs with distance in the face's
+            // frame, which a scaling placement stretches.
+            let scale = (end - start).magnitude() / length;
+            let direction = (end - start) / (end - start).magnitude();
+            let found = match rays.get_or_init(|| {
+                self.kept
+                    .surface(prepared.surface, surface, self.prepared.tol)
+            }) {
+                Some(kept) if kept.tol == tol => kept.cross((start, end))?,
+                _ => {
+                    let ray: ogeom_geom::Curve =
+                        ogeom_geom::LineCurve::segment(start, end, tol)?.into();
+                    ogeom_intersect::intersect_curve_surface(
+                        &ray,
+                        surface,
+                        ogeom_intersect::CurveSurfaceOptions::default(),
+                        tol,
+                    )?
+                }
+            };
+            for hit in &found.crossings {
+                let distance = hit.on_curve / scale;
+                if (at_start && hit.on_curve <= (reach + ring_chord) * scale)
+                    || first.is_some_and(|held| distance >= held)
+                {
+                    continue;
+                }
+                let (u, v) = hit.on_surface;
+                use ogeom_geom::Surface as _;
+                if let Ok((du, dv)) = surface.d1_at(u, v, tol) {
+                    let normal = du.cross(dv);
+                    let size = normal.magnitude();
+                    // A pole or an apex has no normal to be edge-on to.
+                    if size > tol.confusion() && normal.dot(direction).abs() <= sin * size {
+                        continue;
+                    }
+                }
+                let rings = prepared.rings(model, ring_deflection, tol)?;
+                let at = rings.place(surface, Point2::new(u, v), tol);
+                let band = parametric_band(surface, (u, v), reach + ring_chord, tol);
+                let face = &prepared.face;
+                if rings.within(model, face, ring_deflection, at, band, tol)?
+                    || rings.inside(model, face, ring_deflection, at, tol)?
+                {
+                    first = Some(distance);
+                }
+            }
+        }
+        Ok(first)
+    }
+
     /// Where `point`, off every face, stands by the parity of a ray's
     /// crossings, or `None` where every ray met a tangency, a face's
     /// boundary or a degenerate point.

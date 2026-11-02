@@ -50,6 +50,7 @@ use ogeom_topo::Shape;
 
 pub use mesh::to_mesh;
 pub(crate) use mesh::{Pseudonormals, to_mesh_with};
+pub(crate) use shape::Target;
 pub use shape::to_shape;
 
 #[cfg(doc)]

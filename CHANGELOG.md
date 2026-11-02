@@ -13,6 +13,35 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Wall thickness by rays or by medial balls, on meshes and B-reps:
+  `ogeom_algo::thickness`.**
+  - `thickness(target, points, normals, &Thickness)` measures at each point
+    of a mesh through its `Bvh`, into the material against the point's
+    outward normal, and `thickness_of_shape(model, shape, points, normals,
+    &Thickness)` measures on a solid's or a shell's own surfaces, the rays
+    met by intersection with each face's surface inside its trim, not on a
+    tessellation. Both answer `Vec<Option<f64>>`, `None` where the wall is
+    thicker than `max` or the ray leaves without meeting a surface.
+  - `Method::Ray { cone, rays }` reads the distance to the first surface
+    the ray crosses, either side of it counting; with a cone, the shortest
+    of `rays` rays, the first along the normal and the rest spread over the
+    cone by a golden-angle spiral. `Method::Sphere` reads the diameter of
+    the medial ball through the point, started from the ball halfway along
+    the ray and so never longer than it: a wedge of angle α reads
+    `2 s tan(α/2)` at `s` from its edge, where the ray reads `s tan α`. On
+    a mesh the ball is found exactly in one pass over the triangles the
+    starting ball holds; on a shape by the shrinking-ball iteration, to
+    within the confusion distance.
+  - `Thickness::facing_limit` passes over surfaces within the limit of
+    edge-on to the ray, so a plate's side walls do not cut off its
+    thickness near the rim. On a mesh a point's own triangles (within the
+    confusion distance of it) are passed over; on a shape the faces it
+    lies on are, at the ray's start only.
+  - A 3 mm plate reads 3 mm within 1e-9 at every interior vertex with both
+    methods. On a million-triangle torus shell 2 mm thick, rays read 477k
+    vertices a second on one thread and 1.9M on eight, balls 174k and
+    865k.
+
 - **Rigid registration: `ogeom_algo::register`.**
   - `absolute_orientation(pairs, weights)` is the closed form: the unit
     quaternion of the largest eigenvalue of the pairs' weighted
