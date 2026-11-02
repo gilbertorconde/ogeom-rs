@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 86 |
+| `covered` | 87 |
 | `partial` | 8 |
 | `divergent` | 6 |
 
-100 capabilities. Ratchet: `unreviewed_max = 0`.
+101 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -268,6 +268,7 @@ reference in a deck read from text.
 
 - **mesh.editing**: Editing triangulations: connectivity, welding, decimation, boundary loops · `covered`
 - **mesh.hatching**: Hatching faces: iso and free-direction line families clipped to the trim · `covered`
+- **mesh.section**: Sections of a triangle mesh by a plane or a stack of planes: polylines welded through shared edges, carrying the material side, with exact side tests and non-manifold edges reported · `covered`
 - **mesh.spatial-index**: Spatial indexes over meshes and point clouds: nearest point, ball and ray queries, batched in parallel, equal to brute force · `covered`
 - **mesh.tessellation**: Triangulating shapes to a stated deflection by chord and angle alone, with no length cap, deterministically, in parallel · `covered`
 
@@ -295,4 +296,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 1d0cef85e8ceb954 -->
+<!-- ledger-checksum: 9b8e80a1977a9960 -->
