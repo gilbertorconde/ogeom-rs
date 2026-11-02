@@ -268,7 +268,7 @@ reference in a deck read from text.
 
 ### ogeom-mesh
 
-- **mesh.editing**: Editing triangulations: connectivity, welding, decimation, boundary loops · `covered`
+- **mesh.editing**: Editing triangulations: half-edges with stable numbers and source vertices, components, rims, face removal and flips, non-manifold input split and reported, welding, decimation · `covered`
 - **mesh.hatching**: Hatching faces: iso and free-direction line families clipped to the trim · `covered`
 - **mesh.section**: Sections of a triangle mesh by a plane or a stack of planes: polylines welded through shared edges, carrying the material side, with exact side tests and non-manifold edges reported · `covered`
 - **mesh.shadow**: The shadow of a triangle mesh on a plane, holes kept, and the regions of weighted planar chains, traced with exact integer tests and snap rounding · `covered`
@@ -299,4 +299,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 2b038bc7707988e1 -->
+<!-- ledger-checksum: 730d3fe4c5d1b0a6 -->
