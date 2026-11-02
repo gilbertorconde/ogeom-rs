@@ -16,7 +16,7 @@ name = "ogeom-bench"
 path = "src/main.rs"
 
 [dependencies]
-ogeom = { path = "../../crates/ogeom", version = "0.13.2" }
+ogeom = { path = "../../crates/ogeom", version = "0.14.0" }
 
 [lints]
 workspace = true
