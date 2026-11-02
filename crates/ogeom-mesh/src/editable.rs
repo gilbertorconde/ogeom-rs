@@ -54,6 +54,10 @@ use ogeom_core::{FastMap, OgeomResult, ogeom_bail};
 use ogeom_math::{Aabb, Point, Vector};
 use ogeom_topo::Triangulation;
 
+pub mod cut;
+
+pub use cut::{Cap, CutReport, Side};
+
 /// No half-edge, face or vertex.
 const NONE: u32 = u32::MAX;
 
@@ -525,8 +529,14 @@ impl Editable {
             .collect();
         points.sort_unstable();
         points.dedup();
+        let around = self.about(&points);
+        (Scope::Points(points), around)
+    }
+
+    /// Every face with a corner at one of `points`, sorted.
+    fn about(&self, points: &[u32]) -> Vec<u32> {
         let mut around = Vec::new();
-        for &p in &points {
+        for &p in points {
             for v in self.ring(p) {
                 let start = self.out[v as usize];
                 if start == NONE {
@@ -544,7 +554,7 @@ impl Editable {
         }
         around.sort_unstable();
         around.dedup();
-        (Scope::Points(points), around)
+        around
     }
 
     /// The copies of the point `p`, starting from `p`.
@@ -971,7 +981,7 @@ mod tests {
     use core::f64::consts::{SQRT_2, TAU};
     use proptest::prelude::*;
 
-    fn mesh(positions: Vec<Point>, triangles: Vec<[u32; 3]>) -> Triangulation {
+    pub(super) fn mesh(positions: Vec<Point>, triangles: Vec<[u32; 3]>) -> Triangulation {
         Triangulation {
             positions,
             triangles,
@@ -981,7 +991,7 @@ mod tests {
 
     /// A torus about `z`, `rings` by `sides` quads of two triangles each,
     /// wound outward.
-    fn torus(rings: u32, sides: u32) -> Triangulation {
+    pub(super) fn torus(rings: u32, sides: u32) -> Triangulation {
         let mut positions = Vec::new();
         for i in 0..rings {
             let u = f64::from(i) / f64::from(rings) * TAU;
@@ -1086,7 +1096,7 @@ mod tests {
     /// The half-edge structure's invariants: twins run one edge opposite
     /// ways between live faces, every vertex with faces has exactly one fan
     /// and its `out` sweeps it from the rim, and copies share a ring.
-    fn check(e: &Editable) {
+    pub(super) fn check(e: &Editable) {
         let mut at: Vec<Vec<u32>> = vec![Vec::new(); e.positions.len()];
         for f in 0..e.corners.len() {
             if !e.live[f] {

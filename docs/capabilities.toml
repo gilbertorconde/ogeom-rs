@@ -1763,6 +1763,20 @@ tests = [
 ]
 
 [[capability]]
+id = "mesh.plane-cut"
+title = "Cutting an editable mesh by a plane with the section's exact side test, and capping the cut flat and watertight: discs, rings and nested caps, rim gaps bridged within a distance, the rest reported open"
+crate = "ogeom-mesh"
+verdict = "covered"
+symbols = [
+    "ogeom_mesh::Editable", "ogeom_mesh::Side",
+    "ogeom_mesh::Cap", "ogeom_mesh::CutReport",
+]
+tests = [
+    "crates/ogeom-mesh/src/editable/cut.rs",
+    "crates/ogeom/tests/mesh_editable.rs::five_million_triangles_cut_and_capped",
+]
+
+[[capability]]
 id = "mesh.hatching"
 title = "Hatching faces: iso and free-direction line families clipped to the trim"
 crate = "ogeom-mesh"

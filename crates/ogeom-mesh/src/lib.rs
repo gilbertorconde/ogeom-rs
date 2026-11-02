@@ -31,7 +31,7 @@ pub use discretize::{
     Deflection, Polyline, discretize, discretize_on_surface, discretize_planar, is_straight,
     is_straight_planar,
 };
-pub use editable::{Component, Editable, Rim};
+pub use editable::{Cap, Component, CutReport, Editable, Rim, Side};
 pub use hatch::hatch_face;
 pub use planar::{Edge2, Loop2, region};
 pub use point_index::{Neighbour, PointIndex};
