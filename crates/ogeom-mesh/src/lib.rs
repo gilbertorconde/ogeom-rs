@@ -8,14 +8,18 @@
 //!
 //! Also the spatial indexes over meshes and point clouds that inspection
 //! asks of them: [`Bvh`] over triangles and [`PointIndex`] over points,
-//! and the sections of a mesh by planes ([`section()`]).
+//! the sections of a mesh by planes ([`section()`]), and the shadow it casts
+//! on one ([`shadow()`]), traced by the exact planar region engine in
+//! [`planar`].
 
 pub mod attach;
 pub mod bvh;
 pub mod discretize;
 pub mod hatch;
+pub mod planar;
 pub mod point_index;
 pub mod section;
+pub mod shadow;
 pub mod simplify;
 mod tails;
 pub mod triangulate;
@@ -27,8 +31,10 @@ pub use discretize::{
     is_straight_planar,
 };
 pub use hatch::hatch_face;
+pub use planar::{Edge2, Loop2, region};
 pub use point_index::{Neighbour, PointIndex};
 pub use section::{Chain, Section, section, sections};
+pub use shadow::shadow;
 pub use simplify::{Simplified, Target, simplify};
 pub use triangulate::{
     EdgeChords, FaceMesh, FaceMeshCache, edge_chords_for, face_boundary, face_boundary_in_chart,

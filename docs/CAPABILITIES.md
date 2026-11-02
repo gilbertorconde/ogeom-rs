@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 87 |
+| `covered` | 89 |
 | `partial` | 8 |
 | `divergent` | 6 |
 
-101 capabilities. Ratchet: `unreviewed_max = 0`.
+103 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -26,6 +26,7 @@ per module. Each verdict cites the symbols and tests that back it, and
 - **algo.builders**: Building topology by hand: vertices, edges, wires, faces, shells, solids · `covered`
 - **algo.classification**: Classifying a point against a solid or a face: in, out, or on, exactly · `covered`
 - **algo.curve-sampling**: Sampling curves: by count, by spacing, by deflection, by abscissa · `covered`
+- **algo.fit-outline**: An outline of lines, tangent arcs and circles fitted around a 2D silhouette, every point between a play and the play plus twice a tolerance outside it, negative play inside it · `covered`
 - **algo.fitting**: Interpolating and approximating points with B-splines, curves and surfaces · `covered`
 - **algo.global-properties**: Volume, area, mass, centroid and principal moments of shapes · `covered`
 - **algo.history**: Every operation emits history: what was generated, modified, deleted · `covered`
@@ -269,6 +270,7 @@ reference in a deck read from text.
 - **mesh.editing**: Editing triangulations: connectivity, welding, decimation, boundary loops · `covered`
 - **mesh.hatching**: Hatching faces: iso and free-direction line families clipped to the trim · `covered`
 - **mesh.section**: Sections of a triangle mesh by a plane or a stack of planes: polylines welded through shared edges, carrying the material side, with exact side tests and non-manifold edges reported · `covered`
+- **mesh.shadow**: The shadow of a triangle mesh on a plane, holes kept, and the regions of weighted planar chains, traced with exact integer tests and snap rounding · `covered`
 - **mesh.spatial-index**: Spatial indexes over meshes and point clouds: nearest point, ball and ray queries, batched in parallel, equal to brute force · `covered`
 - **mesh.tessellation**: Triangulating shapes to a stated deflection by chord and angle alone, with no length cap, deterministically, in parallel · `covered`
 
@@ -296,4 +298,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 9b8e80a1977a9960 -->
+<!-- ledger-checksum: 3bb08c903a38a6ff -->

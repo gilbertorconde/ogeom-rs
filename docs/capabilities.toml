@@ -700,6 +700,22 @@ tests = [
 ]
 
 [[capability]]
+id = "algo.fit-outline"
+title = "An outline of lines, tangent arcs and circles fitted around a 2D silhouette, every point between a play and the play plus twice a tolerance outside it, negative play inside it"
+crate = "ogeom-algo"
+verdict = "covered"
+symbols = [
+    "ogeom_algo::fit_outline", "ogeom_algo::Outline",
+    "ogeom_algo::Piece2", "ogeom_algo::Wire2d",
+]
+tests = [
+    "crates/ogeom-algo/src/outline.rs",
+    "crates/ogeom-algo/src/fit/segments.rs",
+    "crates/ogeom/tests/mesh_shadow.rs::an_l_bracket_gives_its_outline_with_corners",
+    "crates/ogeom/tests/mesh_shadow.rs::a_cylinder_seen_along_its_axis_gives_one_circle",
+]
+
+[[capability]]
 id = "algo.mesh-orientation"
 title = "Face directions, axes of revolution, principal frames and open rims of a mesh"
 crate = "ogeom-algo"
@@ -1709,6 +1725,22 @@ symbols = [
 tests = [
     "crates/ogeom-mesh/src/section.rs",
     "crates/ogeom/tests/mesh_section.rs::a_million_triangles_section_within_a_tenth_of_a_second",
+]
+
+[[capability]]
+id = "mesh.shadow"
+title = "The shadow of a triangle mesh on a plane, holes kept, and the regions of weighted planar chains, traced with exact integer tests and snap rounding"
+crate = "ogeom-mesh"
+verdict = "covered"
+symbols = [
+    "ogeom_mesh::shadow", "ogeom_mesh::region",
+    "ogeom_mesh::Loop2", "ogeom_mesh::Edge2",
+]
+tests = [
+    "crates/ogeom-mesh/src/planar.rs",
+    "crates/ogeom-mesh/src/shadow.rs",
+    "crates/ogeom/tests/mesh_shadow.rs::a_million_triangle_torus_casts_a_ring",
+    "crates/ogeom/tests/mesh_shadow.rs::a_through_hole_is_kept",
 ]
 
 [[capability]]

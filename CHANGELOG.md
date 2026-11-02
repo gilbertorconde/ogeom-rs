@@ -35,6 +35,47 @@ bump may break the API and a patch bump may not.
     offsets' order.
   - A torus of 1 M triangles sections in 6.2 ms of processor time on one
     thread, 16 planes in 72 ms.
+- **The shadow a triangle mesh casts on a plane: `ogeom_mesh::shadow`.**
+  (#581)
+  - The union of the triangles projected along the plane's normal, as
+    `Loop2` loops in the plane's coordinates with the shadow on their left:
+    outer boundaries counter-clockwise, holes clockwise. A pocket covered
+    by the face around it leaves no mark, an indentation in the outline
+    stays, and a hole through the part is kept. A triangle seen edge on
+    covers nothing.
+  - Exact to a grid of `2^-38` of the extent. Vertices are snapped once,
+    every orientation is integer arithmetic, and the edges two triangles
+    share in opposite directions cancel, leaving the outline, its folds and
+    open edges. Crossings are resolved by snap rounding, so the traced
+    paths cross only at shared points, and a constrained triangulation
+    counts the triangles covering each face.
+  - The tracing runs per tile of some thousands of triangles, in parallel,
+    and then over the tiles' outlines, so the folds of a noisy scan go no
+    further than their tile.
+  - A torus of 1 M triangles casts its ring in 0.2 s of processor time on
+    one thread; with noise of 0.02 on every vertex, half its edge length,
+    in 2.2 s on one thread and 0.6 s on fourteen.
+  - The engine is public as `ogeom_mesh::region`: the boundary of the
+    points whose winding counts in two weighted chains of `Edge2` a rule
+    accepts, for unions, intersections and differences.
+- **An outline of lines, tangent arcs and circles fitted around a
+  silhouette: `ogeom_algo::fit_outline`.** (#581)
+  - `Outline { play, tolerance, round_below }`: every point of the
+    returned `Wire2d`s lies between `play` and `play + 2 tolerance` outside
+    the loops' region; a negative play fits inside it.
+  - The silhouette is offset to the band's middle by the region engine, so
+    holes the band closes over and parts it pinches off go, and nothing
+    runs out and back. Each loop of that offset is split into runs a line
+    or a circle follows within three quarters of the tolerance, the whole
+    loop one `Piece2::Circle` where that holds.
+  - Lines meet at corners; a corner turning less than `round_below`, or
+    one too sharp for the band, takes the largest tangent arc found to fit
+    it. A short piece between two longer lines gives way to their own
+    corner or rounding.
+  - Every piece is then sampled at a quarter of the tolerance and each
+    sample's signed distance checked an eighth inside the band, which by
+    the distance's 1-Lipschitz bound puts the whole piece in it; a loop
+    that fails is returned as the polygon of the band's middle.
 
 ## [0.14.0] - 2026-11-02
 
