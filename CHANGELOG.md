@@ -11,6 +11,17 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-11-02
+
+An additive release: sections and sheets from scans. `mesh::section` cuts a
+mesh by a plane into chains that carry the material side, exactly where the
+plane runs through vertices and edges; `mesh::shadow` is the exact shadow a
+mesh casts on a plane, holes kept, and `algo::fit_outline` fits lines, arcs
+and circles around it inside a clearance band. `algo::fit_segments_2d` fits
+the fewest lines and arcs to a polyline within a hard tolerance. Documents
+carry named construction geometry, which STEP writes and reads as
+wireframe and surface sets.
+
 ### Added
 
 - **Sections of a triangle mesh by a plane: `ogeom_mesh::section`, and a
@@ -10580,7 +10591,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.13.2...v0.14.0
 [0.13.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.13.0...v0.13.1
