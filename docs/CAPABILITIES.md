@@ -28,7 +28,7 @@ per module. Each verdict cites the symbols and tests that back it, and
 - **algo.curve-sampling**: Sampling curves: by count, by spacing, by deflection, by abscissa · `covered`
 - **algo.fit-outline**: An outline of lines, tangent arcs and circles fitted around a 2D silhouette, every point between a play and the play plus twice a tolerance outside it, negative play inside it · `covered`
 - **algo.fit-segments-2d**: The fewest lines and tangent or cornered arcs fitted to a 2D polyline, open or closed, every input point within a hard tolerance of its piece · `covered`
-- **algo.fitting**: Interpolating and approximating points with B-splines, curves and surfaces · `covered`
+- **algo.fitting**: Interpolating and approximating points with B-splines, curves and surfaces, and fitting scattered points over a seed surface's chart to a tolerance · `covered`
 - **algo.global-properties**: Volume, area, mass, centroid and principal moments of shapes · `covered`
 - **algo.history**: Every operation emits history: what was generated, modified, deleted · `covered`
 - **algo.medial-axis**: The medial axis of a planar region · `covered`
@@ -307,4 +307,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 5213ca22cb897ac6 -->
+<!-- ledger-checksum: 8e0cc3d8e356638f -->

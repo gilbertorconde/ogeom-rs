@@ -45,6 +45,10 @@ use ogeom_math::{KnotVector, Point, Point2};
 use crate::curve::BSplineCurve;
 use crate::curve2d::BSpline2d;
 
+mod seeded;
+
+pub use seeded::{Ended, ScatteredFit, ScatteredOptions, Target, fit_surface_scattered_over};
+
 #[allow(
     clippy::cast_precision_loss,
     reason = "sample counts are far below 2^52"
