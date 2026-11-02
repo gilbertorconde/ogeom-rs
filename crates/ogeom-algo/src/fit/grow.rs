@@ -1,10 +1,10 @@
-//! The region of a mesh one surface covers, grown from points clicked on it:
-//! [`grow`].
+//! The region of a mesh one surface covers, or the crease one curve runs
+//! along, grown from points clicked on it: [`grow`].
 
 use std::collections::VecDeque;
 
 use ogeom_core::{OgeomError, OgeomResult, Tolerances, ogeom_bail};
-use ogeom_math::{Cone, Cylinder, Plane, Point, Sphere, Torus, Vector};
+use ogeom_math::{Axis, Circle, Cone, Cylinder, Plane, Point, Sphere, Torus, Vector};
 use ogeom_mesh::Bvh;
 use ogeom_topo::Triangulation;
 
@@ -13,8 +13,12 @@ use super::tails;
 use crate::Cutoff;
 use crate::orient::{check_indices, edge_uses, key};
 
-/// The surface kinds a region is grown for.
+mod rim;
+
+/// The surface kinds a region is grown for, and the curve kinds a crease is
+/// traced for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FitKind {
     /// A plane, [`plane`](super::plane).
     Plane,
@@ -26,6 +30,12 @@ pub enum FitKind {
     Cone,
     /// A torus, [`torus`](super::torus).
     Torus,
+    /// A circle in space, [`circle3`](super::circle3), traced along a
+    /// crease: a bore's or a boss's rim.
+    Circle3,
+    /// A line in space, [`line3`](super::line3), traced along a crease: a
+    /// box's edge.
+    Line3,
 }
 
 impl FitKind {
@@ -36,7 +46,14 @@ impl FitKind {
             Self::Cylinder => Kind::Cylinder,
             Self::Cone => Kind::Cone,
             Self::Torus => Kind::Torus,
+            Self::Circle3 => Kind::Circle3,
+            Self::Line3 => Kind::Line3,
         }
+    }
+
+    /// A curve, traced along a crease rather than grown over triangles.
+    const fn curve(self) -> bool {
+        matches!(self, Self::Circle3 | Self::Line3)
     }
 }
 
@@ -67,12 +84,18 @@ pub struct GrowOptions {
     /// Which side the material is on; where not given, the mesh's normals
     /// decide.
     pub side: Option<Side>,
+    /// The angle, in radians, the surface must turn through across an
+    /// edge, between its two triangles' normals, for a curve to be traced
+    /// along it; above zero and below π. As with the normal limit, the
+    /// noise turns an edge by about the noise over the triangles' size,
+    /// which the limit must clear.
+    pub crease_limit: f64,
 }
 
 impl Default for GrowOptions {
     /// A 3σ cutoff, which keeps 99.7 % of Gaussian noise, and a normal
-    /// limit of π/6, which the noise of a mesh whose triangles are ten
-    /// times the noise across turns past rarely.
+    /// limit and a crease limit of π/6, which the noise of a mesh whose
+    /// triangles are ten times the noise across turns past rarely.
     fn default() -> Self {
         Self {
             cutoff: Cutoff::Sigma(3.0),
@@ -81,12 +104,14 @@ impl Default for GrowOptions {
             max_triangles: None,
             fixed: FitFixed::default(),
             side: None,
+            crease_limit: core::f64::consts::FRAC_PI_6,
         }
     }
 }
 
-/// A grown region's fit, of the kind asked for.
+/// A grown region's or a traced crease's fit, of the kind asked for.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum AnyFit {
     /// A plane's fit.
     Plane(Fit<Plane>),
@@ -98,6 +123,10 @@ pub enum AnyFit {
     Cone(Fit<Cone>),
     /// A torus's fit.
     Torus(Fit<Torus>),
+    /// A circle's fit, [`FitKind::Circle3`].
+    Circle(Fit<Circle>),
+    /// A line's fit, [`FitKind::Line3`].
+    Line(Fit<Axis>),
 }
 
 impl AnyFit {
@@ -110,6 +139,8 @@ impl AnyFit {
             Self::Cylinder(_) => FitKind::Cylinder,
             Self::Cone(_) => FitKind::Cone,
             Self::Torus(_) => FitKind::Torus,
+            Self::Circle(_) => FitKind::Circle3,
+            Self::Line(_) => FitKind::Line3,
         }
     }
 
@@ -138,6 +169,8 @@ impl AnyFit {
             Self::Cylinder(f) => (f.sigma, &f.residuals, &f.used),
             Self::Cone(f) => (f.sigma, &f.residuals, &f.used),
             Self::Torus(f) => (f.sigma, &f.residuals, &f.used),
+            Self::Circle(f) => (f.sigma, &f.residuals, &f.used),
+            Self::Line(f) => (f.sigma, &f.residuals, &f.used),
         }
     }
 
@@ -148,6 +181,8 @@ impl AnyFit {
             Self::Cylinder(f) => Model::cylinder(f),
             Self::Cone(f) => Model::cone(f),
             Self::Torus(f) => Model::torus(f),
+            Self::Circle(f) => Model::circle3(f),
+            Self::Line(f) => Model::line3(f),
         }
     }
 
@@ -168,24 +203,28 @@ impl AnyFit {
 pub struct SeedReport {
     /// The triangle nearest the seed.
     pub triangle: u32,
-    /// Whether that triangle is in the region.
+    /// Whether that triangle is in the region; for a curve, whether a
+    /// crease edge about the seed has both ends on the chain.
     pub in_region: bool,
     /// The seed's residual from the fit.
     pub offset: f64,
     /// The angle, in radians, between the triangle's normal and the fit's
-    /// normal at the point of the triangle nearest the seed.
+    /// normal at the point of the triangle nearest the seed; for a curve,
+    /// the angle the surface turns through across the nearest crease edge
+    /// about the seed on the chain, or the nearest about it where none is.
     pub angle: f64,
 }
 
-/// A region grown over a mesh, and its fit.
+/// A region grown over a mesh, or a crease traced along it, and its fit.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Grown {
-    /// The region's triangles, in increasing order.
+    /// The region's triangles, in increasing order; none for a curve.
     pub triangles: Vec<u32>,
     /// The fit over the region's vertices.
     pub fit: AnyFit,
     /// The mesh vertices the fit measured, in the order of its residuals:
-    /// those of the region's triangles, in increasing order.
+    /// those of the region's triangles, in increasing order; for a curve,
+    /// the chain's, in their order along it.
     pub vertices: Vec<u32>,
     /// Each seed's report, in the seeds' order.
     pub seeds: Vec<SeedReport>,
@@ -266,6 +305,41 @@ const NONE: u32 = u32::MAX;
 /// noise is peeled as rarely as a point of plain noise is cut off. The
 /// model is refitted after each ring.
 ///
+/// # Curves
+///
+/// A [`FitKind::Circle3`] or a [`FitKind::Line3`] is traced along the
+/// mesh's creases rather than grown over its triangles: a crease edge is
+/// one two triangles share across which the surface turns, between their
+/// normals, by more than [`GrowOptions::crease_limit`]. A seed reaches the
+/// crease edges about the smooth part of the surface it lies on, the
+/// triangles reached from the one nearest it across edges that are not
+/// creases. The chain starts at the nearest of them whose chain holds
+/// twice the vertices the kind's fit needs, so an edge the noise alone
+/// turned past the limit is passed over; a seed with no such chain about
+/// it is refused, by the nearest chain's fit's own refusal where one
+/// refused and as lying on a smooth part otherwise.
+///
+/// The chain runs from the first seed's edge both ways, a vertex at each
+/// end in turn. Before a fit has a finite gate (with [`Cutoff::All`],
+/// never), it runs on through a vertex only where one crease edge leaves
+/// it. Once one has, it runs on
+/// along the crease edge whose far vertex lies within the gate of the fit,
+/// the gate growth uses, its rounding floor included; where none does, or
+/// where several do and the fit cannot tell which the crease follows, that
+/// end stops. So a rim stops where its vertices leave the circle, and a
+/// box's edge at its corners, where every edge on turns past the line. The
+/// fit is refitted whenever the chain has doubled since the last, and once
+/// more whenever both ends stop, each asked again; tracing ends when a
+/// whole pass against the latest fit adds no vertex, or the chain closes.
+/// A crease that turns at a vertex no other crease meets, before a fit
+/// over few vertices has a gate narrow enough to see it, is followed round
+/// the turn.
+///
+/// The answer's triangles are empty, and its vertices are the chain's.
+/// Later seeds are reported against the fit, and do not extend the chain.
+/// [`GrowOptions::normal_limit`] and [`GrowOptions::max_triangles`] apply
+/// to regions only.
+///
 /// # Determinism
 ///
 /// Everything runs on the calling thread in an order fixed by the seeds and
@@ -276,14 +350,16 @@ const NONE: u32 = u32::MAX;
 /// # Errors
 ///
 /// [`OgeomError::Domain`](ogeom_core::OgeomError::Domain) with no seeds, a
-/// seed that is not finite, a normal limit out of range, a cutoff whose
-/// number is not positive, peeling with [`Cutoff::All`], a triangle cap of
-/// zero, or a triangle naming a vertex the mesh lacks;
+/// seed that is not finite, a normal limit or a crease limit out of range,
+/// a cutoff whose number is not positive, peeling with [`Cutoff::All`] or
+/// for a curve, a triangle cap of zero, or a triangle naming a vertex the
+/// mesh lacks;
 /// [`OgeomError::Dimension`](ogeom_core::OgeomError::Dimension) where the
 /// hierarchy holds a different number of triangles from the mesh;
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
-/// the mesh has no triangle to be near a seed; and the kind's own
-/// refusals, as its fit gives them.
+/// the mesh has no triangle to be near a seed, or for a curve where no
+/// crease about a seed holds twice the vertices the kind needs; and the
+/// kind's own refusals, as its fit gives them.
 pub fn grow(
     mesh: &Triangulation,
     index: &Bvh,
@@ -292,7 +368,10 @@ pub fn grow(
     options: &GrowOptions,
     tol: Tolerances,
 ) -> OgeomResult<Grown> {
-    checked(mesh, index, seeds, options)?;
+    checked(mesh, index, seeds, kind, options)?;
+    if kind.curve() {
+        return rim::traced(mesh, index, seeds, kind, options, tol);
+    }
     let surface = Surface::of(mesh);
     let least = 2 * primitive::needed(kind.kind(), &options.fixed);
 
@@ -355,6 +434,7 @@ fn checked(
     mesh: &Triangulation,
     index: &Bvh,
     seeds: &[Point],
+    kind: FitKind,
     options: &GrowOptions,
 ) -> OgeomResult<()> {
     if seeds.is_empty() {
@@ -370,7 +450,20 @@ fn checked(
             "the normal limit {limit} must lie above 0 and at most pi/2"
         );
     }
+    let crease = options.crease_limit;
+    if !(crease > 0.0 && crease < core::f64::consts::PI) {
+        ogeom_bail!(
+            Domain,
+            "the crease limit {crease} must lie above 0 and below pi"
+        );
+    }
     options.cutoff.check()?;
+    if options.peel && kind.curve() {
+        ogeom_bail!(
+            Domain,
+            "peeling takes off a region's rim, and a curve traced along a crease has none"
+        );
+    }
     if options.peel && options.cutoff == Cutoff::All {
         ogeom_bail!(
             Domain,
@@ -630,10 +723,11 @@ impl Gate {
     /// The gate of a fit to `points`.
     ///
     /// A cutoff of `k` sigmas (or a median's worth of them) measured over
-    /// a fit of `p` parameters to `n` points is a noise estimated with
-    /// `n - p` degrees of freedom: the threshold is the sigma that estimate
-    /// gives, `σ √(n / (n - p))`, times the Student t at which a residual
-    /// is as rare as `k` sigmas of a known noise. A few points then admit
+    /// a fit of `p` parameters to `n` points, each missing the model in `c`
+    /// directions (two for a curve in space, one for a surface), is a noise
+    /// estimated with `c n - p` degrees of freedom: the threshold is the
+    /// sigma that estimate gives, `σ √(c n / (c n - p))`, times the Student
+    /// t at which a residual is as rare as `k` sigmas of a known noise. A few points then admit
     /// as much as their noise could, and many admit `k σ`. No threshold is
     /// below the confusion distance, within which points are one.
     ///
@@ -658,7 +752,7 @@ impl Gate {
             Cutoff::All => {}
             Cutoff::Distance(d) => threshold = d,
             cutoff @ (Cutoff::Sigma(k) | Cutoff::Median(k)) => {
-                let kept = fit.used().iter().filter(|u| **u).count();
+                let kept = model.components() * fit.used().iter().filter(|u| **u).count();
                 let dof = kept.saturating_sub(model.parameters());
                 let base = fit.threshold(cutoff);
                 let rms = fit.sigma();
@@ -701,7 +795,8 @@ impl Gate {
     ///
     /// On a single-precision mesh, a point is near at least where its
     /// residual is within what rounding alone could have moved it: its own
-    /// coordinates' rounding, along the normal, at most, and the fit's
+    /// coordinates' rounding, along the normal, at most (for a curve, the
+    /// rounding's half diagonal), and the fit's
     /// error from the region's rounding, as many sigmas of it as the
     /// cutoff keeps.
     fn near(&self, p: Point) -> bool {
@@ -709,9 +804,8 @@ impl Gate {
         let leverage = self.model.leverage(p);
         let mut bound = self.threshold * (1.0 + leverage).sqrt();
         if self.quantum > 0.0 {
-            let n = self.model.normal(p);
-            let own =
-                n.x.abs() * half_ulp(p.x) + n.y.abs() * half_ulp(p.y) + n.z.abs() * half_ulp(p.z);
+            let half = Vector::new(half_ulp(p.x), half_ulp(p.y), half_ulp(p.z));
+            let own = self.model.moved_by(p, half);
             bound = bound.max(own + self.sigmas * self.quantum * leverage.sqrt());
         }
         r.abs() <= bound
@@ -759,7 +853,7 @@ impl Grower<'_, '_> {
         let fit = fitted(
             self.kind,
             &points,
-            &normals,
+            Some(&normals),
             self.options,
             self.fit.as_ref(),
             self.tol,
@@ -1089,19 +1183,19 @@ fn ratio(a: f64, b: f64) -> f64 {
 fn fitted(
     kind: FitKind,
     points: &[Point],
-    normals: &[Vector],
+    normals: Option<&[Vector]>,
     options: &GrowOptions,
     last: Option<&AnyFit>,
     tol: Tolerances,
 ) -> OgeomResult<AnyFit> {
     fn with<'n, S>(
         options: &GrowOptions,
-        normals: &'n [Vector],
+        normals: Option<&'n [Vector]>,
         guess: Option<S>,
         robust: bool,
     ) -> FitOptions<'n, S> {
         FitOptions {
-            normals: Some(normals),
+            normals,
             cutoff: options.cutoff,
             robust_start: robust && guess.is_none() && options.cutoff != Cutoff::All,
             fixed: options.fixed,
@@ -1112,8 +1206,8 @@ fn fitted(
     }
     // A consensus start for a curved kind, whose start from a
     // neighbourhood a plane grew may hold another surface's points; a
-    // plane's closed form starts from nothing.
-    let robust = kind != FitKind::Plane;
+    // plane's and a line's closed forms start from nothing.
+    let robust = !matches!(kind, FitKind::Plane | FitKind::Line3);
     Ok(match kind {
         FitKind::Plane => {
             let guess = match last {
@@ -1170,5 +1264,21 @@ fn fitted(
                 tol,
             )?)
         }
+        FitKind::Circle3 => {
+            let guess = match last {
+                Some(AnyFit::Circle(f)) => Some(f.shape),
+                _ => None,
+            };
+            AnyFit::Circle(primitive::circle3(
+                points,
+                &with(options, normals, guess, robust),
+                tol,
+            )?)
+        }
+        FitKind::Line3 => AnyFit::Line(primitive::line3(
+            points,
+            &with(options, normals, None, robust),
+            tol,
+        )?),
     })
 }

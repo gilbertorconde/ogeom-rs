@@ -194,7 +194,8 @@ const ROUND: u8 = 1;
 /// moves to the point at `r` from the inner cube of half side `a - r`,
 /// along the line from its nearest point there. A triangle of the top
 /// face's flat (`FLAT`) has every corner within the inner cube's top; the
-/// rest are `ROUND`, the side faces included. With `r = a` it is a ball.
+/// rest are `ROUND`, the side faces included. With `r = a` it is a ball,
+/// and with `r = 0` a sharp cube.
 fn rounded_cube(a: f64, r: f64, n: usize) -> Builder {
     let mut b = Builder::default();
     let h = 2.0 * a / n as f64;
@@ -206,7 +207,11 @@ fn rounded_cube(a: f64, r: f64, n: usize) -> Builder {
             let p = g.map(|c| c as f64 * h);
             let q = p.map(|c| c.clamp(-inner, inner));
             let d = Vector::new(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
-            let on = Point::new(q[0], q[1], q[2]) + d * (r / d.magnitude());
+            let on = if r > 0.0 {
+                Point::new(q[0], q[1], q[2]) + d * (r / d.magnitude())
+            } else {
+                Point::new(p[0], p[1], p[2])
+            };
             b.vertex(on)
         })
     };
@@ -698,4 +703,265 @@ fn a_noise_free_single_precision_box_face_and_ball_grow_whole_and_peel_nothing()
             "shifted {shift}: radius off by {error}"
         );
     }
+}
+
+/// The top rim of [`bored_plate`]: the first ring built.
+fn top_rim() -> Vec<u32> {
+    (0..128).collect()
+}
+
+/// The chain's vertices, sorted.
+fn sorted(grown: &Grown) -> Vec<u32> {
+    let mut v = grown.vertices.clone();
+    v.sort_unstable();
+    v
+}
+
+#[test]
+fn a_click_by_a_bore_rim_traces_the_rim_circle() {
+    let placed = placement();
+    let b = bored_plate();
+    let mesh = b.mesh(&placed, 7);
+    let centre = placed.apply(Point::ORIGIN);
+    let axis = placed.apply_vector(Vector::Z);
+    // On the plate a tenth of a millimetre out from the rim, and on the
+    // wall six tenths down from it.
+    for at in [
+        Point::new(-BORE_RADIUS - 0.1, 0.0, 0.0),
+        Point::new(0.0, BORE_RADIUS, -0.6),
+    ] {
+        let seed = placed.apply(at);
+        let grown = grown(&mesh, &[seed], FitKind::Circle3, &GrowOptions::default());
+        assert!(grown.triangles.is_empty());
+        assert_eq!(sorted(&grown), top_rim(), "seed {at:?}");
+        let AnyFit::Circle(fit) = &grown.fit else {
+            panic!("not a circle: {:?}", grown.fit.kind());
+        };
+        let n = kept(&grown.fit);
+        assert!(n >= 125, "{n} of the rim's 128 vertices kept");
+        let error = fit.shape.radius() - BORE_RADIUS;
+        assert!(
+            error.abs() <= bound(n),
+            "radius off by {error:e} over {n} points, more than {:e}",
+            bound(n)
+        );
+        let off = (fit.shape.centre() - centre).magnitude();
+        assert!(
+            off <= bound(n),
+            "centre off by {off:e} over {n} points, more than {:e}",
+            bound(n)
+        );
+        let tilt = fit.shape.frame().z().vector().cross(axis).magnitude();
+        assert!(tilt <= 0.01, "axis tilted by {tilt}");
+        assert_eq!(fit.side, Some(Side::Outside));
+        let report = grown.seeds[0];
+        assert!(report.in_region, "{report:?}");
+        assert!(
+            report.angle > GrowOptions::default().crease_limit,
+            "{report:?}"
+        );
+    }
+}
+
+/// The fitted line's distance from a point and its angle from a direction.
+fn line_error(fit: &AnyFit, at: Point, along: Vector) -> (f64, f64) {
+    let AnyFit::Line(line) = fit else {
+        panic!("not a line: {:?}", fit.kind());
+    };
+    let d = line.shape.direction.vector();
+    let w = at - line.shape.location;
+    let off = (w - d * w.dot(d)).magnitude();
+    (off, d.cross(along).magnitude().asin())
+}
+
+#[test]
+fn a_click_by_a_box_edge_traces_its_line_from_corner_to_corner() {
+    let placed = placement();
+    let (a, n) = (5.0, 20);
+    let b = rounded_cube(a, 0.0, n);
+    let mesh = b.mesh(&placed, 19);
+    let seed = placed.apply(Point::new(0.3, a - 0.2, a));
+    let grown = grown(&mesh, &[seed], FitKind::Line3, &GrowOptions::default());
+    assert!(grown.triangles.is_empty());
+
+    // Every vertex of the edge y = z = a, the corners at the chain's ends.
+    let on_edge = |v: u32| {
+        let p = b.positions[v as usize];
+        p.y == a && p.z == a
+    };
+    assert_eq!(grown.vertices.len(), n + 1, "{:?}", grown.vertices);
+    assert!(grown.vertices.iter().all(|&v| on_edge(v)));
+    let ends = [grown.vertices[0], grown.vertices[n]].map(|v| b.positions[v as usize].x);
+    assert_eq!(ends[0].abs(), a);
+    assert_eq!(ends[0], -ends[1]);
+
+    // Four standard errors: across the line at its middle, the noise over
+    // the points, each way; its tilt, the noise over the points' spread
+    // along it, `L / √12` for points spread evenly over a length `L`.
+    let m = kept(&grown.fit) as f64;
+    let (off, angle) = line_error(
+        &grown.fit,
+        placed.apply(Point::new(0.0, a, a)),
+        placed.apply_vector(Vector::X),
+    );
+    let across = 4.0 * SIGMA * (2.0 / m).sqrt();
+    assert!(
+        off <= across,
+        "the line is {off:e} off the edge, past {across:e}"
+    );
+    let tilt = 4.0 * SIGMA * (24.0 / m).sqrt() / (2.0 * a);
+    assert!(
+        angle <= tilt,
+        "the line is {angle:e} off the edge's direction, past {tilt:e}"
+    );
+    assert!(grown.seeds[0].in_region);
+}
+
+/// A pipe's wall of radius 10 mm and length 20 mm, open at both ends, 64
+/// facets round and 20 rows along: triangles about a millimetre across,
+/// fifty times the noise, so no edge turns by more than a few degrees.
+fn pipe() -> Builder {
+    let mut b = Builder::default();
+    let at: Vec<(f64, f64)> = (0..=20).map(|k| (10.0, f64::from(k))).collect();
+    let rings = rings(&mut b, 64, &at);
+    band(&mut b, &rings, |p| Vector::new(p.x, p.y, 0.0), SIDE);
+    b
+}
+
+#[test]
+fn a_click_on_a_smooth_surface_finds_no_crease_and_is_refused() {
+    let placed = placement();
+    let b = pipe();
+    let ball = rounded_cube(5.0, 5.0, 40);
+    let noisy = b.mesh(&placed, 13);
+    let exact_ball = Triangulation {
+        positions: ball
+            .positions
+            .iter()
+            .map(|p| single(placed.apply(*p)))
+            .collect(),
+        ..exact(&ball)
+    };
+    for (mesh, at) in [
+        (&noisy, Point::new(10.0, 0.0, 10.0)),
+        (&exact_ball, Point::new(0.0, 0.0, 5.0)),
+    ] {
+        let index = Bvh::build(mesh).unwrap();
+        let seed = placed.apply(at);
+        for kind in [FitKind::Circle3, FitKind::Line3] {
+            let e = grow(mesh, &index, &[seed], kind, &GrowOptions::default(), T).unwrap_err();
+            assert!(
+                matches!(e, OgeomError::Construction(_)) && e.to_string().contains("smooth"),
+                "{e:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_noise_free_single_precision_rim_and_edge_trace_whole() {
+    let b = bored_plate();
+    let cube = rounded_cube(5.0, 0.0, 20);
+    // Moved by 221.1 before rounding, the edge's rounding stops a gate
+    // without the floor four vertices in.
+    for shift in [0.0, 1.9, 221.1, 517.1] {
+        let placed =
+            Transform::translation(Vector::new(shift, -0.5 * shift, 0.25 * shift)) * placement();
+        let rounded = |b: &Builder| Triangulation {
+            positions: b
+                .positions
+                .iter()
+                .map(|p| single(placed.apply(*p)))
+                .collect(),
+            ..exact(b)
+        };
+
+        let mesh = rounded(&b);
+        let seed = placed.apply(Point::new(-BORE_RADIUS - 0.1, 0.0, 0.0));
+        let rim = grown(&mesh, &[seed], FitKind::Circle3, &GrowOptions::default());
+        assert_eq!(sorted(&rim), top_rim(), "shifted {shift}");
+        assert_eq!(kept(&rim.fit), 128, "shifted {shift}");
+        let AnyFit::Circle(fit) = &rim.fit else {
+            panic!("not a circle");
+        };
+        let error = fit.shape.radius() - BORE_RADIUS;
+        assert!(
+            error.abs() <= 1e-4,
+            "shifted {shift}: radius off by {error}"
+        );
+
+        let mesh = rounded(&cube);
+        let seed = placed.apply(Point::new(0.3, 4.8, 5.0));
+        let edge = grown(&mesh, &[seed], FitKind::Line3, &GrowOptions::default());
+        assert_eq!(
+            edge.vertices.len(),
+            21,
+            "shifted {shift}: {:?}",
+            edge.vertices
+        );
+        assert_eq!(kept(&edge.fit), 21, "shifted {shift}");
+        let ends = [edge.vertices[0], edge.vertices[20]].map(|v| cube.positions[v as usize]);
+        for p in ends {
+            assert_eq!((p.x.abs(), p.y, p.z), (5.0, 5.0, 5.0), "shifted {shift}");
+        }
+    }
+}
+
+#[test]
+fn a_traced_crease_does_not_depend_on_threads() {
+    let placed = placement();
+    let mesh = bored_plate().mesh(&placed, 7);
+    let seed = placed.apply(Point::new(-BORE_RADIUS - 0.1, 0.0, 0.0));
+    let cube = rounded_cube(5.0, 0.0, 20).mesh(&placed, 19);
+    let edge = placed.apply(Point::new(0.3, 4.8, 5.0));
+    let both = || {
+        (
+            grown(&mesh, &[seed], FitKind::Circle3, &GrowOptions::default()),
+            grown(&cube, &[edge], FitKind::Line3, &GrowOptions::default()),
+        )
+    };
+    ogeom_core::parallel::set_threads(1);
+    let one = both();
+    ogeom_core::parallel::set_threads(8);
+    let many = both();
+    ogeom_core::parallel::set_threads(0);
+    assert_eq!(one, many);
+}
+
+#[test]
+fn what_cannot_be_traced_is_refused_by_name() {
+    let placed = placement();
+    let mesh = bored_plate().mesh(&placed, 7);
+    let index = Bvh::build(&mesh).unwrap();
+    let seed = placed.apply(Point::new(-BORE_RADIUS - 0.1, 0.0, 0.0));
+    let fine = GrowOptions::default();
+    let domain = |kind: FitKind, options: &GrowOptions| {
+        let e = grow(&mesh, &index, &[seed], kind, options, T).unwrap_err();
+        assert!(matches!(e, OgeomError::Domain(_)), "{e:?}");
+    };
+    for limit in [0.0, -0.1, core::f64::consts::PI, f64::NAN] {
+        let options = GrowOptions {
+            crease_limit: limit,
+            ..fine
+        };
+        domain(FitKind::Circle3, &options);
+    }
+    let peel = GrowOptions { peel: true, ..fine };
+    domain(FitKind::Circle3, &peel);
+    let sided = GrowOptions {
+        side: Some(Side::Inside),
+        ..fine
+    };
+    domain(FitKind::Line3, &sided);
+
+    // A circle along a box's exactly straight edges: the circle fit's own
+    // refusal, not a smooth part's.
+    let cube = exact(&rounded_cube(5.0, 0.0, 20));
+    let index = Bvh::build(&cube).unwrap();
+    let edge = Point::new(0.3, 4.8, 5.0);
+    let e = grow(&cube, &index, &[edge], FitKind::Circle3, &fine, T).unwrap_err();
+    assert!(
+        matches!(e, OgeomError::Construction(_)) && e.to_string().contains("one line"),
+        "{e:?}"
+    );
 }

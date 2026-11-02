@@ -680,7 +680,7 @@ tests = ["crates/ogeom-geom/src/fit.rs", "crates/ogeom-algo/src/fit.rs"]
 
 [[capability]]
 id = "algo.primitive-fits"
-title = "Best fits of planes, spheres, cylinders, cones, tori, circles and lines to points, with residuals, and a mesh region grown for one from clicks, its rounded rim peeled"
+title = "Best fits of planes, spheres, cylinders, cones, tori, circles and lines to points, with residuals, a mesh region grown for one from clicks, its rounded rim peeled, and a rim circle or a crease line traced along a mesh's sharp edges from a click"
 crate = "ogeom-algo"
 verdict = "covered"
 symbols = [

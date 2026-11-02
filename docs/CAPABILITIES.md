@@ -34,7 +34,7 @@ per module. Each verdict cites the symbols and tests that back it, and
 - **algo.nurbs-conversion**: Converting a shape's geometry to NURBS form · `covered`
 - **algo.place-copy**: Copying and transforming shapes, rigidly or generally, sharing what can be shared · `covered`
 - **algo.point-projection**: Projecting a point onto a curve or a surface, nearest first, all minima found · `covered`
-- **algo.primitive-fits**: Best fits of planes, spheres, cylinders, cones, tori, circles and lines to points, with residuals, and a mesh region grown for one from clicks, its rounded rim peeled · `covered`
+- **algo.primitive-fits**: Best fits of planes, spheres, cylinders, cones, tori, circles and lines to points, with residuals, a mesh region grown for one from clicks, its rounded rim peeled, and a rim circle or a crease line traced along a mesh's sharp edges from a click · `covered`
 - **algo.primitives**: The primitive solids: box, wedge, cylinder, cone, sphere, torus, half-space, prism, revolution · `covered`
 - **algo.rigid-registration**: Rigid registration: closed-form absolute orientation, point-to-plane ICP onto a mesh with free motions, and symmetry planes · `covered`
 - **algo.sewing**: Sewing faces into shells along coincident edges, or across a gap asked for, with spatial acceleration · `covered`
@@ -295,4 +295,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 5822ccb4801b7c74 -->
+<!-- ledger-checksum: 1d0cef85e8ceb954 -->
