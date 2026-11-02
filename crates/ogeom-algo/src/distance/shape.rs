@@ -9,7 +9,7 @@ use ogeom_mesh::{Deflection, face_boundary_in_chart_met};
 use ogeom_topo::{Model, Orientation, SameKey, Shape, ShapeType, explore_unique};
 
 use super::{Closest, DistanceOptions, ShapeFeature, signed, unit, unit_or_zero};
-use crate::classify::{Containment, SolidBoundary};
+use crate::classify::{Containment, SolidBoundary, segment_distance};
 use crate::measure::{curve_bounds, project_on_curve, project_on_surface};
 use crate::proximity::{Element, PointDistance, RING_ANGULAR, RING_CHORD, Trim, trim_side};
 
@@ -85,6 +85,15 @@ pub(crate) struct Target {
     /// The shape's boundary prepared for classifying, where it is closed
     /// and the distances are signed.
     solid: Option<SolidBoundary>,
+}
+
+/// What a nearest point passes over: the elements held by `faces` alone
+/// (a face of them, or an edge or a vertex every face holding which is one
+/// of them) whose nearest point lies within the confusion distance of the
+/// segment from `from` to the point asked about.
+pub(crate) struct Passed<'a> {
+    pub(crate) faces: &'a [Shape],
+    pub(crate) from: Point,
 }
 
 /// One candidate: its unsigned distance, its point, its element, and the
@@ -202,7 +211,7 @@ impl Target {
         if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
             return Ok(None);
         }
-        let Some(found) = self.nearest(model, p, faces, options.max, tol)? else {
+        let Some(found) = self.nearest(model, p, faces, None, options.max, tol)? else {
             return Ok(None);
         };
         let element = &self.elements.elements()[found.element];
@@ -236,12 +245,14 @@ impl Target {
     /// `faces` accepts, where there is a filter (for an edge or a vertex,
     /// the normal of any face holding it): elements taken nearest box first
     /// and passed over once their box is farther than the best so far,
-    /// which changes only the time.
+    /// which changes only the time. The elements `passed` names are passed
+    /// over.
     pub(crate) fn nearest(
         &self,
         model: &Model,
         p: Point,
         faces: Option<&dyn Fn(Vector) -> bool>,
+        passed: Option<&Passed<'_>>,
         max: f64,
         tol: Tolerances,
     ) -> OgeomResult<Option<Found>> {
@@ -262,6 +273,12 @@ impl Target {
             }
         };
         let kept = |normals: &[Vector]| faces.is_none_or(|faces| normals.iter().any(|&n| faces(n)));
+        let skipped = |element: usize, q: Point| {
+            passed.is_some_and(|passed| {
+                segment_distance(q, passed.from, p) <= tol.confusion()
+                    && self.held_by(element, passed.faces)
+            })
+        };
         let sum = |normals: Vec<Vector>| normals.into_iter().fold(Vector::ZERO, |a, n| a + n);
         let mut banded: Vec<Found> = Vec::new();
         for (gap, i) in order {
@@ -271,7 +288,7 @@ impl Target {
             match &list[i] {
                 Element::Vertex(_, q) => {
                     let distance = p.distance(*q);
-                    if !better(&best, distance, i) {
+                    if !better(&best, distance, i) || skipped(i, *q) {
                         continue;
                     }
                     let normals = self.normals_at(i, *q, tol)?;
@@ -286,7 +303,7 @@ impl Target {
                 }
                 Element::Edge(_, curve) => {
                     let foot = project_on_curve(curve, p, 64, tol)?;
-                    if !better(&best, foot.distance, i) {
+                    if !better(&best, foot.distance, i) || skipped(i, foot.point) {
                         continue;
                     }
                     let normals = self.normals_at(i, foot.point, tol)?;
@@ -301,7 +318,7 @@ impl Target {
                 }
                 Element::Face(_, prepared) => {
                     let foot = project_on_surface(&prepared.world, p, 32, tol)?;
-                    if !better(&best, foot.distance, i) {
+                    if !better(&best, foot.distance, i) || skipped(i, foot.point) {
                         continue;
                     }
                     // A foot where the surface has no normal (a pole, an
@@ -341,6 +358,23 @@ impl Target {
             }
         }
         Ok(best)
+    }
+
+    /// Whether element `element` is held by `faces` alone: is one of them,
+    /// or is an edge or a vertex every face holding which is.
+    fn held_by(&self, element: usize, faces: &[Shape]) -> bool {
+        let list = self.elements.elements();
+        let among = |face: usize| match &list[face] {
+            Element::Face(shape, _) => faces.iter().any(|own| own.is_same(shape)),
+            _ => false,
+        };
+        match &list[element] {
+            Element::Face(..) => among(element),
+            _ => {
+                let holding = &self.faces_of[element];
+                !holding.is_empty() && holding.iter().all(|&face| among(face))
+            }
+        }
     }
 
     /// Whether a foot the coarse rings put in their band is inside its

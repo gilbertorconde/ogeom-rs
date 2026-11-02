@@ -1449,6 +1449,22 @@ impl SolidBoundary {
         point: Point,
         tol: Tolerances,
     ) -> OgeomResult<Vec<Shape>> {
+        Ok(self
+            .faces_holding(model, point, tol)?
+            .into_iter()
+            .map(|(face, _)| face)
+            .collect())
+    }
+
+    /// [`SolidBoundary::faces_at`], with how each face holds `point`:
+    /// [`Containment::On`] where it lies within the band of the face's
+    /// trim, [`Containment::In`] where it lies inside the trim clear of it.
+    pub(crate) fn faces_holding(
+        &self,
+        model: &Model,
+        point: Point,
+        tol: Tolerances,
+    ) -> OgeomResult<Vec<(Shape, Containment)>> {
         let Prepared {
             faces, ring_chord, ..
         } = &*self.prepared;
@@ -1459,10 +1475,12 @@ impl SolidBoundary {
         };
         let mut on = Vec::new();
         for prepared in faces {
-            if prepared.bound.contains(point)
-                && prepared.holds(model, point, ring_deflection, tol)? != Containment::Out
-            {
-                on.push(prepared.face.clone());
+            if !prepared.bound.contains(point) {
+                continue;
+            }
+            let held = prepared.holds(model, point, ring_deflection, tol)?;
+            if held != Containment::Out {
+                on.push((prepared.face.clone(), held));
             }
         }
         Ok(on)
@@ -2120,7 +2138,7 @@ fn edge_distance(p: Point, t: [Point; 3]) -> f64 {
 }
 
 /// The distance from a point to a segment.
-fn segment_distance(p: Point, a: Point, b: Point) -> f64 {
+pub(crate) fn segment_distance(p: Point, a: Point, b: Point) -> f64 {
     let d = b - a;
     let squared = d.dot(d);
     if squared <= f64::MIN_POSITIVE {
