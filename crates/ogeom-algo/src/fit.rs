@@ -54,6 +54,7 @@ use ogeom_math::{KnotVector, Point};
 
 mod grow;
 mod primitive;
+pub(crate) mod segments;
 mod tails;
 
 pub use grow::{AnyFit, FitKind, GrowOptions, Grown, SeedReport, grow};
