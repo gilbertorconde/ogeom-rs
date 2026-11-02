@@ -13,6 +13,31 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Decimation verified both ways: `simplify(mesh, Target::Verified {
+  tolerance, share, max_triangles }, tol)`, with the measurement in
+  `Simplified::deviation: Option<Deviation { within_share,
+  distance_at_share, furthest, rms, pinned, rounds }>`.** (#590)
+  - Edges collapse cheapest first by the quadric's mean squared distance
+    to the planes merged in, within `tolerance²`, from a queue whose
+    choice is the one a scan of every edge makes, ties to the lower
+    vertex numbers.
+  - The result is then measured against the source both ways, through a
+    `Bvh`: each source vertex to the result, each result vertex and
+    triangle centre to the source. A far source vertex is pinned, or, if
+    already pinned and lost, its neighbours; a far result point pins the
+    nearest source vertex merged into it or its corners. The decimation
+    runs again from the source until at least `share` of each side is
+    within `tolerance`. Each round pins a vertex not pinned before, so it
+    ends.
+  - With `max_triangles`, a result still larger is decimated further,
+    pins released, and the deviation reported is measured on what came
+    out; `target_met` is then false if it is past the tolerance.
+  - A noisy sphere of 7080 triangles (noise σ 0.01) at 0.05 and 0.999
+    keeps 3812 in six rounds, and brute force over every point agrees
+    with the reported share, furthest point and RMS; 303 632 triangles
+    come down to 6284 in one round in 7.7 s. A closed 20 × 15 × 1 plate
+    of 5360 triangles comes down to 48, no point more than 4e-13 off.
+
 - **Offsetting an editable mesh, with folds repaired:
   `Editable::offset(distance, region) -> OffsetReport { merged, eased,
   capped, folded }`.** (#587)
@@ -135,6 +160,14 @@ bump may break the API and a patch bump may not.
   - `read_dxf_entities` now reads `TEXT` into `DxfEntities::texts`, its
     `\U+XXXX` escapes decoded; a struct literal of `DxfEntities` now
     needs the new field. `write_dxf` is unchanged, byte for byte.
+
+### Changed
+
+- **`mesh::Target` gains the `Verified` variant and `mesh::Simplified`
+  the `deviation` field.** A `match` on `Target` without a wildcard arm
+  needs the new arm, and a `Simplified` built with a struct literal needs
+  the field. `Target::Triangles` and `Target::Error` decimate exactly as
+  before, with `deviation: None`.
 
 ## [0.14.2] - 2026-11-02
 

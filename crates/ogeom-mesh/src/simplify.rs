@@ -28,11 +28,23 @@
 //! A collapse that would turn a triangle inside out is refused for the same
 //! reason: a fold is not a small error, it is a mesh that no longer bounds what
 //! it did.
+//!
+//! # Verified
+//!
+//! The quadric bounds nothing on its own: it is a sum over planes, and the
+//! nearest point of the source need not be on any of them. [`Target::Verified`]
+//! measures the result against the source both ways, pins what fails and
+//! decimates again; see [`Deviation`] for what it reports.
+
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 
 use ogeom_core::{FastMap, FastSet};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::Point;
 use ogeom_topo::Triangulation;
+
+mod verified;
 
 /// How far to decimate.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -45,6 +57,53 @@ pub enum Target {
     /// however few triangles that allows, rather than naming a count and
     /// discovering the error afterwards.
     Error(f64),
+    /// Collapse within `tolerance`, then measure the result against the
+    /// source both ways and hold whatever the measurement refuses.
+    ///
+    /// Each source vertex is measured to the result, and each result vertex
+    /// and triangle centre to the source. Where either is farther than
+    /// `tolerance`, the source vertices behind it are pinned and the
+    /// decimation is run again from the source, until at least `share` of
+    /// the points on each side are within `tolerance`. The measurement is
+    /// reported in [`Simplified::deviation`].
+    ///
+    /// With `max_triangles`, a result still larger than that is decimated
+    /// further, pins released, and the deviation reported is the one
+    /// measured on what came out, however far past `tolerance` it is.
+    Verified {
+        /// How far, as a distance, a point may be from the other mesh.
+        tolerance: f64,
+        /// The fraction of points on each side that must be within
+        /// `tolerance`, in `(0, 1]`; 0.999 is a scan's usual demand.
+        share: f64,
+        /// At most this many triangles, whatever the deviation.
+        max_triangles: Option<usize>,
+    },
+}
+
+/// The distance between a decimated mesh and its source, measured both ways.
+///
+/// The points measured are the source's vertices, against the result, and
+/// the result's vertices and triangle centres, against the source; each
+/// distance is to the nearest point on the other mesh's triangles.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Deviation {
+    /// The smaller of the two sides' fractions of points within the
+    /// tolerance.
+    pub within_share: f64,
+    /// The distance within which the asked share of points lies, on the
+    /// worse of the two sides.
+    pub distance_at_share: f64,
+    /// The point farthest from the other mesh, on either side, and its
+    /// distance.
+    pub furthest: (Point, f64),
+    /// The root mean square distance over every point measured, both sides.
+    pub rms: f64,
+    /// How many source vertices the measurement pinned, counted before a
+    /// `max_triangles` released them.
+    pub pinned: usize,
+    /// How many decimations were run, each from the source.
+    pub rounds: usize,
 }
 
 /// What decimation produced.
@@ -66,6 +125,10 @@ pub struct Simplified {
     /// then the result is as small as it can safely be rather than as small as
     /// was asked for. Reported rather than passed off as success.
     pub target_met: bool,
+    /// With [`Target::Verified`], what was measured; `None` otherwise.
+    ///
+    /// [`Simplified::error`] is then [`Deviation::furthest`]'s distance.
+    pub deviation: Option<Deviation>,
 }
 
 /// Decimate a mesh.
@@ -73,10 +136,27 @@ pub struct Simplified {
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the target is
-/// not a positive count or a positive distance, or the mesh names a vertex it
-/// does not have.
+/// not a positive count or a positive distance, a share is not in `(0, 1]`, or
+/// the mesh names a vertex it does not have;
+/// [`OgeomError::Numeric`](ogeom_core::OgeomError::Numeric) with
+/// [`Target::Verified`] if a vertex of a triangle is not finite.
 pub fn simplify(mesh: &Triangulation, target: Target, tol: Tolerances) -> OgeomResult<Simplified> {
     match target {
+        Target::Verified { tolerance, .. } if !tolerance.is_finite() || tolerance <= 0.0 => {
+            ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
+        }
+        Target::Verified { share, .. } if !(share > 0.0 && share <= 1.0) => {
+            ogeom_bail!(
+                Construction,
+                "a share of {share} is not a fraction of the points"
+            );
+        }
+        Target::Verified {
+            max_triangles: Some(0),
+            ..
+        } => {
+            ogeom_bail!(Construction, "a mesh of no triangles describes nothing");
+        }
         Target::Triangles(0) => {
             ogeom_bail!(Construction, "a mesh of no triangles describes nothing");
         }
@@ -97,15 +177,16 @@ pub fn simplify(mesh: &Triangulation, target: Target, tol: Tolerances) -> OgeomR
         }
     }
 
+    let (budget, floor) = match target {
+        Target::Error(e) => (e * e, 1),
+        Target::Triangles(n) => (f64::MAX, n),
+        Target::Verified {
+            tolerance,
+            share,
+            max_triangles,
+        } => return verified::simplify(mesh, tolerance, share, max_triangles, tol),
+    };
     let mut state = State::new(mesh, tol);
-    let budget = match target {
-        Target::Error(e) => e * e,
-        Target::Triangles(_) => f64::MAX,
-    };
-    let floor = match target {
-        Target::Triangles(n) => n,
-        Target::Error(_) => 1,
-    };
 
     let mut worst = 0.0_f64;
     let mut collapsed = 0;
@@ -122,13 +203,14 @@ pub fn simplify(mesh: &Triangulation, target: Target, tol: Tolerances) -> OgeomR
         Target::Triangles(n) => state.live_triangles() <= n,
         // Every collapse made was inside the budget, and the loop stops only
         // when no remaining one is.
-        Target::Error(_) => true,
+        Target::Error(_) | Target::Verified { .. } => true,
     };
     Ok(Simplified {
-        mesh: state.harvest(),
+        mesh: state.harvest().0,
         error: worst.max(0.0).sqrt(),
         collapsed,
         target_met,
+        deviation: None,
     })
 }
 
@@ -163,6 +245,12 @@ impl Quadric {
         }
     }
 
+    /// The total weight of the planes summed in: each plane's unit normal
+    /// puts its weight once on the diagonal.
+    fn weight(&self) -> f64 {
+        self.0[0] + self.0[4] + self.0[7]
+    }
+
     /// The squared distance this quadric assigns to a point.
     fn at(&self, p: Point) -> f64 {
         let [q00, q01, q02, q03, q11, q12, q13, q22, q23, q33] = self.0;
@@ -189,6 +277,11 @@ struct State {
     quadrics: Vec<Quadric>,
     /// Vertices that must not move: the ones on a boundary.
     pinned: FastSet<u32>,
+    /// Further vertices that must not move: the ones a verified decimation's
+    /// measurement held.
+    held: FastSet<u32>,
+    /// The vertex each vertex was merged into; itself while it survives.
+    merged_into: Vec<u32>,
     /// Which triangles touch each vertex.
     around: FastMap<u32, Vec<usize>>,
     tol: Tolerances,
@@ -242,6 +335,9 @@ impl State {
             live: vec![true; mesh.triangles.len()],
             quadrics,
             pinned,
+            held: FastSet::default(),
+            #[allow(clippy::cast_possible_truncation)]
+            merged_into: (0..mesh.positions.len() as u32).collect(),
             around,
             tol,
             remaining: mesh.triangles.len(),
@@ -349,6 +445,7 @@ impl State {
     /// Merge two vertices at a point.
     fn collapse(&mut self, from: u32, to: u32, at: Point) {
         self.positions[to as usize] = at;
+        self.merged_into[from as usize] = to;
         let mut merged = self.quadrics[from as usize];
         merged.add(&self.quadrics[to as usize]);
         self.quadrics[to as usize] = merged;
@@ -382,8 +479,9 @@ impl State {
         self.around.remove(&from);
     }
 
-    /// The surviving mesh, with unused vertices dropped.
-    fn harvest(self) -> Triangulation {
+    /// The surviving mesh, with unused vertices dropped, and each surviving
+    /// vertex's number in it.
+    fn harvest(&self) -> (Triangulation, FastMap<u32, u32>) {
         let mut out = Triangulation::new();
         let mut moved: FastMap<u32, u32> = FastMap::default();
         for (index, triangle) in self.triangles.iter().enumerate() {
@@ -420,7 +518,164 @@ impl State {
         }
         out.parameters = vec![(0.0, 0.0); out.positions.len()];
         out.deflection_met = false;
+        (out, moved)
+    }
+
+    /// The vertex a vertex of the source ended up as.
+    fn survivor(&self, mut v: u32) -> u32 {
+        while self.merged_into[v as usize] != v {
+            v = self.merged_into[v as usize];
+        }
+        v
+    }
+
+    /// Whether an edge may collapse at all.
+    fn free(&self, a: u32, b: u32) -> bool {
+        !(self.pinned.contains(&a)
+            || self.pinned.contains(&b)
+            || self.held.contains(&a)
+            || self.held.contains(&b))
+    }
+
+    /// The cost of collapsing an edge to its midpoint, as a squared distance:
+    /// the mean of the squared distances to the planes merged in, weighted as
+    /// they were summed.
+    ///
+    /// Divided by the weight so that it does not grow with the size of the
+    /// triangles, which [`Target::Verified`] needs to set a budget in the
+    /// units of its tolerance. A mean can hide one far plane, so the budget
+    /// only orders and filters; the measurement afterwards decides.
+    fn mean_cost(&self, a: u32, b: u32) -> (f64, Point) {
+        let at = Point::from_vector(
+            (self.positions[a as usize].to_vector() + self.positions[b as usize].to_vector()) * 0.5,
+        );
+        let mut merged = self.quadrics[a as usize];
+        merged.add(&self.quadrics[b as usize]);
+        let cost = merged.at(at).max(0.0);
+        let weight = merged.weight();
+        (if weight > 0.0 { cost / weight } else { cost }, at)
+    }
+
+    /// The vertices sharing a live triangle with `v`, in ascending order.
+    fn ring(&self, v: u32) -> Vec<u32> {
+        let mut out = Vec::new();
+        for index in self.around.get(&v).into_iter().flatten() {
+            if self.live[*index] {
+                out.extend(self.triangles[*index].iter().filter(|&&w| w != v));
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
         out
+    }
+
+    /// Collapse the cheapest free edge, by [`State::mean_cost`], while its
+    /// cost is within `budget` and more than `floor` triangles remain;
+    /// returns how many collapses were made.
+    ///
+    /// The choice is the one a scan of every edge would make, ties to the
+    /// lower vertex numbers, kept in a queue: a collapse changes the cost of
+    /// the edges at the merged vertex and whether the edges at its neighbours
+    /// fold, and only those are queued again, the entries before marked
+    /// stale.
+    fn decimate_queued(&mut self, budget: f64, floor: usize) -> usize {
+        let mut stamps = vec![0_u64; self.positions.len()];
+        let mut queue = BinaryHeap::new();
+        let mut seen: FastSet<(u32, u32)> = FastSet::default();
+        for (i, triangle) in self.triangles.iter().enumerate() {
+            if !self.live[i] {
+                continue;
+            }
+            for k in 0..3 {
+                let (a, b) = (triangle[k], triangle[(k + 1) % 3]);
+                let key = (a.min(b), a.max(b));
+                if seen.insert(key) && self.free(a, b) {
+                    queue.push(self.queued(key, &stamps));
+                }
+            }
+        }
+        drop(seen);
+
+        let mut collapsed = 0;
+        while self.remaining > floor {
+            let Some(Reverse(entry)) = queue.pop() else {
+                break;
+            };
+            if entry.cost > budget {
+                break;
+            }
+            let (lo, hi) = entry.edge;
+            if entry.stamps != (stamps[lo as usize], stamps[hi as usize])
+                || !self.around.contains_key(&lo)
+                || !self.around.contains_key(&hi)
+            {
+                continue;
+            }
+            let (_, at) = self.mean_cost(lo, hi);
+            if self.would_fold(hi, lo, at) {
+                continue;
+            }
+            self.collapse(hi, lo, at);
+            collapsed += 1;
+
+            let mut touched = self.ring(lo);
+            touched.push(lo);
+            for &v in &touched {
+                stamps[v as usize] += 1;
+            }
+            for &v in &touched {
+                for w in self.ring(v) {
+                    if self.free(v, w) {
+                        queue.push(self.queued((v.min(w), v.max(w)), &stamps));
+                    }
+                }
+            }
+        }
+        collapsed
+    }
+
+    fn queued(&self, edge: (u32, u32), stamps: &[u64]) -> Reverse<Queued> {
+        Reverse(Queued {
+            cost: self.mean_cost(edge.0, edge.1).0,
+            edge,
+            stamps: (stamps[edge.0 as usize], stamps[edge.1 as usize]),
+        })
+    }
+}
+
+/// An edge waiting to collapse, with its cost and its ends' stamps when it
+/// was queued.
+#[derive(Debug, Clone, Copy)]
+struct Queued {
+    cost: f64,
+    edge: (u32, u32),
+    stamps: (u64, u64),
+}
+
+impl Queued {
+    fn key(&self) -> (f64, (u32, u32), (u64, u64)) {
+        (self.cost, self.edge, self.stamps)
+    }
+}
+
+impl PartialEq for Queued {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Queued {}
+
+impl PartialOrd for Queued {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Queued {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let (a, b) = (self.key(), other.key());
+        a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2))
     }
 }
 

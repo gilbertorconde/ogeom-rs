@@ -42,7 +42,7 @@ pub use planar::{Edge2, Loop2, region};
 pub use point_index::{Neighbour, PointIndex};
 pub use section::{Chain, Section, section, sections};
 pub use shadow::shadow;
-pub use simplify::{Simplified, Target, simplify};
+pub use simplify::{Deviation, Simplified, Target, simplify};
 pub use triangulate::{
     EdgeChords, FaceMesh, FaceMeshCache, edge_chords_for, face_boundary, face_boundary_in_chart,
     face_boundary_in_chart_met, face_meshes_for, inside_boundary, inside_boundary_with,
