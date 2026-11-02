@@ -572,6 +572,21 @@ tests = [
     "crates/ogeom/tests/mesh_editable.rs::five_million_triangles_build_and_read_back",
 ]
 
+[[capability]]
+id = "mesh.boolean"
+title = "Booleans between closed meshes, and between a mesh and a meshed solid, decided exactly, coplanar faces included, new vertices rounded and flagged"
+crate = "ogeom-mesh"
+verdict = "covered"
+symbols = [
+    "ogeom_mesh::boolean", "ogeom_mesh::boolean_with_shape",
+    "ogeom_mesh::BoolKind", "ogeom_mesh::MeshBoolean",
+]
+tests = [
+    "crates/ogeom-mesh/src/boolean/tests.rs",
+    "crates/ogeom-mesh/src/boolean/tests.rs::grid_aligned_cubes_meet_in_every_degenerate_way",
+    "crates/ogeom-mesh/src/boolean/tests.rs::random_rigid_motions_balance_their_volumes",
+]
+
 # --- ogeom-hlr ------------------------------------------------------------
 
 [[capability]]

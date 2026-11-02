@@ -13,6 +13,7 @@
 //! [`planar`], and its curvature at each vertex ([`curvature()`]).
 
 pub mod attach;
+pub mod boolean;
 pub mod bvh;
 pub mod curvature;
 pub mod discretize;
@@ -27,6 +28,7 @@ mod tails;
 pub mod triangulate;
 
 pub use attach::{Tessellated, polyline_of, tessellate, triangulation_of};
+pub use boolean::{BoolKind, MeshBoolean, boolean, boolean_with_shape};
 pub use bvh::{Bvh, Hit};
 pub use curvature::{Curvature, NEIGHBOURS, curvature};
 pub use discretize::{

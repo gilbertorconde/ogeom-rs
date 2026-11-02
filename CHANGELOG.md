@@ -13,6 +13,41 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Exact booleans between closed meshes, and between a mesh and a solid:
+  `mesh::boolean(a, b, op: BoolKind) -> MeshBoolean { mesh, cut,
+  first_new_vertex, rounding }` and `mesh::boolean_with_shape(mesh,
+  model, shape, op, chord, tol)`, `BoolKind` one of `Union`,
+  `Intersection`, `Difference`.** (#588)
+  - Every decision is the exact sign of a polynomial in the input
+    coordinates. A point where an edge crosses a triangle, or two coplanar
+    edges cross, is held as the inputs that define it, and each test on it
+    runs in interval arithmetic first and in exact dyadic arithmetic where
+    the interval cannot tell. Each cut triangle is triangulated afresh in
+    its own plane with the other operand's segments as constraints; the
+    pieces are grouped into regions no segment separates, and each region
+    is classified once, by an exact winding number or, on a coplanar face,
+    by its normal against the other's.
+  - Coplanar faces follow the regularised booleans: a shared face facing
+    the same way is kept once by a union or an intersection; one facing
+    the opposite way is kept from the first operand by a difference only.
+  - The input vertices kept are not moved, first operand first; new
+    vertices follow from `first_new_vertex`, rounded to `f64` within the
+    reported `rounding` bound, and `cut` flags each triangle that is a
+    piece of a cut one.
+  - Refused by name: an operand that is open, not 2-manifold, has a
+    degenerate triangle, crosses itself or is wound inside out; operands
+    that neither touch nor hold one another; a result that would not be
+    2-manifold, where the operands touch along an edge or at a point.
+  - Two overlapping cubes give 15, 1 and 7 exactly; a cube less a sphere
+    inside it, a box less a 64-gon prism through it, stacked cubes, a cube
+    flush-cut on four planes, a mesh against itself and a prism against
+    its half-turned copy (side faces crossing at angles near 1e-16) give
+    their closed forms. Cubes on a half-unit grid meeting in every
+    degenerate way, 60 random rigid motions and 24 copies moved by 1e-15
+    to 1e-9 keep `|A ∪ B| + |A ∩ B| = |A| + |B|` to 1e-9, every result
+    closed and 2-manifold. Two spheres of 99 904 triangles each take
+    0.27 s; of 1 001 112 each, 2.8 s.
+
 - **Decimation verified both ways: `simplify(mesh, Target::Verified {
   tolerance, share, max_triangles }, tol)`, with the measurement in
   `Simplified::deviation: Option<Deviation { within_share,
