@@ -1823,6 +1823,21 @@ tests = [
 ]
 
 [[capability]]
+id = "mesh.hollow-thicken"
+title = "Hollowing a closed mesh to a wall from its exact distance field, the cavity marched on tetrahedra, decimated within a sixteenth of a cell and checked exactly strictly inside; thickening an open mesh by two offset layers walled along each rim"
+crate = "ogeom-mesh"
+verdict = "covered"
+symbols = [
+    "ogeom_mesh::hollow", "ogeom_mesh::Grid", "ogeom_mesh::Hollowed",
+    "ogeom_mesh::thicken", "ogeom_mesh::Thicken", "ogeom_mesh::Thickened",
+]
+tests = [
+    "crates/ogeom-mesh/src/hollow/tests.rs",
+    "crates/ogeom-mesh/src/hollow/tests.rs::a_ball_of_a_million_triangles_hollows_in_time",
+    "crates/ogeom-mesh/src/thicken/tests.rs",
+]
+
+[[capability]]
 id = "mesh.smoothing-curvature"
 title = "Feature-preserving smoothing of an editable mesh onto local least-squares quadrics, creases kept by normal angle, moves capped and blended into a region; mean, Gaussian and principal curvatures with their directions at each vertex of a mesh"
 crate = "ogeom-mesh"

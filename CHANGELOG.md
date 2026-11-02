@@ -13,6 +13,42 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Hollowing and thickening meshes: `mesh::hollow(mesh, wall, &Grid {
+  cell }, tol) -> Hollowed { mesh, first_cavity_triangle, shells, cell,
+  deviation }` and `mesh::thicken(mesh, distance, side: Thicken) ->
+  Thickened { mesh, front, back }`, `Thicken` one of `Inward`, `Outward`,
+  `Both`.** (#589)
+  - `hollow` samples the part's distance field on a grid a third of the
+    wall wide by default. A node is inside by the parity of the crossings
+    of the line along `x` through it, each found exactly (a line through an
+    edge or a vertex resolved by simulation of simplicity) and each placed
+    ahead or behind by the node's exact side of its plane; a node inside
+    takes its exact distance to the nearest triangle. The cavity's surface
+    is marched on six tetrahedra per cell at `-wall`, wound into the
+    cavity, and decimated with `Target::Verified` within a sixteenth of a
+    cell, every point measured.
+  - The cavity is added as a second shell, with no boolean, and the result
+    is checked exactly as `mesh::boolean` checks an operand: closed,
+    2-manifold, no degenerate triangle, no cavity triangle meeting another
+    but at shared corners, every shell wound out of the material, so each
+    cavity lies strictly inside. A decimated cavity that fails is replaced
+    by the one marched. A part's own cavities keep the wall clear of them.
+  - `thicken` offsets the sheet twice with `Editable::offset` (by the
+    distance to one side, or half to each with `Both`), winds the back
+    layer the other way, and closes each rim with a strip zipped by where
+    the layers' rim vertices came from on the sheet's rim. The result is
+    checked the same way, so layers that run into each other are refused.
+  - A cube of 15 with a wall of 2.5 holds its wall to within `h / 1024`
+    at every cavity vertex and its volume to 20 of 2375; the volume lost
+    along the inner cube's sharp edges quarters as the cell halves. A ball
+    of 6 with a wall of 1 has its cavity between radii 4.987 and 4.9995;
+    a ball 100 across of 998 000 triangles with a 2 wall gives a cavity
+    0.08 % from the closed form in 62 s, of which the field, the marching
+    and the checks take 2.5 s and the verified decimation of 583 656
+    triangles to 186 976 the rest. A thickened hemisphere of radius 10 by 1
+    is within 0.17 % of the shell's closed form on each side; a square
+    sheet is a slab of the exact volume.
+
 - **Exact booleans between closed meshes, and between a mesh and a solid:
   `mesh::boolean(a, b, op: BoolKind) -> MeshBoolean { mesh, cut,
   first_new_vertex, rounding }` and `mesh::boolean_with_shape(mesh,
@@ -195,6 +231,14 @@ bump may break the API and a patch bump may not.
   - `read_dxf_entities` now reads `TEXT` into `DxfEntities::texts`, its
     `\U+XXXX` escapes decoded; a struct literal of `DxfEntities` now
     needs the new field. `write_dxf` is unchanged, byte for byte.
+
+### Fixed
+
+- **`mesh::simplify` no longer collapses an edge whose ends share a
+  neighbour off the edge, or that would leave two faces on the same three
+  vertices.** Such a collapse put four faces on one edge, or closed two
+  faces over each other, on a mesh that was a 2-manifold; a double pyramid
+  with two close corners did so. Any other collapse is made as before.
 
 ### Changed
 

@@ -19,12 +19,14 @@ pub mod curvature;
 pub mod discretize;
 pub mod editable;
 pub mod hatch;
+pub mod hollow;
 pub mod planar;
 pub mod point_index;
 pub mod section;
 pub mod shadow;
 pub mod simplify;
 mod tails;
+pub mod thicken;
 pub mod triangulate;
 
 pub use attach::{Tessellated, polyline_of, tessellate, triangulation_of};
@@ -40,11 +42,13 @@ pub use editable::{
     OFFSET_FARTHEST, OPTIMAL_UP_TO, OffsetReport, PASSES, Rim, RimId, Side, Smooth, SmoothReport,
 };
 pub use hatch::hatch_face;
+pub use hollow::{Grid, Hollowed, hollow};
 pub use planar::{Edge2, Loop2, region};
 pub use point_index::{Neighbour, PointIndex};
 pub use section::{Chain, Section, section, sections};
 pub use shadow::shadow;
 pub use simplify::{Deviation, Simplified, Target, simplify};
+pub use thicken::{Thicken, Thickened, thicken};
 pub use triangulate::{
     EdgeChords, FaceMesh, FaceMeshCache, edge_chords_for, face_boundary, face_boundary_in_chart,
     face_boundary_in_chart_met, face_meshes_for, inside_boundary, inside_boundary_with,
