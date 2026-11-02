@@ -120,29 +120,33 @@ fn checked(mesh: &Triangulation, plane: &Plane) -> OgeomResult<()> {
 
 /// Below, in, or above the plane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Side {
+pub(crate) enum Place {
     Below,
     On,
     Above,
 }
 
-impl Side {
-    const fn up(self) -> bool {
+impl Place {
+    /// Whether the place counts as above: in the plane or past it.
+    pub(crate) const fn up(self) -> bool {
         !matches!(self, Self::Below)
     }
 }
 
 /// The plane as the side test sees it.
 #[derive(Debug, Clone, Copy)]
-struct Cutter {
+pub(crate) struct Cutter {
     origin: Point,
     normal: Vector,
+    /// Two unit directions in the plane, `u` then `v` turning
+    /// counter-clockwise about `normal`.
+    axes: [Vector; 2],
     /// Three points spanning the plane, counter-clockwise about `normal`.
     span: [[f64; 3]; 3],
 }
 
 impl Cutter {
-    fn new(plane: &Plane, offset: f64) -> Self {
+    pub(crate) fn new(plane: &Plane, offset: f64) -> Self {
         let z = plane.normal();
         let normal = z.vector();
         let origin = plane.origin() + normal * offset;
@@ -151,6 +155,7 @@ impl Cutter {
         Self {
             origin,
             normal,
+            axes: [u, v],
             span: [
                 origin.to_array(),
                 (origin + u).to_array(),
@@ -159,19 +164,62 @@ impl Cutter {
         }
     }
 
-    fn side(&self, p: Point) -> Side {
+    pub(crate) fn side(&self, p: Point) -> Place {
         let [a, b, c] = self.span;
         // Positive below: seen from below, the counter-clockwise span turns
         // clockwise.
         match Exact::orient3d(a, b, c, p.to_array()) {
-            Sign::Positive => Side::Below,
-            Sign::Zero => Side::On,
-            Sign::Negative => Side::Above,
+            Sign::Positive => Place::Below,
+            Sign::Zero => Place::On,
+            Sign::Negative => Place::Above,
         }
     }
 
     fn height(&self, p: Point) -> f64 {
         (p - self.origin).dot(self.normal)
+    }
+
+    /// Whether `p` lies within the rounding of [`Cutter::along`] of its
+    /// foot on the plane, so that the two may take the same coordinates in
+    /// it. Each coordinate of a point `origin + w` is a dot product of `w`,
+    /// rounded by at most `u`, the unit roundoff, of each of its
+    /// coordinates, with a unit axis, which adds at most
+    /// `γ₃ = 3u / (1 - 3u)` of the sum of its terms' magnitudes: altogether
+    /// within `(u + γ₃ (1 + u)) |w|₁`, under `5u |w|₁`, of the exact one.
+    /// The foot, `p` moved by its height along the normal, is taken as
+    /// within the same of `p`, at twice that.
+    pub(crate) fn near(&self, p: Point) -> bool {
+        let w = p - self.origin;
+        let l1 = w.x.abs() + w.y.abs() + w.z.abs();
+        self.height(p).abs() <= 5.0 * f64::EPSILON * l1
+    }
+
+    /// The plane's unit normal.
+    pub(crate) const fn normal(&self) -> Vector {
+        self.normal
+    }
+
+    /// Where `p`, as coordinates along the plane's two axes from its origin.
+    pub(crate) fn along(&self, p: Point) -> [f64; 2] {
+        let w = p - self.origin;
+        [w.dot(self.axes[0]), w.dot(self.axes[1])]
+    }
+
+    /// Where the edge from `low`, strictly below, to `high`, strictly
+    /// above, crosses the plane, interpolated from the lower end so that
+    /// every triangle sharing the edge computes the same bits.
+    pub(crate) fn crossing(&self, low: Point, high: Point) -> Point {
+        let (hp, hq) = (self.height(low), self.height(high));
+        // The exact sides put `low` strictly below and `high` strictly
+        // above; rounded heights a hair the wrong way are held to the edge,
+        // and two that round equal put the crossing anywhere on it, its
+        // middle as well as any.
+        let t = if hp == hq {
+            0.5
+        } else {
+            (hp / (hp - hq)).clamp(0.0, 1.0)
+        };
+        low.lerp(high, t)
     }
 }
 
@@ -210,7 +258,7 @@ enum Node {
 }
 
 fn cut(mesh: &Triangulation, cutter: &Cutter) -> Section {
-    let sides: Vec<Side> = mesh.positions.iter().map(|&p| cutter.side(p)).collect();
+    let sides: Vec<Place> = mesh.positions.iter().map(|&p| cutter.side(p)).collect();
 
     let mut segments = Vec::new();
     let mut coplanar = Vec::new();
@@ -222,7 +270,7 @@ fn cut(mesh: &Triangulation, cutter: &Cutter) -> Section {
         let s = t.map(|k| sides[k as usize]);
         let ups = s.iter().filter(|s| s.up()).count();
         if ups == 0 || ups == 3 {
-            if s.iter().all(|&s| s == Side::On) {
+            if s.iter().all(|&s| s == Place::On) {
                 coplanar.push(triangle);
             }
             continue;
@@ -331,7 +379,7 @@ fn cut(mesh: &Triangulation, cutter: &Cutter) -> Section {
 fn chain(
     mesh: &Triangulation,
     cutter: &Cutter,
-    sides: &[Side],
+    sides: &[Place],
     segments: &[Segment],
     run: &[usize],
     closed: bool,
@@ -339,7 +387,7 @@ fn chain(
     let node = |edge: Edge| {
         let [a, b] = edge;
         let up = if sides[a as usize].up() { a } else { b };
-        if sides[up as usize] == Side::On {
+        if sides[up as usize] == Place::On {
             Node::Vertex(up)
         } else {
             Node::Edge(edge)
@@ -451,10 +499,8 @@ fn in_plane(mesh: &Triangulation, cutter: &Cutter, triangle: u32) -> Vector {
     n - cutter.normal * n.dot(cutter.normal)
 }
 
-/// Where a node lies: the vertex itself, or the crossing on the edge,
-/// interpolated from the lower end so that every triangle sharing the edge
-/// computes the same bits.
-fn point(mesh: &Triangulation, cutter: &Cutter, sides: &[Side], node: Node) -> Point {
+/// Where a node lies: the vertex itself, or the crossing on the edge.
+fn point(mesh: &Triangulation, cutter: &Cutter, sides: &[Place], node: Node) -> Point {
     match node {
         Node::Vertex(v) => mesh.positions[v as usize],
         Node::Edge(edge) => {
@@ -464,18 +510,7 @@ fn point(mesh: &Triangulation, cutter: &Cutter, sides: &[Side], node: Node) -> P
             } else {
                 (a, b)
             };
-            let (p, q) = (mesh.positions[low as usize], mesh.positions[high as usize]);
-            let (hp, hq) = (cutter.height(p), cutter.height(q));
-            // The exact sides put `p` strictly below and `q` strictly above;
-            // rounded heights a hair the wrong way are held to the edge, and
-            // two that round equal put the crossing anywhere on it, its
-            // middle as well as any.
-            let t = if hp == hq {
-                0.5
-            } else {
-                (hp / (hp - hq)).clamp(0.0, 1.0)
-            };
-            p.lerp(q, t)
+            cutter.crossing(mesh.positions[low as usize], mesh.positions[high as usize])
         }
     }
 }

@@ -35,6 +35,27 @@ bump may break the API and a patch bump may not.
     the source vertex it came from.
   - Five million triangles build in 0.5 s of processor time on one
     thread, welded in 1.7 s, and read back in 26 ms.
+- **A plane cut of an editable mesh, capped flat: `Editable::cut(plane,
+  keep, cap)`.** (#584)
+  - Each vertex's side is `mesh::section`'s exact one, a vertex in the
+    plane counting as above. Faces the plane crosses are clipped to the
+    kept side, every crossed edge cut at one vertex its faces share, at the
+    point the section puts there to the bit. A vertex within rounding of
+    the plane is snapped onto it rather than crowded by new vertices.
+  - With `Some(Cap { bridge })`, the rim's loops in the plane are capped
+    together by a constrained Delaunay triangulation of their own vertices,
+    keeping the faces the loops wind about once: discs, rings, and caps
+    within rings for nested shells, wound outward and sharing every rim
+    edge, so a closed mesh cut and capped is closed. Runs of rim that leave
+    the plane are joined end to start across gaps up to `bridge`.
+  - A loop that cannot be capped soundly, its points landing on one
+    another in the plane, its edges crossing, or its winding not once
+    inside and nowhere outside, as where bodies overlap, is left open. The
+    `CutReport` counts the loops capped, the bridges drawn and the stretches
+    left open.
+  - Kept vertices keep their numbers and `source_vertex`; cut vertices
+    report none. Five million triangles cut and capped in 0.6 s of
+    processor time.
 
 ## [0.14.1] - 2026-11-02
 

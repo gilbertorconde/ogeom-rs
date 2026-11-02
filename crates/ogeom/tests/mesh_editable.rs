@@ -1,5 +1,5 @@
-//! A scan-sized mesh held for editing: built, read back, and a patch cut
-//! out of it.
+//! A scan-sized mesh held for editing: built, read back, a patch cut out
+//! of it, and the whole cut by a plane and capped.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 #[path = "support/cpu_time.rs"]
@@ -9,8 +9,9 @@ use cpu_time::cpu_time;
 use core::f64::consts::TAU;
 use std::time::Duration;
 
-use ogeom::math::Point;
-use ogeom::mesh::Editable;
+use ogeom::core::Tolerances;
+use ogeom::math::{Direction, Plane, Point, Vector};
+use ogeom::mesh::{Cap, CutReport, Editable, Side};
 use ogeom::topo::Triangulation;
 
 /// A torus about the `z` axis, `rings` by `sides` quads, two triangles each.
@@ -74,4 +75,32 @@ fn five_million_triangles_build_and_read_back() {
     assert!(built < Duration::from_secs(5), "{built:?} to build");
     assert!(read < Duration::from_secs(1), "{read:?} to read back");
     assert!(weld < Duration::from_secs(17), "{weld:?} to weld and build");
+}
+
+/// Five million triangles cut across the tube by a plane and capped in
+/// under six seconds of processor time: the cut through the tube's top
+/// half is two loops, an inner and an outer, capped as one ring, and the
+/// part below is closed.
+#[test]
+#[ignore = "heavy"]
+fn five_million_triangles_cut_and_capped() {
+    let mesh = torus(10.0, 3.0, 2500, 1000);
+    let mut e = Editable::from(&mesh, 0.0).unwrap();
+    let normal = Direction::new(Vector::new(0.0, 0.05, 1.0), Tolerances::millimetres()).unwrap();
+    let plane = Plane::through(Point::new(0.0, 0.0, 1.0), normal);
+    let (report, took) = cpu_time(|| {
+        e.cut(&plane, Side::Below, Some(Cap { bridge: 0.0 }))
+            .unwrap()
+    });
+    eprintln!("5M triangles cut and capped: {took:?}");
+    assert_eq!(
+        report,
+        CutReport {
+            capped_loops: 2,
+            ..CutReport::default()
+        }
+    );
+    assert!(e.is_closed());
+    assert_eq!(e.components().len(), 1);
+    assert!(took < Duration::from_secs(6), "{took:?} to cut and cap");
 }

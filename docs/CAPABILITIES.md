@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 90 |
+| `covered` | 91 |
 | `partial` | 8 |
 | `divergent` | 6 |
 
-104 capabilities. Ratchet: `unreviewed_max = 0`.
+105 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -270,6 +270,7 @@ reference in a deck read from text.
 
 - **mesh.editing**: Editing triangulations: half-edges with stable numbers and source vertices, components, rims, face removal and flips, non-manifold input split and reported, welding, decimation · `covered`
 - **mesh.hatching**: Hatching faces: iso and free-direction line families clipped to the trim · `covered`
+- **mesh.plane-cut**: Cutting an editable mesh by a plane with the section's exact side test, and capping the cut flat and watertight: discs, rings and nested caps, rim gaps bridged within a distance, the rest reported open · `covered`
 - **mesh.section**: Sections of a triangle mesh by a plane or a stack of planes: polylines welded through shared edges, carrying the material side, with exact side tests and non-manifold edges reported · `covered`
 - **mesh.shadow**: The shadow of a triangle mesh on a plane, holes kept, and the regions of weighted planar chains, traced with exact integer tests and snap rounding · `covered`
 - **mesh.spatial-index**: Spatial indexes over meshes and point clouds: nearest point, ball and ray queries, batched in parallel, equal to brute force · `covered`
@@ -299,4 +300,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 730d3fe4c5d1b0a6 -->
+<!-- ledger-checksum: b945142645fb7467 -->
