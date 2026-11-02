@@ -335,7 +335,7 @@ pub(super) enum Kind {
 }
 
 impl Kind {
-    const fn name(self) -> &'static str {
+    pub(super) const fn name(self) -> &'static str {
         match self {
             Self::Plane => "plane",
             Self::Line3 => "line",
@@ -581,6 +581,52 @@ impl Model {
         Self::sided(Kind::Torus, state, fit)
     }
 
+    /// A circle in space: its residual is the distance to the circle,
+    /// signed by the side of the cylinder through it.
+    pub(super) fn circle3(fit: &Fit<Circle>) -> Self {
+        let c = &fit.shape;
+        let state = State {
+            radius: c.radius(),
+            ..State::about(c.centre(), c.frame().z())
+        };
+        Self::sided(Kind::Circle3, state, fit)
+    }
+
+    /// A line in space: its residual is the distance to the line, which
+    /// has no side.
+    pub(super) fn line3(fit: &Fit<Axis>) -> Self {
+        Self {
+            kind: Kind::Line3,
+            state: State::about(fit.shape.location, fit.shape.direction),
+            sense: 1.0,
+            oriented: false,
+            free: [false; PARAMETERS],
+            spread: [[0.0; PARAMETERS]; PARAMETERS],
+        }
+    }
+
+    /// How many distances each point's residual combines: two for a curve
+    /// in space, which a point misses in two directions, one for a
+    /// surface.
+    pub(super) const fn components(&self) -> usize {
+        match self.kind {
+            Kind::Line3 => 2,
+            kind => kind.components(),
+        }
+    }
+
+    /// The most the residual at `p` moves when each coordinate moves by at
+    /// most the matching coordinate of `half`: along a surface's normal,
+    /// the box's extent there; for a curve in space, whose residual grows
+    /// in a direction its nearest point decides, the box's half diagonal.
+    pub(super) fn moved_by(&self, p: Point, half: Vector) -> f64 {
+        if self.components() == 2 {
+            return half.magnitude();
+        }
+        let n = self.normal(p);
+        n.x.abs() * half.x + n.y.abs() * half.y + n.z.abs() * half.z
+    }
+
     /// The point's residual, signed as the fit's residuals are.
     pub(super) fn residual(&self, p: Point) -> f64 {
         self.sense * residual(self.kind, &self.state, p)
@@ -616,6 +662,14 @@ impl Model {
             let tilt = fixed.direction.is_none();
             on[TILT[0]] = tilt;
             on[TILT[1]] = tilt;
+            on
+        } else if self.kind == Kind::Line3 {
+            let mut on = [false; PARAMETERS];
+            let tilt = fixed.direction.is_none();
+            on[TILT[0]] = tilt;
+            on[TILT[1]] = tilt;
+            on[ACROSS[0]] = true;
+            on[ACROSS[1]] = true;
             on
         } else {
             free(self.kind, fixed)
@@ -685,19 +739,33 @@ impl Model {
         sum
     }
 
-    /// A point's distances and their derivatives, a plane's included: its
-    /// point moved along its normal and its normal tilted.
+    /// A point's distances and their derivatives, a plane's and a line's
+    /// included: a plane's point moved along its normal and its normal
+    /// tilted; a line's offsets across it, each moved by its point moved
+    /// that way and by its direction tilted that way.
     fn rows(&self, frame: [Vector; 3], p: Point) -> ([(f64, [f64; PARAMETERS]); 2], usize) {
-        if self.kind != Kind::Plane {
-            return distances(self.kind, &self.state, frame, p);
-        }
         let [e1, e2, a] = frame;
         let w = p - self.state.origin;
-        let mut d = [0.0; PARAMETERS];
-        d[TILT[0]] = w.dot(e1);
-        d[TILT[1]] = w.dot(e2);
-        d[ALONG] = -1.0;
-        ([(w.dot(a), d), (0.0, [0.0; PARAMETERS])], 1)
+        match self.kind {
+            Kind::Plane => {
+                let mut d = [0.0; PARAMETERS];
+                d[TILT[0]] = w.dot(e1);
+                d[TILT[1]] = w.dot(e2);
+                d[ALONG] = -1.0;
+                ([(w.dot(a), d), (0.0, [0.0; PARAMETERS])], 1)
+            }
+            Kind::Line3 => {
+                let h = w.dot(a);
+                let mut out = [(0.0, [0.0; PARAMETERS]); 2];
+                for (i, e) in [e1, e2].into_iter().enumerate() {
+                    out[i].0 = w.dot(e);
+                    out[i].1[TILT[i]] = -h;
+                    out[i].1[ACROSS[i]] = -1.0;
+                }
+                (out, 2)
+            }
+            _ => distances(self.kind, &self.state, frame, p),
+        }
     }
 }
 
@@ -1040,9 +1108,9 @@ fn outward(kind: Kind, state: &State, p: Point) -> Vector {
     };
     match kind {
         Kind::Plane => a,
-        Kind::Sphere | Kind::Circle2 | Kind::Line3 => unit(w),
+        Kind::Sphere | Kind::Circle2 => unit(w),
         Kind::Line2 => Vector::new(-a.y, a.x, 0.0),
-        Kind::Cylinder | Kind::Circle3 => unit(q),
+        Kind::Line3 | Kind::Cylinder | Kind::Circle3 => unit(q),
         Kind::Cone => {
             let (s, c) = state.second.sin_cos();
             unit(q) * c - a * s
@@ -1897,6 +1965,44 @@ mod tests {
         for p in [Point::new(9.0, -4.0, 0.2), Point::new(2.1, 2.2, 0.0)] {
             let (u, v) = across(p);
             let closed = 1.0 / count + (c * u * u - 2.0 * b * u * v + a * v * v) / det;
+            let got = model.leverage(p);
+            assert!(
+                (got - closed).abs() <= 1e-12 * closed,
+                "{got} against {closed}"
+            );
+        }
+    }
+
+    /// A line's leverage at a point is the closed form of linear least
+    /// squares, once for each of the two directions across it: `1/n` for
+    /// its offset and `s² / S` for its tilt, `s` the point's height along
+    /// it from the centroid and `S` the points' scatter along it.
+    #[test]
+    #[allow(clippy::cast_precision_loss, reason = "a few points")]
+    fn a_lines_leverage_is_the_closed_form() {
+        let points: Vec<Point> = (0..11)
+            .map(|i| {
+                let t = f64::from(i) * 0.9 - 2.0;
+                let wobble = 0.01 * f64::from((i * 3) % 7) - 0.03;
+                Point::new(1.0 + 0.6 * t, -2.0 + 0.8 * t + wobble, 0.5 - wobble)
+            })
+            .collect();
+        let fit = line3(&points, &FitOptions::default(), T).unwrap();
+        let model = Model::line3(&fit).measured_over(&points, &fit.used, &FitFixed::default());
+        assert_eq!(model.parameters(), 4);
+        assert_eq!(model.components(), 2);
+
+        let d = fit.shape.direction.vector();
+        let count = points.len() as f64;
+        let centroid = points
+            .iter()
+            .fold(Vector::ZERO, |sum, p| sum + p.to_vector())
+            / count;
+        let along = |p: Point| (p.to_vector() - centroid).dot(d);
+        let scatter: f64 = points.iter().map(|p| along(*p).powi(2)).sum();
+        for p in [Point::new(9.0, -4.0, 0.2), Point::new(1.1, -1.9, 0.6)] {
+            let s = along(p);
+            let closed = 2.0 * (1.0 / count + s * s / scatter);
             let got = model.leverage(p);
             assert!(
                 (got - closed).abs() <= 1e-12 * closed,

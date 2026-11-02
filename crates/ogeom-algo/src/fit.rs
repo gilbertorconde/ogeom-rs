@@ -44,7 +44,9 @@
 //!
 //! On a mesh, which points belong to the surface is itself the question:
 //! [`grow`] takes clicks on a surface, grows the region of the mesh a kind
-//! of surface covers around them, and fits it.
+//! of surface covers around them, and fits it. For a circle or a line it
+//! traces the crease nearest the click instead, along edges where the
+//! surface turns sharply: a bore's rim, a box's edge.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::BSplineCurve;

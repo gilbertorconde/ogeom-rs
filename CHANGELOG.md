@@ -13,6 +13,36 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A rim circle or a crease line traced from a click: `FitKind::Circle3`
+  and `FitKind::Line3` in `ogeom_algo::fit::grow`.** (#616)
+  - A crease edge is one two triangles share across which their normals
+    turn by more than `GrowOptions::crease_limit`, π/6 by default. The seed
+    reaches the crease edges bounding the smooth part of the surface it
+    lies on, and the chain starts at the nearest of them that runs over
+    twice the vertices the fit needs, so an edge the noise alone turned
+    past the limit is passed over. A seed with no such chain about it is
+    refused as lying on a smooth part, or with the fit's own refusal.
+  - The chain runs both ways, refitted as it doubles, through each vertex
+    along the one crease edge whose far vertex lies within the gate
+    `grow` uses, its single-precision floor included; where none does, or
+    several do, that end stops. A rim closes round; a box's edge stops at
+    both corners.
+  - The answer is a `Grown` with no triangles, its `vertices` the chain's
+    in order along it, and its fit `AnyFit::Circle(Fit<Circle>)` or
+    `AnyFit::Line(Fit<Axis>)`. A circle's side comes from the vertices'
+    normals, so a bore's rim reads `Side::Outside`.
+  - The gate counts the two directions a point misses a curve in space by:
+    `c n − p` degrees of freedom with `c = 2`, and the half diagonal of a
+    vertex's rounding as its own floor. A line's leverage is its closed
+    form.
+  - A bore rim of 128 vertices on a plate with 0.02 mm of noise fits its
+    radius to 3.4e-3 and its centre to 3.7e-3, within 4σ/√n = 7.1e-3; a
+    box edge of 21 vertices stops at both corners, 6.3e-3 off and 2.0e-3
+    rad from the truth, within 2.5e-2 and 8.6e-3. Noise-free in `f32`, the
+    rim and the edge trace whole at every placement tried, 200 of them;
+    without the floor an edge stopped four vertices in. Every answer is
+    the same at any thread count.
+
 - **Wall thickness by rays or by medial balls, on meshes and B-reps:
   `ogeom_algo::thickness`.**
   - `thickness(target, points, normals, &Thickness)` measures at each point
@@ -90,6 +120,14 @@ bump may break the API and a patch bump may not.
     its tube encloses the prism on its two polygons to 1e-9.
   - Every corpus solid whose shells close meshes closed at chord 0.01,
     with no triangle without area.
+
+### Changed
+
+- **`fit::FitKind` and `fit::AnyFit` are `#[non_exhaustive]`, and
+  `GrowOptions` gains `crease_limit`.** A `match` on either enum needs a
+  wildcard arm, and a `GrowOptions` built with a full struct literal needs
+  the new field; one built with `..GrowOptions::default()` is unchanged.
+  Every region grown before grows the same.
 
 ### Fixed
 
