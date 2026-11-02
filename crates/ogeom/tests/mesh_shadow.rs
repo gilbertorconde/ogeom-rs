@@ -478,10 +478,9 @@ fn a_million_triangle_torus_casts_a_ring() {
     let area: f64 = loops.iter().map(Loop2::area).sum();
     let ring = core::f64::consts::PI * (13.0f64.powi(2) - 7.0f64.powi(2));
     assert!((area - ring).abs() < 1e-3 * ring, "{area} against {ring}");
-    assert!(
-        took < Duration::from_millis(500),
-        "{took:?} of processor time"
-    );
+    // Under 0.2 s on the development machine; the bound leaves room for a
+    // shared CI runner several times slower.
+    assert!(took < Duration::from_secs(2), "{took:?} of processor time");
 
     let tilted = Plane::through(
         Point::ORIGIN,
