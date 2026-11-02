@@ -716,6 +716,20 @@ tests = [
 ]
 
 [[capability]]
+id = "algo.fit-segments-2d"
+title = "The fewest lines and tangent or cornered arcs fitted to a 2D polyline, open or closed, every input point within a hard tolerance of its piece"
+crate = "ogeom-algo"
+verdict = "covered"
+symbols = [
+    "ogeom_algo::fit_segments_2d", "ogeom_algo::Segments",
+    "ogeom_algo::Segment2",
+]
+tests = [
+    "crates/ogeom-algo/tests/fit_segments_2d.rs",
+    "crates/ogeom-algo/src/fit/segments.rs",
+]
+
+[[capability]]
 id = "algo.mesh-orientation"
 title = "Face directions, axes of revolution, principal frames and open rims of a mesh"
 crate = "ogeom-algo"
