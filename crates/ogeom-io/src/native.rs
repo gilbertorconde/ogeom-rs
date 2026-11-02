@@ -1246,6 +1246,38 @@ pub fn write_document(
         }
         emit(&mut out, &t);
     }
+    for item in document.construction() {
+        let mut t = Tokens::default();
+        w(&mut t, "doc-construction");
+        u(&mut t, document.product_index(item.product) as u64);
+        text(&mut t, &item.name);
+        match &item.geometry {
+            ogeom_doc::ConstructionGeometry::Point(p) => {
+                w(&mut t, "point");
+                point(&mut t, *p);
+            }
+            ogeom_doc::ConstructionGeometry::Axis(f) => {
+                w(&mut t, "axis");
+                frame(&mut t, f);
+            }
+            ogeom_doc::ConstructionGeometry::Curve { curve: c, range: r } => {
+                w(&mut t, "curve");
+                range(&mut t, *r);
+                curve(&mut t, c)?;
+            }
+            ogeom_doc::ConstructionGeometry::Surface {
+                surface: s,
+                u: a,
+                v: b,
+            } => {
+                w(&mut t, "surface");
+                range(&mut t, *a);
+                range(&mut t, *b);
+                surface(&mut t, s)?;
+            }
+        }
+        emit(&mut out, &t);
+    }
 
     // The attribute layer: properties, materials, layers, validation:
     // shape-keyed maps in key order, lists in id order, so writing what
@@ -1655,6 +1687,42 @@ pub fn read_document(text: &str) -> OgeomResult<ogeom_doc::Document> {
                     text: text_body,
                     product,
                 });
+            }
+            "doc-construction" => {
+                let index = cursor.count()?;
+                let name = read_text(&mut cursor)?;
+                let tol = Tolerances::millimetres();
+                let geometry = match cursor.word()? {
+                    "point" => ogeom_doc::ConstructionGeometry::Point(cursor.point()?),
+                    "axis" => ogeom_doc::ConstructionGeometry::Axis(cursor.frame(tol)?),
+                    "curve" => {
+                        let range = cursor.range()?;
+                        ogeom_doc::ConstructionGeometry::Curve {
+                            range,
+                            curve: cursor.curve(tol)?,
+                        }
+                    }
+                    "surface" => {
+                        let u = cursor.range()?;
+                        let v = cursor.range()?;
+                        ogeom_doc::ConstructionGeometry::Surface {
+                            u,
+                            v,
+                            surface: cursor.surface(tol)?,
+                        }
+                    }
+                    other => ogeom_bail!(
+                        Construction,
+                        "a construction item is a point, axis, curve or surface, not `{other}`"
+                    ),
+                };
+                let Some(&product) = ids.get(index) else {
+                    ogeom_bail!(
+                        Dangling,
+                        "a construction item names a product not in the file"
+                    );
+                };
+                document.add_construction(product, name, geometry)?;
             }
             other => ogeom_bail!(Construction, "unknown record `{other}`"),
         }

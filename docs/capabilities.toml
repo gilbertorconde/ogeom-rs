@@ -1767,7 +1767,7 @@ tests = ["crates/ogeom/tests/hatch.rs"]
 
 [[capability]]
 id = "io.step"
-title = "STEP, both directions: solids and sheets, assemblies, colours, validation properties, semantic and presentation PMI"
+title = "STEP, both directions: solids and sheets, construction geometry, assemblies, colours, validation properties, semantic and presentation PMI"
 crate = "ogeom-io"
 verdict = "covered"
 symbols = ["ogeom_io::read_step", "ogeom_io::write_step", "ogeom_io::StepImport", "ogeom_io::StepReport"]
@@ -1779,6 +1779,7 @@ tests = [
     "crates/ogeom/tests/step_geometry_kinds.rs",
     "crates/ogeom/tests/step_surface_curves.rs",
     "crates/ogeom-io/tests/sheet_export.rs",
+    "crates/ogeom-io/tests/step_construction.rs",
 ]
 
 [[capability]]

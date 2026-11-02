@@ -1,4 +1,5 @@
-//! Writing STEP: the document's products, assemblies, colours and B-rep.
+//! Writing STEP: the document's products, assemblies, colours, B-rep and
+//! construction geometry.
 //!
 //! The mirror of the reader, and deliberately written against the same
 //! vocabulary: every entity this writer emits is one the reader parses, so
@@ -26,6 +27,8 @@
 use ogeom_core::FastMap;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_doc::{Document, ProductId, ProductKind};
+use ogeom_geom::Curve3d as _;
+use ogeom_geom::Surface as _;
 use ogeom_geom::Transformable as _;
 use ogeom_geom::{Curve, PlanarCurve, SurfaceGeometry};
 use ogeom_math::{Frame, Handedness, Point, Point2, Transform, Vector};
@@ -40,6 +43,10 @@ use std::fmt::Write as _;
 /// their sheets (shells no solid owns, faces no shell owns) as
 /// `SHELL_BASED_SURFACE_MODEL`s in a `MANIFOLD_SURFACE_SHAPE_REPRESENTATION`;
 /// a part holding both carries both representations, related to each other.
+/// A product's construction geometry goes in a geometrically bounded
+/// wireframe representation (a surface among it: a geometrically bounded
+/// surface one) related to the product's, each item named; a part holding
+/// construction geometry and no body is that representation alone.
 /// Assemblies become usage occurrences with their placements; colours
 /// become styled items over the written solids, sheets and faces (a fill
 /// style) and edges (a curve style). PMI anchors to the written faces and
@@ -50,7 +57,7 @@ use std::fmt::Write as _;
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a
 /// shape's structure cannot be expressed: a non-rigid instance placement, a
 /// solid with no shell, a part holding wireframe (a wire, edge or vertex
-/// outside every face) or nothing at all.
+/// outside every face) or nothing at all, a left-handed construction axis.
 pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
     NON_FINITE.with(|seen| seen.set(false));
     let mut writer = Writer {
@@ -102,10 +109,16 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
         pd_of.insert(id, pd);
 
         let world = writer.frame(&Frame::WORLD);
+        let construction: Vec<&ogeom_doc::Construction> = document.construction_of(id).collect();
         let written_before = (writer.written_nodes.len(), writer.written_edges.len());
         let sr = match &product.kind {
             ProductKind::Part { shape } => {
-                let bodies = crate::bodies::bodies_of(writer.model, shape, "STEP", false)?;
+                // A part carrying construction geometry may hold no body.
+                let bodies = if construction.is_empty() {
+                    crate::bodies::bodies_of(writer.model, shape, "STEP", false)?
+                } else {
+                    crate::bodies::bodies_within(writer.model, shape, "STEP", false)?
+                };
                 let mut solids = vec![world];
                 for solid in &bodies.solids {
                     solids.push(writer.solid(solid)?);
@@ -132,7 +145,8 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
                         "MANIFOLD_SURFACE_SHAPE_REPRESENTATION('{name}',({list}),#{gctx})"
                     ))
                 });
-                match (brep, surface) {
+                let geometric = writer.construction(&construction, &name, gctx)?;
+                let sr = match (brep, surface) {
                     (Some(brep), Some(surface)) => {
                         writer.entity(format!(
                             "SHAPE_REPRESENTATION_RELATIONSHIP('','',#{brep},#{surface})"
@@ -140,14 +154,30 @@ pub fn write_step(document: &Document, tol: Tolerances) -> OgeomResult<String> {
                         brep
                     }
                     (Some(only), None) | (None, Some(only)) => only,
-                    (None, None) => ogeom_bail!(
-                        Construction,
-                        "a part's shape holds no solid, shell or face to write as STEP"
-                    ),
+                    (None, None) => match geometric {
+                        Some(only) => only,
+                        None => ogeom_bail!(
+                            Construction,
+                            "a part's shape holds no solid, shell or face to write as STEP"
+                        ),
+                    },
+                };
+                if let Some(geometric) = geometric.filter(|&g| g != sr) {
+                    writer.entity(format!(
+                        "SHAPE_REPRESENTATION_RELATIONSHIP('','',#{sr},#{geometric})"
+                    ));
                 }
+                sr
             }
             ProductKind::Assembly { .. } => {
-                writer.entity(format!("SHAPE_REPRESENTATION('{name}',(#{world}),#{gctx})"))
+                let sr =
+                    writer.entity(format!("SHAPE_REPRESENTATION('{name}',(#{world}),#{gctx})"));
+                if let Some(geometric) = writer.construction(&construction, &name, gctx)? {
+                    writer.entity(format!(
+                        "SHAPE_REPRESENTATION_RELATIONSHIP('','',#{sr},#{geometric})"
+                    ));
+                }
+                sr
             }
         };
         sr_of.insert(id, sr);
@@ -1106,6 +1136,134 @@ impl Writer<'_> {
                 "B_SPLINE_SURFACE_WITH_KNOTS('',{u_deg},{v_deg},({grid_text}),.UNSPECIFIED.,.F.,.F.,.F.,({um}),({vm}),({uk}),({vk}),.UNSPECIFIED.)"
             )))
         }
+    }
+
+    /// A product's construction geometry as one representation, `None` when
+    /// it has none: its points and curves in a `GEOMETRIC_CURVE_SET` of a
+    /// `GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION`, or, where it
+    /// carries a surface, everything in a `GEOMETRIC_SET` of a
+    /// `GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_REPRESENTATION`; its axes as
+    /// items of the representation itself. Every item carries its name.
+    fn construction(
+        &mut self,
+        items: &[&ogeom_doc::Construction],
+        name: &str,
+        gctx: u64,
+    ) -> OgeomResult<Option<u64>> {
+        use ogeom_doc::ConstructionGeometry as G;
+        if items.is_empty() {
+            return Ok(None);
+        }
+        let mut elements = Vec::new();
+        let mut axes = Vec::new();
+        let mut surfaces = false;
+        for item in items {
+            let label = escape(&item.name);
+            match &item.geometry {
+                G::Point(p) => elements.push(self.entity(format!(
+                    "CARTESIAN_POINT('{label}',({},{},{}))",
+                    real(p.x),
+                    real(p.y),
+                    real(p.z)
+                ))),
+                G::Axis(frame) => {
+                    if frame.handedness() == Handedness::Left {
+                        ogeom_bail!(
+                            Construction,
+                            "construction axis '{}' is left-handed; an axis placement \
+                             states a right-handed frame",
+                            item.name
+                        );
+                    }
+                    let origin = self.point(frame.origin());
+                    let z = self.direction(frame.z().vector());
+                    let x = self.direction(frame.x().vector());
+                    axes.push(
+                        self.entity(format!("AXIS2_PLACEMENT_3D('{label}',#{origin},#{z},#{x})")),
+                    );
+                }
+                G::Curve { curve, range } => {
+                    elements.push(self.construction_curve(curve, *range, &label)?);
+                }
+                G::Surface { surface, u, v } => {
+                    surfaces = true;
+                    elements.push(self.construction_surface(surface, *u, *v, &label)?);
+                }
+            }
+        }
+        let (set, representation) = if surfaces {
+            (
+                "GEOMETRIC_SET",
+                "GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_REPRESENTATION",
+            )
+        } else {
+            (
+                "GEOMETRIC_CURVE_SET",
+                "GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION",
+            )
+        };
+        let mut members = Vec::with_capacity(axes.len() + 1);
+        if !elements.is_empty() {
+            let list = reference_list(&elements);
+            members.push(self.entity(format!("{set}('',({list}))")));
+        }
+        members.extend(axes);
+        let list = reference_list(&members);
+        Ok(Some(self.entity(format!(
+            "{representation}('{name}',({list}),#{gctx})"
+        ))))
+    }
+
+    /// A construction curve as a `TRIMMED_CURVE` over its range of the
+    /// curve written as an edge's would be, trimmed at its end points, and
+    /// at its parameters too where the file states the curve's own.
+    fn construction_curve(
+        &mut self,
+        curve: &Curve,
+        (t0, t1): (f64, f64),
+        label: &str,
+    ) -> OgeomResult<u64> {
+        let basis = self.curve(curve, (t0, t1))?;
+        let (p0, p1) = (curve.point_at(t0, self.tol)?, curve.point_at(t1, self.tol)?);
+        let (p0, p1) = (self.point(p0), self.point(p1));
+        let text = if curve_states_parameter(curve) {
+            format!(
+                "TRIMMED_CURVE('{label}',#{basis},(#{p0},PARAMETER_VALUE({})),(#{p1},PARAMETER_VALUE({})),.T.,.PARAMETER.)",
+                real(t0),
+                real(t1)
+            )
+        } else {
+            format!("TRIMMED_CURVE('{label}',#{basis},(#{p0}),(#{p1}),.T.,.CARTESIAN.)")
+        };
+        Ok(self.entity(text))
+    }
+
+    /// A construction surface as a `RECTANGULAR_TRIMMED_SURFACE`: over its
+    /// window of the surface as a face's would be written, where the file
+    /// states the surface's own parameters; else over the whole of the
+    /// exact spline patch of that window.
+    fn construction_surface(
+        &mut self,
+        surface: &SurfaceGeometry,
+        u: (f64, f64),
+        v: (f64, f64),
+        label: &str,
+    ) -> OgeomResult<u64> {
+        let (basis, u, v) = if surface_states_parameters(surface) {
+            (self.surface(surface)?, u, v)
+        } else {
+            let window = ogeom_geom::TrimmedSurface::new(surface.clone(), u, v, self.tol)?;
+            let patch = SurfaceGeometry::Trimmed(Box::new(window)).to_bspline(self.tol)?;
+            let (u, v) = patch.domain();
+            (self.bspline_surface(&patch)?, u, v)
+        };
+        Ok(self.entity(format!(
+            "RECTANGULAR_TRIMMED_SURFACE('{label}',#{basis},{},{},{},{},.T.,.T.)",
+            real(u.0),
+            real(u.1),
+            real(v.0),
+            real(v.1)
+        )))
     }
 
     /// The document's PMI, written over the aspects of the anchor part.

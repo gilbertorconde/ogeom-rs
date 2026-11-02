@@ -9,7 +9,9 @@
 //! what lets a closed shell close. Edge ranges are re-derived on this
 //! kernel's own parameterizations from the vertex geometry, because STEP's
 //! parameterizations are its own business and carrying them over blind is
-//! how off-by-a-period bugs are born.
+//! how off-by-a-period bugs are born. Geometric sets in geometrically
+//! bounded representations are construction geometry: named items with no
+//! topology, kept on the document under their product.
 //!
 //! What the reader does not understand it *counts*: every instance never
 //! visited lands in the report's skipped table by keyword, and every
@@ -25,6 +27,7 @@ use ogeom_algo::{
 };
 use ogeom_core::{FastMap, FastSet};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
+use ogeom_doc::ConstructionGeometry;
 use ogeom_geom::Curve2d as _;
 use ogeom_geom::Curve3d as _;
 use ogeom_geom::Surface as _;
@@ -118,7 +121,7 @@ pub struct UntrimmedFace {
 #[derive(Debug)]
 pub struct StepImport {
     /// The document everything was built into: the model, plus the file's
-    /// product structure, names and colours.
+    /// product structure, names, colours and construction geometry.
     pub document: ogeom_doc::Document,
     /// One shape per `MANIFOLD_SOLID_BREP` (`BREP_WITH_VOIDS` included,
     /// its cavities among its shells), in file order.
@@ -137,11 +140,15 @@ pub struct StepImport {
 
 /// Read a STEP exchange file's B-rep content.
 ///
+/// The geometric sets and axes of its geometrically bounded wireframe and
+/// surface representations read as construction geometry, named, under the
+/// product each representation belongs to.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the file does
-/// not parse, contains no solid, or a solid's structure is broken in a way
-/// topology cannot represent. Faces the reader cannot complete become
+/// not parse, contains no solid, sheet or geometric set, or a solid's
+/// structure is broken in a way topology cannot represent. Faces the reader cannot complete become
 /// warnings, not errors; the report says exactly what was compromised.
 pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
     let (_, instances) = super::parse::parse_instances(text)?;
@@ -241,14 +248,15 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
             });
         }
     }
-    if solids.is_empty() && shells.is_empty() {
+    let construction = reader.construction_sets()?;
+    if solids.is_empty() && shells.is_empty() && construction.is_empty() {
         ogeom_bail!(
             Construction,
             "the exchange file contains no MANIFOLD_SOLID_BREP, \
-             BREP_WITH_VOIDS or SHELL_BASED_SURFACE_MODEL to read"
+             BREP_WITH_VOIDS, SHELL_BASED_SURFACE_MODEL or geometric set to read"
         );
     }
-    let document = reader.document(&by_item, &solids, &shells)?;
+    let document = reader.document(&by_item, &solids, &shells, construction)?;
 
     // Everything never visited, counted by its leading keyword.
     for (id, instance) in instances.iter() {
@@ -268,6 +276,10 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
         report: reader.report,
     })
 }
+
+/// Named construction geometry by the representation holding it, in file
+/// order.
+type ConstructionSets = Vec<(u64, Vec<(String, ConstructionGeometry)>)>;
 
 /// An edge as built: the shape, its curve and range, and whether STEP's edge
 /// direction runs against the curve.
@@ -3537,6 +3549,261 @@ impl<'a> Reader<'a> {
 
     // --- product structure, names, colours -----------------------------------
 
+    /// Every `GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION` and
+    /// `GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_REPRESENTATION`, in file order,
+    /// with the construction geometry it holds: the points, bounded curves
+    /// and bounded surfaces of its geometric sets, and the axis placements
+    /// that are items of its own. An element the reader cannot read is a
+    /// warning, and the rest of the set still reads.
+    fn construction_sets(&mut self) -> OgeomResult<ConstructionSets> {
+        let mut reps: Vec<u64> = self
+            .instances
+            .iter()
+            .filter(|(_, inst)| {
+                inst.part("GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION")
+                    .is_some()
+                    || inst
+                        .part("GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_REPRESENTATION")
+                        .is_some()
+            })
+            .map(|(id, _)| id)
+            .collect();
+        reps.sort_unstable();
+        let mut out = Vec::new();
+        for rep in reps {
+            let items: Vec<u64> = {
+                let Some(inst) = self.instances.get(rep) else {
+                    continue;
+                };
+                let args = inst
+                    .part("GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION")
+                    .or_else(|| inst.part("GEOMETRICALLY_BOUNDED_SURFACE_SHAPE_REPRESENTATION"))
+                    .unwrap_or(&[]);
+                args.get(1)
+                    .and_then(Arg::list)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter_map(Arg::reference)
+                    .collect()
+            };
+            let mut read = Vec::new();
+            for item in items {
+                ogeom_core::progress::checkpoint()?;
+                let Some(inst) = self.instances.get(item) else {
+                    continue;
+                };
+                let set = inst
+                    .part("GEOMETRIC_CURVE_SET")
+                    .or_else(|| inst.part("GEOMETRIC_SET"));
+                if let Some(args) = set {
+                    let elements: Vec<u64> = args
+                        .get(1)
+                        .and_then(Arg::list)
+                        .unwrap_or(&[])
+                        .iter()
+                        .filter_map(Arg::reference)
+                        .collect();
+                    self.visited.mark(item);
+                    for element in elements {
+                        if let Some(found) = self.construction_item(element) {
+                            read.push(found);
+                        }
+                    }
+                } else if inst.part("AXIS2_PLACEMENT_3D").is_some() {
+                    let name = item_name(inst);
+                    match self.frame(item) {
+                        Ok(frame) => read.push((name, ConstructionGeometry::Axis(frame))),
+                        Err(e) => self
+                            .report
+                            .warnings
+                            .push(format!("#{item}: a construction axis is not read: {e}")),
+                    }
+                }
+            }
+            if !read.is_empty() {
+                self.visited.mark(rep);
+                out.push((rep, read));
+            }
+        }
+        Ok(out)
+    }
+
+    /// One element of a geometric set, named: a Cartesian point, a bounded
+    /// curve over its stretch (a trimmed curve's between its trims), or a
+    /// bounded surface over its window (a rectangularly trimmed one's in
+    /// its basis's parameters). `None`, with a warning, for what does not
+    /// read or is not bounded.
+    fn construction_item(&mut self, id: u64) -> Option<(String, ConstructionGeometry)> {
+        let inst = self.instances.get(id)?;
+        let name = item_name(inst);
+        let keyword = inst.keyword().to_owned();
+        let surface = inst.parts.iter().any(|(k, _)| {
+            k == "PLANE"
+                || k.ends_with("_SURFACE")
+                || (k.starts_with("SURFACE_") && !k.ends_with("_CURVE"))
+        });
+        let bounded = |(lo, hi): (f64, f64)| {
+            lo.is_finite() && hi.is_finite() && lo < hi && hi - lo <= SURFACE_EXTENT
+        };
+        let read: OgeomResult<Option<ConstructionGeometry>> =
+            if inst.part("CARTESIAN_POINT").is_some() {
+                self.point(id).map(|p| Some(ConstructionGeometry::Point(p)))
+            } else if surface {
+                self.construction_surface(id, &keyword).map(|found| {
+                    found
+                        .filter(|(_, u, v)| bounded(*u) && bounded(*v))
+                        .map(|(surface, u, v)| ConstructionGeometry::Surface { surface, u, v })
+                })
+            } else if keyword == "TRIMMED_CURVE" {
+                self.construction_trim(id).map(|found| {
+                    found.map(|(curve, range)| ConstructionGeometry::Curve { curve, range })
+                })
+            } else {
+                self.curve(id).map(|found| {
+                    found
+                        .map(|curve| (curve.domain(), curve))
+                        .filter(|(range, _)| bounded(*range))
+                        .map(|(range, curve)| ConstructionGeometry::Curve { curve, range })
+                })
+            };
+        match read {
+            Ok(Some(geometry)) => Some((name, geometry)),
+            Ok(None) => {
+                self.report.warnings.push(format!(
+                    "#{id}: a geometric set's {keyword} is not read: it is not bounded, \
+                     or not a kind read yet"
+                ));
+                None
+            }
+            Err(e) => {
+                self.report.warnings.push(format!(
+                    "#{id}: a geometric set's {keyword} is not read: {e}"
+                ));
+                None
+            }
+        }
+    }
+
+    /// A trimmed curve of a geometric set over its stretch: between its
+    /// trims' parameters where the file names the parameters its master
+    /// trim and the basis is one this kernel parameterizes as the file
+    /// does (a line, a conic of its own frame, a spline), running forward;
+    /// else as [`Self::bounded_curve`] reads it, between its trims' points.
+    fn construction_trim(&mut self, id: u64) -> OgeomResult<Option<(Curve, (f64, f64))>> {
+        let args = self.args(id, "TRIMMED_CURVE")?;
+        let basis_id = args.get(1).and_then(Arg::reference).unwrap_or(0);
+        let forward = !args.get(4).is_some_and(|a| a.is_enum("F"));
+        let by_parameter = args.get(5).is_some_and(|a| a.is_enum("PARAMETER"));
+        let parameter = |trim: Option<&Arg>| {
+            trim.and_then(Arg::list)?
+                .iter()
+                .find_map(|item| match item {
+                    Arg::Typed(typed) if typed.0 == "PARAMETER_VALUE" => {
+                        typed.1.first().and_then(Arg::number)
+                    }
+                    _ => None,
+                })
+        };
+        let (Some(v0), Some(v1)) = (parameter(args.get(2)), parameter(args.get(3))) else {
+            return self.bounded_curve(id);
+        };
+        if !forward || !by_parameter {
+            return self.bounded_curve(id);
+        }
+        let basis_keyword = self.instance(basis_id)?.keyword().to_owned();
+        let scale = match basis_keyword.as_str() {
+            "LINE" => {
+                let line = self.args(basis_id, "LINE")?;
+                let vector = self.args(ref_at(line, 2), "VECTOR")?;
+                vector.get(2).and_then(Arg::number).unwrap_or(1.0) * self.report.scale_mm
+            }
+            "CIRCLE" | "ELLIPSE" => self.angle_scale,
+            "B_SPLINE_CURVE_WITH_KNOTS" => 1.0,
+            _ if self
+                .instance(basis_id)?
+                .part("B_SPLINE_CURVE_WITH_KNOTS")
+                .is_some() =>
+            {
+                1.0
+            }
+            _ => return self.bounded_curve(id),
+        };
+        let Some(basis) = self.curve(basis_id)? else {
+            return Ok(None);
+        };
+        let (a, mut b) = (v0 * scale, v1 * scale);
+        if basis.is_periodic() && b <= a {
+            let (lo, hi) = basis.domain();
+            b += hi - lo;
+        }
+        if a >= b {
+            return self.bounded_curve(id);
+        }
+        Ok(Some((basis, (a, b))))
+    }
+
+    /// A surface of a geometric set with its window: a rectangularly
+    /// trimmed surface's basis over the trim's parameters, read in the
+    /// file's units for the basis's kind; any other surface over its own
+    /// domain.
+    #[allow(clippy::type_complexity)]
+    fn construction_surface(
+        &mut self,
+        id: u64,
+        keyword: &str,
+    ) -> OgeomResult<Option<(SurfaceGeometry, (f64, f64), (f64, f64))>> {
+        if keyword != "RECTANGULAR_TRIMMED_SURFACE" {
+            return Ok(self.surface(id)?.map(|surface| {
+                let (u, v) = surface.domain();
+                (surface, u, v)
+            }));
+        }
+        let args = self.args(id, "RECTANGULAR_TRIMMED_SURFACE")?;
+        let basis_id = args.get(1).and_then(Arg::reference).unwrap_or(0);
+        let Some(basis) = self.surface(basis_id)? else {
+            return Ok(None);
+        };
+        let (length, angle) = (self.report.scale_mm, self.angle_scale);
+        // How the file measures each parameter of the basis: a plane's in
+        // lengths, an angle round each axis of revolution, a spline's and a
+        // swept curve's own parameter as it is.
+        let (u_scale, v_scale) = match self.instance(basis_id)?.keyword() {
+            "PLANE" => (length, length),
+            "CYLINDRICAL_SURFACE" | "CONICAL_SURFACE" => (angle, length),
+            "SPHERICAL_SURFACE" | "TOROIDAL_SURFACE" | "DEGENERATE_TOROIDAL_SURFACE" => {
+                (angle, angle)
+            }
+            "SURFACE_OF_LINEAR_EXTRUSION" => (1.0, length),
+            "SURFACE_OF_REVOLUTION" => (1.0, angle),
+            _ => (1.0, 1.0),
+        };
+        let n = |i: usize| args.get(i).and_then(Arg::number).unwrap_or(0.0);
+        let (u1, u2) = (n(2) * u_scale, n(3) * u_scale);
+        let (v1, v2) = (n(4) * v_scale, n(5) * v_scale);
+        Ok(Some((
+            basis,
+            (u1.min(u2), u1.max(u2)),
+            (v1.min(v2), v1.max(v2)),
+        )))
+    }
+
+    /// Construction items into the document under `product`; one the
+    /// document refuses is a warning.
+    fn add_construction(
+        &mut self,
+        document: &mut ogeom_doc::Document,
+        product: ogeom_doc::ProductId,
+        items: Vec<(String, ConstructionGeometry)>,
+    ) {
+        for (name, geometry) in items {
+            if let Err(e) = document.add_construction(product, &name, geometry) {
+                self.report
+                    .warnings
+                    .push(format!("construction item '{name}' is not kept: {e}"));
+            }
+        }
+    }
+
     /// Assemble the document: the model, plus everything the file says about
     /// products, assemblies, placements and appearance.
     ///
@@ -3549,10 +3816,14 @@ impl<'a> Reader<'a> {
         by_item: &FastMap<u64, Shape>,
         solids: &[Shape],
         shells: &[Shape],
+        construction: ConstructionSets,
     ) -> OgeomResult<ogeom_doc::Document> {
         // The graph is walked before the model moves, because frames scale
         // through the reader's own unit handling.
-        let structure = self.product_structure(by_item);
+        let mut sets: FastMap<u64, Vec<(String, ConstructionGeometry)>> = FastMap::default();
+        let order: Vec<u64> = construction.iter().map(|(rep, _)| *rep).collect();
+        sets.extend(construction);
+        let structure = self.product_structure(by_item, &mut sets);
         let colours = self.colours(by_item);
         let pmi = self.pmi_of();
 
@@ -3568,6 +3839,25 @@ impl<'a> Reader<'a> {
                 }
             }
         }
+        // A set no product reaches is a part of its own, named as its
+        // representation is.
+        for (i, rep) in order.into_iter().enumerate() {
+            let Some(items) = sets.remove(&rep) else {
+                continue;
+            };
+            let name = self
+                .instances
+                .get(rep)
+                .and_then(|inst| inst.parts.first())
+                .and_then(|(_, args)| match args.first() {
+                    Some(Arg::Str(name)) if !name.is_empty() => Some(name.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| format!("construction-{i}"));
+            let empty = ogeom_algo::build::make_compound(document.model_mut(), &[])?.shape;
+            let part = document.add_part(name, empty);
+            self.add_construction(&mut document, part, items);
+        }
         for (shape, colour) in colours {
             document.set_colour(&shape, colour);
         }
@@ -3579,7 +3869,11 @@ impl<'a> Reader<'a> {
     }
 
     /// The file's product graph, or `None` when it has none worth the name.
-    fn product_structure(&mut self, by_item: &FastMap<u64, Shape>) -> Option<Vec<PdEntry>> {
+    fn product_structure(
+        &mut self,
+        by_item: &FastMap<u64, Shape>,
+        sets: &mut FastMap<u64, Vec<(String, ConstructionGeometry)>>,
+    ) -> Option<Vec<PdEntry>> {
         // PRODUCT_DEFINITION -> name, via formation and product.
         let mut pds: Vec<u64> = self
             .instances
@@ -3656,6 +3950,7 @@ impl<'a> Reader<'a> {
         for pd in pds {
             let name = self.product_name(pd).unwrap_or_else(|| format!("#{pd}"));
             let mut shapes: Vec<Shape> = Vec::new();
+            let mut construction = Vec::new();
             if let Some(&sr) = sr_of_pd.get(&pd) {
                 let mut reps = vec![sr];
                 reps.extend(linked.get(&sr).into_iter().flatten().copied());
@@ -3663,12 +3958,14 @@ impl<'a> Reader<'a> {
                     if let Some(items) = self.representation_items(rep) {
                         shapes.extend(items.iter().filter_map(|item| by_item.get(item).cloned()));
                     }
+                    construction.extend(sets.remove(&rep).into_iter().flatten());
                 }
             }
             entries.push(PdEntry {
                 pd,
                 name,
                 shapes,
+                construction,
                 children: Vec::new(),
             });
         }
@@ -3865,10 +4162,18 @@ impl<'a> Reader<'a> {
 
     /// Products into the document: assemblies for the parents, parts for the
     /// shaped, instances for the usage edges.
-    fn build_products(&mut self, document: &mut ogeom_doc::Document, entries: Vec<PdEntry>) {
+    fn build_products(&mut self, document: &mut ogeom_doc::Document, mut entries: Vec<PdEntry>) {
         let mut ids: FastMap<u64, ogeom_doc::ProductId> = FastMap::default();
-        for entry in &entries {
+        for entry in &mut entries {
             let shape = match entry.shapes.len() {
+                // A product whose content is all construction geometry is
+                // a part over nothing, carrying it.
+                0 if !entry.construction.is_empty() && entry.children.is_empty() => {
+                    match ogeom_algo::build::make_compound(document.model_mut(), &[]) {
+                        Ok(built) => Some(built.shape),
+                        Err(_) => None,
+                    }
+                }
                 0 => None,
                 1 => Some(entry.shapes[0].clone()),
                 _ => match ogeom_algo::build::make_compound(document.model_mut(), &entry.shapes) {
@@ -3891,6 +4196,10 @@ impl<'a> Reader<'a> {
                     let body = document.add_part(format!("{}-body", entry.name), shape);
                     let _ = document.add_instance(assembly, body, Transform::IDENTITY, None);
                 }
+            }
+            if let Some(&id) = ids.get(&entry.pd) {
+                let items = std::mem::take(&mut entry.construction);
+                self.add_construction(document, id, items);
             }
         }
         for entry in &entries {
@@ -4823,6 +5132,8 @@ struct PdEntry {
     pd: u64,
     name: String,
     shapes: Vec<Shape>,
+    /// The construction geometry its representations carry.
+    construction: Vec<(String, ConstructionGeometry)>,
     children: Vec<(u64, Transform, Option<String>)>,
 }
 
@@ -5802,6 +6113,20 @@ impl Visited {
 
 /// The reference in argument `i`, or 0 (which names no entity, so the lookup
 /// that follows refuses it) where the argument is missing or not a reference.
+/// A representation item's name: its `REPRESENTATION_ITEM` part's in a
+/// complex instance, else its own first argument's.
+fn item_name(instance: &Instance) -> String {
+    instance
+        .part("REPRESENTATION_ITEM")
+        .or_else(|| instance.parts.first().map(|(_, args)| args.as_slice()))
+        .and_then(<[Arg]>::first)
+        .and_then(|arg| match arg {
+            Arg::Str(name) => Some(name.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 fn ref_at(args: &[Arg], i: usize) -> u64 {
     args.get(i).and_then(Arg::reference).unwrap_or(0)
 }
