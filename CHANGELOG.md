@@ -13,6 +13,36 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Offsetting an editable mesh, with folds repaired:
+  `Editable::offset(distance, region) -> OffsetReport { merged, eased,
+  capped, folded }`.** (#587)
+  - A true offset, not a scale: about each vertex, edges whose faces'
+    normals turn by more than `OFFSET_EDGE_ANGLE` (30°) part the fan into
+    sectors, each with its corner-angle-weighted mean normal, never
+    smoothed across an edge. Those normals fix up to three directions, and
+    within them the vertex takes the least-squares step, weighted by corner
+    angle, that puts each of its faces at `distance`. Flat stretches move
+    by `d`, edges between square faces by `√2 d` and box corners by
+    `√3 d`; no vertex moves farther than `OFFSET_FARTHEST` (3) times `|d|`.
+  - Folds are repaired. A vertex that overshot an edge, ending nearer than
+    `|d|` to a face across an edge that it stands in front of, slides in
+    its plane or along its line onto that face's offset plane, at most
+    twice, so strips land on the edge and vertices near two edges on the
+    corner. Then faces turned by more than the edge angle, or left
+    slivers, have an edge collapsed, the vertex held in fewer directions
+    merging into the one held in more, only where the mesh stays a
+    manifold and no other face turns. Faces left folded are counted.
+  - With a region, only the faces with every corner in it move, as a step:
+    the vertices on its border part in two and a wall of two faces per
+    border edge joins them, so a closed mesh stays closed.
+  - A cube offset by ±d is the cube with sharp edges d larger or smaller,
+    to rounding, also inward by 2.5 cells, where 448 vertices merge; a
+    notched block offset inward by 2.5 cells is the offset block, closed
+    and a manifold; a ball of radius 10 offset by ±0.5 has every vertex at
+    `R ± d` to 5.6·10⁻⁴, within the `|d| (1/cos φ − 1)` = 5.7·10⁻⁴ its
+    faces' tilt `φ` allows. Five million triangles offset in 11.5 s of one
+    core's time.
+
 - **Feature-preserving smoothing of an editable mesh, and mesh curvature:
   `Editable::smooth(&Smooth { size, max_move, keep_edges, region })` and
   `mesh::curvature(mesh, size)`.** (#586)

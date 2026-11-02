@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 94 |
+| `covered` | 95 |
 | `partial` | 8 |
 | `divergent` | 6 |
 
-108 capabilities. Ratchet: `unreviewed_max = 0`.
+109 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -272,6 +272,7 @@ reference in a deck read from text.
 - **mesh.editing**: Editing triangulations: half-edges with stable numbers and source vertices, components, rims, face removal and flips, non-manifold input split and reported, welding, decimation · `covered`
 - **mesh.hatching**: Hatching faces: iso and free-direction line families clipped to the trim · `covered`
 - **mesh.hole-filling**: Filling a rim of an editable mesh: triangulated with the least largest bend then the least area, exactly up to 500 edges and ear-clipped on its plane beyond, refined to the mesh's spacing, faired curved or flat, closed and manifold about the patch, touching holes parted at their shared point · `covered`
+- **mesh.offset**: Offsetting an editable mesh by a distance with sharp edges and corners kept by least squares over corner-angle-weighted face normals, moves capped, folds repaired by pushing overshooting vertices onto the offset planes and collapsing folded faces while staying a manifold, and a region stepped behind a closed wall · `covered`
 - **mesh.plane-cut**: Cutting an editable mesh by a plane with the section's exact side test, and capping the cut flat and watertight: discs, rings and nested caps, rim gaps bridged within a distance, the rest reported open · `covered`
 - **mesh.section**: Sections of a triangle mesh by a plane or a stack of planes: polylines welded through shared edges, carrying the material side, with exact side tests and non-manifold edges reported · `covered`
 - **mesh.shadow**: The shadow of a triangle mesh on a plane, holes kept, and the regions of weighted planar chains, traced with exact integer tests and snap rounding · `covered`
@@ -303,4 +304,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: ef31bb17c27eb239 -->
+<!-- ledger-checksum: 919c7c1e73c5b295 -->

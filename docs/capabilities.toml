@@ -1792,6 +1792,20 @@ tests = [
 ]
 
 [[capability]]
+id = "mesh.offset"
+title = "Offsetting an editable mesh by a distance with sharp edges and corners kept by least squares over corner-angle-weighted face normals, moves capped, folds repaired by pushing overshooting vertices onto the offset planes and collapsing folded faces while staying a manifold, and a region stepped behind a closed wall"
+crate = "ogeom-mesh"
+verdict = "covered"
+symbols = [
+    "ogeom_mesh::Editable", "ogeom_mesh::OffsetReport",
+    "ogeom_mesh::OFFSET_EDGE_ANGLE", "ogeom_mesh::OFFSET_FARTHEST",
+]
+tests = [
+    "crates/ogeom/tests/mesh_offset.rs",
+    "crates/ogeom/tests/mesh_offset.rs::five_million_triangles_offset",
+]
+
+[[capability]]
 id = "mesh.smoothing-curvature"
 title = "Feature-preserving smoothing of an editable mesh onto local least-squares quadrics, creases kept by normal angle, moves capped and blended into a region; mean, Gaussian and principal curvatures with their directions at each vertex of a mesh"
 crate = "ogeom-mesh"
