@@ -1777,6 +1777,21 @@ tests = [
 ]
 
 [[capability]]
+id = "mesh.hole-filling"
+title = "Filling a rim of an editable mesh: triangulated with the least largest bend then the least area, exactly up to 500 edges and ear-clipped on its plane beyond, refined to the mesh's spacing, faired curved or flat, closed and manifold about the patch, touching holes parted at their shared point"
+crate = "ogeom-mesh"
+verdict = "covered"
+symbols = [
+    "ogeom_mesh::Editable", "ogeom_mesh::RimId", "ogeom_mesh::Rim",
+    "ogeom_mesh::Fill", "ogeom_mesh::Fairing", "ogeom_mesh::FillReport",
+    "ogeom_mesh::OPTIMAL_UP_TO",
+]
+tests = [
+    "crates/ogeom-mesh/src/editable/fill.rs",
+    "crates/ogeom/tests/mesh_editable.rs::a_hole_of_five_hundred_edges_filled_in_five_million_triangles",
+]
+
+[[capability]]
 id = "mesh.hatching"
 title = "Hatching faces: iso and free-direction line families clipped to the trim"
 crate = "ogeom-mesh"

@@ -1,5 +1,5 @@
 //! A scan-sized mesh held for editing: built, read back, a patch cut out
-//! of it, and the whole cut by a plane and capped.
+//! of it, the whole cut by a plane and capped, and a hole filled.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 #[path = "support/cpu_time.rs"]
@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use ogeom::core::Tolerances;
 use ogeom::math::{Direction, Plane, Point, Vector};
-use ogeom::mesh::{Cap, CutReport, Editable, Side};
+use ogeom::mesh::{Cap, CutReport, Editable, Fairing, Fill, OPTIMAL_UP_TO, Side};
 use ogeom::topo::Triangulation;
 
 /// A torus about the `z` axis, `rings` by `sides` quads, two triangles each.
@@ -103,4 +103,49 @@ fn five_million_triangles_cut_and_capped() {
     assert!(e.is_closed());
     assert_eq!(e.components().len(), 1);
     assert!(took < Duration::from_secs(6), "{took:?} to cut and cap");
+}
+
+/// A hole of 125 by 125 quads in five million triangles, its rim as long
+/// as the triangulation is optimal for, filled, refined and faired curved
+/// in under 150 s of processor time: the torus is closed again, and its
+/// new vertices lie within a hundredth of the tube's radius of the tube.
+#[test]
+#[ignore = "heavy"]
+fn a_hole_of_five_hundred_edges_filled_in_five_million_triangles() {
+    let (rings, sides, side) = (2500, 1000, 125);
+    let mesh = torus(10.0, 3.0, rings, sides);
+    let mut e = Editable::from(&mesh, 0.0).unwrap();
+    let patch: Vec<u32> = (0..side)
+        .flat_map(|i| (0..side).map(move |j| 2 * (i * sides + j)))
+        .flat_map(|f| [f, f + 1])
+        .collect();
+    e.remove_faces(&patch);
+    let rims = e.rims();
+    assert_eq!(rims.len(), 1);
+    assert_eq!(rims[0].edges.len(), OPTIMAL_UP_TO);
+    let fill = Fill {
+        fairing: Fairing::Curved,
+        refine: true,
+    };
+    let (report, took) = cpu_time(|| e.fill(rims[0].id(), &fill).unwrap());
+    eprintln!(
+        "a rim of 500 edges filled with {} faces and {} vertices: {took:?}",
+        report.faces.len(),
+        report.vertices.len()
+    );
+    assert!(e.is_closed());
+    assert!(e.non_manifold().is_empty());
+    assert_eq!(report.flattened, 0);
+    let off = report
+        .vertices
+        .clone()
+        .map(|v| {
+            let p = e.position(v).unwrap();
+            let ring = (p.x.hypot(p.y) - 10.0).hypot(p.z);
+            (ring - 3.0).abs()
+        })
+        .fold(0.0, f64::max);
+    eprintln!("largest departure from the tube: {off}");
+    assert!(off < 0.03, "{off}");
+    assert!(took < Duration::from_secs(150), "{took:?} to fill");
 }

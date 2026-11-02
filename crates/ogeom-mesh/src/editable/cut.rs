@@ -368,7 +368,7 @@ impl Editable {
     }
 
     /// A new vertex at `at`, a point of its own with no source.
-    fn add_vertex(&mut self, at: Point) -> u32 {
+    pub(super) fn add_vertex(&mut self, at: Point) -> u32 {
         let v = index(self.positions.len());
         self.positions.push(at);
         self.point.push(v);
@@ -380,7 +380,7 @@ impl Editable {
     }
 
     /// A new face, joined to nothing until relinked.
-    fn add_face(&mut self, corners: [u32; 3]) -> u32 {
+    pub(super) fn add_face(&mut self, corners: [u32; 3]) -> u32 {
         let f = index(self.corners.len());
         self.corners.push(corners);
         self.live.push(true);

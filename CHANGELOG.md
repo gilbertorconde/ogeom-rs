@@ -11,6 +11,41 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **Hole filling on an editable mesh: `Editable::fill(rim, &Fill {
+  fairing, refine })`.** (#585)
+  - A rim is named by a `RimId`, its lowest-numbered half-edge, which
+    `Rim::id` gives. A rim through one point more than once, where holes
+    touch, is parted there into simple loops, each filled on its own; the
+    patches close the point into one vertex.
+  - Loops of up to `OPTIMAL_UP_TO` (500) edges are triangulated by exact
+    dynamic programming over every triangulation: least largest bend
+    first, the angle between the normals of faces meeting across an edge,
+    rim edges and the faces on them included, then least area. The state
+    is a triangle on an edge, since a bend depends on both faces; checked
+    against every triangulation of loops of up to nine edges. No edge is
+    drawn between points the mesh already joins, nor a face with collinear
+    corners. Longer loops are ear-clipped on the plane of their vector
+    area by exact orientation tests, and refused by name where their
+    shadow crosses itself.
+  - With `refine`, the patch is refined to the spacing of the mesh about
+    it by centroid splits and angle-raising flips. `Fairing::Curved` then
+    minimises the thin-plate energy, a cotangent bi-Laplacian over the
+    patch with one ring of the mesh held fixed; `Fairing::Flat` makes the
+    patch a membrane on the rim. The three coordinates are solved as one
+    system by conjugate gradients, so a hole in a plane stays in it to
+    rounding.
+  - The mesh is closed and manifold about the patch, no vertex of the
+    mesh moves, and a refused fill changes nothing. A cap of polar angle
+    π/8 off a unit sphere comes back within 0.28 %, 0.38 % and 0.33 % of
+    the radius at 16, 32 and 64 bands, 0.30 % at 256, the patch's top
+    tending to cos α + sin² α / 2, the thin plate's.
+  - A loop of 500 edges is triangulated in 2.7 s with 170 MB; a hole of
+    500 edges in five million triangles is filled, refined to 12,607
+    vertices and faired in 14 s of processor time, within 0.009 of a tube
+    of radius 3.
+
 ## [0.14.2] - 2026-11-02
 
 An additive release that starts mesh editing, with two fixes. `mesh::Editable`
@@ -67,7 +102,6 @@ of one arc and one line as those two pieces.
   - Kept vertices keep their numbers and `source_vertex`; cut vertices
     report none. Five million triangles cut and capped in 0.6 s of
     processor time.
-
 ### Fixed
 
 - **`fit_segments_2d` fits a closed loop of two pieces.** (#635)

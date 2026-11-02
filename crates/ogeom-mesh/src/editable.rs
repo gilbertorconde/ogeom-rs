@@ -55,8 +55,10 @@ use ogeom_math::{Aabb, Point, Vector};
 use ogeom_topo::Triangulation;
 
 pub mod cut;
+pub mod fill;
 
 pub use cut::{Cap, CutReport, Side};
+pub use fill::{Fairing, Fill, FillReport, OPTIMAL_UP_TO};
 
 /// No half-edge, face or vertex.
 const NONE: u32 = u32::MAX;
@@ -128,6 +130,21 @@ pub struct Rim {
     pub length: f64,
     /// The greatest distance between two of its vertices.
     pub span: f64,
+}
+
+/// A rim's name: its lowest-numbered half-edge, the first of its
+/// [`Rim::edges`]. An edit that leaves the rim's faces as they are leaves
+/// its name. One that adds faces on it, or removes or flips its faces, may
+/// give it another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RimId(pub u32);
+
+impl Rim {
+    /// The rim's name.
+    #[must_use]
+    pub fn id(&self) -> RimId {
+        RimId(self.edges[0])
+    }
 }
 
 /// Buffers reused from one point to the next while giving out vertices.
@@ -1015,7 +1032,7 @@ mod tests {
 
     /// A square of `n` by `n` unit cells in `z = 0`, facing `+z`; cell
     /// `(i, j)` is faces `2 (n j + i)` and the one after.
-    fn grid(n: u32) -> Triangulation {
+    pub(super) fn grid(n: u32) -> Triangulation {
         let mut positions = Vec::new();
         for j in 0..=n {
             for i in 0..=n {
@@ -1054,7 +1071,7 @@ mod tests {
 
     /// A cube of side `n h` as six separate grids of `n` by `n` cells, each
     /// with its own vertices and wound outward.
-    fn cube_of_grids(n: u32, h: f64) -> Triangulation {
+    pub(super) fn cube_of_grids(n: u32, h: f64) -> Triangulation {
         let side = f64::from(n) * h;
         let mut out = Triangulation::new();
         // Each face as an origin and two in-plane steps whose cross product
