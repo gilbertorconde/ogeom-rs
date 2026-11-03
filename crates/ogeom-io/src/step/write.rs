@@ -1382,34 +1382,50 @@ impl Writer<'_> {
             let magnitude =
                 self.measure(tolerance.magnitude, ogeom_doc::MeasureKind::Length, lu, au);
             let keyword = format!("{}_TOLERANCE", tolerance.kind.to_uppercase());
-            // A hyphen-joined label is a composite reference: its
-            // constituent datums go through a compartment that binds them
-            // into one.
-            let refs: Vec<String> = tolerance
-                .datums
-                .iter()
-                .filter_map(|d| {
-                    if let Some(id) = datum_ids.get(d.as_str()) {
-                        return Some(format!("#{id}"));
-                    }
-                    let parts: Vec<String> = d
-                        .split('-')
-                        .filter_map(|label| datum_ids.get(label))
-                        .map(|i| format!("#{i}"))
-                        .collect();
-                    if parts.len() < 2 {
-                        return None;
-                    }
-                    let list = parts.join(",");
-                    let (pds, _) = part_of(&tolerance.items);
-                    let compartment = self.entity(format!(
-                        "DATUM_REFERENCE_COMPARTMENT('','',#{pds},.F.,({list}),())"
-                    ));
-                    Some(format!("#{compartment}"))
-                })
-                .collect();
+            let system = !tolerance.datums.is_empty()
+                && (tolerance.datum_system
+                    || tolerance.datums.iter().any(|d| !d.modifiers.is_empty()));
+            let refs: Vec<String> = if system {
+                let (pds, _) = part_of(&tolerance.items);
+                let id = self.datum_system(&tolerance.datums, &datum_ids, pds, lu, au)?;
+                vec![format!("#{id}")]
+            } else {
+                // A hyphen-joined label is a composite reference: its
+                // constituent datums go through a compartment that binds
+                // them into one.
+                tolerance
+                    .datums
+                    .iter()
+                    .filter_map(|d| {
+                        if let Some(id) = datum_ids.get(d.label.as_str()) {
+                            return Some(format!("#{id}"));
+                        }
+                        let parts: Vec<String> = d
+                            .label
+                            .split('-')
+                            .filter_map(|label| datum_ids.get(label))
+                            .map(|i| format!("#{i}"))
+                            .collect();
+                        if parts.len() < 2 {
+                            return None;
+                        }
+                        let list = parts.join(",");
+                        let (pds, _) = part_of(&tolerance.items);
+                        let compartment = self.entity(format!(
+                            "DATUM_REFERENCE_COMPARTMENT('','',#{pds},.F.,({list}),())"
+                        ));
+                        Some(format!("#{compartment}"))
+                    })
+                    .collect()
+            };
             let refs = refs.join(",");
-            let written = if tolerance.modifiers.is_empty() {
+            // A datum system on a kind the schema does not derive from the
+            // datum-referencing tolerance (position, the profiles) needs
+            // the complex form, which states the datum list on its own
+            // part.
+            let simple = tolerance.modifiers.is_empty()
+                && (!system || REFERENCES_DATUMS.contains(&keyword.as_str()));
+            let written = if simple {
                 if refs.is_empty() {
                     self.entity(format!("{keyword}('{name}','',#{magnitude},#{aspect})"))
                 } else {
@@ -1418,20 +1434,22 @@ impl Writer<'_> {
                     ))
                 }
             } else {
-                // Modifiers force the complex form: the shared attributes
-                // sit on the GEOMETRIC_TOLERANCE part, the datum list and
-                // the modifier words on their own parts, the subtype empty.
-                let words: Vec<String> = tolerance
-                    .modifiers
-                    .iter()
-                    .map(|m| format!(".{}.", m.to_uppercase()))
-                    .collect();
-                let words = words.join(",");
+                // The complex form: the shared attributes sit on the
+                // GEOMETRIC_TOLERANCE part, the datum list and the modifier
+                // words on their own parts, the subtype empty.
                 let mut parts = vec![
                     format!("GEOMETRIC_TOLERANCE('{name}','',#{magnitude},#{aspect})"),
-                    format!("GEOMETRIC_TOLERANCE_WITH_MODIFIERS(({words}))"),
                     format!("{keyword}()"),
                 ];
+                if !tolerance.modifiers.is_empty() {
+                    let words: Vec<String> = tolerance
+                        .modifiers
+                        .iter()
+                        .map(|m| format!(".{}.", m.to_uppercase()))
+                        .collect();
+                    let words = words.join(",");
+                    parts.push(format!("GEOMETRIC_TOLERANCE_WITH_MODIFIERS(({words}))"));
+                }
                 if !refs.is_empty() {
                     parts.push(format!(
                         "GEOMETRIC_TOLERANCE_WITH_DATUM_REFERENCE(({refs}))"
@@ -1610,6 +1628,81 @@ impl Writer<'_> {
         Ok(())
     }
 
+    /// An AP242 datum system: one compartment per reference, in precedence
+    /// order, each naming its datum (a common datum through one element
+    /// per constituent) and carrying its modifiers.
+    fn datum_system(
+        &mut self,
+        references: &[ogeom_doc::DatumReference],
+        datum_ids: &FastMap<&str, u64>,
+        pds: u64,
+        lu: u64,
+        au: u64,
+    ) -> OgeomResult<u64> {
+        if references.len() > 3 {
+            ogeom_bail!(
+                Construction,
+                "a datum system holds at most three references, this one {}",
+                references.len()
+            );
+        }
+        let mut compartments: Vec<String> = Vec::with_capacity(references.len());
+        for reference in references {
+            let base = if let Some(&id) = datum_ids.get(reference.label.as_str()) {
+                format!("#{id}")
+            } else {
+                let mut elements: Vec<String> = Vec::new();
+                for label in reference.label.split('-') {
+                    let Some(&id) = datum_ids.get(label) else {
+                        ogeom_bail!(
+                            Construction,
+                            "the datum system references `{}`, which no datum is",
+                            reference.label
+                        );
+                    };
+                    let element =
+                        self.entity(format!("DATUM_REFERENCE_ELEMENT('','',#{pds},.F.,#{id},$)"));
+                    elements.push(format!("#{element}"));
+                }
+                if elements.len() < 2 {
+                    ogeom_bail!(
+                        Construction,
+                        "the datum system references `{}`, which no datum is",
+                        reference.label
+                    );
+                }
+                format!("({})", elements.join(","))
+            };
+            let mut modifiers: Vec<String> = Vec::with_capacity(reference.modifiers.len());
+            for modifier in &reference.modifiers {
+                modifiers.push(match modifier {
+                    ogeom_doc::DatumModifier::Simple(word) => {
+                        format!("SIMPLE_DATUM_REFERENCE_MODIFIER(.{}.)", word.to_uppercase())
+                    }
+                    ogeom_doc::DatumModifier::WithValue { kind, value } => {
+                        let measure = self.measure(*value, ogeom_doc::MeasureKind::Length, lu, au);
+                        let id = self.entity(format!(
+                            "DATUM_REFERENCE_MODIFIER_WITH_VALUE(.{}.,#{measure})",
+                            kind.word().to_uppercase()
+                        ));
+                        format!("#{id}")
+                    }
+                });
+            }
+            let modifiers = if modifiers.is_empty() {
+                "$".to_owned()
+            } else {
+                format!("({})", modifiers.join(","))
+            };
+            let compartment = self.entity(format!(
+                "DATUM_REFERENCE_COMPARTMENT('','',#{pds},.F.,{base},{modifiers})"
+            ));
+            compartments.push(format!("#{compartment}"));
+        }
+        let list = compartments.join(",");
+        Ok(self.entity(format!("DATUM_SYSTEM('','',#{pds},.F.,({list}))")))
+    }
+
     /// A measure representation item, in the document's own units.
     fn measure(&mut self, value: f64, kind: ogeom_doc::MeasureKind, lu: u64, au: u64) -> u64 {
         let v = real(value);
@@ -1664,6 +1757,20 @@ impl Writer<'_> {
         self.entity(format!("STYLED_ITEM('',(#{psa}),#{item})"))
     }
 }
+
+/// The tolerance kinds AP242 derives from
+/// `geometric_tolerance_with_datum_reference`: their simple form states the
+/// datum list itself. The others take one only in the complex form.
+const REFERENCES_DATUMS: [&str; 8] = [
+    "ANGULARITY_TOLERANCE",
+    "CIRCULAR_RUNOUT_TOLERANCE",
+    "COAXIALITY_TOLERANCE",
+    "CONCENTRICITY_TOLERANCE",
+    "PARALLELISM_TOLERANCE",
+    "PERPENDICULARITY_TOLERANCE",
+    "SYMMETRY_TOLERANCE",
+    "TOTAL_RUNOUT_TOLERANCE",
+];
 
 /// Whether a placement keeps every surface's parameters: no scale, no
 /// mirror.

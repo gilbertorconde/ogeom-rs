@@ -4523,10 +4523,19 @@ impl<'a> Reader<'a> {
             let magnitude = magnitude_ref
                 .and_then(|r| self.measure_value(r))
                 .map_or(0.0, |(v, _)| v);
-            let datums: Vec<String> = datum_refs
-                .iter()
-                .filter_map(|&r| self.datum_letter(r, 0))
-                .collect();
+            // A datum system states the whole frame, in precedence order
+            // and with each reference's modifiers; any other reference is
+            // one datum, or one common datum.
+            let mut datums: Vec<ogeom_doc::DatumReference> = Vec::new();
+            let mut datum_system = false;
+            for &r in &datum_refs {
+                if let Some(frame) = self.datum_system(r) {
+                    datums.extend(frame);
+                    datum_system = true;
+                } else if let Some(letter) = self.datum_letter(r, 0) {
+                    datums.push(letter.into());
+                }
+            }
             let items = aspect.map(items_for).unwrap_or_default();
             annotation_ids.insert(id, ogeom_doc::Annotated::Tolerance(pmi.tolerances.len()));
             pmi.tolerances.push(ogeom_doc::GeometricTolerance {
@@ -4535,6 +4544,7 @@ impl<'a> Reader<'a> {
                 magnitude,
                 modifiers,
                 datums,
+                datum_system,
                 items,
             });
         }
@@ -5077,6 +5087,92 @@ impl<'a> Reader<'a> {
             return (name, true, aspects);
         }
         (String::new(), false, Vec::new())
+    }
+
+    /// The references of a datum system, primary first: each compartment's
+    /// datum (a common datum's letters hyphen-joined) and its modifiers.
+    /// `None` when `id` is no datum system, or names a datum no letter
+    /// resolves, the caller then reading it as a plain reference.
+    fn datum_system(&mut self, id: u64) -> Option<Vec<ogeom_doc::DatumReference>> {
+        let compartments: Vec<u64> = {
+            let instance = self.instance(id).ok()?;
+            instance
+                .part("DATUM_SYSTEM")?
+                .get(4)
+                .and_then(Arg::list)?
+                .iter()
+                .filter_map(Arg::reference)
+                .collect()
+        };
+        let mut out = Vec::with_capacity(compartments.len());
+        for compartment in compartments {
+            let args = self.args(compartment, "DATUM_REFERENCE_COMPARTMENT").ok()?;
+            let label = match args.get(4)? {
+                Arg::Ref(base) => self.datum_letter(*base, 0)?,
+                Arg::List(elements) => {
+                    // A common datum: one element per constituent, each
+                    // naming its datum as a compartment does.
+                    let mut letters = Vec::with_capacity(elements.len());
+                    for element in elements {
+                        let element = element.reference()?;
+                        let datum = match self.args(element, "DATUM_REFERENCE_ELEMENT") {
+                            Ok(args) => args.get(4).and_then(Arg::reference)?,
+                            Err(_) => element,
+                        };
+                        letters.push(self.datum_letter(datum, 0)?);
+                    }
+                    letters.join("-")
+                }
+                _ => return None,
+            };
+            let mut modifiers = Vec::new();
+            for modifier in args.get(5).and_then(Arg::list).unwrap_or(&[]) {
+                match modifier {
+                    Arg::Typed(typed) => {
+                        if let Some(Arg::Enum(word)) = typed.1.first() {
+                            modifiers.push(ogeom_doc::DatumModifier::Simple(word.to_lowercase()));
+                        }
+                    }
+                    Arg::Enum(word) => {
+                        modifiers.push(ogeom_doc::DatumModifier::Simple(word.to_lowercase()));
+                    }
+                    Arg::Ref(valued) => {
+                        if let Some(modifier) = self.datum_modifier_with_value(*valued) {
+                            modifiers.push(modifier);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            out.push(ogeom_doc::DatumReference { label, modifiers });
+        }
+        Some(out)
+    }
+
+    /// A `DATUM_REFERENCE_MODIFIER_WITH_VALUE`: its kind and its length.
+    fn datum_modifier_with_value(&mut self, id: u64) -> Option<ogeom_doc::DatumModifier> {
+        let args = self.args(id, "DATUM_REFERENCE_MODIFIER_WITH_VALUE").ok()?;
+        let kind = match args.first()? {
+            Arg::Enum(word) => ogeom_doc::DatumModifierKind::from_word(word)?,
+            _ => return None,
+        };
+        let value = self.length_value(args.get(1)?.reference()?)?;
+        Some(ogeom_doc::DatumModifier::WithValue { kind, value })
+    }
+
+    /// A length measure with unit, in millimetres, whether written as the
+    /// complex measure item or as the plain entity.
+    fn length_value(&mut self, id: u64) -> Option<f64> {
+        if let Some((value, ogeom_doc::MeasureKind::Length)) = self.measure_value(id) {
+            return Some(value);
+        }
+        let args = self.args(id, "LENGTH_MEASURE_WITH_UNIT").ok()?;
+        match args.first()? {
+            Arg::Typed(typed) => {
+                Some(typed.1.first().and_then(Arg::number)? * self.report.scale_mm)
+            }
+            _ => None,
+        }
     }
 
     /// The datum letter reachable from a datum reference, depth-bounded: the

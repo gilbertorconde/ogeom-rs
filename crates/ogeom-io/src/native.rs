@@ -1142,14 +1142,38 @@ pub fn write_document(
             text(&mut t, word);
         }
         u(&mut t, tolerance.datums.len() as u64);
-        for label in &tolerance.datums {
-            text(&mut t, label);
+        for reference in &tolerance.datums {
+            text(&mut t, &reference.label);
         }
         u(&mut t, tolerance.items.len() as u64);
         for node in &tolerance.items {
             key(&mut t, renumbered.node(*node)?);
         }
         emit(&mut out, &t);
+        // The datum system and its modifiers, a record of its own after the
+        // tolerance's, so a file with neither reads as it did.
+        if tolerance.datum_system || tolerance.datums.iter().any(|d| !d.modifiers.is_empty()) {
+            let mut t = Tokens::default();
+            w(&mut t, "pmi-tol-frame");
+            flag(&mut t, tolerance.datum_system);
+            for reference in &tolerance.datums {
+                u(&mut t, reference.modifiers.len() as u64);
+                for modifier in &reference.modifiers {
+                    match modifier {
+                        ogeom_doc::DatumModifier::Simple(word) => {
+                            w(&mut t, "S");
+                            text(&mut t, word);
+                        }
+                        ogeom_doc::DatumModifier::WithValue { kind, value } => {
+                            w(&mut t, "V");
+                            w(&mut t, kind.word());
+                            n(&mut t, *value);
+                        }
+                    }
+                }
+            }
+            emit(&mut out, &t);
+        }
     }
     for datum in &pmi.datums {
         let mut t = Tokens::default();
@@ -1570,7 +1594,7 @@ pub fn read_document(text: &str) -> OgeomResult<ogeom_doc::Document> {
                 }
                 let mut datums = Vec::new();
                 for _ in 0..cursor.count()? {
-                    datums.push(read_text(&mut cursor)?);
+                    datums.push(ogeom_doc::DatumReference::new(read_text(&mut cursor)?));
                 }
                 let mut items = Vec::new();
                 for _ in 0..cursor.count()? {
@@ -1586,8 +1610,38 @@ pub fn read_document(text: &str) -> OgeomResult<ogeom_doc::Document> {
                         magnitude,
                         modifiers,
                         datums,
+                        datum_system: false,
                         items,
                     });
+            }
+            "pmi-tol-frame" => {
+                let system = cursor.flag()?;
+                let Some(tolerance) = document.pmi_mut().tolerances.last_mut() else {
+                    ogeom_bail!(Construction, "a datum frame follows no tolerance");
+                };
+                tolerance.datum_system = system;
+                for reference in &mut tolerance.datums {
+                    for _ in 0..cursor.count()? {
+                        let modifier = match cursor.word()? {
+                            "S" => ogeom_doc::DatumModifier::Simple(read_text(&mut cursor)?),
+                            "V" => {
+                                let word = cursor.word()?;
+                                let Some(kind) = ogeom_doc::DatumModifierKind::from_word(word)
+                                else {
+                                    ogeom_bail!(Construction, "unknown datum modifier `{word}`");
+                                };
+                                ogeom_doc::DatumModifier::WithValue {
+                                    kind,
+                                    value: cursor.number()?,
+                                }
+                            }
+                            other => {
+                                ogeom_bail!(Construction, "unknown datum modifier tag `{other}`")
+                            }
+                        };
+                        reference.modifiers.push(modifier);
+                    }
+                }
             }
             "pmi-datum" => {
                 let label = read_text(&mut cursor)?;
@@ -3185,6 +3239,7 @@ mod tests {
             magnitude: 0.05,
             modifiers: vec!["maximum_material_requirement".into()],
             datums: vec!["A".into(), "A-B".into()],
+            datum_system: false,
             items: vec![face.node()],
         });
         document.pmi_mut().datums.push(ogeom_doc::Datum {

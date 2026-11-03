@@ -25,8 +25,9 @@ pub use attributes::{
 };
 pub use construction::{Construction, ConstructionGeometry};
 pub use pmi::{
-    Annotated, Callout, Datum, DatumTarget, DatumTargetKind, Dimension, GeometricTolerance,
-    MeasureKind, Pmi,
+    Annotated, Callout, Datum, DatumModifier, DatumModifierKind, DatumReference, DatumTarget,
+    DatumTargetKind, Dimension, GeometricTolerance, LEAST_MATERIAL, MAXIMUM_MATERIAL, MeasureKind,
+    Pmi,
 };
 pub use structure::{Colour, Document, Instance, Occurrence, Product, ProductId, ProductKind};
 pub use view::{Note, View};

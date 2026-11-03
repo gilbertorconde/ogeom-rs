@@ -39,7 +39,40 @@ bump may break the API and a patch bump may not.
     the confusion distance. A million points of a bore settle in under a
     second.
 
+- **Datum reference frames, material modifiers, and position, profile
+  and runout tolerances as AP242 semantic PMI in STEP, both directions:
+  `doc::DatumReference { label, modifiers }`, `doc::DatumModifier::{Simple,
+  WithValue}`, `doc::DatumModifierKind`, `doc::{MAXIMUM_MATERIAL,
+  LEAST_MATERIAL}`, and `GeometricTolerance::datum_system`.** (#595)
+  - A tolerance whose `datum_system` is set, or whose datums carry
+    modifiers, is written as the CAx-IF recommended practices give: a
+    `DATUM_SYSTEM` of up to three `DATUM_REFERENCE_COMPARTMENT`s in
+    precedence order, a common datum (`A-B`) through one
+    `DATUM_REFERENCE_ELEMENT` per constituent, each compartment's
+    modifiers as `SIMPLE_DATUM_REFERENCE_MODIFIER`s and
+    `DATUM_REFERENCE_MODIFIER_WITH_VALUE`s, and the tolerance in the
+    complex form wherever its kind (`position`, `surface_profile`,
+    `line_profile`) takes a datum list only there. A frame of more than
+    three references, or naming a label no datum has, is refused.
+  - The reader takes the frame back from the datum system: the
+    references in order, their modifiers, and the faces the tolerance
+    controls. A tolerance that sets neither writes byte for byte as
+    before, and the native format keeps the frame in a record of its own
+    after the tolerance's.
+
+### Changed
+
+- **`GeometricTolerance::datums` holds `DatumReference`s rather than
+  strings, and `GeometricTolerance` gains `datum_system` and `Default`.**
+  A reference converts from a `&str` or `String`, and compares equal to
+  a bare label when it carries no modifiers. A tolerance built with a
+  struct literal needs the field.
+
 ### Fixed
+
+- **A tolerance that references a datum system reads every reference of
+  it.** The reader used to keep only the first: NIST's CTC 1 part, whose
+  positions reference `A|B|C`, read as referencing `A`. (#595)
 
 - **`mesh::simplify` with `Target::Verified` is about fifteen times faster
   on large meshes, and no longer folds a closed mesh through itself.**
