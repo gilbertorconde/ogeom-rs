@@ -727,6 +727,25 @@ tests = [
 ]
 
 [[capability]]
+id = "algo.zone-fits"
+title = "Form as the standards define it: the minimum-zone flatness, circularity, cylindricity, sphericity and straightness of points, and their maximum-inscribed and minimum-circumscribed circles and cylinders, exact or certified by the Chebyshev conditions"
+crate = "ogeom-algo"
+verdict = "covered"
+symbols = [
+    "ogeom_algo::flatness", "ogeom_algo::straightness", "ogeom_algo::circularity",
+    "ogeom_algo::cylindricity", "ogeom_algo::sphericity",
+    "ogeom_algo::inscribed_circle", "ogeom_algo::circumscribed_circle",
+    "ogeom_algo::inscribed_cylinder", "ogeom_algo::circumscribed_cylinder",
+    "ogeom_algo::Zone",
+]
+tests = [
+    "crates/ogeom-algo/tests/zone_fits.rs",
+    "crates/ogeom-algo/src/fit/zone/lp.rs",
+    "crates/ogeom-algo/src/fit/zone/slp.rs",
+    "crates/ogeom-algo/src/fit/zone/hull.rs",
+]
+
+[[capability]]
 id = "algo.fit-outline"
 title = "An outline of lines, tangent arcs and circles fitted around a 2D silhouette, every point between a play and the play plus twice a tolerance outside it, negative play inside it"
 crate = "ogeom-algo"

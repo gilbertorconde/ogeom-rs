@@ -40,6 +40,14 @@
 //! them, with every point's residual ([`plane`], [`sphere`], [`cylinder`],
 //! [`cone`], [`torus`], [`circle3`], [`line3`], [`circle2`], [`line2`]).
 //!
+//! # Zones
+//!
+//! Form as a tolerance limits it is not the least-squares fit's peak to
+//! peak but the narrowest zone holding every point: [`zone`] fits the
+//! minimum zone of a plane, a line, a circle, a cylinder or a sphere, and
+//! the largest inscribed and smallest circumscribed circles and
+//! cylinders.
+//!
 //! # Regions
 //!
 //! On a mesh, which points belong to the surface is itself the question:
@@ -56,6 +64,7 @@ mod grow;
 mod primitive;
 pub(crate) mod segments;
 mod tails;
+pub mod zone;
 
 pub use grow::{AnyFit, FitKind, GrowOptions, Grown, SeedReport, grow};
 pub use primitive::{

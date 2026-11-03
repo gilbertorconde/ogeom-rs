@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 99 |
+| `covered` | 100 |
 | `partial` | 9 |
 | `divergent` | 6 |
 
-114 capabilities. Ratchet: `unreviewed_max = 0`.
+115 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -50,6 +50,7 @@ per module. Each verdict cites the symbols and tests that back it, and
 - **algo.validity**: Diagnosing a shape's validity, by entity, with named problems · `covered`
 - **algo.volume-difference**: The volume between a scan and its solid on a grid: nodes read by exact parity against the scan and against the solid, those in the solid's mesh band against its true surfaces; holes filled and doubted, differences joined into missing and excess regions with volume, depth, layer or lump, and the shallower than a cell dropped · `covered`
 - **algo.wall-thickness**: Wall thickness at many points of a mesh or a shape's own faces, by rays or by medial balls · `covered`
+- **algo.zone-fits**: Form as the standards define it: the minimum-zone flatness, circularity, cylindricity, sphericity and straightness of points, and their maximum-inscribed and minimum-circumscribed circles and cylinders, exact or certified by the Chebyshev conditions · `covered`
 
 ### ogeom-bool
 
@@ -310,4 +311,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 4f6a54b6156e139b -->
+<!-- ledger-checksum: fa5e7d75d7544e27 -->
