@@ -140,6 +140,38 @@ pub(super) fn normal_tail(k: f64) -> f64 {
     gamma_q(0.5, 0.5 * k * k)
 }
 
+/// The `k` at which the normal's two-sided tail is `tail`: zero for a tail
+/// of one or more, infinite for none.
+pub(super) fn normal_at_tail(tail: f64) -> f64 {
+    if tail.is_nan() || tail <= 0.0 {
+        return f64::INFINITY;
+    }
+    if tail >= 1.0 {
+        return 0.0;
+    }
+    // The tail falls as k grows: double past it, then halve the bracket
+    // until it cannot narrow.
+    let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+    while normal_tail(hi) > tail {
+        lo = hi;
+        hi *= 2.0;
+        if !hi.is_finite() {
+            return f64::INFINITY;
+        }
+    }
+    loop {
+        let mid = 0.5 * (lo + hi);
+        if mid <= lo || mid >= hi {
+            return hi;
+        }
+        if normal_tail(mid) > tail {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+}
+
 /// `P(|T| > t)` for Student's `T` with `dof` degrees of freedom.
 fn t_tail(t: f64, dof: f64) -> f64 {
     beta_i(0.5 * dof, 0.5, dof / t.mul_add(t, dof))
@@ -204,6 +236,12 @@ mod tests {
         let many = t_at_normal(3.0, 1_000_000);
         assert!((many - 3.0 * (1.0 + 10.0 / 4e6)).abs() < 1e-9, "{many}");
         assert!(t_at_normal(3.0, 0).is_infinite());
+        // The 5 % and 1 % two-sided points of the normal, and back.
+        assert!((normal_at_tail(0.05) - 1.959_963_984_540_054).abs() < 1e-12);
+        assert!((normal_at_tail(0.01) - 2.575_829_303_548_901).abs() < 1e-12);
+        assert!((normal_at_tail(normal_tail(3.0)) - 3.0).abs() < 1e-12);
+        assert_eq!(normal_at_tail(1.0), 0.0);
+        assert!(normal_at_tail(0.0).is_infinite());
         assert!(t_at_normal(f64::INFINITY, 5).is_infinite());
     }
 }

@@ -214,6 +214,20 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`algo::fit::grow` with `FitKind::Line3` or `FitKind::Circle3` traces
+  a crease only where one lies near the click and turns past the crease
+  limit by more than the noise.** (#664) On a scan with rounded edges and
+  the default limit of π/6, the noise turns scattered edges of the rounds
+  past the limit, and a chain of four to eight of them from anywhere on
+  the box was taken as the crease: a line up to 10 mm from the click. A
+  chain now starts within as many of the click's triangle's longest edge
+  as the shortest chain accepted has edges, and the angles its edges turn
+  through, less the limit, must sum to more than the noise its fit
+  measures could move that sum, at the cutoff's sigmas spread over the
+  chains tried. A click on a rounded edge now finds where its faces meet,
+  and a click in the middle of a face, beyond reach of every crease, is
+  refused. A sharp edge and a bore's rim trace as before.
+
 - **A tolerance that references a datum system reads every reference of
   it.** The reader used to keep only the first: NIST's CTC 1 part, whose
   positions reference `A|B|C`, read as referencing `A`. (#595)
