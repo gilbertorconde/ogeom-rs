@@ -1,7 +1,7 @@
 //! A circle or a line traced along a mesh's creases from a seed, for
 //! [`grow`](super::grow).
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use ogeom_core::{OgeomError, OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{Point, Vector};
@@ -10,17 +10,22 @@ use ogeom_mesh::Bvh;
 use super::{
     AnyFit, Crease, FitKind, Gate, GrowOptions, Grown, NONE, SeedReport, Surface, fitted, meeting,
 };
-use crate::fit::primitive;
+use crate::Cutoff;
+use crate::fit::{primitive, tails};
 
 /// Trace the crease the first seed is nearest and fit `kind` along it.
 ///
-/// The first seed's crease edges are tried nearest first, and the first
-/// whose chain holds twice the vertices the fit needs is traced: an edge
-/// the noise turned past the limit on its own, or with a few neighbours,
-/// makes a chain too short to measure the kind over, and is passed over.
-/// Where none does, a line is sought where two planes meet across a round,
-/// and failing that the nearest edge's fit's own refusal is given, or
-/// where no fit refused, the seed is refused as lying on a smooth part.
+/// The first seed's crease edges within reach of it are tried nearest
+/// first, the reach being as many of its triangle's longest edge as the
+/// shortest chain accepted has edges. The first whose chain holds twice
+/// the vertices the fit needs, and turns past the limit by more than the
+/// noise its fit measures could turn it, is traced: an edge the noise
+/// turned past the limit on its own, or with a few neighbours, makes a
+/// chain too short to measure the kind over or too little past the limit,
+/// and is passed over. Where none does, a line is sought where two planes
+/// meet across a round, and failing that the nearest edge's fit's own
+/// refusal is given, or where no fit refused, the seed is refused as lying
+/// on a smooth part.
 pub(super) fn traced(
     surface: &Surface<'_>,
     index: &Bvh,
@@ -34,9 +39,9 @@ pub(super) fn traced(
     let smooth = |i: usize| -> OgeomError {
         ogeom_core::ogeom_err!(
             Construction,
-            "seed {i} lies on a smooth part of the mesh: no chain of {least} vertices about \
+            "seed {i} lies on a smooth part of the mesh: no chain of {least} vertices near \
              it, enough to measure a {} over, runs along edges turning by more than the \
-             crease limit {}",
+             crease limit {}, past it by more than the noise",
             kind.kind().name(),
             options.crease_limit
         )
@@ -56,6 +61,16 @@ pub(super) fn traced(
         }
         reached.push((hit.triangle, edges));
     }
+    let corners = surface.corners(reached[0].0).map(|v| surface.position(v));
+    let longest = (0..3)
+        .map(|k| (corners[(k + 1) % 3] - corners[k]).magnitude())
+        .fold(0.0, f64::max);
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a chain needs a handful of vertices"
+    )]
+    let reach = (least - 1) as f64 * longest;
+    let within = reached[0].1.partition_point(|edge| edge.3 <= reach);
 
     let mut chain = Chain {
         surface,
@@ -72,7 +87,7 @@ pub(super) fn traced(
     let mut tried: BTreeSet<(u32, u32)> = BTreeSet::new();
     let mut found = false;
     let mut refusal = None;
-    for &(a, b, _) in &reached[0].1 {
+    for &(a, b, ..) in &reached[0].1[..within] {
         if tried.contains(&(a, b)) {
             continue;
         }
@@ -80,15 +95,18 @@ pub(super) fn traced(
         let outcome = chain.trace();
         if chain.vertices.len() >= least {
             outcome?;
-            found = true;
-            break;
-        }
-        match outcome {
-            Ok(()) => {}
-            Err(e @ OgeomError::Construction(_)) => {
-                refusal.get_or_insert(e);
+            if chain.beyond_noise(within) {
+                found = true;
+                break;
             }
-            Err(e) => return Err(e),
+        } else {
+            match outcome {
+                Ok(()) => {}
+                Err(e @ OgeomError::Construction(_)) => {
+                    refusal.get_or_insert(e);
+                }
+                Err(e) => return Err(e),
+            }
         }
         let mut walked: Vec<u32> = chain.vertices.iter().copied().collect();
         if chain.closed {
@@ -119,7 +137,7 @@ pub(super) fn traced(
         .map(|(seed, (triangle, edges))| {
             let on = edges
                 .iter()
-                .find(|(a, b, _)| on_chain[*a as usize] && on_chain[*b as usize]);
+                .find(|(a, b, ..)| on_chain[*a as usize] && on_chain[*b as usize]);
             SeedReport {
                 triangle: *triangle,
                 in_region: on.is_some(),
@@ -229,9 +247,15 @@ impl Creases {
 
     /// The crease edges bounding the smooth part of the surface `triangle`
     /// lies on, the triangles reached from it across edges that are not
-    /// creases, each with the angle the surface turns through there:
-    /// nearest `seed` first, the lesser vertex pair first on a tie.
-    fn about(&self, surface: &Surface<'_>, triangle: u32, seed: Point) -> Vec<(u32, u32, f64)> {
+    /// creases, each with the angle the surface turns through there and
+    /// its distance from `seed`: nearest first, the lesser vertex pair
+    /// first on a tie.
+    fn about(
+        &self,
+        surface: &Surface<'_>,
+        triangle: u32,
+        seed: Point,
+    ) -> Vec<(u32, u32, f64, f64)> {
         let mut seen = vec![false; self.edge.len()];
         let mut queue = VecDeque::from([triangle]);
         seen[triangle as usize] = true;
@@ -257,9 +281,51 @@ impl Creases {
         found.dedup_by_key(|x| x.1);
         found
             .into_iter()
-            .map(|(_, (a, b), turn)| (a, b, turn))
+            .map(|(d, (a, b), turn)| (a, b, turn, d))
             .collect()
     }
+}
+
+/// The angle the surface turns through across the edge `a b`, between the
+/// triangles `a b c` and `a b d`, and its gradient in `a`, `b`, `c` and
+/// `d`; `None` where a triangle has no area.
+///
+/// The angle is π less the one between the half-planes, each from the
+/// edge out to `c` or `d`. Moving `c` across its half-plane by `δ` turns
+/// that half-plane about the edge by `δ / h_c`, `h_c` the distance of `c`
+/// from the edge; moving `a` or `b` turns it by the share of `δ` the
+/// triangle's plane takes at the edge's other end, `1 - s` or `s`, `s` how
+/// far along the edge `c`'s foot lies.
+fn fold([a, b, c, d]: [Point; 4]) -> Option<(f64, [Vector; 4])> {
+    let edge = b - a;
+    let length = edge.dot(edge);
+    if length.is_nan() || length <= 0.0 {
+        return None;
+    }
+    let along = edge / length.sqrt();
+    let foot = |q: Point| {
+        let s = (q - a).dot(edge) / length;
+        let out = (q - a) - edge * s;
+        (s, out, out.magnitude())
+    };
+    let ((sc, uc, hc), (sd, ud, hd)) = (foot(c), foot(d));
+    if !(hc > 0.0 && hd > 0.0) {
+        return None;
+    }
+    let (u1, u2) = (uc / hc, ud / hd);
+    let sine = u1.cross(u2).dot(along);
+    let turn = core::f64::consts::PI - sine.abs().atan2(u1.dot(u2));
+    let way = if sine < 0.0 { -1.0 } else { 1.0 };
+    let (r1, r2) = (along.cross(u1) * (way / hc), along.cross(u2) * (way / hd));
+    Some((
+        turn,
+        [
+            r2 * (1.0 - sd) - r1 * (1.0 - sc),
+            r2 * sd - r1 * sc,
+            r1,
+            -r2,
+        ],
+    ))
 }
 
 /// The distance from `p` to the segment `a b`.
@@ -352,6 +418,72 @@ impl Chain<'_, '_> {
         ));
         self.fit = Some(fit);
         Ok(())
+    }
+
+    /// Whether the chain turns past the crease limit by more than the noise
+    /// could turn it, one of `tries` chains tried.
+    ///
+    /// Across each edge `a b` of the chain, between the triangles `a b c`
+    /// and `a b d`, the surface turns through an angle whose excess over
+    /// the limit, summed along the chain, is `S`. Each point moved by
+    /// independent noise of sigma `σ` along each axis moves `S`, to first
+    /// order, by its gradient there, summed over the edges it bounds: `S`
+    /// varies as `σ² W`, `W` the sum of those gradients' squares. With the
+    /// chain's fit measuring `σ` over `ν` degrees of freedom, the turn is
+    /// past the limit where `S` exceeds the Student t at `ν` for `k'` times
+    /// `σ √W`; `k'` is the normal deviate whose tail is the cutoff's `k`
+    /// sigmas' over `tries`, so of all the chains tried, one whose edges
+    /// turn by the limit at most passes as rarely as a point of plain noise
+    /// lies `k` sigmas out. A short chain's fit measures its noise poorly
+    /// and needs a larger excess. A cutoff that counts no sigmas,
+    /// [`Cutoff::Distance`] or [`Cutoff::All`], measures no noise, and
+    /// every chain passes.
+    fn beyond_noise(&self, tries: usize) -> bool {
+        let surface = self.surface;
+        if !matches!(self.options.cutoff, Cutoff::Sigma(_) | Cutoff::Median(_)) {
+            return true;
+        }
+        let Some(gate) = self.gate else {
+            return false;
+        };
+        let mut edges: Vec<(u32, u32)> = self
+            .vertices
+            .iter()
+            .zip(self.vertices.iter().skip(1))
+            .map(|(&a, &b)| (a, b))
+            .collect();
+        if self.closed
+            && let (Some(&last), Some(&first)) = (self.vertices.back(), self.vertices.front())
+        {
+            edges.push((last, first));
+        }
+        let mut excess = 0.0;
+        let mut gradient: BTreeMap<u32, Vector> = BTreeMap::new();
+        for (a, b) in edges {
+            let beside: Vec<u32> = surface
+                .fan(a)
+                .iter()
+                .map(|&t| surface.corners(t))
+                .filter(|c| c.contains(&b))
+                .filter_map(|c| c.into_iter().find(|&v| v != a && v != b))
+                .collect();
+            let &[c, d] = beside.as_slice() else {
+                return false;
+            };
+            let points = [a, b, c, d];
+            let Some((turn, slopes)) = fold(points.map(|v| surface.position(v))) else {
+                return false;
+            };
+            excess += turn - self.options.crease_limit;
+            for (v, slope) in points.into_iter().zip(slopes) {
+                *gradient.entry(v).or_insert(Vector::ZERO) += slope;
+            }
+        }
+        let spread = gradient.values().map(|g| g.dot(*g)).sum::<f64>().sqrt();
+        #[allow(clippy::cast_precision_loss, reason = "far below 2^52 tries")]
+        let tail = tails::normal_tail(gate.sigmas) / tries.max(1) as f64;
+        let deviate = tails::t_at_normal(tails::normal_at_tail(tail), gate.dof);
+        excess > deviate * gate.noise * spread
     }
 
     /// Run on from one end by one vertex, and say whether it did: along
@@ -447,5 +579,46 @@ impl Chain<'_, '_> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "test code")]
+mod tests {
+    use super::*;
+
+    /// The fold's gradient matches its central differences, either way
+    /// round the edge, across a flat, a convex and a concave edge, and a
+    /// near fold back.
+    #[test]
+    fn the_fold_gradient_is_its_finite_difference() {
+        let a = Point::new(0.1, -0.2, 0.05);
+        let b = Point::new(0.9, 0.15, -0.1);
+        for (c, d) in [
+            (Point::new(0.4, 0.6, 0.0), Point::new(0.5, -0.7, 0.1)),
+            (Point::new(0.3, 0.5, -0.3), Point::new(0.6, -0.4, -0.5)),
+            (Point::new(0.3, 0.5, 0.4), Point::new(0.6, -0.4, 0.7)),
+            (Point::new(0.2, 0.7, 0.1), Point::new(0.7, 0.6, 0.3)),
+        ] {
+            for points in [[a, b, c, d], [b, a, c, d], [a, b, d, c]] {
+                let (_, slopes) = fold(points).unwrap();
+                let h = 1e-6;
+                for (i, slope) in slopes.iter().enumerate() {
+                    for (k, unit) in [Vector::X, Vector::Y, Vector::Z].into_iter().enumerate() {
+                        let moved = |by: f64| {
+                            let mut p = points;
+                            p[i] += unit * by;
+                            fold(p).unwrap().0
+                        };
+                        let difference = (moved(h) - moved(-h)) / (2.0 * h);
+                        let exact = slope.dot(unit);
+                        assert!(
+                            (difference - exact).abs() < 1e-6,
+                            "point {i}, axis {k}: {difference} against {exact}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

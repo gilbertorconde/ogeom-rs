@@ -349,11 +349,28 @@ const NONE: u32 = u32::MAX;
 /// normals, by more than [`GrowOptions::crease_limit`]. A seed reaches the
 /// crease edges about the smooth part of the surface it lies on, the
 /// triangles reached from the one nearest it across edges that are not
-/// creases. The chain starts at the nearest of them whose chain holds
-/// twice the vertices the kind's fit needs, so an edge the noise alone
-/// turned past the limit is passed over; a seed with no such chain about
-/// it is refused, by the nearest chain's fit's own refusal where one
-/// refused and as lying on a smooth part otherwise.
+/// creases. Of those within reach of the first seed, as many of its
+/// triangle's longest edge as the shortest chain accepted has edges, the
+/// chain starts at the nearest whose chain holds twice the vertices the
+/// kind's fit needs and turns past the limit by more than the noise could
+/// turn it, so a run of edges the noise alone turned past the limit is
+/// passed over; a seed with no such chain about it is refused, by the
+/// nearest chain's fit's own refusal where one refused and as lying on a
+/// smooth part otherwise.
+///
+/// A chain turns past the limit by more than the noise where the angles
+/// its edges turn through, less the limit, sum to more than the noise
+/// could move that sum. Each point moved by noise of the sigma the
+/// chain's fit measures moves the sum, to first order, by its gradient
+/// there; the sum's sigma is the noise's times the root of those
+/// gradients' squares, summed over the points the chain's triangles hold.
+/// The sum must exceed that sigma times the Student t, at the fit's
+/// degrees of freedom, as rare as the cutoff's sigmas over the number of
+/// edges within reach: of all the chains tried, one whose edges turn by
+/// no more than the limit passes as rarely as a point of plain noise lies
+/// that many sigmas out. A short chain measures its noise poorly and must
+/// turn by more. With [`Cutoff::Distance`] or [`Cutoff::All`], which count
+/// no sigmas, every chain within reach passes.
 ///
 /// The chain runs from the first seed's edge both ways, a vertex at each
 /// end in turn. Before a fit has a finite gate (with [`Cutoff::All`],
@@ -380,9 +397,10 @@ const NONE: u32 = u32::MAX;
 /// # Rounded edges
 ///
 /// A scan rounds a box's edge, so no edge of it may turn past the crease
-/// limit. Where a [`FitKind::Line3`] finds no chain about the first seed,
-/// the line is sought instead where the planes either side of the round
-/// meet: the sharp edge the round stands in for, [`Crease::Meeting`].
+/// limit by more than the noise. Where a [`FitKind::Line3`] finds no chain
+/// about the first seed, the line is sought instead where the planes
+/// either side of the round meet: the sharp edge the round stands in for,
+/// [`Crease::Meeting`].
 ///
 /// The round's axis is the way the surface about the seed turns least: the
 /// rings of triangles about the seed's grow until their normals spread one
@@ -439,8 +457,10 @@ const NONE: u32 = u32::MAX;
 /// hierarchy holds a different number of triangles from the mesh;
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
 /// the mesh has no triangle to be near a seed, or for a curve where no
-/// crease about a seed holds twice the vertices the kind needs and, for a
-/// line, no two planes meet across a round about the first; and the kind's
+/// crease within reach of the first seed holds twice the vertices the kind
+/// needs and turns past the limit by more than the noise, or none about a
+/// later seed, and, for a line, no two planes meet across a round about
+/// the first; and the kind's
 /// own refusals, as its fit gives them.
 pub fn grow(
     mesh: &Triangulation,
@@ -813,6 +833,11 @@ struct Gate {
     quantum: f64,
     /// How many sigmas of the noise the cutoff keeps.
     sigmas: f64,
+    /// The noise's sigma along each direction a residual is measured in,
+    /// as the fit's residuals estimate it, and the estimate's degrees of
+    /// freedom; zero for a cutoff without sigmas.
+    noise: f64,
+    dof: usize,
 }
 
 impl Gate {
@@ -844,12 +869,13 @@ impl Gate {
             .model()
             .measured_over(points, fit.used(), &options.fixed);
         let (mut threshold, mut quantum, mut sigmas) = (f64::INFINITY, 0.0, 0.0);
+        let (mut noise, mut dof) = (0.0, 0);
         match options.cutoff {
             Cutoff::All => {}
             Cutoff::Distance(d) => threshold = d,
             cutoff @ (Cutoff::Sigma(k) | Cutoff::Median(k)) => {
                 let kept = model.components() * fit.used().iter().filter(|u| **u).count();
-                let dof = kept.saturating_sub(model.parameters());
+                dof = kept.saturating_sub(model.parameters());
                 let base = fit.threshold(cutoff);
                 let rms = fit.sigma();
                 sigmas = if rms > 0.0 { base / rms } else { k };
@@ -861,6 +887,9 @@ impl Gate {
                         reason = "point counts are far below 2^52"
                     )]
                     let unbiased = rms * (kept as f64 / dof as f64).sqrt();
+                    #[allow(clippy::cast_precision_loss, reason = "one, two or three")]
+                    let along = model.components() as f64;
+                    noise = unbiased / along.sqrt();
                     tails::t_at_normal(sigmas, dof) * unbiased
                 } else {
                     0.0
@@ -881,6 +910,8 @@ impl Gate {
             cos_limit: options.normal_limit.cos(),
             quantum,
             sigmas,
+            noise,
+            dof,
         }
     }
 

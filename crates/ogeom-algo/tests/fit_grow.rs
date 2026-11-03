@@ -918,15 +918,11 @@ fn a_traced_crease_does_not_depend_on_threads() {
     let edge = placed.apply(Point::new(0.3, 4.8, 5.0));
     let rounded = rounded_cube(5.0, 1.0, 20).mesh(&placed, 29);
     let round = placed.apply(Point::new(0.3, 4.7, 4.7));
-    let meeting = GrowOptions {
-        crease_limit: core::f64::consts::FRAC_PI_4,
-        ..GrowOptions::default()
-    };
     let both = || {
         (
             grown(&mesh, &[seed], FitKind::Circle3, &GrowOptions::default()),
             grown(&cube, &[edge], FitKind::Line3, &GrowOptions::default()),
-            grown(&rounded, &[round], FitKind::Line3, &meeting),
+            grown(&rounded, &[round], FitKind::Line3, &GrowOptions::default()),
         )
     };
     ogeom_core::parallel::set_threads(1);
@@ -1041,25 +1037,24 @@ fn a_click_on_a_rounded_box_edge_finds_where_its_faces_meet() {
     let (a, r) = (5.0, 1.0);
     let inner = a - r;
     let b = rounded_cube(a, r, 20);
-    // No edge of the noisy mesh turns past the limit away from the
-    // corners, where three cells meet at a vertex: the round has no crease
-    // to trace.
+    // The noise turns edges of the round past the default limit, away from
+    // the corners where three cells meet at a vertex too: chains of them
+    // are passed over as noise.
     let off_corners = |v: u32| {
         let p = b.positions[v as usize];
         [p.x, p.y, p.z].iter().any(|c| c.abs() <= inner)
     };
-    let limit = core::f64::consts::FRAC_PI_4;
-    let options = GrowOptions {
-        crease_limit: limit,
-        ..GrowOptions::default()
-    };
+    let options = GrowOptions::default();
     let along = placed.apply_vector(Vector::X);
     let normals = [Vector::Z, Vector::Y].map(|v| placed.apply_vector(v));
     let origin = placed.apply(Point::new(0.0, a, a));
     for noise in [29, 31, 37] {
         let mesh = b.mesh(&placed, noise);
         let sharpest = sharpest(&mesh, off_corners);
-        assert!(sharpest < limit, "an edge turns by {sharpest}");
+        assert!(
+            sharpest > options.crease_limit,
+            "no edge turns past the limit: {sharpest}"
+        );
         let index = Bvh::build(&mesh).unwrap();
         // Across the round between the top (z = a) and the side y = a, at
         // its middle and nearer either face.
@@ -1149,18 +1144,82 @@ fn a_click_on_a_rounded_box_edge_finds_where_its_faces_meet() {
     }
 }
 
+/// How far from a click a traced line's crease may lie: as many of the
+/// longest edge of the triangle nearest the click as a line's shortest
+/// chain, of four vertices, has edges.
+fn reach(mesh: &Triangulation, index: &Bvh, seed: Point) -> f64 {
+    let t = mesh.triangles[index.nearest(seed, f64::INFINITY).unwrap().triangle as usize];
+    let p = t.map(|v| mesh.positions[v as usize]);
+    let longest = (0..3)
+        .map(|k| (p[(k + 1) % 3] - p[k]).magnitude())
+        .fold(0.0, f64::max);
+    3.0 * longest
+}
+
+#[test]
+fn over_many_noise_draws_no_line_lies_off_the_clicked_edge() {
+    let placed = placement();
+    let (a, r) = (5.0, 1.0);
+    let inner = a - r;
+    let rounded = rounded_cube(a, r, 20);
+    let sharp = rounded_cube(a, 0.0, 20);
+    let options = GrowOptions::default();
+    for noise in 1..=60 {
+        // Across the round: the faces' meeting, never a chain of edges the
+        // noise turned past the limit; the unrounded edge lies within the
+        // radius of every point of the round.
+        let mesh = rounded.mesh(&placed, noise);
+        let index = Bvh::build(&mesh).unwrap();
+        for (x, angle) in [(0.3, 45.0_f64), (-2.1, 20.0), (2.6, 70.0)] {
+            let (sin, cos) = angle.to_radians().sin_cos();
+            let on = Point::new(x, inner + r * sin, inner + r * cos);
+            let seed = placed.apply(on);
+            let grown = grow(&mesh, &index, &[seed], FitKind::Line3, &options, T)
+                .unwrap_or_else(|e| panic!("noise {noise}, at {on:?}: {e}"));
+            assert!(
+                matches!(grown.crease, Some(Crease::Meeting(_))),
+                "noise {noise}, at {on:?}: {:?}",
+                grown.crease
+            );
+            assert!(
+                grown.seeds[0].offset <= r,
+                "noise {noise}, at {on:?}: the line lies {} from the click, past {r}",
+                grown.seeds[0].offset
+            );
+        }
+
+        // By a sharp edge: the edge, corner to corner.
+        if noise > 20 {
+            continue;
+        }
+        let mesh = sharp.mesh(&placed, noise);
+        let index = Bvh::build(&mesh).unwrap();
+        let seed = placed.apply(Point::new(0.3, a - 0.2, a));
+        let grown = grow(&mesh, &index, &[seed], FitKind::Line3, &options, T)
+            .unwrap_or_else(|e| panic!("noise {noise}: {e}"));
+        assert_eq!(grown.crease, Some(Crease::Traced), "noise {noise}");
+        assert_eq!(grown.vertices.len(), 21, "noise {noise}");
+        assert!(grown.vertices.iter().all(|&v| {
+            let p = sharp.positions[v as usize];
+            p.y == a && p.z == a
+        }));
+        assert!(grown.seeds[0].offset <= reach(&mesh, &index, seed));
+    }
+}
+
 #[test]
 fn a_click_on_a_flat_a_ball_or_a_pipe_finds_no_round_to_meet_across() {
     let placed = placement();
     let a = 5.0;
-    let options = GrowOptions {
-        crease_limit: core::f64::consts::FRAC_PI_4,
-        ..GrowOptions::default()
-    };
+    let options = GrowOptions::default();
+    // The middle of a sharp box's face lies further from its edges than
+    // the reach of a crease.
+    let sharp = rounded_cube(a, 0.0, 20).mesh(&placed, 19);
     let cube = rounded_cube(a, 1.0, 20).mesh(&placed, 29);
     let ball = rounded_cube(a, a, 20).mesh(&placed, 29);
     let pipe = pipe().mesh(&placed, 13);
     for (mesh, at) in [
+        (&sharp, Point::new(0.3, -0.2, a)),
         (&cube, Point::new(0.3, -0.2, a)),
         (&cube, Point::new(2.0, 1.0, a)),
         (&ball, Point::new(0.0, 0.0, a)),
