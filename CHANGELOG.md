@@ -11,6 +11,17 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-11-03
+
+An additive release: modelling from scans. `fit_surface_scattered_over`
+fits a B-spline to scattered points over a seed surface, a plane, cylinder,
+sphere or an earlier fit, so bands and caps that are no height field fit,
+and refines it only where it misses a tolerance; `algo::volume_difference`
+finds the regions where a scan and its solid disagree, missing or excess,
+layer or lump, with their depth; and `algo::fit_network` fits a network of
+patches to a scan at once, sharing the poles of every shared curve and
+holding the patches tangent across the curves that are not creases.
+
 ### Added
 
 - **A network of patches fitted to a scan at once:
@@ -11095,7 +11106,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.15.1...HEAD
+[0.15.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.14.2...v0.15.0
 [0.14.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.14.0...v0.14.1
