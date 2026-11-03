@@ -1,11 +1,15 @@
 //! Decimation checked by measuring, both ways, and repeated until it passes.
 //!
 //! The quadric cost that orders collapses is a mean over planes, and a mean
-//! can be small where one point has moved far. So the result is measured
-//! against the source rather than trusted: each source vertex to the result,
-//! and each result vertex and triangle centre to the source. Where a point is
-//! too far, the source vertices responsible are pinned and the decimation runs
-//! again from the source.
+//! can be small where one point has moved far. So each collapse is made only
+//! where every point it moves stays within the tolerance of the other mesh,
+//! and only where it leaves the mesh meeting itself at shared corners alone
+//! (see [`checked`](super::checked)); and the result is then measured against
+//! the source rather than trusted: each source vertex to the result, and each
+//! result vertex and triangle centre to the source. The checks bound what the
+//! measurement finds, so it passes the first time but for rounding. Where a
+//! point is too far all the same, the source vertices responsible are pinned
+//! and the decimation runs again from the source.
 //!
 //! # Why it stops
 //!
@@ -24,6 +28,7 @@ use ogeom_core::{FastMap, FastSet, OgeomResult, Tolerances};
 use ogeom_math::Point;
 use ogeom_topo::Triangulation;
 
+use super::checked::{Cells, Watch, centre_of, decimate};
 use super::{Deviation, Simplified, State};
 use crate::Bvh;
 
@@ -44,29 +49,33 @@ pub(super) fn simplify(
     let budget = tolerance * tolerance;
     let mut held: FastSet<u32> = FastSet::default();
     let mut rounds = 0;
-    let (mut state, mut collapsed, mut measured) = loop {
+    let (mut state, mut cells, mut collapsed, mut measured) = loop {
         rounds += 1;
         let mut state = State::new(mesh, tol);
-        state.held.clone_from(&held);
-        let collapsed = state.decimate_queued(budget, 1);
+        for &v in &held {
+            state.held[v as usize] = true;
+        }
+        let mut cells = Cells::over(&state);
+        let mut watch = Watch::new(&source, mesh, tolerance);
+        let collapsed = decimate(&mut state, budget, 1, &mut cells, Some(&mut watch));
         let measured = Measured::of(&source, mesh, &used, &state, share)?;
         if measured.distance_at_share <= tolerance {
-            break (state, collapsed, measured);
+            break (state, cells, collapsed, measured);
         }
         let before = held.len();
         pin(mesh, &used, &state, &measured, tolerance, &mut held);
         if held.len() == before {
             // Every far point is made of pinned vertices only, so rounding,
             // not a collapse, put it past a tolerance below it.
-            break (state, collapsed, measured);
+            break (state, cells, collapsed, measured);
         }
     };
 
     if let Some(most) = max_triangles
         && state.live_triangles() > most
     {
-        state.held.clear();
-        collapsed += state.decimate_queued(f64::INFINITY, most);
+        state.held.fill(false);
+        collapsed += decimate(&mut state, f64::INFINITY, most, &mut cells, None);
         measured = Measured::of(&source, mesh, &used, &state, share)?;
     }
 
@@ -185,8 +194,7 @@ fn at_share(distances: &[f64], share: f64) -> f64 {
 }
 
 fn centre(mesh: &Triangulation, triangle: [u32; 3]) -> Point {
-    let [a, b, c] = triangle.map(|v| mesh.positions[v as usize].to_vector());
-    Point::from_vector((a + b + c) * (1.0 / 3.0))
+    centre_of(triangle.map(|v| mesh.positions[v as usize]))
 }
 
 /// Pin the source vertices behind every point farther than `tolerance`.
@@ -226,7 +234,7 @@ fn pin(
         let nearest = corners
             .iter()
             .flat_map(|r| &members[*r as usize])
-            .filter(|&&s| !state.pinned.contains(&s) && !state.held.contains(&s))
+            .filter(|&&s| !state.pinned[s as usize] && !state.held[s as usize])
             .map(|&s| ((mesh.positions[s as usize] - point).magnitude(), s))
             .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         if let Some((_, s)) = nearest {
@@ -239,7 +247,7 @@ fn pin(
         if *d <= tolerance {
             continue;
         }
-        if state.pinned.contains(&s) || state.held.contains(&s) {
+        if state.pinned[s as usize] || state.held[s as usize] {
             stuck.insert(s);
         } else {
             held.insert(s);
@@ -252,7 +260,7 @@ fn pin(
             }
         }
     }
-    held.retain(|v| !state.pinned.contains(v));
+    held.retain(|&v| !state.pinned[v as usize]);
 }
 
 #[cfg(test)]
@@ -422,6 +430,32 @@ mod tests {
         assert!(share_within(&there, 0.05) >= 0.999);
         assert!(share_within(&back, 0.05) >= 0.999);
         check_readout(&source, &done, 0.05);
+    }
+
+    #[test]
+    fn every_point_within_tolerance_takes_one_decimation() {
+        // With the whole share asked, each collapse is checked against the
+        // source as it is made, so the first decimation already passes:
+        // every point of either mesh within the tolerance of the other, by
+        // brute force, and the result still closed and meeting itself only
+        // at shared corners.
+        let source = noisy_sphere(0.02, 0.01);
+        let target = Target::Verified {
+            tolerance: 0.05,
+            share: 1.0,
+            max_triangles: None,
+        };
+        let done = simplify(&source, target, T).unwrap();
+        let deviation = done.deviation.unwrap();
+        assert!(done.target_met);
+        assert_eq!(deviation.rounds, 1, "{deviation:?}");
+        // Not a check that holds nothing back: most of the source goes.
+        assert!(done.mesh.triangle_count() * 2 < source.triangle_count());
+        let (there, back) = both_ways(&source, &done.mesh);
+        let worst = there.iter().chain(&back).fold(0.0_f64, |m, d| m.max(*d));
+        assert!(worst <= 0.05, "a point {worst} from the other mesh");
+        check_readout(&source, &done, 0.05);
+        crate::boolean::check_solid(&done.mesh, "decimated", 0).unwrap();
     }
 
     #[test]
@@ -599,7 +633,8 @@ mod tests {
         );
         assert!(done.target_met);
         assert!(source.triangle_count() > 200_000);
-        assert!(took < std::time::Duration::from_secs(80), "took {took:?}");
+        // About 2 s on eight threads of the machine it was measured on.
+        assert!(took < std::time::Duration::from_secs(25), "took {took:?}");
 
         // Brute force on a sample, both ways: nothing farther than the
         // reported furthest point, and that point where it says.

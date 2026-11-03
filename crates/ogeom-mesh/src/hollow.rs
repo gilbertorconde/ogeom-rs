@@ -64,7 +64,7 @@ use ogeom_math::Point;
 use ogeom_topo::Triangulation;
 
 use crate::Bvh;
-use crate::boolean::check_solid;
+use crate::boolean::check_solid_kept;
 use crate::parity::{Lies, Line};
 use crate::simplify::{Deviation, Target, simplify};
 
@@ -115,8 +115,8 @@ pub struct Hollowed {
 ///
 /// The field costs a nearest-triangle query for each node inside the part,
 /// about `V / h³` of them, and the checks one exact pass over the part;
-/// the decimation, which measures and repeats, costs most on a curved
-/// cavity.
+/// the decimation, which checks every collapse against the marched cavity
+/// and the triangles near it, costs most on a curved cavity.
 ///
 /// # Errors
 ///
@@ -141,9 +141,10 @@ pub fn hollow(
     if !(cell.is_finite() && cell > 0.0) {
         ogeom_bail!(Construction, "a cell of {cell} is not a distance");
     }
-    let bvh = check_solid(mesh, "part", 0)?;
-    let lattice = Lattice::over(&bvh, cell, wall)?;
-    let marched = lattice.march(&bvh)?;
+    let part = check_solid_kept(mesh, "part")?;
+    let bvh = part.bvh();
+    let lattice = Lattice::over(bvh, cell, wall)?;
+    let marched = lattice.march(bvh)?;
     let first = mesh.triangles.len();
     if marched.triangles.is_empty() {
         return Ok(Hollowed {
@@ -166,7 +167,7 @@ pub fn hollow(
     )?;
     if decimated.target_met {
         let joined = join(mesh, &decimated.mesh)?;
-        if check_solid(&joined, "hollowed", first).is_ok() {
+        if part.check_cavity(&decimated.mesh, "hollowed").is_ok() {
             return Ok(Hollowed {
                 shells: shells(&decimated.mesh),
                 mesh: joined,
@@ -177,7 +178,7 @@ pub fn hollow(
         }
     }
     let joined = join(mesh, &marched)?;
-    if let Err(e) = check_solid(&joined, "hollowed", first) {
+    if let Err(e) = part.check_cavity(&marched, "hollowed") {
         ogeom_bail!(Invariant, "the marched cavity does not seal the part: {e}");
     }
     Ok(Hollowed {
@@ -373,9 +374,23 @@ impl Lattice {
         if nx < 2 || ny < 2 || nz < 2 {
             return Ok(m.out);
         }
-        let mut below = self.layer(bvh, 0);
+        // The layers are sampled a few at a time, each on one worker, so the
+        // field is held for those layers only.
+        let chunk = u32::try_from(4 * parallel::threads()).unwrap_or(u32::MAX);
+        let mut ahead = std::collections::VecDeque::new();
+        let mut next: u32 = 0;
+        let mut layer = |k: u32| {
+            if ahead.is_empty() {
+                let ks: Vec<u32> = (next..nz.min(next.saturating_add(chunk))).collect();
+                next = ks.last().map_or(next, |&last| last + 1);
+                ahead.extend(parallel::map_ordered(&ks, |_, &k| self.layer(bvh, k)));
+            }
+            debug_assert!(next > k);
+            ahead.pop_front().unwrap_or_default()
+        };
+        let mut below = layer(0);
         for k in 1..nz {
-            let above = self.layer(bvh, k);
+            let above = layer(k);
             for j in 0..ny - 1 {
                 for i in 0..nx - 1 {
                     let mut f = [0.0; 8];

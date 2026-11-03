@@ -11,6 +11,36 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`mesh::simplify` with `Target::Verified` is about fifteen times faster
+  on large meshes, and no longer folds a closed mesh through itself.**
+  (#647)
+  - On the 584 000-triangle cavity of a hollowed ball, 3.7 s rather than
+    58 s, in one decimation rather than seven.
+  - Each collapse is made only where every point it moves stays within the
+    tolerance of the other mesh, so the decimation runs once rather than
+    once per round of pins; the result is still measured both ways, and a
+    round that misses is still pinned and run again. Every point now
+    holds, so a `share` below one is met with room to spare.
+  - Each collapse is tested exactly, as `mesh::boolean` tests an operand,
+    against the triangles near its new fan, so a mesh that met itself only
+    at shared corners still does.
+  - Collapses whose neighbourhoods share no vertex are weighed together on
+    the kernel's workers; the result is the same at any thread count.
+  - `Target::Triangles` and `Target::Error` decimate exactly as before.
+- **`mesh::hollow` keeps its decimated cavity on curved parts and takes
+  about 5 s rather than a minute on a ball of a million triangles.** (#647)
+  The decimated cavity of a ball of radius 6 crossed itself, and `hollow`
+  fell back to the marched one, `deviation: None`; the cavity is now
+  checked against the part without checking the part twice, and the field
+  is sampled several layers at a time. The cavity is decimated within the
+  same tolerance, a sixteenth of a cell, and comes out far smaller: 12 072
+  triangles rather than 186 976 on that ball, its volume within 0.17 % of
+  the closed form rather than 0.08 %.
+- **`mesh::Bvh::build` builds the subtrees of a large mesh in parallel.**
+  The tree is the one built in a single pass.
+
 ## [0.15.1] - 2026-11-03
 
 An additive release: modelling from scans. `fit_surface_scattered_over`

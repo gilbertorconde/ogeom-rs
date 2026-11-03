@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::Editable;
+use crate::boolean::check_solid;
 use std::f64::consts::{PI, TAU};
 
 const T: Tolerances = Tolerances::millimetres();
@@ -176,6 +177,10 @@ fn a_hollowed_sphere_has_the_inner_radius() {
     let done = hollow(&part, w, &Grid::default(), T).unwrap();
     sealed(&done.mesh);
     assert_eq!(done.shells, 1);
+    assert!(
+        done.deviation.is_some(),
+        "the decimated cavity was refused and the marched one kept"
+    );
     let h = done.cell;
     // The facets lie between the sphere and `sag` inside it, so a point
     // `ρ` from the centre is between `R - sag - ρ` and `R - ρ` from them.
@@ -214,11 +219,19 @@ fn a_ball_of_a_million_triangles_hollows_in_time() {
     assert_eq!(done.shells, 1);
     let got = -cavity(&done).volume();
     let want = 4.0 / 3.0 * PI * (r - w).powi(3);
+    eprintln!(
+        "ball: {} triangles hollowed in {took:?}, cavity {} triangles, volume off by {:.3e}, {:?}",
+        part.triangle_count(),
+        done.mesh.triangle_count() - done.first_cavity_triangle,
+        (got - want) / want,
+        done.deviation
+    );
     assert!(
         ((got - want) / want).abs() < 0.002,
         "cavity {got} against {want}"
     );
-    assert!(took < std::time::Duration::from_secs(600), "took {took:?}");
+    // About 5 s on eight threads of the machine it was measured on.
+    assert!(took < std::time::Duration::from_secs(50), "took {took:?}");
 }
 
 #[test]
@@ -304,4 +317,88 @@ fn what_is_not_a_solid_or_a_distance_is_refused() {
         .unwrap_err()
         .to_string();
     assert!(message.contains("not wound outward"), "{message}");
+}
+
+#[test]
+fn a_decimated_cavity_meets_itself_only_at_shared_corners() {
+    // A ball's cavity, curved to a radius of a few cells: collapses on one
+    // side of it reach across to the other unless each new fan is tested
+    // against the triangles near it.
+    let (r, w) = (6.0, 1.0);
+    let part = sphere(r, 48, 96);
+    let checked = crate::boolean::check_solid_kept(&part, "part").unwrap();
+    let cell = w / 3.0;
+    let marched = Lattice::over(checked.bvh(), cell, w)
+        .unwrap()
+        .march(checked.bvh())
+        .unwrap();
+    let target = Target::Verified {
+        tolerance: cell / 16.0,
+        share: 1.0,
+        max_triangles: None,
+    };
+    let done = simplify(&marched, target, T).unwrap();
+    assert!(done.target_met);
+    assert!(done.mesh.triangle_count() < marched.triangle_count());
+    // The cavity faces into itself, so it is a solid turned inside out.
+    let mut outward = done.mesh.clone();
+    for t in &mut outward.triangles {
+        t.swap(1, 2);
+    }
+    check_solid(&outward, "decimated", 0).unwrap();
+}
+
+#[test]
+fn a_cavity_is_checked_as_the_part_joined_to_it_is() {
+    // Against the part, a cube of 20: a cavity well inside it, the same
+    // wound outward, one poking through the part's face, one crossing
+    // itself, and one walling in a hole the part already has.
+    let part = cuboid([0.0; 3], [20.0; 3]);
+    let inward = |lo: P3, hi: P3| {
+        let mut c = cuboid(lo, hi);
+        for t in &mut c.triangles {
+            t.swap(1, 2);
+        }
+        c
+    };
+    let mut crossing = inward([4.0; 3], [8.0; 3]);
+    let other = inward([6.0; 3], [10.0; 3]);
+    crossing.positions.extend_from_slice(&other.positions);
+    crossing
+        .triangles
+        .extend(other.triangles.iter().map(|t| t.map(|v| v + 8)));
+    let cases = [
+        (inward([5.0; 3], [15.0; 3]), true),
+        (cuboid([5.0; 3], [15.0; 3]), false),
+        (inward([5.0; 3], [25.0; 3]), false),
+        (crossing, false),
+    ];
+    let checked = crate::boolean::check_solid_kept(&part, "part").unwrap();
+    for (cavity, sound) in &cases {
+        let alone = checked.check_cavity(cavity, "hollowed");
+        let joined = check_solid(&join(&part, cavity).unwrap(), "hollowed", 12);
+        assert_eq!(alone.is_ok(), *sound, "{alone:?}");
+        assert_eq!(
+            alone.as_ref().err().map(ToString::to_string),
+            joined.as_ref().err().map(ToString::to_string)
+        );
+    }
+
+    // A part with a hole of its own, and a cavity that walls it in: the
+    // hole's faces then face into the cavity's material.
+    let mut holed = cuboid([0.0; 3], [20.0; 3]);
+    let hole = inward([9.0; 3], [11.0; 3]);
+    holed.positions.extend_from_slice(&hole.positions);
+    holed
+        .triangles
+        .extend(hole.triangles.iter().map(|t| t.map(|v| v + 8)));
+    let checked = crate::boolean::check_solid_kept(&holed, "part").unwrap();
+    let around = inward([5.0; 3], [15.0; 3]);
+    let alone = checked.check_cavity(&around, "hollowed");
+    let joined = check_solid(&join(&holed, &around).unwrap(), "hollowed", 24);
+    assert!(alone.is_err());
+    assert_eq!(
+        alone.err().map(|e| e.to_string()),
+        joined.err().map(|e| e.to_string())
+    );
 }
