@@ -33,17 +33,17 @@
 //!
 //! The quadric bounds nothing on its own: it is a sum over planes, and the
 //! nearest point of the source need not be on any of them. [`Target::Verified`]
-//! measures the result against the source both ways, pins what fails and
-//! decimates again; see [`Deviation`] for what it reports.
-
-use std::cmp::Reverse;
-use std::collections::BinaryHeap;
+//! makes a collapse only where the points it moves stay within the tolerance
+//! of the other mesh and its triangles meet no others but at shared corners,
+//! then measures the result against the source both ways, pins what fails
+//! and decimates again; see [`Deviation`] for what it reports.
 
 use ogeom_core::{FastMap, FastSet};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::Point;
 use ogeom_topo::Triangulation;
 
+mod checked;
 mod verified;
 
 /// How far to decimate.
@@ -61,11 +61,15 @@ pub enum Target {
     /// source both ways and hold whatever the measurement refuses.
     ///
     /// Each source vertex is measured to the result, and each result vertex
-    /// and triangle centre to the source. Where either is farther than
-    /// `tolerance`, the source vertices behind it are pinned and the
-    /// decimation is run again from the source, until at least `share` of
-    /// the points on each side are within `tolerance`. The measurement is
-    /// reported in [`Simplified::deviation`].
+    /// and triangle centre to the source. A collapse is made only where
+    /// every point it moves stays within `tolerance`, and only where its
+    /// triangles meet no other triangle but at the corners they share, so a
+    /// mesh that bounded a solid still does. Where a point is farther than
+    /// `tolerance` all the same, which rounding alone can cause, the source
+    /// vertices behind it are pinned and the decimation is run again from
+    /// the source, until at least `share` of the points on each side are
+    /// within `tolerance`. The measurement is reported in
+    /// [`Simplified::deviation`].
     ///
     /// With `max_triangles`, a result still larger than that is decimated
     /// further, pins released, and the deviation reported is the one
@@ -139,7 +143,9 @@ pub struct Simplified {
 /// not a positive count or a positive distance, a share is not in `(0, 1]`, or
 /// the mesh names a vertex it does not have;
 /// [`OgeomError::Numeric`](ogeom_core::OgeomError::Numeric) with
-/// [`Target::Verified`] if a vertex of a triangle is not finite.
+/// [`Target::Verified`] if a vertex of a triangle is not finite;
+/// [`OgeomError::Range`](ogeom_core::OgeomError::Range) if the mesh has more
+/// than `u32::MAX` triangles.
 pub fn simplify(mesh: &Triangulation, target: Target, tol: Tolerances) -> OgeomResult<Simplified> {
     match target {
         Target::Verified { tolerance, .. } if !tolerance.is_finite() || tolerance <= 0.0 => {
@@ -164,6 +170,9 @@ pub fn simplify(mesh: &Triangulation, target: Target, tol: Tolerances) -> OgeomR
             ogeom_bail!(Construction, "an error budget of {e} is not a distance");
         }
         _ => {}
+    }
+    if u32::try_from(mesh.triangles.len()).is_err() {
+        ogeom_bail!(Range, "a mesh of more than four billion triangles");
     }
     for triangle in &mesh.triangles {
         for index in triangle {
@@ -276,14 +285,15 @@ struct State {
     live: Vec<bool>,
     quadrics: Vec<Quadric>,
     /// Vertices that must not move: the ones on a boundary.
-    pinned: FastSet<u32>,
+    pinned: Vec<bool>,
     /// Further vertices that must not move: the ones a verified decimation's
     /// measurement held.
-    held: FastSet<u32>,
+    held: Vec<bool>,
     /// The vertex each vertex was merged into; itself while it survives.
     merged_into: Vec<u32>,
-    /// Which triangles touch each vertex.
-    around: FastMap<u32, Vec<usize>>,
+    /// Which triangles touch each vertex, live or not; empty for a vertex
+    /// no triangle names or one merged away.
+    around: Vec<Vec<u32>>,
     tol: Tolerances,
     remaining: usize,
 }
@@ -291,7 +301,7 @@ struct State {
 impl State {
     fn new(mesh: &Triangulation, tol: Tolerances) -> Self {
         let mut quadrics = vec![Quadric::default(); mesh.positions.len()];
-        let mut around: FastMap<u32, Vec<usize>> = FastMap::default();
+        let mut around: Vec<Vec<u32>> = vec![Vec::new(); mesh.positions.len()];
         let mut uses: FastMap<(u32, u32), usize> = FastMap::default();
 
         for (i, triangle) in mesh.triangles.iter().enumerate() {
@@ -312,7 +322,8 @@ impl State {
                 }
             }
             for v in triangle {
-                around.entry(*v).or_default().push(i);
+                #[allow(clippy::cast_possible_truncation)]
+                around[*v as usize].push(i as u32);
             }
             for k in 0..3 {
                 let (x, y) = (triangle[k], triangle[(k + 1) % 3]);
@@ -321,11 +332,11 @@ impl State {
         }
 
         // A boundary edge is used once. Both its ends are held.
-        let mut pinned = FastSet::default();
+        let mut pinned = vec![false; mesh.positions.len()];
         for ((a, b), count) in uses {
             if count != 2 {
-                pinned.insert(a);
-                pinned.insert(b);
+                pinned[a as usize] = true;
+                pinned[b as usize] = true;
             }
         }
 
@@ -335,7 +346,7 @@ impl State {
             live: vec![true; mesh.triangles.len()],
             quadrics,
             pinned,
-            held: FastSet::default(),
+            held: vec![false; mesh.positions.len()],
             #[allow(clippy::cast_possible_truncation)]
             merged_into: (0..mesh.positions.len() as u32).collect(),
             around,
@@ -369,7 +380,7 @@ impl State {
                 }
                 // Either end pinned means the edge is on a boundary, or leads
                 // to one. Holding both ends holds the outline exactly.
-                if self.pinned.contains(&a) || self.pinned.contains(&b) {
+                if self.pinned[a as usize] || self.pinned[b as usize] {
                     continue;
                 }
                 let at = Point::from_vector(
@@ -402,11 +413,11 @@ impl State {
     /// exactly on every plane and still put the triangle back to front.
     fn would_fold(&self, from: u32, to: u32, at: Point) -> bool {
         for vertex in [from, to] {
-            for index in self.around.get(&vertex).into_iter().flatten() {
-                if !self.live[*index] {
+            for &index in &self.around[vertex as usize] {
+                if !self.live[index as usize] {
                     continue;
                 }
-                let triangle = self.triangles[*index];
+                let triangle = self.triangles[index as usize];
                 // Triangles containing both vanish with the collapse.
                 if triangle.contains(&from) && triangle.contains(&to) {
                     continue;
@@ -433,9 +444,9 @@ impl State {
     /// collapses, close over each other. Neither is a coarser surface.
     fn keeps_manifold(&self, a: u32, b: u32) -> bool {
         let mut across = Vec::new();
-        for index in self.around.get(&a).into_iter().flatten() {
-            let t = self.triangles[*index];
-            if self.live[*index] && t.contains(&b) {
+        for &index in &self.around[a as usize] {
+            let t = self.triangles[index as usize];
+            if self.live[index as usize] && t.contains(&b) {
                 across.extend(t.iter().filter(|&&w| w != a && w != b));
             }
         }
@@ -447,9 +458,9 @@ impl State {
             return false;
         }
         let face = |v: u32, x: u32, y: u32| {
-            self.around.get(&v).into_iter().flatten().any(|&index| {
-                let t = self.triangles[index];
-                self.live[index] && t.contains(&x) && t.contains(&y)
+            self.around[v as usize].iter().any(|&index| {
+                let t = self.triangles[index as usize];
+                self.live[index as usize] && t.contains(&x) && t.contains(&y)
             })
         };
         !(across.len() == 2 && face(a, across[0], across[1]) && face(b, across[0], across[1]))
@@ -481,18 +492,13 @@ impl State {
         merged.add(&self.quadrics[to as usize]);
         self.quadrics[to as usize] = merged;
 
-        let touching: Vec<usize> = self
-            .around
-            .get(&from)
-            .into_iter()
-            .flatten()
-            .copied()
-            .collect();
+        let touching = std::mem::take(&mut self.around[from as usize]);
+        let mut emptied = Vec::new();
         for index in touching {
-            if !self.live[index] {
+            if !self.live[index as usize] {
                 continue;
             }
-            let triangle = &mut self.triangles[index];
+            let triangle = &mut self.triangles[index as usize];
             for v in triangle.iter_mut() {
                 if *v == from {
                     *v = to;
@@ -501,13 +507,22 @@ impl State {
             // A triangle naming one vertex twice has no area left.
             let [a, b, c] = *triangle;
             if a == b || b == c || c == a {
-                self.live[index] = false;
+                self.live[index as usize] = false;
                 self.remaining -= 1;
+                emptied.extend([a, b, c]);
             } else {
-                self.around.entry(to).or_default().push(index);
+                self.around[to as usize].push(index);
             }
         }
-        self.around.remove(&from);
+        // The vertices about a triangle that went drop it, the order of the
+        // rest kept, so that a vertex that has taken in many others does
+        // not walk their dead triangles at every look.
+        emptied.sort_unstable();
+        emptied.dedup();
+        for v in emptied {
+            let live = &self.live;
+            self.around[v as usize].retain(|&t| live[t as usize]);
+        }
     }
 
     /// The surviving mesh, with unused vertices dropped, and each surviving
@@ -562,10 +577,10 @@ impl State {
 
     /// Whether an edge may collapse at all.
     fn free(&self, a: u32, b: u32) -> bool {
-        !(self.pinned.contains(&a)
-            || self.pinned.contains(&b)
-            || self.held.contains(&a)
-            || self.held.contains(&b))
+        !(self.pinned[a as usize]
+            || self.pinned[b as usize]
+            || self.held[a as usize]
+            || self.held[b as usize])
     }
 
     /// The cost of collapsing an edge to its midpoint, as a squared distance:
@@ -590,123 +605,14 @@ impl State {
     /// The vertices sharing a live triangle with `v`, in ascending order.
     fn ring(&self, v: u32) -> Vec<u32> {
         let mut out = Vec::new();
-        for index in self.around.get(&v).into_iter().flatten() {
-            if self.live[*index] {
-                out.extend(self.triangles[*index].iter().filter(|&&w| w != v));
+        for &index in &self.around[v as usize] {
+            if self.live[index as usize] {
+                out.extend(self.triangles[index as usize].iter().filter(|&&w| w != v));
             }
         }
         out.sort_unstable();
         out.dedup();
         out
-    }
-
-    /// Collapse the cheapest free edge, by [`State::mean_cost`], while its
-    /// cost is within `budget` and more than `floor` triangles remain;
-    /// returns how many collapses were made.
-    ///
-    /// The choice is the one a scan of every edge would make, ties to the
-    /// lower vertex numbers, kept in a queue: a collapse changes the cost of
-    /// the edges at the merged vertex and whether the edges at its neighbours
-    /// fold, and only those are queued again, the entries before marked
-    /// stale.
-    fn decimate_queued(&mut self, budget: f64, floor: usize) -> usize {
-        let mut stamps = vec![0_u64; self.positions.len()];
-        let mut queue = BinaryHeap::new();
-        let mut seen: FastSet<(u32, u32)> = FastSet::default();
-        for (i, triangle) in self.triangles.iter().enumerate() {
-            if !self.live[i] {
-                continue;
-            }
-            for k in 0..3 {
-                let (a, b) = (triangle[k], triangle[(k + 1) % 3]);
-                let key = (a.min(b), a.max(b));
-                if seen.insert(key) && self.free(a, b) {
-                    queue.push(self.queued(key, &stamps));
-                }
-            }
-        }
-        drop(seen);
-
-        let mut collapsed = 0;
-        while self.remaining > floor {
-            let Some(Reverse(entry)) = queue.pop() else {
-                break;
-            };
-            if entry.cost > budget {
-                break;
-            }
-            let (lo, hi) = entry.edge;
-            if entry.stamps != (stamps[lo as usize], stamps[hi as usize])
-                || !self.around.contains_key(&lo)
-                || !self.around.contains_key(&hi)
-            {
-                continue;
-            }
-            let (_, at) = self.mean_cost(lo, hi);
-            if self.would_fold(hi, lo, at) || !self.keeps_manifold(lo, hi) {
-                continue;
-            }
-            self.collapse(hi, lo, at);
-            collapsed += 1;
-
-            let mut touched = self.ring(lo);
-            touched.push(lo);
-            for &v in &touched {
-                stamps[v as usize] += 1;
-            }
-            for &v in &touched {
-                for w in self.ring(v) {
-                    if self.free(v, w) {
-                        queue.push(self.queued((v.min(w), v.max(w)), &stamps));
-                    }
-                }
-            }
-        }
-        collapsed
-    }
-
-    fn queued(&self, edge: (u32, u32), stamps: &[u64]) -> Reverse<Queued> {
-        Reverse(Queued {
-            cost: self.mean_cost(edge.0, edge.1).0,
-            edge,
-            stamps: (stamps[edge.0 as usize], stamps[edge.1 as usize]),
-        })
-    }
-}
-
-/// An edge waiting to collapse, with its cost and its ends' stamps when it
-/// was queued.
-#[derive(Debug, Clone, Copy)]
-struct Queued {
-    cost: f64,
-    edge: (u32, u32),
-    stamps: (u64, u64),
-}
-
-impl Queued {
-    fn key(&self) -> (f64, (u32, u32), (u64, u64)) {
-        (self.cost, self.edge, self.stamps)
-    }
-}
-
-impl PartialEq for Queued {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == std::cmp::Ordering::Equal
-    }
-}
-
-impl Eq for Queued {}
-
-impl PartialOrd for Queued {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Queued {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let (a, b) = (self.key(), other.key());
-        a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2))
     }
 }
 

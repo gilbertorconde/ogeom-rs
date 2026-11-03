@@ -156,7 +156,7 @@ pub fn boolean(a: &Triangulation, b: &Triangulation, op: BoolKind) -> OgeomResul
         o.check_embedded(0)?;
     }
     for o in &ops {
-        o.check_wound()?;
+        o.check_wound(o.name, None, 0)?;
     }
     let touches = meet_all(&ops[0], &ops[1]);
     let mut table = Table::new(&ops);
@@ -247,8 +247,99 @@ pub(crate) fn check_solid(
 ) -> OgeomResult<Bvh> {
     let operand = Operand::new(mesh, 0, name)?;
     operand.check_embedded(first)?;
-    operand.check_wound()?;
+    operand.check_wound(name, None, 0)?;
     Ok(operand.bvh)
+}
+
+/// A mesh checked by [`check_solid`], kept to check cavities against.
+pub(crate) struct Solid<'a>(Operand<'a>);
+
+/// [`check_solid`] with `first` zero, the checked mesh kept.
+///
+/// # Errors
+///
+/// As [`check_solid`].
+pub(crate) fn check_solid_kept<'a>(
+    mesh: &'a Triangulation,
+    name: &'static str,
+) -> OgeomResult<Solid<'a>> {
+    let operand = Operand::new(mesh, 0, name)?;
+    operand.check_embedded(0)?;
+    operand.check_wound(name, None, 0)?;
+    Ok(Solid(operand))
+}
+
+impl Solid<'_> {
+    /// The mesh's hierarchy.
+    pub(crate) const fn bvh(&self) -> &Bvh {
+        &self.0.bvh
+    }
+
+    /// [`check_solid`] of the mesh followed by `cavity`, its vertices
+    /// numbered after the mesh's and `first` the mesh's triangle count,
+    /// without checking the mesh again.
+    ///
+    /// The two share no vertex, so the joined mesh is closed, 2-manifold
+    /// and free of degenerate triangles where each is; a cavity triangle
+    /// meets a triangle of the mesh only by meeting it at all; and the
+    /// winding number at a point is the sum of the two meshes'. Messages
+    /// name the cavity's own vertices and triangles where [`Operand::new`]
+    /// refuses it, and the joined mesh's otherwise.
+    ///
+    /// # Errors
+    ///
+    /// As [`check_solid`] for the joined mesh, named `name`.
+    pub(crate) fn check_cavity(
+        &self,
+        cavity: &Triangulation,
+        name: &'static str,
+    ) -> OgeomResult<()> {
+        let part = &self.0;
+        let inner = Operand::new(cavity, 0, name)?;
+        let base = id(part.mesh.positions.len());
+        let first = part.tris.len();
+        let shifted = |t: &Tri, side: Side| Tri {
+            side,
+            v: t.v.map(|v| v + base),
+            ..*t
+        };
+        let chunks: Vec<std::ops::Range<usize>> = (0..inner.tris.len())
+            .step_by(CHUNK)
+            .map(|s| s..(s + CHUNK).min(inner.tris.len()))
+            .collect();
+        let found = parallel::map_ordered(&chunks, |_, range| {
+            for t in range.clone() {
+                let a = shifted(&inner.tris[t], 0);
+                let (lo, hi) = Operand::bounds(&a);
+                for u in part.near(lo, hi) {
+                    let b = Tri {
+                        side: 1,
+                        ..part.tris[u as usize]
+                    };
+                    if !meet_at_shared_only(&a, &b) {
+                        return Some((t + first, u as usize));
+                    }
+                }
+                for u in inner.near(lo, hi) {
+                    if (u as usize) <= t {
+                        continue;
+                    }
+                    if !meet_at_shared_only(&a, &shifted(&inner.tris[u as usize], 1)) {
+                        return Some((t + first, u as usize + first));
+                    }
+                }
+            }
+            None
+        });
+        if let Some((t, u)) = found.into_iter().flatten().next() {
+            ogeom_bail!(
+                Construction,
+                "the {name} mesh crosses itself: triangles {t} and {u} meet away from their shared corners"
+            );
+        }
+        part.check_wound(name, Some(&inner), 0)?;
+        inner.check_wound(name, Some(part), first)
+    }
 }
 
 /// One operand, checked and indexed.
@@ -445,16 +536,7 @@ impl<'a> Operand<'a> {
                         side: 1 - self.side,
                         ..self.tris[u as usize]
                     };
-                    let shared: Vec<u32> =
-                        a.v.iter().copied().filter(|v| b.v.contains(v)).collect();
-                    let clean = shared.len() < 3
-                        && (apart_but_shared(a, &b, &shared)
-                            || pairs::meet(a, &b).is_none_or(|touch| {
-                                touch.points.iter().all(|(key, _)| {
-                                    matches!(key, Key::Vertex(_, v) if shared.contains(v))
-                                })
-                            }));
-                    if !clean {
+                    if !meet_at_shared_only(a, &b) {
                         return Some((t, u));
                     }
                 }
@@ -474,7 +556,10 @@ impl<'a> Operand<'a> {
     /// Each connected piece faces out of the solid: from the middle of one
     /// of its triangles, a ray leaving the way it faces finds the winding
     /// number of the whole mesh 0, and behind it 1.
-    fn check_wound(&self) -> OgeomResult<()> {
+    ///
+    /// With `also`, the winding number counts its triangles too; messages
+    /// name the mesh `name` and number its triangles from `base`.
+    fn check_wound(&self, name: &str, also: Option<&Operand<'_>>, base: usize) -> OgeomResult<()> {
         let mut parent: Vec<u32> = (0..id(self.tris.len())).collect();
         for t in 0..self.tris.len() {
             for &u in &self.across[t] {
@@ -494,12 +579,15 @@ impl<'a> Operand<'a> {
             let corner = tri.p.map(|q| Pt::new(Def::Vertex(q)));
             let mid = Mid([&corner[0], &corner[1], &corner[2]]);
             let out = normal_sign(&tri.p, axis);
-            let w = classify::winding(&self.tris, &self.bvh, &mid, axis, out, Some(id(t)))?;
+            let mut w = classify::winding(&self.tris, &self.bvh, &mid, axis, out, Some(id(t)))?;
+            if let Some(o) = also {
+                w += classify::winding(&o.tris, &o.bvh, &mid, axis, out, None)?;
+            }
             if w != 0 {
                 ogeom_bail!(
                     Construction,
-                    "the {} mesh is not wound outward: triangle {t} faces into the solid",
-                    self.name
+                    "the {name} mesh is not wound outward: triangle {} faces into the solid",
+                    t + base
                 );
             }
         }
@@ -519,6 +607,67 @@ impl<'a> Operand<'a> {
             })
             .collect()
     }
+}
+
+/// Whether two triangles of one mesh, `b` named as the other side, meet
+/// nowhere but at the corners they share.
+///
+/// The side tests [`apart_but_shared`] and [`pairs::meet`] begin with
+/// settle most pairs, and are taken first without building anything:
+/// sharing an edge, the triangles meet only along it when the fourth
+/// vertex is off the plane of the other three; sharing a corner, when one
+/// triangle's other two corners are strictly on one side of the other's
+/// plane; sharing nothing, when one triangle's corners are all strictly on
+/// one side of the other's plane.
+fn meet_at_shared_only(a: &Tri, b: &Tri) -> bool {
+    // The corners of `y` not shared with `x`, all strictly on one side of
+    // `x`'s plane.
+    let off = |x: &Tri, y: &Tri| {
+        let mut sign = None;
+        for k in 0..3 {
+            if x.v.contains(&y.v[k]) {
+                continue;
+            }
+            let s = Exact::orient3d(x.p[0], x.p[1], x.p[2], y.p[k]);
+            if s.is_zero() || sign.is_some_and(|t| t != s) {
+                return false;
+            }
+            sign = Some(s);
+        }
+        true
+    };
+    let settled = match (0..3).filter(|&k| b.v.contains(&a.v[k])).count() {
+        2 => off(a, b),
+        0 | 1 => off(a, b) || off(b, a),
+        _ => false,
+    };
+    settled || meet_at_shared_only_built(a, b)
+}
+
+/// [`meet_at_shared_only`] in full.
+fn meet_at_shared_only_built(a: &Tri, b: &Tri) -> bool {
+    let shared: Vec<u32> = a.v.iter().copied().filter(|v| b.v.contains(v)).collect();
+    shared.len() < 3
+        && (apart_but_shared(a, b, &shared)
+            || pairs::meet(a, b).is_none_or(|touch| {
+                touch
+                    .points
+                    .iter()
+                    .all(|(key, _)| matches!(key, Key::Vertex(_, v) if shared.contains(v)))
+            }))
+}
+
+/// [`meet_at_shared_only`] for two triangles given by their vertex numbers
+/// and corners: whether they meet nowhere but at the vertices they share,
+/// decided exactly.
+pub(crate) fn apart_but_at_shared(a: ([u32; 3], [Point; 3]), b: ([u32; 3], [Point; 3])) -> bool {
+    let tri = |side: Side, (v, p): ([u32; 3], [Point; 3])| Tri {
+        side,
+        id: u32::from(side),
+        v,
+        p: p.map(coords),
+    };
+    meet_at_shared_only(&tri(0, a), &tri(1, b))
 }
 
 /// Whether two triangles of one mesh sharing the corners `shared` meet

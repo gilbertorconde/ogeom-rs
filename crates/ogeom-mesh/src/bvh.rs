@@ -662,6 +662,13 @@ fn along(a: P, d: P, s: f64) -> P {
     [a[0] + d[0] * s, a[1] + d[1] * s, a[2] + d[2] * s]
 }
 
+/// The squared distance from `p` to a triangle, as [`Bvh::nearest`] takes
+/// it: a nearest query over a mesh holding the triangle answers no more
+/// than this.
+pub(crate) fn distance2_to(p: Point, t: [Point; 3]) -> f64 {
+    closest([p.x, p.y, p.z], &t.map(|q| [q.x, q.y, q.z])).2
+}
+
 /// The point on a triangle nearest `p`, its barycentric weights, and its
 /// squared distance to `p`.
 ///
@@ -892,64 +899,182 @@ impl Shear {
 
 /// Build the nodes over the triangles' boxes, reordering `order` into leaf
 /// order: depth first, each left child right after its parent.
-fn build_nodes(boxes: &[(P, P)], order: &mut [u32]) -> Vec<Node> {
-    let mut nodes: Vec<Node> = Vec::new();
-    if order.is_empty() {
-        return nodes;
-    }
+/// The node over a range of the order, and where the range splits, as an
+/// offset into it, when it is not a leaf; the range is partitioned to
+/// match.
+fn node_of(boxes: &[(P, P)], range: &mut [u32], start: usize) -> (Node, Option<usize>) {
     let centre = |t: u32| -> P {
         let (low, high) = boxes[t as usize];
         [0, 1, 2].map(|k| 0.5 * (low[k] + high[k]))
     };
-    // Each pending range carries the parent whose right child it is.
-    let mut pending: Vec<(usize, usize, Option<usize>)> = vec![(0, order.len(), None)];
-    while let Some((start, end, parent)) = pending.pop() {
-        let index = nodes.len();
-        if let Some(parent) = parent {
-            nodes[parent].first = u32::try_from(index).unwrap_or(u32::MAX);
+    let (mut low, mut high) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    let (mut clow, mut chigh) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for &t in range.iter() {
+        let (l, h) = boxes[t as usize];
+        let c = centre(t);
+        for k in 0..3 {
+            low[k] = low[k].min(l[k]);
+            high[k] = high[k].max(h[k]);
+            clow[k] = clow[k].min(c[k]);
+            chigh[k] = chigh[k].max(c[k]);
         }
-        let range = &mut order[start..end];
-        let (mut low, mut high) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
-        let (mut clow, mut chigh) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
-        for &t in range.iter() {
-            let (l, h) = boxes[t as usize];
-            let c = centre(t);
-            for k in 0..3 {
-                low[k] = low[k].min(l[k]);
-                high[k] = high[k].max(h[k]);
-                clow[k] = clow[k].min(c[k]);
-                chigh[k] = chigh[k].max(c[k]);
-            }
+    }
+    let count = range.len();
+    let leaf = Node {
+        low,
+        high,
+        first: u32::try_from(start).unwrap_or(u32::MAX),
+        count: u32::try_from(count).unwrap_or(u32::MAX),
+    };
+    if count <= 2 {
+        return (leaf, None);
+    }
+    let mid = match sah_split(boxes, range, &clow, &chigh, area(&low, &high)) {
+        Some(split) if split.pays || count > LEAF_MOST => {
+            let bin_of = binner(&clow, &chigh, split.axis);
+            partition(range, |t| bin_of(centre(t)[split.axis]) <= split.bin)
         }
-        let count = end - start;
-        let leaf = Node {
-            low,
-            high,
-            first: u32::try_from(start).unwrap_or(u32::MAX),
-            count: u32::try_from(count).unwrap_or(u32::MAX),
-        };
-        if count <= 2 {
-            nodes.push(leaf);
-            continue;
-        }
-        let mid = match sah_split(boxes, range, &clow, &chigh, area(&low, &high)) {
-            Some(split) if split.pays || count > LEAF_MOST => {
-                let bin_of = binner(&clow, &chigh, split.axis);
-                start + partition(range, |t| bin_of(centre(t)[split.axis]) <= split.bin)
-            }
-            None if count > LEAF_MOST => start + count / 2,
-            _ => {
-                nodes.push(leaf);
-                continue;
-            }
-        };
-        nodes.push(Node {
+        None if count > LEAF_MOST => count / 2,
+        _ => return (leaf, None),
+    };
+    (
+        Node {
             first: 0,
             count: 0,
             ..leaf
+        },
+        Some(mid),
+    )
+}
+
+/// The nodes over `order[start..start + order.len()]`, depth first, each
+/// interior node's left child next and its right child at `first`, leaves'
+/// slots numbered from `start` and nodes from `base`.
+fn build_serial(boxes: &[(P, P)], order: &mut [u32], start: usize, base: usize) -> Vec<Node> {
+    let mut nodes: Vec<Node> = Vec::new();
+    if order.is_empty() {
+        return nodes;
+    }
+    // Each pending range carries the parent whose right child it is.
+    let mut pending: Vec<(usize, usize, Option<usize>)> = vec![(0, order.len(), None)];
+    while let Some((from, to, parent)) = pending.pop() {
+        let index = nodes.len();
+        if let Some(parent) = parent {
+            nodes[parent].first = u32::try_from(base + index).unwrap_or(u32::MAX);
+        }
+        let (node, mid) = node_of(boxes, &mut order[from..to], start + from);
+        nodes.push(node);
+        if let Some(mid) = mid {
+            pending.push((from + mid, to, Some(index)));
+            pending.push((from, from + mid, None));
+        }
+    }
+    nodes
+}
+
+/// A range no larger than this is built whole by one worker. The tree is
+/// the same at any size; it only sets how the work is shared.
+const SUBTREE: usize = 1 << 14;
+
+/// The top of the tree, depth first: a node built here, the piece its
+/// right child starts at, or a range left to build whole.
+enum Piece {
+    Node(Node, usize),
+    Range(usize, usize),
+}
+
+fn build_top(boxes: &[(P, P)], order: &mut [u32], start: usize, pieces: &mut Vec<Piece>) {
+    let end = start + order.len();
+    if order.len() <= SUBTREE {
+        pieces.push(Piece::Range(start, end));
+        return;
+    }
+    let (node, mid) = node_of(boxes, order, start);
+    let Some(mid) = mid else {
+        pieces.push(Piece::Node(node, 0));
+        return;
+    };
+    let at = pieces.len();
+    pieces.push(Piece::Node(node, 0));
+    let (left, right) = order.split_at_mut(mid);
+    build_top(boxes, left, start, pieces);
+    let right_piece = pieces.len();
+    if let Piece::Node(_, r) = &mut pieces[at] {
+        *r = right_piece;
+    }
+    build_top(boxes, right, start + mid, pieces);
+}
+
+/// The tree over `order`, which it reorders into leaf order.
+///
+/// The ranges are split one at a time from the top, then the ranges small
+/// enough are built on the kernel's workers and the tree put together in
+/// the order a single walk down it makes, so the tree is the one built
+/// whole.
+fn build_nodes(boxes: &[(P, P)], order: &mut [u32]) -> Vec<Node> {
+    if order.len() <= SUBTREE {
+        return build_serial(boxes, order, 0, 0);
+    }
+    let mut pieces = Vec::new();
+    build_top(boxes, order, 0, &mut pieces);
+    let ranges: Vec<(usize, usize)> = pieces
+        .iter()
+        .filter_map(|p| match p {
+            Piece::Range(a, b) => Some((*a, *b)),
+            Piece::Node(..) => None,
+        })
+        .collect();
+    let built = ogeom_core::parallel::map_ordered(&ranges, |_, &(a, b)| {
+        let mut part = order[a..b].to_vec();
+        let nodes = build_serial(boxes, &mut part, a, 0);
+        (nodes, part)
+    });
+    // Where each piece's first node lands.
+    let mut sizes = Vec::with_capacity(pieces.len());
+    let mut built_at = 0;
+    for p in &pieces {
+        sizes.push(match p {
+            Piece::Node(..) => 1,
+            Piece::Range(..) => {
+                built_at += 1;
+                built[built_at - 1].0.len()
+            }
         });
-        pending.push((mid, end, Some(index)));
-        pending.push((start, mid, None));
+    }
+    let mut offsets = Vec::with_capacity(pieces.len());
+    let mut total = 0;
+    for size in &sizes {
+        offsets.push(total);
+        total += size;
+    }
+    let mut nodes = Vec::with_capacity(total);
+    let mut built = built.into_iter();
+    for (k, p) in pieces.iter().enumerate() {
+        match p {
+            Piece::Node(node, right) => nodes.push(Node {
+                first: if node.count == 0 {
+                    u32::try_from(offsets[*right]).unwrap_or(u32::MAX)
+                } else {
+                    node.first
+                },
+                ..*node
+            }),
+            Piece::Range(a, b) => {
+                let Some((part_nodes, part)) = built.next() else {
+                    continue;
+                };
+                order[*a..*b].copy_from_slice(&part);
+                let shift = u32::try_from(offsets[k]).unwrap_or(u32::MAX);
+                nodes.extend(part_nodes.into_iter().map(|n| Node {
+                    first: if n.count == 0 {
+                        n.first + shift
+                    } else {
+                        n.first
+                    },
+                    ..n
+                }));
+            }
+        }
     }
     nodes
 }
@@ -1097,6 +1222,32 @@ pub(crate) mod tests {
         pub(crate) fn point(&mut self, lo: f64, hi: f64) -> Point {
             Point::new(self.range(lo, hi), self.range(lo, hi), self.range(lo, hi))
         }
+    }
+
+    #[test]
+    fn a_tree_built_in_pieces_is_the_tree_built_whole() {
+        // Small triangles scattered through a cube, with runs of equal
+        // centres to give the splits ties, many times a worker's share.
+        let mut rng = Seeded(0x51ed_270b_d3c4_9a17);
+        let mut boxes = Vec::new();
+        for i in 0..20 * SUBTREE {
+            let c = if i % 7 == 0 && i > 0 {
+                boxes.last().map_or([0.0; 3], |b: &(P, P)| b.0)
+            } else {
+                let p = rng.point(-50.0, 50.0);
+                [p.x, p.y, p.z]
+            };
+            let r = rng.range(0.0, 0.5);
+            boxes.push((c.map(|v| v - r), c.map(|v| v + r)));
+        }
+        let all: Vec<u32> = (0..u32::try_from(boxes.len()).unwrap()).collect();
+        let (mut whole, mut pieces) = (all.clone(), all);
+        let one = build_serial(&boxes, &mut whole, 0, 0);
+        let many = build_nodes(&boxes, &mut pieces);
+        assert_eq!(whole, pieces);
+        let key = |n: &Node| (n.low, n.high, n.first, n.count);
+        assert_eq!(one.len(), many.len());
+        assert!(one.iter().zip(&many).all(|(a, b)| key(a) == key(b)));
     }
 
     fn corners_of(mesh: &Triangulation) -> Vec<[P; 3]> {
