@@ -11,6 +11,27 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-04
+
+A minor release: `GeometricTolerance::datums` holds `DatumReference`s
+rather than strings, `Outline` gains `fill_below`, and `Grown` gains
+`crease` and is now `#[non_exhaustive]`, so struct literals of these and
+code reading datums as strings need updating.
+
+Measuring and modelling from scans, rounded off. Form reads as the
+standards define it: minimum-zone flatness, straightness, circularity,
+cylindricity and sphericity, and inscribed and circumscribed circles and
+cylinders. STEP carries datum reference frames, material modifiers and
+position, profile and runout tolerances as AP242 semantic PMI. Patch
+networks take T-junctions, correct their points' parameters and hold
+irregular corners exactly tangent where the fit allows; a click by a
+rounded edge reads the line its faces meet in; outlines can fill narrow
+holes and notches; IGES writes construction geometry. Crease and rim
+traces on noisy scans no longer return a line or a circle the noise made,
+verified decimation and hollowing are an order of magnitude faster and keep
+a mesh from folding into itself, and PLY and OBJ write meshes without
+normals.
+
 ### Added
 
 - **Form as the standards define it: `algo::fit::zone::{flatness,
@@ -11383,7 +11404,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.14.2...v0.15.0
 [0.14.2]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.14.1...v0.14.2
