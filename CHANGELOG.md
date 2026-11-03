@@ -76,6 +76,46 @@ bump may break the API and a patch bump may not.
   - A 40 by 30 plate with a 0.5 slot and a 0.4 hole gives one wire with
     `fill_below = 1`; a 1.2 slot is kept. Zero, the default, is today's
     fit unchanged.
+- **IGES writes construction geometry, and reads it back:
+  `write_iges_reported(document, tol) -> IgesExport { text, warnings }`.**
+  (#628)
+  - Each item goes out after every part's bodies as one independent
+    entity whose entity use flag says construction geometry (06, IGES 5.3,
+    section 2.2.4.4.9.3), and so does everything it refers to: a point
+    (116); a line (110), a circle or arc (100 over a matrix, 124), an
+    ellipse, hyperbola or parabola (104, forms 1 to 3, over a matrix) and
+    any other curve as its exact B-spline (126); a surface as a trimmed
+    surface (144) over the whole of the exact B-spline patch (128) of its
+    window, a plane's and a B-spline's over their own parameters; an axis
+    as the transformation matrix (124) taking the world frame to it, its
+    translation the origin and its columns the axes, form 1 where the
+    frame is left-handed. The axis is the matrix rather than a point and
+    a line because the matrix states the whole frame and a line only its
+    `z`. Each item keeps its name as a solid does: the label, and a Name
+    property (406, form 15) for the whole of it.
+  - An item with no exact B-spline form (a helix, an offset of a
+    free-form surface) is left out and named in `warnings`, and so is a
+    name a Name property cannot carry (one with a comma or semicolon, or
+    past ASCII), which keeps only its label. `write_iges` writes the same
+    deck and drops the warnings.
+  - `read_iges` reads every independent entity flagged as construction
+    geometry, on no drawing, into the document's construction, in
+    directory order, under the first part or a part named `construction`
+    holding no body: a point, a curve that is one piece, a matrix no
+    entity is placed by, as its axis, and a surface that bounds itself or
+    a trimmed surface over the whole of one, over its own domain. A
+    composite of several pieces is a warning. A circular arc's angle runs
+    from its definition space's `x` axis, where the writer's matrix put
+    the circle's own. Curves and points flagged as geometry read as wires
+    and vertices as before; a construction surface trimmed by a boundary
+    of its own still reads as a face.
+  - Points, arcs, a whole circle, an ellipse, hyperbola and parabola arc,
+    a B-spline curve, a plane and a B-spline window and two axes, one
+    left-handed, go out beside a box and alone and come back within 1e-9
+    over the same parameters, each by its name; a line keeps its points
+    and length, reversed conics their points, and a cylinder's window its
+    exact patch. Documents without construction geometry write the same
+    bytes as before.
 
 ### Changed
 

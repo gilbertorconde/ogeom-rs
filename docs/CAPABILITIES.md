@@ -249,7 +249,17 @@ directory, each file identified by the name its global section gives it
 and a definition by the symbol its index (402, form 12) lists; a missing
 file, a misnamed file, an unlisted symbol, a logical reference and a
 reference to a natively kept definition are refused by name, as is every
-reference in a deck read from text.
+reference in a deck read from text. A document's construction geometry is
+written as independent entities flagged as construction (use flag 06): a
+point (116), a curve as an edge's is (a hyperbola or parabola as a conic
+arc, 104), a surface as a trimmed surface (144) over the exact B-spline
+patch (128) of its window, an axis as a transformation matrix (124), each
+named by its label and a Name property; an item with no exact B-spline
+form is left out and named in `write_iges_reported`'s warnings. The reader
+reads such entities back into the document's construction, a composite of
+several pieces and a surface trimmed by a boundary of its own excepted; a
+line reads back over its own length from its start, and a surface other
+than a plane or a B-spline over its patch's parameters.
 - **io.mesh-formats**: The mesh exchange formats: STL, OBJ, PLY, glTF/GLB, 3MF, with welding on import · `covered`
 - **io.native-format**: The native shape interchange format, versioned, with location and triangulation sets · `covered`
 - **io.obj-materials**: OBJ colours: material libraries' diffuse colours, PNG and JPEG textures sampled at each corner, per-vertex colours · `covered`
@@ -311,4 +321,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 25e17fd86e754323 -->
+<!-- ledger-checksum: 00a9304f468588a3 -->

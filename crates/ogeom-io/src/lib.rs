@@ -39,7 +39,9 @@ pub mod vrml;
 pub(crate) mod xml;
 
 pub use cloud::{PointCloud, Scalar, XyzColumn, read_pts, read_xyz, write_xyz};
-pub use iges::{IgesImport, IgesReport, read_iges, read_iges_file, write_iges};
+pub use iges::{
+    IgesExport, IgesImport, IgesReport, read_iges, read_iges_file, write_iges, write_iges_reported,
+};
 pub use mesh_formats::{
     ExportMesh, ImportedMesh, MeshColours, ObjImport, PlyImport, read_glb, read_gltf, read_obj,
     read_obj_file, read_obj_with_materials, read_ply, read_ply_bytes, write_glb, write_obj,

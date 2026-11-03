@@ -16,6 +16,17 @@
 //! Everything is written in millimetres, model space, with geometry baked:
 //! the same decision the STEP writer made: a file carries positions, not this
 //! kernel's location chains.
+//!
+//! Construction geometry goes out after every part's bodies, each item one
+//! independent entity whose entity use flag says construction (06), and so
+//! does everything it refers to (IGES 5.3, section 2.2.4.4.9.3): a point
+//! (116); a curve as a body's edge curve is written, save that a hyperbola
+//! or a parabola is a conic arc (104) in its plane carried by a matrix
+//! (124); a surface as a trimmed surface (144) over the whole of a
+//! B-spline patch (128) of its window; an axis as a transformation matrix
+//! (124) alone, the frame's origin and axes its translation and columns,
+//! form 1 where the frame is left-handed. Each carries the item's name as
+//! a solid does, the label and a Name property (406, form 15).
 
 use ogeom_core::FastMap;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -35,15 +46,52 @@ use ogeom_topo::{EdgeRepr, Filter, NodeData, Shape, ShapeType, explore};
 /// A wire or edge outside every face is wireframe, written as its curve
 /// (an edge's own, a composite curve (102) of a wire's edges in the order
 /// the wire walks them) standing independent. A vertex outside every edge
-/// is a point (116) standing independent.
+/// is a point (116) standing independent. The document's construction
+/// geometry goes out too; [`write_iges_reported`] says which items had no
+/// IGES spelling and were left out.
+///
+/// # Errors
+///
+/// As [`write_iges_reported`].
+pub fn write_iges(document: &ogeom_doc::Document, tol: Tolerances) -> OgeomResult<String> {
+    write_iges_reported(document, tol).map(|written| written.text)
+}
+
+/// A written IGES file, and what the writer left out of it.
+#[derive(Debug, Clone, Default)]
+pub struct IgesExport {
+    /// The deck.
+    pub text: String,
+    /// One line per construction item with no IGES spelling here, which
+    /// the deck leaves out, and per item whose name the deck carries only
+    /// in part.
+    pub warnings: Vec<String>,
+}
+
+/// Write a document as [`write_iges`] does, saying what it left out.
+///
+/// Each construction item goes out as an independent entity flagged as
+/// construction geometry, after every part's bodies, in the document's
+/// order: a point as a point (116); a line (110), circle or arc (100), an
+/// ellipse, hyperbola or parabola (104, the plane ones over a matrix, 124)
+/// and anything else as its exact B-spline (126); a surface as a trimmed
+/// surface (144) over the whole of the exact B-spline patch (128) of its
+/// window, a plane's and a B-spline's over their own parameters; an axis as
+/// the transformation matrix (124) taking the world frame to it. An item
+/// with no exact B-spline form (a helix, an offset of a free-form basis) is
+/// left out with a warning, and the rest of the deck is written.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
-/// document holds no part, a part holds nothing at all, a wire holds only
-/// degenerate edges, or a body carries geometry with no IGES spelling here;
-/// the error names the entity and the capability row.
-pub fn write_iges(document: &ogeom_doc::Document, tol: Tolerances) -> OgeomResult<String> {
+/// document holds no part and no construction geometry, a part holds
+/// nothing at all, a wire holds only degenerate edges, or a body carries
+/// geometry with no IGES spelling here; the error names the entity and the
+/// capability row.
+pub fn write_iges_reported(
+    document: &ogeom_doc::Document,
+    tol: Tolerances,
+) -> OgeomResult<IgesExport> {
     let mut writer = Writer {
         model: document.model(),
         entities: Vec::new(),
@@ -51,18 +99,24 @@ pub fn write_iges(document: &ogeom_doc::Document, tol: Tolerances) -> OgeomResul
         edges: FastMap::default(),
         vertex_coords: Vec::new(),
         edge_records: Vec::new(),
+        construction_from: usize::MAX,
         tol,
     };
 
     let mut parts = Vec::new();
-    for (_, product) in document.products() {
+    for (id, product) in document.products() {
         let ogeom_doc::ProductKind::Part { shape } = &product.kind else {
             continue;
         };
-        let bodies = crate::bodies::bodies_of(writer.model, shape, "IGES", true)?;
+        // A part carrying construction geometry may hold no body.
+        let bodies = if document.construction_of(id).next().is_none() {
+            crate::bodies::bodies_of(writer.model, shape, "IGES", true)?
+        } else {
+            crate::bodies::bodies_within(writer.model, shape, "IGES", true)?
+        };
         parts.push((product.name.clone(), bodies));
     }
-    if parts.is_empty() {
+    if parts.is_empty() && document.construction().is_empty() {
         ogeom_bail!(Construction, "the document holds no part to write as IGES");
     }
     for (label, bodies) in parts {
@@ -84,7 +138,27 @@ pub fn write_iges(document: &ogeom_doc::Document, tol: Tolerances) -> OgeomResul
             writer.free_point(vertex, &label)?;
         }
     }
-    Ok(writer.serialize())
+    let mut warnings = Vec::new();
+    writer.construction_from = writer.entities.len();
+    for item in document.construction() {
+        // An item that fails leaves nothing behind: entities only append,
+        // and nothing written before it points past where it began.
+        let mark = writer.entities.len();
+        match writer.construction(item) {
+            Ok(name_warning) => warnings.extend(name_warning),
+            Err(e) => {
+                writer.entities.truncate(mark);
+                warnings.push(format!(
+                    "construction item '{}' has no IGES spelling here and is left out: {e}",
+                    item.name
+                ));
+            }
+        }
+    }
+    Ok(IgesExport {
+        text: writer.serialize(),
+        warnings,
+    })
 }
 
 /// One pending entity: directory fields and parameter text.
@@ -113,6 +187,9 @@ struct Writer<'a> {
     vertex_coords: Vec<Point>,
     /// The current solid's edge records: (curve entity, start index, end index).
     edge_records: Vec<(usize, usize, usize)>,
+    /// The first entity written for construction geometry; it and every
+    /// entity after it carry the construction use flag.
+    construction_from: usize,
     tol: Tolerances,
 }
 
@@ -444,6 +521,177 @@ impl Writer<'_> {
         entity.independent = true;
         entity.label = label.chars().take(8).collect();
         Ok(())
+    }
+
+    /// A construction item as one independent entity, labelled and named
+    /// as a solid is. Returns a warning where the name goes out only in
+    /// part: a Name property carries a name of plain ASCII with no
+    /// delimiter here, and the label its first eight such characters.
+    fn construction(&mut self, item: &ogeom_doc::Construction) -> OgeomResult<Option<String>> {
+        use ogeom_doc::ConstructionGeometry as G;
+        let entity = match &item.geometry {
+            G::Point(p) => self.point_entity(*p),
+            G::Axis(frame) => {
+                let entity = self.transform_entity(frame);
+                if frame.handedness() == ogeom_math::Handedness::Left {
+                    self.entities[entity].form = 1;
+                }
+                entity
+            }
+            G::Curve { curve, range } => self.construction_curve(curve, *range)?,
+            G::Surface { surface, u, v } => self.construction_surface(surface, *u, *v)?,
+        };
+        // The B-spline curve's last defined parameters, its plane's unit
+        // normal, which zero leaves unstated; the property pointers follow.
+        if self.entities[entity].kind == 126 {
+            self.entities[entity].params.push_str(",0.,0.,0.");
+        }
+        let name = self.name_property(&item.name);
+        if let Some(name) = name {
+            let pointer = self.de(name);
+            self.entities[entity]
+                .params
+                .push_str(&format!(",0,1,{pointer}"));
+        }
+        let label: String = item
+            .name
+            .chars()
+            .filter(|c| c.is_ascii_graphic() || *c == ' ')
+            .take(8)
+            .collect();
+        let written = &mut self.entities[entity];
+        written.independent = true;
+        written.label.clone_from(&label);
+        Ok(name.is_none().then(|| {
+            format!(
+                "construction item '{}' keeps only its label '{}': a Name property \
+                 carries plain ASCII with no comma or semicolon",
+                item.name,
+                label.trim_end()
+            )
+        }))
+    }
+
+    /// A construction curve over its range: a hyperbola or a parabola as a
+    /// conic arc (104, forms 2 and 3), which an edge's curve does not
+    /// write; anything else as [`Self::curve`] writes an edge's.
+    fn construction_curve(&mut self, curve: &Curve, range: (f64, f64)) -> OgeomResult<usize> {
+        // The curve's own parameter at each end, a reversed one's mirrored
+        // in its domain, and the plane's frame turned over where the walk
+        // runs down the parameter, where each parameter negates.
+        let walk = |frame: Frame, domain: (f64, f64), reversed: bool| {
+            let (s, e) = if reversed {
+                (domain.0 + domain.1 - range.0, domain.0 + domain.1 - range.1)
+            } else {
+                range
+            };
+            if s <= e {
+                (frame, s, e)
+            } else {
+                (frame.with_z_reversed(), -s, -e)
+            }
+        };
+        let (form, frame, coefficients, ends) = match curve {
+            Curve::Hyperbola(h) => {
+                let hyperbola = h.hyperbola();
+                let (a, b) = (hyperbola.major_radius(), hyperbola.minor_radius());
+                let (frame, s, e) = walk(
+                    hyperbola.frame(),
+                    ogeom_geom::Curve3d::domain(h),
+                    h.is_reversed(),
+                );
+                let at = |t: f64| (a * t.cosh(), b * t.sinh());
+                // x²/a² − y²/b² − 1 = 0.
+                (
+                    2,
+                    frame,
+                    [1.0 / (a * a), 0.0, -1.0 / (b * b), 0.0, 0.0, -1.0],
+                    [at(s), at(e)],
+                )
+            }
+            Curve::Parabola(p) => {
+                let parabola = p.parabola();
+                let f = parabola.focal();
+                let (frame, s, e) = walk(
+                    parabola.frame(),
+                    ogeom_geom::Curve3d::domain(p),
+                    p.is_reversed(),
+                );
+                let at = |t: f64| (t * t / (4.0 * f), t);
+                // y² − 4 f x = 0.
+                (
+                    3,
+                    frame,
+                    [0.0, 0.0, 1.0, -4.0 * f, 0.0, 0.0],
+                    [at(s), at(e)],
+                )
+            }
+            _ => return self.curve(curve, range, true),
+        };
+        let transform = self.transform_entity(&frame);
+        let mut params = coefficients.map(fmt).join(",");
+        let [(sx, sy), (ex, ey)] = ends;
+        params.push_str(&format!(
+            ",0.,{},{},{},{}",
+            fmt(sx),
+            fmt(sy),
+            fmt(ex),
+            fmt(ey)
+        ));
+        Ok(self.push(Pending {
+            kind: 104,
+            form,
+            transform: Some(transform),
+            independent: false,
+            label: String::new(),
+            params,
+        }))
+    }
+
+    /// A construction surface as a trimmed surface (144) whose outer
+    /// boundary is its basis's own, over the exact B-spline patch (128) of
+    /// its window. A plane's patch is the bilinear one over the window's
+    /// own parameters and a B-spline's its segment, so either reads back
+    /// over the same window; any other surface's patch has parameters of
+    /// its own, its domain the window's image.
+    fn construction_surface(
+        &mut self,
+        surface: &SurfaceGeometry,
+        u: (f64, f64),
+        v: (f64, f64),
+    ) -> OgeomResult<usize> {
+        let patch = if let SurfaceGeometry::Plane(_) = surface {
+            let corner = |s: f64, t: f64| surface.point_at(s, t, self.tol);
+            let grid = ogeom_math::ControlGrid::new(
+                vec![
+                    corner(u.0, v.0)?,
+                    corner(u.0, v.1)?,
+                    corner(u.1, v.0)?,
+                    corner(u.1, v.1)?,
+                ],
+                2,
+                2,
+            )?;
+            ogeom_geom::BSplineSurface::new(
+                ogeom_math::KnotVector::new(vec![u.0, u.0, u.1, u.1], 1)?,
+                ogeom_math::KnotVector::new(vec![v.0, v.0, v.1, v.1], 1)?,
+                &grid,
+                self.tol,
+            )?
+        } else {
+            let window = ogeom_geom::TrimmedSurface::new(surface.clone(), u, v, self.tol)?;
+            SurfaceGeometry::Trimmed(Box::new(window)).to_bspline(self.tol)?
+        };
+        let basis = self.nurbs_surface(&patch, false);
+        let params = format!("{},0,0,0", self.de(basis));
+        Ok(self.push(Pending {
+            kind: 144,
+            form: 0,
+            transform: None,
+            independent: false,
+            label: String::new(),
+            params,
+        }))
     }
 
     /// Edges as one model-space curve, as [`Self::boundary_curve`] writes a
@@ -1197,11 +1445,13 @@ impl Writer<'_> {
         let mut d_seq = 1usize;
         for (i, e) in self.entities.iter().enumerate() {
             let transform_de = e.transform.map_or(0, |t| self.de(t));
-            let status = if e.independent {
-                "00000000"
+            let subordinate = if e.independent { "00" } else { "01" };
+            let use_flag = if i >= self.construction_from {
+                "06"
             } else {
-                "00010000"
+                "00"
             };
+            let status = format!("00{subordinate}{use_flag}00");
             let line1 = format!(
                 "{:>8}{:>8}{:>8}{:>8}{:>8}{:>8}{:>8}{:>8}{status}",
                 e.kind, param_starts[i], 0, 0, 0, 0, transform_de, 0

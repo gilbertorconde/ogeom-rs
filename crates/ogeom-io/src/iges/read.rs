@@ -409,6 +409,8 @@ fn read_parsed(file: &File, library: &Library, tol: Tolerances) -> OgeomResult<I
         );
     };
     let mut reader = Reader::new(file, Model::new(), scale_mm, library, tol);
+    let on_sheets = on_sheets(file);
+    let construction_des = construction_entities(file, &on_sheets);
 
     // Solids first: every 186, in directory order.
     let mut solids: Vec<(i64, Shape)> = Vec::new();
@@ -445,6 +447,7 @@ fn read_parsed(file: &File, library: &Library, tol: Tolerances) -> OgeomResult<I
             matches!(e.kind, 143 | 144)
                 && (e.status / 10_000) % 100 == 0
                 && !reader.visited.contains_key(de)
+                && !construction_des.contains(de)
         })
         .map(|(de, _)| *de)
         .collect();
@@ -475,6 +478,7 @@ fn read_parsed(file: &File, library: &Library, tol: Tolerances) -> OgeomResult<I
             (UNTRIMMED_KINDS.contains(&e.kind) || is_bounded_plane(e))
                 && (e.status / 10_000) % 100 == 0
                 && !reader.visited.contains_key(de)
+                && !construction_des.contains(de)
         })
         .map(|(de, _)| *de)
         .collect();
@@ -546,7 +550,6 @@ fn read_parsed(file: &File, library: &Library, tol: Tolerances) -> OgeomResult<I
     // Wireframe: every independent curve that is geometry (use flag 00, so
     // not a parameter-space curve, construction or annotation), that no
     // drawing lists and that nothing above took, as a wire.
-    let on_sheets = on_sheets(file);
     let curve_des: Vec<i64> = file
         .entities
         .iter()
@@ -593,15 +596,44 @@ fn read_parsed(file: &File, library: &Library, tol: Tolerances) -> OgeomResult<I
         }
     }
 
-    if solids.is_empty() && sheets.is_empty() && wires.is_empty() && points.is_empty() {
+    // Construction geometry: every entity [`construction_entities`] names
+    // that nothing above took, in directory order, by its name.
+    let mut construction = Vec::new();
+    for de in construction_des {
+        if reader.visited.contains_key(&de) {
+            continue;
+        }
+        match reader.construction_item(de) {
+            Ok(Some(geometry)) => {
+                let name = reader
+                    .long_name(de)
+                    .or_else(|| file.entity(de).map(|e| e.label.clone()))
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or_else(|| format!("construction-{}", construction.len()));
+                construction.push((name, geometry));
+            }
+            Ok(None) => {}
+            Err(e) => reader
+                .report
+                .warnings
+                .push(format!("D{de}: construction item failed to build: {e}")),
+        }
+    }
+
+    if solids.is_empty()
+        && sheets.is_empty()
+        && wires.is_empty()
+        && points.is_empty()
+        && construction.is_empty()
+    {
         // A deck that *had* candidates which all failed is a different
         // refusal from one with nothing to try, and the warnings say why.
         if reader.report.warnings.is_empty() {
             ogeom_bail!(
                 Construction,
                 "the IGES file contains no manifold solid, no independent \
-                 trimmed or untrimmed surface and no independent curve or \
-                 point this reader translates"
+                 trimmed or untrimmed surface, no independent curve or \
+                 point and no construction geometry this reader translates"
             );
         }
         ogeom_bail!(
@@ -641,7 +673,7 @@ fn read_parsed(file: &File, library: &Library, tol: Tolerances) -> OgeomResult<I
             *reader.report.skipped.entry(key).or_default() += 1;
         }
     }
-    let mut document = reader.document(&solids, &names, &sheets);
+    let mut document = reader.document(&solids, &names, &sheets, construction);
     {
         let pmi = document.pmi_mut();
         let base = pmi.dimensions.len();
@@ -4277,17 +4309,105 @@ impl<'a> Reader<'a> {
             .collect()
     }
 
-    /// The name a manifold solid (186) carries in a Name property (406 form
-    /// 15), past the eight columns of its label: the property pointers
-    /// follow the solid's parameters (its shell, its flag, and a pointer and
-    /// flag per void) and its back pointers.
+    /// A construction entity's geometry, `None` with a warning where it has
+    /// no construction form here: a point (116), an axis (124), one curve,
+    /// or a surface over the window of its own bounds.
+    fn construction_item(
+        &mut self,
+        de: i64,
+    ) -> OgeomResult<Option<ogeom_doc::ConstructionGeometry>> {
+        use ogeom_doc::ConstructionGeometry as G;
+        let entity = self.entity(de)?;
+        Ok(Some(match entity.kind {
+            116 => G::Point(self.placement(entity)?.apply(self.point3(entity, 0))),
+            124 => G::Axis(self.axis(entity)?),
+            100 => {
+                let (curve, range) = self.construction_arc(entity)?;
+                G::Curve { curve, range }
+            }
+            144 => {
+                let surface = self.trimmed_basis(entity, entity.at(0).int())?;
+                let (u, v) = ogeom_geom::Surface::domain(&surface);
+                G::Surface { surface, u, v }
+            }
+            kind if UNTRIMMED_KINDS.contains(&kind) => {
+                let surface = self.surface(de)?;
+                let (u, v) = ogeom_geom::Surface::domain(&surface);
+                G::Surface { surface, u, v }
+            }
+            _ => {
+                let mut segments = self.curve_segments(de)?;
+                if segments.len() != 1 {
+                    self.report.warnings.push(format!(
+                        "D{de}: a construction curve of {} pieces is no one curve; \
+                         it is left out",
+                        segments.len()
+                    ));
+                    return Ok(None);
+                }
+                let (curve, range) = segments.remove(0);
+                G::Curve { curve, range }
+            }
+        }))
+    }
+
+    /// A circular arc (100) as a construction curve: as [`Self::curve`]
+    /// reads it, save that its angle runs from the definition space's `x`
+    /// axis rather than from its start, the parameter a writer's matrix
+    /// states.
+    fn construction_arc(&mut self, entity: &Entity) -> OgeomResult<(Curve, (f64, f64))> {
+        let scale = self.report.scale_mm;
+        let zt = entity.at(0).real() * scale;
+        let at = |i: usize| {
+            Point::new(
+                entity.at(i).real() * scale,
+                entity.at(i + 1).real() * scale,
+                zt,
+            )
+        };
+        let (c, s, e) = (at(1), at(3), at(5));
+        let angle = |p: Point| (p.y - c.y).atan2(p.x - c.x);
+        let start = angle(s);
+        let ang = (angle(e) - start).rem_euclid(core::f64::consts::TAU);
+        let sweep = if ang <= self.tol.parametric() {
+            core::f64::consts::TAU
+        } else {
+            ang
+        };
+        let frame = Frame::new(c, Direction::Z, Direction::X, self.tol)?;
+        let circle = Circle::new(frame, c.distance(s), self.tol)?;
+        let curve = Curve::from(CircleCurve::new(circle));
+        let placement = self.placement(entity)?;
+        Ok((
+            curve.transformed(&placement, self.tol)?,
+            (start, start + sweep),
+        ))
+    }
+
+    /// The frame a transformation matrix (124) takes the world frame to:
+    /// its translation the origin and its columns the axes, carried on by
+    /// the matrix's own placement. Form 1's frame is left-handed.
+    fn axis(&mut self, matrix: &Entity) -> OgeomResult<Frame> {
+        let v = |i: usize| matrix.at(i).real();
+        let s = self.report.scale_mm;
+        let placement = self.placement(matrix)?;
+        let column = |k: usize| -> OgeomResult<Direction> {
+            Direction::new(
+                placement.apply_vector(Vector::new(v(k), v(4 + k), v(8 + k))),
+                self.tol,
+            )
+        };
+        let origin = placement.apply(Point::new(v(3) * s, v(7) * s, v(11) * s));
+        Frame::from_axes(origin, column(0)?, column(1)?, column(2)?, self.tol)
+    }
+
+    /// The name an entity carries in a Name property (406 form 15), past
+    /// the eight columns of its label: the property pointers follow the
+    /// parameters its type defines (see [`defined_parameters`]) and its
+    /// back pointers.
     fn long_name(&mut self, de: i64) -> Option<String> {
         let entity = self.file.entity(de)?;
-        if entity.kind != 186 {
-            return None;
-        }
-        let voids = entity.count(2);
-        let back_at = 3 + 2 * voids;
+        let back_at = defined_parameters(entity)?;
         let back = usize::try_from(entity.params.get(back_at)?.int()).ok()?;
         let count_at = back_at + 1 + back;
         let properties = usize::try_from(entity.params.get(count_at)?.int()).ok()?;
@@ -4314,7 +4434,13 @@ impl<'a> Reader<'a> {
         solids: &[(i64, Shape)],
         names: &[Option<String>],
         sheets: &[Shape],
+        construction: Vec<(String, ogeom_doc::ConstructionGeometry)>,
     ) -> ogeom_doc::Document {
+        // A deck states no product its construction geometry belongs to:
+        // it goes with the first part, or a part of its own holding no
+        // body where there is none.
+        let bare = (solids.is_empty() && sheets.is_empty() && !construction.is_empty())
+            .then(|| ogeom_algo::make_compound(&mut self.model, &[]).map(|built| built.shape));
         let colours: Vec<(Shape, ogeom_doc::Colour)> = solids
             .iter()
             .filter_map(|(de, s)| self.colour_of(*de).map(|c| (s.clone(), c)))
@@ -4339,6 +4465,25 @@ impl<'a> Reader<'a> {
         }
         for (shape, colour) in colours {
             document.set_colour(&shape, colour);
+        }
+        let owner = match bare {
+            Some(Ok(nothing)) => Some(document.add_part("construction", nothing)),
+            Some(Err(e)) => {
+                self.report
+                    .warnings
+                    .push(format!("construction geometry has no part to go in: {e}"));
+                None
+            }
+            None => document.products().next().map(|(id, _)| id),
+        };
+        if let Some(owner) = owner {
+            for (name, geometry) in construction {
+                if let Err(e) = document.add_construction(owner, name.clone(), geometry) {
+                    self.report
+                        .warnings
+                        .push(format!("construction item '{name}' was refused: {e}"));
+                }
+            }
         }
         document
     }
@@ -4377,6 +4522,79 @@ impl<'a> Reader<'a> {
             .get(index)
             .map(|&(r, g, b)| ogeom_doc::Colour::rgb(r, g, b))
     }
+}
+
+/// How many parameters an entity's type defines before its back-pointer
+/// and property lists, for the types the reader takes a Name property
+/// (406, form 15) from: a manifold solid, a point, a line, a circular or
+/// conic arc, a transformation matrix, a B-spline curve or surface, and a
+/// trimmed surface. `None` for any other type.
+fn defined_parameters(entity: &Entity) -> Option<usize> {
+    Some(match entity.kind {
+        116 => 4,
+        110 => 6,
+        100 => 7,
+        104 => 11,
+        124 => 12,
+        186 => 3 + 2 * entity.count(2),
+        144 => 4 + entity.count(2),
+        // Six counts and flags, the knots, the weights and control points,
+        // the parameter range and the plane's normal.
+        126 => {
+            let (k, m) = (entity.count(0), entity.count(1));
+            6 + (k + m + 2) + 4 * (k + 1) + 2 + 3
+        }
+        // Nine counts and flags, both knot sequences, the weights and
+        // control points, and the two parameter ranges.
+        128 => {
+            let (k1, k2) = (entity.count(0), entity.count(1));
+            let (m1, m2) = (entity.count(2), entity.count(3));
+            9 + (k1 + m1 + 2) + (k2 + m2 + 2) + 4 * (k1 + 1) * (k2 + 1) + 4
+        }
+        _ => return None,
+    })
+}
+
+/// The entities that are construction geometry (entity use flag 06, IGES
+/// 5.3, section 2.2.4.4.9.3) standing independent and on no drawing, of the
+/// kinds a document's construction holds: a point (116); a curve that
+/// stands as wireframe; a transformation matrix (124) no entity is placed
+/// by, as the axis it takes the world frame to; a surface that bounds
+/// itself and that no trimmed or bounded surface bounds; and a trimmed
+/// surface (144) over the whole of one. A trimmed surface with a boundary
+/// of its own has no construction form, and reads as a face as any other.
+fn construction_entities(file: &File, on_sheets: &std::collections::BTreeSet<i64>) -> Vec<i64> {
+    let placements: std::collections::BTreeSet<i64> =
+        file.entities.values().map(|e| e.transform.abs()).collect();
+    let bases: std::collections::BTreeSet<i64> = file
+        .entities
+        .values()
+        .filter_map(|e| match e.kind {
+            143 => Some(e.at(1).int().abs()),
+            144 => Some(e.at(0).int().abs()),
+            _ => None,
+        })
+        .collect();
+    let bounds_itself = |de: i64| {
+        file.entity(de)
+            .is_some_and(|b| UNTRIMMED_KINDS.contains(&b.kind))
+    };
+    file.entities
+        .iter()
+        .filter(|(de, e)| {
+            (e.status / 10_000) % 100 == 0
+                && (e.status / 100) % 100 == 6
+                && !on_sheets.contains(de)
+                && match e.kind {
+                    116 => true,
+                    124 => !placements.contains(de),
+                    144 => e.at(1).int() == 0 && e.count(2) == 0 && bounds_itself(e.at(0).int()),
+                    kind if UNTRIMMED_KINDS.contains(&kind) => !bases.contains(de),
+                    _ => is_wire(e),
+                }
+        })
+        .map(|(de, _)| *de)
+        .collect()
 }
 
 /// The entities a drawing (404) lists as its own annotation: they live on

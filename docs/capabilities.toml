@@ -2036,9 +2036,20 @@ directory, each file identified by the name its global section gives it
 and a definition by the symbol its index (402, form 12) lists; a missing
 file, a misnamed file, an unlisted symbol, a logical reference and a
 reference to a natively kept definition are refused by name, as is every
-reference in a deck read from text."""
-symbols = ["ogeom_io::read_iges", "ogeom_io::read_iges_file", "ogeom_io::write_iges", "ogeom_io::IgesImport", "ogeom_io::IgesReport"]
+reference in a deck read from text. A document's construction geometry is
+written as independent entities flagged as construction (use flag 06): a
+point (116), a curve as an edge's is (a hyperbola or parabola as a conic
+arc, 104), a surface as a trimmed surface (144) over the exact B-spline
+patch (128) of its window, an axis as a transformation matrix (124), each
+named by its label and a Name property; an item with no exact B-spline
+form is left out and named in `write_iges_reported`'s warnings. The reader
+reads such entities back into the document's construction, a composite of
+several pieces and a surface trimmed by a boundary of its own excepted; a
+line reads back over its own length from its start, and a surface other
+than a plane or a B-spline over its patch's parameters."""
+symbols = ["ogeom_io::read_iges", "ogeom_io::read_iges_file", "ogeom_io::write_iges", "ogeom_io::write_iges_reported", "ogeom_io::IgesExport", "ogeom_io::IgesImport", "ogeom_io::IgesReport"]
 tests = ["crates/ogeom/tests/iges_roundtrip.rs",
+    "crates/ogeom-io/tests/iges_construction.rs",
     "crates/ogeom-io/tests/sheet_export.rs",
     "crates/ogeom-io/src/iges/read.rs::hyperbola_and_parabola_conic_arcs_read_as_their_curves",
     "crates/ogeom-io/src/iges/read.rs::a_ruled_surface_reads_as_the_patch_between_its_curves",
