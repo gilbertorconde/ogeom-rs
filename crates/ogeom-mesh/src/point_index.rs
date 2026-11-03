@@ -94,6 +94,16 @@ impl PointIndex {
         self.order.is_empty()
     }
 
+    /// The points the tree was built over, in their cloud order.
+    #[must_use]
+    pub fn points(&self) -> Vec<Point> {
+        let mut out = vec![Point::ORIGIN; self.order.len()];
+        for (p, &i) in self.points.iter().zip(&self.order) {
+            out[i as usize] = Point::new(p[0], p[1], p[2]);
+        }
+        out
+    }
+
     /// The point nearest `p`, no farther than `max`; the lowest index among
     /// equally near ones. `max` may be infinite.
     #[must_use]

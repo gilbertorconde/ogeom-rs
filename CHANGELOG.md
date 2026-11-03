@@ -13,6 +13,50 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A network of patches fitted to a scan at once:
+  `algo::fit_network(model, patches: &[PatchDef], curves: &[CurveDef],
+  points: &PointIndex, &NetworkOptions { tolerance, smoothing, creases,
+  spans, most }, tol) -> Network { faces, shell, edges, surfaces,
+  worst_tangent, worst_gap, per_patch, corners, outside, ended }`.** (#598)
+  - A `PatchDef` is four sides walked round it, each a curve and whether
+    it runs against the walk; one side may be missing, shrunk to the
+    point where its neighbours meet. A `CurveDef` is a polyline or a curve
+    over a range. Every patch is fitted in one sparse least-squares
+    system: a curve shared by two patches is one set of poles and every
+    corner one pole, so the patches meet with no gap but rounding.
+  - A shared curve that is not a crease is held tangent pole by pole: the
+    curve's pole and the poles beside it in either patch on one line at a
+    ratio fixed along the curve (read off a fit without the constraints,
+    and shared through corners of four patches so the curves crossing
+    there agree), solved for exactly by elimination. A curve ending at a
+    corner of three, five or more patches, or at a three-sided patch's
+    point, is fitted near tangent from the points, since tangency there is
+    no pole-by-pole relation; its angle counts in `worst_tangent`, and the
+    corner's angle is reported in `corners`.
+  - Points are parameterised over the Coons patches of the drawn curves;
+    a point nearest a side no other patch shares lies past the network
+    and is counted in `outside`. Where a patch misses a point by more than
+    the tolerance, the strips of the patches that miss are each tried at
+    twice their spans and the try Mallows' criterion scores best is kept,
+    as `fit_surface_scattered_over` refines, the controls counted after
+    the constraints. The faces share an edge per curve, its pcurves the
+    patches' parameter lines, in one shell. `mesh::PointIndex::points`
+    gives back the cloud an index holds.
+  - Measured, against the true shapes: a band of a radius-10 cylinder in
+    two to four patches fits within 0.0004 mm (tolerance 0.001), its seams
+    tangent to 9e-15 rad and its gaps 6e-15 mm; three sectors in two rows,
+    their middle corners joining four patches each, within 0.0001 mm and
+    tangent to 9e-15 rad. With noise of σ = 0.02 mm and a tolerance of
+    0.1 mm the band is within 0.026 mm of the cylinder. A box edge rounded
+    by a radius-3 fillet beside a sharp edge keeps the sharp edge's right
+    angle within 2e-5 rad clean and 0.0012 rad noisy, the fillet's borders
+    tangent to 2e-15 rad. A ball's octant in three patches meeting at its
+    middle reports that corner of three at 0.0017 rad clean (0.0045 rad
+    the worst along the curves into it) and 0.0085 rad noisy. Six patches
+    on 100,000 noisy points fit in 1.8 s; the same points fit the same
+    network to the bit, and a network written to STEP reads back pole for
+    pole.
+
 - **The volume between a scan and its solid: `algo::volume_difference(mesh,
   model, shape, cell, tol) -> Vec<Region { side: Missing | Excess, volume,
   depth, kind: Layer | Lump, bounds, unsure }>`.** (#592)

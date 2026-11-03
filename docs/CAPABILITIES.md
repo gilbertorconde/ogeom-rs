@@ -13,10 +13,10 @@ per module. Each verdict cites the symbols and tests that back it, and
 | verdict | capabilities |
 |---|---|
 | `covered` | 99 |
-| `partial` | 8 |
+| `partial` | 9 |
 | `divergent` | 6 |
 
-113 capabilities. Ratchet: `unreviewed_max = 0`.
+114 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -34,6 +34,8 @@ per module. Each verdict cites the symbols and tests that back it, and
 - **algo.medial-axis**: The medial axis of a planar region · `covered`
 - **algo.mesh-orientation**: Face directions, axes of revolution, principal frames and open rims of a mesh · `covered`
 - **algo.nurbs-conversion**: Converting a shape's geometry to NURBS form · `covered`
+- **algo.patch-network**: A network of B-spline patches fitted to a scan in one sparse least-squares system: shared curves one set of poles, curves that are not creases held tangent pole by pole, spans raised per strip where a patch misses, built into a shell of faces sharing their edges · `partial`
+  - *restriction:* Patches are four-sided, or three-sided with one side shrunk to a point, each side one whole curve: a T-junction, where a curve ends on the middle of another, cannot be laid out. A curve between two patches is held exactly tangent where both its ends are on the border or at corners of four patches; a curve ending at a corner of three, five or more patches, or at a three-sided patch's point, is fitted near tangent from the points, its angle measured into `worst_tangent` and the corner's angle reported, since tangency there needs the cross derivatives to differ by a multiple of the curve's tangent, which is no pole-by-pole relation on a curve of several spans. Each point keeps the parameters its seed gave it (the Coons patch of the drawn curves); the points are those of the region the network covers.
 - **algo.place-copy**: Copying and transforming shapes, rigidly or generally, sharing what can be shared · `covered`
 - **algo.point-projection**: Projecting a point onto a curve or a surface, nearest first, all minima found · `covered`
 - **algo.primitive-fits**: Best fits of planes, spheres, cylinders, cones, tori, circles and lines to points, with residuals, a mesh region grown for one from clicks, its rounded rim peeled, and a rim circle or a crease line traced along a mesh's sharp edges from a click · `covered`
@@ -308,4 +310,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: cfc4bd7f1b328da9 -->
+<!-- ledger-checksum: 4f6a54b6156e139b -->
