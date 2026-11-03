@@ -11,6 +11,34 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **Form as the standards define it: `algo::fit::zone::{flatness,
+  straightness, circularity, cylindricity, sphericity, inscribed_circle,
+  circumscribed_circle, inscribed_cylinder, circumscribed_cylinder}(points,
+  tol) -> Zone<S> { shape, width, contacts, optimal }`.** (#575)
+  - Minimum (Chebyshev) zones: the narrowest pair of parallel planes,
+    concentric circles, coaxial cylinders or concentric spheres holding
+    every point, started from the least-squares fit and never wider than
+    its peak to peak; `contacts` are the points on the zone's boundaries.
+  - Flatness and circularity are exact. A working subset of the points,
+    seeded from the least-squares extremes, has its narrowest slab found
+    over the antipodal face–vertex and edge–edge pairs of its convex hull,
+    or its narrowest ring over every vertex of its farthest- and
+    nearest-point Voronoi overlay, and grows by the points outside it
+    until it holds them all. Points nearer a line than any ring are
+    refused rather than given a ring of huge radius.
+  - The smallest enclosing circle is Welzl's; the largest empty circle
+    centred in the points' hull stands on their Delaunay triangulation,
+    at a Voronoi vertex or where a Voronoi edge crosses the hull.
+  - Sphericity, cylindricity, straightness (the thinnest cylinder about a
+    line, its diameter the width) and the inscribed and circumscribed
+    cylinders are settled by sequential linear programming in a trust
+    region; `optimal` reports whether the Chebyshev conditions hold, no
+    change of the parameters narrowing the linearised zone by more than
+    the confusion distance. A million points of a bore settle in under a
+    second.
+
 ### Fixed
 
 - **`mesh::simplify` with `Target::Verified` is about fifteen times faster

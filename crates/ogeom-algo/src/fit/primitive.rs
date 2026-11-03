@@ -1805,7 +1805,7 @@ fn consensus(
         reason = "a positive count of a few thousand"
     )]
     let draws = (CONSENSUS_MISS.ln() / (-clean).ln_1p()).ceil() as usize;
-    let mut sequence = Draws(0x9E37_79B9_7F4A_7C15);
+    let mut sequence = Draws::new();
     let mut best: Option<(f64, State)> = None;
     let mut picked: Vec<usize> = Vec::with_capacity(size);
     let mut sizes = vec![0.0; points.len()];
@@ -1840,11 +1840,16 @@ fn consensus(
 
 /// A fixed sequence of draws (xorshift64*), so a consensus start is the
 /// same on every run.
-struct Draws(u64);
+pub(super) struct Draws(u64);
 
 impl Draws {
+    /// The sequence every fit draws from.
+    pub(super) const fn new() -> Self {
+        Self(0x9E37_79B9_7F4A_7C15)
+    }
+
     /// A draw below `n`.
-    fn below(&mut self, n: usize) -> usize {
+    pub(super) fn below(&mut self, n: usize) -> usize {
         let mut x = self.0;
         x ^= x >> 12;
         x ^= x << 25;
