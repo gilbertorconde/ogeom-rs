@@ -8,7 +8,7 @@ mod read;
 mod write;
 
 pub use read::{IgesImport, IgesReport, read_iges, read_iges_file};
-pub use write::write_iges;
+pub use write::{IgesExport, write_iges, write_iges_reported};
 
 /// The entity types the reader and writer translate, by number and by the
 /// name the specification gives each. Refusal messages quote the names.
