@@ -13,6 +13,7 @@ use super::tails;
 use crate::Cutoff;
 use crate::orient::{check_indices, edge_uses, key};
 
+mod meeting;
 mod rim;
 
 /// The surface kinds a region is grown for, and the curve kinds a crease is
@@ -203,33 +204,68 @@ impl AnyFit {
 pub struct SeedReport {
     /// The triangle nearest the seed.
     pub triangle: u32,
-    /// Whether that triangle is in the region; for a curve, whether a
-    /// crease edge about the seed has both ends on the chain.
+    /// Whether that triangle is in the region; for a traced curve, whether
+    /// a crease edge about the seed has both ends on the chain; for a
+    /// [`Crease::Meeting`], whether the triangle lies on the round.
     pub in_region: bool,
     /// The seed's residual from the fit.
     pub offset: f64,
     /// The angle, in radians, between the triangle's normal and the fit's
-    /// normal at the point of the triangle nearest the seed; for a curve,
-    /// the angle the surface turns through across the nearest crease edge
-    /// about the seed on the chain, or the nearest about it where none is.
+    /// normal at the point of the triangle nearest the seed; for a traced
+    /// curve, the angle the surface turns through across the nearest crease
+    /// edge about the seed on the chain, or the nearest about it where none
+    /// is; for a [`Crease::Meeting`], the angle between its planes.
     pub angle: f64,
 }
 
 /// A region grown over a mesh, or a crease traced along it, and its fit.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Grown {
     /// The region's triangles, in increasing order; none for a curve.
     pub triangles: Vec<u32>,
     /// The fit over the region's vertices.
     pub fit: AnyFit,
     /// The mesh vertices the fit measured, in the order of its residuals:
-    /// those of the region's triangles, in increasing order; for a curve,
-    /// the chain's, in their order along it.
+    /// those of the region's triangles, in increasing order; for a traced
+    /// curve, the chain's, in their order along it; for a
+    /// [`Crease::Meeting`], the first plane's and then the second's, each
+    /// in increasing order.
     pub vertices: Vec<u32>,
     /// Each seed's report, in the seeds' order.
     pub seeds: Vec<SeedReport>,
     /// The rings [`GrowOptions::peel`] took off.
     pub peeled_rings: u32,
+    /// For a curve, how its crease was found; `None` for a surface.
+    pub crease: Option<Crease>,
+}
+
+/// How a [`FitKind::Line3`] or a [`FitKind::Circle3`] found its crease.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum Crease {
+    /// Traced along the mesh's crease edges.
+    Traced,
+    /// A line where two planes meet either side of a rounded edge, with no
+    /// crease edge along it: the sharp edge the round stands in for.
+    Meeting(Box<Meeting>),
+}
+
+/// The two planes a [`Crease::Meeting`] line is where they meet.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct Meeting {
+    /// Each plane's fit, its normal facing out of the material; the line's
+    /// residuals are theirs, each point's from its own plane.
+    pub planes: [Fit<Plane>; 2],
+    /// Each plane's region's triangles, in increasing order.
+    pub triangles: [Vec<u32>; 2],
+    /// The angle, in radians, between the planes' normals: how far the
+    /// surface turns across the round.
+    pub angle: f64,
+    /// The least and the greatest distance along the line from its
+    /// location, its direction's way, that the round runs between.
+    pub span: (f64, f64),
 }
 
 /// No neighbour across an edge.
@@ -338,7 +374,52 @@ const NONE: u32 = u32::MAX;
 /// The answer's triangles are empty, and its vertices are the chain's.
 /// Later seeds are reported against the fit, and do not extend the chain.
 /// [`GrowOptions::normal_limit`] and [`GrowOptions::max_triangles`] apply
-/// to regions only.
+/// to regions only, except as below. [`Grown::crease`] is
+/// [`Crease::Traced`].
+///
+/// # Rounded edges
+///
+/// A scan rounds a box's edge, so no edge of it may turn past the crease
+/// limit. Where a [`FitKind::Line3`] finds no chain about the first seed,
+/// the line is sought instead where the planes either side of the round
+/// meet: the sharp edge the round stands in for, [`Crease::Meeting`].
+///
+/// The round's axis is the way the surface about the seed turns least: the
+/// rings of triangles about the seed's grow until their normals spread one
+/// way across their mean by more than the other, by as much at least as
+/// normals spread evenly over the crease limit. The mesh is cut across
+/// that axis through the seed, and each side's planes are grown, peeled,
+/// from the triangles the cut reaches 1, 2, 4, ... triangles out. A pair
+/// meets across a round where all of these hold:
+///
+/// - neither plane holds the seed's triangle, nor do they share one, and
+///   each keeps twice the points a plane needs;
+/// - each is flat: its sigma squared over the noise its mesh shows inside
+///   it (each inner vertex's offset from its neighbours' mean, taken about
+///   the offsets' mean so a constant bend drops out) is no larger than
+///   the cutoff's sigmas of chance allow, the ratio of two estimates of one
+///   noise; or under [`Cutoff::Distance`], its sigma is within the
+///   distance;
+/// - they turn past the crease limit by more than their own uncertainty
+///   puts on the angle between them, at the cutoff's sigmas;
+/// - the cut reaches each side's plane before the other's, and the line
+///   where they meet lies over the round between where it enters them, by
+///   more than the planes' uncertainty moves it;
+/// - the way across the round along the cut is shorter than each plane is
+///   wide across the line, and they run beside each other along it.
+///
+/// Of those, the pair whose narrower plane is widest for the way across
+/// the round is taken: the faces either side of the round, not a facet of
+/// it nor faces further off. The answer's fit is the line, located in the
+/// middle of where both planes run beside it; its vertices are the first
+/// plane's and then the second's, and its residuals each point's from its
+/// own plane, signed as the plane signs them. [`Meeting`] holds the planes,
+/// their regions, the angle between them and the line's span. A seed is
+/// in the region where its triangle is on neither plane, within the span
+/// and within the round's width of the line; its angle is the planes'.
+/// Where no pair meets across a round, or with [`Cutoff::All`], which has
+/// no threshold to peel by, or with anything held fixed, the seed is
+/// refused as it is for want of a chain.
 ///
 /// # Determinism
 ///
@@ -358,8 +439,9 @@ const NONE: u32 = u32::MAX;
 /// hierarchy holds a different number of triangles from the mesh;
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
 /// the mesh has no triangle to be near a seed, or for a curve where no
-/// crease about a seed holds twice the vertices the kind needs; and the
-/// kind's own refusals, as its fit gives them.
+/// crease about a seed holds twice the vertices the kind needs and, for a
+/// line, no two planes meet across a round about the first; and the kind's
+/// own refusals, as its fit gives them.
 pub fn grow(
     mesh: &Triangulation,
     index: &Bvh,
@@ -369,10 +451,23 @@ pub fn grow(
     tol: Tolerances,
 ) -> OgeomResult<Grown> {
     checked(mesh, index, seeds, kind, options)?;
-    if kind.curve() {
-        return rim::traced(mesh, index, seeds, kind, options, tol);
-    }
     let surface = Surface::of(mesh);
+    if kind.curve() {
+        return rim::traced(&surface, index, seeds, kind, options, tol);
+    }
+    region(&surface, index, seeds, kind, options, tol)
+}
+
+/// The region of `kind` grown over `surface` about the seeds, as [`grow`]
+/// describes, its options already checked.
+fn region(
+    surface: &Surface<'_>,
+    index: &Bvh,
+    seeds: &[Point],
+    kind: FitKind,
+    options: &GrowOptions,
+    tol: Tolerances,
+) -> OgeomResult<Grown> {
     let least = 2 * primitive::needed(kind.kind(), &options.fixed);
 
     let mut hits = Vec::with_capacity(seeds.len());
@@ -383,11 +478,11 @@ pub fn grow(
         hits.push(hit);
     }
     let mut grower = Grower {
-        surface: &surface,
+        surface,
         kind,
         options,
         tol,
-        in_region: vec![false; mesh.triangles.len()],
+        in_region: vec![false; surface.mesh.triangles.len()],
         region: Vec::new(),
         fit: None,
         gate: None,
@@ -427,6 +522,7 @@ pub fn grow(
         vertices,
         seeds: reports,
         peeled_rings,
+        crease: None,
     })
 }
 

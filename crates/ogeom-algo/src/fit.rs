@@ -66,7 +66,7 @@ pub(crate) mod segments;
 mod tails;
 pub mod zone;
 
-pub use grow::{AnyFit, FitKind, GrowOptions, Grown, SeedReport, grow};
+pub use grow::{AnyFit, Crease, FitKind, GrowOptions, Grown, Meeting, SeedReport, grow};
 pub use primitive::{
     Fit, FitFixed, FitOptions, Side, circle2, circle3, cone, cylinder, line2, line3, plane, sphere,
     torus,
