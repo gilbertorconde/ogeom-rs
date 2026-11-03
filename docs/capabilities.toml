@@ -747,7 +747,7 @@ tests = [
 
 [[capability]]
 id = "algo.fit-outline"
-title = "An outline of lines, tangent arcs and circles fitted around a 2D silhouette, every point between a play and the play plus twice a tolerance outside it, negative play inside it"
+title = "An outline of lines, tangent arcs and circles fitted around a 2D silhouette, every point between a play and the play plus twice a tolerance outside it, negative play inside it, optionally about the silhouette with holes and notches narrower than a width filled"
 crate = "ogeom-algo"
 verdict = "covered"
 symbols = [
@@ -759,6 +759,7 @@ tests = [
     "crates/ogeom-algo/src/fit/segments.rs",
     "crates/ogeom/tests/mesh_shadow.rs::an_l_bracket_gives_its_outline_with_corners",
     "crates/ogeom/tests/mesh_shadow.rs::a_cylinder_seen_along_its_axis_gives_one_circle",
+    "crates/ogeom-algo/src/outline.rs::fill_below_fills_a_narrow_slot_and_a_small_hole",
 ]
 
 [[capability]]

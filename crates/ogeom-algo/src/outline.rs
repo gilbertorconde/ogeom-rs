@@ -7,7 +7,9 @@
 //! decides what is returned.
 //!
 //! 1. **The middle of the band.** The silhouette is first traced afresh as
-//!    a region, so its loops bound it exactly. Its offset by `play +
+//!    a region, so its loops bound it exactly, and with `fill_below` set it
+//!    is closed (see [Filling](#filling)) and stands for the silhouette
+//!    from then on. Its offset by `play +
 //!    tolerance` is then the union of the silhouette with a rectangle along
 //!    each edge, on the outside, and a sector at each convex corner, or for
 //!    a negative offset the silhouette less such rectangles inside and
@@ -36,6 +38,31 @@
 //!    the whole piece then lies in the band. A loop with any piece failing
 //!    is returned as the polygon of its middle-of-the-band loop, which is
 //!    checked the same way.
+//!
+//! # Filling
+//!
+//! With `fill_below = w > 0` the silhouette `S` is replaced by its
+//! morphological closing by a disc of radius `r = w / 2`: dilated by `r`,
+//! then eroded by `r`. A point outside `S` stays out of the exact closing
+//! `C` exactly when some closed disc of radius `r` holds it and misses `S`.
+//! So a hole, or a notch, whose largest inscribed circle is no wider than
+//! `w` across is filled, and one wider keeps the points such discs reach:
+//! a round hole wider than `w` stays whole, a slot of width `s < w` closes
+//! but for a dent where the disc dips into its mouth, `r - sqrt(r^2 -
+//! s^2/4)` deep. A convex corner with nothing else of `S` within `w` of
+//! it is kept sharp, every point outside it near it lying in such a disc,
+//! while a reflex corner takes a fillet of radius `r`, the disc's own.
+//!
+//! Both steps are offsets as in stage 1, their arcs chords sagging `sigma
+//! = min(tolerance, r) / 32`: the dilation by `r + sigma`, its chords
+//! covering the disc of radius `r`, and the erosion by `r`, its chords
+//! removing at least the disc of radius `r - sigma`. The result `F`
+//! therefore holds `C`, and lies within the closing by `r - sigma` of `S`
+//! dilated by `2 sigma`: everything `C` fills is filled, a hole or notch
+//! more than `w + 2 sigma` across is kept, and a straight side moves out
+//! by `sigma` at most; all to within the engine's snapping. `F` holds
+//! `S`, so the outline clears `S` by the play wherever it clears `F`, and
+//! the band holds about `F`.
 
 use ogeom_core::{Exact, OgeomResult, Predicates, Sign, ogeom_bail};
 use ogeom_math::{Point2, Vector2};
@@ -59,6 +86,11 @@ pub struct Outline {
     /// Corners turning by less than this, in radians, are rounded by the
     /// largest tangent arc found to fit the band.
     pub round_below: f64,
+    /// Holes and notches no wider than this across, by their largest
+    /// inscribed circle, are filled before the fit, and the band is taken
+    /// about the silhouette so filled. Zero, the true silhouette, fills
+    /// nothing. See [Filling](self#filling).
+    pub fill_below: f64,
 }
 
 /// One piece of a fitted outline.
@@ -181,12 +213,15 @@ fn on_circle(centre: Point2, radius: f64, angle: f64) -> Point2 {
 /// counter-clockwise, holes clockwise. The outline has one wire for each
 /// loop of the band's middle: a hole narrower than the band is closed
 /// over, and with a negative play a part thinner than the band is gone.
+/// With `fill_below` set, the band is about the silhouette with its
+/// narrow holes and notches filled.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
-/// the tolerance is not positive, the play is not finite, or `round_below`
-/// is not an angle from zero to a half turn, and
+/// the tolerance is not positive, the play is not finite, `round_below`
+/// is not an angle from zero to a half turn, or `fill_below` is not a
+/// finite width of zero or more, and
 /// [`OgeomError::Numeric`](ogeom_core::OgeomError::Numeric) if a point is not
 /// finite.
 pub fn fit_outline(loops: &[Loop2], outline: &Outline) -> OgeomResult<Vec<Wire2d>> {
@@ -194,6 +229,7 @@ pub fn fit_outline(loops: &[Loop2], outline: &Outline) -> OgeomResult<Vec<Wire2d
         play,
         tolerance,
         round_below,
+        fill_below,
     } = *outline;
     if !(tolerance > 0.0 && tolerance.is_finite()) {
         ogeom_bail!(
@@ -210,9 +246,18 @@ pub fn fit_outline(loops: &[Loop2], outline: &Outline) -> OgeomResult<Vec<Wire2d
             "rounding corners turning less than {round_below} rad is not a turn"
         );
     }
-    let silhouette = region(&chain(loops), |w| w[0] > 0)?;
+    if !(fill_below >= 0.0 && fill_below.is_finite()) {
+        ogeom_bail!(
+            Construction,
+            "filling below {fill_below} across is not a width"
+        );
+    }
+    let mut silhouette = region(&chain(loops), |w| w[0] > 0)?;
     if silhouette.is_empty() {
         return Ok(Vec::new());
+    }
+    if fill_below > 0.0 {
+        silhouette = closed(&silhouette, fill_below / 2.0, tolerance)?;
     }
     let snap = snapping(&silhouette);
     let middle = play + tolerance;
@@ -276,6 +321,14 @@ fn snapping(loops: &[Loop2]) -> f64 {
     }
     let extent = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(0.0);
     extent * 2f64.powi(-36)
+}
+
+/// The silhouette closed by a disc of radius `r`, holding the exact
+/// closing: see [Filling](self#filling).
+fn closed(silhouette: &[Loop2], r: f64, tolerance: f64) -> OgeomResult<Vec<Loop2>> {
+    let sag = tolerance.min(r) / SAG;
+    let dilated = offset(silhouette, r + sag / 2.0, sag)?;
+    offset(&dilated, -(r - sag / 2.0), sag)
 }
 
 /// The silhouette offset by `distance`, outward for a positive one, its
@@ -1064,6 +1117,7 @@ mod tests {
             play: 0.0,
             tolerance: 0.1,
             round_below: 0.5,
+            fill_below: 0.0,
         };
         let wires = fit_outline(&[square(10.0)], &o).unwrap();
         assert_eq!(wires.len(), 1);
@@ -1082,6 +1136,7 @@ mod tests {
             play: 1.0,
             tolerance: 0.1,
             round_below: 0.5,
+            fill_below: 0.0,
         };
         let wires = fit_outline(&[square(10.0)], &o).unwrap();
         assert_eq!(wires.len(), 1);
@@ -1091,5 +1146,178 @@ mod tests {
             .filter(|p| matches!(p, Piece2::Arc { .. }))
             .count();
         assert_eq!(arcs, 4, "{:?}", wires[0]);
+    }
+
+    /// A 40 by 30 plate with a slot `width` wide and 5 deep down from the
+    /// middle of its top side, and a round hole of `diameter` about
+    /// `(10, 10)`, the hole's polygon inscribed in its circle.
+    fn plate(width: f64, diameter: f64) -> Vec<Loop2> {
+        let h = width / 2.0;
+        let outer = Loop2 {
+            points: [
+                (0.0, 0.0),
+                (40.0, 0.0),
+                (40.0, 30.0),
+                (20.0 + h, 30.0),
+                (20.0 + h, 25.0),
+                (20.0 - h, 25.0),
+                (20.0 - h, 30.0),
+                (0.0, 30.0),
+            ]
+            .map(|(x, y)| Point2::new(x, y))
+            .to_vec(),
+        };
+        let hole = Loop2 {
+            points: (0..64)
+                .map(|k| {
+                    let a = -fraction(k, 64) * core::f64::consts::TAU;
+                    on_circle(Point2::new(10.0, 10.0), diameter / 2.0, a)
+                })
+                .collect(),
+        };
+        vec![outer, hole]
+    }
+
+    /// Signed distance from the region the loops bound, positive outside,
+    /// over every edge.
+    fn signed_distance(loops: &[Loop2], p: Point2) -> f64 {
+        let mut nearest = f64::INFINITY;
+        let mut winding = 0;
+        for l in loops {
+            let n = l.points.len();
+            for i in 0..n {
+                let (a, b) = (l.points[i], l.points[(i + 1) % n]);
+                nearest = nearest.min(distance_to_segment(p, a, b));
+                let side = (b - a).cross(p - a);
+                if a.y <= p.y && p.y < b.y && side > 0.0 {
+                    winding += 1;
+                } else if b.y <= p.y && p.y < a.y && side < 0.0 {
+                    winding -= 1;
+                }
+            }
+        }
+        if winding > 0 { -nearest } else { nearest }
+    }
+
+    fn samples(wires: &[Wire2d], step: f64) -> Vec<Point2> {
+        let mut out = Vec::new();
+        for p in wires.iter().flat_map(|w| &w.pieces) {
+            let n = whole((p.length() / step).ceil().max(1.0));
+            out.extend((0..=n).map(|k| p.point_at(fraction(k, n))));
+        }
+        out
+    }
+
+    fn filling(fill_below: f64) -> Outline {
+        Outline {
+            play: 0.05,
+            tolerance: 0.05,
+            round_below: 0.5,
+            fill_below,
+        }
+    }
+
+    /// With `fill_below = 1`, a 0.5 slot and a 0.4 hole are filled: the
+    /// closing holds the exact closing, whose top dips into the slot's
+    /// mouth by `r - sqrt(r^2 - s^2/4)`, and lies within the closing by
+    /// `r - sigma` of the plate dilated by `2 sigma`, whose top is
+    /// `2 sigma` higher and dips less; the convex corners stay and the
+    /// sides move out by `sigma` at most. The outline is one wire, in the
+    /// band about the filled plate, clear of the true one by the play.
+    #[test]
+    fn fill_below_fills_a_narrow_slot_and_a_small_hole() {
+        let loops = plate(0.5, 0.4);
+        let o = filling(1.0);
+        let (r, s) = (0.5, 0.5);
+        let sigma = o.tolerance.min(r) / SAG;
+        let silhouette = region(&chain(&loops), |w| w[0] > 0).unwrap();
+        let filled = closed(&silhouette, r, o.tolerance).unwrap();
+        assert_eq!(filled.len(), 1, "{filled:?}");
+        assert!(!filled[0].is_hole());
+        let inside = |x: f64, y: f64| signed_distance(&filled, Point2::new(x, y)) < 0.0;
+        assert!(inside(10.0, 10.0) && inside(20.0, 27.5));
+        let dip = |r: f64, s: f64| r - (r * r - s * s / 4.0).sqrt();
+        let deepest = 30.0 - dip(r, s);
+        let shallowest = 2.0f64.mul_add(sigma, 30.0) - dip(r - sigma, 4.0f64.mul_add(-sigma, s));
+        assert!(inside(20.0, deepest - 1e-6));
+        assert!(!inside(20.0, shallowest + 1e-6));
+        assert!(inside(40.0 - 1e-6, 30.0 - 1e-6) && inside(1e-6, 1e-6));
+        assert!(!inside(40.0 + sigma + 1e-6, 15.0) && !inside(15.0, -sigma - 1e-6));
+
+        let wires = fit_outline(&loops, &o).unwrap();
+        assert_eq!(wires.len(), 1, "{wires:?}");
+        for q in samples(&wires, o.tolerance / 100.0) {
+            let d = signed_distance(&filled, q);
+            assert!(
+                o.play <= d && d <= 2.0f64.mul_add(o.tolerance, o.play),
+                "{q:?} at {d} from the filled plate"
+            );
+            assert!(signed_distance(&loops, q) >= o.play, "{q:?}");
+        }
+    }
+
+    /// With `fill_below = 0` the slot and the hole are kept: the outline
+    /// runs down into the slot, and the hole has its own wire.
+    #[test]
+    fn no_filling_keeps_the_slot_and_the_hole() {
+        let wires = fit_outline(&plate(0.5, 0.4), &filling(0.0)).unwrap();
+        assert_eq!(wires.len(), 2, "{wires:?}");
+        let points = samples(&wires, 0.01);
+        assert!(
+            points
+                .iter()
+                .any(|q| (q.x - 20.0).abs() < 0.25 && q.y < 26.0)
+        );
+        assert!(
+            points
+                .iter()
+                .any(|q| q.distance(Point2::new(10.0, 10.0)) < 0.2)
+        );
+    }
+
+    /// A slot of 1.2 and a hole of 1.01, both wider than `fill_below = 1`
+    /// and its fuzz of `2 sigma`, are kept, the hole within `2 sigma`; a
+    /// hole of 1 inscribed in its circle, its inscribed circle narrower
+    /// than 1, is filled.
+    #[test]
+    fn fill_below_keeps_what_is_wider() {
+        let o = filling(1.0);
+        let sigma = o.tolerance.min(0.5) / SAG;
+        let mut loops = plate(1.2, 1.01);
+        loops.push(Loop2 {
+            points: plate(1.2, 1.0)[1]
+                .points
+                .iter()
+                .map(|&p| Point2::new(p.x + 20.0, p.y))
+                .collect(),
+        });
+        let silhouette = region(&chain(&loops), |w| w[0] > 0).unwrap();
+        let filled = closed(&silhouette, 0.5, o.tolerance).unwrap();
+        assert_eq!(filled.len(), 2, "{filled:?}");
+        let at = |x: f64, y: f64| signed_distance(&filled, Point2::new(x, y));
+        assert!(at(20.0, 27.5) > 0.0);
+        assert!(at(30.0, 10.0) < 0.0);
+        let rim = 0.505 * (core::f64::consts::PI / 64.0).cos();
+        assert!(
+            at(10.0, 10.0) > rim - 2.0 * sigma - 1e-6,
+            "{}",
+            at(10.0, 10.0)
+        );
+
+        let wires = fit_outline(&loops, &o).unwrap();
+        assert_eq!(wires.len(), 2, "{wires:?}");
+        assert!(
+            samples(&wires, 0.01)
+                .iter()
+                .any(|q| (q.x - 20.0).abs() < 0.6 && q.y < 26.0)
+        );
+    }
+
+    /// A negative or unbounded `fill_below` is no width.
+    #[test]
+    fn fill_below_must_be_a_width() {
+        for w in [-1.0, f64::NAN, f64::INFINITY] {
+            assert!(fit_outline(&plate(0.5, 0.4), &filling(w)).is_err());
+        }
     }
 }
