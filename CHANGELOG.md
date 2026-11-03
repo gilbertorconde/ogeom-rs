@@ -117,6 +117,53 @@ bump may break the API and a patch bump may not.
     exact patch. Documents without construction geometry write the same
     bytes as before.
 
+- **Patch networks with T-junctions, parameter correction and exact
+  tangency at corners of three and five patches:
+  `algo::fit_network_chained(model, patches: &[ChainedPatch], curves,
+  points, options, corrections, tol) -> Network`, `ChainedPatch { sides:
+  [Vec<PatchSide>; 4] }`.** (#653)
+  - A side may be a chain of curves, so a curve can end on the middle of
+    another patch's side. The patch takes a knot of multiplicity three at
+    the junction, its boundary row the chain's poles (shared exactly), and
+    the side opposite crosses the same junction, split alike or one curve
+    whose knots carry the junction on to the patch beyond. The patch is
+    held `C¹` across the parameter line through the junctions, pole by
+    pole, at the ratio of the knot spacings either side; the curve ending
+    at the junction is held tangent at that ratio and the curves either
+    side of it share theirs. Sides split into unlike numbers of curves, or
+    a curve of a split side crossed by junctions itself, are refused.
+    `ChainedPatch::four` builds one; `From<PatchDef>` converts.
+  - `corrections` times at most, once refinement ends, every point's
+    parameters move to its foot on its patch and the patches are fitted
+    again at the same spans; a fit is kept only if its RMS distance falls
+    and, where every point was within the tolerance, stays so.
+  - A corner of three or five patches whose curves all run on to the
+    border is held tangent exactly: `D₁ + λ D₂ + γ T = 0` along each
+    curve, `λ` constant and `γ` linear, is a cubic spline on the curve's
+    knots and held nought at as many points as it has coefficients; at the
+    corner the curves' first poles lie in one plane. Where that fit misses
+    the tolerance, the network is refined again with the corner near
+    tangent, as before.
+  - `fit_network` is unchanged for its callers: it corrects no parameters
+    and fits every network it fitted before to the same poles, bit for
+    bit, except a corner of three or five patches held tangent where the
+    fit meets the tolerance.
+  - Measured, against the true shapes: a third of a radius-10 cylinder in
+    three rows, the top one split in two at a third of the way along,
+    fits within 0.00026 mm (tolerance 0.001), gaps 6e-15 mm and every
+    curve tangent to 3e-15 rad; without the `C¹` rows the patches below
+    the junction kink by 0.0013 rad. Three corrections lower the RMS
+    distance of the band in six patches from 4.3655e-5 to 4.3588e-5 mm,
+    of the box edge from 2.838e-5 to 2.795e-5 mm. A ball's octant in three
+    patches with noise of σ = 0.02 mm (tolerance 0.1) is tangent to
+    1.5e-15 rad along every curve and at the corner (0.023 rad before),
+    and a cap in five patches round a corner of five to 2.2e-15 rad
+    (0.033 rad before). The clean octant at tolerance 0.001 cannot be held
+    so: it misses by 0.00107 mm at any spans, and is fitted near tangent
+    as before. Issue #598's acceptance: thirty patches over a cover curved
+    both ways, 60,000 points with noise of σ = 0.02 mm, fit in 0.8 s,
+    read back from STEP tangent to 4.4e-15 rad with no gap.
+
 ### Changed
 
 - **`Outline` gains `fill_below`.** An `Outline` built with a struct

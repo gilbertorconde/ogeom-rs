@@ -8,7 +8,10 @@
 use core::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::time::Duration;
 
-use ogeom::algo::{CurveDef, Network, NetworkOptions, PatchDef, PatchSide, check, fit_network};
+use ogeom::algo::{
+    ChainedPatch, CurveDef, Network, NetworkOptions, PatchDef, PatchSide, check, fit_network,
+    fit_network_chained,
+};
 use ogeom::core::clock::Instant;
 use ogeom::core::{OgeomError, Tolerances};
 use ogeom::geom::fit::Ended;
@@ -657,4 +660,487 @@ fn the_network_reads_back_from_step_as_written() {
         });
         assert!(matches, "a read patch matches none fitted");
     }
+}
+
+/// The band's sweep a T-junction network covers, and where along it the
+/// junction stands: a third of the way, so the curves either side of it
+/// differ in length.
+const T_SWEEP: f64 = TAU / 3.0;
+const T_AT: f64 = T_SWEEP / 3.0;
+
+/// A circle arc of the band at height `z` from angle `a` to `b`.
+fn band_arc(z: f64, a: f64, b: f64) -> CurveDef {
+    let frame = Frame::new(Point::new(0.0, 0.0, z), Direction::Z, Direction::X, T).unwrap();
+    CurveDef::Curve {
+        curve: Curve::Circle(CircleCurve::new(Circle::new(frame, RADIUS, T).unwrap())),
+        range: (a, b),
+    }
+}
+
+/// A seam of the band at angle `a` from height `z0` to `z1`.
+fn band_seam(a: f64, z0: f64, z1: f64) -> CurveDef {
+    CurveDef::Polyline(vec![on_cylinder(a, z0), on_cylinder(a, z1)])
+}
+
+/// A third of the cylinder band in three rows: a patch below, one above it
+/// across the whole sweep, and two side by side on top, the seam between
+/// them (curve 11) ending on the middle row's top side at a T-junction,
+/// a third of the way along. That side is curves 2 and 3; its opposite,
+/// curve 1, is one curve and carries the junction on to the bottom patch.
+fn t_junction() -> (Vec<CurveDef>, Vec<ChainedPatch>) {
+    let (h1, h2) = (HEIGHT / 3.0, 2.0 * HEIGHT / 3.0);
+    let curves = vec![
+        band_arc(0.0, 0.0, T_SWEEP),
+        band_arc(h1, 0.0, T_SWEEP),
+        band_arc(h2, 0.0, T_AT),
+        band_arc(h2, T_AT, T_SWEEP),
+        band_arc(HEIGHT, 0.0, T_AT),
+        band_arc(HEIGHT, T_AT, T_SWEEP),
+        band_seam(0.0, 0.0, h1),
+        band_seam(T_SWEEP, 0.0, h1),
+        band_seam(0.0, h1, h2),
+        band_seam(T_SWEEP, h1, h2),
+        band_seam(0.0, h2, HEIGHT),
+        band_seam(T_AT, h2, HEIGHT),
+        band_seam(T_SWEEP, h2, HEIGHT),
+    ];
+    let patches = vec![
+        ChainedPatch::four([
+            vec![(0, false)],
+            vec![(7, false)],
+            vec![(1, true)],
+            vec![(6, true)],
+        ]),
+        ChainedPatch::four([
+            vec![(1, false)],
+            vec![(9, false)],
+            vec![(3, true), (2, true)],
+            vec![(8, true)],
+        ]),
+        ChainedPatch::four([
+            vec![(2, false)],
+            vec![(11, false)],
+            vec![(4, true)],
+            vec![(10, true)],
+        ]),
+        ChainedPatch::four([
+            vec![(3, false)],
+            vec![(12, false)],
+            vec![(5, true)],
+            vec![(11, true)],
+        ]),
+    ];
+    (curves, patches)
+}
+
+/// `count` points on the band's sweep from angle nought to `T_SWEEP`.
+fn sweep_points(count: usize, seed: u64) -> Vec<Point> {
+    let mut draws = Draws(seed);
+    (0..count)
+        .map(|_| on_cylinder(T_SWEEP * draws.unit(), HEIGHT * draws.unit()))
+        .collect()
+}
+
+fn fit_chained(
+    curves: &[CurveDef],
+    patches: &[ChainedPatch],
+    cloud: &[Point],
+    corrections: usize,
+) -> (Model, Network) {
+    let index = PointIndex::build(cloud).unwrap();
+    let mut model = Model::new();
+    let network = fit_network_chained(
+        &mut model,
+        patches,
+        curves,
+        &index,
+        &options(CLEAN_TOLERANCE, vec![]),
+        corrections,
+        T,
+    )
+    .unwrap();
+    (model, network)
+}
+
+#[test]
+fn a_t_junction_shares_its_poles_and_holds_tangent() {
+    let (curves, patches) = t_junction();
+    let cloud = sweep_points(20_000, 23);
+    let (model, network) = fit_chained(&curves, &patches, &cloud, 0);
+    assert_eq!(network.ended, Ended::Met, "{network:?}");
+    let off = widest_off(&network, off_cylinder);
+    assert!(off <= CLEAN_TOLERANCE, "{off} off the cylinder");
+    // Every curve meets its patches' boundaries to rounding: the halves of
+    // the split side, the seam ending at the junction, and the curve below
+    // that carries the junction through to the bottom patch.
+    assert!(network.worst_gap <= ROUNDING_GAP, "{}", network.worst_gap);
+    // Tangent across every curve, the seam ending at the junction too.
+    assert!(
+        network.worst_tangent <= ROUNDING_ANGLE,
+        "{}",
+        network.worst_tangent
+    );
+    // A patch counts twice at a junction its side runs straight through:
+    // the junction is a regular corner, not an irregular one.
+    assert!(network.corners.is_empty(), "{:?}", network.corners);
+    // The middle and bottom patches take a knot of multiplicity three at
+    // the junction, and are smooth across it. The junction's share of the
+    // way along is the drawn arcs' lengths' (a third of the sweep against
+    // two), each drawn to chords within the tolerance of the circle, which
+    // shortens it by a far smaller fraction than the bound.
+    for p in [0, 1] {
+        let surface = &network.surfaces[p];
+        let knots = surface.u_knots().knots();
+        let junction = knots
+            .iter()
+            .copied()
+            .find(|&k| k > 0.0 && k < 1.0 && knots.iter().filter(|&&x| x == k).count() == 3)
+            .unwrap();
+        assert!((junction - 1.0 / 3.0).abs() <= 1e-3, "{junction}");
+        for i in 0..=10 {
+            let v = f64::from(i) / 10.0;
+            let before = surface.normal_at(junction.next_down(), v, T).unwrap();
+            let after = surface.normal_at(junction, v, T).unwrap();
+            let (a, b) = (before.vector(), after.vector());
+            let angle = a.cross(b).magnitude().atan2(a.dot(b));
+            assert!(angle <= ROUNDING_ANGLE, "patch {p} turns {angle} at {v}");
+        }
+    }
+    // The border: the arcs below and above and the seams at either end.
+    assert_sound_shell(&model, &network, 9);
+}
+
+#[test]
+fn sides_split_unlike_are_refused() {
+    let (curves, patches) = t_junction();
+    let cloud = sweep_points(1000, 23);
+    let index = PointIndex::build(&cloud).unwrap();
+    let refused = |patches: &[ChainedPatch]| {
+        matches!(
+            fit_network_chained(
+                &mut Model::new(),
+                patches,
+                &curves,
+                &index,
+                &options(CLEAN_TOLERANCE, vec![]),
+                0,
+                T
+            ),
+            Err(OgeomError::Construction(_))
+        )
+    };
+    // The bottom side of the middle patch split in three while its top is
+    // split in two.
+    let mut unlike = patches.clone();
+    unlike[1].sides[0] = vec![
+        PatchSide {
+            curve: 1,
+            reversed: false,
+        },
+        PatchSide {
+            curve: 6,
+            reversed: false,
+        },
+        PatchSide {
+            curve: 7,
+            reversed: false,
+        },
+    ];
+    assert!(refused(&unlike));
+    // A split side's curve crossed by a junction itself: the left top
+    // patch's top split in two over its bottom, curve 2, which is a curve
+    // of the middle patch's split side.
+    let mut nested = patches.clone();
+    nested[2].sides[2] = vec![
+        PatchSide {
+            curve: 4,
+            reversed: true,
+        },
+        PatchSide {
+            curve: 10,
+            reversed: true,
+        },
+    ];
+    assert!(refused(&nested));
+}
+
+#[test]
+fn parameter_correction_brings_a_curved_band_nearer_its_points() {
+    let cloud = band_points(20_000, 0.0, 7);
+    let (curves, patches) = band(3, 2);
+    let patches: Vec<ChainedPatch> = patches.into_iter().map(ChainedPatch::from).collect();
+    let sigma = |network: &Network| {
+        let (sum, count) = network.per_patch.iter().fold((0.0, 0), |(s, n), p| {
+            (p.sigma.mul_add(p.sigma * p.points as f64, s), n + p.points)
+        });
+        (sum / count as f64).sqrt()
+    };
+    let (_, seeded) = fit_chained(&curves, &patches, &cloud, 0);
+    let (_, corrected) = fit_chained(&curves, &patches, &cloud, 3);
+    assert!(sigma(&corrected) < sigma(&seeded));
+    // The same spans, still within the tolerance, still tangent.
+    assert_eq!(corrected.ended, Ended::Met);
+    let spans = |n: &Network| n.per_patch.iter().map(|p| p.spans).collect::<Vec<_>>();
+    assert_eq!(spans(&corrected), spans(&seeded));
+    assert!(
+        corrected
+            .per_patch
+            .iter()
+            .all(|p| p.worst <= CLEAN_TOLERANCE)
+    );
+    assert!(corrected.worst_tangent <= ROUNDING_ANGLE);
+}
+
+#[test]
+fn a_rounded_corner_of_three_patches_is_held_exactly_tangent() {
+    // The ball's octant from a scan whose noise its tolerance allows for:
+    // each curve into the corner runs on to the border, so the patches are
+    // held tangent across it and at the corner, to rounding.
+    let (curves, patches) = rounded_corner();
+    let cloud = octant_points(20_000, NOISE, 3);
+    let (model, network) = fit(&curves, &patches, &cloud, &options(NOISY_TOLERANCE, vec![]));
+    assert_eq!(network.ended, Ended::Met, "{network:?}");
+    let off = widest_off(&network, off_ball);
+    assert!(off <= NOISY_TOLERANCE / 2.0, "{off} off the ball");
+    assert!(network.worst_gap <= ROUNDING_GAP, "{}", network.worst_gap);
+    assert!(
+        network.worst_tangent <= ROUNDING_ANGLE,
+        "{}",
+        network.worst_tangent
+    );
+    let [corner] = network.corners.as_slice() else {
+        panic!("{:?}", network.corners);
+    };
+    assert_eq!(corner.valence, 3);
+    assert!(corner.angle <= ROUNDING_ANGLE, "{corner:?}");
+    assert_sound_shell(&model, &network, 6);
+}
+
+/// The polar angle of the ball's cap a five-patch network covers.
+const CAP: f64 = PI / 3.0;
+
+/// The point of the ball at polar angle `polar` and azimuth `azimuth`.
+fn on_ball_at(polar: f64, azimuth: f64) -> Point {
+    Point::new(
+        BALL * polar.sin() * azimuth.cos(),
+        BALL * polar.sin() * azimuth.sin(),
+        BALL * polar.cos(),
+    )
+}
+
+/// A cap of the ball in five patches round its top, a corner of five: the
+/// spokes (curves 0 to 4) run from the top to the middles of the five
+/// arcs of the cap's rim, each arc two curves (5 to 14).
+fn five_cap() -> (Vec<CurveDef>, Vec<PatchDef>) {
+    let step = TAU / 5.0;
+    let mut curves: Vec<CurveDef> = (0..5)
+        .map(|k| ball_arc(on_ball(0.0, 0.0, 1.0), on_ball_at(CAP, step * k as f64)))
+        .collect();
+    let rim = |a: f64, b: f64| {
+        CurveDef::Polyline(
+            (0..=64)
+                .map(|i| on_ball_at(CAP, (b - a).mul_add(f64::from(i) / 64.0, a)))
+                .collect(),
+        )
+    };
+    for k in 0..5 {
+        let a = step * k as f64;
+        curves.push(rim(a, a + step / 2.0));
+        curves.push(rim(a + step / 2.0, a + step));
+    }
+    let patches = (0..5)
+        .map(|k| {
+            PatchDef::four([
+                (k, false),
+                (5 + 2 * k, false),
+                (6 + 2 * k, false),
+                ((k + 1) % 5, true),
+            ])
+        })
+        .collect();
+    (curves, patches)
+}
+
+/// `count` points over the cap, off the ball radially by noise of
+/// deviation `noise`.
+fn cap_points(count: usize, noise: f64, seed: u64) -> Vec<Point> {
+    let mut draws = Draws(seed);
+    (0..count)
+        .map(|_| {
+            // Even over the cap's area: its height is even.
+            let z = (1.0 - CAP.cos()).mul_add(-draws.unit(), 1.0);
+            let polar = z.acos();
+            let azimuth = TAU * draws.unit();
+            let r = noise.mul_add(draws.gaussian(), BALL);
+            on_ball_at(polar, azimuth).to_vector() * (r / BALL)
+        })
+        .map(|v| Point::ORIGIN + v)
+        .collect()
+}
+
+#[test]
+fn a_corner_of_five_patches_is_held_exactly_tangent() {
+    let (curves, patches) = five_cap();
+    let cloud = cap_points(20_000, NOISE, 29);
+    let (model, network) = fit(&curves, &patches, &cloud, &options(NOISY_TOLERANCE, vec![]));
+    assert_eq!(network.ended, Ended::Met, "{network:?}");
+    let off = widest_off(&network, off_ball);
+    assert!(off <= NOISY_TOLERANCE / 2.0, "{off} off the ball");
+    assert!(network.worst_gap <= ROUNDING_GAP, "{}", network.worst_gap);
+    assert!(
+        network.worst_tangent <= ROUNDING_ANGLE,
+        "{}",
+        network.worst_tangent
+    );
+    let [corner] = network.corners.as_slice() else {
+        panic!("{:?}", network.corners);
+    };
+    assert_eq!(corner.valence, 5);
+    assert!(corner.point.distance(on_ball(0.0, 0.0, 1.0)) <= NOISY_TOLERANCE);
+    assert_sound_shell(&model, &network, 10);
+}
+
+/// The curved cover's height over `(x, y)`: curved both ways.
+fn cover(x: f64, y: f64) -> f64 {
+    8.0 - x * x / 100.0 - y * y / 60.0
+}
+
+/// The cover over `x` in ±30 and `y` in ±25, in six patches along `x` by
+/// five along `y`: the lines along `x` first, then those along `y`, each
+/// drawn as points on the cover.
+fn cover_network() -> (Vec<CurveDef>, Vec<PatchDef>) {
+    let xs: Vec<f64> = (0..=6).map(|i| -30.0 + 10.0 * f64::from(i)).collect();
+    let ys: Vec<f64> = (0..=5).map(|j| -25.0 + 10.0 * f64::from(j)).collect();
+    let line = |a: (f64, f64), b: (f64, f64)| {
+        CurveDef::Polyline(
+            (0..=32)
+                .map(|k| {
+                    let t = f64::from(k) / 32.0;
+                    let (x, y) = ((b.0 - a.0).mul_add(t, a.0), (b.1 - a.1).mul_add(t, a.1));
+                    Point::new(x, y, cover(x, y))
+                })
+                .collect(),
+        )
+    };
+    let mut curves = Vec::new();
+    // Along `x`: segment `i` of line `j`.
+    for &y in &ys {
+        for i in 0..6 {
+            curves.push(line((xs[i], y), (xs[i + 1], y)));
+        }
+    }
+    // Along `y`: segment `j` of line `i`.
+    let base = curves.len();
+    for &x in &xs {
+        for j in 0..5 {
+            curves.push(line((x, ys[j]), (x, ys[j + 1])));
+        }
+    }
+    let along_x = |i: usize, j: usize| j * 6 + i;
+    let along_y = |i: usize, j: usize| base + i * 5 + j;
+    let mut patches = Vec::new();
+    for j in 0..5 {
+        for i in 0..6 {
+            patches.push(PatchDef::four([
+                (along_x(i, j), false),
+                (along_y(i + 1, j), false),
+                (along_x(i, j + 1), true),
+                (along_y(i, j), true),
+            ]));
+        }
+    }
+    (curves, patches)
+}
+
+#[test]
+fn a_thirty_patch_cover_reads_back_from_step_tangent_and_shut() {
+    // Thirty patches over a cover curved both ways, tangent within a
+    // thousandth of a degree and shut within a micrometre, read back from
+    // STEP.
+    let mut draws = Draws(31);
+    let cloud: Vec<Point> = (0..60_000)
+        .map(|_| {
+            let (x, y) = (
+                60.0f64.mul_add(draws.unit(), -30.0),
+                50.0f64.mul_add(draws.unit(), -25.0),
+            );
+            Point::new(x, y, NOISE.mul_add(draws.gaussian(), cover(x, y)))
+        })
+        .collect();
+    let (curves, patches) = cover_network();
+    let (model, network) = fit(&curves, &patches, &cloud, &options(NOISY_TOLERANCE, vec![]));
+    assert_eq!(network.surfaces.len(), 30);
+    let off = widest_off(&network, |p| (p.z - cover(p.x, p.y)).abs());
+    assert!(off <= NOISY_TOLERANCE / 2.0, "{off} off the cover");
+
+    let mut document = ogeom::doc::Document::over(model);
+    document.add_part("cover", network.shell.clone());
+    let text = ogeom::io::write_step(&document, T).unwrap();
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let [shell] = import.shells.as_slice() else {
+        panic!("{} shells", import.shells.len());
+    };
+    let model = import.document.model();
+    let diagnosis = check(model, shell, T).unwrap();
+    assert!(diagnosis.is_usable(), "{diagnosis:?}");
+    let faces = ogeom::topo::explore_unique(model, shell, ogeom::topo::ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 30);
+    // Each fitted patch's read-back patch, matched pole for pole.
+    let read: Vec<ogeom::geom::BSplineSurface> = network
+        .surfaces
+        .iter()
+        .map(|fitted| {
+            faces
+                .iter()
+                .find_map(|face| {
+                    let data = model.node(face).unwrap().data().as_face().unwrap();
+                    let Some(ogeom::geom::SurfaceGeometry::BSpline(read)) =
+                        model.geometry().surface(data.surface)
+                    else {
+                        return None;
+                    };
+                    let (a, b) = (read.grid().points(), fitted.grid().points());
+                    (a.len() == b.len()
+                        && a.iter()
+                            .zip(b)
+                            .all(|(p, q)| p.point().distance(q.point()) <= ROUNDING_GAP))
+                    .then(|| read.clone())
+                })
+                .unwrap()
+        })
+        .collect();
+    // Across every inner line, read off the patches read back: the
+    // widest angle between their normals and the widest gap.
+    let (mut angle, mut gap) = (0.0_f64, 0.0_f64);
+    let mut across = |a: &ogeom::geom::BSplineSurface,
+                      at_a: (f64, f64),
+                      b: &ogeom::geom::BSplineSurface,
+                      at_b: (f64, f64)| {
+        let (na, nb) = (
+            a.normal_at(at_a.0, at_a.1, T).unwrap().vector(),
+            b.normal_at(at_b.0, at_b.1, T).unwrap().vector(),
+        );
+        angle = angle.max(na.cross(nb).magnitude().atan2(na.dot(nb)));
+        let (pa, pb) = (
+            a.point_at(at_a.0, at_a.1, T).unwrap(),
+            b.point_at(at_b.0, at_b.1, T).unwrap(),
+        );
+        gap = gap.max(pa.distance(pb));
+    };
+    for j in 0..5 {
+        for i in 0..6 {
+            let here = &read[j * 6 + i];
+            for k in 0..=40 {
+                let s = f64::from(k) / 40.0;
+                if i < 5 {
+                    across(here, (1.0, s), &read[j * 6 + i + 1], (0.0, s));
+                }
+                if j < 4 {
+                    across(here, (s, 1.0), &read[(j + 1) * 6 + i], (s, 0.0));
+                }
+            }
+        }
+    }
+    assert!(angle <= 0.001_f64.to_radians(), "{angle}");
+    assert!(gap <= 1e-3, "{gap}");
 }
