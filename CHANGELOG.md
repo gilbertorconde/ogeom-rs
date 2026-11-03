@@ -164,7 +164,42 @@ bump may break the API and a patch bump may not.
     both ways, 60,000 points with noise of σ = 0.02 mm, fit in 0.8 s,
     read back from STEP tangent to 4.4e-15 rad with no gap.
 
+- **A line where the faces either side of a rounded edge meet, from a
+  click on the round: `FitKind::Line3` in `ogeom_algo::fit::grow`.** (#616)
+  - Where no chain of crease edges runs about the first seed, as on a
+    scanned box whose edges are rounded, the line is sought where the
+    planes either side of the round meet: the sharp edge the round stands
+    in for. `Grown::crease` says which: `Crease::Traced` for a chain,
+    `Crease::Meeting` for this, holding both planes' fits and regions, the
+    angle between them and the line's span.
+  - The round's axis is the way the surface about the seed turns least.
+    The mesh is cut across it through the seed, and each side's planes are
+    grown, peeled, from the triangles the cut reaches 1, 2, 4, ...
+    triangles out. A pair is taken only where neither holds the seed's
+    triangle, each is flat to within the noise its mesh shows inside it,
+    they turn past the crease limit beyond their own uncertainty, the
+    line where they meet lies over the round between where the cut enters
+    them beyond the planes' uncertainty, and the way across the round is
+    shorter than each plane is wide. Of those, the pair whose narrower
+    plane is widest for the way across is taken, so a facet of the round
+    is not.
+  - The line's residuals are its planes' points, each against its own
+    plane, and it sits in the middle of where both planes run beside it.
+    Where no pair qualifies the seed is refused as before.
+  - On a box of half side 5 mm with every edge rounded to 1 mm, 0.02 mm of
+    noise and no edge off its corners turning past π/4, clicks across the
+    round give the unrounded box's edge to 2.5e-3 to 4.4e-3 mm and
+    1.6e-4 to 1.3e-3 rad, against four standard errors of 1.6e-2 mm and
+    3.1e-3 rad; over 165 clicks on 55 noise draws, at most half of the
+    bound across and two thirds in direction. A click in the middle of a
+    face, on a ball or on a pipe is refused.
+
 ### Changed
+
+- **`Grown` gains `crease` and is `#[non_exhaustive]`, as `Crease` and
+  `Meeting` are.** A `Grown` could be built with a struct literal outside
+  the crate before; it can no longer be, and a pattern naming its fields
+  needs `..`. `crease` is `None` for a surface region.
 
 - **`Outline` gains `fill_below`.** An `Outline` built with a struct
   literal needs the field; `fill_below: 0.0` gives the same outline as

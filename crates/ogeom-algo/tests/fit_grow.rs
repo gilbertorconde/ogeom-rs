@@ -15,7 +15,7 @@ use core::f64::consts::TAU;
 use std::collections::BTreeMap;
 
 use ogeom_algo::Cutoff;
-use ogeom_algo::fit::{AnyFit, FitKind, GrowOptions, Grown, Side, grow};
+use ogeom_algo::fit::{AnyFit, Crease, FitKind, GrowOptions, Grown, Side, grow};
 use ogeom_core::{OgeomError, Tolerances};
 use ogeom_math::{Axis, Direction, Point, Transform, Vector};
 use ogeom_mesh::Bvh;
@@ -303,6 +303,7 @@ fn a_click_in_a_bore_grows_over_its_wall_and_stops_at_the_plate() {
     let seed = placed.apply(Point::new(-BORE_RADIUS, 0.0, -3.0));
     let grown = grown(&mesh, &[seed], FitKind::Cylinder, &GrowOptions::default());
 
+    assert_eq!(grown.crease, None);
     let wall = b.in_region(&grown, WALL);
     assert_eq!(
         b.in_region(&grown, PLATE),
@@ -783,6 +784,7 @@ fn a_click_by_a_box_edge_traces_its_line_from_corner_to_corner() {
     let seed = placed.apply(Point::new(0.3, a - 0.2, a));
     let grown = grown(&mesh, &[seed], FitKind::Line3, &GrowOptions::default());
     assert!(grown.triangles.is_empty());
+    assert_eq!(grown.crease, Some(Crease::Traced));
 
     // Every vertex of the edge y = z = a, the corners at the chain's ends.
     let on_edge = |v: u32| {
@@ -914,10 +916,17 @@ fn a_traced_crease_does_not_depend_on_threads() {
     let seed = placed.apply(Point::new(-BORE_RADIUS - 0.1, 0.0, 0.0));
     let cube = rounded_cube(5.0, 0.0, 20).mesh(&placed, 19);
     let edge = placed.apply(Point::new(0.3, 4.8, 5.0));
+    let rounded = rounded_cube(5.0, 1.0, 20).mesh(&placed, 29);
+    let round = placed.apply(Point::new(0.3, 4.7, 4.7));
+    let meeting = GrowOptions {
+        crease_limit: core::f64::consts::FRAC_PI_4,
+        ..GrowOptions::default()
+    };
     let both = || {
         (
             grown(&mesh, &[seed], FitKind::Circle3, &GrowOptions::default()),
             grown(&cube, &[edge], FitKind::Line3, &GrowOptions::default()),
+            grown(&rounded, &[round], FitKind::Line3, &meeting),
         )
     };
     ogeom_core::parallel::set_threads(1);
@@ -964,4 +973,205 @@ fn what_cannot_be_traced_is_refused_by_name() {
         matches!(e, OgeomError::Construction(_)) && e.to_string().contains("one line"),
         "{e:?}"
     );
+}
+
+/// The largest angle between the normals of two triangles sharing an edge
+/// whose ends `counted` holds.
+fn sharpest(mesh: &Triangulation, counted: impl Fn(u32) -> bool) -> f64 {
+    let normal = |t: &[u32; 3]| {
+        let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+        let n = (b - a).cross(c - a);
+        n / n.magnitude()
+    };
+    let mut by_edge: BTreeMap<(u32, u32), Vec<Vector>> = BTreeMap::new();
+    for t in &mesh.triangles {
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            if !(counted(a) && counted(b)) {
+                continue;
+            }
+            by_edge
+                .entry((a.min(b), a.max(b)))
+                .or_default()
+                .push(normal(t));
+        }
+    }
+    by_edge
+        .values()
+        .filter(|n| n.len() == 2)
+        .map(|n| n[0].dot(n[1]).clamp(-1.0, 1.0).acos())
+        .fold(0.0, f64::max)
+}
+
+/// Four standard errors of the line where two perpendicular planes fitted
+/// to `points` meet, as `(across, tilt, turn)`: its distance at `at`, its
+/// direction, and the angle between the planes.
+///
+/// Over a plane's `n` points, spread by `Su` across the line and `Sw` along
+/// it about their centroid, its offset at a point `u` across and `w` along
+/// from the centroid varies as `σ² (1/n + u²/Su + w²/Sw)`, and moves the
+/// line as far within the other plane; its tilt along the line varies as
+/// `σ²/Sw` and turns the line as far; its tilt across, as `σ²/Su`, turns
+/// the angle between the planes as far.
+fn meeting_bounds(
+    points: [&[Point]; 2],
+    across: [Vector; 2],
+    along: Vector,
+    at: Point,
+) -> (f64, f64, f64) {
+    let (mut offset, mut tilt, mut turn) = (0.0, 0.0, 0.0);
+    for (p, u) in points.iter().zip(across) {
+        let n = p.len() as f64;
+        let centroid = p.iter().fold(Vector::ZERO, |s, q| s + (*q - Point::ORIGIN)) / n;
+        let c = Point::ORIGIN + centroid;
+        let su: f64 = p.iter().map(|q| (*q - c).dot(u).powi(2)).sum();
+        let sw: f64 = p.iter().map(|q| (*q - c).dot(along).powi(2)).sum();
+        let (du, dw) = ((at - c).dot(u), (at - c).dot(along));
+        offset += 1.0 / n + du * du / su + dw * dw / sw;
+        tilt += 1.0 / sw;
+        turn += 1.0 / su;
+    }
+    let four = 4.0 * SIGMA;
+    (four * offset.sqrt(), four * tilt.sqrt(), four * turn.sqrt())
+}
+
+#[test]
+fn a_click_on_a_rounded_box_edge_finds_where_its_faces_meet() {
+    let placed = placement();
+    let (a, r) = (5.0, 1.0);
+    let inner = a - r;
+    let b = rounded_cube(a, r, 20);
+    // No edge of the noisy mesh turns past the limit away from the
+    // corners, where three cells meet at a vertex: the round has no crease
+    // to trace.
+    let off_corners = |v: u32| {
+        let p = b.positions[v as usize];
+        [p.x, p.y, p.z].iter().any(|c| c.abs() <= inner)
+    };
+    let limit = core::f64::consts::FRAC_PI_4;
+    let options = GrowOptions {
+        crease_limit: limit,
+        ..GrowOptions::default()
+    };
+    let along = placed.apply_vector(Vector::X);
+    let normals = [Vector::Z, Vector::Y].map(|v| placed.apply_vector(v));
+    let origin = placed.apply(Point::new(0.0, a, a));
+    for noise in [29, 31, 37] {
+        let mesh = b.mesh(&placed, noise);
+        let sharpest = sharpest(&mesh, off_corners);
+        assert!(sharpest < limit, "an edge turns by {sharpest}");
+        let index = Bvh::build(&mesh).unwrap();
+        // Across the round between the top (z = a) and the side y = a, at
+        // its middle and nearer either face.
+        for (x, angle) in [(0.3, 45.0_f64), (-2.1, 20.0), (2.6, 70.0)] {
+            let (sin, cos) = angle.to_radians().sin_cos();
+            let on = Point::new(x, inner + r * sin, inner + r * cos);
+            let seed = placed.apply(on);
+            let grown = grow(&mesh, &index, &[seed], FitKind::Line3, &options, T)
+                .unwrap_or_else(|e| panic!("noise {noise}, at {on:?}: {e}"));
+            let Some(Crease::Meeting(meeting)) = &grown.crease else {
+                panic!("not a meeting: {:?}", grown.crease);
+            };
+            assert!(grown.triangles.is_empty());
+            let AnyFit::Line(line) = &grown.fit else {
+                panic!("not a line");
+            };
+
+            // Each plane is a face's: the top's or the side's.
+            let first = meeting.planes[0].residuals.len();
+            let split = [&grown.vertices[..first], &grown.vertices[first..]];
+            let mut kept: [Vec<Point>; 2] = [Vec::new(), Vec::new()];
+            let mut across = [Vector::ZERO; 2];
+            for j in 0..2 {
+                let n = meeting.planes[j].shape.normal().vector();
+                let face = if n.dot(normals[0]) > n.dot(normals[1]) {
+                    normals[0]
+                } else {
+                    normals[1]
+                };
+                across[j] = along.cross(face);
+                kept[j] = split[j]
+                    .iter()
+                    .zip(&meeting.planes[j].used)
+                    .filter(|(_, keep)| **keep)
+                    .map(|(&v, _)| mesh.positions[v as usize])
+                    .collect();
+            }
+            assert!(across[0].cross(across[1]).magnitude() > 0.5);
+            assert!(
+                meeting.triangles[0]
+                    .iter()
+                    .all(|t| meeting.triangles[1].binary_search(t).is_err())
+            );
+
+            // The line is the unrounded box's edge, within four standard
+            // errors of the planes' meeting.
+            let s = (line.shape.location - origin).dot(along);
+            let at = origin + along * s;
+            let (off_bound, tilt_bound, turn_bound) =
+                meeting_bounds([&kept[0], &kept[1]], across, along, at);
+            let (off, tilt) = line_error(&grown.fit, at, along);
+            assert!(
+                off <= off_bound,
+                "noise {noise}, at {on:?}: the line is {off:e} off the edge, past {off_bound:e}"
+            );
+            assert!(
+                tilt <= tilt_bound,
+                "noise {noise}, at {on:?}: the line is {tilt:e} off its direction, past \
+                 {tilt_bound:e}"
+            );
+            let turn = meeting.angle - core::f64::consts::FRAC_PI_2;
+            assert!(
+                turn.abs() <= turn_bound,
+                "the faces meet at {}",
+                meeting.angle
+            );
+
+            // It spans the round's straight part, where both flats run
+            // beside it, and the click.
+            let ends = [s + meeting.span.0, s + meeting.span.1];
+            assert!(
+                -inner - 4.0 * SIGMA <= ends[0] && ends[0] < x && x < ends[1],
+                "{ends:?}"
+            );
+            assert!(ends[1] <= inner + 4.0 * SIGMA, "{ends:?}");
+
+            // The click is on the round, as far from the edge as the round
+            // keeps it.
+            let report = grown.seeds[0];
+            assert!(report.in_region, "{report:?}");
+            let gap = ((1.0 - sin) * r).hypot((1.0 - cos) * r);
+            assert!(
+                (report.offset - gap).abs() <= off_bound,
+                "noise {noise}, at {on:?}: {report:?}, not {gap}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_click_on_a_flat_a_ball_or_a_pipe_finds_no_round_to_meet_across() {
+    let placed = placement();
+    let a = 5.0;
+    let options = GrowOptions {
+        crease_limit: core::f64::consts::FRAC_PI_4,
+        ..GrowOptions::default()
+    };
+    let cube = rounded_cube(a, 1.0, 20).mesh(&placed, 29);
+    let ball = rounded_cube(a, a, 20).mesh(&placed, 29);
+    let pipe = pipe().mesh(&placed, 13);
+    for (mesh, at) in [
+        (&cube, Point::new(0.3, -0.2, a)),
+        (&cube, Point::new(2.0, 1.0, a)),
+        (&ball, Point::new(0.0, 0.0, a)),
+        (&pipe, Point::new(10.0, 0.0, 10.0)),
+    ] {
+        let index = Bvh::build(mesh).unwrap();
+        let seed = placed.apply(at);
+        let e = grow(mesh, &index, &[seed], FitKind::Line3, &options, T).unwrap_err();
+        assert!(
+            matches!(e, OgeomError::Construction(_)) && e.to_string().contains("smooth"),
+            "{at:?}: {e:?}"
+        );
+    }
 }

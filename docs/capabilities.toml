@@ -707,7 +707,7 @@ tests = [
 
 [[capability]]
 id = "algo.primitive-fits"
-title = "Best fits of planes, spheres, cylinders, cones, tori, circles and lines to points, with residuals, a mesh region grown for one from clicks, its rounded rim peeled, and a rim circle or a crease line traced along a mesh's sharp edges from a click"
+title = "Best fits of planes, spheres, cylinders, cones, tori, circles and lines to points, with residuals, a mesh region grown for one from clicks, its rounded rim peeled, a rim circle or a crease line traced along a mesh's sharp edges from a click, and the line where the faces either side of a rounded edge meet"
 crate = "ogeom-algo"
 verdict = "covered"
 symbols = [
@@ -717,6 +717,7 @@ symbols = [
     "ogeom_algo::FitOptions", "ogeom_algo::Fit", "ogeom_algo::Cutoff",
     "ogeom_algo::grow", "ogeom_algo::GrowOptions", "ogeom_algo::FitKind",
     "ogeom_algo::AnyFit", "ogeom_algo::Grown", "ogeom_algo::SeedReport",
+    "ogeom_algo::Crease", "ogeom_algo::Meeting",
 ]
 tests = [
     "crates/ogeom-algo/tests/primitive_fits.rs",

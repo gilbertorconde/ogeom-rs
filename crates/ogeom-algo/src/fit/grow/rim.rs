@@ -6,9 +6,10 @@ use std::collections::{BTreeSet, VecDeque};
 use ogeom_core::{OgeomError, OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{Point, Vector};
 use ogeom_mesh::Bvh;
-use ogeom_topo::Triangulation;
 
-use super::{AnyFit, FitKind, Gate, GrowOptions, Grown, NONE, SeedReport, Surface, fitted};
+use super::{
+    AnyFit, Crease, FitKind, Gate, GrowOptions, Grown, NONE, SeedReport, Surface, fitted, meeting,
+};
 use crate::fit::primitive;
 
 /// Trace the crease the first seed is nearest and fit `kind` along it.
@@ -17,18 +18,18 @@ use crate::fit::primitive;
 /// whose chain holds twice the vertices the fit needs is traced: an edge
 /// the noise turned past the limit on its own, or with a few neighbours,
 /// makes a chain too short to measure the kind over, and is passed over.
-/// Where none does, the nearest edge's fit's own refusal is given, or
+/// Where none does, a line is sought where two planes meet across a round,
+/// and failing that the nearest edge's fit's own refusal is given, or
 /// where no fit refused, the seed is refused as lying on a smooth part.
 pub(super) fn traced(
-    mesh: &Triangulation,
+    surface: &Surface<'_>,
     index: &Bvh,
     seeds: &[Point],
     kind: FitKind,
     options: &GrowOptions,
     tol: Tolerances,
 ) -> OgeomResult<Grown> {
-    let surface = Surface::of(mesh);
-    let creases = Creases::of(&surface, options.crease_limit);
+    let creases = Creases::of(surface, options.crease_limit);
     let least = 2 * primitive::needed(kind.kind(), &options.fixed);
     let smooth = |i: usize| -> OgeomError {
         ogeom_core::ogeom_err!(
@@ -45,21 +46,25 @@ pub(super) fn traced(
         let Some(hit) = index.nearest(*seed, f64::INFINITY) else {
             ogeom_bail!(Construction, "no triangle of the mesh lies near seed {i}");
         };
-        let edges = creases.about(&surface, hit.triangle, *seed);
+        let edges = creases.about(surface, hit.triangle, *seed);
         if edges.is_empty() {
-            return Err(smooth(i));
+            return if i == 0 {
+                meeting_or(surface, index, seeds, kind, options, tol, smooth(0))
+            } else {
+                Err(smooth(i))
+            };
         }
         reached.push((hit.triangle, edges));
     }
 
     let mut chain = Chain {
-        surface: &surface,
+        surface,
         creases: &creases,
         kind,
         options,
         tol,
         vertices: VecDeque::new(),
-        on_chain: vec![false; mesh.positions.len()],
+        on_chain: vec![false; surface.mesh.positions.len()],
         closed: false,
         fit: None,
         gate: None,
@@ -94,7 +99,8 @@ pub(super) fn traced(
         }
     }
     if !found {
-        return Err(refusal.unwrap_or_else(|| smooth(0)));
+        let refused = refusal.unwrap_or_else(|| smooth(0));
+        return meeting_or(surface, index, seeds, kind, options, tol, refused);
     }
 
     let Chain {
@@ -128,7 +134,28 @@ pub(super) fn traced(
         vertices: vertices.into(),
         seeds: reports,
         peeled_rings: 0,
+        crease: Some(Crease::Traced),
     })
+}
+
+/// For a line, where two planes meet across a round about the first seed;
+/// for a circle, or where they do not, `refused`.
+fn meeting_or(
+    surface: &Surface<'_>,
+    index: &Bvh,
+    seeds: &[Point],
+    kind: FitKind,
+    options: &GrowOptions,
+    tol: Tolerances,
+    refused: OgeomError,
+) -> OgeomResult<Grown> {
+    if kind != FitKind::Line3 {
+        return Err(refused);
+    }
+    match meeting::met(surface, index, seeds, options, tol) {
+        Err(OgeomError::Construction(_)) => Err(refused),
+        met => met,
+    }
 }
 
 /// A mesh's crease edges: which edges of each triangle are creases, and
