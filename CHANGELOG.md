@@ -214,6 +214,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`write_ply` and `write_obj` write meshes that have no normals.** (#665)
+  A `Triangulation` without one normal per vertex, as `mesh::boolean`,
+  `hollow`, `thicken` and `Editable::to_triangulation` return them, was
+  written as a PLY with no vertex lines and an OBJ whose faces named normal
+  records it never wrote. PLY now leaves out the `nx ny nz` properties and
+  OBJ writes plain `f a b c` faces there; meshes with normals write as
+  before, and an OBJ of several meshes indexes each mesh's normals by its
+  own count.
+
 - **`algo::fit::grow` with `FitKind::Line3` or `FitKind::Circle3` traces
   a crease only where one lies near the click and turns past the crease
   limit by more than the noise.** (#664) On a scan with rounded edges and

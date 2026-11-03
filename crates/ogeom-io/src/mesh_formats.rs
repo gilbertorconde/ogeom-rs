@@ -251,11 +251,14 @@ fn escape_json(s: &str) -> String {
 /// Write meshes as Wavefront OBJ.
 ///
 /// `v`/`vn`/`f` records, one `o` group per named mesh, indices one-based
-/// and shared across the file as the format demands.
+/// and shared across the file as the format demands. A mesh without one
+/// normal per vertex is written without `vn` records, its faces as plain
+/// vertex indices.
 #[must_use]
 pub fn write_obj(meshes: &[ExportMesh<'_>]) -> String {
     let mut out = String::from("# ogeom\n");
     let mut base = 1_usize;
+    let mut normal_base = 1_usize;
     for (i, export) in meshes.iter().enumerate() {
         let mesh = export.mesh;
         if mesh.triangles.is_empty() {
@@ -266,24 +269,42 @@ pub fn write_obj(meshes: &[ExportMesh<'_>]) -> String {
         for p in &mesh.positions {
             let _ = writeln!(out, "v {} {} {}", p.x, p.y, p.z);
         }
-        for n in &mesh.normals {
-            let _ = writeln!(out, "vn {} {} {}", n.x, n.y, n.z);
+        let normals = has_normals(mesh);
+        if normals {
+            for n in &mesh.normals {
+                let _ = writeln!(out, "vn {} {} {}", n.x, n.y, n.z);
+            }
         }
         for t in &mesh.triangles {
             let [a, b, c] = t.map(|k| k as usize + base);
-            let _ = writeln!(out, "f {a}//{a} {b}//{b} {c}//{c}");
+            if normals {
+                let [na, nb, nc] = t.map(|k| k as usize + normal_base);
+                let _ = writeln!(out, "f {a}//{na} {b}//{nb} {c}//{nc}");
+            } else {
+                let _ = writeln!(out, "f {a} {b} {c}");
+            }
         }
         base += mesh.positions.len();
+        if normals {
+            normal_base += mesh.normals.len();
+        }
     }
     out
+}
+
+/// Whether a mesh carries one normal per vertex, as the writers need to
+/// write normals at all.
+fn has_normals(mesh: &Triangulation) -> bool {
+    !mesh.normals.is_empty() && mesh.normals.len() == mesh.positions.len()
 }
 
 // --- PLY ---------------------------------------------------------------------
 
 /// Write one mesh as ASCII PLY.
 ///
-/// Vertices with normals, faces as index lists; a colour, when given, is
-/// carried per vertex as the `uchar` triple the format convention expects.
+/// Vertices with their normals when the mesh has one per vertex, faces as
+/// index lists; a colour, when given, is carried per vertex as the `uchar`
+/// triple the format convention expects.
 #[must_use]
 pub fn write_ply(export: &ExportMesh<'_>) -> String {
     let mesh = export.mesh;
@@ -296,17 +317,22 @@ pub fn write_ply(export: &ExportMesh<'_>) -> String {
     });
     let mut out = String::from("ply\nformat ascii 1.0\ncomment ogeom\n");
     let _ = writeln!(out, "element vertex {}", mesh.positions.len());
-    out.push_str(
-        "property float x\nproperty float y\nproperty float z\n\
-         property float nx\nproperty float ny\nproperty float nz\n",
-    );
+    let normals = has_normals(mesh);
+    out.push_str("property float x\nproperty float y\nproperty float z\n");
+    if normals {
+        out.push_str("property float nx\nproperty float ny\nproperty float nz\n");
+    }
     if colour.is_some() {
         out.push_str("property uchar red\nproperty uchar green\nproperty uchar blue\n");
     }
     let _ = writeln!(out, "element face {}", mesh.triangles.len());
     out.push_str("property list uchar uint vertex_indices\nend_header\n");
-    for (p, n) in mesh.positions.iter().zip(&mesh.normals) {
-        let _ = write!(out, "{} {} {} {} {} {}", p.x, p.y, p.z, n.x, n.y, n.z);
+    for (k, p) in mesh.positions.iter().enumerate() {
+        let _ = write!(out, "{} {} {}", p.x, p.y, p.z);
+        if normals {
+            let n = mesh.normals[k];
+            let _ = write!(out, " {} {} {}", n.x, n.y, n.z);
+        }
         if let Some([r, g, b]) = colour {
             let _ = write!(out, " {r} {g} {b}");
         }
@@ -466,6 +492,63 @@ mod tests {
             .unwrap()
             .shape;
         ogeom_mesh::triangulate(&model, &solid, ogeom_mesh::Deflection::default(), T).unwrap()
+    }
+
+    /// A tetrahedron with no normals, as `boolean`, `hollow`, `thicken` and
+    /// `Editable::to_triangulation` give one.
+    fn bare_tetrahedron() -> Triangulation {
+        Triangulation {
+            positions: vec![
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(1.0, 0.0, 0.0),
+                Point::new(0.0, 1.0, 0.0),
+                Point::new(0.0, 0.0, 1.0),
+            ],
+            normals: Vec::new(),
+            parameters: Vec::new(),
+            triangles: vec![[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]],
+            deflection_met: true,
+        }
+    }
+
+    #[test]
+    fn a_mesh_without_normals_writes_every_vertex_to_ply_and_reads_back() {
+        let tri = bare_tetrahedron();
+        let text = write_ply(&ExportMesh::plain(&tri));
+        assert!(!text.contains("property float nx"));
+        let back = read_ply_bytes(text.as_bytes()).unwrap().mesh();
+        assert_eq!(back.positions, tri.positions);
+        assert_eq!(back.triangles, tri.triangles);
+    }
+
+    #[test]
+    fn a_mesh_without_normals_writes_plain_obj_faces_and_reads_back() {
+        let tri = bare_tetrahedron();
+        let text = write_obj(&[ExportMesh::plain(&tri)]);
+        assert!(!text.contains("vn ") && !text.contains("//"));
+        let back = read_obj(&text).unwrap();
+        assert_eq!(back.positions, tri.positions);
+        assert_eq!(back.triangles, tri.triangles);
+    }
+
+    #[test]
+    fn obj_faces_index_the_normals_of_their_own_mesh_after_a_bare_one() {
+        let bare = bare_tetrahedron();
+        let boxed = box_mesh();
+        let text = write_obj(&[ExportMesh::plain(&bare), ExportMesh::plain(&boxed)]);
+        // The box's first face names its first vertex after the four bare ones
+        // and its first normal, the file's first `vn`.
+        let first_box_face = text
+            .lines()
+            .filter(|l| l.starts_with("f "))
+            .nth(bare.triangles.len())
+            .unwrap();
+        let a = boxed.triangles[0][0] as usize;
+        assert!(first_box_face.starts_with(&format!("f {}//{} ", a + 5, a + 1)));
+        assert_eq!(
+            text.lines().filter(|l| l.starts_with("vn ")).count(),
+            boxed.normals.len()
+        );
     }
 
     #[test]
