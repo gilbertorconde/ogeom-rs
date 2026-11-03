@@ -1,7 +1,8 @@
 //! The two-sided tails of the normal and the Student t distributions, and
 //! the t quantile at a normal tail: how far a residual must lie, in units
 //! of a noise estimated from a few points, to be as rare as `k` standard
-//! deviations of a noise that is known.
+//! deviations of a noise that is known. Likewise the F quantile at a normal
+//! tail, for a ratio of two such estimates.
 
 /// The most terms a continued fraction or a series sums; each converges
 /// geometrically well before this for every argument used here.
@@ -213,6 +214,47 @@ pub(super) fn t_at_normal(k: f64, dof: usize) -> f64 {
     }
 }
 
+/// `P(F > f)` for Snedecor's `F` with `d1` and `d2` degrees of freedom.
+fn f_tail(f: f64, d1: f64, d2: f64) -> f64 {
+    beta_i(0.5 * d2, 0.5 * d1, d2 / d1.mul_add(f, d2))
+}
+
+/// The `f` at which the upper tail of Snedecor's `F` with `d1` and `d2`
+/// degrees of freedom is the normal's two-sided tail at `k`. Infinite with
+/// either count zero, and for a `k` with no tail.
+pub(super) fn f_at_normal(k: f64, d1: usize, d2: usize) -> f64 {
+    if d1 == 0 || d2 == 0 || k.is_infinite() {
+        return f64::INFINITY;
+    }
+    let tail = normal_tail(k);
+    if tail.is_nan() || tail <= 0.0 {
+        return f64::INFINITY;
+    }
+    #[allow(clippy::cast_precision_loss, reason = "point counts")]
+    let (d1, d2) = (d1 as f64, d2 as f64);
+    // The tail falls as f grows: double past it, then halve the bracket
+    // until it cannot narrow.
+    let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+    while f_tail(hi, d1, d2) > tail {
+        lo = hi;
+        hi *= 2.0;
+        if !hi.is_finite() {
+            return f64::INFINITY;
+        }
+    }
+    loop {
+        let mid = 0.5 * (lo + hi);
+        if mid <= lo || mid >= hi {
+            return hi;
+        }
+        if f_tail(mid, d1, d2) > tail {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,5 +285,25 @@ mod tests {
         assert_eq!(normal_at_tail(1.0), 0.0);
         assert!(normal_at_tail(0.0).is_infinite());
         assert!(t_at_normal(f64::INFINITY, 5).is_infinite());
+    }
+
+    #[test]
+    fn the_f_quantile_matches_its_closed_forms_and_tables() {
+        // F with one degree of freedom on top is T squared.
+        for dof in [1, 4, 30] {
+            let t = t_at_normal(3.0, dof);
+            assert!((f_at_normal(3.0, 1, dof) / (t * t) - 1.0).abs() < 1e-10);
+        }
+        // With two on top, P(F > f) = (1 + 2 f / d2)^(-d2 / 2).
+        let p = normal_tail(3.0);
+        let two = 5.0 * (p.powf(-2.0 / 10.0) - 1.0);
+        assert!((f_at_normal(3.0, 2, 10) / two - 1.0).abs() < 1e-10);
+        // The 5 % points of F(6, 10) and F(3, 20).
+        let five = normal_at_tail(0.05);
+        assert!((f_at_normal(five, 6, 10) - 3.217_174_547_398_7).abs() < 1e-9);
+        assert!((f_at_normal(five, 3, 20) - 3.098_391_212_074_7).abs() < 1e-9);
+        assert!(f_at_normal(3.0, 0, 5).is_infinite());
+        assert!(f_at_normal(3.0, 5, 0).is_infinite());
+        assert!(f_at_normal(f64::INFINITY, 2, 5).is_infinite());
     }
 }
