@@ -231,6 +231,7 @@ fn a_cylinder_seen_along_its_axis_gives_one_circle() {
         play: 0.2,
         tolerance: 0.05,
         round_below: 0.5,
+        fill_below: 0.0,
     };
     let wires = fit_outline(&loops, &o).unwrap();
     assert_eq!(wires.len(), 1);
@@ -278,6 +279,7 @@ fn an_l_bracket_gives_its_outline_with_corners() {
         play: 0.05,
         tolerance: 0.05,
         round_below: 0.5,
+        fill_below: 0.0,
     };
     let wires = fit_outline(&loops, &o).unwrap();
     assert_eq!(wires.len(), 1);
@@ -314,6 +316,7 @@ fn a_negative_play_fits_inside() {
         play: -0.2,
         tolerance: 0.05,
         round_below: 0.5,
+        fill_below: 0.0,
     };
     let wires = fit_outline(&loops, &o).unwrap();
     assert_eq!(wires.len(), 1);
@@ -352,6 +355,7 @@ fn a_through_hole_is_kept() {
         play: 0.05,
         tolerance: 0.05,
         round_below: 0.5,
+        fill_below: 0.0,
     };
     let wires = fit_outline(&loops, &o).unwrap();
     assert_eq!(wires.len(), 2);
@@ -423,6 +427,7 @@ fn a_noisy_cylinder_still_gives_one_circle() {
         play: 0.1,
         tolerance: 0.1,
         round_below: 0.5,
+        fill_below: 0.0,
     };
     let (wires, took) = cpu_time(|| fit_outline(&loops, &o).unwrap());
     eprintln!(
@@ -456,6 +461,7 @@ fn a_single_precision_mesh_far_from_the_origin() {
         play: 0.05,
         tolerance: 0.05,
         round_below: 0.5,
+        fill_below: 0.0,
     };
     let wires = fit_outline(&loops, &o).unwrap();
     assert_eq!(wires.len(), 1);
@@ -505,6 +511,7 @@ fn a_million_triangle_torus_casts_a_ring() {
         play: 0.1,
         tolerance: 0.1,
         round_below: 0.5,
+        fill_below: 0.0,
     };
     let (wires, fitted) = cpu_time(|| fit_outline(&loops, &o).unwrap());
     eprintln!(

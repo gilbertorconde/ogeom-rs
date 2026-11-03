@@ -60,7 +60,29 @@ bump may break the API and a patch bump may not.
     before, and the native format keeps the frame in a record of its own
     after the tolerance's.
 
+- **Narrow holes and notches filled before an outline is fitted:
+  `Outline::fill_below`.** (#624)
+  - With `fill_below = w > 0`, `fit_outline` replaces the silhouette by
+    its closing by a disc of diameter `w`: a hole or a notch whose largest
+    inscribed circle is no wider than `w` is filled, a slot narrower than
+    `w` closes but for a dent at its mouth where the disc dips in, convex
+    corners stay and reflex corners take a fillet of radius `w / 2`. The
+    band then holds about the filled silhouette, which holds the true one,
+    so the play is still kept from the true silhouette.
+  - The closing is two offsets by the region engine, the dilation's
+    chords covering its disc and the erosion's within a 32nd of the
+    smaller of the tolerance and `w / 2`: everything the exact closing
+    fills is filled, and a feature more than `w` plus twice that is kept.
+  - A 40 by 30 plate with a 0.5 slot and a 0.4 hole gives one wire with
+    `fill_below = 1`; a 1.2 slot is kept. Zero, the default, is today's
+    fit unchanged.
+
 ### Changed
+
+- **`Outline` gains `fill_below`.** An `Outline` built with a struct
+  literal needs the field; `fill_below: 0.0` gives the same outline as
+  before. `Outline` has no `Default`, as no default tolerance is right
+  for every part.
 
 - **`GeometricTolerance::datums` holds `DatumReference`s rather than
   strings, and `GeometricTolerance` gains `datum_system` and `Default`.**
