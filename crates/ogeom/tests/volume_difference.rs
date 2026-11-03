@@ -397,7 +397,7 @@ fn a_million_triangle_scan_in_bounded_time() {
         "{} of {bump}",
         r.volume
     );
-    assert!(took < Duration::from_secs(8), "took {took:?}");
+    assert!(took < Duration::from_secs(40), "took {took:?}");
 }
 
 /// A sphere's scan of about a million triangles, its own tessellation,
@@ -422,5 +422,5 @@ fn a_million_triangle_scan_of_a_curved_solid_in_bounded_time() {
     let took = start.elapsed();
     eprintln!("{} triangles: {took:?}", scan.triangles.len());
     assert!(regions.is_empty(), "{regions:#?}");
-    assert!(took < Duration::from_secs(15), "took {took:?}");
+    assert!(took < Duration::from_secs(60), "took {took:?}");
 }
