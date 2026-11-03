@@ -26,6 +26,7 @@ pub mod measure;
 pub mod medial;
 pub mod medial_graph;
 pub mod mesh_solid;
+pub mod network;
 pub mod orient;
 pub mod out_and_back;
 pub mod outline;
@@ -91,6 +92,9 @@ pub use mesh_solid::{
     FallbackReason, FitConstraints, MeshRegion, MeshRegions, MeshSolid, MeshSolidOptions,
     MeshSolidReport, RegionFallback, RegionId, RegionRefusal, SurfaceKind, refine_solid,
     single_precision_quantum, solid_from_mesh,
+};
+pub use network::{
+    CurveDef, IrregularCorner, Network, NetworkOptions, PatchDef, PatchFit, PatchSide, fit_network,
 };
 pub use out_and_back::{Notch, OutAndBack, edge_uses, is_tail, notch_of, out_and_back};
 pub use outline::{Outline, Piece2, Wire2d, fit_outline};
