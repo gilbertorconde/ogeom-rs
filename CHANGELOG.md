@@ -223,6 +223,25 @@ bump may break the API and a patch bump may not.
   before, and an OBJ of several meshes indexes each mesh's normals by its
   own count.
 
+- **`algo::fit::grow` with `FitKind::Circle3` on a noisy rim traces the
+  whole rim, or refuses, rather than fitting a circle of the wrong radius
+  to a short arc.** (#667) On a bore's rim at a noise of 0.02 mm and
+  triangles of 0.25 mm, 24 of 400 clicks, in 21 of 100 noise draws,
+  stopped on an arc of 6 to 47 of the rim's 128 vertices and returned a
+  circle of radius 3.2 to 268 mm for a 5 mm rim. A fit over a short arc is poorly determined: run on from the
+  previous fit it could settle in another minimum, a circle of a hundred
+  times the radius, and its gate was wide enough to admit both the next
+  vertex of the rim and the far end of an edge the noise turned past the
+  limit off its side, which stopped the trace. A circle's chain that
+  stops open now runs on once more: from a fit started afresh wherever
+  the fit it stopped with lies outside that one's confidence region, and
+  only through vertices the crease runs on from. The chain run on is
+  kept where its noise is one the shorter chain could have measured, and
+  falls back otherwise. A circle that fits its vertices no better than a
+  line by more than the noise could make it is refused as straight within
+  its noise. Rims traced right before trace bit for bit as before, and a
+  line traces as before.
+
 - **`algo::fit::grow` with `FitKind::Line3` or `FitKind::Circle3` traces
   a crease only where one lies near the click and turns past the crease
   limit by more than the noise.** (#664) On a scan with rounded edges and

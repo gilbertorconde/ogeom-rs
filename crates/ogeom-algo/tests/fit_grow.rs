@@ -764,6 +764,78 @@ fn a_click_by_a_bore_rim_traces_the_rim_circle() {
     }
 }
 
+#[test]
+fn over_many_noise_draws_a_rim_circle_is_the_rim_or_refused() {
+    // On a short arc the circle is poorly determined: the trace must run
+    // on round the rim past the edges the noise turns off its side, and
+    // never settle for a circle of the wrong radius.
+    let placed = placement();
+    let b = bored_plate();
+    let centre = placed.apply(Point::ORIGIN);
+    let mut traced = 0;
+    for noise in 1..=100 {
+        let mesh = b.mesh(&placed, noise);
+        let index = Bvh::build(&mesh).unwrap();
+        for at in [
+            Point::new(-BORE_RADIUS - 0.1, 0.0, 0.0),
+            Point::new(0.0, BORE_RADIUS, -0.6),
+            Point::new(BORE_RADIUS + 0.3, 0.2, 0.0),
+            Point::new(0.0, -BORE_RADIUS, -0.2),
+        ] {
+            let seed = placed.apply(at);
+            match grow(
+                &mesh,
+                &index,
+                &[seed],
+                FitKind::Circle3,
+                &GrowOptions::default(),
+                T,
+            ) {
+                Ok(grown) => {
+                    let AnyFit::Circle(fit) = &grown.fit else {
+                        panic!("noise {noise}, at {at:?}: not a circle");
+                    };
+                    // Four standard errors: the radius's, and the centre's
+                    // each way, √2 that across the axis and one along it.
+                    let n = kept(&grown.fit);
+                    let error = fit.shape.radius() - BORE_RADIUS;
+                    let off = (fit.shape.centre() - centre).magnitude();
+                    assert!(
+                        error.abs() <= bound(n) && off <= 5.0_f64.sqrt() * bound(n),
+                        "noise {noise}, at {at:?}: radius off by {error:e} and centre by \
+                         {off:e} over {n} points, past {:e}",
+                        bound(n)
+                    );
+                    traced += 1;
+                }
+                Err(e) => assert!(
+                    matches!(e, OgeomError::Construction(_))
+                        && (e.to_string().contains("smooth") || e.to_string().contains("straight")),
+                    "noise {noise}, at {at:?}: {e:?}"
+                ),
+            }
+        }
+    }
+    // Refusing every arc would pass the rest: most clicks find the rim.
+    assert!(traced >= 300, "{traced} of 400 clicks traced");
+}
+
+#[test]
+fn a_rim_trace_stopped_by_a_branch_or_a_wrong_fit_runs_on_round_the_rim() {
+    // With these draws the trace from the click stops on a short arc: in
+    // the first where edges the noise turned past the limit leave the rim
+    // at both ends, in the second where the fit over its first vertices
+    // settles on a circle of about 250 mm.
+    let placed = placement();
+    let b = bored_plate();
+    let seed = placed.apply(Point::new(-BORE_RADIUS - 0.1, 0.0, 0.0));
+    for noise in [1, 92] {
+        let mesh = b.mesh(&placed, noise);
+        let grown = grown(&mesh, &[seed], FitKind::Circle3, &GrowOptions::default());
+        assert_eq!(sorted(&grown), top_rim(), "noise {noise}");
+    }
+}
+
 /// The fitted line's distance from a point and its angle from a direction.
 fn line_error(fit: &AnyFit, at: Point, along: Vector) -> (f64, f64) {
     let AnyFit::Line(line) = fit else {
@@ -958,6 +1030,21 @@ fn what_cannot_be_traced_is_refused_by_name() {
         ..fine
     };
     domain(FitKind::Line3, &sided);
+
+    // A circle along a noisy box's straight edge: a line fits its vertices
+    // as well, so no radius is determined.
+    // By the corner, the chain run on round it onto the next edge is
+    // given up for the noise it does not show along one.
+    let noisy = rounded_cube(5.0, 0.0, 20).mesh(&placed, 19);
+    let index = Bvh::build(&noisy).unwrap();
+    for at in [Point::new(0.3, 4.8, 5.0), Point::new(4.0, -4.85, 5.0)] {
+        let edge = placed.apply(at);
+        let e = grow(&noisy, &index, &[edge], FitKind::Circle3, &fine, T).unwrap_err();
+        assert!(
+            matches!(e, OgeomError::Construction(_)) && e.to_string().contains("straight"),
+            "{at:?}: {e:?}"
+        );
+    }
 
     // A circle along a box's exactly straight edges: the circle fit's own
     // refusal, not a smooth part's.

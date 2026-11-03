@@ -388,6 +388,21 @@ const NONE: u32 = u32::MAX;
 /// over few vertices has a gate narrow enough to see it, is followed round
 /// the turn.
 ///
+/// A [`FitKind::Circle3`] whose chain stops open runs on once more. A
+/// circle over a short arc is poorly determined: its fit, run on from the
+/// last, can settle in another minimum than one from nothing, a circle of
+/// a hundred times the radius, and its gate is wide enough to admit both
+/// the next vertex of the crease and the far end of a crease edge the
+/// noise turned past the limit off its side. So where the fit lies outside
+/// the confidence region of a fit from nothing, that one is taken, and an
+/// end runs on only through vertices the crease runs on from. The chain
+/// run on is kept where its fit's noise is one the chain it ran on from
+/// could have measured, by the ratio of their variances, and falls back to
+/// where it stopped otherwise. Last, a circle that fits its points no
+/// better than a line by more than the noise could make it, by the sums of
+/// their squared residuals, has a radius they do not determine, and is
+/// refused.
+///
 /// The answer's triangles are empty, and its vertices are the chain's.
 /// Later seeds are reported against the fit, and do not extend the chain.
 /// [`GrowOptions::normal_limit`] and [`GrowOptions::max_triangles`] apply
@@ -460,7 +475,8 @@ const NONE: u32 = u32::MAX;
 /// crease within reach of the first seed holds twice the vertices the kind
 /// needs and turns past the limit by more than the noise, or none about a
 /// later seed, and, for a line, no two planes meet across a round about
-/// the first; and the kind's
+/// the first, or for a circle where its crease is straight within its
+/// noise; and the kind's
 /// own refusals, as its fit gives them.
 pub fn grow(
     mesh: &Triangulation,

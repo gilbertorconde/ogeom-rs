@@ -11,7 +11,7 @@ use super::{
     AnyFit, Crease, FitKind, Gate, GrowOptions, Grown, NONE, SeedReport, Surface, fitted, meeting,
 };
 use crate::Cutoff;
-use crate::fit::{primitive, tails};
+use crate::fit::{FitFixed, FitOptions, primitive, tails};
 
 /// Trace the crease the first seed is nearest and fit `kind` along it.
 ///
@@ -25,7 +25,9 @@ use crate::fit::{primitive, tails};
 /// and is passed over. Where none does, a line is sought where two planes
 /// meet across a round, and failing that the nearest edge's fit's own
 /// refusal is given, or where no fit refused, the seed is refused as lying
-/// on a smooth part.
+/// on a smooth part. A circle's chain that stops open runs on past the
+/// branches and the wrong fits that stopped it, and a circle whose points
+/// lie on a line as well is refused.
 pub(super) fn traced(
     surface: &Surface<'_>,
     index: &Bvh,
@@ -83,6 +85,7 @@ pub(super) fn traced(
         closed: false,
         fit: None,
         gate: None,
+        resumed: false,
     };
     let mut tried: BTreeSet<(u32, u32)> = BTreeSet::new();
     let mut found = false;
@@ -96,6 +99,12 @@ pub(super) fn traced(
         if chain.vertices.len() >= least {
             outcome?;
             if chain.beyond_noise(within) {
+                if !chain.closed && kind == FitKind::Circle3 {
+                    chain.resume()?;
+                }
+                if let Some(e) = chain.undetermined() {
+                    return Err(e);
+                }
                 found = true;
                 break;
             }
@@ -340,6 +349,57 @@ fn to_segment(p: Point, a: Point, b: Point) -> f64 {
     (p - (a + ab * s)).magnitude()
 }
 
+/// Whether the fit `from` lies outside the confidence region the fit
+/// `fresh`, started from nothing, gives its parameters over `points`.
+///
+/// With `p` parameters fitted to `n` points, each missing the model in `c`
+/// directions, the sums of squared residuals over every point `S` of the
+/// two differ by no more than `p s² F(p, c n - p)` for parameters inside
+/// the region, `s² = S_fresh / (c n - p)` the noise `fresh` measures and
+/// `F` the quantile at the tail of the cutoff's `k` sigmas. Every point
+/// counts, so a fresh fit that dropped points it does not pass near pays
+/// for them. A fit run on from a poorly determined start can settle in
+/// another minimum than the fit from nothing, and fails this test; where
+/// both settle in one, `S` differs by rounding only. The noise is no less
+/// than its gate's threshold stands for, so on a mesh without noise
+/// rounding cannot fail it. A cutoff that counts no sigmas measures no
+/// noise, and no fit lies outside.
+fn outside(
+    from: &AnyFit,
+    fresh: &AnyFit,
+    points: &[Point],
+    single: bool,
+    options: &GrowOptions,
+    tol: Tolerances,
+) -> bool {
+    let gate = Gate::of(fresh, points, single, options, tol);
+    let parameters = gate.model.parameters();
+    let dof = (gate.model.components() * points.len()).saturating_sub(parameters);
+    if gate.sigmas <= 0.0 || dof == 0 {
+        return false;
+    }
+    let model = from.model();
+    let own: f64 = fresh.residuals().iter().map(|r| r * r).sum();
+    let other: f64 = points.iter().map(|p| model.residual(*p).powi(2)).sum();
+    #[allow(clippy::cast_precision_loss, reason = "point counts")]
+    let measured = own / dof as f64;
+    let floor = held(&gate);
+    let noise = measured.max(floor * floor);
+    #[allow(clippy::cast_precision_loss, reason = "a handful of parameters")]
+    let bound = parameters as f64 * noise * tails::f_at_normal(gate.sigmas, parameters, dof);
+    other - own > bound
+}
+
+/// The noise's sigma along each direction that a gate's threshold stands
+/// for: the noise its fit measured, or where the threshold is held up to
+/// the confusion distance or the rounding, the noise it would be drawn at.
+fn held(gate: &Gate) -> f64 {
+    #[allow(clippy::cast_precision_loss, reason = "one, two or three")]
+    let along = (gate.model.components() as f64).sqrt();
+    gate.noise
+        .max(gate.threshold / (tails::t_at_normal(gate.sigmas, gate.dof) * along))
+}
+
 /// One end of the chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum End {
@@ -360,6 +420,8 @@ struct Chain<'s, 'a> {
     closed: bool,
     fit: Option<AnyFit>,
     gate: Option<Gate>,
+    /// Whether the trace runs on past where it first stopped.
+    resumed: bool,
 }
 
 impl Chain<'_, '_> {
@@ -372,6 +434,7 @@ impl Chain<'_, '_> {
         self.closed = false;
         self.fit = None;
         self.gate = None;
+        self.resumed = false;
         self.push(a, End::Back);
         self.push(b, End::Back);
     }
@@ -388,8 +451,25 @@ impl Chain<'_, '_> {
     /// each vertex's normal (the sum of its triangles' vector areas) where
     /// every vertex has one.
     fn refit(&mut self) -> OgeomResult<()> {
+        let (points, normals) = self.sampled();
+        let normals = normals.as_deref();
+        let fit = fitted(
+            self.kind,
+            &points,
+            normals,
+            self.options,
+            self.fit.as_ref(),
+            self.tol,
+        )?;
+        self.settle(fit, &points, normals);
+        Ok(())
+    }
+
+    /// The chain's points, and each one's normal (the sum of its triangles'
+    /// vector areas) where every point has one.
+    fn sampled(&self) -> (Vec<Point>, Option<Vec<Vector>>) {
         let surface = self.surface;
-        let points: Vec<Point> = self.vertices.iter().map(|&v| surface.position(v)).collect();
+        let points = self.vertices.iter().map(|&v| surface.position(v)).collect();
         let normals: Vec<Vector> = self
             .vertices
             .iter()
@@ -401,23 +481,30 @@ impl Chain<'_, '_> {
             })
             .collect();
         let facing = normals.iter().all(|n| n.magnitude() > 0.0);
-        let fit = fitted(
-            self.kind,
-            &points,
-            facing.then_some(normals.as_slice()),
-            self.options,
-            self.fit.as_ref(),
-            self.tol,
-        )?;
+        (points, facing.then_some(normals))
+    }
+
+    /// Take `fit` of the chain's points as its fit, and its gate; once
+    /// resumed, the fit from nothing instead where `fit` lies outside that
+    /// one's confidence region.
+    fn settle(&mut self, fit: AnyFit, points: &[Point], normals: Option<&[Vector]>) {
+        let surface = self.surface;
+        let fit = if self.resumed
+            && let Ok(fresh) = fitted(self.kind, points, normals, self.options, None, self.tol)
+            && outside(&fit, &fresh, points, surface.single, self.options, self.tol)
+        {
+            fresh
+        } else {
+            fit
+        };
         self.gate = Some(Gate::of(
             &fit,
-            &points,
+            points,
             surface.single,
             self.options,
             self.tol,
         ));
         self.fit = Some(fit);
-        Ok(())
     }
 
     /// Whether the chain turns past the crease limit by more than the noise
@@ -514,9 +601,12 @@ impl Chain<'_, '_> {
                 }
             }
             Some(gate) => {
+                let resumed = self.resumed;
+                let creases = self.creases;
                 let mut admitted = core::iter::once(next)
                     .chain(onward)
-                    .filter(|&w| gate.near(self.surface.position(w)));
+                    .filter(|&w| gate.near(self.surface.position(w)))
+                    .filter(|&w| !resumed || creases.from(w).iter().any(|&u| u != at));
                 let Some(only) = admitted.next() else {
                     return false;
                 };
@@ -532,6 +622,122 @@ impl Chain<'_, '_> {
             self.push(next, end);
         }
         true
+    }
+
+    /// For a circle its points do not tell from a line, the refusal naming
+    /// it.
+    ///
+    /// A line is a circle of no curvature, fitted with `q` fewer
+    /// parameters. Over the `n` points the circle kept, each missing it in
+    /// `c` directions, its sum of squared residuals `S_c` has `ν = c n - p`
+    /// degrees of freedom; the line's least squares over the same points,
+    /// `S_l`, exceeds it by more than `q s² F(q, ν)` only where the
+    /// curvature is past what the noise could give a line, `s² = S_c / ν`
+    /// the noise the circle measures and `F` the quantile at the tail of
+    /// the cutoff's `k` sigmas. Short of that the points lie on a line as
+    /// well as on the circle, whose radius they do not determine. The noise
+    /// is no less than the gate's threshold stands for. A circle with a
+    /// parameter held is not a line's extension, and a cutoff that counts
+    /// no sigmas measures no noise: neither is refused.
+    fn undetermined(&self) -> Option<OgeomError> {
+        let (Some(AnyFit::Circle(fit)), Some(gate)) = (&self.fit, self.gate) else {
+            return None;
+        };
+        if gate.sigmas <= 0.0 || gate.dof == 0 || self.options.fixed != FitFixed::default() {
+            return None;
+        }
+        let kept: Vec<Point> = self
+            .vertices
+            .iter()
+            .zip(&fit.used)
+            .filter(|(_, keep)| **keep)
+            .map(|(&v, _)| self.surface.position(v))
+            .collect();
+        let line = primitive::line3(&kept, &FitOptions::default(), self.tol).ok()?;
+        let own: f64 = fit
+            .residuals
+            .iter()
+            .zip(&fit.used)
+            .filter(|(_, keep)| **keep)
+            .map(|(r, _)| r * r)
+            .sum();
+        let straight: f64 = line.residuals.iter().map(|r| r * r).sum();
+        let line = AnyFit::Line(line);
+        let fewer = line
+            .model()
+            .measured_over(&kept, line.used(), &FitFixed::default())
+            .parameters();
+        let extra = gate.model.parameters().saturating_sub(fewer);
+        #[allow(clippy::cast_precision_loss, reason = "point counts")]
+        let measured = own / gate.dof as f64;
+        let floor = held(&gate);
+        let noise = measured.max(floor * floor);
+        let factor = tails::f_at_normal(gate.sigmas, extra, gate.dof);
+        #[allow(clippy::cast_precision_loss, reason = "a handful of parameters")]
+        let bound = extra as f64 * noise * factor;
+        (straight - own <= bound).then(|| {
+            ogeom_core::ogeom_err!(
+                Construction,
+                "the crease traced near seed 0 is straight within its noise: over the {} \
+                 vertices kept, a line misses them by a sum of squares of {straight} and the \
+                 circle of radius {} by {own}, no better than the line by more than the noise \
+                 could make it, so the circle's radius is not determined",
+                kept.len(),
+                fit.shape.radius()
+            )
+        })
+    }
+
+    /// Run on past where the trace stopped open: from the fit it stopped
+    /// with, or where that fit lies outside the confidence region of one
+    /// from nothing, from that one, admitting at each end only vertices the
+    /// crease runs on from.
+    ///
+    /// The chain run on is kept only where its fit's noise is one the
+    /// noise of the chain it ran on from could have measured: the ratio of
+    /// their variances, each over its own degrees of freedom, within the F
+    /// quantile at the tail of the cutoff's `k` sigmas. A chain run on past
+    /// the end of its curve, onto another that its fit then bends to, has a
+    /// noise the curve's points do not, and the chain falls back to where
+    /// it stopped, as it does where a fit of the longer chain is refused.
+    fn resume(&mut self) -> OgeomResult<()> {
+        self.resumed = true;
+        if let Some(fit) = self.fit.take() {
+            let (points, normals) = self.sampled();
+            self.settle(fit, &points, normals.as_deref());
+        }
+        let stopped = (
+            self.vertices.clone(),
+            self.closed,
+            self.fit.clone(),
+            self.gate,
+        );
+        let back = self.step(End::Back);
+        let front = !self.closed && self.step(End::Front);
+        if !(back || front) {
+            return Ok(());
+        }
+        let kept = match self.trace() {
+            Ok(()) => match (stopped.3, self.gate) {
+                (Some(before), Some(after)) if before.sigmas > 0.0 => {
+                    let ratio = (held(&after) / held(&before)).powi(2);
+                    ratio <= tails::f_at_normal(before.sigmas, after.dof, before.dof)
+                }
+                _ => true,
+            },
+            Err(OgeomError::Construction(_)) => false,
+            Err(e) => return Err(e),
+        };
+        if !kept {
+            for &v in &self.vertices {
+                self.on_chain[v as usize] = false;
+            }
+            (self.vertices, self.closed, self.fit, self.gate) = stopped;
+            for &v in &self.vertices {
+                self.on_chain[v as usize] = true;
+            }
+        }
+        Ok(())
     }
 
     /// Trace both ways until a whole pass against the latest fit adds no
