@@ -55,11 +55,21 @@ impl Dimension {
     }
 }
 
+/// The modifier word for the maximum material condition, Ⓜ: on a
+/// tolerance's [`GeometricTolerance::modifiers`] or as a
+/// [`DatumModifier::Simple`] on a datum reference.
+pub const MAXIMUM_MATERIAL: &str = "maximum_material_requirement";
+
+/// The modifier word for the least material condition, Ⓛ.
+pub const LEAST_MATERIAL: &str = "least_material_requirement";
+
 /// A geometric tolerance: flatness, position, profile, and their kin.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GeometricTolerance {
     /// The kind, as a lower-case word: `flatness`, `position`,
-    /// `surface_profile`, `perpendicularity`, …
+    /// `surface_profile`, `line_profile`, `circular_runout`,
+    /// `total_runout`, `perpendicularity`, …: the AP242 entity name without
+    /// its `_tolerance`.
     pub kind: String,
     /// The annotation's own name.
     pub name: String,
@@ -69,12 +79,145 @@ pub struct GeometricTolerance {
     /// `maximum_material_requirement`, `unequally_disposed`, …: the
     /// exchange vocabulary for Ⓜ, Ⓤ and their kin.
     pub modifiers: Vec<String>,
-    /// The datum letters the tolerance references, in precedence order. A
-    /// composite reference (two datums acting as one, ISO's `A-B`) is a
-    /// single entry with its labels hyphen-joined.
-    pub datums: Vec<String>,
+    /// The datums the tolerance references, in precedence order: the
+    /// datum reference frame, primary first. A composite reference (two
+    /// datums acting as one, ISO's `A-B`) is a single entry with its labels
+    /// hyphen-joined.
+    pub datums: Vec<DatumReference>,
+    /// Whether the datums are stated as an AP242 datum system: one
+    /// compartment per reference, at most three, each carrying its own
+    /// modifiers. A reference with modifiers is written that way whether
+    /// or not this is set, the bare datum list having nowhere to put them;
+    /// the reader sets it when the file stated a datum system.
+    pub datum_system: bool,
     /// The topology the tolerance controls.
     pub items: Vec<TShapeId>,
+}
+
+/// One entry of a datum reference frame: a datum, or a common datum, and
+/// the modifiers that apply to it there.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DatumReference {
+    /// The datum's letter, or a common datum's letters hyphen-joined: `A`,
+    /// `A-B`.
+    pub label: String,
+    /// How the datum is simulated in this frame: at its maximum or least
+    /// material boundary, free state, projected, …
+    pub modifiers: Vec<DatumModifier>,
+}
+
+impl DatumReference {
+    /// A reference to `label` with no modifiers.
+    #[must_use]
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            modifiers: Vec::new(),
+        }
+    }
+
+    /// The same reference with one more modifier.
+    #[must_use]
+    pub fn with(mut self, modifier: DatumModifier) -> Self {
+        self.modifiers.push(modifier);
+        self
+    }
+}
+
+impl From<&str> for DatumReference {
+    fn from(label: &str) -> Self {
+        Self::new(label)
+    }
+}
+
+impl From<String> for DatumReference {
+    fn from(label: String) -> Self {
+        Self::new(label)
+    }
+}
+
+impl PartialEq<str> for DatumReference {
+    /// Equal to a bare label: the same label and no modifiers.
+    fn eq(&self, label: &str) -> bool {
+        self.modifiers.is_empty() && self.label == label
+    }
+}
+
+impl PartialEq<&str> for DatumReference {
+    fn eq(&self, label: &&str) -> bool {
+        *self == **label
+    }
+}
+
+/// A modifier on one datum reference of a frame.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DatumModifier {
+    /// A modifier word, lower-case, from AP242's
+    /// `simple_datum_reference_modifier`: [`MAXIMUM_MATERIAL`],
+    /// [`LEAST_MATERIAL`], `free_state`, `basic`, `translation`, …
+    Simple(String),
+    /// A modifier that states a size: AP242's
+    /// `datum_reference_modifier_with_value`.
+    WithValue {
+        /// What the value sizes.
+        kind: DatumModifierKind,
+        /// The size, in the document's length unit.
+        value: f64,
+    },
+}
+
+impl DatumModifier {
+    /// The maximum material condition, Ⓜ.
+    #[must_use]
+    pub fn maximum_material() -> Self {
+        Self::Simple(MAXIMUM_MATERIAL.to_owned())
+    }
+
+    /// The least material condition, Ⓛ.
+    #[must_use]
+    pub fn least_material() -> Self {
+        Self::Simple(LEAST_MATERIAL.to_owned())
+    }
+}
+
+/// What a [`DatumModifier::WithValue`] sizes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DatumModifierKind {
+    /// The diameter of a circular or cylindrical datum simulator.
+    CircularOrCylindrical,
+    /// A distance the modifier states.
+    Distance,
+    /// The length the datum is projected over.
+    Projected,
+    /// The diameter of a spherical datum simulator.
+    Spherical,
+}
+
+impl DatumModifierKind {
+    /// The kind as its lower-case exchange word: `circular_or_cylindrical`,
+    /// `distance`, `projected`, `spherical`.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::CircularOrCylindrical => "circular_or_cylindrical",
+            Self::Distance => "distance",
+            Self::Projected => "projected",
+            Self::Spherical => "spherical",
+        }
+    }
+
+    /// The kind its exchange word names, in either case.
+    #[must_use]
+    pub fn from_word(word: &str) -> Option<Self> {
+        [
+            Self::CircularOrCylindrical,
+            Self::Distance,
+            Self::Projected,
+            Self::Spherical,
+        ]
+        .into_iter()
+        .find(|k| k.word().eq_ignore_ascii_case(word))
+    }
 }
 
 /// A datum: a letter naming a feature other annotations reference.

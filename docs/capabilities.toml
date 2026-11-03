@@ -1603,11 +1603,12 @@ tests = ["crates/ogeom/tests/document.rs", "crates/ogeom/tests/exchange.rs"]
 
 [[capability]]
 id = "doc.pmi"
-title = "Semantic PMI: dimensions, tolerances, datums, datum targets, and their presentation"
+title = "Semantic PMI: dimensions, tolerances with datum reference frames and material modifiers, datums, datum targets, and their presentation"
 crate = "ogeom-doc"
 verdict = "covered"
 symbols = [
     "ogeom_doc::Dimension", "ogeom_doc::GeometricTolerance", "ogeom_doc::Datum",
+    "ogeom_doc::DatumReference", "ogeom_doc::DatumModifier", "ogeom_doc::DatumModifierKind",
     "ogeom_doc::DatumTarget", "ogeom_doc::Callout", "ogeom_doc::Pmi",
 ]
 tests = ["crates/ogeom/tests/pmi_corpus.rs"]
@@ -1940,7 +1941,7 @@ tests = ["crates/ogeom/tests/hatch.rs"]
 
 [[capability]]
 id = "io.step"
-title = "STEP, both directions: solids and sheets, construction geometry, assemblies, colours, validation properties, semantic and presentation PMI"
+title = "STEP, both directions: solids and sheets, construction geometry, assemblies, colours, validation properties, semantic PMI (AP242 datum systems included) and presentation PMI"
 crate = "ogeom-io"
 verdict = "covered"
 symbols = ["ogeom_io::read_step", "ogeom_io::write_step", "ogeom_io::StepImport", "ogeom_io::StepReport"]

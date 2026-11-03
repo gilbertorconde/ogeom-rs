@@ -109,7 +109,7 @@ edge to grow to, and a gap the recovered edges do not bridge.
 
 - **doc.appearance**: Colours, layers, materials and textures, per shape and per sub-shape, with inheritance resolved · `covered`
 - **doc.colour-values**: Colour values and their names · `covered`
-- **doc.pmi**: Semantic PMI: dimensions, tolerances, datums, datum targets, and their presentation · `covered`
+- **doc.pmi**: Semantic PMI: dimensions, tolerances with datum reference frames and material modifiers, datums, datum targets, and their presentation · `covered`
 - **doc.product-structure**: Products, occurrences and instances with placements: the assembly tree · `covered`
 - **doc.properties**: Names, user properties, validation properties, lengths and centroids to check a transfer by · `covered`
 - **doc.saved-views**: Saved views and standalone note objects in the exchange document · `covered`
@@ -254,7 +254,7 @@ reference in a deck read from text.
 - **io.native-format**: The native shape interchange format, versioned, with location and triangulation sets · `covered`
 - **io.obj-materials**: OBJ colours: material libraries' diffuse colours, PNG and JPEG textures sampled at each corner, per-vertex colours · `covered`
 - **io.ply**: PLY in text and both binary byte orders: meshes and point clouds, with normals, colours and named scalar properties · `covered`
-- **io.step**: STEP, both directions: solids and sheets, construction geometry, assemblies, colours, validation properties, semantic and presentation PMI · `covered`
+- **io.step**: STEP, both directions: solids and sheets, construction geometry, assemblies, colours, validation properties, semantic PMI (AP242 datum systems included) and presentation PMI · `covered`
 - **io.text-clouds**: XYZ and PTS text point clouds, columns named or read by their count · `covered`
 - **io.vrml**: VRML scenes · `covered`
 
@@ -311,4 +311,4 @@ reference in a deck read from text.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: fa5e7d75d7544e27 -->
+<!-- ledger-checksum: fd2b970b472e5697 -->

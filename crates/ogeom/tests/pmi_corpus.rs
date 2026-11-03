@@ -47,7 +47,10 @@ fn summary(pmi: &Pmi) -> (Vec<DimensionRow>, Vec<ToleranceRow>, Vec<DatumRow>) {
                 t.kind.clone(),
                 t.name.clone(),
                 f(t.magnitude),
-                t.datums.clone(),
+                t.datums
+                    .iter()
+                    .map(|d| format!("{}{:?}", d.label, d.modifiers))
+                    .collect(),
                 t.items.len(),
             )
         })
@@ -87,25 +90,29 @@ fn the_nist_part_reads_its_annotations_semantically() {
     assert!((angle.values[0] - 60_f64.to_radians()).abs() < 1e-12);
     assert!((angle.plus.unwrap() - 0.5_f64.to_radians()).abs() < 1e-12);
 
-    // Six geometric tolerances, magnitudes and datum references as NIST
-    // published them.
-    let mut kinds: Vec<(&str, f64, &[String])> = pmi
+    // Six geometric tolerances, magnitudes and datum reference frames as
+    // NIST published them: the file states each frame as a datum system,
+    // `A` alone or `A|B|C` in precedence order.
+    let mut kinds: Vec<(&str, f64, Vec<&str>, bool)> = pmi
         .tolerances
         .iter()
-        .map(|t| (t.kind.as_str(), t.magnitude, t.datums.as_slice()))
+        .map(|t| {
+            let labels = t.datums.iter().map(|d| d.label.as_str()).collect();
+            (t.kind.as_str(), t.magnitude, labels, t.datum_system)
+        })
         .collect();
     kinds.sort_by(|a, b| a.0.cmp(b.0).then(a.1.total_cmp(&b.1)));
-    let a = ["A".to_string()];
-    let none: [String; 0] = [];
+    let a = vec!["A"];
+    let abc = vec!["A", "B", "C"];
     assert_eq!(
         kinds,
         [
-            ("flatness", 0.2, &none[..]),
-            ("perpendicularity", 1.5, &a[..]),
-            ("position", 0.75, &a[..]),
-            ("position", 0.75, &a[..]),
-            ("surface_profile", 0.5, &a[..]),
-            ("surface_profile", 1.25, &a[..]),
+            ("flatness", 0.2, vec![], false),
+            ("perpendicularity", 1.5, a.clone(), true),
+            ("position", 0.75, abc.clone(), true),
+            ("position", 0.75, abc.clone(), true),
+            ("surface_profile", 0.5, a, true),
+            ("surface_profile", 1.25, abc, true),
         ]
     );
 
@@ -458,4 +465,223 @@ fn edge_colours_and_edge_pmi_round_trip() {
             vec![node_at(Point::new(10.0, 10.0, 0.0))],
         ]
     );
+}
+
+/// The mean of a face's vertices, in world coordinates: enough to tell a
+/// block's six faces apart across a round trip.
+fn face_centre(model: &ogeom::topo::Model, face: &ogeom::topo::Shape) -> ogeom::math::Point {
+    use ogeom::topo::{ShapeType, explore_unique};
+    let vertices = explore_unique(model, face, ShapeType::Vertex).unwrap();
+    let (mut x, mut y, mut z) = (0.0, 0.0, 0.0);
+    for v in &vertices {
+        let point = model.node(v).unwrap().data().as_vertex().unwrap().point;
+        let p = v.transform(model.datums()).unwrap().apply(point);
+        (x, y, z) = (x + p.x, y + p.y, z + p.z);
+    }
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a block's face has four vertices"
+    )]
+    let n = vertices.len() as f64;
+    ogeom::math::Point::new(x / n, y / n, z / n)
+}
+
+/// A block with datums A, B and C on three faces, as a document, and the
+/// block.
+fn datum_block() -> (ogeom::doc::Document, ogeom::topo::Shape) {
+    use ogeom::math::Frame;
+    let mut model = ogeom::topo::Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 10.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let (a, b, c) = (
+        face_at(&model, &block, (10.0, 5.0, 0.0)),
+        face_at(&model, &block, (0.0, 5.0, 2.5)),
+        face_at(&model, &block, (10.0, 0.0, 2.5)),
+    );
+    let mut document = ogeom::doc::Document::over(model);
+    document.add_part("block", block.clone());
+    for (label, face) in [("A", a), ("B", b), ("C", c)] {
+        document.pmi_mut().datums.push(ogeom::doc::Datum {
+            label: label.into(),
+            items: vec![face],
+        });
+    }
+    (document, block)
+}
+
+/// The block's face centred at `(x, y, z)`.
+fn face_at(
+    model: &ogeom::topo::Model,
+    block: &ogeom::topo::Shape,
+    (x, y, z): (f64, f64, f64),
+) -> ogeom::topo::TShapeId {
+    use ogeom::topo::{ShapeType, explore_unique};
+    explore_unique(model, block, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| face_centre(model, f).distance(ogeom::math::Point::new(x, y, z)) < 1e-9)
+        .unwrap()
+        .node()
+}
+
+/// Where the faces of `block` among `items` sit, sorted.
+fn centres_of(
+    model: &ogeom::topo::Model,
+    block: &ogeom::topo::Shape,
+    items: &[ogeom::topo::TShapeId],
+) -> Vec<String> {
+    use ogeom::topo::{ShapeType, explore_unique};
+    let mut out: Vec<String> = explore_unique(model, block, ShapeType::Face)
+        .unwrap()
+        .iter()
+        .filter(|f| items.contains(&f.node()))
+        .map(|f| {
+            let p = face_centre(model, f);
+            format!("{:.6} {:.6} {:.6}", p.x, p.y, p.z)
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// Datum reference frames, material modifiers, and the position, profile
+/// and runout kinds go through the writer as AP242 datum systems and come
+/// back as they went in: kind, value, the tolerance's modifiers, each
+/// frame's references in precedence order with their own modifiers, and
+/// the faces the tolerance controls.
+#[test]
+fn datum_systems_and_their_modifiers_round_trip() {
+    use ogeom::doc::{
+        DatumModifier, DatumModifierKind, DatumReference, GeometricTolerance, LEAST_MATERIAL,
+        MAXIMUM_MATERIAL,
+    };
+    let (mut document, block) = datum_block();
+    let face = |p| face_at(document.model(), &block, p);
+    let (top, right, back) = (
+        face((10.0, 5.0, 5.0)),
+        face((20.0, 5.0, 2.5)),
+        face((10.0, 10.0, 2.5)),
+    );
+    let tolerance =
+        |kind: &str, magnitude: f64, modifiers: &[&str], datums, items| GeometricTolerance {
+            kind: kind.into(),
+            name: format!("{kind}.1"),
+            magnitude,
+            modifiers: modifiers.iter().map(|&m| m.into()).collect(),
+            datums,
+            datum_system: true,
+            items,
+        };
+    let written = vec![
+        tolerance(
+            "position",
+            0.1,
+            &[MAXIMUM_MATERIAL],
+            vec![
+                "A".into(),
+                DatumReference::new("B").with(DatumModifier::maximum_material()),
+                DatumReference::new("C").with(DatumModifier::least_material()),
+            ],
+            vec![top],
+        ),
+        tolerance(
+            "surface_profile",
+            0.2,
+            &[],
+            vec!["A".into(), "B".into(), "C".into()],
+            vec![top, right],
+        ),
+        tolerance(
+            "line_profile",
+            0.05,
+            &[],
+            vec!["A".into(), "B".into()],
+            vec![back],
+        ),
+        tolerance(
+            "circular_runout",
+            0.02,
+            &[],
+            vec![DatumReference::new("A-B").with(DatumModifier::WithValue {
+                kind: DatumModifierKind::Projected,
+                value: 12.5,
+            })],
+            vec![right],
+        ),
+        tolerance(
+            "total_runout",
+            0.03,
+            &[LEAST_MATERIAL],
+            vec![
+                DatumReference::new("A")
+                    .with(DatumModifier::WithValue {
+                        kind: DatumModifierKind::CircularOrCylindrical,
+                        value: 8.0,
+                    })
+                    .with(DatumModifier::Simple("free_state".into())),
+                "C".into(),
+            ],
+            vec![back],
+        ),
+    ];
+    document.pmi_mut().tolerances.clone_from(&written);
+
+    let text = ogeom::io::write_step(&document, T).unwrap();
+    assert!(!text.contains("GEOMETRIC_TOLERANCE_WITH_MODIFIERS(())"));
+    assert_eq!(text.matches("DATUM_SYSTEM(").count(), written.len());
+    assert_eq!(text.matches("DATUM_REFERENCE_ELEMENT(").count(), 2);
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let model = import.document.model();
+    let read = &import.document.pmi().tolerances;
+    assert_eq!(read.len(), written.len());
+    for (before, after) in written.iter().zip(read) {
+        assert_eq!(after.kind, before.kind);
+        assert_eq!(after.name, before.name);
+        assert!((after.magnitude - before.magnitude).abs() < 1e-12);
+        assert_eq!(after.modifiers, before.modifiers);
+        assert_eq!(after.datums, before.datums, "{}", before.kind);
+        assert!(after.datum_system);
+        assert_eq!(
+            centres_of(model, &import.solids[0], &after.items),
+            centres_of(document.model(), &block, &before.items),
+            "{}",
+            before.kind
+        );
+    }
+
+    // And through the native format, which keeps the frame in a record of
+    // its own.
+    let native = ogeom::io::native::write_document(
+        &import.document,
+        ogeom::io::native::WriteOptions::default(),
+    )
+    .unwrap();
+    let again = ogeom::io::native::read_document(&native).unwrap();
+    for (before, after) in written.iter().zip(&again.pmi().tolerances) {
+        assert_eq!(after.datums, before.datums);
+        assert!(after.datum_system);
+    }
+}
+
+/// A datum system holds at most three references, and each must name a
+/// datum: a frame that cannot be stated is refused, not written short.
+#[test]
+fn a_datum_system_that_cannot_be_stated_is_refused() {
+    let tolerance = |datums: Vec<ogeom::doc::DatumReference>| ogeom::doc::GeometricTolerance {
+        kind: "position".into(),
+        magnitude: 0.1,
+        datums,
+        datum_system: true,
+        ..Default::default()
+    };
+    let (mut document, _) = datum_block();
+    for frame in [
+        vec!["A".into(), "B".into(), "C".into(), "A-B".into()],
+        vec!["A".into(), "D".into()],
+        vec!["A".into(), "B-D".into()],
+    ] {
+        document.pmi_mut().tolerances = vec![tolerance(frame)];
+        assert!(ogeom::io::write_step(&document, T).is_err());
+    }
 }
