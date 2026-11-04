@@ -234,10 +234,12 @@ fn an_oblique_drill_through_the_slot_corners_cuts() {
 /// drill's section with it is a figure eight crossing the round's tangent
 /// edge twice at its double point, or two loops crossing that edge a
 /// hundredth of a millimetre apart where the edge cannot be told from the
-/// drill between them, which is one junction. With the drill's seam on top
-/// or toward -y, cut and common are valid, cut and common add up to the
-/// part and the drill less the part and the common add up to the drill. The common matches the drill's share of the part's
-/// mesh as read: at a tangency the mesh's chord moves that share by the
+/// drill between them, which is one junction. With the drill's seam on
+/// top, toward -y, or on the lowest line or a ten-thousandth of a radian
+/// off it, where the junction holds the loops' ends on either side of the
+/// seam, cut and common are valid, cut and common add up to the part and
+/// the drill less the part and the common add up to the drill. The common
+/// matches the drill's share of the part's mesh as read: at a tangency the mesh's chord moves that share by the
 /// root of the chord, so no extrapolation holds. Over chords from 2e-3 to
 /// 1.25e-4 and grids up to sixteen times finer it lands from 3e-5 below
 /// the common to 7e-5 above it, and 4e-5 above on the chord and grid used
@@ -271,7 +273,13 @@ fn a_drill_lying_in_a_plate_s_underside_between_its_rounds_cuts() {
         (300, 1200),
     );
     let bore = core::f64::consts::PI * radius * radius * length;
-    for x in [up, Vector::new(0.0, -1.0, 0.0)] {
+    let off = 1e-4_f64;
+    for x in [
+        up,
+        Vector::new(0.0, -1.0, 0.0),
+        -up,
+        Vector::new(0.0, off.sin(), -off.cos()),
+    ] {
         let frame = Frame::new(
             start,
             Direction::new(z, T).unwrap(),

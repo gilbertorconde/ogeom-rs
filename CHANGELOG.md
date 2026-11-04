@@ -46,6 +46,39 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A drum moved onto a plane takes its rims and caps along, and a seam
+  through a junction is split there.**
+  - A drum within the confusion distance of touching a plane of the other
+    solid is intersected moved onto it, and its seams moved with it, but
+    its rims stayed where they stood, as did its caps. Moved by the
+    confusion distance with its seam on a diagonal, the results were valid
+    but their volumes missed by about the move times the wall's length and
+    radius: a drill of radius 2 lowered 1e-7 under a block's top less the
+    block came out 2.8e-6 short, and on `nist_ctc_03`'s plate top drill,
+    970 long, the drill less the part and the common fell short of the
+    drill by 1.5e-3. An edge now moves with the drum where every face
+    holding it moves with it or holds it on a plane the move runs along,
+    and a vertex moves where only such edges end on it. Both now match
+    the touching drill: the block's to rounding (5e-13), the plate's to
+    1.9e-7.
+  - A drill lying in `nist_ctc_03`'s plate underside between its rounds,
+    its seam on its lowest line (where it touches the underside) or within
+    a ten-thousandth of a radian of it, was refused at every offset up to
+    a tenth of a micron ("the kept pieces did not close into a shell").
+    The drill's section with a round tangent to the underside is two
+    loops whose ends the marcher stops 0.015 off the triple tangency, one
+    junction, and with the seam through that junction their ends stood
+    either side of the seam, a turn apart in the drum's chart, with no
+    node on the seam to meet at. A seam a junction passes through, with
+    section ends of the face on both sides of it, is now split where it
+    passes nearest the junction, and each end is carried onto the node on
+    its side. The drill cuts at all five offsets: valid, cut and common
+    adding up to the part within 5.8e-6 and the drill less the part and
+    the common to the drill within 1.1e-5 (the junction's ends carried
+    0.015 across the chart), against 4.7e-7 and 9.1e-7 with the seam
+    elsewhere.
+  - Stress (seeds 1 to 8) and the real-world imports are unchanged.
+
 - **A boolean takes a section through a sphere's pole on a face left on its
   own chart, rather than refusing it.** A marched section through a pole
   of a chart (a drill whose wall holds a ball's axis) was walked across the

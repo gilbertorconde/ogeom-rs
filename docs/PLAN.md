@@ -98,29 +98,18 @@ face blend's patch at a few ten-thousandths of a radian states up to
 between two samples lands tens of chords off their chord and is not
 filled in.
 
-**A drill's seam beside the other part's face.** A drum touching a plane
-of the other part to within the confusion distance is the touching drill
-(see `drills_a_hair_off_a_plate_top_running_into_a_round_cut_as_the_touching_one`
-in `crates/ogeom/tests/boolean_grazing_drill.rs`). What is left:
-- The drill lying in `nist_ctc_03`'s plate underside between its rounds,
-  its seam toward -z on the underside, is refused at every offset of up to
-  a tenth of a micron, the touching one included ("the kept pieces did not
-  close into a shell", raised by a tenth "marching resolved no branch").
-  With its seam toward z, -y or y it cuts at all five offsets.
-- Lowered under `nist_ctc_03`'s plate top past the confusion distance, by
-  2e-7 to 1e-6, the stress drill seed 2, drill 5 placement is refused for
-  every seam direction ("the kept pieces did not close into a shell"), as
-  before: the drum then stands apart from the plate, and its section with
-  the round crosses the drill's top line two to five microns past the
-  round's tangent edge.
-- A drum moved onto a plane carries its seams with it but not its rims,
-  which its neighbours hold. Moved by the confusion distance itself (raised
-  or lowered by 1e-7) with the seam on a diagonal, the results are valid
-  but their volumes miss by about the move times the wall's length and
-  radius: the common of the 2 by 30 drill through the block, lowered, by
-  2.8e-6, and on the plate's drill of length 970 the drill less the part
-  and the common add up to the drill short by 1.5e-3, against the
-  touching drill's 2e-7.
+**A drill lowered under a face past the confusion distance.** A drum
+touching a plane of the other part to within the confusion distance is
+the touching drill (see
+`drills_a_hair_off_a_plate_top_running_into_a_round_cut_as_the_touching_one`
+in `crates/ogeom/tests/boolean_grazing_drill.rs`), moved onto the plane
+with its seams, rims and caps. Lowered under `nist_ctc_03`'s plate top
+past the confusion distance, by 2e-7 to 1e-6, the stress drill seed 2,
+drill 5 placement is still refused for every seam direction ("the kept
+pieces did not close into a shell"): the drum then stands apart from the
+plate, cut by it in two lines a few microns apart, and its section with
+the round crosses the drill's top line two to five microns past the
+round's tangent edge.
 
 **A loop's pcurve stops short of its seam column after a fuse.** A
 section that crosses a torus's seam a hair from its own start is marched
