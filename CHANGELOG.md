@@ -46,6 +46,26 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A face bounded by edges whose vertices stand off their curves' ends by
+  more than the chord is meshed on its surface.** (#685)
+  - The mesh draws an edge's ends from its vertices, so every face round
+    a vertex meets at one point. A vertex further off the curve's end
+    than the chord, within its own tolerance, took the edge's last
+    segment that far off its faces; a straight edge is one segment, so a
+    face bounded only by such edges was drawn wholly beside its plane.
+  - Such an edge now takes one more point on its curve, as far in from
+    the end as the vertex stands off it, and only the step from there to
+    the vertex leaves the curve. In the chart the vertex keeps the
+    curve's end. The mesh stays closed, and a vertex within the chord of
+    its curve's end is drawn as before.
+  - A Voron 2.4 part whose box edges are rounds of radius 0.005 that
+    collapse into vertices 0.0035 off their curves meshed 0.7% short of
+    its integrated 0.5663233 at every chord from 1e-2 to 2e-4: its outer
+    faces stood 0.0025 inside their planes. It now meshes to 0.566284 at
+    chords from 3e-3 to 5e-4 and 0.566288 at 1e-4. A unit cube whose
+    vertices stand 0.01 in from its corners meshed to 0.9658 and now
+    meshes to its volume.
+
 - **A face measured on its own mesh within an exact volume keeps its
   flux when it is thinner than the chord.** (#683)
   - `volume_properties` integrates every face it can in closed form and

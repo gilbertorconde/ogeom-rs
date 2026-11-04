@@ -2751,6 +2751,9 @@ fn boundary_ring(
     // Half-period jumps whose side could not be decided when walked.
     let mut ties: Vec<usize> = Vec::new();
     let mut met = true;
+    // Whether the ring's first and last points are vertices drawn one step
+    // past their curves' ends.
+    let mut stepped_ring = [false; 2];
     // Whether each chart direction comes back on itself: periodic, or
     // closed without repeating. Asked once here: closure on a spline is a
     // walk down a control column, too costly to repeat at every edge of
@@ -2879,10 +2882,13 @@ fn boundary_ring(
         };
         // The ends drawn from the edge's vertices rather than its curve.
         let mut snapped_ends: Vec<usize> = Vec::new();
+        // Whether the edge's start and end are vertices drawn one step past
+        // its curve's ends, in the curve's direction.
+        let mut stepped_ends = [false; 2];
         let samples = match sample_parameters(model, data, along, tol)? {
             Some((parameters, edge_met)) => {
                 met &= edge_met;
-                let parameters = match (in_chart, model.geometry().surface(surface)) {
+                let mut parameters = match (in_chart, model.geometry().surface(surface)) {
                     (true, Some(geometry)) => {
                         let (refined, chart_met) = refine_in_chart(
                             parameters,
@@ -2916,6 +2922,23 @@ fn boundary_ring(
                     // between them the faces leave a hole. Drawn from the
                     // vertex itself, every face round it meets at one
                     // point.
+                    //
+                    // Moved onto a vertex further off than the chord, an
+                    // end takes the edge's last segment off its faces by
+                    // that much along the whole segment: a straight edge
+                    // is one segment, and a face bounded by such edges
+                    // alone is drawn wholly beside its surface. The edge
+                    // then takes one more point on its curve, as far in
+                    // from the end as the vertex stands off it, and only
+                    // the step from there to the vertex leaves the curve.
+                    // The point is the edge's own, so every face along the
+                    // edge draws it, and every face round the vertex still
+                    // meets there. In the chart the vertex keeps the
+                    // curve's end: solved onto the vertex, it can stand
+                    // inside the face, where the triangulation joins it
+                    // across the face and takes the face off its surface
+                    // again.
+                    let chord = along.chord * edge_placement.scale_factor().abs();
                     let corners: Vec<(Point, f64)> = model
                         .ordered_children_of(&edge)?
                         .iter()
@@ -2926,18 +2949,52 @@ fn boundary_ring(
                         })
                         .collect();
                     let reach = data.tolerance.get();
-                    for i in [0, edge_anchors.len().saturating_sub(1)] {
+                    // The end last, so the start's index still holds.
+                    let mut snapped = [false; 2];
+                    for i in [edge_anchors.len().saturating_sub(1), 0] {
                         let Some(Some(end)) = edge_anchors.get(i).copied() else {
                             continue;
                         };
-                        if let Some(&(at, within)) = corners
+                        let Some(&(at, within)) = corners
                             .iter()
                             .min_by(|a, b| a.0.distance(end).total_cmp(&b.0.distance(end)))
-                            && at.distance(end) <= within + reach
-                        {
-                            edge_anchors[i] = Some(at);
-                            snapped_ends.push(i);
+                        else {
+                            continue;
+                        };
+                        let off = at.distance(end);
+                        if off > within + reach {
+                            continue;
                         }
+                        let next = if i == 0 { 1 } else { i - 1 };
+                        let mut stepped = false;
+                        if off > chord
+                            && let (Some(&from), Some(&to)) =
+                                (parameters.get(i), parameters.get(next))
+                            && let Some(Some(inner)) = edge_anchors.get(next).copied()
+                            && inner.distance(end) > 2.0 * off
+                        {
+                            let t = from + (to - from) * off / inner.distance(end);
+                            let step = if i == 0 { 1 } else { i };
+                            parameters.insert(step, t);
+                            edge_anchors.insert(
+                                step,
+                                geometry
+                                    .point_at(t, tol)
+                                    .ok()
+                                    .map(|p| edge_placement.apply(p)),
+                            );
+                            stepped = true;
+                        }
+                        let i = if i == 0 { 0 } else { edge_anchors.len() - 1 };
+                        edge_anchors[i] = Some(at);
+                        snapped[usize::from(i != 0)] = !stepped;
+                        stepped_ends[usize::from(i != 0)] = stepped;
+                    }
+                    if snapped[0] {
+                        snapped_ends.push(0);
+                    }
+                    if snapped[1] {
+                        snapped_ends.push(edge_anchors.len() - 1);
                     }
                 }
                 map_to_pcurve(&parameters, data, pcurve_range)
@@ -3026,6 +3083,7 @@ fn boundary_ring(
         if edge.orientation() == Orientation::Reversed {
             points.reverse();
             edge_anchors.reverse();
+            stepped_ends.reverse();
         }
         if edge_anchors.len() != points.len() {
             edge_anchors = vec![None; points.len()];
@@ -3230,6 +3288,10 @@ fn boundary_ring(
             points.remove(0);
             edge_anchors.remove(0);
         }
+        if ring.is_empty() {
+            stepped_ring[0] = stepped_ends[0];
+        }
+        stepped_ring[1] = stepped_ends[1];
         ring.extend(points);
         anchors.extend(edge_anchors);
     }
@@ -3270,7 +3332,26 @@ fn boundary_ring(
                 (Some(Some(a)), Some(Some(b))) => a.distance(*b) <= tol.confusion() * 1e5,
                 _ => false,
             };
-        if first.is_equal(last, tol) || same_vertex {
+        // A vertex drawn one step past both the last edge's curve and the
+        // first's stands at each curve's end in the chart: two points for
+        // one vertex, closed as the walk closes between any two edges. Ends
+        // a whole period apart lift to one point and stay to be wound.
+        let stepped = stepped_ring == [true, true]
+            && match (anchors.first(), anchors.last()) {
+                (Some(Some(a)), Some(Some(b))) => a.distance(*b) <= tol.confusion(),
+                _ => false,
+            }
+            && model.geometry().surface(surface).is_some_and(|geometry| {
+                use ogeom_geom::Surface as _;
+                match (
+                    geometry.point_at(first.x, first.y, tol),
+                    geometry.point_at(last.x, last.y, tol),
+                ) {
+                    (Ok(a), Ok(b)) => a.distance(b) > tol.confusion(),
+                    _ => false,
+                }
+            });
+        if first.is_equal(last, tol) || same_vertex || stepped {
             ring.pop();
             anchors.pop();
         }
