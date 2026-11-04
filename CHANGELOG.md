@@ -98,6 +98,33 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`fillet_edges` rounds an edge whose ball runs off a face along part
+  of it beside edges it shares a face or a corner with.**
+  - A request refused any station where the ball's contact ran off its
+    face, out of the solid, along an edge sharing a face or a vertex with
+    another of the request: the band's contacts are checked against the
+    other bands', and a contact off its face gave the check nothing to
+    read. Alone, `fillet_edge` cuts that band off at the face's side.
+  - Such a station now stands for the band where it is: on the face up to
+    the side the contact crosses, and on the face across that side, at
+    the side and, for a convex edge, where the ball's arc meets that face.
+    The band is built as alone; a request whose bands all fit at every
+    station is unchanged.
+  - Refused by name: a face, or for a convex edge the face across, that is
+    not planar with straight sides; a convex band cut off by more than
+    that one face; and those points standing inside another band.
+  - Measured: a triangle prism's narrowing floor edge asked with the floor
+    edge at the other end, at radius 0.3 and 0.5, removes twice the floor
+    band's closed form to 1e-6. In the stress run's blend scenario, 3 of
+    the 4 refusals of this kind at seeds 1 to 4 round (seed 1 case 6, seed
+    3 cases 13 and 14), each to its edges rounded alone, plus a joint at a
+    shared corner equal, over the radius cubed, to the joint at radius
+    0.05 within 1e-8. Seed 4 case 32 is refused, its band's cut-off side
+    inside another seam's band. At seeds 5 to 8 six more blend cases
+    round, each to the sum of its edges alone; the other fillet scenarios
+    give the same answer per case. The blend baseline moves to 58 ok, 2
+    refused.
+
 - **A marched section rejoined where its walks stall, or fitted where a
   seeded fit swings between samples, states the error it fits within.**
   - Where two surfaces are tangent the section's walks stall, and the

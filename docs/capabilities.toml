@@ -1194,11 +1194,16 @@ piece. It is refused by name where the ball comes onto the face beyond \
 a far edge along the crease (it then rounds the corner between that face \
 and the one it touches, another seam's round), rests on far edges of \
 both faces at once, or leaves either face, and in a request where the \
-edge shares a face or a vertex with another of its edges. It \
-refuses also where it runs off a \
-face anywhere along an edge of a request that shares a face or a vertex \
-with another of its edges; an edge sharing neither runs off a face \
-narrowing to a tip and is cut off there, as alone."""
+edge shares a face or a vertex with another of its edges. A ball whose \
+contact runs off a face along part of an edge, out of the solid, is cut \
+off there as alone, in a request too: where the edge shares a face or a \
+vertex with another of the request, its band is checked against theirs \
+on the stretch the face holds, up to the face's side, and on the face \
+across that side, at the side and, for a convex edge, where the ball's \
+arc meets that face. It refuses by name where the face it runs off, or, \
+convex, the face across, is not planar with straight sides, where a \
+convex band is cut off by more than that one face, and where those \
+points stand inside another band."""
 symbols = [
     "ogeom_fillet::fillet_edge", "ogeom_fillet::fillet_edges",
     "ogeom_fillet::fillet_edge_variable",

@@ -1,5 +1,5 @@
 {
-  "blend": { "ok": 57, "refused": 3, "invalid": 0, "wrong": 0, "panic": 0 },
+  "blend": { "ok": 58, "refused": 2, "invalid": 0, "wrong": 0, "panic": 0 },
   "chain": { "ok": 60, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 },
   "drill": { "ok": 224, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 },
   "faceblend": { "ok": 113, "refused": 7, "invalid": 0, "wrong": 0, "panic": 0 },
