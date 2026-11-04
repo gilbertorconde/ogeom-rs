@@ -179,19 +179,23 @@ impl Cutter {
         (p - self.origin).dot(self.normal)
     }
 
+    /// The rounding of [`Cutter::along`] at `p`. Each coordinate of a point
+    /// `origin + w` is a dot product of `w`, rounded by at most `u`, the
+    /// unit roundoff, of each of its coordinates, with a unit axis, which
+    /// adds at most `γ₃ = 3u / (1 - 3u)` of the sum of its terms'
+    /// magnitudes: altogether within `(u + γ₃ (1 + u)) |w|₁`, under
+    /// `5u |w|₁`, of the exact one.
+    pub(crate) fn blur(&self, p: Point) -> f64 {
+        let w = p - self.origin;
+        5.0 * f64::EPSILON * (w.x.abs() + w.y.abs() + w.z.abs())
+    }
+
     /// Whether `p` lies within the rounding of [`Cutter::along`] of its
     /// foot on the plane, so that the two may take the same coordinates in
-    /// it. Each coordinate of a point `origin + w` is a dot product of `w`,
-    /// rounded by at most `u`, the unit roundoff, of each of its
-    /// coordinates, with a unit axis, which adds at most
-    /// `γ₃ = 3u / (1 - 3u)` of the sum of its terms' magnitudes: altogether
-    /// within `(u + γ₃ (1 + u)) |w|₁`, under `5u |w|₁`, of the exact one.
-    /// The foot, `p` moved by its height along the normal, is taken as
-    /// within the same of `p`, at twice that.
+    /// it: the foot, `p` moved by its height along the normal, is taken as
+    /// within [`Cutter::blur`] of `p`, at twice that.
     pub(crate) fn near(&self, p: Point) -> bool {
-        let w = p - self.origin;
-        let l1 = w.x.abs() + w.y.abs() + w.z.abs();
-        self.height(p).abs() <= 5.0 * f64::EPSILON * l1
+        self.height(p).abs() <= self.blur(p)
     }
 
     /// The plane's unit normal.
@@ -220,6 +224,20 @@ impl Cutter {
             (hp / (hp - hq)).clamp(0.0, 1.0)
         };
         low.lerp(high, t)
+    }
+
+    /// How far [`Cutter::crossing`]'s point `x` on the edge from `low` to
+    /// `high` lies from the point at its parameter `t` on the edge. Each
+    /// coordinate of `high - low` is rounded by at most `u`, the unit
+    /// roundoff, its product with `t` by a further `u`, and the sum with
+    /// `low` by `u` of the sum: altogether within
+    /// `u |x| / (1 - u) + γ₂ t |high - low|`, under `2u (|x| + |high - low|)`,
+    /// of the exact one, and the distance under the sum of those over the
+    /// three coordinates.
+    pub(crate) fn crossing_blur(low: Point, high: Point, x: Point) -> f64 {
+        let d = high - low;
+        let l1 = x.x.abs() + x.y.abs() + x.z.abs() + d.x.abs() + d.y.abs() + d.z.abs();
+        f64::EPSILON * l1
     }
 }
 
