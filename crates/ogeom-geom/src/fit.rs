@@ -668,6 +668,33 @@ pub fn fit_points_at(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Fitted<BSplineCurve>> {
+    fit_points_at_inner(parameters, points, degree, tolerance, false, tol)
+}
+
+/// As [`fit_points_at`], with the loop's join made C1: the points close,
+/// the last the first again.
+///
+/// # Errors
+///
+/// As [`fit_points_at`].
+pub fn fit_points_at_closed(
+    parameters: &[f64],
+    points: &[Point],
+    degree: usize,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<BSplineCurve>> {
+    fit_points_at_inner(parameters, points, degree, tolerance, true, tol)
+}
+
+fn fit_points_at_inner(
+    parameters: &[f64],
+    points: &[Point],
+    degree: usize,
+    tolerance: f64,
+    closed: bool,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<BSplineCurve>> {
     if parameters.len() != points.len() {
         ogeom_bail!(Construction, "one parameter per point, or the fit is a lie");
     }
@@ -691,7 +718,7 @@ pub fn fit_points_at(
     const ROUNDS: usize = 32;
     let mut best: Option<(KnotVector, Vec<[f64; 3]>, f64)> = None;
     for _ in 0..ROUNDS {
-        let control = match least_squares::<3>(&knots, &data, parameters, false) {
+        let control = match least_squares::<3>(&knots, &data, parameters, closed) {
             Ok(control) => control,
             Err(e) => {
                 if best.is_some() {
@@ -719,7 +746,7 @@ pub fn fit_points_at(
         let Some(refined) = refined_where_bad(&knots, &errors, tolerance, false)? else {
             break;
         };
-        knots = refined_or_interpolating(refined, parameters, false)?;
+        knots = refined_or_interpolating(refined, parameters, closed)?;
     }
     let Some((knots, control, worst)) = best else {
         ogeom_bail!(Construction, "the fit found no usable rounds");

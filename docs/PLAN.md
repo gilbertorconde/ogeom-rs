@@ -22,28 +22,32 @@ first, then refusals, then cost.
 
 ### Booleans
 
-**Sections beside a sphere's pole are refused.** A marched branch through
-a pole of either surface's chart, the pole lying on the other surface
-within the trace's chord, is cut there (`cut_at_poles` in
-`ogeom-intersect/src/march.rs`): each piece ends on the pole, its image
-there on the line of the chart it leaves along, and the arrangement cuts
-the face's pole row where the pieces end on it. A face left on its own
-chart (where `ball_chart.rs` cannot restate it: a face with one new pole
-inside whose loop round it the seam meridian crosses at no vertex, a face
-placed inside its solid, a face with an edge that has no curve in space,
-a face whose trim holds no pole of its chart) therefore takes a section
-through its pole. Left on their own charts, a ball and a ball slab
-drilled with the drill's wall through the poles, or a ten-millionth of
-the radius beside them, cut at the closed forms. Still refused ("a
-section through a sphere chart's pole is not resolved"): a section whose
-image runs past the pole row by more than its tolerance, or passes
-within it of a pole between its ends further than the chord from it.
-Left unturned, a drill whose wall stands a thousandth of its radius off
-the pole meets the ball so, its trace wandering beside the pole with
-tolerances of 0.0014 to 0.43, and every such case refuses.
-"A branch passing beside a chart's pole fits nothing yet" is refused the
-same way. What would clear them: march such a branch round the pole on a
-chart turned for the stretch beside it, and cut the face there.
+**A section passing a pole within its tolerance, beyond its chord, is
+refused.** A marched branch through a pole of either surface's chart, the
+pole lying on the other surface within the trace's chord, is cut there
+(`cut_at_poles` in `ogeom-intersect/src/march.rs`): each piece ends on the
+pole, its image there on the line of the chart it leaves along, and the
+arrangement cuts the face's pole row where the pieces end on it. A branch
+passing beside a pole, farther than the chord, is fitted whole; where the
+joint fit of curve and images misses its tolerance a hundredfold and
+either chart has a pole, the curve is fitted in space alone and each image
+read off it by inversion, measured lifted against the curve (`projected`
+in `ogeom-intersect/src/approx.rs`), the closer fit standing. A face left
+on its own chart (where `ball_chart.rs` cannot restate it: a face with one
+new pole inside whose loop round it the seam meridian crosses at no
+vertex, a face placed inside its solid, a face with an edge that has no
+curve in space, a face whose trim holds no pole of its chart) therefore
+takes a section through its pole or beside it. Left on their own charts, a
+ball and a ball slab drilled with the drill's wall through the poles or a
+ten-millionth of the radius beside them, and a ball drilled with it a
+ten-thousandth to a hundredth of the radius off them either side, cut at
+the closed forms. Still refused ("a section through a sphere chart's pole
+is not resolved"): a section whose image runs past the pole row by more
+than its tolerance, or passes within it of a pole between its ends further
+than the chord from it, a band as wide as the fit's error. "A branch
+passing beside a chart's pole fits nothing yet" stands where both fits
+miss. Only spheres' poles are measured; a patch's collapsed side takes the
+same path untested.
 
 **Nearly coplanar faces cross beside a curve only where the rest resolves.**
 Two planar faces leaning a hair apart cross at a small angle, and a strip

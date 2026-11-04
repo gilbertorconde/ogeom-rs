@@ -268,6 +268,29 @@ pub fn approximate_branch(
             (chosen, fit_error) = (held, again);
         }
     }
+    // Beside a pole of either chart the joint fit can miss by the chart's
+    // swing: there the branch is fitted in space alone, where it is smooth,
+    // and each image read off that curve ([`projected`]). Measured the same
+    // way, the closer stands. A miss within a hundred times the tolerance
+    // is one a caller takes whole (`fitted_in_pieces` in `section.rs`),
+    // and stands.
+    if fit_error > tolerance * 1e2
+        && (!crate::march::chart_poles(a, tol).is_empty()
+            || !crate::march::chart_poles(b, tol).is_empty())
+        && let Some(projected) = projected(
+            (a, b),
+            &points,
+            (&unwrapped_a, &unwrapped_b),
+            branch.closed(),
+            tolerance,
+            tol,
+        )
+    {
+        let again = measured(&projected.0).max(projected.1);
+        if again < fit_error {
+            (chosen, fit_error) = (projected.0, again);
+        }
+    }
     // An image fitted up to a pole of its chart can overshoot the pole's
     // bound between its samples, where the chart has no point. Its control
     // points are held to the bound, so the image is (a spline lies in its
@@ -289,6 +312,192 @@ pub fn approximate_branch(
         on_b,
         closed: branch.closed(),
     })
+}
+
+/// The branch through `points` fitted in space alone, at their chord
+/// lengths, and each surface's image fitted to the curve's own points
+/// inverted on it, at the curve's parameters, with how far either image
+/// lifted stands from the curve where its fit read it; `None` where
+/// either fit or an inversion fails.
+///
+/// Beside a pole of a chart the section turns gently in space while its
+/// image swings: half a turn of longitude within a few times its distance
+/// from the pole, which may be a few samples of the trace or none. Fitted
+/// together, the image's swing holds the curve's knots and the curve the
+/// image's, and the fit can stall far above its tolerance. Fitted apart,
+/// the curve needs only the trace, and the image is read where the fit
+/// asks for it ([`ogeom_geom::fit::fit_curve_2d_sampled`]), between the
+/// samples as well as at them, each point inverted from the nearest one
+/// already read and unfolded against it. The image is held, in its chart,
+/// to `tolerance` over the surface's speed along the trace, and lifted it
+/// is measured against the curve at every parameter the fit read. It is
+/// fitted open, its ends pinned where the curve's are inverted: a loop's
+/// image returns to its start or, winding round the chart, a period on.
+fn projected(
+    (a, b): (&SurfaceGeometry, &SurfaceGeometry),
+    points: &[ogeom_math::Point],
+    (image_a, image_b): (&[Point2], &[Point2]),
+    closed: bool,
+    tolerance: f64,
+    tol: Tolerances,
+) -> Option<(Joint, f64)> {
+    use ogeom_geom::{Curve2d as _, Curve3d as _};
+    // Halving the step past the mantissa's bits leaves it where it started.
+    const HALVINGS: u32 = f64::MANTISSA_DIGITS;
+    // As `lift_error` climbs its peaks.
+    const PEAKS: usize = 16;
+    const CLIMB: usize = 16;
+    let mut along = Vec::with_capacity(points.len());
+    let mut length = 0.0;
+    along.push(length);
+    for pair in points.windows(2) {
+        let step = pair[0].distance(pair[1]);
+        if step <= 0.0 {
+            return None;
+        }
+        length += step;
+        along.push(length);
+    }
+    let space = if closed {
+        ogeom_geom::fit::fit_points_at_closed(&along, points, 3, tolerance, tol)
+    } else {
+        ogeom_geom::fit::fit_points_at(&along, points, 3, tolerance, tol)
+    }
+    .ok()?;
+    let image = |surface: &SurfaceGeometry, seeds: &[Point2]| -> Option<(BSpline2d, f64)> {
+        let ((ua, ub), (va, vb)) = surface.domain();
+        let periods = (
+            (surface.is_periodic_u() || surface.is_closed_u(tol)).then_some(ub - ua),
+            (surface.is_periodic_v() || surface.is_closed_v(tol)).then_some(vb - va),
+        );
+        let fold = |near: f64, x: f64, period: Option<f64>| {
+            period.map_or(x, |period| x - ((x - near) / period).round() * period)
+        };
+        let speed = seeds
+            .iter()
+            .filter_map(|uv| surface.d1_at(uv.x, uv.y, tol).ok())
+            .map(|(du, dv)| du.magnitude() + dv.magnitude())
+            .fold(0.0_f64, f64::max);
+        if !(speed.is_finite() && speed > 0.0) {
+            return None;
+        }
+        // Every image read, by parameter: the parameters run from zero, so
+        // their bits sort as they do.
+        let mut read: std::collections::BTreeMap<u64, Point2> = along
+            .iter()
+            .map(|t| t.to_bits())
+            .zip(seeds.iter().copied())
+            .collect();
+        // A foot farther off than the curve may stand from the surface is
+        // Newton's step thrown past where the chart turns (onto a pole's
+        // bound, its longitude stuck): the point is reached in halves from
+        // the one read before it instead.
+        let limit = tolerance.max(space.error);
+        let foot_from = |t: f64, near: (f64, Point2)| -> OgeomResult<Point2> {
+            let mut from = near;
+            let mut to = t;
+            let mut halvings = 0;
+            loop {
+                let p = space.curve.point_at(to, tol)?;
+                let foot =
+                    ogeom_geom::project_on_surface_from(surface, p, (from.1.x, from.1.y), tol)?;
+                if foot.distance <= limit {
+                    let uv = Point2::new(
+                        fold(from.1.x, foot.parameters.0, periods.0),
+                        fold(from.1.y, foot.parameters.1, periods.1),
+                    );
+                    if to == t {
+                        return Ok(uv);
+                    }
+                    from = (to, uv);
+                    to = t;
+                    continue;
+                }
+                halvings += 1;
+                if halvings > HALVINGS {
+                    ogeom_bail!(NotDone, "a point of the curve inverts on no foot near it");
+                }
+                to = f64::midpoint(from.0, to);
+            }
+        };
+        let invert = |t: f64| -> OgeomResult<Point2> {
+            let key = t.to_bits();
+            let before = read
+                .range(..key)
+                .next_back()
+                .map(|(s, uv)| (f64::from_bits(*s), *uv));
+            let after = read
+                .range(key..)
+                .next()
+                .map(|(s, uv)| (f64::from_bits(*s), *uv));
+            let near = match (before, after) {
+                (Some(before), Some(after)) => {
+                    if t - before.0 < after.0 - t {
+                        before
+                    } else {
+                        after
+                    }
+                }
+                (Some(near), None) | (None, Some(near)) => near,
+                (None, None) => ogeom_bail!(Construction, "no image read to start from"),
+            };
+            let uv = foot_from(t, near)?;
+            read.entry(key).or_insert(uv);
+            Ok(uv)
+        };
+        let fitted =
+            ogeom_geom::fit::fit_curve_2d_sampled(invert, &along, false, 3, tolerance / speed, tol)
+                .ok()?;
+        // The lifted image against the curve at every parameter read and
+        // midway between each two, and the widest of those misses climbed
+        // to the top of its peak between its neighbours.
+        let gap = |t: f64| -> Option<f64> {
+            let uv = fitted.curve.point_at(t, tol).ok()?;
+            let lifted = surface.point_at(uv.x, uv.y, tol).ok()?;
+            Some(lifted.distance(space.curve.point_at(t, tol).ok()?))
+        };
+        let reads: Vec<f64> = read.keys().map(|&s| f64::from_bits(s)).collect();
+        let mut stations = Vec::with_capacity(2 * reads.len());
+        for pair in reads.windows(2) {
+            stations.push(pair[0]);
+            stations.push(f64::midpoint(pair[0], pair[1]));
+        }
+        stations.extend(reads.last());
+        let misses = stations
+            .iter()
+            .map(|&t| gap(t))
+            .collect::<Option<Vec<f64>>>()?;
+        let mut off = misses.iter().fold(0.0_f64, |m, &x| m.max(x));
+        let last = stations.len() - 1;
+        let mut peaks: Vec<usize> = (0..=last)
+            .filter(|&k| {
+                (k == 0 || misses[k] >= misses[k - 1]) && (k == last || misses[k] >= misses[k + 1])
+            })
+            .collect();
+        peaks.sort_by(|&i, &j| misses[j].total_cmp(&misses[i]));
+        let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+        for k in peaks.into_iter().take(PEAKS) {
+            let (mut left, mut right) =
+                (stations[k.saturating_sub(1)], stations[(k + 1).min(last)]);
+            for _ in 0..CLIMB {
+                let (c, d) = (
+                    right - (right - left) * ratio,
+                    left + (right - left) * ratio,
+                );
+                let (rc, rd) = (gap(c)?, gap(d)?);
+                off = off.max(rc).max(rd);
+                if rc > rd {
+                    right = d;
+                } else {
+                    left = c;
+                }
+            }
+        }
+        Some((fitted.curve, off))
+    };
+    let (on_a, off_a) = image(a, image_a)?;
+    let (on_b, off_b) = image(b, image_b)?;
+    Some(((space, on_a, on_b), off_a.max(off_b)))
 }
 
 /// `image` with each control point held inside the bound of every pole of
@@ -503,7 +712,12 @@ fn lift_error(
     const PEAKS: usize = 16;
     const CLIMB: usize = 16;
     let (lo, hi) = curve.knots().domain();
-    let spans = curve.knots().distinct().len().saturating_sub(1).max(1);
+    let spans = [curve.knots(), on_a.knots(), on_b.knots()]
+        .into_iter()
+        .map(|knots| knots.distinct().len().saturating_sub(1))
+        .max()
+        .unwrap_or(0)
+        .max(1);
     let stations = (4 * spans).max(200);
     #[allow(clippy::cast_precision_loss)]
     let step = (hi - lo) / stations as f64;
@@ -1380,6 +1594,58 @@ mod tests {
                         lifted.distance(p) <= budget,
                         "the image stands off the curve"
                     );
+                }
+            }
+        }
+    }
+
+    /// A drum whose wall passes a hair beside a ball's poles, farther than
+    /// the trace's chord, meets the ball in two loops whose images on the
+    /// ball swing half a turn of longitude within a few times that
+    /// distance. Each fits within its tolerance, and the curve and both
+    /// images lifted lie on both surfaces within the stated error, read
+    /// densely. Fitted jointly alone, the loops missed by up to 0.35.
+    #[test]
+    fn loops_beside_a_balls_poles_fit_within_their_tolerance() {
+        let ball = sphere(10.0);
+        for (r, off) in [(1.0, 1e-3), (1.0, 1e-4), (2.5, 1e-3), (4.0, 1e-2)] {
+            let wall = r * (1.0 + off);
+            let frame =
+                Frame::new(Point::new(0.0, -wall, -15.0), Direction::Z, Direction::Y, T).unwrap();
+            let drum: SurfaceGeometry =
+                CylinderSurface::new(Cylinder::new(frame, r, T).unwrap(), (0.0, 30.0))
+                    .unwrap()
+                    .into();
+            let marching = Marching::default();
+            let traced = branches(&ball, &drum, marching, T).unwrap();
+            assert_eq!(traced.len(), 2, "drum {r} {off} off: two loops");
+            for branch in &traced {
+                let fitted = approximate_branch(&ball, &drum, branch, 1e-6, T).unwrap();
+                assert!(
+                    fitted.fit_error <= 2e-5,
+                    "drum {r} {off} off: fit misses by {}",
+                    fitted.fit_error
+                );
+                let (lo, hi) = fitted.curve.knots().domain();
+                for k in 0..=20_000 {
+                    let t = lo + (hi - lo) * f64::from(k) / 20_000.0;
+                    let p = fitted.curve.point_at(t, T).unwrap();
+                    let on_ball = (p - Point::ORIGIN).magnitude() - 10.0;
+                    let on_drum = p.x.hypot(p.y + wall) - r;
+                    assert!(
+                        on_ball.abs().max(on_drum.abs()) <= marching.chord + fitted.fit_error,
+                        "drum {r} {off} off: {p:?} off the surfaces"
+                    );
+                    for (surface, image) in [(&ball, &fitted.on_a), (&drum, &fitted.on_b)] {
+                        let uv = image.point_at(t, T).unwrap();
+                        let lifted = surface.point_at(uv.x, uv.y, T).unwrap();
+                        assert!(
+                            lifted.distance(p) <= fitted.fit_error,
+                            "drum {r} {off} off: an image {} off the curve, stating {}",
+                            lifted.distance(p),
+                            fitted.fit_error
+                        );
+                    }
                 }
             }
         }

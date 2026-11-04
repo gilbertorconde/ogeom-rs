@@ -1,5 +1,6 @@
 //! Drills along a ball's axis whose wall passes through both poles of its
-//! chart, or a hair beside them, and drills through the pole of a dome: a
+//! chart, a hair beside them, or up to a hundredth of the drill's radius
+//! off them, and drills through the pole of a dome: a
 //! ball cut below its pole, alone or standing on a drum. A half ball
 //! charted about a tilted axis stands on a drum or is drilled. A placed
 //! half ball or ball is drilled through its pole. A ball cut to a slab
@@ -1377,4 +1378,36 @@ fn a_ball_slab_drilled_through_its_own_charts_poles() {
         slab_drilled(half, r, cx, cy, false)
             .unwrap_or_else(|e| panic!("|x| < {half}, drill {r} at ({cx}, {cy}): {e}"));
     }
+}
+
+/// Left on the ball's own chart, a drill whose wall stands a thousandth of
+/// its radius off both poles cuts the ball at the closed forms.
+#[test]
+fn a_ball_drilled_beside_its_own_charts_poles() {
+    let wall = 1.0 + 1e-3;
+    ogeom_bool::work::unturned(|| drilled(Vector::new(0.0, -wall, 0.0), 1.0)).unwrap();
+}
+
+/// Left on the ball's own chart, a drill whose wall passes a hundredth, a
+/// thousandth or a ten-thousandth of its radius beside both poles, farther
+/// than the trace's chord, meets the ball in loops whose images swing half
+/// a turn of longitude beside each pole: the cut and common add up to the
+/// ball and the common is the drilled volume, as on the turned chart.
+#[test]
+#[ignore = "heavy"]
+fn drills_beside_both_poles_of_the_balls_own_chart() {
+    let r = 2.664_527_471_227_642;
+    let mut failures = Vec::new();
+    for (dx, dy) in [(0.0, -1.0), (1.0, 0.0), (0.6, -0.8)] {
+        for radius in [r, 1.0, 4.0] {
+            for off in [1e-2, 1e-3, 1e-4, -1e-3] {
+                let wall = radius * (1.0 + off);
+                let offset = Vector::new(dx * wall, dy * wall, 0.0);
+                if let Err(e) = ogeom_bool::work::unturned(|| drilled(offset, radius)) {
+                    failures.push(format!("({dx}, {dy}) r {radius} at {wall}: {e}"));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

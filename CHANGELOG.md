@@ -46,6 +46,31 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A marched section passing beside a chart's pole is fitted within its
+  tolerance.**
+  - Beside a sphere's pole the section turns gently in space while its
+    image on the sphere swings half a turn of longitude within a few times
+    its distance from the pole, often between two samples of the trace.
+    The joint fit of curve and images missed there by up to 2.7, and the
+    boolean refused the section as passing within that tolerance of the
+    pole, or built faces from it that came out wrong.
+  - Where the joint fit misses its tolerance a hundredfold, more than a
+    caller takes whole, and either surface's chart has a pole, the branch
+    is now fitted in space alone and each image fitted to the curve's
+    points inverted on its surface, read between the trace's samples
+    where the image moves. Each image lifted is measured against the
+    curve, and the closer of the two fits stands. Those loops now fit
+    within 2e-5, the stated error bounding a dense reading of both
+    images.
+  - Left on the ball's own chart, 36 drills whose walls stand a
+    ten-thousandth to a hundredth of their radius off both poles, or a
+    thousandth inside them, cut at the closed forms: cut and common add up
+    to the ball within 1e-6 and the common is the drilled volume. Before,
+    10 did; 23 refused, and 3 came out wrong, up to 1.5e-5 of the ball's
+    volume. The turned chart, which booleans take first, already gave
+    these cases.
+  - `fit::fit_points_at_closed` fits a loop at fixed parameters.
+
 - **A fused face whose loop crosses its seam a hair from the loop's own
   start closes on the seam column in its chart.**
   - A closed marched section is split at its own start to keep every
