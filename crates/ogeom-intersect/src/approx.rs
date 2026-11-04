@@ -268,6 +268,18 @@ pub fn approximate_branch(
             (chosen, fit_error) = (held, again);
         }
     }
+    // An image fitted up to a pole of its chart can overshoot the pole's
+    // bound between its samples, where the chart has no point. Its control
+    // points are held to the bound, so the image is (a spline lies in its
+    // control points' hull), and the fit measured again as it then stands.
+    if let (Some(on_a), Some(on_b)) = (
+        held_off_poles(a, &chosen.1, tol),
+        held_off_poles(b, &chosen.2, tol),
+    ) && (on_a != chosen.1 || on_b != chosen.2)
+    {
+        chosen = (chosen.0, on_a, on_b);
+        fit_error = measured(&chosen);
+    }
     let (space, on_a, on_b) = chosen;
     Ok(IntersectionCurve {
         fit_error,
@@ -277,6 +289,55 @@ pub fn approximate_branch(
         on_b,
         closed: branch.closed(),
     })
+}
+
+/// `image` with each control point held inside the bound of every pole of
+/// `surface`'s chart (see [`crate::march::chart_poles`]) it stands past;
+/// `None` where a held control point is no control point.
+fn held_off_poles(
+    surface: &SurfaceGeometry,
+    image: &BSpline2d,
+    tol: Tolerances,
+) -> Option<BSpline2d> {
+    let poles = crate::march::chart_poles(surface, tol);
+    if poles.is_empty() {
+        return Some(image.clone());
+    }
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let mut changed = false;
+    let mut control = Vec::with_capacity(image.control_points().len());
+    for held in image.control_points() {
+        let mut point = held.point();
+        for &(k, bound, _) in &poles {
+            let (coordinate, lo, hi) = if k == 0 {
+                (&mut point.x, ua, ub)
+            } else {
+                (&mut point.y, va, vb)
+            };
+            let past = if (bound - hi).abs() <= (bound - lo).abs() {
+                *coordinate > bound
+            } else {
+                *coordinate < bound
+            };
+            if past {
+                *coordinate = bound;
+                changed = true;
+            }
+        }
+        control.push(ogeom_math::Weighted::new(point, held.weight, tol).ok()?);
+    }
+    if !changed {
+        return Some(image.clone());
+    }
+    if image.is_rational() {
+        BSpline2d::rational(image.knots().clone(), control).ok()
+    } else {
+        let points = control
+            .into_iter()
+            .map(ogeom_math::Weighted::point)
+            .collect();
+        BSpline2d::new(image.knots().clone(), points, tol).ok()
+    }
 }
 
 /// How far a joint fit stands from the section it follows, in
@@ -1259,5 +1320,68 @@ mod tests {
             stopped: crate::march::Stopped::Stalled,
         };
         assert!(approximate_branch(&a, &b, &empty, 1e-4, T).is_err());
+    }
+
+    /// A drum whose wall holds a ball's axis meets the ball in two loops,
+    /// each through a pole of its chart, where the chart's longitude turns
+    /// half a turn and the curve does not. Each loop is cut at its pole and
+    /// fitted open, pole to pole, its image on the ball ending on the pole
+    /// row each side and inside the chart throughout; the curve and both
+    /// images lifted lie on both surfaces to the stated error. Fitted
+    /// whole, a loop closing on its pole joined the two ends half a turn
+    /// apart, and its fit ran centimetres off both surfaces.
+    #[test]
+    fn loops_through_a_balls_poles_are_cut_there() {
+        use core::f64::consts::FRAC_PI_2;
+        let ball = sphere(10.0);
+        for (cx, cy, r) in [(0.0, 1.0, 1.0), (0.2, 0.0, 0.2), (0.0, -0.3, 0.3)] {
+            let frame =
+                Frame::new(Point::new(cx, cy, -15.0), Direction::Z, Direction::Y, T).unwrap();
+            let drum: SurfaceGeometry =
+                CylinderSurface::new(Cylinder::new(frame, r, T).unwrap(), (0.0, 30.0))
+                    .unwrap()
+                    .into();
+            let traced = branches(&ball, &drum, options(), T).unwrap();
+            assert_eq!(traced.len(), 2, "drum {r} at ({cx}, {cy}): two loops");
+            for branch in &traced {
+                assert!(
+                    !branch.closed(),
+                    "drum {r} at ({cx}, {cy}): cut at its pole"
+                );
+                let fitted = approximate_branch(&ball, &drum, branch, 1e-6, T).unwrap();
+                let (lo, hi) = fitted.curve.knots().domain();
+                for t in [lo, hi] {
+                    let p = fitted.curve.point_at(t, T).unwrap();
+                    assert!(
+                        (p.z.abs() - 10.0).abs() <= 1e-9,
+                        "an end {p:?} off the pole"
+                    );
+                    let uv = fitted.on_a.point_at(t, T).unwrap();
+                    assert!(
+                        (uv.y.abs() - FRAC_PI_2).abs() <= 1e-12,
+                        "an image end off the row"
+                    );
+                }
+                let budget = options().chord + fitted.fit_error;
+                assert!(budget < 1e-4, "drum {r} at ({cx}, {cy}): stated {budget}");
+                for k in 0..=2000 {
+                    let t = lo + (hi - lo) * f64::from(k) / 2000.0;
+                    let p = fitted.curve.point_at(t, T).unwrap();
+                    let on_ball = (p - Point::ORIGIN).magnitude() - 10.0;
+                    let on_drum = (p.x - cx).hypot(p.y - cy) - r;
+                    assert!(
+                        on_ball.abs().max(on_drum.abs()) <= budget,
+                        "drum {r} at ({cx}, {cy}): {p:?} off the surfaces"
+                    );
+                    let uv = fitted.on_a.point_at(t, T).unwrap();
+                    assert!(uv.y.abs() <= FRAC_PI_2, "the image leaves the chart");
+                    let lifted = ball.point_at(uv.x, uv.y, T).unwrap();
+                    assert!(
+                        lifted.distance(p) <= budget,
+                        "the image stands off the curve"
+                    );
+                }
+            }
+        }
     }
 }

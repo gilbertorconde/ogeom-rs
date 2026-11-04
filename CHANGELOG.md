@@ -44,6 +44,32 @@ bump may break the API and a patch bump may not.
   `source_vertex` names one only where there is exactly one;
   `source_vertices` gives them all. (#662)
 
+### Fixed
+
+- **A boolean takes a section through a sphere's pole on a face left on its
+  own chart, rather than refusing it.** A marched section through a pole
+  of a chart (a drill whose wall holds a ball's axis) was walked across the
+  pole, where the longitude turns half a turn and the curve does not, and
+  fitted as one loop joining the two ends half a turn apart: its fit ran
+  up to 0.12 off both surfaces and its image past the pole row, and the
+  boolean refused it ("a section through a sphere chart's pole is not
+  resolved"). The faces the ball rechart cannot restate kept that refusal.
+  The marcher now cuts a branch where it passes through a pole of either
+  chart lying on the other surface within its chord: each piece ends on the
+  pole, its image there on the line of the chart the curve leaves along,
+  and the face's pole row is cut where the pieces end. Samples within the
+  chord of the pole, whose images are their noise over their distance from
+  it, are left to the pole, and an image's control points are held inside
+  a pole's bound it overshoots. Left on their own charts, a ball slab
+  `|x| < 0.8` or `0.5` drilled through its poles (14 drills, each cut,
+  common and drill less the part) and a ball drilled through or a
+  ten-millionth of the radius beside both poles (36 drills) answer at the
+  closed forms (the slab drills to 1.1e-12 of the volume); all refused
+  before. A face measured
+  on its mesh against an edge closed in space and open in its parameter
+  reads the edge's arc past its end from its start. Stress and the
+  real-world imports are unchanged.
+
 ## [0.16.0] - 2026-11-04
 
 A minor release: `GeometricTolerance::datums` holds `DatumReference`s
