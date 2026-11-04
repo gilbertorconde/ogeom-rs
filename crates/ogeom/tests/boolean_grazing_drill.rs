@@ -753,6 +753,45 @@ fn drills_a_hair_off_a_block_s_top_cut_as_their_closed_form() {
     }
 }
 
+/// The drills of [`drills_a_hair_off_a_block_s_top_cut_as_their_closed_form`]
+/// through the block, their seams on either diagonal, raised or lowered by
+/// the confusion distance and a tenth of it. Each is moved onto the block's
+/// top with its rims and caps, and the drill less the block is the
+/// touching drill's: the disc times the length outside the block, to the
+/// rounding of the exact volume integral, a thousand ulps of it. Rims left
+/// where they stand would leave the drill lowered by the confusion distance
+/// short by about the move times the length outside and the radius.
+#[test]
+fn a_drill_moved_onto_a_face_takes_its_rims_along() {
+    let r = 2.0;
+    for lift in [1e-8, -1e-8, 1e-7, -1e-7] {
+        for seam in [Vector::new(0.0, 1.0, 1.0), Vector::new(0.0, 1.0, -1.0)] {
+            let mut model = Model::new();
+            let block = make_box(&mut model, Frame::WORLD, (20.0, 14.0, 10.0), T)
+                .unwrap()
+                .shape;
+            let frame = Frame::new(
+                Point::new(-5.0, 7.0, 10.0 - r + lift),
+                Direction::X,
+                Direction::new(seam, T).unwrap(),
+                T,
+            )
+            .unwrap();
+            let tool = make_cylinder(&mut model, frame, r, 30.0, T).unwrap().shape;
+            let rest = ogeom::boolean::cut(&mut model, &tool, &block, T)
+                .unwrap()
+                .shape;
+            assert!(check(&model, &rest, T).unwrap().is_valid());
+            let got = volume(&model, &rest);
+            let want = core::f64::consts::PI * r * r * 10.0;
+            assert!(
+                (got - want).abs() <= want * f64::EPSILON * 1e3,
+                "lift {lift} seam {seam:?}: drill less the block {got} against {want}"
+            );
+        }
+    }
+}
+
 /// The drill along y with its top line in `nist_ctc_03`'s plate top where
 /// the face runs into the round of radius 11 at its edge (see
 /// [`drills_along_faces_that_run_into_rounds_cut`]), lowered by a hundredth

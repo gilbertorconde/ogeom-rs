@@ -472,25 +472,6 @@ struct GFace {
 }
 
 impl GFace {
-    /// The face moved by `shift` with its seams: a seam is the face's own
-    /// edge, which no other face holds, and it stays on the face's columns.
-    /// Its other edges stay where they stand, which their neighbours hold
-    /// them at.
-    fn move_by(&mut self, shift: ogeom_math::Vector, tol: Tolerances) -> OgeomResult<()> {
-        let moving = ogeom_math::Transform::translation(shift);
-        let far = shift.magnitude();
-        self.surface = self.surface.transformed(&moving, tol)?;
-        self.bound = self.bound.expanded(far);
-        self.filter = self.filter.expanded(far);
-        for e in &mut self.edges {
-            if e.other_side.is_some() {
-                e.curve = std::sync::Arc::new(e.curve.transformed(&moving, tol)?);
-                e.bound = e.bound.expanded(far);
-            }
-        }
-        Ok(())
-    }
-
     fn trim_lines(&self, tol: Tolerances) -> &[Vec<Point2>] {
         self.trim_lines.get_or_init(|| face_trim_lines(self, tol))
     }
@@ -5221,6 +5202,136 @@ fn drums_onto_planes(
     of_face.into_iter().map(|at| moves[at]).collect()
 }
 
+/// Each face of `solid` moved as `moves` says (see [`drums_onto_planes`]),
+/// with the edges that move along with it: an edge moves where every face
+/// holding it moves by the same shift, or holds it on a plane the shift
+/// runs along, which the edge moved by it stays on. A seam, a drum's rim
+/// shared with its own flat cap, and the vertex where they meet move with
+/// the drum, and the solid stays closed where it stood. An edge a face
+/// set aside holds, or a face that does not move and takes the edge off
+/// its surface, stays where it stands, which the moved faces then reach
+/// within the move.
+fn move_drums(
+    solid: &mut GSolid,
+    moves: &[Option<ogeom_math::Vector>],
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    if moves.iter().all(Option::is_none) {
+        return Ok(());
+    }
+    let mut holders: ogeom_core::FastMap<EdgeKey, Vec<(usize, usize)>> =
+        ogeom_core::FastMap::default();
+    for (f, face) in solid.faces.iter().enumerate() {
+        for (k, e) in face.edges.iter().enumerate() {
+            holders.entry(e.node).or_default().push((f, k));
+        }
+    }
+    let along_plane = |face: &GFace, shift: ogeom_math::Vector| match &face.surface {
+        SurfaceGeometry::Plane(plane) => {
+            plane.plane().normal().vector().dot(shift).abs() <= tol.angular() * shift.magnitude()
+        }
+        _ => false,
+    };
+    let mut shift_of: ogeom_core::FastMap<EdgeKey, ogeom_math::Vector> =
+        ogeom_core::FastMap::default();
+    for (key, held) in &holders {
+        if solid.shared.contains_key(key) {
+            continue;
+        }
+        let Some(shift) = held.iter().find_map(|&(f, _)| moves[f]) else {
+            continue;
+        };
+        if held.iter().all(|&(f, _)| match moves[f] {
+            Some(other) => other == shift,
+            None => along_plane(&solid.faces[f], shift),
+        }) {
+            shift_of.insert(*key, shift);
+        }
+    }
+    // A vertex moves where only moving edges end on it.
+    let staying: ogeom_core::FastSet<[u64; 3]> = solid
+        .faces
+        .iter()
+        .flat_map(|face| &face.edges)
+        .filter(|e| !shift_of.contains_key(&e.node))
+        .flat_map(|e| e.vertices)
+        .map(|p| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()])
+        .collect();
+    let mut curves: ogeom_core::FastMap<EdgeKey, std::sync::Arc<Curve>> =
+        ogeom_core::FastMap::default();
+    for (face, own) in solid.faces.iter_mut().zip(moves) {
+        let far = own
+            .or_else(|| {
+                face.edges
+                    .iter()
+                    .find_map(|e| shift_of.get(&e.node).copied())
+            })
+            .map_or(0.0, |shift| shift.magnitude());
+        if far == 0.0 {
+            continue;
+        }
+        if let Some(shift) = own {
+            face.surface = face
+                .surface
+                .transformed(&ogeom_math::Transform::translation(*shift), tol)?;
+        }
+        face.bound = face.bound.expanded(far);
+        face.filter = face.filter.expanded(far);
+        let chart_shift = |shift: ogeom_math::Vector| match &face.surface {
+            SurfaceGeometry::Plane(plane) => {
+                let frame = plane.plane().frame();
+                Some(ogeom_math::Transform2::translation(
+                    ogeom_math::Vector2::new(
+                        shift.dot(frame.x().vector()),
+                        shift.dot(frame.y().vector()),
+                    ),
+                ))
+            }
+            _ => None,
+        };
+        for e in &mut face.edges {
+            let moved = shift_of.get(&e.node).copied();
+            // The face's own image of an edge is its pcurve on its surface,
+            // which moves with the surface.
+            if let Some(image) = &e.image
+                && let Some(shift) = moved.or(*own)
+            {
+                e.image = Some(std::sync::Arc::new(
+                    image.transformed(&ogeom_math::Transform::translation(shift), tol)?,
+                ));
+            }
+            let Some(shift) = moved else {
+                continue;
+            };
+            let moving = ogeom_math::Transform::translation(shift);
+            e.curve = match curves.get(&e.node) {
+                Some(curve) => curve.clone(),
+                None => {
+                    let curve = std::sync::Arc::new(e.curve.transformed(&moving, tol)?);
+                    curves.insert(e.node, curve.clone());
+                    curve
+                }
+            };
+            // On a plane that stays, the edge moves in the plane's chart.
+            if own.is_none()
+                && let Some(by) = chart_shift(shift)
+            {
+                e.pcurve = e.pcurve.transformed(&by, tol)?;
+            }
+            for end in &mut e.ends {
+                end.0 = moving.apply(end.0);
+            }
+            for at in &mut e.vertices {
+                if !staying.contains(&[at.x.to_bits(), at.y.to_bits(), at.z.to_bits()]) {
+                    *at = moving.apply(*at);
+                }
+            }
+            e.bound = e.bound.expanded(far);
+        }
+    }
+    Ok(())
+}
+
 /// The sections between two gathered solids, with the paves they put on
 /// boundary edges.
 #[allow(clippy::type_complexity)]
@@ -9149,6 +9260,105 @@ struct Junction {
     onto_vertex: bool,
 }
 
+/// Paves on each seam of `solid`'s faces where a junction the seam passes
+/// through holds section ends of the face on both sides of it.
+///
+/// The ends of one junction are one point, and a strand end is carried onto
+/// a node the junction holds, or onto another end, across the face's chart.
+/// Ends either side of a seam stand near its two columns, a period apart in
+/// the chart, and no path inside the chart joins them: with no node on the
+/// seam they dangle on either side of it. Split where it passes nearest the
+/// junction, the seam puts a node on each column, and each end is carried
+/// onto the one on its side, as ends a junction holds on one side of the
+/// seam are carried onto one another.
+fn seams_through_junctions(
+    solid: &GSolid,
+    from_a: bool,
+    (sections, pieces): (&[SectionRec], &[SectionPiece]),
+    junctions: &[Junction],
+    paves: &mut ogeom_core::FastMap<EdgeKey, Vec<Pave>>,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    for (fi, face) in solid.faces.iter().enumerate() {
+        let seams: Vec<&BoundaryEdge> = face
+            .edges
+            .iter()
+            .filter(|e| e.other_side.is_some())
+            .collect();
+        if seams.is_empty() {
+            continue;
+        }
+        // Each end of the face's section pieces, in space and in the chart.
+        let mut ends: Vec<(Point, Point2)> = Vec::new();
+        for sp in pieces {
+            let section = &sections[sp.section];
+            let (face_of, pcurve, hugs) = if from_a {
+                (section.face_a, &section.pc_a, sp.hugs[0])
+            } else {
+                (section.face_b, &section.pc_b, sp.hugs[1])
+            };
+            if face_of != fi || hugs || section.closed {
+                continue;
+            }
+            for t in [sp.range.0, sp.range.1] {
+                ends.push((section.curve.point_at(t, tol)?, pcurve.point_at(t, tol)?));
+            }
+        }
+        for e in seams {
+            let Some((other, orange)) = &e.other_side else {
+                continue;
+            };
+            for junction in junctions {
+                if !e.bound.expanded(junction.reach).contains(junction.at) {
+                    continue;
+                }
+                let (gap, t) = nearest_on_edge_curve(&e.curve, e.crange, junction.at, tol)?;
+                if gap > junction.reach {
+                    continue;
+                }
+                let paved = paves.get(&e.node).is_some_and(|list| {
+                    list.iter().any(|p| {
+                        e.curve
+                            .point_at(p.t, tol)
+                            .is_ok_and(|q| junction.at.distance(q) <= junction.reach)
+                    })
+                });
+                if paved {
+                    continue;
+                }
+                let columns = [
+                    e.pcurve.point_at(rescale(t, e.crange, e.prange), tol)?,
+                    other.point_at(rescale(t, e.crange, *orange), tol)?,
+                ];
+                let mut sides = [false; 2];
+                for (at, chart) in &ends {
+                    if junction.at.distance(*at) <= junction.reach {
+                        let nearer =
+                            usize::from(chart.distance(columns[1]) < chart.distance(columns[0]));
+                        sides[nearer] = true;
+                    }
+                }
+                if sides == [true; 2] {
+                    if *DEBUG_WIRE {
+                        eprintln!(
+                            "PAVE seam e{} at {t:.6}: a junction at {:?} holds ends on both sides",
+                            e.node.index(),
+                            junction.at
+                        );
+                    }
+                    paves.entry(e.node).or_default().push(Pave {
+                        t,
+                        honesty: gap,
+                        across: None,
+                        spread: 0.0,
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Junctions whose balls overlap, merged transitively into one junction
 /// each: at the members' centroid, reaching as far as the farthest member's
 /// own reach extends from it.
@@ -10840,13 +11050,8 @@ fn general_fuse_as(
         drums_onto_planes(&ga, &gb, tol),
         drums_onto_planes(&gb, &ga, tol),
     );
-    for (gathered, onto) in [(&mut ga, onto_a), (&mut gb, onto_b)] {
-        for (face, shift) in gathered.faces.iter_mut().zip(onto) {
-            if let Some(shift) = shift {
-                face.move_by(shift, tol)?;
-            }
-        }
-    }
+    move_drums(&mut ga, &onto_a, tol)?;
+    move_drums(&mut gb, &onto_b, tol)?;
     #[cfg(feature = "test-hooks")]
     work::add(|w| w.faces_gathered += ga.faces.len() + gb.faces.len());
     let neighbours = if operands == Operands::Itself {
@@ -10855,8 +11060,17 @@ fn general_fuse_as(
         None
     };
     ogeom_core::progress::stage("boolean: intersect");
-    let (sections, section_pieces, contacts, tangents, contact_along, paves, same_a, same_b, hugs) =
-        fill(&ga, &gb, false, neighbours.as_deref(), tol)?;
+    let (
+        sections,
+        section_pieces,
+        contacts,
+        tangents,
+        contact_along,
+        mut paves,
+        same_a,
+        same_b,
+        hugs,
+    ) = fill(&ga, &gb, false, neighbours.as_deref(), tol)?;
     if operands == Operands::SheetBySheet && same_a.iter().any(|partners| !partners.is_empty()) {
         ogeom_bail!(
             NotDone,
@@ -10935,6 +11149,16 @@ fn general_fuse_as(
     // on another. Merged, the corner is one vertex whose reach covers
     // every member's span, on every face alike.
     junctions = merge_junctions(junctions);
+    for (from_a, gathered) in [(true, &ga), (false, &gb)] {
+        seams_through_junctions(
+            gathered,
+            from_a,
+            (&sections, &section_pieces),
+            &junctions,
+            &mut paves,
+            tol,
+        )?;
+    }
     if *DEBUG_WIRE {
         for j in &junctions {
             eprintln!("JUNCTION at {:?} reach {:.3e}", j.at, j.reach);
