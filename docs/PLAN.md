@@ -45,24 +45,28 @@ tolerances of 0.0014 to 0.43, and every such case refuses.
 same way. What would clear them: march such a branch round the pole on a
 chart turned for the stretch beside it, and cut the face there.
 
-**Nearly coplanar faces cross only where both are lines.** Two planar faces
-leaning a hair apart cross at a small angle, and a strip of one between the
-crossing and its edge, narrower than the confusion distance's reach divided
-by the angle, stands on the other at every point. On the attempt that
-settles such pieces from both sides (`settled` in `ogeom-bool/src/lib.rs`),
-the edges bounding the strip are carried onto the other face from where a
-plane-plane section line crosses them (`graze_contacts`), so the other face's
-matching strip is split off and the two are kept as one contact: a cube
-and a box whose wall leans 1e-5 or 1e-4 radians off the cube's, crossing a
-micron inside its top or bottom edge, fuse to the closed form within the
-weld distance over the band (`boolean_contact.rs`). The crossing is found
-only between a section line and a line edge: a strip bounded by an arc,
-or by a marched section, is not split this way, and the piece is refused
-as before ("a contact over a region of faces not recognised as coincident
-is refused") where nothing else splits it. Where the strip is wider
-the ordinary crossing splits both faces exactly, and pairing the band as
-same-domain would move the result by up to the weld distance over it, so
-the band is not paired there.
+**Nearly coplanar faces cross beside a curve only where the rest resolves.**
+Two planar faces leaning a hair apart cross at a small angle, and a strip
+of one between the crossing and its edge, narrower than the confusion
+distance's reach divided by the angle, stands on the other at every point.
+On the attempt that settles such pieces from both sides (`settled` in
+`ogeom-bool/src/lib.rs`), the edges bounding the strip are carried onto
+the other face from where a plane-plane section line crosses them
+(`graze_contacts`), so the other face's matching strip is split off and
+the two are kept as one contact. A line edge is crossed first; where that
+refuses, any edge in the face's plane is (`section_crossings`: a circle in
+closed form, any other curve where its distance across the line changes
+sign at 64 steps), and the stretch carried between two crossings is not
+welded shut as a graze. A cube, a drum's disc and an arched block's arc
+against a box whose wall leans 1e-5 to 1e-3 radians and crosses a hundredth of
+a micron to a micron inside the edge fuse to the closed form within the
+weld distance over the band (`boolean_contact.rs`). An arched block whose
+arc is the same arc as a rational B-spline still refuses 40 of 189 such
+operations, and its cut at a lean of 1e-5 misses the closed form by
+1.1e-2 with or without the step; the step is not what fails there. Where
+the strip is wider the ordinary crossing splits both faces exactly, and
+pairing the band as same-domain would move the result by up to the weld
+distance over it, so the band is not paired there.
 
 **A section whose fit misses widens its junctions as far.** A marched
 section keeps its fit's measured error as its tolerance, and the paving's

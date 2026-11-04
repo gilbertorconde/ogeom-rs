@@ -70,6 +70,32 @@ bump may break the API and a patch bump may not.
   reads the edge's arc past its end from its start. Stress and the
   real-world imports are unchanged.
 
+- **Two walls leaning a hair apart fuse where they cross beside an arc.**
+  - A drum's end disc, or an arched block's end face, against a box whose
+    wall leans 1e-5 to 1e-3 radians off it and crosses it a hundredth of a
+    micron to half a micron inside the arc, was refused by the fuse ("a
+    contact over a region of faces not recognised as coincident is
+    refused"). The strip between the crossing and the arc stands within
+    rounding of the leaning wall, but the crossing of a section line was
+    found only on a line edge, so the wall's matching strip was never
+    split off.
+  - Where the retries carrying line edges refuse too, they run once more
+    with a section line of two planes also ending where it crosses an
+    edge of any curve in the face's plane: a circle in closed form, any
+    other curve where its distance across the line changes sign. The arc
+    from one crossing to the other is carried onto the wall as before.
+    Two crossings of the same face whose edge between them is so carried
+    are no longer read as one graze and welded into one junction. A result
+    of this last retry is kept only where nothing in it states a tolerance
+    past the weld distance.
+  - Over drums crossed away from and across their rim's vertex, arched
+    blocks on an arc and on the same arc as a rational B-spline, seven
+    leans and nine depths (756 operations), every one of the 42 refusals
+    on a circle edge now answers, valid and within the weld distance over
+    the band of the closed form (at most 4.4e-7), and 4 of 44 on the
+    B-spline (at most 6.6e-6, a third of that bound). Every operation that
+    answered before answers the same.
+
 ## [0.16.0] - 2026-11-04
 
 A minor release: `GeometricTolerance::datums` holds `DatumReference`s

@@ -2053,3 +2053,172 @@ fn boxes_whose_walls_lean_a_hair_apart_cut_and_fuse_to_their_closed_forms() {
         }
     }
 }
+
+/// How much of a disc of radius `r` lies past a chord `d` from its centre,
+/// weighted by the distance past the chord: `∫ max(0, u - d) dA`.
+fn past_chord(r: f64, d: f64) -> f64 {
+    let half = (r * r - d * d).sqrt();
+    let segment = r * r * (d / r).acos() - d * half;
+    2.0 / 3.0 * half.powi(3) - d * segment
+}
+
+/// A drum's end disc and an arched block's end face, each bounded by a
+/// circular edge (on one arch, by the same arc as an exact rational
+/// B-spline), against a box whose wall leans a hundred-thousandth to a
+/// thousandth of a radian off the face, the two crossing a tenth of a
+/// micron to a third of a micron inside the arc. The strip between the
+/// crossing and the arc stands within rounding of the leaning wall over
+/// its whole width, and the arc from one crossing to the other lies on
+/// that wall: carried there it splits the wall's matching strip off, so
+/// the two are one contact, as where a line edge bounds the strip. On one
+/// drum the strip takes in its rim's vertex. Each volume is the closed
+/// form's to within the weld distance over the band where the two walls
+/// stand within it of each other.
+#[test]
+fn walls_leaning_a_hair_apart_across_an_arc_cut_and_fuse_to_their_closed_forms() {
+    use ogeom::math::Vector;
+    let weld = T.confusion() * 1e2;
+    let pi = core::f64::consts::PI;
+    let (r, length) = (5.0_f64, 10.0_f64);
+    let drum = |model: &mut Model| {
+        ogeom::algo::make_cylinder(model, Frame::WORLD, r, length, T)
+            .unwrap()
+            .shape
+    };
+    // A square ten on a side under a half disc on its top edge, run ten up.
+    let arch = |model: &mut Model, spline: bool| {
+        let corners = [
+            Point::new(0.0, 10.0, 0.0),
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(10.0, 0.0, 0.0),
+            Point::new(10.0, 10.0, 0.0),
+        ];
+        let wire = ogeom::algo::make_polygon(model, &corners, false, T)
+            .unwrap()
+            .shape;
+        let mut edges = model.children_of(&wire).unwrap();
+        let first = model.children_of(&edges[0]).unwrap()[0].clone();
+        let last = model.children_of(&edges[2]).unwrap()[1].clone();
+        let frame = Frame::new(Point::new(5.0, 10.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+        let circle = ogeom::math::Circle::new(frame, r, T).unwrap();
+        let curve = Curve::Circle(ogeom::geom::CircleCurve::new(circle));
+        let (curve, range) = if spline {
+            (
+                Curve::BSpline(curve.to_bspline_over((0.0, pi), T).unwrap()),
+                (0.0, 1.0),
+            )
+        } else {
+            (curve, (0.0, pi))
+        };
+        let arc = ogeom::algo::make_edge_between(model, curve, range, &last, &first, T)
+            .unwrap()
+            .shape;
+        edges.push(arc);
+        let flat =
+            ogeom::geom::PlaneSurface::over(ogeom::math::Plane::XY, (-1.0, 11.0), (-1.0, 16.0))
+                .unwrap();
+        let face = ogeom::algo::make_face_with_pcurves(model, flat.into(), &[edges], T)
+            .unwrap()
+            .shape;
+        ogeom::algo::make_prism(model, &face, Vector::new(0.0, 0.0, length), T)
+            .unwrap()
+            .shape
+    };
+    let arc_arch = |model: &mut Model| arch(model, false);
+    let spline_arch = |model: &mut Model| arch(model, true);
+    let disc = pi * r * r;
+    let arched = 100.0 + disc / 2.0;
+    // Each shape: the solid, the arc's centre on its end face, the way
+    // across the arc the crossing runs, how far the box reaches below the
+    // centre that way, and the end face's area.
+    type Solid<'s> = &'s dyn Fn(&mut Model) -> Shape;
+    let (up_x, up_y) = (Vector::new(1.0, 0.0, 0.0), Vector::new(0.0, 1.0, 0.0));
+    let (on_drum, on_arch) = (Point::new(0.0, 0.0, length), Point::new(5.0, 10.0, length));
+    let drum_across = ("drum", &drum as Solid<'_>, on_drum, up_y, 7.0, disc);
+    let drum_vertex = (
+        "drum at its vertex",
+        &drum as Solid<'_>,
+        on_drum,
+        up_x,
+        7.0,
+        disc,
+    );
+    let arc = ("arch", &arc_arch as Solid<'_>, on_arch, up_y, 12.0, arched);
+    let spline = (
+        "arch on a spline",
+        &spline_arch as Solid<'_>,
+        on_arch,
+        up_y,
+        12.0,
+        arched,
+    );
+    // Each case: the shape, the lean, and how far inside the arc the
+    // crossing runs.
+    let cases = [
+        (drum_across, 1e-5_f64, 1e-4),
+        (drum_across, 1e-4, 1e-4),
+        (drum_across, 1e-3, 3e-4),
+        (drum_vertex, 1e-5, 1e-4),
+        (drum_vertex, 1e-4, 1e-4),
+        (arc, 1e-5, 1e-4),
+        (arc, 1e-4, 1e-5),
+        (arc, 1e-4, 1e-4),
+        (spline, 1e-4, 3e-5),
+        (spline, 1e-3, 1e-5),
+    ];
+    let normal = Vector::new(0.0, 0.0, 1.0);
+    for ((name, solid, centre, toward, below, area), lean, depth) in cases {
+        let chord = r - depth;
+        let make = |model: &mut Model| {
+            let a = solid(model);
+            let across = normal * lean.cos() - toward * lean.sin();
+            let up = toward * lean.cos() + normal * lean.sin();
+            let side = up.cross(across);
+            let at = centre + toward * chord - side * 7.0;
+            let origin = at - across * 5.0 - up * (chord + below);
+            let frame = Frame::new(
+                origin,
+                Direction::new(up, T).unwrap(),
+                Direction::new(across, T).unwrap(),
+                T,
+            )
+            .unwrap();
+            let b = ogeom::algo::make_box(model, frame, (5.0, 14.0, below + r + 2.0), T)
+                .unwrap()
+                .shape;
+            (a, b)
+        };
+        // The face's prism between the box's two walls, less the wedge of
+        // the box beyond the face over the strip, where the wall leans out.
+        let common = area * 5.0 / lean.cos() - lean.tan() * past_chord(r, chord);
+        let band = 2.0 * r * 2.0 * weld / lean;
+        for (op, expected) in [
+            (
+                "fuse",
+                area * length + 5.0 * 14.0 * (below + r + 2.0) - common,
+            ),
+            ("common", common),
+            ("cut", area * length - common),
+        ] {
+            let mut model = Model::new();
+            let (a, b) = make(&mut model);
+            let got = match op {
+                "fuse" => ogeom::boolean::fuse(&mut model, &a, &b, T),
+                "common" => ogeom::boolean::common(&mut model, &a, &b, T),
+                _ => ogeom::boolean::cut(&mut model, &a, &b, T),
+            }
+            .unwrap_or_else(|e| panic!("{name} {lean} {depth} {op}: {e}"))
+            .shape;
+            let m = measured(&model, &got);
+            assert!(
+                m.valid,
+                "{name} {lean} {depth} {op}: check reports the result invalid"
+            );
+            assert!(
+                (m.volume - expected).abs() <= weld * band,
+                "{name} {lean} {depth} {op}: volume {} against {expected}",
+                m.volume
+            );
+        }
+    }
+}
