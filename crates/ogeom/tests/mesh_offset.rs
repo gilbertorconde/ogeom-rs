@@ -197,6 +197,16 @@ fn a_cube_offset_inward_past_its_cells_folds_and_is_repaired_to_the_smaller_cube
     let (e, report) = cube_offset_is_the_cube_with_sharp_edges(10, 0.1, -0.25);
     assert!(report.merged > 0);
     assert!(e.vertex_count() > e.to_triangulation().positions.len());
+    // Each vertex merged away is among the source vertices of the one it
+    // merged into, so every source vertex is behind exactly one vertex.
+    let mut behind = vec![0; e.source_count()];
+    let left = (0..u32::try_from(e.vertex_count()).unwrap()).filter(|&v| e.position(v).is_some());
+    for v in left {
+        for &s in e.source_vertices(v) {
+            behind[s as usize] += 1;
+        }
+    }
+    assert!(behind.iter().all(|&n| n == 1), "{behind:?}");
 }
 
 #[test]

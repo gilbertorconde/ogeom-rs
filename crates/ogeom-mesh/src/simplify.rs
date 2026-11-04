@@ -133,6 +133,11 @@ pub struct Simplified {
     ///
     /// [`Simplified::error`] is then [`Deviation::furthest`]'s distance.
     pub deviation: Option<Deviation>,
+    /// For each vertex of the source, the vertex of [`Simplified::mesh`]
+    /// it was merged into or kept as; `None` for one no triangle of the
+    /// result uses, as a vertex no triangle of the source used. The source
+    /// vertices of one result vertex are those its collapses merged.
+    pub result_vertex: Vec<Option<u32>>,
 }
 
 /// Decimate a mesh.
@@ -214,12 +219,14 @@ pub fn simplify(mesh: &Triangulation, target: Target, tol: Tolerances) -> OgeomR
         // when no remaining one is.
         Target::Error(_) | Target::Verified { .. } => true,
     };
+    let (mesh, renumbered) = state.harvest();
     Ok(Simplified {
-        mesh: state.harvest().0,
+        mesh,
         error: worst.max(0.0).sqrt(),
         collapsed,
         target_met,
         deviation: None,
+        result_vertex: state.result_vertex(&renumbered),
     })
 }
 
@@ -573,6 +580,25 @@ impl State {
             v = self.merged_into[v as usize];
         }
         v
+    }
+
+    /// For each source vertex, the number in the harvested mesh of the
+    /// vertex it ended up as, given each survivor's number there.
+    fn result_vertex(&self, renumbered: &FastMap<u32, u32>) -> Vec<Option<u32>> {
+        let mut root = self.merged_into.clone();
+        for v in 0..root.len() {
+            let mut r = root[v];
+            while root[r as usize] != r {
+                r = root[r as usize];
+            }
+            let mut w = v;
+            while root[w] != r {
+                let up = root[w] as usize;
+                root[w] = r;
+                w = up;
+            }
+        }
+        root.iter().map(|r| renumbered.get(r).copied()).collect()
     }
 
     /// Whether an edge may collapse at all.

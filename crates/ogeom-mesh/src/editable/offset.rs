@@ -55,9 +55,10 @@
 //! included, or is a *sliver*, its height within the rounding of its
 //! corners' coordinates; a face that was a sliver before is passed over.
 //! Each folded face, lowest-numbered first, has an edge collapsed: one of
-//! its corners merged into another, which keeps its position. The corner
-//! merged is the one held in the fewest directions, so a vertex of a flat
-//! stretch merges into one on an edge and that into a corner; ties go to
+//! its corners merged into another, which keeps its position and takes
+//! in the merged one's source vertices. The corner merged is the one held
+//! in the fewest directions, so a vertex of a flat stretch merges into one
+//! on an edge and that into a corner; ties go to
 //! the highest-numbered corner. It merges into the corner held in the most
 //! directions, ties to the nearest, then the lowest-numbered. A collapse is
 //! made only where it keeps the mesh a manifold, the two vertices sharing
@@ -475,7 +476,7 @@ impl Editable {
         let mut faces = self.about(&points);
         for &v in &parted {
             let w = self.add_vertex(self.positions[v as usize]);
-            self.source[w as usize] = self.source[v as usize];
+            self.copy_sources(w, v);
             foot[v as usize] = w;
             points.push(w);
         }
@@ -737,6 +738,7 @@ impl Editable {
             .into_iter()
             .filter(|&g| self.live[g as usize])
             .collect();
+        self.absorb_sources(w, u);
         for &g in &kept {
             for c in &mut self.corners[g as usize] {
                 if *c == u {

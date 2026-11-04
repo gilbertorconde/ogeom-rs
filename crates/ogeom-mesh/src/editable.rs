@@ -45,10 +45,23 @@
 //! [`Editable::to_triangulation`] is the compaction step: it numbers the
 //! vertices left in order, then the faces left in order.
 //!
-//! Every vertex and every copy of it remembers the source vertex it came
-//! from, through every edit: [`Editable::source_vertex`]. A vertex an edit
-//! makes rather than carries, on an edge it cut or in a hole it filled,
-//! has no source and reports `None`.
+//! # Source vertices
+//!
+//! Every vertex and every copy of it remembers the source vertices it came
+//! from, through every edit: [`Editable::source_vertices`]. A vertex of
+//! the source has one, the vertex it was welded onto. A collapse, by
+//! [`Editable::simplify`] or by [`Editable::offset`] repairing a fold,
+//! leaves the vertex it keeps with the source vertices of both. A vertex
+//! an edit makes rather than carries, on an edge it cut or in a hole it
+//! filled, has none, and adds none to a vertex it is merged with.
+//! [`Editable::source_vertex`] names the source vertex where there is
+//! exactly one.
+//!
+//! A marking of the source's vertices selects the vertices all of whose
+//! source vertices it marks, and at least one:
+//! [`Editable::region_from_sources`] turns it into the per-vertex region
+//! that [`Editable::offset`] and [`Editable::smooth`] take. Provenance is
+//! only ever carried; nothing is matched by position.
 
 use ogeom_core::{FastMap, OgeomResult, ogeom_bail};
 use ogeom_math::{Aabb, Point, Vector};
@@ -57,11 +70,13 @@ use ogeom_topo::Triangulation;
 pub mod cut;
 pub mod fill;
 pub mod offset;
+pub mod simplify;
 pub mod smooth;
 
 pub use cut::{Cap, CutReport, Side};
 pub use fill::{Fairing, Fill, FillReport, OPTIMAL_UP_TO};
 pub use offset::{OFFSET_EDGE_ANGLE, OFFSET_FARTHEST, OffsetReport};
+pub use simplify::SimplifyReport;
 pub use smooth::{PASSES, Smooth, SmoothReport};
 
 /// No half-edge, face or vertex.
@@ -97,8 +112,13 @@ pub struct Editable {
     /// The next copy of the same point, round a ring that holds them all.
     copies: Vec<u32>,
     /// The source vertex each vertex came from, or `NONE` for one an edit
-    /// made.
+    /// made; for a vertex in `merged`, the lowest of its source vertices.
     source: Vec<u32>,
+    /// The source vertices, more than one and in increasing order, of each
+    /// vertex a collapse left with several.
+    merged: FastMap<u32, Vec<u32>>,
+    /// How many vertices the source had.
+    source_count: usize,
     /// A half-edge leaving each vertex: the one on a rim where there is
     /// one, so turning from it sweeps the whole fan; `NONE` for a vertex
     /// with no face.
@@ -257,6 +277,8 @@ impl Editable {
             point: (0..n).map(index).collect(),
             copies: (0..n).map(index).collect(),
             source,
+            merged: FastMap::default(),
+            source_count: count,
             out: vec![NONE; n],
             gone: vec![false; n],
             twin: vec![NONE; corners.len() * 3],
@@ -339,13 +361,96 @@ impl Editable {
             .then(|| [self.tail(h), self.head(h)])
     }
 
-    /// The source vertex vertex `v` came from: the one it was welded onto,
-    /// for every copy split off it and through every edit. `None` for a
-    /// vertex an edit made, or a number past the last.
+    /// The source vertex vertex `v` came from, where it came from exactly
+    /// one: the one it was welded onto, for every copy split off it and
+    /// through every edit. `None` for a vertex an edit made, one a
+    /// collapse left with several source vertices, or a number past the
+    /// last.
     #[must_use]
     pub fn source_vertex(&self, v: u32) -> Option<u32> {
+        match self.source_vertices(v) {
+            &[s] => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The source vertices vertex `v` came from, in increasing order: one
+    /// for a vertex carried from the source, every one merged into it for
+    /// a vertex a collapse kept, and none for a vertex an edit made or a
+    /// number past the last. See the [module documentation](self).
+    #[must_use]
+    pub fn source_vertices(&self, v: u32) -> &[u32] {
         let k = v as usize;
-        (k < self.source.len() && self.source[k] != NONE).then(|| self.source[k])
+        if k >= self.source.len() || self.source[k] == NONE {
+            return &[];
+        }
+        self.merged
+            .get(&v)
+            .map_or_else(|| core::slice::from_ref(&self.source[k]), Vec::as_slice)
+    }
+
+    /// How many vertices the source had: the length of a marking of them.
+    /// [`Editable::simplify`] keeps the count of the mesh first built.
+    #[must_use]
+    pub fn source_count(&self) -> usize {
+        self.source_count
+    }
+
+    /// The region, one entry per vertex number, that a marking of the
+    /// source's vertices selects: the vertices that have at least one
+    /// source vertex, and every one of them marked. A vertex an edit made,
+    /// with none, and a vertex gone, are not selected. The result is what
+    /// [`Editable::offset`] and [`Smooth::region`] take.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Range`](ogeom_core::OgeomError::Range) if `marked`
+    /// does not have one entry per source vertex, as
+    /// [`Editable::source_count`] counts them.
+    pub fn region_from_sources(&self, marked: &[bool]) -> OgeomResult<Vec<bool>> {
+        if marked.len() != self.source_count {
+            ogeom_bail!(
+                Range,
+                "a marking of {} entries for {} source vertices",
+                marked.len(),
+                self.source_count
+            );
+        }
+        Ok((0..self.positions.len())
+            .map(|k| {
+                let sources = self.source_vertices(index(k));
+                !self.gone[k] && !sources.is_empty() && sources.iter().all(|&s| marked[s as usize])
+            })
+            .collect())
+    }
+
+    /// Give vertex `to` the source vertices of vertex `from`.
+    fn copy_sources(&mut self, to: u32, from: u32) {
+        self.source[to as usize] = self.source[from as usize];
+        match self.merged.get(&from).cloned() {
+            Some(set) => self.merged.insert(to, set),
+            None => self.merged.remove(&to),
+        };
+    }
+
+    /// Give vertex `to` the source vertices of vertex `from` as well as
+    /// its own.
+    fn absorb_sources(&mut self, to: u32, from: u32) {
+        let mut set: Vec<u32> = self.source_vertices(to).to_vec();
+        set.extend_from_slice(self.source_vertices(from));
+        set.sort_unstable();
+        set.dedup();
+        self.set_sources(to, set);
+    }
+
+    /// Set vertex `v`'s source vertices, sorted and once each.
+    fn set_sources(&mut self, v: u32, set: Vec<u32>) {
+        self.source[v as usize] = set.first().copied().unwrap_or(NONE);
+        if set.len() > 1 {
+            self.merged.insert(v, set);
+        } else {
+            self.merged.remove(&v);
+        }
     }
 
     /// Whether there is a face and every edge of every face is joined to
@@ -829,7 +934,8 @@ impl Editable {
         let v = index(self.positions.len());
         self.positions.push(self.positions[like as usize]);
         self.point.push(p);
-        self.source.push(self.source[like as usize]);
+        self.source.push(NONE);
+        self.copy_sources(v, like);
         self.out.push(NONE);
         self.gone.push(false);
         self.copies.push(self.copies[p as usize]);
