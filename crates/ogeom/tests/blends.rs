@@ -1339,13 +1339,29 @@ fn wall_parted(model: &mut Model, shape: &Shape) -> (Shape, Shape) {
 /// the faces it rides within a tenth of a degree, square to its two caps.
 /// The volume it adds to `before`.
 fn capped_fill(model: &Model, blended: &Shape, before: f64) -> f64 {
+    capped_runs_fill(model, blended, before, 1)
+}
+
+/// A blend of `runs` runs that each end in caps, measured: valid, a fitted
+/// band for each run, each tangent to the faces it rides within a tenth of
+/// a degree and square to its two caps. The volume it adds to `before`.
+fn capped_runs_fill(model: &Model, blended: &Shape, before: f64, runs: usize) -> f64 {
     let diagnosis = ogeom::algo::check(model, blended, T).unwrap();
     assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
     let bands = faces_on(model, blended, |s| {
         matches!(s, ogeom::geom::SurfaceGeometry::BSpline(_))
     });
-    assert_eq!(bands.len(), 1, "one fitted band");
-    let found = joins(model, blended, &bands[0]);
+    assert_eq!(bands.len(), runs, "a fitted band for each run");
+    for band in &bands {
+        band_rides_and_caps(model, blended, band);
+    }
+    exact_volume(model, blended) - before
+}
+
+/// A capped band of `blended`, tangent within a tenth of a degree to the
+/// wall and the top it rides and square to a cap at each end.
+fn band_rides_and_caps(model: &Model, blended: &Shape, band: &Shape) {
+    let found = joins(model, blended, band);
     let surface_of = |f: &Shape| {
         let data = model.node(f).unwrap().data().as_face().unwrap();
         model.geometry().surface(data.surface).unwrap().clone()
@@ -1376,7 +1392,6 @@ fn capped_fill(model: &Model, blended: &Shape, before: f64) -> f64 {
     }
     assert!(riding >= 2, "the band rides both faces: {found:?}");
     assert_eq!(caps, 2, "a cap at each end: {found:?}");
-    exact_volume(model, blended) - before
 }
 
 /// The fills at 1 and 2 degrees of slant against the closed form they
@@ -1480,6 +1495,50 @@ fn a_face_blend_caps_its_round_where_a_face_holds_part_of_the_seat() {
             .unwrap()
             .shape;
         fills.push(capped_fill(&model, &blended, before));
+    }
+    assert_tends_to([fills[0], fills[1]], want);
+    assert!(fills[2] > fills[1], "a steeper slant fills more: {fills:?}");
+}
+
+/// A drum leaning over the block's edge at y = 40, its foot at y = 38, its
+/// wall split above the foot and again along y = 34, and the piece of the
+/// wall past that line blended with the top. The ball rolling round the
+/// foot leaves the top past y = 40 and the wall's piece short of y = 34,
+/// never both at once, so the round is two runs, one over each stretch both
+/// faces hold it, each capped at both ends. Upright, its contact circles
+/// stand 8 and 6 from the axis, the top holding the ball where the sine of
+/// its turn from +x is under 1/4 and the wall's piece where it is over
+/// -2/3: the fill is the torus ring's share of the two turns between.
+#[test]
+#[ignore = "heavy"]
+fn a_face_blend_rounds_two_runs_where_the_faces_let_the_ball_go_apart() {
+    let r = 2.0;
+    let pi = core::f64::consts::PI;
+    let turn = 0.25_f64.asin() + (2.0_f64 / 3.0).asin();
+    let want = rim_ring(6.0, r, -1.0) * 2.0 * turn / (2.0 * pi);
+    let mut fills = Vec::new();
+    for slant in [1.0, 2.0, 15.0] {
+        let mut model = Model::new();
+        let sharp = drum_leaning_x(&mut model, (20.0, 38.0), slant);
+        let before = exact_volume(&model, &sharp);
+        let (parted, wall) = wall_parted(&mut model, &sharp);
+        let split = split_by_plane(
+            &mut model,
+            &parted,
+            &wall,
+            Point::new(0.0, 34.0, 0.0),
+            Vector::new(0.0, 1.0, 0.0),
+        );
+        let walls = walls_where(&model, &split, |b| {
+            b.corners().iter().all(|p| p.z > 10.29) && b.corners().iter().any(|p| p.y > 40.0)
+        });
+        assert_eq!(walls.len(), 1, "one piece of the wall over the edge");
+        let top = lid_at(&model, &split, 10.0);
+        assert!(!share_an_edge(&model, &walls[0], &top));
+        let blended = ogeom::fillet::blend_faces(&mut model, &split, &walls[0], &top, r, T)
+            .unwrap()
+            .shape;
+        fills.push(capped_runs_fill(&model, &blended, before, 2));
     }
     assert_tends_to([fills[0], fills[1]], want);
     assert!(fills[2] > fills[1], "a steeper slant fills more: {fills:?}");
@@ -1869,31 +1928,6 @@ fn curved_face_blends_refuse_by_name() {
         &mut model, &bossed, &cap[0], &side[0], 1.0, T,
     ));
     assert!(said.contains("do not meet"), "{said}");
-
-    // A drum leaning 15 degrees toward +x over the block's edge at
-    // y = 40, its wall split above the foot and again along y = 34: the
-    // ball rolling round the foot leaves the top past y = 40 and the
-    // wall's piece short of y = 34, never both at once, so neither face
-    // gives the round both its ends.
-    let mut model = Model::new();
-    let sharp = drum_leaning_x(&mut model, (20.0, 38.0), 15.0);
-    let (parted, wall) = wall_parted(&mut model, &sharp);
-    let split = split_by_plane(
-        &mut model,
-        &parted,
-        &wall,
-        Point::new(0.0, 34.0, 0.0),
-        Vector::new(0.0, 1.0, 0.0),
-    );
-    let walls = walls_where(&model, &split, |b| {
-        b.corners().iter().all(|p| p.z > 10.29) && b.corners().iter().any(|p| p.y > 40.0)
-    });
-    assert_eq!(walls.len(), 1, "one piece of the wall over the edge");
-    let top = lid_at(&model, &split, 10.0);
-    let said = refusal(ogeom::fillet::blend_faces(
-        &mut model, &split, &walls[0], &top, 2.0, T,
-    ));
-    assert!(said.contains("different places"), "{said}");
 }
 
 /// The corner where three blends meet. Three edges of a box are filleted

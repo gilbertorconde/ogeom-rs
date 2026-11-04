@@ -87,8 +87,11 @@ const CONTACT_STATIONS: u32 = 16;
 ///   contact leaves a face (a crease running off the solid, or a face that
 ///   holds part of the seat), or, where the solid's edges along the crease
 ///   end first (a crease running off a block's side while the ball still
-///   rolls over its top), in the section through their end. The band rides
-///   both faces within a tenth of a degree. An older, smaller round between
+///   rolls over its top), in the section through their end. Where both
+///   faces let the ball go round a closed seat, never at the same place,
+///   the round is a run over each stretch both hold it, each capped at
+///   both ends and applied in turn. The band rides both faces within a
+///   tenth of a degree. An older, smaller round between
 ///   the faces that every ball clears goes with the corner.
 ///
 /// # Errors
@@ -125,10 +128,9 @@ const CONTACT_STATIONS: u32 = 16;
 ///   both sides;
 /// - for a marched seat, on a side, if no ball seats along where the
 ///   surfaces cross, more than one crossing holds one touching both faces,
-///   the ball leaves the two faces at different places round its seat and
-///   never both at once, its line of contact enters a face more than once,
-///   or the march stops while the ball still touches both faces; and if a
-///   face is a trimmed or offset surface.
+///   its line of contact enters a face more than once, or the march stops
+///   while the ball still touches both faces; and if a face is a trimmed
+///   or offset surface.
 ///
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) where whether
 /// another face comes inside the ball between two stations cannot be told
@@ -596,14 +598,18 @@ fn read_sides(
                 tol,
             )
             .and_then(|seat| {
-                let Some([corner, lune]) = seat.probes() else {
+                if seat.probes().is_empty() {
                     ogeom_bail!(Invariant, "a marched seat on the crease has no probe");
-                };
+                }
                 let closed = seat.closed();
                 let inside =
                     crate::pair_marched::face_inside(model, solid, [a, b], &seat, radius, tol)?;
-                let probe = if inside.is_none() { lune } else { corner };
-                Ok((Corners::Marched(Box::new(seat), probe, inside), closed))
+                let probes = seat
+                    .probes()
+                    .iter()
+                    .map(|&[corner, lune]| if inside.is_none() { lune } else { corner })
+                    .collect();
+                Ok((Corners::Marched(Box::new(seat), probes, inside), closed))
             }),
         };
         let (corners, closed) = match built {
@@ -655,8 +661,16 @@ fn read_sides(
                 }
                 fails.unwrap_or(Made::Rounds(Corner::Swept(wedges)))
             }
-            Corners::Marched(seat, probe, inside) => {
-                read(model, probe, inside)?.unwrap_or(Made::Rounds(Corner::Marched(seat)))
+            Corners::Marched(seat, probes, inside) => {
+                // Every run of the seat must stand where the side says.
+                let mut fails = None;
+                for probe in probes {
+                    if let Some(made) = read(model, probe, inside)? {
+                        fails = Some(made);
+                        break;
+                    }
+                }
+                fails.unwrap_or(Made::Rounds(Corner::Marched(seat)))
             }
         };
         reads.push(SideRead {
@@ -671,10 +685,15 @@ fn read_sides(
 
 /// The corners read on one side before the solid is asked: each swept
 /// corner with its probe and any point of another face inside its ball's
-/// lune, or the marched seat with its own.
+/// lune, or the marched seat with a probe for each of its runs and any
+/// point of another face inside a ball of any of them.
 enum Corners {
     Swept(Vec<(Shape, Point, Option<Point>)>),
-    Marched(Box<crate::pair_marched::PairSeat>, Point, Option<Point>),
+    Marched(
+        Box<crate::pair_marched::PairSeat>,
+        Vec<Point>,
+        Option<Point>,
+    ),
 }
 
 /// Whether edges close round loops: every vertex ending one of them ends
