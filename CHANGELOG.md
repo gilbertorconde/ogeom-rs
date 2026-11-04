@@ -70,6 +70,29 @@ bump may break the API and a patch bump may not.
   reads the edge's arc past its end from its start. Stress and the
   real-world imports are unchanged.
 
+- **A boolean's retry at a wider confusion no longer drops a sliver
+  thicker than the weld distance.** (#674)
+  - An arched block whose arc is a rational B-spline, cut by a box whose
+    wall leans 1e-5 radians off the block's end face and crosses it just
+    inside the arc, came out 1.1e-2 off the closed form at four depths:
+    the sliver of the block above the wall, up to 1.5e-4 thick, was
+    missing. The same cut on the circle arc answers exactly.
+  - The cut was the retry at a confusion a hundred times wider. Its weld
+    is a hundred times wider too, and it dropped the sliver whole as a
+    membrane, two faces bounded by the same edges standing within that
+    weld of each other. Its result is kept only where nothing in it
+    states a tolerance past the caller's weld distance, but a shell
+    dropped whole leaves no edge or vertex behind to state one.
+  - During those retries a shell is now dropped as a membrane only where
+    its faces stand within the caller's weld distance of each other. The
+    four cuts now refuse ("a contact over a region of faces not
+    recognised as coincident"), as the fuse and the common of the same
+    shapes already did.
+  - Over the B-spline arch, seven leans and nine depths (189 operations),
+    nothing is outside the weld distance over the band of the closed
+    form; 45 refuse, the 41 that refused before and these 4. Every other
+    operation, and every one on the circle arc, answers as before.
+
 - **Two walls leaning a hair apart fuse where they cross beside an arc.**
   - A drum's end disc, or an arched block's end face, against a box whose
     wall leans 1e-5 to 1e-3 radians off it and crosses it a hundredth of a

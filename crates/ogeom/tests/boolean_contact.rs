@@ -2062,6 +2062,48 @@ fn past_chord(r: f64, d: f64) -> f64 {
     2.0 / 3.0 * half.powi(3) - d * segment
 }
 
+/// A square ten on a side under a half disc of radius five on its top edge,
+/// run ten up; the arc a circle or, with `spline`, the same arc as an exact
+/// rational B-spline.
+fn arched_block(model: &mut Model, spline: bool) -> Shape {
+    let pi = core::f64::consts::PI;
+    let corners = [
+        Point::new(0.0, 10.0, 0.0),
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(10.0, 0.0, 0.0),
+        Point::new(10.0, 10.0, 0.0),
+    ];
+    let wire = ogeom::algo::make_polygon(model, &corners, false, T)
+        .unwrap()
+        .shape;
+    let mut edges = model.children_of(&wire).unwrap();
+    let first = model.children_of(&edges[0]).unwrap()[0].clone();
+    let last = model.children_of(&edges[2]).unwrap()[1].clone();
+    let frame = Frame::new(Point::new(5.0, 10.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let circle = ogeom::math::Circle::new(frame, 5.0, T).unwrap();
+    let curve = Curve::Circle(ogeom::geom::CircleCurve::new(circle));
+    let (curve, range) = if spline {
+        (
+            Curve::BSpline(curve.to_bspline_over((0.0, pi), T).unwrap()),
+            (0.0, 1.0),
+        )
+    } else {
+        (curve, (0.0, pi))
+    };
+    let arc = ogeom::algo::make_edge_between(model, curve, range, &last, &first, T)
+        .unwrap()
+        .shape;
+    edges.push(arc);
+    let flat = ogeom::geom::PlaneSurface::over(ogeom::math::Plane::XY, (-1.0, 11.0), (-1.0, 16.0))
+        .unwrap();
+    let face = ogeom::algo::make_face_with_pcurves(model, flat.into(), &[edges], T)
+        .unwrap()
+        .shape;
+    ogeom::algo::make_prism(model, &face, ogeom::math::Vector::new(0.0, 0.0, 10.0), T)
+        .unwrap()
+        .shape
+}
+
 /// A drum's end disc and an arched block's end face, each bounded by a
 /// circular edge (on one arch, by the same arc as an exact rational
 /// B-spline), against a box whose wall leans a hundred-thousandth to a
@@ -2085,47 +2127,8 @@ fn walls_leaning_a_hair_apart_across_an_arc_cut_and_fuse_to_their_closed_forms()
             .unwrap()
             .shape
     };
-    // A square ten on a side under a half disc on its top edge, run ten up.
-    let arch = |model: &mut Model, spline: bool| {
-        let corners = [
-            Point::new(0.0, 10.0, 0.0),
-            Point::new(0.0, 0.0, 0.0),
-            Point::new(10.0, 0.0, 0.0),
-            Point::new(10.0, 10.0, 0.0),
-        ];
-        let wire = ogeom::algo::make_polygon(model, &corners, false, T)
-            .unwrap()
-            .shape;
-        let mut edges = model.children_of(&wire).unwrap();
-        let first = model.children_of(&edges[0]).unwrap()[0].clone();
-        let last = model.children_of(&edges[2]).unwrap()[1].clone();
-        let frame = Frame::new(Point::new(5.0, 10.0, 0.0), Direction::Z, Direction::X, T).unwrap();
-        let circle = ogeom::math::Circle::new(frame, r, T).unwrap();
-        let curve = Curve::Circle(ogeom::geom::CircleCurve::new(circle));
-        let (curve, range) = if spline {
-            (
-                Curve::BSpline(curve.to_bspline_over((0.0, pi), T).unwrap()),
-                (0.0, 1.0),
-            )
-        } else {
-            (curve, (0.0, pi))
-        };
-        let arc = ogeom::algo::make_edge_between(model, curve, range, &last, &first, T)
-            .unwrap()
-            .shape;
-        edges.push(arc);
-        let flat =
-            ogeom::geom::PlaneSurface::over(ogeom::math::Plane::XY, (-1.0, 11.0), (-1.0, 16.0))
-                .unwrap();
-        let face = ogeom::algo::make_face_with_pcurves(model, flat.into(), &[edges], T)
-            .unwrap()
-            .shape;
-        ogeom::algo::make_prism(model, &face, Vector::new(0.0, 0.0, length), T)
-            .unwrap()
-            .shape
-    };
-    let arc_arch = |model: &mut Model| arch(model, false);
-    let spline_arch = |model: &mut Model| arch(model, true);
+    let arc_arch = |model: &mut Model| arched_block(model, false);
+    let spline_arch = |model: &mut Model| arched_block(model, true);
     let disc = pi * r * r;
     let arched = 100.0 + disc / 2.0;
     // Each shape: the solid, the arc's centre on its end face, the way
@@ -2219,6 +2222,61 @@ fn walls_leaning_a_hair_apart_across_an_arc_cut_and_fuse_to_their_closed_forms()
                 "{name} {lean} {depth} {op}: volume {} against {expected}",
                 m.volume
             );
+        }
+    }
+}
+
+/// The arched block on a spline against a box whose wall leans a
+/// hundred-thousandth of a radian off its end face, crossing it a tenth of
+/// a micron and a hundredth of a millimetre inside the arc. The cut keeps
+/// the sliver of the block above the leaning wall: it thins to nothing at
+/// the crossing and is a hundred and fifty microns thick at the far side,
+/// fifteen times the weld distance, so no retry at a wider confusion may
+/// drop it as a membrane. The cut is the closed form's to within the weld
+/// over the band, or is refused by name as a contact over faces not
+/// recognised as coincident; it is never another volume.
+#[test]
+fn a_sliver_past_a_wall_leaning_across_a_spline_arch_stays_in_the_cut() {
+    use ogeom::math::Vector;
+    let weld = T.confusion() * 1e2;
+    let (r, lean, below) = (5.0_f64, 1e-5_f64, 12.0);
+    let area = 100.0 + core::f64::consts::PI * r * r / 2.0;
+    let (normal, toward) = (Vector::new(0.0, 0.0, 1.0), Vector::new(0.0, 1.0, 0.0));
+    for depth in [1e-4, 1e-2] {
+        let chord = r - depth;
+        let mut model = Model::new();
+        let a = arched_block(&mut model, true);
+        let across = normal * lean.cos() - toward * lean.sin();
+        let up = toward * lean.cos() + normal * lean.sin();
+        let at = Point::new(5.0, 10.0, 10.0) + toward * chord - up.cross(across) * 7.0;
+        let origin = at - across * 5.0 - up * (chord + below);
+        let frame = Frame::new(
+            origin,
+            Direction::new(up, T).unwrap(),
+            Direction::new(across, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let b = ogeom::algo::make_box(&mut model, frame, (5.0, 14.0, below + r + 2.0), T)
+            .unwrap()
+            .shape;
+        let expected = area * 10.0 - area * 5.0 / lean.cos() + lean.tan() * past_chord(r, chord);
+        let band = 2.0 * r * 2.0 * weld / lean;
+        match ogeom::boolean::cut(&mut model, &a, &b, T) {
+            Ok(built) => {
+                let m = measured(&model, &built.shape);
+                assert!(m.valid, "{depth}: check reports the cut invalid");
+                assert!(
+                    (m.volume - expected).abs() <= weld * band,
+                    "{depth}: cut volume {} against {expected}",
+                    m.volume
+                );
+            }
+            Err(e) => assert!(
+                e.to_string()
+                    .contains("a contact over a region of faces not recognised as coincident"),
+                "{depth}: {e}"
+            ),
         }
     }
 }
