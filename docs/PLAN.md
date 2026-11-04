@@ -141,19 +141,29 @@ at the same station, each face's stretch is read with the loop opened in the
 middle of that face's own gap (its line read over the loop less the middle
 half of the gap, so the cut is an open line), the stretches are intersected
 round the loop, and the round is a run over each overlap: capped and applied
-in turn by `blend_faces`, and by `fillet_faces` a round over each run, each
-face cut once along its line, with `trim` or without
+in turn by `blend_faces`, and by `fillet_faces` a round over each run, with
+`trim` or without
 (`a_face_blend_rounds_two_runs_where_the_faces_let_the_ball_go_apart`,
-`a_plane_and_a_leaning_wall_piece_round_in_two_runs`). They refuse
-(`curved_face_blends_refuse_by_name` in `tests/blends.rs`,
+`a_plane_and_a_leaning_wall_piece_round_in_two_runs`). A marched line of
+contact crossing a face more than once (a face letting the ball go at two
+places round its seat, or an open seat whose line runs out of a face and
+back) holds the ball over a stretch each time, and every overlap of the two
+faces' stretches is a run; with `trim` each face is cut along every
+stretch and keeps every piece beyond one
+(`a_face_blend_rounds_two_runs_where_a_face_lets_the_ball_go_at_two_places`,
+`a_floor_letting_the_ball_go_at_two_places_rounds_in_two_runs`,
+`a_floor_its_line_of_contact_runs_out_of_and_back_rounds_in_two_runs`).
+Edges a line is cut into that meet end to end, across a face's seam, are
+one stretch (`a_round_whose_line_crosses_the_drum_s_seam_stands_untrimmed`).
+They refuse (`curved_face_blends_refuse_by_name` in `tests/blends.rs`,
 `face_rounds_refuse_by_name` and `curved_rounds_refuse_by_name` in
 `tests/sheet_fillets.rs`):
 
-- a line of contact crossing a face more than once (a face that lets the
-  ball go at two places round its seat, or an open seat whose line runs out
-  of a face and back): several runs between the same two faces, and with
-  `trim` a face cut along several lines whose piece away from every round
-  may be more than one;
+- with `trim`, a marched line of contact crossing a face's seam (the rail
+  would be two edges), or crossing a face over a stretch the other face
+  does not reach (the face would keep a piece no round meets); and a line
+  of contact crossing a face more than once where the seat has a closed
+  form (two planes, or surfaces sharing a direction or an axis);
 - corners where the surfaces cross in more than one place the ball rolls
   in (two drums fused, a drum's flat and its wall), rounded corner by
   corner by `blend_faces` and `fillet_faces`

@@ -59,6 +59,33 @@ bump may break the API and a patch bump may not.
     trimmed and 5e-7 untrimmed, the band standing the radius from the
     ball's centres within its fit of 2e-4.
 
+- **`blend_faces` and `fillet_faces` round a marched seat whose line of
+  contact crosses a face more than once.**
+  - A face that lets the ball go at two places round its seat, or an open
+    seat whose line runs out of a face and back, holds the ball over a
+    stretch each time the line crosses it, and the round is a run over
+    each overlap of the two faces' stretches. It was refused by name
+    ("crosses it more than once").
+  - On a solid each run is capped and applied in turn. Between separate
+    faces each run is a round; with `trim` each face is cut along every
+    stretch and keeps every piece beyond one, so a face may come back in
+    several pieces, each in the shell and in the history. Edges a line is
+    cut into that meet end to end across a face's seam are one stretch;
+    trimming along such a line is still refused by name, as is trimming a
+    face along a stretch the other face does not reach.
+  - Measured: a block's top split along y = 13 and y = 27 either side of
+    a drum of radius 6 leaning 1 and 2 degrees, ball of radius 2: the
+    fills extrapolate to the upright torus ring's share of the two turns,
+    23.584169, to 2.3e-6, each band riding both faces within a tenth of a
+    degree. A floor over |y| <= 2 and a leaning wall piece: each run's
+    area matches the ball's arc swept over its turn to 6e-6 trimmed and
+    9e-7 untrimmed, and each of the floor's two kept pieces matches the
+    strip less its share of the ellipse of contact to 1e-11. A notched
+    floor beside a B-spline wall: each run is a quarter cylinder to 7e-7,
+    the floor keeps one piece cut along both stretches, exact. A tube
+    whose seam lies inside the run: the untrimmed round matches the
+    closed form to 4e-7, as with the seam behind the drum.
+
 ### Changed
 
 - **`Simplified` gains `result_vertex`, and `Editable::source_vertex`

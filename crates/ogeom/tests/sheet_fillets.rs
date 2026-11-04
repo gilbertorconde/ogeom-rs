@@ -1517,20 +1517,13 @@ fn curved_rounds_refuse_by_name() {
     let said = refusal(fillet_sheet_edges(&mut model, &sheet, &[corner], 6.0, T));
     assert!(said.contains("does not fit inside"), "{said}");
 
-    // A tube and a separate plane tilted across it: the ball rolls round
-    // the tube, and its line of contact crosses one of the faces more than
-    // once, so which stretch of it to round is ambiguous.
+    // A tube and a separate plane tilted across it, the tube's seam
+    // inside the run: trimming the tube along a line of contact that
+    // crosses its seam is owed.
     let mut model = Model::new();
-    let (a, _) = valley(&mut model, 0.5, (0.0, 8.0), (0.0, 8.0));
-    let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 3.0, 5.0, T)
-        .unwrap()
-        .shape;
-    let side = faces(&model, &drum)
-        .into_iter()
-        .find(|f| matches!(surface_of(&model, f), SurfaceGeometry::Cylinder(_)))
-        .unwrap();
+    let (side, a) = tube_across_a_tilted_plane(&mut model, Direction::X);
     let said = refusal(fillet_faces(&mut model, &side, &a, 1.0, true, T));
-    assert!(said.contains("crosses it more than once"), "{said}");
+    assert!(said.contains("crosses the face's seam"), "{said}");
 
     // A floor short of where the ball beside the drum touches it (x = 4),
     // on either side.
@@ -2402,6 +2395,216 @@ fn a_plane_and_a_leaning_wall_piece_round_in_two_runs() {
     measure(&model, &rounds);
 }
 
+/// A floor z = 0 over the strip |y| <= 2 and the piece of the leaning
+/// drum's wall where y > -4. The ball rolling round the drum touches the
+/// floor at y = 8 sin t, so the floor lets it go at two places round its
+/// seat, where |sin t| passes 1/4, and the wall's piece over a stretch
+/// inside one of them: the round is two runs, one where the line of
+/// contact crosses the strip each way. Trimmed, the floor is cut along
+/// both lines and keeps a piece beyond each, the stretch of the strip
+/// inside the ball's ellipse of contact, x = (8 cos t + 2 sin 15°) /
+/// cos 15°, y = 8 sin t, taken away; the wall is cut once along its line,
+/// and the five faces are one shell sharing the four rails. Each run's area
+/// is the ball's arc swept over its turn, integrated apart.
+#[test]
+fn a_floor_letting_the_ball_go_at_two_places_rounds_in_two_runs() {
+    let lean = 15.0_f64;
+    let (r, rho) = (2.0, 8.0);
+    let seat = leaning_seat(lean, 6.0, r);
+    let (s, c) = lean.to_radians().sin_cos();
+    let axis = Vector::new(s, 0.0, c);
+    let on_floor = |p: Point| p.z.abs();
+    let on_wall = |p: Point| off_cylinder(axis, 6.0, p);
+    let a = 0.25_f64.asin();
+    let wants = [seat.run_area(-a, a), seat.run_area(PI - a, PI + a)];
+    let slack = 2e-4 * rho * 2.0 * a;
+    let measure = |model: &Model, rounds: &[Shape]| {
+        let mut got: Vec<f64> = rounds.iter().map(|f| area(model, f)).collect();
+        got.sort_by(f64::total_cmp);
+        let mut want = wants;
+        want.sort_by(f64::total_cmp);
+        for (got, want) in got.iter().zip(want) {
+            assert!((got - want).abs() < slack, "a run's area {got}, not {want}");
+        }
+        for round in rounds {
+            seat.rides(model, round, [&on_floor, &on_wall]);
+        }
+    };
+
+    let mut model = Model::new();
+    let floor = floor_rectangle(&mut model, (-15.0, 15.0), (-2.0, 2.0));
+    let wall = leaning_wall_piece(&mut model, lean);
+    let built = fillet_faces(&mut model, &floor, &wall, r, true, T).unwrap();
+    let shell = built.shape.clone();
+    assert_eq!(model.kind_of(&shell).unwrap(), ShapeType::Shell);
+    assert_eq!(faces(&model, &shell).len(), 5);
+    usable(&model, &shell);
+    assert_eq!(edge_use(&model, &shell).0, 4, "four rails shared");
+    let rounds = built.history.generated(&floor).to_vec();
+    assert_eq!(rounds.len(), 2, "two rounds");
+    for round in &rounds {
+        marched_tangent(&model, &shell, round);
+    }
+    measure(&model, &rounds);
+    // Half the strip's stretch inside the ellipse of contact, whose centre
+    // stands 2 tan 15° along x and whose half axes are 8 / cos 15° and 8.
+    let (h, wide) = (2.0_f64, rho / c);
+    let half = wide / rho * h.mul_add((rho * rho - h * h).sqrt(), rho * rho * (h / rho).asin());
+    let centre = r * s / c;
+    let kept = built.history.modified(&floor).to_vec();
+    assert_eq!(kept.len(), 2, "a piece of the floor beyond each run");
+    let mut got: Vec<(f64, f64)> = kept
+        .iter()
+        .map(|f| (face_normal(&model, f, T).unwrap().0.x, area(&model, f)))
+        .collect();
+    got.sort_by(|p, q| p.0.total_cmp(&q.0));
+    for ((_, got), want) in got.iter().zip([
+        (centre + 15.0) * 2.0 * h - half,
+        (15.0 - centre) * 2.0 * h - half,
+    ]) {
+        assert!(
+            (got - want).abs() < 2.0 * slack,
+            "a floor piece keeps {got}, not {want}"
+        );
+    }
+
+    // Untrimmed, a compound of the two rounds.
+    let mut model = Model::new();
+    let floor = floor_rectangle(&mut model, (-15.0, 15.0), (-2.0, 2.0));
+    let wall = leaning_wall_piece(&mut model, lean);
+    let made = fillet_faces(&mut model, &floor, &wall, r, false, T)
+        .unwrap()
+        .shape;
+    assert_eq!(model.kind_of(&made).unwrap(), ShapeType::Compound);
+    let rounds = faces(&model, &made);
+    assert_eq!(rounds.len(), 2, "two rounds");
+    for round in &rounds {
+        usable(&model, round);
+    }
+    measure(&model, &rounds);
+}
+
+/// A floor z = 0 notched at x < 3 over 8 < y < 12, and a separate wall
+/// x = 0 restated as a B-spline patch: their surfaces cross along a line,
+/// which the ball is marched along. Its line of contact on the floor,
+/// x = 2, runs out of the floor into the notch and back, so the round is
+/// two runs, each a quarter of the cylinder of radius 2 about x = z = 2 over
+/// 8 along y. Trimmed, the floor is cut along both stretches and keeps the
+/// one piece beyond them, all but the two strips 1.5 wide; the wall is cut
+/// once along z = 2 and keeps what stands above it.
+#[test]
+fn a_floor_its_line_of_contact_runs_out_of_and_back_rounds_in_two_runs() {
+    let r = 2.0;
+    let build = |model: &mut Model| {
+        let corners = [
+            (0.5, 0.0),
+            (10.0, 0.0),
+            (10.0, 20.0),
+            (0.5, 20.0),
+            (0.5, 12.0),
+            (3.0, 12.0),
+            (3.0, 8.0),
+            (0.5, 8.0),
+        ]
+        .map(|(x, y)| Point::new(x, y, 0.0));
+        let wire = make_polygon(model, &corners, true, T).unwrap().shape;
+        let edges = model.children_of(&wire).unwrap();
+        let floor = make_face_with_pcurves(
+            model,
+            PlaneSurface::new(Plane::through(Point::ORIGIN, Direction::Z)).into(),
+            &[edges],
+            T,
+        )
+        .unwrap()
+        .shape;
+        assert!(face_normal(model, &floor, T).unwrap().1.z > 0.5);
+        let corners = [
+            Point::new(0.0, -1.0, 0.5),
+            Point::new(0.0, 21.0, 0.5),
+            Point::new(0.0, 21.0, 10.0),
+            Point::new(0.0, -1.0, 10.0),
+        ];
+        let wire = make_polygon(model, &corners, true, T).unwrap().shape;
+        let edges = model.children_of(&wire).unwrap();
+        let flat = make_face_with_pcurves(
+            model,
+            PlaneSurface::new(Plane::through(Point::ORIGIN, Direction::X)).into(),
+            &[edges],
+            T,
+        )
+        .unwrap()
+        .shape;
+        let splined = ogeom::algo::to_nurbs(model, &flat, T).unwrap().shape;
+        let wall = faces(model, &splined).remove(0);
+        assert!(matches!(
+            surface_of(model, &wall),
+            SurfaceGeometry::BSpline(_)
+        ));
+        let wall = if face_normal(model, &wall, T).unwrap().1.x > 0.5 {
+            wall
+        } else {
+            wall.reversed()
+        };
+        (floor, wall)
+    };
+    let want_round = PI / 2.0 * r * 8.0;
+    let slack = 2e-4 * 8.0;
+    let rides = |model: &Model, round: &Shape| {
+        for (_, _, p) in band_samples(model, round, 8, 32) {
+            let off = (Vector::new(p.x - 2.0, 0.0, p.z - 2.0).magnitude() - r).abs();
+            assert!(off < 2e-4, "the band leaves the cylinder by {off} at {p:?}");
+        }
+        let got = area(model, round);
+        assert!(
+            (got - want_round).abs() < slack,
+            "a run's area {got}, not {want_round}"
+        );
+    };
+
+    let mut model = Model::new();
+    let (floor, wall) = build(&mut model);
+    let built = fillet_faces(&mut model, &floor, &wall, r, true, T).unwrap();
+    let shell = built.shape.clone();
+    assert_eq!(model.kind_of(&shell).unwrap(), ShapeType::Shell);
+    assert_eq!(faces(&model, &shell).len(), 4);
+    usable(&model, &shell);
+    assert_eq!(edge_use(&model, &shell).0, 4, "four rails shared");
+    let rounds = built.history.generated(&floor).to_vec();
+    assert_eq!(rounds.len(), 2, "two rounds");
+    for round in &rounds {
+        marched_tangent(&model, &shell, round);
+        rides(&model, round);
+    }
+    let kept = built.history.modified(&floor).to_vec();
+    assert_eq!(kept.len(), 1, "one piece of the floor beyond both runs");
+    let (got, want) = (area(&model, &kept[0]), 9.5 * 20.0 - 2.5 * 4.0 - 1.5 * 16.0);
+    assert!(
+        (got - want).abs() < 4.0 * slack,
+        "the floor keeps {got}, not {want}"
+    );
+    let kept = built.history.modified(&wall).to_vec();
+    assert_eq!(kept.len(), 1);
+    let (got, want) = (area(&model, &kept[0]), 22.0 * 8.0);
+    assert!(
+        (got - want).abs() < 4.0 * slack,
+        "the wall keeps {got}, not {want}"
+    );
+
+    // Untrimmed, a compound of the two rounds.
+    let mut model = Model::new();
+    let (floor, wall) = build(&mut model);
+    let made = fillet_faces(&mut model, &floor, &wall, r, false, T)
+        .unwrap()
+        .shape;
+    assert_eq!(model.kind_of(&made).unwrap(), ShapeType::Compound);
+    let rounds = faces(&model, &made);
+    assert_eq!(rounds.len(), 2, "two rounds");
+    for round in &rounds {
+        usable(&model, round);
+        rides(&model, round);
+    }
+}
+
 /// The floor over 20 by 20 restated as a B-spline patch and the upright
 /// tube: the patch has no axis the closed form can read, so the ball is
 /// marched round the tube's foot, and the round it closes is the torus
@@ -2725,4 +2928,56 @@ fn a_cone_standing_on_a_plane_trims_to_its_circles_of_contact() {
             "{r0} to {r1}: the top keeps {got} against {want}"
         );
     }
+}
+
+/// The wall of an upright drum of radius 3 and height 5 whose seam stands
+/// where its frame's `x` points, and the valley's plane rising 30 degrees
+/// toward +x from x = 0.5 over -2 < y < 8.
+fn tube_across_a_tilted_plane(model: &mut Model, seam: Direction) -> (Shape, Shape) {
+    let (a, _) = valley(model, 0.5, (-2.0, 8.0), (0.0, 8.0));
+    let frame = Frame::new(Point::ORIGIN, Direction::Z, seam, T).unwrap();
+    let drum = ogeom::algo::make_cylinder(model, frame, 3.0, 5.0, T)
+        .unwrap()
+        .shape;
+    let side = faces(model, &drum)
+        .into_iter()
+        .find(|f| matches!(surface_of(model, f), SurfaceGeometry::Cylinder(_)))
+        .unwrap();
+    (side, a)
+}
+
+/// The drum's wall and the plane tilted 30 degrees across it: turned
+/// about y, the tube leaning 30 degrees on a floor, so the ball of radius 1
+/// rolls on the seat [`leaning_seat`] reads. The plane holds the ball from
+/// where its contact, 4 from the axis at the turn `t`, crosses y = -2
+/// (t = -30 degrees) to where it crosses x = 0.5 (t = 90 degrees), and the
+/// drum all the while. Its line of contact on the drum crosses the drum's
+/// seam at t = 0, so the face is cut there in two edges that meet end to
+/// end: one stretch. Untrimmed, the round over that stretch is the same
+/// with the seam inside the run or behind the drum, and its area is the
+/// ball's arc swept over the turn, integrated apart.
+#[test]
+fn a_round_whose_line_crosses_the_drum_s_seam_stands_untrimmed() {
+    let seat = leaning_seat(30.0, 3.0, 1.0);
+    let want = seat.run_area(-PI / 6.0, PI / 2.0);
+    let slack = 2e-4 * 4.0 * (2.0 * PI / 3.0);
+    let behind = Direction::new(Vector::new(-1.0, 0.0, 0.0), T).unwrap();
+    let mut got = Vec::new();
+    for seam in [Direction::X, behind] {
+        let mut model = Model::new();
+        let (side, a) = tube_across_a_tilted_plane(&mut model, seam);
+        let built = fillet_faces(&mut model, &side, &a, 1.0, false, T).unwrap();
+        assert_eq!(model.kind_of(&built.shape).unwrap(), ShapeType::Face);
+        usable(&model, &built.shape);
+        let area = area(&model, &built.shape);
+        assert!(
+            (area - want).abs() < slack,
+            "the round's area {area}, not {want}"
+        );
+        got.push(area);
+    }
+    assert!(
+        (got[0] - got[1]).abs() < slack,
+        "the seam moves the round: {got:?}"
+    );
 }
