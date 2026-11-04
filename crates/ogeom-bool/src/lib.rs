@@ -5718,12 +5718,11 @@ fn fill(
                                     // the very miss being hunted.
                                     fa.bound.union(&fb.bound)
                                 };
-                                for fitted in march_pair(
-                                    &windowed_to(&fa.surface, &shared),
-                                    &windowed_to(&fb.surface, &shared),
-                                    &options,
-                                    tol,
-                                )? {
+                                let (wa, wb) = (
+                                    windowed_to(&fa.surface, &shared),
+                                    windowed_to(&fb.surface, &shared),
+                                );
+                                for fitted in march_pair(&wa, &wb, &options, tol)? {
                                     // The same two refusals the intersector's
                                     // own marched sections meet: a fit a
                                     // thousand chords off its trace, and a
@@ -5759,7 +5758,12 @@ fn fill(
                                         );
                                     }
                                     out.sections.push(SectionRec {
-                                        closed: curve.is_closed(tol),
+                                        // A branch cut at a pole of either
+                                        // chart ends on it twice, its images
+                                        // apart there: closed in space, open
+                                        // in the charts.
+                                        closed: curve.is_closed(tol)
+                                            && !on_a_chart_pole(&curve, [&wa, &wb], tol)?,
                                         tolerance: options.marching.chord + fitted.fit_error,
                                         curve,
                                         pc_a: fitted.on_a.into(),
@@ -8041,6 +8045,20 @@ fn split_at_degeneracies(
         return Ok(None);
     }
     Ok(Some(out))
+}
+
+/// Whether `curve` starts on a pole of either chart.
+fn on_a_chart_pole(
+    curve: &Curve,
+    surfaces: [&SurfaceGeometry; 2],
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let start = curve.point_at(curve.domain().0, tol)?;
+    Ok(surfaces.iter().any(|surface| {
+        ogeom_intersect::march::chart_poles(surface, tol)
+            .iter()
+            .any(|&(_, _, pole)| pole.distance(start) <= tol.confusion())
+    }))
 }
 
 /// Each face's carrier, numbered within the solid, with the window of the

@@ -151,6 +151,36 @@ fn drill_through_both_poles() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// Left on the ball's own chart, a drill whose wall runs through both poles,
+/// or a ten-millionth of its radius beside them, meets the ball in loops
+/// through the poles, each cut there: the cut and common add up to the
+/// ball and the common is the drilled volume, as on the turned chart.
+#[test]
+#[ignore = "heavy"]
+fn drills_through_both_poles_of_the_balls_own_chart() {
+    let r = 2.664_527_471_227_642;
+    let mut failures = Vec::new();
+    for (dx, dy) in [
+        (0.0, -1.0),
+        (1.0, 0.0),
+        (
+            core::f64::consts::FRAC_1_SQRT_2,
+            core::f64::consts::FRAC_1_SQRT_2,
+        ),
+        (0.6, -0.8),
+    ] {
+        for radius in [r, 1.0, 4.0] {
+            for wall in [radius, radius * (1.0 + 1e-7), radius * (1.0 - 1e-7)] {
+                let offset = Vector::new(dx * wall, dy * wall, 0.0);
+                if let Err(e) = ogeom_bool::work::unturned(|| drilled(offset, radius)) {
+                    failures.push(format!("({dx}, {dy}) r {radius} at {wall}: {e}"));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 /// A body whose top is a dome of the ball about the origin, its pole on
 /// the z axis.
 #[derive(Clone, Copy, Debug)]
@@ -1244,8 +1274,10 @@ fn slab_drilled_volume(half: f64, cx: f64, cy: f64, r: f64) -> f64 {
 /// Cut, common and drill less the part of the ball slab `|x| < half` with
 /// a vertical drill of radius `r` at `(cx, cy)`: each valid, the common at
 /// its integrated volume, and the cut and the drill less the part at what
-/// is left of the part's and the drill's closed forms.
-fn slab_drilled(half: f64, r: f64, cx: f64, cy: f64) -> Result<(), String> {
+/// is left of the part's and the drill's closed forms. Where `turned` is
+/// false the band is left on its own chart, whose poles the drill's wall
+/// passes through.
+fn slab_drilled(half: f64, r: f64, cx: f64, cy: f64, turned: bool) -> Result<(), String> {
     let mut model = Model::new();
     let part = ball_slab(&mut model, half);
     let len = 30.0;
@@ -1260,10 +1292,15 @@ fn slab_drilled(half: f64, r: f64, cx: f64, cy: f64) -> Result<(), String> {
         ("common", inside),
         ("drill less the part", bore - inside),
     ] {
-        let made = match name {
-            "cut" => ogeom::boolean::cut(&mut model, &part, &drill, T),
-            "common" => ogeom::boolean::common(&mut model, &part, &drill, T),
-            _ => ogeom::boolean::cut(&mut model, &drill, &part, T),
+        let run = |model: &mut Model| match name {
+            "cut" => ogeom::boolean::cut(model, &part, &drill, T),
+            "common" => ogeom::boolean::common(model, &part, &drill, T),
+            _ => ogeom::boolean::cut(model, &drill, &part, T),
+        };
+        let made = if turned {
+            run(&mut model)
+        } else {
+            ogeom_bool::work::unturned(|| run(&mut model))
         }
         .map_err(|e| format!("{name}: {e}"))?;
         let diagnosis = check(&model, &made.shape, T).unwrap();
@@ -1302,7 +1339,7 @@ fn a_ball_slab_drilled_with_its_wall_through_the_poles() {
         (0.8, 0.3, 0.0, -0.3),
         (0.8, 0.2, 0.2, 0.0),
     ] {
-        slab_drilled(half, r, cx, cy)
+        slab_drilled(half, r, cx, cy, true)
             .unwrap_or_else(|e| panic!("|x| < {half}, drill {r} at ({cx}, {cy}): {e}"));
     }
 }
@@ -1311,10 +1348,14 @@ fn a_ball_slab_drilled_with_its_wall_through_the_poles() {
 #[ignore = "heavy"]
 fn ball_slabs_drilled_with_their_walls_through_the_poles() {
     let mut failures = Vec::new();
-    for half in [0.8, 0.5] {
-        for (r, cx, cy) in SLAB_DRILLS {
-            if let Err(e) = slab_drilled(half, r, cx, cy) {
-                failures.push(format!("|x| < {half}, drill {r} at ({cx}, {cy}): {e}"));
+    for turned in [true, false] {
+        for half in [0.8, 0.5] {
+            for (r, cx, cy) in SLAB_DRILLS {
+                if let Err(e) = slab_drilled(half, r, cx, cy, turned) {
+                    failures.push(format!(
+                        "|x| < {half}, drill {r} at ({cx}, {cy}), turned {turned}: {e}"
+                    ));
+                }
             }
         }
     }
@@ -1322,35 +1363,18 @@ fn ball_slabs_drilled_with_their_walls_through_the_poles() {
 }
 
 /// Left on its own chart, the band meets each drill in sections through its
-/// poles, whose images no one chart line can follow: each operation
-/// refuses by name rather than reading a piece round both of the band's
-/// loops.
+/// poles. Each is cut at the pole, its image on the band ending there on
+/// the line of the chart it leaves along, and the arrangement takes the
+/// pole row cut where the pieces end on it: every operation answers at the
+/// closed forms, as it does on the turned chart.
 #[test]
-fn a_section_through_a_sphere_charts_pole_is_refused() {
+fn a_ball_slab_drilled_through_its_own_charts_poles() {
     for (half, r, cx, cy) in [
         (0.5, 1.0, 0.0, 1.0),
         (0.8, 0.3, 0.0, -0.3),
         (0.8, 0.2, 0.2, 0.0),
     ] {
-        let mut model = Model::new();
-        let part = ball_slab(&mut model, half);
-        let at = Frame::new(Point::new(cx, cy, -15.0), Direction::Z, Direction::Y, T).unwrap();
-        let drill = make_cylinder(&mut model, at, r, 30.0, T).unwrap().shape;
-        for name in ["cut", "common", "drill less the part"] {
-            let made = ogeom_bool::work::unturned(|| match name {
-                "cut" => ogeom::boolean::cut(&mut model, &part, &drill, T),
-                "common" => ogeom::boolean::common(&mut model, &part, &drill, T),
-                _ => ogeom::boolean::cut(&mut model, &drill, &part, T),
-            });
-            let case = format!("|x| < {half}, drill {r} at ({cx}, {cy}) {name}");
-            let Err(e) = made else {
-                panic!("{case}: answered where its section passes a pole");
-            };
-            assert!(
-                e.to_string()
-                    .contains("a section through a sphere chart's pole is not resolved"),
-                "{case}: {e}"
-            );
-        }
+        slab_drilled(half, r, cx, cy, false)
+            .unwrap_or_else(|e| panic!("|x| < {half}, drill {r} at ({cx}, {cy}): {e}"));
     }
 }

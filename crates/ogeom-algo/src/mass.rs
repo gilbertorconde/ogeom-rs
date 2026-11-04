@@ -1059,24 +1059,30 @@ fn arc_of(
     };
     let (ta, tb) = (at(a)?, at(b)?);
     // Of the two ways round a closed curve, the one whose middle is
-    // nearer the chord's.
+    // nearer the chord's. The way past either end of a closed curve runs
+    // on from the other, which a curve that does not repeat is read at.
     let mut tb = tb;
-    if curve.is_closed(tol) {
-        let (lo, hi) = curve.domain();
-        let period = hi - lo;
+    let closed = curve.is_closed(tol);
+    let (lo, hi) = curve.domain();
+    let period = hi - lo;
+    let point_at = |t: f64| {
+        let t = if closed && period > 0.0 && !curve.is_periodic() {
+            lo + (t - lo).rem_euclid(period)
+        } else {
+            t
+        };
+        curve.point_at(t, tol)
+    };
+    if closed {
         let middle = a.midpoint(b);
         let other = if tb > ta { tb - period } else { tb + period };
-        let off = |t: f64| {
-            curve
-                .point_at(f64::midpoint(ta, t), tol)
-                .map_or(f64::INFINITY, |p| p.distance(middle))
-        };
+        let off =
+            |t: f64| point_at(f64::midpoint(ta, t)).map_or(f64::INFINITY, |p| p.distance(middle));
         if off(other) < off(tb) {
             tb = other;
         }
     }
-    let sag = curve
-        .point_at(f64::midpoint(ta, tb), tol)
+    let sag = point_at(f64::midpoint(ta, tb))
         .ok()?
         .distance(a.midpoint(b));
     if sag > a.distance(b) {
@@ -1090,7 +1096,7 @@ fn arc_of(
     for k in 1..pieces {
         #[allow(clippy::cast_precision_loss)]
         let f = k as f64 / pieces as f64;
-        points.push(curve.point_at(ta + (tb - ta) * f, tol).ok()?);
+        points.push(point_at(ta + (tb - ta) * f).ok()?);
     }
     points.push(b);
     Some((sag, points))
