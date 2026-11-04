@@ -46,6 +46,26 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A face measured on its own mesh within an exact volume keeps its
+  flux when it is thinner than the chord.** (#683)
+  - `volume_properties` integrates every face it can in closed form and
+    measures a face whose integral does not settle, or that no closed
+    form speaks for, on its mesh at a tenth of the chord. That mesh was
+    the whole-shape mesh asked of the one face, which welds and seals
+    openings narrower than the chord: a face thinner than that had its
+    two rims sealed across, and its flux was lost or replaced by the
+    seal's.
+  - The face is now measured on its own mesh, which ends on its edges'
+    chords and is closed against their arcs as before; a face that
+    draws nothing alone leaves the whole shape to the mesh.
+  - The cut of the arched block on a spline by a box whose wall leans
+    1e-5 across it, which leaves slivers 5e-5 thick at most on the
+    arch's wall, measured 4.2e-4 short at a chord of 1e-3 (crossing 1e-4
+    inside the crown) and 9.6e-6 short (1e-2 inside); both are now
+    within 5.2e-9 of the closed form at chords of 1e-3 and 1e-4 alike. A
+    slab 5e-5 thick with one side face on an offset of its plane
+    measured a third short and is now exact.
+
 - **A wall leaning a hair off an arched block's end face, across an arch
   spelled as a rational B-spline, cuts and fuses where it crosses beside
   the arch's crown.**

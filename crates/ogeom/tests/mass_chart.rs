@@ -850,6 +850,61 @@ fn a_face_no_closed_form_speaks_for_leaves_only_itself_to_the_mesh() {
     );
 }
 
+/// A slab ten by ten and five hundredths of a micron to a hundredth
+/// thick, one of whose side faces stands on an offset of its plane: a
+/// face no closed form speaks for, thinner than a tenth of the chord it is
+/// meshed at. Measured on its own mesh, the slab is ten by ten by its
+/// thickness at the default chord and a tenth of it alike. Drawn as the
+/// whole-shape mesh draws one face, the sliver's rims are sealed across
+/// and its flux, a third of the slab's, is lost.
+#[test]
+fn a_face_thinner_than_its_chord_measured_on_its_mesh_keeps_its_flux() {
+    use ogeom::geom::{OffsetSurface, Surface as _, SurfaceGeometry, Transformable as _};
+    use ogeom::topo::{ShapeType, explore_unique};
+    for thick in [5e-5, 1e-2] {
+        let mut model = Model::new();
+        let slab = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, thick), T)
+            .unwrap()
+            .shape;
+        let side = explore_unique(&model, &slab, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .find(|face| {
+                let data = model.node(face).unwrap().data().as_face().unwrap();
+                let surface = model.geometry().surface(data.surface).unwrap();
+                matches!(surface, SurfaceGeometry::Plane(_))
+                    && surface.normal_at(0.0, 0.0, T).unwrap().vector().x.abs() > 0.5
+                    && surface.point_at(0.0, 0.0, T).unwrap().x > 5.0
+            })
+            .unwrap();
+        let id = model.node(&side).unwrap().data().as_face().unwrap().surface;
+        let plane = model.geometry().surface(id).unwrap().clone();
+        let normal = plane.normal_at(0.0, 0.0, T).unwrap().vector();
+        let below = plane
+            .transformed(&ogeom::math::Transform::translation(normal * -1.0), T)
+            .unwrap();
+        *model.geometry_mut().surface_mut(id).unwrap() =
+            SurfaceGeometry::Offset(Box::new(OffsetSurface::new(below, 1.0).unwrap()));
+
+        let exact = 100.0 * thick;
+        for chord in [1e-3, 1e-4] {
+            let found = volume_properties(&model, &slab, Deflection::with_chord(chord).unwrap(), T)
+                .unwrap();
+            assert!(
+                found.deflection > 0.0,
+                "{thick} {chord}: the side face is meshed"
+            );
+            // Every face is flat, so its mesh is exact and only rounding
+            // over the faces' fluxes, ten by ten by at most ten, is left.
+            assert!(
+                (found.mass - exact).abs() <= 1e-12 * 1e3,
+                "{thick} {chord}: the slab measures {} against {exact}",
+                found.mass
+            );
+        }
+    }
+}
+
 /// A drum of radius 2 and height 5 converted to splines, its wall's chart
 /// closing over a turn without repeating, with every pcurve of the wall
 /// that `restate` picks moved `turns` whole turns along `u`. A file may

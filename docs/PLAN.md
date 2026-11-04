@@ -80,9 +80,9 @@ within 7.3e-7 of the closed form; 6 refuse, at a lean of 1e-5 with the
 crossing 1e-5 or 3e-5 inside ("a piece lies on the other solid's
 boundary" for the cut, fuse and common at 3e-5, "the kept pieces did not
 close" at 1e-5). At a lean of 1e-5 the faces the wall leaves on the
-arch's wall, a sliver 5e-5 thick at most, are measured on their meshes,
-and at a chord of 1e-3 `volume_properties` loses them and comes out
-4.2e-4 short (at 1e-4, within 1e-8); the tests measure those at 1e-4. The cut
+arch's wall, a sliver 5e-5 thick at most, are measured on their own
+meshes, within 5.2e-9 of the closed form at a chord of 1e-3 as at 1e-4
+(#683). The cut
 at a lean of 1e-5 keeps the sliver above the wall, a retry at a wider
 confusion dropping a shell only within the caller's weld distance (#674). Where
 the strip is wider the ordinary crossing splits both faces exactly, and
