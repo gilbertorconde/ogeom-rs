@@ -2571,10 +2571,29 @@ fn sliver_fan(
     mesh
 }
 
-/// Within this of each other, two chart points of a ring are one point: a
-/// millionth of the ring's extent, well under any feature and well over
-/// the slop two edges leave at the vertex they share.
-fn chart_reach(ring: &[Point2]) -> f64 {
+/// How near two chart points of a ring stand to be one point: within a
+/// millionth of the ring's extent along each chart direction, well under
+/// any feature and well over the slop two edges leave at the vertex they
+/// share. Each direction is held to its own extent: a chart's two
+/// directions need not share a unit (a drum's u is an angle and its v a
+/// length), and a ring a few microns wide round a drum and hundreds of
+/// millimetres along it keeps its width, where a millionth of its length
+/// read in radians is wider than the whole ring.
+#[derive(Debug, Clone, Copy)]
+struct ChartReach {
+    u: f64,
+    v: f64,
+}
+
+impl ChartReach {
+    /// Whether `p` and `q` are one point.
+    fn joins(self, p: Point2, q: Point2) -> bool {
+        (p.x - q.x).abs() <= self.u && (p.y - q.y).abs() <= self.v
+    }
+}
+
+/// The [`ChartReach`] of `ring`, or `None` for a ring with no extent.
+fn chart_reach(ring: &[Point2]) -> Option<ChartReach> {
     let (mut lo, mut hi) = (
         Point2::new(f64::INFINITY, f64::INFINITY),
         Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
@@ -2583,25 +2602,30 @@ fn chart_reach(ring: &[Point2]) -> f64 {
         lo = Point2::new(lo.x.min(p.x), lo.y.min(p.y));
         hi = Point2::new(hi.x.max(p.x), hi.y.max(p.y));
     }
-    let extent = (hi.x - lo.x).max(hi.y - lo.y);
-    if extent.is_finite() && extent > 0.0 {
-        extent * 1e-6
-    } else {
-        0.0
-    }
+    let (du, dv) = (hi.x - lo.x, hi.y - lo.y);
+    (du.is_finite() && dv.is_finite() && du.max(dv) > 0.0).then_some(ChartReach {
+        u: du * 1e-6,
+        v: dv * 1e-6,
+    })
 }
 
 /// Merge consecutive ring points within `reach` of each other,
 /// cyclically; the earlier point and its anchor stay.
-fn merge_near_duplicates(ring: &mut Vec<Point2>, anchors: &mut Vec<Option<Point>>, reach: f64) {
-    if ring.len() < 2 || anchors.len() != ring.len() || reach <= 0.0 {
+fn merge_near_duplicates(
+    ring: &mut Vec<Point2>,
+    anchors: &mut Vec<Option<Point>>,
+    reach: Option<ChartReach>,
+) {
+    let Some(reach) = reach else {
+        return;
+    };
+    if ring.len() < 2 || anchors.len() != ring.len() {
         return;
     }
     let mut i = 0;
     while i < ring.len() && ring.len() >= 2 {
         let next = (i + 1) % ring.len();
-        let (p, q) = (ring[i], ring[next]);
-        if (p.x - q.x).hypot(p.y - q.y) <= reach {
+        if reach.joins(ring[i], ring[next]) {
             // The later point goes (the last one when the ring's end
             // repeats its start), and the earlier is looked at again, in
             // case it sits next to another near-duplicate.
@@ -2622,16 +2646,21 @@ fn merge_near_duplicates(ring: &mut Vec<Point2>, anchors: &mut Vec<Option<Point>
 /// back from, the two `p` within `reach` of each other), with its anchors,
 /// until none is left. Cyclic: the ring's last point is its first's
 /// neighbour.
-fn remove_spikes(ring: &mut Vec<Point2>, anchors: &mut Vec<Option<Point>>, reach: f64) {
+fn remove_spikes(
+    ring: &mut Vec<Point2>,
+    anchors: &mut Vec<Option<Point>>,
+    reach: Option<ChartReach>,
+) {
+    let Some(reach) = reach else {
+        return;
+    };
     loop {
         let n = ring.len();
         if n < 3 || anchors.len() != n {
             return;
         }
-        let Some(tip) = (0..n).find(|&i| {
-            let (before, after) = (ring[(i + n - 1) % n], ring[(i + 1) % n]);
-            (before.x - after.x).hypot(before.y - after.y) <= reach
-        }) else {
+        let Some(tip) = (0..n).find(|&i| reach.joins(ring[(i + n - 1) % n], ring[(i + 1) % n]))
+        else {
             return;
         };
         // The tip and one of its two identical neighbours go.
@@ -6628,6 +6657,34 @@ mod predicate_tests {
             ],
             "the spike is gone and the ring is the square with a point on one side"
         );
+        assert_eq!(anchors.len(), ring.len());
+    }
+
+    /// A ring a ten-thousandth of a radian across a drum's chart and 365
+    /// along it (a strip of a radius-32 drum a few microns wide) keeps its
+    /// width: the points across it are a millionth of the ring's extent
+    /// across apart many times over, though not a millionth of its length.
+    /// Its closing point repeated a hair off along both directions still
+    /// goes.
+    #[test]
+    fn a_ring_narrow_in_one_chart_direction_keeps_its_width() {
+        let p = |x: f64, y: f64| Point2::new(x, y);
+        let w = 1.77e-4;
+        let strip = vec![
+            p(0.0, 0.0),
+            p(w / 2.0, 0.0),
+            p(w, 0.0),
+            p(w, 365.0),
+            p(w / 2.0, 365.0),
+            p(0.0, 365.0),
+        ];
+        let mut ring = strip.clone();
+        ring.push(p(w * 1e-9, 1e-9));
+        let mut anchors = vec![None; ring.len()];
+        let reach = chart_reach(&ring);
+        merge_near_duplicates(&mut ring, &mut anchors, reach);
+        remove_spikes(&mut ring, &mut anchors, reach);
+        assert_eq!(ring, strip, "the strip keeps every corner");
         assert_eq!(anchors.len(), ring.len());
     }
 

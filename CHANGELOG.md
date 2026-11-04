@@ -46,6 +46,31 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A face a few microns across a drum's chart and hundreds of
+  millimetres along it keeps its trim.** (#680)
+  - Before a face's rings are triangulated or read as its trim, points
+    standing a millionth of the ring's extent apart are merged as one, and
+    a run out to a point and straight back within that is stripped. The
+    extent was the larger of the chart's two, though the two need not
+    share a unit: a drum's u is an angle and its v a length. Raised
+    through `nist_ctc_03`'s plate top by 2e-7 to 1e-6 with the seam on
+    the top line (stress drill seed 2, drill 5), the drum's face between
+    its seam and the plate top's section is 1.8e-4 radians (5.6 microns)
+    across and 365 along. A millionth of 365 is wider than the face, so
+    its ring merged to nothing, the solid's rays passed through it
+    uncounted, and points inside the plate read as inside the drill less
+    the part. `check` then named the plate top under the face as facing
+    into the material, though the result was right.
+  - Each chart direction is now held to a millionth of the ring's extent
+    along it. With eight seam directions at 2e-7, 5e-7, 7.5e-7 and 1e-6,
+    116 of 120 cuts, commons and drill-less-parts checked valid before
+    (the drill less the part with the seam on the top line failed at
+    every height), 120 of 120 now, every volume unchanged and the commons
+    of one height agreeing across the seams to 2.3e-8. Drills of radius
+    32 raised 2e-7 to 1e-6 through a block 400 long, with the seam on the
+    top line, checked inside out the same way and now cut at the closed
+    form.
+
 - **A drill lowered a few confusion distances under a face, along the
   face's edge and on along the arc it runs into, cuts.**
   - A section running along a face's boundary within the hug width (ten

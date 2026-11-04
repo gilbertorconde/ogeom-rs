@@ -734,8 +734,7 @@ fn drills_a_hair_off_a_block_s_top_cut_as_their_closed_form() {
                 );
                 let disc = core::f64::consts::PI * r * r;
                 let cap = if lift > T.confusion() {
-                    let h: f64 = lift;
-                    r * r * ((r - h) / r).acos() - (r - h) * h.mul_add(-h, 2.0 * r * h).sqrt()
+                    cap_area(r, lift)
                 } else {
                     0.0
                 };
@@ -749,6 +748,57 @@ fn drills_a_hair_off_a_block_s_top_cut_as_their_closed_form() {
                     "lift {lift} seam {seam:?} length {length}: common {common} against {want}"
                 );
             }
+        }
+    }
+}
+
+/// The area of the cap a chord at depth `h` cuts off a disc of radius `r`.
+fn cap_area(r: f64, h: f64) -> f64 {
+    r * r * ((r - h) / r).acos() - (r - h) * h.mul_add(-h, 2.0 * r * h).sqrt()
+}
+
+/// Drills of radius 32 along x through a 400 by 80 by 80 block, raised
+/// through its top by 2e-7 to 1e-6, the seam on the top line, across,
+/// below and on either diagonal. The face cuts the drum in two lines a few
+/// microns either side of the top, and with the seam on the top line the
+/// drum's face between the seam and either line is a strip a few microns
+/// wide and 400 long: in the drum's chart a ten-thousandth of a radian
+/// across and 400 along. Its trim keeps that width, every probe and ray
+/// meets it, and every cut, common and drill less the block is valid and
+/// adds up to the block and the drill (see [`drill`]); the common is the
+/// disc less the cap above the face, times the block's length.
+#[test]
+fn long_drills_raised_a_hair_through_a_block_s_top_cut_as_their_closed_form() {
+    let (r, inside) = (32.0, 400.0);
+    for lift in [2e-7, 5e-7, 1e-6] {
+        for seam in [
+            Vector::new(0.0, 0.0, 1.0),
+            Vector::new(0.0, 1.0, 0.0),
+            Vector::new(0.0, 0.0, -1.0),
+            Vector::new(0.0, 1.0, 1.0),
+            Vector::new(0.0, 1.0, -1.0),
+        ] {
+            let mut model = Model::new();
+            let block = make_box(&mut model, Frame::WORLD, (inside, 80.0, 80.0), T)
+                .unwrap()
+                .shape;
+            let common = drill(
+                &mut model,
+                &block,
+                Point::new(-10.0, 40.0, 80.0 - r + lift),
+                (Vector::new(1.0, 0.0, 0.0), seam),
+                r,
+                inside + 20.0,
+            );
+            let want = (core::f64::consts::PI * r * r - cap_area(r, lift)) * inside;
+            // The result's faces stand within the confusion distance of
+            // the exact ones, so its volume is the exact one to within
+            // that distance times the drill's wall inside the block.
+            let doubt = T.confusion() * core::f64::consts::TAU * r * inside;
+            assert!(
+                (common - want).abs() <= doubt,
+                "lift {lift} seam {seam:?}: common {common} against {want}"
+            );
         }
     }
 }
@@ -879,6 +929,63 @@ fn drills_lowered_under_a_plate_top_past_the_confusion_distance_cut() {
             let common = plate_top_drill(&mut base.clone(), &part, seam, dz);
             assert!(
                 (common - touching).abs() <= dz.abs() * surface,
+                "seam {k}/8 dz {dz}: common {common} against the touching drill's {touching}"
+            );
+            commons.push(common);
+        }
+        let (least, most) = commons
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &c| {
+                (lo.min(c), hi.max(c))
+            });
+        assert!(
+            most - least <= T.confusion() * wall,
+            "dz {dz}: commons spread from {least} to {most} across the seams"
+        );
+    }
+}
+
+/// The plate-top drill of
+/// [`a_drill_a_hair_under_a_plate_top_running_into_a_round_cuts`] raised
+/// through the plate top by 5e-7, its seam on the top line. The plate top
+/// cuts the drum in two lines 5.6 microns either side of the top, and the
+/// drum's face between the seam and the line on one side is a strip that
+/// wide and 365 long, a ten-thousandth of a radian across in the drum's
+/// chart. Its trim keeps that width: a ray through it is counted, the
+/// plate top it lies on is read facing out of the drill less the part,
+/// and cut, common and drill less the part are valid and add up to the
+/// part and the drill.
+#[test]
+fn a_drill_raised_through_a_plate_top_seamed_on_its_top_line_cuts() {
+    let (model, part) = corpus_part("nist_ctc_03_asme1_rc.stp");
+    let mut model = model;
+    plate_top_drill(&mut model, &part, Vector::new(0.0, 0.0, 1.0), 5e-7);
+}
+
+/// The drill of
+/// [`a_drill_raised_through_a_plate_top_seamed_on_its_top_line_cuts`]
+/// raised by 2e-7 to 1e-6, its seam turned through the eight directions of
+/// [`drills_a_hair_off_a_plate_top_running_into_a_round_cut_as_the_touching_one`].
+/// Every placement is valid and adds up to the part and the drill (see
+/// [`drill`]); the commons of one height agree across the seams to within
+/// the confusion distance times the drill's wall; and each stands off the
+/// touching drill's by no more than the height times the drill's surface.
+#[test]
+#[ignore = "heavy"]
+fn drills_raised_through_a_plate_top_cut_for_every_seam() {
+    let (base, part) = corpus_part("nist_ctc_03_asme1_rc.stp");
+    let (_, r, length) = PLATE_DRILL;
+    let wall = core::f64::consts::TAU * r * length;
+    let surface = core::f64::consts::TAU * r * r + wall;
+    let touching = plate_top_drill(&mut base.clone(), &part, Vector::new(0.0, 0.0, -1.0), 0.0);
+    for dz in [2e-7, 5e-7, 7.5e-7, 1e-6] {
+        let mut commons = Vec::new();
+        for k in 0..8 {
+            let a = core::f64::consts::FRAC_PI_4 * f64::from(k);
+            let seam = Vector::new(a.sin(), 0.0, -a.cos());
+            let common = plate_top_drill(&mut base.clone(), &part, seam, dz);
+            assert!(
+                (common - touching).abs() <= dz * surface,
                 "seam {k}/8 dz {dz}: common {common} against the touching drill's {touching}"
             );
             commons.push(common);

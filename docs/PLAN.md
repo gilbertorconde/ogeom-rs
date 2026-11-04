@@ -122,9 +122,8 @@ Still refused ("the kept pieces did not close into a shell"):
 - lowered by 1e-6, the hug width itself, with the seam on the top line;
 - lowered by 2e-6 or 5e-6, past the hug width, every seam direction
   (not yet traced).
-Raised through the plate top by 2e-7 to 1e-6 with the seam on the top
-line, the drill less the part comes back with a face whose outward normal
-points into the material, which `check` reports: a wrong result.
+Raised through the plate top by 2e-7 to 1e-6 it cuts for every seam
+direction (`drills_raised_through_a_plate_top_cut_for_every_seam`).
 
 ### Fillets and blends
 
