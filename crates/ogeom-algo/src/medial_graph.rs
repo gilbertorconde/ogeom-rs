@@ -1049,11 +1049,8 @@ fn build(
         }
     }
 
-    // Branch points: each triple solved on its own, then the solutions that
-    // land on one point merged. Merging the sampled centres first, by a few
-    // sampling steps, would fuse two true branch points nearer each other
-    // than that (a neck's reflex corners just off a block's centre), and
-    // no point stands equidistant from the fused sites: both were lost.
+    // Solve each triple before merging coincident solutions: nearby branch
+    // points can have different sites with no common equidistant centre.
     let merge = spacing * 4.0;
     let mut nodes: Vec<Node> = Vec::new();
     for (at, labels) in triples {
