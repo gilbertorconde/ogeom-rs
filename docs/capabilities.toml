@@ -1197,7 +1197,8 @@ both faces at once, or leaves either face, and in a request where the \
 edge shares a face or a vertex with another of its edges. A ball whose \
 contact runs off a face along part of an edge, out of the solid, is cut \
 off there as alone, in a request too: where the edge shares a face or a \
-vertex with another of the request, its band is checked against theirs \
+vertex with another of the request, or stands within the two setbacks' \
+sum of another, its band is checked against theirs \
 on the stretch the face holds, up to the face's side, and on the face \
 across that side, at the side and, for a convex edge, where the ball's \
 arc meets that face. It refuses by name where the face it runs off, or, \

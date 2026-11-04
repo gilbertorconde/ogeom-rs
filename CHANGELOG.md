@@ -98,6 +98,25 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`fillet_edges` checks a band cut off past a face's side against the
+  request's other bands, where its edge shares nothing with them.** (#691)
+  - An edge sharing no face and no vertex with another of the request was
+    rounded as alone and its band checked against none. Where its ball
+    runs off a face, the band is cut off on the face across that face's
+    side, which another band of the request may round, and the two bands
+    could overlap with nothing checking it.
+  - Such an edge, where it stands within the sum of the two bands'
+    setbacks of another edge of the request, now has its band read past
+    the face's side as an edge sharing a face is, and checked against the
+    others'. A band lies within its setback of its edge, so edges standing
+    further apart round as before.
+  - Measured: two concave seams, a sloping step's foot on a floor and a
+    slanted block's foot on the step, each running off its narrow face
+    over part of its length at radius 1: rounded alone, their fills share
+    a volume of 0.0026, and the request, which rounded them so, is now
+    refused by name. With the block set back clear of the step's edge,
+    the request adds the sum of the two edges alone.
+
 - **`fillet_edges` rounds an edge whose ball runs off a face along part
   of it beside edges it shares a face or a corner with.**
   - A request refused any station where the ball's contact ran off its

@@ -599,9 +599,8 @@ fn fillet_edges_own(
     // back into another edge's band, the two balls overlap.
     let mut contacts = Vec::with_capacity(edges.len());
     // An edge sharing no face and no vertex with another of the request
-    // has no band checked against its own: its contacts stand on its two
-    // faces, which no other band reaches across, and no corner or junction
-    // takes its ends.
+    // stands alone: no corner or junction takes its ends, and its band
+    // is built as it is alone.
     let mut touched: Vec<(Vec<ogeom_topo::TShapeId>, Vec<ogeom_topo::TShapeId>)> =
         Vec::with_capacity(edges.len());
     for edge in edges {
@@ -637,6 +636,31 @@ fn fillet_edges_own(
                     contacts.push(Vec::new());
                 }
                 Err(other) => return Err(other),
+            }
+        }
+        // A band lies within its setback of its edge, its contacts its
+        // farthest points. A band standing alone whose ball runs off a face
+        // is cut off on the face across that face's side, which may be one
+        // another band stands on; where the two edges stand within their
+        // setbacks' sum, it is checked against the others as a neighbour's
+        // is.
+        let reach =
+            |found: &[crate::support::Contact]| found.iter().map(|c| c.setback).reduce(f64::max);
+        let mut boxes = Vec::with_capacity(edges.len());
+        for edge in edges {
+            boxes.push(ogeom_algo::shape_bounds(model, edge, tol)?);
+        }
+        let reaches: Vec<Option<f64>> = contacts.iter().map(|found| reach(found)).collect();
+        for (i, edge) in edges.iter().enumerate() {
+            let Some(own) = reaches[i].filter(|_| alone(i)) else {
+                continue;
+            };
+            let near = reaches.iter().enumerate().any(|(j, other)| {
+                j != i
+                    && other.is_some_and(|other| boxes[i].distance_to_box(&boxes[j]) < own + other)
+            });
+            if near {
+                contacts[i] = crate::support::ball_fits(model, solid, edge, radius, true, tol)?;
             }
         }
         Ok(())

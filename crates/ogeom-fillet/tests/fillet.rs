@@ -1388,6 +1388,158 @@ fn a_seam_cut_off_at_a_side_inside_another_band_is_refused() {
     );
 }
 
+/// A prism of the planar polygon `points`, square to `normal`, swept
+/// along `sweep`.
+fn polygon_prism(
+    model: &mut ogeom_topo::Model,
+    points: &[Point],
+    normal: ogeom_math::Direction,
+    sweep: ogeom_math::Vector,
+) -> ogeom_topo::Shape {
+    use ogeom_math::Plane;
+    let wire = ogeom_algo::make_polygon(model, points, true, T)
+        .unwrap()
+        .shape;
+    let plane = ogeom_geom::PlaneSurface::over(
+        Plane::through(points[0], normal),
+        (-100.0, 100.0),
+        (-100.0, 100.0),
+    )
+    .unwrap();
+    let face = ogeom_algo::make_face(model, plane.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    ogeom_algo::make_prism(model, &face, sweep, T)
+        .unwrap()
+        .shape
+}
+
+/// A step on a floor, its top sloping down along x, and a block standing
+/// on the step, its face slanting toward the step's edge: two concave
+/// seams sharing no face and no vertex, the step's foot on the floor and
+/// the block's foot on the step. Each stands under the radius over part
+/// of its length, the step's wall in height and the step's top beside the
+/// block in width, so each ball runs off its narrow face there, out of
+/// the solid, and each band is cut off on the face across that face's
+/// side: the step's band on the step's top, which the block's band
+/// rounds, and the block's band on the step's wall. Rounded alone, the
+/// two fills of the radius overlap past the step's edge: their common
+/// volume is positive and the request would round each edge with a band
+/// cutting into the other, so it is refused by name. With the block set
+/// back, its band clear of the step's edge, the request rounds each edge
+/// as it rounds alone: the step's band is the closed form `(1 - pi/4) r^2
+/// L` for its square crease of length `L`, and the two together add the
+/// sum of what each adds alone. Before, a band sharing nothing with the
+/// others was never checked against them.
+#[test]
+fn a_band_alone_cut_off_on_a_face_another_band_rounds_is_checked() {
+    use core::f64::consts::FRAC_PI_4;
+    use ogeom_math::{Direction, Vector};
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-4,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let radius = 1.0;
+    // The step's height at its ends, and the step's top's width beside
+    // the block at the block's ends.
+    let step = (1.7, 0.5);
+    let volume = |model: &ogeom_topo::Model, solid: &ogeom_topo::Shape| {
+        ogeom_algo::volume_properties(model, solid, fine, T)
+            .unwrap()
+            .mass
+    };
+    for (beside, overlap) in [((1.7, 0.5), true), ((3.0, 2.5), false)] {
+        let mut model = ogeom_topo::Model::new();
+        let floor = polygon_prism(
+            &mut model,
+            &[
+                Point::new(0.0, -6.0, -1.0),
+                Point::new(10.0, -6.0, -1.0),
+                Point::new(10.0, 6.0, -1.0),
+                Point::new(0.0, 6.0, -1.0),
+            ],
+            Direction::Z,
+            Vector::new(0.0, 0.0, 1.0),
+        );
+        let raised = polygon_prism(
+            &mut model,
+            &[
+                Point::new(1.0, 0.0, -0.5),
+                Point::new(9.0, 0.0, -0.5),
+                Point::new(9.0, 0.0, step.1),
+                Point::new(1.0, 0.0, step.0),
+            ],
+            Direction::Y,
+            Vector::new(0.0, -5.0, 0.0),
+        );
+        let block = polygon_prism(
+            &mut model,
+            &[
+                Point::new(2.0, -beside.0, 0.0),
+                Point::new(2.0, -4.0, 0.0),
+                Point::new(8.0, -4.0, 0.0),
+                Point::new(8.0, -beside.1, 0.0),
+            ],
+            Direction::Z,
+            Vector::new(0.0, 0.0, 3.0),
+        );
+        let part = ogeom_bool::fuse(&mut model, &floor, &raised, T)
+            .unwrap()
+            .shape;
+        let part = ogeom_bool::fuse(&mut model, &part, &block, T)
+            .unwrap()
+            .shape;
+        let before = volume(&model, &part);
+        let foot = edge_with_midpoint(&model, &part, Point::new(5.0, 0.0, 0.0));
+        let top = f64::midpoint(step.0, step.1);
+        let width = f64::midpoint(beside.0, beside.1);
+        let seat = edge_with_midpoint(&model, &part, Point::new(5.0, -width, top));
+        let mut fills = Vec::new();
+        let mut added = Vec::new();
+        for edge in [&foot, &seat] {
+            let alone = ogeom_fillet::fillet_edge(&mut model, &part, edge, radius, T).unwrap();
+            added.push(volume(&model, &alone.shape) - before);
+            fills.push(
+                ogeom_bool::cut(&mut model, &alone.shape, &part, T)
+                    .unwrap()
+                    .shape,
+            );
+        }
+        let crease = (1.0 - FRAC_PI_4) * radius * radius * 8.0;
+        assert!(
+            (added[0] - crease).abs() < 1e-9,
+            "the step's band added {} against {crease}",
+            added[0]
+        );
+        let common = ogeom_bool::common(&mut model, &fills[0], &fills[1], T)
+            .unwrap()
+            .shape;
+        let shared = volume(&model, &common);
+        let asked = ogeom_fillet::fillet_edges(&mut model, &part, &[foot, seat], radius, T);
+        if overlap {
+            assert!(shared > 1e-3, "the fills alone share {shared}");
+            let Err(ogeom_core::OgeomError::Construction(why)) = asked else {
+                panic!("two bands overlapping past a face's side were rounded");
+            };
+            assert!(
+                why.to_string()
+                    .contains("two blends of the chain overlap across a face they share"),
+                "{why}"
+            );
+        } else {
+            assert!(shared < 1e-9, "the fills alone share {shared}");
+            let rounded = asked.unwrap();
+            let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+            let both = volume(&model, &rounded.shape) - before;
+            assert!(
+                (both - added.iter().sum::<f64>()).abs() < 1e-9,
+                "the two bands added {both} against {added:?} alone"
+            );
+        }
+    }
+}
+
 /// A round wider than a strip beside its edge takes the strip off whole:
 /// the corner of a prism, cut by a narrow bevel, rounded on either of the
 /// bevel's edges at a radius whose ball no longer touches the bevel. No
