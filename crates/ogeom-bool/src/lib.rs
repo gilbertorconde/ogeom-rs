@@ -3291,10 +3291,12 @@ const GRAZE_REACH: f64 = 10.0;
 ///
 /// With `crossings`, on the retries run again once every other has refused
 /// a piece read on the other solid (see [`settled`]), a section line of two
-/// planes also ends where it crosses an edge of either face. Two walls leaning a hair apart
-/// cross a few microns inside one's edge, and the strip between stands
-/// within rounding of the other wall: the edges bounding the strip lie on
-/// that wall from the crossing on, and carried there they split the other
+/// planes also ends where it crosses an edge of either face: a line edge,
+/// and on the retries after those, any edge ([`section_crossings`]). Two
+/// walls leaning a hair apart cross a few microns inside one's edge, and
+/// the strip between stands within rounding of the other wall: the edges
+/// bounding the strip lie on that wall from the crossing on (an arc from
+/// one crossing to the other), and carried there they split the other
 /// wall's matching strip off, so the two are read as one contact and one
 /// of them kept. Every earlier attempt leaves the edges where they are, so
 /// whatever those resolve is resolved as before.
@@ -3303,7 +3305,7 @@ fn graze_contacts(
     gb: &GSolid,
     sections: &[SectionRec],
     contacts: &[ContactRec],
-    crossings: bool,
+    crossings: Crossings,
     tol: Tolerances,
 ) -> OgeomResult<Vec<ContactRec>> {
     let reach = tol.confusion() * GRAZE_REACH;
@@ -3341,23 +3343,32 @@ fn graze_contacts(
                 };
                 let reached = near.max(e.standoff);
                 // A section line whose ends stand off the edge may still
-                // leave the owner face across it: the crossing is then its
-                // one end there, the other staying out of reach, and its
-                // middle is read an edge's length along from the crossing.
-                let (ends, middle) = match crossings
-                    .then(|| lines_crossing(&section.curve, &e.curve, tol))
-                    .transpose()?
-                    .flatten()
+                // leave the owner face across it. Crossed once, the
+                // crossing is its one end there, the other staying out of
+                // reach, and its middle is read an edge's length along from
+                // the crossing; crossed twice, the two crossings are its
+                // ends and its middle is halfway between them.
+                let crossed = if crossings != Crossings::Off
+                    && ends.iter().all(|p| e.bound.distance_to(*p) > reached)
                 {
-                    Some((at, along)) if ends.iter().all(|p| e.bound.distance_to(*p) > reached) => {
+                    section_crossings(&section.curve, e, &owner.surface, crossings, reached, tol)?
+                } else {
+                    None
+                };
+                let (ends, middle) = match crossed {
+                    Some(Crossed::Once(at, along)) => {
                         let length = e
                             .curve
                             .point_at(e.crange.0, tol)?
                             .distance(e.curve.point_at(e.crange.1, tol)?);
                         ([at, ends[1]], at + along * length)
                     }
-                    _ => (ends, middle),
+                    Some(Crossed::Twice(first, second)) => {
+                        ([first, second], first.midpoint(second))
+                    }
+                    None => (ends, middle),
                 };
+                let crossed = crossed.is_some() && !matches!(&*e.curve, Curve::Line(_));
                 if ends.iter().all(|p| e.bound.distance_to(*p) > reached)
                     || contacts.iter().chain(&out).any(held)
                 {
@@ -3468,12 +3479,151 @@ fn graze_contacts(
                         target_from_a,
                         target_face,
                         bound: e.bound,
+                        crossed,
                     });
                 }
             }
         }
     }
     Ok(out)
+}
+
+/// Which edges [`graze_contacts`] carries onto the other face from where a
+/// section line crosses them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Crossings {
+    /// None: an edge is carried only from a section's own ends.
+    Off,
+    /// Line edges.
+    Lines,
+    /// Edges of any curve.
+    Curves,
+}
+
+/// Where a section line crosses an edge of the face it lies on, as
+/// [`section_crossings`] finds it.
+enum Crossed {
+    /// One crossing, on the line, with the line's unit direction.
+    Once(Point, ogeom_math::Vector),
+    /// Two crossings, on the line.
+    Twice(Point, Point),
+}
+
+/// Where a section line crosses the boundary edge `e` of the face whose
+/// surface is `owner`, within the edge's range: `None` unless the section
+/// is a line, or where the edge is crossed other than once or twice.
+///
+/// A line edge is crossed where the two lines come nearest each other
+/// ([`lines_crossing`]). Any other edge needs the face to be a plane, which
+/// holds both it and the line. A circle is crossed where the line, laid in
+/// the circle's plane, meets it: the two roots of a quadratic. Any other
+/// curve is crossed where its signed distance from the line, square to the
+/// line in the plane, changes sign: read at 64 steps along the range and
+/// halved down to rounding at each change. Two crossings within one step
+/// are not seen; what is found still carries a stretch only where the
+/// stretch lies on the other face end to end. Each crossing is given on
+/// the line, and kept only where the edge's nearest point to it is within
+/// `reach` and inside the edge's range.
+fn section_crossings(
+    section: &Curve,
+    e: &BoundaryEdge,
+    owner: &SurfaceGeometry,
+    crossings: Crossings,
+    reach: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Crossed>> {
+    if matches!(&*e.curve, Curve::Line(_)) {
+        return Ok(
+            lines_crossing(section, &e.curve, tol)?.map(|(at, along)| Crossed::Once(at, along))
+        );
+    }
+    if crossings != Crossings::Curves {
+        return Ok(None);
+    }
+    let (Curve::Line(_), SurfaceGeometry::Plane(plane)) = (section, owner) else {
+        return Ok(None);
+    };
+    let p = section.point_at(0.0, tol)?;
+    let u = section.point_at(1.0, tol)? - p;
+    let length = u.magnitude();
+    if length <= 0.0 {
+        return Ok(None);
+    }
+    let u = u / length;
+    let mut found: Vec<Point> = Vec::new();
+    if let Curve::Circle(c) = &*e.curve {
+        let circle = c.circle();
+        let axis = circle.frame().z().vector();
+        let w = p - circle.centre();
+        let w = w - axis * w.dot(axis);
+        let v = u - axis * u.dot(axis);
+        let (square, half, rest) = (
+            v.dot(v),
+            w.dot(v),
+            w.dot(w) - circle.radius() * circle.radius(),
+        );
+        let discriminant = half * half - square * rest;
+        if square <= 0.0 || discriminant <= 0.0 {
+            return Ok(None);
+        }
+        let q = -(half + discriminant.sqrt().copysign(half));
+        if q == 0.0 {
+            return Ok(None);
+        }
+        found.extend([p + u * (q / square), p + u * (rest / q)]);
+    } else {
+        let across = u.cross(plane.plane().normal().vector());
+        let size = across.magnitude();
+        if size <= 0.0 {
+            return Ok(None);
+        }
+        let across = across / size;
+        let side = |q: Point| (q - p).dot(across);
+        let corners = e.bound.expanded(reach).corners();
+        if corners.iter().all(|q| side(*q) > 0.0) || corners.iter().all(|q| side(*q) < 0.0) {
+            return Ok(None);
+        }
+        let (lo, hi) = e.crange;
+        let at = |t: f64| -> OgeomResult<f64> { Ok(side(e.curve.point_at(t, tol)?)) };
+        let mut before = (lo, at(lo)?);
+        for i in 1..=64 {
+            let t = lo + (hi - lo) * f64::from(i) / 64.0;
+            let now = (t, at(t)?);
+            if (before.1 < 0.0) != (now.1 < 0.0) {
+                let (mut a, mut b, mut fa) = (before.0, now.0, before.1);
+                for _ in 0..64 {
+                    let m = f64::midpoint(a, b);
+                    if m <= a || m >= b {
+                        break;
+                    }
+                    let fm = at(m)?;
+                    if (fa < 0.0) == (fm < 0.0) {
+                        (a, fa) = (m, fm);
+                    } else {
+                        b = m;
+                    }
+                }
+                let q = e.curve.point_at(f64::midpoint(a, b), tol)?;
+                found.push(p + u * (q - p).dot(u));
+            }
+            before = now;
+        }
+    }
+    let mut kept: Vec<Point> = Vec::new();
+    for q in found {
+        let foot = ogeom_algo::project_on_curve(&e.curve, q, 64, tol)?;
+        if foot.distance <= reach
+            && foot.parameter >= e.crange.0 - tol.parametric()
+            && foot.parameter <= e.crange.1 + tol.parametric()
+        {
+            kept.push(q);
+        }
+    }
+    Ok(match kept[..] {
+        [at] => Some(Crossed::Once(at, u)),
+        [first, second] => Some(Crossed::Twice(first, second)),
+        _ => None,
+    })
 }
 
 /// Where two lines come nearest each other, on the first, with the first's
@@ -3632,6 +3782,7 @@ fn tangent_contacts(
                     target_from_a,
                     target_face,
                     bound: e.bound,
+                    crossed: false,
                 });
             }
         }
@@ -3865,6 +4016,7 @@ fn cluster_paves(
     edge_tolerance: f64,
     paves: &[Pave],
     off: Option<OffFace<'_>>,
+    along: Along<'_>,
     tol: Tolerances,
 ) -> OgeomResult<Vec<PaveCluster>> {
     let mut ts: Vec<Pave> = paves
@@ -3916,9 +4068,15 @@ fn cluster_paves(
                         .all(|p| p.distance(at) <= last.spread + pave.spread))
         });
         let touch = match (prev, off) {
-            (Some((held, last)), Some(off)) if !joined => {
-                grazed(curve, (held, last), (at, pave), edge_tolerance, off, tol)?
-            }
+            (Some((held, last)), Some(off)) if !joined => grazed(
+                curve,
+                (held, last),
+                (at, pave),
+                edge_tolerance,
+                off,
+                along,
+                tol,
+            )?,
             _ => None,
         };
         if (joined || touch.is_some())
@@ -3954,6 +4112,29 @@ fn cluster_paves(
 /// How far a point stands off a face of the other solid, the face named as
 /// [`Pave::across`] names it.
 type OffFace<'f> = &'f dyn Fn((bool, usize), Point) -> OgeomResult<f64>;
+
+/// A stretch of an edge carried onto a face of the other solid from where
+/// section lines cross it ([`ContactRec::crossed`]): its range on the edge,
+/// and that face as [`Pave::across`] names it.
+type Stretch = ((f64, f64), (bool, usize));
+
+/// The [`Stretch`]es of one edge.
+type Along<'h> = &'h [Stretch];
+
+/// The [`Stretch`]es of every edge that has any.
+type AlongEdges = ogeom_core::FastMap<EdgeKey, Vec<Stretch>>;
+
+/// [`AlongEdges`] for the contacts carried.
+fn crossed_along(contacts: &[ContactRec]) -> AlongEdges {
+    let mut along = AlongEdges::default();
+    for c in contacts.iter().filter(|c| c.crossed) {
+        along
+            .entry(c.node)
+            .or_default()
+            .push((c.crange, (c.target_from_a, c.target_face)));
+    }
+    along
+}
 
 /// How far `p` stands off the surface of a face of `a` (the flag set) or
 /// of `b`.
@@ -3991,13 +4172,16 @@ fn off_face(
 /// sections were fitted, and a window read off their fit error would
 /// split a graze or not as a fit happens to land. So the stub a junction
 /// takes in is at most 0.1 long at millimetre tolerances, and the
-/// junction's reach never grows with a section's stated error.
+/// junction's reach never grows with a section's stated error. A stretch
+/// `along` carries onto the face between the two is an edge running along
+/// it, and no graze.
 fn grazed(
     curve: &Curve,
     (from, first): (Point, Pave),
     (to, second): (Point, Pave),
     edge_tolerance: f64,
     off: OffFace<'_>,
+    along: Along<'_>,
     tol: Tolerances,
 ) -> OgeomResult<Option<(f64, Point)>> {
     let (Some(face), Some(other)) = (first.across, second.across) else {
@@ -4005,6 +4189,12 @@ fn grazed(
     };
     let honesty = honest(first.honesty.max(second.honesty).max(edge_tolerance), tol);
     if face != other || from.distance(to) > honest(f64::INFINITY, tol) * 1e2 {
+        return Ok(None);
+    }
+    let (lo, hi) = (first.t.min(second.t), first.t.max(second.t));
+    if along.iter().any(|&((a, b), onto)| {
+        onto == face && a <= lo + tol.parametric() && b >= hi - tol.parametric()
+    }) {
         return Ok(None);
     }
     let mut nearest: Option<(f64, f64, Point)> = None;
@@ -4063,6 +4253,11 @@ struct ContactRec {
     /// The owner edge's conservative box: a target edge whose own box
     /// stands further off than a crossing can reach is not intersected.
     bound: ogeom_math::Aabb,
+    /// Whether the stretch runs between two crossings of the edge by a
+    /// section line, or from one to a vertex, where the edge is a curve
+    /// (see [`graze_contacts`]): the edge runs along the target face there,
+    /// however short the stretch.
+    crossed: bool,
 }
 
 /// A same-domain contact edge's image in the shared surface's chart, where
@@ -5357,6 +5552,7 @@ fn fill(
                                     target_from_a,
                                     target_face,
                                     bound: e.bound,
+                                    crossed: false,
                                 });
                             }
                         }
@@ -5419,6 +5615,7 @@ fn fill(
                                         target_from_a,
                                         target_face,
                                         bound: e.bound,
+                                        crossed: false,
                                     });
                                 }
                             }
@@ -5539,6 +5736,7 @@ fn fill(
                                         target_from_a,
                                         target_face,
                                         bound: e.bound,
+                                        crossed: false,
                                     });
                                 }
                             }
@@ -9043,6 +9241,7 @@ fn pave_junctions(
     ga: &GSolid,
     gb: &GSolid,
     paves: &ogeom_core::FastMap<EdgeKey, Vec<Pave>>,
+    along: &AlongEdges,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Junction>> {
     let mut seen: ogeom_core::FastSet<EdgeKey> = ogeom_core::FastSet::default();
@@ -9071,7 +9270,8 @@ fn pave_junctions(
         }
         .max(tol.confusion() * 10.0);
         let off = |face, p| off_face(ga, gb, face, p, tol);
-        for cluster in cluster_paves(&e.curve, e.crange, e.tolerance, ts, Some(&off), tol)? {
+        let along = along.get(&e.node).map_or(&[][..], Vec::as_slice);
+        for cluster in cluster_paves(&e.curve, e.crange, e.tolerance, ts, Some(&off), along, tol)? {
             if cluster.members > 1 || cluster.honesty > tol.confusion() * 1e2 || tolerant {
                 junctions.push(Junction {
                     at: cluster.at,
@@ -10256,12 +10456,12 @@ thread_local! {
     /// [`settled`]). Off but for the last attempt. Read once per boolean
     /// on the calling thread.
     static AT_STATED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Whether a section line also ends where it crosses an edge, for the
-    /// edges it carries onto the other face (see [`graze_contacts`]). Off
-    /// but for the retries run again once every other has refused a piece
-    /// read on the other solid's boundary. Read once per boolean on the
-    /// calling thread.
-    static FROM_CROSSINGS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Which edges a section line also ends where it crosses, for the edges
+    /// it carries onto the other face (see [`graze_contacts`]). Off but for
+    /// the retries run again once every other has refused a piece read on
+    /// the other solid's boundary. Read once per boolean on the calling
+    /// thread.
+    static FROM_CROSSINGS: std::cell::Cell<Crossings> = const { std::cell::Cell::new(Crossings::Off) };
 }
 
 /// An operation run once, and where it refuses, again in three steps. Where
@@ -10293,11 +10493,15 @@ thread_local! {
 /// other solid's edges bounding it ([`thin_by_strands`]).
 ///
 /// Last, where the refusal was a piece on the other solid's boundary and
-/// every retry refused too, the same retries again with the edges a
+/// every retry refused too, the same retries again with the line edges a
 /// section line crosses carried onto the other face from the crossing on
 /// ([`graze_contacts`]): a strip of one wall between such a crossing and
 /// its edge, standing on another wall a hair's angle off it, is then split
-/// off both and read as one contact. What the retries without them
+/// off both and read as one contact. Where those refuse too, once more
+/// with edges of any curve carried so, the result kept only where nothing
+/// in it states a tolerance past the weld distance: an arc's strip is
+/// shorter than a line's, and a junction welding its two ends together
+/// would weld the faces beside it into one. What the retries without them
 /// resolve is resolved as before.
 fn settled(
     model: &mut Model,
@@ -10326,12 +10530,18 @@ fn settled(
         struct Plain;
         impl Drop for Plain {
             fn drop(&mut self) {
-                FROM_CROSSINGS.set(false);
+                FROM_CROSSINGS.set(Crossings::Off);
             }
         }
-        FROM_CROSSINGS.set(true);
         let _plain = Plain;
+        FROM_CROSSINGS.set(Crossings::Lines);
         if let Some(built) = retried(model, tol, &refusal, &mut attempt)? {
+            return Ok(built);
+        }
+        FROM_CROSSINGS.set(Crossings::Curves);
+        if let Some(built) = retried(model, tol, &refusal, &mut attempt)?
+            && welded_within(model, &built.shape, weld_limit(tol))?
+        {
             return Ok(built);
         }
     }
@@ -10372,9 +10582,7 @@ fn retried(
             Err(_) => {}
         }
     }
-    // The weld distance, and the wider confusion the welding run itself
-    // states its vertices to.
-    let limit = (tol.confusion() * 1e2 + tol.confusion() * 10.0) * (1.0 + 1e-9);
+    let limit = weld_limit(tol);
     for widen in [10.0, 100.0] {
         let Ok(wider) = Tolerances::with_scale(tol.scale() / widen) else {
             continue;
@@ -10407,6 +10615,12 @@ fn retried(
         }
     }
     Ok(None)
+}
+
+/// The widest tolerance a retried result may state: the weld distance, and
+/// the wider confusion the welding run itself states its vertices to.
+fn weld_limit(tol: Tolerances) -> f64 {
+    (tol.confusion() * 1e2 + tol.confusion() * 10.0) * (1.0 + 1e-9)
 }
 
 /// Whether every edge and vertex of `shape` states a tolerance within
@@ -10641,7 +10855,8 @@ fn general_fuse_as(
             past_a_pole(section, pcurve, face, tol)?;
         }
     }
-    let mut junctions = pave_junctions(&ga, &gb, &paves, tol)?;
+    let along = crossed_along(&contacts);
+    let mut junctions = pave_junctions(&ga, &gb, &paves, &along, tol)?;
     if *DEBUG_WIRE {
         for j in &junctions {
             eprintln!("JUNCTION from paves at {:?} reach {:.3e}", j.at, j.reach);
@@ -10825,7 +11040,9 @@ fn general_fuse_as(
                 // Paves the edge itself cannot tell apart are one
                 // junction, and the cluster's representative speaks for it.
                 let off = |face, p| off_face(&ga, &gb, face, p, tol);
-                for c in cluster_paves(&e.curve, e.crange, e.tolerance, ts, Some(&off), tol)? {
+                let along = along.get(&e.node).map_or(&[][..], Vec::as_slice);
+                for c in cluster_paves(&e.curve, e.crange, e.tolerance, ts, Some(&off), along, tol)?
+                {
                     if c.members > 1 {
                         let chart = e.pcurve.point_at(rescale(c.t, e.crange, e.prange), tol)?;
                         gathered.push((c.at, chart, c.span + c.honesty));
@@ -11040,6 +11257,7 @@ fn general_fuse_as(
                         contact.tolerance,
                         ts,
                         None,
+                        &[],
                         tol,
                     )?
                     .iter()
@@ -16208,6 +16426,7 @@ mod tests {
                 target_from_a: true,
                 target_face: 0,
                 bound: ogeom_math::Aabb::EMPTY,
+                crossed: false,
             };
             // The piece is on the left of its ring about the chart's
             // normal, which is `+z` or `-z`.
@@ -16393,7 +16612,7 @@ mod tests {
                 })
                 .collect();
             let clusters =
-                cluster_paves(&curve, crange, 1e-7, &paves, Some(&off_drill), T).unwrap();
+                cluster_paves(&curve, crange, 1e-7, &paves, Some(&off_drill), &[], T).unwrap();
             assert_eq!(clusters.len(), 1, "honesty {honesty}: {clusters:?}");
             assert!(clusters[0].at.x.abs() < half, "{clusters:?}");
         }
@@ -16539,12 +16758,12 @@ mod tests {
             spread,
         };
         let two = [pave(1.0, 0.03), pave(1.05, 0.03)];
-        let clusters = cluster_paves(&curve, crange, 0.0096, &two, None, T).unwrap();
+        let clusters = cluster_paves(&curve, crange, 0.0096, &two, None, &[], T).unwrap();
         assert_eq!(clusters.len(), 1, "{clusters:?}");
         assert!((clusters[0].span - 0.05).abs() < 1e-9, "{clusters:?}");
         let tight = [pave(1.0, 0.0), pave(1.05, 0.0)];
         assert_eq!(
-            cluster_paves(&curve, crange, 0.0096, &tight, None, T)
+            cluster_paves(&curve, crange, 0.0096, &tight, None, &[], T)
                 .unwrap()
                 .len(),
             2
@@ -16552,7 +16771,7 @@ mod tests {
         let run: Vec<Pave> = (0..8)
             .map(|k| pave(0.5 + 0.05 * f64::from(k), 0.03))
             .collect();
-        let clusters = cluster_paves(&curve, crange, 0.0096, &run, None, T).unwrap();
+        let clusters = cluster_paves(&curve, crange, 0.0096, &run, None, &[], T).unwrap();
         assert!(clusters.len() > 1, "{clusters:?}");
         for c in &clusters {
             assert!(c.span <= 0.06 + 1e-9, "{clusters:?}");
