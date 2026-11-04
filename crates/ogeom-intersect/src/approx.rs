@@ -239,8 +239,12 @@ pub fn approximate_branch(
     {
         fitted = Some(winding);
     }
+    let mut tried_free = true;
     let mut chosen = match fitted {
-        Some(fitted) if fitted.0.error <= tolerance => fitted,
+        Some(fitted) if fitted.0.error <= tolerance => {
+            tried_free = false;
+            fitted
+        }
         Some(fitted) => {
             let other = free()?;
             if other.0.error < fitted.0.error {
@@ -266,6 +270,20 @@ pub fn approximate_branch(
         let again = measured(&held);
         if again < fit_error {
             (chosen, fit_error) = (held, again);
+        }
+    }
+    // A seeded fit within its tolerance at every sample stands without the
+    // free one being made, but it can pass every sample and still swing
+    // between two of them. Where it misses, measured, by more than a caller
+    // takes whole (as beside a pole, below), the free fit is made and
+    // measured the same way, and the closer stands.
+    if fit_error > tolerance * 1e2
+        && !tried_free
+        && let Ok(other) = free()
+    {
+        let again = measured(&other);
+        if again < fit_error {
+            (chosen, fit_error) = (other, again);
         }
     }
     // Beside a pole of either chart the joint fit can miss by the chart's

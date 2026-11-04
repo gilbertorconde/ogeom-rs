@@ -46,6 +46,28 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A marched section rejoined where its walks stall, or fitted where a
+  seeded fit swings between samples, states the error it fits within.**
+  - Where two surfaces are tangent the section's walks stall, and the
+    fragments are rejoined at the tangency. The joint took the point
+    the fragments stall at with the parameters of the next fragment's
+    first sample, up to sixty chords away and across a chart's closure
+    from it. A section cut there ended on that sample, and its pcurves,
+    fitted to it, stood off the curve at the end: between two skinned
+    runs round a lens, glued on a mitre plane where a hole's circle meets
+    itself across the skin's closure, a section stated 2.1e-3, 5.8e-4
+    past the closure in the skin's chart. The joint now takes the
+    parameters the point was walked at, and no section of that pipe
+    states more than 3.2e-5.
+  - A section's fit seeded at its stations and passing every sample
+    within its tolerance stood without the free fit being made, though
+    measured between the samples it could miss far more. Where it misses
+    by more than a hundred times its tolerance, the miss a caller takes
+    whole, the free fit is now made and measured the same way, and the
+    closer stands. Where a skin crosses a mitre plane ever more shallowly toward
+    an L's corner, the seeded fit measured 2.5e-2 off and the section
+    stated 1.6e-3; it now states 2.2e-4.
+
 - **A face bounded by edges whose vertices stand off their curves' ends by
   more than the chord is meshed on its surface.** (#685)
   - The mesh draws an edge's ends from its vertices, so every face round
