@@ -535,6 +535,41 @@ impl BSpline2d {
     pub const fn is_rational(&self) -> bool {
         self.rational
     }
+
+    /// The same closed image with its seam moved to `u`: what was the
+    /// stretch from `u` to the end now comes first, and the stretch from
+    /// the start to `u` follows it, carried by `lap` so that it continues
+    /// from the end. `lap` is how far the end stands from the start: zero
+    /// for a loop closed in the plane, a whole period for an image winding
+    /// once round a periodic chart. The domain keeps its length and begins
+    /// at `u`, so the image at a parameter past the old end is the old
+    /// image a domain's length earlier, moved by `lap`.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+    /// the end stands further than the parametric tolerance from the start
+    /// carried by `lap`; as [`bspline::split`] if `u` is an end of the
+    /// domain.
+    pub fn reseamed_at(&self, u: f64, lap: Vector2, tol: Tolerances) -> OgeomResult<Self> {
+        let (start, end) = self.domain();
+        let (head, tail) = (self.point_at(start, tol)? + lap, self.point_at(end, tol)?);
+        if head.distance(tail) > tol.parametric() {
+            ogeom_bail!(
+                Construction,
+                "the image does not close over its lap: its ends are {:.3e} apart",
+                head.distance(tail)
+            );
+        }
+        let ((before_knots, before), (after_knots, after)) =
+            bspline::split(&self.knots, &self.control, u, tol)?;
+        let carried = before
+            .iter()
+            .map(|w| Weighted::new(w.point() + lap, w.weight, tol))
+            .collect::<OgeomResult<Vec<_>>>()?;
+        let (knots, control) = bspline::join(&(after_knots, after), &(before_knots, carried))?;
+        Self::rational(knots, control)
+    }
 }
 
 impl Trimmed2d {
@@ -1482,5 +1517,45 @@ mod tests {
         for k in [-2.0_f64, 1.0, 3.0] {
             assert!(base.is_equal(c.point_at(k.mul_add(TAU, 0.7), T).unwrap(), T));
         }
+    }
+
+    /// An image winding once round a periodic chart, its seam moved, is
+    /// the same image from the new start: past the old end it is the old
+    /// image a domain earlier, carried by the lap. An image that does not
+    /// close over the lap it is given is refused.
+    #[test]
+    fn a_reseamed_winding_image_is_the_same_image_from_a_new_start() {
+        // A cubic climbing one period in v while wobbling in u.
+        let lap = Vector2::new(0.0, TAU);
+        let ring = [
+            Point2::new(1.0, 0.0),
+            Point2::new(1.4, 1.5),
+            Point2::new(0.7, 3.0),
+            Point2::new(1.2, 4.5),
+            Point2::new(0.9, 5.5),
+            Point2::new(1.0, TAU),
+        ];
+        let knots = KnotVector::clamped_uniform(3, ring.len()).unwrap();
+        let image = BSpline2d::new(knots, ring.to_vec(), T).unwrap();
+        let (start, end) = image.domain();
+        let seam = 0.35;
+        let moved = image.reseamed_at(seam, lap, T).unwrap();
+        let (new_start, new_end) = moved.domain();
+        assert_relative_eq!(new_start, seam, epsilon = 1e-12);
+        assert_relative_eq!(new_end - new_start, end - start, epsilon = 1e-12);
+        for i in 0..=40 {
+            let s = (end - start) * f64::from(i) / 40.0;
+            let want = if seam + s <= end {
+                image.point_at(seam + s, T).unwrap()
+            } else {
+                image.point_at(seam + s - (end - start), T).unwrap() + lap
+            };
+            let got = moved.point_at(new_start + s, T).unwrap();
+            assert!(
+                got.distance(want) < 1e-12,
+                "at {s}: {got:?} against {want:?}"
+            );
+        }
+        assert!(image.reseamed_at(seam, Vector2::new(0.0, 0.0), T).is_err());
     }
 }

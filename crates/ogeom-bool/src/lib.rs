@@ -3077,6 +3077,79 @@ fn seamed_at_a_stop(
     })
 }
 
+/// A closed marched section with its seam moved to `u`, its curve and both
+/// images the same from the new start, each parameter naming the point it
+/// named: the domain begins at `u`, and past the old end each image is the
+/// old one a lap earlier, carried by the whole periods it climbs over the
+/// lap.
+///
+/// A closed section's kept piece that runs across its seam is split there
+/// to stay within one period. Moved to the piece's start, the seam splits
+/// nothing.
+///
+/// `None` (the piece split at the seam, as before) unless the curve is a
+/// clamped spline closed to the confusion and each image is a spline whose
+/// end stands on its start, carried by whole periods of its chart, to the
+/// parametric tolerance: then nothing moves but the seam.
+fn reseamed_section(
+    section: &SectionRec,
+    u: f64,
+    surfaces: [&SurfaceGeometry; 2],
+    tol: Tolerances,
+) -> Option<SectionRec> {
+    let Curve::BSpline(spline) = &section.curve else {
+        return None;
+    };
+    if spline.is_periodic() {
+        return None;
+    }
+    let (start, end) = spline.domain();
+    if spline
+        .point_at(start, tol)
+        .ok()?
+        .distance(spline.point_at(end, tol).ok()?)
+        > tol.confusion()
+    {
+        return None;
+    }
+    let image = |pcurve: &PlanarCurve, surface: &SurfaceGeometry| -> Option<PlanarCurve> {
+        let PlanarCurve::BSpline(image) = pcurve else {
+            return None;
+        };
+        let domain = image.domain();
+        if (domain.0 - start).abs() > tol.parametric() || (domain.1 - end).abs() > tol.parametric()
+        {
+            return None;
+        }
+        let (head, tail) = (
+            image.point_at(start, tol).ok()?,
+            image.point_at(end, tol).ok()?,
+        );
+        // The lap is the whole periods nearest the image's climb; the
+        // reseam itself refuses an image that misses it.
+        let climb = [tail.x - head.x, tail.y - head.y];
+        let mut lap = [0.0; 2];
+        for (k, span) in chart_spans(surface, tol).into_iter().enumerate() {
+            if let Some(span) = span {
+                lap[k] = (climb[k] / span).round() * span;
+            }
+        }
+        image
+            .reseamed_at(u, ogeom_math::Vector2::new(lap[0], lap[1]), tol)
+            .ok()
+            .map(PlanarCurve::BSpline)
+    };
+    Some(SectionRec {
+        curve: Curve::BSpline(spline.reseamed_at(u, tol).ok()?),
+        pc_a: image(&section.pc_a, surfaces[0])?,
+        pc_b: image(&section.pc_b, surfaces[1])?,
+        face_a: section.face_a,
+        face_b: section.face_b,
+        closed: true,
+        tolerance: section.tolerance,
+    })
+}
+
 /// A face's welded chart outline, borrowed as the trim tests take it.
 fn outline_refs(face: &GFace, tol: Tolerances) -> OgeomResult<Vec<&[Point2]>> {
     let Some(lines) = face.outline(tol) else {
@@ -6198,7 +6271,12 @@ fn fill(
     // section reads. So the measuring runs in parallel and the accumulating
     // runs afterwards in section order: the same split `tessellate` uses,
     // and the same reason: nothing about scheduling can reach the answer.
-    type SectionWork = (Vec<(EdgeKey, Pave)>, Vec<SectionPiece>, Vec<Junction>);
+    type SectionWork = (
+        Vec<(EdgeKey, Pave)>,
+        Vec<SectionPiece>,
+        Vec<Junction>,
+        Option<SectionRec>,
+    );
     let mut hug_junctions: Vec<Junction> = Vec::new();
     // Each section's box, for skipping pairs of sections too far apart to
     // cross. A curve whose box cannot be had stands unbounded and is never
@@ -7002,6 +7080,7 @@ fn fill(
             // where a kept piece ends.
             let mut bridges: Vec<(f64, f64, [Vec<usize>; 2])> = Vec::new();
             let mut kept_stops: Vec<f64> = Vec::new();
+            let mut reseamed: Option<SectionRec> = None;
             for (lo, hi) in candidates {
                 if hi - lo <= tol.parametric() {
                     continue;
@@ -7423,6 +7502,56 @@ fn fill(
                     }
                     cuts = kept;
                 }
+                // A marched section's ends weld at a thousand confusions, and
+                // a piece no longer than that between the domain-end split
+                // and its neighbouring cut is dust the arrangement collapses
+                // into one node: the loop then closes in space within that
+                // weld and its image stops the piece's length short in the
+                // chart. Where nothing moves but the seam, the curve's seam
+                // moves to the interval's start instead, and nothing is
+                // split there.
+                if section.tolerance > 0.0
+                    && let Some(at) = cuts.iter().position(|c| *c == domain.1)
+                    && at > 0
+                    && at + 1 < cuts.len()
+                {
+                    let span = |from: f64, to: f64| -> OgeomResult<f64> {
+                        let mut length = 0.0;
+                        let mut last = section.curve.point_at(at_param(from, domain, true), tol)?;
+                        for k in 1..=16 {
+                            let t = from + (to - from) * f64::from(k) / 16.0;
+                            let p = section.curve.point_at(at_param(t, domain, true), tol)?;
+                            length += last.distance(p);
+                            last = p;
+                        }
+                        Ok(length)
+                    };
+                    let shortest = span(cuts[at - 1], cuts[at])?.min(span(cuts[at], cuts[at + 1])?);
+                    if shortest <= tol.confusion() * 1e3 {
+                        reseamed = reseamed_section(
+                            section,
+                            lo,
+                            [
+                                &ga.faces[section.face_a].surface,
+                                &gb.faces[section.face_b].surface,
+                            ],
+                            tol,
+                        );
+                        if *DEBUG_WIRE {
+                            eprintln!(
+                                "PAVE s{si}: the domain-end split of ({lo:.6}, {hi:.6}) leaves {shortest:.3e}; {}",
+                                if reseamed.is_some() {
+                                    "the seam moves to the interval's start"
+                                } else {
+                                    "it stays"
+                                }
+                            );
+                        }
+                        if reseamed.is_some() {
+                            cuts.remove(at);
+                        }
+                    }
+                }
                 // A hugged edge is boundary where this piece is section: it
                 // must split at the piece's interior cuts too, or the face
                 // that keeps the edge walks one long strand where its
@@ -7576,16 +7705,31 @@ fn fill(
                     }
                 }
             }
-            Ok((paves, pieces, junctions))
+            Ok((paves, pieces, junctions, reseamed))
         },
     );
-    for work in paved {
-        let (found, made, hugged) = work?;
+    let mut reseams: Vec<(usize, SectionRec)> = Vec::new();
+    for (si, work) in paved.into_iter().enumerate() {
+        let (found, made, hugged, reseamed) = work?;
         hug_junctions.extend(hugged);
         for (node, at) in found {
             paves.entry(node).or_default().push(at);
         }
         pieces.extend(made);
+        if let Some(section) = reseamed {
+            reseams.push((si, section));
+        }
+    }
+    // A section whose seam moved names every point by the parameter it had,
+    // a period on where it stood before the new start: each piece's range is
+    // carried into the new domain, so nothing evaluates it out of domain.
+    for (si, section) in reseams {
+        let domain = section.curve.domain();
+        for piece in pieces.iter_mut().filter(|p| p.section == si) {
+            let start = fold(piece.range.0, domain);
+            piece.range = (start, start + (piece.range.1 - piece.range.0));
+        }
+        sections[si] = section;
     }
     share_hugs(&mut pieces, &sections, [ga, gb], tol)?;
     // A piece running along a face's own edge and that edge are one curve,
