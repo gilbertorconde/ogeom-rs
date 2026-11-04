@@ -834,6 +834,67 @@ fn drills_a_hair_off_a_plate_top_running_into_a_round_cut_as_the_touching_one() 
     }
 }
 
+/// The plate-top drill of
+/// [`a_drill_a_hair_under_a_plate_top_running_into_a_round_cuts`] lowered
+/// by 5e-7, five times the confusion distance and within the width a
+/// section runs along an edge at. The drum stands apart from the plate top,
+/// and its top line, in the plane of the wall the round ends on, runs along
+/// the wall's top edge 5e-7 under it, past the edge's end at the round's
+/// tangent line and on along the round's end arc until it crosses the arc
+/// three microns on. That stretch is the wall's own boundary on two edges:
+/// the line stops where it passes the vertex between them, each piece runs
+/// along one edge, and the wall is not split in a sliver 5e-7 wide. Cut,
+/// common and drill less the part are valid and add up to the part and the
+/// drill.
+#[test]
+fn a_drill_lowered_under_a_plate_top_past_the_confusion_distance_cuts() {
+    let (model, part) = corpus_part("nist_ctc_03_asme1_rc.stp");
+    let mut model = model;
+    plate_top_drill(&mut model, &part, Vector::new(0.0, 0.0, -1.0), -5e-7);
+}
+
+/// The drill of
+/// [`a_drill_lowered_under_a_plate_top_past_the_confusion_distance_cuts`]
+/// lowered by 2.5e-7 to 9e-7, its seam turned through
+/// the eight directions of
+/// [`drills_a_hair_off_a_plate_top_running_into_a_round_cut_as_the_touching_one`].
+/// Every placement is valid and adds up to the part and the drill (see
+/// [`drill`]); the commons of one depth agree across the seams to within
+/// the confusion distance times the drill's wall; and each stands off the
+/// touching drill's by no more than the depth times the drill's surface,
+/// which bounds how far moving the drill can change the common.
+#[test]
+#[ignore = "heavy"]
+fn drills_lowered_under_a_plate_top_past_the_confusion_distance_cut() {
+    let (base, part) = corpus_part("nist_ctc_03_asme1_rc.stp");
+    let (_, r, length) = PLATE_DRILL;
+    let wall = core::f64::consts::TAU * r * length;
+    let surface = core::f64::consts::TAU * r * r + wall;
+    let touching = plate_top_drill(&mut base.clone(), &part, Vector::new(0.0, 0.0, -1.0), 0.0);
+    for dz in [-2.5e-7, -5e-7, -7.5e-7, -9e-7] {
+        let mut commons = Vec::new();
+        for k in 0..8 {
+            let a = core::f64::consts::FRAC_PI_4 * f64::from(k);
+            let seam = Vector::new(a.sin(), 0.0, -a.cos());
+            let common = plate_top_drill(&mut base.clone(), &part, seam, dz);
+            assert!(
+                (common - touching).abs() <= dz.abs() * surface,
+                "seam {k}/8 dz {dz}: common {common} against the touching drill's {touching}"
+            );
+            commons.push(common);
+        }
+        let (least, most) = commons
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &c| {
+                (lo.min(c), hi.max(c))
+            });
+        assert!(
+            most - least <= T.confusion() * wall,
+            "dz {dz}: commons spread from {least} to {most} across the seams"
+        );
+    }
+}
+
 /// Stress drill seed 2, drill 5 on `nist_ctc_03`: start, radius and length.
 const PLATE_DRILL: (Point, f64, f64) = (
     Point::new(

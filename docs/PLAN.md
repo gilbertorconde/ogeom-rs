@@ -108,12 +108,23 @@ the touching drill (see
 `drills_a_hair_off_a_plate_top_running_into_a_round_cut_as_the_touching_one`
 in `crates/ogeom/tests/boolean_grazing_drill.rs`), moved onto the plane
 with its seams, rims and caps. Lowered under `nist_ctc_03`'s plate top
-past the confusion distance, by 2e-7 to 1e-6, the stress drill seed 2,
-drill 5 placement is still refused for every seam direction ("the kept
-pieces did not close into a shell"): the drum then stands apart from the
-plate, cut by it in two lines a few microns apart, and its section with
-the round crosses the drill's top line two to five microns past the
-round's tangent edge.
+past it (the stress drill seed 2, drill 5 placement), its top line runs
+along the top edge of the wall the plate's round ends on and on along
+the round's end arc, within the width a section runs along an edge at,
+and cuts from 2.5e-7 to 9e-7 for every seam direction
+(`drills_lowered_under_a_plate_top_past_the_confusion_distance_cut`).
+Still refused ("the kept pieces did not close into a shell"):
+- lowered by at most 2e-7, every seam direction: the top line passes
+  within the crossing gap (the confusion distance and the arc's own
+  tolerance) of the arc's end vertex, its two crossings of the arc's
+  circle a few microns either side of the vertex read as one touch there,
+  and the line's stretch along the arc is lost;
+- lowered by 1e-6, the hug width itself, with the seam on the top line;
+- lowered by 2e-6 or 5e-6, past the hug width, every seam direction
+  (not yet traced).
+Raised through the plate top by 2e-7 to 1e-6 with the seam on the top
+line, the drill less the part comes back with a face whose outward normal
+points into the material, which `check` reports: a wrong result.
 
 ### Fillets and blends
 

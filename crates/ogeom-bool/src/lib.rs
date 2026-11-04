@@ -6997,6 +6997,88 @@ fn fill(
                 }
                 trim_ts = kept;
             }
+            // How far from an edge a stretch of the section may run and
+            // still run along it, below the edge's own reach (see the hug
+            // below). Wider than the crossing filters on purpose for a
+            // fitted section: a tangentially-traced curve wobbles about the
+            // boundary it hugs by far more than a fit budget, and a genuine
+            // section keeps a distance of feature scale, not microns. An
+            // exact section keeps to the edge's own honesty: a plane's
+            // ellipse across a band touches the band's rail tangentially,
+            // and the stretch within a tenth of a millimetre of the rail is
+            // the section, not the rail. Read as a hug it leaves the cap's
+            // crescent unable to close. On the last attempt a fitted
+            // section, too, runs along an edge only within the sum of its
+            // radius and the edge's: its tolerance is how far it may sit
+            // from the true section, the shallow angle of the two surfaces
+            // included, and a section leaving a rim it touches parts from it
+            // by more than that well inside the loose width.
+            let hug_floor = if section.tolerance > 0.0 && !at_stated {
+                tol.confusion() * 1e3
+            } else {
+                tol.confusion() * 10.0
+            };
+            // A vertex of either face within that width of an exact section
+            // is a stop of it. Running along a face's boundary, the section
+            // passes there from one edge onto the next (a drill's top line a
+            // few confusion distances under a plate's edge, on past its end
+            // along the arc the edge runs into), and the hug reads a stretch
+            // along one edge at a time: a piece along two reads as along
+            // neither, and splits the face in a sliver within the width of
+            // the face's own boundary. A section crossing a face's edges at
+            // a vertex already stops there.
+            let mut vertex_stops: Vec<f64> = Vec::new();
+            if section.tolerance <= 0.0 {
+                let width = hug_floor;
+                let near_stop = |t: f64, at: Point| -> OgeomResult<bool> {
+                    Ok(section
+                        .curve
+                        .point_at(at_param(t, domain, section.closed), tol)?
+                        .distance(at)
+                        <= width)
+                };
+                for own in [&ga.faces[section.face_a], &gb.faces[section.face_b]] {
+                    for e in &own.edges {
+                        for end in [e.crange.0, e.crange.1] {
+                            let vertex = e.curve.point_at(end, tol)?;
+                            if section_bounds[si]
+                                .as_ref()
+                                .is_some_and(|b| !b.expanded(width).contains(vertex))
+                            {
+                                continue;
+                            }
+                            let foot =
+                                ogeom_algo::project_on_curve(&section.curve, vertex, 64, tol)?;
+                            if foot.distance > width
+                                || (!section.closed
+                                    && (foot.parameter <= domain.0 + tol.parametric()
+                                        || foot.parameter >= domain.1 - tol.parametric()))
+                            {
+                                continue;
+                            }
+                            let mut taken = false;
+                            for &t in trim_ts.iter().chain(&vertex_stops) {
+                                if near_stop(t, foot.point)? {
+                                    taken = true;
+                                    break;
+                                }
+                            }
+                            if taken {
+                                continue;
+                            }
+                            if *DEBUG_WIRE {
+                                eprintln!(
+                                    "PAVE s{si}: stop at {:.6} beside the vertex {vertex:?}, {:.2e} off",
+                                    foot.parameter, foot.distance
+                                );
+                            }
+                            vertex_stops.push(foot.parameter);
+                        }
+                    }
+                }
+                trim_ts.extend_from_slice(&vertex_stops);
+                trim_ts.sort_by(f64::total_cmp);
+            }
             let mut candidates: Vec<(f64, f64)> = Vec::new();
             if section.closed {
                 let period = domain.1 - domain.0;
@@ -7175,28 +7257,6 @@ fn fill(
                         }
                     };
                     for (i, &at) in samples.iter().enumerate() {
-                        // Wider than the crossing filters on purpose for a
-                        // fitted section: a tangentially-traced curve wobbles
-                        // about the boundary it hugs by far more than a fit
-                        // budget, and a genuine section keeps a distance of
-                        // feature scale, not microns. An exact section keeps
-                        // to the edge's own honesty: a plane's ellipse across
-                        // a band touches the band's rail tangentially, and
-                        // the stretch within a tenth of a millimetre of the
-                        // rail is the section, not the rail. Read as a hug
-                        // it leaves the cap's crescent unable to close.
-                        // On the last attempt a fitted section, too, runs
-                        // along an edge only within the sum of its radius
-                        // and the edge's: its tolerance is how far it may
-                        // sit from the true section, the shallow angle of
-                        // the two surfaces included, and a section leaving
-                        // a rim it touches parts from it by more than that
-                        // well inside the loose width.
-                        let floor = if section.tolerance > 0.0 && !at_stated {
-                            tol.confusion() * 1e3
-                        } else {
-                            tol.confusion() * 10.0
-                        };
                         let mut near = false;
                         for (ei, e) in own.edges.iter().enumerate() {
                             let (drawn, drange, off) = e.drawn();
@@ -7206,7 +7266,7 @@ fn fill(
                                 0.0
                             };
                             let width =
-                                held_to(reach.max(floor).max(radii).max(off * 2.0), off * 2.0);
+                                held_to(reach.max(hug_floor).max(radii).max(off * 2.0), off * 2.0);
                             // The edge's box holds its curve: a point outside
                             // the box grown by the width is not near it.
                             if !e.bound.expanded(width).contains(at) {
@@ -7231,7 +7291,7 @@ fn fill(
                                 votes[ei] += 1;
                             }
                         }
-                        let width = reach.max(floor);
+                        let width = reach.max(hug_floor);
                         // A contact edge is a strand on this face too (the other
                         // solid's boundary, carried into a chart they share), so a
                         // section tracing one would be the same curve twice, and
@@ -7643,7 +7703,9 @@ fn fill(
                 }
             }
             // A stretch running along an edge of each face is those edges'
-            // to carry, and they split where it ends, as the section does.
+            // to carry, and they split where it ends, as the section does,
+            // and where it passes a vertex of either face, from one edge
+            // onto the next.
             // Two faces' edges all but in line (a merged facet column's
             // edge leaning off a pad's corner edge by a hundred-thousandth)
             // are crossed by a section lying all but along both a micron
@@ -7656,6 +7718,7 @@ fn fill(
                 for stop in [*lo, *hi] {
                     if !kept_stops
                         .iter()
+                        .chain(&vertex_stops)
                         .any(|k| (k - stop).abs() <= tol.parametric())
                     {
                         continue;

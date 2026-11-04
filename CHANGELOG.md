@@ -46,6 +46,29 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A drill lowered a few confusion distances under a face, along the
+  face's edge and on along the arc it runs into, cuts.**
+  - A section running along a face's boundary within the hug width (ten
+    confusion distances for an exact section) is that boundary on the
+    face, and the hug reads it one edge at a time. Lowered under
+    `nist_ctc_03`'s plate top by 2.5e-7 to 9e-7 (stress drill seed 2,
+    drill 5), the drill's top line runs along the top edge of the wall the
+    plate's round ends on, past the edge's end at the round's tangent line
+    and on along the round's end arc until it crosses it a few microns on.
+    The piece of the line reaching past the vertex between the two edges
+    read as along neither, split the wall in a sliver as wide as the
+    depth, which the wall's chart cannot hold, and the kept pieces did not
+    close.
+  - An exact section now also stops where it passes a vertex of either
+    face within the hug width, and a stretch along an edge of each face
+    splits both faces' edges there. Lowered by 2.5e-7, 5e-7, 7.5e-7 and
+    9e-7 with eight seam directions, 3 of 32 placements cut before (the
+    seam on the top line, at the three deepest), 32 of 32 now, valid and
+    adding up to the part and the drill, their commons agreeing across the
+    seams to 3e-8 and those three agreeing with what they gave before to
+    2e-10.
+    Lowered by 1e-6, 0 of 8 cut before and 7 of 8 now.
+
 - **A marched section passing beside a chart's pole is fitted within its
   tolerance.**
   - Beside a sphere's pole the section turns gently in space while its
