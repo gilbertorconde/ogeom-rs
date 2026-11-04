@@ -46,6 +46,36 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A wall leaning a hair off an arched block's end face, across an arch
+  spelled as a rational B-spline, cuts and fuses where it crosses beside
+  the arch's crown.**
+  - The wall's section with the arch's wall is the arc carried onto the
+    wall's plane, but where it crosses the arch's top rim it was marched,
+    and at a lean of 1e-5 to 1e-3 radians it meets that rim all but
+    tangentially, within the confusion distance of it over tenths of a
+    millimetre. The walk stopped short of the rim, the wall's boundary
+    loop there stayed open, and 45 of 189 operations (leans ±1e-5, ±1e-4,
+    1e-6, 3e-4 and 1e-3, crossings 1e-6 to 1e-2 inside the crown) refused.
+  - `ogeom::intersect::plane_extrusion_at_rims` splits such a section
+    where the profile's height to the plane reaches the rim: the roots of
+    a polynomial B-spline, isolated on its Bernstein coefficients and
+    bisected to rounding, each stretch carried onto the plane in closed
+    form and ending on the rim. `crosses_extrusion_rim` says which pairs
+    it answers. A boolean whose every retry refuses, and that met such a
+    pair, runs again with it, keeping a result only where nothing in it
+    states a tolerance past the weld distance; what resolved before
+    resolves as before.
+  - An edge crossing a section beside a plane it all but lies in is held
+    to its own distance off that plane over its lean out of it, not to
+    the gap between the two curves at the crossing. The crown's rim leans
+    6e-8 out of the wall there, and a gap of 3.5e-10 had widened its
+    vertex to 2e-3. An exact section ending where it touches an edge is
+    held there to its end's distance off the edge, not to the stretch the
+    two run together.
+  - 6 of the 189 refuse now, at a lean of 1e-5 with the crossing 1e-5 and
+    3e-5 inside the crown. The 39 answered newly are within 7.3e-7 of the
+    closed form; the 144 answered before give the same volumes.
+
 - **A face a few microns across a drum's chart and hundreds of
   millimetres along it keeps its trim.** (#680)
   - Before a face's rings are triangulated or read as its trim, points

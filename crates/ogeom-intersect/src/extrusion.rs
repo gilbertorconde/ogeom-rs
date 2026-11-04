@@ -16,7 +16,10 @@
 //! crossings with the plane moved to each end of the sweep, each a root of
 //! a closed form. A B-spline's crossings have none, and its section is
 //! taken only where its control points' heights all lie within the sweep,
-//! which holds every point's.
+//! which holds every point's. Where they straddle an end,
+//! [`plane_extrusion_at_rims`] splits it at its crossings with the rim
+//! there, roots of a polynomial B-spline found to rounding, for a caller
+//! that asks.
 //!
 //! The pair is left to the marcher, as before, wherever the closed form
 //! does not hold cleanly: a profile this does not map (a helix, an offset,
@@ -50,6 +53,87 @@ pub(crate) fn plane_extrusion(
     b: &SurfaceGeometry,
     tol: Tolerances,
 ) -> Option<Vec<SectionCurve>> {
+    plane_extrusion_with(a, b, false, tol)
+}
+
+/// Where a plane meets an extrusion of a B-spline profile whose heights to
+/// the plane straddle an end of the sweep, the section split where it
+/// crosses the rim there: `None` for any other pair, which
+/// [`intersect_surfaces`](crate::intersect_surfaces) answers as before,
+/// and where a crossing is not resolved cleanly.
+///
+/// The profile's crossings with the plane moved to the sweep's end are
+/// the roots of a polynomial B-spline, isolated on its Bernstein
+/// coefficients and bisected to rounding; each stretch of the profile whose height stays
+/// within the sweep is carried onto the plane in closed form and ends
+/// exactly on the rim, and a stretch past the end, where the section
+/// leaves the extrusion, is dropped.
+#[must_use]
+pub fn plane_extrusion_at_rims(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    tol: Tolerances,
+) -> Option<Vec<SectionCurve>> {
+    if !crosses_extrusion_rim(a, b, tol) {
+        return None;
+    }
+    plane_extrusion_with(a, b, true, tol)
+}
+
+/// Whether `a` and `b` are a plane and an extrusion of a B-spline profile
+/// whose control points' heights to the plane straddle an end of the
+/// sweep: the pair [`plane_extrusion_at_rims`] answers, and
+/// [`intersect_surfaces`](crate::intersect_surfaces) leaves to the
+/// marcher.
+#[must_use]
+pub fn crosses_extrusion_rim(a: &SurfaceGeometry, b: &SurfaceGeometry, tol: Tolerances) -> bool {
+    let Some((carry, spline, sweep)) = spline_pair(a, b, tol) else {
+        return false;
+    };
+    let heights = spline.heights(&carry);
+    [sweep.0, sweep.1]
+        .iter()
+        .any(|&end| heights.iter().any(|&v| v < end) && heights.iter().any(|&v| v > end))
+}
+
+/// The carry of a plane across an extrusion of a B-spline profile, the
+/// profile and the sweep, where the pair is one and the plane crosses the
+/// sweep.
+fn spline_pair(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    tol: Tolerances,
+) -> Option<(Carry, SplineProfile, (f64, f64))> {
+    let (p, extrusion) = match (a, b) {
+        (SurfaceGeometry::Plane(p), SurfaceGeometry::Extrusion(e))
+        | (SurfaceGeometry::Extrusion(e), SurfaceGeometry::Plane(p)) => (p, &**e),
+        _ => return None,
+    };
+    let plane = p.plane();
+    let (n, d) = (plane.normal().vector(), extrusion.direction().vector());
+    let along = n.dot(d);
+    if along.abs() < TANGENTIAL_SINE {
+        return None;
+    }
+    let (window, sweep) = extrusion.domain();
+    let spline = SplineProfile::of(extrusion.curve(), window, tol)?;
+    let carry = Carry {
+        n,
+        o: plane.origin(),
+        d,
+        along,
+    };
+    Some((carry, spline, sweep))
+}
+
+/// [`plane_extrusion`], with a B-spline profile straddling an end of the
+/// sweep split at the rim there where `at_rims` holds.
+fn plane_extrusion_with(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    at_rims: bool,
+    tol: Tolerances,
+) -> Option<Vec<SectionCurve>> {
     let (plane_surface, extrusion, plane_first) = match (a, b) {
         (SurfaceGeometry::Plane(_), SurfaceGeometry::Extrusion(e)) => (a, &**e, true),
         (SurfaceGeometry::Extrusion(e), SurfaceGeometry::Plane(_)) => (b, &**e, false),
@@ -65,13 +149,12 @@ pub(crate) fn plane_extrusion(
     let (window, sweep) = extrusion.domain();
     let along = n.dot(d);
     let sections = if let Some(spline) = SplineProfile::of(extrusion.curve(), window, tol) {
-        // A spline profile's crossings with a plane have no closed form, so
-        // neither the rulings of a plane holding `d` nor the cuts at the
-        // sweep's ends are taken here.
+        // A spline profile's crossings with a plane holding `d` have no
+        // closed form, so its rulings are not taken here.
         if along.abs() < TANGENTIAL_SINE {
             return None;
         }
-        spline.carried(&Carry { n, o, d, along }, sweep, tol)?
+        spline.carried(&Carry { n, o, d, along }, sweep, at_rims, tol)?
     } else {
         let (profile, window, whole_turn) = Profile::of(extrusion.curve(), window, tol)?;
         planar_sections(&profile, window, whole_turn, (n, o, d), extrusion, tol)?
@@ -325,45 +408,89 @@ impl SplineProfile {
         if basis.is_periodic() || !spline.knots().is_clamped() {
             return None;
         }
-        let mut piece: Spline<Weighted<Point>> =
+        let whole: Spline<Weighted<Point>> =
             (spline.knots().clone(), spline.control_points().to_vec());
-        let (lo, hi) = piece.0.domain();
-        if window.0 > lo + tol.parametric() {
-            piece = bspline::split(&piece.0, &piece.1, window.0, tol).ok()?.1;
-        }
-        if window.1 < hi - tol.parametric() {
-            piece = bspline::split(&piece.0, &piece.1, window.1, tol).ok()?.0;
-        }
-        Some(Self {
-            knots: piece.0,
-            control: piece.1,
-        })
+        let (knots, control) = cut_to(whole, window, tol)?;
+        Some(Self { knots, control })
     }
 
     /// The profile carried onto the plane, with its chart trace on the
-    /// extrusion: `Some` of nothing where every control point's height,
-    /// and so every point's, falls outside the sweep on one side; `None`
-    /// where the heights straddle an end of the sweep, whose cut has no
-    /// closed form.
+    /// extrusion: nothing where every control point's height, and so every
+    /// point's, falls outside the sweep on one side. Where the heights
+    /// straddle an end of the sweep, `None` unless `at_rims` holds, and
+    /// then each stretch whose height stays within the sweep, split at its
+    /// crossings with the rims (see [`level_crossings`]).
     fn carried(
         &self,
         carry: &Carry,
         sweep: (f64, f64),
+        at_rims: bool,
         tol: Tolerances,
     ) -> Option<Vec<(Curve, PlanarCurve)>> {
         // A point of the profile is a convex blend of its control points,
         // and so is its height of theirs.
-        let heights: Vec<f64> = self
-            .control
-            .iter()
-            .map(|w| carry.height(w.point()))
-            .collect();
+        let heights = self.heights(carry);
         if heights.iter().all(|&v| v < sweep.0) || heights.iter().all(|&v| v > sweep.1) {
             return Some(Vec::new());
         }
-        if heights.iter().any(|&v| v < sweep.0 || v > sweep.1) {
+        if heights.iter().all(|&v| v >= sweep.0 && v <= sweep.1) {
+            return Some(vec![self.carried_whole(carry, &heights, tol)?]);
+        }
+        if !at_rims {
             return None;
         }
+        let window = self.knots.domain();
+        let mut cuts = vec![window.0, window.1];
+        for end in [sweep.0, sweep.1] {
+            if heights.iter().any(|&v| v < end) && heights.iter().any(|&v| v > end) {
+                cuts.extend(level_crossings(
+                    &self.knots,
+                    &self.control,
+                    carry,
+                    end,
+                    tol,
+                )?);
+            }
+        }
+        cuts.sort_by(f64::total_cmp);
+        cuts.dedup_by(|x, y| (*x - *y).abs() <= tol.parametric());
+        let mut out = Vec::new();
+        for pair in cuts.windows(2) {
+            let (lo, hi) = (pair[0], pair[1]);
+            if hi - lo <= tol.parametric() {
+                continue;
+            }
+            let mid =
+                bspline::evaluate_rational(&self.knots, &self.control, f64::midpoint(lo, hi), tol)
+                    .ok()?;
+            let v = carry.height(mid);
+            if v < sweep.0 || v > sweep.1 {
+                continue;
+            }
+            let (knots, control) =
+                cut_to((self.knots.clone(), self.control.clone()), (lo, hi), tol)?;
+            let piece = Self { knots, control };
+            let heights = piece.heights(carry);
+            out.push(piece.carried_whole(carry, &heights, tol)?);
+        }
+        Some(out)
+    }
+
+    /// Each control point's height to the plane.
+    fn heights(&self, carry: &Carry) -> Vec<f64> {
+        self.control
+            .iter()
+            .map(|w| carry.height(w.point()))
+            .collect()
+    }
+
+    /// The whole profile carried onto the plane, with its chart trace.
+    fn carried_whole(
+        &self,
+        carry: &Carry,
+        heights: &[f64],
+        tol: Tolerances,
+    ) -> Option<(Curve, PlanarCurve)> {
         let image: Vec<Weighted<Point>> = self
             .control
             .iter()
@@ -373,8 +500,8 @@ impl SplineProfile {
         let curve: Curve = BSplineCurve::rational(self.knots.clone(), image)
             .ok()?
             .into();
-        let chart = self.chart(&heights, tol)?;
-        Some(vec![(curve, chart.into())])
+        let chart = self.chart(heights, tol)?;
+        Some((curve, chart.into()))
     }
 
     /// The chart trace `(u, v(u))` at the profile's own parameter, where
@@ -427,6 +554,137 @@ impl SplineProfile {
         }
         BSpline2d::rational(KnotVector::new(knots, up).ok()?, control).ok()
     }
+}
+
+/// A clamped B-spline cut to `(lo, hi)` within its domain.
+fn cut_to<P: bspline::Blend>(
+    mut piece: Spline<P>,
+    (lo, hi): (f64, f64),
+    tol: Tolerances,
+) -> Option<Spline<P>> {
+    let (start, end) = piece.0.domain();
+    if lo > start + tol.parametric() {
+        piece = bspline::split(&piece.0, &piece.1, lo, tol).ok()?.1;
+    }
+    if hi < end - tol.parametric() {
+        piece = bspline::split(&piece.0, &piece.1, hi, tol).ok()?.0;
+    }
+    Some(piece)
+}
+
+/// Where a B-spline profile's height to the plane is `level`, in order:
+/// its crossings with the plane moved `level` along the sweep, which on
+/// the extrusion is the rim the profile sweeps to there.
+///
+/// The height less `level` is `Σ Nₖ wₖ (vₖ − level) / Σ Nₖ wₖ`, so its sign
+/// is that of a polynomial B-spline with coefficients `wₖ (vₖ − level)`, a
+/// blend of the control points' heights with their weights. Over each
+/// Bézier piece its values lie within its coefficients' hull, and the
+/// number of the coefficients' sign changes bounds its roots from above
+/// with the same parity (Bernstein's form of Descartes' rule). A piece
+/// whose coefficients keep one sign holds no root, one with a single sign
+/// change and its ends of opposite signs holds exactly one, bisected down
+/// to rounding, and any other is halved by de Casteljau's construction.
+/// `None` where a piece is halved down to the parametric confusion
+/// without settling (a profile touching the level there, or meeting it at
+/// a piece's joint), or where every coefficient of a piece is within the
+/// rounding they were computed to (a profile lying in the level).
+fn level_crossings(
+    knots: &KnotVector,
+    control: &[Weighted<Point>],
+    carry: &Carry,
+    level: f64,
+    tol: Tolerances,
+) -> Option<Vec<f64>> {
+    let signed: Vec<Weighted<f64>> = control
+        .iter()
+        .map(|w| Weighted {
+            scaled: w.weight * (carry.height(w.point()) - level),
+            weight: w.weight,
+        })
+        .collect();
+    // Each coefficient is a difference of two heights, rounded to the
+    // larger's last bits, and so is every blend of them.
+    let noise = control
+        .iter()
+        .map(|w| w.weight * (carry.height(w.point()).abs() + level.abs()))
+        .fold(0.0, f64::max)
+        * f64::EPSILON
+        * 64.0;
+    let pieces = bspline::to_bezier_segments(knots, &signed, tol).ok()?;
+    let mut found = Vec::new();
+    for ((a, b), piece) in pieces {
+        let values: Vec<f64> = piece.iter().map(|w| w.scaled).collect();
+        bezier_roots(&values, (a, b), noise, tol, &mut found)?;
+    }
+    found.sort_by(f64::total_cmp);
+    found.dedup_by(|x, y| (*x - *y).abs() <= tol.parametric());
+    Some(found)
+}
+
+/// The roots over `(a, b)` of the polynomial whose Bernstein coefficients
+/// over it are `values`, pushed onto `found` (see [`level_crossings`]).
+fn bezier_roots(
+    values: &[f64],
+    (a, b): (f64, f64),
+    noise: f64,
+    tol: Tolerances,
+    found: &mut Vec<f64>,
+) -> Option<()> {
+    if values.iter().all(|&c| c > 0.0) || values.iter().all(|&c| c < 0.0) {
+        return Some(());
+    }
+    if values.iter().all(|&c| c.abs() <= noise) {
+        return None;
+    }
+    let (first, last) = (values[0], values[values.len() - 1]);
+    let changes = values
+        .windows(2)
+        .filter(|pair| pair[0] * pair[1] < 0.0)
+        .count();
+    if changes == 1 && first * last < 0.0 && values.iter().all(|&c| c != 0.0) {
+        let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+        loop {
+            let mid = f64::midpoint(lo, hi);
+            if mid <= lo || mid >= hi {
+                break;
+            }
+            if de_casteljau(values, mid).0[values.len() - 1] * first > 0.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        found.push((b - a).mul_add(f64::midpoint(lo, hi), a));
+        return Some(());
+    }
+    if b - a <= tol.parametric() {
+        return None;
+    }
+    let (left, right) = de_casteljau(values, 0.5);
+    let mid = f64::midpoint(a, b);
+    bezier_roots(&left, (a, mid), noise, tol, found)?;
+    bezier_roots(&right, (mid, b), noise, tol, found)
+}
+
+/// Bernstein coefficients split at `s` by de Casteljau's construction:
+/// those of the stretch before it and after it, the first's last value
+/// the polynomial's at `s`.
+fn de_casteljau(values: &[f64], s: f64) -> (Vec<f64>, Vec<f64>) {
+    let mut row = values.to_vec();
+    let mut left = Vec::with_capacity(values.len());
+    let mut right = Vec::with_capacity(values.len());
+    left.push(row[0]);
+    right.push(row[row.len() - 1]);
+    for len in (1..row.len()).rev() {
+        for k in 0..len {
+            row[k] = (row[k + 1] - row[k]).mul_add(s, row[k]);
+        }
+        left.push(row[0]);
+        right.push(row[len - 1]);
+    }
+    right.reverse();
+    (left, right)
 }
 
 /// The sections of an extrusion by a plane holding its direction: the
@@ -1206,6 +1464,125 @@ mod tests {
         assert!(super::plane_extrusion(&plane, &straddling, T).is_none());
     }
 
+    /// The cubic above swept over `[−5, 1.6]` and cut by `z = 1`, its
+    /// heights straddling the sweep's top: split at its rim, each section
+    /// lies on both, ends at the profile's own end or on the rim,
+    /// and every point of the profile whose height falls inside the sweep
+    /// is on one.
+    #[test]
+    fn a_swept_cubic_straddling_its_rim_is_split_there() {
+        let control = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(1.0, 2.0, 0.5),
+            Point::new(2.0, -1.0, -0.4),
+            Point::new(3.0, 1.0, 0.3),
+            Point::new(4.0, 0.0, 0.0),
+        ];
+        let cubic: Curve =
+            BSplineCurve::new(KnotVector::clamped_uniform(3, 5).unwrap(), control, T)
+                .unwrap()
+                .into();
+        let along = direction(0.0, 1.0, 1.0);
+        let plane: SurfaceGeometry =
+            PlaneSurface::new(Plane::through(Point::new(0.0, 0.0, 1.0), Direction::Z)).into();
+        let top = 1.6;
+        let extrusion: SurfaceGeometry = ExtrusionSurface::over(cubic.clone(), along, (-5.0, top))
+            .unwrap()
+            .into();
+        assert!(super::crosses_extrusion_rim(&plane, &extrusion, T));
+        let found = super::plane_extrusion_at_rims(&plane, &extrusion, T).unwrap();
+        assert!(!found.is_empty());
+        exact_on_both(&found, &plane, &extrusion);
+        let height = |t: f64| (1.0 - cubic.point_at(t, T).unwrap().z) / along.vector().z;
+        let (lo, hi) = cubic.domain();
+        let mut spans = Vec::new();
+        for section in &found {
+            let trace = section.on_b.as_ref().unwrap();
+            let (a, b) = trace.domain();
+            for end in [a, b] {
+                let uv = trace.point_at(end, T).unwrap();
+                assert!(
+                    (uv.x - lo).abs() < 1e-12
+                        || (uv.x - hi).abs() < 1e-12
+                        || (uv.y - top).abs() < 1e-12,
+                    "an end at {uv:?} neither on the profile's end nor on the rim"
+                );
+            }
+            spans.push((
+                trace.point_at(a, T).unwrap().x,
+                trace.point_at(b, T).unwrap().x,
+            ));
+        }
+        for i in 0..=400 {
+            let t = (hi - lo).mul_add(f64::from(i) / 400.0, lo);
+            if height(t) >= top - 1e-9 {
+                continue;
+            }
+            assert!(
+                spans
+                    .iter()
+                    .any(|&(a, b)| t >= a.min(b) - 1e-12 && t <= a.max(b) + 1e-12),
+                "t {t} at height {} is on no section",
+                height(t)
+            );
+        }
+    }
+
+    /// A half circle of radius five spelled as a rational quadratic, swept
+    /// ten up, and cut by a plane leaning a hundred-thousandth of a radian
+    /// that crosses the swept top a ten-thousandth inside the arc's crown,
+    /// at the chord `d = r − 10⁻⁴` from its centre. Past the chord the plane
+    /// stands above the top by at most `10⁻⁹`, within the confusion distance
+    /// over the whole crown, and meets the top rim all but tangentially. It
+    /// is split there, in two: each section lies on both, runs from the
+    /// arc's end to the rim, and ends on the rim where the plane crosses
+    /// it, at `x = 5 ± √(r² − d²)`. The section meets the rim within a
+    /// rounding `δ` of height over a stretch `δ / (θ |dy/dx|)` long, at the
+    /// lean `θ` and the arc's slope there `√(r² − d²) / d`, a few tenths of a
+    /// micron for `δ` a few times `10⁻¹⁵`, and is held to a micron.
+    #[test]
+    fn a_rational_arc_grazing_its_rim_is_split_where_the_plane_crosses_it() {
+        let (radius, lean, depth) = (5.0_f64, 1e-5_f64, 1e-4_f64);
+        let centre = Point::new(5.0, 10.0, 0.0);
+        let circle = Circle::new(
+            Frame::new(centre, Direction::Z, Direction::X, T).unwrap(),
+            radius,
+            T,
+        )
+        .unwrap();
+        let arc: Curve = Curve::from(CircleCurve::new(circle))
+            .to_bspline_over((0.0, core::f64::consts::PI), T)
+            .unwrap()
+            .into();
+        let chord = radius - depth;
+        let plane: SurfaceGeometry = PlaneSurface::new(Plane::through(
+            Point::new(5.0, 10.0 + chord, 10.0),
+            direction(0.0, -lean.sin(), lean.cos()),
+        ))
+        .into();
+        let extrusion: SurfaceGeometry = ExtrusionSurface::over(arc, Direction::Z, (0.0, 10.0))
+            .unwrap()
+            .into();
+        let found = super::plane_extrusion_at_rims(&plane, &extrusion, T).unwrap();
+        exact_on_both(&found, &plane, &extrusion);
+        assert_eq!(found.len(), 2);
+        let half = radius.mul_add(radius, -chord * chord).sqrt();
+        let mut crossed = Vec::new();
+        for section in &found {
+            let (lo, hi) = section.curve.domain();
+            let ends = [lo, hi].map(|t| section.curve.point_at(t, T).unwrap());
+            let (base, rim): (Vec<Point>, Vec<Point>) =
+                ends.iter().partition(|p| (p.y - 10.0).abs() < 1e-12);
+            assert_eq!((base.len(), rim.len()), (1, 1), "ends {ends:?}");
+            assert!((rim[0].z - 10.0).abs() < 1e-12);
+            crossed.push(rim[0].x);
+        }
+        crossed.sort_by(f64::total_cmp);
+        assert!((crossed[0] - (5.0 - half)).abs() < 1e-6, "{crossed:?}");
+        assert!((crossed[1] - (5.0 + half)).abs() < 1e-6, "{crossed:?}");
+        assert!(super::plane_extrusion(&plane, &extrusion, T).is_none());
+    }
+
     /// The profiles the property test sweeps: a line, a circle, an
     /// ellipse, a parabola and a rational cubic, whole or trimmed.
     fn profile() -> impl Strategy<Value = Curve> {
@@ -1289,8 +1666,9 @@ mod tests {
             let at = Point::new(at.0, at.1, at.2);
             let extrusion = ExtrusionSurface::over(profile.clone(), along, sweep).unwrap();
             let plane_surface: SurfaceGeometry = PlaneSurface::new(Plane::through(at, normal)).into();
-            let Some(found) =
-                super::plane_extrusion(&plane_surface, &extrusion.clone().into(), T)
+            let swept: SurfaceGeometry = extrusion.clone().into();
+            let Some(found) = super::plane_extrusion(&plane_surface, &swept, T)
+                .or_else(|| super::plane_extrusion_at_rims(&plane_surface, &swept, T))
             else {
                 // Declined: a touch, or a section meeting the extrusion
                 // all but tangentially. Neither is what this measures.

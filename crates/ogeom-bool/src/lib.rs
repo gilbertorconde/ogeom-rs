@@ -5447,7 +5447,9 @@ fn fill(
         contacts: Vec<ContactRec>,
         tangents: Vec<TangentRec>,
         same_pairs: Vec<(usize, usize)>,
+        rim_crossed: bool,
     }
+    let at_rims = AT_RIMS.get();
     let mut pairs: Vec<(usize, usize)> = if admit_all {
         (0..ga.faces.len())
             .flat_map(|ia| (0..gb.faces.len()).map(move |ib| (ia, ib)))
@@ -5501,11 +5503,27 @@ fn fill(
                     ..ogeom_intersect::Marching::default()
                 },
             };
+            // A plane across a B-spline extrusion's rim, split there in
+            // closed form on the run that asks for it, and noted on any
+            // other.
+            let at_rim = if at_rims {
+                ogeom_intersect::plane_extrusion_at_rims(&fa.surface, &fb.surface, tol)
+            } else {
+                out.rim_crossed =
+                    ogeom_intersect::crosses_extrusion_rim(&fa.surface, &fb.surface, tol);
+                None
+            };
             // The intersector measures a pair without a closed form for
             // coincidence at the chord; the faces' own stated looseness is
             // asked here, since only the faces know it.
             let met = if coincide_as_stated(fa, fb, tol) {
                 SurfaceIntersection::Same
+            } else if let Some(found) = at_rim {
+                if found.is_empty() {
+                    SurfaceIntersection::Apart
+                } else {
+                    SurfaceIntersection::Along(found)
+                }
             } else {
                 let once = met_once
                     .lock()
@@ -6187,6 +6205,9 @@ fn fill(
         }));
         tangents.extend(pair.tangents);
         same_pairs.extend(pair.same_pairs);
+        if pair.rim_crossed {
+            RIM_CROSSED.set(true);
+        }
     }
     for section in &mut sections {
         if let Some(rebased) = seamed_at_a_stop(
@@ -6513,9 +6534,14 @@ fn fill(
                                     // tenths of a millimetre, and a junction
                                     // that wide swallows the edge's vertex
                                     // and the section's other end with it.
-                                    honesty = honesty
-                                        .max(foot.distance)
-                                        .max(crossing.reach.min(tol.confusion() * 1e5));
+                                    // An exact section's end is where its
+                                    // closed form stops, and wanders nowhere.
+                                    let wander = if section.tolerance > 0.0 {
+                                        crossing.reach.min(tol.confusion() * 1e5)
+                                    } else {
+                                        0.0
+                                    };
+                                    honesty = honesty.max(foot.distance).max(wander);
                                 }
                                 break;
                             }
@@ -6560,10 +6586,10 @@ fn fill(
                         }
                         // Where the edge runs all but in the other face's plane
                         // (a facet row's edge between two facets nearly
-                        // coplanar with a wall that crosses them), where it
-                        // pierces that plane is known along it only to the
-                        // crossing's gap over the sine of its lean out of the
-                        // plane. A facet's plane misses the edge it shares with
+                        // coplanar with a wall that crosses them), the crossing
+                        // stands from where it pierces that plane by its own
+                        // distance off the plane over the sine of its lean out
+                        // of it. A facet's plane misses the edge it shares with
                         // the next by its points' rounding, so the sections on
                         // the facets either side reach the edge apart by that
                         // rounding over the sine (a few tenths of a micron
@@ -6592,7 +6618,11 @@ fn fill(
                                 let sine =
                                     along_edge.dot(plane.plane().normal().vector()).abs() / length;
                                 if sine > 0.0 {
-                                    let leaning = crossing.gap / sine;
+                                    let off = plane
+                                        .plane()
+                                        .signed_distance_to(e.curve.point_at(on_b, tol)?)
+                                        .abs();
+                                    let leaning = off / sine;
                                     honesty =
                                         honesty.max(if crossing.gap <= tol.confusion() * 1e2 {
                                             leaning.min(tol.confusion() * 2e4)
@@ -10886,6 +10916,15 @@ thread_local! {
     /// whole leaves no edge or vertex behind to state how far apart its
     /// faces stood. Read once per assembly on the calling thread.
     static MEMBRANE_WITHIN: std::cell::Cell<f64> = const { std::cell::Cell::new(f64::INFINITY) };
+    /// Whether a plane's section with an extrusion of a B-spline profile
+    /// crossing a rim of it is split at the rim in closed form
+    /// ([`ogeom_intersect::plane_extrusion_at_rims`]) rather than marched.
+    /// Off but for the retries [`settled`] runs once every other has
+    /// refused. Read once per assembly on the calling thread.
+    static AT_RIMS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether an assembly since [`settled`] began met such a pair with
+    /// [`AT_RIMS`] off.
+    static RIM_CROSSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// An operation run once, and where it refuses, again in three steps. Where
@@ -10929,11 +10968,19 @@ thread_local! {
 /// shorter than a line's, and a junction welding its two ends together
 /// would weld the faces beside it into one. What the retries without them
 /// resolve is resolved as before.
+///
+/// Where all of that refuses and a plane crossed an extrusion of a
+/// B-spline profile across a rim of it, whose marched section stops short
+/// of the rim, the run once more from the first attempt with that section
+/// split where it crosses the rim in closed form ([`AT_RIMS`]), its result
+/// kept only where nothing in it states a tolerance past the weld
+/// distance.
 fn settled(
     model: &mut Model,
     tol: Tolerances,
     mut attempt: impl FnMut(&mut Model, Tolerances) -> OgeomResult<Built>,
 ) -> OgeomResult<Built> {
+    RIM_CROSSED.set(false);
     let refusal = match attempt(model, tol) {
         Ok(built) => return Ok(built),
         Err(e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_))) => {
@@ -10941,6 +10988,46 @@ fn settled(
         }
         Err(e) => e,
     };
+    if let Some(built) = settled_after(model, tol, &refusal, &mut attempt)? {
+        return Ok(built);
+    }
+    if !RIM_CROSSED.get() {
+        return Err(refusal);
+    }
+    struct Rims;
+    impl Drop for Rims {
+        fn drop(&mut self) {
+            AT_RIMS.set(false);
+        }
+    }
+    AT_RIMS.set(true);
+    let _rims = Rims;
+    let limit = weld_limit(tol);
+    let at_rims = match attempt(model, tol) {
+        Ok(built) if welded_within(model, &built.shape, limit)? => return Ok(built),
+        Err(e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_))) => {
+            return Err(e);
+        }
+        Ok(_) => return Err(refusal),
+        Err(e) => e,
+    };
+    if let Some(built) = settled_after(model, tol, &at_rims, &mut attempt)?
+        && welded_within(model, &built.shape, limit)?
+    {
+        return Ok(built);
+    }
+    Err(refusal)
+}
+
+/// The retries [`settled`] runs after an attempt refused with `refusal`,
+/// pieces on the other solid's boundary settled from both sides of them,
+/// and the first result one of them keeps.
+fn settled_after(
+    model: &mut Model,
+    tol: Tolerances,
+    refusal: &ogeom_core::OgeomError,
+    attempt: &mut impl FnMut(&mut Model, Tolerances) -> OgeomResult<Built>,
+) -> OgeomResult<Option<Built>> {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
@@ -10949,8 +11036,8 @@ fn settled(
     }
     SETTLE_FROM_BOTH_SIDES.set(true);
     let _reset = Reset;
-    if let Some(built) = retried(model, tol, &refusal, &mut attempt)? {
-        return Ok(built);
+    if let Some(built) = retried(model, tol, refusal, attempt)? {
+        return Ok(Some(built));
     }
     if refusal.to_string().contains("no coincident partner face") {
         struct Plain;
@@ -10961,17 +11048,17 @@ fn settled(
         }
         let _plain = Plain;
         FROM_CROSSINGS.set(Crossings::Lines);
-        if let Some(built) = retried(model, tol, &refusal, &mut attempt)? {
-            return Ok(built);
+        if let Some(built) = retried(model, tol, refusal, attempt)? {
+            return Ok(Some(built));
         }
         FROM_CROSSINGS.set(Crossings::Curves);
-        if let Some(built) = retried(model, tol, &refusal, &mut attempt)?
+        if let Some(built) = retried(model, tol, refusal, attempt)?
             && welded_within(model, &built.shape, weld_limit(tol))?
         {
-            return Ok(built);
+            return Ok(Some(built));
         }
     }
-    Err(refusal)
+    Ok(None)
 }
 
 /// The retries [`settled`] runs after a first attempt refused with
