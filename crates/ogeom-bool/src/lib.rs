@@ -10462,6 +10462,13 @@ thread_local! {
     /// the other solid's boundary. Read once per boolean on the calling
     /// thread.
     static FROM_CROSSINGS: std::cell::Cell<Crossings> = const { std::cell::Cell::new(Crossings::Off) };
+    /// The farthest apart two faces may stand and still be dropped as a
+    /// membrane (see [`without_membranes`]), whatever weld the attempt
+    /// itself runs at: during the retries at a widened confusion, the weld
+    /// their result is held to, and unbounded otherwise. A shell dropped
+    /// whole leaves no edge or vertex behind to state how far apart its
+    /// faces stood. Read once per assembly on the calling thread.
+    static MEMBRANE_WITHIN: std::cell::Cell<f64> = const { std::cell::Cell::new(f64::INFINITY) };
 }
 
 /// An operation run once, and where it refuses, again in three steps. Where
@@ -10477,8 +10484,10 @@ thread_local! {
 /// a few microns apart, a face tilted a few microradians) is then the kind
 /// the boolean welds, and the result is kept only if nothing in it states
 /// a tolerance past the weld distance, a hundred confusion distances (and
-/// the ten the welding run states its own vertices to), so a sliver any
-/// thicker is never lost to the retry.
+/// the ten the welding run states its own vertices to). A shell those
+/// retries drop as a membrane leaves nothing behind to state that, so it
+/// is dropped only where its faces stand within that same weld of each
+/// other, and a sliver any thicker is never lost to the retry.
 ///
 /// Then, at the given confusion, with contacts read at the radii their
 /// curves hold to rather than at the loose width a fitted curve is
@@ -10583,6 +10592,13 @@ fn retried(
         }
     }
     let limit = weld_limit(tol);
+    struct Restore(f64);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            MEMBRANE_WITHIN.set(self.0);
+        }
+    }
+    let restore = Restore(MEMBRANE_WITHIN.replace(limit.min(MEMBRANE_WITHIN.get())));
     for widen in [10.0, 100.0] {
         let Ok(wider) = Tolerances::with_scale(tol.scale() / widen) else {
             continue;
@@ -10595,6 +10611,7 @@ fn retried(
             _ => {}
         }
     }
+    drop(restore);
     {
         struct Off;
         impl Drop for Off {
@@ -14624,6 +14641,7 @@ fn with_holes(model: &mut Model, image: &Shape, holes: &[Shape]) -> OgeomResult<
 /// by the same edges but standing apart (a lens's two caps on their one
 /// rim) is a solid's own boundary and stays. A shell that is membranes
 /// through (a sliver thinner than the weld) encloses nothing and goes.
+/// The faces of a pair stand within [`MEMBRANE_WITHIN`] of each other too.
 fn without_membranes(
     model: &mut Model,
     shells: &mut Vec<Shape>,
@@ -14632,6 +14650,7 @@ fn without_membranes(
 ) -> OgeomResult<History> {
     use ogeom_geom::Transformable as _;
     let mut dropped = History::new();
+    let within = MEMBRANE_WITHIN.get();
     let bounding = |model: &Model, face: &Shape| -> OgeomResult<Vec<ogeom_topo::TShapeId>> {
         let mut edges: Vec<ogeom_topo::TShapeId> = explore_unique(model, face, ShapeType::Edge)?
             .iter()
@@ -14683,9 +14702,10 @@ fn without_membranes(
             .iter()
             .filter_map(|v| model.node(v).and_then(|n| n.data().as_vertex()))
             .fold(0.0_f64, |acc, d| acc.max(d.tolerance.get()));
+        let reach = (weld + owned).min(within);
         for probe in probes {
             let foot = ogeom_algo::project_on_surface(&placed, probe, 16, tol)?;
-            if foot.point.distance(probe) > weld + owned {
+            if foot.point.distance(probe) > reach {
                 return Ok(false);
             }
         }

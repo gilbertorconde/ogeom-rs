@@ -61,9 +61,20 @@ welded shut as a graze. A cube, a drum's disc and an arched block's arc
 against a box whose wall leans 1e-5 to 1e-3 radians and crosses a hundredth of
 a micron to a micron inside the edge fuse to the closed form within the
 weld distance over the band (`boolean_contact.rs`). An arched block whose
-arc is the same arc as a rational B-spline still refuses 40 of 189 such
-operations, and its cut at a lean of 1e-5 misses the closed form by
-1.1e-2 with or without the step; the step is not what fails there. Where
+arc is the same arc as a rational B-spline still refuses 45 of 189 such
+operations. The wall's section with the arch's extrusion is marched, and
+it meets the arch's top rim at a grazing angle, within the confusion
+distance of it over a few tenths of a millimetre: the walk stops short of
+the rim on the extrusion's window, so the wall's boundary loop near the
+crossing stays open. Stretched past the rim, as `reaching` stretches a
+cylinder's window, the section comes out exact, but where it then crosses
+the rim the fuse and cut move by 4e-4 at a lean of 1e-5 and results go
+invalid at 3e-4 and 1e-3, so the window is not stretched. What would
+clear them: a section crossing a rim it grazes split at the crossing the
+rim's own closed form gives. The cut at a lean of 1e-5, 1.1e-2 off the
+closed form before, refuses: the retry at a wider confusion dropped the
+sliver above the wall whole as a membrane, and drops a shell so only
+within the caller's weld distance now (#674). Where
 the strip is wider the ordinary crossing splits both faces exactly, and
 pairing the band as same-domain would move the result by up to the weld
 distance over it, so the band is not paired there.
