@@ -2252,16 +2252,6 @@ fn box_leaning_across_a_spline_arch(model: &mut Model, lean: f64, depth: f64) ->
     (a, b)
 }
 
-/// The volume of `shape` at a chord of a ten-thousandth. The faces a wall
-/// leaning a hundred-thousandth of a radian leaves on the arch's wall, a
-/// sliver five hundredths of a micron thick at most, are measured on their
-/// meshes, and at the default chord those drop them (see docs/PLAN.md).
-fn finely(model: &Model, shape: &Shape) -> f64 {
-    ogeom::algo::volume_properties(model, shape, Deflection::with_chord(1e-4).unwrap(), T)
-        .unwrap()
-        .mass
-}
-
 /// The arched block on a spline against a box whose wall leans a
 /// hundred-thousandth of a radian off its end face, crossing it a tenth of
 /// a micron and a hundredth of a millimetre inside the arc. The cut keeps
@@ -2290,7 +2280,7 @@ fn a_sliver_past_a_wall_leaning_across_a_spline_arch_stays_in_the_cut() {
                         .is_valid(),
                     "{depth}: check reports the cut invalid"
                 );
-                let volume = finely(&model, &built.shape);
+                let volume = volume(&model, &built.shape);
                 assert!(
                     (volume - expected).abs() <= weld * band,
                     "{depth}: cut volume {volume} against {expected}"
@@ -2347,7 +2337,7 @@ fn a_wall_leaning_across_a_spline_arch_s_crown_splits_its_section_at_the_rim() {
                 ogeom::algo::check(&model, &got, T).unwrap().is_valid(),
                 "{lean} {depth} {op}: check reports the result invalid"
             );
-            let volume = finely(&model, &got);
+            let volume = volume(&model, &got);
             assert!(
                 (volume - expected).abs() <= weld * band,
                 "{lean} {depth} {op}: volume {volume} against {expected}"

@@ -789,7 +789,18 @@ fn exact_volume_properties(
             chord: deflection.chord * MESHED_FACE_CHORD,
             ..deflection
         };
-        let mesh = ogeom_mesh::triangulate(model, &faces[at], finer, tol)?;
+        // The face's own mesh, ending on its own edges' chords. The
+        // whole-shape mesh welds and seals across openings narrower than
+        // its chord, and asked of one face it closes a sliver thinner than
+        // that across its rims. A face that draws nothing alone leaves the
+        // whole shape to the mesh.
+        let Some(mesh) = or_mesh(
+            ogeom_mesh::triangulate_face(model, &faces[at], finer, tol).map(Some),
+            None,
+        )?
+        else {
+            return Ok(None);
+        };
         let mut acc = Accumulator::new();
         for triangle in &mesh.triangles {
             let [a, b, c] = triangle.map(|i| mesh.positions[i as usize]);
