@@ -98,6 +98,20 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`Editable::cut` caps both parts where the plane passes a hair from a
+  vertex, the crossings of its edges within a rounding of it.** (#693)
+  - A vertex was snapped onto the plane only where it lay within rounding
+    of the plane or a crossing of an edge from it rounded onto it exactly.
+    A vertex just past that, or one near the plane's origin where the
+    crossings' own rounding outweighs the plane's coordinates', had the
+    crossings of its edges land within a rounding of it but not on it, at
+    one point of the plane or tangled about it, and the loop through them
+    was left open.
+  - A vertex is now snapped where a crossing of an edge from it lies
+    within the crossing's rounding and that of the plane's coordinates at
+    the two. Of 256,732 planes through or along the test meshes' vertices,
+    23 left a part open before and none do now.
+
 - **`fillet_edges` checks a band cut off past a face's side against the
   request's other bands, where its edge shares nothing with them.** (#691)
   - An edge sharing no face and no vertex with another of the request was

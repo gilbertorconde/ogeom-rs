@@ -6,9 +6,9 @@
 //! once per vertex by the exact orientation predicate, a vertex in the plane
 //! counting as above. A vertex within rounding of the plane, so near that
 //! it and its foot on the plane could take the same coordinates in it, or
-//! one onto which the crossing of an edge from it rounds, is snapped onto
-//! it: it counts as in the plane, so that no new vertex crowds it and no
-//! sliver is left between it and the plane.
+//! one the crossing of an edge from it lands within rounding of, is
+//! snapped onto it: it counts as in the plane, so that no new vertex crowds
+//! it and no sliver is left between it and the plane.
 //!
 //! A face whose corners all lie on the kept side stays, one whose corners
 //! all lie on the other goes, and one whose corners disagree is clipped: its
@@ -280,8 +280,14 @@ impl Editable {
 
     /// Each vertex's place: [`section`]'s exact side, except that a vertex
     /// the cut snaps onto the plane is in it. That is one within rounding
-    /// of the plane ([`Cutter::near`]), or one onto which the crossing of
-    /// an edge from it rounds. Copies of a point share its place.
+    /// of the plane ([`Cutter::near`]), or one from which the crossing of an
+    /// edge lies no farther than the crossing's rounding
+    /// ([`Cutter::crossing_blur`]) and the rounding of the plane's
+    /// coordinates at the two ([`Cutter::blur`]) added: the crossing could
+    /// be the vertex itself, and the crossings of the edges from it could
+    /// land on one point of the plane, or so near one another that rounding
+    /// tangles them, which the cap cannot tell apart. Copies of a point
+    /// share its place.
     ///
     /// [`section`]: crate::section()
     fn places(&self, cutter: &Cutter) -> Vec<Place> {
@@ -311,9 +317,10 @@ impl Editable {
                 }
                 let (p, q) = (self.positions[low as usize], self.positions[high as usize]);
                 let x = cutter.crossing(p, q);
-                if x == q {
+                let blur = cutter.blur(x) + Cutter::crossing_blur(p, q, x);
+                if x.distance(q) <= blur + cutter.blur(q) {
                     snapped.push(self.point[high as usize]);
-                } else if x == p {
+                } else if x.distance(p) <= blur + cutter.blur(p) {
                     snapped.push(self.point[low as usize]);
                 }
             }
@@ -1330,15 +1337,20 @@ mod tests {
 
     /// Planes through or a rounding from vertices, each of which once left
     /// a part open: through a ring a rounding off an axis plane, through a
-    /// vertex others round onto, and along a drum's flat side.
+    /// vertex others round onto, through two whose crossings land within a
+    /// rounding of them, of the plane's coordinates or of the crossing's
+    /// own, and along a drum's flat side.
     #[test]
     fn planes_grazing_vertices_close_both_parts() {
         let shift = 0.001_455_055_119_429_773_2;
+        let (past, by_origin) = (-0.020_749_998_000_000_002, -0.002_512_462_814_070_363);
         let cases = [
             (torus(12, 8), 0, Vector::new(-1.0, -1.0, 1.0), 0.0),
             (torus(12, 8), 5, Vector::new(0.0, -1.0, 0.0), 0.0),
             (torus(12, 8), 91, Vector::new(-1.0, 0.0, 0.0), 0.0),
             (torus(12, 8), 0, Vector::new(-1.0, 3.0, 0.0), shift),
+            (torus(12, 8), 51, Vector::new(1.0, -3.0, 0.0), past),
+            (torus(12, 8), 52, Vector::new(1.0, -3.0, 0.0), by_origin),
             (nested(12), 5, Vector::new(0.0, -2.0, 0.0), 0.0),
             (nested(12), 19, Vector::new(3.0, 3.0, 0.0), 0.0),
         ];
