@@ -1491,7 +1491,8 @@ fn a_holed_square_round_a_lens_mitres_its_tube_under_the_binormal() {
 /// about the spine where `half` is given, a disc of `radius` standing
 /// `off` (across, up) from the spine otherwise, or as a hole in the square
 /// where both are given. Swept with `skin`, checked valid and integrated
-/// exactly; the volume, and the lens's turn.
+/// exactly, and no section between the runs stating more than `skin`, the
+/// width the runs are skinned to; the volume, and the lens's turn.
 fn round_the_lens(
     law: &PipeLaw<'_>,
     half: Option<f64>,
@@ -1529,17 +1530,25 @@ fn round_the_lens(
     )
     .unwrap()
     .shape;
-    let pipe = make_pipe_shell_with(
-        &mut model,
-        &profile,
-        &spine,
-        law,
-        PipeCorners::Mitre,
-        skin,
-        T,
-    )
-    .unwrap_or_else(|e| panic!("{half:?} {disc:?}: {e}"))
-    .shape;
+    let (pipe, work) = ogeom_bool::work::counted(|| {
+        make_pipe_shell_with(
+            &mut model,
+            &profile,
+            &spine,
+            law,
+            PipeCorners::Mitre,
+            skin,
+            T,
+        )
+    });
+    let pipe = pipe
+        .unwrap_or_else(|e| panic!("{half:?} {disc:?}: {e}"))
+        .shape;
+    assert!(
+        work.widest_section <= skin,
+        "{half:?} {disc:?}: a section states {}",
+        work.widest_section
+    );
     let found = ogeom::algo::check(&model, &pipe, T).unwrap();
     assert!(found.is_valid(), "{half:?} {disc:?}: {found}");
     let measured =
@@ -1666,6 +1675,11 @@ fn off_centre_disc_round_the_lens(radius: f64, inward: f64, turned: f64) -> f64 
 ///   same law. Standing 0.4 across and 0.2 up, the hole's circle touches
 ///   the axis of the first run's corners at both its ends, so each trim of
 ///   that run cuts its skin along a loop touching the end rim.
+///
+/// The runs are tangent where a circle's cut meets itself across the
+/// skin's closure, and the section's walks stall there. Rejoined, a joint
+/// that took the next sample's parameters stood 5.8e-4 past the closure
+/// and the section stated 2.1e-3; no section states more than the skin.
 #[test]
 fn sections_off_the_spine_round_a_lens_glue_their_runs_on_the_mitre_planes() {
     let (big, half, radius, skin) = (15.0, 1.0, 0.4, 1e-3);

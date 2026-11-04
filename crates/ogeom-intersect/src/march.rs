@@ -3620,8 +3620,10 @@ fn stitch_stalled(
         return out;
     }
 
-    // Branch points: the near-tangent stall ends, clustered.
+    // Branch points: the near-tangent stall ends, clustered, each the
+    // first such end met, with the parameters it was walked at.
     let mut bps: Vec<Point> = Vec::new();
+    let mut bp_params: Vec<((f64, f64), (f64, f64))> = Vec::new();
     for branch in &candidates {
         let n = branch.points.len();
         for at in [0, n - 1] {
@@ -3629,6 +3631,7 @@ fn stitch_stalled(
                 let p = branch.points[at];
                 if !bps.iter().any(|held| held.distance(p) <= reach) {
                     bps.push(p);
+                    bp_params.push((branch.on_a[at], branch.on_b[at]));
                 }
             }
         }
@@ -3785,13 +3788,16 @@ fn stitch_stalled(
             } else {
                 (arc.points.clone(), arc.on_a.clone(), arc.on_b.clone())
             };
-            // Insert the branch point itself at the junction.
+            // Insert the branch point itself at the junction, at the
+            // parameters it was walked at: the arc's first sample can stand
+            // up to the cluster's reach from it, and across a chart's
+            // closure.
             if !points.is_empty() {
                 let joint_bp = if reversed { arc.tail_bp } else { arc.head_bp };
                 if let Some(bp) = joint_bp {
                     points.push(bps[bp]);
-                    on_a.push(pa[0]);
-                    on_b.push(pb[0]);
+                    on_a.push(bp_params[bp].0);
+                    on_b.push(bp_params[bp].1);
                 }
             }
             points.extend(pts);

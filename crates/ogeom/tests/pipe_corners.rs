@@ -399,6 +399,11 @@ fn guide_held_at_the_ends(model: &mut Model, l: f64, h: f64) -> Shape {
 /// A hole subtracts its own such term. The volume strays from that by at
 /// most the skin's tolerance over the walls: the perimeter times the
 /// longest path a point runs, the spine and a reach past the corner.
+///
+/// The rectangle's skin crosses the mitre plane ever more shallowly toward
+/// the corner, its normal there parallel to the plane's to 1e-14. A fit of
+/// that section passing every sample swung between two by 2.5e-2, and the
+/// section stated 1.6e-3; no section states more than the skin.
 #[test]
 fn an_off_centre_section_down_an_l_mitres_between_skinned_runs() {
     let (l, h, skin) = (10.0, 5.0, 1e-3);
@@ -450,17 +455,23 @@ fn an_off_centre_section_down_an_l_mitres_between_skinned_runs() {
         .unwrap()
         .shape;
         let guide = guide_held_at_the_ends(&mut model, l, h);
-        let pipe = make_pipe_shell_with(
-            &mut model,
-            &profile,
-            &spine,
-            &PipeLaw::Auxiliary { guide: &guide },
-            PipeCorners::Mitre,
-            skin,
-            T,
-        )
-        .unwrap_or_else(|e| panic!("{section}: {e}"))
-        .shape;
+        let (pipe, work) = ogeom_bool::work::counted(|| {
+            make_pipe_shell_with(
+                &mut model,
+                &profile,
+                &spine,
+                &PipeLaw::Auxiliary { guide: &guide },
+                PipeCorners::Mitre,
+                skin,
+                T,
+            )
+        });
+        let pipe = pipe.unwrap_or_else(|e| panic!("{section}: {e}")).shape;
+        assert!(
+            work.widest_section <= skin,
+            "{section}: a section states {}",
+            work.widest_section
+        );
         let found = check(&model, &pipe, T).unwrap();
         assert!(found.is_valid(), "{section}: {found}");
         let (v, exact) = measure(&model, &pipe);

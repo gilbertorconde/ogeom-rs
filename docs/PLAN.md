@@ -95,14 +95,13 @@ reach and the junctions along an edge grow with it, unbounded. Over the
 workspace suite (heavy tier included) and the stress suite at seeds 1 to
 4, a boolean's sections no longer state more than 2.1e-3, with a sphere
 chart's pole met only where the chart is left unturned, which refuses.
-Three still miss by more than a few chords. A section of two skinned
-lens runs ends with its sample 5.8e-4 past the edge of one patch's chart,
-and its pcurve, lifted there, stands 2.1e-3 off the curve
-(`sections_off_the_spine_round_a_lens_glue_their_runs_on_the_mitre_planes`
-in `crates/ogeom/tests/pipe_laws.rs`). A skin running tangent to a mitre
-plane (`an_off_centre_section_down_an_l_mitres_between_skinned_runs` in
-`crates/ogeom/tests/pipe_corners.rs`) states 1.6e-3, the surfaces' normals
-there parallel to 1e-14. A drum meeting a
+Two still miss by more than a few chords. A skin crossing a mitre
+plane ever more shallowly toward the corner
+(`an_off_centre_section_down_an_l_mitres_between_skinned_runs` in
+`crates/ogeom/tests/pipe_corners.rs`, the surfaces' normals parallel to
+1e-14 at the corner) states 2.2e-4: within the confusion distance of both
+surfaces the walk's correction can land a sample off the crossing, one by
+2.9e-5 in the skin's chart, and the fit follows it. A drum meeting a
 face blend's patch at a few ten-thousandths of a radian states up to
 5.2e-4 (the stress face-blend scenarios), where the section solved
 between two samples lands tens of chords off their chord and is not
