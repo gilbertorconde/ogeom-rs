@@ -568,25 +568,10 @@ fn triangulate_reporting_from(
     let region_ms = phase.elapsed().as_secs_f64() * 1e3;
     let phase = Instant::now();
 
-    // Whether the triangulator was handed a region at all, asked of what it
-    // returned rather than of what it was given. A well-formed triangulation
-    // over `b` boundary points in `w` rings has at least `b + 2w - 4`
-    // triangles: exactly that where no interior point is added, more where
-    // refinement adds them. Fewer is not a coarse answer, it is a different
-    // shape: the boundary crossed itself and what came back is disconnected
-    // fragments with holes between them.
-    //
-    // Counting is why it is asked this way round. Sweeping the rings for a
-    // crossing is the direct question, and costs a sort and an active list
-    // on every face to catch the rare one that crosses. The count is
-    // already in hand and exact for the failure that matters.
-    //
-    // That count is exact only before interior points go in; over a face
-    // that takes hundreds of them, a crossing that costs a handful of
-    // triangles is lost in the total. So the region also counts its own
-    // triangles the moment the boundary is in and nothing else, where the
-    // number is exactly `b + 2w - 4` for a boundary that encloses a region
-    // and anything else for one that crosses.
+    // Boundary-only triangulation checks the exact count before interior
+    // points can hide missing triangles. Its minimum includes shared junctions
+    // between touching lobes, which reduce the simple polygon's count.
+    // Filtering degenerate triangles must still leave that minimum.
     //
     // And a face narrower than a few chords is short too, whatever its
     // count: drawn at the caller's chord its boundary sags by more than
@@ -597,8 +582,7 @@ fn triangulate_reporting_from(
     let boundary: usize = drawn.iter().map(Vec::len).sum();
     let narrow = narrow_chord(surface, drawn, deflection, tol)
         .is_some_and(|want| !edges_already_at(model, face, finer, want));
-    let crossed =
-        narrow || planar.crossed || planar.triangles.len() + 4 < boundary + 2 * drawn.len();
+    let crossed = narrow || planar.crossed || planar.triangles.len() < planar.boundary_triangles;
     if *MESH_DEBUG_REFINE {
         eprintln!(
             "SHORT {} triangles against {boundary} boundary points in {} rings: crossed {crossed} (boundary pass {})",
@@ -1611,8 +1595,7 @@ fn face_chords(
             rim_holds(model, face, deflection, tol)?,
             tol,
         )?;
-        let boundary: usize = rings.iter().map(Vec::len).sum();
-        if !planar.crossed && planar.triangles.len() + 4 >= boundary + 2 * rings.len() {
+        if !planar.crossed && planar.triangles.len() >= planar.boundary_triangles {
             break;
         }
         chord *= 0.5;
@@ -2140,7 +2123,7 @@ fn trimming_rings(
     // pole row, or its own translate a period over the other way.
     for (ring, anchors) in rings.iter_mut().zip(ring_anchors.iter_mut()) {
         close_wound_ring(ring, anchors, surface, tol);
-        snap_chart_junctions(ring, surface, tol);
+        snap_chart_junctions(ring, anchors, surface, tol);
     }
 
     // Points closer than the triangulator's own resolution make it refuse
@@ -2678,11 +2661,15 @@ fn remove_spikes(
     }
 }
 
-/// A boundary vertex within numerical precision of a nonincident side must
-/// be represented on that side in the chart. Otherwise a tangency becomes a
-/// microscopic crossing and the CDT refuses one of the constraints. Anchors
-/// stay unchanged: this only agrees the chart's combinatorial junction.
-fn snap_chart_junctions(ring: &mut [Point2], surface: &SurfaceGeometry, tol: Tolerances) {
+/// Split a nonincident side at a boundary vertex within chart and surface
+/// precision. Both occurrences carry the same coordinates and spatial anchor,
+/// making the junction explicit even under exact orientation predicates.
+fn snap_chart_junctions(
+    ring: &mut Vec<Point2>,
+    anchors: &mut Vec<Option<Point>>,
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) {
     let original = ring.to_vec();
     if original.len() < 3 {
         return;
@@ -2695,6 +2682,7 @@ fn snap_chart_junctions(ring: &mut [Point2], surface: &SurfaceGeometry, tol: Tol
     if x_bands.bands.is_empty() || y_bands.bands.is_empty() {
         return;
     }
+    let mut junctions = Vec::new();
     for (i, p) in original.iter().copied().enumerate() {
         let nearest = junction_candidates(&x_bands, &y_bands, p, tol.parametric())
             .iter()
@@ -2714,17 +2702,38 @@ fn snap_chart_junctions(ring: &mut [Point2], surface: &SurfaceGeometry, tol: Tol
                 }
                 let q = Point2::new(a.x + dx * along, a.y + dy * along);
                 let distance = p.distance(q);
-                (distance > 0.0 && distance <= tol.parametric()).then_some((q, distance))
+                (distance <= tol.parametric()).then_some((k, along, q, distance))
             })
-            .min_by(|a, b| a.1.total_cmp(&b.1));
-        if let Some((q, _)) = nearest
+            .min_by(|a, b| a.3.total_cmp(&b.3));
+        if let Some((side, along, q, _)) = nearest
             && let (Ok(at), Ok(on)) = (
                 surface.point_at(p.x, p.y, tol),
                 surface.point_at(q.x, q.y, tol),
             )
             && at.distance(on) <= tol.confusion()
         {
-            ring[i] = q;
+            junctions.push((side, along, i));
+        }
+    }
+    if junctions.is_empty() {
+        return;
+    }
+    // Rebuild in side order so many junctions require one linear copy.
+    // Each shared vertex bends its constraint by at most the accepted reach.
+    junctions.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let held = std::mem::take(anchors);
+    ring.clear();
+    let mut junctions = junctions.into_iter().peekable();
+    for (side, (&p, &anchor)) in original.iter().zip(&held).enumerate() {
+        ring.push(p);
+        anchors.push(anchor);
+        while let Some(&(at, _, vertex)) = junctions.peek() {
+            if at != side {
+                break;
+            }
+            ring.push(original[vertex]);
+            anchors.push(held[vertex]);
+            junctions.next();
         }
     }
 }
@@ -3824,6 +3833,8 @@ struct PlanarMesh {
     parameters: Vec<(f64, f64)>,
     /// Triangles as indices into `parameters`.
     triangles: Vec<[u32; 3]>,
+    /// Minimum triangle count, accounting for repeated junction vertices.
+    boundary_triangles: usize,
     /// The boundary alone did not triangulate to the count a boundary that
     /// encloses a region gives: it crosses itself somewhere.
     crossed: bool,
@@ -3965,6 +3976,7 @@ fn triangulate_region_inner(
         ConstrainedDelaunayTriangulation::new();
     let sub = Instant::now();
     let mut refused_total = 0usize;
+    let mut junctions = 0usize;
 
     // Everything the triangulation sees is in the scaled chart; the rings'
     // own chart points are kept by their scaled bits so a boundary vertex
@@ -4000,6 +4012,8 @@ fn triangulate_region_inner(
                 .map_err(|e| ogeom_core::ogeom_err!(NotDone, "boundary insertion failed: {e}"))?;
             ring_handles.push(handle);
         }
+        let distinct: ogeom_core::FastSet<_> = ring_handles.iter().copied().collect();
+        junctions += ring_handles.len() - distinct.len();
         let mut refused = 0usize;
         let mut same = 0usize;
         for i in 0..ring_handles.len() {
@@ -4037,18 +4051,15 @@ fn triangulate_region_inner(
         refused_total += refused;
     }
 
-    // With the boundary in and nothing else, a boundary that encloses a
-    // region triangulates to exactly `b + 2w - 4` triangles inside it, `b`
-    // its distinct vertices and `w` its rings: the count any triangulation
-    // of a polygon with holes has. One that crosses itself gives another
-    // number: a segment refused as a constraint, a lobe wound the wrong
-    // way. Asked here, before interior points bury the difference.
+    // Before interior points go in, the boundary gives an exact triangle
+    // count. A simple polygon with holes gives `b + 2w - 4`, where `b` is
+    // its distinct vertices and `w` its rings. A repeated vertex within a
+    // ring joins otherwise separate lobes and reduces that count by one.
     let bands = RingBands::over(&scaled);
-    // A segment the triangulation refused as a constraint crossed one
-    // already there; that alone is the answer.
+    // A refused constraint crosses one already present, regardless of count.
+    let boundary_triangles = (cdt.num_vertices() + 2 * rings.len()).saturating_sub(4 + junctions);
     let crossed = refused_total > 0
-        || inside_by_parity(&cdt)
-            .is_none_or(|inside| inside + 4 != cdt.num_vertices() + 2 * rings.len());
+        || inside_by_parity(&cdt).is_none_or(|inside| inside != boundary_triangles);
     if *MESH_DEBUG_REFINE && crossed {
         let points: usize = rings.iter().map(Vec::len).sum();
         eprintln!(
@@ -4310,6 +4321,7 @@ fn triangulate_region_inner(
     Ok(PlanarMesh {
         parameters,
         triangles,
+        boundary_triangles,
         crossed,
     })
 }
@@ -5741,40 +5753,90 @@ mod tests {
         .unwrap();
         let plane: SurfaceGeometry =
             ogeom_geom::PlaneSurface::new(ogeom_math::Plane::new(frame)).into();
-        for offset in [-1e-12, 0.0, 1e-12] {
-            let mut ring = vec![
-                Point2::new(0.0, 0.0),
-                Point2::new(0.0, 10.0),
-                Point2::new(1.0, 10.0),
-                Point2::new(offset, 5.0),
-                Point2::new(1.0, 0.0),
-            ];
-            snap_chart_junctions(&mut ring, &plane, tol);
-            assert_eq!(ring[3], Point2::new(0.0, 5.0));
-            let mesh = triangulate_region(
-                &[ring],
-                &plane,
-                Deflection::with_chord(0.1).unwrap(),
-                Rows::Ends,
-                tol,
-            )
-            .unwrap();
-            assert_eq!(mesh.triangles.len(), 2);
-            let triangles: Vec<_> = mesh
-                .triangles
-                .iter()
-                .map(|t| t.map(|i| mesh.parameters[i as usize]))
+        for angle in [0.0_f64, 0.1, 0.7] {
+            let (sin, cos) = angle.sin_cos();
+            let rotate = |p: Point2| Point2::new(cos * p.x - sin * p.y, sin * p.x + cos * p.y);
+            for offset in [-1e-12, 0.0, 1e-12] {
+                let mut ring: Vec<_> = [
+                    Point2::new(0.0, 0.0),
+                    Point2::new(0.0, 10.0),
+                    Point2::new(1.0, 10.0),
+                    Point2::new(offset, 3.0),
+                    Point2::new(1.0, 0.0),
+                ]
+                .into_iter()
+                .map(rotate)
                 .collect();
-            for expected in [
-                [(0.0, 0.0), (0.0, 5.0), (1.0, 0.0)],
-                [(0.0, 5.0), (0.0, 10.0), (1.0, 10.0)],
-            ] {
-                assert!(
-                    triangles
-                        .iter()
-                        .any(|t| expected.iter().all(|p| t.contains(p))),
-                    "{triangles:?}"
+                let original = ring.clone();
+                let mut anchors = vec![None; ring.len()];
+                snap_chart_junctions(&mut ring, &mut anchors, &plane, tol);
+                assert_eq!(
+                    ring[1], original[3],
+                    "the target side shares the touching vertex"
                 );
+                let boundary = ring.clone();
+                let mesh = triangulate_region(
+                    &[ring],
+                    &plane,
+                    Deflection::with_chord(0.1).unwrap(),
+                    Rows::Ends,
+                    tol,
+                )
+                .unwrap();
+                assert!(!mesh.crossed, "angle {angle}, offset {offset}");
+                assert_eq!(mesh.triangles.len(), 2);
+                for (&a, &b) in boundary.iter().zip(boundary.iter().cycle().skip(1)) {
+                    assert!(
+                        mesh.triangles.iter().any(|t| (0..3).any(|i| {
+                            let x = mesh.parameters[t[i] as usize];
+                            let y = mesh.parameters[t[(i + 1) % 3] as usize];
+                            (x == (a.x, a.y) && y == (b.x, b.y))
+                                || (x == (b.x, b.y) && y == (a.x, a.y))
+                        })),
+                        "missing boundary side {a:?} -- {b:?}"
+                    );
+                }
+                // The two lobes have total area 5. The tolerance covers the
+                // sub-parametric boundary bend and floating-point rotation.
+                let area: f64 = mesh
+                    .triangles
+                    .iter()
+                    .map(|t| {
+                        let [a, b, c] = t.map(|i| {
+                            let (u, v) = mesh.parameters[i as usize];
+                            Point2::new(u, v)
+                        });
+                        (b - a).cross(c - a).abs() * 0.5
+                    })
+                    .sum();
+                assert!((area - 5.0).abs() < 1e-9, "{area}");
+                let mut model = Model::new();
+                let points: Vec<_> = original.iter().map(|p| Point::new(p.x, p.y, 0.0)).collect();
+                let wire = ogeom_algo::make_polygon(&mut model, &points, true, tol)
+                    .unwrap()
+                    .shape;
+                let face = ogeom_algo::make_face(&mut model, plane.clone(), &[wire], tol)
+                    .unwrap()
+                    .shape;
+                ogeom_algo::build::trimmed_where_bare(&mut model, &face, tol).unwrap();
+                let (mesh, verdict) = triangulate_reporting(
+                    &model,
+                    &face,
+                    Deflection::with_chord(0.1).unwrap(),
+                    Some(&EdgeChords::new()),
+                    tol,
+                )
+                .unwrap();
+                assert!(verdict != Verdict::Short, "angle {angle}, offset {offset}");
+                let area: f64 = mesh
+                    .triangles
+                    .iter()
+                    .map(|t| {
+                        let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+                        (b - a).cross(c - a).magnitude() * 0.5
+                    })
+                    .sum();
+                assert!((area - 5.0).abs() < 1e-9, "face area {area}");
             }
         }
         let mut separate = vec![
@@ -5785,7 +5847,7 @@ mod tests {
             Point2::new(1.0, 0.0),
         ];
         let before = separate.clone();
-        snap_chart_junctions(&mut separate, &plane, tol);
+        snap_chart_junctions(&mut separate, &mut vec![None; before.len()], &plane, tol);
         assert_eq!(separate, before, "a resolvable gap must stay separate");
     }
     #[test]

@@ -331,6 +331,23 @@ impl Triangulation {
             // Split each original side from the opposite corner. A fan from
             // the ring's first vertex would leave its incident sides unsplit
             // and emit collinear triangles along them.
+            let sides = std::array::from_fn(|i| {
+                let (a, b) = (t[i], t[(i + 1) % 3]);
+                splits
+                    .get(&(a.min(b), a.max(b)))
+                    .map_or(&[][..], Vec::as_slice)
+            });
+            let nearest = nearest_split_sides(t, sides, |i, v| {
+                let (a, b) = (t[i], t[(i + 1) % 3]);
+                let (pa, pb, p) = (
+                    self.positions[a as usize],
+                    self.positions[b as usize],
+                    self.positions[v as usize],
+                );
+                let d = pb - pa;
+                let along = (p - pa).dot(d) / d.dot(d);
+                (pa + d * along).distance(p)
+            });
             let mut pieces = vec![*t];
             for i in 0..3 {
                 let (a, b) = (t[i], t[(i + 1) % 3]);
@@ -341,29 +358,7 @@ impl Triangulation {
                     let vs: Vec<_> = vs
                         .iter()
                         .copied()
-                        .filter(|v| !t.contains(v))
-                        .filter(|&v| {
-                            (0..3)
-                                .filter_map(|k| {
-                                    let (x, y) = (t[k], t[(k + 1) % 3]);
-                                    if !splits
-                                        .get(&(x.min(y), x.max(y)))
-                                        .is_some_and(|vs| vs.contains(&v))
-                                    {
-                                        return None;
-                                    }
-                                    let (px, py, p) = (
-                                        self.positions[x as usize],
-                                        self.positions[y as usize],
-                                        self.positions[v as usize],
-                                    );
-                                    let d = py - px;
-                                    let along = (p - px).dot(d) / d.dot(d);
-                                    Some((k, (px + d * along).distance(p)))
-                                })
-                                .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))
-                                .is_some_and(|(nearest, _)| nearest == i)
-                        })
+                        .filter(|v| nearest.get(v) == Some(&i))
                         .collect();
                     if vs.is_empty() {
                         continue;
@@ -648,6 +643,32 @@ impl Triangulation {
         }
         out
     }
+}
+
+/// Assign each candidate once per incident side, with stable ties at narrow
+/// corners. Hash lookups keep a densely subdivided side linear after sorting.
+fn nearest_split_sides<V: Copy + Eq + std::hash::Hash>(
+    corners: &[V; 3],
+    sides: [&[V]; 3],
+    mut distance: impl FnMut(usize, V) -> f64,
+) -> ogeom_core::FastMap<V, usize> {
+    let mut nearest: ogeom_core::FastMap<V, (usize, f64)> = ogeom_core::FastMap::default();
+    for (side, vertices) in sides.into_iter().enumerate() {
+        for &v in vertices {
+            if corners.contains(&v) {
+                continue;
+            }
+            let d = distance(side, v);
+            let entry = nearest.entry(v).or_insert((side, d));
+            if d.total_cmp(&entry.1).is_lt() {
+                *entry = (side, d);
+            }
+        }
+    }
+    nearest
+        .into_iter()
+        .map(|(v, (side, _))| (v, side))
+        .collect()
 }
 
 /// How many triangles use each undirected edge, keyed (smaller, larger).
@@ -978,6 +999,54 @@ mod tests {
         assert_eq!(sources.len(), unfolded.triangles.len());
         for (triangle, source) in unfolded.triangles.iter().zip(sources) {
             assert_eq!(*triangle, folded.triangles[source]);
+        }
+    }
+
+    #[test]
+    fn dense_border_assigns_each_candidate_once_per_side() {
+        use std::cell::Cell;
+        use std::hash::{Hash, Hasher};
+
+        #[derive(Clone, Copy)]
+        struct Vertex<'a>(u32, &'a Cell<usize>);
+        impl PartialEq for Vertex<'_> {
+            fn eq(&self, other: &Self) -> bool {
+                self.1.set(self.1.get() + 1);
+                self.0 == other.0
+            }
+        }
+        impl Eq for Vertex<'_> {}
+        impl Hash for Vertex<'_> {
+            fn hash<H: Hasher>(&self, state: &mut H) {
+                self.0.hash(state);
+            }
+        }
+
+        let comparisons = Cell::new(0);
+        let vertices: Vec<_> = (3..10_003).map(|v| Vertex(v, &comparisons)).collect();
+        let corners = [
+            Vertex(0, &comparisons),
+            Vertex(1, &comparisons),
+            Vertex(2, &comparisons),
+        ];
+        let mut visits = 0;
+        let nearest =
+            nearest_split_sides(&corners, [&vertices, &vertices[..20], &[]], |side, v| {
+                visits += 1;
+                // Twenty vertices also reach the adjacent side, which is nearer.
+                if side == 1 && v.0 < 23 { 0.0 } else { 1.0 }
+            });
+        // Three corner checks per candidate and hash-table probes fit this
+        // linear budget. A split-list scan alone takes over 50 million checks.
+        assert!(
+            comparisons.get() < 8 * vertices.len(),
+            "{} comparisons",
+            comparisons.get()
+        );
+        assert_eq!(visits, vertices.len() + 20);
+        assert_eq!(nearest.len(), vertices.len());
+        for v in vertices {
+            assert_eq!(nearest[&v], usize::from(v.0 < 23));
         }
     }
 
