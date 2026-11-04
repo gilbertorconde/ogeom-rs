@@ -13,6 +13,10 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- `Triangulation::border_stitched_with_sources` and
+  `Triangulation::without_folds_with_sources` retain the source triangle
+  of every output triangle, for carrying per-face data through mesh repair.
+
 - **Decimating an editable mesh with its source vertices carried:
   `Editable::simplify(target, tol) -> SimplifyReport { error, collapsed,
   target_met, deviation }`, `Editable::source_vertices(v) -> &[u32]`,
@@ -65,6 +69,15 @@ bump may break the API and a patch bump may not.
     chords from 3e-3 to 5e-4 and 0.566288 at 1e-4. A unit cube whose
     vertices stand 0.01 in from its corners meshed to 0.9658 and now
     meshes to its volume.
+
+- Medial-axis branch points closer than the sampling spacing stay distinct:
+  each triple is solved before coincident solutions merge.
+- Boundary tangencies within chart and surface precision share an explicit
+  constraint vertex. Touching lobes satisfy tessellation's boundary count,
+  including on rotated charts.
+- Border stitching splits all three triangle sides from their opposite
+  corners and assigns narrow-corner candidates to the nearest side in
+  linear work after sorting.
 
 - **A face measured on its own mesh within an exact volume keeps its
   flux when it is thinner than the chord.** (#683)
