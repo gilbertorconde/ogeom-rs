@@ -2226,6 +2226,42 @@ fn walls_leaning_a_hair_apart_across_an_arc_cut_and_fuse_to_their_closed_forms()
     }
 }
 
+/// The arched block on a spline and a box whose wall leans `lean` off the
+/// block's end face, crossing it `depth` inside the arc's crown, the box
+/// reaching twelve below the arc's centre and two past it every other way.
+fn box_leaning_across_a_spline_arch(model: &mut Model, lean: f64, depth: f64) -> (Shape, Shape) {
+    use ogeom::math::Vector;
+    let (r, below) = (5.0_f64, 12.0);
+    let (normal, toward) = (Vector::new(0.0, 0.0, 1.0), Vector::new(0.0, 1.0, 0.0));
+    let chord = r - depth;
+    let a = arched_block(model, true);
+    let across = normal * lean.cos() - toward * lean.sin();
+    let up = toward * lean.cos() + normal * lean.sin();
+    let at = Point::new(5.0, 10.0, 10.0) + toward * chord - up.cross(across) * 7.0;
+    let origin = at - across * 5.0 - up * (chord + below);
+    let frame = Frame::new(
+        origin,
+        Direction::new(up, T).unwrap(),
+        Direction::new(across, T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let b = ogeom::algo::make_box(model, frame, (5.0, 14.0, below + r + 2.0), T)
+        .unwrap()
+        .shape;
+    (a, b)
+}
+
+/// The volume of `shape` at a chord of a ten-thousandth. The faces a wall
+/// leaning a hundred-thousandth of a radian leaves on the arch's wall, a
+/// sliver five hundredths of a micron thick at most, are measured on their
+/// meshes, and at the default chord those drop them (see docs/PLAN.md).
+fn finely(model: &Model, shape: &Shape) -> f64 {
+    ogeom::algo::volume_properties(model, shape, Deflection::with_chord(1e-4).unwrap(), T)
+        .unwrap()
+        .mass
+}
+
 /// The arched block on a spline against a box whose wall leans a
 /// hundred-thousandth of a radian off its end face, crossing it a tenth of
 /// a micron and a hundredth of a millimetre inside the arc. The cut keeps
@@ -2237,39 +2273,27 @@ fn walls_leaning_a_hair_apart_across_an_arc_cut_and_fuse_to_their_closed_forms()
 /// recognised as coincident; it is never another volume.
 #[test]
 fn a_sliver_past_a_wall_leaning_across_a_spline_arch_stays_in_the_cut() {
-    use ogeom::math::Vector;
     let weld = T.confusion() * 1e2;
-    let (r, lean, below) = (5.0_f64, 1e-5_f64, 12.0);
+    let (r, lean) = (5.0_f64, 1e-5_f64);
     let area = 100.0 + core::f64::consts::PI * r * r / 2.0;
-    let (normal, toward) = (Vector::new(0.0, 0.0, 1.0), Vector::new(0.0, 1.0, 0.0));
     for depth in [1e-4, 1e-2] {
         let chord = r - depth;
         let mut model = Model::new();
-        let a = arched_block(&mut model, true);
-        let across = normal * lean.cos() - toward * lean.sin();
-        let up = toward * lean.cos() + normal * lean.sin();
-        let at = Point::new(5.0, 10.0, 10.0) + toward * chord - up.cross(across) * 7.0;
-        let origin = at - across * 5.0 - up * (chord + below);
-        let frame = Frame::new(
-            origin,
-            Direction::new(up, T).unwrap(),
-            Direction::new(across, T).unwrap(),
-            T,
-        )
-        .unwrap();
-        let b = ogeom::algo::make_box(&mut model, frame, (5.0, 14.0, below + r + 2.0), T)
-            .unwrap()
-            .shape;
+        let (a, b) = box_leaning_across_a_spline_arch(&mut model, lean, depth);
         let expected = area * 10.0 - area * 5.0 / lean.cos() + lean.tan() * past_chord(r, chord);
         let band = 2.0 * r * 2.0 * weld / lean;
         match ogeom::boolean::cut(&mut model, &a, &b, T) {
             Ok(built) => {
-                let m = measured(&model, &built.shape);
-                assert!(m.valid, "{depth}: check reports the cut invalid");
                 assert!(
-                    (m.volume - expected).abs() <= weld * band,
-                    "{depth}: cut volume {} against {expected}",
-                    m.volume
+                    ogeom::algo::check(&model, &built.shape, T)
+                        .unwrap()
+                        .is_valid(),
+                    "{depth}: check reports the cut invalid"
+                );
+                let volume = finely(&model, &built.shape);
+                assert!(
+                    (volume - expected).abs() <= weld * band,
+                    "{depth}: cut volume {volume} against {expected}"
                 );
             }
             Err(e) => assert!(
@@ -2277,6 +2301,57 @@ fn a_sliver_past_a_wall_leaning_across_a_spline_arch_stays_in_the_cut() {
                     .contains("a contact over a region of faces not recognised as coincident"),
                 "{depth}: {e}"
             ),
+        }
+    }
+}
+
+/// The arched block on a spline against a box whose wall leans a
+/// hundred-thousandth to a thousandth of a radian off its end face,
+/// crossing it a ten-thousandth to a hundredth inside the arc's crown. The
+/// wall's section with the arch's wall meets the top rim all but
+/// tangentially, within the confusion distance of it over tenths of a
+/// millimetre, and the marched section stops short of the rim there. Split
+/// where the wall crosses the rim instead, and the crossing taken where
+/// the rim leaves the wall's plane by its own distance off it, each volume
+/// is the closed form's to within the weld distance over the band where
+/// the two walls stand within it of each other.
+#[test]
+fn a_wall_leaning_across_a_spline_arch_s_crown_splits_its_section_at_the_rim() {
+    let weld = T.confusion() * 1e2;
+    let r = 5.0_f64;
+    let area = 100.0 + core::f64::consts::PI * r * r / 2.0;
+    let boxed = 5.0 * 14.0 * (12.0 + r + 2.0);
+    for (lean, depth) in [
+        (1e-5_f64, 1e-4_f64),
+        (1e-4, 1e-2),
+        (3e-4, 1e-3),
+        (1e-3, 1e-4),
+    ] {
+        let common = area * 5.0 / lean.cos() - lean.tan() * past_chord(r, r - depth);
+        let band = 2.0 * r * 2.0 * weld / lean;
+        for (op, expected) in [
+            ("fuse", area * 10.0 + boxed - common),
+            ("common", common),
+            ("cut", area * 10.0 - common),
+        ] {
+            let mut model = Model::new();
+            let (a, b) = box_leaning_across_a_spline_arch(&mut model, lean, depth);
+            let got = match op {
+                "fuse" => ogeom::boolean::fuse(&mut model, &a, &b, T),
+                "common" => ogeom::boolean::common(&mut model, &a, &b, T),
+                _ => ogeom::boolean::cut(&mut model, &a, &b, T),
+            }
+            .unwrap_or_else(|e| panic!("{lean} {depth} {op}: {e}"))
+            .shape;
+            assert!(
+                ogeom::algo::check(&model, &got, T).unwrap().is_valid(),
+                "{lean} {depth} {op}: check reports the result invalid"
+            );
+            let volume = finely(&model, &got);
+            assert!(
+                (volume - expected).abs() <= weld * band,
+                "{lean} {depth} {op}: volume {volume} against {expected}"
+            );
         }
     }
 }

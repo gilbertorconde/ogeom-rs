@@ -65,20 +65,26 @@ welded shut as a graze. A cube, a drum's disc and an arched block's arc
 against a box whose wall leans 1e-5 to 1e-3 radians and crosses a hundredth of
 a micron to a micron inside the edge fuse to the closed form within the
 weld distance over the band (`boolean_contact.rs`). An arched block whose
-arc is the same arc as a rational B-spline still refuses 45 of 189 such
-operations. The wall's section with the arch's extrusion is marched, and
-it meets the arch's top rim at a grazing angle, within the confusion
-distance of it over a few tenths of a millimetre: the walk stops short of
-the rim on the extrusion's window, so the wall's boundary loop near the
-crossing stays open. Stretched past the rim, as `reaching` stretches a
-cylinder's window, the section comes out exact, but where it then crosses
-the rim the fuse and cut move by 4e-4 at a lean of 1e-5 and results go
-invalid at 3e-4 and 1e-3, so the window is not stretched. What would
-clear them: a section crossing a rim it grazes split at the crossing the
-rim's own closed form gives. The cut at a lean of 1e-5, 1.1e-2 off the
-closed form before, refuses: the retry at a wider confusion dropped the
-sliver above the wall whole as a membrane, and drops a shell so only
-within the caller's weld distance now (#674). Where
+arc is the same arc as a rational B-spline meets the box's wall in a
+section that crosses the arch's top rim all but tangentially, within the
+confusion distance of it over tenths of a millimetre, and the marcher
+stops short of the rim there. Where every retry refuses, the boolean runs
+again with that section split where the arc's height to the wall's plane
+reaches the rim, in closed form (`plane_extrusion_at_rims` in
+`ogeom-intersect/src/extrusion.rs`), an edge crossing a section beside a
+plane held to its own distance off the plane over its lean out of it,
+and an exact section's end touching an edge held to its own distance
+off the edge. Over leans of ±1e-5, ±1e-4, 1e-6, 3e-4 and 1e-3 and
+crossings 1e-6 to 1e-2 inside the crown, 183 of 189 operations answer
+within 7.3e-7 of the closed form; 6 refuse, at a lean of 1e-5 with the
+crossing 1e-5 or 3e-5 inside ("a piece lies on the other solid's
+boundary" for the cut, fuse and common at 3e-5, "the kept pieces did not
+close" at 1e-5). At a lean of 1e-5 the faces the wall leaves on the
+arch's wall, a sliver 5e-5 thick at most, are measured on their meshes,
+and at a chord of 1e-3 `volume_properties` loses them and comes out
+4.2e-4 short (at 1e-4, within 1e-8); the tests measure those at 1e-4. The cut
+at a lean of 1e-5 keeps the sliver above the wall, a retry at a wider
+confusion dropping a shell only within the caller's weld distance (#674). Where
 the strip is wider the ordinary crossing splits both faces exactly, and
 pairing the band as same-domain would move the result by up to the weld
 distance over it, so the band is not paired there.

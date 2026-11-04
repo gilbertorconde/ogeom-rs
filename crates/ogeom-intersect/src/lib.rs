@@ -62,6 +62,7 @@ pub use extrema::{
     Approach, Extrema, ExtremaOptions, extrema_curve_curve, extrema_curve_surface,
     extrema_surface_surface,
 };
+pub use extrusion::{crosses_extrusion_rim, plane_extrusion_at_rims};
 pub use march::{Contact, Marching, Stopped, Traced, branches, seeds, trace};
 pub use section::{
     IntersectOptions, ParameterWindow, SectionCurve, SurfaceIntersection, exact_pcurve_of,
