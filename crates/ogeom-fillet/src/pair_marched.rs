@@ -12,16 +12,18 @@
 //! Where the ball touches each face is a line on it: the touch points, at
 //! the guide's parameters, fitted together with their places in the face's
 //! chart. A face the ball leaves is cut along that line, which settles
-//! exactly where the line enters and leaves the face, and the round spans
-//! the overlap of the two faces' stretches.
+//! exactly where the line enters and leaves the face, each time it crosses
+//! it, and the round is a run over each overlap of the two faces'
+//! stretches.
 //!
 //! Between faces of a solid the corner between the band and the crease is
 //! built as the marched edge blend builds it and cut off or fused on: a
 //! ring where the ball touches both faces all the way round a closed seat,
 //! and otherwise capped at each end of the run in the ball's section there,
 //! as the open marched edge blend caps its run. Between separate faces each
-//! face is cut back to its line of contact and the round sewn between them:
-//! over the overlap of the faces' stretches, or, where the ball touches
+//! face is cut back to its line of contact, keeping the piece beyond each
+//! stretch of it, and the rounds sewn between them: over the overlaps of
+//! the faces' stretches, or, where the ball touches
 //! both all the way round a closed seat, as a band closed round the loop
 //! between two closed lines of contact.
 
@@ -115,23 +117,38 @@ pub(crate) fn hosts_of(
     })
 }
 
-/// Where a face's stretch of the ball's line of contact lies on it.
+/// Where a face's stretches of the ball's line of contact lie on it.
 pub(crate) struct FaceStretch {
-    /// The piece of the face on the far side of the line from the round.
-    piece: Shape,
-    /// The edge the line cut it along.
-    edge: Shape,
+    /// The pieces of the face on the far side of the line from the round.
+    pieces: Vec<Shape>,
+    /// Each stretch of the line on the face, in order along the guide.
+    cuts: Vec<FaceCut>,
     /// The line's curve, parameterized as the guide.
     line: Curve,
+}
+
+/// One stretch of a line of contact across its face.
+struct FaceCut {
+    /// The edges the line cut the face along, end to end: more than one
+    /// where it crosses the face's seam.
+    edges: Vec<Shape>,
     /// The guide's parameters where the line enters and leaves the face.
     span: (f64, f64),
+    /// Which of the face's kept pieces lies beyond it.
+    piece: usize,
+}
+
+impl FaceStretch {
+    fn spans(&self) -> Vec<(f64, f64)> {
+        self.cuts.iter().map(|c| c.span).collect()
+    }
 }
 
 /// How much of the marched seat the round takes.
 pub(crate) enum Run {
     /// The whole loop: the ball touches both faces all the way round.
     Closed,
-    /// The overlaps of the faces' two stretches, a run over each.
+    /// The overlaps of the two faces' stretches, a run over each.
     Open(Box<[FaceStretch; 2]>),
     /// Between faces of a solid, the stretches of the seat where the ball
     /// touches both, each ended where it leaves one: the corner is capped
@@ -309,9 +326,12 @@ fn spread(count: usize, most: usize) -> Vec<usize> {
 ///
 /// A closed seat both faces let go of, never at the same station, gives a
 /// run over each overlap of the faces' stretches round the loop: each
-/// face's stretch is read with the loop opened in that face's own gap, so
-/// its line of contact enters and leaves it once, and the two stretches
-/// are intersected round the loop.
+/// face's stretches are read with the loop opened in that face's own gap,
+/// so its line of contact starts and ends off it, and the two faces'
+/// stretches are intersected round the loop. Between separate faces so
+/// too where the first station the ball misses a face at holds it on the
+/// other. A line crossing its face more than once holds the ball over a
+/// stretch each time, and every overlap is a run of its own.
 #[allow(clippy::too_many_arguments, reason = "one seat, all its data")]
 #[allow(clippy::type_complexity, reason = "the seat's three parts")]
 fn seat_along(
@@ -402,10 +422,14 @@ fn seat_along(
             return Ok(Some((vec![blend], Run::Closed, probes)));
         }
         // Both faces let the ball go round a loop, never at one station:
-        // a run over each overlap of their stretches.
-        (true, Some(_))
+        // a run over each overlap of their stretches. So too between
+        // separate faces both of which let it go, where the first station
+        // the ball misses a face at holds it on the other: a line read
+        // round the loop from there would start and end on that face.
+        (true, Some(at))
             if missed.iter().all(|m| m.contains(&true))
-                && !sampled.iter().any(|&i| missed[0][i] && missed[1][i]) =>
+                && (!sampled.iter().any(|&i| missed[0][i] && missed[1][i])
+                    || (whole.is_none() && !(missed[0][at] && missed[1][at]))) =>
         {
             let Some(period) = period else {
                 ogeom_bail!(
@@ -453,7 +477,10 @@ fn seat_along(
         // the line enters and leaves it. The round spans the overlap, and
         // each of its ends must be where the ball leaves a face: where the
         // march stopped on both faces is no end the faces give.
-        let (mut w0, mut w1) = (blend.along[0], blend.along[blend.len() - 1]);
+        // A line crossing its face more than once holds the ball over
+        // several stretches, and the round is a run over each overlap.
+        let mut spans = vec![(blend.along[0], blend.along[blend.len() - 1])];
+        let mut several = false;
         for (f, face) in faces.iter().enumerate() {
             if !missed[f].contains(&true) {
                 continue;
@@ -461,22 +488,29 @@ fn seat_along(
             let Some(cut) = contact_cut(model, face, f, &blend, hosts, guide, radius, tol)? else {
                 return Ok(None);
             };
-            w0 = w0.max(cut.span.0);
-            w1 = w1.min(cut.span.1);
+            let held = cut.spans();
+            if held.len() == 1 && !several {
+                let (w0, w1) = (spans[0].0.max(held[0].0), spans[0].1.min(held[0].1));
+                spans = vec![(w0, w1)];
+            } else {
+                several = true;
+                spans = overlaps(&spans, &held, None, tol);
+            }
         }
-        let run = capped_run(
-            model,
-            solid,
-            hosts,
-            guide,
-            sides,
-            radius,
-            &blend,
-            (w0, w1),
-            tol,
-        )?;
-        let probes = probes_at(&run, guide, run.len() / 2, radius, tol)?;
-        return Ok(Some((vec![run], Run::Capped, vec![probes])));
+        if spans.is_empty() {
+            ogeom_bail!(
+                Construction,
+                "the two faces reach the round over stretches of the corner that do not overlap"
+            );
+        }
+        let mut runs = Vec::with_capacity(spans.len());
+        let mut probes = Vec::with_capacity(spans.len());
+        for span in spans {
+            let run = capped_run(model, solid, hosts, guide, sides, radius, &blend, span, tol)?;
+            probes.push(probes_at(&run, guide, run.len() / 2, radius, tol)?);
+            runs.push(run);
+        }
+        return Ok(Some((runs, Run::Capped, probes)));
     }
 
     let mut stretches = Vec::with_capacity(2);
@@ -488,24 +522,56 @@ fn seat_along(
     let [Some(a), Some(b)] = [stretches.remove(0), stretches.remove(0)] else {
         return Ok(None);
     };
-    let (w0, w1) = (a.span.0.max(b.span.0), a.span.1.min(b.span.1));
-    if w1 - w0 <= tol.parametric() {
+    let spans = overlaps(&a.spans(), &b.spans(), None, tol);
+    if spans.is_empty() {
         ogeom_bail!(
             Construction,
             "the two faces reach the round over stretches of the corner that do not overlap"
         );
     }
-    let run = trimmed(
-        &blend,
-        hosts,
-        guide,
-        sides,
-        radius,
-        (w0, w1),
-        [None; 2],
-        tol,
-    )?;
-    Ok(Some((vec![run], Run::Open(Box::new([a, b])), Vec::new())))
+    let mut runs = Vec::with_capacity(spans.len());
+    for span in spans {
+        runs.push(trimmed(
+            &blend, hosts, guide, sides, radius, span, [None; 2], tol,
+        )?);
+    }
+    Ok(Some((runs, Run::Open(Box::new([a, b])), Vec::new())))
+}
+
+/// The overlaps of two faces' stretches along the guide, in the first
+/// face's parameters and in order. Round a loop of guide parameter
+/// `period`, each of the second face's stretches is taken a whole number
+/// of turns either way, as each face reads its own turn.
+fn overlaps(
+    first: &[(f64, f64)],
+    second: &[(f64, f64)],
+    period: Option<f64>,
+    tol: Tolerances,
+) -> Vec<(f64, f64)> {
+    let mut found = Vec::new();
+    for &(a0, a1) in first {
+        for &(b0, b1) in second {
+            let turns = match period {
+                Some(period) => {
+                    let shift = ((f64::midpoint(a0, a1) - f64::midpoint(b0, b1)) / period).round();
+                    vec![
+                        (shift - 1.0) * period,
+                        shift * period,
+                        (shift + 1.0) * period,
+                    ]
+                }
+                None => vec![0.0],
+            };
+            for d in turns {
+                let (w0, w1) = (a0.max(b0 + d), a1.min(b1 + d));
+                if w1 - w0 > tol.parametric() {
+                    found.push((w0, w1));
+                }
+            }
+        }
+    }
+    found.sort_by(|x, y| x.0.total_cmp(&y.0));
+    found
 }
 
 /// The guide's period where it loops: periodic, or closed on itself
@@ -683,34 +749,26 @@ fn runs_round_loop(
             .filter(|&i| (from..=to).contains(&in_turn.along[i]))
             .collect();
         let in_turn = reordered(&in_turn, &inner);
-        let span = if whole.is_some() {
+        let spans = if whole.is_some() {
             match contact_cut(model, face, f, &in_turn, hosts, guide, radius, tol)? {
-                Some(cut) => cut.span,
+                Some(cut) => cut.spans(),
                 None => return Ok(None),
             }
         } else {
             match stretch_on(model, face, f, &in_turn, hosts, guide, radius, tol)? {
                 Some(stretch) => {
-                    let span = stretch.span;
+                    let spans = stretch.spans();
                     stretches.push(stretch);
-                    span
+                    spans
                 }
                 None => return Ok(None),
             }
         };
-        read.push((in_turn, span));
+        read.push((in_turn, spans));
     }
-    // The overlaps, in the first face's turn: its stretch against the
+    // The overlaps, in the first face's turn: its stretches against the
     // second's a whole number of turns either way.
-    let (a, b) = (read[0].1, read[1].1);
-    let shift = ((f64::midpoint(a.0, a.1) - f64::midpoint(b.0, b.1)) / period).round();
-    let mut overlaps = Vec::with_capacity(2);
-    for k in [shift - 1.0, shift, shift + 1.0] {
-        let (w0, w1) = (a.0.max(b.0 + k * period), a.1.min(b.1 + k * period));
-        if w1 - w0 > tol.parametric() {
-            overlaps.push((w0, w1));
-        }
-    }
+    let overlaps = overlaps(&read[0].1, &read[1].1, Some(period), tol);
     if overlaps.is_empty() {
         ogeom_bail!(
             Construction,
@@ -790,17 +848,26 @@ fn probes_at(
 struct ContactCut {
     /// The face split along the line.
     split: Shape,
-    /// The edge the line cut the face along.
-    edge: Shape,
+    /// Each stretch of the line on the face, in order along the guide: the
+    /// edges it cut the face along, end to end, and the guide's parameters
+    /// where it enters and leaves the face.
+    stretches: Vec<(Vec<Shape>, (f64, f64))>,
     /// The line's curve, parameterized as the guide.
     line: Curve,
-    /// The guide's parameters where the line enters and leaves the face.
-    span: (f64, f64),
 }
 
-/// The face's stretch of the ball's line of contact: the face cut along
-/// the line, and the piece away from the round kept. `None` where the
-/// line misses the face.
+impl ContactCut {
+    /// The guide's parameters over which the face holds the ball.
+    fn spans(&self) -> Vec<(f64, f64)> {
+        self.stretches.iter().map(|(_, span)| *span).collect()
+    }
+}
+
+/// The face's stretches of the ball's line of contact: the face cut along
+/// the line, and the piece away from the round beyond each stretch kept.
+/// `None` where the line misses the face, or a piece beyond a stretch is
+/// not bounded by it. A line crossing the face more than once must leave
+/// every piece beside the round apart from every piece beyond it.
 #[allow(clippy::too_many_arguments, reason = "one stretch, all its data")]
 fn stretch_on(
     model: &mut Model,
@@ -815,9 +882,8 @@ fn stretch_on(
     let surface = &hosts.surfaces[f];
     let Some(ContactCut {
         split,
-        edge: cut,
+        stretches,
         line,
-        span,
     }) = contact_cut(model, face, f, blend, hosts, guide, radius, tol)?
     else {
         return Ok(None);
@@ -827,57 +893,107 @@ fn stretch_on(
     } else {
         (&blend.touch_second, &blend.touch_first)
     };
-    let (cut_curve, cut_range) = edge_curve(model, &cut, tol)?;
-
-    // The piece away from the round: probed just off the line, half way
-    // along the stretch, on the far side from the round.
-    let middle = f64::midpoint(span.0, span.1);
-    let i = blend
-        .along
-        .partition_point(|&t| t < middle)
-        .min(blend.len() - 1);
-    let (centre, at, to) = (blend.spine[i], touch[i], other[i]);
-    let (a, b) = (at - centre, to - centre);
-    let into_arc = b - a * (a.dot(b) / a.dot(a));
-    let away: Vector = -into_arc.normalized(tol)?;
-    let reach = cut_curve
-        .point_at(cut_range.0, tol)?
-        .distance(cut_curve.point_at(cut_range.1, tol)?)
-        .max(tol.confusion() * 1e3)
-        .min(a.magnitude());
+    let several = stretches.len() > 1;
     let pieces = explore_unique(model, &split, ShapeType::Face)?;
-    for scale in [1e-3, 1e-2, 5e-2] {
-        let eps = reach * scale;
-        let deflection = ogeom_mesh::Deflection {
-            chord: eps * 0.1,
-            ..ogeom_mesh::Deflection::default()
-        };
-        let probe = project_on_surface(surface, at + away * eps, 32, tol)?.point;
-        let mut holding = Vec::new();
-        for piece in &pieces {
-            if ogeom_algo::classify_on_face(model, piece, probe, deflection, tol)?
-                == ogeom_algo::Containment::In
-            {
-                holding.push(piece.clone());
+    let mut kept: Vec<Shape> = Vec::new();
+    let mut beside: Vec<Shape> = Vec::new();
+    let mut cuts = Vec::with_capacity(stretches.len());
+    for (edges, span) in stretches {
+        // The piece away from the round: probed just off the line, half way
+        // along the stretch, on the far side from the round; and, where the
+        // line crosses the face more than once, the piece beside the round
+        // probed as far on the near side.
+        let middle = f64::midpoint(span.0, span.1);
+        let i = blend
+            .along
+            .partition_point(|&t| t < middle)
+            .min(blend.len() - 1);
+        let (centre, at, to) = (blend.spine[i], touch[i], other[i]);
+        let (a, b) = (at - centre, to - centre);
+        let into_arc = b - a * (a.dot(b) / a.dot(a));
+        let away: Vector = -into_arc.normalized(tol)?;
+        // The stretch's chord, from the first edge's start to the last's
+        // end.
+        let chord = match edges.as_slice() {
+            [one] => {
+                let (cut_curve, cut_range) = edge_curve(model, one, tol)?;
+                cut_curve
+                    .point_at(cut_range.0, tol)?
+                    .distance(cut_curve.point_at(cut_range.1, tol)?)
             }
-        }
-        let [piece] = holding.as_slice() else {
-            continue;
+            _ => line
+                .point_at(span.0, tol)?
+                .distance(line.point_at(span.1, tol)?),
         };
-        if !explore_unique(model, piece, ShapeType::Edge)?
+        let reach = chord.max(tol.confusion() * 1e3).min(a.magnitude());
+        let mut found = None;
+        for scale in [1e-3, 1e-2, 5e-2] {
+            let eps = reach * scale;
+            let deflection = ogeom_mesh::Deflection {
+                chord: eps * 0.1,
+                ..ogeom_mesh::Deflection::default()
+            };
+            let holding = |model: &Model, side: f64| -> OgeomResult<Vec<Shape>> {
+                let probe = project_on_surface(surface, at + away * (side * eps), 32, tol)?.point;
+                let mut holding = Vec::new();
+                for piece in &pieces {
+                    if ogeom_algo::classify_on_face(model, piece, probe, deflection, tol)?
+                        == ogeom_algo::Containment::In
+                    {
+                        holding.push(piece.clone());
+                    }
+                }
+                Ok(holding)
+            };
+            let Ok([piece]) = <[Shape; 1]>::try_from(holding(model, 1.0)?) else {
+                continue;
+            };
+            let near = if several {
+                let Ok([near]) = <[Shape; 1]>::try_from(holding(model, -1.0)?) else {
+                    continue;
+                };
+                Some(near)
+            } else {
+                None
+            };
+            found = Some((piece, near));
+            break;
+        }
+        let Some((piece, near)) = found else {
+            return Ok(None);
+        };
+        if !explore_unique(model, &piece, ShapeType::Edge)?
             .iter()
-            .any(|e| e.is_same(&cut))
+            .any(|e| edges.iter().any(|cut| e.is_same(cut)))
         {
             return Ok(None);
         }
-        return Ok(Some(FaceStretch {
-            piece: piece.clone(),
-            edge: cut,
-            line,
+        beside.extend(near);
+        let k = match kept.iter().position(|p| p.is_same(&piece)) {
+            Some(k) => k,
+            None => {
+                kept.push(piece);
+                kept.len() - 1
+            }
+        };
+        cuts.push(FaceCut {
+            edges,
             span,
-        }));
+            piece: k,
+        });
     }
-    Ok(None)
+    if kept.iter().any(|p| beside.iter().any(|q| q.is_same(p))) {
+        ogeom_bail!(
+            Construction,
+            "the line the ball touches a face along crosses it more than once, and a piece of \
+             the face lies beyond the line at one stretch and beside the round at another"
+        );
+    }
+    Ok(Some(FaceStretch {
+        pieces: kept,
+        cuts,
+        line,
+    }))
 }
 
 /// The ball's line of contact on one face, fitted at the guide's
@@ -1202,28 +1318,72 @@ fn contact_cut(
         .filter(|s| model.kind_of(s).is_ok_and(|k| k == ShapeType::Edge))
         .cloned()
         .collect();
-    let cut = match cut.as_slice() {
-        [] => return Ok(None),
-        [one] => one.clone(),
-        _ => ogeom_bail!(
-            Construction,
-            "the line the ball touches a face along crosses it more than once; the stretch the \
-             round spans is ambiguous"
-        ),
-    };
-    let (cut_curve, cut_range) = edge_curve(model, &cut, tol)?;
-    let mut span = [0.0; 2];
-    for (k, t) in [cut_range.0, cut_range.1].into_iter().enumerate() {
-        let p = cut_curve.point_at(t, tol)?;
-        span[k] = project_on_curve(&line, p, 512, tol)?.parameter;
+    if cut.is_empty() {
+        return Ok(None);
     }
-    let span = (span[0].min(span[1]), span[0].max(span[1]));
+    // A line that crosses the face more than once cuts it along a stretch
+    // each time; each is read where it enters and leaves the face. Edges
+    // that meet end to end on the face, the line crossing the face's seam,
+    // are one stretch.
+    let mut read = Vec::with_capacity(cut.len());
+    for edge in cut {
+        let (cut_curve, cut_range) = edge_curve(model, &edge, tol)?;
+        let mut span = [0.0; 2];
+        for (k, t) in [cut_range.0, cut_range.1].into_iter().enumerate() {
+            let p = cut_curve.point_at(t, tol)?;
+            span[k] = project_on_curve(&line, p, 512, tol)?.parameter;
+        }
+        read.push((edge, (span[0].min(span[1]), span[0].max(span[1]))));
+    }
+    read.sort_by(|x, y| x.1.0.total_cmp(&y.1.0));
+    let mut stretches: Vec<(Vec<Shape>, (f64, f64))> = Vec::with_capacity(read.len());
+    for (edge, span) in read {
+        if let Some((edges, held)) = stretches.last_mut() {
+            let shared = shared_vertex(model, &edges[edges.len() - 1], &edge)?;
+            let meet = match &shared {
+                Some(vertex) => {
+                    let reach = model
+                        .tolerance_of(vertex)?
+                        .map_or(tol.confusion(), |t| t.get().max(tol.confusion()));
+                    let (p, q) = (line.point_at(held.1, tol)?, line.point_at(span.0, tol)?);
+                    p.distance(q) <= 2.0 * reach
+                }
+                None => false,
+            };
+            if meet {
+                edges.push(edge);
+                held.1 = held.1.max(span.1);
+                continue;
+            }
+            if shared.is_some() || span.0 <= held.1 + tol.parametric() {
+                ogeom_bail!(
+                    Construction,
+                    "the line the ball touches a face along comes back to the face where it \
+                     left it, or runs over its own path there; the stretches the round spans \
+                     are ambiguous"
+                );
+            }
+        }
+        stretches.push((vec![edge], span));
+    }
     Ok(Some(ContactCut {
         split: split.shape,
-        edge: cut,
+        stretches,
         line,
-        span,
     }))
+}
+
+/// The vertex two edges share, if any.
+fn shared_vertex(model: &Model, a: &Shape, b: &Shape) -> OgeomResult<Option<Shape>> {
+    let (Some((a0, a1)), Some((b0, b1))) = (
+        ogeom_algo::edge_vertices(model, a)?,
+        ogeom_algo::edge_vertices(model, b)?,
+    ) else {
+        return Ok(None);
+    };
+    Ok([a0, a1]
+        .into_iter()
+        .find(|v| v.is_same(&b0) || v.is_same(&b1)))
 }
 
 /// The stations over the run `w0..w1` of the guide, with the ball's exact
@@ -1779,8 +1939,9 @@ fn crease_over(guide: &Curve, (w0, w1): (f64, f64), tol: Tolerances) -> OgeomRes
 
 /// Round the corner between two faces of separate shapes over a marched
 /// seat, the ball in front of both, a round over each run; with `trim`,
-/// each face cut back to its line of contact and the faces and rounds sewn
-/// into one shell.
+/// each face cut back to its line of contact, every piece beyond a stretch
+/// of it kept, and the pieces and rounds sewn into one shell. Trimming
+/// refuses a stretch no run lies along, and a line crossing a face's seam.
 pub(crate) fn fillet_faces(
     model: &mut Model,
     a: &Shape,
@@ -1871,42 +2032,85 @@ pub(crate) fn fillet_faces(
             .mul_add(period, w),
         None => w,
     };
-    let mut kept = Vec::with_capacity(2);
+    let mut kept: Vec<Vec<Shape>> = Vec::with_capacity(2);
     let mut rails: Vec<Vec<Shape>> = vec![Vec::with_capacity(2); marched.len()];
     let mut corners: Vec<Vec<[Shape; 2]>> = vec![Vec::with_capacity(2); marched.len()];
     for stretch in &*stretches {
-        // The piece's own surface, which the cut edge's image is on: the
-        // split may restate a face's surface as a fresh one.
-        let (surface_id, _, tolerance) = unplaced_face(model, &stretch.piece)?;
-        let mut ends = Vec::with_capacity(marched.len());
-        for marched in &marched {
-            let along = &marched.blend.along;
-            let (w0, w1) = (along[0], along[along.len() - 1]);
-            ends.push([
-                stretch.line.point_at(on_stretch(w0, stretch.span), tol)?,
-                stretch.line.point_at(on_stretch(w1, stretch.span), tol)?,
-            ]);
+        // The runs along each stretch of the line across the face: a run
+        // lies inside the stretch it was read over, a whole number of turns
+        // over round a loop.
+        let mut along: Vec<Vec<usize>> = vec![Vec::new(); stretch.cuts.len()];
+        for (k, marched) in marched.iter().enumerate() {
+            let at = &marched.blend.along;
+            let (w0, w1) = (at[0], at[at.len() - 1]);
+            let mid = f64::midpoint(w0, w1);
+            let inside = |cut: &FaceCut| {
+                let m = on_stretch(mid, cut.span);
+                cut.span.0 < m && m < cut.span.1
+            };
+            let found = match stretch.cuts.as_slice() {
+                [_] => Some(0),
+                cuts => cuts.iter().position(inside),
+            };
+            let Some(c) = found else {
+                ogeom_bail!(
+                    Invariant,
+                    "a run lies outside every stretch it was read over"
+                );
+            };
+            along[c].push(k);
         }
-        let (piece, cut) = cut_to_runs(
-            model,
-            &stretch.piece,
-            &stretch.edge,
-            surface_id,
-            tolerance,
-            &ends,
-            tol,
-        )?;
-        // Each rail's image on its band is fitted; it and its ends hold the
-        // band's own fit.
-        for (k, (rail, ends)) in cut.into_iter().enumerate() {
-            model.widen(&rail, widened)?;
-            for v in &ends {
-                model.widen(v, widened)?;
+        if along.iter().any(Vec::is_empty) {
+            ogeom_bail!(
+                Construction,
+                "the line the ball touches a face along crosses it over a stretch the other face \
+                 does not reach; cut there, the face would keep a piece no round meets"
+            );
+        }
+        if stretch.cuts.iter().any(|cut| cut.edges.len() > 1) {
+            ogeom_bail!(
+                Construction,
+                "the line the ball touches a face along crosses the face's seam, so the face \
+                 would be cut along it in more than one edge; trimming it is owed"
+            );
+        }
+        let mut pieces = stretch.pieces.clone();
+        for (cut, runs) in stretch.cuts.iter().zip(along) {
+            let piece = pieces[cut.piece].clone();
+            // The piece's own surface, which the cut edge's image is on: the
+            // split may restate a face's surface as a fresh one.
+            let (surface_id, _, tolerance) = unplaced_face(model, &piece)?;
+            let mut ends = Vec::with_capacity(runs.len());
+            for &k in &runs {
+                let at = &marched[k].blend.along;
+                let (w0, w1) = (at[0], at[at.len() - 1]);
+                ends.push([
+                    stretch.line.point_at(on_stretch(w0, cut.span), tol)?,
+                    stretch.line.point_at(on_stretch(w1, cut.span), tol)?,
+                ]);
             }
-            rails[k].push(rail);
-            corners[k].push(ends);
+            let (piece, cut_rails) = cut_to_runs(
+                model,
+                &piece,
+                &cut.edges[0],
+                surface_id,
+                tolerance,
+                &ends,
+                tol,
+            )?;
+            pieces[cut.piece] = piece;
+            // Each rail's image on its band is fitted; it and its ends hold
+            // the band's own fit.
+            for (&k, (rail, ends)) in runs.iter().zip(cut_rails) {
+                model.widen(&rail, widened)?;
+                for v in &ends {
+                    model.widen(v, widened)?;
+                }
+                rails[k].push(rail);
+                corners[k].push(ends);
+            }
         }
-        kept.push(piece);
+        kept.push(pieces);
     }
     let mut rounds = Vec::with_capacity(marched.len());
     for (k, marched) in marched.iter().enumerate() {
@@ -1920,12 +2124,15 @@ pub(crate) fn fillet_faces(
             tol,
         )?);
     }
-    let mut faces = vec![kept[0].clone()];
+    let mut faces = kept[0].clone();
     faces.extend(rounds.iter().cloned());
-    faces.push(kept[1].clone());
+    faces.extend(kept[1].iter().cloned());
     let shell = model.add_shell(&faces)?;
-    history.modify(a, kept[0].clone());
-    history.modify(b, kept[1].clone());
+    for (face, pieces) in [a, b].into_iter().zip(&kept) {
+        for piece in pieces {
+            history.modify(face, piece.clone());
+        }
+    }
     for round in rounds {
         history.generate(a, round.clone());
         history.generate(b, round);

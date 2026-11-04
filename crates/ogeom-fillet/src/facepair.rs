@@ -128,9 +128,10 @@ const CONTACT_STATIONS: u32 = 16;
 ///   both sides;
 /// - for a marched seat, on a side, if no ball seats along where the
 ///   surfaces cross, more than one crossing holds one touching both faces,
-///   its line of contact enters a face more than once, or the march stops
-///   while the ball still touches both faces; and if a face is a trimmed
-///   or offset surface.
+///   its line of contact comes back to a face where it left it, or the
+///   march stops while the ball still touches both faces; and if a face is
+///   a trimmed or offset surface. A line of contact crossing a face more
+///   than once gives a capped run over each stretch both faces hold.
 ///
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) where whether
 /// another face comes inside the ball between two stations cannot be told

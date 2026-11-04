@@ -246,11 +246,15 @@ pub fn fillet_sheet_edges(
 ///   own axis;
 /// - for two planes, a face does not reach its line of contact (it lies
 ///   wholly beyond it, or wholly between it and the corner);
-/// - a line of contact crosses its face more than once;
+/// - where the seat has a closed form, a line of contact crosses its face
+///   more than once; on a marched seat each crossing is a stretch and the
+///   round a run over each overlap, but with `trim` a line crossing a
+///   face's seam, or over a stretch no run lies along, is refused;
 /// - the stretches the two faces reach do not overlap;
 /// - one face's line of contact closes on itself across the face's own
 ///   boundary (round a seam) while the round spans only part of the turn;
-/// - with `trim`, cutting a face back leaves it in more than one piece, or
+/// - with `trim`, cutting a face back over one stretch leaves it in more
+///   than one piece, or
 ///   leaves a placed face, or, over several corners, a later corner's line
 ///   of contact misses what the earlier cuts left of the face or the cut
 ///   along it rebuilds an earlier one's edge.

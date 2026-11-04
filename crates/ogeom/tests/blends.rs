@@ -1544,6 +1544,80 @@ fn a_face_blend_rounds_two_runs_where_the_faces_let_the_ball_go_apart() {
     assert!(fills[2] > fills[1], "a steeper slant fills more: {fills:?}");
 }
 
+/// A drum leaning on a block whose top is split along y = 13 and y = 27,
+/// either side of the drum's foot, its wall split above the foot, and the
+/// strip of the top between the lines blended with the wall above. The
+/// ball rolling round the foot leaves the strip at both lines, so the strip
+/// lets it go at two places round its seat and the round is two runs, one
+/// beside each side of the drum, each capped at both ends. Upright, the
+/// contact circle stands 8 from the axis and the strip holds the ball where
+/// the sine of its turn is under 7/8 either way: the fill is the torus
+/// ring's share of the two turns.
+#[test]
+#[ignore = "heavy"]
+fn a_face_blend_rounds_two_runs_where_a_face_lets_the_ball_go_at_two_places() {
+    let r = 2.0;
+    let pi = core::f64::consts::PI;
+    let (foot, reach): ((f64, f64), f64) = ((20.0, 20.0), 7.0);
+    let turn = 2.0 * (reach / (6.0 + r)).asin();
+    let want = rim_ring(6.0, r, -1.0) * 2.0 * turn / (2.0 * pi);
+    let mut fills = Vec::new();
+    for slant in [1.0, 2.0, 15.0] {
+        let mut model = Model::new();
+        let sharp = drum_leaning_x(&mut model, foot, slant);
+        let before = exact_volume(&model, &sharp);
+        let (mut split, _) = wall_parted(&mut model, &sharp);
+        for line in [foot.1 + reach, foot.1 - reach] {
+            let top = faces_on(&model, &split, |s| {
+                matches!(s, ogeom::geom::SurfaceGeometry::Plane(_))
+            })
+            .into_iter()
+            .find(|f| {
+                let (p, n) = ogeom::algo::face_normal(&model, f, T).unwrap();
+                let held = ogeom::algo::shape_bounds(&model, f, T)
+                    .unwrap()
+                    .corners()
+                    .iter()
+                    .map(|q| q.y)
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), y| {
+                        (lo.min(y), hi.max(y))
+                    });
+                (p.z - 10.0).abs() < 1e-9 && n.z > 0.5 && held.0 < line && line < held.1
+            })
+            .unwrap();
+            split = split_by_plane(
+                &mut model,
+                &split,
+                &top,
+                Point::new(0.0, line, 0.0),
+                Vector::new(0.0, 1.0, 0.0),
+            );
+        }
+        let strip: Vec<Shape> = faces_on(&model, &split, |s| {
+            matches!(s, ogeom::geom::SurfaceGeometry::Plane(_))
+        })
+        .into_iter()
+        .filter(|f| {
+            let (p, n) = ogeom::algo::face_normal(&model, f, T).unwrap();
+            let corners = ogeom::algo::shape_bounds(&model, f, T).unwrap().corners();
+            (p.z - 10.0).abs() < 1e-9
+                && n.z > 0.5
+                && corners.iter().all(|q| (q.y - foot.1).abs() < reach + 1e-6)
+        })
+        .collect();
+        assert_eq!(strip.len(), 1, "one strip of the top between the lines");
+        let walls = walls_where(&model, &split, |b| b.corners().iter().all(|p| p.z > 10.29));
+        assert_eq!(walls.len(), 1, "one wall above the split");
+        assert!(!share_an_edge(&model, &walls[0], &strip[0]));
+        let blended = ogeom::fillet::blend_faces(&mut model, &split, &walls[0], &strip[0], r, T)
+            .unwrap()
+            .shape;
+        fills.push(capped_runs_fill(&model, &blended, before, 2));
+    }
+    assert_tends_to([fills[0], fills[1]], want);
+    assert!(fills[2] > fills[1], "a steeper slant fills more: {fills:?}");
+}
+
 /// The faces of `shape` that reach past the block's side at y = 40 by more
 /// than `slack` and are not the drum's own: anything but a cylinder of the
 /// drum's radius or a plane square to its `axis`. A face's bounds reach
