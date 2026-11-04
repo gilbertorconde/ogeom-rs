@@ -82,6 +82,7 @@ pub(super) fn simplify(
     let target_met = measured.distance_at_share <= tolerance
         && max_triangles.is_none_or(|most| state.live_triangles() <= most);
     let within_share = measured.within(tolerance);
+    let result_vertex = state.result_vertex(&measured.renumbered);
     Ok(Simplified {
         mesh: measured.mesh,
         error: measured.furthest.1,
@@ -95,6 +96,7 @@ pub(super) fn simplify(
             pinned: held.len(),
             rounds,
         }),
+        result_vertex,
     })
 }
 

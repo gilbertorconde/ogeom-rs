@@ -11,6 +11,39 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **Decimating an editable mesh with its source vertices carried:
+  `Editable::simplify(target, tol) -> SimplifyReport { error, collapsed,
+  target_met, deviation }`, `Editable::source_vertices(v) -> &[u32]`,
+  `Editable::source_count()` and `Editable::region_from_sources(marked)
+  -> Vec<bool>`.** (#662)
+  - The mesh is decimated as `simplify` decimates `to_triangulation`'s
+    mesh, triangle for triangle and with the same report, and rebuilt
+    from the result; vertex and face numbers are the result's.
+  - Each vertex keeps the source vertices of every vertex a collapse
+    merged into it; a vertex a cut or fill made has none and adds none.
+    Sets survive smoothing, offsets and repeated decimation, and are only
+    carried, never matched by position.
+  - A marking of the source's vertices selects a vertex when it has at
+    least one source vertex and every one is marked;
+    `region_from_sources` gives that as the per-vertex region `offset`
+    and `Smooth::region` take. On a ball of radius 10 and over 10,000
+    triangles reduced to 200, offsetting a marking of every source vertex
+    by 0.1 is the whole-mesh offset, vertex for vertex.
+  - `Simplified::result_vertex` maps each source vertex to the result
+    vertex it became, for callers of the free function.
+
+### Changed
+
+- **`Simplified` gains `result_vertex`, and `Editable::source_vertex`
+  answers `None` for a vertex with several source vertices.** A
+  `Simplified` built with a struct literal needs the field; the decimated
+  mesh and the report are unchanged. An offset's fold repair now leaves
+  the vertex it keeps with the source vertices of both, so
+  `source_vertex` names one only where there is exactly one;
+  `source_vertices` gives them all. (#662)
+
 ## [0.16.0] - 2026-11-04
 
 A minor release: `GeometricTolerance::datums` holds `DatumReference`s

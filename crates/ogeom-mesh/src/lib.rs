@@ -40,7 +40,8 @@ pub use discretize::{
 };
 pub use editable::{
     Cap, Component, CutReport, Editable, Fairing, Fill, FillReport, OFFSET_EDGE_ANGLE,
-    OFFSET_FARTHEST, OPTIMAL_UP_TO, OffsetReport, PASSES, Rim, RimId, Side, Smooth, SmoothReport,
+    OFFSET_FARTHEST, OPTIMAL_UP_TO, OffsetReport, PASSES, Rim, RimId, Side, SimplifyReport, Smooth,
+    SmoothReport,
 };
 pub use hatch::hatch_face;
 pub use hollow::{Grid, Hollowed, hollow};
