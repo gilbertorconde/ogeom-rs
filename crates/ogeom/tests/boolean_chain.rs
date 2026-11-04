@@ -27,14 +27,15 @@ fn frame(at: [f64; 3], z: [f64; 3], x: [f64; 3]) -> Frame {
 }
 
 /// A small torus fused with a drum, the drum's wall crossing the tube in a
-/// meridian loop: on the fused torus face the loop's pcurve stops 7.6e-5
-/// short of the column of the tube's seam it closes on, two hundredths of a
-/// micron in space, inside the loop's own radius. A box then cuts the
-/// fused solid. Read at a fixed parameter snap, the face's far seam column
-/// met nothing and was dropped as a column the face does not use, and the
-/// strand that ends on it dangled: the cut and the common were refused. Ends
-/// that meet within their radii in space meet, and the cut and the common
-/// add up to the fused solid.
+/// meridian loop that crosses the tube's seam a hair from the marched
+/// loop's own start. Split at its start, the loop's kept piece left a
+/// piece a few hundred-thousandths long the paving dropped as dust, and on
+/// the fused torus face the loop's image stopped 7.6e-5 short of the seam
+/// column it closes on. With the loop's seam moved to where the piece
+/// starts, nothing is dropped: the fused face's ring closes on its seam
+/// column in the chart, every volume is integrated on the exact surfaces,
+/// the fuse and the common of the two add up to the torus and the drum,
+/// and a box's cut and common add up to the fused solid.
 #[test]
 fn a_fused_torus_face_whose_loop_stops_a_hair_short_of_its_seam_is_cut() {
     let mut model = Model::new();
@@ -103,23 +104,55 @@ fn a_fused_torus_face_whose_loop_stops_a_hair_short_of_its_seam_is_cut() {
     let fused = ogeom::boolean::fuse(&mut model, &ring, &drum, T)
         .unwrap()
         .shape;
+    let diagnosis = ogeom::algo::check(&model, &fused, T).unwrap();
+    assert!(diagnosis.is_valid(), "fused: {diagnosis}");
+    // Read at a millionth of a radian, the snap below which every
+    // arrangement's nodes meet.
+    let open = widest_seam_joint(&model, &fused);
+    assert!(
+        open <= 1e-6,
+        "the fused ring stands {open} off its seam column"
+    );
+    // Integrated on the exact surfaces, the fuse and the common of the two
+    // add up to the torus and the drum.
+    let exact = |model: &Model, shape: &Shape| {
+        let found =
+            ogeom::algo::volume_properties(model, shape, Deflection::with_chord(1e-3).unwrap(), T)
+                .unwrap();
+        assert_eq!(
+            found.deflection, 0.0,
+            "measured from a mesh: {}",
+            found.mass
+        );
+        found.mass
+    };
+    let whole = exact(&model, &fused);
+    let pi = core::f64::consts::PI;
+    let (torus, cylinder) = (
+        2.0 * pi * pi * 1.0 * 0.3 * 0.3,
+        pi * 3.760_353_843_229_520_3_f64.powi(2) * 2.167_250_261_850_533_4,
+    );
     let cut = ogeom::boolean::cut(&mut model, &fused, &block, T)
         .unwrap()
         .shape;
     let common = ogeom::boolean::common(&mut model, &fused, &block, T)
         .unwrap()
         .shape;
-    for (name, shape) in [("cut", &cut), ("common", &common)] {
+    let overlap = ogeom::boolean::common(&mut model, &ring, &drum, T)
+        .unwrap()
+        .shape;
+    for (name, shape) in [("cut", &cut), ("common", &common), ("overlap", &overlap)] {
         let diagnosis = ogeom::algo::check(&model, shape, T).unwrap();
         assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
     }
-    let (whole, kept, shared) = (
-        volume(&model, &fused),
-        volume(&model, &cut),
-        volume(&model, &common),
-    );
+    let shared_by_both = exact(&model, &overlap);
     assert!(
-        (kept + shared - whole).abs() <= whole * 1e-7,
+        (whole + shared_by_both - torus - cylinder).abs() <= (torus + cylinder) * 1e-9,
+        "fuse {whole} + common {shared_by_both} against {torus} + {cylinder}"
+    );
+    let (kept, shared) = (exact(&model, &cut), exact(&model, &common));
+    assert!(
+        (kept + shared - whole).abs() <= whole * 1e-9,
         "cut {kept} + common {shared} against {whole}"
     );
 }

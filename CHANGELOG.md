@@ -46,6 +46,30 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A fused face whose loop crosses its seam a hair from the loop's own
+  start closes on the seam column in its chart.**
+  - A closed marched section is split at its own start to keep every
+    piece within one period. A drum fused with a small torus, its wall
+    crossing the tube in a loop that crosses the tube's seam 1.2e-5 of a
+    lap past the loop's start, left a piece 2.3e-5 long, inside the
+    thousand confusions a marched section's ends weld at, and the paving
+    dropped it as dust. On the fused torus face the loop's image stopped
+    7.6e-5 short of the seam column it closes on: a later boolean cut it,
+    but the ring stood open in the chart.
+  - Where that split would leave a piece no longer than the weld, and the
+    curve closes to the confusion and its images close to the parametric
+    tolerance over whole periods of their charts, the section's seam now
+    moves to where its kept piece starts, every parameter naming the
+    point it named, and nothing is split at the old start. Elsewhere the
+    split stays.
+  - The fused ring now closes on its seam column within 1.6e-8. Integrated
+    exactly, the fuse and the common of the torus and the drum add up to
+    the two within 1.7e-13, and a box's cut and common add up to the
+    fused solid within 2.2e-15.
+  - `BSpline2d::reseamed_at(u, lap, tol)` moves a closed image's seam.
+  - Stress (chain at seeds 1 to 12 with 100 cases, every scenario at seeds
+    1 to 8) and the real-world imports are unchanged.
+
 - **A drum moved onto a plane takes its rims and caps along, and a seam
   through a junction is split there.**
   - A drum within the confusion distance of touching a plane of the other

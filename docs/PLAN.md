@@ -111,20 +111,6 @@ plate, cut by it in two lines a few microns apart, and its section with
 the round crosses the drill's top line two to five microns past the
 round's tangent edge.
 
-**A loop's pcurve stops short of its seam column after a fuse.** A
-section that crosses a torus's seam a hair from its own start is marched
-as a long piece and one a few hundred-thousandths long across the seam.
-The fuse drops the short piece, the loop closes in space within its
-vertex's radius, and on the fused face its pcurve stops 7.6e-5 short of
-the column it closes on (`a_fused_torus_face_whose_loop_stops_a_hair_short_of_its_seam_is_cut`
-in `crates/ogeom/tests/boolean_chain.rs`). A later boolean reads the two
-ends as meeting within their radii and cuts it, but the fused face's ring
-is open in the chart. Ending the long piece's image on the column breaks
-its agreement with its own curve by the dropped piece's length, and the
-exact volume integral then gives the face up to the mesh. The fuse should
-carry the short piece into the long one, across the closed section's
-join, which a piece's range does not yet pass.
-
 ### Fillets and blends
 
 **Curved face blends refused by name.** `blend_faces` and `fillet_faces`
