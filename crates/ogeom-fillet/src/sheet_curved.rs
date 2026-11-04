@@ -3260,6 +3260,30 @@ pub(crate) fn cut_to_run(
     ends: [Point; 2],
     tol: Tolerances,
 ) -> OgeomResult<(Shape, Shape, [Shape; 2])> {
+    let (piece, mut runs) = cut_to_runs(model, piece, edge, surface_id, tolerance, &[ends], tol)?;
+    let (rail, ends) = runs.remove(0);
+    Ok((piece, rail, ends))
+}
+
+/// [`cut_to_run`] over several runs along one line of contact, each given
+/// by the points where the ball touches the edge at its ends: the edge cut
+/// at every run's ends and the piece rebuilt around the pieces. Back come
+/// the piece and, for each run in the order given, its rail (running from
+/// its first end to its second) and the vertices at its start and end. Runs
+/// that overlap along the edge are refused.
+#[allow(
+    clippy::type_complexity,
+    reason = "the piece and each run's rail and ends"
+)]
+pub(crate) fn cut_to_runs(
+    model: &mut Model,
+    piece: &Shape,
+    edge: &Shape,
+    surface_id: SurfaceId,
+    tolerance: Tolerance,
+    runs: &[[Point; 2]],
+    tol: Tolerances,
+) -> OgeomResult<(Shape, Vec<(Shape, [Shape; 2])>)> {
     let edge = edge.oriented(Orientation::Forward);
     let (edge_curve_of, edge_range) = edge_curve(model, &edge, tol)?;
     let Some((s, e)) = edge_vertices(model, &edge)? else {
@@ -3271,38 +3295,60 @@ pub(crate) fn cut_to_run(
         edge_range.1,
         tol,
     )?));
-    // The run's ends on this edge, in its own parameter.
-    let mut at = [0.0; 2];
-    for (k, point) in ends.into_iter().enumerate() {
-        at[k] = project_on_curve(&bounded, point, 64, tol)?.parameter;
+    // Each run's ends on this edge, in its own parameter, the runs in order
+    // along it.
+    let mut spans = Vec::with_capacity(runs.len());
+    for (k, ends) in runs.iter().enumerate() {
+        let mut at = [0.0; 2];
+        for (j, point) in ends.iter().enumerate() {
+            at[j] = project_on_curve(&bounded, *point, 64, tol)?.parameter;
+        }
+        let rising = at[1] > at[0];
+        let (t_lo, t_hi) = if rising {
+            (at[0], at[1])
+        } else {
+            (at[1], at[0])
+        };
+        spans.push((t_lo, t_hi, rising, k));
     }
-    let rising = at[1] > at[0];
-    let (t_lo, t_hi) = if rising {
-        (at[0], at[1])
-    } else {
-        (at[1], at[0])
-    };
+    spans.sort_by(|x, y| x.0.total_cmp(&y.0));
+    if spans
+        .windows(2)
+        .any(|w| w[1].0 <= w[0].1 + tol.parametric())
+    {
+        ogeom_bail!(
+            Construction,
+            "two runs of the round meet or overlap along one line of contact"
+        );
+    }
+    let last = spans.len().saturating_sub(1);
     let mut cuts = vec![(edge_range.0, s.clone())];
-    let at_lo = if (t_lo - edge_range.0).abs() <= tol.parametric() {
-        s.clone()
-    } else {
-        let v = make_vertex(model, ends[if rising { 0 } else { 1 }]).shape;
-        cuts.push((t_lo, v.clone()));
-        v
-    };
-    let at_hi = if (edge_range.1 - t_hi).abs() <= tol.parametric() {
-        e.clone()
-    } else {
-        let v = make_vertex(model, ends[if rising { 1 } else { 0 }]).shape;
-        cuts.push((t_hi, v.clone()));
-        v
-    };
+    let mut made_ends = Vec::with_capacity(spans.len());
+    for (i, &(t_lo, t_hi, rising, k)) in spans.iter().enumerate() {
+        let ends = runs[k];
+        let at_lo = if i == 0 && (t_lo - edge_range.0).abs() <= tol.parametric() {
+            s.clone()
+        } else {
+            let v = make_vertex(model, ends[if rising { 0 } else { 1 }]).shape;
+            cuts.push((t_lo, v.clone()));
+            v
+        };
+        let at_hi = if i == last && (edge_range.1 - t_hi).abs() <= tol.parametric() {
+            e.clone()
+        } else {
+            let v = make_vertex(model, ends[if rising { 1 } else { 0 }]).shape;
+            cuts.push((t_hi, v.clone()));
+            v
+        };
+        made_ends.push((t_lo, at_lo, at_hi, rising, k));
+    }
     cuts.push((edge_range.1, e.clone()));
-    let (piece, rail) = if cuts.len() == 2 {
-        (piece.clone(), edge.clone())
+    let mut rails: Vec<Option<Shape>> = vec![None; runs.len()];
+    let piece = if cuts.len() == 2 {
+        rails[made_ends[0].4] = Some(edge.clone());
+        piece.clone()
     } else {
-        let mut pieces = Vec::with_capacity(3);
-        let mut rail = None;
+        let mut pieces = Vec::with_capacity(cuts.len() - 1);
         for w in cuts.windows(2) {
             let made = piece_of(
                 model,
@@ -3313,30 +3359,37 @@ pub(crate) fn cut_to_run(
                 &w[1].1,
                 tol,
             )?;
-            if (w[0].0 - t_lo).abs() <= tol.parametric() {
-                rail = Some(made.clone());
+            if let Some(found) = made_ends
+                .iter()
+                .find(|m| (w[0].0 - m.0).abs() <= tol.parametric())
+            {
+                rails[found.4] = Some(made.clone());
             }
             pieces.push(made);
         }
-        let Some(rail) = rail else {
-            ogeom_bail!(Invariant, "the run's stretch of a line of contact was lost");
-        };
-        let face = rebuilt_face(
+        rebuilt_face(
             model,
             piece,
             surface_id,
             tolerance,
             &[(edge.clone(), pieces)],
             tol,
-        )?;
-        (face, rail)
+        )?
     };
-    // The rail runs from the run's start to its end.
-    Ok(if rising {
-        (piece, rail, [at_lo, at_hi])
-    } else {
-        (piece, rail.reversed(), [at_hi, at_lo])
-    })
+    // Each rail runs from its run's start to its end.
+    let mut out: Vec<Option<(Shape, [Shape; 2])>> = vec![None; runs.len()];
+    for (_, at_lo, at_hi, rising, k) in made_ends {
+        let Some(rail) = rails[k].take() else {
+            ogeom_bail!(Invariant, "the run's stretch of a line of contact was lost");
+        };
+        out[k] = Some(if rising {
+            (rail, [at_lo, at_hi])
+        } else {
+            (rail.reversed(), [at_hi, at_lo])
+        });
+    }
+    let out = out.into_iter().flatten().collect();
+    Ok((piece, out))
 }
 
 /// A kept piece whose line of contact closes on itself as a loop of its

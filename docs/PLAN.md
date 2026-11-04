@@ -136,21 +136,24 @@ direction (`drills_raised_through_a_plate_top_cut_for_every_seam`).
 round curved faces that share no edge where their surfaces share a direction
 or an axis, and otherwise march the ball round where the surfaces cross;
 between separate faces a march closed round its seat is a band fitted closed
-round the loop. They refuse (`curved_face_blends_refuse_by_name` in
-`tests/blends.rs`, `face_rounds_refuse_by_name` and `curved_rounds_refuse_by_name`
-in `tests/sheet_fillets.rs`):
+round the loop. Where both faces let the ball go round a closed seat, never
+at the same station, each face's stretch is read with the loop opened in the
+middle of that face's own gap (its line read over the loop less the middle
+half of the gap, so the cut is an open line), the stretches are intersected
+round the loop, and the round is a run over each overlap: capped and applied
+in turn by `blend_faces`, and by `fillet_faces` a round over each run, each
+face cut once along its line, with `trim` or without
+(`a_face_blend_rounds_two_runs_where_the_faces_let_the_ball_go_apart`,
+`a_plane_and_a_leaning_wall_piece_round_in_two_runs`). They refuse
+(`curved_face_blends_refuse_by_name` in `tests/blends.rs`,
+`face_rounds_refuse_by_name` and `curved_rounds_refuse_by_name` in
+`tests/sheet_fillets.rs`):
 
-- faces the ball leaves at different places round its seat and never both at
-  once. The round would be two runs, one over each overlap of the faces'
-  stretches. Each face's end is found by cutting it along its line of
-  contact over a run opened where the ball is off every face it leaves;
-  with no such station, any opening runs one face's line out of it and back,
-  and the cut gives two edges. Owed: each face's stretch read with the loop
-  opened in that face's own gap, the stretches intersected round the loop,
-  and one capped wedge per run applied in turn;
-- a line of contact crossing a face more than once: several runs between the
-  same two faces, and with `trim` a face cut along several lines whose piece
-  away from every round may be more than one;
+- a line of contact crossing a face more than once (a face that lets the
+  ball go at two places round its seat, or an open seat whose line runs out
+  of a face and back): several runs between the same two faces, and with
+  `trim` a face cut along several lines whose piece away from every round
+  may be more than one;
 - corners where the surfaces cross in more than one place the ball rolls
   in (two drums fused, a drum's flat and its wall), rounded corner by
   corner by `blend_faces` and `fillet_faces`

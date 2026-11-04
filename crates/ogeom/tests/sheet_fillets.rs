@@ -2070,6 +2070,28 @@ impl<F: Fn(f64) -> ([Vector; 3], Vector, Vector)> ClosedSeat<F> {
         total * 2.0 * PI / f64::from(STEPS)
     }
 
+    /// The area of the round over the stretch `t0..t1` of the loop: the
+    /// same integrand as [`Self::round_area`], by Simpson's rule.
+    fn run_area(&self, t0: f64, t1: f64) -> f64 {
+        const STEPS: u32 = 4096;
+        let r = self.r;
+        let at = |t: f64| {
+            let ([_, d1, d2], a, b) = (self.at)(t);
+            let sweep = a.dot(b).clamp(-1.0, 1.0).acos();
+            let across = (b - a * a.dot(b)).normalized(T).unwrap();
+            let swept = a * sweep.sin() + across * (1.0 - sweep.cos());
+            let speed = d1.magnitude();
+            speed * r * sweep - r * r * swept.dot(d2) / speed
+        };
+        let h = (t1 - t0) / f64::from(STEPS);
+        let mut total = at(t0) + at(t1);
+        for k in 1..STEPS {
+            let weight = if k % 2 == 1 { 4.0 } else { 2.0 };
+            total += weight * at(h.mul_add(f64::from(k), t0));
+        }
+        total * h / 3.0
+    }
+
     /// How far `p` stands from the nearest centre of the ball: the loop
     /// scanned, then the nearest sample's neighbourhood narrowed down.
     fn off_centres(&self, p: Point) -> f64 {
@@ -2273,6 +2295,111 @@ fn a_plane_and_a_leaning_tube_round_closed_on_itself() {
         (got - want).abs() < slack,
         "the round's area {got}, not {want}"
     );
+}
+
+/// The piece of the wall of a drum of radius 6 about the axis through the
+/// origin leaning `lean` degrees from z toward +x where y > -4, running
+/// from 4 below the origin to 8 above it along the axis, facing out of its
+/// axis.
+fn leaning_wall_piece(model: &mut Model, lean: f64) -> Shape {
+    let (s, c) = lean.to_radians().sin_cos();
+    let axis = Direction::new(Vector::new(s, 0.0, c), T).unwrap();
+    let base = Point::ORIGIN - axis.vector() * 4.0;
+    // The frame's x is -y, so a point at angle a stands at y = -6 cos a.
+    let frame = Frame::new(
+        base,
+        axis,
+        Direction::new(Vector::new(0.0, -1.0, 0.0), T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let edge = (2.0_f64 / 3.0).acos();
+    let arc = ogeom::algo::make_edge(
+        model,
+        Curve::Circle(CircleCurve::new(Circle::new(frame, 6.0, T).unwrap())),
+        (edge, 2.0 * PI - edge),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let wall = make_prism(model, &arc, axis.vector() * 12.0, T)
+        .unwrap()
+        .shape;
+    let (p, n) = face_normal(model, &wall, T).unwrap();
+    let d = p - base;
+    let radial = d - axis.vector() * d.dot(axis.vector());
+    if n.dot(radial) > 0.0 {
+        wall
+    } else {
+        wall.reversed()
+    }
+}
+
+/// A floor z = 0 reaching to y = 2 and a separate piece of a leaning drum's
+/// wall, where y > -4. The ball rolling round the drum on the floor touches
+/// the floor 8 from the axis at y = 8 sin t and the wall 6 from it at
+/// y = 6 sin t, `t` its turn round the axis, so it leaves the floor where
+/// sin t passes 1/4 and the wall where it falls past -2/3, never both at
+/// once: the round is two runs, one over each turn both faces hold it.
+/// Each rides the ball and both faces, and its area is the ball's arc
+/// swept over its run, integrated apart. Trimmed, the two faces and the
+/// two rounds are one shell sharing the four rails.
+#[test]
+fn a_plane_and_a_leaning_wall_piece_round_in_two_runs() {
+    let lean = 15.0_f64;
+    let seat = leaning_seat(lean, 6.0, 2.0);
+    let (s, _) = lean.to_radians().sin_cos();
+    let axis = Vector::new(s, 0.0, lean.to_radians().cos());
+    let on_floor = |p: Point| p.z.abs();
+    let on_wall = |p: Point| off_cylinder(axis, 6.0, p);
+    let (low, high) = ((-2.0_f64 / 3.0).asin(), 0.25_f64.asin());
+    let mut wants = [seat.run_area(low, high), seat.run_area(PI - high, PI - low)];
+    wants.sort_by(f64::total_cmp);
+    // A tolerance of the fit along a line of contact moves the area it
+    // bounds by at most that much per unit of its length.
+    let slack = 2e-4 * 8.0 * (high - low);
+    let measure = |model: &Model, rounds: &[Shape]| {
+        let mut got: Vec<f64> = rounds.iter().map(|f| area(model, f)).collect();
+        got.sort_by(f64::total_cmp);
+        for (got, want) in got.iter().zip(wants) {
+            assert!((got - want).abs() < slack, "a run's area {got}, not {want}");
+        }
+        for round in rounds {
+            seat.rides(model, round, [&on_floor, &on_wall]);
+        }
+    };
+    assert!((wants[0] - wants[1]).abs() > slack * 10.0, "{wants:?}");
+
+    let mut model = Model::new();
+    let floor = floor_rectangle(&mut model, (-15.0, 15.0), (-15.0, 2.0));
+    let wall = leaning_wall_piece(&mut model, lean);
+    let built = fillet_faces(&mut model, &floor, &wall, seat.r, true, T).unwrap();
+    let shell = built.shape.clone();
+    assert_eq!(model.kind_of(&shell).unwrap(), ShapeType::Shell);
+    assert_eq!(faces(&model, &shell).len(), 4);
+    usable(&model, &shell);
+    assert_eq!(edge_use(&model, &shell).0, 4, "four rails shared");
+    let rounds = built.history.generated(&floor).to_vec();
+    assert_eq!(rounds.len(), 2, "two rounds");
+    for round in &rounds {
+        marched_tangent(&model, &shell, round);
+    }
+    measure(&model, &rounds);
+
+    // Untrimmed, a compound of the two rounds.
+    let mut model = Model::new();
+    let floor = floor_rectangle(&mut model, (-15.0, 15.0), (-15.0, 2.0));
+    let wall = leaning_wall_piece(&mut model, lean);
+    let made = fillet_faces(&mut model, &floor, &wall, seat.r, false, T)
+        .unwrap()
+        .shape;
+    assert_eq!(model.kind_of(&made).unwrap(), ShapeType::Compound);
+    let rounds = faces(&model, &made);
+    assert_eq!(rounds.len(), 2, "two rounds");
+    for round in &rounds {
+        usable(&model, round);
+    }
+    measure(&model, &rounds);
 }
 
 /// The floor over 20 by 20 restated as a B-spline patch and the upright

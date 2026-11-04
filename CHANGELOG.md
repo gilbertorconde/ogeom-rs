@@ -34,6 +34,31 @@ bump may break the API and a patch bump may not.
   - `Simplified::result_vertex` maps each source vertex to the result
     vertex it became, for callers of the free function.
 
+- **`blend_faces` and `fillet_faces` round a marched seat in two runs
+  where both faces let the ball go round it, never at the same place.**
+  - Where the ball rolls round a closed seat and leaves each face over a
+    stretch of it the other face holds (a drum leaning over a block's edge,
+    the top letting the ball go past the edge and a piece of the wall short
+    of its own boundary), the round is a run over each stretch both faces
+    hold it. It was refused by name ("different places round its seat" on
+    a solid, "crosses it more than once" between separate faces).
+  - Each face's stretch is read with the loop opened in the middle of that
+    face's own gap, its line read over the loop less the middle half of
+    the gap so it cuts the face as an open line, and the two stretches are
+    intersected round the loop. On a solid each run is capped in the
+    ball's sections at its ends and applied in turn; between separate
+    faces each run is a round, and with `trim` each face is cut once along
+    its line, every run's rails on it and the line between them free.
+  - Measured: the drum of radius 6 at (20, 38) leaning 1 and 2 degrees,
+    its wall split at y = 34, ball of radius 2: the fills extrapolate to
+    the upright torus ring's share of the two turns, 10.873144, to 1e-6;
+    each band rides both faces within a tenth of a degree and meets a cap
+    square at each end. A floor to y = 2 and the piece of a drum's wall
+    of radius 6 leaning 15 degrees where y > -4: each run's area matches
+    the ball's arc swept over its turn, integrated apart, to 2e-7
+    trimmed and 5e-7 untrimmed, the band standing the radius from the
+    ball's centres within its fit of 2e-4.
+
 ### Changed
 
 - **`Simplified` gains `result_vertex`, and `Editable::source_vertex`

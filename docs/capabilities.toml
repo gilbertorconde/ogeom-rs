@@ -1126,10 +1126,12 @@ ball that touches both all the way round a closed seat (a tube through a \
 floor at a slant, two pipes crossing) gives a band fitted closed round \
 the loop, each face cut along its closed line of contact; a closed line \
 across the seam of a closed B-spline face whose chart does not wrap \
-round is refused by name, as the cut does not part the face. Refused by \
-name too: faces the ball leaves at different places round its seat and \
-never both at once, a line of contact crossing a face more than once, \
-and a round crossing a face between the two (a ball wider than a \
+round is refused by name, as the cut does not part the face. Where both \
+faces let a marched ball go round a closed seat, never at the same place, \
+the round is a run over each stretch both hold it: capped and applied in \
+turn on a solid, and between separate faces a round over each run, each \
+face cut once along its line of contact. Refused by name too: a line of \
+contact crossing a face more than once, and a round crossing a face between the two (a ball wider than a \
 chamfer between the faces it rounds). The ball touching both faces is \
 the one the round's arc lies on, and a blend is refused by name where \
 another face of the solid, on any surface, B-splines included, holds a \

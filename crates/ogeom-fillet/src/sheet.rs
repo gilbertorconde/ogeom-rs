@@ -200,8 +200,10 @@ pub fn fillet_sheet_edges(
 /// the ball's arcs over the stretch both faces reach, ending in the ball's
 /// sections there, or, where the ball touches both faces all the way round
 /// a closed seat (a tube through a floor at a slant, two pipes crossing),
-/// fitted closed round the loop with no ends. It rides both faces within a
-/// tenth of a degree.
+/// fitted closed round the loop with no ends. Where both faces let the
+/// ball go round a closed seat, never at the same place, there is a round
+/// over each stretch both hold it. It rides both faces within a tenth of a
+/// degree.
 ///
 /// With `trim`, each face is cut back to its line of contact (everything of
 /// it on the round's side of that line goes) and the result is one shell
@@ -209,7 +211,9 @@ pub fn fillet_sheet_edges(
 /// of contact; where a face's line of contact runs past the round's ends
 /// (or closes round on itself), the rest of it stays free boundary. Over
 /// several corners each face is cut back along every line of contact it
-/// holds, and the shell holds every round. Without it the faces are left
+/// holds, and the shell holds every round; over several runs each face is
+/// cut once along its line, which every run's round shares, and the line
+/// between the runs stays free boundary. Without it the faces are left
 /// as they are and the result is the round alone, or a compound of the
 /// rounds, its normal following the faces' as in the shell.
 ///

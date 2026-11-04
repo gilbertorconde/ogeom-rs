@@ -40,7 +40,7 @@ use ogeom_topo::{Location, Model, Orientation, Shape, ShapeType, SurfaceId, expl
 
 use crate::march::{BlendStop, MarchedBlend, Sides, march_blend_seeded, seat_section};
 use crate::marched::{band_fit_target, fit_open_band};
-use crate::sheet_curved::{Marched, cut_to_run, marched_round, unplaced_face};
+use crate::sheet_curved::{Marched, cut_to_runs, marched_round, unplaced_face};
 use crate::support::edge_curve;
 
 /// The two faces' surfaces as the ball rolls on them, carried on past the
@@ -131,11 +131,11 @@ pub(crate) struct FaceStretch {
 pub(crate) enum Run {
     /// The whole loop: the ball touches both faces all the way round.
     Closed,
-    /// The overlap of the faces' two stretches.
+    /// The overlaps of the faces' two stretches, a run over each.
     Open(Box<[FaceStretch; 2]>),
-    /// Between faces of a solid, the stretch of the seat where the ball
-    /// touches both, ended where it leaves one: the corner is capped in
-    /// the ball's section at each end.
+    /// Between faces of a solid, the stretches of the seat where the ball
+    /// touches both, each ended where it leaves one: the corner is capped
+    /// in the ball's section at each end of each run.
     Capped,
 }
 
@@ -144,21 +144,22 @@ pub(crate) enum Run {
 pub(crate) struct PairSeat {
     hosts: Hosts,
     guide: Curve,
-    /// The stations: the loop for a closed run, the run with its exact end
-    /// sections otherwise, in order along the guide.
-    blend: MarchedBlend,
+    /// The stations: the loop for a closed run; otherwise each run with its
+    /// exact end sections, in order along the guide, the runs in order
+    /// along it too.
+    runs: Vec<MarchedBlend>,
     run: Run,
     /// For a seat between faces of a solid, two points beside the middle of
-    /// the ball's arc where the solid says which side of the faces the ball
-    /// rolls on: one just off the arc toward the crease, where it says
-    /// whether the corner is material, and one as far inside the ball,
-    /// where it says whether the ball's lune is.
-    probes: Option<[Point; 2]>,
+    /// each run's ball's arc where the solid says which side of the faces
+    /// the ball rolls on: one just off the arc toward the crease, where it
+    /// says whether the corner is material, and one as far inside the
+    /// ball, where it says whether the ball's lune is.
+    probes: Vec<[Point; 2]>,
 }
 
 impl PairSeat {
-    pub(crate) const fn probes(&self) -> Option<[Point; 2]> {
-        self.probes
+    pub(crate) fn probes(&self) -> &[[Point; 2]] {
+        &self.probes
     }
 
     /// Whether the round runs all the way round a closed seat.
@@ -238,7 +239,7 @@ pub(crate) fn pair_seat(
     let mut why: Option<OgeomError> = None;
     for guide in guides {
         match seat_along(model, faces, &hosts, &guide, sides, radius, solid, tol) {
-            Ok(Some((blend, run, probes))) => found.push((guide, blend, run, probes)),
+            Ok(Some((runs, run, probes))) => found.push((guide, runs, run, probes)),
             Ok(None) => {}
             Err(e @ (OgeomError::Construction(_) | OgeomError::NotDone(_))) => why = Some(e),
             Err(e) => return Err(e),
@@ -246,11 +247,11 @@ pub(crate) fn pair_seat(
     }
     match found.len() {
         1 => {
-            let (guide, blend, run, probes) = found.remove(0);
+            let (guide, runs, run, probes) = found.remove(0);
             Ok(PairSeat {
                 hosts,
                 guide,
-                blend,
+                runs,
                 run,
                 probes,
             })
@@ -300,11 +301,17 @@ fn spread(count: usize, most: usize) -> Vec<usize> {
     (0..most).map(|k| k * (count - 1) / (most - 1)).collect()
 }
 
-/// The march along one guide, and the run it gives: `None` where the ball
-/// does not touch both faces along it. With `whole`, the solid the faces
-/// bound, the run is the closed seat or the stretch of it the faces and the
-/// solid's edges along the crease give ends to, and the probes beside it
-/// are read.
+/// The march along one guide, and the runs it gives: `None` where the
+/// ball does not touch both faces along it. With `whole`, the solid the
+/// faces bound, the run is the closed seat or the stretches of it the faces
+/// and the solid's edges along the crease give ends to, and the probes
+/// beside each are read.
+///
+/// A closed seat both faces let go of, never at the same station, gives a
+/// run over each overlap of the faces' stretches round the loop: each
+/// face's stretch is read with the loop opened in that face's own gap, so
+/// its line of contact enters and leaves it once, and the two stretches
+/// are intersected round the loop.
 #[allow(clippy::too_many_arguments, reason = "one seat, all its data")]
 #[allow(clippy::type_complexity, reason = "the seat's three parts")]
 fn seat_along(
@@ -316,7 +323,7 @@ fn seat_along(
     radius: f64,
     whole: Option<&Shape>,
     tol: Tolerances,
-) -> OgeomResult<Option<(MarchedBlend, Run, Option<[Point; 2]>)>> {
+) -> OgeomResult<Option<(Vec<MarchedBlend>, Run, Vec<[Point; 2]>)>> {
     let [first, second] = &hosts.surfaces;
     // Seeded where the guide passes nearest each face, then at its middle.
     let mut seeds = Vec::with_capacity(3);
@@ -385,13 +392,31 @@ fn seat_along(
     }
 
     let closed = blend.stopped == BlendStop::Closed;
+    let period = loop_period(guide, tol);
     let (blend, missed) = match (closed, missing) {
         (true, None) => {
-            let probes = whole
-                .is_some()
-                .then(|| probes_at(&blend, guide, blend.len() / 2, radius, tol))
-                .transpose()?;
-            return Ok(Some((blend, Run::Closed, probes)));
+            let probes = match whole {
+                Some(_) => vec![probes_at(&blend, guide, blend.len() / 2, radius, tol)?],
+                None => Vec::new(),
+            };
+            return Ok(Some((vec![blend], Run::Closed, probes)));
+        }
+        // Both faces let the ball go round a loop, never at one station:
+        // a run over each overlap of their stretches.
+        (true, Some(_))
+            if missed.iter().all(|m| m.contains(&true))
+                && !sampled.iter().any(|&i| missed[0][i] && missed[1][i]) =>
+        {
+            let Some(period) = period else {
+                ogeom_bail!(
+                    Invariant,
+                    "a march closed round its seat along a guide that does not loop"
+                );
+            };
+            return runs_round_loop(
+                model, faces, hosts, guide, sides, radius, whole, &blend, &missed, &sampled,
+                period, tol,
+            );
         }
         // A loop the faces hold part of: opened where the ball misses a
         // face, and read from there round as one run. Between faces of a
@@ -405,66 +430,22 @@ fn seat_along(
                 // every face it leaves, so the run starts and ends inside it.
                 let left: Vec<usize> = (0..2).filter(|&f| missed[f].contains(&true)).collect();
                 let gone = |i: usize| left.iter().all(|&f| missed[f][i % n]);
-                let Some(start) = (0..n).find(|&i| gone(i) && !gone(i + n - 1)) else {
+                let Some(at) = gap_middle(n, gone) else {
                     ogeom_bail!(
-                        Construction,
-                        "the ball leaves the two faces at different places round its seat; a \
-                         round between faces of a solid is ended where the ball leaves both, or \
-                         one face it leaves while the other holds it throughout"
+                        Invariant,
+                        "the ball is off every face it leaves at none of its seat's stations, \
+                         or at all of them"
                     );
                 };
-                let mut best = (0, start);
-                for i in (0..n).filter(|&i| gone(i) && !gone(i + n - 1)) {
-                    let length = (0..n).take_while(|&k| gone(i + k)).count();
-                    if length > best.0 {
-                        best = (length, i);
-                    }
-                }
-                (best.1 + best.0 / 2) % n
+                at
             } else {
                 at
             };
-            let order: Vec<usize> = (0..n).map(|k| (at + k) % n).collect();
-            let missed = [
-                order.iter().map(|&i| missed[0][i]).collect(),
-                order.iter().map(|&i| missed[1][i]).collect(),
-            ];
-            (reordered(&blend, &order), missed)
+            opened(&blend, &missed, at)
         }
         (false, _) => (blend, missed),
     };
-
-    // In order along the guide: a looping guide's parameters unwrapped
-    // into one sweep, then sorted, every station that fails to advance
-    // dropped.
-    let mut along = blend.along.clone();
-    let loops = guide.is_periodic()
-        || guide
-            .point_at(lo, tol)
-            .and_then(|p| guide.point_at(hi, tol).map(|q| p.distance(q)))
-            .is_ok_and(|d| d <= tol.confusion() * 10.0);
-    if loops {
-        let period = hi - lo;
-        for i in 1..along.len() {
-            let mut t = along[i];
-            while t - along[i - 1] > period / 2.0 {
-                t -= period;
-            }
-            while along[i - 1] - t > period / 2.0 {
-                t += period;
-            }
-            along[i] = t;
-        }
-    }
-    let mut order: Vec<usize> = (0..along.len()).collect();
-    order.sort_by(|&i, &j| along[i].total_cmp(&along[j]));
-    order.dedup_by(|j, i| along[*j] <= along[*i] + tol.parametric());
-    let mut blend = reordered(&blend, &order);
-    blend.along = order.iter().map(|&i| along[i]).collect();
-    let missed: [Vec<bool>; 2] = [
-        order.iter().map(|&i| missed[0][i]).collect(),
-        order.iter().map(|&i| missed[1][i]).collect(),
-    ];
+    let (blend, missed) = in_order(&blend, &missed, period, tol);
 
     if let Some(solid) = whole {
         // A face the ball never leaves holds the whole run; one it leaves
@@ -472,8 +453,7 @@ fn seat_along(
         // the line enters and leaves it. The round spans the overlap, and
         // each of its ends must be where the ball leaves a face: where the
         // march stopped on both faces is no end the faces give.
-        let (first_at, last_at) = (blend.along[0], blend.along[blend.len() - 1]);
-        let (mut w0, mut w1) = (first_at, last_at);
+        let (mut w0, mut w1) = (blend.along[0], blend.along[blend.len() - 1]);
         for (f, face) in faces.iter().enumerate() {
             if !missed[f].contains(&true) {
                 continue;
@@ -484,35 +464,19 @@ fn seat_along(
             w0 = w0.max(cut.span.0);
             w1 = w1.min(cut.span.1);
         }
-        let margin = (last_at - first_at) * 1e-6;
-        if w0 <= first_at + margin || w1 >= last_at - margin {
-            ogeom_bail!(
-                Construction,
-                "the march along where the surfaces meet stops while the ball still touches \
-                 both faces; the round has no end the faces give it"
-            );
-        }
-        if w1 - w0 <= tol.parametric() {
-            ogeom_bail!(
-                Construction,
-                "the two faces reach the round over stretches of the corner that do not overlap"
-            );
-        }
-        // Where the solid's edges along the crease end inside the run, the
-        // corner ends there: past it the crease is no corner of the solid
-        // (a crease running off the side of a block the ball still rolls
-        // over). That end caps in the section plane through the edges' end.
-        let ends = crease_edge_ends(model, solid, guide, loops, (w0, w1), tol)?;
-        if let Some((w, _)) = ends[0] {
-            w0 = w;
-        }
-        if let Some((w, _)) = ends[1] {
-            w1 = w;
-        }
-        let through = [ends[0].map(|(_, p)| p), ends[1].map(|(_, p)| p)];
-        let run = trimmed(&blend, hosts, guide, sides, radius, (w0, w1), through, tol)?;
+        let run = capped_run(
+            model,
+            solid,
+            hosts,
+            guide,
+            sides,
+            radius,
+            &blend,
+            (w0, w1),
+            tol,
+        )?;
         let probes = probes_at(&run, guide, run.len() / 2, radius, tol)?;
-        return Ok(Some((run, Run::Capped, Some(probes))));
+        return Ok(Some((vec![run], Run::Capped, vec![probes])));
     }
 
     let mut stretches = Vec::with_capacity(2);
@@ -541,7 +505,257 @@ fn seat_along(
         [None; 2],
         tol,
     )?;
-    Ok(Some((run, Run::Open(Box::new([a, b])), None)))
+    Ok(Some((vec![run], Run::Open(Box::new([a, b])), Vec::new())))
+}
+
+/// The guide's period where it loops: periodic, or closed on itself
+/// between the ends of its domain.
+fn loop_period(guide: &Curve, tol: Tolerances) -> Option<f64> {
+    let (lo, hi) = guide.domain();
+    let loops = guide.is_periodic()
+        || guide
+            .point_at(lo, tol)
+            .and_then(|p| guide.point_at(hi, tol).map(|q| p.distance(q)))
+            .is_ok_and(|d| d <= tol.confusion() * 10.0);
+    loops.then_some(hi - lo)
+}
+
+/// Of a loop of `n` stations, the middle of the longest stretch of
+/// neighbours where `off` holds, round the loop; `None` where it holds at
+/// none, or at all.
+fn gap_middle(n: usize, off: impl Fn(usize) -> bool) -> Option<usize> {
+    let starts = (0..n).filter(|&i| off(i) && !off(i + n - 1));
+    let mut best: Option<(usize, usize)> = None;
+    for i in starts {
+        let length = (0..n).take_while(|&k| off(i + k)).count();
+        if best.is_none_or(|(held, _)| length > held) {
+            best = Some((length, i));
+        }
+    }
+    best.map(|(length, start)| (start + length / 2) % n)
+}
+
+/// A closed march and its misses read round the loop from station `at`.
+fn opened(
+    blend: &MarchedBlend,
+    missed: &[Vec<bool>; 2],
+    at: usize,
+) -> (MarchedBlend, [Vec<bool>; 2]) {
+    let n = blend.len();
+    let order: Vec<usize> = (0..n).map(|k| (at + k) % n).collect();
+    let missed = [
+        order.iter().map(|&i| missed[0][i]).collect(),
+        order.iter().map(|&i| missed[1][i]).collect(),
+    ];
+    (reordered(blend, &order), missed)
+}
+
+/// The stations in order along the guide: a looping guide's parameters
+/// (`period` its period) unwrapped into one sweep from the first station,
+/// then sorted, every station that fails to advance dropped.
+fn in_order(
+    blend: &MarchedBlend,
+    missed: &[Vec<bool>; 2],
+    period: Option<f64>,
+    tol: Tolerances,
+) -> (MarchedBlend, [Vec<bool>; 2]) {
+    let mut along = blend.along.clone();
+    if let Some(period) = period {
+        for i in 1..along.len() {
+            let mut t = along[i];
+            while t - along[i - 1] > period / 2.0 {
+                t -= period;
+            }
+            while along[i - 1] - t > period / 2.0 {
+                t += period;
+            }
+            along[i] = t;
+        }
+    }
+    let mut order: Vec<usize> = (0..along.len()).collect();
+    order.sort_by(|&i, &j| along[i].total_cmp(&along[j]));
+    order.dedup_by(|j, i| along[*j] <= along[*i] + tol.parametric());
+    let mut sorted = reordered(blend, &order);
+    sorted.along = order.iter().map(|&i| along[i]).collect();
+    let missed = [
+        order.iter().map(|&i| missed[0][i]).collect(),
+        order.iter().map(|&i| missed[1][i]).collect(),
+    ];
+    (sorted, missed)
+}
+
+/// The capped run over `w0..w1` of a march in order along the guide,
+/// between faces of `solid`: each end must lie inside the march, where a
+/// face lets the ball go, the two apart. Where the solid's edges along the
+/// crease end inside the run the corner ends there, capped in the section
+/// plane through the edges' end (a crease running off the side of a block
+/// the ball still rolls over).
+#[allow(clippy::too_many_arguments, reason = "one run, all its data")]
+fn capped_run(
+    model: &Model,
+    solid: &Shape,
+    hosts: &Hosts,
+    guide: &Curve,
+    sides: Sides,
+    radius: f64,
+    blend: &MarchedBlend,
+    (mut w0, mut w1): (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<MarchedBlend> {
+    let (first_at, last_at) = (blend.along[0], blend.along[blend.len() - 1]);
+    let margin = (last_at - first_at) * 1e-6;
+    if w0 <= first_at + margin || w1 >= last_at - margin {
+        ogeom_bail!(
+            Construction,
+            "the march along where the surfaces meet stops while the ball still touches \
+             both faces; the round has no end the faces give it"
+        );
+    }
+    if w1 - w0 <= tol.parametric() {
+        ogeom_bail!(
+            Construction,
+            "the two faces reach the round over stretches of the corner that do not overlap"
+        );
+    }
+    let loops = loop_period(guide, tol).is_some();
+    let ends = crease_edge_ends(model, solid, guide, loops, (w0, w1), tol)?;
+    if let Some((w, _)) = ends[0] {
+        w0 = w;
+    }
+    if let Some((w, _)) = ends[1] {
+        w1 = w;
+    }
+    let through = [ends[0].map(|(_, p)| p), ends[1].map(|(_, p)| p)];
+    trimmed(blend, hosts, guide, sides, radius, (w0, w1), through, tol)
+}
+
+/// The runs of a closed seat both faces let go of, never at one station:
+/// each face's stretch read with the loop opened in the middle of that
+/// face's own longest gap, and a run over each overlap of the two
+/// stretches round the loop (of guide parameter `period`). Between faces
+/// of a solid (`whole`) each run is capped; between separate faces each
+/// face is cut along its line and the runs share the two stretches.
+#[allow(clippy::too_many_arguments, reason = "one seat, all its data")]
+#[allow(clippy::type_complexity, reason = "the seat's three parts")]
+fn runs_round_loop(
+    model: &mut Model,
+    faces: [&Shape; 2],
+    hosts: &Hosts,
+    guide: &Curve,
+    sides: Sides,
+    radius: f64,
+    whole: Option<&Shape>,
+    blend: &MarchedBlend,
+    missed: &[Vec<bool>; 2],
+    sampled: &[usize],
+    period: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Vec<MarchedBlend>, Run, Vec<[Point; 2]>)>> {
+    let mut read = Vec::with_capacity(2);
+    let mut stretches = Vec::with_capacity(2);
+    for (f, face) in faces.iter().enumerate() {
+        let m = sampled.len();
+        let Some(gap) = gap_middle(m, |k| missed[f][sampled[k % m]]) else {
+            return Ok(None);
+        };
+        // Where the ball is read on the face, round the loop from the
+        // middle of its gap.
+        let mut held = vec![false; blend.len()];
+        for &i in sampled {
+            held[i] = !missed[f][i];
+        }
+        let flags = [held, missed[f].clone()];
+        let (opened, flags) = opened(blend, &flags, sampled[gap]);
+        let (in_turn, flags) = in_order(&opened, &flags, Some(period), tol);
+        // The line read over the loop less the middle half of the gap: it
+        // starts and ends off the face, its ends apart, so it cuts the
+        // face as an open line from boundary to boundary.
+        let (Some(h0), Some(h1)) = (
+            flags[0].iter().position(|&h| h),
+            flags[0].iter().rposition(|&h| h),
+        ) else {
+            return Ok(None);
+        };
+        let last = in_turn.len() - 1;
+        let from = f64::midpoint(in_turn.along[0], in_turn.along[h0]);
+        let to = f64::midpoint(in_turn.along[h1], in_turn.along[last]);
+        let inner: Vec<usize> = (0..in_turn.len())
+            .filter(|&i| (from..=to).contains(&in_turn.along[i]))
+            .collect();
+        let in_turn = reordered(&in_turn, &inner);
+        let span = if whole.is_some() {
+            match contact_cut(model, face, f, &in_turn, hosts, guide, radius, tol)? {
+                Some(cut) => cut.span,
+                None => return Ok(None),
+            }
+        } else {
+            match stretch_on(model, face, f, &in_turn, hosts, guide, radius, tol)? {
+                Some(stretch) => {
+                    let span = stretch.span;
+                    stretches.push(stretch);
+                    span
+                }
+                None => return Ok(None),
+            }
+        };
+        read.push((in_turn, span));
+    }
+    // The overlaps, in the first face's turn: its stretch against the
+    // second's a whole number of turns either way.
+    let (a, b) = (read[0].1, read[1].1);
+    let shift = ((f64::midpoint(a.0, a.1) - f64::midpoint(b.0, b.1)) / period).round();
+    let mut overlaps = Vec::with_capacity(2);
+    for k in [shift - 1.0, shift, shift + 1.0] {
+        let (w0, w1) = (a.0.max(b.0 + k * period), a.1.min(b.1 + k * period));
+        if w1 - w0 > tol.parametric() {
+            overlaps.push((w0, w1));
+        }
+    }
+    if overlaps.is_empty() {
+        ogeom_bail!(
+            Construction,
+            "the two faces reach the round over stretches of the corner that do not overlap"
+        );
+    }
+    let in_turn = &read[0].0;
+    let mut runs = Vec::with_capacity(overlaps.len());
+    let mut probes = Vec::with_capacity(overlaps.len());
+    for (w0, w1) in overlaps {
+        let run = match whole {
+            Some(solid) => {
+                let run = capped_run(
+                    model,
+                    solid,
+                    hosts,
+                    guide,
+                    sides,
+                    radius,
+                    in_turn,
+                    (w0, w1),
+                    tol,
+                )?;
+                probes.push(probes_at(&run, guide, run.len() / 2, radius, tol)?);
+                run
+            }
+            None => trimmed(
+                in_turn,
+                hosts,
+                guide,
+                sides,
+                radius,
+                (w0, w1),
+                [None; 2],
+                tol,
+            )?,
+        };
+        runs.push(run);
+    }
+    if whole.is_some() {
+        return Ok(Some((runs, Run::Capped, probes)));
+    }
+    let [a, b] = <[FaceStretch; 2]>::try_from(stretches)
+        .map_err(|_| ogeom_core::ogeom_err!(Invariant, "a face's stretch was not read"))?;
+    Ok(Some((runs, Run::Open(Box::new([a, b])), Vec::new())))
 }
 
 /// Two points beside the middle of the ball's arc at station `i`: one just
@@ -1291,7 +1505,8 @@ pub(crate) fn crease_edge_ends(
 /// The ball is seated exactly between the march's stations, from the
 /// nearest of them. A closed run goes round its loop and has no ends. A
 /// capped run ends at its first and last stations, and a face holding a
-/// contact or the crease there is a face it runs off.
+/// contact or the crease there is a face it runs off. Each run of the seat
+/// is read on its own.
 pub(crate) fn face_inside(
     model: &mut Model,
     solid: &Shape,
@@ -1300,13 +1515,37 @@ pub(crate) fn face_inside(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<Point>> {
-    let PairSeat {
-        hosts,
-        guide,
-        blend,
-        run,
-        ..
-    } = seat;
+    let closed = seat.closed();
+    for blend in &seat.runs {
+        let found = face_inside_run(
+            model,
+            solid,
+            faces,
+            (&seat.hosts, &seat.guide),
+            blend,
+            closed,
+            radius,
+            tol,
+        )?;
+        if found.is_some() {
+            return Ok(found);
+        }
+    }
+    Ok(None)
+}
+
+/// [`face_inside`] over one run's stations, `closed` round the loop.
+#[allow(clippy::too_many_arguments, reason = "one run, all its data")]
+fn face_inside_run(
+    model: &mut Model,
+    solid: &Shape,
+    faces: [&Shape; 2],
+    (hosts, guide): (&Hosts, &Curve),
+    blend: &MarchedBlend,
+    closed: bool,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Point>> {
     let [first, second] = &hosts.surfaces;
     let n = blend.len();
     let (lo, hi) = guide.domain();
@@ -1314,7 +1553,6 @@ pub(crate) fn face_inside(
     // The stations' guide parameters in order along the run, unwrapped
     // round a loop, a closed run's last station followed by its first.
     let mut stations = blend.along.clone();
-    let closed = matches!(run, Run::Closed);
     if closed {
         for i in 1..n {
             while stations[i] - stations[i - 1] > period / 2.0 {
@@ -1423,7 +1661,7 @@ pub(crate) fn apply_to_solid(
     let PairSeat {
         hosts,
         guide,
-        blend,
+        runs,
         run,
         ..
     } = seat;
@@ -1431,32 +1669,52 @@ pub(crate) fn apply_to_solid(
     let surfaces = [(first, hosts.signs[0]), (second, hosts.signs[1])];
     match run {
         Run::Closed => {
+            let [blend] = <[MarchedBlend; 1]>::try_from(runs).map_err(|_| {
+                ogeom_core::ogeom_err!(Invariant, "a closed seat is one run round its loop")
+            })?;
             let range = guide.domain();
             crate::marched::closed_band_wedge(
                 model, solid, None, blend, &guide, range, true, surfaces, radius, behind, tol,
             )
         }
         Run::Capped => {
-            let (w0, w1) = (blend.along[0], blend.along[blend.len() - 1]);
-            let crease = crease_over(&guide, (w0, w1), tol)?;
-            let mut blend = blend;
-            for t in &mut blend.along {
-                *t =
-                    project_on_curve(&crease, guide.point_at(on_guide(&guide, *t), tol)?, 64, tol)?
-                        .parameter;
+            // Runs that stand apart round the seat, capped and applied one
+            // after the other.
+            let mut built: Option<Built> = None;
+            for mut blend in runs {
+                let (w0, w1) = (blend.along[0], blend.along[blend.len() - 1]);
+                let crease = crease_over(&guide, (w0, w1), tol)?;
+                for t in &mut blend.along {
+                    *t = project_on_curve(
+                        &crease,
+                        guide.point_at(on_guide(&guide, *t), tol)?,
+                        64,
+                        tol,
+                    )?
+                    .parameter;
+                }
+                let from = built.as_ref().map_or(solid, |b| &b.shape).clone();
+                let next = crate::marched::build_open_band(
+                    model,
+                    &from,
+                    None,
+                    &blend,
+                    &crease,
+                    surfaces,
+                    radius,
+                    behind,
+                    [false, false],
+                    tol,
+                )?;
+                built = Some(match built {
+                    None => next,
+                    Some(earlier) => {
+                        let history = earlier.history.then(&next.history);
+                        Built::new(next.shape, history)
+                    }
+                });
             }
-            crate::marched::build_open_band(
-                model,
-                solid,
-                None,
-                &blend,
-                &crease,
-                surfaces,
-                radius,
-                behind,
-                [false, false],
-                tol,
-            )
+            built.ok_or_else(|| ogeom_core::ogeom_err!(Invariant, "a capped seat has no run"))
         }
         Run::Open(_) => ogeom_bail!(
             Invariant,
@@ -1520,8 +1778,9 @@ fn crease_over(guide: &Curve, (w0, w1): (f64, f64), tol: Tolerances) -> OgeomRes
 }
 
 /// Round the corner between two faces of separate shapes over a marched
-/// seat, the ball in front of both; with `trim`, each face cut back to its
-/// line of contact and the three sewn into one shell.
+/// seat, the ball in front of both, a round over each run; with `trim`,
+/// each face cut back to its line of contact and the faces and rounds sewn
+/// into one shell.
 pub(crate) fn fillet_faces(
     model: &mut Model,
     a: &Shape,
@@ -1533,98 +1792,144 @@ pub(crate) fn fillet_faces(
     let hosts = hosts_of(model, [a, b], radius, tol)?;
     let seat = pair_seat(model, [a, b], &hosts, radius, false, None, tol)?;
     let PairSeat {
-        hosts, blend, run, ..
+        hosts,
+        guide,
+        runs,
+        run,
+        ..
     } = seat;
     let stretches = match run {
         Run::Open(stretches) => stretches,
-        Run::Closed => return closed_round(model, [a, b], &hosts, blend, radius, trim, tol),
+        Run::Closed => {
+            let [blend] = <[MarchedBlend; 1]>::try_from(runs).map_err(|_| {
+                ogeom_core::ogeom_err!(Invariant, "a closed seat is one run round its loop")
+            })?;
+            return closed_round(model, [a, b], &hosts, blend, radius, trim, tol);
+        }
         Run::Capped => ogeom_bail!(
             Invariant,
             "a seat between separate faces is taken over their stretches"
         ),
     };
     let fit_target = band_fit_target(tol);
-    let band = fit_open_band(&blend, radius, [false, false], tol)?;
-    let (w0, w1) = (blend.along[0], blend.along[blend.len() - 1]);
-    let marched = Marched {
-        blend,
-        band,
-        fit_target,
-    };
+    let mut marched = Vec::with_capacity(runs.len());
+    for blend in runs {
+        let band = fit_open_band(&blend, radius, [false, false], tol)?;
+        marched.push(Marched {
+            blend,
+            band,
+            fit_target,
+        });
+    }
     let widened = Tolerance::new(fit_target)?;
     let mut history = History::new();
 
     if !trim {
-        let mut corners = Vec::with_capacity(2);
-        let mut rails = Vec::with_capacity(2);
-        for f in 0..2 {
-            let v0 = make_vertex(model, marched.corner(f, 0)).shape;
-            let v1 = make_vertex(model, marched.corner(f, 1)).shape;
-            model.widen(&v0, widened)?;
-            model.widen(&v1, widened)?;
-            let border = marched.border(f, tol)?;
-            let domain = border.domain();
-            let rail = make_edge_between(model, border, domain, &v0, &v1, tol)?.shape;
-            model.widen(&rail, widened)?;
-            corners.push([v0, v1]);
-            rails.push(rail);
+        let mut rounds = Vec::with_capacity(marched.len());
+        for marched in &marched {
+            let mut corners = Vec::with_capacity(2);
+            let mut rails = Vec::with_capacity(2);
+            for f in 0..2 {
+                let v0 = make_vertex(model, marched.corner(f, 0)).shape;
+                let v1 = make_vertex(model, marched.corner(f, 1)).shape;
+                model.widen(&v0, widened)?;
+                model.widen(&v1, widened)?;
+                let border = marched.border(f, tol)?;
+                let domain = border.domain();
+                let rail = make_edge_between(model, border, domain, &v0, &v1, tol)?.shape;
+                model.widen(&rail, widened)?;
+                corners.push([v0, v1]);
+                rails.push(rail);
+            }
+            let round = marched_round(
+                model,
+                marched,
+                &[rails[0].clone(), rails[1].clone()],
+                &[corners[0].clone(), corners[1].clone()],
+                true,
+                false,
+                tol,
+            )?;
+            history.generate(a, round.clone());
+            history.generate(b, round.clone());
+            rounds.push(round);
         }
-        let round = marched_round(
-            model,
-            &marched,
-            &[rails[0].clone(), rails[1].clone()],
-            &[corners[0].clone(), corners[1].clone()],
-            true,
-            false,
-            tol,
-        )?;
-        history.generate(a, round.clone());
-        history.generate(b, round.clone());
-        return Ok(Built::new(round, history));
+        let made = match rounds.as_slice() {
+            [one] => one.clone(),
+            _ => model.add_compound(&rounds)?,
+        };
+        return Ok(Built::new(made, history));
     }
 
+    // Each face's line is parameterized as the guide over that face's own
+    // turn round a loop; a run's ends are read on it a whole number of
+    // turns over.
+    let period = loop_period(&guide, tol);
+    let on_stretch = |w: f64, (s0, s1): (f64, f64)| match period {
+        Some(period) => ((f64::midpoint(s0, s1) - w) / period)
+            .round()
+            .mul_add(period, w),
+        None => w,
+    };
     let mut kept = Vec::with_capacity(2);
-    let mut rails = Vec::with_capacity(2);
-    let mut corners = Vec::with_capacity(2);
-    for (f, stretch) in stretches.iter().enumerate() {
-        let (_, _, tolerance) = unplaced_face(model, &stretch.piece)?;
-        let ends = [
-            stretch.line.point_at(w0, tol)?,
-            stretch.line.point_at(w1, tol)?,
-        ];
-        let (piece, rail, ends) = cut_to_run(
+    let mut rails: Vec<Vec<Shape>> = vec![Vec::with_capacity(2); marched.len()];
+    let mut corners: Vec<Vec<[Shape; 2]>> = vec![Vec::with_capacity(2); marched.len()];
+    for stretch in &*stretches {
+        // The piece's own surface, which the cut edge's image is on: the
+        // split may restate a face's surface as a fresh one.
+        let (surface_id, _, tolerance) = unplaced_face(model, &stretch.piece)?;
+        let mut ends = Vec::with_capacity(marched.len());
+        for marched in &marched {
+            let along = &marched.blend.along;
+            let (w0, w1) = (along[0], along[along.len() - 1]);
+            ends.push([
+                stretch.line.point_at(on_stretch(w0, stretch.span), tol)?,
+                stretch.line.point_at(on_stretch(w1, stretch.span), tol)?,
+            ]);
+        }
+        let (piece, cut) = cut_to_runs(
             model,
             &stretch.piece,
             &stretch.edge,
-            hosts.ids[f],
+            surface_id,
             tolerance,
-            ends,
+            &ends,
             tol,
         )?;
-        // The rail's image on the band is fitted; it and its ends hold the
+        // Each rail's image on its band is fitted; it and its ends hold the
         // band's own fit.
-        model.widen(&rail, widened)?;
-        for v in &ends {
-            model.widen(v, widened)?;
+        for (k, (rail, ends)) in cut.into_iter().enumerate() {
+            model.widen(&rail, widened)?;
+            for v in &ends {
+                model.widen(v, widened)?;
+            }
+            rails[k].push(rail);
+            corners[k].push(ends);
         }
         kept.push(piece);
-        rails.push(rail);
-        corners.push(ends);
     }
-    let round = marched_round(
-        model,
-        &marched,
-        &[rails[0].clone(), rails[1].clone()],
-        &[corners[0].clone(), corners[1].clone()],
-        false,
-        false,
-        tol,
-    )?;
-    let shell = model.add_shell(&[kept[0].clone(), round.clone(), kept[1].clone()])?;
+    let mut rounds = Vec::with_capacity(marched.len());
+    for (k, marched) in marched.iter().enumerate() {
+        rounds.push(marched_round(
+            model,
+            marched,
+            &[rails[k][0].clone(), rails[k][1].clone()],
+            &[corners[k][0].clone(), corners[k][1].clone()],
+            false,
+            false,
+            tol,
+        )?);
+    }
+    let mut faces = vec![kept[0].clone()];
+    faces.extend(rounds.iter().cloned());
+    faces.push(kept[1].clone());
+    let shell = model.add_shell(&faces)?;
     history.modify(a, kept[0].clone());
     history.modify(b, kept[1].clone());
-    history.generate(a, round.clone());
-    history.generate(b, round);
+    for round in rounds {
+        history.generate(a, round.clone());
+        history.generate(b, round);
+    }
     Ok(Built::new(shell, history))
 }
 
