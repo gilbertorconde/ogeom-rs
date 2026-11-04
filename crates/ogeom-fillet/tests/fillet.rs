@@ -582,7 +582,7 @@ fn a_second_blend_lands_beside_the_first() {
     );
 }
 
-/// The edge whose curve midpoint lies nearest `at`.
+/// The edge whose placed curve midpoint lies nearest `at`.
 fn edge_with_midpoint(
     model: &ogeom_topo::Model,
     solid: &ogeom_topo::Shape,
@@ -600,9 +600,11 @@ fn edge_with_midpoint(
         let Some(geometry) = model.geometry().curve(*curve) else {
             continue;
         };
-        let p = geometry
-            .point_at(f64::midpoint(range.0, range.1), T)
-            .unwrap();
+        let p = edge.transform(model.datums()).unwrap().apply(
+            geometry
+                .point_at(f64::midpoint(range.0, range.1), T)
+                .unwrap(),
+        );
         let d = p.distance(at);
         if best.as_ref().is_none_or(|(held, _)| d < *held) {
             best = Some((d, edge));
@@ -973,6 +975,417 @@ fn a_round_running_off_a_narrowing_wall_is_taken_beside_an_edge_apart() {
             assert!(cylinders > 0, "{which}: no band was generated");
         }
     }
+}
+
+/// The narrowing wall's floor edge asked together with the floor edge at
+/// the prism's other end, which shares the floor with it: each band is
+/// checked against the other. The wall stands under the radius over the
+/// last quarter of the edge, so the contact runs off the wall there, out
+/// of the solid, and the band is cut off by the sloped face across the
+/// wall's side. On the wall the band reaches that side, and on the sloped
+/// face it reaches down to where the ball's arc meets it, under a setback
+/// from the edge: the other end's band stands the depth away, and both
+/// are taken, each as it is alone, `(1 - pi/4) r^2 (L - r/k1 - r/k2) +
+/// r^3/(6 k1) + r^3/(6 k2)` for tips rising at slopes `k1`, `k2`. Before,
+/// a band sharing a face with another refused any station whose contact
+/// ran off.
+#[test]
+fn a_round_running_off_a_narrowing_wall_is_checked_against_a_band_on_its_floor() {
+    use core::f64::consts::FRAC_PI_4;
+    use ogeom_math::Vector;
+    let (length, apex, height, depth) = (10.0_f64, 1.0_f64, 1.0_f64, 2.0_f64);
+    let rises = [height / apex, height / (length - apex)];
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-4,
+        ..ogeom_mesh::Deflection::default()
+    };
+    for radius in [0.3, 0.5] {
+        // The wall's height over the edge's station three quarters along.
+        assert!(height * (length - 0.75 * length) / (length - apex) < radius);
+        let mut model = ogeom_topo::Model::new();
+        let profile = [(0.0, 0.0), (length, 0.0), (apex, height)];
+        let prism = profile_prism(&mut model, &profile, depth);
+        let before = ogeom_algo::volume_properties(&model, &prism, fine, T)
+            .unwrap()
+            .mass;
+        let near = edge_with_midpoint(&model, &prism, Point::new(0.0, length / 2.0, 0.0));
+        let far = edge_with_midpoint(&model, &prism, Point::new(-depth, length / 2.0, 0.0));
+        let rounded =
+            ogeom_fillet::fillet_edges(&mut model, &prism, &[near.clone(), far.clone()], radius, T)
+                .unwrap_or_else(|e| panic!("radius {radius}: {e}"));
+        let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let removed = before
+            - ogeom_algo::volume_properties(&model, &rounded.shape, fine, T)
+                .unwrap()
+                .mass;
+        let band = (1.0 - FRAC_PI_4)
+            * radius
+            * radius
+            * (length - rises.iter().map(|k| radius / k).sum::<f64>())
+            + rises
+                .iter()
+                .map(|k| radius.powi(3) / (6.0 * k))
+                .sum::<f64>();
+        assert!(
+            (removed - 2.0 * band).abs() < 1e-6,
+            "radius {radius}: the two rounds took {removed} against {}",
+            2.0 * band
+        );
+        for (which, edge, wall) in [("near", &near, 0.0), ("far", &far, -depth)] {
+            let mut cylinders = 0;
+            for face in rounded.history.generated(edge) {
+                let data = model.node(face).unwrap().data().as_face().unwrap();
+                let ogeom_geom::SurfaceGeometry::Cylinder(c) =
+                    model.geometry().surface(data.surface).unwrap()
+                else {
+                    continue;
+                };
+                let placed = face.transform(model.datums()).unwrap();
+                let axis = c.cylinder().axis();
+                let origin = placed.apply(axis.location);
+                let direction = placed.apply_vector(axis.direction.vector());
+                // A radius over the floor and a radius inside the wall.
+                let inward = if wall == 0.0 { -radius } else { radius };
+                assert!(
+                    (c.cylinder().radius() - radius).abs() < 1e-9
+                        && direction.cross(Vector::Y).magnitude() < 1e-9
+                        && (origin.z - radius).abs() < 1e-9
+                        && (origin.x - (wall + inward)).abs() < 1e-9,
+                    "{which}: a band of radius {} about {origin:?} along {direction:?}",
+                    c.cylinder().radius()
+                );
+                cylinders += 1;
+            }
+            assert!(cylinders > 0, "{which}: no band was generated");
+        }
+    }
+}
+
+/// A box's size, corner and z and x axes.
+type BoxSpec = ((f64, f64, f64), [f64; 3], [f64; 3], [f64; 3]);
+
+/// Two boxes fused on oblique axes, as the blend stress scenario builds
+/// them.
+fn fused_boxes(model: &mut ogeom_topo::Model, boxes: [BoxSpec; 2]) -> ogeom_topo::Shape {
+    use ogeom_math::{Direction, Vector};
+    let [a, b] = boxes.map(|(size, at, z, x)| {
+        let z = Direction::new(Vector::new(z[0], z[1], z[2]), T).unwrap();
+        let x = Direction::new(Vector::new(x[0], x[1], x[2]), T).unwrap();
+        let frame = Frame::new(Point::new(at[0], at[1], at[2]), z, x, T).unwrap();
+        ogeom_algo::make_box(model, frame, size, T).unwrap().shape
+    });
+    ogeom_bool::fuse(model, &a, &b, T).unwrap().shape
+}
+
+/// The edges of `solid` between each pair of ends.
+fn edges_between(
+    model: &ogeom_topo::Model,
+    solid: &ogeom_topo::Shape,
+    ends: &[([f64; 3], [f64; 3])],
+) -> Vec<ogeom_topo::Shape> {
+    ends.iter()
+        .map(|(a, b)| {
+            let mid = Point::new(
+                f64::midpoint(a[0], b[0]),
+                f64::midpoint(a[1], b[1]),
+                f64::midpoint(a[2], b[2]),
+            );
+            edge_with_midpoint(model, solid, mid)
+        })
+        .collect()
+}
+
+/// Seams of two boxes fused at a slant, each asked with edges that share a
+/// face or a corner with it, at radii whose ball runs off a narrow face
+/// beside the seam over part of it, out of the solid: the face holds the
+/// band up to its side, and past it the fill stands in the open. Where the
+/// stretch the face holds and the side it is cut off at stand clear of
+/// the other bands, the request rounds each edge as it rounds alone, and
+/// where two edges meet at a corner, joins their bands there as it does at
+/// a radius whose ball sits on every face: the volume it moves past the
+/// sum of the edges' alone is the joint's, a figure similar at every
+/// radius, so the same multiple of the radius cubed as at the small
+/// radius (none where no two edges meet). Each edge's band is a cylinder
+/// of the radius. Before, a band sharing a face or a corner with another
+/// refused any station whose contact ran off.
+#[test]
+fn seams_whose_ball_runs_off_a_narrow_face_round_beside_other_edges() {
+    type Case = ([BoxSpec; 2], f64, [([f64; 3], [f64; 3]); 3]);
+    let cases: [Case; 3] = [
+        (
+            [
+                (
+                    (5.144767924468569, 3.6843403462125237, 5.478265583058404),
+                    [
+                        0.040725408140183994,
+                        1.1759028267555878,
+                        0.08755970996097018,
+                    ],
+                    [0.9838328245029522, 0.013585387533624958, 0.1785732641693722],
+                    [
+                        0.013366983769765866,
+                        -0.9999077143644614,
+                        0.0024262109013002825,
+                    ],
+                ),
+                (
+                    (2.7872430819209715, 5.593131485308893, 4.093961348667973),
+                    [1.3838629232036737, -1.7681147967133555, -1.2376460015375836],
+                    [
+                        -0.10842466369396848,
+                        -0.6938979548625345,
+                        -0.7118635547212977,
+                    ],
+                    [0.0, -0.7160851137158388, 0.6980129725976262],
+                ),
+            ],
+            0.17622609627015812,
+            [
+                (
+                    [5.430422910097845, 1.250327187713556, 1.0658314771144384],
+                    [
+                        0.040725408140183994,
+                        1.1759028267555878,
+                        0.08755970996097018,
+                    ],
+                ),
+                (
+                    [1.3838629232036737, -3.3777329621511902, 0.3313495534380895],
+                    [1.3395608932435068, -3.9514047856821333, 0.3233083924783367],
+                ),
+                (
+                    [5.499192939443429, -3.8939659485774047, 1.078313769137444],
+                    [6.157178343978747, -3.8939659485774047, -2.546795745642477],
+                ),
+            ],
+        ),
+        (
+            [
+                (
+                    (4.56059405414047, 2.608008240519031, 3.616373802249933),
+                    [-0.5905037726230247, 1.5269467266690486, 1.7342392936550177],
+                    [-0.5754939441906246, 0.5790706314689187, -0.5774806697804751],
+                    [0.0, -0.7061340232808163, -0.7080782027186316],
+                ),
+                (
+                    (5.705406207536826, 2.8848003020225637, 3.647146141198268),
+                    [
+                        -0.31555980386827276,
+                        0.22249462605571058,
+                        -1.8477015290393783,
+                    ],
+                    [
+                        0.09332918369567265,
+                        -0.9142611888766942,
+                        0.39422854029670795,
+                    ],
+                    [
+                        -0.9956353064605029,
+                        -0.08570131039831906,
+                        0.03695432214655793,
+                    ],
+                ),
+            ],
+            0.1044192171700272,
+            [
+                (
+                    [-4.804549889030571, -0.42444107729020486, -2.28530156903601],
+                    [-4.64397785179561, -0.1500826582692517, -1.6870465644251569],
+                ),
+                (
+                    [-4.583612141643999, -0.5519692138019097, -2.6333584733136597],
+                    [-4.804549889030571, -0.42444107729020486, -2.28530156903601],
+                ),
+                (
+                    [
+                        -0.31555980386827276,
+                        0.22249462605571058,
+                        -1.8477015290393783,
+                    ],
+                    [
+                        -0.31555980386827276,
+                        -0.9197615843601998,
+                        -4.4967246569708355,
+                    ],
+                ),
+            ],
+        ),
+        (
+            [
+                (
+                    (2.684090021065487, 2.633390532608403, 5.163412767583785),
+                    [1.5092001940993658, -1.8865089410113338, -0.6590223727948175],
+                    [
+                        -0.9647644349774764,
+                        -0.21552229564378922,
+                        -0.15092953681444177,
+                    ],
+                    [0.15456190864841482, 0.0, -0.9879831053185876],
+                ),
+                (
+                    (4.362859758220718, 4.57196667756723, 5.082472773745155),
+                    [
+                        -0.6143747615111983,
+                        -1.1794547319438689,
+                        -0.1797275912337768,
+                    ],
+                    [
+                        -0.4427529526334064,
+                        -0.5237146899300703,
+                        -0.7277999357555968,
+                    ],
+                    [-0.8966436432242191, 0.2586046608998749, 0.35937975238799996],
+                ),
+            ],
+            0.3107962123658068,
+            [
+                (
+                    [1.9240582707394114, -1.8865089410113338, -3.3108579667617306],
+                    [-2.655482818673303, -2.909549563988206, -4.027289864942038],
+                ),
+                (
+                    [
+                        -0.6143747615111983,
+                        -1.1794547319438689,
+                        -0.1797275912337768,
+                    ],
+                    [-0.6143747615111985, 2.531581507877077, -2.8501375461883995],
+                ),
+                (
+                    [-2.8646545887657653, -3.5893226000241056, -4.060013084445304],
+                    [-2.655482818673303, -2.909549563988206, -4.027289864942038],
+                ),
+            ],
+        ),
+    ];
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-4,
+        ..ogeom_mesh::Deflection::default()
+    };
+    // A radius whose ball sits on every face beside each edge.
+    const SMALL: f64 = 0.05;
+    for (k, (boxes, radius, ends)) in cases.into_iter().enumerate() {
+        let mut model = ogeom_topo::Model::new();
+        let part = fused_boxes(&mut model, boxes);
+        let edges = edges_between(&model, &part, &ends);
+        let volume = |model: &ogeom_topo::Model, shape: &ogeom_topo::Shape| {
+            ogeom_algo::volume_properties(model, shape, fine, T)
+                .unwrap()
+                .mass
+        };
+        let before = volume(&model, &part);
+        // What the request moves past what its edges move alone, over the
+        // cube of the radius, and the request's result.
+        let past_alone = |r: f64| {
+            let mut alone = 0.0;
+            for edge in &edges {
+                let mut own = model.clone();
+                let rounded =
+                    ogeom_fillet::fillet_edges(&mut own, &part, std::slice::from_ref(edge), r, T)
+                        .unwrap_or_else(|e| panic!("case {k}, radius {r}, alone: {e}"));
+                alone += volume(&own, &rounded.shape) - before;
+            }
+            let mut own = model.clone();
+            let rounded = ogeom_fillet::fillet_edges(&mut own, &part, &edges, r, T)
+                .unwrap_or_else(|e| panic!("case {k}, radius {r}: {e}"));
+            let diagnosis = ogeom_algo::check(&own, &rounded.shape, T).unwrap();
+            assert!(
+                diagnosis.is_valid(),
+                "case {k}, radius {r}: {:?}",
+                diagnosis.problems
+            );
+            let moved = volume(&own, &rounded.shape) - before;
+            ((moved - alone) / r.powi(3), own, rounded)
+        };
+        let (small, _, _) = past_alone(SMALL);
+        let (past, model, rounded) = past_alone(radius);
+        assert!(
+            (past - small).abs() < 1e-8,
+            "case {k}: the request moved {past} r^3 past its edges alone, against {small} r^3 \
+             where no ball runs off"
+        );
+        for (i, edge) in edges.iter().enumerate() {
+            let mut bands = 0;
+            for face in rounded.history.generated(edge) {
+                let data = model.node(face).unwrap().data().as_face().unwrap();
+                if let ogeom_geom::SurfaceGeometry::Cylinder(c) =
+                    model.geometry().surface(data.surface).unwrap()
+                {
+                    assert!(
+                        (c.cylinder().radius() - radius).abs() < 1e-9,
+                        "case {k}, edge {i}: a band of radius {}",
+                        c.cylinder().radius()
+                    );
+                    bands += 1;
+                }
+            }
+            assert!(bands > 0, "case {k}, edge {i}: no band was generated");
+        }
+    }
+}
+
+/// A seam whose ball runs off a narrow face beside it, out of the solid,
+/// asked with a seam of the other box that the face's side, past it,
+/// runs into: the side where the band is cut off stands inside the other
+/// band's strip on the face across, so the two would overlap there, and
+/// the request is refused by name.
+#[test]
+fn a_seam_cut_off_at_a_side_inside_another_band_is_refused() {
+    let mut model = ogeom_topo::Model::new();
+    let part = fused_boxes(
+        &mut model,
+        [
+            (
+                (5.9160404347163045, 3.254850629456677, 5.970802965092705),
+                [-0.3604819560823245, 0.943635206190399, -1.021863589795331],
+                [-0.633212603031764, 0.772399405315172, 0.049406052569562674],
+                [
+                    -0.7739779062490982,
+                    -0.6319211880221245,
+                    -0.04042044986104332,
+                ],
+            ),
+            (
+                (2.284745648454085, 2.3437638219543424, 5.466460593451971),
+                [0.7472006383165022, -1.52709554271196, 1.4027941278063039],
+                [
+                    -0.5471569166011463,
+                    -0.3452972440454482,
+                    -0.7624887683567179,
+                ],
+                [-0.8370300523968817, 0.22571683635702738, 0.4984301366986638],
+            ),
+        ],
+    );
+    let edges = edges_between(
+        &model,
+        &part,
+        &[
+            (
+                [-1.1652001315225684, 0.08783504202937209, 2.0437900986036905],
+                [-0.3604819560823245, 0.8052608620087015, 1.1414393983625462],
+            ),
+            (
+                [-0.4678372350229485, 0.9355975097565485, 1.15945316946393],
+                [-0.3604819560823245, 0.8203823875504161, 0.9050340041158873],
+            ),
+            (
+                [-4.156211854557421, -0.7639026294606461, -2.5933997429770064],
+                [-2.2438110847183506, -1.2796081891101871, -3.732185828857653],
+            ),
+        ],
+    );
+    let Err(ogeom_core::OgeomError::Construction(why)) =
+        ogeom_fillet::fillet_edges(&mut model, &part, &edges, 0.23879960857102378, T)
+    else {
+        panic!("a band cut off inside another band's strip was rounded");
+    };
+    assert!(
+        why.to_string()
+            .contains("two blends of the chain overlap across a face they share"),
+        "{why}"
+    );
 }
 
 /// A round wider than a strip beside its edge takes the strip off whole:

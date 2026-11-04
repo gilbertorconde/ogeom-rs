@@ -103,7 +103,7 @@ fn fillet_edge_own(
     // the band would cut through the face. Past a strip's far side all
     // along, the ball may roll between the faces either side of the strip
     // and take it off whole.
-    if let Err(refusal) = crate::support::ball_fits(model, solid, edge, radius, true, tol) {
+    if let Err(refusal) = crate::support::ball_fits(model, solid, edge, radius, false, tol) {
         return consuming(model, solid, edge, radius, refusal, tol);
     }
     let edges = std::slice::from_ref(edge);
@@ -627,7 +627,7 @@ fn fillet_edges_own(
         // A band checked against no other is held to what one edge alone
         // is.
         for (i, edge) in edges.iter().enumerate() {
-            match crate::support::ball_fits(model, solid, edge, radius, alone(i), tol) {
+            match crate::support::ball_fits(model, solid, edge, radius, !alone(i), tol) {
                 Ok(found) => contacts.push(found),
                 Err(refusal @ OgeomError::Construction(_)) if edges.len() > 1 && alone(i) => {
                     if crate::rolled::rolled_run(model, solid, edge, radius, tol)?.is_none() {

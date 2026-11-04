@@ -1942,11 +1942,9 @@ pub(crate) fn face_reach(
 /// its face and its setback, for a chain to check its bands against each
 /// other.
 ///
-/// `anywhere` asks only that the ball sit somewhere along the edge, for a
-/// band no other band of the request is checked against. A face
-/// narrowing along the edge (a triangle's side running down to its tip, a
-/// pyramid's side toward its base) holds the ball along part of the edge
-/// and lets the contact run off it elsewhere. Where the contact then
+/// A face narrowing along the edge (a triangle's side running down to its
+/// tip, a pyramid's side toward its base) holds the ball along part of the
+/// edge and lets the contact run off it elsewhere. Where the contact then
 /// stands outside the solid, the face it ran off ended at the solid's
 /// boundary, and the band is cut off there by the face that follows, as
 /// a band running up under a roof is. Where it stands in the material,
@@ -1954,17 +1952,25 @@ pub(crate) fn face_reach(
 /// there would cut under it, touching no face: that station refuses. A
 /// ball that fits at no station is refused too.
 ///
+/// `carry` asks for the contacts of a band that other bands of the request
+/// are checked against. Where its contact runs off a face and is cut off,
+/// the station stands for the band on the stretch the face holds, up to
+/// the side the contact crosses, and on the face across that side
+/// ([`carried_contacts`]). A station whose band cannot be read so is
+/// refused.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
-/// where a contact falls outside its face (for `anywhere`, in the
-/// material, or at every station).
+/// where a contact falls outside its face in the material, at every
+/// station, or, for `carry`, where its band cannot be read past the
+/// face's side.
 pub(crate) fn ball_fits(
     model: &Model,
     solid: &Shape,
     edge: &Shape,
     radius: f64,
-    anywhere: bool,
+    carry: bool,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Contact>> {
     use ogeom_geom::Surface as _;
@@ -2106,7 +2112,10 @@ pub(crate) fn ball_fits(
         else {
             continue;
         };
-        for (face, surface, step) in [(face0, &s0, d0), (face1, &s1, d1)] {
+        let mut station_missed = false;
+        for (face, surface, step, normals) in
+            [(face0, &s0, d0, [n0, n1]), (face1, &s1, d1, [n1, n0])]
+        {
             let guess = p + step * setback;
             let found = ogeom_algo::project_on_surface(surface, guess, 16, tol)?;
             let (u, v) = found.parameters;
@@ -2134,11 +2143,36 @@ pub(crate) fn ball_fits(
                     }
                     None => true,
                 };
-                if !anywhere || !cut_off {
+                if !cut_off {
                     ogeom_bail!(Construction, "{refusal}");
                 }
                 missed = Some(refusal);
-                continue 'stations;
+                if !carry {
+                    continue 'stations;
+                }
+                // Walking into a face from a convex edge goes behind the
+                // other.
+                let station = Station {
+                    at: p,
+                    tangent,
+                    step,
+                    normals,
+                    setback,
+                    radius,
+                    convex: d0.dot(n1) < 0.0,
+                };
+                let Some(carried) = carried_contacts(model, solid, face, &station, tol)? else {
+                    ogeom_bail!(
+                        Construction,
+                        "a blend of radius {radius} on the edge through {p:?} sets back \
+                         {setback} across a face that does not reach so far, and its band \
+                         cannot be carried past that face's side, where another blend of the \
+                         request is checked against it"
+                    );
+                };
+                contacts.extend(carried);
+                station_missed = true;
+                continue;
             }
             contacts.push(Contact {
                 face: face.node(),
@@ -2146,7 +2180,7 @@ pub(crate) fn ball_fits(
                 setback,
             });
         }
-        held = true;
+        held |= !station_missed;
     }
     if let Some(refusal) = missed
         && !held
@@ -2154,6 +2188,154 @@ pub(crate) fn ball_fits(
         ogeom_bail!(Construction, "{refusal}");
     }
     Ok(contacts)
+}
+
+/// A station of a band whose contact on a face runs off it: the edge's
+/// point and unit tangent there, the unit step into the face square to the
+/// edge, the outward unit normals of that face and of the other, the
+/// band's setback and radius, and whether the edge is convex.
+struct Station {
+    at: Point,
+    tangent: Vector,
+    step: Vector,
+    normals: [Vector; 2],
+    setback: f64,
+    radius: f64,
+    convex: bool,
+}
+
+/// The contacts a band stands for at `station`, where its contact on the
+/// planar `face` lies past the face's far side, outside the solid.
+///
+/// The face holds the band from the edge to `q`, where the step toward the
+/// contact first crosses a side of the face; `q` lies on the face across
+/// that side too. Past `q` a concave band's fill stands in the open over
+/// the face's plane, reaching no face. A convex band runs on over the face
+/// across the side and is cut off by it, which must be planar: the round's
+/// section there is that face's line from `q` down to where it meets the
+/// ball's arc between its contacts, at `c`, the first point of the arc
+/// from the run-off contact that the face's plane reaches. So the band
+/// stands for `q` on both faces and, convex, for `c` on the face across,
+/// each with the band's setback: its section stays within the setback of
+/// the edge, the arc's farthest points being its contacts.
+///
+/// `None` where `face` is not planar and bounded by straight sides, where
+/// the side crossed bounds no other face, or, convex, where the face across
+/// is not so bounded either or its plane misses the arc or meets it outside
+/// that face: the band is then cut off by more than the one face.
+fn carried_contacts(
+    model: &Model,
+    solid: &Shape,
+    face: &Shape,
+    station: &Station,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<Contact>>> {
+    let conf = tol.confusion();
+    let &Station {
+        at: p,
+        tangent,
+        step,
+        normals: [n_face, n_other],
+        setback,
+        radius,
+        convex,
+    } = station;
+    if crate::rolled::flat(model, face, tol)?.is_none() {
+        return Ok(None);
+    }
+    // The first side of the face the step from the edge crosses.
+    let (e1, e2) = crate::rolled::basis(n_face);
+    let flat2 = |v: Vector| (v.dot(e1), v.dot(e2));
+    let (dx, dy) = flat2(step);
+    let mut first: Option<(f64, Shape)> = None;
+    for side in ogeom_topo::explore_unique(model, face, ShapeType::Edge)? {
+        let Some([a, b]) = crate::consumed::segment(model, &side, tol)? else {
+            return Ok(None);
+        };
+        let ((ax, ay), (bx, by)) = (flat2(a - p), flat2(b - p));
+        let (sx, sy) = (bx - ax, by - ay);
+        // The side's sweep across the step: under the confusion distance
+        // over its length, it runs along the step and crosses it nowhere.
+        let det = sx * dy - dx * sy;
+        if det.abs() <= conf {
+            continue;
+        }
+        // p + step t = a + (b - a) u, with u held to the side within the
+        // confusion distance.
+        let t = (sx * ay - ax * sy) / det;
+        let u = (dx * ay - ax * dy) / det;
+        let slack = conf / sx.hypot(sy);
+        if t > conf
+            && t <= setback
+            && (-slack..=1.0 + slack).contains(&u)
+            && first.as_ref().is_none_or(|(held, _)| t < *held)
+        {
+            first = Some((t, side));
+        }
+    }
+    let Some((t, side)) = first else {
+        return Ok(None);
+    };
+    let q = p + step * t;
+    let mut others: Vec<Shape> = Vec::new();
+    for f in ogeom_topo::ancestors_of(model, solid, &side, ShapeType::Face)? {
+        if !f.is_same(face) && !others.iter().any(|o| o.is_same(&f)) {
+            others.push(f);
+        }
+    }
+    let [across] = others.as_slice() else {
+        return Ok(None);
+    };
+    let contact = |on: &Shape, at: Point| Contact {
+        face: on.node(),
+        at,
+        setback,
+    };
+    let mut carried = vec![contact(face, q), contact(across, q)];
+    if !convex {
+        return Ok(Some(carried));
+    }
+    let Some(flat) = crate::rolled::flat(model, across, tol)? else {
+        return Ok(None);
+    };
+    // The ball's arc in the plane square to the edge, from the run-off
+    // contact (angle 0) to the other face's (angle `turn`), about the
+    // centre a radius under the run-off contact.
+    let centre = p + step * setback - n_face * radius;
+    let towards = n_other - n_face * n_face.dot(n_other);
+    let l = towards.magnitude();
+    if l <= conf || tangent.dot(n_face).abs() > tol.angular() {
+        return Ok(None);
+    }
+    let towards = towards / l;
+    let turn = n_face.dot(n_other).clamp(-1.0, 1.0).acos();
+    // Height over the face across along the arc:
+    // h(θ) = h0 + a cos θ + b sin θ, above it at the run-off contact.
+    let h0 = (centre - flat.origin).dot(flat.normal);
+    let (a, b) = (
+        radius * n_face.dot(flat.normal),
+        radius * towards.dot(flat.normal),
+    );
+    let m = a.hypot(b);
+    if h0 + a <= conf || m <= conf || h0.abs() > m {
+        return Ok(None);
+    }
+    let delta = b.atan2(a);
+    let spread = (-h0 / m).acos();
+    let Some(theta) = [delta - spread, delta + spread]
+        .into_iter()
+        .map(|th| th.rem_euclid(core::f64::consts::TAU))
+        .filter(|th| *th <= turn)
+        .reduce(f64::min)
+    else {
+        return Ok(None);
+    };
+    let c = centre + (n_face * theta.cos() + towards * theta.sin()) * radius;
+    if crate::rolled::face_distance(&flat, c) > conf {
+        return Ok(None);
+    }
+    carried.push(contact(across, c));
+    Ok(Some(carried))
 }
 
 /// Where a rolling ball touches one of an edge's faces.

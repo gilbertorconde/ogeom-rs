@@ -268,12 +268,23 @@ the far edges of both faces at once, its centre on the quartic where the
 cylinders a radius about the two edges meet, which has no closed-form
 piece here. In seed 4 case 48 the ball's contact on the face it touches
 runs over a concave seam of that face onto the face beyond. Seed 1 case
-12 rounds alone, but another edge of its request shares a face with it. Within a request, the ball also refuses where its contact
-runs off a face anywhere along an edge that shares a face or a vertex
-with another of the request (4 refusals): the band's contacts are checked
-against its neighbours' and an off-face contact holds none to check. Owed:
-the overlap check read on the stretch of the band the face holds, and the
-contact beyond it carried onto the face the band is cut off by.
+12 rounds alone, but another edge of its request shares a face with it:
+a band the ball rests on a far edge for, all along or in part, is taken
+in a request only for an edge sharing no face and no vertex with another,
+and owes its contacts on the face it touches and on the far edge to the
+check of each band against the others'. Within a request, a ball whose
+contact runs off a face along part of an edge, out of the solid, is cut
+off there as alone, its band checked against the others' on the stretch
+the face holds, up to the face's side, and on the face across that side
+(`carried_contacts` in `support.rs`). Of the 4 stress blend refusals of
+that kind at seeds 1 to 4, seed 1 case 6 and seed 3 cases 13 and 14
+round, each to its edges rounded alone with the joint at a shared corner
+as at a radius that fits (and six more at seeds 5 to 8). Seed 4 case 32 is refused by name: the side
+its band is cut off at stands inside another seam's band on the face
+across. Owed, alone and in a request alike: past a face's side,
+a concave band's fill stands as a flat on the face's plane, where the
+ball rests on the side instead (`carried.rs`), a run read only from a
+ball holding that side at the crease's middle.
 
 **A pole leg whose edge winds round the pole and whose rail does not.** A
 marched band whose rail passes over a sphere's pole has a leg from the
