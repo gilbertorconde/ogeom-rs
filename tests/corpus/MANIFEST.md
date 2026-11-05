@@ -377,6 +377,17 @@ part's own half of the channel, and the image's bake pinned the bore's
 fitted edges to a vertex's image on the wrong side of the bore's chart
 closure; either left the channel's arrangement no piece of the face.
 
+## channel_axis_tilted_by_its_mirror.ogeom
+
+A box cropped, in this kernel's native format, from the same community
+printer carriage as `half_channel_on_the_mirror_plane.ogeom`, as printCAD
+rebuilt it natively: x from -5 to the mirror plane at 0, y from -3 to 2, z
+from 26 to 34, taking a stretch of the half-round channel of 3 mm radius
+centred on the plane and the fitted edges where another face meets it. The
+channel's axis is tilted 2.7e-12 off y, so the part's mirror image carries
+it on an axis 5.4e-12 apart. The reproducer for fusing the part with its
+mirror image across a channel whose two halves' axes differ by a rounding.
+
 ## half_channel_mirror_baked_round_the_back.ogeom
 
 The mirror image of `half_channel_on_the_mirror_plane.ogeom`, in this
