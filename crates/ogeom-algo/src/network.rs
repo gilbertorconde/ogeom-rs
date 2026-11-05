@@ -44,9 +44,10 @@
 //!   spacings; the line through the junction is then held at the corner's
 //!   ratio instead, tangent but not `C¹`. A curve may also run on to
 //!   another corner held by its spans, which pins it to a second ratio:
-//!   the first poles round an odd corner may be scaled to give any of its
-//!   curves short of all any ratio, so both corners are scaled to the
-//!   geometric mean of the two. So a corner of three patches or more,
+//!   the first poles round a corner may be scaled to give its curves other
+//!   ratios, so both corners are scaled to the geometric mean of the two,
+//!   moved as little as closes every cycle of a corner's scales all of
+//!   whose curves are asked a ratio. So a corner of three patches or more,
 //!   other than four, whose curves each run on to the border, a corner of
 //!   four patches, a junction or another such corner is held, every curve
 //!   into it tangent to rounding, as long as the fit still comes within
@@ -154,11 +155,12 @@ impl PatchDef {
 /// a [`PatchDef`]'s `None`.
 ///
 /// A side split into several curves has its patch cross the same
-/// junctions from the side opposite: that side is split into as many
-/// curves, the `i`-th along one direction opposite the `i`-th along it on
-/// the other, or is one curve, which then carries the junctions to the
-/// patch beyond it. A curve of a split side is not itself crossed by
-/// junctions elsewhere.
+/// junctions from the side opposite: that side is split too, or is one
+/// curve, which then carries the junctions to the patch beyond it. A curve
+/// so carrying junctions may itself be one of the curves of a split side
+/// (nested junctions): every side then crosses as many strips as the
+/// curves along it carry between them, and the side opposite as many, the
+/// `i`-th along one direction opposite the `i`-th along it on the other.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainedPatch {
     /// The sides, in walking order, each its curves in walking order.
@@ -374,10 +376,10 @@ pub fn fit_network(
 ///
 /// As [`fit_network`], and
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if two
-/// opposite sides of a patch are split into different numbers of curves,
-/// a curve of a split side is itself crossed by junctions elsewhere, or the
-/// curves of a split side meet one another, or the patch's corners, other
-/// than at their junctions.
+/// opposite sides of a patch, one of them split, cross different numbers
+/// of strips, the split sides carry their junctions round a loop back to
+/// themselves, or the curves of a split side meet one another, or the
+/// patch's corners, other than at their junctions.
 pub fn fit_network_chained(
     model: &mut Model,
     patches: &[ChainedPatch],
@@ -874,30 +876,52 @@ fn corner_chart(k: usize) -> (f64, f64) {
     }
 }
 
+/// The strips along the walk of each curve of side `k` of patch `p`.
+fn side_parts(topo: &Topology, patches: &[ChainedPatch], (p, k): (usize, usize)) -> Vec<usize> {
+    patches[p].sides[k]
+        .iter()
+        .map(|s| topo.curve_strip[s.curve].len())
+        .collect()
+}
+
 /// The share of side `k`'s walk, from its start, that its `i`-th curve
-/// covers, `bounds` the bounds of the shares of the strips along the
-/// side's direction.
-fn walk_share(k: usize, i: usize, count: usize, bounds: &[f64]) -> (f64, f64) {
-    if count < 2 {
+/// covers, `parts` the strips each of its curves crosses in walking order
+/// and `bounds` the bounds of the shares of the strips along the side's
+/// direction.
+fn walk_share(k: usize, i: usize, parts: &[usize], bounds: &[f64]) -> (f64, f64) {
+    if parts.len() < 2 {
         return (0.0, 1.0);
     }
     let m = bounds.len() - 1;
+    let (from, to) = (
+        parts[..i].iter().sum::<usize>(),
+        parts[..=i].iter().sum::<usize>(),
+    );
     if k < 2 {
-        (bounds[i], bounds[i + 1])
+        (bounds[from], bounds[to])
     } else {
-        (1.0 - bounds[m - i], 1.0 - bounds[m - 1 - i])
+        (1.0 - bounds[m - from], 1.0 - bounds[m - to])
     }
 }
 
-/// Which curve of side `k`, of `count`, holds the point at `x` along the
-/// side's direction, `bounds` the bounds of the shares of its strips.
-fn piece_at(k: usize, x: f64, count: usize, bounds: &[f64]) -> usize {
-    if count < 2 {
+/// Which curve of side `k` holds the point at `x` along the side's
+/// direction, `parts` the strips each of its curves crosses in walking
+/// order and `bounds` the bounds of the shares of its strips.
+fn piece_at(k: usize, x: f64, parts: &[usize], bounds: &[f64]) -> usize {
+    if parts.len() < 2 {
         return 0;
     }
     let m = bounds.len() - 1;
     let strip = bounds[1..m].iter().filter(|&&b| x > b).count();
-    if k < 2 { strip } else { m - 1 - strip }
+    let walked = if k < 2 { strip } else { m - 1 - strip };
+    let mut end = 0;
+    for (i, n) in parts.iter().enumerate() {
+        end += n;
+        if walked < end {
+            return i;
+        }
+    }
+    parts.len() - 1
 }
 
 /// The seed patches the points are parameterised over.
@@ -1095,22 +1119,25 @@ impl Seeds {
         cloud: &[Point],
         tol: Tolerances,
     ) -> OgeomResult<Taken> {
-        // Whether each curve of each side is on the network's border.
-        let border: Vec<[Vec<bool>; 4]> = patches
-            .iter()
-            .map(|patch| {
+        // Whether each curve of each side is on the network's border, and
+        // the strips each crosses.
+        let border: Vec<[(Vec<bool>, Vec<usize>); 4]> = (0..patches.len())
+            .map(|p| {
                 core::array::from_fn(|k| {
-                    patch.sides[k]
-                        .iter()
-                        .map(|s| topo.users[s.curve].len() < 2)
-                        .collect()
+                    (
+                        patches[p].sides[k]
+                            .iter()
+                            .map(|s| topo.users[s.curve].len() < 2)
+                            .collect(),
+                        side_parts(topo, patches, (p, k)),
+                    )
                 })
             })
             .collect();
         let past = |p: usize, (u, v): (f64, f64)| {
             let free = |k: usize, x: f64| {
-                let sides = &border[p][k];
-                let i = piece_at(k, x, sides.len(), &self.bounds[p][k % 2]);
+                let (sides, parts) = &border[p][k];
+                let i = piece_at(k, x, parts, &self.bounds[p][k % 2]);
                 sides.get(i).copied().unwrap_or(false)
             };
             (v <= 0.0 && free(0, u))
@@ -1328,21 +1355,18 @@ fn plane_weights(flat: &[(f64, f64)], sides: &[(usize, usize)]) -> Option<Vec<(f
 impl Relation {
     /// Scale the curves' first poles so each curve of `wanted` takes its
     /// ratio there, then hold it to that ratio to the bit; false, the
-    /// relation untouched, where they cannot all be met.
+    /// relation untouched, where a ratio is then not positive.
     ///
     /// Scaling the first pole of the curve on a curve's first side by `a`
     /// and that on its second by `b` scales its `λ` by `a / b`, and its own
     /// leaves `λ` alone: the ratios wanted are differences of the scales'
-    /// logarithms along the curves either side of each. Round an odd
-    /// corner those pairs close in one cycle, so any ratios short of all of
-    /// them are met, each run of them settled with the mean logarithm
-    /// nought; round an even corner they close in two cycles whose ratios
-    /// are not free, and none is moved.
+    /// logarithms along the curves either side of each, each run of them
+    /// settled with the mean logarithm nought. Those pairs close in one
+    /// cycle round an odd corner and two round an even one; where every
+    /// curve of a cycle is wanted, the ratios wanted have been [closed
+    /// round it](close_cycles), and its last pair follows from the others.
     fn rescale(&mut self, wanted: &[(usize, f64)]) -> bool {
         let n = self.flat.len();
-        if n.is_multiple_of(2) {
-            return false;
-        }
         // Each scale's logarithm against its run's first: a union-find
         // whose links carry the difference.
         let mut parent: Vec<usize> = (0..n).collect();
@@ -1361,7 +1385,7 @@ impl Relation {
             let step = (target / self.weights[i].0).ln();
             let ((rl, ol), (rr, or)) = (root(&parent, &offset, l), root(&parent, &offset, r));
             if rl == rr {
-                return false;
+                continue;
             }
             parent[rr] = rl;
             offset[rr] = ol - step - or;
@@ -1464,6 +1488,211 @@ struct Settled {
     ratio: f64,
     chains: Members,
     lines: Members,
+}
+
+/// A curve of a corner asked the ratio of a settled class: the curve's
+/// place round the corner, the class, whether the chain's ratio is the
+/// class's inverse, and whether the curve's is its chain's.
+#[derive(Debug, Clone, Copy)]
+struct Asked {
+    curve: usize,
+    class: usize,
+    odd: bool,
+    inverse: bool,
+}
+
+/// A combination of the classes' log ratios with integer coefficients,
+/// and a constant.
+type Potential = (BTreeMap<usize, i64>, f64);
+
+/// `a + sign b`.
+fn potential_add(a: &Potential, b: &Potential, sign: i64) -> Potential {
+    let mut out = a.0.clone();
+    for (&f, &x) in &b.0 {
+        *out.entry(f).or_insert(0) += sign * x;
+    }
+    out.retain(|_, x| *x != 0);
+    (out, precise_signed(sign).mul_add(b.1, a.1))
+}
+
+/// Move the log ratios `logs` of the settled classes as little as lets
+/// every corner meet every ratio asked of it; the classes that cannot be
+/// met so.
+///
+/// A corner [rescaled](Relation::rescale) meets the ratios asked of its
+/// curves through the differences of its scales' logarithms, one per
+/// curve between the scales of the curves either side. Those pairs close
+/// in one cycle round an odd corner and two round an even one, and where
+/// every curve of a cycle is asked a ratio, the differences round it sum
+/// to nought: the ratios asked, signed as the cycle meets each curve, sum
+/// to the sum of the curves' own log ratios. Round an odd corner that sum
+/// is nought, as the ratios multiply to one; round an even one it is the
+/// cycle's own. Each such cycle is a linear condition with integer
+/// coefficients on the classes' log ratios, so the ratios are moved to
+/// the nearest that meet them all, by least squares over independent
+/// ones. Conditions that depend on one another are met where all of them
+/// are an odd corner's, their sums all nought; otherwise, or where the
+/// integers outgrow their type, every class in a condition fails.
+fn close_cycles(
+    corners: &[Related],
+    asked: &BTreeMap<usize, Vec<Asked>>,
+    logs: &mut [Option<f64>],
+) -> Vec<bool> {
+    let mut failed = vec![false; logs.len()];
+    // Each cycle's condition: the coefficients, the value they sum to,
+    // and whether it is an even corner's.
+    let mut conditions: Vec<(BTreeMap<usize, i64>, f64, bool)> = Vec::new();
+    for (&k, links) in asked {
+        let Some(relation) = &corners[k].relation else {
+            continue;
+        };
+        let n = relation.flat.len();
+        let even = n.is_multiple_of(2);
+        // Each scale's log against its run's root: a union-find whose
+        // links carry the difference.
+        let mut parent: Vec<usize> = (0..n).collect();
+        let mut offset: Vec<Potential> = vec![(BTreeMap::new(), 0.0); n];
+        let root = |parent: &[usize], offset: &[Potential], mut x: usize| {
+            let mut sum: Potential = (BTreeMap::new(), 0.0);
+            while parent[x] != x {
+                sum = potential_add(&sum, &offset[x], 1);
+                x = parent[x];
+            }
+            (x, sum)
+        };
+        for a in links {
+            let (l, r) = relation.sides[a.curve];
+            // `log a_l − log a_r = ±x − log λ`, `x` the class's log ratio.
+            let sign = if a.odd ^ a.inverse { -1 } else { 1 };
+            let step: Potential = (
+                BTreeMap::from([(a.class, sign)]),
+                -relation.weights[a.curve].0.ln(),
+            );
+            let ((rl, ol), (rr, or)) = (root(&parent, &offset, l), root(&parent, &offset, r));
+            let gap = potential_add(&potential_add(&ol, &step, -1), &or, -1);
+            if rl == rr {
+                // `ol − or − step` is nought: its coefficients against
+                // minus its constant, nought round an odd corner.
+                conditions.push((gap.0, if even { -gap.1 } else { 0.0 }, even));
+            } else {
+                parent[rr] = rl;
+                offset[rr] = gap;
+            }
+        }
+    }
+    if conditions.is_empty() {
+        return failed;
+    }
+    let fail_all = |failed: &mut Vec<bool>| {
+        for (row, _, _) in &conditions {
+            for &f in row.keys() {
+                failed[f] = true;
+            }
+        }
+    };
+    // The independent conditions, by fraction-free elimination over the
+    // integers: each kept row with its pivot column, zero in the pivot
+    // columns of the rows kept before it.
+    let columns = logs.len();
+    let mut kept: Vec<(usize, Vec<i128>)> = Vec::new();
+    let mut independent = Vec::new();
+    let mut dependent = false;
+    for (index, (row, _, _)) in conditions.iter().enumerate() {
+        let mut dense = vec![0i128; columns];
+        for (&f, &c) in row {
+            dense[f] = i128::from(c);
+        }
+        for (pivot, base) in &kept {
+            let x = dense[*pivot];
+            if x == 0 {
+                continue;
+            }
+            let y = base[*pivot];
+            let mut divisor = 0i128;
+            for (d, &b) in dense.iter_mut().zip(base) {
+                let Some(v) = d
+                    .checked_mul(y)
+                    .and_then(|v| v.checked_sub(b.checked_mul(x)?))
+                else {
+                    fail_all(&mut failed);
+                    return failed;
+                };
+                *d = v;
+                divisor = gcd(divisor, v);
+            }
+            if divisor > 1 {
+                for d in &mut dense {
+                    *d /= divisor;
+                }
+            }
+        }
+        match dense.iter().position(|&d| d != 0) {
+            Some(pivot) => {
+                kept.push((pivot, dense));
+                independent.push(index);
+            }
+            None => dependent = true,
+        }
+    }
+    if dependent && conditions.iter().any(|c| c.2) {
+        fail_all(&mut failed);
+        return failed;
+    }
+    // The nearest log ratios meeting the independent conditions `C x = d`:
+    // `x − Cᵀ (C Cᵀ)⁻¹ (C x − d)`.
+    let rows: Vec<&(BTreeMap<usize, i64>, f64, bool)> =
+        independent.iter().map(|&i| &conditions[i]).collect();
+    let value = |f: usize| logs[f].unwrap_or(0.0);
+    let mut gram = Lower::default();
+    for (i, a) in rows.iter().enumerate() {
+        for (j, b) in rows.iter().enumerate().take(i + 1) {
+            let dot: i64 =
+                a.0.iter()
+                    .filter_map(|(f, x)| b.0.get(f).map(|y| x * y))
+                    .sum();
+            gram.add(i, j, precise_signed(dot));
+        }
+    }
+    let residual: Vec<f64> = rows
+        .iter()
+        .map(|(row, d, _)| {
+            row.iter()
+                .map(|(&f, &x)| precise_signed(x) * value(f))
+                .sum::<f64>()
+                - d
+        })
+        .collect();
+    let Some(solved) = solve_spd(rows.len(), &gram, &[residual]) else {
+        fail_all(&mut failed);
+        return failed;
+    };
+    let mut shift: BTreeMap<usize, f64> = BTreeMap::new();
+    for ((row, _, _), y) in rows.iter().zip(&solved[0]) {
+        for (&f, &x) in row {
+            *shift.entry(f).or_insert(0.0) += precise_signed(x) * y;
+        }
+    }
+    for (f, moved) in shift {
+        if let Some(log) = logs[f].as_mut() {
+            *log -= moved;
+        }
+    }
+    failed
+}
+
+/// The greatest common divisor of two integers' magnitudes.
+fn gcd(a: i128, b: i128) -> i128 {
+    let (mut a, mut b) = (a.abs(), b.abs());
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
+/// A small signed count as a float.
+#[allow(clippy::cast_precision_loss, reason = "coefficients far below 2^52")]
+fn precise_signed(n: i64) -> f64 {
+    n as f64
 }
 
 impl Fit<'_> {
@@ -1923,8 +2152,9 @@ impl Fit<'_> {
     ///   ratio rather than their knot spacings', pole by pole as across a
     ///   curve, so their patches are tangent across them though not `C¹`;
     /// - where it meets several corners, it takes the geometric mean of
-    ///   their ratios, and each corner is [rescaled](Relation::rescale) to
-    ///   it, which an odd corner allows for any of its curves short of all.
+    ///   their ratios, moved as little as [closes](close_cycles) every
+    ///   cycle of a corner's scales asked a ratio at each of its curves, and
+    ///   each corner is [rescaled](Relation::rescale) to it.
     ///
     /// Chains and lines that pin one another are settled together, and
     /// where one of them cannot be, all of them are left as before.
@@ -2230,18 +2460,19 @@ impl Fit<'_> {
             });
         }
         // A class pinned by several corners takes the geometric mean of
-        // their ratios, read before any corner is rescaled; each corner is
-        // then rescaled once, to every ratio asked of it.
-        let mut ratios: Vec<Option<f64>> = vec![None; found.len()];
-        let mut wanted: BTreeMap<usize, Vec<(usize, f64, usize)>> = BTreeMap::new();
+        // their ratios, read before any corner is rescaled, moved as little
+        // as [closes](close_cycles) the corners asked a ratio for every
+        // curve of a cycle of their scales; each corner is then rescaled
+        // once, to every ratio asked of it.
+        let mut logs: Vec<Option<f64>> = vec![None; found.len()];
+        let mut asked: BTreeMap<usize, Vec<Asked>> = BTreeMap::new();
         for (f, class) in found.iter().enumerate() {
             let (pins, chain_members) = (&class.pins, &class.chains);
             if pins.len() < 2 {
                 continue;
             }
-            let logs: f64 = pins.iter().map(|p| p.2.ln()).sum();
-            let ratio = (logs / precise(pins.len())).exp();
-            ratios[f] = Some(ratio);
+            let sum: f64 = pins.iter().map(|p| p.2.ln()).sum();
+            logs[f] = Some(sum / precise(pins.len()));
             for &(k, i, _) in pins {
                 let Some((chain, inverse)) = holding.chain[corners[k].curves[i]] else {
                     continue;
@@ -2250,26 +2481,35 @@ impl Fit<'_> {
                     .iter()
                     .find(|m| m.0 == chain)
                     .is_some_and(|m| m.1);
-                // The ratio in the curve's own direction, as the triples
-                // read it.
-                let rho = if odd { 1.0 / ratio } else { ratio };
-                wanted
-                    .entry(k)
-                    .or_default()
-                    .push((i, if inverse { 1.0 / rho } else { rho }, f));
+                asked.entry(k).or_default().push(Asked {
+                    curve: i,
+                    class: f,
+                    odd,
+                    inverse,
+                });
             }
         }
-        let mut failed = vec![false; found.len()];
-        for (k, asked) in wanted {
-            let pairs: Vec<(usize, f64)> =
-                asked.iter().map(|&(i, target, _)| (i, target)).collect();
-            let rescaled = corners[k]
-                .relation
-                .as_mut()
-                .is_some_and(|relation| relation.rescale(&pairs));
+        let mut failed = close_cycles(corners, &asked, &mut logs);
+        let ratios: Vec<Option<f64>> = logs.iter().map(|l| l.map(f64::exp)).collect();
+        for (k, asked) in asked {
+            let mut pairs = Vec::with_capacity(asked.len());
+            for a in &asked {
+                let Some(ratio) = ratios[a.class].filter(|_| !failed[a.class]) else {
+                    continue;
+                };
+                // The ratio in the curve's own direction, as the triples
+                // read it.
+                let rho = if a.odd { 1.0 / ratio } else { ratio };
+                pairs.push((a.curve, if a.inverse { 1.0 / rho } else { rho }));
+            }
+            let rescaled = pairs.len() == asked.len()
+                && corners[k]
+                    .relation
+                    .as_mut()
+                    .is_some_and(|relation| relation.rescale(&pairs));
             if !rescaled {
-                for (_, _, f) in asked {
-                    failed[f] = true;
+                for a in asked {
+                    failed[a.class] = true;
                 }
             }
         }

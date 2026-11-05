@@ -13,6 +13,39 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Patch networks lay out nested T-junctions, and settle the ratios of
+  irregular corners that pin one another all together.** (#653)
+  - A curve of a split side may now itself be crossed by junctions
+    elsewhere: a curve carrying a junction on from the patch beyond it,
+    such as a T whose own split side is split again further on. It was
+    refused. Each side now crosses as many strips as its curves carry
+    between them, the side opposite as many, and each junction's line is
+    held `C¹` as before. Junctions carried round a loop back to their own
+    side are refused.
+  - A corner held by its spans meets the ratios asked of its curves by
+    scaling their first poles; the scales close in one cycle round an odd
+    corner and two round an even one. Where every curve of a cycle was
+    asked a ratio (a ball covered as a cube, each curve between two
+    corners of three), or the corner was even, the curves were left near
+    tangent. Each closed cycle is now one linear condition with integer
+    coefficients on the log ratios, and the ratios are moved to the
+    nearest that meet all of them, by least squares over the independent
+    ones. Dependent conditions are met where all are odd corners', whose
+    sums are nought; otherwise those classes fit as before.
+  - Every other network fits to the same poles as before, bit for bit: 28
+    scenarios digested on both.
+  - Measured along every shared curve at 201 points: the nested layout
+    (six patches on a cylinder band, clean, tolerance 0.001) is tangent
+    to 6.8e-15 rad, each junction line to 6.8e-15 rad, gaps 5.0e-15 mm
+    (refused before). The ball as a cube is tangent to 1.3e-14 rad with
+    σ = 0.02 mm noise (0.16 rad before) and 9.7e-15 rad with σ = 0.005
+    mm, every corner too. A corner of six patches joined to one of three
+    is tangent to 8.7e-15 rad with σ = 0.03 mm (0.12 rad before).
+  - Still near tangent: three-sided patches' points, the clean ball as a
+    cube and clean caps of five or more at tolerance 0.001, and the
+    two-corner cap at σ = 0.005 mm, whose held fits leave points off by
+    their corners.
+
 - **Patch networks hold exactly tangent the corners whose curves end at a
   T-junction or at another irregular corner.** (#653)
   - A curve from a corner held by its spans may now end at a junction.

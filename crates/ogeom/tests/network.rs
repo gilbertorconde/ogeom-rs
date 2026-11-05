@@ -939,6 +939,91 @@ fn a_t_junction_shares_its_poles_and_holds_tangent() {
     assert_sound_shell(&model, &network, 9);
 }
 
+/// The band's sweep in three rows with nested junctions: a patch below
+/// across the whole sweep, its top split at a third of the way along
+/// (curves 1 and 2) by the seam between the two patches of the middle row
+/// (curve 12), and the left of those split again at half its width
+/// (curves 3 and 4) by the seam between two of the three top patches
+/// (curve 15). Curve 1 is a curve of the bottom patch's split side and
+/// carries that second junction down into it, which crosses three strips.
+fn nested_junctions() -> (Vec<CurveDef>, Vec<ChainedPatch>) {
+    let (h1, h2) = (HEIGHT / 3.0, 2.0 * HEIGHT / 3.0);
+    let half = T_AT / 2.0;
+    let curves = vec![
+        band_arc(0.0, 0.0, T_SWEEP),
+        band_arc(h1, 0.0, T_AT),
+        band_arc(h1, T_AT, T_SWEEP),
+        band_arc(h2, 0.0, half),
+        band_arc(h2, half, T_AT),
+        band_arc(h2, T_AT, T_SWEEP),
+        band_arc(HEIGHT, 0.0, half),
+        band_arc(HEIGHT, half, T_AT),
+        band_arc(HEIGHT, T_AT, T_SWEEP),
+        band_seam(0.0, 0.0, h1),
+        band_seam(T_SWEEP, 0.0, h1),
+        band_seam(0.0, h1, h2),
+        band_seam(T_AT, h1, h2),
+        band_seam(T_SWEEP, h1, h2),
+        band_seam(0.0, h2, HEIGHT),
+        band_seam(half, h2, HEIGHT),
+        band_seam(T_AT, h2, HEIGHT),
+        band_seam(T_SWEEP, h2, HEIGHT),
+    ];
+    let patch = |bottom: Vec<(usize, bool)>, right: usize, top: Vec<(usize, bool)>, left: usize| {
+        ChainedPatch::four([bottom, vec![(right, false)], top, vec![(left, true)]])
+    };
+    let patches = vec![
+        patch(vec![(0, false)], 10, vec![(2, true), (1, true)], 9),
+        patch(vec![(1, false)], 12, vec![(4, true), (3, true)], 11),
+        patch(vec![(2, false)], 13, vec![(5, true)], 12),
+        patch(vec![(3, false)], 15, vec![(6, true)], 14),
+        patch(vec![(4, false)], 16, vec![(7, true)], 15),
+        patch(vec![(5, false)], 17, vec![(8, true)], 16),
+    ];
+    (curves, patches)
+}
+
+#[test]
+fn nested_junctions_share_their_poles_and_hold_tangent() {
+    let (curves, patches) = nested_junctions();
+    let cloud = sweep_points(20_000, 23);
+    let (model, network) = fit_chained(&curves, &patches, &cloud, 0);
+    assert_eq!(network.ended, Ended::Met, "{network:?}");
+    let off = widest_off(&network, off_cylinder);
+    assert!(off <= CLEAN_TOLERANCE, "{off} off the cylinder");
+    // Curve 1 crosses two strips, and the bottom patch's side along the
+    // arcs below it three; every curve the same poles in both patches.
+    let mut parts = vec![1; curves.len()];
+    parts[1] = 2;
+    parts[0] = 3;
+    let (angle, gap) = across_chained(&network, &patches, &parts);
+    assert!(angle <= EXACT_ANGLE, "{angle}");
+    assert!(gap <= ROUNDING_GAP, "{gap}");
+    assert!(network.worst_gap <= ROUNDING_GAP, "{}", network.worst_gap);
+    assert!(
+        network.worst_tangent <= EXACT_ANGLE,
+        "{}",
+        network.worst_tangent
+    );
+    assert!(network.corners.is_empty(), "{:?}", network.corners);
+    // The bottom patch takes a knot of multiplicity three at both
+    // junctions, a sixth and a third of the way along, and the middle
+    // left one at the second: each is held smooth across them.
+    let shares = side_shares(&network.surfaces[0], 0);
+    assert_eq!(shares.len(), 4, "{shares:?}");
+    assert!((shares[1] - 1.0 / 6.0).abs() <= 1e-3, "{shares:?}");
+    assert!((shares[2] - 1.0 / 3.0).abs() <= 1e-3, "{shares:?}");
+    for p in [0, 1] {
+        let line = across_junction_line(&network, p);
+        assert!(
+            line <= EXACT_ANGLE,
+            "patch {p} turns {line} across a junction"
+        );
+    }
+    // The border: the arcs below and above and the seams at either end.
+    assert_sound_shell(&model, &network, 10);
+}
+
 #[test]
 fn sides_split_unlike_are_refused() {
     let (curves, patches) = t_junction();
@@ -976,21 +1061,6 @@ fn sides_split_unlike_are_refused() {
         },
     ];
     assert!(refused(&unlike));
-    // A split side's curve crossed by a junction itself: the left top
-    // patch's top split in two over its bottom, curve 2, which is a curve
-    // of the middle patch's split side.
-    let mut nested = patches.clone();
-    nested[2].sides[2] = vec![
-        PatchSide {
-            curve: 4,
-            reversed: true,
-        },
-        PatchSide {
-            curve: 10,
-            reversed: true,
-        },
-    ];
-    assert!(refused(&nested));
 }
 
 #[test]
@@ -1539,8 +1609,11 @@ fn side_shares(surface: &BSplineSurface, k: usize) -> Vec<f64> {
 type ChainedUser = (usize, usize, (f64, f64), bool);
 
 /// As [`across_shared`], over patches whose sides may be chains of
-/// curves: each curve read off either patch over its share of the side.
-fn across_chained(network: &Network, patches: &[ChainedPatch]) -> (f64, f64) {
+/// curves: each curve read off either patch over its share of the side,
+/// `parts` how many of the side's strips each curve crosses where more
+/// than one (nought or missing for one).
+fn across_chained(network: &Network, patches: &[ChainedPatch], parts: &[usize]) -> (f64, f64) {
+    let crosses = |c: usize| parts.get(c).copied().unwrap_or(1).max(1);
     let mut users: Vec<Vec<ChainedUser>> = Vec::new();
     for (p, patch) in patches.iter().enumerate() {
         for (k, side) in patch.sides.iter().enumerate() {
@@ -1549,12 +1622,22 @@ fn across_chained(network: &Network, patches: &[ChainedPatch]) -> (f64, f64) {
             } else {
                 vec![0.0, 1.0]
             };
-            assert_eq!(shares.len(), side.len() + 1, "patch {p} side {k}");
-            for (i, piece) in side.iter().enumerate() {
+            let strips: usize = side.iter().map(|s| crosses(s.curve)).sum();
+            if side.len() > 1 {
+                assert_eq!(shares.len(), strips + 1, "patch {p} side {k}");
+            }
+            let mut at = 0;
+            for piece in side {
                 if users.len() <= piece.curve {
                     users.resize(piece.curve + 1, Vec::new());
                 }
-                users[piece.curve].push((p, k, (shares[i], shares[i + 1]), piece.reversed));
+                let end = if side.len() > 1 {
+                    at + crosses(piece.curve)
+                } else {
+                    1
+                };
+                users[piece.curve].push((p, k, (shares[at], shares[end]), piece.reversed));
+                at = end;
             }
         }
     }
@@ -1626,7 +1709,7 @@ fn a_box_corner_with_its_fillets_one_patch_each_is_held_exactly_tangent() {
             off <= tolerance / 2.0,
             "noise {noise}: {off} off the corner"
         );
-        let (angle, gap) = across_chained(&network, &patches);
+        let (angle, gap) = across_chained(&network, &patches, &[]);
         assert!(angle <= EXACT_ANGLE, "noise {noise}: {angle}");
         assert!(gap <= ROUNDING_GAP, "noise {noise}: {gap}");
         for p in 3..6 {
@@ -1712,4 +1795,178 @@ fn two_corners_joined_by_a_curve_are_held_exactly_tangent() {
         assert!(off_ball(corner.point) <= NOISY_TOLERANCE, "{corner:?}");
     }
     assert_sound_shell(&model, &network, 6);
+}
+
+/// The ball covered as a cube: a patch per face of the cube in `x, y, z`
+/// from −1 to 1, pushed out on to the ball, its curves the great circle
+/// arcs over the cube's edges. Every corner is one of three patches, and
+/// every curve runs between two of them. Each patch's parameters run up
+/// the axes along its face, and each curve up its axis, so no strip turns.
+fn ball_cube() -> (Vec<CurveDef>, Vec<PatchDef>) {
+    // A cube corner's index: a bit per axis, set where it is at +1.
+    let corner = |i: usize| {
+        let at = |bit: usize| if i & (1 << bit) == 0 { -1.0 } else { 1.0 };
+        on_ball(at(0), at(1), at(2))
+    };
+    let mut ends: Vec<(usize, usize)> = Vec::new();
+    let mut curves = Vec::new();
+    let mut patches = Vec::new();
+    for axis in 0..3 {
+        for high in [false, true] {
+            // The face's other two axes, in the order that turns its walk
+            // counter-clockwise seen from outside: `e_b × e_c` is `e_axis`
+            // taken cyclically.
+            let (mut b, mut c) = ((axis + 1) % 3, (axis + 2) % 3);
+            if !high {
+                (b, c) = (c, b);
+            }
+            let base = if high { 1 << axis } else { 0 };
+            let walk = [0, 1 << b, (1 << b) | (1 << c), 1 << c].map(|x| x | base);
+            let mut sides = [(0, false); 4];
+            for (k, side) in sides.iter_mut().enumerate() {
+                let (from, to) = (walk[k], walk[(k + 1) % 4]);
+                let key = (from.min(to), from.max(to));
+                let c = ends.iter().position(|&e| e == key).unwrap_or_else(|| {
+                    ends.push(key);
+                    curves.push(ball_arc(corner(key.0), corner(key.1)));
+                    ends.len() - 1
+                });
+                *side = (c, from > to);
+            }
+            patches.push(PatchDef::four(sides));
+        }
+    }
+    (curves, patches)
+}
+
+/// `count` points over the whole ball, off it radially by noise of
+/// deviation `noise`.
+fn ball_points(count: usize, noise: f64, seed: u64) -> Vec<Point> {
+    let mut draws = Draws(seed);
+    (0..count)
+        .map(|_| {
+            let (a, b, c) = (draws.gaussian(), draws.gaussian(), draws.gaussian());
+            let n = (a * a + b * b + c * c).sqrt();
+            let r = noise.mul_add(draws.gaussian(), BALL);
+            Point::new(r * a / n, r * b / n, r * c / n)
+        })
+        .collect()
+}
+
+#[test]
+fn a_ball_covered_as_a_cube_is_held_exactly_tangent_at_every_corner() {
+    // Every curve is pinned to a ratio at both its ends, and every curve of
+    // every corner is asked one: the corners' scales and the curves'
+    // ratios are settled together.
+    let (curves, patches) = ball_cube();
+    for noise in [NOISE, NOISE / 4.0] {
+        let tolerance = 5.0 * noise;
+        let cloud = ball_points(40_000, noise, 41);
+        let (model, network) = fit(&curves, &patches, &cloud, &options(tolerance, vec![]));
+        assert_eq!(network.ended, Ended::Met, "{network:?}");
+        let off = widest_off(&network, off_ball);
+        assert!(off <= tolerance / 2.0, "{off} off the ball");
+        let (angle, gap) = across_shared(&network, &patches);
+        assert!(angle <= EXACT_ANGLE, "{angle}");
+        assert!(gap <= ROUNDING_GAP, "{gap}");
+        assert!(
+            network.worst_tangent <= EXACT_ANGLE,
+            "{}",
+            network.worst_tangent
+        );
+        assert_eq!(network.corners.len(), 8, "{:?}", network.corners);
+        for corner in &network.corners {
+            assert_eq!(corner.valence, 3);
+            assert!(corner.angle <= EXACT_ANGLE, "{corner:?}");
+            assert!(off_ball(corner.point) <= tolerance, "{corner:?}");
+        }
+        // Closed: every edge used twice.
+        let diagnosis = check(&model, &network.shell, T).unwrap();
+        assert!(diagnosis.problems.is_empty(), "{diagnosis:?}");
+    }
+}
+
+/// A cap with a corner of six patches at its pole, one of its curves
+/// running on to a corner of three between the pole and the rim, at
+/// azimuth nought: curve 0 joins the two, curves 1 and 2 run from the
+/// second corner to the rim at azimuths `±π/6`, and curves 3 to 7 from the
+/// pole to the rim at azimuths `π/3` to `5π/3`.
+fn even_joined_cap() -> (Vec<CurveDef>, Vec<PatchDef>) {
+    let (a, b) = (on_ball(0.0, 0.0, 1.0), on_ball_at(0.5, 0.0));
+    let rim_at = |azimuth: f64| on_ball_at(CAP, azimuth);
+    let sixth = PI / 3.0;
+    let mut curves = vec![
+        ball_arc(a, b),
+        ball_arc(b, rim_at(sixth / 2.0)),
+        ball_arc(b, rim_at(-sixth / 2.0)),
+    ];
+    curves.extend((1..6).map(|j| ball_arc(a, rim_at(sixth * j as f64))));
+    let mut rim = |from: f64, to: f64| {
+        curves.push(ball_arc(rim_at(from), rim_at(to)));
+        curves.len() - 1
+    };
+    let mut patches = vec![
+        PatchDef::four([
+            (0, false),
+            (1, false),
+            (rim(sixth / 2.0, sixth), false),
+            (3, true),
+        ]),
+        PatchDef::four([
+            (0, true),
+            (7, false),
+            (rim(5.0 * sixth, 5.5 * sixth), false),
+            (2, true),
+        ]),
+    ];
+    for j in 1..5 {
+        let from = sixth * j as f64;
+        patches.push(PatchDef::four([
+            (2 + j, false),
+            (rim(from, from + sixth / 2.0), false),
+            (rim(from + sixth / 2.0, from + sixth), false),
+            (3 + j, true),
+        ]));
+    }
+    patches.push(PatchDef::four([
+        (2, false),
+        (rim(-sixth / 2.0, 0.0), false),
+        (rim(0.0, sixth / 2.0), false),
+        (1, true),
+    ]));
+    (curves, patches)
+}
+
+#[test]
+fn an_even_corner_joined_to_an_odd_one_is_held_exactly_tangent() {
+    // A corner of six patches joined by a curve to one of three: the curve
+    // is pinned to a ratio at either end, and the even corner is rescaled
+    // to their mean through the curves of its own cycle of scales. Held by
+    // its spans, an even corner leaves points about 0.09 off at the seed's
+    // parameters on this ball (a cap of six patches 0.097), so the noise is
+    // taken a half wider than elsewhere, the tolerance five deviations.
+    let (curves, patches) = even_joined_cap();
+    let noise = 1.5 * NOISE;
+    let tolerance = 5.0 * noise;
+    let cloud = cap_points(20_000, noise, 29);
+    let (model, network) = fit(&curves, &patches, &cloud, &options(tolerance, vec![]));
+    assert_eq!(network.ended, Ended::Met, "{network:?}");
+    let off = widest_off(&network, off_ball);
+    assert!(off <= tolerance / 2.0, "{off} off the ball");
+    let (angle, gap) = across_shared(&network, &patches);
+    assert!(angle <= EXACT_ANGLE, "{angle}");
+    assert!(gap <= ROUNDING_GAP, "{gap}");
+    assert!(
+        network.worst_tangent <= EXACT_ANGLE,
+        "{}",
+        network.worst_tangent
+    );
+    let mut valences: Vec<usize> = network.corners.iter().map(|c| c.valence).collect();
+    valences.sort_unstable();
+    assert_eq!(valences, [3, 6], "{:?}", network.corners);
+    for corner in &network.corners {
+        assert!(corner.angle <= EXACT_ANGLE, "{corner:?}");
+        assert!(off_ball(corner.point) <= tolerance, "{corner:?}");
+    }
+    assert_sound_shell(&model, &network, 2 * patches.len() - 2);
 }

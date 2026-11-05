@@ -6,7 +6,7 @@ use ogeom_math::{KnotVector, Point2};
 use ogeom_topo::{EdgeData, Location, Model, NodeData, Shape};
 
 use super::topology::{Topology, Touch};
-use super::{ChainedPatch, IrregularCorner, Round, corner_chart, walk_share};
+use super::{ChainedPatch, IrregularCorner, Round, corner_chart, side_parts, walk_share};
 use crate::build::{
     attach_pcurve, make_edge_between, make_face_on, make_shell, make_vertex, make_wire,
 };
@@ -50,11 +50,17 @@ fn on_side(k: usize, f: f64) -> Point2 {
 
 /// The share of side `k`'s walk of patch `p` that its `i`-th curve
 /// covers in `round`.
-fn share(patches: &[ChainedPatch], round: &Round, (p, k): (usize, usize), i: usize) -> (f64, f64) {
+fn share(
+    topo: &Topology,
+    patches: &[ChainedPatch],
+    round: &Round,
+    (p, k): (usize, usize),
+    i: usize,
+) -> (f64, f64) {
     walk_share(
         k,
         i,
-        patches[p].sides[k].len(),
+        &side_parts(topo, patches, (p, k)),
         &round.patch_bounds[p][k % 2],
     )
 }
@@ -62,6 +68,7 @@ fn share(patches: &[ChainedPatch], round: &Round, (p, k): (usize, usize), i: usi
 /// Where curve `c`'s parameter `t` lies on the chart of the patch whose
 /// side `k` it is on.
 fn chart_of(
+    topo: &Topology,
     patches: &[ChainedPatch],
     round: &Round,
     (p, k): (usize, usize),
@@ -70,7 +77,7 @@ fn chart_of(
 ) -> Point2 {
     let side = &patches[p].sides[k];
     let i = side.iter().position(|s| s.curve == c).unwrap_or(0);
-    let (f0, f1) = share(patches, round, (p, k), i);
+    let (f0, f1) = share(topo, patches, round, (p, k), i);
     let (from, to) = (on_side(k, f0), on_side(k, f1));
     let (start, end) = if side[i].reversed {
         (to, from)
@@ -124,7 +131,7 @@ pub(super) fn faces(
                 continue;
             }
             for (i, s) in side.iter().enumerate() {
-                let (f0, f1) = share(patches, round, (p, k), i);
+                let (f0, f1) = share(topo, patches, round, (p, k), i);
                 let (from, to) = (on_side(k, f0), on_side(k, f1));
                 let edge = &edges[s.curve];
                 let (start, end) = if s.reversed { (to, from) } else { (from, to) };
@@ -215,7 +222,7 @@ pub(super) fn measure(
             let on = curve.point_at(t, tol)?;
             let mut normals = Vec::with_capacity(2);
             for &user in &topo.users[c] {
-                let chart = chart_of(patches, round, user, c, t);
+                let chart = chart_of(topo, patches, round, user, c, t);
                 let surface = &round.surfaces[user.0];
                 worst_gap = worst_gap.max(surface.point_at(chart.x, chart.y, tol)?.distance(on));
                 let at_apex = (t <= 0.0 && topo.apex[a]) || (t >= 1.0 && topo.apex[b]);
@@ -249,7 +256,7 @@ pub(super) fn measure(
                     let (u, w) = corner_chart(k);
                     Point2::new(u, w)
                 }
-                Touch::Through(k, j) => on_side(k, share(patches, round, (p, k), j).1),
+                Touch::Through(k, j) => on_side(k, share(topo, patches, round, (p, k), j).1),
             };
             normals.push(round.surfaces[p].normal_at(chart.x, chart.y, tol)?.vector());
         }

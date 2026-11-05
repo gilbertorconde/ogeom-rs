@@ -1914,15 +1914,18 @@ crate = "ogeom-algo"
 verdict = "partial"
 restriction = """Patches are four-sided, or three-sided with one side \
 shrunk to a point. A side may be a chain of curves (a T-junction), but the \
-side opposite must be split alike or be one curve, and a curve of a split \
-side may not itself be crossed by junctions elsewhere. A curve between two \
+side opposite must cross as many strips, split or as one curve; a curve of \
+a split side may itself be crossed by junctions elsewhere (nested \
+junctions), unless the junctions are carried round a loop. A curve between two \
 patches is held exactly tangent where both its ends are on the border, at \
 corners of four patches or at T-junctions; a curve between two junctions \
 whose knot ratios differ is left near tangent. A corner of other than four \
 patches is held exactly tangent only where every curve into it runs on to \
 the border, to a corner of four patches, to a T-junction (the line across \
 the patch through the junction then held tangent at the corner's ratio, \
-not `C¹`) or to another such corner (both of an odd number of patches), \
+not `C¹`) or to other such corners (an even corner, or a corner whose \
+curves all end at others, as on a ball covered as a cube, settled with the \
+rest where the ratios asked round every cycle of its scales close), \
 and the fit with it meets the tolerance (bicubic patches allow one ratio \
 along each curve, which the points at their seed's parameters need not \
 admit: a clean cap of five or more patches at tolerance 0.001 is not \

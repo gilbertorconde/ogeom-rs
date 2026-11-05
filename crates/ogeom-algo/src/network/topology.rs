@@ -174,17 +174,19 @@ fn side_ends(side: &[PatchSide]) -> Option<(usize, usize)> {
 }
 
 /// How many strips each direction of patch `p` crosses, given each curve's:
-/// the curves of a split side, or the strips of the whole curve opposite.
+/// those its side's curves cross, the most of its two sides'.
 fn crossed(patch: &ChainedPatch, dir: usize, parts: &[usize]) -> usize {
     [dir, dir + 2]
         .iter()
-        .map(|&k| match patch.sides[k].as_slice() {
-            [] => 1,
-            [one] => parts[one.curve],
-            many => many.len(),
-        })
+        .map(|&k| side_parts(&patch.sides[k], parts))
         .max()
         .unwrap_or(1)
+}
+
+/// How many strips a side crosses: those of its curves, one where it is
+/// missing.
+fn side_parts(side: &[PatchSide], parts: &[usize]) -> usize {
+    side.iter().map(|s| parts[s.curve]).sum::<usize>().max(1)
 }
 
 impl Topology {
@@ -328,11 +330,26 @@ impl Topology {
             corner_vertex.push(corners);
         }
 
-        // How many strips each curve crosses: one, or as many as the curves
-        // of the side split at junctions opposite it, carried on from patch
-        // to patch through the curves they share.
+        // How many strips each curve crosses: one, or as many as the side
+        // opposite it crosses, carried on from patch to patch through the
+        // curves they share. Each strip a curve crosses past its first
+        // begins on a line from a junction between the curves of a split
+        // side; a curve crossing more than there are such junctions meets
+        // one line twice, which the junctions carry round a loop.
+        let windows: usize = patches
+            .iter()
+            .flat_map(|patch| patch.sides.iter())
+            .map(|side| side.len().saturating_sub(1))
+            .sum();
         let mut parts = vec![1usize; curves];
         loop {
+            if let Some(c) = parts.iter().position(|&n| n > windows + 1) {
+                ogeom_bail!(
+                    Construction,
+                    "curve {c} is crossed by more junction lines than there are junctions; \
+                     the split sides carry their junctions round a loop"
+                );
+            }
             let mut changed = false;
             for patch in patches {
                 for dir in 0..2 {
@@ -356,23 +373,13 @@ impl Topology {
                 let m = crossed(patch, dir, &parts);
                 for k in [dir, dir + 2] {
                     let side = &patch.sides[k];
-                    if side.len() > 1 && side.len() != m {
+                    let own = side_parts(side, &parts);
+                    if side.len() > 1 && own != m {
                         ogeom_bail!(
                             Construction,
-                            "patch {p}'s side {k} is split into {} curves and the side \
-                             opposite into {m}; opposite sides split at junctions are split \
-                             alike",
-                            side.len()
-                        );
-                    }
-                    if side.len() > 1
-                        && let Some(piece) = side.iter().find(|s| parts[s.curve] > 1)
-                    {
-                        ogeom_bail!(
-                            Construction,
-                            "curve {} is one of the curves of patch {p}'s split side {k}, \
-                             and is itself crossed by junctions elsewhere",
-                            piece.curve
+                            "patch {p}'s side {k} is split into curves crossing {own} strips \
+                             and the side opposite into {m}; opposite sides split at \
+                             junctions cross as many strips"
                         );
                     }
                 }
@@ -411,28 +418,22 @@ impl Topology {
                     // Sides 0 and 1 walk with their direction, 2 and 3
                     // against it.
                     let along = |w: usize| if k < 2 { w } else { m - 1 - w };
-                    match patch.sides[k].as_slice() {
-                        [] => {}
-                        // A curve runs against the patch's direction where
-                        // it runs against a walk that runs against it.
-                        [one] => {
-                            for w in 0..m {
-                                let part = if one.reversed { m - 1 - w } else { w };
-                                let (a, b) =
-                                    (segment(p, dir, along(w)), part_base[one.curve] + part);
-                                if !strips.join(a, b, (k >= 2) != one.reversed) {
-                                    turned.push(a);
-                                }
+                    // Each curve crosses as many strips as it has parts,
+                    // from where the curves before it along the side end; a
+                    // curve runs against the patch's direction where it runs
+                    // against a walk that runs against it.
+                    let mut w = 0;
+                    for piece in &patch.sides[k] {
+                        let n = parts[piece.curve];
+                        for x in 0..n {
+                            let part = if piece.reversed { n - 1 - x } else { x };
+                            let (a, b) =
+                                (segment(p, dir, along(w + x)), part_base[piece.curve] + part);
+                            if !strips.join(a, b, (k >= 2) != piece.reversed) {
+                                turned.push(a);
                             }
                         }
-                        many => {
-                            for (w, piece) in many.iter().enumerate() {
-                                let (a, b) = (segment(p, dir, along(w)), part_base[piece.curve]);
-                                if !strips.join(a, b, (k >= 2) != piece.reversed) {
-                                    turned.push(a);
-                                }
-                            }
-                        }
+                        w += n;
                     }
                 }
             }
