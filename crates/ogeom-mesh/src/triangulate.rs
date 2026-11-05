@@ -1298,6 +1298,13 @@ fn orient_pieces(mesh: &mut Triangulation, pieces: &[(usize, usize)]) {
                     key(&mesh.positions[a as usize]),
                     key(&mesh.positions[b as usize]),
                 );
+                // A side whose corners lie on one point (a triangle closing
+                // at an apex, or a fan ruled onto a seam that shrinks to a
+                // point) is walked no way at all, and says nothing of
+                // which way its pieces turn.
+                if ka == kb {
+                    continue;
+                }
                 // One undirected key, direction recorded: `true` where this
                 // piece walks the smaller key first.
                 let (lo, hi, forward) = if ka <= kb {
@@ -5594,6 +5601,37 @@ pub fn polyline_of_edge(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// Two pieces wound alike about +z share one side, walked once each
+    /// way, and each closes a triangle at the same two points, a side of
+    /// which runs from a point to itself. Those sides are walked no way, so
+    /// they cast no vote, and neither piece is flipped.
+    #[test]
+    fn a_side_from_a_point_to_itself_turns_no_piece() {
+        let (far, farther) = (Point::new(5.0, 5.0, 5.0), Point::new(6.0, 5.0, 5.0));
+        let mut mesh = Triangulation::new();
+        mesh.positions = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(1.0, 0.0, 0.0),
+            Point::new(0.0, 1.0, 0.0),
+            Point::new(1.0, 1.0, 0.0),
+            far,
+            far,
+            farther,
+            farther,
+            far,
+            far,
+            farther,
+            farther,
+        ];
+        mesh.normals = vec![Vector::new(0.0, 0.0, 1.0); mesh.positions.len()];
+        let first = [[0, 1, 2], [0, 4, 5], [0, 6, 7]];
+        let second = [[1, 3, 2], [3, 8, 9], [3, 10, 11]];
+        mesh.triangles = first.iter().chain(&second).copied().collect();
+        let before = mesh.triangles.clone();
+        orient_pieces(&mut mesh, &[(0, 3), (3, 6)]);
+        assert_eq!(mesh.triangles, before);
+    }
 
     /// A ring wrapping a closed chart once, read a whole turn low: the
     /// extent a patch's full band reads before it is slid, on a chart of

@@ -295,18 +295,6 @@ edge's own vertex and can cross the hole. No measured part builds one.
 
 ### Construction and exchange
 
-**The converter widens its distance for one fit.** The default coplanar
-distance doubles, twice at most, when any one recognized fit presses
-against it, as a fit that runs on tangentially into its neighbours does:
-`nist_ftc_10` widens once and `nist_ctc_05` twice, each for one or two
-fits. Regions do not depend on how the mesh lists its triangles, so
-neither does the widening, but a wider distance lets facets of surfaces
-nothing recognizes merge into planes: `nist_ftc_07` widened twice comes
-back on 319 faces with its volume 6e-5 off, against 583 and 3e-7 at the
-default. Exporter scatter is everywhere and a run-on is local, so the
-distance should widen only where many fits press, or for the pressing
-region alone.
-
 **STEP pcurves the file cannot state exactly.** The reader keeps a file's
 pcurve where its lifted gap is within twice the projection's, restated in
 this kernel's units (the file's length and plane angle units, applied to

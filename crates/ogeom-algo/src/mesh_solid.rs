@@ -69,7 +69,7 @@ use checks::{
 };
 use planner::{NOISE_FLOOR, Planner, Replan};
 use regions::{flat_noise, split_disconnected};
-use segment::{coplanar_groups, found_within, one_each, plane_of, segment};
+use segment::{coplanar_groups, one_each, plane_of, segment, widen_where_pressed};
 use weld::{
     Adjacency, Piece, by_position, diagonal, has_area, inside, lowest_first, orient, unfold,
     weld_points,
@@ -615,9 +615,10 @@ fn find_in(
     let diagonal = diagonal(&points);
     let noise = flat_noise(&points, &triangles, &adjacency);
     let quantum = options.quantum.unwrap_or(0.0);
+    let scatter = (2.0 * quantum).max(1.5 * noise);
     let mut flat = options
         .coplanar_distance
-        .unwrap_or_else(|| (1e-6 * diagonal).max(2.0 * quantum).max(1.5 * noise))
+        .unwrap_or_else(|| (1e-6 * diagonal).max(scatter))
         .max(weld);
     // A distance asked below what the mesh's own scatter allows cannot be
     // met: no surface fitted to the vertices holds them closer, regions
@@ -665,33 +666,50 @@ fn find_in(
     // surfaces than that. The recognized surfaces say so: where their fits
     // press against the distance, it is the distance that stops them, and
     // their rims' last triangles stay facets. Unless the caller chose the
-    // distance, it widens while that holds, twice at most. A wider distance
-    // also lets a fit spread over triangles of other surfaces, so each
-    // curved region found at it keeps the regions the default found among
-    // its triangles, which the build puts back where it cannot place the
-    // wider one.
+    // distance, it widens while that holds, twice at most. Where the mesh's
+    // own scatter (its noise or its rounding) set the distance, that
+    // scatter is everywhere, and so is the widening. Otherwise it widens for
+    // the smooth patches the pressing fits lie in alone: a fit that runs on
+    // tangentially into its neighbours does so within its patch, and
+    // elsewhere a wider distance only lets fits spread over facets of other
+    // surfaces and merges facets of surfaces nothing recognizes into planes.
+    // Each curved region found wider keeps the regions the default found
+    // among its triangles, which the build puts back where it cannot place
+    // the wider one.
     let found_at = flat;
     let mut first = None;
     if options.coplanar_distance.is_none() && options.recognize {
-        first = Some(Box::new(groups.clone()));
+        let narrow = groups.clone();
+        let everywhere = scatter > 1e-6 * diagonal;
         for _ in 0..2 {
-            let pressed = groups
+            let pressing: Vec<usize> = groups
                 .carriers
                 .iter()
-                .filter_map(|c| match c {
-                    Carrier::Curved(curved) => Some(curved.fitted),
+                .enumerate()
+                .filter_map(|(g, c)| match c {
+                    Carrier::Curved(curved) if curved.fitted > flat * PRESSED => Some(g),
                     _ => None,
                 })
-                .fold(0.0_f64, f64::max);
-            if pressed <= flat * PRESSED {
+                .collect();
+            if pressing.is_empty() {
                 break;
             }
             flat *= 2.0;
-            groups = segment(&points, &triangles, &adjacency, options, flat, tol)?;
+            let wide = segment(&points, &triangles, &adjacency, options, flat, tol)?;
+            widen_where_pressed(
+                &points,
+                &triangles,
+                &adjacency,
+                options,
+                &mut groups,
+                &wide,
+                &narrow,
+                if everywhere { None } else { Some(&pressing) },
+                flat,
+            );
         }
-        match &first {
-            Some(narrow) if flat > found_at => found_within(&mut groups, narrow, flat),
-            _ => first = None,
+        if flat > found_at {
+            first = Some(Box::new(narrow));
         }
     }
     Ok(Found {
