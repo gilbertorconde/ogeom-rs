@@ -1909,7 +1909,7 @@ tests = [
 
 [[capability]]
 id = "algo.patch-network"
-title = "A network of B-spline patches fitted to a scan in one sparse least-squares system: shared curves one set of poles, curves that are not creases held tangent pole by pole, sides that may be chains of curves meeting at T-junctions, corners of three and five patches held tangent where the tolerance allows, spans raised per strip where a patch misses, optional parameter correction, built into a shell of faces sharing their edges"
+title = "A network of B-spline patches fitted to a scan in one sparse least-squares system: shared curves one set of poles, curves that are not creases held tangent pole by pole, sides that may be chains of curves meeting at T-junctions, corners of other than four patches held tangent where the tolerance allows, spans raised per strip where a patch misses, optional parameter correction, built into a shell of faces sharing their edges"
 crate = "ogeom-algo"
 verdict = "partial"
 restriction = """Patches are four-sided, or three-sided with one side \
@@ -1918,14 +1918,15 @@ side opposite must be split alike or be one curve, and a curve of a split \
 side may not itself be crossed by junctions elsewhere. A curve between two \
 patches is held exactly tangent where both its ends are on the border, at \
 corners of four patches or at T-junctions; a curve between two junctions \
-whose knot ratios differ is left near tangent. A corner of three or five \
+whose knot ratios differ is left near tangent. A corner of other than four \
 patches is held exactly tangent only where every curve into it runs on to \
-the border and the fit with it meets the tolerance (bicubic patches allow \
-one ratio along each curve, which the points at their seed's parameters \
-need not admit: the clean rounded octant misses by 0.00107 at tolerance \
-0.001); otherwise, and at even corners, a three-sided patch's point, or a \
-curve running on to a corner of four or a junction, the curves are fitted \
-near tangent from the points, their angle measured into `worst_tangent` \
+the border or to a corner of four patches that is not a junction, and the \
+fit with it meets the tolerance (bicubic patches allow one ratio along \
+each curve, which the points at their seed's parameters need not admit: a \
+clean cap of five or more patches at tolerance 0.001 is not held); \
+otherwise, and at a three-sided patch's point or a corner whose curves end \
+at a junction or another such corner, the curves are fitted near tangent \
+from the points, their angle measured into `worst_tangent` \
 and the corner's angle reported. Parameter correction runs only after \
 refinement, at the final spans, and only through `fit_network_chained`; \
 the points are those of the region the network covers."""

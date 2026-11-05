@@ -90,6 +90,39 @@ bump may break the API and a patch bump may not.
     whose seam lies inside the run: the untrimmed round matches the
     closed form to 4e-7, as with the seam behind the drum.
 
+- **Patch networks hold more of their irregular corners exactly tangent:
+  corners whose curves run on to corners of four patches (a rounded box
+  corner with its edges' fillets attached), even corners of six or more
+  patches, and the clean rounded octant that missed by 0.00107.** (#653)
+  - A corner can now be held by its spans. The knot past each curve's
+    span next to the corner is doubled and that span is a quadratic. In
+    `D₁ + λ D₂ + γ T = 0`, `γ` is a quadratic over the span with a double
+    root at its far end and nought past it. Two rows per curve hold the
+    span; past it the curve is held by the pole triples at the corner's
+    ratio, so it can run on to a corner of four patches and chain through
+    it. Spans raised there shrink the quadratic span.
+  - Holding a corner whole (`γ` linear along each whole curve) binds each
+    curve into it to a single cubic, which is why the clean octant missed
+    at any spans.
+  - The ratios round a corner multiply to one, so the twist cycle at an
+    even corner is always singular. Holding the corner by its spans leaves
+    that cycle's one condition on the poles of those spans, which the fit
+    settles.
+  - Each way of holding the corners is refined in turn: whole first where
+    spans would hold no more corners, then by spans, then near tangent as
+    before. A network every way misses is fitted to the same poles as
+    before, bit for bit.
+  - Still near tangent: three-sided patches' points, corners whose curves
+    end at a junction or another irregular corner, and corners no way of
+    holding fits within the tolerance (a clean cap of five or more
+    patches at 0.001).
+  - Measured, against the true shapes, along every shared curve at 201
+    points: the octant at tolerance 0.001 now comes within 0.00055 mm and
+    is tangent to 1.6e-14 rad (0.0045 rad before). The filleted corner
+    with σ = 0.02 mm noise is tangent to 3.3e-15 rad (0.42 rad before),
+    and to 5.3e-15 rad with σ = 0.005 mm. A cap of six patches is tangent
+    to 4.0e-15 rad (0.035 rad before). Gaps stay at 2.5e-15 mm.
+
 ### Changed
 
 - **`Simplified` gains `result_vertex`, and `Editable::source_vertex`
