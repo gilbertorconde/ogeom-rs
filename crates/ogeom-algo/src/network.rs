@@ -38,16 +38,22 @@
 //!   quadratic, and `γ` is a quadratic over it with a double root at its
 //!   far end and nought past it. Past that span the curve is held by the
 //!   pole triples at its corner's ratio, so its far end may be on the
-//!   border or a corner of four patches (an edge's fillet attached to a
-//!   rounded box corner), and spans raised there shrink the quadratic span.
-//!   So a corner of three patches or more, other than four, whose curves
-//!   each run on to the border or a corner of four patches is held, every
-//!   curve into it tangent to rounding, as long as the fit still comes
-//!   within the tolerance: the one ratio along each curve these conditions
-//!   allow is a restriction the points at their seed's parameters need not
+//!   border, a corner of four patches (an edge's fillet attached to a
+//!   rounded box corner) or a junction, and spans raised there shrink the
+//!   quadratic span. A junction pins the curve to its patch's knot
+//!   spacings; the line through the junction is then held at the corner's
+//!   ratio instead, tangent but not `C¹`. A curve may also run on to
+//!   another corner held by its spans, which pins it to a second ratio:
+//!   the first poles round an odd corner may be scaled to give any of its
+//!   curves short of all any ratio, so both corners are scaled to the
+//!   geometric mean of the two. So a corner of three patches or more,
+//!   other than four, whose curves each run on to the border, a corner of
+//!   four patches, a junction or another such corner is held, every curve
+//!   into it tangent to rounding, as long as the fit still comes within
+//!   the tolerance: the one ratio along each curve these conditions allow
+//!   is a restriction the points at their seed's parameters need not
 //!   admit. Where no way of holding it does, and at any other corner of
-//!   other than four patches (an apex, a junction, or a corner whose curves
-//!   run on to another such corner or to a junction), a curve with such a
+//!   other than four patches (an apex, or a junction), a curve with such a
 //!   corner at an end is fitted without the triples: near tangent as the
 //!   points are smooth, its angle measured into [`Network::worst_tangent`].
 //!   Every such corner's widest angle between the patches' normals is
@@ -59,10 +65,12 @@
 //!   exactly, and the side opposite crosses the same junction: it is
 //!   split alike, or is one curve whose knots carry the junction too. The
 //!   patch is held `C¹` across the parameter line between the two, pole by
-//!   pole, at the ratio of the knot spacings either side. That line runs
-//!   straight on from the curve ending at the junction, so that curve is
-//!   held tangent at that same ratio, and the chain's curves either side
-//!   of the junction share theirs, as at a corner of four patches.
+//!   pole, at the ratio of the knot spacings either side, or tangent at a
+//!   corner's ratio where a curve from a corner held by its spans ends
+//!   there. That line runs straight on from the curve ending at the
+//!   junction, so that curve is held tangent at that same ratio, and the
+//!   chain's curves either side of the junction share theirs, as at a
+//!   corner of four patches.
 //! - **spans are raised per strip.** The curves opposite each other in a
 //!   patch share knots, and so do all the curves of a strip of patches
 //!   joined through their opposite sides. Where a patch misses the points
@@ -1232,7 +1240,7 @@ enum Corners {
     /// four, held by the span of each curve next to them: that span a
     /// quadratic, `γ` quadratic over it and nought past it, so that past it
     /// the curve is held by the pole triples and may run on to a corner of
-    /// four patches.
+    /// four patches, a junction or another such corner.
     Spans,
 }
 
@@ -1291,9 +1299,99 @@ struct Relation {
     order: Vec<usize>,
     /// Each curve's `λ` and `g` there.
     weights: Vec<(f64, f64)>,
+    /// Each curve's first pole off the corner, in the plane the relation
+    /// is read in.
+    flat: Vec<(f64, f64)>,
+    /// The curves either side of each: the one whose first pole lies in
+    /// its first patch, and the one in its second.
+    sides: Vec<(usize, usize)>,
+}
+
+/// Each curve's `λ` and `g` at a corner, `e₁ + λ e₂ + g e = 0` among its
+/// own first pole `e` and those of the curves either side in the plane;
+/// `None` where a ratio is not positive.
+fn plane_weights(flat: &[(f64, f64)], sides: &[(usize, usize)]) -> Option<Vec<(f64, f64)>> {
+    let mut weights = Vec::with_capacity(flat.len());
+    for (i, &(l, r)) in sides.iter().enumerate() {
+        let ((lx, ly), (ox, oy), (rx, ry)) = (flat[l], flat[i], flat[r]);
+        let det = rx.mul_add(oy, -(ry * ox));
+        let lambda = (ly.mul_add(ox, -(lx * oy))) / det;
+        let g = (lx.mul_add(ry, -(ly * rx))) / det;
+        if !(lambda > 0.0 && lambda.is_finite() && g.is_finite()) {
+            return None;
+        }
+        weights.push((lambda, g));
+    }
+    Some(weights)
 }
 
 impl Relation {
+    /// Scale the curves' first poles so each curve of `wanted` takes its
+    /// ratio there, then hold it to that ratio to the bit; false, the
+    /// relation untouched, where they cannot all be met.
+    ///
+    /// Scaling the first pole of the curve on a curve's first side by `a`
+    /// and that on its second by `b` scales its `λ` by `a / b`, and its own
+    /// leaves `λ` alone: the ratios wanted are differences of the scales'
+    /// logarithms along the curves either side of each. Round an odd
+    /// corner those pairs close in one cycle, so any ratios short of all of
+    /// them are met, each run of them settled with the mean logarithm
+    /// nought; round an even corner they close in two cycles whose ratios
+    /// are not free, and none is moved.
+    fn rescale(&mut self, wanted: &[(usize, f64)]) -> bool {
+        let n = self.flat.len();
+        if n.is_multiple_of(2) {
+            return false;
+        }
+        // Each scale's logarithm against its run's first: a union-find
+        // whose links carry the difference.
+        let mut parent: Vec<usize> = (0..n).collect();
+        let mut offset = vec![0.0; n];
+        let root = |parent: &[usize], offset: &[f64], mut x: usize| {
+            let mut sum = 0.0;
+            while parent[x] != x {
+                sum += offset[x];
+                x = parent[x];
+            }
+            (x, sum)
+        };
+        for &(i, target) in wanted {
+            let (l, r) = self.sides[i];
+            // `log a_l − log a_r = log(target / λ)`.
+            let step = (target / self.weights[i].0).ln();
+            let ((rl, ol), (rr, or)) = (root(&parent, &offset, l), root(&parent, &offset, r));
+            if rl == rr {
+                return false;
+            }
+            parent[rr] = rl;
+            offset[rr] = ol - step - or;
+        }
+        let logs: Vec<(usize, f64)> = (0..n).map(|x| root(&parent, &offset, x)).collect();
+        let mut means = vec![(0.0, 0usize); n];
+        for &(r, log) in &logs {
+            means[r].0 += log;
+            means[r].1 += 1;
+        }
+        let flat: Vec<(f64, f64)> = self
+            .flat
+            .iter()
+            .zip(&logs)
+            .map(|(&(x, y), &(r, log))| {
+                let scale = (log - means[r].0 / precise(means[r].1)).exp();
+                (x * scale, y * scale)
+            })
+            .collect();
+        let Some(mut weights) = plane_weights(&flat, &self.sides) else {
+            return false;
+        };
+        for &(i, target) in wanted {
+            weights[i].0 = target;
+        }
+        self.flat = flat;
+        self.weights = weights;
+        true
+    }
+
     /// The rows holding the relation: `n − 2` consecutive curves' own, the
     /// other two following from them.
     fn rows(&self) -> Vec<Vec<(usize, f64)>> {
@@ -1323,6 +1421,50 @@ struct Related {
 /// A constraint row keyed by its slots: the middle one, then the other two
 /// in order.
 type Keyed = BTreeMap<(usize, usize, usize), Vec<(usize, f64)>>;
+
+/// The parameter lines through the junctions: each a patch's rows across
+/// one junction, joined with the rows of the patches beyond the curves
+/// that carry the junction on.
+struct Lines {
+    /// Each junction row's line, and whether the row as kept runs against
+    /// the line's direction.
+    of: BTreeMap<(usize, usize, usize), (usize, bool)>,
+    /// The number of lines.
+    count: usize,
+    /// The lines met both ways, which hold their patches' own ratio alone.
+    torn: Vec<bool>,
+}
+
+/// What the tangency rows come to: the rows, which chains are left untied,
+/// and the junction rows held at a ratio of their own in place of their
+/// patches' knot spacings.
+struct Tangency {
+    rows: Vec<Row>,
+    untied: Vec<bool>,
+    relaxed: Keyed,
+}
+
+/// The members of a class of chains or of junction lines, each with
+/// whether its ratio is the inverse of the class's root's.
+type Members = Vec<(usize, bool)>;
+
+/// A class of chains and junction lines that corners pin: each corner's
+/// pin (the corner, its curve, and the ratio it pins the root to), and its
+/// members.
+struct Pinned {
+    pins: Vec<(usize, usize, f64)>,
+    chains: Members,
+    lines: Members,
+}
+
+/// A class of chains and junction lines a corner settles on one ratio:
+/// the ratio of the class's root, and each chain and line with whether its
+/// own is the inverse.
+struct Settled {
+    ratio: f64,
+    chains: Members,
+    lines: Members,
+}
 
 impl Fit<'_> {
     /// Fit from [`NetworkOptions::spans`] per strip, raising them while
@@ -1408,7 +1550,7 @@ impl Fit<'_> {
 
         // Without the tangency, for the ratios across each curve; the
         // patches held smooth across their junctions all the same.
-        let junctions = self.junction_rows(&layout, spans);
+        let (junctions, lines) = self.junction_rows(&layout, spans);
         let loose_basis = if junctions.is_empty() {
             Basis::identity(layout.slots)
         } else {
@@ -1418,17 +1560,27 @@ impl Fit<'_> {
             )
         };
         let loose = self.solve(&layout, &locals, &loose_basis)?;
-        let mut rows: Vec<Vec<(usize, f64)>> = junctions.values().cloned().collect();
+        let junction_rows = |relaxed: &Keyed| -> Vec<Row> {
+            junctions
+                .iter()
+                .map(|(key, row)| relaxed.get(key).unwrap_or(row).clone())
+                .collect()
+        };
+        let mut rows: Vec<Row>;
         match self.corners {
             Corners::Loose => {
-                rows.extend(self.tangency(&layout, &loose, &junctions, &[])?.0);
+                let held = self.tangency(&layout, &loose, &junctions, &lines, &mut [])?;
+                rows = junction_rows(&held.relaxed);
+                rows.extend(held.rows);
             }
             Corners::Whole => {
-                rows.extend(self.tangency(&layout, &loose, &junctions, &[])?.0);
+                let held = self.tangency(&layout, &loose, &junctions, &lines, &mut [])?;
+                rows = junction_rows(&held.relaxed);
+                rows.extend(held.rows);
                 rows.extend(self.corner_rows(&layout, &loose, &curve_knots));
             }
             Corners::Spans => {
-                let related: Vec<Related> = self
+                let mut related: Vec<Related> = self
                     .topo
                     .span_corners
                     .iter()
@@ -1438,8 +1590,10 @@ impl Fit<'_> {
                         relation: self.relate(&layout, &loose, *v, curves),
                     })
                     .collect();
-                let (triples, untied) = self.tangency(&layout, &loose, &junctions, &related)?;
-                rows.extend(triples);
+                let held = self.tangency(&layout, &loose, &junctions, &lines, &mut related)?;
+                rows = junction_rows(&held.relaxed);
+                rows.extend(held.rows);
+                let untied = held.untied;
                 let holding = &self.topo.spanned;
                 for corner in &related {
                     let Some(relation) = &corner.relation else {
@@ -1532,10 +1686,17 @@ impl Fit<'_> {
     /// carrying the junction between them) is kept once: the spacings are
     /// each strip's weight over its spans, the same numbers from either
     /// patch.
-    fn junction_rows(&self, layout: &Layout, spans: &[usize]) -> Keyed {
+    ///
+    /// Also the lines the rows lie on: a patch's rows across one junction
+    /// are one line, and lines sharing a row are one.
+    fn junction_rows(&self, layout: &Layout, spans: &[usize]) -> (Keyed, Lines) {
         let topo = self.topo;
         let spacing = |s: usize| self.weights[s] / precise(spans[s]);
         let mut rows = Keyed::new();
+        // Each row's first patch line and the pole before its middle there.
+        let mut owner: BTreeMap<(usize, usize, usize), (usize, usize)> = BTreeMap::new();
+        let mut joined = Vec::new();
+        let mut patch_lines = 0;
         for p in 0..self.patches.len() {
             let (nu, nv) = layout.dims(p);
             for (dir, strips) in topo.patch_strips[p].iter().enumerate() {
@@ -1544,6 +1705,8 @@ impl Fit<'_> {
                 for pair in strips.windows(2) {
                     at += layout.controls[pair[0]] - 1;
                     let (h1, h2) = (spacing(pair[0]), spacing(pair[1]));
+                    let line = patch_lines;
+                    patch_lines += 1;
                     for j in 0..across {
                         let slot = |i: usize| {
                             let pole = if dir == 0 { (i, j) } else { (j, i) };
@@ -1555,13 +1718,43 @@ impl Fit<'_> {
                         if mid == before || mid == after || before == after {
                             continue;
                         }
-                        rows.entry((mid, before.min(after), before.max(after)))
+                        let key = (mid, before.min(after), before.max(after));
+                        match owner.get(&key) {
+                            Some(&(first, first_before)) => {
+                                joined.push((first, line, first_before != before));
+                            }
+                            None => {
+                                owner.insert(key, (line, before));
+                            }
+                        }
+                        rows.entry(key)
                             .or_insert_with(|| vec![(mid, h1 + h2), (before, -h2), (after, -h1)]);
                     }
                 }
             }
         }
-        rows
+        let mut classes = topology::Classes::new(patch_lines);
+        let mut torn_lines = Vec::new();
+        for (a, b, odd) in joined {
+            if !classes.join(a, b, odd) {
+                torn_lines.push(a);
+            }
+        }
+        let (named, count) = classes.numbered(0..patch_lines);
+        let mut torn = vec![false; count];
+        for line in torn_lines {
+            if let Some(id) = named[line] {
+                torn[id] = true;
+            }
+        }
+        let of = owner
+            .into_iter()
+            .map(|(key, (line, _))| {
+                let flip = classes.find(line).1;
+                (key, (named[line].unwrap_or(0), flip))
+            })
+            .collect();
+        (rows, Lines { of, count, torn })
     }
 
     /// Patch `p`'s normal equations over its own net.
@@ -1714,8 +1907,8 @@ impl Fit<'_> {
     /// The tangency rows: for each pole of each curve held tangent, the
     /// pole and the poles one row into either patch on one line,
     /// `(1 + λ) B − L − λ R = 0`, `L` in the curve's first patch, `λ` its
-    /// chain's ratio of pole spacings in the fit `loose`; and which chains
-    /// are left untied.
+    /// chain's ratio of pole spacings in the fit `loose`; which chains are
+    /// left untied; and the junction rows held at a ratio of their own.
     ///
     /// A triple that is one of the `junctions` rows (a curve ending at a
     /// T-junction, the line on through it the patch's own) is held by that
@@ -1723,19 +1916,35 @@ impl Fit<'_> {
     /// `corners` pins its chain's ratio to its own `λ` there, and its two
     /// poles nearest the corner are held by the corner's rows instead; a
     /// corner without a relation unties its curves' chains. A chain pinned
-    /// to two ratios is left untied, its curves near tangent.
+    /// to two ratios is left untied, its curves near tangent, but where a
+    /// corner pins it:
+    ///
+    /// - the lines through the junctions it meets are held at the corner's
+    ///   ratio rather than their knot spacings', pole by pole as across a
+    ///   curve, so their patches are tangent across them though not `C¹`;
+    /// - where it meets several corners, it takes the geometric mean of
+    ///   their ratios, and each corner is [rescaled](Relation::rescale) to
+    ///   it, which an odd corner allows for any of its curves short of all.
+    ///
+    /// Chains and lines that pin one another are settled together, and
+    /// where one of them cannot be, all of them are left as before.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the pins, then the chains they settle"
+    )]
     fn tangency(
         &self,
         layout: &Layout,
         loose: &[Point],
         junctions: &Keyed,
-        corners: &[Related],
-    ) -> OgeomResult<(Vec<Row>, Vec<bool>)> {
+        lines: &Lines,
+        corners: &mut [Related],
+    ) -> OgeomResult<Tangency> {
         let topo = self.topo;
         let holding = self.holding();
         // The poles of each curve the corners hold.
         let mut skipped: Vec<[bool; 2]> = vec![[false; 2]; topo.users.len()];
-        for corner in corners {
+        for corner in corners.iter() {
             for &c in &corner.curves {
                 skipped[c][usize::from(topo.curve_ends[c].0 != corner.vertex)] = true;
             }
@@ -1760,6 +1969,8 @@ impl Fit<'_> {
                 ));
             }
         }
+        let settled = self.settle(&triples, junctions, lines, corners);
+
         // Each chain's pin, as the ratio's numerator and denominator, and
         // whether two pins disagree.
         let mut pins: Vec<Option<(f64, f64)>> = vec![None; holding.chains];
@@ -1773,7 +1984,7 @@ impl Fit<'_> {
             }
         };
         let mut unpinned = Vec::new();
-        for corner in corners {
+        for corner in corners.iter() {
             for (i, &c) in corner.curves.iter().enumerate() {
                 let Some((chain, inverse)) = holding.chain[c] else {
                     continue;
@@ -1839,25 +2050,71 @@ impl Fit<'_> {
             }
             ratio.push(rho);
         }
-        // A corner with a curve untied is held by none of its rows: its
-        // curves are untied together.
+
+        // The settled classes override their chains, and a corner with a
+        // curve untied is held by none of its rows: its curves are untied
+        // together. A settled class that loses a chain so is unsettled, and
+        // the corners are gone over again.
+        let (pinned_ratio, pinned_untied) = (ratio.clone(), untied.clone());
+        let mut kept = vec![true; settled.len()];
         loop {
-            let mut changed = false;
-            for corner in corners {
-                let chains: Vec<usize> = corner
-                    .curves
-                    .iter()
-                    .filter_map(|&c| holding.chain[c].map(|(chain, _)| chain))
-                    .collect();
-                if chains.iter().any(|&chain| untied[chain]) {
-                    for chain in chains {
-                        changed |= !untied[chain];
-                        untied[chain] = true;
-                    }
+            ratio.clone_from(&pinned_ratio);
+            untied.clone_from(&pinned_untied);
+            for (class, keep) in settled.iter().zip(&kept) {
+                if !keep {
+                    continue;
+                }
+                for &(chain, odd) in &class.chains {
+                    ratio[chain] = if odd { 1.0 / class.ratio } else { class.ratio };
+                    untied[chain] = false;
                 }
             }
-            if !changed {
+            loop {
+                let mut changed = false;
+                for corner in corners.iter() {
+                    let chains: Vec<usize> = corner
+                        .curves
+                        .iter()
+                        .filter_map(|&c| holding.chain[c].map(|(chain, _)| chain))
+                        .collect();
+                    if chains.iter().any(|&chain| untied[chain]) {
+                        for chain in chains {
+                            changed |= !untied[chain];
+                            untied[chain] = true;
+                        }
+                    }
+                }
+                if !changed {
+                    break;
+                }
+            }
+            let mut lost = false;
+            for (class, keep) in settled.iter().zip(kept.iter_mut()) {
+                if *keep && class.chains.iter().any(|&(chain, _)| untied[chain]) {
+                    *keep = false;
+                    lost = true;
+                }
+            }
+            if !lost {
                 break;
+            }
+        }
+        let mut relaxed = Keyed::new();
+        for (class, _) in settled.iter().zip(&kept).filter(|(_, keep)| **keep) {
+            for &(line, odd) in &class.lines {
+                let mu = if odd { 1.0 / class.ratio } else { class.ratio };
+                for (key, &(of, flip)) in &lines.of {
+                    if of != line {
+                        continue;
+                    }
+                    let row = &junctions[key];
+                    let (mid, before, after) = if flip {
+                        (row[0].0, row[2].0, row[1].0)
+                    } else {
+                        (row[0].0, row[1].0, row[2].0)
+                    };
+                    relaxed.insert(*key, vec![(mid, 1.0 + mu), (before, -1.0), (after, -mu)]);
+                }
             }
         }
         let rows = triples
@@ -1875,7 +2132,180 @@ impl Fit<'_> {
                 Some(vec![(b, 1.0 + lambda), (l, -1.0), (r, -lambda)])
             })
             .collect();
-        Ok((rows, untied))
+        Ok(Tangency {
+            rows,
+            untied,
+            relaxed,
+        })
+    }
+
+    /// The chains and junction lines a corner pins along with something
+    /// else, settled on one ratio each, as [`tangency`](Self::tangency)
+    /// describes; the corners they meet more than once are rescaled to it.
+    fn settle(
+        &self,
+        triples: &[(usize, usize, usize, usize)],
+        junctions: &Keyed,
+        lines: &Lines,
+        corners: &mut [Related],
+    ) -> Vec<Settled> {
+        let holding = self.holding();
+        let chains = holding.chains;
+        // Chains, then lines, each node's ratio that of its class's root or
+        // its inverse.
+        let mut classes = topology::Classes::new(chains + lines.count);
+        let mut torn = Vec::new();
+        for &(c, b, l, r) in triples {
+            let Some((chain, inverse)) = holding.chain[c] else {
+                continue;
+            };
+            let key = (b, l.min(r), l.max(r));
+            let (Some(row), Some(&(line, flip))) = (junctions.get(&key), lines.of.get(&key)) else {
+                continue;
+            };
+            // The line's own direction runs from the pole before its middle
+            // to the one after, as the row was first kept, or against it.
+            let before = if flip { row[2].0 } else { row[1].0 };
+            if !classes.join(chain, chains + line, inverse ^ (l != before)) {
+                torn.push(chain);
+            }
+        }
+        for (line, &bad) in lines.torn.iter().enumerate() {
+            if bad {
+                torn.push(chains + line);
+            }
+        }
+        // Each class's corners' pins: the corner, the curve, and the ratio
+        // they pin the class's root to.
+        let mut pinned: BTreeMap<usize, Vec<(usize, usize, f64)>> = BTreeMap::new();
+        let mut spoiled: Vec<usize> = Vec::new();
+        for (k, corner) in corners.iter().enumerate() {
+            for (i, &c) in corner.curves.iter().enumerate() {
+                let Some((chain, inverse)) = holding.chain[c] else {
+                    continue;
+                };
+                let (root, odd) = classes.find(chain);
+                match &corner.relation {
+                    Some(relation) => {
+                        let lambda = relation.weights[i].0;
+                        let value = if inverse ^ odd { 1.0 / lambda } else { lambda };
+                        pinned.entry(root).or_default().push((k, i, value));
+                    }
+                    None => spoiled.push(root),
+                }
+            }
+        }
+        for node in torn {
+            spoiled.push(classes.find(node).0);
+        }
+        for chain in 0..chains {
+            if holding.conflicted[chain] {
+                spoiled.push(classes.find(chain).0);
+            }
+        }
+        let mut members: BTreeMap<usize, (Members, Members)> = BTreeMap::new();
+        for node in 0..chains + lines.count {
+            let (root, odd) = classes.find(node);
+            let entry = members.entry(root).or_default();
+            if node < chains {
+                entry.0.push((node, odd));
+            } else {
+                entry.1.push((node - chains, odd));
+            }
+        }
+        // The classes pinned more than once or meeting a junction, with
+        // whether their corners were rescaled to them.
+        let mut found: Vec<Pinned> = Vec::new();
+        for (root, pins) in pinned {
+            let Some((chain_members, line_members)) = members.remove(&root) else {
+                continue;
+            };
+            if spoiled.contains(&root) || (pins.len() < 2 && line_members.is_empty()) {
+                continue;
+            }
+            found.push(Pinned {
+                pins,
+                chains: chain_members,
+                lines: line_members,
+            });
+        }
+        // A class pinned by several corners takes the geometric mean of
+        // their ratios, read before any corner is rescaled; each corner is
+        // then rescaled once, to every ratio asked of it.
+        let mut ratios: Vec<Option<f64>> = vec![None; found.len()];
+        let mut wanted: BTreeMap<usize, Vec<(usize, f64, usize)>> = BTreeMap::new();
+        for (f, class) in found.iter().enumerate() {
+            let (pins, chain_members) = (&class.pins, &class.chains);
+            if pins.len() < 2 {
+                continue;
+            }
+            let logs: f64 = pins.iter().map(|p| p.2.ln()).sum();
+            let ratio = (logs / precise(pins.len())).exp();
+            ratios[f] = Some(ratio);
+            for &(k, i, _) in pins {
+                let Some((chain, inverse)) = holding.chain[corners[k].curves[i]] else {
+                    continue;
+                };
+                let odd = chain_members
+                    .iter()
+                    .find(|m| m.0 == chain)
+                    .is_some_and(|m| m.1);
+                // The ratio in the curve's own direction, as the triples
+                // read it.
+                let rho = if odd { 1.0 / ratio } else { ratio };
+                wanted
+                    .entry(k)
+                    .or_default()
+                    .push((i, if inverse { 1.0 / rho } else { rho }, f));
+            }
+        }
+        let mut failed = vec![false; found.len()];
+        for (k, asked) in wanted {
+            let pairs: Vec<(usize, f64)> =
+                asked.iter().map(|&(i, target, _)| (i, target)).collect();
+            let rescaled = corners[k]
+                .relation
+                .as_mut()
+                .is_some_and(|relation| relation.rescale(&pairs));
+            if !rescaled {
+                for (_, _, f) in asked {
+                    failed[f] = true;
+                }
+            }
+        }
+        // A class pinned by one corner takes its ratio, as rescaled.
+        let mut settled = Vec::new();
+        for (f, class) in found.into_iter().enumerate() {
+            let Pinned {
+                pins,
+                chains,
+                lines,
+            } = class;
+            if failed[f] {
+                continue;
+            }
+            let ratio = match ratios[f] {
+                Some(ratio) => ratio,
+                None => {
+                    let (k, i, _) = pins[0];
+                    let Some(relation) = &corners[k].relation else {
+                        continue;
+                    };
+                    let Some((chain, inverse)) = holding.chain[corners[k].curves[i]] else {
+                        continue;
+                    };
+                    let odd = chains.iter().find(|m| m.0 == chain).is_some_and(|m| m.1);
+                    let lambda = relation.weights[i].0;
+                    if inverse ^ odd { 1.0 / lambda } else { lambda }
+                }
+            };
+            settled.push(Settled {
+                ratio,
+                chains,
+                lines,
+            });
+        }
+        settled
     }
 
     /// The slot of the pole one row into patch side `user` beside curve
@@ -2003,24 +2433,20 @@ impl Fit<'_> {
             let d = e(slot);
             (d.dot(x), d.dot(y))
         };
-        // Each curve's `λ` and `γ` at the corner: `e₁ + λ e₂ + g e = 0` in
-        // the plane.
-        let mut weights = Vec::with_capacity(curves.len());
-        for &(left, own, right) in &near {
-            let ((lx, ly), (ox, oy), (rx, ry)) = (flat(left), flat(own), flat(right));
-            let det = rx.mul_add(oy, -(ry * ox));
-            let lambda = (ly.mul_add(ox, -(lx * oy))) / det;
-            let g = (lx.mul_add(ry, -(ly * rx))) / det;
-            if !(lambda > 0.0 && lambda.is_finite() && g.is_finite()) {
-                return None;
-            }
-            weights.push((lambda, g));
-        }
+        let flat: Vec<(f64, f64)> = near.iter().map(|&(_, own, _)| flat(own)).collect();
+        let curve_at = |slot: usize| near.iter().position(|n| n.1 == slot);
+        let sides = near
+            .iter()
+            .map(|&(left, _, right)| Some((curve_at(left)?, curve_at(right)?)))
+            .collect::<Option<Vec<_>>>()?;
+        let weights = plane_weights(&flat, &sides)?;
         Some(Relation {
             vertex: v,
             near,
             order,
             weights,
+            flat,
+            sides,
         })
     }
 

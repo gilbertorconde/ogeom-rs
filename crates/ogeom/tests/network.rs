@@ -1469,3 +1469,247 @@ fn a_corner_of_six_patches_is_held_exactly_tangent() {
     assert!(corner.angle <= EXACT_ANGLE, "{corner:?}");
     assert_sound_shell(&model, &network, 12);
 }
+
+/// The rounded box corner of [`filleted_corner`], each edge's fillet one
+/// patch: its side along the octant runs from `z` to the side's middle and
+/// on to `y`, two curves meeting at a junction, where the octant's curve
+/// into its corner ends (curves `9 + 3k` to `11 + 3k` for the fillet `k`:
+/// its edges back from `y` and from `z`, and the arc across its far end,
+/// which carries the junction on).
+fn filleted_corner_in_one() -> (Vec<CurveDef>, Vec<ChainedPatch>) {
+    let (mut curves, octant) = rounded_corner();
+    let mut patches: Vec<ChainedPatch> = octant.into_iter().map(ChainedPatch::from).collect();
+    let back = -FILLET_RUN;
+    let (y, z) = (Point::new(0.0, BALL, 0.0), Point::new(0.0, 0.0, BALL));
+    let at_back = |p: Point| Point::new(back, p.y, p.z);
+    let fillet = [
+        vec![y, at_back(y)],
+        vec![z, at_back(z)],
+        (0..=64)
+            .map(|i| {
+                let a = FRAC_PI_2 * f64::from(i) / 64.0;
+                Point::new(back, BALL * a.cos(), BALL * a.sin())
+            })
+            .collect::<Vec<_>>(),
+    ];
+    for (k, &(from_y, from_z)) in [(2, 5), (4, 1), (0, 3)].iter().enumerate() {
+        let base = curves.len();
+        for points in &fillet {
+            curves.push(CurveDef::Polyline(
+                points.iter().map(|&p| turned(p, k)).collect(),
+            ));
+        }
+        patches.push(ChainedPatch::four([
+            vec![(from_z, false), (from_y, true)],
+            vec![(base, false)],
+            vec![(base + 2, false)],
+            vec![(base + 1, true)],
+        ]));
+    }
+    (curves, patches)
+}
+
+/// The walk shares at which side `k` of `surface` is split into its
+/// curves: the knots of multiplicity three inside the side's direction,
+/// in walking order, with the ends.
+fn side_shares(surface: &BSplineSurface, k: usize) -> Vec<f64> {
+    let knots = if k.is_multiple_of(2) {
+        surface.u_knots().knots()
+    } else {
+        surface.v_knots().knots()
+    };
+    let mut inner: Vec<f64> = knots
+        .iter()
+        .copied()
+        .filter(|&x| x > 0.0 && x < 1.0 && knots.iter().filter(|&&y| y == x).count() == 3)
+        .collect();
+    inner.dedup();
+    let mut shares = vec![0.0];
+    if k < 2 {
+        shares.extend(inner);
+    } else {
+        shares.extend(inner.iter().rev().map(|x| 1.0 - x));
+    }
+    shares.push(1.0);
+    shares
+}
+
+/// A patch a curve bounds: the patch, its side, the share of the side's
+/// walk the curve covers, and whether it runs against the walk.
+type ChainedUser = (usize, usize, (f64, f64), bool);
+
+/// As [`across_shared`], over patches whose sides may be chains of
+/// curves: each curve read off either patch over its share of the side.
+fn across_chained(network: &Network, patches: &[ChainedPatch]) -> (f64, f64) {
+    let mut users: Vec<Vec<ChainedUser>> = Vec::new();
+    for (p, patch) in patches.iter().enumerate() {
+        for (k, side) in patch.sides.iter().enumerate() {
+            let shares = if side.len() > 1 {
+                side_shares(&network.surfaces[p], k)
+            } else {
+                vec![0.0, 1.0]
+            };
+            assert_eq!(shares.len(), side.len() + 1, "patch {p} side {k}");
+            for (i, piece) in side.iter().enumerate() {
+                if users.len() <= piece.curve {
+                    users.resize(piece.curve + 1, Vec::new());
+                }
+                users[piece.curve].push((p, k, (shares[i], shares[i + 1]), piece.reversed));
+            }
+        }
+    }
+    let (mut angle, mut gap) = (0.0_f64, 0.0_f64);
+    for pair in users.iter().filter(|u| u.len() == 2) {
+        let at = |(p, k, (a, b), reversed): ChainedUser, t: f64| {
+            let f = (b - a).mul_add(if reversed { 1.0 - t } else { t }, a);
+            let (u, v) = on_side(k, f);
+            let surface = &network.surfaces[p];
+            (
+                surface.normal_at(u, v, T).unwrap().vector(),
+                surface.point_at(u, v, T).unwrap(),
+            )
+        };
+        for i in 0..=200 {
+            let t = f64::from(i) / 200.0;
+            let ((na, pa), (nb, pb)) = (at(pair[0], t), at(pair[1], t));
+            angle = angle.max(na.cross(nb).magnitude().atan2(na.dot(nb)));
+            gap = gap.max(pa.distance(pb));
+        }
+    }
+    (angle, gap)
+}
+
+/// The widest angle between the normals either side of the junction line
+/// across patch `p`'s `u` direction, read at 201 points along it.
+fn across_junction_line(network: &Network, p: usize) -> f64 {
+    let surface = &network.surfaces[p];
+    let shares = side_shares(surface, 0);
+    let mut widest = 0.0_f64;
+    for &junction in &shares[1..shares.len() - 1] {
+        for i in 0..=200 {
+            let v = f64::from(i) / 200.0;
+            let before = surface.normal_at(junction.next_down(), v, T).unwrap();
+            let after = surface.normal_at(junction, v, T).unwrap();
+            let (a, b) = (before.vector(), after.vector());
+            widest = widest.max(a.cross(b).magnitude().atan2(a.dot(b)));
+        }
+    }
+    widest
+}
+
+#[test]
+fn a_box_corner_with_its_fillets_one_patch_each_is_held_exactly_tangent() {
+    // Each curve into the rounded corner ends at a junction on a fillet's
+    // side, which pins the curve's ratio to the fillet's knot spacings
+    // either side of it, and the corner pins it to its own: the line across
+    // the fillet through the junction is held at the corner's ratio
+    // instead, tangent though not `C¹`.
+    let (curves, patches) = filleted_corner_in_one();
+    for noise in [NOISE, NOISE / 4.0] {
+        let tolerance = 5.0 * noise;
+        let cloud = filleted_points(40_000, noise, 37);
+        let index = PointIndex::build(&cloud).unwrap();
+        let mut model = Model::new();
+        let network = fit_network_chained(
+            &mut model,
+            &patches,
+            &curves,
+            &index,
+            &options(tolerance, vec![]),
+            0,
+            T,
+        )
+        .unwrap();
+        assert_eq!(network.ended, Ended::Met, "noise {noise}: {network:?}");
+        let off = widest_off(&network, off_filleted);
+        assert!(
+            off <= tolerance / 2.0,
+            "noise {noise}: {off} off the corner"
+        );
+        let (angle, gap) = across_chained(&network, &patches);
+        assert!(angle <= EXACT_ANGLE, "noise {noise}: {angle}");
+        assert!(gap <= ROUNDING_GAP, "noise {noise}: {gap}");
+        for p in 3..6 {
+            let line = across_junction_line(&network, p);
+            assert!(
+                line <= EXACT_ANGLE,
+                "noise {noise}: fillet {p} turns {line}"
+            );
+        }
+        assert!(
+            network.worst_tangent <= EXACT_ANGLE,
+            "noise {noise}: {}",
+            network.worst_tangent
+        );
+        let [corner] = network.corners.as_slice() else {
+            panic!("{:?}", network.corners);
+        };
+        assert_eq!(corner.valence, 3);
+        assert!(corner.angle <= EXACT_ANGLE, "{corner:?}");
+        // The far ends of the fillets: two edges along each and the arc
+        // across its end.
+        assert_sound_shell(&model, &network, 9);
+    }
+}
+
+/// A cap of the ball in four patches with two corners of three, `A` and
+/// `B` either side of the top, joined by curve 0 over it: two more curves
+/// from each run out to the border (1 and 2 from `B`, 3 and 4 from `A`),
+/// a hexagon of great circle arcs with its corners on the cap's rim (5 to
+/// 10), so every patch turns at each of its corners.
+fn two_corner_cap() -> (Vec<CurveDef>, Vec<PatchDef>) {
+    let (a, b) = (on_ball_at(0.3, PI), on_ball_at(0.3, 0.0));
+    let rim_at = |azimuth: f64| on_ball_at(CAP, azimuth);
+    let rim = |from: f64, to: f64| ball_arc(rim_at(from), rim_at(to));
+    let q = PI / 4.0;
+    let curves = vec![
+        ball_arc(a, b),
+        ball_arc(b, rim_at(q)),
+        ball_arc(b, rim_at(-q)),
+        ball_arc(a, rim_at(3.0 * q)),
+        ball_arc(a, rim_at(5.0 * q)),
+        rim(q, 3.0 * q),
+        rim(5.0 * q, 7.0 * q),
+        rim(3.0 * q, PI),
+        rim(PI, 5.0 * q),
+        rim(-q, 0.0),
+        rim(0.0, q),
+    ];
+    let patches = vec![
+        PatchDef::four([(0, false), (1, false), (5, false), (3, true)]),
+        PatchDef::four([(0, true), (4, false), (6, false), (2, true)]),
+        PatchDef::four([(3, false), (7, false), (8, false), (4, true)]),
+        PatchDef::four([(2, false), (9, false), (10, false), (1, true)]),
+    ];
+    (curves, patches)
+}
+
+#[test]
+fn two_corners_joined_by_a_curve_are_held_exactly_tangent() {
+    // The curve between the corners is pinned to a ratio at either end:
+    // both corners are rescaled to the geometric mean of the two, each
+    // through its curves that run on to the border.
+    let (curves, patches) = two_corner_cap();
+    let cloud = cap_points(20_000, NOISE, 29);
+    let (model, network) = fit(&curves, &patches, &cloud, &options(NOISY_TOLERANCE, vec![]));
+    assert_eq!(network.ended, Ended::Met, "{network:?}");
+    let off = widest_off(&network, off_ball);
+    assert!(off <= NOISY_TOLERANCE / 2.0, "{off} off the ball");
+    let (angle, gap) = across_shared(&network, &patches);
+    assert!(angle <= EXACT_ANGLE, "{angle}");
+    assert!(gap <= ROUNDING_GAP, "{gap}");
+    assert!(
+        network.worst_tangent <= EXACT_ANGLE,
+        "{}",
+        network.worst_tangent
+    );
+    assert_eq!(network.corners.len(), 2, "{:?}", network.corners);
+    for corner in &network.corners {
+        assert_eq!(corner.valence, 3);
+        assert!(corner.angle <= EXACT_ANGLE, "{corner:?}");
+        // The corners may slide along the ball from where the curves were
+        // drawn to meet, but stay on it.
+        assert!(off_ball(corner.point) <= NOISY_TOLERANCE, "{corner:?}");
+    }
+    assert_sound_shell(&model, &network, 6);
+}

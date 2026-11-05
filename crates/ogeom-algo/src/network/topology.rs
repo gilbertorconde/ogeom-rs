@@ -8,14 +8,14 @@ use super::{ChainedPatch, PatchSide};
 
 /// A union-find over `0..n`, its classes named by their first member's
 /// order of appearance, and an optional parity between members.
-struct Classes {
+pub(super) struct Classes {
     parent: Vec<usize>,
     /// The parity of each member relative to its parent.
     parity: Vec<bool>,
 }
 
 impl Classes {
-    fn new(n: usize) -> Self {
+    pub(super) fn new(n: usize) -> Self {
         Self {
             parent: (0..n).collect(),
             parity: vec![false; n],
@@ -23,7 +23,7 @@ impl Classes {
     }
 
     /// The class's root and the member's parity relative to it.
-    fn find(&mut self, x: usize) -> (usize, bool) {
+    pub(super) fn find(&mut self, x: usize) -> (usize, bool) {
         let mut root = x;
         let mut parity = false;
         while self.parent[root] != root {
@@ -46,7 +46,7 @@ impl Classes {
 
     /// Join the classes of `a` and `b`, `b`'s parity relative to `a` being
     /// `odd`. False where they were already joined at the other parity.
-    fn join(&mut self, a: usize, b: usize, odd: bool) -> bool {
+    pub(super) fn join(&mut self, a: usize, b: usize, odd: bool) -> bool {
         let (ra, pa) = self.find(a);
         let (rb, pb) = self.find(b);
         if ra == rb {
@@ -60,7 +60,10 @@ impl Classes {
 
     /// Each member's class, numbered from nought in order of first
     /// appearance over `members`, and the number of classes.
-    fn numbered(&mut self, members: impl Iterator<Item = usize>) -> (Vec<Option<usize>>, usize) {
+    pub(super) fn numbered(
+        &mut self,
+        members: impl Iterator<Item = usize>,
+    ) -> (Vec<Option<usize>>, usize) {
         let n = self.parent.len();
         let mut name = vec![None; n];
         let mut of = vec![None; n];
@@ -137,9 +140,9 @@ pub(super) struct Topology {
     /// The corners of other than four patches, more than four where even,
     /// other than three-sided patches' points and junctions, whose curves
     /// are all smooth, each crossing one strip that runs one way
-    /// throughout, and each ending at its other end on the network's border
-    /// or at a corner of four patches that is not a junction: each with its
-    /// curves.
+    /// throughout, and each ending at its other end on the network's
+    /// border, at a corner of four patches or a junction, or at another
+    /// such corner: each with its curves.
     pub span_corners: Vec<(usize, Vec<usize>)>,
 }
 
@@ -563,13 +566,28 @@ impl Topology {
         // multiplicity two at the end of its span next to the corner, in
         // its one strip, which must then run one way for every patch and
         // curve along it; past that span it is held by the pole triples,
-        // as a curve between corners of four patches is.
-        let span_corners = odd_with(true, &|c, v| {
-            let far = far_of(c, v);
-            let ends_held =
-                (border[far] && !apex[far]) || (interior_valence[far] == Some(4) && !through(far));
-            ends_held && curve_strip[c].len() == 1 && !two_way[curve_strip[c][0]]
-        });
+        // as a curve between corners of four patches is. Its far end may be
+        // on the border, a corner of four patches, a junction, or another
+        // corner held by its spans: the corners are pared down until every
+        // curve's far end is one of them.
+        let mut span_at = vec![true; vertices];
+        let span_corners = loop {
+            let found = odd_with(true, &|c, v| {
+                let far = far_of(c, v);
+                let ends_held = (border[far] && !apex[far])
+                    || interior_valence[far] == Some(4)
+                    || (span_at[far] && interior_valence[far].is_some());
+                ends_held && curve_strip[c].len() == 1 && !two_way[curve_strip[c][0]]
+            });
+            let mut kept = vec![false; vertices];
+            for (v, _) in &found {
+                kept[*v] = true;
+            }
+            if kept == span_at {
+                break found;
+            }
+            span_at = kept;
+        };
 
         // Chains: held curves running straight on through a corner of four
         // patches, or through a junction of a split side, share their
