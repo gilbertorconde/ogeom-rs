@@ -11,6 +11,26 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-05
+
+A minor release: `Simplified` gains `result_vertex`, so a `Simplified`
+built with a struct literal needs the field, and `Editable::source_vertex`
+answers `None` for a vertex with several source vertices.
+
+Booleans that used to refuse now cut: sections through and beside a
+sphere's pole, a drill a hair under a plate's top, walls leaning a
+hair off an arched block whether its arc is exact or a B-spline, and
+sections where marched walks stall. A face thinner than its chord keeps
+its volume, and a face whose vertices stand off its edges' ends meshes to
+its volume rather than a few tenths of a percent short. Face blends round
+in several runs where the faces let the ball go apart, edge rounds in one
+request are checked against each other where one runs off a face, and
+patch networks hold corners with their curves attached exactly tangent.
+Editable meshes decimate with their source vertices carried and cut
+closed where a plane passes a hair from a vertex; mesh repair keeps each
+triangle's source, and medial-axis branch points closer than the sampling
+stay apart.
+
 ### Added
 
 - `Triangulation::border_stitched_with_sources` and
@@ -11892,7 +11912,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.14.2...v0.15.0
