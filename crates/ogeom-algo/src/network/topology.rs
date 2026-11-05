@@ -116,9 +116,38 @@ pub(super) struct Topology {
     /// Whether each curve joins its patches smoothly: between two patches
     /// and not a crease.
     pub tangent: Vec<bool>,
-    /// Whether each smooth curve is held tangent by the pole triples:
-    /// neither of its ends is an apex or a corner of other than four
-    /// patches.
+    /// Whether each patch's strips along `u` and along `v` run against
+    /// their strips' own direction.
+    pub patch_flip: Vec<[Vec<bool>; 2]>,
+    /// Whether each curve's strips run against their own direction.
+    pub curve_flip: Vec<Vec<bool>>,
+    /// The curves held tangent by the pole triples where no corner is held
+    /// by its spans: neither of a curve's ends is an apex or a corner of
+    /// other than four patches.
+    pub plain: Holding,
+    /// The curves held tangent by the pole triples where the
+    /// [`span_corners`](Self::span_corners) are held: as
+    /// [`plain`](Self::plain), and every curve into such a corner, from its
+    /// span next to the corner on.
+    pub spanned: Holding,
+    /// The corners of an odd number of patches, other than three-sided
+    /// patches' points, whose curves are all smooth and all end on the
+    /// network's border at their other ends: each with its curves.
+    pub odd_corners: Vec<(usize, Vec<usize>)>,
+    /// The corners of other than four patches, more than four where even,
+    /// other than three-sided patches' points and junctions, whose curves
+    /// are all smooth, each crossing one strip that runs one way
+    /// throughout, and each ending at its other end on the network's border
+    /// or at a corner of four patches that is not a junction: each with its
+    /// curves.
+    pub span_corners: Vec<(usize, Vec<usize>)>,
+}
+
+/// Which curves the pole triples hold tangent, and how their ratios are
+/// shared.
+#[derive(Debug, Clone)]
+pub(super) struct Holding {
+    /// Whether each smooth curve is held tangent by the pole triples.
     pub held: Vec<bool>,
     /// Each held curve's chain, and whether its ratio is the chain's
     /// inverse.
@@ -128,10 +157,6 @@ pub(super) struct Topology {
     /// The chains whose curves meet at the other parity somewhere, which
     /// only a ratio of one serves.
     pub conflicted: Vec<bool>,
-    /// The corners of an odd number of patches, other than three-sided
-    /// patches' points, whose curves are all smooth and all end on the
-    /// network's border at their other ends: each with its curves.
-    pub odd_corners: Vec<(usize, Vec<usize>)>,
 }
 
 /// A side's start and end, as curve ends: `2c` the start, `2c + 1` the end.
@@ -366,6 +391,7 @@ impl Topology {
             dir_base.push(base);
         }
         let mut strips = Classes::new(next);
+        let mut turned = Vec::new();
         let segment = |p: usize, dir: usize, i: usize| {
             dir_base[p]
                 + if dir == 0 {
@@ -384,23 +410,24 @@ impl Topology {
                     let along = |w: usize| if k < 2 { w } else { m - 1 - w };
                     match patch.sides[k].as_slice() {
                         [] => {}
+                        // A curve runs against the patch's direction where
+                        // it runs against a walk that runs against it.
                         [one] => {
                             for w in 0..m {
                                 let part = if one.reversed { m - 1 - w } else { w };
-                                strips.join(
-                                    segment(p, dir, along(w)),
-                                    part_base[one.curve] + part,
-                                    false,
-                                );
+                                let (a, b) =
+                                    (segment(p, dir, along(w)), part_base[one.curve] + part);
+                                if !strips.join(a, b, (k >= 2) != one.reversed) {
+                                    turned.push(a);
+                                }
                             }
                         }
                         many => {
                             for (w, piece) in many.iter().enumerate() {
-                                strips.join(
-                                    segment(p, dir, along(w)),
-                                    part_base[piece.curve],
-                                    false,
-                                );
+                                let (a, b) = (segment(p, dir, along(w)), part_base[piece.curve]);
+                                if !strips.join(a, b, (k >= 2) != piece.reversed) {
+                                    turned.push(a);
+                                }
                             }
                         }
                     }
@@ -426,6 +453,30 @@ impl Topology {
                     .collect()
             })
             .collect();
+        let patch_flip: Vec<[Vec<bool>; 2]> = (0..patches.len())
+            .map(|p| {
+                core::array::from_fn(|dir| {
+                    (0..crossed(&patches[p], dir, &parts))
+                        .map(|i| strips.find(segment(p, dir, i)).1)
+                        .collect()
+                })
+            })
+            .collect();
+        let curve_flip: Vec<Vec<bool>> = (0..curves)
+            .map(|c| {
+                (0..parts[c])
+                    .map(|i| strips.find(part_base[c] + i).1)
+                    .collect()
+            })
+            .collect();
+        // A strip met one way by one patch and the other way by another,
+        // as round a band with a half twist, has no one direction.
+        let mut two_way = vec![false; strip_count];
+        for a in turned {
+            if let Some(s) = strip_of[a] {
+                two_way[s] = true;
+            }
+        }
 
         let tangent: Vec<bool> = (0..curves)
             .map(|c| users[c].len() == 2 && !creases.contains(&c))
@@ -473,114 +524,150 @@ impl Topology {
         // the other way on the other: no pole triple of the curve can hold
         // across it.
         let free_at = |v: usize| apex[v] || interior_valence[v].is_some_and(|n| n != 4);
-        let held: Vec<bool> = (0..curves)
-            .map(|c| {
-                let (a, b) = curve_ends[c];
-                tangent[c] && !free_at(a) && !free_at(b)
-            })
-            .collect();
+        let at_vertex = |v: usize| -> Vec<usize> {
+            (0..curves)
+                .filter(|&c| curve_ends[c].0 == v || curve_ends[c].1 == v)
+                .collect()
+        };
+        let through = |v: usize| {
+            touching[v]
+                .iter()
+                .any(|(_, t)| matches!(t, Touch::Through(..)))
+        };
+        let far_of = |c: usize, v: usize| {
+            let (a, b) = curve_ends[c];
+            if a == v { b } else { a }
+        };
+        // A corner of an odd number of patches (or, where `even`, of an even
+        // number above four), not at a junction, whose curves are all smooth
+        // and pass `reaches` at their other ends; with its curves.
+        let odd_with =
+            |even: bool, reaches: &dyn Fn(usize, usize) -> bool| -> Vec<(usize, Vec<usize>)> {
+                (0..vertices)
+                    .filter_map(|v| {
+                        let valence = interior_valence[v]?;
+                        if (valence % 2 == 0 && !(even && valence > 4)) || apex[v] || through(v) {
+                            return None;
+                        }
+                        let at = at_vertex(v);
+                        (at.len() == valence && at.iter().all(|&c| tangent[c] && reaches(c, v)))
+                            .then_some((v, at))
+                    })
+                    .collect()
+            };
+        let odd_corners = odd_with(false, &|c, v| {
+            let far = far_of(c, v);
+            border[far] && !apex[far]
+        });
+        // A curve into a corner held by its spans takes a knot of
+        // multiplicity two at the end of its span next to the corner, in
+        // its one strip, which must then run one way for every patch and
+        // curve along it; past that span it is held by the pole triples,
+        // as a curve between corners of four patches is.
+        let span_corners = odd_with(true, &|c, v| {
+            let far = far_of(c, v);
+            let ends_held =
+                (border[far] && !apex[far]) || (interior_valence[far] == Some(4) && !through(far));
+            ends_held && curve_strip[c].len() == 1 && !two_way[curve_strip[c][0]]
+        });
 
         // Chains: held curves running straight on through a corner of four
         // patches, or through a junction of a split side, share their
         // ratio.
-        let mut chains = Classes::new(curves);
-        let mut conflicted_curves = Vec::new();
         let curve_of = |p: usize, k: usize, last: bool| {
             let side = &patches[p].sides[k];
             if last { side.last() } else { side.first() }.map(|s| s.curve)
         };
-        for v in 0..vertices {
-            if interior_valence[v] != Some(4) {
-                continue;
-            }
-            if touching[v]
-                .iter()
-                .any(|(_, t)| matches!(t, Touch::Through(..)))
-            {
-                continue;
-            }
-            let at: Vec<(usize, [Option<usize>; 2])> = touching[v]
-                .iter()
-                .filter_map(|&(p, t)| match t {
-                    Touch::Corner(k) => {
-                        Some((p, [curve_of(p, (k + 3) % 4, true), curve_of(p, k, false)]))
-                    }
-                    Touch::Through(..) => None,
-                })
-                .collect();
-            let Some(ring) = ring_round(&at) else {
-                continue;
-            };
-            for i in 0..2 {
-                let (c, far) = (ring[i].0, ring[i + 2].0);
-                if !(held[c] && held[far]) {
+        let holding = |held: Vec<bool>| -> Holding {
+            let mut chains = Classes::new(curves);
+            let mut conflicted_curves = Vec::new();
+            for v in 0..vertices {
+                if interior_valence[v] != Some(4) || through(v) {
                     continue;
                 }
-                // The patch between `c` and the curve after it, and the one
-                // between that curve and `far`: the sides of `c` and `far`
-                // facing the curve between them.
-                let near_side = ring[i].1;
-                let far_side = ring[i + 1].1;
-                let flip_c = users[c][0].0 != near_side;
-                let flip_far = users[far][0].0 != far_side;
-                if !chains.join(c, far, flip_c ^ flip_far) {
-                    conflicted_curves.push(c);
-                }
-            }
-        }
-        for (p, patch) in patches.iter().enumerate() {
-            for side in &patch.sides {
-                for w in side.windows(2) {
-                    let (c, next) = (w[0].curve, w[1].curve);
-                    let v = vertex(walk_ends(w[0]).1);
-                    if interior_valence[v] != Some(4) || !(held[c] && held[next]) {
+                let at: Vec<(usize, [Option<usize>; 2])> = touching[v]
+                    .iter()
+                    .filter_map(|&(p, t)| match t {
+                        Touch::Corner(k) => {
+                            Some((p, [curve_of(p, (k + 3) % 4, true), curve_of(p, k, false)]))
+                        }
+                        Touch::Through(..) => None,
+                    })
+                    .collect();
+                let Some(ring) = ring_round(&at) else {
+                    continue;
+                };
+                for i in 0..2 {
+                    let (c, far) = (ring[i].0, ring[i + 2].0);
+                    if !(held[c] && held[far]) {
                         continue;
                     }
-                    // Patch `p` lies on the same side of both: their ratios
-                    // agree where `p` is the first patch of both or of
-                    // neither.
-                    let flip = (users[c][0].0 == p) != (users[next][0].0 == p);
-                    if !chains.join(c, next, flip) {
+                    // The patch between `c` and the curve after it, and the
+                    // one between that curve and `far`: the sides of `c` and
+                    // `far` facing the curve between them.
+                    let near_side = ring[i].1;
+                    let far_side = ring[i + 1].1;
+                    let flip_c = users[c][0].0 != near_side;
+                    let flip_far = users[far][0].0 != far_side;
+                    if !chains.join(c, far, flip_c ^ flip_far) {
                         conflicted_curves.push(c);
                     }
                 }
             }
-        }
-        let (chain_of, chain_count) = chains.numbered((0..curves).filter(|&c| held[c]));
-        let mut conflicted = vec![false; chain_count];
-        for c in conflicted_curves {
-            if let Some(id) = chain_of[c] {
-                conflicted[id] = true;
+            for (p, patch) in patches.iter().enumerate() {
+                for side in &patch.sides {
+                    for w in side.windows(2) {
+                        let (c, next) = (w[0].curve, w[1].curve);
+                        let v = vertex(walk_ends(w[0]).1);
+                        if interior_valence[v] != Some(4) || !(held[c] && held[next]) {
+                            continue;
+                        }
+                        // Patch `p` lies on the same side of both: their
+                        // ratios agree where `p` is the first patch of both
+                        // or of neither.
+                        let flip = (users[c][0].0 == p) != (users[next][0].0 == p);
+                        if !chains.join(c, next, flip) {
+                            conflicted_curves.push(c);
+                        }
+                    }
+                }
             }
-        }
-        let chain = (0..curves)
-            .map(|c| chain_of[c].map(|id| (id, chains.find(c).1)))
-            .collect();
-
-        let odd_corners = (0..vertices)
-            .filter_map(|v| {
-                let valence = interior_valence[v]?;
-                if valence % 2 == 0 || apex[v] {
-                    return None;
+            let (chain_of, chain_count) = chains.numbered((0..curves).filter(|&c| held[c]));
+            let mut conflicted = vec![false; chain_count];
+            for c in conflicted_curves {
+                if let Some(id) = chain_of[c] {
+                    conflicted[id] = true;
                 }
-                if touching[v]
-                    .iter()
-                    .any(|(_, t)| matches!(t, Touch::Through(..)))
-                {
-                    return None;
-                }
-                let at: Vec<usize> = (0..curves)
-                    .filter(|&c| curve_ends[c].0 == v || curve_ends[c].1 == v)
-                    .collect();
-                let reaches_border = |c: usize| {
+            }
+            let chain = (0..curves)
+                .map(|c| chain_of[c].map(|id| (id, chains.find(c).1)))
+                .collect();
+            Holding {
+                held,
+                chain,
+                chains: chain_count,
+                conflicted,
+            }
+        };
+        // A corner of other than four patches, or an apex, turns the
+        // parameter lines that cross a curve one way on one side of it and
+        // the other way on the other: no pole triple of the curve can hold
+        // across it, but where the corner is held by its spans.
+        let held_where = |spanned: &[bool]| -> Vec<bool> {
+            (0..curves)
+                .map(|c| {
                     let (a, b) = curve_ends[c];
-                    let far = if a == v { b } else { a };
-                    border[far] && !apex[far]
-                };
-                (at.len() == valence && at.iter().all(|&c| tangent[c] && reaches_border(c)))
-                    .then_some((v, at))
-            })
-            .collect();
+                    let ok = |v: usize| !free_at(v) || spanned[v];
+                    tangent[c] && ok(a) && ok(b)
+                })
+                .collect()
+        };
+        let plain = holding(held_where(&vec![false; vertices]));
+        let mut spanned_at = vec![false; vertices];
+        for (v, _) in &span_corners {
+            spanned_at[*v] = true;
+        }
+        let spanned = holding(held_where(&spanned_at));
 
         Ok(Self {
             vertices,
@@ -594,11 +681,12 @@ impl Topology {
             interior_valence,
             touching,
             tangent,
-            held,
-            chain,
-            chains: chain_count,
-            conflicted,
+            patch_flip,
+            curve_flip,
+            plain,
+            spanned,
             odd_corners,
+            span_corners,
         })
     }
 }

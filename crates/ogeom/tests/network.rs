@@ -15,7 +15,7 @@ use ogeom::algo::{
 use ogeom::core::clock::Instant;
 use ogeom::core::{OgeomError, Tolerances};
 use ogeom::geom::fit::Ended;
-use ogeom::geom::{CircleCurve, Curve, Surface as _};
+use ogeom::geom::{BSplineSurface, CircleCurve, Curve, Surface as _};
 use ogeom::math::{Circle, Direction, Frame, Point};
 use ogeom::mesh::PointIndex;
 use ogeom::topo::Model;
@@ -496,44 +496,173 @@ fn rounded_corner() -> (Vec<CurveDef>, Vec<PatchDef>) {
     (curves, patches)
 }
 
-#[test]
-fn a_corner_of_three_patches_is_reported_with_its_angle() {
-    let (curves, patches) = rounded_corner();
-    let middle = on_ball(1.0, 1.0, 1.0);
-    for (noise, tolerance) in [(0.0, CLEAN_TOLERANCE), (NOISE, NOISY_TOLERANCE)] {
-        let cloud = octant_points(20_000, noise, 3);
-        let (model, network) = fit(&curves, &patches, &cloud, &options(tolerance, vec![]));
-        assert!(widest_off(&network, off_ball) <= tolerance);
-        assert!(network.worst_gap <= ROUNDING_GAP, "{}", network.worst_gap);
-        let [corner] = network.corners.as_slice() else {
-            panic!("{:?}", network.corners);
+/// The widest angle a curve held tangent by its spans may show, read off
+/// the patches: the rows are solved for exactly, so the normals differ by
+/// the rounding of the elimination and of evaluating unit normals of
+/// patches with coordinates about five, a few hundred units in the last
+/// place at most.
+const EXACT_ANGLE: f64 = 1e-12;
+
+/// The pole `w` along side `k` of a patch's net, walked as [`PatchDef`]'s
+/// sides are.
+fn side_pole(surface: &BSplineSurface, k: usize, w: usize) -> Point {
+    let (nu, nv) = (surface.grid().u_count(), surface.grid().v_count());
+    let (i, j) = match k {
+        0 => (w, 0),
+        1 => (nu - 1, w),
+        2 => (nu - 1 - w, nv - 1),
+        _ => (0, nv - 1 - w),
+    };
+    surface.grid().get(i, j).unwrap().point()
+}
+
+/// The chart point at share `f` of the walk along side `k`.
+fn on_side(k: usize, f: f64) -> (f64, f64) {
+    match k {
+        0 => (f, 0.0),
+        1 => (1.0, f),
+        2 => (1.0 - f, 1.0),
+        _ => (0.0, 1.0 - f),
+    }
+}
+
+/// Across every curve two of `patches` share, read off the fitted patches
+/// at 201 points along it, its ends included: the widest angle between
+/// the two patches' normals and the widest distance between their points.
+/// Each such curve's poles must be the same in both patches' nets, to the
+/// bit.
+fn across_shared(network: &Network, patches: &[PatchDef]) -> (f64, f64) {
+    let mut users: Vec<Vec<(usize, usize, bool)>> = Vec::new();
+    for (p, patch) in patches.iter().enumerate() {
+        for (k, side) in patch.sides.iter().enumerate() {
+            let Some(side) = side else { continue };
+            if users.len() <= side.curve {
+                users.resize(side.curve + 1, Vec::new());
+            }
+            users[side.curve].push((p, k, side.reversed));
+        }
+    }
+    let (mut angle, mut gap) = (0.0_f64, 0.0_f64);
+    for pair in users.iter().filter(|u| u.len() == 2) {
+        let [(p, kp, rp), (q, kq, rq)] = [pair[0], pair[1]];
+        let (a, b) = (&network.surfaces[p], &network.surfaces[q]);
+        let along = |k: usize, s: &BSplineSurface| {
+            if k.is_multiple_of(2) {
+                s.grid().u_count()
+            } else {
+                s.grid().v_count()
+            }
         };
-        assert_eq!(corner.valence, 3);
-        assert!(corner.point.distance(middle) <= tolerance, "{corner:?}");
-        // Near tangent: a patch's normal near a curve is that of its first
-        // poles in from the curve, which a fit within the tolerance tilts
-        // by at most twice the tolerance over their spacing, a third of a
-        // span (the sides are arcs of about 0.6155 radians, the arc from
-        // an octant's side's middle to its middle); the two patches either
-        // side tilt opposite ways at worst.
-        let spans = network
+        let n = along(kp, a);
+        assert_eq!(n, along(kq, b));
+        for w in 0..n {
+            // The curve's pole `w` in its own order, along either walk.
+            let (wp, wq) = (
+                if rp { n - 1 - w } else { w },
+                if rq { n - 1 - w } else { w },
+            );
+            assert_eq!(
+                side_pole(a, kp, wp),
+                side_pole(b, kq, wq),
+                "curve shared by {p}, {q}"
+            );
+        }
+        for i in 0..=200 {
+            let t = f64::from(i) / 200.0;
+            let (ca, cb) = (
+                on_side(kp, if rp { 1.0 - t } else { t }),
+                on_side(kq, if rq { 1.0 - t } else { t }),
+            );
+            let (na, nb) = (
+                a.normal_at(ca.0, ca.1, T).unwrap().vector(),
+                b.normal_at(cb.0, cb.1, T).unwrap().vector(),
+            );
+            angle = angle.max(na.cross(nb).magnitude().atan2(na.dot(nb)));
+            let (pa, pb) = (
+                a.point_at(ca.0, ca.1, T).unwrap(),
+                b.point_at(cb.0, cb.1, T).unwrap(),
+            );
+            gap = gap.max(pa.distance(pb));
+        }
+    }
+    (angle, gap)
+}
+
+#[test]
+fn a_clean_rounded_corner_is_held_exactly_tangent_by_its_spans() {
+    // The ball's octant from a clean scan, to a thousandth: holding its
+    // corner with `γ` linear along each whole curve into it binds each
+    // curve to a single cubic and misses the points by 0.00107 at any
+    // spans, so the corner is held by the span of each curve next to it.
+    let (curves, patches) = rounded_corner();
+    let cloud = octant_points(20_000, 0.0, 3);
+    let (model, network) = fit(&curves, &patches, &cloud, &options(CLEAN_TOLERANCE, vec![]));
+    assert_eq!(network.ended, Ended::Met, "{network:?}");
+    assert!(network.per_patch.iter().all(|p| p.worst <= CLEAN_TOLERANCE));
+    let off = widest_off(&network, off_ball);
+    assert!(off <= CLEAN_TOLERANCE, "{off} off the ball");
+    let (angle, gap) = across_shared(&network, &patches);
+    assert!(angle <= EXACT_ANGLE, "{angle}");
+    assert!(gap <= ROUNDING_GAP, "{gap}");
+    assert!(
+        network.worst_tangent <= EXACT_ANGLE,
+        "{}",
+        network.worst_tangent
+    );
+    let [corner] = network.corners.as_slice() else {
+        panic!("{:?}", network.corners);
+    };
+    assert_eq!(corner.valence, 3);
+    assert!(corner.angle <= EXACT_ANGLE, "{corner:?}");
+    // The corner may slide along the ball from where the curves were drawn
+    // to meet, but stays on it.
+    assert!(off_ball(corner.point) <= CLEAN_TOLERANCE, "{corner:?}");
+    // Refined past one span each way, so each curve into the corner runs
+    // on past its span next to the corner, held there by the triples.
+    assert!(
+        network
             .per_patch
             .iter()
-            .map(|p| p.spans.0.max(p.spans.1))
-            .max()
-            .unwrap();
-        let spacing = BALL * 0.6155 / (3.0 * spans as f64);
-        let bound = 4.0 * tolerance / spacing;
-        assert!(corner.angle > 0.0, "{corner:?}");
-        assert!(corner.angle <= bound, "{corner:?} beyond {bound}");
-        assert!(network.worst_tangent >= corner.angle);
-        assert!(
-            network.worst_tangent <= bound,
-            "{} beyond {bound}",
-            network.worst_tangent
-        );
-        assert_sound_shell(&model, &network, 6);
+            .all(|p| p.spans.0 >= 2 && p.spans.1 >= 2),
+        "{:?}",
+        network.per_patch
+    );
+    assert_sound_shell(&model, &network, 6);
+}
+
+#[test]
+fn a_corner_left_near_tangent_is_reported_with_its_angle() {
+    // A cap of five patches from a clean scan, to a thousandth: neither
+    // way of holding its corner meets the points at their seed's
+    // parameters, so the curves into it are fitted near tangent and the
+    // corner's widest angle reported, as read off the patches.
+    let (curves, patches) = five_cap();
+    let cloud = cap_points(20_000, 0.0, 29);
+    let (model, network) = fit(&curves, &patches, &cloud, &options(CLEAN_TOLERANCE, vec![]));
+    assert_eq!(network.ended, Ended::Met, "{network:?}");
+    assert!(widest_off(&network, off_ball) <= CLEAN_TOLERANCE);
+    let [corner] = network.corners.as_slice() else {
+        panic!("{:?}", network.corners);
+    };
+    assert_eq!(corner.valence, 5);
+    let normals: Vec<_> = network
+        .surfaces
+        .iter()
+        .map(|s| s.normal_at(0.0, 0.0, T).unwrap().vector())
+        .collect();
+    let mut widest = 0.0_f64;
+    for (i, a) in normals.iter().enumerate() {
+        for b in &normals[i + 1..] {
+            widest = widest.max(a.cross(*b).magnitude().atan2(a.dot(*b)));
+        }
     }
+    // The same normals, evaluated the same way: equal to rounding.
+    assert!(
+        (corner.angle - widest).abs() <= EXACT_ANGLE,
+        "{corner:?} against {widest}"
+    );
+    assert!(network.worst_tangent >= corner.angle);
+    assert_sound_shell(&model, &network, 10);
 }
 
 #[test]
@@ -932,8 +1061,14 @@ fn on_ball_at(polar: f64, azimuth: f64) -> Point {
 /// spokes (curves 0 to 4) run from the top to the middles of the five
 /// arcs of the cap's rim, each arc two curves (5 to 14).
 fn five_cap() -> (Vec<CurveDef>, Vec<PatchDef>) {
-    let step = TAU / 5.0;
-    let mut curves: Vec<CurveDef> = (0..5)
+    cap(5)
+}
+
+/// A cap of the ball in `n` patches round its top, a corner of `n`, laid
+/// out as [`five_cap`]'s.
+fn cap(n: usize) -> (Vec<CurveDef>, Vec<PatchDef>) {
+    let step = TAU / n as f64;
+    let mut curves: Vec<CurveDef> = (0..n)
         .map(|k| ball_arc(on_ball(0.0, 0.0, 1.0), on_ball_at(CAP, step * k as f64)))
         .collect();
     let rim = |a: f64, b: f64| {
@@ -943,18 +1078,18 @@ fn five_cap() -> (Vec<CurveDef>, Vec<PatchDef>) {
                 .collect(),
         )
     };
-    for k in 0..5 {
+    for k in 0..n {
         let a = step * k as f64;
         curves.push(rim(a, a + step / 2.0));
         curves.push(rim(a + step / 2.0, a + step));
     }
-    let patches = (0..5)
+    let patches = (0..n)
         .map(|k| {
             PatchDef::four([
                 (k, false),
-                (5 + 2 * k, false),
-                (6 + 2 * k, false),
-                ((k + 1) % 5, true),
+                (n + 2 * k, false),
+                (n + 1 + 2 * k, false),
+                ((k + 1) % n, true),
             ])
         })
         .collect();
@@ -1143,4 +1278,194 @@ fn a_thirty_patch_cover_reads_back_from_step_tangent_and_shut() {
     }
     assert!(angle <= 0.001_f64.to_radians(), "{angle}");
     assert!(gap <= 1e-3, "{gap}");
+}
+
+/// How far the box's edge fillets run back from the rounded corner.
+const FILLET_RUN: f64 = 4.0;
+
+/// `p` turned a third of a turn about the diagonal `k` times: `x` to `y`,
+/// `y` to `z`, `z` to `x`.
+fn turned(p: Point, k: usize) -> Point {
+    (0..k % 3).fold(p, |p, _| Point::new(p.z, p.x, p.y))
+}
+
+/// The corner of a box rounded on its three edges with the edges' fillets
+/// attached: the ball's octant of [`rounded_corner`] (curves 0 to 8,
+/// patches 0 to 2), and along each edge, back from the octant, a quarter
+/// of the cylinder of the ball's radius round that edge's axis, in two
+/// patches either side of the line that runs straight on from the
+/// octant's curve into the corner (curves `9 + 5k` to `13 + 5k` for the
+/// fillet `k`). The ends of the octant's curves into its corner are now
+/// corners of four patches.
+fn filleted_corner() -> (Vec<CurveDef>, Vec<PatchDef>) {
+    let (mut curves, mut patches) = rounded_corner();
+    let line = |a: Point, b: Point| CurveDef::Polyline(vec![a, b]);
+    let ring = |x: f64, from: f64, to: f64| {
+        CurveDef::Polyline(
+            (0..=64)
+                .map(|i| {
+                    let a = (to - from).mul_add(f64::from(i) / 64.0, from);
+                    Point::new(x, BALL * a.cos(), BALL * a.sin())
+                })
+                .collect(),
+        )
+    };
+    // The fillet round `x`, from the octant's side in `x = 0` back to
+    // `x = −FILLET_RUN`, then turned onto the other two edges.
+    let back = -FILLET_RUN;
+    let (y, yz, z) = (
+        Point::new(0.0, BALL, 0.0),
+        on_ball(0.0, 1.0, 1.0),
+        Point::new(0.0, 0.0, BALL),
+    );
+    let at_back = |p: Point| Point::new(back, p.y, p.z);
+    let fillet = [
+        line(yz, at_back(yz)),
+        line(y, at_back(y)),
+        line(z, at_back(z)),
+        ring(back, 0.0, FRAC_PI_2 / 2.0),
+        ring(back, FRAC_PI_2, FRAC_PI_2 / 2.0),
+    ];
+    // The octant's curves along its side in `x = 0`, from `y` and from `z`
+    // to the side's middle, and those the turns take them to.
+    let sides = [(2, 5), (4, 1), (0, 3)];
+    for (k, &(from_y, from_z)) in sides.iter().enumerate() {
+        let base = curves.len();
+        for curve in &fillet {
+            let CurveDef::Polyline(points) = curve else {
+                unreachable!()
+            };
+            curves.push(CurveDef::Polyline(
+                points.iter().map(|&p| turned(p, k)).collect(),
+            ));
+        }
+        patches.push(PatchDef::four([
+            (from_y, true),
+            (base + 1, false),
+            (base + 3, false),
+            (base, true),
+        ]));
+        patches.push(PatchDef::four([
+            (from_z, false),
+            (base, false),
+            (base + 4, true),
+            (base + 2, true),
+        ]));
+    }
+    (curves, patches)
+}
+
+/// `count` points over the filleted corner, even over its area, off it
+/// along its normal by noise of deviation `noise`.
+fn filleted_points(count: usize, noise: f64, seed: u64) -> Vec<Point> {
+    let octant = PI * BALL * BALL / 2.0;
+    let fillet = FRAC_PI_2 * BALL * FILLET_RUN;
+    let mut draws = Draws(seed);
+    let ball = octant_points(count, noise, seed ^ 0x9e37);
+    let mut at = 0;
+    (0..count)
+        .map(|_| {
+            let pick = (octant + 3.0 * fillet) * draws.unit();
+            if pick < octant {
+                at += 1;
+                return ball[at - 1];
+            }
+            let k = (1..3)
+                .filter(|&k| pick - octant > fillet * f64::from(k))
+                .count();
+            let a = FRAC_PI_2 * draws.unit();
+            let r = noise.mul_add(draws.gaussian(), BALL);
+            let p = Point::new(-FILLET_RUN * draws.unit(), r * a.cos(), r * a.sin());
+            turned(p, k)
+        })
+        .collect()
+}
+
+/// The distance from `p` to the filleted corner: to the nearest of the
+/// octant and the three quarter cylinders, each point of them taken at
+/// `p`'s nearest point there.
+fn off_filleted(p: Point) -> f64 {
+    let ball = {
+        let q = Point::new(p.x.max(0.0), p.y.max(0.0), p.z.max(0.0)).to_vector();
+        p.distance(Point::ORIGIN + q * (BALL / q.magnitude()))
+    };
+    let fillet = |k: usize| {
+        // Turned back so the fillet runs along `x`.
+        let q = turned(p, 3 - k % 3);
+        let (y, z) = (q.y.max(0.0), q.z.max(0.0));
+        let r = y.hypot(z);
+        let on = Point::new(q.x.clamp(-FILLET_RUN, 0.0), BALL * y / r, BALL * z / r);
+        q.distance(on)
+    };
+    ball.min(fillet(0)).min(fillet(1)).min(fillet(2))
+}
+
+#[test]
+fn a_filleted_box_corner_is_held_exactly_tangent() {
+    // The rounded corner with its edges' fillets attached: each curve into
+    // the corner runs on to a corner of four patches, where it carries on
+    // straight across a fillet, so the corner is held by its spans and
+    // every curve, past the span next to it, by the pole triples. At the
+    // finer noise the octant's patches take two spans each way, so the
+    // knot past each span next to the corner is doubled.
+    let (curves, patches) = filleted_corner();
+    for noise in [NOISE, NOISE / 4.0] {
+        // Five deviations of the noise, as the other noisy clouds.
+        let tolerance = 5.0 * noise;
+        let cloud = filleted_points(40_000, noise, 37);
+        let (model, network) = fit(&curves, &patches, &cloud, &options(tolerance, vec![]));
+        assert_eq!(network.ended, Ended::Met, "noise {noise}: {network:?}");
+        let off = widest_off(&network, off_filleted);
+        assert!(
+            off <= tolerance / 2.0,
+            "noise {noise}: {off} off the corner"
+        );
+        let (angle, gap) = across_shared(&network, &patches);
+        assert!(angle <= EXACT_ANGLE, "noise {noise}: {angle}");
+        assert!(gap <= ROUNDING_GAP, "noise {noise}: {gap}");
+        assert!(
+            network.worst_tangent <= EXACT_ANGLE,
+            "noise {noise}: {}",
+            network.worst_tangent
+        );
+        let [corner] = network.corners.as_slice() else {
+            panic!("{:?}", network.corners);
+        };
+        assert_eq!(corner.valence, 3);
+        assert!(corner.angle <= EXACT_ANGLE, "{corner:?}");
+        if noise < NOISE {
+            assert!(
+                network.per_patch[..3]
+                    .iter()
+                    .all(|p| p.spans.0 >= 2 && p.spans.1 >= 2),
+                "{:?}",
+                network.per_patch
+            );
+        }
+        // The far ends of the fillets: two curves along each and the arcs
+        // across their ends.
+        assert_sound_shell(&model, &network, 12);
+    }
+}
+
+#[test]
+fn a_corner_of_six_patches_is_held_exactly_tangent() {
+    // An even corner: the twists round it close in a cycle that is always
+    // singular, and the rows holding the corner by its spans leave that
+    // cycle's one condition on the curves' own poles.
+    let (curves, patches) = cap(6);
+    let cloud = cap_points(20_000, NOISE, 29);
+    let (model, network) = fit(&curves, &patches, &cloud, &options(NOISY_TOLERANCE, vec![]));
+    assert_eq!(network.ended, Ended::Met, "{network:?}");
+    let off = widest_off(&network, off_ball);
+    assert!(off <= NOISY_TOLERANCE / 2.0, "{off} off the ball");
+    let (angle, gap) = across_shared(&network, &patches);
+    assert!(angle <= EXACT_ANGLE, "{angle}");
+    assert!(gap <= ROUNDING_GAP, "{gap}");
+    let [corner] = network.corners.as_slice() else {
+        panic!("{:?}", network.corners);
+    };
+    assert_eq!(corner.valence, 6);
+    assert!(corner.angle <= EXACT_ANGLE, "{corner:?}");
+    assert_sound_shell(&model, &network, 12);
 }

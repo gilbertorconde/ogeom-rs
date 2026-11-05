@@ -18,30 +18,40 @@
 //!   the ratio of the pole spacings either side, and is shared by every
 //!   curve that runs straight on through a corner of four patches, which
 //!   is what lets the constraints of the curves crossing there agree.
-//! - **a corner of an odd number of patches is held tangent where it
+//! - **a corner of other than four patches is held tangent where it
 //!   can be.** The triples hold the parameter lines that cross a curve to
 //!   one direction on both sides of it. At a corner of three patches (or
-//!   five, or the point a three-sided patch's missing side shrinks to) the
-//!   lines crossing a curve there lean one way on one side and the other
-//!   way on the other, and no triple holds; tangency there needs the cross
-//!   derivatives to differ by a multiple of the curve's own tangent,
-//!   `D₁ + λ D₂ + γ T = 0`. With `λ` constant and `γ` linear along the
-//!   curve that is a cubic spline on the curve's knots, nought where it is
-//!   nought at as many points as it has coefficients: an exact linear
-//!   condition, though not a pole-by-pole one. At the corner it puts the
-//!   curves' first poles in one plane, at ratios read off the fit without
-//!   the constraints. A corner of three or five patches whose curves all
-//!   run on to the network's border is held so, and every curve into it is
-//!   tangent to rounding, as long as the fit still comes within the
-//!   tolerance: the one ratio along each curve the condition allows is a
-//!   restriction the points at their seed's parameters need not admit.
-//!   Where they do not, and at any other corner of other than four patches
-//!   (an even count, whose twists close in a cycle that can be singular, or
-//!   a curve running on to a corner of four, which closes one there), a
-//!   curve with such a corner at an end is fitted without the triples:
-//!   near tangent as the points are smooth, its angle measured into
-//!   [`Network::worst_tangent`]. Every such corner's widest angle between
-//!   the patches' normals is reported in [`Network::corners`].
+//!   five, or six, or the point a three-sided patch's missing side shrinks
+//!   to) the lines crossing a curve there lean one way on one side and the
+//!   other way on the other, and no triple holds; tangency there needs the
+//!   cross derivatives to differ by a multiple of the curve's own tangent,
+//!   `D₁ + λ D₂ + γ T = 0`. At the corner that puts the curves' first poles
+//!   in one plane, at ratios read off the fit without the constraints. A
+//!   corner of an odd number of patches whose curves all run on to the
+//!   network's border is first held with `λ` constant and `γ` linear along
+//!   each whole curve: a cubic spline on the curve's knots, nought where it
+//!   is nought at as many points as it has coefficients, an exact linear
+//!   condition though not a pole-by-pole one. It binds each curve to a
+//!   single cubic where `γ` is not nought at its knots. Otherwise, or
+//!   where that misses the points, a corner is held by its spans: the knot
+//!   past each curve's span next to the corner is doubled, that span is a
+//!   quadratic, and `γ` is a quadratic over it with a double root at its
+//!   far end and nought past it. Past that span the curve is held by the
+//!   pole triples at its corner's ratio, so its far end may be on the
+//!   border or a corner of four patches (an edge's fillet attached to a
+//!   rounded box corner), and spans raised there shrink the quadratic span.
+//!   So a corner of three patches or more, other than four, whose curves
+//!   each run on to the border or a corner of four patches is held, every
+//!   curve into it tangent to rounding, as long as the fit still comes
+//!   within the tolerance: the one ratio along each curve these conditions
+//!   allow is a restriction the points at their seed's parameters need not
+//!   admit. Where no way of holding it does, and at any other corner of
+//!   other than four patches (an apex, a junction, or a corner whose curves
+//!   run on to another such corner or to a junction), a curve with such a
+//!   corner at an end is fitted without the triples: near tangent as the
+//!   points are smooth, its angle measured into [`Network::worst_tangent`].
+//!   Every such corner's widest angle between the patches' normals is
+//!   reported in [`Network::corners`].
 //! - **a side may be a chain of curves.** A curve may end on the middle of
 //!   a patch's side (a T-junction), the side then a chain of curves meeting
 //!   there ([`ChainedPatch`]). The patch takes a knot of multiplicity three
@@ -294,9 +304,11 @@ pub struct Network {
 /// too coarse for the shape misses for its neighbour. A patch misses only
 /// in a cell holding as many points as the sixteen poles that bear on it,
 /// and a point farther off than the noise of its cell reaches is a stray
-/// rather than a miss. Where corners of an odd number of patches are held
-/// tangent and the refined fit still misses a point, the network is
-/// refined again from the start with those corners near tangent instead.
+/// rather than a miss. Where corners of other than four patches can be
+/// held tangent, the network is refined from the start with each way of
+/// holding them the [module documentation](self) describes in turn, until
+/// one comes within the tolerance; failing that, with those corners near
+/// tangent.
 ///
 /// The faces are built in `model` on the fitted patches, every curve an
 /// edge on the poles the patches share, with the parameter lines of the
@@ -400,18 +412,45 @@ pub fn fit_network_chained(
         taken: &taken,
         weights: &weights,
         smoothing: options.smoothing,
-        corners: !topo.odd_corners.is_empty(),
+        corners: Corners::Loose,
         tol,
     };
-    let (mut spans, mut current, mut ended) = fit.refine(options)?;
     // A corner held exactly tangent binds its curves' cross derivatives to
     // a relation with one ratio along each, which the points at the seed's
-    // parameters need not admit within the tolerance at any spans. Where
-    // they do not, the corners are left near tangent, as without them.
-    if fit.corners && ended != Ended::Met {
-        fit.corners = false;
-        (spans, current, ended) = fit.refine(options)?;
+    // parameters need not admit within the tolerance. Each way of holding
+    // the corners is refined in turn until one comes within it, the corners
+    // left near tangent last. Holding a corner by its spans holds every
+    // corner held whole and more besides; where it holds no more, the
+    // corners are held whole first.
+    let mut tries = Vec::with_capacity(3);
+    let whole = !topo.odd_corners.is_empty();
+    let spanned = !topo.span_corners.is_empty();
+    let more = topo
+        .span_corners
+        .iter()
+        .any(|(v, _)| !topo.odd_corners.iter().any(|(w, _)| w == v));
+    if spanned && more {
+        tries.push(Corners::Spans);
     }
+    if whole {
+        tries.push(Corners::Whole);
+    }
+    if spanned && !more {
+        tries.push(Corners::Spans);
+    }
+    tries.push(Corners::Loose);
+    let mut settled = None;
+    for corners in tries {
+        fit.corners = corners;
+        let (spans, current, ended) = fit.refine(options)?;
+        if ended == Ended::Met || corners == Corners::Loose {
+            settled = Some((spans, current, ended));
+            break;
+        }
+    }
+    let Some((spans, mut current, ended)) = settled else {
+        ogeom_bail!(Numeric, "no way of holding the corners was tried");
+    };
     // Parameter correction, at the spans refinement settled on. Refinement
     // fits every try at the seed's parameters, so that tries compare as
     // fits of the same points at the same parameters rather than as
@@ -587,17 +626,35 @@ fn strip_weights(topo: &Topology, drawn: &[Vec<Point>]) -> Vec<f64> {
         .collect()
 }
 
+/// How many knots each strip takes beyond one per span: one for each end
+/// of it whose first knot in is doubled, where it has a knot inside it.
+fn extra_knots(spans: usize, doubled: [bool; 2]) -> usize {
+    match spans {
+        1 => 0,
+        2 => usize::from(doubled[0] || doubled[1]),
+        _ => usize::from(doubled[0]) + usize::from(doubled[1]),
+    }
+}
+
 /// The knots of a run of strips over the unit interval, and the bounds of
 /// each strip's share of it: each strip's spans even over its share, the
 /// shares in proportion to the strips' weights, and a knot of multiplicity
 /// the degree at each junction between two strips, where the run's poles
-/// pass through the junction's.
+/// pass through the junction's. `flips` says which strips the run crosses
+/// against their own direction, and `doubled` which ends of each strip, in
+/// its own direction, have their first knot in doubled (none where it is
+/// empty).
 fn run_knots(
     strips: &[usize],
+    flips: &[bool],
     spans: &[usize],
     weights: &[f64],
+    doubled: &[[bool; 2]],
 ) -> OgeomResult<(KnotVector, Vec<f64>)> {
-    if let [one] = strips {
+    let ends = |s: usize| doubled.get(s).copied().unwrap_or([false; 2]);
+    if let [one] = strips
+        && extra_knots(spans[*one], ends(*one)) == 0
+    {
         return Ok((even_knots(spans[*one])?, vec![0.0, 1.0]));
     }
     let total: f64 = strips.iter().map(|&s| weights[s]).sum();
@@ -614,8 +671,18 @@ fn run_knots(
     let mut knots = vec![0.0; DEGREE + 1];
     for (i, &s) in strips.iter().enumerate() {
         let (a, b) = (bounds[i], bounds[i + 1]);
-        for k in 1..spans[s] {
-            knots.push((b - a).mul_add(precise(k) / precise(spans[s]), a));
+        let (n, [first, last]) = (spans[s], ends(s));
+        let flip = flips.get(i).copied().unwrap_or(false);
+        for k in 1..n {
+            let x = if strips.len() == 1 {
+                precise(k) / precise(n)
+            } else {
+                (b - a).mul_add(precise(k) / precise(n), a)
+            };
+            // The knot's place counted in the strip's own direction.
+            let own = if flip { n - k } else { k };
+            let twice = (own == 1 && first) || (own == n - 1 && last);
+            knots.extend(core::iter::repeat_n(x, 1 + usize::from(twice)));
         }
         if i + 1 < strips.len() {
             knots.extend(core::iter::repeat_n(b, DEGREE));
@@ -650,8 +717,14 @@ struct Layout {
 }
 
 impl Layout {
-    fn new(topo: &Topology, spans: &[usize]) -> Self {
-        let controls: Vec<usize> = spans.iter().map(|s| s + DEGREE).collect();
+    /// The layout over `spans` per strip, the ends of each strip named in
+    /// `doubled` with their first knot in doubled.
+    fn new(topo: &Topology, spans: &[usize], doubled: &[[bool; 2]]) -> Self {
+        let controls: Vec<usize> = spans
+            .iter()
+            .zip(doubled)
+            .map(|(&s, &ends)| s + DEGREE + extra_knots(s, ends))
+            .collect();
         let curve_poles: Vec<usize> = topo
             .curve_strip
             .iter()
@@ -893,7 +966,7 @@ impl Seeds {
                 if settled[c] {
                     continue;
                 }
-                let (knots, _) = run_knots(&topo.curve_strip[c], &spans, weights)?;
+                let (knots, _) = run_knots(&topo.curve_strip[c], &[], &spans, weights, &[])?;
                 let curve = ogeom_geom::BSplineCurve::new(knots.clone(), poles_of(c, &knots), tol)?;
                 let mut within = true;
                 for (p, &t) in drawn[c].iter().zip(&chords[c]) {
@@ -937,8 +1010,8 @@ impl Seeds {
         let mut all_bounds = Vec::with_capacity(patches.len());
         for (p, patch) in patches.iter().enumerate() {
             let [su, sv] = &topo.patch_strips[p];
-            let (ku, bu) = run_knots(su, &spans, weights)?;
-            let (kv, bv) = run_knots(sv, &spans, weights)?;
+            let (ku, bu) = run_knots(su, &[], &spans, weights, &[])?;
+            let (kv, bv) = run_knots(sv, &[], &spans, weights, &[])?;
             let (nu, nv) = (ku.control_point_count(), kv.control_point_count());
             let mut net = vec![Point::ORIGIN; nu * nv];
             for (k, side) in patch.sides.iter().enumerate() {
@@ -949,7 +1022,7 @@ impl Seeds {
                     let mut poles: Vec<Point> = Vec::with_capacity(n);
                     for piece in side {
                         let (knots, _) =
-                            run_knots(&topo.curve_strip[piece.curve], &spans, weights)?;
+                            run_knots(&topo.curve_strip[piece.curve], &[], &spans, weights, &[])?;
                         let mut own = poles_of(piece.curve, &knots);
                         if piece.reversed {
                             own.reverse();
@@ -1147,6 +1220,22 @@ struct Local {
     rhs: Vec<[f64; 3]>,
 }
 
+/// Which corners of other than four patches are held exactly tangent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Corners {
+    /// None: every curve into one is fitted near tangent.
+    Loose,
+    /// The corners of an odd number of patches whose curves all run on to
+    /// the border, `γ` linear along each whole curve.
+    Whole,
+    /// The corners of an odd number of patches, or an even number above
+    /// four, held by the span of each curve next to them: that span a
+    /// quadratic, `γ` quadratic over it and nought past it, so that past it
+    /// the curve is held by the pole triples and may run on to a corner of
+    /// four patches.
+    Spans,
+}
+
 /// The fitting problem, fixed across rounds.
 struct Fit<'a> {
     topo: &'a Topology,
@@ -1154,9 +1243,9 @@ struct Fit<'a> {
     taken: &'a Taken,
     weights: &'a [f64],
     smoothing: f64,
-    /// Whether the corners of an odd number of patches are held exactly
-    /// tangent.
-    corners: bool,
+    /// Which corners of other than four patches are held exactly tangent,
+    /// and how.
+    corners: Corners,
     tol: Tolerances,
 }
 
@@ -1187,6 +1276,49 @@ impl Round {
 
 /// Slots and their weights.
 type Weighted = Vec<(usize, f64)>;
+
+/// A constraint row: slots and their coefficients, summing to nought.
+type Row = Vec<(usize, f64)>;
+
+/// How the curves into a corner of other than four patches relate there.
+struct Relation {
+    /// The corner's vertex.
+    vertex: usize,
+    /// Each curve's pole next to the corner and the poles beside it there in
+    /// its first and second patch.
+    near: Vec<(usize, usize, usize)>,
+    /// The curves in turn round the corner.
+    order: Vec<usize>,
+    /// Each curve's `λ` and `g` there.
+    weights: Vec<(f64, f64)>,
+}
+
+impl Relation {
+    /// The rows holding the relation: `n − 2` consecutive curves' own, the
+    /// other two following from them.
+    fn rows(&self) -> Vec<Vec<(usize, f64)>> {
+        self.order[..self.order.len() - 2]
+            .iter()
+            .map(|&i| {
+                let (left, own, right) = self.near[i];
+                let (lambda, g) = self.weights[i];
+                vec![
+                    (left, 1.0),
+                    (right, lambda),
+                    (own, g),
+                    (self.vertex, -(1.0 + lambda + g)),
+                ]
+            })
+            .collect()
+    }
+}
+
+/// A corner held by its spans, with its relation where it has one.
+struct Related {
+    vertex: usize,
+    curves: Vec<usize>,
+    relation: Option<Relation>,
+}
 
 /// A constraint row keyed by its slots: the middle one, then the other two
 /// in order.
@@ -1251,19 +1383,23 @@ impl Fit<'_> {
     /// Fit over `spans` per strip, the points at `at`.
     fn round(&self, spans: &[usize], at: &[(f64, f64)]) -> OgeomResult<Round> {
         let topo = self.topo;
-        let layout = Layout::new(topo, spans);
+        let doubled = self.doubled();
+        let layout = Layout::new(topo, spans, &doubled);
         let mut patch_knots = Vec::with_capacity(self.patches.len());
         let mut patch_bounds = Vec::with_capacity(self.patches.len());
-        for [su, sv] in &topo.patch_strips {
-            let (ku, bu) = run_knots(su, spans, self.weights)?;
-            let (kv, bv) = run_knots(sv, spans, self.weights)?;
+        for ([su, sv], [fu, fv]) in topo.patch_strips.iter().zip(&topo.patch_flip) {
+            let (ku, bu) = run_knots(su, fu, spans, self.weights, &doubled)?;
+            let (kv, bv) = run_knots(sv, fv, spans, self.weights, &doubled)?;
             patch_knots.push([ku, kv]);
             patch_bounds.push([bu, bv]);
         }
         let curve_knots: Vec<KnotVector> = topo
             .curve_strip
             .iter()
-            .map(|strips| run_knots(strips, spans, self.weights).map(|k| k.0))
+            .zip(&topo.curve_flip)
+            .map(|(strips, flips)| {
+                run_knots(strips, flips, spans, self.weights, &doubled).map(|k| k.0)
+            })
             .collect::<OgeomResult<_>>()?;
         let locals: Vec<Local> = ogeom_core::parallel::map_ordered(
             &(0..self.patches.len()).collect::<Vec<_>>(),
@@ -1283,9 +1419,51 @@ impl Fit<'_> {
         };
         let loose = self.solve(&layout, &locals, &loose_basis)?;
         let mut rows: Vec<Vec<(usize, f64)>> = junctions.values().cloned().collect();
-        rows.extend(self.tangency(&layout, &loose, &junctions)?);
-        if self.corners {
-            rows.extend(self.corner_rows(&layout, &loose, &curve_knots));
+        match self.corners {
+            Corners::Loose => {
+                rows.extend(self.tangency(&layout, &loose, &junctions, &[])?.0);
+            }
+            Corners::Whole => {
+                rows.extend(self.tangency(&layout, &loose, &junctions, &[])?.0);
+                rows.extend(self.corner_rows(&layout, &loose, &curve_knots));
+            }
+            Corners::Spans => {
+                let related: Vec<Related> = self
+                    .topo
+                    .span_corners
+                    .iter()
+                    .map(|(v, curves)| Related {
+                        vertex: *v,
+                        curves: curves.clone(),
+                        relation: self.relate(&layout, &loose, *v, curves),
+                    })
+                    .collect();
+                let (triples, untied) = self.tangency(&layout, &loose, &junctions, &related)?;
+                rows.extend(triples);
+                let holding = &self.topo.spanned;
+                for corner in &related {
+                    let Some(relation) = &corner.relation else {
+                        continue;
+                    };
+                    let tied = corner
+                        .curves
+                        .iter()
+                        .all(|&c| holding.chain[c].is_some_and(|(chain, _)| !untied[chain]));
+                    if !tied {
+                        continue;
+                    }
+                    rows.extend(relation.rows());
+                    for (i, &c) in corner.curves.iter().enumerate() {
+                        rows.extend(self.span_rows(
+                            &layout,
+                            c,
+                            corner.vertex,
+                            relation.weights[i],
+                            &curve_knots[c],
+                        ));
+                    }
+                }
+            }
         }
         let basis = null_space(layout.slots, &rows);
         let poles = self.solve(&layout, &locals, &basis)?;
@@ -1507,31 +1685,73 @@ impl Fit<'_> {
             .collect())
     }
 
+    /// The curves held by the pole triples, as the corners are held.
+    fn holding(&self) -> &topology::Holding {
+        if self.corners == Corners::Spans {
+            &self.topo.spanned
+        } else {
+            &self.topo.plain
+        }
+    }
+
+    /// Which ends of each strip have their first knot in doubled: the end
+    /// at each corner held by its spans, of each curve into it.
+    fn doubled(&self) -> Vec<[bool; 2]> {
+        let topo = self.topo;
+        let mut doubled = vec![[false; 2]; topo.strips];
+        if self.corners == Corners::Spans {
+            for (v, curves) in &topo.span_corners {
+                for &c in curves {
+                    let starts = topo.curve_ends[c].0 == *v;
+                    doubled[topo.curve_strip[c][0]][usize::from(starts == topo.curve_flip[c][0])] =
+                        true;
+                }
+            }
+        }
+        doubled
+    }
+
     /// The tangency rows: for each pole of each curve held tangent, the
     /// pole and the poles one row into either patch on one line,
     /// `(1 + λ) B − L − λ R = 0`, `L` in the curve's first patch, `λ` its
-    /// chain's ratio of pole spacings in the fit `loose`.
+    /// chain's ratio of pole spacings in the fit `loose`; and which chains
+    /// are left untied.
     ///
     /// A triple that is one of the `junctions` rows (a curve ending at a
     /// T-junction, the line on through it the patch's own) is held by that
-    /// row, and pins its chain's ratio to the row's; a chain pinned to two
-    /// ratios is left untied, its curves near tangent.
+    /// row, and pins its chain's ratio to the row's. A curve into one of the
+    /// `corners` pins its chain's ratio to its own `λ` there, and its two
+    /// poles nearest the corner are held by the corner's rows instead; a
+    /// corner without a relation unties its curves' chains. A chain pinned
+    /// to two ratios is left untied, its curves near tangent.
     fn tangency(
         &self,
         layout: &Layout,
         loose: &[Point],
         junctions: &Keyed,
-    ) -> OgeomResult<Vec<Vec<(usize, f64)>>> {
+        corners: &[Related],
+    ) -> OgeomResult<(Vec<Row>, Vec<bool>)> {
         let topo = self.topo;
+        let holding = self.holding();
+        // The poles of each curve the corners hold.
+        let mut skipped: Vec<[bool; 2]> = vec![[false; 2]; topo.users.len()];
+        for corner in corners {
+            for &c in &corner.curves {
+                skipped[c][usize::from(topo.curve_ends[c].0 != corner.vertex)] = true;
+            }
+        }
         // Each held triple: (curve, B, L, R) slots.
         let mut triples: Vec<(usize, usize, usize, usize)> = Vec::new();
-        for c in 0..topo.users.len() {
-            if !topo.held[c] {
+        for (c, [at_start, at_end]) in skipped.into_iter().enumerate() {
+            if !holding.held[c] {
                 continue;
             }
             let n = layout.along(c);
             let beside = |user: (usize, usize), q: usize| self.beside(layout, user, c, q);
             for q in 0..n {
+                if (at_start && q < 2) || (at_end && q + 2 >= n) {
+                    continue;
+                }
                 triples.push((
                     c,
                     layout.curve_slot(topo, c, q),
@@ -1542,26 +1762,48 @@ impl Fit<'_> {
         }
         // Each chain's pin, as the ratio's numerator and denominator, and
         // whether two pins disagree.
-        let mut pins: Vec<Option<(f64, f64)>> = vec![None; topo.chains];
-        let mut untied = vec![false; topo.chains];
-        let mut sums = vec![(0.0, 0.0); topo.chains];
+        let mut pins: Vec<Option<(f64, f64)>> = vec![None; holding.chains];
+        let mut untied = vec![false; holding.chains];
+        let mut pin = |chain: usize, pinned: (f64, f64)| match pins[chain] {
+            None => pins[chain] = Some(pinned),
+            Some(held) => {
+                if held.0 * pinned.1 != pinned.0 * held.1 {
+                    untied[chain] = true;
+                }
+            }
+        };
+        let mut unpinned = Vec::new();
+        for corner in corners {
+            for (i, &c) in corner.curves.iter().enumerate() {
+                let Some((chain, inverse)) = holding.chain[c] else {
+                    continue;
+                };
+                match &corner.relation {
+                    Some(relation) => {
+                        let lambda = relation.weights[i].0;
+                        pin(
+                            chain,
+                            if inverse {
+                                (1.0, lambda)
+                            } else {
+                                (lambda, 1.0)
+                            },
+                        );
+                    }
+                    None => unpinned.push(chain),
+                }
+            }
+        }
+        let mut sums = vec![(0.0, 0.0); holding.chains];
         for &(c, b, l, r) in &triples {
-            let Some((chain, inverse)) = topo.chain[c] else {
+            let Some((chain, inverse)) = holding.chain[c] else {
                 continue;
             };
             if let Some(row) = junctions.get(&(b, l.min(r), l.max(r))) {
                 // The row reads `a B − x L − y R`, so `λ = y / x`.
                 let of = |slot: usize| row.iter().find(|t| t.0 == slot).map_or(0.0, |t| -t.1);
                 let (x, y) = (of(l), of(r));
-                let pin = if inverse { (x, y) } else { (y, x) };
-                match pins[chain] {
-                    None => pins[chain] = Some(pin),
-                    Some(held) => {
-                        if held.0 * pin.1 != pin.0 * held.1 {
-                            untied[chain] = true;
-                        }
-                    }
-                }
+                pin(chain, if inverse { (x, y) } else { (y, x) });
                 continue;
             }
             let (near, far) = (loose[b].distance(loose[l]), loose[r].distance(loose[b]));
@@ -1569,18 +1811,21 @@ impl Fit<'_> {
             sums[chain].0 += num;
             sums[chain].1 += den;
         }
-        let mut ratio = Vec::with_capacity(topo.chains);
+        for chain in unpinned {
+            untied[chain] = true;
+        }
+        let mut ratio = Vec::with_capacity(holding.chains);
         for (chain, &(num, den)) in sums.iter().enumerate() {
             if let Some((num, den)) = pins[chain] {
                 // Opposite parities somewhere are served by a ratio of one
                 // alone.
-                if topo.conflicted[chain] && num != den {
+                if holding.conflicted[chain] && num != den {
                     untied[chain] = true;
                 }
                 ratio.push(num / den);
                 continue;
             }
-            if topo.conflicted[chain] {
+            if holding.conflicted[chain] {
                 ratio.push(1.0);
                 continue;
             }
@@ -1594,10 +1839,31 @@ impl Fit<'_> {
             }
             ratio.push(rho);
         }
-        Ok(triples
+        // A corner with a curve untied is held by none of its rows: its
+        // curves are untied together.
+        loop {
+            let mut changed = false;
+            for corner in corners {
+                let chains: Vec<usize> = corner
+                    .curves
+                    .iter()
+                    .filter_map(|&c| holding.chain[c].map(|(chain, _)| chain))
+                    .collect();
+                if chains.iter().any(|&chain| untied[chain]) {
+                    for chain in chains {
+                        changed |= !untied[chain];
+                        untied[chain] = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let rows = triples
             .iter()
             .filter_map(|&(c, b, l, r)| {
-                let (chain, inverse) = topo.chain[c]?;
+                let (chain, inverse) = holding.chain[c]?;
                 if untied[chain] || junctions.contains_key(&(b, l.min(r), l.max(r))) {
                     return None;
                 }
@@ -1608,7 +1874,8 @@ impl Fit<'_> {
                 };
                 Some(vec![(b, 1.0 + lambda), (l, -1.0), (r, -lambda)])
             })
-            .collect())
+            .collect();
+        Ok((rows, untied))
     }
 
     /// The slot of the pole one row into patch side `user` beside curve
@@ -1626,121 +1893,207 @@ impl Fit<'_> {
     /// `D₁(t)` and `D₂(t)` (the differences of the poles one row in from
     /// the curve's, on the curve's knots), and the patches share a tangent
     /// plane wherever `D₁ + λ D₂ + γ T = 0`, `T` the curve's own derivative
-    /// and `λ > 0`. At the corner `D₁` and `D₂` run along the neighbouring
-    /// curves, so there the condition is a relation among the first poles
-    /// of the curves along each of them: they lie in one plane through the
-    /// corner. With `λ` and `γ` constant along the curve the left side is
-    /// a cubic spline with double knots, `C¹` where the curve's knots are,
-    /// so it is nought throughout where it is nought at the corner and at
-    /// two points inside each span and the far end, which is as many points
-    /// as it has coefficients: an exact, linear condition on the poles,
-    /// though no pole-by-pole one.
-    ///
-    /// The relations at the corner come from the fit `loose`: its first
-    /// poles projected on the plane their consecutive cross products face,
-    /// each curve's `λ` and `γ` the unique relation among its own first
-    /// pole and the two beside it there. Those of `n` curves round a
-    /// corner have `n − 2` independent ones, so `n − 2` consecutive ones
-    /// are held and the other two follow. The cross derivatives at the
-    /// corner differentiated along each curve bring in each patch's twist
-    /// pole, once from either side, in a cycle that an odd number of
-    /// positive ratios never makes singular; at an even number it can
-    /// (the vertex enclosure condition), and a curve running on to a corner
-    /// of four patches would close such a cycle there too, so neither is
-    /// held. A corner whose relations do not give every curve a positive
-    /// ratio is left near tangent.
+    /// and `λ > 0`. At the corner the condition is the corner's
+    /// [relation](Self::relate). With `λ` constant and `γ` linear along the
+    /// curve the left side is a cubic spline with double knots, `C¹` where
+    /// the curve's knots are, so it is nought throughout where it is nought
+    /// at the corner and at two points inside each span and the far end,
+    /// which is as many points as it has coefficients: an exact, linear
+    /// condition on the poles, though no pole-by-pole one.
     fn corner_rows(
         &self,
         layout: &Layout,
         loose: &[Point],
         curve_knots: &[KnotVector],
     ) -> Vec<Vec<(usize, f64)>> {
-        let topo = self.topo;
         let mut rows = Vec::new();
-        for (v, curves) in &topo.odd_corners {
-            let v = *v;
-            // Each curve's pole next to the corner, and the poles beside it
-            // there in its first and second patch: those of the curves
-            // either side.
-            let near: Vec<(usize, usize, usize)> = curves
-                .iter()
-                .map(|&c| {
-                    let n = layout.along(c);
-                    let (at, next) = if topo.curve_ends[c].0 == v {
-                        (0, 1)
-                    } else {
-                        (n - 1, n - 2)
-                    };
-                    let [first, second] = [topo.users[c][0], topo.users[c][1]];
-                    (
-                        self.beside(layout, first, c, at),
-                        layout.curve_slot(topo, c, next),
-                        self.beside(layout, second, c, at),
-                    )
-                })
-                .collect();
-            // The curves in turn round the corner.
-            let mut order = vec![0];
-            while order.len() < curves.len() {
-                let last = near[order[order.len() - 1]];
-                let Some(next) = (0..curves.len())
-                    .find(|&i| !order.contains(&i) && (near[i].1 == last.0 || near[i].1 == last.2))
-                else {
-                    break;
-                };
-                order.push(next);
-            }
-            let closes = {
-                let (first, last) = (near[order[0]], near[order[order.len() - 1]]);
-                order.len() == curves.len() && (first.0 == last.1 || first.2 == last.1)
-            };
-            if !closes {
+        for (v, curves) in &self.topo.odd_corners {
+            let Some(relation) = self.relate(layout, loose, *v, curves) else {
                 continue;
-            }
-            let e = |slot: usize| loose[slot] - loose[v];
-            let mut normal = Vector::ZERO;
-            for (k, &i) in order.iter().enumerate() {
-                let j = order[(k + 1) % order.len()];
-                normal += e(near[i].1).cross(e(near[j].1));
-            }
-            let first = e(near[order[0]].1);
-            let x = first - normal * (first.dot(normal) / normal.dot(normal));
-            let y = normal.cross(x);
-            let flat = |slot: usize| {
-                let d = e(slot);
-                (d.dot(x), d.dot(y))
             };
-            // Each curve's `λ` and `γ` at the corner: `e₁ + λ e₂ + g e = 0`
-            // in the plane.
-            let mut weights = Vec::with_capacity(curves.len());
-            for &(left, own, right) in &near {
-                let ((lx, ly), (ox, oy), (rx, ry)) = (flat(left), flat(own), flat(right));
-                let det = rx.mul_add(oy, -(ry * ox));
-                let lambda = (ly.mul_add(ox, -(lx * oy))) / det;
-                let g = (lx.mul_add(ry, -(ly * rx))) / det;
-                if !(lambda > 0.0 && lambda.is_finite() && g.is_finite()) {
-                    break;
-                }
-                weights.push((lambda, g));
-            }
-            if weights.len() < curves.len() {
-                continue;
-            }
-            for &i in &order[..curves.len() - 2] {
-                let (left, own, right) = near[i];
-                let (lambda, g) = weights[i];
-                rows.push(vec![
-                    (left, 1.0),
-                    (right, lambda),
-                    (own, g),
-                    (v, -(1.0 + lambda + g)),
-                ]);
-            }
+            rows.extend(relation.rows());
             for (i, &c) in curves.iter().enumerate() {
-                rows.extend(self.along_rows(layout, loose, c, v, weights[i], &curve_knots[c]));
+                rows.extend(self.along_rows(
+                    layout,
+                    loose,
+                    c,
+                    *v,
+                    relation.weights[i],
+                    &curve_knots[c],
+                ));
             }
         }
         rows
+    }
+
+    /// How the curves into corner `v` of other than four patches relate
+    /// there, read off the fit `loose`; `None` where they do not close
+    /// round it or a curve's ratio is not positive.
+    ///
+    /// At the corner `D₁` and `D₂` run along the neighbouring curves, so
+    /// there `D₁ + λ D₂ + γ T = 0` is a relation among the first poles of
+    /// the curves along each of them: they lie in one plane through the
+    /// corner. The relations come from `loose`: its first poles projected
+    /// on the plane their consecutive cross products face, each curve's `λ`
+    /// and `γ` the unique relation among its own first pole and the two
+    /// beside it there. Those of `n` curves round a corner have `n − 2`
+    /// independent ones, so `n − 2` consecutive ones are held and the other
+    /// two follow.
+    ///
+    /// The cross derivatives at the corner differentiated along each curve
+    /// bring in each patch's twist pole, once from either side, in a cycle.
+    /// Each curve's ratio is that of the cross products of its first pole
+    /// with those of the curves either side, so the ratios round the corner
+    /// multiply to one: the cycle is never singular at an odd number of
+    /// curves and always singular at an even one (the vertex enclosure
+    /// condition), where it leaves one condition on the curves' own poles.
+    /// Corners held whole are odd only; a corner held by its spans may be
+    /// even, the condition then falling on the poles of the curves' spans
+    /// next to it.
+    fn relate(
+        &self,
+        layout: &Layout,
+        loose: &[Point],
+        v: usize,
+        curves: &[usize],
+    ) -> Option<Relation> {
+        let topo = self.topo;
+        // Each curve's pole next to the corner, and the poles beside it
+        // there in its first and second patch: those of the curves either
+        // side.
+        let near: Vec<(usize, usize, usize)> = curves
+            .iter()
+            .map(|&c| {
+                let n = layout.along(c);
+                let (at, next) = if topo.curve_ends[c].0 == v {
+                    (0, 1)
+                } else {
+                    (n - 1, n - 2)
+                };
+                let [first, second] = [topo.users[c][0], topo.users[c][1]];
+                (
+                    self.beside(layout, first, c, at),
+                    layout.curve_slot(topo, c, next),
+                    self.beside(layout, second, c, at),
+                )
+            })
+            .collect();
+        // The curves in turn round the corner.
+        let mut order = vec![0];
+        while order.len() < curves.len() {
+            let last = near[order[order.len() - 1]];
+            let next = (0..curves.len())
+                .find(|&i| !order.contains(&i) && (near[i].1 == last.0 || near[i].1 == last.2))?;
+            order.push(next);
+        }
+        let (first, last) = (near[order[0]], near[order[order.len() - 1]]);
+        if !(first.0 == last.1 || first.2 == last.1) {
+            return None;
+        }
+        let e = |slot: usize| loose[slot] - loose[v];
+        let mut normal = Vector::ZERO;
+        for (k, &i) in order.iter().enumerate() {
+            let j = order[(k + 1) % order.len()];
+            normal += e(near[i].1).cross(e(near[j].1));
+        }
+        let first = e(near[order[0]].1);
+        let x = first - normal * (first.dot(normal) / normal.dot(normal));
+        let y = normal.cross(x);
+        let flat = |slot: usize| {
+            let d = e(slot);
+            (d.dot(x), d.dot(y))
+        };
+        // Each curve's `λ` and `γ` at the corner: `e₁ + λ e₂ + g e = 0` in
+        // the plane.
+        let mut weights = Vec::with_capacity(curves.len());
+        for &(left, own, right) in &near {
+            let ((lx, ly), (ox, oy), (rx, ry)) = (flat(left), flat(own), flat(right));
+            let det = rx.mul_add(oy, -(ry * ox));
+            let lambda = (ly.mul_add(ox, -(lx * oy))) / det;
+            let g = (lx.mul_add(ry, -(ly * rx))) / det;
+            if !(lambda > 0.0 && lambda.is_finite() && g.is_finite()) {
+                return None;
+            }
+            weights.push((lambda, g));
+        }
+        Some(Relation {
+            vertex: v,
+            near,
+            order,
+            weights,
+        })
+    }
+
+    /// The rows holding `D₁ + λ D₂ + γ T` nought along the span of curve
+    /// `c` next to its end at corner `v`, which the curve's other poles'
+    /// triples leave free, and that span a quadratic; `weights` are `λ`
+    /// and the relation's `g` at `v`.
+    ///
+    /// The knot past that span is doubled, so over it the two basis
+    /// functions nearest the corner are the cubic Bernstein polynomials
+    /// `(1 − x)³` and `3 x (1 − x)²`, `x` running across the span from the
+    /// corner, and the patches are only `C¹` across its far end. With `γ`
+    /// quadratic over the span, `γ(0) (1 − x)²`, and nought past it, and `T`
+    /// linear over it, `γ T` is `γ(0) T(0)` times the first and `γ(0) T(1)
+    /// / 3` times the second; the curve's triples past those two poles hold
+    /// the rest nought. So the triple of the pole next to the corner is
+    /// `−γ(0) T(0)`, which is the corner's relation, and that of the pole
+    /// after it `−γ(0) T(1) / 3`, `T(1)` the curve's derivative at the far
+    /// end of the span: the left side is then nought throughout, `C¹` across
+    /// the span's far end on either side, as `γ` has a double root there.
+    /// Past the span `γ` is nought, so the curve is held as a curve between
+    /// corners of four patches is, and its far end may be one.
+    fn span_rows(
+        &self,
+        layout: &Layout,
+        c: usize,
+        v: usize,
+        (lambda, g): (f64, f64),
+        knots: &KnotVector,
+    ) -> Vec<Vec<(usize, f64)>> {
+        let topo = self.topo;
+        let t = knots.knots();
+        let n = layout.along(c);
+        let starts = topo.curve_ends[c].0 == v;
+        // The span next to the corner, its far end, its width, and the pole
+        // after the corner's next one.
+        let (span, far, width, next) = if starts {
+            (DEGREE, t[DEGREE + 1], t[DEGREE + 1] - t[DEGREE], 1)
+        } else {
+            (n - 1, t[n - 1], t[n] - t[n - 1], n - 2)
+        };
+        // `γ(0) T` in the poles' differences: `T` at the corner is `3 / h`
+        // times the first pole's difference from it, and the other way
+        // about at the curve's end.
+        let near = if starts {
+            g * width / precise(DEGREE)
+        } else {
+            -g * width / precise(DEGREE)
+        };
+        let own = |i: usize| layout.curve_slot(topo, c, span - DEGREE + i);
+        let [first, second] = [topo.users[c][0], topo.users[c][1]];
+        let mut row: BTreeMap<usize, f64> = BTreeMap::new();
+        *row.entry(self.beside(layout, first, c, next))
+            .or_insert(0.0) += 1.0;
+        *row.entry(self.beside(layout, second, c, next))
+            .or_insert(0.0) += lambda;
+        *row.entry(layout.curve_slot(topo, c, next)).or_insert(0.0) -= 1.0 + lambda;
+        let slope = knots.basis_derivatives(span, far, 1);
+        for (i, rate) in slope[1].iter().enumerate() {
+            *row.entry(own(i)).or_insert(0.0) += near / precise(DEGREE) * rate;
+        }
+        // The span's third derivative, nought, scaled to its width.
+        let middle = f64::midpoint(t[span], t[span + 1]);
+        let jerk = knots.basis_derivatives(span, middle, DEGREE);
+        let cube = width * width * width;
+        vec![
+            row.into_iter().filter(|e| e.1 != 0.0).collect(),
+            jerk[DEGREE]
+                .iter()
+                .enumerate()
+                .map(|(i, d)| (own(i), d * cube))
+                .collect(),
+        ]
     }
 
     /// The rows holding `D₁ + λ D₂ + γ T` nought along curve `c` past its
