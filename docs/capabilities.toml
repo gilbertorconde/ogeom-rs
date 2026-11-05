@@ -1920,13 +1920,14 @@ patches is held exactly tangent where both its ends are on the border, at \
 corners of four patches or at T-junctions; a curve between two junctions \
 whose knot ratios differ is left near tangent. A corner of other than four \
 patches is held exactly tangent only where every curve into it runs on to \
-the border or to a corner of four patches that is not a junction, and the \
-fit with it meets the tolerance (bicubic patches allow one ratio along \
-each curve, which the points at their seed's parameters need not admit: a \
-clean cap of five or more patches at tolerance 0.001 is not held); \
-otherwise, and at a three-sided patch's point or a corner whose curves end \
-at a junction or another such corner, the curves are fitted near tangent \
-from the points, their angle measured into `worst_tangent` \
+the border, to a corner of four patches, to a T-junction (the line across \
+the patch through the junction then held tangent at the corner's ratio, \
+not `C¹`) or to another such corner (both of an odd number of patches), \
+and the fit with it meets the tolerance (bicubic patches allow one ratio \
+along each curve, which the points at their seed's parameters need not \
+admit: a clean cap of five or more patches at tolerance 0.001 is not \
+held); otherwise, and at a three-sided patch's point, the curves are \
+fitted near tangent from the points, their angle measured into `worst_tangent` \
 and the corner's angle reported. Parameter correction runs only after \
 refinement, at the final spans, and only through `fit_network_chained`; \
 the points are those of the region the network covers."""

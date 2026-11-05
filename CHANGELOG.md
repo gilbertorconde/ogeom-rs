@@ -11,6 +11,41 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **Patch networks hold exactly tangent the corners whose curves end at a
+  T-junction or at another irregular corner.** (#653)
+  - A curve from a corner held by its spans may now end at a junction.
+    The junction pins the curve's ratio to its patch's knot spacings
+    either side, which the corner's ratio never matches, so the curve was
+    left near tangent. The parameter line through the junction is now
+    held pole by pole at the corner's ratio instead, with the lines of
+    the patches beyond that share its rows: the patch is tangent across
+    it, though no longer `C¹` there.
+  - A curve may also run between two corners held by their spans, each
+    pinning it to its own ratio. The ratios round a corner depend only on
+    how long its curves' first poles are against one another, and round
+    an odd corner those lengths can give any of its curves short of all
+    any ratio. Both corners are scaled to the geometric mean of their two
+    ratios, each run of scaled poles keeping its mean length.
+  - Chains, junction lines and corners that pin one another are settled
+    together; where one cannot be (an even corner asked for a ratio, or
+    every curve of a corner pinned elsewhere), they are all fitted as
+    before. Every other network fits to the same poles as before, bit for
+    bit: 28 scenarios digested on both.
+  - Measured along every shared curve at 201 points, and across each
+    junction line: a rounded box corner whose three edge fillets are one
+    patch each, the corner's curves ending at junctions on them, is
+    tangent to 3.6e-15 rad with σ = 0.02 mm noise (0.39 rad before) and
+    4.4e-15 rad with σ = 0.005 mm (0.17 rad before), each junction line to
+    3.5e-15 rad. A cap with two corners of three joined by a curve is
+    tangent to 1.3e-14 rad with σ = 0.02 mm (0.050 rad before). Gaps stay
+    at 2.7e-15 mm.
+  - Still near tangent: the same cap with σ = 0.005 mm, where the held fit
+    leaves one point by its corner 0.084 off at 16 spans and falls back;
+    three-sided patches' points; and clean caps of five or more patches at
+    tolerance 0.001.
+
 ## [0.17.0] - 2026-11-05
 
 A minor release: `Simplified` gains `result_vertex`, so a `Simplified`
