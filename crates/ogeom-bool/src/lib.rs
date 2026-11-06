@@ -62,7 +62,7 @@ pub use self_union::self_union;
 
 use ogeom_algo::{
     Built, Containment, History, is_shell_closed, make_edge_between, make_face_on, make_vertex,
-    make_wire, sew_around, shape_bounds,
+    make_wire, sew_around, sew_around_within, shape_bounds,
 };
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve2d as _;
@@ -8448,6 +8448,18 @@ fn fill(
                         );
                     }
                     contact_along[ci].push((lo, hi));
+                    let mut apart = 0.0_f64;
+                    for t in [lo, f64::midpoint(lo, hi), hi] {
+                        apart = apart.max(
+                            contact
+                                .curve
+                                .point_at(t, tol)?
+                                .distance(e.curve.point_at(carry(t), tol)?),
+                        );
+                    }
+                    if apart > contact.tolerance.max(e.tolerance) {
+                        ALONG_APART.set(ALONG_APART.get().max(apart));
+                    }
                     // The *target* edge splits where the shared stretch ends,
                     // exactly as the contact does. Without this, the face across
                     // the overlap keeps one long boundary edge where its new
@@ -10917,6 +10929,16 @@ thread_local! {
     /// its area. Off but for the attempt after kept pieces fail to close.
     /// Read once per boolean on the calling thread.
     static PROBE_AT_CENTRE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The farthest apart a contact and a boundary edge it was read along
+    /// stand, where that is past what either edge states: the paving takes
+    /// the two for one edge and splits neither face along them, so only the
+    /// sew can join them. Zero where every such pair lies within its stated
+    /// tolerances. Gathered by the attempts since [`settled`] began.
+    static ALONG_APART: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+    /// The gap the kept pieces are sewn across: zero but for the attempt
+    /// [`settled`] makes last, across the distance [`ALONG_APART`] measured.
+    /// Read once per assembly on the calling thread.
+    static SEW_ACROSS: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
     /// Whether contacts are read at the radii their curves hold to (see
     /// [`settled`]). Off but for the last attempt. Read once per boolean
     /// on the calling thread.
@@ -10993,12 +11015,25 @@ thread_local! {
 /// split where it crosses the rim in closed form ([`AT_RIMS`]), its result
 /// kept only where nothing in it states a tolerance past the weld
 /// distance.
+///
+/// And where the kept pieces still did not close and the first attempt
+/// read a contact along a boundary edge it stands further from than either
+/// states (a floor edge lying its tolerance off a mirror plane, against its
+/// mirror image as far off the other way), once more with the pieces sewn
+/// across that distance ([`SEW_ACROSS`]), where it is within the weld
+/// distance the retries above hold to: the paving took the two for one
+/// edge and split neither face along them, so the edge kept widens to
+/// reach where the other ran. The attempt runs at the given confusion, and
+/// the sew widens nothing further than that distance beyond what the
+/// pieces already state, so its result is not held to the weld distance a
+/// second time: a part may itself state wider tolerances.
 fn settled(
     model: &mut Model,
     tol: Tolerances,
     mut attempt: impl FnMut(&mut Model, Tolerances) -> OgeomResult<Built>,
 ) -> OgeomResult<Built> {
     RIM_CROSSED.set(false);
+    ALONG_APART.set(0.0);
     let refusal = match attempt(model, tol) {
         Ok(built) => return Ok(built),
         Err(e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_))) => {
@@ -11006,11 +11041,46 @@ fn settled(
         }
         Err(e) => e,
     };
-    if let Some(built) = settled_after(model, tol, &refusal, &mut attempt)? {
+    let apart = ALONG_APART.get();
+    if let Some(built) = resettled(model, tol, &refusal, &mut attempt)? {
         return Ok(built);
     }
+    if apart > 0.0
+        && apart + tol.confusion() <= weld_limit(tol)
+        && refusal.to_string().contains("did not close into a shell")
+    {
+        struct Plain;
+        impl Drop for Plain {
+            fn drop(&mut self) {
+                SEW_ACROSS.set(0.0);
+            }
+        }
+        SEW_ACROSS.set(apart + tol.confusion());
+        let _plain = Plain;
+        match attempt(model, tol) {
+            Ok(built) => return Ok(built),
+            Err(e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_))) => {
+                return Err(e);
+            }
+            Err(_) => {}
+        }
+    }
+    Err(refusal)
+}
+
+/// The retries [`settled`] runs after the first attempt refused with
+/// `refusal`, short of the last, and the first result one of them keeps.
+fn resettled(
+    model: &mut Model,
+    tol: Tolerances,
+    refusal: &ogeom_core::OgeomError,
+    attempt: &mut impl FnMut(&mut Model, Tolerances) -> OgeomResult<Built>,
+) -> OgeomResult<Option<Built>> {
+    if let Some(built) = settled_after(model, tol, refusal, attempt)? {
+        return Ok(Some(built));
+    }
     if !RIM_CROSSED.get() {
-        return Err(refusal);
+        return Ok(None);
     }
     struct Rims;
     impl Drop for Rims {
@@ -11022,19 +11092,19 @@ fn settled(
     let _rims = Rims;
     let limit = weld_limit(tol);
     let at_rims = match attempt(model, tol) {
-        Ok(built) if welded_within(model, &built.shape, limit)? => return Ok(built),
+        Ok(built) if welded_within(model, &built.shape, limit)? => return Ok(Some(built)),
         Err(e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_))) => {
             return Err(e);
         }
-        Ok(_) => return Err(refusal),
+        Ok(_) => return Ok(None),
         Err(e) => e,
     };
-    if let Some(built) = settled_after(model, tol, &at_rims, &mut attempt)?
+    if let Some(built) = settled_after(model, tol, &at_rims, attempt)?
         && welded_within(model, &built.shape, limit)?
     {
-        return Ok(built);
+        return Ok(Some(built));
     }
-    Err(refusal)
+    Ok(None)
 }
 
 /// The retries [`settled`] runs after an attempt refused with `refusal`,
@@ -14294,7 +14364,7 @@ fn assemble_result(
         holes,
         kept: built_from,
     } = rebuilt_pieces(model, fused, kept, &mut history, tol)?;
-    let sewn = sew_around(model, &faces, &settled, tol)?;
+    let sewn = sew_around_within(model, &faces, &settled, SEW_ACROSS.get(), tol)?;
     // Sewing rebuilds the pieces onto shared edges: the result's faces are
     // its faces, reached from the inputs through both steps.
     history = history.followed_by(&sewn.history);

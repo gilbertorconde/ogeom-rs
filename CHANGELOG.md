@@ -13,6 +13,9 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`sew_around_within`**: sew faces of which some are settled, as
+  `sew_around`, across a gap as `sew_within` does.
+
 - **Patch networks lay out nested T-junctions, and settle the ratios of
   irregular corners that pin one another all together.** (#653)
   - A curve of a split side may now itself be crossed by junctions
@@ -96,6 +99,26 @@ bump may break the API and a patch bump may not.
     the farthest its face reaches from its origin, by no more than the
     distance already allowed between the two origins. The channel's
     5.4e-12 moves it 1e-11 over its few millimetres.
+
+- **Fusing a part with its mirror image where an edge on the mirror plane
+  lies a hair past it.**
+  - A pocket floor meeting the mirror plane along an edge 1.08e-7 past
+    it, within the edge's tolerance of 1.16e-7, has a mirror image whose
+    floor edge lies as far past the plane the other way, 2.06e-7 from the
+    part's. The boolean reads each floor edge as running along the other's
+    (a contact is read along an edge within twice its tolerance), so it
+    splits neither floor; the sew joins two edges only within the wider of
+    their tolerances, so it left both open, and the fuse was refused ("the
+    kept pieces did not close into a shell").
+  - Where the kept pieces do not close and the first attempt read a
+    contact along an edge further from it than either edge states, the
+    fuse runs once more with the pieces sewn across that distance, where
+    it is within the weld distance the other retries hold to (a hundred
+    and ten confusions). The edge kept widens to reach where the other
+    ran. Nothing that succeeded before runs it.
+  - The whole carriage half printCAD rebuilt (along-pairs up to 1.03e-6
+    apart) now fuses strictly with its mirror image into a valid solid
+    at 2.0000000192 times the half's volume.
 
 ## [0.17.0] - 2026-11-05
 

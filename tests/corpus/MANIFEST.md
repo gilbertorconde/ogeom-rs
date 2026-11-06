@@ -388,6 +388,17 @@ channel's axis is tilted 2.7e-12 off y, so the part's mirror image carries
 it on an axis 5.4e-12 apart. The reproducer for fusing the part with its
 mirror image across a channel whose two halves' axes differ by a rounding.
 
+## floor_edge_a_hair_off_the_mirror_plane.ogeom
+
+A box cropped, in this kernel's native format, from the same community
+printer carriage as `half_channel_on_the_mirror_plane.ogeom`, as printCAD
+rebuilt it natively: x from -12.07 to the mirror plane at 0, y from -5.13
+to -1.93, z from -23.07 to -15.13. A pocket's floor at z = -22.67 meets
+the plane along an edge lying 1.08e-7 past it, within the edge's tolerance
+of 1.16e-7, beside an arc swept along x that runs onto the plane. The
+reproducer for fusing the part with its mirror image, whose floor edge lies
+as far past the plane the other way.
+
 ## half_channel_mirror_baked_round_the_back.ogeom
 
 The mirror image of `half_channel_on_the_mirror_plane.ogeom`, in this

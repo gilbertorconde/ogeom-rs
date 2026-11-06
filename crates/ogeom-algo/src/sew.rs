@@ -331,6 +331,30 @@ pub fn sew_around(
     settled: &[bool],
     tol: Tolerances,
 ) -> OgeomResult<Sewn> {
+    sew_around_within(model, faces, settled, 0.0, tol)
+}
+
+/// Sew faces of which some are settled, as [`sew_around`], across a gap of
+/// up to `gap` as [`sew_within`] sews: the edge kept, and the vertices it
+/// ends on, widen to reach the edge they replace.
+///
+/// # Errors
+///
+/// As [`sew_around`], and [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+/// if `gap` is not finite and non-negative.
+pub fn sew_around_within(
+    model: &mut Model,
+    faces: &[Shape],
+    settled: &[bool],
+    gap: f64,
+    tol: Tolerances,
+) -> OgeomResult<Sewn> {
+    if !(gap.is_finite() && gap >= 0.0) {
+        ogeom_bail!(
+            Construction,
+            "the gap to sew across, {gap}, is not finite and non-negative"
+        );
+    }
     if settled.len() != faces.len() {
         ogeom_bail!(
             Construction,
@@ -341,11 +365,11 @@ pub fn sew_around(
     }
     check_faces(model, faces)?;
     model.begin_operation();
-    if let Some(sewn) = sew_faces(model, faces, settled, 0.0, tol)? {
+    if let Some(sewn) = sew_faces(model, faces, settled, gap, tol)? {
         return Ok(sewn);
     }
     let none = vec![false; faces.len()];
-    match sew_faces(model, faces, &none, 0.0, tol)? {
+    match sew_faces(model, faces, &none, gap, tol)? {
         Some(sewn) => Ok(sewn),
         None => ogeom_bail!(
             Construction,
