@@ -120,6 +120,38 @@ bump may break the API and a patch bump may not.
     apart) now fuses strictly with its mirror image into a valid solid
     at 2.0000000192 times the half's volume.
 
+- **Mesh conversion widens its coplanar distance only where a fit presses
+  against it.**
+  - `solid_from_mesh` doubled the default distance for the whole mesh, at
+    most twice, when any one recognized fit pressed against it, as a round
+    running on tangentially into its neighbours does. Everywhere else the
+    wider distance let fits spread over neighbouring facets and merged
+    facets into planes: `nist_ftc_07` with one cylinder's vertices pushed
+    off it and back by 0.8 of the distance came back on 360 faces for 583,
+    its volume 5.5e-7 off for 3.9e-7.
+  - The distance now widens over the smooth patches the pressing fits lie
+    in (triangles joined across edges that do not crease), and every
+    region elsewhere stays as the default found it. Where the mesh's own
+    noise or rounding set the distance, that scatter is everywhere, and so
+    is the widening, as before.
+  - That pushed `nist_ftc_07` comes back on 547 faces, its volume 4.0e-7
+    off, with 520 of the untouched mesh's faces as it builds them;
+    `nist_ctc_02` on 1450 faces (1435 before), its volume 6.707e-5 off
+    (6.713e-5), and `nist_ctc_05` on 317 (315), 1.9038e-4 off (1.9065e-4).
+    Every other part of the converter's corpus and truth bench comes back
+    as before, and so does each of them meshed with noise of 4e-6 of its
+    diagonal.
+- **A solid tessellated whole keeps its faces' windings beside a triangle
+  closing at a point.**
+  - The whole-shape mesh turns faces so neighbours walk their shared
+    sides opposite ways, and read a side from a point to itself (a fan
+    ruled onto a seam that shrinks to a point) as one walked the same way
+    by both faces. Two such sides outvoted the one real side a corner fan
+    shared with its neighbour, and a fillet of `nist_ctc_02` converted
+    with its corners came back drawn open at the default deflection,
+    though the solid was valid and its faces each drew closed. Such sides
+    now cast no vote.
+
 ## [0.17.0] - 2026-11-05
 
 A minor release: `Simplified` gains `result_vertex`, so a `Simplified`

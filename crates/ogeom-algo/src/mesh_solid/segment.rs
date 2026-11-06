@@ -625,31 +625,138 @@ pub(super) fn segment(
     Ok(groups)
 }
 
-/// Give each curved region of `groups`, found at the wider `distance`, the
-/// curved regions of `narrow`, found at the default, that hold any of its
-/// triangles (none where the default left them all planar), for the build
-/// to put back in its place.
-pub(super) fn found_within(groups: &mut Groups, narrow: &Groups, distance: f64) {
-    let mut within: ogeom_core::FastMap<usize, Vec<usize>> = ogeom_core::FastMap::default();
-    for (&w, &n) in groups.of.iter().zip(&narrow.of) {
-        if !matches!(groups.carriers.get(w), Some(Carrier::Curved(_))) {
-            continue;
+/// Take into `groups` what `wide`, found at the wider `distance`, found
+/// over the smooth patches the `pressing` curved regions of `groups` lie
+/// in (over the whole mesh for none), and keep everything else as `groups`
+/// found it.
+///
+/// A smooth patch is a run of triangles joined across edges that do not
+/// crease: a fit that runs on tangentially into its neighbours runs on
+/// within its patch, and the patches across a crease are other surfaces,
+/// whose facets the wider distance would merge into planes or spread fits
+/// over. The triangles taken are those patches, together with every region
+/// of either segmentation holding any of them, until no region straddles
+/// the line, so each region is taken or kept whole. Each curved region
+/// taken keeps the curved regions of `narrow`, found at the default, that
+/// hold any of its triangles (none where the default left them all
+/// planar), for the build to put back in its place.
+///
+/// The regions are numbered in the order `wide` numbers the regions their
+/// lowest triangles lie in, so where every patch is taken they are `wide`'s
+/// regions in `wide`'s order.
+#[allow(clippy::too_many_arguments, reason = "the segmentation's inputs")]
+pub(super) fn widen_where_pressed(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    options: &MeshSolidOptions,
+    groups: &mut Groups,
+    wide: &Groups,
+    narrow: &Groups,
+    pressing: Option<&[usize]>,
+    distance: f64,
+) {
+    let n = triangles.len();
+    let cos_crease = options.crease.cos();
+    let normals: Vec<Vector> = triangles.iter().map(|&t| unit_normal(points, t)).collect();
+    let members = |g: &Groups| {
+        let mut of: ogeom_core::FastMap<usize, Vec<usize>> = ogeom_core::FastMap::default();
+        for (t, &r) in g.of.iter().enumerate() {
+            of.entry(r).or_default().push(t);
         }
-        let found = within.entry(w).or_default();
-        if matches!(narrow.carriers.get(n), Some(Carrier::Curved(_))) && !found.contains(&n) {
-            found.push(n);
+        of
+    };
+    let (held, held_wide) = (members(groups), members(wide));
+    let mut taken = vec![pressing.is_none(); n];
+    let mut stack: Vec<usize> = pressing
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|r| held.get(r))
+        .flatten()
+        .copied()
+        .collect();
+    for &t in &stack {
+        taken[t] = true;
+    }
+    let mut through = ogeom_core::FastSet::default();
+    let mut through_wide = ogeom_core::FastSet::default();
+    while let Some(t) = stack.pop() {
+        let mut next: Vec<usize> = (3 * t..3 * t + 3)
+            .filter_map(|h| adjacency.twin[h].map(|g| g / 3))
+            .filter(|&u| normals[t].dot(normals[u]) >= cos_crease)
+            .collect();
+        if through.insert(groups.of[t]) {
+            next.extend(held.get(&groups.of[t]).into_iter().flatten());
+        }
+        if through_wide.insert(wide.of[t]) {
+            next.extend(held_wide.get(&wide.of[t]).into_iter().flatten());
+        }
+        for u in next {
+            if !taken[u] {
+                taken[u] = true;
+                stack.push(u);
+            }
         }
     }
-    for (w, found) in within {
+    let curved = |g: &Groups, r: usize| matches!(g.carriers.get(r), Some(Carrier::Curved(_)));
+    // Each region, kept or taken, by the region of `wide` its lowest
+    // triangle lies in, then by that triangle.
+    let mut order: Vec<((usize, usize), bool, usize)> = Vec::new();
+    let mut seen = ogeom_core::FastSet::default();
+    for (t, &here) in taken.iter().enumerate() {
+        let (from_wide, r) = if here {
+            (true, wide.of[t])
+        } else {
+            (false, groups.of[t])
+        };
+        if seen.insert((from_wide, r)) {
+            order.push(((wide.of[t], t), from_wide, r));
+        }
+    }
+    order.sort_unstable();
+    let mut renumbered: ogeom_core::FastMap<(bool, usize), usize> = ogeom_core::FastMap::default();
+    let mut carriers = Vec::with_capacity(order.len());
+    let mut narrower = ogeom_core::FastMap::default();
+    for (_, from_wide, r) in order {
+        let k = carriers.len();
+        renumbered.insert((from_wide, r), k);
+        if from_wide {
+            carriers.push(wide.carriers[r].clone());
+        } else {
+            carriers.push(std::mem::replace(&mut groups.carriers[r], Carrier::Gone));
+            if let Some(record) = groups.narrower.remove(&r) {
+                narrower.insert(k, record);
+            }
+        }
+    }
+    let mut within: ogeom_core::FastMap<usize, Vec<usize>> = ogeom_core::FastMap::default();
+    for t in 0..n {
+        let k = if taken[t] {
+            renumbered[&(true, wide.of[t])]
+        } else {
+            renumbered[&(false, groups.of[t])]
+        };
+        groups.of[t] = k;
+        let r = narrow.of[t];
+        if taken[t] && curved(wide, wide.of[t]) {
+            let found = within.entry(k).or_default();
+            if curved(narrow, r) && !found.contains(&r) {
+                found.push(r);
+            }
+        }
+    }
+    for (k, found) in within {
         let regions = found
             .into_iter()
-            .map(|n| {
+            .map(|r| {
                 let held = (0..narrow.of.len())
-                    .filter(|&t| narrow.of[t] == n)
+                    .filter(|&t| narrow.of[t] == r)
                     .collect();
-                (narrow.carriers[n].clone(), held)
+                (narrow.carriers[r].clone(), held)
             })
             .collect();
-        groups.narrower.insert(w, Narrower { distance, regions });
+        narrower.insert(k, Narrower { distance, regions });
     }
+    groups.carriers = carriers;
+    groups.narrower = narrower;
 }

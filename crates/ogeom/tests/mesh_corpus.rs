@@ -567,6 +567,181 @@ fn nist_ftc_10() {
     );
 }
 
+/// A corpus part meshed at a thousandth of its diagonal.
+fn meshed(name: &str) -> ogeom::topo::Triangulation {
+    let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
+    let import = ogeom::io::read_step(&std::fs::read_to_string(path).unwrap(), T).unwrap();
+    let model = import.document.model();
+    let part = &import.solids[0];
+    let diagonal = shape_bounds(model, part, T).unwrap().diagonal();
+    let chord = Deflection::with_chord(diagonal * 1e-3).unwrap();
+    ogeom::mesh::triangulate(model, part, chord, T).unwrap()
+}
+
+/// The face of `faces` of `kind` and sizes `sizes` nearest `near`: its area.
+fn area_near(
+    faces: &[(&'static str, Vec<f64>, f64, ogeom::math::Point)],
+    kind: &str,
+    sizes: &[f64],
+    near: ogeom::math::Point,
+) -> f64 {
+    faces
+        .iter()
+        .filter(|(k, s, _, _)| {
+            *k == kind
+                && s.len() == sizes.len()
+                && s.iter().zip(sizes).all(|(a, b)| (a - b).abs() < 0.05)
+        })
+        .min_by(|a, b| a.3.distance(near).total_cmp(&b.3.distance(near)))
+        .map(|f| f.2)
+        .unwrap()
+}
+
+/// nist_ftc_07 with one cylinder's fit made to press against the default
+/// distance: the vertices inside its region, every triangle round them on
+/// it, pushed off it and back by turns, by 0.8 of the distance. The
+/// distance widens for that fit; the faces elsewhere come back as they do
+/// from the mesh untouched, rather than every region found again at the
+/// wider distance, where fits spread over neighbouring facets and the part
+/// came back on 360 faces for 583.
+#[test]
+#[ignore = "heavy"]
+fn a_fit_pressing_in_one_place_widens_the_distance_there_alone() {
+    let mesh = meshed("nist_ftc_07_asme1_rd.stp");
+    let options = MeshSolidOptions::default();
+    let regions = MeshRegions::find(&mesh, &options, T).unwrap();
+    let (points, triangles) = (regions.points().to_vec(), regions.triangles().to_vec());
+    let of: Vec<_> = (0..triangles.len())
+        .map(|t| regions.region_of(t).unwrap())
+        .collect();
+    let mut on: Vec<Vec<usize>> = vec![Vec::new(); points.len()];
+    for (t, corners) in triangles.iter().enumerate() {
+        for &v in corners {
+            on[v as usize].push(t);
+        }
+    }
+    // The cylinder with the most such vertices.
+    let (inside, cylinder) = regions
+        .regions()
+        .into_iter()
+        .filter_map(|r| match r.surface {
+            Some(Canonical::Cylinder(c)) => {
+                let inside: Vec<usize> = (0..points.len())
+                    .filter(|&v| !on[v].is_empty() && on[v].iter().all(|&t| of[t] == r.id))
+                    .collect();
+                Some((inside, c))
+            }
+            _ => None,
+        })
+        .max_by_key(|(inside, _)| inside.len())
+        .unwrap();
+    assert!(inside.len() >= 10, "{} vertices inside", inside.len());
+    let (origin, axis) = (cylinder.frame().origin(), cylinder.frame().z().vector());
+    let default = default_distance(&mesh);
+    let push = 0.8 * default;
+    let mut pushed = points.clone();
+    for (k, &v) in inside.iter().enumerate() {
+        let d = points[v] - origin;
+        let radial = d - axis * d.dot(axis);
+        let side = if k % 2 == 0 { push } else { -push };
+        pushed[v] = points[v] + radial * (side / radial.magnitude());
+    }
+    let convert = |positions: Vec<ogeom::math::Point>| {
+        let mut mesh = ogeom::topo::Triangulation::new();
+        mesh.positions = positions;
+        mesh.triangles.clone_from(&triangles);
+        let mut back = Model::new();
+        let out = solid_from_mesh(&mut back, &mesh, &options, T).unwrap();
+        assert!(out.closed, "{:?}", out.report);
+        let diagnosis = check(&back, &out.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{diagnosis}");
+        assert_eq!(out.report.curved_faceted, 0, "{:?}", out.report.fallbacks);
+        (faces_of(&back, &out.shape), out.coplanar_distance)
+    };
+    let (untouched, _) = convert(points);
+    let (faces, distance) = convert(pushed);
+    assert!(distance > default, "the distance did not widen");
+    let kept = untouched
+        .iter()
+        .filter(|(kind, sizes, area, centre)| {
+            faces.iter().any(|(k, s, a, c)| {
+                k == kind
+                    && s.len() == sizes.len()
+                    && s.iter()
+                        .zip(sizes)
+                        .all(|(x, y)| (x - y).abs() <= 1e-9 * y.abs().max(1.0))
+                    && (a - area).abs() <= 1e-9 * area.max(1.0)
+                    && c.distance(*centre) <= 1e-6
+            })
+        })
+        .count();
+    // Four in five: the faces of the pushed cylinder's smooth patch are
+    // found again at the wider distance, and the rest are the default's.
+    assert!(
+        5 * kept >= 4 * untouched.len(),
+        "{kept} of {} faces came back as from the untouched mesh",
+        untouched.len()
+    );
+}
+
+/// The coplanar distance the converter starts from on `mesh`, before any
+/// fit widens it: the one it finds with recognition off.
+fn default_distance(mesh: &ogeom::topo::Triangulation) -> f64 {
+    let options = MeshSolidOptions {
+        recognize: false,
+        ..MeshSolidOptions::default()
+    };
+    MeshRegions::find(mesh, &options, T).unwrap().distance()
+}
+
+/// The round of `nist_ftc_10` and the one of `nist_ctc_05` that press
+/// against the default distance: the distance widens for them, and each
+/// takes rim triangles the default left as facets, coming back larger than
+/// at the default alone.
+#[test]
+#[ignore = "heavy"]
+fn pressing_rounds_take_their_rims() {
+    for (name, kind, sizes, near) in [
+        (
+            "nist_ftc_10_asme1_rb.stp",
+            "cylinder",
+            vec![8.0],
+            (15.83, 29.69, -4.10),
+        ),
+        (
+            "nist_ctc_05_asme1_rd.stp",
+            "torus",
+            vec![158.75, 6.35],
+            (153.64, 0.0, 56.9),
+        ),
+    ] {
+        let near = ogeom::math::Point::new(near.0, near.1, near.2);
+        let mesh = meshed(name);
+        let round = |options: &MeshSolidOptions| {
+            let mut back = Model::new();
+            let out = solid_from_mesh(&mut back, &mesh, options, T).unwrap();
+            assert_eq!(
+                out.report.curved_faceted, 0,
+                "{name}: {:?}",
+                out.report.fallbacks
+            );
+            let area = area_near(&faces_of(&back, &out.shape), kind, &sizes, near);
+            (area, out.coplanar_distance)
+        };
+        let default = default_distance(&mesh);
+        let (widened, distance) = round(&MeshSolidOptions::default());
+        let (alone, _) = round(&MeshSolidOptions {
+            coplanar_distance: Some(default),
+            ..MeshSolidOptions::default()
+        });
+        assert!(distance > default, "{name}: the distance did not widen");
+        assert!(
+            widened > alone,
+            "{name}: the round came back on {widened}, {alone} at the default alone"
+        );
+    }
+}
+
 #[test]
 fn nist_ftc_11() {
     comes_back("nist_ftc_11_asme1_rb.stp", true, true);
