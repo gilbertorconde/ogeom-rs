@@ -84,6 +84,21 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`unify_same_domain` no longer merges a plane face onto a neighbour it
+  is tilted off past the confusion distance.**
+  - Two planar faces were read as one plane where the second's frame
+    origin lay within the confusion distance of the first plane and their
+    normals' dot product was within the angular tolerance of one. That
+    product departs from one as the square of the angle, so planes up to
+    about 1.4e-6 apart in angle were one, however far the faces reached. A
+    wall tilted 1.43e-8 off a mirror plane, 1.43e-7 off it 10 mm along,
+    merged onto it, and the edges of the wall it absorbed were left
+    further off the merged face than they state: a valid part became
+    invalid when refined.
+  - Two planes are now one where each stands off the other, at a point
+    amid its face, by no more than the confusion distance less the tilt
+    times how far the face reaches from that point.
+
 - **Fusing a part with its mirror image across a channel whose axis is
   tilted by a rounding.**
   - Where two coincident cylinders, cones or tori meet in a fuse, an edge
