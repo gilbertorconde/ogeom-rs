@@ -517,6 +517,19 @@ tangentially. The reproducer for a section whose fit swung between two
 samples: it stated a tolerance of 0.156, and the fuse came out a valid
 solid of 0.1191 where the junction alone is 0.1368.
 
+## pocket_floor_leaning_off_the_floor.ogeom
+
+Two solids in this kernel's native format, as printCAD rebuilt a community
+printer carriage from its FreeCAD file (#704): the running solid before its
+"up to face" pocket, and the pocket's tool, written right before the cut.
+The tool is a triangular prism 16.32 long in the corner between the
+part's floor and a wall, its frame turned 1.5e-8 to 2e-8 rad off the
+part's by rounding: its floor parts from the part's by 1.05e-7 at its far
+edge, its wall from the part's by 3.2e-7 at its stop face. The reproducer
+for a face leaning a hair past the confusion distance off one it meets
+along an edge: the cut was refused (a piece on the other solid's boundary
+with no coincident partner face).
+
 ## drum_in_inches_and_degrees.step
 
 Authored for this project (written by hand, then committed): a drum an inch
