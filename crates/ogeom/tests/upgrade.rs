@@ -1034,3 +1034,58 @@ fn a_band_whose_seam_closes_nothing_leaves_its_neighbours_merging() {
         .shape;
     assert_eq!(faces_on(&model, &refined, SurfaceKind::Cylinder), 2);
 }
+
+/// A pad whose side at x = 0 runs from y = 0 to 10, fused with a second
+/// whose side runs on from there to y = 20, standing `off` past the plane
+/// at its far end: the second wall is tilted off the first by `off / 10`.
+fn pads_with_a_wall_turned_by(model: &mut Model, off: f64) -> ogeom::topo::Shape {
+    let near = pad(
+        model,
+        &[(0.0, 0.0), (0.0, 10.0), (-10.0, 10.0), (-10.0, 0.0)],
+        &[],
+        0.0,
+        5.0,
+    );
+    let far = pad(
+        model,
+        &[(0.0, 10.0), (off, 20.0), (-10.0, 20.0), (-10.0, 10.0)],
+        &[],
+        0.0,
+        5.0,
+    );
+    ogeom::boolean::fuse(model, &near, &far, T).unwrap().shape
+}
+
+/// A wall tilted 1.43e-8 off its neighbour, standing 1.43e-7 off its
+/// plane at its far end, past the confusion distance: the two are not one
+/// plane, and merging them left the far wall's edges further off the
+/// merged face than they state. The other three sides merge; that wall
+/// stays two faces, and the solid stays valid.
+#[test]
+fn a_wall_tilted_past_the_confusion_over_its_length_stays_its_own_face() {
+    let mut model = Model::new();
+    let part = pads_with_a_wall_turned_by(&mut model, 1.43e-7);
+    assert_eq!(
+        planar_faces(&model, &part),
+        10,
+        "the fuse leaves four sides split"
+    );
+    let unified = unified_keeping_the_solid(&mut model, &part);
+    let diagnosis = ogeom::algo::check(&model, &unified, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    assert_eq!(planar_faces(&model, &unified), 7);
+    assert!((exact_volume(&model, &unified) - exact_volume(&model, &part)).abs() < 1e-9);
+}
+
+/// The same wall turned by a hundredth of that, 1.43e-9 off the plane at
+/// its far end and within the confusion distance of it all along: one
+/// plane, merged into one wall with the other three sides.
+#[test]
+fn a_wall_tilted_within_the_confusion_over_its_length_merges() {
+    let mut model = Model::new();
+    let part = pads_with_a_wall_turned_by(&mut model, 1.43e-9);
+    let unified = unified_keeping_the_solid(&mut model, &part);
+    let diagnosis = ogeom::algo::check(&model, &unified, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    assert_eq!(planar_faces(&model, &unified), 6);
+}

@@ -7,7 +7,7 @@ use ogeom_core::{FastMap, FastSet};
 use ogeom_algo::{Built, History};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve2d as _, Curve3d as _, PlanarCurve, SurfaceGeometry};
-use ogeom_math::{Direction2, Plane, Point2, Transform};
+use ogeom_math::{Direction2, Plane, Point, Point2, Transform};
 use ogeom_topo::{
     EdgeRepr, Location, Model, NodeData, Orientation, PCurveId, Shape, ShapeType, SurfaceId,
     TShapeId, explore_unique,
@@ -584,6 +584,12 @@ struct Flat {
     stored: Plane,
     /// What takes the stored chart to the world.
     placement: Transform,
+    /// A point of the plane amid the face, and how far from it the face
+    /// reaches: a plane tilted off this one by an angle whose sine is `s`
+    /// stands off it, across the face, by up to `s` times the reach more
+    /// than it does at the point.
+    centre: Point,
+    reach: f64,
 }
 
 /// Whether two carriers are one surface facing one way, whatever their
@@ -591,8 +597,15 @@ struct Flat {
 fn same_carrier(a: &Carrier, b: &Carrier, tol: Tolerances) -> bool {
     match (a, b) {
         (Carrier::Flat(a), Carrier::Flat(b)) => {
-            a.outward.dot(b.outward) > 1.0 - tol.angular()
-                && a.world.signed_distance_to(b.world.frame().origin()).abs() <= tol.confusion()
+            let tilt = a
+                .world
+                .normal()
+                .vector()
+                .cross(b.world.normal().vector())
+                .magnitude();
+            a.outward.dot(b.outward) > 0.0
+                && a.world.signed_distance_to(b.centre).abs() + tilt * b.reach <= tol.confusion()
+                && b.world.signed_distance_to(a.centre).abs() + tilt * a.reach <= tol.confusion()
         }
         (Carrier::Curved(a), Carrier::Curved(b)) => curved::same_carrier(a, b, tol),
         _ => false,
@@ -623,6 +636,22 @@ fn carrier_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
     }
     let world = stored.transformed(&placement, tol)?;
     let normal = world.normal().vector();
+    let bounds = ogeom_algo::face_bounds(model, face)?;
+    let (Some(low), Some(high)) = (bounds.low(), bounds.high()) else {
+        return Ok(None);
+    };
+    let mid = Point::new(
+        f64::midpoint(low.x, high.x),
+        f64::midpoint(low.y, high.y),
+        f64::midpoint(low.z, high.z),
+    );
+    let centre = mid - normal * world.signed_distance_to(mid);
+    let reach = [low.x, high.x]
+        .into_iter()
+        .flat_map(|x| [low.y, high.y].map(|y| (x, y)))
+        .flat_map(|(x, y)| [low.z, high.z].map(|z| Point::new(x, y, z)))
+        .map(|corner| corner.distance(centre))
+        .fold(0.0_f64, f64::max);
     Ok(Some(Carrier::Flat(Flat {
         outward: if face.orientation() == Orientation::Reversed {
             -normal
@@ -632,6 +661,8 @@ fn carrier_of(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Optio
         world,
         stored,
         placement,
+        centre,
+        reach,
     })))
 }
 
