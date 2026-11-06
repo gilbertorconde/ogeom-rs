@@ -1926,10 +1926,15 @@ the patch through the junction then held tangent at the corner's ratio, \
 not `C¹`) or to other such corners (an even corner, or a corner whose \
 curves all end at others, as on a ball covered as a cube, settled with the \
 rest where the ratios asked round every cycle of its scales close), \
-and the fit with it meets the tolerance (bicubic patches allow one ratio \
-along each curve, which the points at their seed's parameters need not \
-admit: a clean cap of five or more patches at tolerance 0.001 is not \
-held); otherwise, and at a three-sided patch's point, the curves are \
+and the fit with it meets the tolerance; where it does not, a corner of \
+an odd number of patches whose curves each run on to the border or to \
+another such corner has its gluing spread along its curves, every knot \
+inside their strips doubled and the patches only `C¹` across those knots, \
+which meets 0.001 on clean caps of five and seven patches. The clean ball \
+covered as a cube at 0.001 still misses (its curves slide along the ball, \
+leaving points past the patches' sides, near tangent too), as do even \
+corners at their clean tolerance (a clean cap of six patches); there, and \
+at a three-sided patch's point, the curves are \
 fitted near tangent from the points, their angle measured into `worst_tangent` \
 and the corner's angle reported. Parameter correction runs only after \
 refinement, at the final spans, and only through `fit_network_chained`; \

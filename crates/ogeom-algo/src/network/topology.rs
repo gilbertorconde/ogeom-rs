@@ -144,6 +144,12 @@ pub(super) struct Topology {
     /// border, at a corner of four patches or a junction, or at another
     /// such corner: each with its curves.
     pub span_corners: Vec<(usize, Vec<usize>)>,
+    /// The corners of an odd number of patches, other than three-sided
+    /// patches' points and junctions, whose curves are all smooth, each
+    /// crossing one strip that runs one way throughout, and each ending at
+    /// its other end on the network's border or at another such corner:
+    /// each with its curves.
+    pub spread_corners: Vec<(usize, Vec<usize>)>,
 }
 
 /// Which curves the pole triples hold tangent, and how their ratios are
@@ -590,6 +596,28 @@ impl Topology {
             span_at = kept;
         };
 
+        // A curve into a corner held with its gluing spread along it has
+        // every knot inside its one strip doubled, and is held from end to
+        // end by the corner's rows: its far end may be on the border or at
+        // another such corner, the corners pared down as above.
+        let mut spread_at = vec![true; vertices];
+        let spread_corners = loop {
+            let found = odd_with(false, &|c, v| {
+                let far = far_of(c, v);
+                let ends_held = (border[far] && !apex[far])
+                    || (spread_at[far] && interior_valence[far].is_some());
+                ends_held && curve_strip[c].len() == 1 && !two_way[curve_strip[c][0]]
+            });
+            let mut kept = vec![false; vertices];
+            for (v, _) in &found {
+                kept[*v] = true;
+            }
+            if kept == spread_at {
+                break found;
+            }
+            spread_at = kept;
+        };
+
         // Chains: held curves running straight on through a corner of four
         // patches, or through a junction of a split side, share their
         // ratio.
@@ -706,6 +734,7 @@ impl Topology {
             spanned,
             odd_corners,
             span_corners,
+            spread_corners,
         })
     }
 }
