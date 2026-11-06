@@ -2011,6 +2011,37 @@ fn a_mirror_image_s_channel_on_an_axis_tilted_a_hair_is_one_cylinder() {
     );
 }
 
+/// A part whose pocket floor meets its mirror plane along an edge lying
+/// 1.08e-7 past the plane, within the edge's tolerance of 1.16e-7, fused
+/// with its own mirror image: the image's floor edge lies as far past the
+/// plane the other way, 2.06e-7 from the part's. The two floors are one
+/// plane, and each floor edge is read as running along the other's, so
+/// neither floor is split; the two edges are joined across the distance
+/// between them, the edge kept stating where the other ran, and the whole
+/// closes at twice the half's volume.
+#[test]
+fn a_floor_edge_a_hair_past_the_mirror_plane_joins_its_image() {
+    let (mut model, roots) =
+        ogeom::io::native::read(&corpus("floor_edge_a_hair_off_the_mirror_plane.ogeom")).unwrap();
+    let part = &roots[0];
+    let (half, _) = measured(&model, part);
+    let copy = ogeom::algo::copied(&mut model, part).unwrap().shape;
+    let mirror =
+        ogeom::math::Transform::plane_mirror(ogeom::math::Point::ORIGIN, ogeom::math::Direction::X);
+    let image = ogeom::algo::transformed(&mut model, &copy, mirror)
+        .unwrap()
+        .shape;
+    let fused = ogeom::boolean::fuse(&mut model, part, &image, T).unwrap();
+    let diagnosis = ogeom::algo::check(&model, &fused.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    assert_eq!(edges_walked_one_way(&model, &fused.shape), 0);
+    let (whole, _) = measured(&model, &fused.shape);
+    assert!(
+        (whole - 2.0 * half).abs() <= half * 1e-7,
+        "the whole measures {whole} against twice the half's {half}"
+    );
+}
+
 /// The mirror image of `half_channel_on_the_mirror_plane.ogeom` as a bake
 /// that pinned a fitted edge's end on the wrong side of the bore's chart
 /// closure left it: the edge, 1.17 long where the bore meets the channel,

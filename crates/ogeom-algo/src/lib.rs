@@ -116,7 +116,7 @@ pub use segments_2d::{Segment2, Segments, fit_segments_2d};
 pub use self_cross::{SelfCrossing, self_crossings};
 pub use sew::{
     Agreement, Sewn, agreeing_orientation, make_wire_unordered, order_edges, sew, sew_around,
-    sew_within,
+    sew_around_within, sew_within,
 };
 pub use sweep::{make_prism, make_prism_tapered, make_revolution};
 pub use text::make_text;
