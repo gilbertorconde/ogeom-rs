@@ -2426,3 +2426,36 @@ fn a_contact_ending_within_its_own_vertex_closes_the_cut() {
         "cut {kept} and common {shared}, block {block} and wedge {wedge}"
     );
 }
+
+/// An "up to face" pocket's tool cut from the part it was sketched on: a
+/// triangular prism 16.32 long in the corner between the part's floor and
+/// a wall, its floor leaning 1.47e-8 rad off the part's and parting from it
+/// by 1.05e-7 at its far edge, a hair past the confusion distance and
+/// within the 2e-7 the two faces state. The cut was refused: read as two
+/// planes crossing along the edge they share, which split neither, the
+/// prism's floor lay on the part's boundary everywhere with no coincident
+/// partner. The prism lies in the part, so the cut keeps the part less the
+/// prism, less the slivers between the leaning faces it is read flush
+/// with: the floor's 6.1e-6 and a wall's 1.9e-5, far inside a millionth.
+#[test]
+fn a_pocket_whose_floor_leans_a_hair_off_the_floor_cuts() {
+    let (mut model, roots) =
+        ogeom::io::native::read(&corpus("pocket_floor_leaning_off_the_floor.ogeom")).unwrap();
+    let volume = |model: &ogeom::topo::Model, shape: &ogeom::topo::Shape| {
+        let diagnosis = ogeom::algo::check(model, shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{diagnosis}");
+        ogeom::algo::volume_properties(model, shape, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    let (part, prism) = (volume(&model, &roots[0]), volume(&model, &roots[1]));
+    let cut = ogeom::boolean::cut(&mut model, &roots[0], &roots[1], T)
+        .unwrap()
+        .shape;
+    let kept = volume(&model, &cut);
+    assert!(
+        (kept - (part - prism)).abs() <= kept * 1e-6,
+        "cut {kept} where the part less the prism is {}",
+        part - prism
+    );
+}

@@ -115,6 +115,26 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Cutting an "up to face" pocket whose floor leans a hair off the floor
+  it stands on.** (#704)
+  - A pocket's tool in a printer carriage had its floor 1.47e-8 rad off
+    the part's floor, meeting it along their shared edge and 1.05e-7 off
+    it at the far edge: past the confusion distance, within the 2e-7 the
+    two faces state. The planes were read as crossing along the shared
+    edge, which split neither face; the tool's floor lay on the part's
+    boundary everywhere with no coincident partner, and the exact cut
+    was refused ("a piece lies on the other solid's boundary at every
+    point it was asked at"). Only the fuzzy cut built it.
+  - Where that refusal survives every retry, the boolean now runs once
+    more with each pair of faces asked whether they coincide within the
+    tolerances they state, as it already did for faces stating more than
+    the default, and splits each by the other's boundary as coincident
+    faces are. The tolerances are the faces' own; nothing is widened, and
+    every operation that succeeded before reaches the same result
+    without this attempt.
+  - The cut is valid and keeps the part less the tool and the 2.5e-5 of
+    slivers between the leaning faces, matching the fuzzy cut to 1.2e-14.
+
 - **`unify_same_domain` no longer merges a plane face onto a neighbour it
   is tilted off past the confusion distance.**
   - Two planar faces were read as one plane where the second's frame

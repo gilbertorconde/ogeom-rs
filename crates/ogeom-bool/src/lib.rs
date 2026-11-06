@@ -5468,6 +5468,7 @@ fn fill(
         rim_crossed: bool,
     }
     let at_rims = AT_RIMS.get();
+    let as_stated = AS_STATED.get();
     let mut pairs: Vec<(usize, usize)> = if admit_all {
         (0..ga.faces.len())
             .flat_map(|ia| (0..gb.faces.len()).map(move |ib| (ia, ib)))
@@ -5534,7 +5535,7 @@ fn fill(
             // The intersector measures a pair without a closed form for
             // coincidence at the chord; the faces' own stated looseness is
             // asked here, since only the faces know it.
-            let met = if coincide_as_stated(fa, fb, tol) {
+            let met = if coincide_as_stated(fa, fb, as_stated, tol) {
                 SurfaceIntersection::Same
             } else if let Some(found) = at_rim {
                 if found.is_empty() {
@@ -8908,20 +8909,21 @@ fn surfaces_stand_apart(a: &SurfaceGeometry, b: &SurfaceGeometry, tol: Tolerance
 /// closed form, held to the confusion distance, sees two.
 ///
 /// Asked only where the faces, or a fuzzy boolean's widened confusion,
-/// allow more than the default confusion distance's few. The smaller face
+/// allow more than the default confusion distance's few, or with
+/// `as_stated` at any tolerance (see [`AS_STATED`]). The smaller face
 /// is sampled on a grid over its chart, inside its
 /// trim. Every sample inside the other face's trim must lie within the
 /// stated tolerance of the other's surface, and a few must, for the answer
 /// to mean anything. A pair that crosses fails at its first sample off the
 /// other.
-fn coincide_as_stated(fa: &GFace, fb: &GFace, tol: Tolerances) -> bool {
+fn coincide_as_stated(fa: &GFace, fb: &GFace, as_stated: bool, tol: Tolerances) -> bool {
     const GRID: usize = 8;
     const EVIDENCE: usize = 4;
     // What the faces state, or the run's own confusion where a fuzzy
     // boolean has widened it past theirs: a fuzz is a statement of how far
     // the two solids' geometry may disagree and still be one.
     let reach = (fa.tolerance + fb.tolerance).max(tol.confusion() * 2.0);
-    if reach <= ogeom_core::tolerance::CONFUSION * 10.0 {
+    if reach <= ogeom_core::tolerance::CONFUSION * 10.0 && !as_stated {
         return false;
     }
     // Two closed forms of different kinds share no patch: a plane is no
@@ -10965,6 +10967,11 @@ thread_local! {
     /// Whether an assembly since [`settled`] began met such a pair with
     /// [`AT_RIMS`] off.
     static RIM_CROSSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether two faces are asked whether they coincide within the
+    /// tolerances they state ([`coincide_as_stated`]) where those are the
+    /// default ones too. Off but for the attempt [`settled`] makes last.
+    /// Read once per assembly on the calling thread.
+    static AS_STATED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// An operation run once, and where it refuses, again in three steps. Where
@@ -11027,6 +11034,19 @@ thread_local! {
 /// the sew widens nothing further than that distance beyond what the
 /// pieces already state, so its result is not held to the weld distance a
 /// second time: a part may itself state wider tolerances.
+///
+/// After all of that, where the refusal was a piece on the other solid's
+/// boundary with no coincident partner and every retry above refused too,
+/// once more with every pair of faces asked whether they coincide within
+/// the tolerances they state, the default ones included ([`AS_STATED`]). A
+/// face leaning a rounding off another it meets along an edge (a pocket's
+/// floor sketched a tenth of a micron off the plane it stands on) parts
+/// from it by a hair past the confusion distance at its far edge: the
+/// closed form reads the two as crossing along the edge they share, which
+/// splits neither, and the leaning face reads on the other's boundary
+/// everywhere with no partner. Within what the two faces state they are one
+/// surface, and each face is split by the other's boundary as a coincident
+/// face is.
 fn settled(
     model: &mut Model,
     tol: Tolerances,
@@ -11056,6 +11076,23 @@ fn settled(
             }
         }
         SEW_ACROSS.set(apart + tol.confusion());
+        let _plain = Plain;
+        match attempt(model, tol) {
+            Ok(built) => return Ok(built),
+            Err(e @ (ogeom_core::OgeomError::Cancelled | ogeom_core::OgeomError::Dangling(_))) => {
+                return Err(e);
+            }
+            Err(_) => {}
+        }
+    }
+    if refusal.to_string().contains("no coincident partner face") {
+        struct Plain;
+        impl Drop for Plain {
+            fn drop(&mut self) {
+                AS_STATED.set(false);
+            }
+        }
+        AS_STATED.set(true);
         let _plain = Plain;
         match attempt(model, tol) {
             Ok(built) => return Ok(built),
