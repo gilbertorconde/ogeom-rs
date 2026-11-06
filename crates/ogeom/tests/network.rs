@@ -1939,6 +1939,46 @@ fn a_ball_covered_as_a_cube_is_held_exactly_tangent_at_every_corner() {
     }
 }
 
+#[test]
+fn a_clean_ball_covered_as_a_cube_meets_its_tolerance_exactly_tangent() {
+    // The seeds take a few points by the patch beside the face of the cube
+    // they lie over, up to 0.0022 past the great circle between the two,
+    // and every fit at the seed's parameters leaves them about as far past
+    // that patch's side: no try meets 0.001 until a held fit is finished,
+    // those points taken by the patch across the side.
+    let (curves, patches) = ball_cube();
+    let cloud = ball_points(40_000, 0.0, 41);
+    let (model, network) = fit(&curves, &patches, &cloud, &options(CLEAN_TOLERANCE, vec![]));
+    assert_eq!(network.ended, Ended::Met, "{network:?}");
+    assert_eq!(network.outside, 0);
+    assert_eq!(
+        network.per_patch.iter().map(|p| p.points).sum::<usize>(),
+        cloud.len()
+    );
+    assert!(
+        network.per_patch.iter().all(|p| p.worst <= CLEAN_TOLERANCE),
+        "{:?}",
+        network.per_patch
+    );
+    let off = widest_off(&network, off_ball);
+    assert!(off <= CLEAN_TOLERANCE, "{off} off the ball");
+    let (angle, gap) = across_shared(&network, &patches);
+    assert!(angle <= EXACT_ANGLE, "{angle}");
+    assert!(gap <= ROUNDING_GAP, "{gap}");
+    assert!(
+        network.worst_tangent <= EXACT_ANGLE,
+        "{}",
+        network.worst_tangent
+    );
+    assert_eq!(network.corners.len(), 8, "{:?}", network.corners);
+    for corner in &network.corners {
+        assert!(corner.angle <= EXACT_ANGLE, "{corner:?}");
+        assert!(off_ball(corner.point) <= CLEAN_TOLERANCE, "{corner:?}");
+    }
+    let diagnosis = check(&model, &network.shell, T).unwrap();
+    assert!(diagnosis.problems.is_empty(), "{diagnosis:?}");
+}
+
 /// A cap with a corner of six patches at its pole, one of its curves
 /// running on to a corner of three between the pole and the rim, at
 /// azimuth nought: curve 0 joins the two, curves 1 and 2 run from the

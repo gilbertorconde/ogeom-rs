@@ -16,6 +16,48 @@ bump may break the API and a patch bump may not.
 - **`sew_around_within`**: sew faces of which some are settled, as
   `sew_around`, across a gap as `sew_within` does.
 
+- **Patch networks finish a held fit that missed by re-taking its points
+  at their nearest points on it, where the fit near tangent misses too.**
+  (#653)
+  - The seeds take each point by the nearest seed patch. On the clean ball
+    covered as a cube a few points are taken by the patch beside the face
+    of the cube they lie over, up to 0.0022 past the great circle between
+    the two. Every fit leaves them about as far past that patch's side,
+    so every try ended on strays at tolerance 0.001 and the curves were
+    left near tangent (3.1e-3 rad). Correcting the parameters alone does
+    not reach the tolerance there: the worst point falls from 0.0020 to
+    0.0018, then rises.
+  - Where every way of holding the corners misses and the fit near
+    tangent misses too, each held fit that missed is now finished at its
+    spans, in the order they were tried. Each point is re-taken at its
+    nearest point on the fit; where that lies on a side its patch shares
+    and the patch across the side is nearer, that patch takes it. The
+    patches are fitted again at those parameters.
+  - A fit is kept only while it holds every corner, takes off more of the
+    squared distances than twice the noise's variance, and leaves the
+    worst miss that is not a stray no worse. The noise is read once, off
+    the fit at the seed's parameters, and not re-read after a correction.
+    The corrections stop once the squared distances are down to that
+    noise over the controls left free, and after eight steps: past the
+    few that re-take the misplaced points, each is a correction creeping
+    the points under the tolerance while the patches' free corners drift
+    off the shape. The first fit within the tolerance is kept; otherwise
+    the network is the near-tangent fit, as before.
+  - Measured: the clean ball as a cube at 0.001 meets it, 16 spans each
+    way, every curve and corner tangent to 2.6e-14 rad along 201 points,
+    the worst point 0.00055 off and the surfaces within 0.00061 of the
+    ball, after one step.
+  - All 28 scenarios digested fit to the same poles as before, bit for
+    bit. Every network that met its tolerance before is fitted as before.
+  - Still not met: a clean rounded box corner with its edge fillets
+    attached, at 0.001; uncapped, the corrections met it only after 53
+    steps by 1 %, its fillets' free far corners drifting from 0.0043 to
+    0.0052 off the shape, so it ends on strays near tangent as before.
+  - Also not met: a box edge capped at two spans, which has no corner to
+    hold (finishing its near-tangent fit too stalls at 0.0014); even
+    corners at their clean tolerance and three-sided patches' points,
+    which meet the tolerance near tangent and so are not finished.
+
 - **Patch networks spread the gluing of an odd corner along its curves
   where holding the corner whole or by its spans misses the points.**
   (#653)

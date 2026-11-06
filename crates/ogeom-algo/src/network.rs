@@ -91,7 +91,17 @@
 //! - **points may be reparameterised.** Once refinement ends,
 //!   [`fit_network_chained`] can move every point's parameters to its
 //!   nearest point on its patch and fit the patches again, a fit kept only
-//!   where it comes nearer the points.
+//!   where it comes nearer the points. Where every way of holding the
+//!   corners misses, and so does the fit near tangent, each held fit that
+//!   missed is finished that way at its spans before the near-tangent one
+//!   is kept: a point whose nearest point lies on a side its patch shares
+//!   is taken by the patch across that side where that one is nearer, as
+//!   the seeds take each point by the nearest. A fit is kept only while it
+//!   holds the corners, takes off more of the squared distances than twice
+//!   the noise's variance, read once off the fit at the seed's parameters,
+//!   and leaves the worst miss that is not a stray no worse, for at most
+//!   eight steps; the first that comes within the tolerance is the
+//!   network.
 //!
 //! The constraints are solved for exactly, by elimination, before the
 //! least squares: what is held tangent is tangent to rounding.
@@ -122,6 +132,13 @@ const NORMAL_QUARTILE: f64 = 0.674_489_750_196_081_7;
 
 /// How many points a worker projects at a time.
 const POINT_BATCH: usize = 2048;
+
+/// The most steps a held fit that missed is finished by. Re-taking the
+/// points fixes the few a seed took by the wrong patch within a step or
+/// two; past that, each step is a correction converging linearly, which
+/// creeps the points under the tolerance while the patches' corners and
+/// free borders, which no point beyond them holds, drift off the shape.
+const FINISH_STEPS: usize = 8;
 
 /// One side of a patch: the curve along it and which way it runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,7 +345,11 @@ pub struct Network {
 /// held tangent, the network is refined from the start with each way of
 /// holding them the [module documentation](self) describes in turn, until
 /// one comes within the tolerance; failing that, with those corners near
-/// tangent.
+/// tangent. Where that misses too, each held way is finished at its spans,
+/// its points re-taken at their nearest points on it, as the module
+/// documentation describes, and the first to come within the tolerance is
+/// kept. The points a patch fits ([`PatchFit::points`]) are then those it
+/// takes as finished.
 ///
 /// The faces are built in `model` on the fitted patches, every curve an
 /// edge on the poles the patches share, with the parameter lines of the
@@ -463,6 +484,7 @@ pub fn fit_network_chained(
     }
     tries.push(Corners::Loose);
     let mut settled = None;
+    let mut missed = Vec::new();
     for corners in tries {
         fit.corners = corners;
         let (spans, current, ended) = fit.refine(options)?;
@@ -470,9 +492,31 @@ pub fn fit_network_chained(
             settled = Some((spans, current, ended));
             break;
         }
+        if current.held {
+            missed.push((corners, spans, current));
+        }
     }
-    let Some((spans, mut current, ended)) = settled else {
+    let Some((mut spans, mut current, mut ended)) = settled else {
         ogeom_bail!(Numeric, "no way of holding the corners was tried");
+    };
+    // Where the corners near tangent miss too, each held try that missed
+    // is finished at its spans, in the order they were tried: the points
+    // re-taken at their nearest points on the fit.
+    let mut retaken = None;
+    if ended != Ended::Met {
+        for (corners, at, round) in missed {
+            let held = Fit { corners, ..fit };
+            if let Some((round, again)) = held.finish(&at, round, tolerance)? {
+                fit.corners = corners;
+                (spans, current, ended) = (at, round, Ended::Met);
+                retaken = Some(again);
+                break;
+            }
+        }
+    }
+    let fit = Fit {
+        taken: retaken.as_ref().unwrap_or(&taken),
+        ..fit
     };
     // Parameter correction, at the spans refinement settled on. Refinement
     // fits every try at the seed's parameters, so that tries compare as
@@ -506,7 +550,7 @@ pub fn fit_network_chained(
             sv.iter().map(|&s| spans[s]).sum(),
         );
     }
-    for (&p, &d) in taken.patch.iter().zip(&current.distances) {
+    for (&p, &d) in fit.taken.patch.iter().zip(&current.distances) {
         let fit = &mut per_patch[p];
         fit.points += 1;
         fit.sigma += d * d;
@@ -964,6 +1008,7 @@ struct Seeds {
 }
 
 /// The points each patch takes and where on it.
+#[derive(Clone)]
 struct Taken {
     patch: Vec<usize>,
     point: Vec<Point>,
@@ -3164,6 +3209,123 @@ impl Fit<'_> {
             rows.push(row.into_iter().filter(|e| e.1 != 0.0).collect());
         }
         rows
+    }
+
+    /// Finish a try that missed at `spans`, from its fit `start` at the
+    /// seed's parameters: while not every point is within the tolerance,
+    /// the points are re-taken at their nearest points on the fit and the
+    /// patches fitted again at the same spans. The fit and the points as
+    /// re-taken where it comes within the tolerance; `None` where it stops
+    /// first.
+    ///
+    /// The noise's variance is read once, off `start`'s median distance as
+    /// refinement reads it, and held: re-read after a correction, whose
+    /// distances are all along the normal, it would shrink and let the fit
+    /// follow the noise. A fit is kept only where it holds every corner the
+    /// try names, takes off more of the squared distances than twice that
+    /// variance (what Mallows' criterion charges a free pole), and the
+    /// worst miss that is not a stray grows no worse. The corrections stop
+    /// where the squared distances are down to the noise left over the free
+    /// controls, `σ̂₀²(m − free)`, and after [`FINISH_STEPS`].
+    fn finish(
+        &self,
+        spans: &[usize],
+        start: Round,
+        tolerance: f64,
+    ) -> OgeomResult<Option<(Round, Taken)>> {
+        let judged = (DEGREE + 1) * (DEGREE + 1);
+        let variance = (median(&start.distances) / NORMAL_QUARTILE).powi(2);
+        let floor = variance * precise(start.distances.len().saturating_sub(start.free));
+        let worst = |fit: &Fit, round: &Round| {
+            fit.missed(round, tolerance, judged)
+                .0
+                .first()
+                .map_or(0.0, |w| w.0)
+        };
+        let mut taken = self.taken.clone();
+        let mut current = start;
+        for step in 0..=FINISH_STEPS {
+            if current.distances.iter().all(|d| *d <= tolerance) {
+                return Ok(Some((current, taken)));
+            }
+            if step == FINISH_STEPS || variance <= 0.0 || current.square() <= floor {
+                return Ok(None);
+            }
+            let fit = Fit {
+                taken: &taken,
+                ..*self
+            };
+            let again = fit.retake(&current)?;
+            let refit = Fit {
+                taken: &again,
+                ..*self
+            };
+            let next = refit.round(spans, &again.at)?;
+            let kept = next.held
+                && current.square() - next.square() > 2.0 * variance
+                && worst(&refit, &next) <= worst(&fit, &current);
+            if !kept {
+                return Ok(None);
+            }
+            (taken, current) = (again, next);
+        }
+        Ok(None)
+    }
+
+    /// The points re-taken at their nearest points on `round`'s patches:
+    /// each by its own patch, or, where that foot lies on a side its patch
+    /// shares, by the patch across the side where that is nearer. Such a
+    /// point lies past its patch's side, on the other's side of the curve,
+    /// and the nearest patch takes it, as the seeds took every point.
+    fn retake(&self, round: &Round) -> OgeomResult<Taken> {
+        let topo = self.topo;
+        let geometry: Vec<SurfaceGeometry> = round
+            .surfaces
+            .iter()
+            .map(|s| SurfaceGeometry::BSpline(s.clone()))
+            .collect();
+        let mut taken = self.taken.clone();
+        taken.at.clone_from(&round.feet);
+        for (i, &p) in self.taken.patch.iter().enumerate() {
+            let (u, v) = round.feet[i];
+            let mut best: Option<(usize, (f64, f64), f64)> = None;
+            for (k, x, on) in [
+                (0, u, v <= 0.0),
+                (1, v, u >= 1.0),
+                (2, u, v >= 1.0),
+                (3, v, u <= 0.0),
+            ] {
+                if !on {
+                    continue;
+                }
+                let parts = side_parts(topo, self.patches, (p, k));
+                let piece = piece_at(k, x, &parts, &round.patch_bounds[p][k % 2]);
+                let Some(side) = self.patches[p].sides[k].get(piece) else {
+                    continue;
+                };
+                for &(q, _) in &topo.users[side.curve] {
+                    if q == p {
+                        continue;
+                    }
+                    let foot =
+                        ogeom_geom::project_on_surface(&geometry[q], taken.point[i], 0, self.tol)?;
+                    if foot.distance < best.map_or(round.distances[i], |b| b.2) {
+                        best = Some((q, foot.parameters, foot.distance));
+                    }
+                }
+            }
+            if let Some((q, at, _)) = best {
+                taken.patch[i] = q;
+                taken.at[i] = at;
+            }
+        }
+        for mine in &mut taken.of_patch {
+            mine.clear();
+        }
+        for (i, &p) in taken.patch.iter().enumerate() {
+            taken.of_patch[p].push(i);
+        }
+        Ok(taken)
     }
 
     /// The worst miss of each patch among its cells holding at least

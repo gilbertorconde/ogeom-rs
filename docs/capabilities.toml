@@ -1930,15 +1930,19 @@ and the fit with it meets the tolerance; where it does not, a corner of \
 an odd number of patches whose curves each run on to the border or to \
 another such corner has its gluing spread along its curves, every knot \
 inside their strips doubled and the patches only `C¹` across those knots, \
-which meets 0.001 on clean caps of five and seven patches. The clean ball \
-covered as a cube at 0.001 still misses (its curves slide along the ball, \
-leaving points past the patches' sides, near tangent too), as do even \
-corners at their clean tolerance (a clean cap of six patches); there, and \
-at a three-sided patch's point, the curves are \
+which meets 0.001 on clean caps of five and seven patches. Where the \
+fit near tangent misses too, each held fit that missed is finished at its \
+spans: the points re-taken at their nearest points on it (by the patch \
+across a shared side where a point lies past its own patch's side) while \
+that comes nearer them, for at most eight steps, the noise read once from \
+the fit at the seed's parameters; this meets 0.001 on the clean ball covered as a cube. Even \
+corners at their clean tolerance (a clean cap of six patches) still miss; \
+there, and at a three-sided patch's point, the curves are \
 fitted near tangent from the points, their angle measured into `worst_tangent` \
-and the corner's angle reported. Parameter correction runs only after \
-refinement, at the final spans, and only through `fit_network_chained`; \
-the points are those of the region the network covers."""
+and the corner's angle reported. Parameter correction otherwise runs only \
+after refinement, at the final spans, and only through \
+`fit_network_chained`; the points are those of the region the network \
+covers."""
 symbols = [
     "ogeom_algo::fit_network", "ogeom_algo::fit_network_chained", "ogeom_algo::Network",
     "ogeom_algo::NetworkOptions", "ogeom_algo::PatchDef", "ogeom_algo::ChainedPatch",
