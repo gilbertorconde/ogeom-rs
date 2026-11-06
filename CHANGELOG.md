@@ -16,6 +16,37 @@ bump may break the API and a patch bump may not.
 - **`sew_around_within`**: sew faces of which some are settled, as
   `sew_around`, across a gap as `sew_within` does.
 
+- **Patch networks spread the gluing of an odd corner along its curves
+  where holding the corner whole or by its spans misses the points.**
+  (#653)
+  - Holding a corner exactly tangent asks `D₁ + λ D₂ + γ T = 0` along
+    each curve into it. With `γ` linear along the whole curve, single
+    knots bind the curve to one cubic; held by its spans, `γ` falls to
+    nought within one span. The points sit at the parameters of a Coons
+    seed, whose own gluing runs linearly along the whole curve, so both
+    misses grew as refinement narrowed the spans, and clean caps of five
+    or more patches at tolerance 0.001 were left near tangent.
+  - A new last try before near tangent, for corners of an odd number of
+    patches whose curves each run on to the border or to another such
+    corner: `λ` constant and `γ` linear along each whole curve, every knot
+    inside the curve's strip doubled, and every curve along that strip
+    held `C²` across each. The patches are only `C¹` across those knots,
+    and the curves refine freely. The condition is held at every knot, in
+    value and derivative, so its rows stay independent at any number of
+    spans. A curve between two such corners takes their geometric mean
+    ratio, as the corners held by their spans do.
+  - Measured along every shared curve at 201 points: clean caps of five
+    and seven patches at 0.001 are tangent to 1.1e-14 and 1.3e-14 rad
+    (0.011 and 0.0059 rad before), within 0.00093 and 0.00095 of the
+    ball; the two-corner cap at σ = 0.005 mm and tolerance 0.025 is
+    tangent to 7.2e-14 rad (0.052 rad before).
+  - Only those two of the 28 scenarios digested before change; the other
+    26 fit to the same poles, bit for bit.
+  - Still near tangent: the clean ball as a cube at 0.001, whose curves
+    slide along the ball and leave points past the patches' sides, as
+    near tangent too; even corners at their clean tolerance; three-sided
+    patches' points.
+
 - **Patch networks lay out nested T-junctions, and settle the ratios of
   irregular corners that pin one another all together.** (#653)
   - A curve of a split side may now itself be crossed by junctions
