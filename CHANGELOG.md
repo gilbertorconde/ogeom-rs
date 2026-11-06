@@ -11,6 +11,24 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-11-06
+
+A patch release: `sew_around_within` is added, and no existing API changes.
+
+A part fuses strictly with its mirror image where a channel's axis is
+tilted by a rounding and where an edge on the mirror plane lies a hair
+past it. `unify_same_domain` no longer merges a plane face onto a
+neighbour tilted past the confusion over its length, which left broken
+edges. Mesh conversion widens its coplanar distance only where a fit
+presses against it, and a solid tessellated whole keeps its windings
+beside a triangle closing at a point. An "up to face" pocket whose floor
+leans a hair off the floor it stands on cuts exactly. Patch networks lay
+out nested T-junctions, hold exactly tangent the corners whose curves end
+at a junction or another corner, spread an odd corner's gluing along its
+curves so clean caps of five and seven patches meet 0.001, and finish a
+held fit that missed by re-taking its points, so the clean ball covered as
+a cube meets 0.001 too.
+
 ### Added
 
 - **`sew_around_within`**: sew faces of which some are settled, as
@@ -12161,7 +12179,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.17.1...HEAD
+[0.17.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.15.0...v0.15.1
