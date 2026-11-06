@@ -4542,7 +4542,25 @@ fn coaxial_chart_map(
     };
     let (za, zb) = (fa.z().vector(), fb.z().vector());
     let axis = ogeom_math::Axis::new(fb.origin(), fb.z());
-    if za.cross(zb).magnitude() > tol.angular() || axis.distance_to(fa.origin()) > reach {
+    // The axes are one line where the owner's stands within `reach` of the
+    // target's wherever the owner's face can be: at its origin, and tilted
+    // by their angle over the farthest the face reaches from it, which is
+    // the ends of a cylinder's or a cone's height window and a torus's
+    // outer radius. An unbounded window is held to the angle alone.
+    let lever = match owner {
+        SurfaceGeometry::Torus(t) => t.torus().major_radius() + t.torus().minor_radius(),
+        _ => {
+            let (_, (va, vb)) = owner.domain();
+            va.abs().max(vb.abs())
+        }
+    };
+    let tilt = za.cross(zb).magnitude();
+    let tilted = if lever.is_finite() {
+        tilt * lever > reach
+    } else {
+        tilt > tol.angular()
+    };
+    if tilted || axis.distance_to(fa.origin()) > reach {
         return None;
     }
     let s = if za.dot(zb) >= 0.0 { 1.0 } else { -1.0 };

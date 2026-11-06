@@ -79,6 +79,24 @@ bump may break the API and a patch bump may not.
     three-sided patches' points; and clean caps of five or more patches at
     tolerance 0.001.
 
+### Fixed
+
+- **Fusing a part with its mirror image across a channel whose axis is
+  tilted by a rounding.**
+  - Where two coincident cylinders, cones or tori meet in a fuse, an edge
+    of one with no closed-form image on the other is carried across as
+    its own pcurve, mapped between the two charts. The axes had to be
+    parallel to within an angle of 1e-12, so a half-round channel on a
+    mirror plane, its axis tilted 2.7e-12 off y and its mirror image's the
+    other way, was not one cylinder: the fitted edges where another face
+    meets it were refused ("same-domain contact whose edge's stretch on
+    the shared surface's window has no image in its chart"), and a part
+    could not be fused with its own mirror image.
+  - The axes are now one line where the tilt moves the owner's axis, over
+    the farthest its face reaches from its origin, by no more than the
+    distance already allowed between the two origins. The channel's
+    5.4e-12 moves it 1e-11 over its few millimetres.
+
 ## [0.17.0] - 2026-11-05
 
 A minor release: `Simplified` gains `result_vertex`, so a `Simplified`

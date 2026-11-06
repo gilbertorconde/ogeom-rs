@@ -1980,6 +1980,37 @@ fn a_part_on_its_mirror_plane_fuses_with_its_mirror_image() {
     assert!(bounds.low().unwrap().x < -3.0 && bounds.high().unwrap().x > 3.0);
 }
 
+/// A part whose half-round channel on its mirror plane runs along an axis
+/// tilted 2.7e-12 off y, fused with its own mirror image: the image's
+/// channel is the part's on an axis tilted the other way, 5.4e-12 apart,
+/// which over the channel's few millimetres moves it 1e-11. The fitted
+/// edges where another face meets the image's channel have no closed-form
+/// image on the part's half, and are carried across as the image's own
+/// pcurves on the one cylinder; they were refused as a contact on a chart
+/// the two halves do not share.
+#[test]
+fn a_mirror_image_s_channel_on_an_axis_tilted_a_hair_is_one_cylinder() {
+    let (mut model, roots) =
+        ogeom::io::native::read(&corpus("channel_axis_tilted_by_its_mirror.ogeom")).unwrap();
+    let part = &roots[0];
+    let (half, _) = measured(&model, part);
+    let copy = ogeom::algo::copied(&mut model, part).unwrap().shape;
+    let mirror =
+        ogeom::math::Transform::plane_mirror(ogeom::math::Point::ORIGIN, ogeom::math::Direction::X);
+    let image = ogeom::algo::transformed(&mut model, &copy, mirror)
+        .unwrap()
+        .shape;
+    let fused = ogeom::boolean::fuse(&mut model, part, &image, T).unwrap();
+    let diagnosis = ogeom::algo::check(&model, &fused.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    assert_eq!(edges_walked_one_way(&model, &fused.shape), 0);
+    let (whole, _) = measured(&model, &fused.shape);
+    assert!(
+        (whole - 2.0 * half).abs() <= half * 1e-7,
+        "the whole measures {whole} against twice the half's {half}"
+    );
+}
+
 /// The mirror image of `half_channel_on_the_mirror_plane.ogeom` as a bake
 /// that pinned a fitted edge's end on the wrong side of the bore's chart
 /// closure left it: the edge, 1.17 long where the bore meets the channel,
