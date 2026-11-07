@@ -11,6 +11,7 @@
 //! solid's own faces by same-domain resolution, and the envelope stays as
 //! the blend.
 
+use crate::law::{Profile, RadiusLaw};
 use crate::support::{
     Seat, apply_wedge, apply_wedge_solid, edge_curve, face_from_edges, planar_face, planar_seat,
     revolved_flanks, revolved_seat, segment_between, trimmed_wedge, wedge_solid,
@@ -2121,6 +2122,424 @@ fn fillet_edge_variable_own(
     };
     let cap0 = cap(model, 0, -seat.along)?.shape;
     let cap1 = cap(model, 1, seat.along)?.shape;
+
+    let faces = [leg_a, leg_b, cap0, cap1, blend];
+    apply_wedge(model, solid, Some(edge), &faces, !seat.convex, tol)
+}
+
+/// Round a convex or concave edge, or a closed chain of curved edges, with
+/// a blend whose radius follows `law` along `chain`, taken as one
+/// parameter in arc length.
+///
+/// At arc length `s` along the chain the blend's section, in the plane
+/// square to the edge there, is the arc of radius `law(s)` tangent to both
+/// faces: the rolling ball of that radius seated in the section. The
+/// chain starts where its first edge does as that edge is oriented (a
+/// reversed edge starts at its stored curve's far end) and runs the way
+/// that edge does.
+///
+/// Rounded:
+///
+/// - a straight edge between two planes, for any law. The linear law is
+///   [`fillet_edge_variable`]'s blend; under [`RadiusLaw::Points`] the
+///   envelope is again exact: a cubic B-spline along the edge, the
+///   rational quadratic arc across it, the control net the edge's
+///   Greville points pushed out by the law's own control radii.
+/// - a closed loop of curved edges between the same two faces, given as
+///   one closed edge or as the arcs it is split into, end to end round
+///   the loop: a drum's rim, a cut drum's oblique rim, a branch's seam. The
+///   march carries the law's radius station by station round the whole
+///   loop, and the band is fitted through each station's own arc.
+///
+/// A law holding one radius all along is [`fillet_edges`]' round.
+///
+/// What `solid` shares with other shapes is copied before it is
+/// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`] where the law states no usable radius
+/// (no points, a fraction off the chain or out of order, a radius not a
+/// positive length), where a linear law changes radius round a closed
+/// chain, where `chain` is empty, an open chain of more than one edge, a
+/// closed chain with a straight edge, or a chain whose edges do not run
+/// end to end between the same two faces, where a curved chain is open
+/// (its round would run out past its ends), or where the ball at the
+/// law's largest radius does not fit the edge's faces; and as
+/// [`fillet_edge`] for the seat itself.
+pub fn fillet_edges_variable(
+    model: &mut Model,
+    solid: &Shape,
+    chain: &[Shape],
+    law: &RadiusLaw,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    if chain.is_empty() {
+        ogeom_bail!(
+            Construction,
+            "a variable radius over no edges rounds nothing"
+        );
+    }
+    ogeom_algo::on_own_nodes(model, solid, chain, |model, solid, parts| {
+        fillet_chain_law_own(model, solid, parts, law, tol)
+    })
+}
+
+/// Whether `chain` runs end to end and back to its start, each edge
+/// between the same two faces of `solid` as the first, none twice.
+fn closed_chain(model: &Model, solid: &Shape, chain: &[Shape]) -> OgeomResult<bool> {
+    let faces_of = |edge: &Shape| -> OgeomResult<Vec<Shape>> {
+        let mut faces: Vec<Shape> = Vec::new();
+        for f in ogeom_topo::ancestors_of(model, solid, edge, ShapeType::Face)? {
+            if !faces.iter().any(|g| g.is_same(&f)) {
+                faces.push(f);
+            }
+        }
+        Ok(faces)
+    };
+    let hosts = faces_of(&chain[0])?;
+    let mut ends = Vec::with_capacity(chain.len());
+    for (i, edge) in chain.iter().enumerate() {
+        if chain[..i].iter().any(|e| e.is_same(edge)) {
+            return Ok(false);
+        }
+        let faces = faces_of(edge)?;
+        let same =
+            faces.len() == hosts.len() && faces.iter().all(|f| hosts.iter().any(|h| h.is_same(f)));
+        if !same {
+            return Ok(false);
+        }
+        let Some(pair) = ogeom_algo::edge_vertices(model, edge)? else {
+            return Ok(false);
+        };
+        ends.push(pair);
+    }
+    Ok((0..ends.len()).all(|i| ends[i].1.is_same(&ends[(i + 1) % ends.len()].0)))
+}
+
+/// [`fillet_edges_variable`] on a shape every node below which is its own.
+fn fillet_chain_law_own(
+    model: &mut Model,
+    solid: &Shape,
+    chain: &[Shape],
+    law: &RadiusLaw,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let edge = &chain[0];
+    let closed = closed_chain(model, solid, chain)?;
+    if chain.len() > 1 && !closed {
+        ogeom_bail!(
+            Construction,
+            "a variable radius over an open chain of {} edges is still owed; \
+             a single edge or a closed loop is rounded; see \
+             docs/CAPABILITIES.md, fillet.variable",
+            chain.len()
+        );
+    }
+    let profile = Profile::new(law, closed, tol)?;
+    if profile.level(tol) {
+        let radii = vec![profile.largest(); chain.len()];
+        return fillet_edges_meeting(model, solid, chain, &radii, tol);
+    }
+    let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
+    if chain.len() == 1
+        && let RadiusLaw::Linear { start, end } = law
+    {
+        let (from, to) = if reversed {
+            (*end, *start)
+        } else {
+            (*start, *end)
+        };
+        return fillet_edge_variable_own(model, solid, edge, from, to, tol);
+    }
+    let mut planar = false;
+    for e in chain {
+        let (curve, _) = edge_curve(model, e, tol)?;
+        if matches!(curve, Curve::Line(_)) {
+            planar = chain.len() == 1
+                && matches!(route(model, solid, e, Rims::Exact, tol)?, Route::Planar);
+            if !planar {
+                ogeom_bail!(
+                    Construction,
+                    "a variable radius on a straight edge other than one \
+                     between two planes, alone, is still owed; see \
+                     docs/CAPABILITIES.md, fillet.variable"
+                );
+            }
+        }
+    }
+    if !planar && !closed {
+        ogeom_bail!(
+            Construction,
+            "a variable radius on an open curved edge is still owed; a \
+             closed loop is rounded; see docs/CAPABILITIES.md, fillet.variable"
+        );
+    }
+    // The ball at the law's largest radius sets back furthest: where that
+    // one fits each face, every smaller one does.
+    for e in chain {
+        crate::support::ball_fits(model, solid, e, profile.largest(), false, tol)?;
+    }
+    let mut built = if planar {
+        straight_law_fillet(model, solid, edge, &profile, reversed, tol)?
+    } else {
+        crate::marched::marched_fillet_law(model, solid, edge, &profile, tol)?
+    };
+    crate::support::credit_new_faces(model, solid, edge, &mut built)?;
+    Ok(built)
+}
+
+/// The straight planar seat under a law of points: the envelope exact, a
+/// cubic B-spline along the edge by the rational quadratic arc across it.
+///
+/// Along a straight edge the arc length is affine in the parameter, so the
+/// law's cubic B-spline is the radius at every section; the apex line in
+/// the same basis has the Greville points for control points. Each row of
+/// the net is that apex control point moved out along the section's arm
+/// by the law's control radius, which is the section's arc at every
+/// parameter, since both are affine in the net.
+fn straight_law_fillet(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    law: &Profile,
+    reversed: bool,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let seat = planar_seat(model, solid, edge, tol)?;
+    let (first, second) = if seat
+        .along
+        .dot(seat.normals[0].cross(seat.normals[1]))
+        .is_sign_positive()
+    {
+        (0, 1)
+    } else {
+        (1, 0)
+    };
+    let sign = if seat.convex { 1.0 } else { -1.0 };
+    let n1 = seat.normals[first] * sign;
+    let n2 = seat.normals[second] * sign;
+    let a = seat.leg(first, tol)? * sign;
+    let b = seat.leg(second, tol)? * sign;
+    let bisector = {
+        let u = a + b;
+        let m = u.magnitude();
+        if m <= tol.angular() {
+            ogeom_bail!(Construction, "the faces meet too sharply to seat a fillet");
+        }
+        u / m
+    };
+    let depth = -n1.dot(bisector);
+    if depth <= tol.angular() {
+        ogeom_bail!(Construction, "the faces meet too sharply to seat a fillet");
+    }
+    let sweep = seat.along.dot(n1.cross(n2)).atan2(n1.dot(n2)) * sign;
+    if sweep <= tol.angular() {
+        ogeom_bail!(Construction, "the faces are parallel; there is no corner");
+    }
+
+    // The law over the edge's own parameter, start to end: the chain's
+    // fraction where the edge runs with it, and its complement where
+    // against.
+    let (knots, radii) = {
+        let (knots, values) = law.spline(tol);
+        if reversed {
+            (
+                knots.iter().rev().map(|k| 1.0 - k).collect::<Vec<f64>>(),
+                values.into_iter().rev().collect::<Vec<f64>>(),
+            )
+        } else {
+            (knots, values)
+        }
+    };
+    let greville: Vec<f64> = (0..radii.len())
+        .map(|i| (knots[i + 1] + knots[i + 2] + knots[i + 3]) / 3.0)
+        .collect();
+    let apex_at = |u: f64| seat.start + (seat.end - seat.start) * u;
+    let apex = [seat.start, seat.end];
+    let end_radii = [radii[0], radii[radii.len() - 1]];
+    let centre = [
+        apex[0] + bisector * (end_radii[0] / depth),
+        apex[1] + bisector * (end_radii[1] / depth),
+    ];
+    let contact_a = [centre[0] + n1 * end_radii[0], centre[1] + n1 * end_radii[1]];
+    let contact_b = [centre[0] + n2 * end_radii[0], centre[1] + n2 * end_radii[1]];
+
+    let half_cos = (sweep / 2.0).cos();
+    let arc_mid = (n1 + n2) / (1.0 + n1.dot(n2));
+    let weights = [1.0, half_cos, 1.0];
+    let arms = [n1, arc_mid, n2];
+    let lift = bisector / depth;
+
+    let u_knots = ogeom_math::KnotVector::new(knots.clone(), 3)?;
+    let v_knots = ogeom_math::KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)?;
+    let mut net: Vec<ogeom_math::Weighted<Point>> = Vec::with_capacity(radii.len() * 3);
+    for (g, r) in greville.iter().zip(&radii) {
+        for (arm, w) in arms.iter().zip(weights) {
+            net.push(ogeom_math::Weighted::new(
+                apex_at(*g) + (lift + *arm) * *r,
+                w,
+                tol,
+            )?);
+        }
+    }
+    let grid = ogeom_math::ControlGrid::new(net, radii.len(), 3)?;
+    let surface: SurfaceGeometry =
+        ogeom_geom::BSplineSurface::rational(u_knots, v_knots, grid)?.into();
+    let surface_id = model.geometry_mut().add_surface(surface.clone());
+
+    let va = [
+        make_vertex(model, contact_a[0]).shape,
+        make_vertex(model, contact_a[1]).shape,
+    ];
+    let vb = [
+        make_vertex(model, contact_b[0]).shape,
+        make_vertex(model, contact_b[1]).shape,
+    ];
+
+    // The tangency lines: the net's border rows, each in its own face's
+    // plane, since every arm's end lies in its face.
+    let rail = |model: &mut Model,
+                arm: Vector,
+                ends: [&Shape; 2],
+                row: f64|
+     -> OgeomResult<Shape> {
+        let control: Vec<Point> = greville
+            .iter()
+            .zip(&radii)
+            .map(|(g, r)| apex_at(*g) + (lift + arm) * *r)
+            .collect();
+        let knot_vector = ogeom_math::KnotVector::new(knots.clone(), 3)?;
+        let curve = Curve::BSpline(ogeom_geom::BSplineCurve::new(knot_vector, control, tol)?);
+        let built = make_edge_between(model, curve, (0.0, 1.0), ends[0], ends[1], tol)?.shape;
+        let image = ogeom_geom::Line2d::over(
+            ogeom_math::Axis2::new(ogeom_math::Point2::new(0.0, row), ogeom_math::Direction2::X),
+            0.0,
+            1.0,
+        )?;
+        ogeom_algo::attach_pcurve(
+            model,
+            &built,
+            image.into(),
+            surface_id,
+            ogeom_topo::Location::identity(),
+            (0.0, 1.0),
+        )?;
+        Ok(built)
+    };
+    let rail_a = rail(model, n1, [&va[0], &va[1]], 0.0)?;
+    let rail_b = rail(model, n2, [&vb[0], &vb[1]], 1.0)?;
+
+    let arc_edge = |model: &mut Model, i: usize| -> OgeomResult<Shape> {
+        let knots = ogeom_math::KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)?;
+        let control = vec![
+            ogeom_math::Weighted::new(contact_a[i], 1.0, tol)?,
+            ogeom_math::Weighted::new(centre[i] + arc_mid * end_radii[i], half_cos, tol)?,
+            ogeom_math::Weighted::new(contact_b[i], 1.0, tol)?,
+        ];
+        let curve = Curve::BSpline(ogeom_geom::BSplineCurve::rational(knots, control)?);
+        let built = make_edge_between(model, curve, (0.0, 1.0), &va[i], &vb[i], tol)?.shape;
+        #[allow(clippy::cast_precision_loss)]
+        let column = ogeom_geom::Line2d::over(
+            ogeom_math::Axis2::new(
+                ogeom_math::Point2::new(i as f64, 0.0),
+                ogeom_math::Direction2::Y,
+            ),
+            0.0,
+            1.0,
+        )?;
+        ogeom_algo::attach_pcurve(
+            model,
+            &built,
+            column.into(),
+            surface_id,
+            ogeom_topo::Location::identity(),
+            (0.0, 1.0),
+        )?;
+        Ok(built)
+    };
+    let arc0 = arc_edge(model, 0)?;
+    let arc1 = arc_edge(model, 1)?;
+
+    let blend = {
+        let wire = ogeom_algo::make_wire(
+            model,
+            &[
+                rail_a.clone(),
+                arc1.clone(),
+                rail_b.reversed(),
+                arc0.reversed(),
+            ],
+            tol,
+        )?
+        .shape;
+        let face =
+            ogeom_algo::make_face_on(model, surface_id, std::slice::from_ref(&wire), tol)?.shape;
+        use ogeom_geom::Surface as _;
+        let s_mid = surface.point_at(0.5, 0.5, tol)?;
+        let (du, dv) = surface.d1_at(0.5, 0.5, tol)?;
+        let apex_mid = apex[0].midpoint(apex[1]);
+        let outward = s_mid - apex_mid.midpoint(s_mid);
+        if du.cross(dv).dot(outward) >= 0.0 {
+            face
+        } else {
+            face.reversed()
+        }
+    };
+
+    // A planar face on `corners`' plane bounded by `edges` in ring order,
+    // walked back where the corners turn against `outward`.
+    let plane_face = |model: &mut Model,
+                      corners: [Point; 3],
+                      edges: Vec<Shape>,
+                      outward: Vector|
+     -> OgeomResult<Shape> {
+        let plane = Plane::through(corners[0], Direction::new(outward, tol)?);
+        let reach = corners
+            .iter()
+            .fold(1.0_f64, |m, p| m.max(p.distance(corners[0])))
+            * 2.0
+            + seat.start.distance(seat.end) * 2.0;
+        let surface: SurfaceGeometry =
+            PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
+        let turn = (corners[1] - corners[0]).cross(corners[2] - corners[0]);
+        let edges: Vec<Shape> = if turn.dot(outward) < 0.0 {
+            edges.iter().rev().map(Shape::reversed).collect()
+        } else {
+            edges
+        };
+        Ok(ogeom_algo::make_face_with_pcurves(model, surface, &[edges], tol)?.shape)
+    };
+    let apex_v = [
+        make_vertex(model, apex[0]).shape,
+        make_vertex(model, apex[1]).shape,
+    ];
+    let leg = |model: &mut Model,
+               rail: &Shape,
+               ends: &[Shape; 2],
+               contact: [Point; 2],
+               outward: Vector|
+     -> OgeomResult<Shape> {
+        let edges = vec![
+            segment_between(model, (&apex_v[0], apex[0]), (&ends[0], contact[0]), tol)?,
+            rail.clone(),
+            segment_between(model, (&ends[1], contact[1]), (&apex_v[1], apex[1]), tol)?,
+            segment_between(model, (&apex_v[1], apex[1]), (&apex_v[0], apex[0]), tol)?,
+        ];
+        plane_face(model, [apex[0], contact[0], contact[1]], edges, outward)
+    };
+    let leg_a = leg(model, &rail_a, &va, contact_a, n1 * sign)?;
+    let leg_b = leg(model, &rail_b, &vb, contact_b, n2 * sign)?;
+    let cap = |model: &mut Model, i: usize, outward: Vector| -> OgeomResult<Shape> {
+        let edges = vec![
+            segment_between(model, (&apex_v[i], apex[i]), (&va[i], contact_a[i]), tol)?,
+            if i == 0 { arc0.clone() } else { arc1.clone() },
+            segment_between(model, (&vb[i], contact_b[i]), (&apex_v[i], apex[i]), tol)?,
+        ];
+        plane_face(model, [apex[i], contact_a[i], contact_b[i]], edges, outward)
+    };
+    let cap0 = cap(model, 0, -seat.along)?;
+    let cap1 = cap(model, 1, seat.along)?;
 
     let faces = [leg_a, leg_b, cap0, cap1, blend];
     apply_wedge(model, solid, Some(edge), &faces, !seat.convex, tol)

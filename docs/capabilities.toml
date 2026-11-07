@@ -1284,6 +1284,29 @@ tests = [
 ]
 
 [[capability]]
+id = "fillet.variable"
+title = "Variable-radius fillets under a radius law: linear or by points along the chain"
+crate = "ogeom-fillet"
+verdict = "partial"
+restriction = """The radius follows a law by arc length along the chain \
+(linear, or radii at fractions interpolated C1 without overshoot), the \
+section the arc of the law's radius in the plane square to the edge. \
+Rounded: a straight edge between two planes under any law, its envelope \
+exact (a cubic B-spline along the edge by the rational quadratic arc \
+across it under a law of points); and a closed loop of curved edges \
+between the same two faces, one closed edge or the arcs it is split \
+into end to end (a drum's rim, a cut drum's oblique rim), marched with \
+the law's radius station by station and the band fitted through each \
+station's arc. Refused by name: a linear law changing radius round a \
+closed chain (it jumps where the chain closes), an open chain of more \
+than one edge, a straight edge whose faces are not both planes, an open \
+curved edge (the run-out caps of a varying ball are owed), a seat \
+pinched where its hosts are tangent, and a ball at the law's largest \
+radius that does not fit the faces."""
+symbols = ["ogeom_fillet::fillet_edges_variable", "ogeom_fillet::RadiusLaw"]
+tests = ["crates/ogeom-fillet/tests/variable.rs"]
+
+[[capability]]
 id = "fillet.chamfers"
 title = "Chamfering edges: symmetric, two-distance, distance-and-angle"
 crate = "ogeom-fillet"

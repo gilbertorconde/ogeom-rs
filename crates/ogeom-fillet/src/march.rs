@@ -40,6 +40,8 @@ use ogeom_intersect::walk::Condition;
 use ogeom_intersect::{Marching, Stopped};
 use ogeom_math::{Point, Vector, solve};
 
+use crate::law::RadiusAlong;
+
 /// Which side of each support the ball rolls on.
 ///
 /// A rolling ball sits at `P + s·r·n` for one sign `s` per support: outward
@@ -177,6 +179,7 @@ pub fn march_blend(
         first,
         second,
         radius,
+        None,
         guide,
         &Sides::ALL,
         None,
@@ -204,7 +207,17 @@ pub fn march_blend_sided(
     options: Marching,
     tol: Tolerances,
 ) -> OgeomResult<MarchedBlend> {
-    march_blend_on(first, second, radius, guide, &[sides], None, options, tol)
+    march_blend_on(
+        first,
+        second,
+        radius,
+        None,
+        guide,
+        &[sides],
+        None,
+        options,
+        tol,
+    )
 }
 
 /// As [`march_blend_sided`], seated at the caller's own guide parameter.
@@ -234,6 +247,34 @@ pub fn march_blend_seeded(
         first,
         second,
         radius,
+        None,
+        guide,
+        &[sides],
+        Some(seed),
+        options,
+        tol,
+    )
+}
+
+/// As [`march_blend_seeded`], the ball's radius following `law` along the
+/// guide: each section's ball is the law's at the section's guide
+/// parameter. `radius` is the law's largest, the scale a stop is read at.
+#[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
+pub(crate) fn march_blend_law(
+    first: &SurfaceGeometry,
+    second: &SurfaceGeometry,
+    law: &RadiusAlong,
+    guide: &Curve,
+    sides: Sides,
+    seed: f64,
+    options: Marching,
+    tol: Tolerances,
+) -> OgeomResult<MarchedBlend> {
+    march_blend_on(
+        first,
+        second,
+        law.largest(),
+        Some(law),
         guide,
         &[sides],
         Some(seed),
@@ -247,6 +288,7 @@ fn march_blend_on(
     first: &SurfaceGeometry,
     second: &SurfaceGeometry,
     radius: f64,
+    law: Option<&RadiusAlong>,
     guide: &Curve,
     candidates: &[Sides],
     seed: Option<f64>,
@@ -257,7 +299,9 @@ fn march_blend_on(
         ogeom_bail!(Construction, "a blend of radius {radius} rounds nothing");
     }
     options.validate()?;
-    let (start, sides) = seat(first, second, radius, guide, candidates, seed, None, tol)?;
+    let (start, sides) = seat(
+        first, second, radius, law, guide, candidates, seed, None, tol,
+    )?;
     let guide_loops = guide.is_periodic() || {
         let (lo, hi) = guide.domain();
         guide
@@ -269,6 +313,7 @@ fn march_blend_on(
         first,
         second,
         radius,
+        law,
         guide,
         sides,
         guide_loops,
@@ -361,6 +406,7 @@ pub(crate) fn seat_section(
         first,
         second,
         radius,
+        None,
         guide,
         &[sides],
         Some(at),
@@ -381,6 +427,7 @@ fn seat(
     first: &SurfaceGeometry,
     second: &SurfaceGeometry,
     radius: f64,
+    law: Option<&RadiusAlong>,
     guide: &Curve,
     candidates: &[Sides],
     seed: Option<f64>,
@@ -415,6 +462,7 @@ fn seat(
             first,
             second,
             radius,
+            law,
             guide,
             sides,
             // The seed holds its guide parameter; whether the guide loops
@@ -467,8 +515,9 @@ fn seat(
         let Some(centre) = contact.centre(&x, tol) else {
             continue;
         };
-        if (centre.distance(p1) - radius).abs() > tol.confusion() * 10.0
-            || (centre.distance(p2) - radius).abs() > tol.confusion() * 10.0
+        let held = contact.radius_at(at, tol)?.0;
+        if (centre.distance(p1) - held).abs() > tol.confusion() * 10.0
+            || (centre.distance(p2) - held).abs() > tol.confusion() * 10.0
         {
             continue;
         }
@@ -487,6 +536,8 @@ struct BallContact<'s> {
     first: &'s SurfaceGeometry,
     second: &'s SurfaceGeometry,
     radius: f64,
+    /// The law the radius follows along the guide, where it varies.
+    law: Option<&'s RadiusAlong>,
     guide: &'s Curve,
     sides: Sides,
     /// Whether the guide comes back to its start, by parameterization or,
@@ -501,7 +552,29 @@ impl BallContact<'_> {
     fn centre(&self, x: &[f64], tol: Tolerances) -> Option<Point> {
         let p = self.first.point_at(x[0], x[1], tol).ok()?;
         let n = unit_normal(self.first, x[0], x[1], tol)?;
-        Some(p + n * (f64::from(self.sides.first) * self.radius))
+        let radius = match self.law {
+            None => self.radius,
+            Some(_) => self.radius_at(self.wrapped(x[4]), tol).ok()?.0,
+        };
+        Some(p + n * (f64::from(self.sides.first) * radius))
+    }
+
+    /// The ball's radius at guide parameter `t`, and its rate per unit `t`.
+    fn radius_at(&self, t: f64, tol: Tolerances) -> OgeomResult<(f64, f64)> {
+        match self.law {
+            None => Ok((self.radius, 0.0)),
+            Some(law) => law.at(t, tol),
+        }
+    }
+
+    /// A guide parameter read on a looping guide's own loop.
+    fn wrapped(&self, t: f64) -> f64 {
+        let (lo, hi) = self.guide.domain();
+        if self.guide_loops && hi > lo {
+            lo + (t - lo).rem_euclid(hi - lo)
+        } else {
+            t
+        }
     }
 }
 
@@ -538,10 +611,22 @@ impl Condition for BallContact<'_> {
         let (p2, a2, b2) = (second.point, second.du, second.dv);
         let (n1, dn1u, dn1v) = normal_and_derivatives_of(&first, tol)?;
         let (n2, dn2u, dn2v) = normal_and_derivatives_of(&second, tol)?;
+        let w = self.wrapped(x[4]);
+        let (radius, rate) = self.radius_at(w, tol).ok()?;
         let (s1, s2) = (
-            f64::from(self.sides.first) * self.radius,
-            f64::from(self.sides.second) * self.radius,
+            f64::from(self.sides.first) * radius,
+            f64::from(self.sides.second) * radius,
         );
+        // Where the radius varies, the centre moves with the guide
+        // parameter as well: each side's ball grows along its own normal.
+        let lean = match self.law {
+            None => [0.0; 3],
+            Some(_) => {
+                let d = n1 * (f64::from(self.sides.first) * rate)
+                    - n2 * (f64::from(self.sides.second) * rate);
+                [d.x, d.y, d.z]
+            }
+        };
 
         // Three: the ball's centre is the same point from either side.
         let gap = (p1 + n1 * s1) - (p2 + n2 * s2);
@@ -557,14 +642,6 @@ impl Condition for BallContact<'_> {
         // may propose a parameter a hair past the end, and a fitted loop (
         // closed, not periodic) refuses it, so the step fails and the march
         // stalls at the join instead of crossing it.
-        let w = {
-            let (lo, hi) = self.guide.domain();
-            if self.guide_loops && hi > lo {
-                lo + (x[4] - lo).rem_euclid(hi - lo)
-            } else {
-                x[4]
-            }
-        };
         let derivatives = self.guide.derivatives_at(w, 2, tol).ok()?;
         let g = Point::ORIGIN + derivatives[0];
         let (gd, gdd) = (derivatives[1], *derivatives.get(2).unwrap_or(&Vector::ZERO));
@@ -574,9 +651,9 @@ impl Condition for BallContact<'_> {
             (
                 vec![gap.x, gap.y, gap.z, square],
                 vec![
-                    vec![c1u.x, c1v.x, -c2u.x, -c2v.x, 0.0],
-                    vec![c1u.y, c1v.y, -c2u.y, -c2v.y, 0.0],
-                    vec![c1u.z, c1v.z, -c2u.z, -c2v.z, 0.0],
+                    vec![c1u.x, c1v.x, -c2u.x, -c2v.x, lean[0]],
+                    vec![c1u.y, c1v.y, -c2u.y, -c2v.y, lean[1]],
+                    vec![c1u.z, c1v.z, -c2u.z, -c2v.z, lean[2]],
                     vec![
                         a1.dot(gd),
                         b1.dot(gd),

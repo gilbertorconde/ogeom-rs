@@ -278,6 +278,16 @@ winding loop is the rail, `pole_leg` in `marched.rs` splits it clear of the
 hole and starts the seam there. When it is the edge, the seam leaves from the
 edge's own vertex and can cross the hole. No measured part builds one.
 
+**Variable radius on open curved seats and on chains.** `fillet_edges_variable`
+rounds a straight edge between planes under any law and a closed loop of
+curved edges marched with the law's radius per station. Owed: an open curved
+edge (the run-out caps of `open_runout_wedge` assume one radius: the cap
+plane, the crease continuation and the ball's exit all read it), an open
+chain of several edges (the junctions of `fillet_edges` meet bands of one
+radius cap to cap; two bands of different end sections there need the
+re-entrant intersection path), a straight edge between a plane and a drum
+(`ruled.rs` has no law), and a seat pinched where its hosts are tangent.
+
 ### Construction and exchange
 
 **STEP pcurves the file cannot state exactly.** The reader keeps a file's
