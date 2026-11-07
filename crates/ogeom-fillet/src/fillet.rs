@@ -578,14 +578,21 @@ fn fillet_edges_meeting_with(
 /// # Errors
 ///
 /// [`OgeomError::Construction`] where a ball does not sit on its faces or
-/// two bands overlap.
+/// two bands overlap, naming the edges refused.
 pub(crate) fn request_fits(
     model: &Model,
     solid: &Shape,
     edges: &[Shape],
     radius: f64,
     tol: Tolerances,
-) -> OgeomResult<Vec<bool>> {
+) -> Result<Vec<bool>, crate::support::Blamed> {
+    use crate::support::Blamed;
+    let blame = |i: usize| {
+        move |error: OgeomError| Blamed {
+            edges: vec![i],
+            error,
+        }
+    };
     // The ball touches each face a setback back from the edge; set back
     // past a face's far side, the band would cut through the face, and set
     // back into another edge's band, the two balls overlap.
@@ -614,20 +621,23 @@ pub(crate) fn request_fits(
     // Edges sharing nothing with the rest of the request whose ball rests
     // on the far edge of a narrow face beside them, rounded as alone.
     let mut rolled = vec![false; edges.len()];
-    let fitted = crate::support::keeping_face_meshes(|| -> OgeomResult<()> {
+    crate::support::keeping_face_meshes(|| -> Result<(), Blamed> {
         // A band checked against no other is held to what one edge alone
         // is.
         for (i, edge) in edges.iter().enumerate() {
             match crate::support::ball_fits(model, solid, edge, radius, !alone(i), tol) {
                 Ok(found) => contacts.push(found),
                 Err(refusal @ OgeomError::Construction(_)) if edges.len() > 1 && alone(i) => {
-                    if crate::rolled::rolled_run(model, solid, edge, radius, tol)?.is_none() {
-                        return Err(refusal);
+                    if crate::rolled::rolled_run(model, solid, edge, radius, tol)
+                        .map_err(blame(i))?
+                        .is_none()
+                    {
+                        return Err(blame(i)(refusal));
                     }
                     rolled[i] = true;
                     contacts.push(Vec::new());
                 }
-                Err(other) => return Err(other),
+                Err(other) => return Err(blame(i)(other)),
             }
         }
         // A band lies within its setback of its edge, its contacts its
@@ -652,12 +662,12 @@ pub(crate) fn request_fits(
                     && other.is_some_and(|other| boxes[i].distance_to_box(&boxes[j]) < own + other)
             });
             if near {
-                contacts[i] = crate::support::ball_fits(model, solid, edge, radius, true, tol)?;
+                contacts[i] = crate::support::ball_fits(model, solid, edge, radius, true, tol)
+                    .map_err(blame(i))?;
             }
         }
         Ok(())
-    });
-    fitted?;
+    })?;
     crate::support::bands_clear(model, edges, &contacts, tol)?;
     Ok(rolled)
 }
@@ -691,7 +701,7 @@ fn fillet_edges_own(
         Ok(rolled) => rolled,
         // A request of one edge is that edge alone, a strip beside it taken
         // off whole as there.
-        Err(refusal) => {
+        Err(crate::support::Blamed { error: refusal, .. }) => {
             return match edges {
                 [edge] if meeting.is_none() => consuming(model, solid, edge, radius, refusal, tol),
                 _ => Err(refusal),
