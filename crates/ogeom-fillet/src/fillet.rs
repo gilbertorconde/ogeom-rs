@@ -569,31 +569,23 @@ fn fillet_edges_meeting_with(
     fillet_edges_own(model, solid, edges, radius, None, rims, tol)
 }
 
-/// What a rounding with junctions may take and took: whether crossed
-/// junctions may be taken, whether any junction and any crossed one was,
-/// and the solid's face surfaces as they stood before it built a band.
-#[derive(Default)]
-struct Taken {
-    crossed: bool,
-    any: bool,
-    any_crossed: bool,
-    surfaces: Vec<(ogeom_topo::SurfaceId, SurfaceGeometry)>,
-}
-
-/// [`fillet_edges`] on a shape every node below which is its own, with
-/// junctions where `meeting` asks, which notes there what it took.
-fn fillet_edges_own(
-    model: &mut Model,
+/// The checks a request's bands pass before any is built: each ball sits
+/// on both faces of its edge, and no band overlaps another across a face
+/// they share. Which edges, sharing nothing with the rest of the request,
+/// had their ball rest on the far edge of a narrow face beside them, to
+/// be rounded as alone, comes back.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`] where a ball does not sit on its faces or
+/// two bands overlap.
+pub(crate) fn request_fits(
+    model: &Model,
     solid: &Shape,
     edges: &[Shape],
     radius: f64,
-    meeting: Option<&mut Taken>,
-    cones: Rims,
     tol: Tolerances,
-) -> OgeomResult<Built> {
-    if edges.is_empty() {
-        ogeom_bail!(Construction, "a chain of no edges rounds nothing");
-    }
+) -> OgeomResult<Vec<bool>> {
     // The ball touches each face a setback back from the edge; set back
     // past a face's far side, the band would cut through the face, and set
     // back into another edge's band, the two balls overlap.
@@ -665,15 +657,47 @@ fn fillet_edges_own(
         }
         Ok(())
     });
-    if let Err(refusal) = fitted {
+    fitted?;
+    crate::support::bands_clear(model, edges, &contacts, tol)?;
+    Ok(rolled)
+}
+
+/// What a rounding with junctions may take and took: whether crossed
+/// junctions may be taken, whether any junction and any crossed one was,
+/// and the solid's face surfaces as they stood before it built a band.
+#[derive(Default)]
+struct Taken {
+    crossed: bool,
+    any: bool,
+    any_crossed: bool,
+    surfaces: Vec<(ogeom_topo::SurfaceId, SurfaceGeometry)>,
+}
+
+/// [`fillet_edges`] on a shape every node below which is its own, with
+/// junctions where `meeting` asks, which notes there what it took.
+fn fillet_edges_own(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    radius: f64,
+    meeting: Option<&mut Taken>,
+    cones: Rims,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    if edges.is_empty() {
+        ogeom_bail!(Construction, "a chain of no edges rounds nothing");
+    }
+    let rolled = match request_fits(model, solid, edges, radius, tol) {
+        Ok(rolled) => rolled,
         // A request of one edge is that edge alone, a strip beside it taken
         // off whole as there.
-        return match edges {
-            [edge] if meeting.is_none() => consuming(model, solid, edge, radius, refusal, tol),
-            _ => Err(refusal),
-        };
-    }
-    crate::support::bands_clear(model, edges, &contacts, tol)?;
+        Err(refusal) => {
+            return match edges {
+                [edge] if meeting.is_none() => consuming(model, solid, edge, radius, refusal, tol),
+                _ => Err(refusal),
+            };
+        }
+    };
     use ogeom_geom::Curve3d as _;
     // The vertices three or more of the chain's edges meet at: the corners
     // the ball rolls round, closed by the corner tool.
