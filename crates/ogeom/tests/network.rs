@@ -2063,3 +2063,116 @@ fn an_even_corner_joined_to_an_odd_one_is_held_exactly_tangent() {
     }
     assert_sound_shell(&model, &network, 2 * patches.len() - 2);
 }
+
+/// A cap of the ball in `n` three-sided patches round its top, a fan: the
+/// spokes (curves 0 to `n − 1`) run from the top to `n` points of the
+/// cap's rim, each arc of the rim between two of them one curve (`n` to
+/// `2n − 1`), and each patch's fourth side shrinks to the top.
+fn fan(n: usize) -> (Vec<CurveDef>, Vec<PatchDef>) {
+    let step = TAU / n as f64;
+    let mut curves: Vec<CurveDef> = (0..n)
+        .map(|k| ball_arc(on_ball(0.0, 0.0, 1.0), on_ball_at(CAP, step * k as f64)))
+        .collect();
+    for k in 0..n {
+        let a = step * k as f64;
+        curves.push(CurveDef::Polyline(
+            (0..=64)
+                .map(|i| on_ball_at(CAP, step.mul_add(f64::from(i) / 64.0, a)))
+                .collect(),
+        ));
+    }
+    let side = |curve: usize, reversed: bool| Some(PatchSide { curve, reversed });
+    let patches = (0..n)
+        .map(|k| PatchDef {
+            sides: [
+                side(k, false),
+                side(n + k, false),
+                side((k + 1) % n, true),
+                None,
+            ],
+        })
+        .collect();
+    (curves, patches)
+}
+
+/// The fan's patches' normals at the top, each the limit along `u = 0`
+/// where its side shrinks, `S_u × S_uv`, at 201 points up `v`, and the
+/// widest angle between two of them.
+fn fan_apex_angle(network: &Network) -> f64 {
+    let mut normals = Vec::new();
+    for s in &network.surfaces {
+        for i in 0..=200 {
+            let v = f64::from(i) / 200.0;
+            let (su, _) = s.d1_at(0.0, v, T).unwrap();
+            let (_, suv, _) = s.d2_at(0.0, v, T).unwrap();
+            let n = su.cross(suv);
+            normals.push(n / n.magnitude());
+        }
+    }
+    let mut widest = 0.0_f64;
+    for (i, a) in normals.iter().enumerate() {
+        for b in &normals[i + 1..] {
+            widest = widest.max(a.cross(*b).magnitude().atan2(a.dot(*b)));
+        }
+    }
+    widest
+}
+
+/// Across each spoke of the fan, read at 200 points along it from the
+/// rim, short of the top: the widest angle between the two patches'
+/// normals.
+fn fan_spoke_angle(network: &Network, n: usize) -> f64 {
+    let mut widest = 0.0_f64;
+    for k in 0..n {
+        // Spoke `k` is side 0 of patch `k` and side 2 of patch `k − 1`,
+        // both with the rim at `u = 1`.
+        let (a, b) = (&network.surfaces[k], &network.surfaces[(k + n - 1) % n]);
+        for i in 0..200 {
+            let t = f64::from(i) / 200.0;
+            let na = a.normal_at(1.0 - t, 0.0, T).unwrap().vector();
+            let nb = b.normal_at(1.0 - t, 1.0, T).unwrap().vector();
+            widest = widest.max(na.cross(nb).magnitude().atan2(na.dot(nb)));
+        }
+    }
+    widest
+}
+
+#[test]
+fn a_fan_of_three_sided_patches_is_held_exactly_tangent_at_its_point() {
+    // Every patch shrinks its missing side to the top. Each spoke is held
+    // by the pole triples from end to end, and the rows of poles one in
+    // from the top, every patch's, in one plane through it, so the patches
+    // share one tangent plane there.
+    for (n, noise) in [(3, 0.0), (5, 0.0), (4, NOISE)] {
+        let tolerance = if noise > 0.0 {
+            NOISY_TOLERANCE
+        } else {
+            CLEAN_TOLERANCE
+        };
+        let (curves, patches) = fan(n);
+        let cloud = cap_points(20_000, noise, 29);
+        let (model, network) = fit(&curves, &patches, &cloud, &options(tolerance, vec![]));
+        assert_eq!(network.ended, Ended::Met, "{n}: {network:?}");
+        assert!(network.per_patch.iter().all(|p| p.worst <= tolerance));
+        let off = widest_off(&network, off_ball);
+        let near = if noise > 0.0 {
+            tolerance / 2.0
+        } else {
+            tolerance
+        };
+        assert!(off <= near, "{n}: {off} off the ball");
+        let spoke = fan_spoke_angle(&network, n);
+        assert!(spoke <= EXACT_ANGLE, "{n}: {spoke}");
+        let apex = fan_apex_angle(&network);
+        assert!(apex <= EXACT_ANGLE, "{n}: {apex}");
+        assert!(
+            network.worst_tangent <= EXACT_ANGLE,
+            "{n}: {}",
+            network.worst_tangent
+        );
+        assert!(network.worst_gap <= ROUNDING_GAP, "{}", network.worst_gap);
+        let top = network.surfaces[0].point_at(0.0, 0.5, T).unwrap();
+        assert!(off_ball(top) <= near, "{n}: {top:?}");
+        assert_sound_shell(&model, &network, n);
+    }
+}

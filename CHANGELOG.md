@@ -11,6 +11,33 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **Patch networks hold a fan of three-sided patches exactly tangent,
+  along its curves and at its point.** (#653)
+  - A fan is a point every patch there shrinks its missing side to, as a
+    cap of three-sided patches round its top. Each curve into it was
+    fitted near tangent, and the patches' normals at the point were left
+    apart: on a clean cap of three patches at tolerance 0.001, 4.1e-3 rad
+    along the curves and 5.0e-3 rad at the point; with σ = 0.02 noise,
+    0.14 rad and 0.070 rad.
+  - Both patches beside such a curve shrink at the point, so its pole
+    triples hold it tangent from end to end, as between corners of four
+    patches.
+  - Each patch's normal at the point comes from the row of poles one in
+    from its missing side. Every patch's such row is held in one plane
+    through the point, laid out as in the fit without the constraints,
+    so the patches share one tangent plane there.
+  - The fit is kept only where every patch's normal is defined all along
+    its missing side and points one way. Each way of holding the corners
+    is first tried with the fans held; where none of them comes within
+    the tolerance, the fans are fitted near tangent as before.
+  - Fans of three to six patches, clean at 0.001 and with σ = 0.02 noise
+    at 0.1, now meet their tolerance tangent to 6.9e-14 rad along their
+    curves and 7.6e-14 rad at the point.
+  - A point where a three-sided patch meets four-sided ones is still fitted
+    near tangent.
+
 ### Changed
 
 - **`refine_solid` takes about half the time on a large solid converted

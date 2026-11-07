@@ -150,6 +150,29 @@ pub(super) struct Topology {
     /// its other end on the network's border or at another such corner:
     /// each with its curves.
     pub spread_corners: Vec<(usize, Vec<usize>)>,
+    /// The fans: points inside the network that every patch there is
+    /// three-sided at, its missing side shrunk to the point, each crossing
+    /// one strip along that side, whose curves are all smooth, each
+    /// crossing one strip and ending at its other end on the network's
+    /// border, not at a three-sided patch's point, or at a corner of four
+    /// patches: each with its curves and its patches, each patch with its
+    /// missing side.
+    pub fans: Vec<Fan>,
+    /// As [`plain`](Self::plain), and every curve into a fan.
+    pub plain_fans: Holding,
+    /// As [`spanned`](Self::spanned), and every curve into a fan.
+    pub spanned_fans: Holding,
+}
+
+/// A point that every patch there is three-sided at.
+#[derive(Debug, Clone)]
+pub(super) struct Fan {
+    /// Its vertex.
+    pub vertex: usize,
+    /// The curves into it.
+    pub curves: Vec<usize>,
+    /// Its patches, each with its missing side.
+    pub patches: Vec<(usize, usize)>,
 }
 
 /// Which curves the pole triples hold tangent, and how their ratios are
@@ -618,6 +641,41 @@ impl Topology {
             spread_at = kept;
         };
 
+        // A fan's curves are held by the pole triples from end to end: at
+        // the point both patches beside a curve shrink, so the parameter
+        // lines crossing it turn neither way.
+        let missing_at = |p: usize| {
+            patches[p]
+                .sides
+                .iter()
+                .position(Vec::is_empty)
+                .map(|k| (k, corner_vertex[p][k]))
+        };
+        let fans: Vec<Fan> = (0..vertices)
+            .filter(|&v| apex[v] && !border[v] && !through(v))
+            .filter_map(|v| {
+                let mut fan_patches = Vec::new();
+                for &(p, _) in &touching[v] {
+                    let (k, at) = missing_at(p)?;
+                    if at != v || patch_strips[p][k % 2].len() != 1 {
+                        return None;
+                    }
+                    fan_patches.push((p, k));
+                }
+                let curves = at_vertex(v);
+                let ok = curves.len() == fan_patches.len()
+                    && curves.iter().all(|&c| {
+                        let far = far_of(c, v);
+                        tangent[c] && curve_strip[c].len() == 1 && !free_at(far)
+                    });
+                ok.then_some(Fan {
+                    vertex: v,
+                    curves,
+                    patches: fan_patches,
+                })
+            })
+            .collect();
+
         // Chains: held curves running straight on through a corner of four
         // patches, or through a junction of a split side, share their
         // ratio.
@@ -715,6 +773,15 @@ impl Topology {
             spanned_at[*v] = true;
         }
         let spanned = holding(held_where(&spanned_at));
+        let mut fanned_at = vec![false; vertices];
+        for fan in &fans {
+            fanned_at[fan.vertex] = true;
+        }
+        let plain_fans = holding(held_where(&fanned_at));
+        for fan in &fans {
+            spanned_at[fan.vertex] = true;
+        }
+        let spanned_fans = holding(held_where(&spanned_at));
 
         Ok(Self {
             vertices,
@@ -735,6 +802,9 @@ impl Topology {
             odd_corners,
             span_corners,
             spread_corners,
+            fans,
+            plain_fans,
+            spanned_fans,
         })
     }
 }

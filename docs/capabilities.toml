@@ -1937,9 +1937,12 @@ across a shared side where a point lies past its own patch's side) while \
 that comes nearer them, for at most eight steps, the noise read once from \
 the fit at the seed's parameters; this meets 0.001 on the clean ball covered as a cube. Even \
 corners at their clean tolerance (a clean cap of six patches) still miss; \
-there, and at a three-sided patch's point, the curves are \
-fitted near tangent from the points, their angle measured into `worst_tangent` \
-and the corner's angle reported. Parameter correction otherwise runs only \
+there, the curves are fitted near tangent from the points, their angle \
+measured into `worst_tangent` and the corner's angle reported. A fan, a \
+point every patch there is three-sided at, is held exactly tangent along \
+its curves and at the point where that meets the tolerance (fans of three \
+to six patches meet 0.001 clean); a point where a three-sided patch meets \
+four-sided ones is fitted near tangent. Parameter correction otherwise runs only \
 after refinement, at the final spans, and only through \
 `fit_network_chained`; the points are those of the region the network \
 covers."""

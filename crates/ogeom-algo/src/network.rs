@@ -69,6 +69,26 @@
 //!   points are smooth, its angle measured into [`Network::worst_tangent`].
 //!   Every such corner's widest angle between the patches' normals is
 //!   reported in [`Network::corners`].
+//! - **a fan is held tangent where it can be.** At a point every patch
+//!   there shrinks its missing side to, both patches beside each curve
+//!   into it shrink, so the parameter lines crossing the curve turn
+//!   neither way and its pole triples hold it from end to end. Each
+//!   patch's normal at the point is the limit `S_d × S_dw`, `d` across
+//!   its missing side and `w` along it: from the point to the row of poles
+//!   one in from that side, crossed with the row's own derivative. The
+//!   patches share one tangent plane there where every patch's such row
+//!   lies in one plane through the point; the rows are held to the layout
+//!   they take in the fit without the constraints, projected on a plane
+//!   through the point, its orientation, scale and shear left free. A fit
+//!   holding a fan is kept only where every patch's normal at the point is
+//!   defined all along its missing side and points one way, which the
+//!   Bernstein coefficients of `(R − V) × R'` bound, `R` the row and `V`
+//!   the point. Each way of holding the corners is first tried with the
+//!   fans held, and only where none of them comes within the tolerance are
+//!   the fans left near tangent. A point where a three-sided patch meets
+//!   four-sided ones is left near tangent: there the three-sided patch's
+//!   cross derivative vanishes and the other's does not, which no ratio
+//!   fixed along the curve serves.
 //! - **a side may be a chain of curves.** A curve may end on the middle of
 //!   a patch's side (a T-junction), the side then a chain of curves meeting
 //!   there ([`ChainedPatch`]). The patch takes a knot of multiplicity three
@@ -454,6 +474,7 @@ pub fn fit_network_chained(
         weights: &weights,
         smoothing: options.smoothing,
         corners: Corners::Loose,
+        fans: false,
         tol,
     };
     // A corner held exactly tangent binds its curves' cross derivatives to
@@ -483,17 +504,26 @@ pub fn fit_network_chained(
         tries.push(Corners::Spread);
     }
     tries.push(Corners::Loose);
+    // Where there are fans, each way is first tried with them held too,
+    // the near-tangent corners' way only kept where it comes within the
+    // tolerance with them held.
+    let mut tries: Vec<(Corners, bool)> = tries.into_iter().map(|c| (c, false)).collect();
+    if !topo.fans.is_empty() {
+        let fanned: Vec<(Corners, bool)> = tries.iter().map(|&(c, _)| (c, true)).collect();
+        tries.splice(0..0, fanned);
+    }
     let mut settled = None;
     let mut missed = Vec::new();
-    for corners in tries {
+    for (corners, fans) in tries {
         fit.corners = corners;
+        fit.fans = fans;
         let (spans, current, ended) = fit.refine(options)?;
-        if (ended == Ended::Met && current.held) || corners == Corners::Loose {
+        if (ended == Ended::Met && current.held) || (corners == Corners::Loose && !fans) {
             settled = Some((spans, current, ended));
             break;
         }
         if current.held {
-            missed.push((corners, spans, current));
+            missed.push((corners, fans, spans, current));
         }
     }
     let Some((mut spans, mut current, mut ended)) = settled else {
@@ -504,10 +534,15 @@ pub fn fit_network_chained(
     // re-taken at their nearest points on the fit.
     let mut retaken = None;
     if ended != Ended::Met {
-        for (corners, at, round) in missed {
-            let held = Fit { corners, ..fit };
+        for (corners, fans, at, round) in missed {
+            let held = Fit {
+                corners,
+                fans,
+                ..fit
+            };
             if let Some((round, again)) = held.finish(&at, round, tolerance)? {
                 fit.corners = corners;
+                fit.fans = fans;
                 (spans, current, ended) = (at, round, Ended::Met);
                 retaken = Some(again);
                 break;
@@ -1360,6 +1395,8 @@ struct Fit<'a> {
     /// Which corners of other than four patches are held exactly tangent,
     /// and how.
     corners: Corners,
+    /// Whether the fans are held exactly tangent.
+    fans: bool,
     tol: Tolerances,
 }
 
@@ -1541,12 +1578,15 @@ struct Lines {
 }
 
 /// What the tangency rows come to: the rows, which chains are left untied,
-/// and the junction rows held at a ratio of their own in place of their
-/// patches' knot spacings.
+/// the junction rows held at a ratio of their own in place of their
+/// patches' knot spacings, and the triples held.
 struct Tangency {
     rows: Vec<Row>,
     untied: Vec<bool>,
     relaxed: Keyed,
+    /// Each triple held, by its curve's pole: the poles beside it in the
+    /// curve's first and second patch, and `λ`.
+    held: BTreeMap<usize, (usize, usize, f64)>,
 }
 
 /// The members of a class of chains or of junction lines, each with
@@ -1963,22 +2003,26 @@ impl Fit<'_> {
         };
         let mut rows: Vec<Row>;
         let mut held = true;
+        let triples;
         match self.corners {
             Corners::Loose => {
                 let held = self.tangency(&layout, &loose, &junctions, &lines, &mut [])?;
                 rows = junction_rows(&held.relaxed);
                 rows.extend(held.rows);
+                triples = held.held;
             }
             Corners::Whole => {
                 let held = self.tangency(&layout, &loose, &junctions, &lines, &mut [])?;
                 rows = junction_rows(&held.relaxed);
                 rows.extend(held.rows);
+                triples = held.held;
                 rows.extend(self.corner_rows(&layout, &loose, &curve_knots));
             }
             Corners::Spread => {
                 let tangent = self.tangency(&layout, &loose, &junctions, &lines, &mut [])?;
                 rows = junction_rows(&tangent.relaxed);
                 rows.extend(tangent.rows);
+                triples = tangent.held;
                 match self.spread_rows(&layout, &loose, &curve_knots) {
                     Some(spread) => rows.extend(spread),
                     None => held = false,
@@ -1998,6 +2042,7 @@ impl Fit<'_> {
                 let held = self.tangency(&layout, &loose, &junctions, &lines, &mut related)?;
                 rows = junction_rows(&held.relaxed);
                 rows.extend(held.rows);
+                triples = held.held;
                 let untied = held.untied;
                 let holding = &self.topo.spanned;
                 for corner in &related {
@@ -2024,8 +2069,17 @@ impl Fit<'_> {
                 }
             }
         }
+        if self.fans {
+            match self.fan_rows(&layout, &loose, &triples) {
+                Some(fan) => rows.extend(fan),
+                None => held = false,
+            }
+        }
         let basis = null_space(layout.slots, &rows);
         let poles = self.solve(&layout, &locals, &basis)?;
+        if self.fans && held {
+            held = self.fans_regular(&layout, &patch_knots, &poles)?;
+        }
 
         let mut surfaces = Vec::with_capacity(self.patches.len());
         for (p, [ku, kv]) in patch_knots.iter().enumerate() {
@@ -2284,12 +2338,14 @@ impl Fit<'_> {
             .collect())
     }
 
-    /// The curves held by the pole triples, as the corners are held.
+    /// The curves held by the pole triples, as the corners and fans are
+    /// held.
     fn holding(&self) -> &topology::Holding {
-        if self.corners == Corners::Spans {
-            &self.topo.spanned
-        } else {
-            &self.topo.plain
+        match (self.corners == Corners::Spans, self.fans) {
+            (true, false) => &self.topo.spanned,
+            (false, false) => &self.topo.plain,
+            (true, true) => &self.topo.spanned_fans,
+            (false, true) => &self.topo.plain_fans,
         }
     }
 
@@ -2377,12 +2433,17 @@ impl Fit<'_> {
                 if (at_start && q < 2) || (at_end && q + 2 >= n) {
                     continue;
                 }
-                triples.push((
-                    c,
+                let (b, l, r) = (
                     layout.curve_slot(topo, c, q),
                     beside(topo.users[c][0], q),
                     beside(topo.users[c][1], q),
-                ));
+                );
+                // At a fan's point both rows beside the curve shrink to
+                // it, and the triple holds nothing.
+                if b == l && b == r {
+                    continue;
+                }
+                triples.push((c, b, l, r));
             }
         }
         let settled = self.settle(&triples, junctions, lines, corners);
@@ -2533,6 +2594,7 @@ impl Fit<'_> {
                 }
             }
         }
+        let mut held = BTreeMap::new();
         let rows = triples
             .iter()
             .filter_map(|&(c, b, l, r)| {
@@ -2545,6 +2607,7 @@ impl Fit<'_> {
                 } else {
                     ratio[chain]
                 };
+                held.insert(b, (l, r, lambda));
                 Some(vec![(b, 1.0 + lambda), (l, -1.0), (r, -lambda)])
             })
             .collect();
@@ -2552,6 +2615,7 @@ impl Fit<'_> {
             rows,
             untied,
             relaxed,
+            held,
         })
     }
 
@@ -2736,6 +2800,181 @@ impl Fit<'_> {
 
     /// The slot of the pole one row into patch side `user` beside curve
     /// `c`'s pole `q`.
+    /// The slots of the row of poles one in from the missing side of fan
+    /// patch `p`, `k` that side, along the patch's knots in that side's
+    /// direction: its ends the poles next to the fan's point of the curves
+    /// either side.
+    fn fan_ring(&self, layout: &Layout, (p, k): (usize, usize)) -> Vec<usize> {
+        let (nu, nv) = layout.dims(p);
+        let pole = |w: usize| match k {
+            0 => (w, 1),
+            1 => (nu - 2, w),
+            2 => (w, nv - 2),
+            _ => (1, w),
+        };
+        let along = if k % 2 == 0 { nu } else { nv };
+        (0..along)
+            .map(|w| layout.slot(self.topo, self.patches, p, pole(w)))
+            .collect()
+    }
+
+    /// The rows holding each fan's patches to one tangent plane at its
+    /// point; `None` where a curve into a fan is not held by its triple
+    /// next to the point, or the poles round it are not spread over a
+    /// plane in the fit `loose`.
+    ///
+    /// At a fan's point every patch's cross derivative along its missing
+    /// side is nought, and its normal there is the limit `S_d × S_dw`, `d`
+    /// across the side and `w` along it: from the point to the row of poles
+    /// one in from the side, crossed with that row's own derivative. The
+    /// patches share a tangent plane there where those rows, every patch's,
+    /// lie in one plane through the point. That plane is an unknown
+    /// direction, which rows on the poles cannot name, so the rows are laid
+    /// out as they lie in the fit without the constraints, projected on
+    /// the plane through the point that their consecutive poles' cross
+    /// products, each row walked as its patch walks round, sum to the
+    /// normal of: each pole is held to two of them, the
+    /// anchors, as `P − (1 − α − β) V − α A − β B = 0`, `α` and `β` its
+    /// coordinates there against theirs. The plane and the layout's scale
+    /// and shear stay free through `A` and `B`. A pole next to the point on
+    /// a curve into the fan is held instead by the curve's triple, which
+    /// puts it on the line through the poles beside it.
+    fn fan_rows(
+        &self,
+        layout: &Layout,
+        loose: &[Point],
+        triples: &BTreeMap<usize, (usize, usize, f64)>,
+    ) -> Option<Vec<Row>> {
+        let topo = self.topo;
+        let mut rows = Vec::new();
+        for fan in &topo.fans {
+            let v = fan.vertex;
+            for &c in &fan.curves {
+                let n = layout.along(c);
+                let next = if topo.curve_ends[c].0 == v { 1 } else { n - 2 };
+                triples.get(&layout.curve_slot(topo, c, next))?;
+            }
+            let rings: Vec<Vec<usize>> = fan
+                .patches
+                .iter()
+                .map(|&side| self.fan_ring(layout, side))
+                .collect();
+            let e = |slot: usize| loose[slot] - loose[v];
+            // Each row walked as its patch walks its missing side, which
+            // turns every patch's one way round the point.
+            let mut normal = Vector::ZERO;
+            for (ring, &(_, k)) in rings.iter().zip(&fan.patches) {
+                for w in ring.windows(2) {
+                    let turn = e(w[0]).cross(e(w[1]));
+                    normal += if k < 2 { turn } else { -turn };
+                }
+            }
+            let inner: Vec<usize> = rings
+                .iter()
+                .flat_map(|ring| ring[1..ring.len() - 1].iter().copied())
+                .collect();
+            let first = e(inner[0]);
+            let x = first - normal * (first.dot(normal) / normal.dot(normal));
+            let x = x / x.magnitude();
+            let y = (normal / normal.magnitude()).cross(x);
+            let flat = |slot: usize| {
+                let d = e(slot);
+                (d.dot(x), d.dot(y))
+            };
+            let flats: Vec<(f64, f64)> = inner.iter().map(|&s| flat(s)).collect();
+            let (ax, ay) = flats[0];
+            let cross = |(bx, by): (f64, f64)| ax.mul_add(by, -(ay * bx));
+            let b = (1..flats.len()).max_by(|&i, &j| {
+                let sine = |k: usize| {
+                    let (bx, by) = flats[k];
+                    cross(flats[k]).abs() / bx.hypot(by)
+                };
+                sine(i).total_cmp(&sine(j))
+            })?;
+            let det = cross(flats[b]);
+            if !(det.abs() > 0.0 && det.is_finite()) {
+                return None;
+            }
+            let (bx, by) = flats[b];
+            for (i, &(px, py)) in flats.iter().enumerate() {
+                if i == 0 || i == b {
+                    continue;
+                }
+                let alpha = px.mul_add(by, -(py * bx)) / det;
+                let beta = ax.mul_add(py, -(ay * px)) / det;
+                if !(alpha.is_finite() && beta.is_finite()) {
+                    return None;
+                }
+                rows.push(vec![
+                    (inner[i], 1.0),
+                    (inner[0], -alpha),
+                    (inner[b], -beta),
+                    (v, alpha + beta - 1.0),
+                ]);
+            }
+        }
+        Some(rows)
+    }
+
+    /// Whether every fan patch's normal at its fan's point, held to one
+    /// plane by [`fan_rows`](Self::fan_rows), is defined all along its
+    /// missing side and points one way there: the limit normal is
+    /// `(R − V) × R'` along the row `R` of poles one in from the side, a
+    /// spline whose Bernstein coefficients, span by span, all on one side
+    /// of the plane bound it off nought. Across each curve into the fan
+    /// the triples hold the two patches' normals alike, and so up to the
+    /// point, so every patch's normal there is the same.
+    fn fans_regular(
+        &self,
+        layout: &Layout,
+        patch_knots: &[[KnotVector; 2]],
+        poles: &[Point],
+    ) -> OgeomResult<bool> {
+        for fan in &self.topo.fans {
+            let at = poles[fan.vertex];
+            for &(p, k) in &fan.patches {
+                let ring: Vec<Vector> = self
+                    .fan_ring(layout, (p, k))
+                    .iter()
+                    .map(|&s| poles[s] - at)
+                    .collect();
+                let segments = ogeom_math::bspline::to_bezier_segments(
+                    &patch_knots[p][k % 2],
+                    &ring,
+                    self.tol,
+                )?;
+                // `(R − V) × R'` over each span as a quintic, from the
+                // cubic's poles `b` and its derivative's, `Δb`: each
+                // coefficient the sum of `C(3,i) C(2,j) b_i × Δb_j` over
+                // `i + j = k`, over `C(5,k)`, dropping the derivative's
+                // positive scale.
+                const CUBIC: [f64; 4] = [1.0, 3.0, 3.0, 1.0];
+                const QUADRATIC: [f64; 3] = [1.0, 2.0, 1.0];
+                const QUINTIC: [f64; 6] = [1.0, 5.0, 10.0, 10.0, 5.0, 1.0];
+                let mut coefficients = Vec::new();
+                for (_, b) in &segments {
+                    let d: Vec<Vector> = b.windows(2).map(|w| w[1] - w[0]).collect();
+                    for (n, &q) in QUINTIC.iter().enumerate() {
+                        let mut sum = Vector::ZERO;
+                        for (i, &ci) in CUBIC.iter().enumerate() {
+                            if let Some(j) = n.checked_sub(i)
+                                && j < 3
+                            {
+                                sum += b[i].cross(d[j]) * (ci * QUADRATIC[j]);
+                            }
+                        }
+                        coefficients.push(sum / q);
+                    }
+                }
+                let normal = coefficients.iter().fold(Vector::ZERO, |a, &c| a + c);
+                if !coefficients.iter().all(|c| c.dot(normal) > 0.0) {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
+
     fn beside(&self, layout: &Layout, user: (usize, usize), c: usize, q: usize) -> usize {
         let w = layout.walk_index(self.patches, user, c, q);
         let (_, inner) = side_pole(user.1, w, layout.dims(user.0));
