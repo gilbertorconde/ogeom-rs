@@ -126,7 +126,13 @@ Still refused ("the kept pieces did not close into a shell"):
   and the line's stretch along the arc is lost;
 - lowered by 1e-6, the hug width itself, with the seam on the top line;
 - lowered by 2e-6 or 5e-6, past the hug width, every seam direction
-  (not yet traced).
+  (not yet traced);
+- lowered by 1e-5 with the seam on the top line, the cut: the sew would
+  join the wall's edge and the drum's top line as one edge within a
+  vertex the section widened to 1.7e-2, and the two run 1.3e-2 apart on
+  the wall, so they stay two edges and the pieces do not close. Every
+  other seam direction cuts at 1e-5, and so do the common and the drill
+  less the part.
 Raised through the plate top by 2e-7 to 1e-6 it cuts for every seam
 direction (`drills_raised_through_a_plate_top_cut_for_every_seam`).
 

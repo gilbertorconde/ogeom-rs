@@ -1026,3 +1026,32 @@ fn plate_top_drill(model: &mut Model, part: &Shape, seam: Vector, dz: f64) -> f6
         length,
     )
 }
+
+/// The drill of [`drills_lowered_under_a_plate_top_past_the_confusion_distance_cut`]
+/// lowered by 1e-5, its seam on the top line. The drum's top line runs
+/// 1e-5 under the plate top's edge on the wall at the drill's axis, and
+/// the section ending it beside the round's arc leaves a vertex widened to
+/// 1.7e-2 there. The sew joined the wall's edge and the drum's top line as
+/// one edge, their far ends 1.3e-2 apart within that vertex, and carried
+/// both their pcurves on the wall: two plain pcurves on one surface that
+/// part by 1.3e-2, where the edge states 1e-5, and the cut came back
+/// broken. Whatever the cut answers, it is not that.
+#[test]
+fn a_drill_lowered_under_a_plate_top_is_not_cut_with_an_edge_read_twice_on_its_wall() {
+    let (mut model, part) = corpus_part("nist_ctc_03_asme1_rc.stp");
+    let (start, radius, length) = PLATE_DRILL;
+    let frame = Frame::new(
+        Point::new(start.x, start.y, start.z - 1e-5),
+        Direction::new(Vector::new(0.0, 1.0, 0.0), T).unwrap(),
+        Direction::new(Vector::new(0.0, 0.0, 1.0), T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let tool = make_cylinder(&mut model, frame, radius, length, T)
+        .unwrap()
+        .shape;
+    if let Ok(made) = ogeom::boolean::cut(&mut model, &part, &tool, T) {
+        let diagnosis = check(&model, &made.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{diagnosis}");
+    }
+}

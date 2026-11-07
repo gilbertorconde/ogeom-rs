@@ -647,6 +647,18 @@ fn sew_faces(
             continue;
         };
         let off = carried_off(model, &survivor, &paced, tol)?;
+        // A face finds an edge's pcurve by its surface, so a carried pcurve
+        // on a surface the survivor already holds one on must run where
+        // that one does, to within what the survivor will state: a face on
+        // the surface reads the first. Where they part further (two edges
+        // that agree only within a vertex widened at one of their ends),
+        // the two are not one edge on that surface.
+        let stated = Some(off.map_or(missed, |o| o.max(missed)));
+        if parts_from_own(model, &survivor, &paced, stated, tol)? {
+            merged.remove(&dropped);
+            joined -= 1;
+            continue;
+        }
         let Some(node) = model.node_mut(&survivor) else {
             ogeom_bail!(Dangling, "an edge is not in this model");
         };
@@ -1369,6 +1381,90 @@ fn join_vertex(
     }
     vertices.insert(gone, keep);
     Ok(())
+}
+
+/// Whether a carried plain pcurve runs further from the survivor's own
+/// plain pcurve on the same surface, at the same placement, than `check`
+/// lets two fits of one edge part at the tolerance the survivor states
+/// once it states `off`, measured where the two lie
+/// on the surface: two columns of a closed surface's seam lie on the
+/// same points, and become the seam's two sides, where two pcurves that
+/// part on the surface are no one edge's.
+fn parts_from_own(
+    model: &Model,
+    survivor: &Shape,
+    carried: &[EdgeRepr],
+    off: Option<f64>,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let Some(data) = model.node(survivor).and_then(|n| n.data().as_edge()) else {
+        ogeom_bail!(Dangling, "an edge is not in this model");
+    };
+    let stated = off.map_or(data.tolerance.get(), |o| {
+        data.tolerance
+            .get()
+            .max(o + ogeom_core::Tolerance::MIN.get())
+    });
+    let reach = crate::check::CHART_GAP_SLACK * stated.max(tol.approximation());
+    for repr in carried {
+        let EdgeRepr::PCurve {
+            curve,
+            surface,
+            location,
+            range,
+        } = repr
+        else {
+            continue;
+        };
+        for own in &data.representations {
+            let EdgeRepr::PCurve {
+                curve: own_curve,
+                surface: own_surface,
+                location: own_location,
+                range: own_range,
+            } = own
+            else {
+                continue;
+            };
+            if own_surface != surface || own_location != location {
+                continue;
+            }
+            let (Some(on), Some(a), Some(b)) = (
+                model.geometry().surface(*surface),
+                model.geometry().pcurve(*own_curve),
+                model.geometry().pcurve(*curve),
+            ) else {
+                ogeom_bail!(Dangling, "an edge names geometry not in this model");
+            };
+            if lifted_apart(on, (a, *own_range), (b, *range), tol)? > reach {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// The widest distance in space between two pcurves on one surface, each
+/// lifted at the same fractions of its range.
+fn lifted_apart(
+    surface: &ogeom_geom::SurfaceGeometry,
+    (a, ra): (&ogeom_geom::PlanarCurve, (f64, f64)),
+    (b, rb): (&ogeom_geom::PlanarCurve, (f64, f64)),
+    tol: Tolerances,
+) -> OgeomResult<f64> {
+    use ogeom_geom::{Curve2d as _, Surface as _};
+    const SAMPLES: u32 = 4;
+    let mut widest = 0.0_f64;
+    for i in 0..=SAMPLES {
+        let t = f64::from(i) / f64::from(SAMPLES);
+        let pa = a.point_at(ra.0 + (ra.1 - ra.0) * t, tol)?;
+        let pb = b.point_at(rb.0 + (rb.1 - rb.0) * t, tol)?;
+        let apart = surface
+            .point_at(pa.x, pa.y, tol)?
+            .distance(surface.point_at(pb.x, pb.y, tol)?);
+        widest = widest.max(apart);
+    }
+    Ok(widest)
 }
 
 /// The dropped edge's parametric representations as the survivor carries
