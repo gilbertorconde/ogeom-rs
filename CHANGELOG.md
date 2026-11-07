@@ -11,6 +11,24 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Changed
+
+- **`refine_solid` takes about half the time on a large solid converted
+  from a mesh, with the same result.** (#706)
+  - On a 29,003-face solid converted from a real part's mesh, 101 s of
+    processor time rather than 208 s on one thread; 56 s rather than
+    136 s of wall time on a loaded machine. The refined solid is the same
+    to the bit, on this part and at two other mesh densities.
+  - A face whose boundary crosses itself is asked how fine its edges must
+    be drawn once per face, its edges and the chords held for them, and
+    the answer kept beside the face meshes: the build measures each
+    attempt's volume, and most faces recur unchanged between attempts.
+    Each ask stops at the boundary's verdict rather than meshing the
+    face's inside, and the faces that came up short are asked side by
+    side.
+  - A recognized surface's fit reads the surface's axis once per step
+    rather than once per sample and parameter.
+
 ## [0.17.1] - 2026-11-06
 
 A patch release: `sew_around_within` is added, and no existing API changes.

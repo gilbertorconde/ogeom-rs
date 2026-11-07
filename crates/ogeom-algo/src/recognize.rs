@@ -1318,24 +1318,87 @@ fn parameters(surface: &Canonical) -> Option<Vec<f64>> {
 /// A point's signed distance to the surface `x` describes, of the kind
 /// `like` is.
 pub(crate) fn residual(like: &Canonical, x: &[f64], p: Point) -> f64 {
-    let o = Point::new(x[0], x[1], x[2]);
-    if let Canonical::Sphere(_) = like {
-        return p.distance(o) - x[3];
-    }
-    let d = Vector::new(x[3], x[4], x[5]);
-    let m = d.magnitude();
-    let a = if m > 0.0 { d / m } else { Vector::Z };
-    let w = p - o;
-    let h = w.dot(a);
-    let rho = (w - a * h).magnitude();
-    match like {
-        Canonical::Cylinder(_) => rho - x[6],
-        Canonical::Cone(_) => {
-            let (r0, angle) = (x[6], x[7]);
-            (rho - h.mul_add(angle.tan(), r0)) * angle.cos()
+    Gauge::of(like, x).residual(p)
+}
+
+/// The surface `x` describes, of the kind `like` is, read once for
+/// measuring many points against it: its axis made unit, its cone's
+/// slope taken.
+enum Gauge {
+    Sphere {
+        o: Point,
+        radius: f64,
+    },
+    Cylinder {
+        o: Point,
+        a: Vector,
+        radius: f64,
+    },
+    Cone {
+        o: Point,
+        a: Vector,
+        r0: f64,
+        tan: f64,
+        cos: f64,
+    },
+    Torus {
+        o: Point,
+        a: Vector,
+        major: f64,
+        minor: f64,
+    },
+    Nothing,
+}
+
+impl Gauge {
+    fn of(like: &Canonical, x: &[f64]) -> Self {
+        let o = Point::new(x[0], x[1], x[2]);
+        if let Canonical::Sphere(_) = like {
+            return Self::Sphere { o, radius: x[3] };
         }
-        Canonical::Torus(_) => (rho - x[6]).hypot(h) - x[7],
-        Canonical::Plane(_) | Canonical::Sphere(_) | Canonical::Swept(_) => 0.0,
+        let d = Vector::new(x[3], x[4], x[5]);
+        let m = d.magnitude();
+        let a = if m > 0.0 { d / m } else { Vector::Z };
+        match like {
+            Canonical::Cylinder(_) => Self::Cylinder { o, a, radius: x[6] },
+            Canonical::Cone(_) => Self::Cone {
+                o,
+                a,
+                r0: x[6],
+                tan: x[7].tan(),
+                cos: x[7].cos(),
+            },
+            Canonical::Torus(_) => Self::Torus {
+                o,
+                a,
+                major: x[6],
+                minor: x[7],
+            },
+            Canonical::Plane(_) | Canonical::Sphere(_) | Canonical::Swept(_) => Self::Nothing,
+        }
+    }
+
+    /// The point's signed distance to the surface.
+    fn residual(&self, p: Point) -> f64 {
+        // The height along the axis and the distance from it.
+        let around = |o: Point, a: Vector| {
+            let w = p - o;
+            let h = w.dot(a);
+            (h, (w - a * h).magnitude())
+        };
+        match *self {
+            Self::Sphere { o, radius } => p.distance(o) - radius,
+            Self::Cylinder { o, a, radius } => around(o, a).1 - radius,
+            Self::Cone { o, a, r0, tan, cos } => {
+                let (h, rho) = around(o, a);
+                (rho - h.mul_add(tan, r0)) * cos
+            }
+            Self::Torus { o, a, major, minor } => {
+                let (h, rho) = around(o, a);
+                (rho - major).hypot(h) - minor
+            }
+            Self::Nothing => 0.0,
+        }
     }
 }
 
@@ -1408,7 +1471,10 @@ pub(crate) fn refine(
 ) -> Option<Canonical> {
     let mut x = parameters(&seed)?;
     let n = x.len();
-    let cost = |x: &[f64]| -> f64 { points.iter().map(|p| residual(&seed, x, *p).powi(2)).sum() };
+    let cost = |x: &[f64]| -> f64 {
+        let gauge = Gauge::of(&seed, x);
+        points.iter().map(|p| gauge.residual(*p).powi(2)).sum()
+    };
     let scale = points
         .iter()
         .map(|p| p.distance(points[0]))
@@ -1437,15 +1503,18 @@ pub(crate) fn refine(
         let mut jacobian = nalgebra::DMatrix::<f64>::zeros(points.len(), n);
         let mut r = nalgebra::DVector::<f64>::zeros(points.len());
         let steps: Vec<f64> = x.iter().map(|v| 1e-7 * v.abs().max(scale)).collect();
+        let gauge = Gauge::of(&seed, &x);
         for (i, p) in points.iter().enumerate() {
-            r[i] = residual(&seed, &x, *p);
-            for k in 0..n {
-                let mut up = x.clone();
-                let mut down = x.clone();
-                up[k] += steps[k];
-                down[k] -= steps[k];
-                jacobian[(i, k)] =
-                    (residual(&seed, &up, *p) - residual(&seed, &down, *p)) / (2.0 * steps[k]);
+            r[i] = gauge.residual(*p);
+        }
+        for k in 0..n {
+            let mut up = x.clone();
+            let mut down = x.clone();
+            up[k] += steps[k];
+            down[k] -= steps[k];
+            let (up, down) = (Gauge::of(&seed, &up), Gauge::of(&seed, &down));
+            for (i, p) in points.iter().enumerate() {
+                jacobian[(i, k)] = (up.residual(*p) - down.residual(*p)) / (2.0 * steps[k]);
             }
         }
         let svd = jacobian.svd(true, true);

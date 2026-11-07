@@ -108,6 +108,10 @@ pub fn triangulate_face_kept(
 #[derive(Debug, Default)]
 pub struct FaceMeshCache {
     held: std::sync::Mutex<ogeom_core::FastMap<Vec<u8>, (Triangulation, Verdict)>>,
+    /// The chords a face that came up short asked its edges to be drawn
+    /// at, under the same key as its mesh: each edge's in the order the
+    /// face's wires walk them, `None` for one it did not name.
+    chords: std::sync::Mutex<ogeom_core::FastMap<Vec<u8>, Vec<Option<f64>>>>,
 }
 
 impl FaceMeshCache {
@@ -127,6 +131,21 @@ impl FaceMeshCache {
 
     fn put(&self, key: Vec<u8>, found: (Triangulation, Verdict)) {
         self.held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, found);
+    }
+
+    fn chords(&self, key: &[u8]) -> Option<Vec<Option<f64>>> {
+        self.chords
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .cloned()
+    }
+
+    fn keep_chords(&self, key: Vec<u8>, found: Vec<Option<f64>>) {
+        self.chords
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(key, found);
@@ -950,7 +969,7 @@ pub(crate) fn face_meshes(
             };
         }
         drawn = finer.clone();
-        changed = refine_short(read_model, faces, &short, &mut finer, deflection, tol)?;
+        changed = refine_short(read_model, faces, &short, &mut finer, deflection, kept, tol)?;
     }
     // A face still short is drawn once more at the chords it was drawn to,
     // as its last pass. The chords stay as they are, and so do its
@@ -990,32 +1009,45 @@ fn refine_short(
     short: &[usize],
     finer: &mut EdgeChords,
     deflection: Deflection,
+    kept: Option<&FaceMeshCache>,
     tol: Tolerances,
 ) -> OgeomResult<ogeom_core::FastSet<u32>> {
     let mut changed: ogeom_core::FastSet<u32> = ogeom_core::FastSet::default();
     // Each face asked against the chords held before any of them answers,
     // so the answers do not hang on the order the faces are taken in.
+    // That also lets them be asked side by side; the answers are merged
+    // in the faces' order, the first error standing as it would one by one.
     let held = finer.clone();
-    for &index in short {
-        let face = &faces[index];
-        let Some(node) = read_model.node(face) else {
+    let asked: Vec<OgeomResult<Option<EdgeChords>>> =
+        ogeom_core::parallel::map_ordered(short, |_, &index| {
+            ogeom_core::progress::checkpoint()?;
+            let face = &faces[index];
+            let Some(node) = read_model.node(face) else {
+                return Ok(None);
+            };
+            let NodeData::Face(data) = node.data() else {
+                return Ok(None);
+            };
+            let Some(surface) = read_model.geometry().surface(data.surface) else {
+                return Ok(None);
+            };
+            face_chords_kept(
+                read_model,
+                face,
+                data.surface,
+                surface,
+                deflection,
+                &held,
+                kept,
+                tol,
+            )
+            .map(Some)
+        });
+    for answer in asked {
+        let Some(chords) = answer? else {
             continue;
         };
-        let NodeData::Face(data) = node.data() else {
-            continue;
-        };
-        let Some(surface) = read_model.geometry().surface(data.surface) else {
-            continue;
-        };
-        for (edge, chord) in face_chords(
-            read_model,
-            face,
-            data.surface,
-            surface,
-            deflection,
-            &held,
-            tol,
-        )? {
+        for (edge, chord) in chords {
             let held = finer.entry(edge).or_insert(f64::INFINITY);
             if chord < *held {
                 *held = chord;
@@ -1126,7 +1158,9 @@ fn first_pass(
     // two sides of one of them disagree. Only an edge whose chord
     // *changed* sends its faces back.
     let drawn = finer.clone();
-    let changed = refine_short(read_model, faces, &crossed, &mut finer, deflection, tol)?;
+    let changed = refine_short(
+        read_model, faces, &crossed, &mut finer, deflection, cache, tol,
+    )?;
     Ok(FirstPass {
         finer,
         computed,
@@ -1540,6 +1574,57 @@ pub type EdgeChords = std::collections::HashMap<u32, f64>;
 /// a seventh time only spends longer to say so.
 const REFINEMENTS: usize = 6;
 
+/// [`face_chords`], through `kept` where there is one: a face is known by
+/// its mesh's key at the chords held for its edges, and its answer is kept
+/// by where each edge comes in the face's walk, so the same face built
+/// again in another model, its edges named afresh, finds it.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "face_chords' own arguments and the cache"
+)]
+fn face_chords_kept(
+    model: &Model,
+    face: &Shape,
+    id: ogeom_topo::SurfaceId,
+    surface: &SurfaceGeometry,
+    deflection: Deflection,
+    held: &EdgeChords,
+    kept: Option<&FaceMeshCache>,
+    tol: Tolerances,
+) -> OgeomResult<EdgeChords> {
+    let walked = || -> Option<Vec<u32>> {
+        let mut edges = Vec::new();
+        for wire in model.ordered_children_of(face).ok()? {
+            for edge in model.ordered_children_of(&wire).ok()? {
+                edges.push(edge.node().index());
+            }
+        }
+        Some(edges)
+    };
+    let (Some(kept), Some(key), Some(walk)) = (
+        kept,
+        mesh_key(model, face, deflection, Some(held), Pass::Agreeing, tol),
+        walked(),
+    ) else {
+        return face_chords(model, face, id, surface, deflection, held, tol);
+    };
+    if let Some(found) = kept.chords(&key)
+        && found.len() == walk.len()
+    {
+        return Ok(walk
+            .iter()
+            .zip(found)
+            .filter_map(|(&edge, chord)| chord.map(|c| (edge, c)))
+            .collect());
+    }
+    let found = face_chords(model, face, id, surface, deflection, held, tol)?;
+    // Kept only where the walk names every edge answered for.
+    if found.keys().all(|e| walk.contains(e)) {
+        kept.keep_chords(key, walk.iter().map(|e| found.get(e).copied()).collect());
+    }
+    Ok(found)
+}
+
 /// What one face needs its own edges drawn with.
 ///
 /// A face narrower than the chord error its boundary is drawn with has a
@@ -1595,11 +1680,14 @@ fn face_chords(
     }
     for _ in 0..=REFINEMENTS {
         let rings = trimming_rings(model, face, id, surface, deflection, &finer, false, tol)?.rings;
-        let planar = triangulate_region(
+        // Only the verdict is read: where the rings crossed, the mesh
+        // inside them is not drawn.
+        let planar = region_mesh(
             &rings,
             surface,
             deflection,
             rim_holds(model, face, deflection, tol)?,
+            Upto::Crossing,
             tol,
         )?;
         if !planar.crossed && planar.triangles.len() >= planar.boundary_triangles {
@@ -3857,6 +3945,28 @@ fn triangulate_region(
     rows_kept: Rows,
     tol: Tolerances,
 ) -> OgeomResult<PlanarMesh> {
+    region_mesh(rings, surface, deflection, rows_kept, Upto::Whole, tol)
+}
+
+/// How far [`region_mesh`] goes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Upto {
+    /// The whole mesh.
+    Whole,
+    /// Only as far as whether the rings crossed: where they did, the mesh
+    /// comes back empty, its boundary count and verdict as they are.
+    Crossing,
+}
+
+/// [`triangulate_region`], stopping where `upto` says.
+fn region_mesh(
+    rings: &[Vec<Point2>],
+    surface: &SurfaceGeometry,
+    deflection: Deflection,
+    rows_kept: Rows,
+    upto: Upto,
+    tol: Tolerances,
+) -> OgeomResult<PlanarMesh> {
     // A chart mangled enough (trims fitted through millimetres of boundary
     // error) can drive the triangulation library past its own asserts, and
     // a panic in a dependency is a crash in every consumer. The rings are
@@ -3884,7 +3994,7 @@ fn triangulate_region(
         }
     }
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        triangulate_region_inner(rings, surface, deflection, rows_kept, tol)
+        triangulate_region_inner(rings, surface, deflection, rows_kept, upto, tol)
     })) {
         Ok(result) => result,
         Err(_) => ogeom_bail!(
@@ -3977,6 +4087,7 @@ fn triangulate_region_inner(
     surface: &SurfaceGeometry,
     deflection: Deflection,
     rows_kept: Rows,
+    upto: Upto,
     tol: Tolerances,
 ) -> OgeomResult<PlanarMesh> {
     let mut cdt: ConstrainedDelaunayTriangulation<SpadePoint<f64>> =
@@ -4076,6 +4187,14 @@ fn triangulate_region_inner(
             rings.len(),
             cdt.num_inner_faces()
         );
+    }
+    if crossed && upto == Upto::Crossing {
+        return Ok(PlanarMesh {
+            parameters: Vec::new(),
+            triangles: Vec::new(),
+            boundary_triangles,
+            crossed,
+        });
     }
 
     // Interior points where the surface bends away from the flat triangle. A
