@@ -362,15 +362,143 @@ fn wedge_for(
     spec: &Chamfer,
     tol: Tolerances,
 ) -> OgeomResult<Wedge> {
+    match legs(model, solid, edge, spec, tol)? {
+        Legs::Straight(seat, distances) => bevel(model, &seat, distances, tol),
+        Legs::Rim(seat, on_wall, on_cap) => {
+            revolved_bevel(model, edge, &seat, on_wall, on_cap, tol)
+        }
+    }
+}
+
+/// The largest measure up to `up_to` at which a chamfer of `spec`'s
+/// spelling on `edge` of `solid` is not refused for running past its
+/// faces: for [`Chamfer::Symmetric`] the distance, for
+/// [`Chamfer::Distances`] the largest common scale of its two distances,
+/// and for [`Chamfer::Angle`] the distance along its face at its angle;
+/// the measure `spec` itself names is not read. None where no measure
+/// leaving both legs longer than the confusion distance fits.
+///
+/// Read from the seat, without building a wedge. On a straight edge
+/// between planes, a convex bevel's leg runs at most as far as its face
+/// reaches back from the edge, the bound [`chamfer_edges_with`] refuses
+/// past, and the answer is exact against it; a concave one fuses and runs
+/// past no face. On a rim, the cap's leg stops short of the axis, and
+/// each leg's contact stays on its face at the stations
+/// [`largest_fillet_radius`](crate::largest_fillet_radius) reads, a
+/// confusion distance short.
+///
+/// # Errors
+///
+/// As [`chamfer_edges_with`] where the seat or spelling is refused at any
+/// measure, and [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+/// if `up_to` is not a usable length; as
+/// [`largest_fillet_radius`](crate::largest_fillet_radius) where a
+/// contact's walk on a rim depends on the measure.
+pub fn largest_chamfer_distance(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    spec: &Chamfer,
+    up_to: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let conf = tol.confusion();
+    if !up_to.is_finite() || up_to <= conf {
+        ogeom_bail!(
+            Construction,
+            "a largest distance up to {up_to} asks for nothing"
+        );
+    }
+    // The legs at a measure of one, which scale with it.
+    let unit = match spec {
+        Chamfer::Symmetric(_) => Chamfer::Symmetric(1.0),
+        Chamfer::Distances {
+            face,
+            on_face,
+            on_other,
+        } => Chamfer::Distances {
+            face: face.clone(),
+            on_face: *on_face,
+            on_other: *on_other,
+        },
+        Chamfer::Angle { face, angle, .. } => Chamfer::Angle {
+            face: face.clone(),
+            distance: 1.0,
+            angle: *angle,
+        },
+    };
+    let mut largest = up_to;
+    let shortest = match legs(model, solid, edge, &unit, tol)? {
+        Legs::Straight(seat, per) => {
+            if seat.convex {
+                for (i, leg) in per.into_iter().enumerate() {
+                    if leg > 0.0 {
+                        let along = seat.leg(i, tol)?;
+                        let reach = crate::support::face_reach(
+                            model,
+                            &seat.faces[i],
+                            seat.start,
+                            along,
+                            tol,
+                        )?;
+                        largest = largest.min(reach / leg);
+                    }
+                }
+            }
+            per[0].min(per[1])
+        }
+        Legs::Rim(seat, on_wall, on_cap) => {
+            // The cap's leg ends at the radius `radius - sigma tau on_cap`,
+            // which stays above the confusion distance.
+            let inward = seat.sigma * seat.tau * on_cap;
+            if inward > 0.0 {
+                largest = largest.min((seat.radius - 2.0 * conf) / inward);
+            }
+            let (wall, cap) = (seat.wall_face.node(), seat.cap_face.node());
+            let per = |face: ogeom_topo::TShapeId| {
+                if face == wall {
+                    on_wall
+                } else if face == cap {
+                    on_cap
+                } else {
+                    0.0
+                }
+            };
+            largest = largest.min(crate::fits::legs_largest(
+                model, solid, edge, largest, per, tol,
+            )?);
+            on_wall.min(on_cap)
+        }
+    };
+    Ok((largest * shortest > conf).then_some(largest))
+}
+
+/// The seat a chamfer stands on and how far its legs run along each face.
+enum Legs {
+    /// A straight edge between planes, its legs along the seat's faces in
+    /// order.
+    Straight(Seat, [f64; 2]),
+    /// A rim on a cylinder: its legs down the wall and in along the cap.
+    Rim(RevolvedSeat, f64, f64),
+}
+
+/// Read one chamfer's seat and legs from `solid` as it stands.
+fn legs(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    spec: &Chamfer,
+    tol: Tolerances,
+) -> OgeomResult<Legs> {
     match spec {
         Chamfer::Symmetric(distance) => match seat_kind(model, edge, tol)? {
             SeatKind::Straight => {
                 let seat = planar_seat(model, solid, edge, tol)?;
-                bevel(model, &seat, [*distance, *distance], tol)
+                Ok(Legs::Straight(seat, [*distance, *distance]))
             }
             SeatKind::Rim(rim) => {
                 let seat = rim_seat(model, solid, edge, &rim, tol)?;
-                revolved_bevel(model, edge, &seat, *distance, *distance, tol)
+                Ok(Legs::Rim(seat, *distance, *distance))
             }
         },
         Chamfer::Distances {
@@ -384,12 +512,12 @@ fn wedge_for(
                 let mut distances = [0.0; 2];
                 distances[i] = *on_face;
                 distances[1 - i] = *on_other;
-                bevel(model, &seat, distances, tol)
+                Ok(Legs::Straight(seat, distances))
             }
             SeatKind::Rim(rim) => {
                 let seat = rim_seat(model, solid, edge, &rim, tol)?;
                 let (on_wall, on_cap) = revolved_side(&seat, face, *on_face, *on_other)?;
-                revolved_bevel(model, edge, &seat, on_wall, on_cap, tol)
+                Ok(Legs::Rim(seat, on_wall, on_cap))
             }
         },
         Chamfer::Angle {
@@ -428,7 +556,7 @@ fn wedge_for(
                     let mut distances = [0.0; 2];
                     distances[i] = distance;
                     distances[1 - i] = derived;
-                    bevel(model, &seat, distances, tol)
+                    Ok(Legs::Straight(seat, distances))
                 }
                 SeatKind::Rim(rim) => {
                     // The rim's seat is square by construction (the cap is
@@ -444,7 +572,7 @@ fn wedge_for(
                     let seat = rim_seat(model, solid, edge, &rim, tol)?;
                     let derived = distance * angle.tan();
                     let (on_wall, on_cap) = revolved_side(&seat, face, distance, derived)?;
-                    revolved_bevel(model, edge, &seat, on_wall, on_cap, tol)
+                    Ok(Legs::Rim(seat, on_wall, on_cap))
                 }
             }
         }

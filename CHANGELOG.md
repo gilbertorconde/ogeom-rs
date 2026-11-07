@@ -38,6 +38,24 @@ bump may break the API and a patch bump may not.
   - A point where a three-sided patch meets four-sided ones is still fitted
     near tangent.
 
+- **`largest_fillet_radius`, `largest_fillet_radius_all` and
+  `largest_chamfer_distance` answer the largest radius or distance that
+  fits, read from the seat without building.** (#715)
+  - Each contact of the ball walks square to the edge, `r · tan(φ/2)` into
+    its face, at the stations the request check reads; the answer is where
+    the first walk leaves its face, a confusion distance short. On a plane,
+    and along a ruling of a cylinder or a cone, that is exact against the
+    region the check reads the face by; on other surfaces the walk is
+    followed by 256 stations and bisected.
+  - `_all` adds the overlap of bands across a face they share: a contact's
+    distance to the other edge changes no faster than it walks, so the
+    radius where it first comes within the other's setback is approached
+    from below in steps that cannot pass it. Every answer is passed through
+    the request's own check before it is returned.
+  - A 20 × 20 × 2 plate's top edge: 2.0 (rounds; 2.1 is refused). All
+    twelve edges: 1.0 (rounds; 1.05 is refused). A chamfer of the top edge:
+    2.0. A frustum's rim: `√5 / tan(acos(1/√5)/2)` = 3.6180340 within 1e-6.
+
 ### Changed
 
 - **`refine_solid` takes about half the time on a large solid converted

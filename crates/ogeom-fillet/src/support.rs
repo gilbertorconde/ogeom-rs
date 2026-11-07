@@ -2420,7 +2420,7 @@ pub(crate) fn bands_clear(
 
 /// The distance from `p` to a curve over `range`: the nearest of a scan,
 /// refined in the interval around it.
-fn distance_to_edge(
+pub(crate) fn distance_to_edge(
     curve: &Curve,
     range: (f64, f64),
     p: Point,
@@ -2476,7 +2476,7 @@ pub(crate) fn keeping_face_meshes<T>(f: impl FnOnce() -> T) -> T {
 }
 
 /// A face's mesh at the default deflection, kept where a caller asked.
-fn face_mesh(
+pub(crate) fn face_mesh(
     model: &Model,
     face: &Shape,
     tol: Tolerances,
@@ -2503,7 +2503,7 @@ fn face_mesh(
 
 /// Whether a chart point lies in a face's region: inside one of the
 /// triangles its own mesh lays over its chart, or on one's side.
-fn chart_holds(
+pub(crate) fn chart_holds(
     model: &Model,
     face: &Shape,
     at: ogeom_math::Point2,

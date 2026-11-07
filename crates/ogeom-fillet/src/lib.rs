@@ -12,6 +12,7 @@ pub mod corner2d;
 mod corner_curved;
 pub mod facepair;
 pub mod fillet;
+mod fits;
 mod junction;
 pub mod march;
 mod marched;
@@ -28,12 +29,13 @@ pub use analyse::{BlendContact, analyse_blend, face_curvature_samples};
 pub use bridge::{End, make_blend_curve, make_blend_surface};
 pub use chamfer::{
     Chamfer, chamfer_edge, chamfer_edge_angle, chamfer_edge_distances, chamfer_edges,
-    chamfer_edges_with,
+    chamfer_edges_with, largest_chamfer_distance,
 };
 pub use corner::round_vertex;
 pub use corner2d::{chamfer_corner_2d, fillet_corner_2d};
 pub use facepair::blend_faces;
 pub use fillet::{fillet_edge, fillet_edge_variable, fillet_edges};
+pub use fits::{largest_fillet_radius, largest_fillet_radius_all};
 pub use march::{
     BlendStop, MarchedBlend, Sides, march_blend, march_blend_seeded, march_blend_sided,
 };
