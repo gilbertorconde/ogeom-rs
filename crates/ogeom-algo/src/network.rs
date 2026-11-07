@@ -48,13 +48,16 @@
 //!   ratios, so both corners are scaled to the geometric mean of the two,
 //!   moved as little as closes every cycle of a corner's scales all of
 //!   whose curves are asked a ratio. Where neither way meets the points, a
-//!   corner of an odd number of patches whose curves each run on to the
-//!   border or to another such corner has its gluing spread along its
-//!   curves: `λ` constant and `γ` linear along each whole curve, from the
-//!   corner's `g` to a value read off the fit at the border or to the other
-//!   corner's, every knot inside the curve's strip doubled and the curves
-//!   along it held `C²` across each. The curve is then as free to refine
-//!   as any, its patches only `C¹` across those knots. This is the gluing
+//!   corner of an odd number of patches, or an even number above four,
+//!   whose curves each run on to the border or to another such corner has
+//!   its gluing spread along its curves: `λ` constant and `γ` linear along
+//!   each whole curve, from the corner's `g` to a value read off the fit
+//!   at the border or to the other corner's, every knot inside the curve's
+//!   strip doubled and the curves along it held `C²` across each. The
+//!   curve is then as free to refine as any, its patches only `C¹` across
+//!   those knots. At an even corner the twists round it close in a cycle
+//!   that is always singular, which leaves one condition on the curves'
+//!   second poles, held with the rest. This is the gluing
 //!   a Coons patch's parameters carry, `γ` falling along the whole curve,
 //!   which the points at their seed's parameters admit where `γ` nought
 //!   past one span does not. So a corner of three patches or more,
@@ -1378,10 +1381,10 @@ enum Corners {
     /// the curve is held by the pole triples and may run on to a corner of
     /// four patches, a junction or another such corner.
     Spans,
-    /// The corners of an odd number of patches whose curves all run on to
-    /// the border or to another such corner, `γ` linear along each whole
-    /// curve, every knot inside the curve's strip doubled and the curve
-    /// held `C²` across each.
+    /// The corners of an odd number of patches, or an even number above
+    /// four, whose curves all run on to the border or to another such
+    /// corner, `γ` linear along each whole curve, every knot inside the
+    /// curve's strip doubled and the curve held `C²` across each.
     Spread,
 }
 
@@ -3143,9 +3146,9 @@ impl Fit<'_> {
     /// multiply to one: the cycle is never singular at an odd number of
     /// curves and always singular at an even one (the vertex enclosure
     /// condition), where it leaves one condition on the curves' own poles.
-    /// Corners held whole are odd only; a corner held by its spans may be
-    /// even, the condition then falling on the poles of the curves' spans
-    /// next to it.
+    /// Corners held whole are odd only; a corner held by its spans or with
+    /// its gluing spread may be even, the condition then falling on the
+    /// poles of the curves' spans next to it, or on their second poles.
     fn relate(
         &self,
         layout: &Layout,
