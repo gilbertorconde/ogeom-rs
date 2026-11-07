@@ -13,7 +13,7 @@ use ogeom::core::{Tolerance, Tolerances};
 use ogeom::geom::fit::fit_points;
 use ogeom::geom::{CircleCurve, CylinderSurface, LineCurve, PlaneSurface, Surface as _};
 use ogeom::math::{Circle, Cylinder, Direction, Frame, Plane, Point, Vector};
-use ogeom::mesh::{Deflection, triangulate_with_face_meshes};
+use ogeom::mesh::{Deflection, FaceMeshCache, triangulate_with_face_meshes};
 use ogeom::topo::{Model, Shape};
 
 const T: Tolerances = Tolerances::millimetres();
@@ -223,5 +223,29 @@ fn a_spline_running_along_a_circle_to_their_vertex_meshes_closed() {
             (all - wall).abs() <= 1e-6 * wall,
             "exact areas sum to {all} against {wall}"
         );
+    }
+}
+
+/// The face whose ring crosses itself asks for its edges to be drawn
+/// finer, and a cache kept across models hands that ask back to the same
+/// sector built again, where its edges take other handles: the meshes
+/// drawn through the cache are the ones drawn without it.
+#[test]
+fn kept_asks_of_a_crossing_face_answer_for_it_built_again() {
+    let kept = FaceMeshCache::new();
+    for padding in [0, 7, 0] {
+        let mut model = Model::new();
+        for i in 0..padding {
+            make_vertex(&mut model, Point::new(f64::from(i), -5.0, 0.0));
+        }
+        let (solid, _) = sector(&mut model);
+        for chord in [0.1, 0.01] {
+            let deflection = Deflection::with_chord(chord).unwrap();
+            let fresh = triangulate_with_face_meshes(&model, &solid, deflection, None, T).unwrap();
+            let held =
+                triangulate_with_face_meshes(&model, &solid, deflection, Some(&kept), T).unwrap();
+            assert_eq!(held.0, fresh.0, "padding {padding}, chord {chord}");
+            assert_eq!(held.1, fresh.1, "padding {padding}, chord {chord}");
+        }
     }
 }
