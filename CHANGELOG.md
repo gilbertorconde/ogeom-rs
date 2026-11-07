@@ -56,6 +56,25 @@ bump may break the API and a patch bump may not.
     twelve edges: 1.0 (rounds; 1.05 is refused). A chamfer of the top edge:
     2.0. A frustum's rim: `√5 / tan(acos(1/√5)/2)` = 3.6180340 within 1e-6.
 
+### Fixed
+
+- **A boolean no longer returns an edge read in two places on one
+  surface where two edges meet only inside a widened vertex.**
+  - The sew joins two edges whose ends meet within their vertices'
+    tolerances and whose middles lie on each other, and carries the
+    dropped edge's pcurves to the survivor. A drill lowered 1e-5 under
+    `nist_ctc_03`'s plate top, its seam on the top line, had its top line
+    joined with the wall's edge 1e-5 above it: the two end 1.3e-2 apart
+    inside a vertex a grazing section widened to 1.7e-2. Both their
+    pcurves on the wall were kept, 1.3e-2 apart where the edge states
+    1e-5, and the cut came back broken: a face on the wall reads the first
+    pcurve whichever edge it walked.
+  - A carried pcurve on a surface the survivor already holds one on must
+    now run within the survivor's stated tolerance of it, the measure
+    `check` holds the pair to; otherwise the two stay two edges, as they
+    do where a carried pcurve runs elsewhere than the survivor. That cut
+    is now refused by name ("the kept pieces did not close into a shell").
+
 ### Changed
 
 - **`refine_solid` takes about half the time on a large solid converted
