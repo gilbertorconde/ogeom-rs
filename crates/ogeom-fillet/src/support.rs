@@ -2349,6 +2349,24 @@ pub(crate) struct Contact {
     pub setback: f64,
 }
 
+/// A refusal of a request of several edges, with the indices into the
+/// request of the edges it concerns: the edge refused first, then any it
+/// collides with. None where the refusal is no edge's.
+#[derive(Debug)]
+pub(crate) struct Blamed {
+    pub edges: Vec<usize>,
+    pub error: ogeom_core::OgeomError,
+}
+
+impl From<ogeom_core::OgeomError> for Blamed {
+    fn from(error: ogeom_core::OgeomError) -> Self {
+        Self {
+            edges: Vec::new(),
+            error,
+        }
+    }
+}
+
 /// Refuse a chain whose bands overlap across a face they share.
 ///
 /// Each edge's band covers the strip of a face between the edge and its
@@ -2361,13 +2379,14 @@ pub(crate) struct Contact {
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
-/// where two bands overlap.
+/// where two bands overlap, naming the edge whose contact stands in the
+/// other's band, then the other.
 pub(crate) fn bands_clear(
     model: &Model,
     edges: &[Shape],
     contacts: &[Vec<Contact>],
     tol: Tolerances,
-) -> OgeomResult<()> {
+) -> Result<(), Blamed> {
     let vertices = |edge: &Shape| -> OgeomResult<Vec<ogeom_topo::TShapeId>> {
         Ok(ogeom_algo::edge_vertices(model, edge)?
             .map(|(a, b)| vec![a.node(), b.node()])
@@ -2406,11 +2425,15 @@ pub(crate) fn bands_clear(
                 }
                 let away = distance_to_edge(&curve, range, contact.at, tol)?;
                 if away < strip - tol.confusion() * 1e3 {
-                    ogeom_bail!(
-                        Construction,
-                        "two blends of the chain overlap across a face they share: a \
-                         contact stands {away} from the other edge, inside its band of {strip}"
-                    );
+                    return Err(Blamed {
+                        edges: vec![i, j],
+                        error: ogeom_core::ogeom_err!(
+                            Construction,
+                            "two blends of the chain overlap across a face they share: a \
+                             contact stands {away} from the other edge, inside its band of \
+                             {strip}"
+                        ),
+                    });
                 }
             }
         }

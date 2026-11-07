@@ -3,6 +3,7 @@
 
 pub mod analyse;
 mod between;
+mod blame;
 pub mod bridge;
 mod carried;
 pub mod chamfer;
@@ -26,6 +27,10 @@ mod support;
 mod turned_pole;
 
 pub use analyse::{BlendContact, analyse_blend, face_curvature_samples};
+pub use blame::{
+    BlendRefusal, chamfer_edges_checked, chamfer_edges_partial, fillet_edges_checked,
+    fillet_edges_partial,
+};
 pub use bridge::{End, make_blend_curve, make_blend_surface};
 pub use chamfer::{
     Chamfer, chamfer_edge, chamfer_edge_angle, chamfer_edge_distances, chamfer_edges,

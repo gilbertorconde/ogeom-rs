@@ -13,6 +13,23 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fillet_edges_checked` and `chamfer_edges_checked` name the request's
+  edges a refusal concerns; `fillet_edges_partial` and
+  `chamfer_edges_partial` build what can be built and leave the rest
+  sharp.** (#714)
+  - A refusal is a `BlendRefusal { edges, error }`, the indices into the
+    request: the edge whose ball does not sit on its faces, or whose
+    contact stands in another band (then that other), as the request's
+    check reads them; a chamfer's wedge refused, or one not applying (then
+    the bevels before it at its vertices). A refusal of the build past the
+    check names the first edge whose prefix of the request does not build,
+    then, where it builds alone, the edges before it it meets.
+  - The partial build takes the edges in request order, each joining when
+    it builds with those accepted so far, each attempt on a copy of the
+    model; the result is the full call on exactly the accepted edges. On a
+    20 × 20 × 2 plate at radius 1.5, one edge of each pair across the wall
+    is left sharp, each refusal naming it and its partner.
+
 - **Patch networks hold a fan of three-sided patches exactly tangent,
   along its curves and at its point.** (#653)
   - A fan is a point every patch there shrinks its missing side to, as a

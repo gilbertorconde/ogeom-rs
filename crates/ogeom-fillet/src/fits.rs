@@ -506,7 +506,8 @@ pub fn largest_fillet_radius_all(
             ogeom_bail!(
                 NotDone,
                 "the largest radius read from the seats, {largest}, does not pass the \
-                 request's check: {refusal}"
+                 request's check: {}",
+                refusal.error
             );
         }
         Ok(Some(largest))

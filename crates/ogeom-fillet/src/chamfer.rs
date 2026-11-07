@@ -18,7 +18,7 @@
 //! for the slant, and the same melt taking the legs away.
 
 use crate::support::{
-    RevolvedSeat, Seat, apply_wedge, edge_curve, planar_face, planar_seat, revolved_flanks,
+    Blamed, RevolvedSeat, Seat, apply_wedge, edge_curve, planar_face, planar_seat, revolved_flanks,
     revolved_seat,
 };
 use ogeom_algo::{Built, make_revolution_band};
@@ -299,33 +299,81 @@ pub fn chamfer_edges_with(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    chamfer_edges_blamed(model, solid, specs, tol).map_err(|blamed| blamed.error)
+}
+
+/// [`chamfer_edges_with`], its refusal naming the specs it concerns.
+pub(crate) fn chamfer_edges_blamed(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> Result<Built, Blamed> {
+    let mut blame = Vec::new();
     ogeom_algo::on_own_nodes(
         model,
         solid,
         &chamfer_parts(specs),
         |model, solid, parts| {
-            chamfer_edges_with_own(model, solid, &chamfer_specs(specs, parts), tol)
+            chamfer_edges_with_own(model, solid, &chamfer_specs(specs, parts), tol).map_err(
+                |blamed| {
+                    blame = blamed.edges;
+                    blamed.error
+                },
+            )
         },
     )
+    .map_err(|error| Blamed {
+        edges: blame,
+        error,
+    })
 }
 
 /// [`chamfer_edges_with`] on a shape every node below which is its own.
+///
+/// A wedge refused names its spec; one that does not apply names its
+/// spec, then the specs before it whose edges share a vertex with its
+/// edge, whose bevels it was applied after.
 fn chamfer_edges_with_own(
     model: &mut Model,
     solid: &Shape,
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
-) -> OgeomResult<Built> {
+) -> Result<Built, Blamed> {
     if specs.is_empty() {
-        ogeom_bail!(Construction, "a chain of no edges bevels nothing");
+        return Err(
+            ogeom_core::ogeom_err!(Construction, "a chain of no edges bevels nothing").into(),
+        );
     }
-    let wedges: Vec<Wedge> = specs
-        .iter()
-        .map(|(edge, spec)| wedge_for(model, solid, edge, spec, tol))
-        .collect::<OgeomResult<_>>()?;
+    let mut wedges = Vec::with_capacity(specs.len());
+    for (i, (edge, spec)) in specs.iter().enumerate() {
+        wedges.push(
+            wedge_for(model, solid, edge, spec, tol).map_err(|error| Blamed {
+                edges: vec![i],
+                error,
+            })?,
+        );
+    }
     let mut built = Built::from_nothing(solid.clone());
-    for ((edge, _), wedge) in specs.iter().zip(wedges) {
-        let step = wedge.apply(model, &built.shape, edge, tol)?;
+    for (i, ((edge, _), wedge)) in specs.iter().zip(wedges).enumerate() {
+        let step = match wedge.apply(model, &built.shape, edge, tol) {
+            Ok(step) => step,
+            Err(error) => {
+                let mut edges = vec![i];
+                let ends = |e: &Shape| -> OgeomResult<Vec<ogeom_topo::TShapeId>> {
+                    Ok(ogeom_algo::edge_vertices(model, e)?
+                        .map(|(a, b)| vec![a.node(), b.node()])
+                        .unwrap_or_default())
+                };
+                let own = ends(edge)?;
+                for (j, (other, _)) in specs[..i].iter().enumerate() {
+                    if ends(other)?.iter().any(|v| own.contains(v)) {
+                        edges.push(j);
+                    }
+                }
+                return Err(Blamed { edges, error });
+            }
+        };
         built = Built {
             shape: step.shape.clone(),
             history: built.history.then(&step.history),
