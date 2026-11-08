@@ -632,12 +632,13 @@ fn a_clean_rounded_corner_is_held_exactly_tangent_by_its_spans() {
 
 #[test]
 fn a_corner_left_near_tangent_is_reported_with_its_angle() {
-    // A cap of six patches from a clean scan, to a thousandth: an even
-    // corner held by its spans misses the points at their seed's
-    // parameters, and its gluing is not spread, so the curves into it are
-    // fitted near tangent and the corner's widest angle reported, as read
-    // off the patches.
-    let (curves, patches) = cap(6);
+    // A cap of eight patches from a clean scan, to a thousandth: held by
+    // its spans the corner misses the points at their seed's parameters,
+    // and with its gluing spread two points on the rim stand past what the
+    // rest of their cells reach and end refinement as strays, so the curves
+    // into it are fitted near tangent and the corner's widest angle
+    // reported, as read off the patches.
+    let (curves, patches) = cap(8);
     let cloud = cap_points(20_000, 0.0, 29);
     let (model, network) = fit(&curves, &patches, &cloud, &options(CLEAN_TOLERANCE, vec![]));
     assert_eq!(network.ended, Ended::Met, "{network:?}");
@@ -645,7 +646,7 @@ fn a_corner_left_near_tangent_is_reported_with_its_angle() {
     let [corner] = network.corners.as_slice() else {
         panic!("{:?}", network.corners);
     };
-    assert_eq!(corner.valence, 6);
+    assert_eq!(corner.valence, 8);
     let normals: Vec<_> = network
         .surfaces
         .iter()
@@ -665,18 +666,20 @@ fn a_corner_left_near_tangent_is_reported_with_its_angle() {
     // Near tangent, not held: well past what rounding leaves.
     assert!(corner.angle > EXACT_ANGLE, "{corner:?}");
     assert!(network.worst_tangent >= corner.angle);
-    assert_sound_shell(&model, &network, 12);
+    assert_sound_shell(&model, &network, 16);
 }
 
 #[test]
-fn clean_caps_of_five_and_seven_patches_are_held_exactly_tangent() {
+fn clean_caps_of_five_to_seven_patches_are_held_exactly_tangent() {
     // Clean scans, to a thousandth. Holding the corner with `γ` linear
     // along each whole curve binds the curve to a single cubic, and by its
     // spans asks `γ` to fall to nought within a span, which the points at
     // their seed's parameters do not admit: the seed's gluing runs
     // linearly along the whole curve. Spread along the curve, every knot
-    // inside its strip doubled, it refines as far as the points need.
-    for n in [5, 7] {
+    // inside its strip doubled, it refines as far as the points need. At
+    // the even corner the twists close in a singular cycle, whose one
+    // condition the rows leave on the curves' second poles.
+    for n in [5, 6, 7] {
         let (curves, patches) = cap(n);
         let cloud = cap_points(20_000, 0.0, 29);
         let (model, network) = fit(&curves, &patches, &cloud, &options(CLEAN_TOLERANCE, vec![]));
@@ -1566,25 +1569,33 @@ fn a_filleted_box_corner_is_held_exactly_tangent() {
 }
 
 #[test]
-fn a_corner_of_six_patches_is_held_exactly_tangent() {
+fn even_corners_of_six_and_eight_patches_are_held_exactly_tangent() {
     // An even corner: the twists round it close in a cycle that is always
-    // singular, and the rows holding the corner by its spans leave that
-    // cycle's one condition on the curves' own poles.
-    let (curves, patches) = cap(6);
-    let cloud = cap_points(20_000, NOISE, 29);
-    let (model, network) = fit(&curves, &patches, &cloud, &options(NOISY_TOLERANCE, vec![]));
-    assert_eq!(network.ended, Ended::Met, "{network:?}");
-    let off = widest_off(&network, off_ball);
-    assert!(off <= NOISY_TOLERANCE / 2.0, "{off} off the ball");
-    let (angle, gap) = across_shared(&network, &patches);
-    assert!(angle <= EXACT_ANGLE, "{angle}");
-    assert!(gap <= ROUNDING_GAP, "{gap}");
-    let [corner] = network.corners.as_slice() else {
-        panic!("{:?}", network.corners);
-    };
-    assert_eq!(corner.valence, 6);
-    assert!(corner.angle <= EXACT_ANGLE, "{corner:?}");
-    assert_sound_shell(&model, &network, 12);
+    // singular, and the rows holding the corner leave that cycle's one
+    // condition on the curves' own poles. Six patches are held by their
+    // spans; eight miss that way and are held with the gluing spread.
+    for n in [6, 8] {
+        let (curves, patches) = cap(n);
+        let cloud = cap_points(20_000, NOISE, 29);
+        let (model, network) = fit(&curves, &patches, &cloud, &options(NOISY_TOLERANCE, vec![]));
+        assert_eq!(network.ended, Ended::Met, "{n}: {network:?}");
+        let off = widest_off(&network, off_ball);
+        assert!(off <= NOISY_TOLERANCE / 2.0, "{n}: {off} off the ball");
+        let (angle, gap) = across_shared(&network, &patches);
+        assert!(angle <= EXACT_ANGLE, "{n}: {angle}");
+        assert!(gap <= ROUNDING_GAP, "{n}: {gap}");
+        assert!(
+            network.worst_tangent <= EXACT_ANGLE,
+            "{n}: {}",
+            network.worst_tangent
+        );
+        let [corner] = network.corners.as_slice() else {
+            panic!("{:?}", network.corners);
+        };
+        assert_eq!(corner.valence, n);
+        assert!(corner.angle <= EXACT_ANGLE, "{corner:?}");
+        assert_sound_shell(&model, &network, 2 * n);
+    }
 }
 
 /// The rounded box corner of [`filleted_corner`], each edge's fillet one

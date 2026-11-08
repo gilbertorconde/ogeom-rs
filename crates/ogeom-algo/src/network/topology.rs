@@ -144,11 +144,11 @@ pub(super) struct Topology {
     /// border, at a corner of four patches or a junction, or at another
     /// such corner: each with its curves.
     pub span_corners: Vec<(usize, Vec<usize>)>,
-    /// The corners of an odd number of patches, other than three-sided
-    /// patches' points and junctions, whose curves are all smooth, each
-    /// crossing one strip that runs one way throughout, and each ending at
-    /// its other end on the network's border or at another such corner:
-    /// each with its curves.
+    /// The corners of other than four patches, more than four where even,
+    /// other than three-sided patches' points and junctions, whose curves
+    /// are all smooth, each crossing one strip that runs one way
+    /// throughout, and each ending at its other end on the network's
+    /// border or at another such corner: each with its curves.
     pub spread_corners: Vec<(usize, Vec<usize>)>,
     /// The fans: points inside the network that every patch there is
     /// three-sided at, its missing side shrunk to the point, each crossing
@@ -625,7 +625,7 @@ impl Topology {
         // another such corner, the corners pared down as above.
         let mut spread_at = vec![true; vertices];
         let spread_corners = loop {
-            let found = odd_with(false, &|c, v| {
+            let found = odd_with(true, &|c, v| {
                 let far = far_of(c, v);
                 let ends_held = (border[far] && !apex[far])
                     || (spread_at[far] && interior_valence[far].is_some());

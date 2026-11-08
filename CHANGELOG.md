@@ -30,6 +30,22 @@ bump may break the API and a patch bump may not.
     20 × 20 × 2 plate at radius 1.5, one edge of each pair across the wall
     is left sharp, each refusal naming it and its partner.
 
+- **Patch networks hold an even corner exactly tangent with its gluing
+  spread along its curves.** (#653)
+  - A corner of six or eight patches whose spans miss the points was
+    fitted near tangent: a clean cap of six patches at tolerance 0.001 at
+    8.0e-3 rad, and a cap of eight with σ = 0.02 noise at 0.1 at
+    0.094 rad.
+  - Even corners above four now take the spread try odd corners take:
+    `γ` linear along each whole curve, every knot inside its strip
+    doubled. The twists round an even corner close in a singular cycle,
+    and its one condition falls on the curves' second poles, held with
+    the other rows.
+  - The clean cap of six now meets 0.001 tangent to 1.2e-14 rad, and the
+    noisy cap of eight meets 0.1 tangent to rounding.
+  - A clean cap of eight at 0.001 is still fitted near tangent: two points
+    on its rim end refinement as strays.
+
 - **Patch networks hold a fan of three-sided patches exactly tangent,
   along its curves and at its point.** (#653)
   - A fan is a point every patch there shrinks its missing side to, as a
