@@ -24,6 +24,17 @@ bump may break the API and a patch bump may not.
   - Junctions and the corner tool are kept to bands of one radius. A corner
     where three or more bands of different radii meet is refused rather
     than left capped: closing it takes a patch between the bands' ends.
+
+- **STEP: a pcurve on a line swept into a plane is kept.** The reader takes
+  a `SURFACE_OF_LINEAR_EXTRUSION` of a line for the plane it is, whose chart
+  here is the file's carried through an affine map, sheared where the sweep
+  leans on the line; every pcurve on it was derived again. A line or spline
+  pcurve is now carried through that map, exactly, at its own parameter,
+  and kept where it follows the edge as closely as a derived one. On a box
+  written with its pcurves and each plane restated as a line swept along a
+  vector leaning half across it, all 24 pcurves are kept (12 before, 12
+  derived). A conic on such a chart is still derived.
+
 - **A patch network that misses everywhere refines on as it finishes, so the
   clean filleted box corner meets 0.001 exactly tangent.** (#653)
   - Where every way of holding the corners missed and the near-tangent fit
