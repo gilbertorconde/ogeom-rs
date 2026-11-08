@@ -355,11 +355,11 @@ pub(crate) fn legs_largest(
     solid: &Shape,
     edge: &Shape,
     up_to: f64,
-    per: impl Fn(ogeom_topo::TShapeId) -> f64,
+    per: impl Fn(&Shape) -> f64,
     tol: Tolerances,
 ) -> OgeomResult<f64> {
     crate::support::keeping_face_meshes(|| {
-        Ok(edge_largest(model, solid, edge, up_to, |w| per(w.face.node()), tol)?.0)
+        Ok(edge_largest(model, solid, edge, up_to, |w| per(&w.face), tol)?.0)
     })
 }
 
@@ -405,7 +405,9 @@ pub fn largest_fillet_radius(
 /// across a face they share, the overlap
 /// [`fillet_edges`](crate::fillet_edges) refuses. Edges meeting at a
 /// vertex are corner mates, whose bands meet there by design, and are not
-/// held apart. None where no radius above the confusion distance fits.
+/// held apart; vertices and faces are told apart by placement as well as
+/// node, as that refusal tells them. None where no radius above the
+/// confusion distance fits.
 ///
 /// A contact's distance to another edge changes no faster than the
 /// contact walks, and the edge's setback grows linearly, so the radius
@@ -445,9 +447,9 @@ pub fn largest_fillet_radius_all(
         if largest <= conf {
             return Ok(None);
         }
-        let ends = |edge: &Shape| -> OgeomResult<Vec<ogeom_topo::TShapeId>> {
+        let ends = |edge: &Shape| -> OgeomResult<Vec<Shape>> {
             Ok(ogeom_algo::edge_vertices(model, edge)?
-                .map(|(a, b)| vec![a.node(), b.node()])
+                .map(|(a, b)| vec![a, b])
                 .unwrap_or_default())
         };
         for (i, first) in edges.iter().enumerate() {
@@ -456,7 +458,7 @@ pub fn largest_fillet_radius_all(
                     continue;
                 }
                 let (own, other) = (ends(first)?, ends(second)?);
-                if own.iter().any(|v| other.contains(v)) {
+                if own.iter().any(|v| other.iter().any(|o| o.is_same(v))) {
                     continue;
                 }
                 let Ok((curve, range)) = edge_curve(model, second, tol) else {
@@ -467,7 +469,7 @@ pub fn largest_fillet_radius_all(
                     // this face, if it has a contact there.
                     let Some(strip) = seats[j]
                         .iter()
-                        .filter(|(w, _)| w.face.node() == walk.face.node())
+                        .filter(|(w, _)| w.face.is_same(&walk.face))
                         .map(|(w, _)| w.factor)
                         .reduce(f64::max)
                     else {

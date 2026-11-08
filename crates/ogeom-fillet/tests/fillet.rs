@@ -1388,6 +1388,76 @@ fn a_seam_cut_off_at_a_side_inside_another_band_is_refused() {
     );
 }
 
+/// Every edge of a 20 x 20 x 2 plate rounded: at radii 1.5 and 1.9 the
+/// two bands on each 2 mm side need more than its width, so no rounding
+/// exists and the request is refused, whether the plate is a box or a
+/// prism of a square. The prism's top face is its bottom face placed up
+/// the sweep, sharing the bottom's edges and vertices under a placement;
+/// a side's top and bottom edges are then one edge in two places, and
+/// were taken for corner mates meeting at a shared vertex and never
+/// checked against each other. At radius 0.9 both plates round, to the
+/// same volume.
+#[test]
+fn every_edge_of_a_thin_plate_overlaps_alike_built_as_box_or_prism() {
+    use ogeom_math::{Direction, Vector};
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-4,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let volume = |model: &ogeom_topo::Model, solid: &ogeom_topo::Shape| {
+        ogeom_algo::volume_properties(model, solid, fine, T)
+            .unwrap()
+            .mass
+    };
+    let plate = |model: &mut ogeom_topo::Model, prism: bool| {
+        if prism {
+            polygon_prism(
+                model,
+                &[
+                    Point::new(0.0, 0.0, 0.0),
+                    Point::new(20.0, 0.0, 0.0),
+                    Point::new(20.0, 20.0, 0.0),
+                    Point::new(0.0, 20.0, 0.0),
+                ],
+                Direction::Z,
+                Vector::new(0.0, 0.0, 2.0),
+            )
+        } else {
+            ogeom_algo::make_box(model, Frame::WORLD, (20.0, 20.0, 2.0), T)
+                .unwrap()
+                .shape
+        }
+    };
+    let mut rounded = Vec::new();
+    for prism in [false, true] {
+        for radius in [1.5, 1.9] {
+            let mut model = ogeom_topo::Model::new();
+            let part = plate(&mut model, prism);
+            let edges = ogeom_topo::explore_unique(&model, &part, ShapeType::Edge).unwrap();
+            assert_eq!(edges.len(), 12);
+            let Err(ogeom_core::OgeomError::Construction(why)) =
+                ogeom_fillet::fillet_edges(&mut model, &part, &edges, radius, T)
+            else {
+                panic!("a plate built as a prism {prism} rounded at {radius} past its width");
+            };
+            assert!(
+                why.to_string()
+                    .contains("two blends of the chain overlap across a face they share"),
+                "{why}"
+            );
+        }
+        let mut model = ogeom_topo::Model::new();
+        let part = plate(&mut model, prism);
+        let edges = ogeom_topo::explore_unique(&model, &part, ShapeType::Edge).unwrap();
+        let done = ogeom_fillet::fillet_edges(&mut model, &part, &edges, 0.9, T).unwrap();
+        rounded.push(volume(&model, &done.shape));
+    }
+    assert!(
+        (rounded[0] - rounded[1]).abs() < 1e-6 * rounded[0],
+        "{rounded:?}"
+    );
+}
+
 /// A prism of the planar polygon `points`, square to `normal`, swept
 /// along `sweep`.
 fn polygon_prism(

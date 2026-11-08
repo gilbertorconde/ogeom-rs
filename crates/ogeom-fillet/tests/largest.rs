@@ -126,6 +126,45 @@ fn a_plate_rounds_all_round_at_most_half_its_thickness() {
 }
 
 #[test]
+fn a_prism_built_plate_rounds_all_round_at_most_half_its_thickness() {
+    // The same plate as a prism of a square: its top is its bottom placed
+    // up the sweep, so a side's top and bottom edges have vertices of the
+    // same nodes in different places, and are no corner mates.
+    let mut m = Model::new();
+    let wire = ogeom_algo::make_polygon(
+        &mut m,
+        &[
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(20.0, 0.0, 0.0),
+            Point::new(20.0, 20.0, 0.0),
+            Point::new(0.0, 20.0, 0.0),
+        ],
+        true,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let plane = ogeom_geom::PlaneSurface::over(
+        ogeom_math::Plane::through(Point::new(0.0, 0.0, 0.0), Direction::Z),
+        (-100.0, 100.0),
+        (-100.0, 100.0),
+    )
+    .unwrap();
+    let face = ogeom_algo::make_face(&mut m, plane.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    let plate = ogeom_algo::make_prism(&mut m, &face, ogeom_math::Vector::new(0.0, 0.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let all = explore_unique(&m, &plate, ShapeType::Edge).unwrap();
+    let r = largest_fillet_radius_all(&m, &plate, &all, 10.0, T)
+        .unwrap()
+        .unwrap();
+    assert!((1.0 - 1e-6..=1.0).contains(&r), "largest radius {r}");
+    builds_at_and_refused_past(&m, &plate, &all, r);
+}
+
+#[test]
 fn a_cone_rim_rounds_at_most_where_its_wall_ends() {
     // A frustum of radii 6 and 5, 2 high: the wall's generator is √5
     // long, and the rim's faces turn by acos(1/√5), so the wall's contact
