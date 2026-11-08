@@ -572,6 +572,31 @@ impl RevolutionSurface {
         })
     }
 
+    /// Revolve `curve` about `axis` over the angles `range`, which may
+    /// start anywhere: the point at angle `u` is the curve turned by `u`, as
+    /// for [`RevolutionSurface::new`], so a wider range sweeps the same
+    /// surface further either way, its parameters kept.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the range
+    /// is not finite, empty, or spans more than a full turn.
+    pub fn over(curve: Curve, axis: Axis, range: (f64, f64)) -> OgeomResult<Self> {
+        let (a0, a1) = range;
+        let sweep = a1 - a0;
+        if !a0.is_finite() || !a1.is_finite() || sweep <= 0.0 || sweep > TAU + 1e-12 {
+            ogeom_bail!(
+                Construction,
+                "revolution range [{a0}, {a1}] must sweep (0, 2*pi]"
+            );
+        }
+        Ok(Self {
+            curve,
+            axis,
+            angle: (a0, a0 + sweep.min(TAU)),
+        })
+    }
+
     /// The generating curve.
     #[must_use]
     pub const fn curve(&self) -> &Curve {
@@ -893,7 +918,7 @@ impl OffsetSurface {
         let curve = CircleCurve::new(ogeom_math::Circle::new(frame, radius, tol)?);
         let angle = r.domain().0;
         Ok(Some(
-            RevolutionSurface::new(curve.into(), axis, angle.1 - angle.0)?.into(),
+            RevolutionSurface::over(curve.into(), axis, angle)?.into(),
         ))
     }
 }

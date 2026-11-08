@@ -16,7 +16,8 @@
 //! families are opened by, and past a side of the chart the face reaches
 //! by continuing the surface there as itself (a B-spline's end spans
 //! continued as their own polynomials, an extrusion along its direction
-//! and along its profile's continuation). Only the part over the face's
+//! and along its profile's continuation, a revolution swept further about
+//! its axis and along its profile's). Only the part over the face's
 //! own window is kept by the trim; the continuation says where the corner
 //! falls.
 
@@ -66,23 +67,42 @@ pub(crate) fn moved_free_form(
     let own = face_window(model, face, surface, data.natural_restriction, tol)?;
     crate::thick::folds_within(base, total, amount, own, tol)?;
 
-    let (opened, window) = opened(base, own, reach, tol)?;
-    let moved_at = |u: f64, v: f64| -> OgeomResult<Option<Point>> {
-        let p = opened.point_at(u, v, tol)?;
-        Ok(limit_normal(&opened, u, v, total, tol)?.map(|n| p + n * total))
-    };
     let target = tol.approximation();
     let bound = crate::thick::fit_bound(data.tolerance.get(), amount, tol);
-    let (fitted, _, worst) = crate::thick::fitted_parallel(
-        &opened,
-        &opened,
-        &moved_at,
-        window,
-        amount,
-        (target, bound),
-        tol,
-    )?;
-    Ok((fitted, worst))
+    // The continuation is kept only as far as its parallel holds: where a
+    // continued surface folds within the reach (a profile curling in onto
+    // its axis) or its parallel does not fit, the reach is halved, down to
+    // the distance itself (a square corner's mitre stands that far past
+    // the face), and past that the face's own window is fitted alone.
+    let mut reach = reach;
+    loop {
+        let (opened, window) = if reach >= amount.abs() {
+            opened(base, own, reach, tol)?
+        } else {
+            (base.clone(), own)
+        };
+        let moved_at = |u: f64, v: f64| -> OgeomResult<Option<Point>> {
+            let p = opened.point_at(u, v, tol)?;
+            Ok(limit_normal(&opened, u, v, total, tol)?.map(|n| p + n * total))
+        };
+        let fitted =
+            crate::thick::folds_within(&opened, total, amount, window, tol).and_then(|()| {
+                crate::thick::fitted_parallel(
+                    &opened,
+                    &opened,
+                    &moved_at,
+                    window,
+                    amount,
+                    (target, bound),
+                    tol,
+                )
+            });
+        match fitted {
+            Ok((fitted, _, worst)) => return Ok((fitted, worst)),
+            Err(e) if reach < amount.abs() => return Err(e),
+            Err(_) => reach *= 0.5,
+        }
+    }
 }
 
 /// The unit normal of `surface` at `(u, v)`, or where the chart is
@@ -335,7 +355,9 @@ fn opened(
 /// `surface` continued past one side of its chart by `length` in space,
 /// its chart kept where it was: a B-spline's end spans continued as their
 /// own polynomials, an extrusion along its direction or along its
-/// B-spline profile's continuation, a revolution along its profile's;
+/// profile's continuation, a revolution swept further about its axis or
+/// along its profile's continuation. A profile continues as a B-spline's
+/// end span or as an analytic curve's own formula ([`Curve::widened`]).
 /// `None` for a side no such continuation exists for.
 fn continued(
     surface: &SurfaceGeometry,
@@ -352,6 +374,21 @@ fn continued(
                 b.degree(),
                 tol,
             )?))),
+            other if !other.is_periodic() => {
+                // An analytic profile runs on as its own formula: the span
+                // the length asks for is read at the end's speed.
+                let (lo, hi) = other.domain();
+                let speed = other.d1_at(if at_end { hi } else { lo }, tol)?.magnitude();
+                if speed <= tol.confusion() {
+                    return Ok(None);
+                }
+                let span = length / speed;
+                Ok(other.widened(if at_end {
+                    (lo, hi + span)
+                } else {
+                    (lo - span, hi)
+                }))
+            }
             _ => Ok(None),
         }
     };
@@ -385,19 +422,40 @@ fn continued(
             }
         }
         SurfaceGeometry::Revolution(r) if !along_u => {
-            let ((a0, a1), _) = surface.domain();
-            match profile(r.curve())? {
-                Some(c) => {
-                    let longer = ogeom_geom::RevolutionSurface::new(c, r.axis(), a1 - a0)?;
-                    let same_turn = {
-                        use ogeom_geom::Surface as _;
-                        let ((b0, b1), _) = longer.domain();
-                        (b0 - a0).abs() <= tol.parametric() && (b1 - a1).abs() <= tol.parametric()
-                    };
-                    same_turn.then(|| SurfaceGeometry::Revolution(Box::new(longer)))
-                }
-                None => None,
+            let (angles, _) = surface.domain();
+            profile(r.curve())?
+                .map(|c| {
+                    ogeom_geom::RevolutionSurface::over(c, r.axis(), angles)
+                        .map(|s| SurfaceGeometry::Revolution(Box::new(s)))
+                })
+                .transpose()?
+        }
+        SurfaceGeometry::Revolution(r) => {
+            // Swept further about the axis, its angles kept. The turn the
+            // length asks for is read at the profile's widest reach from
+            // the axis, the least turn that covers the length anywhere,
+            // and the sweep stays short of closing on itself: each side
+            // takes at most half the turn left.
+            let ((a0, a1), (c0, c1)) = surface.domain();
+            let mut widest: f64 = 0.0;
+            for k in 0..=SAMPLES {
+                let t = c0 + (c1 - c0) * f64::from(k) / f64::from(SAMPLES);
+                let p = r.curve().point_at(t, tol)?;
+                widest = widest.max(p.distance(r.axis().project(p)));
             }
+            let left = (core::f64::consts::TAU - (a1 - a0)) * 0.5;
+            if widest <= tol.confusion() || left <= tol.angular() {
+                return Ok(None);
+            }
+            let turn = (length / widest).min(left);
+            let angles = if at_end {
+                (a0, a1 + turn)
+            } else {
+                (a0 - turn, a1)
+            };
+            Some(SurfaceGeometry::Revolution(Box::new(
+                ogeom_geom::RevolutionSurface::over(r.curve().clone(), r.axis(), angles)?,
+            )))
         }
         _ => None,
     })

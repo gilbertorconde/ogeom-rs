@@ -47,6 +47,28 @@ bump may break the API and a patch bump may not.
   two and shifted, every pcurve is kept (the box 24, 12 before, 12 derived),
   the solid valid at eight times the volume.
 
+- **`offset_shape` runs a free-form face on past a revolution's angles and
+  an analytic profile's ends.** (Part of #710)
+  - A moved neighbour that met a free-form face past a side its surface
+    could not be continued across was refused ("the moved faces no longer
+    meet at a corner they shared"). That covered the angle sides of a
+    partial revolution, and the profile ends of an extrusion or revolution
+    whose profile is a line, a parabola, a hyperbola branch, a helix or a
+    trim of one.
+  - A revolution now sweeps further about its axis over the same angles
+    (`RevolutionSurface::over`), each side by at most half the turn left.
+    An analytic profile runs on as its own formula (`Curve::widened`),
+    the same points at the same parameters, unless its parameters mirror
+    across its domain.
+  - The continuation is kept only as far as its parallel holds. Where it
+    folds within the reach, or its parallel does not fit (a profile run on
+    onto its axis), the reach is halved down to the offset distance, and
+    past that the face's own window is fitted alone.
+  - A quarter turn of a ring with a cubic B-spline bulge, grown by 0.3, is
+    valid. The bulge's exact parallel lies on it at the middle angle and
+    where it meets each moved end cap, past the old angles. Shrunk back by
+    0.3, it returns 7.5861386 against 7.5861384.
+
 - **`fillet_edges_with` rounds each edge of a request at its own
   radius.** (#713)
   - With one radius on every edge it is `fillet_edges`, bit for bit.
