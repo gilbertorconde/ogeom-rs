@@ -1215,8 +1215,17 @@ edge's line, where over the whole crease the ball rests on that edge \
 alone, its contact moving one way along it, touches the face within it, \
 comes within its radius of no other face and its sections do not cross \
 (an end face meeting the far edge's end, touched there by the end ball, \
-is clear of every ball); a ball that would reach the far edge of a face \
-beyond the strip (the lower step of a staircase) is refused by name. \
+is clear of every ball). Where a ball on that edge comes within its \
+radius of the faces beyond it, and the strips beyond the narrow face are \
+planes whose far edges run parallel to the edge over its whole length, \
+ending on faces square to it, the ball may rest on the far edge of a strip \
+beyond (a wall on a staircase with a deep drop past its lower step): the \
+round is the cylinder about the line its centre runs on, and the fill is \
+the prism of one section fused on, the strips it reaches over going into \
+it. Past a concave far edge the ball may touch the plane face the strips \
+run into instead (a flat in an inside corner, a staircase coming down on \
+a floor): the round is the cylinder a radius off that face and the \
+touched one, the strips between going into the fill. \
 Where the ball changes what it holds partway, the round is a chain of \
 such bands meeting tangent on the section where the ball holds three \
 things at once, each piece the ball's holding a face on each side (the \

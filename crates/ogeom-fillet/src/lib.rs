@@ -25,6 +25,7 @@ mod rolled;
 mod ruled;
 pub mod sheet;
 mod sheet_curved;
+mod stepped;
 mod support;
 mod turned_pole;
 

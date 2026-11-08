@@ -215,21 +215,29 @@ fused, a triangle face whose apex stands under the setback). Where the
 face is a planar strip whose far edge turns the same way as the edge
 (convex both: a chamfer, a narrow top), the ball rolls between the faces
 either side of the strip and, where the strip lies wholly in the corner
-it takes off, the strip goes with the corner (`consumed.rs`). Owed there:
-the concave mirror (a flat in an inside corner), whose fill's caps need
-the solid past the strip's ends read as open, and ends not square to the
-edge. Where the far edge turns the other way (a concave seam where two
+it takes off, the strip goes with the corner (`consumed.rs`). The concave
+mirror (a flat in an inside corner) rounds where the strips are planes
+whose edges run parallel to the seam over its length and end on faces
+square to it: the ball touches the faces either side, and the fill is the
+prism of one section over the strips (`stepped.rs`). Owed there: ends not
+square to the edge, on both sides. Where the far edge turns the other way (a concave seam where two
 solids are fused at a slant), the ball touches the other face and rests
 on the far edge, its centre on the ellipse where the plane a radius off
 that face meets the cylinder a radius about the edge, and where it rests
 on that edge alone over the whole crease the round is the band through
 its arcs (`rolled.rs`); an end face meeting the far edge's end, touched
 there by the end ball, lies behind the plane through that contact square
-to the ball's radius and is clear of every ball. Owed there: a ball that
-reaches the far edge of a face beyond the strip as well (a wall on a
-staircase whose lower step comes within the radius, #720), whose round
-holds an edge of a face the seam does not bound and consumes the faces
-between. Where the ball changes what it holds along the
+to the ball's radius and is clear of every ball. Where the ball reaches
+the far edge of a strip beyond the narrow face (a wall on a staircase with
+a deep drop past its lower step, #720), and every strip between is a plane
+whose far edge runs parallel to the seam over its length, ending on faces
+square to it, the round is the cylinder about its centre's line and the
+fill the prism of one section fused on over the strips (`stepped.rs`).
+A ball that comes down on the plane face the strips run into (the floor
+under a shallow staircase) touches it and the face it touches, the steps
+going into the fill. Owed there: such holds where the strips' edges are
+not parallel to the seam, which needs the ellipse pieces of `carried.rs`
+held on edges and faces the seam does not bound. Where the ball changes what it holds along the
 crease, the round is a chain of bands meeting tangent where it holds
 three things at once (`carried.rs`): a face on each side (the cylinder
 between the planes), a face and the other face's edge (the ellipse), or a

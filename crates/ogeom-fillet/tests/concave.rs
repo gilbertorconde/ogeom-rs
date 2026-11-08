@@ -1317,3 +1317,268 @@ fn a_round_rolls_on_the_upper_far_edge_of_a_staircase() {
         }
     }
 }
+
+/// A wall on two stair steps, each 1 high and 1 deep, the drop past the
+/// lower one running 6 down to the floor: rounded at radius 6, the ball
+/// touching the wall clears the upper step's far edge (9, 7) and rests on
+/// the lower one's (10, 6), its centre on the line `x = 14`,
+/// `z = 6 + sqrt(20)`. The round is the cylinder about it, reaching over
+/// both steps: the fill is the section from the seam to the touch on the
+/// wall, the arc to the lower edge, and back over the steps, less nothing
+/// of the solid.
+#[test]
+fn a_round_rests_on_the_lower_far_edge_of_a_staircase() {
+    let block = |model: &mut ogeom_topo::Model, x: f64, z: f64, w: f64, h: f64| {
+        let at = Frame::new(
+            Point::new(x, 0.0, z),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        ogeom_algo::make_box(model, at, (w, 20.0, h), T)
+            .unwrap()
+            .shape
+    };
+    let radius = 6.0;
+    let mut model = ogeom_topo::Model::new();
+    let mut solid = block(&mut model, 0.0, -5.0, 30.0, 5.0);
+    for (w, h) in [(10.0, 6.0), (9.0, 7.0), (8.0, 20.0)] {
+        let part = block(&mut model, 0.0, 0.0, w, h);
+        solid = ogeom_bool::fuse(&mut model, &solid, &part, T)
+            .unwrap()
+            .shape;
+    }
+    let foot = explore(&model, &solid, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(&model, e).unwrap().unwrap();
+            [a, b].iter().all(|v| {
+                let p = model
+                    .node(v)
+                    .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                    .unwrap();
+                (p.x - 8.0).abs() < 1e-9 && (p.z - 7.0).abs() < 1e-9
+            })
+        })
+        .expect("the wall's foot on the upper step");
+    let before = volume(&model, &solid);
+    let rounded = ogeom_fillet::fillet_edge(&mut model, &solid, &foot, radius, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    // The section: the seam (8, 7), the touch (8, cz), the contact (10, 6),
+    // then (9, 6) and (9, 7) back over the steps; less the segment the arc
+    // cuts off the chord from the touch to the contact.
+    let (cx, cz) = (14.0, 6.0 + 20.0f64.sqrt());
+    let ring = [(8.0, 7.0), (8.0, cz), (10.0, 6.0), (9.0, 6.0), (9.0, 7.0)];
+    let polygon = (0..ring.len())
+        .map(|i| {
+            let (p, q) = (ring[i], ring[(i + 1) % ring.len()]);
+            p.0 * q.1 - q.0 * p.1
+        })
+        .sum::<f64>()
+        .abs()
+        / 2.0;
+    let angle = (((8.0 - cx) * (10.0 - cx) + (cz - cz) * (6.0 - cz)) / (radius * radius)).acos();
+    let segment = radius * radius * (angle - angle.sin()) / 2.0;
+    let want = (polygon - segment) * 20.0;
+    let got = volume(&model, &rounded.shape) - before;
+    eprintln!("stepped round added {got} against {want}");
+    assert!(
+        (got - want).abs() <= want * 1e-6,
+        "the round added {got} against {want}"
+    );
+    // The round is the cylinder about the centre line, and every ball
+    // stands clear of the result.
+    let cylinder = rounded.history.generated(&foot).iter().any(|f| {
+        let data = model.node(f).unwrap().data().as_face().unwrap();
+        matches!(
+            model.geometry().surface(data.surface),
+            Some(ogeom_geom::SurfaceGeometry::Cylinder(c))
+                if (c.cylinder().radius() - radius).abs() < 1e-12
+        )
+    });
+    assert!(cylinder, "the round is not the cylinder of its radius");
+    let boundary = ogeom_algo::PointDistance::of(&model, &rounded.shape, T).unwrap();
+    for k in 0..=40 {
+        let c = Point::new(cx, 20.0 * f64::from(k) / 40.0, cz);
+        let (d, _) = boundary.nearest(c, T).unwrap();
+        assert!(d >= radius - 1e-9, "a ball at {c:?} is {d} from the solid");
+    }
+    // With the floor just under the lower step, the ball comes down on the
+    // floor instead.
+    a_round_over_a_staircase_comes_down_on_the_floor();
+}
+
+/// The staircase of `a_round_rolls_on_the_upper_far_edge_of_a_staircase`
+/// with its floor 1 under the lower step, rounded at radius 6: the ball
+/// touching the wall and resting on the lower step's far edge would stand
+/// `1 + sqrt(20) - 6` short of a radius over the floor. The ball comes
+/// down on the floor instead, touching the wall and the floor, its centre
+/// at (14, 11), clear of both steps' far edges by `sqrt(41) - 6`: the
+/// round is the cylinder about that line, and both steps go into its
+/// fill.
+fn a_round_over_a_staircase_comes_down_on_the_floor() {
+    let block = |model: &mut ogeom_topo::Model, x: f64, z: f64, w: f64, h: f64| {
+        let at = Frame::new(
+            Point::new(x, 0.0, z),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        ogeom_algo::make_box(model, at, (w, 20.0, h), T)
+            .unwrap()
+            .shape
+    };
+    let radius = 6.0;
+    let mut model = ogeom_topo::Model::new();
+    let mut solid = block(&mut model, 0.0, 0.0, 30.0, 5.0);
+    for (w, h) in [(10.0, 1.0), (9.0, 2.0), (8.0, 15.0)] {
+        let part = block(&mut model, 0.0, 5.0, w, h);
+        solid = ogeom_bool::fuse(&mut model, &solid, &part, T)
+            .unwrap()
+            .shape;
+    }
+    let foot = explore(&model, &solid, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(&model, e).unwrap().unwrap();
+            [a, b].iter().all(|v| {
+                let p = model
+                    .node(v)
+                    .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                    .unwrap();
+                (p.x - 8.0).abs() < 1e-9 && (p.z - 7.0).abs() < 1e-9
+            })
+        })
+        .expect("the wall's foot on the upper step");
+    let before = volume(&model, &solid);
+    let rounded = ogeom_fillet::fillet_edge(&mut model, &solid, &foot, radius, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    // The section: the seam (8, 7), the touch on the wall (8, 11), the
+    // touch on the floor (14, 5), and back over the steps; less the
+    // quarter disc's segment the arc cuts off the chord.
+    let ring = [
+        (8.0, 7.0),
+        (8.0, 11.0),
+        (14.0, 5.0),
+        (10.0, 5.0),
+        (10.0, 6.0),
+        (9.0, 6.0),
+        (9.0, 7.0),
+    ];
+    let polygon = (0..ring.len())
+        .map(|i| {
+            let (p, q) = (ring[i], ring[(i + 1) % ring.len()]);
+            p.0 * q.1 - q.0 * p.1
+        })
+        .sum::<f64>()
+        .abs()
+        / 2.0;
+    let segment = radius * radius * (core::f64::consts::FRAC_PI_2 - 1.0) / 2.0;
+    let want = (polygon - segment) * 20.0;
+    let got = volume(&model, &rounded.shape) - before;
+    eprintln!("the round down on the floor added {got} against {want}");
+    assert!(
+        (got - want).abs() <= want * 1e-6,
+        "the round added {got} against {want}"
+    );
+}
+
+#[test]
+fn a_round_takes_a_flat_in_an_inside_corner_into_its_fill() {
+    use ogeom_geom::{Curve, Curve3d as _, LineCurve, PlaneSurface};
+    let (radius, a, length) = (2.0, 0.5, 20.0);
+    let mut model = ogeom_topo::Model::new();
+    let slab = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, length, 2.0), T)
+        .unwrap()
+        .shape;
+    let wall = ogeom_algo::make_box(&mut model, Frame::WORLD, (2.0, length, 10.0), T)
+        .unwrap()
+        .shape;
+    let mut solid = ogeom_bool::fuse(&mut model, &slab, &wall, T).unwrap().shape;
+    // The flat's wedge: the triangle (2, 2), (2 + a, 2), (2, 2 + a) in the
+    // plane y = 0, swept along y.
+    let corners = [
+        Point::new(2.0, 0.0, 2.0),
+        Point::new(2.0 + a, 0.0, 2.0),
+        Point::new(2.0, 0.0, 2.0 + a),
+    ];
+    let v: Vec<_> = corners
+        .iter()
+        .map(|p| ogeom_algo::make_vertex(&mut model, *p).shape)
+        .collect();
+    let edges: Vec<_> = (0..3)
+        .map(|i| {
+            let (p, q) = (corners[i], corners[(i + 1) % 3]);
+            let line: Curve = LineCurve::segment(p, q, T).unwrap().into();
+            let range = line.domain();
+            ogeom_algo::make_edge_between(&mut model, line, range, &v[i], &v[(i + 1) % 3], T)
+                .unwrap()
+                .shape
+        })
+        .collect();
+    let wire = ogeom_algo::make_wire(&mut model, &edges, T).unwrap().shape;
+    let plane = ogeom_math::Plane::new(
+        Frame::new(
+            Point::ORIGIN,
+            -ogeom_math::Direction::Y,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap(),
+    );
+    let surface = PlaneSurface::over(plane, (-20.0, 20.0), (-20.0, 20.0)).unwrap();
+    let face = ogeom_algo::make_face(&mut model, surface.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    let wedge = ogeom_algo::make_prism(
+        &mut model,
+        &face,
+        ogeom_math::Vector::new(0.0, length, 0.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    solid = ogeom_bool::fuse(&mut model, &solid, &wedge, T)
+        .unwrap()
+        .shape;
+    let foot = explore(&model, &solid, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let (p, q) = ogeom_algo::edge_vertices(&model, e).unwrap().unwrap();
+            [p, q].iter().all(|v| {
+                let p = model
+                    .node(v)
+                    .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                    .unwrap();
+                (p.x - (2.0 + a)).abs() < 1e-9 && (p.z - 2.0).abs() < 1e-9
+            })
+        })
+        .expect("the flat's edge on the floor");
+    let before = volume(&model, &solid);
+    let rounded = ogeom_fillet::fillet_edge(&mut model, &solid, &foot, radius, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let want = (radius * radius * (1.0 - core::f64::consts::PI / 4.0) - a * a / 2.0) * length;
+    let got = volume(&model, &rounded.shape) - before;
+    eprintln!("the flat's round added {got} against {want}");
+    assert!(
+        (got - want).abs() <= want * 1e-6,
+        "the round added {got} against {want}"
+    );
+    let cylinder = rounded.history.generated(&foot).iter().any(|f| {
+        let data = model.node(f).unwrap().data().as_face().unwrap();
+        matches!(
+            model.geometry().surface(data.surface),
+            Some(ogeom_geom::SurfaceGeometry::Cylinder(c))
+                if (c.cylinder().radius() - radius).abs() < 1e-12
+        )
+    });
+    assert!(cylinder, "the round is not the cylinder of its radius");
+}

@@ -13,6 +13,31 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A concave round rests on what lies beyond the narrow face beside it:
+  the far edge of a strip further on, or the face the strips run into.**
+  (Part of #720)
+  - The ball touching one face of a concave straight seam was refused
+    where it could not touch the narrow face beside the seam or rest on
+    its far edge. That covered a wall on a staircase ("the ball comes
+    within its radius of another face") and a flat in an inside corner
+    ("sets back ... across a face that does not reach so far").
+  - The strips beyond are now walked far edge to far edge. Each must be a
+    plane whose far edge runs parallel to the seam over its whole length,
+    with the crease ending on faces square to it. The ball rests on a
+    convex far edge, or past a concave one touches the plane face beyond,
+    wherever it is clear of every face all along.
+  - Its centre runs on a line, so the round is exactly the cylinder of the
+    radius about it. The fill is the prism of one section: from the seam
+    to the touch, the arc, and back over the strips. Fused on, the strips
+    it reaches over go into it.
+  - A wall on two 1 x 1 steps with a 6 deep drop, at r 6, rests on the
+    lower step's far edge: it adds 34.98615499551 against the closed form
+    34.98615499551.
+  - The issue's staircase, its floor 1 under the lower step, at r 6, comes
+    down on the floor: 94.513322353837 against 94.513322353837.
+  - An inside corner with a 0.5 flat, at r 2, takes the flat in:
+    14.668146928204 against 14.668146928204.
+
 - **Chamfers bevel a rim where a cone meets its cap, in all three
   spellings.** (#711)
   - The wall's leg runs its distance along the cone's slant, and the bevel is
