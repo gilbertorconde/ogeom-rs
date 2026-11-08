@@ -12,8 +12,9 @@
 //! other face. All three end in the same wedge subtraction.
 //!
 //! Two seats per spelling. A straight edge between planes takes the
-//! triangular prism above; the circular rim where a cylindrical wall meets a
-//! perpendicular planar cap takes a revolved wedge whose bevel is a *cone*:
+//! triangular prism above; the circular rim where a coaxial cylinder or cone
+//! meets a perpendicular planar cap takes a revolved wedge whose bevel is a
+//! *cone*, its leg on a cone's wall running along the slant:
 //! the same flanks the rim fillet builds, with the quarter-tube exchanged
 //! for the slant, and the same melt taking the legs away.
 
@@ -382,8 +383,8 @@ fn chamfer_edges_with_own(
     Ok(built)
 }
 
-/// The seat of a rim's bevel: a revolved seat whose wall is a cylinder. A
-/// cone's wall meets the cap at a slant the bevel's legs do not follow.
+/// The seat of a rim's bevel: a revolved seat, its wall a cylinder or a
+/// cone.
 fn rim_seat(
     model: &Model,
     solid: &Shape,
@@ -391,15 +392,27 @@ fn rim_seat(
     rim: &ogeom_geom::CircleCurve,
     tol: Tolerances,
 ) -> OgeomResult<RevolvedSeat> {
-    let seat = revolved_seat(model, solid, edge, rim, tol)?;
-    if seat.slope != 0.0 {
-        ogeom_bail!(
-            Construction,
-            "the rim meets a face that is neither plane nor cylinder; that \
-             seat needs the marching blend machinery"
-        );
+    revolved_seat(model, solid, edge, rim, tol)
+}
+
+/// How far along the axis a leg of `on_wall` down the wall's ruling
+/// reaches: the leg itself on a cylinder, its run along the slant on a
+/// cone.
+fn wall_depth(seat: &RevolvedSeat, on_wall: f64) -> f64 {
+    if seat.slope == 0.0 {
+        on_wall
+    } else {
+        on_wall / seat.slope.hypot(1.0)
     }
-    Ok(seat)
+}
+
+/// The angle at the rim between the cap's leg and the wall's, in the
+/// rim's section: square on a cylinder, and on a cone the cone's lean
+/// from it, obtuse where the wall leans out under the cap.
+fn rim_corner(seat: &RevolvedSeat) -> f64 {
+    // In the section, the cap's leg runs `-sigma tau` radially and the
+    // wall's runs `(-slope tau, -tau)`, both from the rim.
+    (seat.sigma * seat.slope / seat.slope.hypot(1.0)).acos()
 }
 
 /// The wedge one chamfer cuts, built on `solid` as it stands.
@@ -502,6 +515,12 @@ pub fn largest_chamfer_distance(
             if inward > 0.0 {
                 largest = largest.min((seat.radius - 2.0 * conf) / inward);
             }
+            // A cone's wall leg ends at the radius the wall has a depth
+            // down, which narrows toward the apex with the measure.
+            let narrowing = seat.slope * seat.tau * wall_depth(&seat, on_wall);
+            if narrowing > 0.0 {
+                largest = largest.min((seat.radius - 2.0 * conf) / narrowing);
+            }
             let per = |face: &Shape| {
                 if face.is_same(&seat.wall_face) {
                     on_wall
@@ -525,7 +544,8 @@ pub(crate) enum Legs {
     /// A straight edge between planes, its legs along the seat's faces in
     /// order.
     Straight(Seat, [f64; 2]),
-    /// A rim on a cylinder: its legs down the wall and in along the cap.
+    /// A rim on a cylinder or a cone: its legs down the wall and in along the
+    /// cap.
     Rim(RevolvedSeat, f64, f64),
 }
 
@@ -606,18 +626,30 @@ pub(crate) fn legs(
                     Ok(Legs::Straight(seat, distances))
                 }
                 SeatKind::Rim(rim) => {
-                    // The rim's seat is square by construction (the cap is
-                    // perpendicular to the wall), so the derived distance is
-                    // the plain tangent, and past a right angle the bevel
-                    // walks away from the other face instead of toward it.
-                    if angle >= core::f64::consts::FRAC_PI_2 - tol.angular() {
+                    // In the rim's section the legs make the triangle with
+                    // the bevel: `angle` at the named face's contact and the
+                    // corner's own angle at the rim. A cylinder's seat is
+                    // square, the derived distance the plain tangent; past
+                    // the two angles' sum of a half turn the bevel walks
+                    // away from the other face instead of toward it.
+                    let seat = rim_seat(model, solid, edge, &rim, tol)?;
+                    let corner = rim_corner(&seat);
+                    let past = if seat.slope == 0.0 {
+                        angle >= core::f64::consts::FRAC_PI_2 - tol.angular()
+                    } else {
+                        angle + corner >= core::f64::consts::PI - tol.angular()
+                    };
+                    if past {
                         ogeom_bail!(
                             Construction,
                             "the bevel at that angle never meets the edge's other face"
                         );
                     }
-                    let seat = rim_seat(model, solid, edge, &rim, tol)?;
-                    let derived = distance * angle.tan();
+                    let derived = if seat.slope == 0.0 {
+                        distance * angle.tan()
+                    } else {
+                        distance * angle.sin() / (angle + corner).sin()
+                    };
                     let (on_wall, on_cap) = revolved_side(&seat, face, distance, derived)?;
                     Ok(Legs::Rim(seat, on_wall, on_cap))
                 }
@@ -704,8 +736,8 @@ fn revolved_side(
 }
 
 /// The revolved wedge with the quarter-tube exchanged for a slant: legs
-/// `on_wall` axially down the wall and `on_cap` radially along the cap, and
-/// the cone between the two tangency rings as the bevel.
+/// `on_wall` down the wall along its ruling and `on_cap` radially along the
+/// cap, and the cone between the two tangency rings as the bevel.
 fn revolved_bevel(
     model: &mut Model,
     edge: &Shape,
@@ -728,29 +760,58 @@ fn revolved_bevel(
             seat.radius
         );
     }
-    if let Some((start, sweep)) = arc_span(model, edge, seat, tol)? {
-        return sector_bevel(model, seat, on_wall, cap_rho, start, sweep, tol);
+    // A cone's wall leg runs its distance along the slant, a depth down
+    // the axis, to the wall's radius there.
+    let depth = wall_depth(seat, on_wall);
+    let wall_rho = seat.radius_at(-seat.tau * depth);
+    if wall_rho <= tol.confusion() {
+        ogeom_bail!(
+            Construction,
+            "a chamfer of {on_wall} down the wall runs past the apex of its cone"
+        );
     }
-    let flanks = revolved_flanks(model, seat, on_wall, cap_rho, tol)?;
+    if let Some((start, sweep)) = arc_span(model, edge, seat, tol)? {
+        return sector_bevel(model, seat, depth, cap_rho, start, sweep, tol);
+    }
+    let flanks = revolved_flanks(model, seat, depth, cap_rho, tol)?;
 
     // The bevel: the cone through both tangency rings (reference radius
-    // `cap_rho` at the cap's level, the rim's radius a wall-depth below).
-    // Unlike the fillet's quarter-tube, whose away-from-the-tube normal
-    // tracks the wedge seat by seat, the cone's natural normal always points
-    // away from the axis, and the wedge sits on the axis side of the slant
-    // exactly when `sigma` and `tau` agree.
+    // `cap_rho` at the cap's level, the wall's radius a depth below), a
+    // cylinder where the two radii agree. Unlike the fillet's quarter-tube,
+    // whose away-from-the-tube normal tracks the wedge seat by seat, the
+    // cone's natural normal always points away from the axis, and the
+    // wedge sits on the axis side of the slant exactly when `sigma` and
+    // `tau` agree.
     let bevel_band = {
-        let slope = (cap_rho - seat.radius) / (seat.tau * on_wall);
-        let cone = Cone::new(seat.frame_at(seat.centre, tol)?, cap_rho, slope.atan(), tol)?;
+        let slope = (cap_rho - wall_rho) / (seat.tau * depth);
         // The domain covers the band's two rows (the cap ring at zero and
         // the wall ring a depth away) with a margin that stays clear of the
         // apex, where the surface degenerates.
         let rows = (
-            0.0_f64.min(-seat.tau * on_wall),
-            0.0_f64.max(-seat.tau * on_wall),
+            0.0_f64.min(-seat.tau * depth),
+            0.0_f64.max(-seat.tau * depth),
         );
-        let pad = 0.1 * on_wall;
-        let surface: SurfaceGeometry = ConeSurface::new(cone, (rows.0 - pad, rows.1 + pad))?.into();
+        let frame = seat.frame_at(seat.centre, tol)?;
+        let surface: SurfaceGeometry = if slope.atan().abs() <= tol.angular() {
+            let pad = 0.1 * depth;
+            ogeom_geom::CylinderSurface::new(
+                ogeom_math::Cylinder::new(frame, cap_rho, tol)?,
+                (rows.0 - pad, rows.1 + pad),
+            )?
+            .into()
+        } else {
+            // Beside a cone's wall the bevel's apex can come near its
+            // rows; the margin then stops halfway to it.
+            let pad = if seat.slope == 0.0 {
+                0.1 * depth
+            } else {
+                let apex = -cap_rho / slope;
+                let clear = (apex - rows.0).abs().min((apex - rows.1).abs());
+                (0.1 * depth).min(0.5 * clear)
+            };
+            let cone = Cone::new(frame, cap_rho, slope.atan(), tol)?;
+            ConeSurface::new(cone, (rows.0 - pad, rows.1 + pad))?.into()
+        };
         let band = make_revolution_band(model, &surface, &flanks.wall_ring, &flanks.cap_ring, tol)?;
         if seat.sigma * seat.tau > 0.0 {
             band.reversed()
@@ -817,7 +878,7 @@ fn arc_span(
 fn sector_bevel(
     model: &mut Model,
     seat: &RevolvedSeat,
-    on_wall: f64,
+    depth: f64,
     cap_rho: f64,
     start: f64,
     sweep: f64,
@@ -826,7 +887,12 @@ fn sector_bevel(
     let frame = seat.frame_at(seat.centre, tol)?;
     let radial = frame.x().vector() * start.cos() + frame.y().vector() * start.sin();
     let rim = seat.centre + radial * seat.radius;
-    let wall = rim - seat.up * (seat.tau * on_wall);
+    let wall = if seat.slope == 0.0 {
+        rim - seat.up * (seat.tau * depth)
+    } else {
+        let height = -seat.tau * depth;
+        seat.centre + seat.up * height + radial * seat.radius_at(height)
+    };
     let cap = seat.centre + radial * cap_rho;
     let across = seat.up.cross(radial);
     let profile = crate::support::planar_face(model, &[rim, wall, cap], across, tol)?;

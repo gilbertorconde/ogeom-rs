@@ -13,6 +13,17 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Chamfers bevel a rim where a cone meets its cap, in all three
+  spellings.** (#711)
+  - The wall's leg runs its distance along the cone's slant, and the bevel is
+    the cone (or the cylinder) through the two contact rings. `Angle` reads
+    the derived distance off the section's triangle, the corner's own angle
+    at the rim in place of a right angle.
+  - A frustum of radii 10 and 6, 10 high, has its top rim chamfered
+    `Symmetric(1)`. Its volume is the frustum's less the revolved triangle by
+    Pappus, 2035.62, within 1e-6. `Distances` and `Angle` likewise match
+    their own triangles.
+
 - **`chamfer_edges_cornered` closes a corner of three bevels with a facet.**
   (#717)
   - `ChamferCorner::Point` is `chamfer_edges_with`, the bevels mitred into
