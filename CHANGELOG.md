@@ -173,6 +173,22 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A drill lowered a micron under a plate top with its seam on its top
+  line now cuts.**
+  - `nist_ctc_03`'s plate-top drill lowered by 1e-6, its seam on the top
+    line, was refused ("the kept pieces did not close into a shell"). The
+    drum's section with the face across each wall's side ends a micron
+    under that face's corner and is read as the corner; its end in that
+    face's chart stood 1.000000001e-6 from the corner, a hair past the
+    face's node snap, dangled and was pruned.
+  - An exact section's end that the crossings read at an exact edge's end
+    vertex is now welded on its face at its own distance from the vertex,
+    that end alone: a sliver edge shorter than the weld still holds its
+    ends apart, as it does for a box tilted 5e-6 on another.
+  - The cut, the common and the drill less the part are valid and add up;
+    the common stands 7.8e-3 off the touching drill's, within the depth
+    times the drill's surface (0.20).
+
 - **A rim's round takes a narrow ring beside it off whole, as a straight
   edge's does.** (#719)
   - A chamfered or small-rounded rim of a boss, rounded larger, was refused:
@@ -231,8 +247,8 @@ bump may break the API and a patch bump may not.
   - Two sections through one face no longer cut each other where the other
     lies off its other face, beside a tight shared edge as beside a loose
     one: the round's cylinder meets the drum past the round's end too.
-  - Lowered by 2e-7 for every seam, and by 1e-6 with its seam on the top
-    line, the drill is still refused (see docs/PLAN.md).
+  - Lowered by 2e-7 the drill is still refused, for every seam (see
+    docs/PLAN.md).
 
 - **`fillet_edges` refuses overlapping bands on a plate built as a prism,
   as it does on the same plate built as a box.** (#721)
