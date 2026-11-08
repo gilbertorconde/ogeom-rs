@@ -390,3 +390,128 @@ fn a_chamfer_named_on_a_prism_s_far_end_face_is_refused() {
             .mass;
     assert!((lost - 0.5 * 1.0 / 2.0 * 20.0).abs() < 1e-9, "lost {lost}");
 }
+
+/// The faces of `shape` and whether each one's own check passes.
+fn faces_sound(model: &ogeom_topo::Model, shape: &ogeom_topo::Shape) {
+    let diagnosis = ogeom_algo::check(model, shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    for face in ogeom_topo::explore_unique(model, shape, ShapeType::Face).unwrap() {
+        let diagnosis = ogeom_algo::check(model, &face, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    }
+}
+
+/// Two bevels of 1.9 on the top and bottom edges of one 2 mm wall of a
+/// 20 x 20 x 2 plate cross on that wall: the wall is cut away and the two
+/// bevel planes meet in a ridge. The result is the plate less both
+/// wedges, whose cross-sections, the triangles of legs 1.9 at the top and
+/// bottom corners, share the triangle of base 1.8 on the wall and height
+/// 0.9 to the ridge: the plate loses 20 x (2 x 1.805 - 0.81). The plate
+/// built as a box or as a prism of a square answers alike, valid.
+#[test]
+fn bevels_crossing_on_a_thin_wall_cut_both_wedges() {
+    use ogeom_math::{Direction, Vector};
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-3,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let plate = |model: &mut ogeom_topo::Model, prism: bool| {
+        if !prism {
+            return ogeom_algo::make_box(model, Frame::WORLD, (20.0, 20.0, 2.0), T)
+                .unwrap()
+                .shape;
+        }
+        let wire = ogeom_algo::make_polygon(
+            model,
+            &[
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(20.0, 0.0, 0.0),
+                Point::new(20.0, 20.0, 0.0),
+                Point::new(0.0, 20.0, 0.0),
+            ],
+            true,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let plane = ogeom_geom::PlaneSurface::over(
+            ogeom_math::Plane::through(Point::ORIGIN, Direction::Z),
+            (-100.0, 100.0),
+            (-100.0, 100.0),
+        )
+        .unwrap();
+        let face = ogeom_algo::make_face(model, plane.into(), &[wire], T)
+            .unwrap()
+            .shape;
+        ogeom_algo::make_prism(model, &face, Vector::new(0.0, 0.0, 2.0), T)
+            .unwrap()
+            .shape
+    };
+    for prism in [false, true] {
+        let mut model = ogeom_topo::Model::new();
+        let part = plate(&mut model, prism);
+        let specs: Vec<_> = [2.0, 0.0]
+            .into_iter()
+            .map(|z: f64| {
+                let edge = ogeom_topo::explore_unique(&model, &part, ShapeType::Edge)
+                    .unwrap()
+                    .into_iter()
+                    .find(|e| {
+                        let b = ogeom_algo::shape_bounds(&model, e, T).unwrap();
+                        let c = b.centre().unwrap();
+                        c.y.abs() < 1e-6 && (c.z - z).abs() < 1e-6 && b.size().x > 19.0
+                    })
+                    .unwrap();
+                (edge, ogeom_fillet::Chamfer::Symmetric(1.9))
+            })
+            .collect();
+        let built = ogeom_fillet::chamfer_edges_with(&mut model, &part, &specs, T).unwrap();
+        faces_sound(&model, &built.shape);
+        let lost = 800.0
+            - ogeom_algo::volume_properties(&model, &built.shape, fine, T)
+                .unwrap()
+                .mass;
+        let exact = 20.0 * (2.0 * 1.9 * 1.9 / 2.0 - 1.8 * 0.9 / 2.0);
+        assert!(
+            (lost - exact).abs() < 1e-9,
+            "lost {lost} against {exact} (prism {prism})"
+        );
+    }
+}
+
+/// The two rims of a disc of radius 5 and thickness 2, both bevelled by
+/// 1.5, cross on its wall: each wedge's cross-section is the triangle of
+/// legs 1.5 at its corner, area 1.125 about radius 4.5, and the two share
+/// the triangle (4.5, 1), (5, 0.5), (5, 1.5), area 0.25 about radius
+/// 29/6. By Pappus the disc loses 2 pi (2 x 1.125 x 4.5 - 0.25 x 29/6),
+/// and the result is valid.
+#[test]
+fn rim_bevels_crossing_on_a_thin_drum_wall_cut_both_rings() {
+    use core::f64::consts::{PI, TAU};
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-4,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let mut model = ogeom_topo::Model::new();
+    let drum = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 2.0, T)
+        .unwrap()
+        .shape;
+    let specs: Vec<_> = ogeom_topo::explore_unique(&model, &drum, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| ogeom_algo::shape_bounds(&model, e, T).unwrap().size().z < 1e-6)
+        .map(|e| (e, ogeom_fillet::Chamfer::Symmetric(1.5)))
+        .collect();
+    assert_eq!(specs.len(), 2);
+    let built = ogeom_fillet::chamfer_edges_with(&mut model, &drum, &specs, T).unwrap();
+    faces_sound(&model, &built.shape);
+    let lost = PI * 25.0 * 2.0
+        - ogeom_algo::volume_properties(&model, &built.shape, fine, T)
+            .unwrap()
+            .mass;
+    let exact = TAU * (2.0 * 1.125 * 4.5 - 0.25 * 29.0 / 6.0);
+    assert!(
+        (lost - exact).abs() < 1e-6 * exact,
+        "lost {lost} against {exact}"
+    );
+}
