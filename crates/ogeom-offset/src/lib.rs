@@ -7,6 +7,7 @@ pub mod fill;
 mod fill_n;
 mod fill_patch;
 pub(crate) mod fixed;
+mod freeform;
 pub mod loft;
 pub mod middle;
 pub mod project;

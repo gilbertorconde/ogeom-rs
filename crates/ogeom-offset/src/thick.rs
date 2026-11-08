@@ -1229,7 +1229,7 @@ const FIT_SHARE: f64 = 1e-4;
 /// The most a fitted offset of a face may miss the exact offset by when
 /// refining cannot bring it within the approximation tolerance: the face's
 /// own tolerance or a share of the distance, whichever is larger.
-fn fit_bound(face_tolerance: f64, distance: f64, tol: Tolerances) -> f64 {
+pub(crate) fn fit_bound(face_tolerance: f64, distance: f64, tol: Tolerances) -> f64 {
     tol.approximation()
         .max(face_tolerance)
         .max(FIT_SHARE * distance.abs())
@@ -1260,27 +1260,7 @@ fn moved_surface(
         )
     };
 
-    // The fold: moved toward the side a surface curves to, by its radius
-    // of curvature or more, the parallel turns back on itself.
-    for i in 0..=PROBES {
-        for j in 0..=PROBES {
-            let (u, v) = probe(i, j);
-            let Some(curvatures) = principal_curvatures(base, u, v, tol)? else {
-                continue;
-            };
-            for k in curvatures {
-                if total * k >= 1.0 - 1e-9 {
-                    ogeom_bail!(
-                        Construction,
-                        "an offset of {distance} reaches past the face's \
-                         radius of curvature of {} at ({u}, {v}); the moved \
-                         face would fold over itself",
-                        1.0 / k.abs()
-                    );
-                }
-            }
-        }
-    }
+    folds_within(base, total, distance, face.window, tol)?;
 
     let moved_at = |u: f64, v: f64| -> OgeomResult<Option<Point>> {
         let p = face.surface.point_at(u, v, tol)?;
@@ -1321,7 +1301,72 @@ fn moved_surface(
         }
     }
 
-    let corners = chart_corners(base, face.window);
+    fitted_parallel(
+        &face.surface,
+        base,
+        &moved_at,
+        face.window,
+        distance,
+        (target, bound),
+        tol,
+    )
+}
+
+/// Refuse a parallel at signed distance `total` from `base` that folds
+/// over itself somewhere in `window`: moved toward the side a surface
+/// curves to by its radius of curvature or more.
+pub(crate) fn folds_within(
+    base: &SurfaceGeometry,
+    total: f64,
+    distance: f64,
+    ((u0, u1), (v0, v1)): ((f64, f64), (f64, f64)),
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    let probe = |i: i32, j: i32| {
+        (
+            u0 + (u1 - u0) * f64::from(i) / f64::from(PROBES),
+            v0 + (v1 - v0) * f64::from(j) / f64::from(PROBES),
+        )
+    };
+    for i in 0..=PROBES {
+        for j in 0..=PROBES {
+            let (u, v) = probe(i, j);
+            let Some(curvatures) = principal_curvatures(base, u, v, tol)? else {
+                continue;
+            };
+            for k in curvatures {
+                if total * k >= 1.0 - 1e-9 {
+                    ogeom_bail!(
+                        Construction,
+                        "an offset of {distance} reaches past the face's \
+                         radius of curvature of {} at ({u}, {v}); the moved \
+                         face would fold over itself",
+                        1.0 / k.abs()
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The parallel of `own` over `window` of its chart, fitted at the
+/// chart's own parameters to the points `moved_at` gives, refined until the
+/// points it was not fitted to (the cell centres and edge middles) agree
+/// within `target`, or the finest net is reached and the closest fit
+/// stands against `bound`. `base` is the surface whose knots the fit may
+/// turn at. Returns the fit and its measured deviation.
+pub(crate) fn fitted_parallel(
+    own: &SurfaceGeometry,
+    base: &SurfaceGeometry,
+    moved_at: &dyn Fn(f64, f64) -> OgeomResult<Option<Point>>,
+    window: ((f64, f64), (f64, f64)),
+    distance: f64,
+    (target, bound): (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<(SurfaceGeometry, bool, f64)> {
+    let ((u0, u1), (v0, v1)) = window;
+    let corners = chart_corners(base, window);
 
     // A fit at the chart's own parameters, refined until the points it was
     // not fitted to (the cell centres and edge middles) agree too, or the
@@ -1400,10 +1445,8 @@ fn moved_surface(
             for j in (0..=2 * n).step_by(2) {
                 for i in (0..=2 * n).step_by(2) {
                     let (u, v) = (at(i, u0, u1), at(j, v0, v1));
-                    let (Ok(a), Ok(b)) = (
-                        face.surface.normal_at(u, v, tol),
-                        surface.normal_at(u, v, tol),
-                    ) else {
+                    let (Ok(a), Ok(b)) = (own.normal_at(u, v, tol), surface.normal_at(u, v, tol))
+                    else {
                         continue;
                     };
                     if a.vector().dot(b.vector()) <= 0.0 {
