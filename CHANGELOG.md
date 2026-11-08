@@ -13,6 +13,17 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fillet_edges_with` rounds each edge of a request at its own
+  radius.** (#713)
+  - With one radius on every edge it is `fillet_edges`, bit for bit.
+  - Each band is checked against the others at its own radius. Two bands of
+    different radii turning at a vertex take the union of their cuts, in
+    either order: a box's top edges at 1 and 3 match the closed form to
+    1e-3. A stadium's top rim at 1 along its straights and 2 round its ends
+    steps its radius at the tangent junctions.
+  - Junctions and the corner tool are kept to bands of one radius. A corner
+    where three or more bands of different radii meet is refused rather
+    than left capped: closing it takes a patch between the bands' ends.
 - **A patch network that misses everywhere refines on as it finishes, so the
   clean filleted box corner meets 0.001 exactly tangent.** (#653)
   - Where every way of holding the corners missed and the near-tangent fit

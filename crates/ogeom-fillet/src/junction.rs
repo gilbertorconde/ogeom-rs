@@ -136,18 +136,18 @@ impl Junction {
 }
 
 /// The junctions among `edges` of `solid`, given the faces each lies
-/// between, the request's mates, and the radius: every pair of edges
-/// sharing an end vertex no third edge of the request ends at (a corner the
-/// corner tool speaks to), each leaving it along its mate's direction at
-/// its end nearer the vertex, where the meeting is exact. A pair whose
-/// junction cannot be read is no junction.
+/// between, the request's mates, and each edge's radius: every pair of
+/// edges of one radius sharing an end vertex no third edge of the request
+/// ends at (a corner the corner tool speaks to), each leaving it along its
+/// mate's direction at its end nearer the vertex, where the meeting is
+/// exact. A pair whose junction cannot be read is no junction.
 pub(crate) fn junctions(
     model: &Model,
     solid: &Shape,
     edges: &[Shape],
     hosts: &[Vec<Shape>],
     mates: &[Mate],
-    radius: f64,
+    radii: &[f64],
     tol: Tolerances,
 ) -> OgeomResult<Vec<Junction>> {
     let ends: Vec<Vec<Shape>> = edges
@@ -191,6 +191,10 @@ pub(crate) fn junctions(
     let mut found = Vec::new();
     for i in 0..edges.len() {
         for j in i + 1..edges.len() {
+            // Bands of two radii cross in no plane.
+            if radii[i] != radii[j] {
+                continue;
+            }
             for v in &ends[i] {
                 if !ends[j].iter().any(|w| w.is_same(v)) {
                     continue;
@@ -228,7 +232,7 @@ pub(crate) fn junctions(
                     [edges[i].clone(), edges[j].clone()],
                     (at, held),
                     [leaving_i, leaving_j],
-                    radius,
+                    radii[i],
                     tol,
                 ) {
                     found.push(junction);

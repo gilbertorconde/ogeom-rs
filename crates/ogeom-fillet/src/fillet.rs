@@ -422,26 +422,72 @@ pub fn fillet_edges(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    let radii = vec![radius; edges.len()];
     ogeom_algo::on_own_nodes(model, solid, edges, |model, solid, parts| {
-        fillet_edges_meeting(model, solid, parts, radius, tol)
+        fillet_edges_meeting(model, solid, parts, &radii, tol)
     })
 }
 
-/// [`fillet_edges`] on a shape every node below which is its own, its
+/// [`fillet_edges`] with a radius per edge.
+///
+/// With every radius the same, exactly [`fillet_edges`] at that radius.
+/// Each band is built at its own radius and checked against the others as
+/// [`fillet_edges`] checks them. Two edges of one radius meet as there.
+/// Two edges of different radii turning at a vertex are rounded in turn,
+/// the later band running on through the earlier and the cut trimming
+/// the two against each other along their own intersection. A tangent
+/// chain whose radius steps at a junction is rounded likewise, the later
+/// band's end standing against the earlier band.
+///
+/// # Errors
+///
+/// As [`fillet_edges`], and [`OgeomError::Construction`] where three or
+/// more of the edges meeting at a vertex do not share one radius: no ball
+/// rolls round such a corner, and closing it takes a patch between the
+/// bands' ends, which this does not build. An edge asked twice at two
+/// radii is refused likewise.
+pub fn fillet_edges_with(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let shapes: Vec<Shape> = edges.iter().map(|(edge, _)| edge.clone()).collect();
+    let radii: Vec<f64> = edges.iter().map(|&(_, radius)| radius).collect();
+    for (i, (edge, radius)) in edges.iter().enumerate() {
+        if !radius.is_finite() || *radius <= tol.confusion() {
+            ogeom_bail!(Construction, "a fillet of radius {radius} rounds nothing");
+        }
+        if edges[..i]
+            .iter()
+            .any(|(other, r)| other.is_same(edge) && r != radius)
+        {
+            ogeom_bail!(
+                Construction,
+                "an edge asked at two radii, {radius} and another, rounds neither"
+            );
+        }
+    }
+    ogeom_algo::on_own_nodes(model, solid, &shapes, |model, solid, parts| {
+        fillet_edges_meeting(model, solid, parts, &radii, tol)
+    })
+}
+
+/// [`fillet_edges_with`] on a shape every node below which is its own, its
 /// cone rims rounded exactly where that builds and fitted where it does
 /// not, as [`with_fitted_rims`] says.
 fn fillet_edges_meeting(
     model: &mut Model,
     solid: &Shape,
     edges: &[Shape],
-    radius: f64,
+    radii: &[f64],
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     with_fitted_rims(
         model,
         solid,
         edges,
-        |model, rims| fillet_edges_meeting_with(model, solid, edges, radius, rims, tol),
+        |model, rims| fillet_edges_meeting_with(model, solid, edges, radii, rims, tol),
         tol,
     )
 }
@@ -501,7 +547,7 @@ fn fillet_edges_meeting_with(
     model: &mut Model,
     solid: &Shape,
     edges: &[Shape],
-    radius: f64,
+    radii: &[f64],
     rims: Rims,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
@@ -518,7 +564,7 @@ fn fillet_edges_meeting_with(
         }
     }
     if !shared {
-        return fillet_edges_own(model, solid, edges, radius, None, rims, tol);
+        return fillet_edges_own(model, solid, edges, radii, None, rims, tol);
     }
     // What an attempt changes of the given solid where it stands: the
     // tolerances it widens, which the model's journal notes, and, once a
@@ -533,7 +579,7 @@ fn fillet_edges_meeting_with(
             crossed,
             ..Taken::default()
         };
-        match fillet_edges_own(model, solid, edges, radius, Some(&mut taken), rims, tol) {
+        match fillet_edges_own(model, solid, edges, radii, Some(&mut taken), rims, tol) {
             Ok(built) => {
                 model.keep_widened(mark);
                 return Ok(built);
@@ -566,7 +612,7 @@ fn fillet_edges_meeting_with(
             }
         }
     }
-    fillet_edges_own(model, solid, edges, radius, None, rims, tol)
+    fillet_edges_own(model, solid, edges, radii, None, rims, tol)
 }
 
 /// The checks a request's bands pass before any is built: each ball sits
@@ -583,7 +629,7 @@ pub(crate) fn request_fits(
     model: &Model,
     solid: &Shape,
     edges: &[Shape],
-    radius: f64,
+    radii: &[f64],
     tol: Tolerances,
 ) -> Result<Vec<bool>, crate::support::Blamed> {
     use crate::support::Blamed;
@@ -625,10 +671,10 @@ pub(crate) fn request_fits(
         // A band checked against no other is held to what one edge alone
         // is.
         for (i, edge) in edges.iter().enumerate() {
-            match crate::support::ball_fits(model, solid, edge, radius, !alone(i), tol) {
+            match crate::support::ball_fits(model, solid, edge, radii[i], !alone(i), tol) {
                 Ok(found) => contacts.push(found),
                 Err(refusal @ OgeomError::Construction(_)) if edges.len() > 1 && alone(i) => {
-                    if crate::rolled::rolled_run(model, solid, edge, radius, tol)
+                    if crate::rolled::rolled_run(model, solid, edge, radii[i], tol)
                         .map_err(blame(i))?
                         .is_none()
                     {
@@ -662,7 +708,7 @@ pub(crate) fn request_fits(
                     && other.is_some_and(|other| boxes[i].distance_to_box(&boxes[j]) < own + other)
             });
             if near {
-                contacts[i] = crate::support::ball_fits(model, solid, edge, radius, true, tol)
+                contacts[i] = crate::support::ball_fits(model, solid, edge, radii[i], true, tol)
                     .map_err(blame(i))?;
             }
         }
@@ -689,7 +735,7 @@ fn fillet_edges_own(
     model: &mut Model,
     solid: &Shape,
     edges: &[Shape],
-    radius: f64,
+    radii: &[f64],
     meeting: Option<&mut Taken>,
     cones: Rims,
     tol: Tolerances,
@@ -697,13 +743,15 @@ fn fillet_edges_own(
     if edges.is_empty() {
         ogeom_bail!(Construction, "a chain of no edges rounds nothing");
     }
-    let rolled = match request_fits(model, solid, edges, radius, tol) {
+    let rolled = match request_fits(model, solid, edges, radii, tol) {
         Ok(rolled) => rolled,
         // A request of one edge is that edge alone, a strip beside it taken
         // off whole as there.
         Err(crate::support::Blamed { error: refusal, .. }) => {
             return match edges {
-                [edge] if meeting.is_none() => consuming(model, solid, edge, radius, refusal, tol),
+                [edge] if meeting.is_none() => {
+                    consuming(model, solid, edge, radii[0], refusal, tol)
+                }
                 _ => Err(refusal),
             };
         }
@@ -711,45 +759,58 @@ fn fillet_edges_own(
     use ogeom_geom::Curve3d as _;
     // The vertices three or more of the chain's edges meet at: the corners
     // the ball rolls round, closed by the corner tool.
-    let mut corners: Vec<(Shape, usize)> = Vec::new();
-    for edge in edges {
+    // Each holds the radii of the edges ending there.
+    let mut corners: Vec<(Shape, Vec<f64>)> = Vec::new();
+    for (edge, &radius) in edges.iter().zip(radii) {
         let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
             continue;
         };
         for v in [a, b] {
             if let Some(slot) = corners.iter_mut().find(|(held, _)| held.is_same(&v)) {
-                slot.1 += 1;
+                slot.1.push(radius);
             } else {
-                corners.push((v, 1));
+                corners.push((v, vec![radius]));
             }
         }
     }
-    corners.retain(|(_, count)| *count >= 3);
+    corners.retain(|(_, at)| at.len() >= 3);
+    // No ball rolls round a corner whose bands differ in radius: the
+    // corner tool's ball would touch a band of another radius nowhere
+    // along its rim.
+    if corners.iter().any(|(_, at)| at.iter().any(|&r| r != at[0])) {
+        ogeom_bail!(
+            Construction,
+            "three or more bands of different radii meet at a corner, which no \
+             ball rolls round"
+        );
+    }
     // A corner the tool rounds, or the solid unchanged where it does not
     // speak the corner, which keeps the bands' caps.
-    let round = |model: &mut Model, built: Built, vertex: &Shape| -> OgeomResult<Built> {
-        match crate::corner::round_vertex_with(model, &built.shape, vertex, radius, None, tol) {
-            Ok(rounded) => Ok(Built {
-                shape: rounded.shape,
-                history: built.history.then(&rounded.history),
-            }),
-            Err(OgeomError::Construction(_)) => Ok(built),
-            Err(other) => Err(other),
-        }
-    };
+    let round =
+        |model: &mut Model, built: Built, vertex: &Shape, radius: f64| -> OgeomResult<Built> {
+            match crate::corner::round_vertex_with(model, &built.shape, vertex, radius, None, tol) {
+                Ok(rounded) => Ok(Built {
+                    shape: rounded.shape,
+                    history: built.history.then(&rounded.history),
+                }),
+                Err(OgeomError::Construction(_)) => Ok(built),
+                Err(other) => Err(other),
+            }
+        };
     // The corner first, the bands after it: bands built first crash into
     // each other at an apex, and the corner tool wants the sharp vertex's
     // planes, not the bands' mitre. Corners that stand clear of each other
     // are cut in one boolean, the rest one after another.
     let mut built: Option<Built> = None;
     let mut rounded: Vec<Point> = Vec::new();
-    let together = if corners.len() > 1 {
+    // Corners of different radii are cut one after another.
+    let together = if corners.len() > 1 && corners.iter().all(|(_, at)| at[0] == corners[0].1[0]) {
         let vertices: Vec<Shape> = corners.iter().map(|(v, _)| v.clone()).collect();
-        crate::corner::round_vertices_together(model, solid, &vertices, radius, tol)?
+        crate::corner::round_vertices_together(model, solid, &vertices, corners[0].1[0], tol)?
     } else {
         None
     };
-    let one_by_one: &[(Shape, usize)] = if together.is_some() { &[] } else { &corners };
+    let one_by_one: &[(Shape, Vec<f64>)] = if together.is_some() { &[] } else { &corners };
     if let Some(all) = together {
         for (vertex, _) in &corners {
             if let Some(point) = model
@@ -762,12 +823,12 @@ fn fillet_edges_own(
         }
         built = Some(all);
     }
-    for (vertex, _) in one_by_one {
+    for (vertex, at) in one_by_one {
         let start = built
             .take()
             .unwrap_or_else(|| Built::from_nothing(solid.clone()));
         let before = start.shape.clone();
-        let after = round(model, start, vertex)?;
+        let after = round(model, start, vertex, at[0])?;
         if !after.shape.is_same(&before)
             && let Some(point) = model
                 .node(vertex)
@@ -840,9 +901,8 @@ fn fillet_edges_own(
             .iter()
             .map(|e| host_faces.get(&e.node()).cloned().unwrap_or_default())
             .collect();
-        let mut found =
-            crate::junction::junctions(model, solid, edges, &given, &mates, radius, tol)
-                .unwrap_or_default();
+        let mut found = crate::junction::junctions(model, solid, edges, &given, &mates, radii, tol)
+            .unwrap_or_default();
         if meeting.as_ref().is_some_and(|taken| !taken.crossed) {
             found.retain(|junction| !junction.crossed);
         }
@@ -1110,8 +1170,13 @@ fn fillet_edges_own(
             let mut step = {
                 let (step, wedges) = crate::support::collecting_wedges(|| {
                     if rolled[index] {
-                        let Some(mut built) =
-                            crate::rolled::rolled_fillet(model, &current, target, radius, tol)?
+                        let Some(mut built) = crate::rolled::rolled_fillet(
+                            model,
+                            &current,
+                            target,
+                            radii[index],
+                            tol,
+                        )?
                         else {
                             ogeom_bail!(
                                 Construction,
@@ -1126,7 +1191,7 @@ fn fillet_edges_own(
                         model,
                         &current,
                         target,
-                        radius,
+                        radii[index],
                         Some((index, &mates)),
                         cones,
                         tol,
@@ -1182,7 +1247,7 @@ fn fillet_edges_own(
                                     model,
                                     &wedge.solid,
                                     plane,
-                                    radius * 2.0,
+                                    radii[index] * 2.0,
                                     tol,
                                 )?;
                             }

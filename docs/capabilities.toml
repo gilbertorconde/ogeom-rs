@@ -1207,9 +1207,15 @@ across that side, at the side and, for a convex edge, where the ball's \
 arc meets that face. It refuses by name where the face it runs off, or, \
 convex, the face across, is not planar with straight sides, where a \
 convex band is cut off by more than that one face, and where those \
-points stand inside another band."""
+points stand inside another band. A request may give each edge its own \
+radius (fillet_edges_with): two bands of different radii turning at a \
+vertex take the union of their cuts, a tangent chain steps its radius at \
+a junction, and a corner where three or more bands of different radii \
+meet is refused, since no ball rolls round it and the patch between the \
+bands' ends is not built."""
 symbols = [
     "ogeom_fillet::fillet_edge", "ogeom_fillet::fillet_edges",
+    "ogeom_fillet::fillet_edges_with",
     "ogeom_fillet::fillet_edge_variable",
     "ogeom_fillet::march_blend", "ogeom_fillet::blend_faces",
     "ogeom_fillet::MarchedBlend", "ogeom_fillet::round_vertex",
@@ -1224,6 +1230,7 @@ tests = [
     "crates/ogeom-fillet/tests/marched_fillet.rs",
     "crates/ogeom-fillet/tests/chain.rs",
     "crates/ogeom-fillet/tests/fillet.rs",
+    "crates/ogeom-fillet/tests/radius_per_edge.rs",
     "crates/ogeom-fillet/tests/concave.rs::a_round_rolls_on_the_far_edge_of_a_strip_narrower_than_its_setback",
     "crates/ogeom-fillet/tests/concave.rs::a_round_rolls_on_a_far_edge_parallel_to_the_face_it_touches",
     "crates/ogeom-fillet/tests/concave.rs::a_round_rolling_on_a_far_edge_refuses_where_the_ball_leaves_it",
