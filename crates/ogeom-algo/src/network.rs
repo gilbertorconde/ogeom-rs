@@ -133,6 +133,7 @@
 
 mod build;
 mod solve;
+mod split;
 mod topology;
 
 use std::collections::BTreeMap;
@@ -277,6 +278,21 @@ pub struct NetworkOptions {
     pub spans: usize,
     /// The most knot spans a strip may reach.
     pub most: usize,
+    /// Whether a three-sided patch beside four-sided ones is split into
+    /// three four-sided patches, so that its point is a corner like any
+    /// other. Its three sides are split at their middles, each half a curve
+    /// of its own, and curves are drawn inside it from each middle to its
+    /// centre. The network's patches and curves are then those of the
+    /// split: in [`Network::faces`], [`Network::surfaces`] and
+    /// [`Network::per_patch`] a split patch's own place holds its part at
+    /// its point, and its other two parts follow the caller's patches, in
+    /// the order of the patches split; in [`Network::edges`] a split
+    /// curve's own place holds its first half, and the second halves, then
+    /// the three curves inside each split patch, follow the caller's
+    /// curves. A patch whose point lies on the border, whose other sides
+    /// are not each one curve, or at whose point every patch is
+    /// three-sided (a fan) is not split.
+    pub split_three_sided: bool,
 }
 
 /// How one patch fits its points.
@@ -466,6 +482,24 @@ pub fn fit_network_chained(
     }
     let topo = Topology::of(patches, curves.len(), &options.creases)?;
     let drawn = drawn_curves(curves, tolerance, tol)?;
+    if options.split_three_sided
+        && let Some(split) = split::three_sided(&topo, patches, curves, &drawn, &options.creases)
+    {
+        let options = NetworkOptions {
+            creases: split.creases,
+            split_three_sided: false,
+            ..options.clone()
+        };
+        return fit_network_chained(
+            model,
+            &split.patches,
+            &split.curves,
+            points,
+            &options,
+            corrections,
+            tol,
+        );
+    }
     let corners = corner_points(&topo, &drawn, tolerance)?;
     let weights = strip_weights(&topo, &drawn);
     let seeds = Seeds::new(&topo, patches, &drawn, &corners, &weights, options, tol)?;
