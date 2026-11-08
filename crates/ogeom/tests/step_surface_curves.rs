@@ -470,3 +470,171 @@ fn pcurves_on_a_line_swept_into_a_plane_are_kept() {
         .mass;
     assert!((after - 1000.0).abs() <= 1e-9 * 1000.0, "{after} back");
 }
+
+/// A box and a drum written with their pcurves, each face's surface then
+/// restated as a replica of a copy of it, carried by a scaling of two about
+/// the origin and a shift, and every point, vector and radius of the
+/// file's edges carried by the same: the solid is the source twice over,
+/// moved, and each pcurve, stated in its surface's parent's parameters,
+/// names the same boundary once each length parameter is scaled. Each is
+/// kept.
+#[test]
+fn pcurves_on_a_scaled_surface_replica_are_kept() {
+    const SCALE: f64 = 2.0;
+    const SHIFT: [f64; 3] = [1.0, 2.0, 3.0];
+    let mut model = Model::new();
+    let parts = [
+        ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 10.0, 5.0), T)
+            .unwrap()
+            .shape,
+        ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 3.0, 5.0, T)
+            .unwrap()
+            .shape,
+    ];
+    for shape in parts {
+        let mut document = ogeom::doc::Document::over(model.clone());
+        document.add_part("part", shape.clone());
+        let text = ogeom::io::write_step(&document, T).unwrap();
+        let written = ogeom::io::read_step(&text, T).unwrap().report.pcurves_kept;
+        assert!(written > 0, "the writer states pcurves");
+
+        let mut entities = std::collections::BTreeMap::new();
+        let mut highest = 0;
+        for line in text.lines() {
+            if let Some(rest) = line.strip_prefix('#')
+                && let Some(eq) = rest.find('=')
+                && let Ok(id) = rest[..eq].trim().parse::<u64>()
+            {
+                highest = highest.max(id);
+                entities.insert(id, rest[eq + 1..].trim_end_matches(';').to_owned());
+            }
+        }
+        let refs = |body: &str| -> Vec<u64> {
+            body.split('#')
+                .skip(1)
+                .map(|r| {
+                    r.chars()
+                        .take_while(char::is_ascii_digit)
+                        .collect::<String>()
+                        .parse()
+                        .unwrap()
+                })
+                .collect()
+        };
+        // Each face's surface, copied with all it names under new ids.
+        let mut extra = String::new();
+        let mut replicas = std::collections::BTreeMap::new();
+        let origin = highest + 1;
+        let operator = highest + 2;
+        highest += 2;
+        extra.push_str(&format!(
+            "#{origin}=CARTESIAN_POINT('',({},{},{}));\n\
+             #{operator}=CARTESIAN_TRANSFORMATION_OPERATOR_3D('',$,$,#{origin},{},$);\n",
+            real(SHIFT[0]),
+            real(SHIFT[1]),
+            real(SHIFT[2]),
+            real(SCALE)
+        ));
+        for body in entities
+            .values()
+            .filter(|b| b.starts_with("ADVANCED_FACE("))
+        {
+            let surface = *refs(body).last().unwrap();
+            if replicas.contains_key(&surface) {
+                continue;
+            }
+            let mut copies = std::collections::BTreeMap::new();
+            let mut stack = vec![surface];
+            while let Some(id) = stack.pop() {
+                if copies.contains_key(&id) {
+                    continue;
+                }
+                highest += 1;
+                copies.insert(id, highest);
+                stack.extend(refs(&entities[&id]));
+            }
+            for (&from, &to) in &copies {
+                let mut body = entities[&from].clone();
+                // Longest ids first, so `#12` is not taken for `#1`.
+                let mut named: Vec<u64> = refs(&body);
+                named.sort_by_key(|id| std::cmp::Reverse(id.to_string().len()));
+                for id in named {
+                    body = body.replace(&format!("#{id},"), &format!("#@{},", copies[&id]));
+                    body = body.replace(&format!("#{id})"), &format!("#@{})", copies[&id]));
+                }
+                extra.push_str(&format!("#{to}={};\n", body.replace("#@", "#")));
+            }
+            replicas.insert(surface, copies[&surface]);
+        }
+        let mut out = String::new();
+        let mut data = false;
+        for line in text.lines() {
+            let Some(rest) = line.strip_prefix('#') else {
+                data |= line.trim() == "DATA;";
+                if data && line.trim() == "ENDSEC;" && !extra.is_empty() {
+                    out.push_str(&std::mem::take(&mut extra));
+                }
+                out.push_str(line);
+                out.push('\n');
+                continue;
+            };
+            let eq = rest.find('=').unwrap();
+            let id: u64 = rest[..eq].parse().unwrap();
+            let body = &entities[&id];
+            if let Some(parent) = replicas.get(&id) {
+                out.push_str(&format!(
+                    "#{id}=SURFACE_REPLICA('',#{parent},#{operator});\n"
+                ));
+            } else if body.starts_with("CARTESIAN_POINT") && numbers(body).len() == 3 {
+                let p = numbers(body);
+                let head = &body[..body.find(",(").unwrap() + 2];
+                let q: Vec<String> = (0..3)
+                    .map(|i| real(SCALE.mul_add(p[i], SHIFT[i])))
+                    .collect();
+                out.push_str(&format!("#{id}={head}{},{},{}));\n", q[0], q[1], q[2]));
+            } else if (body.starts_with("VECTOR(") && numbers(&entities[&refs(body)[0]]).len() == 3)
+                || (body.starts_with("CIRCLE(")
+                    && entities[&refs(body)[0]].starts_with("AXIS2_PLACEMENT_3D"))
+            {
+                // The trailing length: a vector's magnitude, a radius.
+                let cut = body.rfind(',').unwrap();
+                let value: f64 = body[cut + 1..body.rfind(')').unwrap()]
+                    .trim()
+                    .parse()
+                    .unwrap();
+                out.push_str(&format!(
+                    "#{id}={},{});\n",
+                    &body[..cut],
+                    real(value * SCALE)
+                ));
+            } else {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        assert!(!replicas.is_empty(), "the fixture replicated the surfaces");
+        let import = ogeom::io::read_step(&out, T).unwrap();
+        assert_eq!(
+            (import.report.pcurves_kept, import.report.pcurves_derived),
+            (written, 0),
+            "every pcurve is kept on the replicas"
+        );
+        let [solid] = import.solids.as_slice() else {
+            panic!("{} solids", import.solids.len());
+        };
+        let back = import.document.model();
+        assert!(ogeom::algo::check(back, solid, T).unwrap().is_valid());
+        let fine = Deflection::with_chord(1e-3).unwrap();
+        let before = ogeom::algo::volume_properties(&model, &shape, fine, T)
+            .unwrap()
+            .mass;
+        let after = ogeom::algo::volume_properties(back, solid, fine, T)
+            .unwrap()
+            .mass;
+        let wanted = before * SCALE.powi(3);
+        assert!(
+            (after - wanted).abs() <= wanted * 1e-6,
+            "{wanted} wanted, {after} back"
+        );
+    }
+}
