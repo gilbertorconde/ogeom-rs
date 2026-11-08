@@ -1526,9 +1526,11 @@ impl<'a> Reader<'a> {
         // Restated in this kernel's units where the file's are known; a
         // pcurve that has no image here at the same parameters stays as
         // written.
-        if !out.is_empty()
-            && let (Some(chart), Some(pace)) =
-                (self.chart_units(surface_id), self.curve_units(curve_id))
+        if out.is_empty() {
+            return out;
+        }
+        if let (Some(chart), Some(pace)) =
+            (self.chart_units(surface_id), self.curve_units(curve_id))
         {
             for pcurve in &mut out {
                 if let Some(restated) =
@@ -1537,8 +1539,51 @@ impl<'a> Reader<'a> {
                     *pcurve = restated;
                 }
             }
+        } else if let (Some(map), Some(pace)) = (
+            self.swept_line_chart(surface_id),
+            self.curve_units(curve_id),
+        ) {
+            for pcurve in &mut out {
+                if let Some(restated) = through_map(pcurve, map, pace, self.tol) {
+                    *pcurve = restated;
+                }
+            }
         }
         out
+    }
+
+    /// How a line swept into a plane reads the file's chart on the plane it
+    /// is read as: the map from the file's parameters, the line's own and
+    /// the length along the sweep's vector as ISO 10303-42 parameterizes
+    /// the extrusion, to this kernel's, the plane's coordinates along its
+    /// frame. The sweep may lean on the line, so the map is affine, not a
+    /// stretch along each direction. `None` for any other surface.
+    fn swept_line_chart(&mut self, id: u64) -> Option<ChartMap> {
+        let args = self.args(id, "SURFACE_OF_LINEAR_EXTRUSION").ok()?.to_vec();
+        let Some(SurfaceGeometry::Plane(plane)) = self.surface(id).ok()? else {
+            return None;
+        };
+        let line_id = ref_at(&args, 1);
+        let Some(Curve::Line(line)) = self.curve(line_id).ok()? else {
+            return None;
+        };
+        let pace = self.curve_units(line_id)?;
+        let vector = self.args(ref_at(&args, 2), "VECTOR").ok()?.to_vec();
+        let across = vector.get(2).and_then(Arg::number).unwrap_or(1.0) * self.report.scale_mm;
+        let sweep = self.direction(vector.get(1)?.reference()?).ok()?.vector();
+        let frame = plane.plane().frame();
+        let (x, y) = (frame.x().vector(), frame.y().vector());
+        let (along, from) = (
+            line.axis().direction.vector(),
+            line.axis().location - frame.origin(),
+        );
+        Some(ChartMap {
+            linear: [
+                [pace * along.dot(x), across * sweep.dot(x)],
+                [pace * along.dot(y), across * sweep.dot(y)],
+            ],
+            offset: (from.dot(x), from.dot(y)),
+        })
     }
 
     /// How a surface's parameters here follow the file's: this kernel's `u`
@@ -1549,7 +1594,8 @@ impl<'a> Reader<'a> {
     /// round its axis and its curve's parameter; an extrusion's are its
     /// curve's parameter and a length along its vector. `None` for a
     /// surface whose chart here is not the file's stretched along each
-    /// direction (a line swept into a plane, whose sweep may lean on it).
+    /// direction (a line swept into a plane, whose sweep may lean on it:
+    /// [`swept_line_chart`](Self::swept_line_chart) maps its chart).
     fn chart_units(&mut self, id: u64) -> Option<(f64, f64)> {
         let (keyword, args) = {
             let instance = self.instance(id).ok()?;
@@ -5497,6 +5543,73 @@ fn in_kernel_units(
         PlanarCurve::BSpline(_) => {
             let stretched = pcurve.stretched(su, sv, tol).ok()?;
             paced(&stretched, own / pace, 0.0, tol)
+        }
+        _ => None,
+    }
+}
+
+/// An affine map of a chart's coordinates: `linear` times the point, plus
+/// `offset`.
+#[derive(Debug, Clone, Copy)]
+struct ChartMap {
+    linear: [[f64; 2]; 2],
+    offset: (f64, f64),
+}
+
+impl ChartMap {
+    fn point(&self, p: ogeom_math::Point2) -> ogeom_math::Point2 {
+        let [[a, b], [c, d]] = self.linear;
+        ogeom_math::Point2::new(
+            a.mul_add(p.x, b * p.y) + self.offset.0,
+            c.mul_add(p.x, d * p.y) + self.offset.1,
+        )
+    }
+
+    fn vector(&self, v: ogeom_math::Vector2) -> ogeom_math::Vector2 {
+        let [[a, b], [c, d]] = self.linear;
+        ogeom_math::Vector2::new(a.mul_add(v.x, b * v.y), c.mul_add(v.x, d * v.y))
+    }
+}
+
+/// A file's pcurve carried through `map` into this kernel's chart, its
+/// parameter carried onto the edge's curve's here, which runs `pace` per
+/// file unit. An affine map takes a line to a line and a spline to the
+/// spline on its mapped control points, both exactly, at their own
+/// parameters; `None` for a conic, whose image under a map that is not a
+/// similarity is an ellipse at another phase than any stated here, and
+/// for anything else.
+fn through_map(
+    pcurve: &PlanarCurve,
+    map: ChartMap,
+    pace: f64,
+    tol: Tolerances,
+) -> Option<PlanarCurve> {
+    match pcurve {
+        PlanarCurve::Line(l) => {
+            let axis = l.axis();
+            let along = map.vector(axis.direction.vector());
+            let speed = along.magnitude();
+            let line = ogeom_math::Axis2::new(
+                map.point(axis.location),
+                ogeom_math::Direction2::new(along, tol).ok()?,
+            );
+            let (lo, hi) = l.domain();
+            let mapped: PlanarCurve = ogeom_geom::Line2d::over(line, lo * speed, hi * speed)
+                .ok()?
+                .into();
+            paced(&mapped, speed / pace, 0.0, tol)
+        }
+        PlanarCurve::BSpline(b) => {
+            let control = b
+                .control_points()
+                .iter()
+                .map(|w| ogeom_math::Weighted::new(map.point(w.point()), w.weight, tol))
+                .collect::<OgeomResult<Vec<_>>>()
+                .ok()?;
+            let mapped: PlanarCurve = ogeom_geom::BSpline2d::rational(b.knots().clone(), control)
+                .ok()?
+                .into();
+            paced(&mapped, 1.0 / pace, 0.0, tol)
         }
         _ => None,
     }

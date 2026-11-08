@@ -336,9 +336,18 @@ ends: a conic either way round and turned, a line at any pace, a spline
 over its own domain either way. Still derived: a trig or offset trace and
 a pcurve of a curve written as a spline conversion, none of which STEP
 states at a linear map of the curve's parameter; an ellipse turned other
-than by half turns; a conic on a chart stretched unevenly; and pcurves on
-a line swept into a plane or on a surface replica, whose charts here are
-not the file's stretched along each direction. The writer still leaves out
+than by half turns; a conic on a chart stretched unevenly or on a line swept
+into a plane (whose chart here is the file's sheared where the sweep leans,
+taking a circle to an ellipse at a phase no conic here states; lines and
+splines on it are carried through the map and kept); and pcurves on a
+surface replica, whose chart here is not the file's stretched along each
+direction. What blocks each: a trace and a spline conversion have no linear
+map of the curve's parameter to state; the conics need a conic stated at a
+phase other than half turns from its major axis, which no conic here
+carries; a replica's chart is its parent's with each length parameter
+scaled by the operator's scale (its linear part is a rotation), which needs
+the rule for which of each surface kind's parameters are lengths, proven on
+a fixture whose every point is carried onto the replica. The writer still leaves out
 a reversed conic pcurve: written forward, it would ask other readers to
 take a pcurve at another pace than its curve.
 
@@ -348,7 +357,10 @@ before any face is built. IGES trimmed surfaces (143, 144) cut every boundary
 segment through a pole of any surface read with them, so neighbours sew piece
 to piece. Not cut: a trim placed by one subfigure instance against a pole of
 a surface placed by another, and pcurves other producers build through a
-pole. The cut edge stays in the model unused, and a STEP style or shape
+pole. A subfigure definition is built once and shared by every placement,
+so the first would cut the definition for poles only some placements meet,
+and needs such definitions built per placement; the second has no file at
+hand that writes one. The cut edge stays in the model unused, and a STEP style or shape
 aspect naming its file id lands on every piece.
 
 ### Mesh conversion

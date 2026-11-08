@@ -316,3 +316,157 @@ fn pcurves_at_another_pace_than_their_curve_are_kept() {
         );
     }
 }
+
+/// The numbers of a point's or direction's list of coordinates, the list
+/// after its name: `KEYWORD('name',(x,y,…))`.
+fn numbers(text: &str) -> Vec<f64> {
+    let open = text.find(",(").unwrap() + 1;
+    let close = open + text[open..].find(')').unwrap();
+    text[open + 1..close]
+        .split(',')
+        .map(|n| n.trim().parse().unwrap())
+        .collect()
+}
+
+/// A STEP real, with the decimal point the format asks for.
+fn real(x: f64) -> String {
+    format!("{x:.17E}")
+}
+
+/// A box written with its pcurves, each plane then restated as a line swept
+/// along a vector that leans on it, half along the line and half across:
+/// the file's chart on each face is this kernel's sheared, `u = s + t`,
+/// `v = t`, and every pcurve point and direction is written in it. Each
+/// pcurve is the same boundary through that map, and is kept.
+#[test]
+fn pcurves_on_a_line_swept_into_a_plane_are_kept() {
+    let mut model = Model::new();
+    let shape = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 10.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let mut document = ogeom::doc::Document::over(model.clone());
+    document.add_part("part", shape.clone());
+    let text = ogeom::io::write_step(&document, T).unwrap();
+    let written = ogeom::io::read_step(&text, T).unwrap().report.pcurves_kept;
+    assert!(written > 0, "the writer states pcurves");
+
+    let mut entities = std::collections::BTreeMap::new();
+    let mut highest = 0;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix('#')
+            && let Some(eq) = rest.find('=')
+            && let Ok(id) = rest[..eq].trim().parse::<u64>()
+        {
+            highest = highest.max(id);
+            entities.insert(id, rest[eq + 1..].to_owned());
+        }
+    }
+    let refs = |body: &str| -> Vec<u64> {
+        body.split('#')
+            .skip(1)
+            .map(|r| {
+                r.chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>()
+                    .parse()
+                    .unwrap()
+            })
+            .collect()
+    };
+    let two_d = |body: &str| {
+        (body.starts_with("CARTESIAN_POINT") || body.starts_with("DIRECTION"))
+            && numbers(body).len() == 2
+    };
+    let mut extra = String::new();
+    let mut swept = 0;
+    let mut out = String::new();
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix('#') else {
+            if line.trim() == "ENDSEC;" && !extra.is_empty() {
+                out.push_str(&std::mem::take(&mut extra));
+            }
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        };
+        let eq = rest.find('=').unwrap();
+        let id = &rest[..eq];
+        let body = &rest[eq + 1..];
+        if body.starts_with("PLANE(") {
+            // The plane's placement: its origin, normal and reference.
+            let placement = &entities[&refs(body)[0]];
+            let [origin, z, x] = refs(placement)[..] else {
+                panic!("{placement}")
+            };
+            let (zv, xv) = (numbers(&entities[&z]), numbers(&entities[&x]));
+            let y = [
+                zv[1] * xv[2] - zv[2] * xv[1],
+                zv[2] * xv[0] - zv[0] * xv[2],
+                zv[0] * xv[1] - zv[1] * xv[0],
+            ];
+            let lean: Vec<f64> = (0..3).map(|i| (xv[i] + y[i]) / 2f64.sqrt()).collect();
+            let (along, line_id, sweep_dir, sweep) =
+                (highest + 1, highest + 2, highest + 3, highest + 4);
+            highest += 4;
+            extra.push_str(&format!(
+                "#{along}=VECTOR('',#{x},1.);\n#{line_id}=LINE('',#{origin},#{along});\n\
+                 #{sweep_dir}=DIRECTION('',({},{},{}));\n#{sweep}=VECTOR('',#{sweep_dir},{});\n",
+                real(lean[0]),
+                real(lean[1]),
+                real(lean[2]),
+                real(2f64.sqrt())
+            ));
+            out.push_str(&format!(
+                "#{id}=SURFACE_OF_LINEAR_EXTRUSION('',#{line_id},#{sweep});\n"
+            ));
+            swept += 1;
+        } else if two_d(body) {
+            // `s = u − v`, `t = v`.
+            let p = numbers(body);
+            let head = &body[..body.find(",(").unwrap() + 2];
+            if body.starts_with("DIRECTION") {
+                let (s, t) = (p[0] - p[1], p[1]);
+                let n = s.hypot(t);
+                out.push_str(&format!("#{id}={head}{},{}));\n", real(s / n), real(t / n)));
+            } else {
+                out.push_str(&format!(
+                    "#{id}={head}{},{}));\n",
+                    real(p[0] - p[1]),
+                    real(p[1])
+                ));
+            }
+        } else if body.starts_with("VECTOR(")
+            && let [d] = refs(body)[..]
+            && two_d(&entities[&d])
+        {
+            // The direction's own length through the map scales the pace.
+            let p = numbers(&entities[&d]);
+            let n = (p[0] - p[1]).hypot(p[1]);
+            let magnitude: f64 = body[body.rfind(',').unwrap() + 1..body.rfind(')').unwrap()]
+                .trim()
+                .parse()
+                .unwrap();
+            out.push_str(&format!("#{id}=VECTOR('',#{d},{});\n", real(magnitude * n)));
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    assert_eq!(swept, 6, "the fixture swept every plane");
+    let import = ogeom::io::read_step(&out, T).unwrap();
+    assert_eq!(
+        (import.report.pcurves_kept, import.report.pcurves_derived),
+        (written, 0),
+        "every pcurve is kept through the sheared chart"
+    );
+    let [solid] = import.solids.as_slice() else {
+        panic!("{} solids", import.solids.len());
+    };
+    let back = import.document.model();
+    assert!(ogeom::algo::check(back, solid, T).unwrap().is_valid());
+    let fine = Deflection::with_chord(1e-3).unwrap();
+    let after = ogeom::algo::volume_properties(back, solid, fine, T)
+        .unwrap()
+        .mass;
+    assert!((after - 1000.0).abs() <= 1e-9 * 1000.0, "{after} back");
+}
