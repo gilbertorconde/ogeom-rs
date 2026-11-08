@@ -116,15 +116,17 @@
 //!   nearest point on its patch and fit the patches again, a fit kept only
 //!   where it comes nearer the points. Where every way of holding the
 //!   corners misses, and so does the fit near tangent, each held fit that
-//!   missed is finished that way at its spans before the near-tangent one
-//!   is kept: a point whose nearest point lies on a side its patch shares
-//!   is taken by the patch across that side where that one is nearer, as
-//!   the seeds take each point by the nearest. A fit is kept only while it
-//!   holds the corners, takes off more of the squared distances than twice
-//!   the noise's variance, read once off the fit at the seed's parameters,
-//!   and leaves the worst miss that is not a stray no worse, for at most
-//!   eight steps; the first that comes within the tolerance is the
-//!   network.
+//!   missed is finished that way from its spans before the near-tangent
+//!   one is kept: a point whose nearest point lies on a side its patch
+//!   shares is taken by the patch across that side where that one is
+//!   nearer, as the seeds take each point by the nearest. A step is kept
+//!   only while it holds the corners, takes off more of the squared
+//!   distances than twice the noise's variance, read once off the fit at
+//!   the seed's parameters, and leaves neither the worst miss that is not
+//!   a stray nor the worst of all no worse; after each, the fit is refined
+//!   on with that variance held, every patch a point misses, strays and
+//!   all, tried at more spans, for at most eight steps. The first that
+//!   comes within the tolerance is the network.
 //!
 //! The constraints are solved for exactly, by elimination, before the
 //! least squares: what is held tangent is tangent to rounding.
@@ -368,10 +370,10 @@ pub struct Network {
 /// held tangent, the network is refined from the start with each way of
 /// holding them the [module documentation](self) describes in turn, until
 /// one comes within the tolerance; failing that, with those corners near
-/// tangent. Where that misses too, each held way is finished at its spans,
-/// its points re-taken at their nearest points on it, as the module
-/// documentation describes, and the first to come within the tolerance is
-/// kept. The points a patch fits ([`PatchFit::points`]) are then those it
+/// tangent. Where that misses too, each held way is finished from its
+/// spans, its points re-taken at their nearest points on it and the fit
+/// refined on, as the module documentation describes, and the first to
+/// come within the tolerance is kept. The points a patch fits ([`PatchFit::points`]) are then those it
 /// takes as finished.
 ///
 /// The faces are built in `model` on the fitted patches, every curve an
@@ -543,7 +545,7 @@ pub fn fit_network_chained(
                 fans,
                 ..fit
             };
-            if let Some((round, again)) = held.finish(&at, round, tolerance)? {
+            if let Some((at, round, again)) = held.finish(options, &at, round)? {
                 fit.corners = corners;
                 fit.fans = fans;
                 (spans, current, ended) = (at, round, Ended::Met);
@@ -1909,24 +1911,50 @@ impl Fit<'_> {
     /// a point misses, as [`fit_network`] describes; the spans, the fit and
     /// why refinement stopped.
     fn refine(&self, options: &NetworkOptions) -> OgeomResult<(Vec<usize>, Round, Ended)> {
+        let spans = vec![options.spans; self.topo.strips];
+        let current = self.round(&spans, &self.taken.at)?;
+        self.refine_from(options, spans, current, None)
+    }
+
+    /// [`refine`](Self::refine) from the fit `current` at `spans`, the
+    /// points where `self` takes them; the noise's variance in Mallows'
+    /// criterion read off each fit's median distance, or held at `held`.
+    fn refine_from(
+        &self,
+        options: &NetworkOptions,
+        mut spans: Vec<usize>,
+        mut current: Round,
+        held: Option<f64>,
+    ) -> OgeomResult<(Vec<usize>, Round, Ended)> {
         let (topo, tolerance) = (self.topo, options.tolerance);
-        let mut spans = vec![options.spans; topo.strips];
-        let mut current = self.round(&spans, &self.taken.at)?;
         let ended = loop {
             if current.distances.iter().all(|d| *d <= tolerance) {
                 break Ended::Met;
             }
-            let (missed, any, strays) =
-                self.missed(&current, tolerance, (DEGREE + 1) * (DEGREE + 1));
-            if !any && strays {
-                break Ended::Strays;
-            }
+            // The patches that miss; where the variance is held, every
+            // patch a point misses, strays and all.
+            let patches: Vec<usize> = if held.is_some() {
+                (0..self.patches.len())
+                    .filter(|&p| {
+                        self.taken.of_patch[p]
+                            .iter()
+                            .any(|&i| current.distances[i] > tolerance)
+                    })
+                    .collect()
+            } else {
+                let (missed, any, strays) =
+                    self.missed(&current, tolerance, (DEGREE + 1) * (DEGREE + 1));
+                if !any && strays {
+                    break Ended::Strays;
+                }
+                missed.iter().map(|&(_, p)| p).collect()
+            };
             // The strips of every patch that misses, each tried alone: a
             // patch can miss for a neighbour too coarse to follow the
             // shape, which its tangency binds it to.
-            let mut tries: Vec<usize> = missed
+            let mut tries: Vec<usize> = patches
                 .iter()
-                .flat_map(|&(_, p)| topo.patch_strips[p].iter().flatten().copied())
+                .flat_map(|&p| topo.patch_strips[p].iter().flatten().copied())
                 .filter(|&s| spans[s] < options.most)
                 .collect();
             tries.sort_unstable();
@@ -1936,8 +1964,10 @@ impl Fit<'_> {
             }
             // Mallows' criterion, as the single-patch refinement scores:
             // the squared distances plus twice the noise's variance per
-            // free pole, the variance read off the median distance.
-            let variance = (median(&current.distances) / NORMAL_QUARTILE).powi(2);
+            // free pole, the variance read off the median distance unless
+            // held.
+            let variance =
+                held.unwrap_or_else(|| (median(&current.distances) / NORMAL_QUARTILE).powi(2));
             let score = |r: &Round| 2.0f64.mul_add(variance * precise(r.free), r.square());
             let mut best: Option<(f64, Vec<usize>, Round)> = None;
             for raised in tries {
@@ -3455,41 +3485,52 @@ impl Fit<'_> {
 
     /// Finish a try that missed at `spans`, from its fit `start` at the
     /// seed's parameters: while not every point is within the tolerance,
-    /// the points are re-taken at their nearest points on the fit and the
-    /// patches fitted again at the same spans. The fit and the points as
-    /// re-taken where it comes within the tolerance; `None` where it stops
-    /// first.
+    /// the points are re-taken at their nearest points on the fit, the
+    /// patches fitted again at the same spans, and the fit refined on from
+    /// there. The spans, the fit and the points as re-taken where it comes
+    /// within the tolerance holding every corner the try names; `None`
+    /// where it stops first.
     ///
     /// The noise's variance is read once, off `start`'s median distance as
     /// refinement reads it, and held: re-read after a correction, whose
     /// distances are all along the normal, it would shrink and let the fit
     /// follow the noise. A fit is kept only where it holds every corner the
     /// try names, takes off more of the squared distances than twice that
-    /// variance (what Mallows' criterion charges a free pole), and the
-    /// worst miss that is not a stray grows no worse. The corrections stop
-    /// where the squared distances are down to the noise left over the free
-    /// controls, `σ̂₀²(m − free)`, and after [`FINISH_STEPS`].
+    /// variance (what Mallows' criterion charges a free pole), and neither
+    /// the worst miss that is not a stray nor the worst distance grows. The
+    /// corrections stop where the squared distances are down to the noise
+    /// left over the free controls, `σ̂₀²(m − free)`, and after
+    /// [`FINISH_STEPS`].
+    ///
+    /// Refinement then scores with the same variance and tries the strips
+    /// of every patch a point misses, strays too: on a clean scan the rest
+    /// of a cell's spread is the fit's own error, not noise, and a point
+    /// past it is a miss the finished fit must still come within the
+    /// tolerance of, as it is kept only where every point does.
     fn finish(
         &self,
+        options: &NetworkOptions,
         spans: &[usize],
         start: Round,
-        tolerance: f64,
-    ) -> OgeomResult<Option<(Round, Taken)>> {
+    ) -> OgeomResult<Option<(Vec<usize>, Round, Taken)>> {
+        let tolerance = options.tolerance;
         let judged = (DEGREE + 1) * (DEGREE + 1);
         let variance = (median(&start.distances) / NORMAL_QUARTILE).powi(2);
-        let floor = variance * precise(start.distances.len().saturating_sub(start.free));
         let worst = |fit: &Fit, round: &Round| {
             fit.missed(round, tolerance, judged)
                 .0
                 .first()
                 .map_or(0.0, |w| w.0)
         };
+        let widest = |round: &Round| round.distances.iter().copied().fold(0.0, f64::max);
         let mut taken = self.taken.clone();
+        let mut spans = spans.to_vec();
         let mut current = start;
         for step in 0..=FINISH_STEPS {
-            if current.distances.iter().all(|d| *d <= tolerance) {
-                return Ok(Some((current, taken)));
+            if current.held && current.distances.iter().all(|d| *d <= tolerance) {
+                return Ok(Some((spans, current, taken)));
             }
+            let floor = variance * precise(current.distances.len().saturating_sub(current.free));
             if step == FINISH_STEPS || variance <= 0.0 || current.square() <= floor {
                 return Ok(None);
             }
@@ -3502,14 +3543,18 @@ impl Fit<'_> {
                 taken: &again,
                 ..*self
             };
-            let next = refit.round(spans, &again.at)?;
+            let next = refit.round(&spans, &again.at)?;
             let kept = next.held
                 && current.square() - next.square() > 2.0 * variance
-                && worst(&refit, &next) <= worst(&fit, &current);
+                && worst(&refit, &next) <= worst(&fit, &current)
+                && widest(&next) <= widest(&current);
             if !kept {
                 return Ok(None);
             }
-            (taken, current) = (again, next);
+            // Refined on from there, the points where they now lie and
+            // the variance held.
+            let (raised, refined, _) = refit.refine_from(options, spans, next, Some(variance))?;
+            (taken, spans, current) = (again, raised, refined);
         }
         Ok(None)
     }

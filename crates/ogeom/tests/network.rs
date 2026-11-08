@@ -1598,6 +1598,58 @@ fn even_corners_of_six_and_eight_patches_are_held_exactly_tangent() {
     }
 }
 
+#[test]
+fn a_clean_filleted_box_corner_meets_its_tolerance_exactly_tangent() {
+    // From a clean scan, to a thousandth. Held by its spans the corner
+    // stops with each fillet one span across, its worst points standing
+    // past what the rest of their cells reach, so refinement counts them
+    // strays; near tangent it stops the same way. Finished, the points are
+    // re-taken on the held fit and the fit refined on, strays counted as
+    // misses, until every point is within the tolerance.
+    let (curves, patches) = filleted_corner();
+    let cloud = filleted_points(40_000, 0.0, 37);
+    let (model, network) = fit(&curves, &patches, &cloud, &options(CLEAN_TOLERANCE, vec![]));
+    assert_eq!(network.ended, Ended::Met, "{network:?}");
+    assert!(
+        network.per_patch.iter().all(|p| p.worst <= CLEAN_TOLERANCE),
+        "{:?}",
+        network.per_patch
+    );
+    assert_eq!(network.outside, 0);
+    assert_eq!(
+        network.per_patch.iter().map(|p| p.points).sum::<usize>(),
+        cloud.len()
+    );
+    // Inside each patch, where the points surround every sample; at the
+    // fillets' far corners on the border the points stop short and the
+    // patch runs on beyond them.
+    let mut off = 0.0_f64;
+    for surface in &network.surfaces {
+        for i in 4..=36 {
+            for j in 4..=36 {
+                let (u, v) = (f64::from(i) / 40.0, f64::from(j) / 40.0);
+                off = off.max(off_filleted(surface.point_at(u, v, T).unwrap()));
+            }
+        }
+    }
+    assert!(off <= CLEAN_TOLERANCE, "{off} off the corner");
+    let (angle, gap) = across_shared(&network, &patches);
+    assert!(angle <= EXACT_ANGLE, "{angle}");
+    assert!(gap <= ROUNDING_GAP, "{gap}");
+    assert!(
+        network.worst_tangent <= EXACT_ANGLE,
+        "{}",
+        network.worst_tangent
+    );
+    let [corner] = network.corners.as_slice() else {
+        panic!("{:?}", network.corners);
+    };
+    assert_eq!(corner.valence, 3);
+    assert!(corner.angle <= EXACT_ANGLE, "{corner:?}");
+    assert!(off_filleted(corner.point) <= CLEAN_TOLERANCE, "{corner:?}");
+    assert_sound_shell(&model, &network, 12);
+}
+
 /// The rounded box corner of [`filleted_corner`], each edge's fillet one
 /// patch: its side along the octant runs from `z` to the side's middle and
 /// on to `y`, two curves meeting at a junction, where the octant's curve
