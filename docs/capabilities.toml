@@ -406,6 +406,32 @@ symbols = ["ogeom_heal::reduce_tolerances"]
 tests = ["crates/ogeom-heal/src/upgrade.rs"]
 
 [[capability]]
+id = "algo.surface-sheet"
+title = "Laying a flat sketch onto a curved face: geodesic polar coordinates, curves carried with pcurves"
+crate = "ogeom-algo"
+verdict = "partial"
+restriction = """`SurfaceSheet` lays a sheet by geodesic polar coordinates (the \
+exponential map at its origin) on any face whose surface has first and \
+second derivatives: a plane, a cylinder and a cone by their exact \
+development, a sphere in closed form, every other surface by integrating \
+its geodesics and their Jacobi field in its chart, the step error held per \
+unit of length. Lengths along lines through the origin are kept; \
+`distortion` reports the across-ray stretch over the points carried. \
+Carried curves are fitted chart curves whose lift stands within the \
+tolerance asked (a line on a plane or a cylinder is exact), continued \
+across periodic seams. Refused: an origin on a pole of the chart, a \
+sphere's reach to its origin's antipode, a point past the reach, on a \
+pole, off a bounded surface's domain or past a fold of the map; a curve \
+passing round a pole of the chart. The least-distortion flattening of \
+the covered region (as-rigid-as-possible or conformal) is not built: \
+`SheetMethod` has the geodesic method alone."""
+symbols = [
+    "ogeom_algo::SurfaceSheet", "ogeom_algo::SheetPlacement",
+    "ogeom_algo::SheetMethod", "ogeom_algo::SheetDistortion",
+]
+tests = ["crates/ogeom/tests/sheet_wrap.rs", "crates/ogeom-algo/src/sheet.rs"]
+
+[[capability]]
 id = "heal.fix-shape"
 title = "Fixing broken shapes: wires, faces, shells, solids, free bounds, small features"
 crate = "ogeom-heal"
