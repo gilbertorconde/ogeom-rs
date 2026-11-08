@@ -189,6 +189,26 @@ bump may break the API and a patch bump may not.
     the chamfer, or first rounded 0.5, matches the plain drum rounded 3
     within 1e-6.
 
+- **The closed form reads which side of its edges a narrow face lies on
+  where its pcurves close only within their tolerance.** (#706)
+  - A face's chart loop was wound by `x dy` over its pieces alone. Where
+    the pieces meet only within the edges' tolerance, that sum hangs on
+    where the chart's origin lies, by each junction's gap times its
+    distance from the origin. On a strip 0.44 round and 0.036 high on a
+    cylinder, three radians from the origin, with junction gaps of 4e-3,
+    it came out +0.012 where the loop as the integrand closes it encloses
+    -0.015, and the face was read as lying on the wrong side of every one
+    of its edges.
+  - The loop is now closed, for its winding, by the same junction steps
+    the integrand closes it with.
+  - Each build of a solid converted from a mesh measured its volume on
+    its tessellation for the one such face in it, which the probe finds
+    facing out as its neighbours do. The closed form now measures it.
+    `refine_solid` on the 29,003-face part of #733 at chord 0.002 takes
+    17% fewer instructions (9.59e11 rather than 1.155e12), and the
+    refined solid is the same to the bit, as is every part of
+    `mesh_corpus` converted back.
+
 - **A drill lowered under a plate top past the confusion distance now
   cuts for every seam direction from 2e-6 to ten microns.**
   - `nist_ctc_03`'s plate-top drill lowered by 2e-6, 5e-6 and 1e-5, its

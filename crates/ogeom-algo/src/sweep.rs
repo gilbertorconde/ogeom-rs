@@ -2760,6 +2760,111 @@ mod tests {
         );
     }
 
+    /// A narrow face far from its chart's origin, whose pcurves close only
+    /// within its edges' tolerance, still reads which side of each edge it
+    /// lies on. A wedge's outer wall is a strip 0.44 round and 0.036 high,
+    /// its pcurves moved a whole turn along the chart (the same surface)
+    /// and one of its axial pcurves starting 4e-3 short of its corner within
+    /// a tolerance widened to cover it. The loop's pieces then run 0.036 down
+    /// one side and 0.032 up the other, and their `x dy` taken without the
+    /// step closing that corner is off by the step times the chart's
+    /// distance from its origin, more than the strip's whole area and the
+    /// other way.
+    ///
+    /// The face is still the wedge's, facing out: the walks must tie every
+    /// face into one agreeing set, and the volume, the step closing the
+    /// corner along the piece's own chart line, is Pappus's to rounding,
+    /// closed form.
+    #[test]
+    fn a_narrow_face_far_from_its_charts_origin_reads_its_side_across_its_gaps() {
+        let (offset, side, angle) = (1.4_f64, 0.036_f64, 0.44_f64);
+        let short_by = 4e-3;
+        let mut model = Model::new();
+        let profile = ring_profile(&mut model, offset, side);
+        let built = make_revolution(&mut model, &profile, Axis::Z, angle, T).unwrap();
+        let outer = explode(&model, &built.shape)
+            .into_iter()
+            .find(|face| {
+                let data = model.node(face).unwrap().data().as_face().unwrap();
+                matches!(
+                    model.geometry().surface(data.surface),
+                    Some(ogeom_geom::SurfaceGeometry::Cylinder(c))
+                        if (c.cylinder().radius() - (offset + side)).abs() < 1e-12
+                )
+            })
+            .unwrap();
+        let surface = model
+            .node(&outer)
+            .unwrap()
+            .data()
+            .as_face()
+            .unwrap()
+            .surface;
+        let mut pieces = Vec::new();
+        for edge in explore_unique(&model, &outer, ShapeType::Edge).unwrap() {
+            let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+            let Some(EdgeRepr::PCurve { curve, range, .. }) =
+                data.pcurve_for(surface, edge.location()).cloned()
+            else {
+                panic!("the wall's edges each have one pcurve on it");
+            };
+            pieces.push((edge, curve, range));
+        }
+        let turn = ogeom_math::Transform2::translation(ogeom_math::Vector2::new(TAU, 0.0));
+        for (_, id, _) in &pieces {
+            let held = model.geometry_mut().pcurve_mut(*id).unwrap();
+            *held = held.transformed(&turn, T).unwrap();
+        }
+        // The axial piece at the wedge's far end, drawn from short of its
+        // corner along its own line.
+        let edge = pieces
+            .iter()
+            .filter_map(|(edge, id, range)| {
+                let curve = model.geometry().pcurve(*id).unwrap();
+                use ogeom_geom::Curve2d as _;
+                let (a, b) = (
+                    curve.point_at(range.0, T).unwrap(),
+                    curve.point_at(range.1, T).unwrap(),
+                );
+                ((a.x - b.x).abs() < 1e-12).then_some((edge.clone(), *id, *range, a, b))
+            })
+            .max_by(|p, q| p.3.x.total_cmp(&q.3.x))
+            .map(|(edge, id, range, a, b)| {
+                let short = a + (b - a) * (short_by / a.distance(b));
+                let knots =
+                    ogeom_math::KnotVector::new(vec![range.0, range.0, range.1, range.1], 1)
+                        .unwrap();
+                *model.geometry_mut().pcurve_mut(id).unwrap() =
+                    ogeom_geom::BSpline2d::new(knots, vec![short, b], T)
+                        .unwrap()
+                        .into();
+                edge
+            })
+            .unwrap();
+        let widened = ogeom_core::Tolerance::new(short_by * 1.25).unwrap();
+        model.widen(&edge, widened).unwrap();
+        for vertex in explore_unique(&model, &edge, ShapeType::Vertex).unwrap() {
+            model.widen(&vertex, widened).unwrap();
+        }
+
+        let flags = crate::mass::flags_agree(&model, &built.shape, T).unwrap();
+        assert!(flags.agree, "the walks tie the faces consistently");
+        assert!(
+            flags.sets.is_empty(),
+            "every face is in one set, none turned against it: {:?}",
+            flags
+                .sets
+                .iter()
+                .map(|set| set.iter().filter(|(_, against)| *against).count())
+                .collect::<Vec<_>>()
+        );
+        let exact = side * side * angle * (offset + side / 2.0);
+        let found = crate::mass::volume_as_flagged(&model, &built.shape, deflection(1e-3), None, T)
+            .unwrap();
+        assert_eq!(found.deflection, 0.0, "the closed form measured it");
+        assert_relative_eq!(found.mass, exact, max_relative = 1e-9);
+    }
+
     /// A quadrilateral profile in the xz plane, wound counter-clockwise about
     /// `-y` so its wire agrees with its own normal.
     fn profile_from(model: &mut Model, corners: &[Point]) -> Shape {

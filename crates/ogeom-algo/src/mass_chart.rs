@@ -987,7 +987,8 @@ fn walked(
     }
 
     // Which loop is the boundary and which the holes: the boundary encloses
-    // the most chart, whichever way each was wound. A spline is integrated
+    // the most chart, whichever way each was wound, and its winding says
+    // which side of the walk the face lies on. A spline is integrated
     // knot span by knot span: one rule across a closed spline of many spans
     // can miss its area entirely and give the wrong winding.
     let mut areas = Vec::with_capacity(loops.len());
@@ -1016,6 +1017,20 @@ fn walked(
                     area += p.x * d.y * w;
                 }
             }
+        }
+        // Closed as the integrand closes it: each junction's step, less
+        // any whole period a loop round a periodic chart wraps by. The
+        // pieces alone are an open path, whose `x dy` hangs on where the
+        // chart's origin lies by the junctions' gaps times their distance
+        // from it, which on a narrow face far from the origin is more than
+        // the face's own area, and turns its winding.
+        for (k, segment) in segments.iter().enumerate() {
+            let next = &segments[(k + 1) % segments.len()];
+            let (end, _) = segment.at(segment.t1, tol)?;
+            let (start, _) = next.at(next.t0, tol)?;
+            let gap = start - end;
+            let step = gap - fold(gap, period);
+            area += step.x.mul_add(0.5, end.x) * step.y;
         }
         areas.push(area);
     }
