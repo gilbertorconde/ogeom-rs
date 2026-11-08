@@ -318,8 +318,11 @@ from the origin and stretch across them by the Jacobi field's ratio. Owed:
 the flattening of the covered region that spreads that stretch (an
 as-rigid-as-possible or conformal map of a mesh of the region, pinned at
 the origin), so a wide sketch on a sphere keeps its area rather than its
-rays; and a curve passing round a pole of the chart, which needs the
-chart curve cut where it crosses the pole.
+rays; and a curve running through a pole of the chart (a sheet line
+through the point that lands on a sphere's pole), whose chart curve jumps
+there: it needs cutting at the pole into pieces, and `split_face` taught
+to follow a path from one piece to the next along the pole's degenerate
+edge. A curve going round a pole is carried as one chart curve.
 
 ### Mesh conversion
 

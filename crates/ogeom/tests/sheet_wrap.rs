@@ -387,3 +387,65 @@ fn a_rectangle_laid_on_a_sphere_thickens_outward_and_fuses_onto_it() {
         "{volume}"
     );
 }
+
+#[test]
+fn a_circle_round_the_spheres_pole_cuts_off_its_geodesic_cap() {
+    // Laid ten degrees from the north pole, the sheet circle of radius 3
+    // about the origin goes round the pole: its chart curve runs a whole
+    // turn of longitude, and it cuts off the cap of geodesic radius 3,
+    // 2 pi R^2 (1 - cos(3 / R)).
+    let mut model = Model::new();
+    let sphere = make_sphere(&mut model, Frame::WORLD, 10.0, T)
+        .unwrap()
+        .shape;
+    let face = faces(&model, &sphere)[0].clone();
+    let latitude = 80.0_f64.to_radians();
+    let at = Point::new(0.0, -10.0 * latitude.cos(), 10.0 * latitude.sin());
+    let sheet = sheet_on(&model, &face, at, 3.0);
+    let circle: PlanarCurve =
+        Circle2d::new(Circle2::centred(Point2::ORIGIN, 3.0, T).unwrap()).into();
+    let pcurve = sheet.chart_curve(&circle, (0.0, TAU), FIT).unwrap();
+    let (start, end) = (
+        pcurve.point_at(0.0, T).unwrap(),
+        pcurve.point_at(TAU, T).unwrap(),
+    );
+    assert!(
+        ((end.x - start.x).abs() - TAU).abs() <= 1e-9,
+        "{start:?} {end:?}"
+    );
+    assert!((end.y - start.y).abs() <= 1e-9, "{start:?} {end:?}");
+    for k in 0..=400 {
+        let t = TAU * f64::from(k) / 400.0;
+        let uv = pcurve.point_at(t, T).unwrap();
+        let p = sheet.surface().point_at(uv.x, uv.y, T).unwrap();
+        // Every point stands 3 / R radians from the origin's point.
+        let apart = (p.to_vector().dot(at.to_vector()) / 100.0)
+            .clamp(-1.0, 1.0)
+            .acos();
+        assert!((apart * 10.0 - 3.0).abs() <= FIT, "{t}: {apart}");
+    }
+    let edge = sheet
+        .chart_edge(&mut model, &circle, (0.0, TAU), FIT)
+        .unwrap()
+        .shape;
+    let whole = area(&model, &face);
+    let built = split_face(&mut model, &sphere, &face, &[edge], Projection::OnFace, T).unwrap();
+    assert!(check(&model, &built.shape, T).unwrap().is_usable());
+    let mut areas: Vec<f64> = built
+        .history
+        .trace(&face)
+        .iter()
+        .map(|p| area(&model, p))
+        .collect();
+    areas.sort_by(f64::total_cmp);
+    assert_eq!(areas.len(), 2, "{areas:?}");
+    let cap = TAU * 100.0 * (1.0 - 0.3_f64.cos());
+    assert!(
+        (areas[0] - cap).abs() <= cap * 1e-5,
+        "{areas:?} against {cap}"
+    );
+    assert!(
+        (areas[0] + areas[1] - whole).abs() <= whole * 1e-6,
+        "{areas:?}"
+    );
+}
