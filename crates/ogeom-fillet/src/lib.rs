@@ -8,6 +8,7 @@ pub mod bridge;
 mod carried;
 pub mod chamfer;
 mod consumed;
+mod consumed_rim;
 pub mod corner;
 pub mod corner2d;
 mod corner_curved;

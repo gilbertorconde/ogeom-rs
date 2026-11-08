@@ -107,11 +107,20 @@ fn fillet_edge_own(
         return consuming(model, solid, edge, radius, refusal, tol);
     }
     let edges = std::slice::from_ref(edge);
-    with_fitted_rims(
+    or_rim_consumed(
         model,
         solid,
-        edges,
-        |model, rims| fillet_edge_meeting(model, solid, edge, radius, None, rims, tol),
+        edge,
+        radius,
+        |model| {
+            with_fitted_rims(
+                model,
+                solid,
+                edges,
+                |model, rims| fillet_edge_meeting(model, solid, edge, radius, None, rims, tol),
+                tol,
+            )
+        },
         tol,
     )
 }
@@ -131,7 +140,10 @@ fn consuming(
     }
     let Some(seat) = crate::consumed::consumed_seat(model, solid, edge, radius, tol)? else {
         let Some(mut built) = crate::rolled::rolled_fillet(model, solid, edge, radius, tol)? else {
-            return Err(refusal);
+            return match crate::consumed_rim::consumed_rim(model, solid, edge, radius, tol)? {
+                Some(rim) => rim_consuming(model, solid, edge, rim, radius, tol),
+                None => Err(refusal),
+            };
         };
         crate::support::credit_new_faces(model, solid, edge, &mut built)?;
         return Ok(built);
@@ -139,6 +151,56 @@ fn consuming(
     let mut built = seated_fillet(model, solid, &seat, radius, Some(edge), &[], tol)?;
     crate::support::credit_new_faces(model, solid, edge, &mut built)?;
     Ok(built)
+}
+
+/// The round of a rim on `rim`, the seat of the cap and wall either side of
+/// a ring beside it that the round takes off whole.
+fn rim_consuming(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    rim: crate::support::RevolvedSeat,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let mut built = revolved_fillet_on(model, solid, edge, rim, radius, tol)?;
+    crate::support::credit_new_faces(model, solid, edge, &mut built)?;
+    Ok(built)
+}
+
+/// `round`, the rounding of the one `edge`, and where it refuses, the round
+/// that takes a ring beside a rim off whole, where
+/// [`crate::consumed_rim::consumed_rim`] finds one: a rim beside a small
+/// round meets it tangentially, so no seat of the rim's own builds. What
+/// the refused attempt widened is put back first; elsewhere the attempt
+/// stands as it is.
+fn or_rim_consumed(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    radius: f64,
+    round: impl FnOnce(&mut Model) -> OgeomResult<Built>,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let mark = model.note_widened();
+    match round(model) {
+        Err(refusal @ OgeomError::Construction(_)) => {
+            match crate::consumed_rim::consumed_rim(model, solid, edge, radius, tol)? {
+                Some(rim) => {
+                    model.undo_widened(mark);
+                    rim_consuming(model, solid, edge, rim, radius, tol)
+                }
+                None => {
+                    model.keep_widened(mark);
+                    Err(refusal)
+                }
+            }
+        }
+        other => {
+            model.keep_widened(mark);
+            other
+        }
+    }
 }
 
 /// An edge of a multi-edge request, by its ends: where each end stands and
@@ -483,13 +545,21 @@ fn fillet_edges_meeting(
     radii: &[f64],
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    with_fitted_rims(
-        model,
-        solid,
-        edges,
-        |model, rims| fillet_edges_meeting_with(model, solid, edges, radii, rims, tol),
-        tol,
-    )
+    let round = |model: &mut Model| {
+        with_fitted_rims(
+            model,
+            solid,
+            edges,
+            |model, rims| fillet_edges_meeting_with(model, solid, edges, radii, rims, tol),
+            tol,
+        )
+    };
+    // A request of one edge is that edge alone, a ring beside a rim taken
+    // off whole as there.
+    match (edges, radii) {
+        ([edge], [radius]) => or_rim_consumed(model, solid, edge, *radius, round, tol),
+        _ => round(model),
+    }
 }
 
 /// Round with every cone rim's band an exact torus band, and where that
@@ -2453,7 +2523,19 @@ fn revolved_fillet(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let seat = revolved_seat(model, solid, edge, rim, tol)?;
+    revolved_fillet_on(model, solid, edge, seat, radius, tol)
+}
 
+/// [`revolved_fillet`] on `seat`, read from `edge` or from the faces either
+/// side of a ring beside it.
+fn revolved_fillet_on(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    seat: crate::support::RevolvedSeat,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     let ball = seat.ball(radius);
     let tube_rho = ball.rho;
     if tube_rho <= tol.confusion() {

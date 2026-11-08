@@ -157,6 +157,22 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A rim's round takes a narrow ring beside it off whole, as a straight
+  edge's does.** (#719)
+  - A chamfered or small-rounded rim of a boss, rounded larger, was refused:
+    the ball sets back past the narrow ring.
+  - Where the ring, a coaxial cone or torus, lies wholly in the corner the
+    ball rolling between the cap and the wall takes off, the round is the
+    torus band of the circle where the cap's plane meets the wall, and the
+    ring goes with the corner. Every condition is read in closed form in the
+    rim's section; the ring's sides may be arcs of their circles, as a
+    boolean leaves them, together turning the whole turn.
+  - It is tried only where the rim's own round is refused, the rim beside a
+    small round included, which meets the cap tangentially.
+  - A drum of radius 10 chamfered 0.5, then rounded 3 from either edge of
+    the chamfer, or first rounded 0.5, matches the plain drum rounded 3
+    within 1e-6.
+
 - **A drill lowered under a plate top past the confusion distance now
   cuts for every seam direction from 2e-6 to ten microns.**
   - `nist_ctc_03`'s plate-top drill lowered by 2e-6, 5e-6 and 1e-5, its
