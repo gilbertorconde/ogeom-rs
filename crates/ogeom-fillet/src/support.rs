@@ -773,15 +773,7 @@ fn circle_covered(
     frame: &Frame,
     tol: Tolerances,
 ) -> OgeomResult<bool> {
-    use core::f64::consts::TAU;
     let reach = tol.confusion() * 100.0;
-    let angle_of = |p: Point| {
-        let local = frame.to_local(p);
-        local.y.atan2(local.x)
-    };
-    // Each arc as its start and its sweep, turning positively about the
-    // frame's axis.
-    let mut arcs: Vec<(f64, f64)> = Vec::new();
     let axis = circle.frame().z().vector();
     let mut on_walls: Vec<Shape> = Vec::new();
     for face in ogeom_topo::explore_unique(model, solid, ShapeType::Face)? {
@@ -818,7 +810,29 @@ fn circle_covered(
             on_walls.extend(ogeom_topo::explore_unique(model, &face, ShapeType::Edge)?);
         }
     }
-    for edge in on_walls {
+    edges_cover(model, on_walls, circle, frame, tol)
+}
+
+/// Whether the arcs of `edges` on `circle` run its whole turn between
+/// them, each edge's arc taken as angles about `frame`, whose origin is the
+/// circle's centre; edges off the circle are passed over.
+pub(crate) fn edges_cover(
+    model: &Model,
+    edges: Vec<Shape>,
+    circle: &Circle,
+    frame: &Frame,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    use core::f64::consts::TAU;
+    let reach = tol.confusion() * 100.0;
+    let angle_of = |p: Point| {
+        let local = frame.to_local(p);
+        local.y.atan2(local.x)
+    };
+    // Each arc as its start and its sweep, turning positively about the
+    // frame's axis.
+    let mut arcs: Vec<(f64, f64)> = Vec::new();
+    for edge in edges {
         let Ok((Curve::Circle(c), range)) = edge_curve(model, &edge, tol) else {
             continue;
         };
@@ -965,58 +979,16 @@ pub(crate) fn revolved_flanks(
         }
     };
 
-    let annulus = {
-        let plane = Plane::through(seat.centre, Direction::new(seat.up * seat.tau, tol)?);
-        let reach = (seat.radius + wall_depth + cap_rho) * 2.0;
-        let surface: SurfaceGeometry =
-            PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
-        // Both rings turn about `up`. The wider is the outer boundary and
-        // turns positively about the face's normal, the narrower the hole
-        // and turns against it, so the face keeps itself on their left.
-        let (wide, narrow) = if cap_rho > seat.radius {
-            (&cap_ring, &apex_ring)
-        } else {
-            (&apex_ring, &cap_ring)
-        };
-        let with_normal = seat.tau > 0.0;
-        let turned = |ring: &Shape, positive: bool| {
-            if positive == with_normal {
-                ring.clone()
-            } else {
-                ring.reversed()
-            }
-        };
-        let outer = ogeom_algo::make_wire(model, &[turned(wide, true)], tol)?.shape;
-        let inner = ogeom_algo::make_wire(model, &[turned(narrow, false)], tol)?.shape;
-        let face = ogeom_algo::make_face(model, surface.clone(), &[outer, inner], tol)?.shape;
-        let surface_id = {
-            let Some(node) = model.node(&face) else {
-                ogeom_bail!(Dangling, "the face just built is not in this model");
-            };
-            let NodeData::Face(data) = node.data() else {
-                ogeom_bail!(Construction, "the face holds no face data");
-            };
-            data.surface
-        };
-        for pedge in explore(model, &face, Filter::OfType(ShapeType::Edge))? {
-            let (curve, prange) = edge_curve(model, &pedge, tol)?;
-            let Some(pcurve) = ogeom_intersect::exact_pcurve_of(&curve, &surface, tol) else {
-                ogeom_bail!(
-                    Construction,
-                    "an annulus edge has no closed-form pcurve on its plane"
-                );
-            };
-            ogeom_algo::attach_pcurve(
-                model,
-                &pedge,
-                pcurve,
-                surface_id,
-                ogeom_topo::Location::identity(),
-                prange,
-            )?;
-        }
-        face
-    };
+    let annulus = revolved_annulus(
+        model,
+        seat.centre,
+        seat.up,
+        seat.tau,
+        (seat.radius, cap_rho),
+        (seat.radius + wall_depth + cap_rho) * 2.0,
+        (&apex_ring, &cap_ring),
+        tol,
+    )?;
 
     Ok(RevolvedFlanks {
         wall_band,
@@ -1024,6 +996,75 @@ pub(crate) fn revolved_flanks(
         wall_ring,
         cap_ring,
     })
+}
+
+/// The annulus of a revolved wedge's cap: the plane through `centre`
+/// square to `up` between the rim of radius `radii.0` and the contact ring
+/// of radius `radii.1`, both rings given, facing `up * tau`, its chart
+/// reaching `reach` each way.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the seat's parts, read by two seats"
+)]
+pub(crate) fn revolved_annulus(
+    model: &mut Model,
+    centre: Point,
+    up: Vector,
+    tau: f64,
+    (radius, cap_rho): (f64, f64),
+    reach: f64,
+    (apex_ring, cap_ring): (&Shape, &Shape),
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let plane = Plane::through(centre, Direction::new(up * tau, tol)?);
+    let surface: SurfaceGeometry =
+        PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
+    // Both rings turn about `up`. The wider is the outer boundary and
+    // turns positively about the face's normal, the narrower the hole
+    // and turns against it, so the face keeps itself on their left.
+    let (wide, narrow) = if cap_rho > radius {
+        (cap_ring, apex_ring)
+    } else {
+        (apex_ring, cap_ring)
+    };
+    let with_normal = tau > 0.0;
+    let turned = |ring: &Shape, positive: bool| {
+        if positive == with_normal {
+            ring.clone()
+        } else {
+            ring.reversed()
+        }
+    };
+    let outer = ogeom_algo::make_wire(model, &[turned(wide, true)], tol)?.shape;
+    let inner = ogeom_algo::make_wire(model, &[turned(narrow, false)], tol)?.shape;
+    let face = ogeom_algo::make_face(model, surface.clone(), &[outer, inner], tol)?.shape;
+    let surface_id = {
+        let Some(node) = model.node(&face) else {
+            ogeom_bail!(Dangling, "the face just built is not in this model");
+        };
+        let NodeData::Face(data) = node.data() else {
+            ogeom_bail!(Construction, "the face holds no face data");
+        };
+        data.surface
+    };
+    for pedge in explore(model, &face, Filter::OfType(ShapeType::Edge))? {
+        let (curve, prange) = edge_curve(model, &pedge, tol)?;
+        let Some(pcurve) = ogeom_intersect::exact_pcurve_of(&curve, &surface, tol) else {
+            ogeom_bail!(
+                Construction,
+                "an annulus edge has no closed-form pcurve on its plane"
+            );
+        };
+        ogeom_algo::attach_pcurve(
+            model,
+            &pedge,
+            pcurve,
+            surface_id,
+            ogeom_topo::Location::identity(),
+            prange,
+        )?;
+    }
+    Ok(face)
 }
 
 /// Whether `probe` sits strictly inside the face's trim.
