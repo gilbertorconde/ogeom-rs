@@ -91,6 +91,31 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A drill lowered under a plate top past the confusion distance now
+  cuts for every seam direction from 2e-6 to ten microns.**
+  - `nist_ctc_03`'s plate-top drill lowered by 2e-6, 5e-6 and 1e-5, its
+    seam in each of eight directions, was refused ("the kept pieces did not
+    close into a shell") at 2e-6 and 5e-6 for every seam, and at 1e-5 with
+    its seam on the top line. All 24 placements now cut, their commons
+    within the depth times the drill's surface of the touching drill's and
+    within the confusion distance times its wall of one another.
+  - An exact section crossing an exact edge is read as the edge's end only
+    within the edge's and its vertices' own radii of the end, or within
+    the width a section runs along an edge at, not within ten microns:
+    the drum's top line crosses the wall's side edge 2e-6 under the
+    corner, and the wall's strip between the line and its top edge is now
+    split off.
+  - A crossing on an edge's curve past the edge's range, off the edge by
+    more than the weld, no longer stops the section: a line under a
+    round's tangent edge crosses the circle of the round's end arc either
+    side of the arc's end, and only one crossing is on the arc. A seam's
+    crossings are read as before.
+  - Two sections through one face no longer cut each other where the other
+    lies off its other face, beside a tight shared edge as beside a loose
+    one: the round's cylinder meets the drum past the round's end too.
+  - Lowered by 2e-7 for every seam, and by 1e-6 with its seam on the top
+    line, the drill is still refused (see docs/PLAN.md).
+
 - **`fillet_edges` refuses overlapping bands on a plate built as a prism,
   as it does on the same plate built as a box.** (#721)
   - A prism's top face is its bottom face placed up the sweep, sharing the
