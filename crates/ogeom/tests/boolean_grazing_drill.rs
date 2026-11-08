@@ -1044,6 +1044,22 @@ fn a_drill_lowered_under_a_plate_top_past_the_hug_width_cuts() {
 }
 
 /// The drill of [`a_drill_lowered_under_a_plate_top_past_the_hug_width_cuts`]
+/// lowered by 1e-6 with its seam on the top line. The top line hugs the
+/// walls' top edges, and the drum's section with the face across each
+/// wall's side ends a micron under that face's corner, where it is read
+/// as the corner. Its end in that face's chart stands beside the corner
+/// by that micron, a hair past the face's node snap: welded only at the
+/// snap the end dangled, was pruned, and the face was not split. Cut,
+/// common and drill less the part are valid and add up to the part and
+/// the drill.
+#[test]
+fn a_drill_seamed_on_its_top_line_lowered_a_micron_under_a_plate_top_cuts() {
+    let (model, part) = corpus_part("nist_ctc_03_asme1_rc.stp");
+    let mut model = model;
+    plate_top_drill(&mut model, &part, Vector::new(0.0, 0.0, 1.0), -1e-6);
+}
+
+/// The drill of [`a_drill_lowered_under_a_plate_top_past_the_hug_width_cuts`]
 /// lowered by 5e-6, its seam on the top line. The top line crosses the
 /// circle of each round's end arc twice, 9e-3 either side of the arc's
 /// end, and the round's cylinder meets the drum on both sides of the
@@ -1060,7 +1076,7 @@ fn a_drill_seamed_on_its_top_line_lowered_under_a_plate_top_cuts() {
 }
 
 /// The drill of [`drills_lowered_under_a_plate_top_past_the_confusion_distance_cut`]
-/// lowered by 2e-6 to 1e-5, past the width a section runs along an edge
+/// lowered by 1e-6 to 1e-5, from the width a section runs along an edge
 /// at, its seam turned through the eight directions
 /// of [`drills_a_hair_off_a_plate_top_running_into_a_round_cut_as_the_touching_one`].
 /// Every placement is valid and adds up to the part and the drill (see
@@ -1075,7 +1091,7 @@ fn drills_lowered_under_a_plate_top_past_the_hug_width_cut() {
     let wall = core::f64::consts::TAU * r * length;
     let surface = core::f64::consts::TAU * r * r + wall;
     let touching = plate_top_drill(&mut base.clone(), &part, Vector::new(0.0, 0.0, -1.0), 0.0);
-    for dz in [-2e-6, -5e-6, -1e-5] {
+    for dz in [-1e-6, -2e-6, -5e-6, -1e-5] {
         let mut commons = Vec::new();
         for k in 0..8 {
             let a = core::f64::consts::FRAC_PI_4 * f64::from(k);

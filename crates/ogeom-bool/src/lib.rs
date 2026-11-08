@@ -12179,6 +12179,28 @@ fn general_fuse_as(
                 let mut weld = doubt_at(face, q, tol)?.max(near);
                 if let Tag::Section { section, .. } = st.tag {
                     weld = weld.max(doubt_at(other(section), q, tol)?);
+                    // An exact section's stop read at an exact edge's end
+                    // vertex (see the crossings in [`fill`]) stands beside
+                    // the vertex by as far as the section passes it, up to
+                    // the weld that read it there, and is that vertex.
+                    let s = &sections[section];
+                    if s.tolerance <= 0.0 && exact(&s.curve) {
+                        let reach = tol.confusion();
+                        for e in face
+                            .edges
+                            .iter()
+                            .filter(|e| e.image.is_none() && exact(&e.curve))
+                        {
+                            let read_at = (reach + e.tolerance.max(e.ends_tolerance))
+                                .max(tol.confusion() * 10.0);
+                            for end_t in [e.crange.0, e.crange.1] {
+                                let gap = e.curve.point_at(end_t, tol)?.distance(q);
+                                if gap <= read_at {
+                                    weld = weld.max(gap + tol.confusion());
+                                }
+                            }
+                        }
+                    }
                 }
                 // A contact's end is its own edge's end vertex, within that
                 // vertex's radius, as an edge of this face ends at its own.
