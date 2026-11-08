@@ -200,12 +200,6 @@ They refuse (`curved_face_blends_refuse_by_name` in `tests/blends.rs`,
   on the face's surface only where it lands inside the trim, so a face
   whose nearest interior point is not its surface's is read from its
   edges.
-- with `trim`, a closed line of contact across the seam of a closed B-spline
-  face whose chart does not wrap round (a tube swept from a B-spline ring):
-  `split_face` brings a trace back by a period only on a periodic chart, so
-  the cut does not part the face into pieces covering it once. Owed: the
-  line cut at the seam on such a chart, or the face restated on a periodic
-  one.
 
 **An edge round whose ball is wider than a face it rounds.** `fillet_edge`
 refuses where the ball's contact on one of the edge's faces stands past

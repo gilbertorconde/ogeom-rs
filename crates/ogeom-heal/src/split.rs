@@ -5,9 +5,10 @@
 //! where it carries one on the surface, the exact or fitted one where it
 //! lies on the surface, or, for a projection, the curve through its landed
 //! points fitted together with their chart positions, so curve and trace
-//! share a parameter. A trace leaving the face's window of a periodic chart
-//! is cut there and brought back by a period, and the pieces of all the
-//! curves are chained end to end into paths.
+//! share a parameter. A trace leaving the face's window of a chart that
+//! wraps round (it repeats, or its two sides are one line of points) is cut
+//! there and brought back by a period, and the pieces of all the curves are
+//! chained end to end into paths.
 //!
 //! Each path is then cut where it meets the face's boundary, and each
 //! stretch of it inside the face divides the face it runs through: a
@@ -503,21 +504,26 @@ fn segment(
     })
 }
 
-/// The periods of the surface's chart, zero where a direction is not
-/// periodic.
-fn periods(surface: &SurfaceGeometry) -> (f64, f64) {
+/// The periods of the surface's chart, zero where a direction does not
+/// wrap round. A direction wraps where the chart repeats or where its two
+/// sides are one line of points (a tube swept from a closed B-spline ring):
+/// the surface reads a parameter past either side as one a domain's length
+/// back, so a trace crossing the seam runs on there.
+fn periods(surface: &SurfaceGeometry, tol: Tolerances) -> (f64, f64) {
     let ((u0, u1), (v0, v1)) = surface.domain();
+    let (wraps_u, wraps_v) = wraps(surface, tol);
     (
-        if surface.is_periodic_u() {
-            u1 - u0
-        } else {
-            0.0
-        },
-        if surface.is_periodic_v() {
-            v1 - v0
-        } else {
-            0.0
-        },
+        if wraps_u { u1 - u0 } else { 0.0 },
+        if wraps_v { v1 - v0 } else { 0.0 },
+    )
+}
+
+/// Whether each direction of the surface's chart wraps round: it repeats,
+/// or it closes on itself.
+fn wraps(surface: &SurfaceGeometry, tol: Tolerances) -> (bool, bool) {
+    (
+        surface.is_periodic_u() || surface.is_closed_u(tol),
+        surface.is_periodic_v() || surface.is_closed_v(tol),
     )
 }
 
@@ -533,7 +539,7 @@ fn unfold(
     window: Bounds,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Segment>> {
-    let (pu, pv) = periods(surface);
+    let (pu, pv) = periods(surface, tol);
     let mut parts = vec![segment];
     for (axis, period, (lo, hi)) in [(0, pu, window.0), (1, pv, window.1)] {
         if period <= 0.0 || !lo.is_finite() || !hi.is_finite() {
@@ -616,7 +622,7 @@ fn chain(
     surface: &SurfaceGeometry,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Cutter>> {
-    let (pu, pv) = periods(surface);
+    let (pu, pv) = periods(surface, tol);
     let meet = |a: &Segment, fa: f64, b: &Segment, fb: f64| -> OgeomResult<bool> {
         let reach = a.tolerance + b.tolerance + tol.confusion();
         if a.point(fa, tol)?.distance(b.point(fb, tol)?) > reach {
@@ -722,6 +728,7 @@ fn ray_hit(
     tol: Tolerances,
 ) -> OgeomResult<Option<(Point, f64, f64)>> {
     let ((u0, u1), (v0, v1)) = surface.domain();
+    let (wraps_u, wraps_v) = wraps(surface, tol);
     let hold = |x: f64, lo: f64, hi: f64, periodic: bool| {
         if periodic && hi > lo {
             lo + (x - lo).rem_euclid(hi - lo)
@@ -741,8 +748,8 @@ fn ray_hit(
         let Some(step) = j.lu().solve(&nalgebra::Vector3::new(-f.x, -f.y, -f.z)) else {
             return Ok(None);
         };
-        u = hold(u + step[0], u0, u1, surface.is_periodic_u());
-        v = hold(v + step[1], v0, v1, surface.is_periodic_v());
+        u = hold(u + step[0], u0, u1, wraps_u);
+        v = hold(v + step[1], v0, v1, wraps_v);
         s += step[2];
     }
     let at = surface.point_at(u, v, tol)?;
@@ -866,7 +873,7 @@ fn projected(
         chart.push(uv);
         seed = Some(uv);
     }
-    unwrap(&mut chart, surface);
+    unwrap(&mut chart, surface, tol);
     let (fitted, trace, _) =
         ogeom_geom::fit::fit_points_joint(&points, &chart, &chart, 3, tol.confusion(), tol)?;
     let error = fitted.error;
@@ -883,10 +890,10 @@ fn projected(
     )
 }
 
-/// Undo the folding a periodic chart applies: every step longer than half a
-/// period is that period the other way.
-fn unwrap(chart: &mut [Point2], surface: &SurfaceGeometry) {
-    let (pu, pv) = periods(surface);
+/// Undo the folding a chart that wraps round applies: every step longer
+/// than half a period is that period the other way.
+fn unwrap(chart: &mut [Point2], surface: &SurfaceGeometry, tol: Tolerances) {
+    let (pu, pv) = periods(surface, tol);
     for k in 1..chart.len() {
         let previous = chart[k - 1];
         let here = &mut chart[k];

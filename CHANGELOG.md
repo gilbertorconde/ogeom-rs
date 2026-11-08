@@ -266,6 +266,22 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`split_face` cuts across the seam of a chart that closes on itself
+  without repeating, and a trimmed round of a B-spline tube's foot
+  builds.**
+  - A face on a closed B-spline surface whose chart does not repeat (a tube
+    swept from a closed B-spline ring) was cut only where a trace stayed
+    inside its domain. A closed line of contact round it crossed the seam
+    and the cut failed, so `fillet_faces` with `trim` refused it ("its
+    chart does not wrap round").
+  - A direction whose two sides are one line of points now wraps as a
+    repeating one does, as the surface itself already reads a parameter
+    past either side. A trace crossing the seam is cut there and brought
+    back by the domain's length.
+  - The round of that tube's foot on a floor, at r 1, trimmed: the floor
+    keeps 349.7345230 against 400 - 16π = 349.7345175 (the marched rail's
+    fit), the tube 94.2477796 against 30π to 5e-13.
+
 - **A drill lowered 2e-7 under a plate top now cuts for every seam
   direction.**
   - `nist_ctc_03`'s plate-top drill lowered by 2e-7 was refused ("the

@@ -2773,19 +2773,41 @@ fn face_rounds_refuse_by_name() {
     .shape;
     let said = refusal(fillet_faces(&mut model, &a, &copy, 1.0, true, T));
     assert!(said.contains("parallel"), "{said}");
+}
 
-    // An upright tube swept from a B-spline ring stands on a closed
-    // B-spline surface whose chart does not wrap round: the ball's line of
-    // contact round it crosses the seam, and the face cut along it does
-    // not part into pieces covering it once, or is not cut at all.
-    // Untrimmed, the round stands.
+/// An upright tube swept from a B-spline ring stands on a closed B-spline
+/// surface whose chart closes on itself without repeating. The ball's line
+/// of contact round its foot crosses the seam, and the tube is cut along
+/// it as a repeating chart's tube is: the floor keeps all but the disc of
+/// radius 4 the round stands on, the tube all but its foot below height 1.
+#[test]
+fn a_spline_tube_on_a_floor_rounds_trimmed_across_its_seam() {
     let mut model = Model::new();
     let floor = floor_rectangle(&mut model, (-10.0, 10.0), (-10.0, 10.0));
     let (sheet, _) = tube_on_floor_as(&mut model, true);
     let tube = face_where(&model, &sheet, |s| !matches!(s, SurfaceGeometry::Plane(_)));
-    let said = refusal(fillet_faces(&mut model, &floor, &tube, 1.0, true, T));
-    assert!(said.contains("its chart does not wrap round"), "{said}");
-    assert!(fillet_faces(&mut model, &floor, &tube, 1.0, false, T).is_ok());
+    let built = fillet_faces(&mut model, &floor, &tube, 1.0, true, T).unwrap();
+    usable(&model, &built.shape);
+    let kept_floor = face_where(&model, &built.shape, |s| {
+        matches!(s, SurfaceGeometry::Plane(_))
+    });
+    let kept_tube = built
+        .history
+        .trace(&tube)
+        .first()
+        .cloned()
+        .expect("the tube is kept");
+    let (floor_area, tube_area) = (area(&model, &kept_floor), area(&model, &kept_tube));
+    let (floor_want, tube_want) = (400.0 - PI * 16.0, 2.0 * PI * 3.0 * 5.0);
+    eprintln!("floor {floor_area} against {floor_want}, tube {tube_area} against {tube_want}");
+    assert!(
+        (floor_area - floor_want).abs() < 1e-3,
+        "{floor_area} against {floor_want}"
+    );
+    assert!(
+        (tube_area - tube_want).abs() < 1e-3,
+        "{tube_area} against {tube_want}"
+    );
 }
 
 /// A floor whose far side notches back toward the corner, to within 1.5
