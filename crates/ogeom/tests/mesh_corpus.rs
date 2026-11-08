@@ -795,12 +795,12 @@ fn grid_point_on_a_diagonal_boundary() {
     assert_eq!(report.curved_faceted, 0, "{:?}", report.fallbacks);
 }
 
-/// The widest edge between a curved face and a planar face of three edges
-/// (a single facet, or a facet's worth of coplanar triangles) of a part
+/// The widest edge between a curved face and a planar face of `edges`
+/// edges or fewer (three for a single facet, four for two in one plane) of a part
 /// converted from its mesh at a thousandth of its diagonal, and the reach
 /// of that conversion: twenty coplanar distances, as far as a snapped curve
 /// may stand off its faces.
-fn widest_facet_seam(name: &str) -> (f64, f64) {
+fn widest_facet_seam(name: &str, edges: usize) -> (f64, f64) {
     let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
     let import = ogeom::io::read_step(&std::fs::read_to_string(path).unwrap(), T).unwrap();
     let model = import.document.model();
@@ -836,7 +836,7 @@ fn widest_facet_seam(name: &str) -> (f64, f64) {
         .iter()
         .filter(|e| {
             let faces = &owners[&e.node()];
-            faces.iter().any(|&(planar, n)| planar && n == 3)
+            faces.iter().any(|&(planar, n)| planar && n <= edges)
                 && faces.iter().any(|&(planar, _)| !planar)
         })
         .map(|e| {
@@ -858,19 +858,23 @@ fn widest_facet_seam(name: &str) -> (f64, f64) {
 /// mesh edge they share, and the line threaded along that edge stands off
 /// the curved face by the edge's sag, up to 0.05 to 0.1 on these parts
 /// against reaches of 0.004 to 0.02. Each such facet comes back as a fan
-/// onto the curved face, its seam lifted onto that face, and every edge
-/// between a curved face and a facet holds within the reach.
+/// onto the curved face, its seam lifted onto that face, and so does a
+/// facet sharing its plane with one other, taken out of it: every edge
+/// between a curved face and a plane of one or two facets holds within the
+/// reach. On the sliver part, a plane of two facets beside a torus keeps
+/// its seams at 0.019 against a reach of 0.004 and is held to its single
+/// facets alone.
 #[test]
 #[ignore = "heavy"]
 fn facets_beside_spline_pieces_meet_them_within_the_reach() {
-    for name in [
-        "nist_ctc_04_asme1_rd.stp",
-        "nist_ftc_07_asme1_rd.stp",
-        "nist_ftc_10_asme1_rb.stp",
-        "grid_point_on_a_diagonal_boundary.step",
-        "sliver_on_a_diagonal_of_the_grid.step",
+    for (name, edges) in [
+        ("nist_ctc_04_asme1_rd.stp", 4),
+        ("nist_ftc_07_asme1_rd.stp", 4),
+        ("nist_ftc_10_asme1_rb.stp", 4),
+        ("grid_point_on_a_diagonal_boundary.step", 4),
+        ("sliver_on_a_diagonal_of_the_grid.step", 3),
     ] {
-        let (widest, reach) = widest_facet_seam(name);
+        let (widest, reach) = widest_facet_seam(name, edges);
         assert!(
             widest <= reach,
             "{name}: an edge between a curved face and a facet stands {widest} off, \

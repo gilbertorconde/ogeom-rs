@@ -920,6 +920,15 @@ fn build_from(
                     continue;
                 }
                 Ok(Err(Replan::Fan(facets))) => {
+                    // A facet sharing its plane with another is taken out
+                    // into a plane of its own, which it is then alone in.
+                    for &t in &facets {
+                        let g = groups.of[t];
+                        if (0..triangles.len()).any(|u| u != t && groups.of[u] == g) {
+                            groups.of[t] = groups.carriers.len();
+                            groups.carriers.push(groups.carriers[g].clone());
+                        }
+                    }
                     groups.fans.extend(facets);
                     continue;
                 }
@@ -1547,6 +1556,19 @@ impl Groups {
     /// a wedge, two sides against curved faces and the third against a
     /// planar one.
     fn fan_at(&self, t: usize, triangles: &[[u32; 3]], adjacency: &Adjacency) -> Option<Fan> {
+        self.fan_apart(t, triangles, adjacency, false)
+    }
+
+    /// [`Groups::fan_at`], or with `apart` the fan the triangle would be
+    /// once taken out of its group into a plane of its own: the rest of
+    /// its group is then a planar neighbour like any other.
+    fn fan_apart(
+        &self,
+        t: usize,
+        triangles: &[[u32; 3]],
+        adjacency: &Adjacency,
+        apart: bool,
+    ) -> Option<Fan> {
         let g = *self.of.get(t)?;
         if !matches!(self.carriers.get(g), Some(Carrier::Plane(_))) {
             return None;
@@ -1555,6 +1577,7 @@ impl Groups {
         for (k, side) in sides.iter_mut().enumerate() {
             let o = self.of[adjacency.twin[3 * t + k]? / 3];
             match self.carriers.get(o) {
+                _ if o == g && apart => {}
                 _ if o == g => return None,
                 Some(Carrier::Curved(_)) => *side = Some(o),
                 Some(Carrier::Plane(_)) => {}

@@ -373,10 +373,17 @@ point carries onto both surfaces (a torus and a cylinder fitted to pieces of
 one spline blend) can stand 0.2 off, stated as its tolerance. A single facet
 whose seam with a curved face would be a chord wider than the reach is built
 as a fan onto that face instead (a wedge split at its corner first), its
-seam lifted onto the face: on `mesh_corpus` every edge between a curved face
-and a single facet then holds within the reach except on `nist_ctc_02`,
-whose widest (0.35) border two-triangle planes along a spline blend's tori.
-Design items, in order: those two-facet planes, which no fan takes; seams
+seam lifted onto the face. A plane of two facets gives up the one along such
+a seam into a plane of its own, which is then fanned the same way, the other
+then a facet alone. On `mesh_corpus` every edge between a curved face and a
+plane of one or two facets then holds within the reach except:
+
+- on `nist_ctc_02`, whose widest (0.25, down from 0.35) border single facets
+  beside its tori that are not yet fanned, the cause not yet read;
+- on the sliver part, where a plane of two facets beside a torus keeps
+  seams of 0.019 against a reach of 0.004.
+
+Design items, in order: those facets; seams
 between two curved faces fitted to one spline (a torus beside a cylinder at
 0.09, nearly tangent, no point on both); junction rules (Benière et al.
 2012: a junction stays only if its faces are pairwise adjacent, dangling
