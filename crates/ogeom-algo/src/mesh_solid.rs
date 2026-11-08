@@ -748,8 +748,15 @@ fn build(
     let mut start = found.groups.clone();
     let mut flat = found.flat;
     let mut first = found.first.clone();
+    // Face meshes kept across every build from these regions, and whether
+    // each body's volume held on the last build that measured it: most
+    // faces recur unchanged from one build to the next.
+    let kept = crate::mass::VolumeKept::default();
+    let mut held: Vec<bool> = Vec::new();
     loop {
-        let narrowing = match build_from(model, found, &start, flat, options, protected, tol)? {
+        let narrowing = match build_from(
+            model, found, &start, flat, options, protected, &kept, &mut held, tol,
+        )? {
             Ok(solid) => return Ok(solid),
             Err(narrowing) => narrowing,
         };
@@ -793,6 +800,8 @@ fn build_from(
     flat: f64,
     options: &MeshSolidOptions,
     protected: &[bool],
+    kept: &crate::mass::VolumeKept,
+    held: &mut Vec<bool>,
     tol: Tolerances,
 ) -> OgeomResult<Result<MeshSolid, Vec<usize>>> {
     let (points, triangles, adjacency) = (&found.points, &found.triangles, &found.adjacency);
@@ -847,9 +856,7 @@ fn build_from(
     let mut regrouped = Regrouped::default();
     let snaps = std::sync::Mutex::new(SnapCache::default());
     let images = std::sync::Mutex::new(ImageCache::default());
-    // Face meshes and areas kept across the builds: most faces recur
-    // unchanged.
-    let kept = crate::mass::VolumeKept::default();
+    // Areas kept across the builds: most faces recur unchanged.
     let areas = AreaCache::default();
     let shape = 'attempt: loop {
         // Plan until every curved face's boundary is exact, faceting the ones
@@ -961,7 +968,8 @@ fn build_from(
                                     &built,
                                     &bodies,
                                     flat,
-                                    &kept,
+                                    kept,
+                                    held,
                                     tol,
                                     &mut report,
                                 )

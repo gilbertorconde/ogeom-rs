@@ -88,6 +88,21 @@ pub(super) fn assemble(
 /// the face still be taken to cover what they do.
 const AREA_ASTRAY: f64 = 1.5;
 
+/// How many steps per halving the grid a body's volume is first measured
+/// on has: the first measurement is at most a twelfth finer than the
+/// allowance asks (two to the eighth root), and an allowance that drifts
+/// by less than that between builds mostly stays on one step.
+const MEASURE_STEPS: f64 = 8.0;
+
+/// The chord taken down to the grid of [`MEASURE_STEPS`] per halving: the
+/// largest power of two to an eighth that is no coarser. A chord the grid
+/// cannot be read for is its own.
+fn on_grid(chord: f64) -> f64 {
+    ((chord.log2() * MEASURE_STEPS).floor() / MEASURE_STEPS)
+        .exp2()
+        .min(chord)
+}
+
 /// The recognized regions to facet so every body of the result is sound: a
 /// recognized face turned into the material gives up its region, and a
 /// body whose volume is not
@@ -95,7 +110,8 @@ const AREA_ASTRAY: f64 = 1.5;
 /// facets, gives up all of its recognized regions (a face closed over the
 /// wrong part of its surface passes every local test and is caught only
 /// there). Other bodies keep theirs. Returned with which of the two it
-/// was.
+/// was. `held` says, by each body's place, whether its volume held on the
+/// last build that measured it, and is brought up to date.
 #[allow(
     clippy::too_many_arguments,
     reason = "the build's own state, passed through"
@@ -109,6 +125,7 @@ pub(super) fn body_culprits(
     bodies: &[Body],
     flat: f64,
     kept: &crate::mass::VolumeKept,
+    held: &mut Vec<bool>,
     tol: Tolerances,
     report: &mut MeshSolidReport,
 ) -> OgeomResult<(Vec<usize>, FallbackReason)> {
@@ -132,7 +149,7 @@ pub(super) fn body_culprits(
         return Ok((culprits, FallbackReason::TurnedIn));
     }
     let mut culprits: Vec<usize> = Vec::new();
-    for body in bodies {
+    for (at, body) in bodies.iter().enumerate() {
         let own = own(body);
         if own.is_empty() {
             continue;
@@ -144,30 +161,53 @@ pub(super) fn body_culprits(
         // offset from their surfaces, whose error over the area is the
         // allowance again, counted in the slack.
         let chord = (allowance / area.max(f64::MIN_POSITIVE)).max(flat);
-        let deflection = ogeom_mesh::Deflection::with_chord(chord)?;
         // A body with a swept face is measured on its tessellation at that
         // chord: the exact integral over a fitted profile is held to far
         // finer than the slack asks, at far greater cost.
         let swept = own
             .iter()
             .any(|&g| matches!(&groups.carriers[g], Carrier::Curved(c) if matches!(c.shape, Canonical::Swept(_))));
-        let measured = if swept {
-            let (mesh, _, _) = ogeom_mesh::triangulate_with_face_meshes(
-                model,
-                &body.solid,
-                deflection,
-                Some(kept.meshes()),
-                tol,
-            )?;
-            mesh.volume()
-        } else {
-            crate::mass::volume_as_flagged(model, &body.solid, deflection, Some(kept), tol)?.mass
+        let measured = |chord: f64| -> OgeomResult<f64> {
+            let deflection = ogeom_mesh::Deflection::with_chord(chord)?;
+            Ok(if swept {
+                let (mesh, _, _) = ogeom_mesh::triangulate_with_face_meshes(
+                    model,
+                    &body.solid,
+                    deflection,
+                    Some(kept.meshes()),
+                    tol,
+                )?;
+                mesh.volume()
+            } else {
+                crate::mass::volume_as_flagged(model, &body.solid, deflection, Some(kept), tol)?
+                    .mass
+            })
         };
         // Measured at the facets' corners and edge middles, the allowance
         // misses the surface's rise inside a facet and a fitted boundary's
         // wander between the rows; twice over covers both.
         let slack = allowance * 2.0 + area * chord * 2.0 + diagonal.powi(3) * 1e-12;
-        if (measured - mesh_volume).abs() > slack {
+        let within = |chord: f64| -> OgeomResult<bool> {
+            Ok((measured(chord)? - mesh_volume).abs() <= slack)
+        };
+        // A body whose volume held on the last build is measured first at
+        // the chord taken down to the grid of [`MEASURE_STEPS`] per
+        // halving: no coarser than the slack allows for, so a body within
+        // it there is within it, and the same chord on every build whose
+        // allowance drifts within one step, so the faces that did not
+        // change are measured from the meshes kept. Any other body, and
+        // one that misses on the grid, is measured at the chord itself and
+        // stands or falls by that: a body that missed mostly misses again,
+        // and would be measured twice.
+        let gridded = on_grid(chord);
+        let first = gridded < chord && held.get(at).copied().unwrap_or(false);
+        let holds = (first && matches!(within(gridded), Ok(true))) || within(chord)?;
+        if held.len() <= at {
+            held.resize(at + 1, false);
+        }
+        held[at] = holds;
+        if !holds {
+            let deflection = ogeom_mesh::Deflection::with_chord(chord)?;
             // The sweeps answer first: the least proven of the fits. Only
             // where none is left does the body give up its recognition.
             let sweeps: Vec<usize> = own
@@ -344,4 +384,31 @@ fn volume_allowance(
         allowance += size * off;
     }
     (volume, allowance, area)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The grid a body is first measured on is never coarser than the chord
+    /// the slack was reckoned for (a coarser one would miss by more than the
+    /// slack allows), and never more than one step finer.
+    #[test]
+    fn a_chord_on_the_grid_is_no_coarser_and_at_most_a_step_finer() {
+        let step = (1.0 / MEASURE_STEPS).exp2();
+        let mut chord = 1e-9;
+        while chord < 1e3 {
+            let gridded = on_grid(chord);
+            assert!(gridded <= chord, "{gridded} above {chord}");
+            // Up to a few units in the last place: the step is read through
+            // a logarithm and a power, each rounded.
+            assert!(
+                gridded * step >= chord * (1.0 - 1e-12),
+                "{gridded} more than a step below {chord}"
+            );
+            chord *= 1.0137;
+        }
+        assert!(on_grid(f64::NAN).is_nan());
+        assert_eq!(on_grid(f64::INFINITY), f64::INFINITY);
+    }
 }

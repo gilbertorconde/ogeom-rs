@@ -55,6 +55,7 @@ use ogeom_topo::{EdgeRepr, Model, NodeData, Orientation, Shape};
 /// One pcurve piece of a boundary loop, walked from `t0` to `t1` and moved
 /// by `shift` in the chart: a whole number of periods where the walk
 /// crossed a periodic surface's join.
+#[derive(Clone)]
 struct Segment {
     edge: Shape,
     curve: PlanarCurve,
@@ -73,6 +74,7 @@ struct Segment {
 /// the lifted pcurve to its nearest point on the curve. The face, its
 /// strips and its neighbours' then close: what is left open is a gap no
 /// wider than the strip at each end of it.
+#[derive(Clone)]
 struct Ribbon {
     curve: Curve,
     range: (f64, f64),
@@ -323,6 +325,7 @@ impl Segment {
 /// A face as its surface and the closed chart loops that bound it, each
 /// with the sign that makes its enclosed region count positive for the
 /// face's outer boundary and negative for a hole.
+#[derive(Clone)]
 pub(crate) struct ChartFace {
     /// The surface placed as the face is less the placement's scale, which
     /// `split` applies to every sample.

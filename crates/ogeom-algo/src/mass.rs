@@ -265,12 +265,16 @@ pub(crate) fn volume_as_flagged(
 
 /// What measuring volumes keeps for the next shape asked about, for a
 /// caller measuring a run of shapes in which most faces recur unchanged:
-/// each face's mesh, and each face's closed-form integrals about a
-/// reference point. A face is known by its content (see
-/// [`ogeom_topo::face_content`]), which is everything either reads.
+/// each face's mesh, each face's regions as the closed forms take them, and
+/// each region's closed-form integrals about a reference point. A face is
+/// known by its content (see [`ogeom_topo::face_content`]), which is
+/// everything any of these reads.
 #[derive(Default)]
 pub(crate) struct VolumeKept {
     meshes: ogeom_mesh::FaceMeshCache,
+    /// By the face's content and the tolerances: its regions, or `None`
+    /// where the closed forms cannot take it.
+    regions: std::sync::Mutex<ogeom_core::FastMap<Vec<u8>, Option<Vec<ExactFace>>>>,
     /// By the face's content, the region's place among the face's regions
     /// and the reference's bits: the region's moments, or `None` where its
     /// integral did not settle.
@@ -281,6 +285,21 @@ impl VolumeKept {
     /// The face meshes kept, for a caller meshing the same faces.
     pub(crate) const fn meshes(&self) -> &ogeom_mesh::FaceMeshCache {
         &self.meshes
+    }
+
+    fn regions(&self, key: &[u8]) -> Option<Option<Vec<ExactFace>>> {
+        self.regions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .cloned()
+    }
+
+    fn keep_regions(&self, key: Vec<u8>, found: Option<Vec<ExactFace>>) {
+        self.regions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, found);
     }
 
     fn integral(&self, key: &[u8]) -> Option<Option<Moments>> {
@@ -484,6 +503,7 @@ fn probed_mesh_volume(
 ///
 /// A rectangle or a disc stands on its surface placed as the face is less
 /// the placement's scale, which `split` applies to every sample.
+#[derive(Clone)]
 enum ExactFace {
     /// `[u0, u1] x [v0, v1]` on the (placed) surface.
     ChartRectangle {
@@ -566,14 +586,36 @@ fn exact_volume_properties(
     let mut region_of: Vec<usize> = Vec::with_capacity(faces.len());
     // The faces no closed form speaks for, measured on their own meshes.
     let mut unspoken: Vec<usize> = Vec::new();
+    // Where anything is kept, each face is known by its content.
+    let contents: Vec<Option<Vec<u8>>> = match kept {
+        Some(_) => faces
+            .iter()
+            .map(|face| ogeom_topo::face_content(model, face))
+            .collect(),
+        None => vec![None; faces.len()],
+    };
     // Each face prepared on its own, and taken in the faces' order. A face
     // with no wires has no edge for the shell's closure to be read off, so
     // the divergence theorem is not told its boundary closes: its mesh is.
-    let prepared = ogeom_core::parallel::map_ordered(&faces, |_, face| {
+    let prepared = ogeom_core::parallel::map_ordered(&faces, |at, face| {
         if model.children_of(face)?.is_empty() {
             return Ok(None);
         }
-        integrable_face(model, face, tol)
+        let key = contents[at].as_ref().map(|content| {
+            let mut key = content.clone();
+            key.extend_from_slice(format!("{tol:?}").as_bytes());
+            key
+        });
+        if let (Some(kept), Some(key)) = (kept, &key)
+            && let Some(found) = kept.regions(key)
+        {
+            return Ok(found);
+        }
+        let found = integrable_face(model, face, tol);
+        if let (Some(kept), Some(key), Ok(found)) = (kept, key, &found) {
+            kept.keep_regions(key, found.clone());
+        }
+        found
     });
     for (at, (face, found)) in faces.iter().zip(prepared).enumerate() {
         // A face the closed forms cannot evaluate (a chart point a hair off
@@ -686,10 +728,6 @@ fn exact_volume_properties(
     // its place among the face's regions, and the reference.
     let keys: Vec<Option<Vec<u8>>> = match kept {
         Some(_) => {
-            let contents: Vec<Option<Vec<u8>>> = faces
-                .iter()
-                .map(|face| ogeom_topo::face_content(model, face))
-                .collect();
             let mut place = 0_u64;
             region_of
                 .iter()
