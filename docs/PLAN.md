@@ -323,15 +323,12 @@ states at a linear map of the curve's parameter; an ellipse turned other
 than by half turns; a conic on a chart stretched unevenly or on a line swept
 into a plane (whose chart here is the file's sheared where the sweep leans,
 taking a circle to an ellipse at a phase no conic here states; lines and
-splines on it are carried through the map and kept); and pcurves on a
-surface replica, whose chart here is not the file's stretched along each
-direction. What blocks each: a trace and a spline conversion have no linear
-map of the curve's parameter to state; the conics need a conic stated at a
-phase other than half turns from its major axis, which no conic here
-carries; a replica's chart is its parent's with each length parameter
-scaled by the operator's scale (its linear part is a rotation), which needs
-the rule for which of each surface kind's parameters are lengths, proven on
-a fixture whose every point is carried onto the replica. The writer still leaves out
+splines on it are carried through the map and kept). A surface replica's
+chart is its parent's with each length parameter scaled by the replica's
+scale, and its pcurves are restated so. What blocks each still derived: a
+trace and a spline conversion have no linear map of the curve's parameter to
+state; the conics need a conic stated at a phase other than half turns from
+its major axis, which no conic here carries. The writer still leaves out
 a reversed conic pcurve: written forward, it would ask other readers to
 take a pcurve at another pace than its curve.
 

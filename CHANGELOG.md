@@ -13,6 +13,17 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **STEP: a pcurve on a surface replica is kept.** A `SURFACE_REPLICA`'s
+  parameters are its parent's, carried by a rotation, a shift and a scale,
+  so each parameter that is a length here (a plane's two, a cylinder's and a
+  cone's height, an extrusion's sweep, a revolution's or an extrusion's line
+  or parabola parameter) is the file's times the scale, and an angle or a
+  spline's own parameter is the file's. The reader had no units for a
+  replica and derived every pcurve on one again. On a box and a drum written
+  with their pcurves and each face's surface restated as a replica scaled by
+  two and shifted, every pcurve is kept (the box 24, 12 before, 12 derived),
+  the solid valid at eight times the volume.
+
 - **`fillet_edges_with` rounds each edge of a request at its own
   radius.** (#713)
   - With one radius on every edge it is `fillet_edges`, bit for bit.

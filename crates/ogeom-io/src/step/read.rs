@@ -1592,7 +1592,9 @@ impl<'a> Reader<'a> {
     /// angle and `v` a length along the axis; a sphere's and a torus's are
     /// both angles; a spline's are its own; a revolution's are the angle
     /// round its axis and its curve's parameter; an extrusion's are its
-    /// curve's parameter and a length along its vector. `None` for a
+    /// curve's parameter and a length along its vector; a replica's are its
+    /// parent's, each that is a length scaled by the replica's scale (its
+    /// motion a rotation and a shift, never a reflection). `None` for a
     /// surface whose chart here is not the file's stretched along each
     /// direction (a line swept into a plane, whose sweep may lean on it:
     /// [`swept_line_chart`](Self::swept_line_chart) maps its chart).
@@ -1630,6 +1632,26 @@ impl<'a> Reader<'a> {
                 self.chart_units(ref_at(args, 1))
             }
             "SURFACE_OF_REVOLUTION" => Some((angle, self.curve_units(ref_at(args, 1))?)),
+            // A replica's parameters are its parent's; carried by a motion
+            // and a scaling, each of them that is a length here scales.
+            "SURFACE_REPLICA" => {
+                let parent = ref_at(args, 1);
+                let scale = self
+                    .args(ref_at(args, 2), "CARTESIAN_TRANSFORMATION_OPERATOR_3D")
+                    .ok()?
+                    .get(4)
+                    .and_then(Arg::number)
+                    .unwrap_or(1.0);
+                if !(scale > 0.0 && scale.is_finite()) {
+                    return None;
+                }
+                let (u, v) = self.chart_units(parent)?;
+                let (lu, lv) = self.length_parameters(parent)?;
+                Some((
+                    if lu { u * scale } else { u },
+                    if lv { v * scale } else { v },
+                ))
+            }
             "SURFACE_OF_LINEAR_EXTRUSION" => {
                 let along = self.curve_units(ref_at(args, 1))?;
                 let vector = self.args(ref_at(args, 2), "VECTOR").ok()?;
@@ -1648,6 +1670,92 @@ impl<'a> Reader<'a> {
                     _ => None,
                 }
             }
+            _ => None,
+        }
+    }
+
+    /// Whether each of a surface's parameters here is a length, which a
+    /// scaling of the surface scales: a plane's both, a cylinder's and a
+    /// cone's height, a revolution's curve parameter and an extrusion's
+    /// where it is the length along a line or a parabola's axis normal, an
+    /// extrusion's sweep; an angle and a spline's own parameter are not.
+    /// `None` for a surface [`chart_units`](Self::chart_units) does not
+    /// read.
+    fn length_parameters(&mut self, id: u64) -> Option<(bool, bool)> {
+        let (keyword, args) = {
+            let instance = self.instance(id).ok()?;
+            if [
+                "B_SPLINE_SURFACE",
+                "B_SPLINE_SURFACE_WITH_KNOTS",
+                "BEZIER_SURFACE",
+                "UNIFORM_SURFACE",
+                "QUASI_UNIFORM_SURFACE",
+            ]
+            .into_iter()
+            .any(|k| instance.part(k).is_some())
+            {
+                return Some((false, false));
+            }
+            (
+                instance.keyword().to_owned(),
+                instance
+                    .parts
+                    .first()
+                    .map_or_else(Vec::new, |(_, a)| a.clone()),
+            )
+        };
+        match keyword.as_str() {
+            "PLANE" => Some((true, true)),
+            "CYLINDRICAL_SURFACE" | "CONICAL_SURFACE" => Some((false, true)),
+            "SPHERICAL_SURFACE" | "TOROIDAL_SURFACE" | "DEGENERATE_TOROIDAL_SURFACE" => {
+                Some((false, false))
+            }
+            "OFFSET_SURFACE"
+            | "RECTANGULAR_TRIMMED_SURFACE"
+            | "CURVE_BOUNDED_SURFACE"
+            | "SURFACE_REPLICA" => self.length_parameters(ref_at(&args, 1)),
+            "SURFACE_OF_REVOLUTION" => Some((false, self.length_parameter(ref_at(&args, 1))?)),
+            "SURFACE_OF_LINEAR_EXTRUSION" => match self.surface(id).ok()?? {
+                SurfaceGeometry::Cylinder(_) => Some((false, true)),
+                SurfaceGeometry::Extrusion(_) => {
+                    Some((self.length_parameter(ref_at(&args, 1))?, true))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Whether a curve's parameter here is a length, which a scaling of the
+    /// curve scales: a line's and a parabola's; a conic's angle, a
+    /// hyperbola's and a spline's own parameter are not. `None` for a curve
+    /// [`curve_units`](Self::curve_units) does not read.
+    fn length_parameter(&mut self, id: u64) -> Option<bool> {
+        let (keyword, inner) = {
+            let instance = self.instance(id).ok()?;
+            if [
+                "B_SPLINE_CURVE",
+                "B_SPLINE_CURVE_WITH_KNOTS",
+                "BEZIER_CURVE",
+                "UNIFORM_CURVE",
+                "QUASI_UNIFORM_CURVE",
+            ]
+            .into_iter()
+            .any(|k| instance.part(k).is_some())
+            {
+                return Some(false);
+            }
+            let args = instance
+                .parts
+                .first()
+                .map_or(&[][..], |(_, a)| a.as_slice());
+            (instance.keyword().to_owned(), ref_at(args, 1))
+        };
+        match keyword.as_str() {
+            "LINE" | "PARABOLA" => Some(true),
+            "CIRCLE" | "ELLIPSE" | "HYPERBOLA" => Some(false),
+            "SURFACE_CURVE" | "SEAM_CURVE" | "INTERSECTION_CURVE" | "TRIMMED_CURVE"
+            | "OFFSET_CURVE_3D" => self.length_parameter(inner),
             _ => None,
         }
     }
