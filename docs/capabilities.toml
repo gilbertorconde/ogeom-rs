@@ -1180,7 +1180,10 @@ cylinder a radius about the edge, the band fitted through the balls' arcs \
 to the marched band's target with its rails on the face's plane and the \
 edge's line, where over the whole crease the ball rests on that edge \
 alone, its contact moving one way along it, touches the face within it, \
-comes within its radius of no other face and its sections do not cross. \
+comes within its radius of no other face and its sections do not cross \
+(an end face meeting the far edge's end, touched there by the end ball, \
+is clear of every ball); a ball that would reach the far edge of a face \
+beyond the strip (the lower step of a staircase) is refused by name. \
 Where the ball changes what it holds partway, the round is a chain of \
 such bands meeting tangent on the section where the ball holds three \
 things at once, each piece the ball's holding a face on each side (the \

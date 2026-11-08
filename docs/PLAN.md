@@ -252,7 +252,13 @@ solids are fused at a slant), the ball touches the other face and rests
 on the far edge, its centre on the ellipse where the plane a radius off
 that face meets the cylinder a radius about the edge, and where it rests
 on that edge alone over the whole crease the round is the band through
-its arcs (`rolled.rs`). Where the ball changes what it holds along the
+its arcs (`rolled.rs`); an end face meeting the far edge's end, touched
+there by the end ball, lies behind the plane through that contact square
+to the ball's radius and is clear of every ball. Owed there: a ball that
+reaches the far edge of a face beyond the strip as well (a wall on a
+staircase whose lower step comes within the radius, #720), whose round
+holds an edge of a face the seam does not bound and consumes the faces
+between. Where the ball changes what it holds along the
 crease, the round is a chain of bands meeting tangent where it holds
 three things at once (`carried.rs`): a face on each side (the cylinder
 between the planes), a face and the other face's edge (the ellipse), or a
