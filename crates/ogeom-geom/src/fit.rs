@@ -1009,8 +1009,10 @@ fn sampled<const D: usize, P>(
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
 /// tolerance is not a distance, the degree is zero or the parameters do not
-/// strictly increase with at least two; whatever `trace` or `on_surface`
-/// refuses.
+/// strictly increase with at least two; whatever `trace` refuses, and
+/// whatever `on_surface` refuses other than a position off the surface's
+/// domain, which a fitted image straying there misses by more than any
+/// distance and is refined away from.
 pub fn fit_trace_sampled(
     mut trace: impl FnMut(f64) -> OgeomResult<(Point, Point2)>,
     on_surface: impl Fn(Point2) -> OgeomResult<Point>,
@@ -1019,7 +1021,7 @@ pub fn fit_trace_sampled(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<(Fitted<BSplineCurve>, BSpline2d)> {
-    use crate::traits::{Curve2d as _, Curve3d as _};
+    use crate::traits::Curve3d as _;
     const MOST: usize = 1024;
     if !(tolerance > 0.0 && tolerance.is_finite()) {
         ogeom_bail!(Construction, "a tolerance of {tolerance} is not a distance");
@@ -1093,10 +1095,10 @@ pub fn fit_trace_sampled(
             )?;
             let mut off_at = |t: f64| -> OgeomResult<f64> {
                 let (p, _) = at(t)?;
-                let (c, s) = (
-                    curve.point_at(t, tol)?,
-                    on_surface(image.point_at(t, tol)?)?,
-                );
+                let c = curve.point_at(t, tol)?;
+                let Some(s) = lifted(&on_surface, &image, t, tol)? else {
+                    return Ok(f64::INFINITY);
+                };
                 Ok(c.distance(p).max(s.distance(p)).max(c.distance(s)))
             };
             let mut error = 0.0_f64;
@@ -1164,10 +1166,10 @@ pub fn fit_trace_sampled(
     if !read {
         let mut off_at = |t: f64| -> OgeomResult<f64> {
             let (p, _) = at(t)?;
-            let (c, s) = (
-                fitted.curve.point_at(t, tol)?,
-                on_surface(image.point_at(t, tol)?)?,
-            );
+            let c = fitted.curve.point_at(t, tol)?;
+            let Some(s) = lifted(&on_surface, &image, t, tol)? else {
+                return Ok(f64::INFINITY);
+            };
             Ok(c.distance(p).max(s.distance(p)).max(c.distance(s)))
         };
         let dense = read_densely(
@@ -1180,6 +1182,23 @@ pub fn fit_trace_sampled(
         fitted.error = fitted.error.max(dense.widest.0);
     }
     Ok((fitted, image))
+}
+
+/// The surface at a fitted chart image's position at `t`; `None` where the
+/// image strays off the surface's domain, a candidate that misses the
+/// trace by more than any distance.
+fn lifted(
+    on_surface: &impl Fn(Point2) -> OgeomResult<Point>,
+    image: &BSpline2d,
+    t: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Point>> {
+    use crate::traits::Curve2d as _;
+    match on_surface(image.point_at(t, tol)?) {
+        Ok(p) => Ok(Some(p)),
+        Err(ogeom_core::OgeomError::Domain(_)) => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 /// The tops of the peaks of a curve fit's miss beside its widest eighth

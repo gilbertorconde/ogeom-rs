@@ -19,7 +19,9 @@
 //! per unit of length, to the share of the accuracy asked that the whole
 //! length leaves it. A chart position is reached continuously along the
 //! sheet's straight line from the origin, so it runs on past a periodic
-//! seam unwrapped.
+//! seam unwrapped; a carried curve's chart curve is continued along the
+//! curve itself instead, so one going round a pole of the chart winds a
+//! whole period, as a parallel does.
 
 use core::f64::consts::PI;
 
@@ -256,13 +258,18 @@ impl SurfaceSheet {
     /// A line on a plane or a cylinder is carried exactly; anything else
     /// is fitted, half of `tolerance` left to the fit and half to the
     /// geodesics, and the fit is measured in space between its samples.
+    /// The chart curve is continued along the curve across every period
+    /// of the chart, so a curve going round a pole of the chart (a circle
+    /// about a sphere's pole) is one chart curve whose ends stand a whole
+    /// turn apart, as a parallel's do.
     ///
     /// # Errors
     ///
     /// As [`SurfaceSheet::chart_point`] at any point of the curve;
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
-    /// where `tolerance` is not a length or the fit cannot be held to it,
-    /// as for a curve passing round a pole of the chart.
+    /// where `tolerance` is not a length, where the curve runs through a
+    /// pole of the chart, so its chart curve cannot be continued along
+    /// it, or where the fit cannot be held to `tolerance`.
     pub fn chart_curve(
         &self,
         curve: &PlanarCurve,
@@ -290,17 +297,15 @@ impl SurfaceSheet {
             return Ok(BSpline2d::new(knots, control, tol)?.into());
         }
         let half = tolerance / 2.0;
-        let ts: Vec<f64> = (0..=8)
-            .map(|k| (range.1 - range.0).mul_add(f64::from(k) / 8.0, range.0))
-            .collect();
         let surface = &self.surface;
+        let lift = Unwrapped::along(self, curve, range, half)?;
         let (fitted, image) = ogeom_geom::fit::fit_trace_sampled(
             |t| {
-                let uv = self.landed(curve.point_at(t, tol)?, half)?;
+                let uv = lift.at(self, curve, t, half)?;
                 Ok((surface.point_at(uv.x, uv.y, tol)?, uv))
             },
             |uv| surface.point_at(uv.x, uv.y, tol),
-            &ts,
+            &lift.ts,
             3,
             half,
             tol,
@@ -309,8 +314,7 @@ impl SurfaceSheet {
             ogeom_bail!(
                 Construction,
                 "the carried curve's chart curve misses it by {:.3e}, over the {half:.3e} \
-                 asked: a curve passing round a pole of the surface's chart is not one \
-                 chart curve",
+                 asked",
                 fitted.error
             );
         }
@@ -621,6 +625,120 @@ impl SurfaceSheet {
         let gaussian = l.mul_add(n, -m * m) / det;
         Ok([a, b, accel_u, accel_v, y[5], -gaussian * y[4]])
     }
+}
+
+/// A carried curve's chart positions continued along it: each periodic
+/// chart coordinate taken at the period nearest its neighbours', read
+/// from a table of positions dense enough that no step between two of
+/// them turns by as much as a quarter of a period. A position away from
+/// the table is its ray's position moved by the whole periods that put it
+/// nearest the table's line between the samples either side.
+struct Unwrapped {
+    periods: [Option<f64>; 2],
+    ts: Vec<f64>,
+    uvs: Vec<Point2>,
+}
+
+impl Unwrapped {
+    /// The table along `curve` over `range`, positions to `accuracy`.
+    fn along(
+        sheet: &SurfaceSheet,
+        curve: &PlanarCurve,
+        range: (f64, f64),
+        accuracy: f64,
+    ) -> OgeomResult<Self> {
+        let surface = &sheet.surface;
+        let ((ua, ub), (va, vb)) = surface.domain();
+        let periods = [
+            surface.is_periodic_u().then_some(ub - ua),
+            surface.is_periodic_v().then_some(vb - va),
+        ];
+        let mut ts: Vec<f64> = (0..=64)
+            .map(|k| (range.1 - range.0).mul_add(f64::from(k) / 64.0, range.0))
+            .collect();
+        let mut seen: ogeom_core::FastMap<u64, Point2> = ogeom_core::FastMap::default();
+        loop {
+            let mut uvs: Vec<Point2> = Vec::with_capacity(ts.len());
+            for &t in &ts {
+                let ray = match seen.get(&t.to_bits()) {
+                    Some(uv) => *uv,
+                    None => {
+                        let uv = sheet.landed(curve.point_at(t, sheet.tol)?, accuracy)?;
+                        seen.insert(t.to_bits(), uv);
+                        uv
+                    }
+                };
+                uvs.push(match uvs.last() {
+                    Some(previous) => nearest(ray, *previous, periods),
+                    None => ray,
+                });
+            }
+            let mut next = Vec::with_capacity(ts.len() * 2);
+            for (k, pair) in ts.windows(2).enumerate() {
+                next.push(pair[0]);
+                let step = uvs[k + 1] - uvs[k];
+                let wide = [step.x, step.y]
+                    .iter()
+                    .zip(periods)
+                    .any(|(d, p)| p.is_some_and(|p| d.abs() > p / 4.0));
+                if wide {
+                    let middle = f64::midpoint(pair[0], pair[1]);
+                    if middle <= pair[0] || middle >= pair[1] {
+                        ogeom_bail!(
+                            Construction,
+                            "the carried curve runs through a pole of the surface's chart \
+                             near its parameter {middle}: its chart curve cannot be \
+                             continued along it"
+                        );
+                    }
+                    next.push(middle);
+                }
+            }
+            next.push(ts[ts.len() - 1]);
+            if next.len() == ts.len() {
+                return Ok(Self { periods, ts, uvs });
+            }
+            if next.len() > ogeom_geom::fit::SAMPLED_SPANS + 1 {
+                ogeom_bail!(
+                    Construction,
+                    "the carried curve runs through a pole of the surface's chart: its \
+                     chart curve turns too fast to be continued along it"
+                );
+            }
+            ts = next;
+        }
+    }
+
+    /// The continued chart position at `t`.
+    fn at(
+        &self,
+        sheet: &SurfaceSheet,
+        curve: &PlanarCurve,
+        t: f64,
+        accuracy: f64,
+    ) -> OgeomResult<Point2> {
+        let ray = sheet.landed(curve.point_at(t, sheet.tol)?, accuracy)?;
+        let last = self.ts.len() - 1;
+        let k = self.ts.partition_point(|s| *s <= t).clamp(1, last);
+        let (t0, t1) = (self.ts[k - 1], self.ts[k]);
+        let f = ((t - t0) / (t1 - t0)).clamp(0.0, 1.0);
+        let guide = self.uvs[k - 1] + (self.uvs[k] - self.uvs[k - 1]) * f;
+        let out = nearest(ray, guide, self.periods);
+        Ok(out)
+    }
+}
+
+/// `uv` moved by the whole periods that bring each periodic coordinate
+/// nearest `guide`'s.
+fn nearest(uv: Point2, guide: Point2, periods: [Option<f64>; 2]) -> Point2 {
+    let near = |x: f64, g: f64, p: Option<f64>| match p {
+        Some(p) => ((g - x) / p).round().mul_add(p, x),
+        None => x,
+    };
+    Point2::new(
+        near(uv.x, guide.x, periods[0]),
+        near(uv.y, guide.y, periods[1]),
+    )
 }
 
 /// The state `y` stepped `h` along the slope `k`.

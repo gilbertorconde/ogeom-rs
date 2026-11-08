@@ -419,10 +419,12 @@ unit of length. Lengths along lines through the origin are kept; \
 `distortion` reports the across-ray stretch over the points carried. \
 Carried curves are fitted chart curves whose lift stands within the \
 tolerance asked (a line on a plane or a cylinder is exact), continued \
-across periodic seams. Refused: an origin on a pole of the chart, a \
-sphere's reach to its origin's antipode, a point past the reach, on a \
-pole, off a bounded surface's domain or past a fold of the map; a curve \
-passing round a pole of the chart. The least-distortion flattening of \
+along the curve across periodic seams, so a curve going round a pole of \
+the chart is one chart curve winding a whole period. Refused: an origin \
+on a pole of the chart, a sphere's reach to its origin's antipode, a \
+point past the reach, on a pole, off a bounded surface's domain or past \
+a fold of the map; a curve running through a pole of the chart, whose \
+chart curve jumps there. The least-distortion flattening of \
 the covered region (as-rigid-as-possible or conformal) is not built: \
 `SheetMethod` has the geodesic method alone."""
 symbols = [

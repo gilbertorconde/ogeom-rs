@@ -69,6 +69,18 @@ bump may break the API and a patch bump may not.
     where it meets each moved end cap, past the old angles. Shrunk back by
     0.3, it returns 7.5861386 against 7.5861384.
 
+- **A sketch curve going round a chart pole lays onto the face.** (#729)
+  - `SurfaceSheet::chart_curve` continues the chart curve along the carried
+    curve itself across every period of the chart, rather than position by
+    position from the sheet's origin. A sheet circle round a sphere's pole
+    becomes one chart curve winding a whole turn of longitude, as a parallel
+    does, and `split_face` cuts the cap off with it.
+  - A circle of geodesic radius 3, laid 10° from the pole of a sphere of
+    radius 10, cuts off a cap within 1e-5 of the closed form
+    2πR²(1 − cos(3/R)). Before, it was refused.
+  - A curve running through the pole itself is still refused, with a reason
+    naming the pole.
+
 - **`fillet_edges_with` rounds each edge of a request at its own
   radius.** (#713)
   - With one radius on every edge it is `fillet_edges`, bit for bit.
@@ -280,6 +292,11 @@ bump may break the API and a patch bump may not.
     the part's or nearer (`nist_ftc_07` from 3.9e-7 to 6.8e-8 relative),
     and the other eleven parts of `mesh_corpus` come back the same to the
     bit.
+
+- **`fit_trace_sampled` refines past a fitted chart image that strays off
+  the surface's domain, rather than failing.** (#729) Such a candidate now
+  counts as missing the trace by more than any distance, and the fit
+  refines away from it. A fit held to its tolerance is unchanged.
 
 - **A rim's round takes a narrow ring beside it off whole, as a straight
   edge's does.** (#719)
