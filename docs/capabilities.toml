@@ -1281,8 +1281,12 @@ symbols = [
     "ogeom_fillet::chamfer_edge", "ogeom_fillet::chamfer_edge_distances",
     "ogeom_fillet::chamfer_edge_angle", "ogeom_fillet::chamfer_edges",
     "ogeom_fillet::chamfer_edges_with", "ogeom_fillet::Chamfer",
+    "ogeom_fillet::chamfer_edges_cornered", "ogeom_fillet::ChamferCorner",
 ]
-tests = ["crates/ogeom/tests/blends.rs", "crates/ogeom/tests/edge_chains.rs"]
+tests = [
+    "crates/ogeom/tests/blends.rs", "crates/ogeom/tests/edge_chains.rs",
+    "crates/ogeom-fillet/tests/chamfer_corner.rs",
+]
 
 [[capability]]
 id = "fillet.corners-2d"

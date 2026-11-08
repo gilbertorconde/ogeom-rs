@@ -521,7 +521,7 @@ pub fn largest_chamfer_distance(
 }
 
 /// The seat a chamfer stands on and how far its legs run along each face.
-enum Legs {
+pub(crate) enum Legs {
     /// A straight edge between planes, its legs along the seat's faces in
     /// order.
     Straight(Seat, [f64; 2]),
@@ -530,7 +530,7 @@ enum Legs {
 }
 
 /// Read one chamfer's seat and legs from `solid` as it stands.
-fn legs(
+pub(crate) fn legs(
     model: &Model,
     solid: &Shape,
     edge: &Shape,

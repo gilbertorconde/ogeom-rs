@@ -7,6 +7,7 @@ mod blame;
 pub mod bridge;
 mod carried;
 pub mod chamfer;
+mod chamfer_corner;
 mod consumed;
 mod consumed_rim;
 pub mod corner;
@@ -37,6 +38,7 @@ pub use chamfer::{
     Chamfer, chamfer_edge, chamfer_edge_angle, chamfer_edge_distances, chamfer_edges,
     chamfer_edges_with, largest_chamfer_distance,
 };
+pub use chamfer_corner::{ChamferCorner, chamfer_edges_cornered};
 pub use corner::round_vertex;
 pub use corner2d::{chamfer_corner_2d, fillet_corner_2d};
 pub use facepair::blend_faces;
