@@ -107,38 +107,6 @@ face blend's patch at a few ten-thousandths of a radian states up to
 between two samples lands tens of chords off their chord and is not
 filled in.
 
-**A drill lowered under a face past the confusion distance.** A drum
-touching a plane of the other part to within the confusion distance is
-the touching drill (see
-`drills_a_hair_off_a_plate_top_running_into_a_round_cut_as_the_touching_one`
-in `crates/ogeom/tests/boolean_grazing_drill.rs`), moved onto the plane
-with its seams, rims and caps. Lowered under `nist_ctc_03`'s plate top
-past it (the stress drill seed 2, drill 5 placement), its top line runs
-along the top edge of the wall the plate's round ends on and on along
-the round's end arc, and cuts from 2.5e-7 to 1e-5 for every seam
-direction
-(`drills_lowered_under_a_plate_top_past_the_confusion_distance_cut`,
-`drills_lowered_under_a_plate_top_past_the_hug_width_cut`). Lowered by
-2e-7 it is still refused for every seam direction ("the kept pieces did
-not close into a shell"). The top line passes 2e-7 under the top of the
-circle of each round's end arc, and the line meets that circle either
-side of the arc's end vertex, 2.5e-3 along. The dip equals the gap the
-line is met against the arc at (the section's reach and the arc's
-standoff), and on one wall `line_conic_3d` reads the line as not
-reaching deeper than that gap and hands the pair to the general solver.
-That solver returns one touch at the tangent point, the arc's end, with
-the two meeting points as its spread, and the stop is welded to the end
-vertex. The line's 2.5e-3 stretch along the arc past the vertex, which
-the round's own section with the drum reaches, is then dropped as
-outside the wall, and the two ends stand 2e-3 apart. On the other wall
-the same pair is solved in closed form, two crossings, and the stretch
-is kept as running along the arc. Resolving it needs a touch whose
-spread straddles an edge's end paved as the stretch of the edge it runs
-along, from the end to the spread's far point on the edge's range,
-rather than as a stop at the end.
-Raised through the plate top by 2e-7 to 1e-6 it cuts for every seam
-direction (`drills_raised_through_a_plate_top_cut_for_every_seam`).
-
 ### Fillets and blends
 
 **Curved face blends refused by name.** `blend_faces` and `fillet_faces`

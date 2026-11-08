@@ -6406,7 +6406,69 @@ fn fill(
                         ..cc
                     };
                     let found = intersect_curves(&section.curve, drawn, cc, tol)?;
-                    for crossing in &found.crossings {
+                    // Met at the edge's widened reach, an exact section that
+                    // dips under an exact edge's curve by no more than that
+                    // reach reads as touching it, the touch spread along the
+                    // valley. Where the valley takes in one of the edge's
+                    // ends, the touch is read at that end, and the stretch
+                    // of the valley on the edge, which the section runs along,
+                    // is lost. Met at the section's own reach the two cross
+                    // where they truly meet, either side of the valley's
+                    // bottom, and those crossings stand for the touch: the
+                    // one past the edge's end is beyond the edge and dropped
+                    // below, and the stretch from the other to the end runs
+                    // along the edge, as it does where the dip is deeper
+                    // than the widened reach and the crossings are found
+                    // in the first place.
+                    let near_an_end = |c: &ogeom_intersect::Crossing<Point>| -> OgeomResult<bool> {
+                        for end in [e.crange.0, e.crange.1] {
+                            if e.curve.point_at(end, tol)?.distance(c.point) <= c.reach {
+                                return Ok(true);
+                            }
+                        }
+                        Ok(false)
+                    };
+                    let mut crossings = found.crossings.clone();
+                    if section.tolerance <= 0.0
+                        && e.image.is_none()
+                        && exact(&section.curve)
+                        && exact(drawn)
+                        && edge_reach > reach
+                    {
+                        let mut touches = Vec::new();
+                        for c in &found.crossings {
+                            if c.reach > 0.0 && near_an_end(c)? {
+                                touches.push(*c);
+                            }
+                        }
+                        if !touches.is_empty() {
+                            let narrow = intersect_curves(
+                                &section.curve,
+                                drawn,
+                                CurveCurveOptions {
+                                    gap: reach.max(CurveCurveOptions::default().gap),
+                                    ..cc
+                                },
+                                tol,
+                            )?;
+                            let met: Vec<ogeom_intersect::Crossing<Point>> = narrow
+                                .crossings
+                                .into_iter()
+                                .filter(|n| {
+                                    n.reach <= 0.0
+                                        && n.gap <= reach
+                                        && touches
+                                            .iter()
+                                            .any(|t| t.point.distance(n.point) <= t.reach)
+                                })
+                                .collect();
+                            if !met.is_empty() {
+                                crossings.retain(|c| !touches.contains(c));
+                                crossings.extend(met);
+                            }
+                        }
+                    }
+                    for crossing in &crossings {
                         if crossing.gap > edge_reach {
                             continue;
                         }

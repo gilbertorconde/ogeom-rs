@@ -229,6 +229,25 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A drill lowered 2e-7 under a plate top now cuts for every seam
+  direction.**
+  - `nist_ctc_03`'s plate-top drill lowered by 2e-7 was refused ("the
+    kept pieces did not close into a shell") for every seam. Its top line
+    dips 2e-7 under the top of the circle of each round's end arc and
+    crosses it 1.8e-3 either side of the arc's end vertex. On one wall the
+    arc stands off its face by enough that, met at the edge's widened
+    reach, the dip reads as a touch along the valley, and the touch was
+    taken at the arc's end: the line stopped 1.8e-3 short of where the
+    round's own section meets it.
+  - Where an exact section touches an exact edge only within the edge's
+    widened reach and the touch takes in one of the edge's ends, the pair
+    is met again at the section's own reach, and the crossings found there
+    stand for the touch: the one past the edge's end is beyond the edge,
+    and the stretch from the other to the end runs along the edge, as on
+    the wall where the crossings are found in the first place.
+  - All eight seams cut, their commons 1.6e-3 off the touching drill's,
+    within the depth times the drill's surface (4.0e-2).
+
 - **A drill lowered a micron under a plate top with its seam on its top
   line now cuts.**
   - `nist_ctc_03`'s plate-top drill lowered by 1e-6, its seam on the top
@@ -320,8 +339,6 @@ bump may break the API and a patch bump may not.
   - Two sections through one face no longer cut each other where the other
     lies off its other face, beside a tight shared edge as beside a loose
     one: the round's cylinder meets the drum past the round's end too.
-  - Lowered by 2e-7 the drill is still refused, for every seam (see
-    docs/PLAN.md).
 
 - **`fillet_edges` refuses overlapping bands on a plate built as a prism,
   as it does on the same plate built as a box.** (#721)
