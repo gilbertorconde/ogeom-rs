@@ -1935,11 +1935,14 @@ run on to the border or to another such corner has its gluing spread along \
 its curves, every knot inside their strips doubled and the patches only \
 `C¹` across those knots, which meets 0.001 on clean caps of five, six and \
 seven patches. Where the \
-fit near tangent misses too, each held fit that missed is finished at its \
+fit near tangent misses too, each held fit that missed is finished from its \
 spans: the points re-taken at their nearest points on it (by the patch \
 across a shared side where a point lies past its own patch's side) while \
-that comes nearer them, for at most eight steps, the noise read once from \
-the fit at the seed's parameters; this meets 0.001 on the clean ball covered as a cube. A \
+that comes nearer them and the worst distance grows no worse, the fit \
+refined on after each step with points past their cells' spread counted as \
+misses, for at most eight steps, the noise read once from the fit at the \
+seed's parameters; this meets 0.001 on the clean ball covered as a cube and \
+the clean filleted box corner. A \
 clean cap of eight patches at 0.001 still misses (two points on its rim end \
 refinement as strays); there, the curves are fitted near tangent from the points, their angle \
 measured into `worst_tangent` and the corner's angle reported. A fan, a \

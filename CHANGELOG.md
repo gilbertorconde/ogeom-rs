@@ -13,6 +13,23 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A patch network that misses everywhere refines on as it finishes, so the
+  clean filleted box corner meets 0.001 exactly tangent.** (#653)
+  - Where every way of holding the corners missed and the near-tangent fit
+    did too, each held fit was finished at its spans only: its points
+    re-taken at their nearest points, at most eight steps. The clean box
+    corner with its three edge fillets at tolerance 0.001 stayed near
+    tangent, 2.0e-2 rad, its worst point 3.0e-3: each fillet kept one span
+    across, its worst points counted as strays.
+  - After each step the fit is now refined on, the noise's variance held
+    at the value read off the fit at the seed's parameters, and every patch
+    a point misses tried at more spans, strays too: on a clean scan a
+    cell's spread is the fit's own error. A step is also kept only where
+    the worst distance grows no worse.
+  - The filleted corner now meets 0.001 in four steps, tangent to
+    4.6e-14 rad, its worst point 8.5e-4. Fits that meet the tolerance any
+    other way are unchanged to the bit.
+
 - **`fillet_edges_checked` and `chamfer_edges_checked` name the request's
   edges a refusal concerns; `fillet_edges_partial` and
   `chamfer_edges_partial` build what can be built and leave the rest
