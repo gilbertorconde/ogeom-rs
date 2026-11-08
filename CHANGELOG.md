@@ -13,6 +13,18 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`chamfer_edges_cornered` closes a corner of three bevels with a facet.**
+  (#717)
+  - `ChamferCorner::Point` is `chamfer_edges_with`, the bevels mitred into
+    one point.
+  - With `ChamferCorner::Facet`, on each face two of the corner's bevels
+    share, their contact lines cross at a point. The tetrahedron between
+    those three points and the point the mitred bevels share is cut away.
+    Each bevel ends on the facet, and the corner is that triangle.
+  - A 20 × 20 × 10 box's corner of three 2 mm bevels gains one face. Its
+    volume is the mitre's less the tetrahedron on (1, 1, 1), (2, 2, 0),
+    (0, 2, 2) and (2, 0, 2), 2/3.
+
 - **STEP: a pcurve on a surface replica is kept.** A `SURFACE_REPLICA`'s
   parameters are its parent's, carried by a rotation, a shift and a scale,
   so each parameter that is a length here (a plane's two, a cylinder's and a
