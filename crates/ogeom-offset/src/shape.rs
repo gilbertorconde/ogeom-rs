@@ -15,11 +15,15 @@
 //! and the cut's same-domain resolution melts the flush faces away, which is
 //! what opens the shell.
 //!
-//! The honest limits, refused by name: faces whose surfaces are not among
-//! the five analytics (a spline, revolution, extrusion, trimmed or offset
-//! surface has no same-family parallel to move to, though a face something
-//! *replaces* (a draft's turned wall) rides through on the replacement and
-//! a face moved by nothing keeps its own surface whatever the family),
+//! A face on a surface outside the five analytics (a spline, revolution,
+//! extrusion, trimmed or offset surface) has no same-family parallel: it
+//! moves to a fit of its parallel at its own chart's parameters, run on
+//! past the face so its moved neighbours meet it, its poles moved along
+//! the limit of the normals there. The fit's
+//! measured deviation widens the moved face.
+//!
+//! The honest limits, refused by name: a free-form face moved past its
+//! radius of curvature (its parallel folds) or whose fit misses its bound,
 //! vertices whose seats leave them under-determined, and offsets that
 //! collapse the solid. Edges between moved supports re-derive exactly where
 //! a line or circle exists; anywhere else the pair's own intersection is
@@ -41,6 +45,19 @@ use ogeom_topo::{
 };
 
 use ogeom_core::FastMap;
+
+/// Whether `surface` is outside the five analytic families, its parallel
+/// a fit.
+fn is_free_form(surface: &SurfaceGeometry) -> bool {
+    !matches!(
+        surface,
+        SurfaceGeometry::Plane(_)
+            | SurfaceGeometry::Cylinder(_)
+            | SurfaceGeometry::Cone(_)
+            | SurfaceGeometry::Sphere(_)
+            | SurfaceGeometry::Torus(_)
+    )
+}
 
 /// The displacement constraint one face puts on a point of itself.
 type Displacement<'a> = dyn Fn(&Model, usize, Point) -> OgeomResult<Option<(Vector, f64)>> + 'a;
@@ -109,9 +126,12 @@ pub(crate) fn canonical_input(
 ///
 /// # Errors
 ///
-/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a face,
-/// edge or vertex falls outside the analytic vocabulary this rebuild speaks
-/// (see the module documentation), or the offset collapses the solid.
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if an
+/// edge or vertex falls outside what this rebuild re-derives, a free-form
+/// face is moved past its radius of curvature (see the module
+/// documentation), or the offset collapses the solid;
+/// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if a free-form
+/// face's parallel does not fit within its bound.
 pub fn offset_shape(
     model: &mut Model,
     solid: &Shape,
@@ -603,6 +623,9 @@ struct Prepared {
     rings: Option<[Shape; 2]>,
     /// Whether the face is a whole torus, bounded by its seams alone.
     whole_torus: bool,
+    /// How far a fitted parallel of a free-form face stands, at most, off
+    /// the exact one; zero for every other face.
+    fit_deviation: f64,
 }
 
 /// Rebuild a solid's topology on moved supports: the rebuild under both
@@ -684,6 +707,7 @@ pub(crate) fn rebuilt(
                     .is_some_and(|d| d.degenerate)
             });
         let grow = amount.abs() * 4.0 + 1.0;
+        let mut fit_deviation = 0.0;
         let replacement = instead_of(face);
         let moved: SurfaceGeometry = if let Some(given) = replacement {
             given
@@ -791,11 +815,18 @@ pub(crate) fn rebuilt(
                     )?
                     .into()
                 }
-                _ => ogeom_bail!(
-                    Construction,
-                    "offsetting a face on this surface needs a construction \
-                     the rebuild does not yet speak; see docs/CAPABILITIES.md, offset.shell-thicken"
-                ),
+                free_form => {
+                    let (fitted, deviation) = crate::freeform::moved_free_form(
+                        model,
+                        face,
+                        free_form,
+                        (sign, amount),
+                        grow,
+                        tol,
+                    )?;
+                    fit_deviation = deviation;
+                    fitted
+                }
             }
         };
         // A band rebuilds wholesale only on a surface of revolution; a
@@ -808,6 +839,7 @@ pub(crate) fn rebuilt(
             amount,
             sign,
             whole_torus,
+            fit_deviation,
             // A band needs a ring with an angle to anchor its chart; a whole
             // sphere, bounded by its two poles alone, is assembled wire by
             // wire like any other seamed face.
@@ -853,7 +885,16 @@ pub(crate) fn rebuilt(
         let n = du.cross(dv);
         let m = n.magnitude();
         if m <= tol.confusion() {
-            return Ok(None);
+            // A free-form face's pole moves along the limit of the normals
+            // approaching it, as its fitted parallel moved it; an analytic
+            // family's apex and pole are answered by the moved surface.
+            if prepared[fi].amount == 0.0 || !is_free_form(surface) {
+                return Ok(None);
+            }
+            let amount = prepared[fi].amount;
+            let along = amount * prepared[fi].sign;
+            return Ok(crate::freeform::limit_normal(surface, u, v, along, tol)?
+                .map(|n| (n * prepared[fi].sign, amount)));
         }
         let outward = n / m * prepared[fi].sign;
         Ok(Some((outward, prepared[fi].amount)))
@@ -1544,6 +1585,9 @@ pub(crate) fn rebuilt(
                 Construction,
                 "the offset cannot close a face it rebuilt: {why}"
             );
+        }
+        if prep.fit_deviation > tol.confusion() {
+            model.widen(&built, ogeom_core::Tolerance::new(prep.fit_deviation)?)?;
         }
         history.modify(&prep.shape, built.clone());
         rebuilt_faces.push(built);

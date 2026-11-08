@@ -41,6 +41,33 @@ bump may break the API and a patch bump may not.
     4.6e-14 rad, its worst point 8.5e-4. Fits that meet the tolerance any
     other way are unchanged to the bit.
 
+- **`offset_shape` offsets solids with free-form faces.** (Part of #710)
+  - A face on a B-spline, revolution, extrusion, trimmed or offset surface
+    was refused ("needs a construction the rebuild does not yet speak").
+    It now moves to a fit of its parallel at its own chart's parameters,
+    as `offset_sheet` fits one, and the edges and vertices re-derive
+    against its neighbours' moved surfaces as for the analytic faces.
+  - The fit runs on past the face, so moved neighbours meet it where a
+    corner opens. Inside the chart it runs on by the reach the analytic
+    faces are opened by. Past a side of the chart the face reaches, it
+    runs on along the surface's own continuation: a B-spline's end spans
+    as their polynomials, an extrusion along its direction and its
+    profile.
+  - A pole moves along the limit of the normals approaching it, read
+    from the mixed derivative, and only where that limit is one direction
+    all across it. The fit's measured deviation widens the moved face.
+  - An ellipsoid with semi-axes 5, 3 and 2 (a unit ball scaled) offsets
+    by +1 to a valid solid of volume 308.220178. The closed form of the
+    parallel surface gives 308.220161, and the fit states 1.2e-5. By -0.5
+    it gives 68.650644 against 68.650641. Its bounds are the moved
+    semi-axes within 1e-3.
+  - By -1 it is refused: that is past its smallest radius of curvature,
+    0.8 at the ends of its long axis, where the parallel folds. The inward
+    offset there is not that parallel: (4, 0, 0) lies 0.976 from the
+    surface.
+  - A prism over a cubic B-spline arch and a line, grown by 0.5 and shrunk
+    back by 0.5, returns 12.5999997 against 12.6.
+
 - **`fillet_edges_checked` and `chamfer_edges_checked` name the request's
   edges a refusal concerns; `fillet_edges_partial` and
   `chamfer_edges_partial` build what can be built and leave the rest
