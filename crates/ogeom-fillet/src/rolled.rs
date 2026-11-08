@@ -358,6 +358,7 @@ pub(crate) fn enters(ring: &[Point], normal: Vector, [p, q]: [Point; 2], margin:
 pub(crate) enum Run {
     Rolled(Rolled),
     Carried(crate::carried::Carried),
+    Stepped(crate::stepped::Stepped),
 }
 
 /// The run of a ball of `radius` rounding the concave straight `edge`
@@ -397,12 +398,21 @@ pub(crate) fn rolled_run(
             Err(e) => return Err(e),
         }
     }
-    let Some(named) = named else {
-        return Ok(None);
-    };
-    match crate::carried::carried_run(model, solid, edge, &seat, radius, tol)? {
-        Some(run) => Ok(Some(Run::Carried(run))),
-        None => Err(named),
+    if named.is_some()
+        && let Some(run) = crate::carried::carried_run(model, solid, edge, &seat, radius, tol)?
+    {
+        return Ok(Some(Run::Carried(run)));
+    }
+    // Clear of the narrow face's far edge, or past a concave one, the ball
+    // may rest on the far edge of a strip beyond it or touch the face the
+    // strips run into.
+    match (
+        crate::stepped::stepped_run(model, solid, edge, &seat, radius, tol)?,
+        named,
+    ) {
+        (Some(run), _) => Ok(Some(Run::Stepped(run))),
+        (None, Some(named)) => Err(named),
+        (None, None) => Ok(None),
     }
 }
 
@@ -910,6 +920,9 @@ pub(crate) fn rolled_fillet(
         Some(Run::Rolled(run)) => rolled_band(model, solid, edge, &run, radius, tol).map(Some),
         Some(Run::Carried(run)) => {
             crate::carried::carried_band(model, solid, edge, &run, radius, tol).map(Some)
+        }
+        Some(Run::Stepped(run)) => {
+            crate::stepped::stepped_band(model, solid, edge, &run, radius, tol).map(Some)
         }
     }
 }
