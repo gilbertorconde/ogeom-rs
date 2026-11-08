@@ -142,6 +142,59 @@ pub struct TrimmedCurve {
     reversed: bool,
 }
 
+impl Curve {
+    /// This curve over the wider parameter range `range`, tracing the same
+    /// points at the same parameters over its own domain and running on as
+    /// its own formula past it: a line, and a parabola, a hyperbola branch
+    /// or a helix running forward, over any range; a forward trim over any
+    /// range its basis holds. `None` for a curve whose formula does not
+    /// reach past its domain (a B-spline, an offset or surface curve), one
+    /// that repeats (a whole circle or ellipse has no end), one whose
+    /// reversal mirrors its parameters across its domain, or a range that
+    /// does not hold the domain.
+    #[must_use]
+    pub fn widened(&self, (lo, hi): (f64, f64)) -> Option<Self> {
+        let (a, b) = self.domain();
+        if !lo.is_finite() || !hi.is_finite() || lo > a || hi < b {
+            return None;
+        }
+        match self {
+            Self::Line(l) => Some(Self::Line(LineCurve {
+                domain: (lo, hi),
+                ..*l
+            })),
+            Self::Parabola(p) if !p.reversed => Some(Self::Parabola(ParabolaCurve {
+                domain: (lo, hi),
+                ..*p
+            })),
+            Self::Hyperbola(h) if !h.reversed => Some(Self::Hyperbola(HyperbolaCurve {
+                domain: (lo, hi),
+                ..*h
+            })),
+            Self::Helix(h) if !h.reversed => Some(Self::Helix(HelixCurve {
+                domain: (lo, hi),
+                ..*h
+            })),
+            Self::Trimmed(t) if !t.reversed => {
+                let (lo, hi) = if t.basis.is_periodic() {
+                    (lo, hi)
+                } else {
+                    let (ba, bb) = t.basis.domain();
+                    (lo.max(ba), hi.min(bb))
+                };
+                (lo < a || hi > b).then(|| {
+                    Self::Trimmed(Box::new(TrimmedCurve {
+                        basis: t.basis.clone(),
+                        domain: (lo, hi),
+                        reversed: false,
+                    }))
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
 impl LineCurve {
     /// A line along `axis`, spanning [`LINE_EXTENT`] either side of its origin.
     #[must_use]
@@ -3013,5 +3066,50 @@ mod conical_tests {
         let inside = curve.point_at(lo + 0.4, T).unwrap();
         let wrapped = curve.point_at(hi + 0.4, T).unwrap();
         assert!(inside.distance(wrapped) < 1e-9);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+mod widened_tests {
+    use super::*;
+    use ogeom_math::{Direction, Frame, Parabola};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// A line and a forward parabola widened trace the same points at the
+    /// same parameters over their old domain, and their own formula past
+    /// it; a reversed one, whose parameters mirror across its domain, and
+    /// a whole circle are not widened.
+    #[test]
+    fn a_curve_widens_as_its_own_formula_or_not_at_all() {
+        let line: Curve = LineCurve::segment(Point::ORIGIN, Point::new(3.0, 4.0, 0.0), T)
+            .unwrap()
+            .into();
+        let frame = Frame::new(Point::new(1.0, 2.0, 3.0), Direction::Z, Direction::X, T).unwrap();
+        let parabola: Curve = ParabolaCurve::new(Parabola::new(frame, 0.7, T).unwrap(), 2.0)
+            .unwrap()
+            .into();
+        for curve in [line, parabola] {
+            let (a, b) = curve.domain();
+            let wide = curve.widened((a - 1.5, b + 2.5)).expect("widens");
+            assert_eq!(wide.domain(), (a - 1.5, b + 2.5));
+            for k in 0..=8 {
+                let t = a + (b - a) * f64::from(k) / 8.0;
+                let gap = wide
+                    .point_at(t, T)
+                    .unwrap()
+                    .distance(curve.point_at(t, T).unwrap());
+                assert!(gap <= 1e-12, "{gap} at {t}");
+            }
+            assert!(curve.widened((a + 0.1, b)).is_none(), "a narrower range");
+            // A reversed line is a line along the other way, and widens.
+            let reversed = curve.reversed().widened((a - 1.0, b + 1.0));
+            assert_eq!(reversed.is_some(), matches!(curve, Curve::Line(_)));
+        }
+        let circle: Curve =
+            CircleCurve::new(ogeom_math::Circle::new(frame, 2.0, T).unwrap()).into();
+        let (a, b) = circle.domain();
+        assert!(circle.widened((a - 1.0, b + 1.0)).is_none());
     }
 }

@@ -446,3 +446,129 @@ fn a_spline_sided_prism_offsets_out_and_back() {
         "shrunk back to {got} against {before}"
     );
 }
+
+/// A quarter turn of a ring whose outer side is a cubic B-spline bulge:
+/// the profile in the `xz` plane runs up the bulge from (2, 0) to (2, 2),
+/// in to (1, 2), down to (1, 0) and out again, revolved a quarter turn
+/// about `z`. The bulge sweeps a revolution surface over the angles 0 to
+/// a quarter turn; the end caps are planes through the axis.
+fn bulged_quarter_ring(model: &mut Model) -> Shape {
+    use ogeom::geom::{BSplineCurve, Curve, LineCurve, PlaneSurface};
+    use ogeom::math::{Axis, KnotVector, Plane};
+    let at = [
+        Point::new(2.0, 0.0, 0.0),
+        Point::new(2.0, 0.0, 2.0),
+        Point::new(1.0, 0.0, 2.0),
+        Point::new(1.0, 0.0, 0.0),
+    ];
+    let v: Vec<Shape> = at
+        .iter()
+        .map(|p| ogeom::algo::make_vertex(model, *p).shape)
+        .collect();
+    let bulge = BSplineCurve::new(
+        KnotVector::clamped_uniform(3, 4).unwrap(),
+        vec![
+            at[0],
+            Point::new(2.8, 0.0, 0.6),
+            Point::new(2.8, 0.0, 1.4),
+            at[1],
+        ],
+        T,
+    )
+    .unwrap();
+    let mut edges = vec![
+        ogeom::algo::make_edge_between(model, Curve::BSpline(bulge), (0.0, 1.0), &v[0], &v[1], T)
+            .unwrap()
+            .shape,
+    ];
+    for i in 1..4 {
+        let (a, b) = (at[i], at[(i + 1) % 4]);
+        let line = LineCurve::segment(a, b, T).unwrap();
+        edges.push(
+            ogeom::algo::make_edge_between(
+                model,
+                Curve::from(line),
+                (0.0, a.distance(b)),
+                &v[i],
+                &v[(i + 1) % 4],
+                T,
+            )
+            .unwrap()
+            .shape,
+        );
+    }
+    let wire = ogeom::algo::make_wire(model, &edges, T).unwrap().shape;
+    let side = Plane::new(Frame::new(Point::ORIGIN, -Direction::Y, Direction::X, T).unwrap());
+    let plane = PlaneSurface::over(side, (-10.0, 10.0), (-10.0, 10.0)).unwrap();
+    let face = ogeom::algo::make_face(model, plane.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    let axis = Axis::new(Point::ORIGIN, Direction::Z);
+    ogeom::algo::make_revolution(model, &face, axis, PI / 2.0, T)
+        .unwrap()
+        .shape
+}
+
+/// The quarter ring grown: its end caps move out past the bulge's ends, so
+/// the bulge's parallel runs on round the axis past both of its angles,
+/// the revolution swept further, to meet them. Shrunk back, the ring
+/// returns.
+#[test]
+fn a_bulged_quarter_ring_offsets_out_and_back() {
+    let mut model = Model::new();
+    let ring = bulged_quarter_ring(&mut model);
+    let before = volume(&model, &ring);
+    let grown = ogeom::offset::offset_shape(&mut model, &ring, 0.3, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &grown, T).unwrap();
+    assert!(diagnosis.is_valid(), "grown: {diagnosis}");
+    // The bulge's parallel, a section `r(t), z(t)` turned about `z`: at the
+    // middle angle, and where it meets each moved end cap, a plane 0.3 off
+    // the old one, turned past the old angles by `asin(0.3 / r)`. Those
+    // corners lie on the grown solid only where the bulge swept on.
+    use ogeom::geom::Curve3d as _;
+    let bulge = ogeom::geom::BSplineCurve::new(
+        ogeom::math::KnotVector::clamped_uniform(3, 4).unwrap(),
+        vec![
+            Point::new(2.0, 0.0, 0.0),
+            Point::new(2.8, 0.0, 0.6),
+            Point::new(2.8, 0.0, 1.4),
+            Point::new(2.0, 0.0, 2.0),
+        ],
+        T,
+    )
+    .unwrap();
+    let (breadth, _) = stated_breadth(&model, &grown);
+    let boundary = ogeom::algo::PointDistance::of(&model, &grown, T).unwrap();
+    for k in 1..16 {
+        let t = f64::from(k) / 16.0;
+        let p = bulge.point_at(t, T).unwrap();
+        let d = bulge.d1_at(t, T).unwrap();
+        let out = Vector::new(d.z, 0.0, -d.x) * (1.0 / d.magnitude());
+        let (r, z) = (p.x + 0.3 * out.x, p.z + 0.3 * out.z);
+        let lead = (0.3 / r).asin();
+        for angle in [-lead, PI / 4.0, PI / 2.0 + lead] {
+            let on = Point::new(r * angle.cos(), r * angle.sin(), z);
+            let (gap, _) = boundary.nearest(on, T).unwrap();
+            assert!(
+                gap <= breadth.max(1e-7),
+                "the parallel at {t}, angle {angle}, stands {gap} off"
+            );
+        }
+    }
+    let back = ogeom::offset::offset_shape(&mut model, &grown, -0.3, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &back, T).unwrap();
+    assert!(diagnosis.is_valid(), "shrunk back: {diagnosis}");
+    let got = volume(&model, &back);
+    eprintln!(
+        "quarter ring: {before}, grown {}, shrunk back {got}",
+        volume(&model, &grown)
+    );
+    assert!(
+        (got - before).abs() <= before * 1e-3,
+        "shrunk back to {got} against {before}"
+    );
+}
