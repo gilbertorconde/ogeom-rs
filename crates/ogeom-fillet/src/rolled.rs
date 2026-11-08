@@ -21,6 +21,7 @@
 //! to the band's fit target against the envelope of the balls; the fill
 //! is the marched band's wedge, capped in the end arcs' planes.
 
+use crate::carried::trig_max;
 use crate::consumed::{seat_of, segment};
 use crate::march::{BlendStop, MarchedBlend, Sides};
 use crate::marched::{ExactBand, Rail};
@@ -158,6 +159,24 @@ impl Path {
                 radius, au, av, k, ..
             } => radius * (1.0 + au.hypot(av) / k.abs()),
             Self::Line { .. } => 1.0,
+        }
+    }
+
+    /// Whether every one of `points` lies behind the plane through the
+    /// ball's contact on the far edge square to its radius there, at every
+    /// parameter of `[lo, hi]`: each then stands a radius or more off every
+    /// centre. The radius is square to the edge's line, so the contact's
+    /// slide along it drops out, and on the ellipse the greatest reach
+    /// toward the centre over the span is read in closed form.
+    fn behind_contact(&self, points: &[Point], lo: f64, hi: f64, conf: f64) -> bool {
+        match *self {
+            Self::Ellipse { base, u, v, .. } => points
+                .iter()
+                .all(|x| trig_max(u.dot(*x - base), v.dot(*x - base), lo, hi) <= conf),
+            Self::Line { base, w, .. } => {
+                let reach = w.magnitude();
+                points.iter().all(|x| (*x - base).dot(w) <= conf * reach)
+            }
         }
     }
 
@@ -687,7 +706,9 @@ fn across(
 
     // Every ball lies in free space: no face of the solid comes inside it.
     // A face on or behind the touched face's plane stands a radius off
-    // every centre.
+    // every centre, as does one behind the plane through the contact on
+    // the far edge square to the ball's radius (an end face meeting the
+    // far edge's end, touched there by the end ball).
     // The narrow face lies on the crease's side of the far edge and the
     // beyond face on its own side, and the centre stands between their
     // normals, so each stands a radius off it. Every other face is read
@@ -724,7 +745,9 @@ fn across(
             .iter()
             .flatten()
             .all(|p| (*p - e0).dot(n1) <= conf);
+        let vertices: Vec<Point> = flat.sides.iter().flatten().copied().collect();
         if behind_first
+            || path.behind_contact(&vertices, sa, sb, conf)
             || face.is_same(f2) && one_side(&flat, to_narrow)
             || face.is_same(f3) && one_side(&flat, to_beyond)
         {

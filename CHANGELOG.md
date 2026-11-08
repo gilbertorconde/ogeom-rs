@@ -111,6 +111,20 @@ bump may break the API and a patch bump may not.
     chamfered"), as on a box; `largest_chamfer_distance` reads the named
     face of a rim by placement too.
 
+- **A concave round resting on a narrow face's far edge builds where an
+  end face meets that edge's end.** (Part of #720)
+  - A wall standing on a step whose top is narrower than the ball's
+    setback (a staircase of 1 mm steps under a wall, rounded at r 4) was
+    refused: "the ball comes within its radius of another face". The end
+    face meets the far edge's end, and the end ball touches it exactly
+    there, so the proof by halving never cleared it.
+  - A face lying behind the plane through the ball's contact on the far
+    edge, square to its radius, is now cleared in closed form over the
+    whole run. The staircase at r 2 and r 4 builds valid, its volume the
+    closed form's within the band's fit.
+  - Where the ball would also reach the lower step's far edge (r above 5
+    there), the round is still refused by name.
+
 - **A boolean no longer returns an edge read in two places on one
   surface where two edges meet only inside a widened vertex.**
   - The sew joins two edges whose ends meet within their vertices'

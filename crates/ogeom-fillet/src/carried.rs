@@ -294,7 +294,7 @@ fn trig_roots(a: f64, b: f64, c: f64, near: f64) -> Vec<f64> {
 }
 
 /// The greatest of `a cos s + b sin s` over `[lo, hi]`.
-fn trig_max(a: f64, b: f64, lo: f64, hi: f64) -> f64 {
+pub(crate) fn trig_max(a: f64, b: f64, lo: f64, hi: f64) -> f64 {
     let (lo, hi) = (lo.min(hi), lo.max(hi));
     let m = a.hypot(b);
     let phase = b.atan2(a);

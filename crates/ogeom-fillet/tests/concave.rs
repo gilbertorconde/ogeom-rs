@@ -1236,3 +1236,84 @@ fn a_round_rolls_round_the_corner_of_a_narrow_triangle() {
     );
     assert_eq!(bands, 2, "a band for each piece");
 }
+
+/// A wall standing on two stair steps, each 1 high, 1 deep and the full
+/// length of the wall, its foot rounded with a ball of radius `r` that
+/// touches the wall and rests on the upper step's far edge. The ball's
+/// centre runs on the line `x = 8 + r`, `z = 7 + sqrt(2r - 1)`, and the end
+/// faces meet that edge's ends where the end balls touch it: the run is
+/// held in free space up to the ends. Up to `r = 5` the lower step's far
+/// edge stays clear of every ball.
+#[test]
+fn a_round_rolls_on_the_upper_far_edge_of_a_staircase() {
+    let block = |model: &mut ogeom_topo::Model, x: f64, z: f64, w: f64, h: f64| {
+        let at = Frame::new(
+            Point::new(x, 0.0, z),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        ogeom_algo::make_box(model, at, (w, 20.0, h), T)
+            .unwrap()
+            .shape
+    };
+    for radius in [2.0, 4.0] {
+        let mut model = ogeom_topo::Model::new();
+        let mut solid = block(&mut model, 0.0, 0.0, 30.0, 5.0);
+        for (w, h) in [(10.0, 1.0), (9.0, 2.0), (8.0, 15.0)] {
+            let part = block(&mut model, 0.0, 5.0, w, h);
+            solid = ogeom_bool::fuse(&mut model, &solid, &part, T)
+                .unwrap()
+                .shape;
+        }
+        let foot = explore(&model, &solid, Filter::OfType(ShapeType::Edge))
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                let (a, b) = ogeom_algo::edge_vertices(&model, e).unwrap().unwrap();
+                [a, b].iter().all(|v| {
+                    let p = model
+                        .node(v)
+                        .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                        .unwrap();
+                    (p.x - 8.0).abs() < 1e-9 && (p.z - 7.0).abs() < 1e-9
+                })
+            })
+            .expect("the wall's foot on the upper step");
+        let before = volume(&model, &solid);
+        let rounded = ogeom_fillet::fillet_edge(&mut model, &solid, &foot, radius, T).unwrap();
+        let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "r {radius}: {:?}", diagnosis.problems);
+        // In the section: the seam at (8, 7), the touch on the wall at
+        // (8, cz), the contact on the far edge at (9, 7).
+        let (cx, cz) = (8.0 + radius, 7.0 + 2.0f64.mul_add(radius, -1.0).sqrt());
+        let triangle = (cz - 7.0) / 2.0;
+        let angle = ((cx - 9.0) / radius).acos();
+        let segment = radius * radius * (angle - angle.sin()) / 2.0;
+        let want = (triangle - segment) * 20.0;
+        let generated = rounded.history.generated(&foot).to_vec();
+        let (worst, area) =
+            fitted_round(&model, &generated, &|p| (p.x - cx).hypot(p.z - cz) - radius);
+        assert!(
+            worst < 2e-4,
+            "r {radius}: the round stands {worst} off the balls"
+        );
+        let got = volume(&model, &rounded.shape) - before;
+        assert!(
+            (got - want).abs() <= worst * area,
+            "r {radius}: the round added {got} against {want}, within {worst} over {area}"
+        );
+        // Every ball stands clear of the result's boundary but for the
+        // band's own fit.
+        let boundary = ogeom_algo::PointDistance::of(&model, &rounded.shape, T).unwrap();
+        for k in 0..=40 {
+            let c = Point::new(cx, 20.0 * f64::from(k) / 40.0, cz);
+            let (d, _) = boundary.nearest(c, T).unwrap();
+            assert!(
+                d >= radius - worst,
+                "r {radius}: a ball at {c:?} is {d} from the solid"
+            );
+        }
+    }
+}
