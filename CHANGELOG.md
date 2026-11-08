@@ -186,6 +186,22 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **`refine_solid` measures a converted body's volume with less repeated
+  work, to the same result.** (#706)
+  - On the 29,003-face solid converted from a real part's mesh at chord
+    0.002, 17% fewer instructions on one thread (1.155e12 rather than
+    1.399e12); at chord 0.005, where every build misses its volume, 1%
+    fewer. The refined solid is the same to the bit at both.
+  - The body's allowance drifts by parts in ten thousand between builds,
+    and so did the chord its volume was measured at, so no face mesh was
+    reused. A body whose volume held on the last build is now measured
+    first at its chord taken down to a grid of eight steps per halving:
+    never coarser than the slack allows for, and the same chord on every
+    build within one step. A body that misses there, or that missed or
+    was not measured before, is measured at the chord itself, which
+    decides as it did; a body whose volume held before still holds.
+  - Face meshes, and each face's regions as the closed forms take them,
+    are kept by face content across every build from one set of regions.
 - **`refine_solid` takes about half the time on a large solid converted
   from a mesh, with the same result.** (#706)
   - On a 29,003-face solid converted from a real part's mesh, 101 s of
