@@ -6441,8 +6441,22 @@ fn fill(
                         // section's stop misses by its own honesty once more:
                         // the trace is off the true crossing by that, and
                         // the crossing found against the edge by that again.
-                        let weld =
-                            (reach + honest(section.tolerance, tol)).max(tol.confusion() * 1e2);
+                        // An exact section crossing an exact edge has no such
+                        // slop and lands where it crosses: within the edge's
+                        // and its vertices' own radii of the end it is the
+                        // end, and past them it is not. A drum lowered two
+                        // microns under a plate's top crosses the wall it
+                        // stands in two microns under the wall's corner, and
+                        // the strip between is the wall's.
+                        let exact_pair = section.tolerance <= 0.0
+                            && e.image.is_none()
+                            && exact(&section.curve)
+                            && exact(drawn);
+                        let weld = if exact_pair {
+                            (reach + e.tolerance.max(e.ends_tolerance)).max(tol.confusion() * 10.0)
+                        } else {
+                            (reach + honest(section.tolerance, tol)).max(tol.confusion() * 1e2)
+                        };
                         let mut at_end: Option<(f64, Point)> = None;
                         for end in [e.crange.0, e.crange.1] {
                             let vertex = e.curve.point_at(end, tol)?;
@@ -6602,6 +6616,27 @@ fn fill(
                                     tol,
                                 );
                             }
+                        }
+                        // The curve is crossed over its whole length, the edge
+                        // only over its range. A crossing past either end and
+                        // farther than the weld from that end's vertex is on
+                        // the curve beyond the edge: a line under a plane's
+                        // edge crosses the circle of a round's end arc tangent
+                        // to that edge twice, either side of the tangent point,
+                        // and only one of the two is on the arc. A seam is
+                        // left as it is: its circle runs on past a pole into
+                        // the face it bounds, and a drill beside the pole
+                        // crossing it there is stopped where the pole's own
+                        // reading meets it.
+                        if at_end.is_none()
+                            && !ended
+                            && e.seam.is_none()
+                            && (on_b < e.crange.0 - tol.parametric()
+                                || on_b > e.crange.1 + tol.parametric())
+                            && distance_to_edge_curve(drawn, drange, crossing.point, tol)?
+                                > weld + crossing.reach
+                        {
+                            continue;
                         }
                         // Where the edge runs all but in the other face's plane
                         // (a facet row's edge between two facets nearly
@@ -6963,18 +6998,22 @@ fn fill(
                             (ga.faces.get(section.face_a), ga.faces.get(other.face_a))
                         } {
                             // Off the edge the two faces share, the crossing
-                            // is one only where the other section is kept.
-                            // Beside a loose shared edge (a chord between a
-                            // facet and the drum it was converted beside)
-                            // the two faces' surfaces meet the crossing face
-                            // again a sag's lean off the edge, on neither
-                            // face, and a cut there leaves a stub inside the
-                            // junction the edge's crossings make. Only there
-                            // is a crossing asked whether it lies inside the
-                            // other section's face, to within that face's
-                            // doubt and the loose edge's tolerance: a tight
-                            // edge's two faces meet where it runs, however far
-                            // a stated edge drifts from their meet.
+                            // is one only where the other section is kept:
+                            // inside the other section's face, to within that
+                            // face's doubt and a loose shared edge's
+                            // tolerance. Beside a loose shared edge (a chord
+                            // between a facet and the drum it was converted
+                            // beside) the two faces' surfaces meet the
+                            // crossing face again a sag's lean off the edge,
+                            // on neither face, and a cut there leaves a stub
+                            // inside the junction the edge's crossings make.
+                            // Beside a tight one, the other section's surface
+                            // can run on past its face's end: a round's
+                            // cylinder meets a drum lowered under the round's
+                            // tangent edge on both sides of that edge, the
+                            // far branch a few thousandths off the round, and
+                            // a cut there splits the drum's own top line
+                            // where nothing else meets it.
                             let loose = beside
                                 .edges
                                 .iter()
@@ -6986,19 +7025,17 @@ fn fill(
                                 .fold(None, |most: Option<f64>, t| {
                                     Some(most.map_or(t, |m| m.max(t)))
                                 });
-                            if let Some(loose) = loose {
-                                let doubt = doubt_at(beside, crossing.point, tol)?
-                                    .max(both)
-                                    .max(tol.confusion() * 1e3)
-                                    + loose;
-                                if !within_face(beside, crossing.point, doubt, tol)? {
-                                    if *DEBUG_WIRE {
-                                        eprintln!(
-                                            "PAVE s{si}: cross s{sj} at {at:.6} off s{sj}'s face, no cut"
-                                        );
-                                    }
-                                    continue;
+                            let doubt = doubt_at(beside, crossing.point, tol)?
+                                .max(both)
+                                .max(tol.confusion() * 1e3)
+                                + loose.unwrap_or(0.0);
+                            if !within_face(beside, crossing.point, doubt, tol)? {
+                                if *DEBUG_WIRE {
+                                    eprintln!(
+                                        "PAVE s{si}: cross s{sj} at {at:.6} off s{sj}'s face, no cut"
+                                    );
                                 }
+                                continue;
                             }
                         }
                     }

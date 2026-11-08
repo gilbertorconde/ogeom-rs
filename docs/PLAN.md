@@ -115,24 +115,43 @@ in `crates/ogeom/tests/boolean_grazing_drill.rs`), moved onto the plane
 with its seams, rims and caps. Lowered under `nist_ctc_03`'s plate top
 past it (the stress drill seed 2, drill 5 placement), its top line runs
 along the top edge of the wall the plate's round ends on and on along
-the round's end arc, within the width a section runs along an edge at,
-and cuts from 2.5e-7 to 9e-7 for every seam direction
-(`drills_lowered_under_a_plate_top_past_the_confusion_distance_cut`).
-Still refused ("the kept pieces did not close into a shell"):
-- lowered by at most 2e-7, every seam direction: the top line passes
-  within the crossing gap (the confusion distance and the arc's own
-  tolerance) of the arc's end vertex, its two crossings of the arc's
-  circle a few microns either side of the vertex read as one touch there,
-  and the line's stretch along the arc is lost;
-- lowered by 1e-6, the hug width itself, with the seam on the top line;
-- lowered by 2e-6 or 5e-6, past the hug width, every seam direction
-  (not yet traced);
-- lowered by 1e-5 with the seam on the top line, the cut: the sew would
-  join the wall's edge and the drum's top line as one edge within a
-  vertex the section widened to 1.7e-2, and the two run 1.3e-2 apart on
-  the wall, so they stay two edges and the pieces do not close. Every
-  other seam direction cuts at 1e-5, and so do the common and the drill
-  less the part.
+the round's end arc, and cuts from 2.5e-7 to 1e-5 for every seam
+direction but one
+(`drills_lowered_under_a_plate_top_past_the_confusion_distance_cut`,
+`drills_lowered_under_a_plate_top_past_the_hug_width_cut`). Still
+refused ("the kept pieces did not close into a shell"):
+
+Lowered by 1e-6 with its seam on the top line. The drum's section with
+the face across each wall's side (the plane the round's tangent edge
+ends on) ends 1e-6 under that face's corner and is welded to the corner,
+1e-6 being the width a section runs along an edge at. On that face the
+section's chart end stays where the section stopped, 1.000000001e-6 from
+the corner, and the face's node snap is 1e-6: the end dangles, is
+pruned, and the face is not split. A junction at the corner owning the
+gap closes it here, but a junction for every exact stop welded beside a
+vertex also fires in the retries of
+`slivers_under_the_weld_distance_are_welded` (a box tilted 5e-6 on
+another, retried at a wider confusion, where the face's snap already
+covers the gap) and leaves a face with no piece. What is needed is the
+weld's own end carried onto the vertex in the face's chart where the
+face's snap does not reach it, decided where the snap is known.
+
+Lowered by 2e-7, every seam direction. The top line passes 2e-7 under
+the top of the circle of each round's end arc, and the line meets that circle either
+side of the arc's end vertex, 2.5e-3 along. The dip equals the gap the
+line is met against the arc at (the section's reach and the arc's
+standoff), and on one wall `line_conic_3d` reads the line as not
+reaching deeper than that gap and hands the pair to the general solver.
+That solver returns one touch at the tangent point, the arc's end, with
+the two meeting points as its spread, and the stop is welded to the end
+vertex. The line's 2.5e-3 stretch along the arc past the vertex, which
+the round's own section with the drum reaches, is then dropped as
+outside the wall, and the two ends stand 2e-3 apart. On the other wall
+the same pair is solved in closed form, two crossings, and the stretch
+is kept as running along the arc. Resolving it needs a touch whose
+spread straddles an edge's end paved as the stretch of the edge it runs
+along, from the end to the spread's far point on the edge's range,
+rather than as a stop at the end.
 Raised through the plate top by 2e-7 to 1e-6 it cuts for every seam
 direction (`drills_raised_through_a_plate_top_cut_for_every_seam`).
 

@@ -1028,30 +1028,88 @@ fn plate_top_drill(model: &mut Model, part: &Shape, seam: Vector, dz: f64) -> f6
 }
 
 /// The drill of [`drills_lowered_under_a_plate_top_past_the_confusion_distance_cut`]
-/// lowered by 1e-5, its seam on the top line. The drum's top line runs
-/// 1e-5 under the plate top's edge on the wall at the drill's axis, and
-/// the section ending it beside the round's arc leaves a vertex widened to
-/// 1.7e-2 there. The sew joined the wall's edge and the drum's top line as
-/// one edge, their far ends 1.3e-2 apart within that vertex, and carried
-/// both their pcurves on the wall: two plain pcurves on one surface that
-/// part by 1.3e-2, where the edge states 1e-5, and the cut came back
-/// broken. Whatever the cut answers, it is not that.
+/// lowered by 2e-6, past the width a section runs along an edge at, its
+/// seam on the bottom line. The drum's top line lies in the walls at the
+/// drill's axis 2e-6 under their top edges, and crosses each wall's side
+/// edge 2e-6 under its corner. Read as the corner, the crossing left the
+/// wall no corner for the strip between the line and the top edge, the
+/// strip was never split off, and the kept pieces did not close. Cut,
+/// common and drill less the part are valid and add up to the part and
+/// the drill.
 #[test]
-fn a_drill_lowered_under_a_plate_top_is_not_cut_with_an_edge_read_twice_on_its_wall() {
-    let (mut model, part) = corpus_part("nist_ctc_03_asme1_rc.stp");
-    let (start, radius, length) = PLATE_DRILL;
-    let frame = Frame::new(
-        Point::new(start.x, start.y, start.z - 1e-5),
-        Direction::new(Vector::new(0.0, 1.0, 0.0), T).unwrap(),
-        Direction::new(Vector::new(0.0, 0.0, 1.0), T).unwrap(),
-        T,
-    )
-    .unwrap();
-    let tool = make_cylinder(&mut model, frame, radius, length, T)
-        .unwrap()
-        .shape;
-    if let Ok(made) = ogeom::boolean::cut(&mut model, &part, &tool, T) {
-        let diagnosis = check(&model, &made.shape, T).unwrap();
-        assert!(diagnosis.is_valid(), "{diagnosis}");
+fn a_drill_lowered_under_a_plate_top_past_the_hug_width_cuts() {
+    let (model, part) = corpus_part("nist_ctc_03_asme1_rc.stp");
+    let mut model = model;
+    plate_top_drill(&mut model, &part, Vector::new(0.0, 0.0, -1.0), -2e-6);
+}
+
+/// The drill of [`a_drill_lowered_under_a_plate_top_past_the_hug_width_cuts`]
+/// lowered by 5e-6, its seam on the top line. The top line crosses the
+/// circle of each round's end arc twice, 9e-3 either side of the arc's
+/// end, and the round's cylinder meets the drum on both sides of the
+/// round's tangent edge. Only one crossing of each pair is on the arc,
+/// and only one branch on the round: the other crossing and the other
+/// branch's crossing of the top line split the seam where nothing meets
+/// it, and the wall's strip closed on the wrong vertex. Cut, common and
+/// drill less the part are valid and add up to the part and the drill.
+#[test]
+fn a_drill_seamed_on_its_top_line_lowered_under_a_plate_top_cuts() {
+    let (model, part) = corpus_part("nist_ctc_03_asme1_rc.stp");
+    let mut model = model;
+    plate_top_drill(&mut model, &part, Vector::new(0.0, 0.0, 1.0), -5e-6);
+}
+
+/// The drill of [`drills_lowered_under_a_plate_top_past_the_confusion_distance_cut`]
+/// lowered by 2e-6 to 1e-5, past the width a section runs along an edge
+/// at, its seam turned through the eight directions
+/// of [`drills_a_hair_off_a_plate_top_running_into_a_round_cut_as_the_touching_one`].
+/// Every placement is valid and adds up to the part and the drill (see
+/// [`drill`]); the commons of one depth agree across the seams to within
+/// the confusion distance times the drill's wall; and each stands off the
+/// touching drill's by no more than the depth times the drill's surface.
+#[test]
+#[ignore = "heavy"]
+fn drills_lowered_under_a_plate_top_past_the_hug_width_cut() {
+    let (base, part) = corpus_part("nist_ctc_03_asme1_rc.stp");
+    let (_, r, length) = PLATE_DRILL;
+    let wall = core::f64::consts::TAU * r * length;
+    let surface = core::f64::consts::TAU * r * r + wall;
+    let touching = plate_top_drill(&mut base.clone(), &part, Vector::new(0.0, 0.0, -1.0), 0.0);
+    for dz in [-2e-6, -5e-6, -1e-5] {
+        let mut commons = Vec::new();
+        for k in 0..8 {
+            let a = core::f64::consts::FRAC_PI_4 * f64::from(k);
+            let seam = Vector::new(a.sin(), 0.0, -a.cos());
+            let common = plate_top_drill(&mut base.clone(), &part, seam, dz);
+            assert!(
+                (common - touching).abs() <= dz.abs() * surface,
+                "seam {k}/8 dz {dz}: common {common} against the touching drill's {touching}"
+            );
+            commons.push(common);
+        }
+        let (least, most) = commons
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &c| {
+                (lo.min(c), hi.max(c))
+            });
+        assert!(
+            most - least <= T.confusion() * wall,
+            "dz {dz}: commons spread from {least} to {most} across the seams"
+        );
     }
+}
+
+/// The drill of [`drills_lowered_under_a_plate_top_past_the_confusion_distance_cut`]
+/// lowered by 1e-5, its seam on the top line. The drum's top line runs
+/// 1e-5 under the plate top's edge on the wall at the drill's axis. Its
+/// crossing of the circle of the round's end arc 1.3e-2 past the arc's
+/// end stopped it there, the stop was welded to the arc's end vertex,
+/// and the sew joined the wall's edge and the drum's top line as one edge
+/// read twice on the wall, 1.3e-2 apart. Cut, common and drill less the
+/// part are valid and add up to the part and the drill.
+#[test]
+fn a_drill_seamed_on_its_top_line_lowered_ten_microns_under_a_plate_top_cuts() {
+    let (model, part) = corpus_part("nist_ctc_03_asme1_rc.stp");
+    let mut model = model;
+    plate_top_drill(&mut model, &part, Vector::new(0.0, 0.0, 1.0), -1e-5);
 }
