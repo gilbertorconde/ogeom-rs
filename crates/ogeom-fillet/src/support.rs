@@ -2175,7 +2175,7 @@ pub(crate) fn ball_fits(
                 continue;
             }
             contacts.push(Contact {
-                face: face.node(),
+                face: face.clone(),
                 at: found.point,
                 setback,
             });
@@ -2287,7 +2287,7 @@ fn carried_contacts(
         return Ok(None);
     };
     let contact = |on: &Shape, at: Point| Contact {
-        face: on.node(),
+        face: on.clone(),
         at,
         setback,
     };
@@ -2339,10 +2339,10 @@ fn carried_contacts(
 }
 
 /// Where a rolling ball touches one of an edge's faces.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct Contact {
-    /// The face touched.
-    pub face: ogeom_topo::TShapeId,
+    /// The face touched, in its place in the solid.
+    pub face: Shape,
     /// The point of contact.
     pub at: Point,
     /// How far back from the edge it stands.
@@ -2374,7 +2374,10 @@ impl From<ogeom_core::OgeomError> for Blamed {
 /// two long edges of a narrow strip, a wall's two rims) each need their own
 /// strip; where one's contact stands inside the other's strip, the two
 /// balls overlap and no pair of blends is the rounding. Edges meeting at a
-/// vertex are corner mates, whose bands meet there by design.
+/// vertex are corner mates, whose bands meet there by design. Vertices
+/// and faces are told apart by placement as well as node: a prism's top
+/// is its bottom placed up the sweep, and a side's top and bottom edges
+/// share no vertex though their vertices share nodes.
 ///
 /// # Errors
 ///
@@ -2387,9 +2390,9 @@ pub(crate) fn bands_clear(
     contacts: &[Vec<Contact>],
     tol: Tolerances,
 ) -> Result<(), Blamed> {
-    let vertices = |edge: &Shape| -> OgeomResult<Vec<ogeom_topo::TShapeId>> {
+    let vertices = |edge: &Shape| -> OgeomResult<Vec<Shape>> {
         Ok(ogeom_algo::edge_vertices(model, edge)?
-            .map(|(a, b)| vec![a.node(), b.node()])
+            .map(|(a, b)| vec![a, b])
             .unwrap_or_default())
     };
     // Each edge's box: a contact further from it than a strip is further
@@ -2404,7 +2407,7 @@ pub(crate) fn bands_clear(
                 continue;
             }
             let (ends, others) = (vertices(first)?, vertices(second)?);
-            if ends.iter().any(|v| others.contains(v)) {
+            if ends.iter().any(|v| others.iter().any(|o| o.is_same(v))) {
                 continue;
             }
             let Ok((curve, range)) = edge_curve(model, second, tol) else {
@@ -2414,7 +2417,7 @@ pub(crate) fn bands_clear(
                 // The second edge's own setback on this face, if it has one.
                 let Some(strip) = contacts[j]
                     .iter()
-                    .filter(|c| c.face == contact.face)
+                    .filter(|c| c.face.is_same(&contact.face))
                     .map(|c| c.setback)
                     .reduce(f64::max)
                 else {

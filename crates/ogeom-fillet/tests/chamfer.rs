@@ -301,3 +301,92 @@ fn a_chamfer_far_from_the_origin_loses_exactly_the_wedge() {
         );
     }
 }
+
+/// A chamfer of unequal distances names the face its first distance runs
+/// along, and that face must meet the edge. On a 20 x 20 x 2 plate built
+/// as a prism of a square, the top face is the bottom face placed up the
+/// sweep, one node in two places; a top edge with its first distance
+/// named along the bottom face was taken as named along the top, and
+/// bevelled there. It is refused, as on a box; named along the top it
+/// loses the wedge of legs 0.5 and 1 along its length of 20.
+#[test]
+fn a_chamfer_named_on_a_prism_s_far_end_face_is_refused() {
+    use ogeom_math::{Direction, Vector};
+    let mut model = ogeom_topo::Model::new();
+    let wire = ogeom_algo::make_polygon(
+        &mut model,
+        &[
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(20.0, 0.0, 0.0),
+            Point::new(20.0, 20.0, 0.0),
+            Point::new(0.0, 20.0, 0.0),
+        ],
+        true,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let plane = ogeom_geom::PlaneSurface::over(
+        ogeom_math::Plane::through(Point::ORIGIN, Direction::Z),
+        (-100.0, 100.0),
+        (-100.0, 100.0),
+    )
+    .unwrap();
+    let face = ogeom_algo::make_face(&mut model, plane.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    let plate = ogeom_algo::make_prism(&mut model, &face, Vector::new(0.0, 0.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let at_height = |model: &ogeom_topo::Model, z: f64| {
+        ogeom_topo::explore_unique(model, &plate, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .find(|f| {
+                let b = ogeom_algo::shape_bounds(model, f, T).unwrap();
+                (b.centre().unwrap().z - z).abs() < 1e-6 && b.size().z < 1e-3
+            })
+            .unwrap()
+    };
+    let (bottom, top) = (at_height(&model, 0.0), at_height(&model, 2.0));
+    assert!(bottom.is_partner(&top), "the prism's ends share one node");
+    let edge = ogeom_topo::explore_unique(&model, &plate, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let b = ogeom_algo::shape_bounds(&model, e, T).unwrap();
+            let c = b.centre().unwrap();
+            (c.y).abs() < 1e-6 && (c.z - 2.0).abs() < 1e-6 && b.size().x > 19.0
+        })
+        .unwrap();
+    let spec = |face: &ogeom_topo::Shape| {
+        vec![(
+            edge.clone(),
+            ogeom_fillet::Chamfer::Distances {
+                face: face.clone(),
+                on_face: 0.5,
+                on_other: 1.0,
+            },
+        )]
+    };
+    let Err(ogeom_core::OgeomError::Construction(why)) =
+        ogeom_fillet::chamfer_edges_with(&mut model, &plate, &spec(&bottom), T)
+    else {
+        panic!("a chamfer named along a face away from its edge was built");
+    };
+    assert!(
+        why.to_string()
+            .contains("the named face does not meet the edge being chamfered"),
+        "{why}"
+    );
+    let built = ogeom_fillet::chamfer_edges_with(&mut model, &plate, &spec(&top), T).unwrap();
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-3,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let lost = 800.0
+        - ogeom_algo::volume_properties(&model, &built.shape, fine, T)
+            .unwrap()
+            .mass;
+    assert!((lost - 0.5 * 1.0 / 2.0 * 20.0).abs() < 1e-9, "lost {lost}");
+}

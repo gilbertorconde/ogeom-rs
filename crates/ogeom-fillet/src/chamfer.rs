@@ -502,11 +502,10 @@ pub fn largest_chamfer_distance(
             if inward > 0.0 {
                 largest = largest.min((seat.radius - 2.0 * conf) / inward);
             }
-            let (wall, cap) = (seat.wall_face.node(), seat.cap_face.node());
-            let per = |face: ogeom_topo::TShapeId| {
-                if face == wall {
+            let per = |face: &Shape| {
+                if face.is_same(&seat.wall_face) {
                     on_wall
-                } else if face == cap {
+                } else if face.is_same(&seat.cap_face) {
                     on_cap
                 } else {
                     0.0
@@ -692,9 +691,9 @@ fn revolved_side(
     on_face: f64,
     on_other: f64,
 ) -> OgeomResult<(f64, f64)> {
-    if seat.wall_face.node() == face.node() {
+    if seat.wall_face.is_same(face) {
         Ok((on_face, on_other))
-    } else if seat.cap_face.node() == face.node() {
+    } else if seat.cap_face.is_same(face) {
         Ok((on_other, on_face))
     } else {
         ogeom_bail!(
@@ -842,9 +841,9 @@ fn sector_bevel(
 
 /// Which side of the seat a named face is, by identity.
 fn seat_side(seat: &Seat, face: &Shape) -> OgeomResult<usize> {
-    if seat.faces[0].node() == face.node() {
+    if seat.faces[0].is_same(face) {
         Ok(0)
-    } else if seat.faces[1].node() == face.node() {
+    } else if seat.faces[1].is_same(face) {
         Ok(1)
     } else {
         ogeom_bail!(

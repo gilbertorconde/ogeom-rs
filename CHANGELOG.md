@@ -75,6 +75,26 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`fillet_edges` refuses overlapping bands on a plate built as a prism,
+  as it does on the same plate built as a box.** (#721)
+  - A prism's top face is its bottom face placed up the sweep, sharing the
+    bottom's edges and vertices under that placement. The check that holds
+    two bands on one face apart told vertices and faces apart by node
+    alone, so a side's top and bottom edges were taken for corner mates
+    meeting at a vertex and never checked. Every edge of a 20 x 20 x 2
+    plate at radius 1.5 or 1.9 built a solid that is no rounding (volume
+    689.15 at 1.9); it is now refused for the overlap, as the box's plate
+    is. At radius 0.9 both plates round to the same volume.
+  - `largest_fillet_radius_all` told them apart the same way and answered
+    2 for that plate where 1 is the largest that builds; it now answers 1,
+    as for the box.
+  - A chamfer of unequal distances or of a distance and an angle named
+    its face the same way, so a top edge of that plate with its distance
+    named along the bottom face was bevelled as if named along the top.
+    It is now refused ("the named face does not meet the edge being
+    chamfered"), as on a box; `largest_chamfer_distance` reads the named
+    face of a rim by placement too.
+
 - **A boolean no longer returns an edge read in two places on one
   surface where two edges meet only inside a widened vertex.**
   - The sew joins two edges whose ends meet within their vertices'
