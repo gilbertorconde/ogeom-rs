@@ -1266,8 +1266,9 @@ impl Planner<'_> {
     /// rulings, and failing them is fitted onto that face as a section is.
     /// `None` when no curve holds the chain and the faces.
     /// The facet a seam that no curve places could be built as a fan
-    /// from: one triangle alone in its planar group, its side along the
-    /// chain's single span against the curved face across it, its other two
+    /// from: one triangle alone in its planar group, or one of a group of
+    /// two along the chain, taken out of it, its side along a span of the
+    /// chain against the curved face across it, its other two
     /// against planar faces, and not a fan already. Its seam is then the
     /// span drawn straight in the curved face's chart, where no curve
     /// through the span's ends keeps to both the facet's plane and the
@@ -1277,33 +1278,63 @@ impl Planner<'_> {
         let [a, b] = faces[..] else {
             return None;
         };
-        let [p, q] = chain[..] else {
-            return None;
-        };
         let (facet, curved) = match (self.curved(a), self.curved(b)) {
             (Some(_), None) => (b, a),
             (None, Some(_)) => (a, b),
             _ => return None,
         };
-        let mut members = self
+        let members: Vec<usize> = self
             .groups
             .of
             .iter()
             .enumerate()
             .filter(|&(_, &g)| g == facet)
-            .map(|(t, _)| t);
-        let t = members.next()?;
-        if members.next().is_some() || self.groups.fans.contains(&t) {
+            .map(|(t, _)| t)
+            .take(3)
+            .collect();
+        let holds = |t: usize, (p, q): (u32, u32)| {
+            let tri = self.triangles[t];
+            tri.contains(&p) && tri.contains(&q)
+        };
+        // A plane of two facets gives up one along the chain, which is then
+        // alone in a plane of its own and the other its neighbour: the one
+        // along the chain's single span, or, where the chain runs one span
+        // along each, the one along its first, the other then a facet
+        // alone with a span of its own.
+        let (t, span, apart) = match (&members[..], chain) {
+            (&[t], &[p, q]) => (t, (p, q), false),
+            (&[x, y], &[p, q]) => match (holds(x, (p, q)), holds(y, (p, q))) {
+                (true, false) => (x, (p, q), true),
+                (false, true) => (y, (p, q), true),
+                _ => return None,
+            },
+            (&[x, y], &[p, m, q]) => {
+                let (first, last) = ((p, m), (m, q));
+                match (
+                    holds(x, first) && holds(y, last),
+                    holds(y, first) && holds(x, last),
+                ) {
+                    (true, false) => (x, first, true),
+                    (false, true) => (y, first, true),
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        };
+        if self.groups.fans.contains(&t) {
             return None;
         }
-        let fan = self.groups.fan_at(t, self.triangles, self.adjacency)?;
-        (fan.seam_between(p, q) == Some(curved)).then_some(t)
+        let fan = self
+            .groups
+            .fan_apart(t, self.triangles, self.adjacency, apart)?;
+        (fan.seam_between(span.0, span.1) == Some(curved)).then_some(t)
     }
 
     /// The corner to pin where a chain no curve places runs along both
     /// curved sides of a wedge onto one curved face: the two sides meet at
     /// the chain's middle vertex, which split there leaves each side a span
-    /// of its own, a seam the wedge can be built from.
+    /// of its own, a seam the wedge can be built from. The wedge may share
+    /// its plane with one other facet, which it is then taken apart from.
     fn wedge_corner(&self, chain: &[u32], faces: &[usize]) -> Option<u32> {
         let [a, b] = faces[..] else {
             return None;
@@ -1316,18 +1347,38 @@ impl Planner<'_> {
             (None, Some(_)) => (a, b),
             _ => return None,
         };
-        let mut members = self
+        let members: Vec<usize> = self
             .groups
             .of
             .iter()
             .enumerate()
             .filter(|&(_, &g)| g == facet)
-            .map(|(t, _)| t);
-        let t = members.next()?;
-        if members.next().is_some() || self.pinned.contains(&middle) {
+            .map(|(t, _)| t)
+            .take(3)
+            .collect();
+        // The wedge alone in its plane, or the one of a plane of two whose
+        // corners are the chain's, taken out of it as a fan is.
+        let (t, apart) = match members[..] {
+            [t] => (t, false),
+            [x, y] => {
+                let wedge = |t: usize| {
+                    let tri = self.triangles[t];
+                    [p, middle, q].iter().all(|v| tri.contains(v))
+                };
+                match (wedge(x), wedge(y)) {
+                    (true, false) => (x, true),
+                    (false, true) => (y, true),
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        };
+        if self.pinned.contains(&middle) {
             return None;
         }
-        let fan = self.groups.fan_at(t, self.triangles, self.adjacency)?;
+        let fan = self
+            .groups
+            .fan_apart(t, self.triangles, self.adjacency, apart)?;
         (fan.seam.1 == middle
             && fan.seam_between(p, middle) == Some(curved)
             && fan.seam_between(middle, q) == Some(curved))

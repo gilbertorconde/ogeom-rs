@@ -200,6 +200,23 @@ bump may break the API and a patch bump may not.
     the common stands 7.8e-3 off the touching drill's, within the depth
     times the drill's surface (0.20).
 
+- **A converted solid meets a curved face within the reach where a plane
+  of two facets borders it, as a single facet does.** (#706)
+  - A single facet whose seam with a curved face would be a chord wider
+    than the reach was built as a fan onto that face. A plane of two
+    facets was not, and kept the chord: 0.096 on `nist_ctc_04`, 0.054 on
+    `nist_ftc_07`, 0.064 on `nist_ftc_10`, against reaches of 0.004 to
+    0.019.
+  - Such a plane now gives up the facet along the seam into a plane of
+    its own, which is fanned (a wedge split at its corner first), and the
+    other facet is then alone and fanned in turn where it needs to be.
+  - Those three parts' widest such seams are now 0.000, 0.006 and 0.004,
+    within their reaches, and `nist_ctc_02`'s widest falls from 0.35 to
+    0.25. Every converted part stays valid and closed, its volume as near
+    the part's or nearer (`nist_ftc_07` from 3.9e-7 to 6.8e-8 relative),
+    and the other eleven parts of `mesh_corpus` come back the same to the
+    bit.
+
 - **A rim's round takes a narrow ring beside it off whole, as a straight
   edge's does.** (#719)
   - A chamfered or small-rounded rim of a boss, rounded larger, was refused:

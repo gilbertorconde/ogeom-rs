@@ -728,7 +728,8 @@ fn a_bore_with_a_loose_rim_drawn_in_strips_takes_no_open_sweep() {
 /// and its seams with the balls could not be placed. A flat face bending
 /// only at a few slivers is not tried as a sweep, and the fillet stays a
 /// cylinder between its balls. (The piece cut out is open where the cut
-/// ran.)
+/// ran.) Planes of a facet or two beside the balls come back as fans, on
+/// ruled B-spline surfaces of their own, and none as a fitted patch.
 #[test]
 fn a_fillet_beside_a_floor_drawn_in_strips_stays_a_cylinder() {
     let path = format!(
@@ -739,7 +740,9 @@ fn a_fillet_beside_a_floor_drawn_in_strips_stays_a_cylinder() {
     let mut back = Model::new();
     let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
     assert_eq!(out.report.curved_faceted, 0, "{:?}", out.report.fallbacks);
-    assert_eq!(kinds(&back, &out.shape)[1..], [2, 0, 2, 0]);
+    assert_eq!(out.report.patch_faces, 0, "no region is a fitted patch");
+    let (canonical, _fans) = kinds_and_patches(&back, &out.shape);
+    assert_eq!(canonical[1..], [2, 0, 2, 0]);
 }
 
 /// The rounded block drawn the way other kernels commonly draw a drum, each
