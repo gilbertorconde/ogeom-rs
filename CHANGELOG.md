@@ -95,6 +95,22 @@ bump may break the API and a patch bump may not.
     model; the result is the full call on exactly the accepted edges. On a
     20 × 20 × 2 plate at radius 1.5, one edge of each pair across the wall
     is left sharp, each refusal naming it and its partner.
+- **A flat sketch lays onto a sphere, a torus or any curved face with
+  least stretch: `SurfaceSheet`.** (#729)
+  - The sheet is laid by geodesic polar coordinates at a point of the
+    face: lengths along every line through that point are kept. A plane,
+    a cylinder and a cone are laid by their exact development, a sphere in
+    closed form, and every other surface by integrating its geodesics in
+    its chart.
+  - `chart_curve` carries a planar curve onto the face as a chart curve
+    whose lift stands within the tolerance asked, and `chart_edge` makes
+    the edge with that pcurve, ready for `split_face(.., OnFace)` and
+    `make_thick_sheet`. `distortion` reports the stretch across the rays.
+  - A 6 × 4 rectangle on a sphere of radius 10 cuts out 23.827 (the
+    geodesic map's own stretch, sin(r/R)/(r/R)), on a torus 20/5 23.863;
+    its middle row turns 0.6 and 0.24 rad about the axis, as the equators
+    have it; integrated geodesics meet the sphere's closed form to 2.0e-9.
+  - The least-distortion flattening of a whole region is not built yet.
 
 - **Patch networks hold an even corner exactly tangent with its gluing
   spread along its curves.** (#653)

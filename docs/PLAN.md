@@ -363,6 +363,15 @@ and needs such definitions built per placement; the second has no file at
 hand that writes one. The cut edge stays in the model unused, and a STEP style or shape
 aspect naming its file id lands on every piece.
 
+**A least-distortion sheet over a whole region (#729).** `SurfaceSheet`
+lays a sketch by geodesic polar coordinates, which keep lengths along rays
+from the origin and stretch across them by the Jacobi field's ratio. Owed:
+the flattening of the covered region that spreads that stretch (an
+as-rigid-as-possible or conformal map of a mesh of the region, pinned at
+the origin), so a wide sketch on a sphere keeps its area rather than its
+rays; and a curve passing round a pole of the chart, which needs the
+chart curve cut where it crosses the pole.
+
 ### Mesh conversion
 
 `solid_from_mesh` rebuilds planes, the four canonical surfaces, extrusions,

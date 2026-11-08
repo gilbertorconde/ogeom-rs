@@ -45,6 +45,7 @@ mod seam_columns;
 pub mod segments_2d;
 mod self_cross;
 pub mod sew;
+pub mod sheet;
 pub mod sweep;
 pub mod text;
 pub mod thickness;
@@ -118,6 +119,7 @@ pub use sew::{
     Agreement, Sewn, agreeing_orientation, make_wire_unordered, order_edges, sew, sew_around,
     sew_around_within, sew_within,
 };
+pub use sheet::{SheetDistortion, SheetMethod, SheetPlacement, SurfaceSheet};
 pub use sweep::{make_prism, make_prism_tapered, make_revolution};
 pub use text::make_text;
 pub use thickness::{Thickness, thickness, thickness_of_shape};
