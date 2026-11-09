@@ -7,17 +7,19 @@
 //! the corner then touches the two faces either side of the strip, rolling
 //! along the crossing of their surfaces nearest the strip, as
 //! [`crate::pair_marched`] rolls it between two faces that share no edge.
-//! The strip goes with the corner where it lies wholly in it:
+//! The strip goes with the corner where it lies wholly in it, over the
+//! whole loop of a closed seat or over the runs of an open one, each
+//! capped in its end sections' planes:
 //!
 //! - the ball touches both outer faces, past each strip edge (the march
 //!   refuses a touch off its face);
 //! - no face of the solid reaches into the ball's lune at any station, the
 //!   strip included ([`crate::pair_marched::face_inside`]);
 //! - every point of the strip's mesh stands behind both outer surfaces, in
-//!   the corner they make;
+//!   the corner they make, and between some run's two caps;
 //! - no edge of the solid but the strip's own and the seams stands within
-//!   the corner's reach of the crossing: the farthest a touch stands from
-//!   its station's crossing point.
+//!   the corner's reach of the crossing, strictly between some run's caps:
+//!   the farthest a touch stands from its station's crossing point.
 
 use ogeom_algo::Built;
 use ogeom_core::{OgeomError, OgeomResult, Tolerances};
@@ -58,7 +60,8 @@ pub(crate) fn consumed_marched(
         let Some(beyond) = strip_beyond(model, solid, strip, outer)? else {
             continue;
         };
-        match round_over(model, solid, edge, strip, [outer, &beyond], radius, tol) {
+        let dbg = round_over(model, solid, edge, strip, [outer, &beyond], radius, tol);
+        match dbg {
             Ok(Some(built)) => return Ok(Some(built)),
             Ok(None) | Err(OgeomError::Construction(_) | OgeomError::NotDone(_)) => {}
             Err(e) => return Err(e),
@@ -68,15 +71,16 @@ pub(crate) fn consumed_marched(
 }
 
 /// The face across `strip` from `outer`: every edge of the strip but its
-/// seams is shared with `outer` or with that one face, and both sides hold
-/// some.
+/// seams is shared with `outer`, with that face, or with a face at one of
+/// the strip's ends, and the face across is the one sharing the most of
+/// the strip's border after `outer`. Both sides hold some.
 fn strip_beyond(
     model: &Model,
     solid: &Shape,
     strip: &Shape,
     outer: &Shape,
 ) -> OgeomResult<Option<Shape>> {
-    let mut beyond: Option<Shape> = None;
+    let mut shares: Vec<(Shape, f64)> = Vec::new();
     let mut on_outer = false;
     for e in explore_unique(model, strip, ShapeType::Edge)? {
         let holders = faces_at(model, solid, &e)?;
@@ -85,15 +89,40 @@ fn strip_beyond(
             // A seam of the strip itself.
             [] => {}
             [f] if f.is_same(outer) => on_outer = true,
-            [f] => match &beyond {
-                Some(b) if !b.is_same(f) => return Ok(None),
-                Some(_) => {}
-                None => beyond = Some((*f).clone()),
-            },
+            [f] => {
+                let length = edge_length(model, &e)?;
+                match shares.iter_mut().find(|(g, _)| g.is_same(f)) {
+                    Some((_, total)) => *total += length,
+                    None => shares.push(((*f).clone(), length)),
+                }
+            }
             _ => return Ok(None),
         }
     }
-    Ok(beyond.filter(|b| on_outer && !b.is_same(outer)))
+    if !on_outer {
+        return Ok(None);
+    }
+    Ok(shares
+        .into_iter()
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(f, _)| f))
+}
+
+/// An edge's length, summed over chords.
+fn edge_length(model: &Model, edge: &Shape) -> OgeomResult<f64> {
+    let Some((curve, (a, b))) = ogeom_algo::placed_edge_curve(model, edge, Tolerances::default())?
+    else {
+        return Ok(0.0);
+    };
+    let tol = Tolerances::default();
+    let mut length = 0.0;
+    let mut last = curve.point_at(a, tol)?;
+    for k in 1..=64 {
+        let p = curve.point_at((b - a).mul_add(f64::from(k) / 64.0, a), tol)?;
+        length += p.distance(last);
+        last = p;
+    }
+    Ok(length)
 }
 
 /// The round of the corner of `outer`, the two faces either side of
@@ -122,9 +151,6 @@ fn round_over(
         Some(near),
         tol,
     )?;
-    if !seat.closed() {
-        return Ok(None);
-    }
     if crate::pair_marched::face_inside(model, solid, outer, &seat, radius, tol)?.is_some() {
         return Ok(None);
     }
@@ -149,10 +175,30 @@ fn round_over(
                 .max(crease.distance(blend.touch_second[i]));
         }
     }
-    if !strip_behind(model, strip, outer, reach, tol)? {
+    // Over an open seat the round is runs capped in their end sections'
+    // planes: the strip must stand between some run's two caps, and no
+    // other edge stands within reach strictly between them. Round a closed
+    // seat the round has no caps.
+    let spans = if seat.closed() {
+        Vec::new()
+    } else {
+        let mut spans = Vec::with_capacity(seat.runs().len());
+        for run in seat.runs() {
+            spans.push(run_caps(run, tol)?);
+        }
+        spans
+    };
+    let within = |p: Point, slack: f64| -> bool {
+        spans.is_empty()
+            || spans.iter().any(|caps| {
+                caps.iter()
+                    .all(|(on, normal)| (p - *on).dot(*normal) >= -slack)
+            })
+    };
+    if !strip_behind(model, strip, outer, reach, &within, tol)? {
         return Ok(None);
     }
-    if other_edge_within(model, solid, strip, &guide, reach, tol)? {
+    if other_edge_within(model, solid, strip, &guide, reach, &within, tol)? {
         return Ok(None);
     }
     let mut built = crate::pair_marched::apply_to_solid(model, solid, seat, radius, true, tol)?;
@@ -162,12 +208,14 @@ fn round_over(
 }
 
 /// Whether every point of the strip's mesh stands behind both outer faces'
-/// surfaces, within its edges' tolerances: in the corner they make.
+/// surfaces, within its edges' tolerances: in the corner they make; and
+/// `within` the round's span, the same slack allowed.
 fn strip_behind(
     model: &Model,
     strip: &Shape,
     outer: [&Shape; 2],
     reach: f64,
+    within: &dyn Fn(Point, f64) -> bool,
     tol: Tolerances,
 ) -> OgeomResult<bool> {
     let deflection = ogeom_mesh::Deflection {
@@ -183,6 +231,9 @@ fn strip_behind(
         if let Some(t) = model.tolerance_of(&e)? {
             slack = slack.max(t.get());
         }
+    }
+    if let Some(p) = mesh.positions.iter().find(|p| !within(**p, slack)) {
+        return Ok(false);
     }
     for face in outer {
         let Some(data) = model.node(face).and_then(|n| n.data().as_face()) else {
@@ -214,14 +265,15 @@ fn strip_behind(
 }
 
 /// Whether an edge of `solid` other than the strip's own and the seams
-/// stands within `reach` of the crossing `guide` anywhere, sampled along
-/// each edge.
+/// stands within `reach` of the crossing `guide` anywhere strictly
+/// `within` the round's span, sampled along each edge.
 fn other_edge_within(
     model: &Model,
     solid: &Shape,
     strip: &Shape,
     guide: &ogeom_geom::Curve,
     reach: f64,
+    within: &dyn Fn(Point, f64) -> bool,
     tol: Tolerances,
 ) -> OgeomResult<bool> {
     let own = explore_unique(model, strip, ShapeType::Edge)?;
@@ -237,10 +289,44 @@ fn other_edge_within(
         for k in 0..=64 {
             let t = (b - a).mul_add(f64::from(k) / 64.0, a);
             let p: Point = curve.point_at(t, tol)?;
+            // A point on or past a cap (a wall the round ends on) is the
+            // cap's to meet, not the corner's.
+            if !within(p, -tol.confusion()) {
+                continue;
+            }
             if ogeom_algo::project_on_curve(guide, p, 64, tol)?.distance <= reach {
                 return Ok(true);
             }
         }
     }
     Ok(false)
+}
+
+/// A capped run's two end planes, each as a point on it and its unit
+/// normal into the run: the plane of the ball's arc at the run's first
+/// station and at its last.
+fn run_caps(
+    run: &crate::march::MarchedBlend,
+    tol: Tolerances,
+) -> OgeomResult<[(Point, ogeom_math::Vector); 2]> {
+    let n = run.len();
+    if n < 2 {
+        ogeom_core::ogeom_bail!(Construction, "a capped run of fewer than two stations");
+    }
+    let cap = |at: usize, toward: usize| -> OgeomResult<(Point, ogeom_math::Vector)> {
+        let centre = run.spine[at];
+        let normal = (run.touch_first[at] - centre).cross(run.touch_second[at] - centre);
+        let m = normal.magnitude();
+        if m <= tol.confusion() * tol.confusion() {
+            ogeom_core::ogeom_bail!(Construction, "a run's end section has no plane");
+        }
+        let normal = normal / m;
+        let inward = if (run.spine[toward] - centre).dot(normal) >= 0.0 {
+            normal
+        } else {
+            -normal
+        };
+        Ok((centre, inward))
+    };
+    Ok([cap(0, n - 1)?, cap(n - 1, 0)?])
 }
