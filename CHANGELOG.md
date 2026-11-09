@@ -22,6 +22,26 @@ bump may break the API and a patch bump may not.
     thread (9.69e11 to 7.22e11 instructions), with the refined solid and
     every part of `mesh_corpus` the same to the bit.
 
+- **A convex round that takes a narrow strip off whole ends on faces
+  slanted to it.**
+  - A round wider than a bevel beside its edge takes the bevel off with
+    the corner the ball touching the faces either side of it cuts. That
+    was taken only where the bevel's ends were square to the edge; with
+    slanted ends it was refused ("sets back ... across a face that does not
+    reach so far").
+  - Each end may now lie on the plane of the face across the strip's end
+    edge, slanted to the edge. The corner the cut takes is the section's
+    prism between the two end planes. The outer faces hold the stretches
+    from the line their planes meet on to the contacts, between the
+    planes; each end face holds the corner's trace on its plane; no other
+    face's bound meets the corner's. The cut is the section's prism, run
+    past both planes and cut back to them.
+  - A bevelled square prism cut to a slab between planes slanted 20
+    degrees, rounded at r 0.5 and r 1 on either bevel edge, keeps its
+    unbevelled profile less the rounded corner, times the slab's 4:
+    15.785398163397 and 15.141592653590, both within 5e-14. Square-ended
+    strips are rounded as before.
+
 - **A stepped concave round ends on faces slanted to its seam.**
   - A round resting beyond the narrow face beside a concave seam (a wall on
     a staircase, a flat in an inside corner) was taken only where the seam

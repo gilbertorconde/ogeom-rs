@@ -140,7 +140,11 @@ fn consuming(
         return Err(refusal);
     }
     let Some(seat) = crate::consumed::consumed_seat(model, solid, edge, radius, tol)? else {
-        let Some(mut built) = crate::rolled::rolled_fillet(model, solid, edge, radius, tol)? else {
+        let rolled = match crate::rolled::rolled_fillet(model, solid, edge, radius, tol)? {
+            Some(built) => Some(built),
+            None => crate::consumed::consumed_slanted(model, solid, edge, radius, tol)?,
+        };
+        let Some(mut built) = rolled else {
             return match crate::consumed_rim::consumed_rim(model, solid, edge, radius, tol)? {
                 Some(rim) => rim_consuming(model, solid, edge, rim, radius, tol),
                 None => Err(refusal),

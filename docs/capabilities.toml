@@ -1199,7 +1199,8 @@ ball would roll over onto the face beyond), but for a convex straight \
 edge beside a planar strip (a chamfer, a narrow top) whose far edge is \
 convex too: where the strip lies wholly in the corner the ball touching \
 the planes either side of it takes off, its ends on faces square to the \
-edge, the round is that ball's and the strip goes with the corner; and \
+edge or slanted to it, the round is that ball's and the strip goes with \
+the corner, cut back to slanted ends by their planes; and \
 for a convex rim beside a ring (a coaxial cone or torus: a chamfered or \
 small-rounded boss's rim) whose far circle is on the wall: where the \
 ring lies wholly in the corner the ball touching the cap and the wall \
