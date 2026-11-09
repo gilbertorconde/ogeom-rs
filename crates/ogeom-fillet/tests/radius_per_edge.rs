@@ -275,3 +275,108 @@ fn a_tangent_chain_steps_its_radius_at_the_junctions() {
     let v = vol(&m, &built.shape);
     assert!((v - expected).abs() < 0.05, "{v} against {expected}");
 }
+
+/// A square pyramid, its apex at (0, 0, 10).
+fn pyramid(m: &mut Model) -> Shape {
+    let mut solid = ogeom_algo::make_box(m, at(-10.0, -10.0, -10.0), (20.0, 20.0, 20.0), T)
+        .unwrap()
+        .shape;
+    // Four planes leaning in from the box's top edges to the apex, each
+    // cutting a half-space off.
+    for (nx, ny) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+        let normal = Vector::new(nx, ny, 1.0);
+        let across = Vector::new(-ny, nx, 0.0);
+        let side = normal.cross(across) / normal.cross(across).magnitude();
+        let corner = Point::new(0.0, 0.0, 10.0) - across * 40.0 - side * 40.0;
+        let frame = Frame::new(
+            corner,
+            Direction::new(normal, T).unwrap(),
+            Direction::new(across, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let away = ogeom_algo::make_box(m, frame, (80.0, 80.0, 40.0), T)
+            .unwrap()
+            .shape;
+        solid = ogeom_bool::cut(m, &solid, &away, T).unwrap().shape;
+    }
+    solid
+}
+
+/// A pyramid's apex at alternating radii 0.5 and 1.5: each band stops
+/// past where the others reach its section plane, not only past where its
+/// own section clears them, so a wide band beside a narrow one does not
+/// cross the narrow one's section inside the cell. Closed, valid, tangent,
+/// the same in either order, between the rounds at either radius alone.
+#[test]
+fn a_pyramid_apex_at_alternating_radii_closes_with_one_patch() {
+    for (small, large) in [(0.5, 1.5)] {
+        let mut m = Model::new();
+        let solid = pyramid(&mut m);
+        let apex = Point::new(0.0, 0.0, 10.0);
+        let at_apex: Vec<Shape> = explore_unique(&m, &solid, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                let (c, (a, b)) = ogeom_algo::placed_edge_curve(&m, e, T).unwrap().unwrap();
+                c.point_at(a, T).unwrap().distance(apex) < 1e-6
+                    || c.point_at(b, T).unwrap().distance(apex) < 1e-6
+            })
+            .collect();
+        assert_eq!(at_apex.len(), 4);
+        // Round the apex: alternate edges at the two radii, by direction so
+        // the alternation is round the apex whatever order they came in.
+        let radius = |e: &Shape| {
+            let (c, (a, b)) = ogeom_algo::placed_edge_curve(&m, e, T).unwrap().unwrap();
+            let far = [c.point_at(a, T).unwrap(), c.point_at(b, T).unwrap()]
+                .into_iter()
+                .find(|p| p.distance(apex) > 1e-6)
+                .unwrap();
+            if (far.x > 0.0) == (far.y > 0.0) {
+                small
+            } else {
+                large
+            }
+        };
+        let asked: Vec<(Shape, f64)> = at_apex.iter().map(|e| (e.clone(), radius(e))).collect();
+        let mut volumes = Vec::new();
+        for order in [[0, 1, 2, 3], [3, 1, 0, 2]] {
+            let request: Vec<(Shape, f64)> = order.iter().map(|&i| asked[i].clone()).collect();
+            let rounded = fillet_edges_with(&mut m, &solid, &request, T).unwrap();
+            let found = ogeom_algo::check(&m, &rounded.shape, T).unwrap();
+            assert!(found.is_valid(), "{small}/{large}: {:?}", found.problems);
+            let patch = explore_unique(&m, &rounded.shape, ShapeType::Face)
+                .unwrap()
+                .into_iter()
+                .find(|f| {
+                    m.node(f)
+                        .and_then(|n| n.data().as_face())
+                        .and_then(|d| m.geometry().surface(d.surface))
+                        .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::BSpline(_)))
+                        && explore_unique(&m, f, ShapeType::Edge).unwrap().len() == 8
+                })
+                .expect("the corner patch");
+            for c in ogeom_fillet::analyse_blend(&m, &rounded.shape, &patch, 17, T).unwrap() {
+                assert!(c.tangency_error < 1e-3, "a crease across the patch: {c:?}");
+            }
+            volumes.push(vol(&m, &rounded.shape));
+        }
+        assert!(
+            (volumes[0] - volumes[1]).abs() <= volumes[0] * 1e-9,
+            "{volumes:?}"
+        );
+        let mut at = |r: f64| {
+            let request: Vec<(Shape, f64)> = at_apex.iter().cloned().map(|e| (e, r)).collect();
+            let s = fillet_edges_with(&mut m, &solid, &request, T)
+                .unwrap()
+                .shape;
+            vol(&m, &s)
+        };
+        let (narrow, wide) = (at(small), at(large));
+        assert!(
+            wide < volumes[0] && volumes[0] < narrow,
+            "{small}/{large}: {wide} < {} < {narrow}",
+            volumes[0]
+        );
+    }
+}
