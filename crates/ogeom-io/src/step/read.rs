@@ -134,6 +134,12 @@ pub struct StepImport {
     /// to close: the file did not call it a solid, and the document carries
     /// it under its product exactly as the file placed it.
     pub shells: Vec<Shape>,
+    /// Every face the solids and shells are made of, with the file's id for
+    /// it (its `ADVANCED_FACE` or `FACE_SURFACE`), in id order. Each shape is
+    /// the face node the bodies hold, so a face found in a body finds its id
+    /// here by [`Shape::is_partner`]: the name a consumer can keep for a face
+    /// across reads of the same file.
+    pub faces: Vec<(u64, Shape)>,
     /// What happened along the way.
     pub report: StepReport,
 }
@@ -269,10 +275,18 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
         }
     }
 
+    let mut faces: Vec<(u64, Shape)> = reader
+        .faces
+        .iter()
+        .map(|(id, face)| (*id, face.clone()))
+        .collect();
+    faces.sort_unstable_by_key(|(id, _)| *id);
+
     Ok(StepImport {
         document,
         solids,
         shells,
+        faces,
         report: reader.report,
     })
 }
