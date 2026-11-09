@@ -533,6 +533,7 @@ fn least_setbacks(
         })
         .collect();
     let mut setback = vec![0.0_f64; n];
+    let mut corners: Vec<[Vector; 3]> = Vec::with_capacity(n);
     for k in 0..n {
         if !reach[k].is_finite() {
             ogeom_bail!(
@@ -574,6 +575,43 @@ fn least_setbacks(
             }
         }
         setback[k] = least + reach[k];
+        corners.push(offsets);
     }
-    Ok(setback)
+    // And each band, up to its own section, short of every other band's
+    // section plane: band `j` takes away the sweep of its section triangle
+    // from the vertex to `s_j`, which reaches along `d_k` as far as
+    // `s_j max(0, d_j·d_k) + o·d_k` at its farthest corner `o`, a touch
+    // point on its rail. Where that reaches band `k`'s section, band `k`
+    // stops one of its own widths past it. The bounds tie the setbacks
+    // together, each a share below one of the others, so they settle by
+    // going round until none moves.
+    let ties = |setback: &[f64], k: usize| -> f64 {
+        let dk = frame.d[k].vector();
+        let mut far = f64::NEG_INFINITY;
+        for (j, offsets) in corners.iter().enumerate().filter(|&(j, _)| j != k) {
+            let along = frame.d[j].vector().dot(dk).max(0.0);
+            for o in offsets {
+                far = far.max(setback[j].mul_add(along, o.dot(dk)));
+            }
+        }
+        far
+    };
+    for _ in 0..=64 * n {
+        let mut moved = false;
+        for k in 0..n {
+            let far = ties(&setback, k);
+            if far >= setback[k] {
+                setback[k] = far + reach[k];
+                moved = true;
+            }
+        }
+        if !moved {
+            return Ok(setback);
+        }
+    }
+    ogeom_bail!(
+        Construction,
+        "the bands at this corner reach past each other's sections however far \
+         they are set back"
+    )
 }

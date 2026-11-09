@@ -722,6 +722,17 @@ bump may break the API and a patch bump may not.
   - At 1, within the bevel's width, the round is unchanged: 448.526356
     against the swept section's 448.526332.
 
+- **A corner of bands of different radii no longer lets a wide band cross
+  a narrow one's section.** (#713) `fillet_edges_with` set each band back
+  only until its own section cleared the other bands. A wide band beside a
+  narrow one could still reach the narrow band's section plane inside the
+  corner, and the corner was refused ("a band's end arc does not reach its
+  face"). Each band now also stops one of its own widths past where any
+  other band, up to its own section, reaches its section plane. A
+  pyramid's apex at 0.5, 1.5, 0.5 and 1.5 now closes, valid, tangent and
+  the same in either order. Corners where no band crossed keep their
+  setbacks to the bit.
+
 - **A section passing a sphere chart's pole within its fit's tolerance is
   cut there instead of refused.**
   - A marched branch is cut at a pole of either chart lying on the other
