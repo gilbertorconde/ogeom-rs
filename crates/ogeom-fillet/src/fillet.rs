@@ -2211,6 +2211,13 @@ fn fillet_edge_variable_own(
 ///   in its end sections, and the bands' wedges are joined across each
 ///   junction, where one ball touches the same two points from either
 ///   side, and applied in one boolean.
+/// - a chain of straight edges between planes turning where they meet on
+///   one shared planar host (a block's top loop, an L-block's). Past a
+///   turning vertex each band goes on at the law's radius there, as the
+///   law holds level past an edge's end: across a convex turn it runs out
+///   as the constant band of that radius alone does and the cuts take the
+///   union; across a re-entrant one it is carried to the plane bisecting
+///   the turn, where the two are joined.
 ///
 /// A law holding one radius all along is [`fillet_edges`]' round.
 ///
@@ -2223,7 +2230,10 @@ fn fillet_edge_variable_own(
 /// (no points, a fraction off the chain or out of order, a radius not a
 /// positive length), where a linear law changes radius round a closed
 /// chain, where `chain` is empty, a chain of more than one edge whose
-/// creases turn where they meet or whose edges do not run end to end, a
+/// edges do not run end to end, a turn where a curved crease meets or
+/// whose bands' sections differ across a re-entrant turn, a ball resting
+/// on a narrow face's far edge or two bands overlapping across a face
+/// they share at an edge's largest radius, a
 /// straight edge between faces that are neither two planes nor a drum and
 /// a face along its ruling (only two planes inside a chain of different
 /// seats), where two bands' end sections at a junction part by more than
@@ -2385,7 +2395,7 @@ fn fillet_chain_law_own(
     // curve its arcs cover end to end.
     let span = if chain.len() > 1 && !closed {
         let Some(span) = one_curve_span(model, solid, chain, tol)? else {
-            return tangent_chain_law(model, solid, chain, law, tol);
+            return chain_law(model, solid, chain, law, tol);
         };
         Some(span)
     } else {
@@ -2478,10 +2488,11 @@ fn chain_mates(model: &Model, chain: &[Shape], tol: Tolerances) -> OgeomResult<V
         .collect()
 }
 
-/// A chain of edges of different seats that continue each other end to
-/// end (the top loop of a rounded-rectangle pad: its sides between two
-/// planes, its corners' arcs between the top and a drum), rounded under
-/// `law` as one run.
+/// A chain of edges of different seats running end to end, rounded under
+/// `law` as one run: edges continuing each other (the top loop of a
+/// rounded-rectangle pad: its sides between two planes, its corners' arcs
+/// between the top and a drum), or straight edges between planes turning
+/// where they meet on one shared planar host (a block's top loop).
 ///
 /// The run is walked from the first edge the way it runs, on through the
 /// edges sharing its ends, and back from its start where it is open; the
@@ -2497,7 +2508,11 @@ fn chain_mates(model: &Model, chain: &[Shape], tol: Tolerances) -> OgeomResult<V
 /// sections are one; the bands' wedges are joined across each junction's
 /// plane into one wedge (sewn within the fit a marched band is held to,
 /// which refuses ends that part by more) and applied in one boolean.
-fn tangent_chain_law(
+/// Where they turn, each band goes on past the vertex at the law's radius
+/// there, which the law holds level past an edge's end: the constant band
+/// of that radius, read as `fillet_edges` reads it, run out across a
+/// convex turn and carried to the plane bisecting a re-entrant one.
+fn chain_law(
     model: &mut Model,
     solid: &Shape,
     chain: &[Shape],
@@ -2551,22 +2566,7 @@ fn tangent_chain_law(
              rounds nothing; see docs/CAPABILITIES.md, fillet.variable"
         );
     }
-    let junctions: Vec<crate::junction::Junction> =
-        crate::junction::tangent_junctions(chain, &mates, tol)
-            .into_iter()
-            .filter(|j| j.tangent)
-            .collect();
-    let meetings = walk.len() - 1 + usize::from(closed);
-    if junctions.len() != meetings {
-        ogeom_bail!(
-            Construction,
-            "a variable radius over an open chain of {} edges is still owed \
-             where its creases turn where they meet; a chain continuing \
-             itself end to end, arcs of one curve, a single edge or a closed \
-             loop is rounded; see docs/CAPABILITIES.md, fillet.variable",
-            chain.len()
-        );
-    }
+    let tangent = crate::junction::tangent_junctions(chain, &mates, tol);
     let profile = Profile::new(law, closed, tol)?;
     if profile.level(tol) {
         let radii = vec![profile.largest(); chain.len()];
@@ -2579,18 +2579,119 @@ fn tangent_chain_law(
         lengths.push(crate::law::Ruler::new(curve, range, false, tol)?.length());
     }
     let total: f64 = lengths.iter().sum();
-    let mut set_aside: Vec<(Vec<usize>, Shape, crate::support::Wedge)> = Vec::new();
+    // Each meeting of the run: the two edges, where they meet, and the
+    // law's radius there, one radius from either side.
+    let mut meetings: Vec<([usize; 2], Point, f64)> = Vec::new();
     let mut before = 0.0;
-    for (&(k, with), length) in walk.iter().zip(&lengths) {
-        let edge = &chain[k];
+    for (step, &(k, with)) in walk.iter().enumerate() {
+        before += lengths[step];
+        let Some(&(next, _)) = walk
+            .get(step + 1)
+            .or(if closed { walk.first() } else { None })
+        else {
+            continue;
+        };
+        let at = if with { runs[k][1] } else { runs[k][0] };
+        meetings.push(([k, next], at, profile.at(before / total).0));
+    }
+    // A meeting where the creases continue each other is a tangent
+    // junction; any other is the junction two bands of the meeting's
+    // radius make there, read as `fillet_edges` reads it.
+    let mut junctions: Vec<crate::junction::Junction> = Vec::new();
+    for &([i, j], at, radius) in &meetings {
+        if let Some(found) = tangent
+            .iter()
+            .find(|t| t.slot(i).is_some() && t.slot(j).is_some() && near(t.at, at))
+        {
+            junctions.push(found.clone());
+            continue;
+        }
+        let hosts: Vec<Vec<Shape>> = [i, j]
+            .iter()
+            .map(|&k| -> OgeomResult<Vec<Shape>> {
+                let mut faces: Vec<Shape> = Vec::new();
+                for f in ogeom_topo::ancestors_of(model, solid, &chain[k], ShapeType::Face)? {
+                    if !faces.iter().any(|g| g.is_same(&f)) {
+                        faces.push(f);
+                    }
+                }
+                Ok(faces)
+            })
+            .collect::<OgeomResult<_>>()?;
+        let turning = crate::junction::junctions(
+            model,
+            solid,
+            &[chain[i].clone(), chain[j].clone()],
+            &hosts,
+            &[mates[i], mates[j]],
+            &[radius, radius],
+            tol,
+        )?
+        .into_iter()
+        .find(|t| near(t.at, at));
+        let Some(mut turning) = turning else {
+            ogeom_bail!(
+                Construction,
+                "a variable radius over a chain whose creases turn where they \
+                 meet other than as two bands meeting at a corner of one shared \
+                 planar host is still owed; see docs/CAPABILITIES.md, \
+                 fillet.variable"
+            );
+        };
+        turning.pair = [i, j];
+        let straight = [i, j].iter().all(|&k| {
+            edge_curve(model, &chain[k], tol).is_ok_and(|(c, _)| matches!(c, Curve::Line(_)))
+        });
+        let convex = turning.crossed && !turning.reentrant;
+        let reentrant = !turning.crossed && turning.reentrant;
+        if !straight || !(convex || reentrant) {
+            ogeom_bail!(
+                Construction,
+                "a variable radius over a chain turning where it meets is \
+                 rounded only between straight creases, across a convex turn or \
+                 a re-entrant one whose bands meet in a plane; see \
+                 docs/CAPABILITIES.md, fillet.variable"
+            );
+        }
+        junctions.push(turning);
+    }
+    // Each edge's law over its own stretch of the run, laid from its own
+    // start the way it runs.
+    let mut owns: Vec<Profile> = Vec::with_capacity(walk.len());
+    let mut before = 0.0;
+    for (&(_, with), length) in walk.iter().zip(&lengths) {
         let (from, to) = (before / total, (before + length) / total);
         before += length;
-        // Laid from the edge's own start the way it runs.
-        let own = if with {
+        owns.push(if with {
             profile.window(from, to)
         } else {
             profile.window(to, from)
-        };
+        });
+    }
+    // The request's checks at each edge's largest radius, where its ball
+    // sets back furthest: each ball on its faces, and no band over another
+    // across a face they share. A ball resting on a narrow face's far
+    // edge, which `fillet_edges` takes off whole, is refused here.
+    {
+        let mut edges: Vec<Shape> = Vec::with_capacity(walk.len());
+        let mut radii: Vec<f64> = Vec::with_capacity(walk.len());
+        for (&(k, _), own) in walk.iter().zip(&owns) {
+            edges.push(chain[k].clone());
+            radii.push(own.largest());
+        }
+        let rests = request_fits(model, solid, &edges, &radii, tol).map_err(|b| b.error)?;
+        if rests.iter().any(|&r| r) {
+            ogeom_bail!(
+                Construction,
+                "a variable radius over a chain one of whose balls rests on \
+                 the far edge of a narrow face beside it is still owed; see \
+                 docs/CAPABILITIES.md, fillet.variable"
+            );
+        }
+    }
+    let mut set_aside: Vec<(Vec<usize>, Shape, crate::support::Wedge)> = Vec::new();
+    for ((&(k, _), own), _) in walk.iter().zip(&owns).zip(&lengths) {
+        let edge = &chain[k];
         crate::support::ball_fits(model, solid, edge, own.largest(), false, tol)?;
         let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
         let (curve, _) = edge_curve(model, edge, tol)?;
@@ -2604,13 +2705,13 @@ fn tangent_chain_law(
                          docs/CAPABILITIES.md, fillet.variable"
                     );
                 }
-                straight_law_fillet(model, solid, edge, &own, reversed, tol)
+                straight_law_fillet(model, solid, edge, own, reversed, tol)
             } else {
                 crate::marched::marched_fillet_law(
                     model,
                     solid,
                     edge,
-                    &own,
+                    own,
                     None,
                     Some((k, &mates)),
                     tol,
@@ -2627,14 +2728,90 @@ fn tangent_chain_law(
         })?;
         set_aside.push((vec![k], edge.clone(), wedge));
     }
-    let joined = join_flush(model, set_aside, &junctions, &[], tol)?;
-    if joined.len() != 1 {
-        ogeom_bail!(
-            Construction,
-            "the bands of a chain under a law did not join into one wedge \
-             across its junctions"
-        );
+    // At a turning junction each band goes on past the vertex at the
+    // meeting's radius, where the law holds level past an edge's end: the
+    // constant band of that radius, which is what the junction is read for.
+    // Across a convex turn each band runs out as the constant band alone
+    // does and the cuts take their union; across a re-entrant one each is
+    // carried on to the plane the two meet in, where they are joined.
+    let gap = crate::marched::band_fit_target(tol) * 2.0;
+    for (junction, &(_, _, radius)) in junctions.iter().zip(&meetings) {
+        if junction.tangent {
+            continue;
+        }
+        for slot in 0..2 {
+            let index = junction.pair[slot];
+            let edge = chain[index].clone();
+            let Some(entry) = set_aside
+                .iter_mut()
+                .find(|(held, _, _)| held.contains(&index))
+            else {
+                continue;
+            };
+            let outward = junction.outward[slot];
+            if junction.reentrant {
+                let Some(cap) =
+                    crate::junction::cap_at(model, &entry.2.solid, junction.at, outward, tol)?
+                else {
+                    ogeom_bail!(
+                        Construction,
+                        "a band meeting another across a re-entrant turn has no \
+                         cap at the vertex to carry on from"
+                    );
+                };
+                let hosts: Vec<Shape> =
+                    ogeom_topo::ancestors_of(model, solid, &edge, ShapeType::Face)?;
+                entry.2.solid = crate::junction::carried_into(
+                    model,
+                    &entry.2.solid,
+                    &cap,
+                    (&edge, &hosts),
+                    outward,
+                    junction.keeps(slot),
+                    tol,
+                )?;
+                continue;
+            }
+            // The constant band alone, and what of it stands past the
+            // vertex: its run-out, where it runs out there.
+            let (built, wedges) = crate::support::collecting_wedges(|| {
+                planar_fillet(model, solid, &edge, radius, None, tol)
+            });
+            built?;
+            let Some(alone) = wedges.into_iter().next() else {
+                continue;
+            };
+            // A straight band's sections stand square to its crease, so
+            // its vertices reach as far past the vertex as any point of it.
+            let mut past = f64::NEG_INFINITY;
+            for vertex in explore_unique(model, &alone.solid, ShapeType::Vertex)? {
+                if let Some(data) = model.node(&vertex).and_then(|n| n.data().as_vertex()) {
+                    let p = vertex.transform(model.datums())?.apply(data.point);
+                    past = past.max((p - junction.at).dot(outward));
+                }
+            }
+            if past <= gap {
+                continue;
+            }
+            let run_out = crate::support::trimmed_wedge(
+                model,
+                &alone.solid,
+                (junction.at, outward),
+                ogeom_algo::shape_bounds(model, &alone.solid, tol)?.diagonal() * 2.0,
+                tol,
+            )?;
+            let (solid_joined, _) = crate::junction::joined(
+                model,
+                [&entry.2.solid, &run_out],
+                (junction.at, outward),
+                junction.at,
+                gap,
+                tol,
+            )?;
+            entry.2.solid = solid_joined;
+        }
     }
+    let joined = join_flush(model, set_aside, &junctions, &[], tol)?;
     let mut built = apply_set_aside(model, Built::from_nothing(solid.clone()), joined, tol)?;
     for edge in chain {
         built.history.delete(edge);
