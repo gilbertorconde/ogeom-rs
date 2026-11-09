@@ -1834,7 +1834,17 @@ pub(crate) fn apply_to_solid(
             })?;
             let range = guide.domain();
             crate::marched::closed_band_wedge(
-                model, solid, None, blend, &guide, range, true, surfaces, radius, behind, tol,
+                model,
+                solid,
+                None,
+                blend,
+                &guide,
+                range,
+                true,
+                surfaces,
+                crate::marched::Ball::Constant(radius),
+                behind,
+                tol,
             )
         }
         Run::Capped => {
@@ -2161,7 +2171,7 @@ fn closed_round(
     // Aimed at half the target, as the open band is: the borders are the
     // rails the faces are cut along, and the band's normal there, which
     // the faces' must match, strays by the fit over the arc's sampling.
-    let (fitted, _) = crate::marched::fit_closed_band(&blend, radius, fit_target * 0.5, tol)?;
+    let (fitted, _) = crate::marched::fit_closed_band(&blend, Some(radius), fit_target * 0.5, tol)?;
     if fitted.error > fit_target {
         ogeom_bail!(
             NotDone,

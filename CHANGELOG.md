@@ -234,6 +234,24 @@ bump may break the API and a patch bump may not.
   - A clean cap of eight at 0.001 is still fitted near tangent: two points
     on its rim end refinement as strays.
 
+- **Variable-radius fillets take a radius law, on curved closed seats
+  too.** `fillet_edges_variable(model, solid, chain, &RadiusLaw, tol)`
+  rounds with the radius following `RadiusLaw::Linear { start, end }` or
+  `RadiusLaw::Points` (radii at fractions of the chain's arc length,
+  interpolated C1 without overshooting them). (#716)
+  - A straight edge between two planes rounds under any law. The linear
+    law is `fillet_edge_variable`'s blend; a law of points is again an
+    exact envelope, a cubic B-spline along the edge by the rational
+    quadratic arc across it.
+  - A closed loop of curved edges between the same two faces rounds, as
+    one closed edge or as the arcs a boolean split it into: the march
+    carries the law's radius per station. On a drum's rim under
+    `(0, 1), (0.5, 2), (1, 1)` every contact stands within 1e-3 of the
+    law's setback; a cut drum's oblique rim meets both faces as tangent
+    as the constant band does (2.0e-3 rad).
+  - Refused by name: an open chain of several edges, an open curved
+    edge, a linear law changing radius round a closed chain.
+
 - **Patch networks hold a fan of three-sided patches exactly tangent,
   along its curves and at its point.** (#653)
   - A fan is a point every patch there shrinks its missing side to, as a
