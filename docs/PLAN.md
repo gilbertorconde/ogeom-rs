@@ -195,10 +195,10 @@ They refuse (`curved_face_blends_refuse_by_name` in `tests/blends.rs`,
   ends, are where the round runs off (a crease running off a block's
   side) and are not asked. Owed: a face that ends the run without
   meeting either line or holding an end (a narrow face past the one a
-  line of contact leaves by) is asked as a face between; and the face's
-  distance is the kernel's point-to-face distance, which takes the foot
-  on the face's surface only where it lands inside the trim, so a face
-  whose nearest interior point is not its surface's is read from its
+  line of contact leaves by) is asked as a face between. A face's distance
+  is the kernel's point-to-face distance: the foot on its surface where it
+  lands inside the trim, and where it lands outside on a curved face, the
+  local feet inside it sought from samples of the face, as well as its
   edges.
 
 **An edge round whose ball is wider than a face it rounds.** `fillet_edge`
