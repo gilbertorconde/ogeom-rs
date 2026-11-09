@@ -136,7 +136,8 @@ impl Walk<'_, '_> {
 }
 
 /// Bevel `edge` of `solid` on its marched seat by `spec`, the wedge built
-/// and applied.
+/// and applied, its contacts read against its faces as the request named
+/// them (`given`) as well as against the faces as they stand.
 ///
 /// # Errors
 ///
@@ -152,6 +153,7 @@ pub(crate) fn marched_bevel(
     solid: &Shape,
     edge: &Shape,
     spec: &Chamfer,
+    given: &[Shape],
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let reach = match spec {
@@ -359,7 +361,9 @@ pub(crate) fn marched_bevel(
 
     // Each contact over the edge's own stretch stands on its face, or the
     // wedge would cut past the face; past an open edge's ends the run-out
-    // leaves the faces by design.
+    // leaves the faces by design. A contact on a face as the request named
+    // it (`given`), where an earlier bevel of the request has cut that face
+    // back, stands in what that bevel took, as two bevels' mitre does.
     keeping_face_meshes(|| -> OgeomResult<()> {
         let deflection = ogeom_mesh::Deflection {
             chord: reach * 1e-2,
@@ -373,9 +377,20 @@ pub(crate) fn marched_bevel(
                 if !loops && (*w < edge_range.0 || *w > edge_range.1) {
                     continue;
                 }
-                if ogeom_algo::classify_on_face(model, face, *p, deflection, tol)?
-                    == ogeom_algo::Containment::Out
-                {
+                let off = |face: &Shape| -> OgeomResult<bool> {
+                    Ok(
+                        ogeom_algo::classify_on_face(model, face, *p, deflection, tol)?
+                            == ogeom_algo::Containment::Out,
+                    )
+                };
+                let mut on_given = false;
+                for named in given {
+                    if !off(named)? {
+                        on_given = true;
+                        break;
+                    }
+                }
+                if off(face)? && !on_given {
                     ogeom_bail!(
                         Construction,
                         "a chamfer's contact at {p:?} runs past its face"
