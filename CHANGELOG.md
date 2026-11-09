@@ -29,6 +29,19 @@ bump may break the API and a patch bump may not.
     lies between the loop's constant rounds at 1 (958.12) and 0.5
     (963.74).
 
+- **`fit_loop_quads` fills a closed loop with one quad per corner round a
+  centre, every side held exactly and held across.** (#718)
+  - Each side, a curve over a range with its `Across`, is split at its
+    middle. Spokes run from the middles to a centre. The patch at each
+    corner of the loop is bounded by the two halves beside it and their
+    spokes.
+  - Held curves now leave their ends along the caller's own derivative,
+    so two halves of one side stand on one line at the middle.
+  - A loop of four exact cubics on a surface flat across each side is
+    filled tangent across its spokes to rounding. Each patch leaves its
+    sides along their supports to 7.1e-8 rad: every pole across is held
+    but the spoke's first, which the spoke's pole ratio places.
+
 - **`fit_network` holds a patch's border tangent to a support, exactly.**
   (#718)
   - `NetworkOptions::across` names held border curves and how their patch

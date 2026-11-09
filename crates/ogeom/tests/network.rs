@@ -9,8 +9,8 @@ use core::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::time::Duration;
 
 use ogeom::algo::{
-    Across, ChainedPatch, CurveDef, Network, NetworkOptions, PatchDef, PatchSide, check,
-    fit_network, fit_network_chained,
+    Across, ChainedPatch, CurveDef, LoopSide, Network, NetworkOptions, PatchDef, PatchSide, check,
+    fit_loop_quads, fit_network, fit_network_chained,
 };
 use ogeom::core::clock::Instant;
 use ogeom::core::{OgeomError, Tolerances};
@@ -2412,4 +2412,114 @@ fn a_curve_held_across_leaves_its_patch_along_the_support_to_rounding() {
         matches!(refused, Err(OgeomError::Construction(_))),
         "{refused:?}"
     );
+}
+
+/// The surface `z = 0.01 (x² (6 − x) + y² (6 − y))`, flat across each side
+/// of `[0, 4]²`: its slope across `x = 0` and `x = 4` is nought along `x`,
+/// across `y = 0` and `y = 4` along `y`.
+fn on_flat_sided(x: f64, y: f64) -> Point {
+    Point::new(x, y, 0.01 * (x * x * (6.0 - x) + y * y * (6.0 - y)))
+}
+
+/// The cubic Bézier through `f` at `t = 0, 1/3, 2/3, 1`: `f` itself where
+/// `f` is a cubic.
+fn cubic_through(f: impl Fn(f64) -> Point) -> ogeom::geom::BSplineCurve {
+    use ogeom::math::KnotVector;
+    let (p0, f1, f2, p3) = (f(0.0), f(1.0 / 3.0), f(2.0 / 3.0), f(1.0));
+    let a = f1.to_vector() * 27.0 - p0.to_vector() * 8.0 - p3.to_vector();
+    let b = f2.to_vector() * 27.0 - p0.to_vector() - p3.to_vector() * 8.0;
+    let p1 = Point::ORIGIN + (a * 2.0 - b) / 18.0;
+    let p2 = Point::ORIGIN + (b * 2.0 - a) / 18.0;
+    ogeom::geom::BSplineCurve::new(
+        KnotVector::new(vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 3).unwrap(),
+        vec![p0, p1, p2, p3],
+        T,
+    )
+    .unwrap()
+}
+
+/// A loop of four exact cubics round `[0, 4]²` on the flat-sided surface,
+/// filled as four quads round its centre, each side held across along the
+/// surface's own direction across it. Every patch leaves its sides along
+/// that direction to rounding, the spokes are held tangent to rounding,
+/// and every point is within the tolerance.
+#[test]
+fn a_loop_filled_as_quads_leaves_every_side_along_its_support() {
+    use ogeom::math::Vector;
+    let (x, y) = (Vector::new(1.0, 0.0, 0.0), Vector::new(0.0, 1.0, 0.0));
+    let side = |f: Box<dyn Fn(f64) -> Point>, across: Vector| LoopSide {
+        curve: Curve::BSpline(cubic_through(f)),
+        range: (0.0, 1.0),
+        across: Across::Along(across),
+    };
+    let sides = vec![
+        side(Box::new(|t| on_flat_sided(4.0 * t, 0.0)), y),
+        side(Box::new(|t| on_flat_sided(4.0, 4.0 * t)), x),
+        side(Box::new(|t| on_flat_sided(4.0 - 4.0 * t, 4.0)), y),
+        side(Box::new(|t| on_flat_sided(0.0, 4.0 - 4.0 * t)), x),
+    ];
+    let spoke = |from: (f64, f64)| -> Vec<Point> {
+        (0..=32)
+            .map(|i| {
+                let f = f64::from(i) / 32.0;
+                on_flat_sided(
+                    (2.0 - from.0).mul_add(f, from.0),
+                    (2.0 - from.1).mul_add(f, from.1),
+                )
+            })
+            .collect()
+    };
+    let spokes = vec![
+        spoke((2.0, 0.0)),
+        spoke((4.0, 2.0)),
+        spoke((2.0, 4.0)),
+        spoke((0.0, 2.0)),
+    ];
+    let mut cloud = Vec::new();
+    for i in 0..=60 {
+        for j in 0..=60 {
+            cloud.push(on_flat_sided(f64::from(i) / 15.0, f64::from(j) / 15.0));
+        }
+    }
+    let index = PointIndex::build(&cloud).unwrap();
+    let mut model = Model::new();
+    let network = fit_loop_quads(
+        &mut model,
+        &sides,
+        &spokes,
+        &index,
+        &options(CLEAN_TOLERANCE, vec![]),
+        T,
+    )
+    .unwrap();
+    assert_sound_shell(&model, &network, 8);
+    assert_eq!(network.ended, Ended::Met);
+    assert!(
+        network.worst_tangent < ROUNDING_ANGLE,
+        "{}",
+        network.worst_tangent
+    );
+    // Each patch's sides 0 and 1 are halves of the loop's sides: the
+    // derivative across each runs along that side's direction. Every pole
+    // across a side is held to it but the spoke's first pole, which the
+    // spoke's pole triples place at the spoke's own ratio; the halves meet
+    // at the side's middle at theirs, so that pole stands off the side's
+    // support by the difference. Measured 7.1e-8 rad here, far under the
+    // tangency the setback corner asks of its patch.
+    let mut lean = 0.0_f64;
+    for (q, surface) in network.surfaces.iter().enumerate() {
+        let (first, second) = (&sides[q], &sides[(q + 1) % 4]);
+        let along = |a: &Across| match a {
+            Across::Along(v) | Across::Plane(v) => *v,
+        };
+        for i in 0..=32 {
+            let t = f64::from(i) / 32.0;
+            let (_, dv) = surface.d1_at(t, 0.0, T).unwrap();
+            let (du, _) = surface.d1_at(1.0, t, T).unwrap();
+            for (d, v) in [(dv, along(&first.across)), (du, along(&second.across))] {
+                lean = lean.max(d.cross(v).magnitude() / (d.magnitude() * v.magnitude()));
+            }
+        }
+    }
+    assert!(lean < 1e-6, "a patch leans {lean} off its side's support");
 }
