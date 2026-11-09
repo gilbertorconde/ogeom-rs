@@ -158,6 +158,27 @@ bump may break the API and a patch bump may not.
     tangent at its finest net, past the 2e-4 target, and the request is
     refused by name (`NotDone`) instead of returning a crease.
 
+- **A marched blend rounds a part thinner than its ball where the lune
+  stays inside.**
+  - Between two planes and on the swept path, a face inside the ball
+    counted only inside its lune, the part between its centre and its
+    arc. On the marched path, where the ball's section turns along the
+    run, the whole ball was asked, so a part whose far side reached into
+    the back of the ball was refused ("cuts into another face of the
+    solid").
+  - The marched lunes are now searched cell by cell over radius, angle
+    and run. A cell moves between two stations by at most the centre's
+    travel and the radius times the turn of the contacts' directions, each
+    read from its arc's chord and height. A point found is placed on a
+    station's section plane by the secant and must lie inside its sector.
+  - The solid common to cylinders of radius 3 along x and 2 along z, its
+    crease first rounded at 0.2, its wide wall's top and narrow wall
+    blended at r 0.6 with a bore of radius 1.1 along z crossing the back
+    of every ball, was refused ("cuts into another face of the solid").
+    It is now valid, and matches the unbored solid's blend less the bore
+    to 3e-11 (the bands' fit allows 1.8e-3). Of the 120 s the test takes,
+    the lune search is about 8 s.
+
 - **`fillet_edges_variable` rounds an open chain of arcs of one curve.**
   (#716)
   - A crease split at a vertex (a half drum's rim across its seam, two

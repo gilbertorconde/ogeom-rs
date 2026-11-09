@@ -17,12 +17,16 @@
 use ogeom_algo::PointDistance;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve;
-use ogeom_math::Point;
+use ogeom_math::{Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
 /// How many times an interval of the run is halved, at most, to show that
 /// the ball stays clear of a face between two stations.
 const HALVINGS: u32 = 24;
+
+/// How many cells of a run's turning lunes are read, at most, to show a
+/// face clear of them or find a point of it inside one.
+const LUNE_CELLS: usize = 1 << 16;
 
 /// A search of a face of the model, read by its distances, for a point
 /// inside the lune of a ball of a run, tried first at a point it may
@@ -253,6 +257,274 @@ pub(crate) fn face_inside_balls(
         }
     }
     Ok(None)
+}
+
+/// The lunes of a ball whose section turns along its run (a marched run):
+/// at each station the sector of the section through the centre and the
+/// two contacts, from the centre out to the radius, the short way round
+/// from the first contact to the second.
+pub(crate) struct TurningLunes<'a> {
+    pub(crate) radius: f64,
+    /// The run's stations, in order.
+    pub(crate) stations: &'a [f64],
+    /// The centre and the two contacts at a station, seated exactly.
+    pub(crate) section: &'a dyn Fn(f64) -> OgeomResult<[Point; 3]>,
+}
+
+/// One station's section, as the lunes read it.
+#[derive(Clone, Copy)]
+struct Section {
+    centre: Point,
+    /// The unit directions from the centre to the two contacts.
+    to: [Vector; 2],
+    /// The contacts themselves.
+    contacts: [Point; 2],
+}
+
+impl Section {
+    /// The unit direction at `alpha` of the way from the first contact's
+    /// direction to the second's, normalised from the chord between them;
+    /// `None` where the two directions stand opposite.
+    fn direction(&self, alpha: f64) -> Option<Vector> {
+        let w = self.to[0] * (1.0 - alpha) + self.to[1] * alpha;
+        let size = w.magnitude();
+        (size > 1e-9).then(|| w * (1.0 / size))
+    }
+
+    /// The least length of that chord's point over `[a0, a1]`: at the
+    /// fraction nearest a half.
+    fn least_chord(&self, a0: f64, a1: f64) -> f64 {
+        let alpha = 0.5_f64.clamp(a0, a1);
+        (self.to[0] * (1.0 - alpha) + self.to[1] * alpha).magnitude()
+    }
+
+    /// How far `p`, in the section's plane, stands inside the sector of
+    /// `radius`: the least of its distances to the arc and to the two
+    /// sides; negative outside it, read only for a point at a direction
+    /// between the two.
+    fn depth(&self, radius: f64, rho: f64, direction: Vector) -> f64 {
+        let side = |to: Vector| {
+            let angle = to.dot(direction).clamp(-1.0, 1.0).acos();
+            if angle >= core::f64::consts::FRAC_PI_2 {
+                rho
+            } else {
+                rho * angle.sin()
+            }
+        };
+        (radius - rho).min(side(self.to[0])).min(side(self.to[1]))
+    }
+}
+
+/// The length of a convex arc through `a`, `m` and `b` at most: its chord
+/// and twice its height, the bound [`face_inside_balls`] reads the centre's
+/// travel by.
+fn arc_reach(a: Point, m: Point, b: Point) -> f64 {
+    a.distance(b) + 2.0 * m.distance(Point::midpoint(a, b))
+}
+
+impl TurningLunes<'_> {
+    /// A point of the face `measure` reads lying more than the confusion
+    /// inside a lune at a station of the run; `None` where the face is
+    /// shown to reach into no lune by more than twice the confusion.
+    ///
+    /// The lunes are cut into cells, each a stretch of the radius, of the
+    /// way from the first contact's direction to the second's, and of the
+    /// run between two stations. In its middle section every point of a
+    /// cell lies within `e` of its middle point: half the radius's stretch
+    /// and the outer radius times the larger angle to the middle direction.
+    /// Over the cell's stretch of the run a point moves at most the
+    /// centre's travel and the outer radius times its direction's turn.
+    /// The centre and each contact travel at most their arc's chord and
+    /// twice its height over the stretch, as [`face_inside_balls`] reads
+    /// the centre's; a contact's direction from the centre turns at most
+    /// their travels over the radius, and the direction between them at
+    /// most twice the larger of those over the least length of the chord
+    /// point it is normalised from. A cell whose middle point stands
+    /// farther from the face than those bounds add up to holds none of it,
+    /// and a cell all within the confusion of the sector's boundary holds
+    /// none deeper. Every other cell is halved across its widest stretch,
+    /// until the face's nearest point to a middle point is found inside a
+    /// lune: on the plane of some station's section between the cell's
+    /// two, found by regula falsi, more than the confusion inside its
+    /// sector.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) where the
+    /// cells read reach [`LUNE_CELLS`] with neither found, and whatever
+    /// seating a section reports.
+    pub(crate) fn face_inside(
+        &self,
+        measure: &PointDistance,
+        tol: Tolerances,
+    ) -> OgeomResult<Option<Point>> {
+        let conf = tol.confusion();
+        let radius = self.radius;
+        let mut memo: ogeom_core::FastMap<u64, Option<Section>> = ogeom_core::FastMap::default();
+        let mut section = |t: f64| -> OgeomResult<Option<Section>> {
+            if let Some(s) = memo.get(&t.to_bits()) {
+                return Ok(*s);
+            }
+            let [centre, first, second] = (self.section)(t)?;
+            let to = [first - centre, second - centre];
+            let sizes = [to[0].magnitude(), to[1].magnitude()];
+            let s = (sizes[0] > 0.0 && sizes[1] > 0.0).then(|| Section {
+                centre,
+                to: [to[0] * (1.0 / sizes[0]), to[1] * (1.0 / sizes[1])],
+                contacts: [first, second],
+            });
+            memo.insert(t.to_bits(), s);
+            Ok(s)
+        };
+        // One cell of the whole sector between each two stations: a march
+        // holds many, and most stand far from any one face.
+        let mut cells: Vec<[f64; 6]> = self
+            .stations
+            .windows(2)
+            .map(|pair| [0.0, radius, 0.0, 1.0, pair[0], pair[1]])
+            .collect();
+        let cannot = || {
+            ogeom_core::ogeom_err!(
+                NotDone,
+                "whether another face of the solid comes inside the part of the ball of radius \
+                 {radius} between its centre and its arc cannot be told within {LUNE_CELLS} \
+                 pieces of the run"
+            )
+        };
+        let mut read = 0;
+        while let Some([r0, r1, a0, a1, t0, t1]) = cells.pop() {
+            read += 1;
+            if read > LUNE_CELLS {
+                return Err(cannot());
+            }
+            let tm = f64::midpoint(t0, t1);
+            let (Some(s0), Some(sm), Some(s1)) = (section(t0)?, section(tm)?, section(t1)?) else {
+                return Err(cannot());
+            };
+            let (rm, am) = (f64::midpoint(r0, r1), f64::midpoint(a0, a1));
+            let (Some(dm), Some(d0), Some(d1)) =
+                (sm.direction(am), sm.direction(a0), sm.direction(a1))
+            else {
+                return Err(cannot());
+            };
+            let angle = |p: Vector, q: Vector| p.dot(q).clamp(-1.0, 1.0).acos();
+            let middle = sm.centre + dm * rm;
+            let across = (r1 - r0).mul_add(0.5, r1 * angle(d0, dm).max(angle(dm, d1)));
+            if sm.depth(radius, rm, dm) + across <= conf {
+                continue;
+            }
+            let centre_travel = arc_reach(s0.centre, sm.centre, s1.centre);
+            let turn = (0..2)
+                .map(|k| arc_reach(s0.contacts[k], sm.contacts[k], s1.contacts[k]) + centre_travel)
+                .fold(0.0_f64, f64::max)
+                / radius;
+            let chord = sm.least_chord(a0, a1) - turn;
+            let along = if chord > 0.0 {
+                r1.mul_add(2.0 * turn / chord, centre_travel)
+            } else {
+                f64::INFINITY
+            };
+            let (d, q) = measure.nearest(middle, tol)?;
+            if d > across + along {
+                continue;
+            }
+            if let Some(q) = self.held(&mut section, q, (t0, t1), tol)? {
+                return Ok(Some(q));
+            }
+            if across + along <= conf {
+                continue;
+            }
+            let widest = [r1 - r0, r1 * angle(d0, d1), along.min(f64::MAX)];
+            if widest[0] >= widest[1] && widest[0] >= widest[2] {
+                cells.push([r0, rm, a0, a1, t0, t1]);
+                cells.push([rm, r1, a0, a1, t0, t1]);
+            } else if widest[1] >= widest[2] {
+                cells.push([r0, r1, a0, am, t0, t1]);
+                cells.push([r0, r1, am, a1, t0, t1]);
+            } else {
+                cells.push([r0, r1, a0, a1, t0, tm]);
+                cells.push([r0, r1, a0, a1, tm, t1]);
+            }
+        }
+        Ok(None)
+    }
+
+    /// `q` where it lies on the plane of some station's section between
+    /// `t0` and `t1`, found by regula falsi on its height over the plane
+    /// bracketed there, and more than the confusion inside that section's
+    /// sector; else `None`.
+    fn held(
+        &self,
+        section: &mut impl FnMut(f64) -> OgeomResult<Option<Section>>,
+        q: Point,
+        (t0, t1): (f64, f64),
+        tol: Tolerances,
+    ) -> OgeomResult<Option<Point>> {
+        let conf = tol.confusion();
+        let height = |s: &Section| -> Option<f64> {
+            let n = s.to[0].cross(s.to[1]);
+            let size = n.magnitude();
+            (size > 1e-9).then(|| (q - s.centre).dot(n) / size)
+        };
+        let (lo, hi) = (t0.min(t1), t0.max(t1));
+        let (Some(a), Some(b)) = (section(t0)?, section(t1)?) else {
+            return Ok(None);
+        };
+        let (Some(mut ha), Some(mut hb)) = (height(&a), height(&b)) else {
+            return Ok(None);
+        };
+        if ha * hb > 0.0 {
+            return Ok(None);
+        }
+        // Regula falsi, the Illinois way, keeping the root bracketed.
+        let (mut ta, mut tb) = (t0, t1);
+        let mut kept = 0_i8;
+        for _ in 0..60 {
+            let t = if hb == ha {
+                f64::midpoint(ta, tb)
+            } else {
+                (tb - hb * (tb - ta) / (hb - ha)).clamp(lo, hi)
+            };
+            let Some(s) = section(t)? else {
+                return Ok(None);
+            };
+            let Some(h) = height(&s) else {
+                return Ok(None);
+            };
+            if h.abs() <= conf * 0.1 {
+                let w = q - s.centre;
+                let rho = w.magnitude();
+                if rho <= 0.0 {
+                    return Ok(None);
+                }
+                let direction = w * (1.0 / rho);
+                // Between the two contacts' directions, the short way.
+                let n = s.to[0].cross(s.to[1]);
+                let between = s.to[0].cross(direction).dot(n) >= 0.0
+                    && direction.cross(s.to[1]).dot(n) >= 0.0;
+                return Ok(
+                    (between && s.depth(self.radius, rho, direction) > conf + h.abs()).then_some(q),
+                );
+            }
+            if (h > 0.0) == (hb > 0.0) {
+                (tb, hb) = (t, h);
+                if kept == -1 {
+                    ha *= 0.5;
+                }
+                kept = -1;
+            } else {
+                (ta, ha) = (t, h);
+                if kept == 1 {
+                    hb *= 0.5;
+                }
+                kept = 1;
+            }
+            if (tb - ta).abs() <= f64::EPSILON * tb.abs().max(1.0) {
+                return Ok(None);
+            }
+        }
+        Ok(None)
+    }
 }
 
 /// A stretch of the run still to be shown clear of a face.
