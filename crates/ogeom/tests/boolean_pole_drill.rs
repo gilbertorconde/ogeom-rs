@@ -1445,3 +1445,19 @@ fn drills_within_their_fit_of_both_poles_of_the_balls_own_chart() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// Left on the ball's own chart, a drill of radius 4 whose wall stands
+/// 4e-5 inside both poles. Beside the south pole the section piece ending
+/// at the pole and the sphere's seam meridian agree within the vertices'
+/// 4e-5 and are sewn as one edge, the section's chart on the sphere
+/// carried onto the seam's. The sew measured that chart's gap by a
+/// refinement that stops within the confusion distance of its widest, read
+/// it within the edge's 4.006647e-5, and the edge stated that while its
+/// chart ran 4.006739e-5 off. The carried chart is held to the edge's own
+/// measure as well, and every edge of the cut and the common states at
+/// least how far its charts stand from its curve.
+#[test]
+fn a_ball_drilled_with_a_seam_piece_beside_its_pole_states_its_charts() {
+    let wall = 4.0 * (1.0 - 1e-5);
+    ogeom_bool::work::unturned(|| drilled(Vector::new(0.0, -wall, 0.0), 4.0)).unwrap();
+}
