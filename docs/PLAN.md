@@ -359,20 +359,18 @@ as a fan onto that face instead (a wedge split at its corner first), its
 seam lifted onto the face. A plane of two facets gives up the one along such
 a seam into a plane of its own, which is then fanned the same way, the other
 then a facet alone. A facet whose seam the plan took within the reach and the
-build placed past it is fanned too. On `mesh_corpus` every edge between a
-curved face and a plane of one or two facets then holds within the reach
-except:
+build placed past it is fanned too, and a facet with a curved face across
+every side whose seam stands past the reach is split at its middle into
+three, each a facet with one curved side, and the conversion made again. On
+`mesh_corpus` every edge between a curved face and a plane of one or two
+facets then holds within the reach except:
 
-- on `nist_ctc_02`, two sides (0.25 and 0.16, against a reach of 0.093) of
-  one facet with a curved face across every side, which no fan takes: a fan
-  turns its seam onto one curved face, a wedge onto two;
 - on the sliver part, where a plane of two facets beside a torus keeps
   seams of 0.019 against a reach of 0.004.
 
 Design items, in order:
 
-- **Those two.** A facet with a curved face across every side needs a fan
-  that lifts all three of its sides, or a split into fans.
+- **The sliver part's plane of two facets**, not yet diagnosed.
 - **Seams between two curved faces fitted to one spline.** On `mesh_corpus`
   one such seam stands past its reach: on `nist_ctc_02`, a cone (half-angle
   3°) beside a torus (major radius 112, tube 10), at 0.097 against a reach
