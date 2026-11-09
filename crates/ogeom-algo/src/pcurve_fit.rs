@@ -78,7 +78,23 @@ fn land(
 ) -> OgeomResult<(ogeom_math::Point2, f64)> {
     if let Some(uv) = chart_of(surface, p) {
         let lifted = surface.point_at(uv.x, uv.y, tol)?;
-        return Ok((uv, p.distance(lifted)));
+        let off = p.distance(lifted);
+        // Near a sphere's pole the arcsine of the height loses half its
+        // digits, and a point on the sphere lands a root of the rounding
+        // off it: past the confusion distance, the latitude read against
+        // the ring's radius, which stays exact there, is taken where it
+        // lands nearer.
+        if off > tol.confusion()
+            && let SurfaceGeometry::Sphere(s) = surface
+        {
+            let l = s.sphere().frame().to_local(p);
+            let exact = ogeom_math::Point2::new(uv.x, l.z.atan2(l.x.hypot(l.y)));
+            let nearer = p.distance(surface.point_at(exact.x, exact.y, tol)?);
+            if nearer < off {
+                return Ok((exact, nearer));
+            }
+        }
+        return Ok((uv, off));
     }
     let near = seed.and_then(|luv| {
         crate::measure::project_on_surface_from(surface, p, (luv.x, luv.y), tol).ok()
