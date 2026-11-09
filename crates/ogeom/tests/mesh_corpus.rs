@@ -796,8 +796,7 @@ fn grid_point_on_a_diagonal_boundary() {
 }
 
 /// The widest edge between a curved face and a planar face of `edges`
-/// edges or fewer (three for a single facet, four for two in one plane),
-/// other than a facet with a curved face across every side, of a part
+/// edges or fewer (three for a single facet, four for two in one plane) of a part
 /// converted from its mesh at a thousandth of its diagonal, and the reach
 /// of that conversion: twenty coplanar distances, as far as a snapped curve
 /// may stand off its faces.
@@ -832,16 +831,6 @@ fn widest_facet_seam(name: &str, edges: usize) -> (f64, f64) {
         }
         shapes.push((planar, edges));
     }
-    // A facet with a curved face across every side is no fan's (a fan
-    // turns its seam onto one curved face, a wedge onto two) and is left
-    // out.
-    let enclosed = |at: usize| {
-        shapes[at].1.iter().all(|edge| {
-            owners[&edge.node()]
-                .iter()
-                .any(|&other| other != at && !shapes[other].0)
-        })
-    };
     let widest = explore_unique(&back, &out.shape, ShapeType::Edge)
         .unwrap()
         .iter()
@@ -849,7 +838,7 @@ fn widest_facet_seam(name: &str, edges: usize) -> (f64, f64) {
             let faces = &owners[&e.node()];
             faces
                 .iter()
-                .any(|&at| shapes[at].0 && shapes[at].1.len() <= edges && !enclosed(at))
+                .any(|&at| shapes[at].0 && shapes[at].1.len() <= edges)
                 && faces.iter().any(|&at| !shapes[at].0)
         })
         .map(|e| {
@@ -875,10 +864,10 @@ fn widest_facet_seam(name: &str, edges: usize) -> (f64, f64) {
 /// facet sharing its plane with one other, taken out of it: every edge
 /// between a curved face and a plane of one or two facets holds within the
 /// reach, and so does a facet whose seam the plan took within the reach
-/// and the build placed past it. A facet with a curved face across every
-/// side is no fan's and is left out. On the sliver part, a plane of two
-/// facets beside a torus keeps its seams at 0.019 against a reach of 0.004
-/// and is held to its single facets alone.
+/// and the build placed past it, and a facet with a curved face across
+/// every side, split at its middle into three. On the sliver part, a plane
+/// of two facets beside a torus keeps its seams at 0.019 against a reach of
+/// 0.004 and is held to its single facets alone.
 #[test]
 #[ignore = "heavy"]
 fn facets_beside_spline_pieces_meet_them_within_the_reach() {

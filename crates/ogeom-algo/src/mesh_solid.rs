@@ -758,7 +758,20 @@ fn build(
             model, found, &start, flat, options, protected, &kept, &mut held, tol,
         )? {
             Ok(solid) => return Ok(solid),
-            Err(narrowing) => narrowing,
+            Err(Unbuilt::Narrow(narrowing)) => narrowing,
+            Err(Unbuilt::Split(facets)) => {
+                let split = found.split_at_middles(&facets);
+                let protected: Vec<bool> = if protected.is_empty() {
+                    Vec::new()
+                } else {
+                    let mut grown = protected.to_vec();
+                    for &t in &facets {
+                        grown.extend([protected[t]; 2]);
+                    }
+                    grown
+                };
+                return build(model, &split, options, &protected, tol);
+            }
         };
         for g in narrowing {
             narrow(&mut start, triangles, g);
@@ -803,7 +816,7 @@ fn build_from(
     kept: &crate::mass::VolumeKept,
     held: &mut Vec<bool>,
     tol: Tolerances,
-) -> OgeomResult<Result<MeshSolid, Vec<usize>>> {
+) -> OgeomResult<Result<MeshSolid, Unbuilt>> {
     let (points, triangles, adjacency) = (&found.points, &found.triangles, &found.adjacency);
     let (pieces, depth, all_closed) = (&found.pieces, &found.depth, found.all_closed);
     let mut groups = start.clone();
@@ -1221,6 +1234,20 @@ fn build_from(
                                     groups.fans.extend(fanned);
                                     continue 'build;
                                 }
+                                // A facet alone with a curved face across
+                                // every side is no fan's: where a seam of it
+                                // stands past the reach, the conversion is
+                                // made again with the facet split at its
+                                // middle into three, each a facet with one
+                                // curved side.
+                                let enclosed: Vec<usize> = (0..triangles.len())
+                                    .filter(|&t| {
+                                        enclosed_wide(model, &built, &groups, adjacency, t, reach)
+                                    })
+                                    .collect();
+                                if !enclosed.is_empty() {
+                                    return Ok(Err(Unbuilt::Split(enclosed)));
+                                }
                             }
                             break 'build shape;
                         }
@@ -1270,7 +1297,7 @@ fn build_from(
                 .filter(|g| groups.narrower.contains_key(g))
                 .collect();
             if !narrowing.is_empty() {
-                return Ok(Err(narrowing));
+                return Ok(Err(Unbuilt::Narrow(narrowing)));
             }
             let mut alone = Vec::new();
             let mut withdrawn = false;
@@ -1600,6 +1627,100 @@ fn seam_built_wider(
                 .and_then(|n| n.data().as_edge())
                 .is_some_and(|d| d.tolerance.get() > reach)
     })
+}
+
+/// Why [`build_from`] did not build: the regions found at a wider distance
+/// to put back as the default found them, or the facets to split at their
+/// middles before the conversion is made again.
+enum Unbuilt {
+    Narrow(Vec<usize>),
+    Split(Vec<usize>),
+}
+
+/// Whether triangle `t` is a facet alone in its plane with a curved face
+/// across every side, and a built edge it shares with one of them stands
+/// wider than `reach`.
+fn enclosed_wide(
+    model: &Model,
+    built: &[Option<Shape>],
+    groups: &Groups,
+    adjacency: &Adjacency,
+    t: usize,
+    reach: f64,
+) -> bool {
+    let g = groups.of[t];
+    if !matches!(groups.carriers.get(g), Some(Carrier::Plane(_))) {
+        return false;
+    }
+    let mut across = Vec::with_capacity(3);
+    for h in 3 * t..3 * t + 3 {
+        let Some(twin) = adjacency.twin[h] else {
+            return false;
+        };
+        let o = groups.of[twin / 3];
+        if o == g || !matches!(groups.carriers.get(o), Some(Carrier::Curved(_))) {
+            return false;
+        }
+        across.push(o);
+    }
+    across
+        .into_iter()
+        .any(|c| seam_built_wider(model, built, g, c, reach))
+}
+
+impl Found {
+    /// The same mesh with each of `facets` split at its middle into three
+    /// triangles, wound as it was, each in a plane of its own on the
+    /// facet's plane; among the regions found at the default distance, the
+    /// three stay in the facet's region.
+    fn split_at_middles(&self, facets: &[usize]) -> Self {
+        let mut found = self.clone();
+        for &t in facets {
+            let [a, b, c] = found.triangles[t];
+            let corners = [a, b, c].map(|v| found.points[v as usize].to_vector());
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a mesh's vertex count fits its u32 indices"
+            )]
+            let middle = found.points.len() as u32;
+            found.points.push(Point::from_vector(
+                (corners[0] + corners[1] + corners[2]) / 3.0,
+            ));
+            let first = found.triangles.len();
+            found.triangles[t] = [a, b, middle];
+            found.triangles.push([b, c, middle]);
+            found.triangles.push([c, a, middle]);
+            for added in [first, first + 1] {
+                let g = found.groups.of[t];
+                found.groups.of.push(found.groups.carriers.len());
+                let carrier = found.groups.carriers[g].clone();
+                found.groups.carriers.push(carrier);
+                if let Some(regions) = found.first.as_deref_mut() {
+                    let held = regions.of[t];
+                    regions.of.push(held);
+                }
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "a mesh's triangle count fits its u32 indices"
+                )]
+                let added = added as u32;
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "a mesh's triangle count fits its u32 indices"
+                )]
+                let held = t as u32;
+                if let Some(piece) = found
+                    .pieces
+                    .iter_mut()
+                    .find(|piece| piece.triangles.contains(&held))
+                {
+                    piece.triangles.push(added);
+                }
+            }
+        }
+        found.adjacency = Adjacency::new(&found.triangles);
+        found
+    }
 }
 
 impl Groups {

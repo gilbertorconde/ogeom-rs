@@ -316,6 +316,20 @@ bump may break the API and a patch bump may not.
     against a fine grid's 2.4112614 over the face; it read 2.9467014, the
     distance to its edges.
 
+- **A facet with a curved face across every side meets them within the
+  reach.** (#706)
+  - No fan takes such a facet: a fan lifts its seam onto one curved face,
+    a wedge onto two. On `nist_ctc_02` one stood 0.25 and 0.16 off two of
+    its neighbours against a reach of 0.093.
+  - Where a seam of such a facet stands past the reach once built, the
+    conversion is made again with the facet split at its middle into three
+    triangles, each a facet with one curved side, which the build fans or
+    gives to its curved neighbour as it does any other.
+  - `nist_ctc_02`'s widest seam beside a plane of a facet or two is now
+    0.089, within the reach; the part stays valid and closed, its volume
+    the same. The other fourteen parts of `mesh_corpus` come back the same
+    to the bit.
+
 - **`split_face` cuts across the seam of a chart that closes on itself
   without repeating, and a trimmed round of a B-spline tube's foot
   builds.**
