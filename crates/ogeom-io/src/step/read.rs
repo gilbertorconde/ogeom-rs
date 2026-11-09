@@ -168,6 +168,7 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
         pcurves: FastMap::default(),
         pieces: FastMap::default(),
         band_faces: FastSet::default(),
+        unnamed_colours: FastSet::default(),
         pole_vertices: Vec::new(),
         piece_key: u64::MAX,
         untrimmed_ids: Vec::new(),
@@ -338,6 +339,9 @@ struct Reader<'a> {
     /// a vertex column only because one rim was split on the other's: each
     /// builds as a band of rings through its common column.
     band_faces: FastSet<u64>,
+    /// The `DRAUGHTING_PRE_DEFINED_COLOUR`s whose name is none of the eight
+    /// the standard defines, warned of once each.
+    unnamed_colours: FastSet<u64>,
     /// The vertices made at poles, shared by every piece that meets one.
     pole_vertices: Vec<Shape>,
     /// The last key handed to a piece; keys count down from the top of the
@@ -4449,6 +4453,33 @@ impl<'a> Reader<'a> {
                 channel(2)?,
                 channel(3)?,
             ));
+        }
+        // A colour named rather than mixed: one of the eight the standard
+        // (ISO 10303-46) defines, each channel fully on or off. Any other
+        // name is no colour, said once for the entity.
+        if keyword == "DRAUGHTING_PRE_DEFINED_COLOUR" {
+            let name = match args.first() {
+                Some(Arg::Str(name)) => name.as_str(),
+                _ => "",
+            };
+            let channels = match name.to_ascii_lowercase().as_str() {
+                "black" => Some((0.0, 0.0, 0.0)),
+                "red" => Some((1.0, 0.0, 0.0)),
+                "green" => Some((0.0, 1.0, 0.0)),
+                "blue" => Some((0.0, 0.0, 1.0)),
+                "yellow" => Some((1.0, 1.0, 0.0)),
+                "magenta" => Some((1.0, 0.0, 1.0)),
+                "cyan" => Some((0.0, 1.0, 1.0)),
+                "white" => Some((1.0, 1.0, 1.0)),
+                _ => None,
+            };
+            if channels.is_none() && self.unnamed_colours.insert(id) {
+                self.report.warnings.push(format!(
+                    "#{id}: DRAUGHTING_PRE_DEFINED_COLOUR '{name}' names none of the eight \
+                     predefined colours; the item is left uncoloured"
+                ));
+            }
+            return channels.map(|(r, g, b)| ogeom_doc::Colour::rgb(r, g, b));
         }
         let mut refs: Vec<u64> = Vec::new();
         collect_refs(&args, &mut refs);
