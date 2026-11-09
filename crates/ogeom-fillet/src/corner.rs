@@ -424,6 +424,49 @@ fn corner_at(
     }))
 }
 
+/// A convex planar corner one ball touches every face of, read as
+/// [`round_vertex`] reads it: the vertex's point, the ball's centre, each
+/// plane's inward normal, the planes in their order round the vertex, and
+/// edge `k`'s direction into the solid, where plane `ring[k]` meets plane
+/// `ring[k + 1]`.
+pub(crate) struct CornerFrame {
+    pub corner: Point,
+    pub far: Point,
+    pub m: Vec<Vector>,
+    pub ring: Vec<usize>,
+    pub d: Vec<Direction>,
+}
+
+/// The frame of `vertex` of `solid` as a corner one ball of `radius`
+/// touches every plane of, refused by name where it is another kind.
+pub(crate) fn corner_frame(
+    model: &Model,
+    solid: &Shape,
+    vertex: &Shape,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<CornerFrame> {
+    match corner_at(model, solid, vertex, radius, tol)? {
+        Corner::OneBall(one) => Ok(CornerFrame {
+            corner: one.corner,
+            far: one.far,
+            m: one.m,
+            ring: one.ring,
+            d: one.d,
+        }),
+        Corner::Curved(_) => ogeom_bail!(
+            Construction,
+            "a setback corner where a curved face meets the vertex is still \
+             owed; see docs/CAPABILITIES.md, fillet.setback-corners"
+        ),
+        Corner::Setback(..) => ogeom_bail!(
+            Construction,
+            "a setback corner whose planes share no tangent ball is still \
+             owed; see docs/CAPABILITIES.md, fillet.setback-corners"
+        ),
+    }
+}
+
 /// [`round_vertex_with`] at a corner one ball touches every face of.
 fn one_ball_corner(
     model: &mut Model,
@@ -1341,7 +1384,7 @@ fn setback_corner(
 /// centroid. The polyhedron builder checks what this hands it (planarity,
 /// every edge shared by two faces) so a set of half-spaces that bounds
 /// nothing, or bounds a sliver, is refused rather than built.
-fn convex_block(
+pub(crate) fn convex_block(
     model: &mut Model,
     walls: &[(Vector, Point)],
     tol: Tolerances,
@@ -1398,7 +1441,11 @@ fn convex_block(
 }
 
 /// Where three planes meet, or `None` where they do not span.
-fn planes_meet(a: &(Vector, Point), b: &(Vector, Point), c: &(Vector, Point)) -> Option<Point> {
+pub(crate) fn planes_meet(
+    a: &(Vector, Point),
+    b: &(Vector, Point),
+    c: &(Vector, Point),
+) -> Option<Point> {
     let m = [a.0, b.0, c.0];
     let rhs = [
         a.0.dot(a.1 - Point::ORIGIN),

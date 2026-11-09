@@ -109,6 +109,24 @@ bump may break the API and a patch bump may not.
   - A crease that does not close on itself (a run-out, a mitre at a
     vertex) is still refused.
 
+- **Setback vertex corners.** `round_vertex_setback(model, solid,
+  vertex, radius, &Setbacks, tol)` stops each band meeting a vertex at its
+  own distance along its edge and fills the opening with one patch, so a
+  corner reads as one soft surface rather than a ball pressed into its
+  bands. (#718)
+  - Each band is cut square to its edge at its setback; on each face the
+    trim runs from one band's rail end to the next on a conic tangent to
+    both rails; the patch meets every band end and face G1 within the
+    bands' fit target. On a 20 × 20 × 10 block's corner at radius 2 and
+    setback 5, the patch meets its six neighbours within 3.1e-5 rad.
+  - A setback equal to the ball's own is the ball corner `fillet_edges`
+    builds. G2 is refused by name: a circular band meets its face only at
+    G1, so no patch is G2 to both where they meet.
+  - Built at convex planar corners one ball touches every face of (a box
+    corner, a square pyramid's apex).
+- **`make_filling_n` lives in ogeom-fillet**, re-exported by ogeom-offset
+  under the same names, so the corner tools can fill openings with it.
+
 - **A concave round rests on what lies beyond the narrow face beside it:
   the far edge of a strip further on, or the face the strips run into.**
   (Part of #720)

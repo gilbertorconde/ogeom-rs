@@ -24,7 +24,7 @@ use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, Curve3d as _, Reversible as _, SurfaceGeometry, TrimmedCurve};
 use ogeom_topo::{Model, Shape, ShapeType};
 
-pub use crate::fill_n::{FillBoundary, FillSide, Filled, make_filling_n};
+pub use ogeom_fillet::{FillBoundary, FillSide, Filled, make_filling_n};
 
 /// Fill the loop `edges` bound with a fitted patch face.
 ///
