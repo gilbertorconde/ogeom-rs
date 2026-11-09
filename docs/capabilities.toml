@@ -1304,23 +1304,24 @@ restriction = """The radius follows a law by arc length along the chain \
 section the arc of the law's radius in the plane square to the edge. \
 Rounded: a straight edge between two planes under any law, its envelope \
 exact (a cubic B-spline along the edge by the rational quadratic arc \
-across it under a law of points); and a closed loop of curved edges \
-between the same two faces, one closed edge or the arcs it is split \
-into end to end (a drum's rim, a cut drum's oblique rim), marched with \
-the law's radius station by station and the band fitted through each \
-station's arc; an open curved edge whose ball runs out past its ends \
-(a half drum's rim), the law laid along the edge and held at its end \
-radius past each end, where the ball runs out at that radius; and an \
-open chain of arcs of one curve between the same two faces, end to end \
-(a crease split at a vertex), rounded as the one seat over the window \
-its arcs cover. Refused by name: a linear law changing radius round a \
-closed chain (it jumps where the chain closes), any other open chain of \
-more than one edge (arcs of different curves, or turning where they \
-meet), a \
-straight edge whose faces are not both planes, a law over one arc of a \
-crease that closes through other edges (the whole loop is given \
-instead), a seat pinched where its hosts are tangent, and a ball at the \
-law's largest radius that does not fit the faces."""
+across it under a law of points); a closed loop of curved edges between \
+the same two faces, one closed edge or the arcs it is split into end to \
+end (a drum's rim, a cut drum's oblique rim), marched with the law's \
+radius station by station and the band fitted through each station's \
+arc; an open curved edge whose ball runs out past its ends (a half \
+drum's rim), the law laid along the edge and held at its end radius past \
+each end, where the ball runs out at that radius; an open chain of arcs \
+of one curve between the same two faces, end to end (a crease split at a \
+vertex), rounded as the one seat over the window its arcs cover; and a \
+straight edge along a drum's ruling (a flat or a wall meeting a drum, or \
+two drums), marched with the law's radius. Refused by name: a linear law \
+changing radius round a closed chain (it jumps where the chain closes), \
+any other open chain of more than one edge (arcs of different curves, or \
+turning where they meet), any other straight edge whose faces are not \
+both planes, a law over one arc of a crease that closes through other \
+edges (the whole loop is given instead), a seat pinched where its hosts \
+are tangent, and a ball at the law's largest radius that does not fit \
+the faces."""
 symbols = ["ogeom_fillet::fillet_edges_variable", "ogeom_fillet::RadiusLaw"]
 tests = ["crates/ogeom-fillet/tests/variable.rs"]
 

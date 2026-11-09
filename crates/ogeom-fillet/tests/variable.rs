@@ -548,6 +548,91 @@ fn a_law_of_points_rounds_an_open_chain_of_arcs_of_one_circle() {
     }
 }
 
+/// A straight edge along a drum's ruling under a law of points: a drum of
+/// radius 5, 10 tall, cut flat at x = 3, its flat meeting it along a ruling
+/// at y = 4. The ball of radius `r` seated on the flat and inside the drum
+/// has its centre at x = 3 - r, 5 - r from the axis, so its contact on the
+/// flat stands at y = sqrt((5 - r)^2 - (3 - r)^2) and on the drum at
+/// x = 5 (3 - r) / (5 - r); every contact on both rails is held there at
+/// the law's radius for its height.
+#[test]
+fn a_law_of_points_rounds_a_flat_meeting_a_drum_along_its_ruling() {
+    let mut model = Model::new();
+    let drum = ogeom_algo::make_cylinder(&mut model, at(0.0, 0.0, 0.0), 5.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let away = ogeom_algo::make_box(&mut model, at(3.0, -10.0, -1.0), (10.0, 20.0, 12.0), T)
+        .unwrap()
+        .shape;
+    let flat = ogeom_bool::cut(&mut model, &drum, &away, T).unwrap().shape;
+    let ruling = edge_near(&model, &flat, [3.0, 4.0, 5.0]);
+    let rounded =
+        fillet_edges_variable(&mut model, &flat, std::slice::from_ref(&ruling), &hump(), T)
+            .unwrap();
+    valid(&model, &rounded.shape);
+    assert!(rounded.history.is_deleted(&ruling));
+
+    // The fraction along the ruling at a height, the way it runs.
+    let upward = {
+        let (c, (lo, hi)) = ogeom_algo::placed_edge_curve(&model, &ruling, T)
+            .unwrap()
+            .unwrap();
+        let rises = c.point_at(hi, T).unwrap().z > c.point_at(lo, T).unwrap().z;
+        rises != (ruling.orientation() == Orientation::Reversed)
+    };
+    let fraction = |z: f64| if upward { z / 10.0 } else { 1.0 - z / 10.0 };
+    let (mut on_flat, mut on_drum) = (0, 0);
+    for e in explore_unique(&model, &rounded.shape, ShapeType::Edge).unwrap() {
+        let Some((c, (a, b))) = ogeom_algo::placed_edge_curve(&model, &e, T).unwrap() else {
+            continue;
+        };
+        let points: Vec<Point> = (0..=32)
+            .map(|i| c.point_at(a + (b - a) * f64::from(i) / 32.0, T).unwrap())
+            .collect();
+        // Rails run up the ruling's side from end face to end face: on the
+        // flat beside it, or on the drum beside it (a fitted curve, held to
+        // the drum within the band's fit).
+        let (low, high) = points
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(l, h), p| (l.min(p.z), h.max(p.z)));
+        if high - low < 5.0 || points.iter().any(|p| p.y < 0.5) {
+            continue;
+        }
+        if points
+            .iter()
+            .all(|p| (p.x - 3.0).abs() < 1e-6 && p.y < 4.0 - 1e-3)
+        {
+            for p in &points {
+                let r = hump_open(fraction(p.z));
+                let want = ((5.0 - r).powi(2) - (3.0 - r).powi(2)).sqrt();
+                assert!(
+                    (p.y - want).abs() < 1e-3,
+                    "on the flat at z {}: y {} against {want}",
+                    p.z,
+                    p.y
+                );
+                on_flat += 1;
+            }
+        } else if points
+            .iter()
+            .all(|p| (p.x.hypot(p.y) - 5.0).abs() < 1e-3 && p.x < 3.0 - 1e-3)
+        {
+            for p in &points {
+                let r = hump_open(fraction(p.z));
+                let want = 5.0 * (3.0 - r) / (5.0 - r);
+                assert!(
+                    (p.x - want).abs() < 1e-3,
+                    "on the drum at z {}: x {} against {want}",
+                    p.z,
+                    p.x
+                );
+                on_drum += 1;
+            }
+        }
+    }
+    assert!(on_flat > 16 && on_drum > 16, "{on_flat} and {on_drum}");
+}
+
 #[test]
 fn a_variable_radius_refuses_by_name_what_it_does_not_round() {
     let mut model = Model::new();

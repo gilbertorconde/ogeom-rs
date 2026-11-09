@@ -2160,6 +2160,8 @@ fn fillet_edge_variable_own(
 /// - an open chain of arcs of one curve between the same two faces, end
 ///   to end (a crease split at a vertex): the one seat over the window of
 ///   that curve its arcs cover.
+/// - a straight edge along a drum's ruling (a flat or a wall meeting a
+///   drum, or two drums): marched with the law's radius station by station.
 ///
 /// A law holding one radius all along is [`fillet_edges`]' round.
 ///
@@ -2172,12 +2174,13 @@ fn fillet_edge_variable_own(
 /// (no points, a fraction off the chain or out of order, a radius not a
 /// positive length), where a linear law changes radius round a closed
 /// chain, where `chain` is empty, an open chain of more than one edge that
-/// is not arcs of one curve, a
-/// closed chain with a straight edge, or a chain whose edges do not run
-/// end to end between the same two faces, where a law is given over one
-/// arc of a crease that closes through other edges, or where the ball at
-/// the law's largest radius does not fit the edge's faces; and as
-/// [`fillet_edge`] for the seat itself.
+/// is not arcs of one curve, a closed chain with a straight edge, a
+/// straight edge between faces that are neither two planes nor a drum and
+/// a face along its ruling, or a chain whose edges do not run end to end
+/// between the same two faces, where a law is given over one arc of a
+/// crease that closes through other edges, or where the ball at the law's
+/// largest radius does not fit the edge's faces; and as [`fillet_edge`]
+/// for the seat itself.
 pub fn fillet_edges_variable(
     model: &mut Model,
     solid: &Shape,
@@ -2361,18 +2364,25 @@ fn fillet_chain_law_own(
         };
         return fillet_edge_variable_own(model, solid, edge, from, to, tol);
     }
+    // A straight edge alone: between two planes the envelope is exact;
+    // along a drum's ruling (a wall meeting a drum, or two drums) every
+    // section changes with the radius, and the march carries it.
     let mut planar = false;
     for e in chain {
         let (curve, _) = edge_curve(model, e, tol)?;
         if matches!(curve, Curve::Line(_)) {
-            planar = chain.len() == 1
-                && matches!(route(model, solid, e, Rims::Exact, tol)?, Route::Planar);
-            if !planar {
+            let seat = if chain.len() == 1 {
+                Some(route(model, solid, e, Rims::Exact, tol)?)
+            } else {
+                None
+            };
+            planar = matches!(seat, Some(Route::Planar));
+            if !planar && !matches!(seat, Some(Route::Ruled(_))) {
                 ogeom_bail!(
                     Construction,
                     "a variable radius on a straight edge other than one \
-                     between two planes, alone, is still owed; see \
-                     docs/CAPABILITIES.md, fillet.variable"
+                     between two planes or along a drum's ruling, alone, is \
+                     still owed; see docs/CAPABILITIES.md, fillet.variable"
                 );
             }
         }
