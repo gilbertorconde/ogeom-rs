@@ -1580,7 +1580,30 @@ pub fn branches(
     options: Marching,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Traced>> {
-    Ok(branches_from_touches(a, b, options, tol)?
+    branches_cut_at_poles(a, b, options, 0.0, tol)
+}
+
+/// Every branch of the intersection, as [`branches`], each cut at a pole
+/// of either chart lying on the other surface within `reach` of it as well
+/// as within the chord (see [`cut_at_poles`]).
+///
+/// A section fitted whole past a pole states a tolerance about its own
+/// distance from the pole, since no image follows the chart's half turn
+/// there; where it passes the pole within that tolerance
+/// ([`passes_a_pole`]), the pole is a point of the section as far as the
+/// fit can say, and the pair is traced again cut there.
+///
+/// # Errors
+///
+/// As [`branches`].
+pub fn branches_cut_at_poles(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    options: Marching,
+    reach: f64,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Traced>> {
+    Ok(branches_from_touches(a, b, options, reach, tol)?
         .into_iter()
         .map(|(branch, _)| branch)
         .collect())
@@ -1593,6 +1616,7 @@ pub(crate) fn branches_from_touches(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
     options: Marching,
+    pole_reach: f64,
     tol: Tolerances,
 ) -> OgeomResult<Vec<(Traced, bool)>> {
     let Seeded {
@@ -1708,7 +1732,7 @@ pub(crate) fn branches_from_touches(
         split_at_touches(stitched, again, a, b, options, tol)
             .into_iter()
             .flat_map(|(branch, crossing)| {
-                cut_at_poles(branch, a, b, options, tol)
+                cut_at_poles(branch, a, b, options.chord.max(pole_reach), tol)
                     .into_iter()
                     .map(move |piece| (piece, crossing))
             })
@@ -2099,11 +2123,17 @@ fn pole_parameter(
 /// for it), and the branch cut. Each piece's end on the pole is read on
 /// the line of the free parameter its curve leaves along, the section's
 /// tangent there oriented into the piece.
-fn cut_at_poles(
+///
+/// `reach` is how far the pole may stand off the other surface and off the
+/// polyline and still be a point of the section: the march's chord as it
+/// traces, or a fitted section's stated tolerance where the fit passes the
+/// pole within it (see [`passes_a_pole`]).
+#[must_use]
+pub fn cut_at_poles(
     branch: Traced,
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
-    options: Marching,
+    reach: f64,
     tol: Tolerances,
 ) -> Vec<Traced> {
     let n = branch.points.len();
@@ -2122,6 +2152,7 @@ fn cut_at_poles(
         return vec![branch];
     }
     let closed = branch.closed();
+    let reach = reach.max(tol.confusion());
     let state = |i: usize| {
         [
             branch.on_a[i].0,
@@ -2130,7 +2161,6 @@ fn cut_at_poles(
             branch.on_b[i].1,
         ]
     };
-    let reach = options.chord.max(tol.confusion());
     let segments = n - 1;
     let gap = |p: Point, j: usize| distance_to_segment(p, branch.points[j], branch.points[j + 1]);
     // Each visit to a pole: the segment it lies beside, and the pole.
@@ -2410,6 +2440,66 @@ fn cut_at_poles(
         }
     }
     pieces
+}
+
+/// Whether `curve` passes a pole of either surface's chart within `reach`
+/// between its ends: nearer the pole than `reach` somewhere, its ends both
+/// farther.
+///
+/// A section fitted whole past a pole states a tolerance about its own
+/// distance from the pole, since no image follows the chart's half turn
+/// there. Within that tolerance the pole is a point of the section as the
+/// fit states it, and the branch is cut there as [`cut_at_poles`] cuts it
+/// within the march's chord.
+///
+/// The nearest approach is read at its worst among evenly spaced samples,
+/// refined by golden section between their neighbours.
+#[must_use]
+pub fn passes_a_pole(
+    curve: &ogeom_geom::Curve,
+    surfaces: [&SurfaceGeometry; 2],
+    reach: f64,
+    tol: Tolerances,
+) -> bool {
+    const SAMPLES: u32 = 256;
+    use ogeom_geom::Curve3d;
+    let (lo, hi) = curve.domain();
+    let (Ok(start), Ok(end)) = (curve.point_at(lo, tol), curve.point_at(hi, tol)) else {
+        return false;
+    };
+    let at = |k: u32| (hi - lo).mul_add(f64::from(k) / f64::from(SAMPLES), lo);
+    for surface in surfaces {
+        for (_, _, pole) in chart_poles(surface, tol) {
+            if start.distance(pole) <= reach || end.distance(pole) <= reach {
+                continue;
+            }
+            let off = |t: f64| {
+                curve
+                    .point_at(t, tol)
+                    .map_or(f64::INFINITY, |p| p.distance(pole))
+            };
+            let nearest = (0..=SAMPLES)
+                .min_by(|&x, &y| off(at(x)).total_cmp(&off(at(y))))
+                .unwrap_or(0);
+            let (mut l, mut h) = (
+                at(nearest.saturating_sub(1)),
+                at((nearest + 1).min(SAMPLES)),
+            );
+            let golden = (5.0_f64.sqrt() - 1.0) / 2.0;
+            for _ in 0..100 {
+                let (x, y) = (h - golden * (h - l), l + golden * (h - l));
+                if off(x) < off(y) {
+                    h = y;
+                } else {
+                    l = x;
+                }
+            }
+            if off(f64::midpoint(l, h)).min(off(at(nearest))) <= reach {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Where unknown `k` turns along three samples of a branch, to second

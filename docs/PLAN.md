@@ -37,14 +37,29 @@ on its own chart (where `ball_chart.rs` cannot restate it: a face with one
 new pole inside whose loop round it the seam meridian crosses at no
 vertex, a face placed inside its solid, a face with an edge that has no
 curve in space, a face whose trim holds no pole of its chart) therefore
-takes a section through its pole or beside it. Left on their own charts, a
-ball and a ball slab drilled with the drill's wall through the poles or a
-ten-millionth of the radius beside them, and a ball drilled with it a
-ten-thousandth to a hundredth of the radius off them either side, cut at
-the closed forms. Still refused ("a section through a sphere chart's pole
-is not resolved"): a section whose image runs past the pole row by more
-than its tolerance, or passes within it of a pole between its ends further
-than the chord from it, a band as wide as the fit's error. "A branch
+takes a section through its pole or beside it. A branch fitted whole that
+passes a pole within its stated tolerance (the chord and the fit's error)
+is traced again, cut at the pole within that tolerance
+(`branches_cut_at_poles`, `passes_a_pole`): fitted whole there it states a
+tolerance about its own distance from the pole, since no image follows the
+chart's half turn, and the pole is a point of the section as far as the fit
+can say. Left on their own charts, a ball and a ball slab drilled with the
+drill's wall through the poles or a ten-millionth of the radius beside
+them, and a ball drilled with it a hundred-thousandth to a hundredth of the
+radius off them either side, cut at the closed forms. Still refused: a
+section whose image runs past the pole row by more than its tolerance ("a
+section through a sphere chart's pole is not resolved"); and a ball
+drilled with its wall 2e-5 of the radius off the poles, outside the fit's
+tolerance of 1.1e-5, in two of three directions on one side and one on the
+other ("the kept pieces did not close into a shell", as on 0.17): the
+loop round the north pole passes 2e-6 rad off the chart's pole row, and
+the sphere's cap inside it is not formed, its section pieces left open
+round it. Found while measuring, on 0.17 as on this change: a ball of radius 10
+drilled on its own chart by a drill of radius 4 whose wall stands 4e-5
+inside the poles along -y returns a common whose chart on the sphere runs
+4.0067e-5 off an edge stating 4.0066e-5, an invalid solid
+(`check` refuses it), where the drill's radius 1 and 2.66 placements cut
+or refuse. "A branch
 passing beside a chart's pole fits nothing yet" stands where both fits
 miss. Only spheres' poles are measured; a patch's collapsed side takes the
 same path untested.

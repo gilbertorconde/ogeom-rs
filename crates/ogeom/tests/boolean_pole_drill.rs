@@ -1388,6 +1388,19 @@ fn a_ball_drilled_beside_its_own_charts_poles() {
     ogeom_bool::work::unturned(|| drilled(Vector::new(0.0, -wall, 0.0), 1.0)).unwrap();
 }
 
+/// Left on the ball's own chart, a drill whose wall stands a
+/// hundred-thousandth of its radius off both poles, beyond the trace's
+/// chord. Fitted whole, each loop beside a pole states a tolerance about
+/// its own distance from the pole, since no image follows the chart's half
+/// turn there, and passes the pole within it: refused as a section through
+/// the pole it does not stop at. Traced again cut at the pole within that
+/// tolerance, it cuts the ball at the closed forms.
+#[test]
+fn a_ball_drilled_within_its_fit_of_its_own_charts_poles() {
+    let wall = 1.0 + 1e-5;
+    ogeom_bool::work::unturned(|| drilled(Vector::new(0.0, -wall, 0.0), 1.0)).unwrap();
+}
+
 /// Left on the ball's own chart, a drill whose wall passes a hundredth, a
 /// thousandth or a ten-thousandth of its radius beside both poles, farther
 /// than the trace's chord, meets the ball in loops whose images swing half
@@ -1406,6 +1419,27 @@ fn drills_beside_both_poles_of_the_balls_own_chart() {
                 if let Err(e) = ogeom_bool::work::unturned(|| drilled(offset, radius)) {
                     failures.push(format!("({dx}, {dy}) r {radius} at {wall}: {e}"));
                 }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The drill of [`a_ball_drilled_within_its_fit_of_its_own_charts_poles`]
+/// beside the poles in three directions, its wall a hundred-thousandth of
+/// its radius off them either side: each loop passes its pole within its
+/// fit's tolerance, is traced again cut there, and the cut and common add
+/// up to the ball, the common the drilled volume.
+#[test]
+#[ignore = "heavy"]
+fn drills_within_their_fit_of_both_poles_of_the_balls_own_chart() {
+    let mut failures = Vec::new();
+    for (dx, dy) in [(0.0, -1.0), (1.0, 0.0), (0.6, -0.8)] {
+        for off in [1e-5, -1e-5] {
+            let wall = 1.0 + off;
+            let offset = Vector::new(dx * wall, dy * wall, 0.0);
+            if let Err(e) = ogeom_bool::work::unturned(|| drilled(offset, 1.0)) {
+                failures.push(format!("({dx}, {dy}) at {wall}: {e}"));
             }
         }
     }

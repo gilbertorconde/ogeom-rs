@@ -6141,7 +6141,8 @@ fn fill(
                                     windowed_to(&fa.surface, &shared),
                                     windowed_to(&fb.surface, &shared),
                                 );
-                                for fitted in march_pair(&wa, &wb, &options, tol)? {
+                                let (marched, pole_reach) = march_pair(&wa, &wb, &options, tol)?;
+                                for fitted in marched {
                                     // The same two refusals the intersector's
                                     // own marched sections meet: a fit a
                                     // thousand chords off its trace, and a
@@ -6183,7 +6184,11 @@ fn fill(
                                         // in the charts.
                                         closed: curve.is_closed(tol)
                                             && !on_a_chart_pole(&curve, [&wa, &wb], tol)?,
-                                        tolerance: options.marching.chord + fitted.fit_error,
+                                        // Cut at a pole within a reach, the
+                                        // trace passes the pole up to that
+                                        // reach off the truth.
+                                        tolerance: (options.marching.chord + fitted.fit_error)
+                                            .max(pole_reach),
                                         curve,
                                         pc_a: fitted.on_a.into(),
                                         pc_b: fitted.on_b.into(),
@@ -8913,19 +8918,38 @@ fn reaching(
         .map(Into::into))
 }
 
-/// March a pair whose exact section has no closed-form pcurve.
+/// March a pair whose exact section has no closed-form pcurve: the fitted
+/// branches, and the reach they were cut at poles within, which their
+/// tolerance must cover.
 fn march_pair(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
     options: &ogeom_intersect::IntersectOptions,
     tol: Tolerances,
-) -> OgeomResult<Vec<ogeom_intersect::IntersectionCurve>> {
-    use ogeom_intersect::{approximate_branch, branches};
-    let traced = branches(a, b, options.marching, tol)?;
-    let mut out = Vec::new();
-    for branch in &traced {
-        out.push(approximate_branch(a, b, branch, options.tolerance, tol)?);
-    }
+) -> OgeomResult<(Vec<ogeom_intersect::IntersectionCurve>, f64)> {
+    use ogeom_intersect::{approximate_branch, branches_cut_at_poles, passes_a_pole};
+    // Fitted whole past a pole of either chart within its stated
+    // tolerance, a section passes through the pole as far as the fit can
+    // say: the pair is traced again, cut there as within the chord.
+    let mut pole_reach = 0.0;
+    let out = loop {
+        let traced = branches_cut_at_poles(a, b, options.marching, pole_reach, tol)?;
+        let mut out = Vec::new();
+        let mut again: Option<f64> = None;
+        for branch in &traced {
+            let fitted = approximate_branch(a, b, branch, options.tolerance, tol)?;
+            let stated = options.marching.chord + fitted.fit_error;
+            if pole_reach == 0.0 && passes_a_pole(&fitted.curve.clone().into(), [a, b], stated, tol)
+            {
+                again = Some(again.map_or(stated, |r: f64| r.max(stated)));
+            }
+            out.push(fitted);
+        }
+        match again {
+            Some(reach) => pole_reach = reach,
+            None => break out,
+        }
+    };
     if out.is_empty() {
         // No branch found is two different stories. Surfaces that measurably
         // stand apart over their stated extents (a blend's cylinder and a
@@ -8934,7 +8958,7 @@ fn march_pair(
         // answer. Only a pair that comes close and still resolves nothing
         // is beyond the intersector.
         if surfaces_stand_apart(a, b, tol) {
-            return Ok(out);
+            return Ok((out, pole_reach));
         }
         ogeom_bail!(
             NotDone,
@@ -8943,7 +8967,7 @@ fn march_pair(
              reach"
         );
     }
-    Ok(out)
+    Ok((out, pole_reach))
 }
 
 /// Whether two surfaces measurably keep their distance over their stated

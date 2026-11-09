@@ -488,6 +488,23 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A section passing a sphere chart's pole within its fit's tolerance is
+  cut there instead of refused.**
+  - A marched branch is cut at a pole of either chart lying on the other
+    surface within the march's chord. A branch passing a pole a little
+    farther off was fitted whole, stated a tolerance about its own distance
+    from the pole (no image follows the chart's half turn there), passed
+    the pole within it, and was refused ("a section passes within … of a
+    sphere chart's pole between its ends, inside its tolerance").
+  - Where a fitted section passes a pole within its stated tolerance, the
+    pair is now traced again, cut at the pole within that tolerance:
+    `ogeom_intersect::branches_cut_at_poles`, `passes_a_pole` and
+    `cut_at_poles` are public.
+  - A ball drilled on its own chart with the drill's wall 1e-5 of the
+    radius off both poles, either side and in three directions, now cuts
+    at the closed forms; all six placements were refused. At 2e-5 off,
+    three placements are still refused as before (see docs/PLAN.md).
+
 - **A sheet on a sphere reads its landing's latitude against the ring's
   radius, not as the arcsine of its height.** (#729) Near a pole the
   arcsine loses half its digits: its error grows to the root of twice the
