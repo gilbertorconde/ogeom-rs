@@ -472,6 +472,82 @@ fn a_law_of_points_rounds_an_open_arc_running_out_at_both_ends() {
     assert!(v2 < v && v < v1, "{v2} < {v} < {v1}");
 }
 
+/// An open chain of arcs of one curve, a crease split at a vertex, under a
+/// law of points: the half of a radius-5 drum across its seam, whose top
+/// rim is two arcs of one circle meeting at the seam's vertex. It is
+/// rounded as the one seat it is, the law laid along both arcs' length
+/// and the ball running out through the cut at both ends.
+#[test]
+fn a_law_of_points_rounds_an_open_chain_of_arcs_of_one_circle() {
+    let mut model = Model::new();
+    let drum = ogeom_algo::make_cylinder(&mut model, at(0.0, 0.0, 0.0), 5.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let away = ogeom_algo::make_box(&mut model, at(-10.0, -10.0, -1.0), (10.0, 20.0, 12.0), T)
+        .unwrap()
+        .shape;
+    let half = ogeom_bool::cut(&mut model, &drum, &away, T).unwrap().shape;
+    let arcs: Vec<Shape> = explore_unique(&model, &half, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (c, (lo, hi)) = ogeom_algo::placed_edge_curve(&model, e, T)
+                .unwrap()
+                .unwrap();
+            let mid = c.point_at(f64::midpoint(lo, hi), T).unwrap();
+            (mid.z - 10.0).abs() < 1e-6 && (mid.x.hypot(mid.y) - 5.0).abs() < 1e-6
+        })
+        .collect();
+    assert_eq!(arcs.len(), 2, "the rim is two arcs, split at the seam");
+    let ends = |e: &Shape| ogeom_algo::edge_vertices(&model, e).unwrap().unwrap();
+    let chain = if ends(&arcs[0]).1.is_same(&ends(&arcs[1]).0) {
+        vec![arcs[0].clone(), arcs[1].clone()]
+    } else {
+        vec![arcs[1].clone(), arcs[0].clone()]
+    };
+    let rounded = fillet_edges_variable(&mut model, &half, &chain, &hump(), T).unwrap();
+    valid(&model, &rounded.shape);
+    assert!(chain.iter().all(|e| rounded.history.is_deleted(e)));
+
+    // The chain's fraction at a point: its angle round the axis from the
+    // chain's start, the way it runs, over the half turn.
+    let (start, ahead) = {
+        let (c, (lo, hi)) = ogeom_algo::placed_edge_curve(&model, &chain[0], T)
+            .unwrap()
+            .unwrap();
+        let (t, sense) = if chain[0].orientation() == Orientation::Reversed {
+            (hi, -1.0)
+        } else {
+            (lo, 1.0)
+        };
+        (c.point_at(t, T).unwrap(), c.d1_at(t, T).unwrap() * sense)
+    };
+    let fraction = |p: Point| {
+        let a0 = start.y.atan2(start.x);
+        let turn = if (start.x * ahead.y - start.y * ahead.x) > 0.0 {
+            1.0
+        } else {
+            -1.0
+        };
+        let a = p.y.atan2(p.x);
+        ((a - a0) * turn).rem_euclid(core::f64::consts::TAU) / core::f64::consts::PI
+    };
+    let (top, wall) = rim_contacts(&model, &rounded.shape, 5.0, 10.0, fraction);
+    assert!(
+        top.len() > 16 && wall.len() > 16,
+        "{} and {}",
+        top.len(),
+        wall.len()
+    );
+    for (s, setback) in top.iter().chain(&wall) {
+        let law = hump_open(s.clamp(0.0, 1.0));
+        assert!(
+            (setback - law).abs() < 1e-3,
+            "at {s} the contact stands {setback} from the rim, the law {law}"
+        );
+    }
+}
+
 #[test]
 fn a_variable_radius_refuses_by_name_what_it_does_not_round() {
     let mut model = Model::new();
@@ -508,7 +584,7 @@ fn a_variable_radius_refuses_by_name_what_it_does_not_round() {
     ];
     let chain = refusal(fillet_edges_variable(&mut model, &block, &two, &hump(), T));
     assert!(
-        chain.contains("open chain of 2 edges is still owed"),
+        chain.contains("open chain of 2 edges is still owed unless"),
         "{chain}"
     );
     for (law, says) in [

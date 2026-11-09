@@ -59,7 +59,7 @@ pub(crate) fn marched_fillet(
     mates: Option<(usize, &[crate::fillet::Mate])>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    marched_fillet_by(model, solid, edge, radius, None, mates, tol)
+    marched_fillet_by(model, solid, edge, radius, None, None, mates, tol)
 }
 
 /// Round a closed edge as [`marched_fillet`] does, the ball's radius
@@ -69,14 +69,27 @@ pub(crate) fn marched_fillet_law(
     solid: &Shape,
     edge: &Shape,
     law: &Profile,
+    span: Option<(f64, f64)>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    marched_fillet_by(model, solid, edge, law.largest(), Some(law), None, tol)
+    marched_fillet_by(
+        model,
+        solid,
+        edge,
+        law.largest(),
+        Some(law),
+        span,
+        None,
+        tol,
+    )
 }
 
 /// [`marched_fillet`] with a constant radius, or with `law` where one is
 /// given; `radius` is then the law's largest, the scale every reach past
-/// the crease is taken at.
+/// the crease is taken at. `span`, where given, is the window of `edge`'s
+/// own curve an open chain of arcs of that curve covers, which the seat
+/// is rounded over in place of the edge's own.
+#[allow(clippy::too_many_arguments, reason = "one seat's settings")]
 #[allow(clippy::too_many_lines, reason = "one seat, read end to end")]
 fn marched_fillet_by(
     model: &mut Model,
@@ -84,6 +97,7 @@ fn marched_fillet_by(
     edge: &Shape,
     radius: f64,
     law: Option<&Profile>,
+    span: Option<(f64, f64)>,
     mates: Option<(usize, &[crate::fillet::Mate])>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
@@ -96,7 +110,7 @@ fn marched_fillet_by(
         closed,
         loops,
         march_guide,
-    } = marched_seat(model, solid, edge, radius, tol)?;
+    } = marched_seat_over(model, solid, edge, radius, span, tol)?;
     // An open seat on a spline that ends with the edge (a converted
     // solid's every edge) leaves the ball nowhere to run out: the guide
     // is continued past both ends by a few radii. A run-out's caps and its
@@ -440,7 +454,22 @@ pub(crate) fn marched_seat(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<MarchedSeat> {
+    marched_seat_over(model, solid, edge, radius, None, tol)
+}
+
+/// [`marched_seat`], over `span` of the edge's own curve where one is given:
+/// the window an open chain of arcs of that curve covers, read in place of
+/// the edge's own.
+fn marched_seat_over(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    radius: f64,
+    span: Option<(f64, f64)>,
+    tol: Tolerances,
+) -> OgeomResult<MarchedSeat> {
     let (stored_guide, edge_range) = edge_curve(model, edge, tol)?;
+    let edge_range = span.unwrap_or(edge_range);
     let closed = ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
     // A closed seat on a fitted seam (a bore's rim where it leaves a
     // sphere, the two arcs of a boolean's seam joined end to end) is a

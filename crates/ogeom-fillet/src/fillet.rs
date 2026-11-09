@@ -2157,6 +2157,9 @@ fn fillet_edge_variable_own(
 /// - an open curved edge whose ball runs out past its ends (a half drum's
 ///   rim): the law is held at its end radius past each end, so the ball
 ///   runs out there at that one radius, as a constant round's does.
+/// - an open chain of arcs of one curve between the same two faces, end
+///   to end (a crease split at a vertex): the one seat over the window of
+///   that curve its arcs cover.
 ///
 /// A law holding one radius all along is [`fillet_edges`]' round.
 ///
@@ -2168,7 +2171,8 @@ fn fillet_edge_variable_own(
 /// [`OgeomError::Construction`] where the law states no usable radius
 /// (no points, a fraction off the chain or out of order, a radius not a
 /// positive length), where a linear law changes radius round a closed
-/// chain, where `chain` is empty, an open chain of more than one edge, a
+/// chain, where `chain` is empty, an open chain of more than one edge that
+/// is not arcs of one curve, a
 /// closed chain with a straight edge, or a chain whose edges do not run
 /// end to end between the same two faces, where a law is given over one
 /// arc of a crease that closes through other edges, or where the ball at
@@ -2195,6 +2199,95 @@ pub fn fillet_edges_variable(
 /// Whether `chain` runs end to end and back to its start, each edge
 /// between the same two faces of `solid` as the first, none twice.
 fn closed_chain(model: &Model, solid: &Shape, chain: &[Shape]) -> OgeomResult<bool> {
+    if !runs_between_one_pair(model, solid, chain)? {
+        return Ok(false);
+    }
+    let (Some(first), Some(last)) = (
+        ogeom_algo::edge_vertices(model, &chain[0])?,
+        ogeom_algo::edge_vertices(model, &chain[chain.len() - 1])?,
+    ) else {
+        return Ok(false);
+    };
+    Ok(last.1.is_same(&first.0))
+}
+
+/// The window of one curve an open `chain` covers, where its edges run
+/// end to end between the same two faces of `solid` and are each a piece
+/// of that curve (the same geometry), one after the other along it: in the curve's own
+/// parameters, a piece past a periodic curve's seam taken a period on.
+/// `None` for any other chain.
+fn one_curve_span(
+    model: &Model,
+    solid: &Shape,
+    chain: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<Option<(f64, f64)>> {
+    if !runs_between_one_pair(model, solid, chain)? {
+        return Ok(None);
+    }
+    let mut pieces = Vec::with_capacity(chain.len());
+    for edge in chain {
+        let Some(ogeom_topo::EdgeRepr::Curve3d {
+            curve,
+            location,
+            range,
+        }) = model
+            .node(edge)
+            .and_then(|n| n.data().as_edge())
+            .and_then(|d| d.curve3d())
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        if edge.location() != &ogeom_topo::Location::default() {
+            return Ok(None);
+        }
+        pieces.push((curve, location, range, edge.orientation()));
+    }
+    // One curve: the same stored geometry, whether or not under one handle
+    // (a boolean that splits a crease gives each piece its own copy).
+    let (curve, location, _, orientation) = pieces[0].clone();
+    let Some(geometry) = model.geometry().curve(curve) else {
+        return Ok(None);
+    };
+    if pieces.iter().any(|(c, l, _, o)| {
+        *l != location || *o != orientation || model.geometry().curve(*c) != Some(geometry)
+    }) {
+        return Ok(None);
+    }
+    let period = {
+        use ogeom_geom::Curve3d as _;
+        geometry.is_periodic().then(|| {
+            let (lo, hi) = geometry.domain();
+            hi - lo
+        })
+    };
+    // Along the curve the way the chain runs: forward pieces end where the
+    // next begins, reversed ones begin where the next ends.
+    let forward = orientation != ogeom_topo::Orientation::Reversed;
+    let ordered: Vec<(f64, f64)> = if forward {
+        pieces.iter().map(|p| p.2).collect()
+    } else {
+        pieces.iter().rev().map(|p| p.2).collect()
+    };
+    let reach = tol.parametric();
+    let mut span = ordered[0];
+    for &(lo, hi) in &ordered[1..] {
+        let shift = match period {
+            Some(period) if (lo + period - span.1).abs() <= reach => period,
+            _ => 0.0,
+        };
+        if (lo + shift - span.1).abs() > reach {
+            return Ok(None);
+        }
+        span.1 = hi + shift;
+    }
+    Ok(Some(span))
+}
+
+/// Whether `chain` runs end to end, each edge between the same two faces of
+/// `solid` as the first, none twice.
+fn runs_between_one_pair(model: &Model, solid: &Shape, chain: &[Shape]) -> OgeomResult<bool> {
     let faces_of = |edge: &Shape| -> OgeomResult<Vec<Shape>> {
         let mut faces: Vec<Shape> = Vec::new();
         for f in ogeom_topo::ancestors_of(model, solid, edge, ShapeType::Face)? {
@@ -2221,7 +2314,7 @@ fn closed_chain(model: &Model, solid: &Shape, chain: &[Shape]) -> OgeomResult<bo
         };
         ends.push(pair);
     }
-    Ok((0..ends.len()).all(|i| ends[i].1.is_same(&ends[(i + 1) % ends.len()].0)))
+    Ok((1..ends.len()).all(|i| ends[i - 1].1.is_same(&ends[i].0)))
 }
 
 /// [`fillet_edges_variable`] on a shape every node below which is its own.
@@ -2234,15 +2327,24 @@ fn fillet_chain_law_own(
 ) -> OgeomResult<Built> {
     let edge = &chain[0];
     let closed = closed_chain(model, solid, chain)?;
-    if chain.len() > 1 && !closed {
-        ogeom_bail!(
-            Construction,
-            "a variable radius over an open chain of {} edges is still owed; \
-             a single edge or a closed loop is rounded; see \
-             docs/CAPABILITIES.md, fillet.variable",
-            chain.len()
-        );
-    }
+    // An open chain of arcs of one curve (a crease the boolean split at a
+    // vertex) is rounded as the one seat it is, over the window of that
+    // curve its arcs cover end to end.
+    let span = if chain.len() > 1 && !closed {
+        let Some(span) = one_curve_span(model, solid, chain, tol)? else {
+            ogeom_bail!(
+                Construction,
+                "a variable radius over an open chain of {} edges is still \
+                 owed unless they are arcs of one curve between the same two \
+                 faces, end to end; a single edge or a closed loop is rounded; \
+                 see docs/CAPABILITIES.md, fillet.variable",
+                chain.len()
+            );
+        };
+        Some(span)
+    } else {
+        None
+    };
     let profile = Profile::new(law, closed, tol)?;
     if profile.level(tol) {
         let radii = vec![profile.largest(); chain.len()];
@@ -2283,9 +2385,15 @@ fn fillet_chain_law_own(
     let mut built = if planar {
         straight_law_fillet(model, solid, edge, &profile, reversed, tol)?
     } else {
-        crate::marched::marched_fillet_law(model, solid, edge, &profile, tol)?
+        crate::marched::marched_fillet_law(model, solid, edge, &profile, span, tol)?
     };
     crate::support::credit_new_faces(model, solid, edge, &mut built)?;
+    // The chain's other arcs went with the first: the one seat over them.
+    if span.is_some() {
+        for other in &chain[1..] {
+            built.history.delete(other);
+        }
+    }
     Ok(built)
 }
 
