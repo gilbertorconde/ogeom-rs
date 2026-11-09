@@ -332,14 +332,6 @@ fn marched_fillet_by(
         _ => (guide, guide_range),
     };
 
-    if law.is_some() && !loops {
-        ogeom_bail!(
-            Construction,
-            "a variable radius on a curved seat that does not close is still \
-             owed; see docs/CAPABILITIES.md, fillet.variable"
-        );
-    }
-
     // A seat running through a point where its hosts are tangent (the
     // crossing of two equal drums) has no section there: the ball's arc
     // collapses at the pole, and the march can only stall on it. Where a
@@ -447,8 +439,34 @@ fn marched_fillet_by(
     // there. The first refusal stands when none seats.
     let steering = march_guide.as_ref().unwrap_or(&guide);
     // A law is laid along the loop the march walks, its arc length read
-    // from where the edge starts, the way the edge runs.
+    // from where the edge starts, the way the edge runs. On an open seat it
+    // is laid along the edge's own window of the guide, which keeps the
+    // stored curve's parameters, the edge's start its stored start or, on a
+    // reversed edge, its stored end; past the window the law holds level
+    // at the end's radius, and the ball runs out at that one radius.
+    // A law given over one arc of a crease that closes through others (a
+    // seat the boolean split at its hosts' seams) would be read round the
+    // whole loop the march walks; the loop is given whole instead.
+    if law.is_some_and(|profile| loops && !profile.closed()) {
+        ogeom_bail!(
+            Construction,
+            "a variable radius over one arc of a crease that closes through \
+             other edges is still owed; give the whole loop as the chain; see \
+             docs/CAPABILITIES.md, fillet.variable"
+        );
+    }
     let along = match law {
+        Some(profile) if !loops => {
+            let ruler = crate::law::Ruler::new(steering.clone(), edge_range, false, tol)?;
+            let reversed = edge.orientation() == Orientation::Reversed;
+            let origin = if reversed { 1.0 } else { 0.0 };
+            Some(crate::law::RadiusAlong::new(
+                profile.clone(),
+                ruler,
+                origin,
+                reversed,
+            ))
+        }
         Some(profile) => {
             let ruler = crate::law::Ruler::new(steering.clone(), steering.domain(), true, tol)?;
             let (stored, (lo, hi)) = edge_curve(model, edge, tol)?;
@@ -553,13 +571,6 @@ fn marched_fillet_by(
     if blend.len() < 8 {
         ogeom_bail!(Construction, "the march produced too few stations to fit");
     }
-    if open_stop && along.is_some() {
-        ogeom_bail!(
-            Construction,
-            "a variable radius whose ball runs off its hosts is still owed; \
-             see docs/CAPABILITIES.md, fillet.variable"
-        );
-    }
     if open_stop {
         return open_runout_wedge(
             model,
@@ -572,6 +583,7 @@ fn marched_fillet_by(
             [&face_first, &face_second],
             mates,
             radius,
+            along.as_ref(),
             convex,
             tol,
         );
@@ -1242,6 +1254,7 @@ fn open_runout_wedge(
     host_faces: [&Shape; 2],
     mates: Option<(usize, &[crate::fillet::Mate])>,
     radius: f64,
+    law: Option<&crate::law::RadiusAlong>,
     convex: bool,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
@@ -1582,7 +1595,13 @@ fn open_runout_wedge(
                 blend.on_second[i].0,
                 blend.on_second[i].1,
             ];
+            // The ball at the end station: under a law, the law's radius
+            // there, which past the edge's end is held at the end's own.
             let section = |w: f64| -> OgeomResult<([f64; 5], Point, Point, Point)> {
+                let radius = match law {
+                    Some(law) => law.at(w, tol)?.0,
+                    None => radius,
+                };
                 let x = crate::march::seat_section(
                     first,
                     second,
@@ -1723,7 +1742,7 @@ fn open_runout_wedge(
     const RUNS_OUT_ON_A_FACE: &str = "the marched band's end where its crease runs out on \
          another face does not melt with that face; see docs/CAPABILITIES.md, \
          fillet.edge-blends";
-    match build_open_band(
+    match build_held_band_by(
         model,
         solid,
         Some(edge),
@@ -1731,8 +1750,10 @@ fn open_runout_wedge(
         guide,
         hosts,
         radius,
+        law.is_some(),
         convex,
         [false, false],
+        None,
         tol,
     ) {
         Err(ogeom_core::OgeomError::NotDone(e)) if ends_on_a_wall => {
@@ -1827,6 +1848,31 @@ pub(crate) fn build_held_band(
     exact: Option<&ExactBand<'_>>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    build_held_band_by(
+        model, solid, edge, blend, guide, hosts, radius, false, convex, pinched, exact, tol,
+    )
+}
+
+/// [`build_held_band`], with `varies` where the ball's radius follows a law
+/// station by station: each station's arcs are then fitted, and its end
+/// arcs measured, at its own radius, and `radius` is only the largest, the
+/// scale every reach is taken at.
+#[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
+#[allow(clippy::too_many_lines, reason = "one wedge, assembled end to end")]
+fn build_held_band_by(
+    model: &mut Model,
+    solid: &Shape,
+    edge: Option<&Shape>,
+    blend: &crate::march::MarchedBlend,
+    guide: &Curve,
+    hosts: [(&SurfaceGeometry, f64); 2],
+    radius: f64,
+    varies: bool,
+    convex: bool,
+    pinched: [bool; 2],
+    exact: Option<&ExactBand<'_>>,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     use ogeom_geom::Surface as _;
     let [(first, sign_first), (second, sign_second)] = hosts;
     let additive = !convex;
@@ -1882,7 +1928,7 @@ pub(crate) fn build_held_band(
     } else {
         Some(section_plane(n - 1)?)
     };
-    let fitted = fit_open_band(blend, radius, pinched, tol)?;
+    let fitted = fit_open_band_by(blend, (!varies).then_some(radius), pinched, tol)?;
     let (u_knots, v_knots) = (fitted.u_knots().clone(), fitted.v_knots().clone());
     let (k_count, l_count, mut net) = {
         let grid = fitted.grid();
@@ -2054,10 +2100,15 @@ pub(crate) fn build_held_band(
         let curve = end_arc(j)?;
         let (lo, hi) = curve.domain();
         let centre = blend.spine[station];
+        let ball = if varies {
+            blend.touch_first[station].distance(centre)
+        } else {
+            radius
+        };
         let mut off: f64 = 0.0;
         for k in 0..=64 {
             let t = lo + (hi - lo) * f64::from(k) / 64.0;
-            off = off.max((curve.point_at(t, tol)?.distance(centre) - radius).abs());
+            off = off.max((curve.point_at(t, tol)?.distance(centre) - ball).abs());
         }
         widen_edge(model, arc, off * 2.0)?;
     }
@@ -2789,6 +2840,18 @@ pub(crate) fn fit_open_band(
     pinched: [bool; 2],
     tol: Tolerances,
 ) -> OgeomResult<ogeom_geom::BSplineSurface> {
+    fit_open_band_by(blend, Some(radius), pinched, tol)
+}
+
+/// [`fit_open_band`] at one radius, or with `radius` `None` at each
+/// station's own: its centre's distance from its touch on the first host,
+/// as a ball under a law seats.
+fn fit_open_band_by(
+    blend: &crate::march::MarchedBlend,
+    radius: Option<f64>,
+    pinched: [bool; 2],
+    tol: Tolerances,
+) -> OgeomResult<ogeom_geom::BSplineSurface> {
     const ACROSS_OPEN: usize = 17;
     let n = blend.len();
     let fit_target = band_fit_target(tol);
@@ -2801,6 +2864,7 @@ pub(crate) fn fit_open_band(
             continue;
         }
         let centre = blend.spine[at];
+        let radius = radius.unwrap_or_else(|| blend.touch_first[at].distance(centre));
         let a = (blend.touch_first[at] - centre) / radius;
         let b = (blend.touch_second[at] - centre) / radius;
         let cross = a.cross(b);

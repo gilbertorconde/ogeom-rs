@@ -13,6 +13,21 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fillet_edges_variable` rounds an open curved edge whose ball runs out
+  past its ends.** (#716)
+  - The law is laid along the edge's own arc length and, as on any open
+    chain, held at its end radius past each end. Past the end the ball
+    keeps that one radius, so its run-out (the band carried on until the
+    ball leaves the solid, and the cap in the end section's plane) is the
+    constant round's at that radius; each station's arc is fitted at its
+    own radius.
+  - A half drum of radius 5 rounded on its open rim under radii 1, 2, 1:
+    every contact on both rails stands within 1e-3 of the law, and the
+    round removes more than the constant round of radius 1 and less than
+    that of radius 2.
+  - A law over one arc of a crease that closes through other edges is
+    refused by name: give the whole loop.
+
 - **The README says what a crate depending on ogeom should set to build it
   fast.** (#706)
   - The workspace's release profile and target CPU do not reach a
