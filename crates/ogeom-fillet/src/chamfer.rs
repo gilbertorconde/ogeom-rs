@@ -356,6 +356,21 @@ fn chamfer_edges_with_own(
             })?,
         );
     }
+    // A bevel on a marched seat is built against the solid as it stands
+    // when its turn comes: its edge is found again there, between the faces
+    // it lay between as asked.
+    let marched = specs
+        .iter()
+        .any(|(edge, _)| matches!(seat_kind(model, edge, tol), Ok(SeatKind::Marched)));
+    let given = if marched {
+        let mut given = Vec::with_capacity(specs.len());
+        for (edge, _) in specs {
+            given.push(faces_holding(model, solid, edge)?);
+        }
+        given
+    } else {
+        Vec::new()
+    };
     let mut built = Built::from_nothing(solid.clone());
     let mut rings: Vec<(usize, WholeRing)> = Vec::new();
     for (i, ((edge, _), wedge)) in specs.iter().zip(wedges).enumerate() {
@@ -378,7 +393,11 @@ fn chamfer_edges_with_own(
             }
             rings.push((i, ring));
         }
-        let step = match wedge.apply(model, &built.shape, edge, tol) {
+        let applied = match &wedge.marched {
+            Some(spec) => marched_step(model, &built, edge, spec, &given[i], &specs[..i], tol),
+            None => wedge.apply(model, &built.shape, edge, tol),
+        };
+        let step = match applied {
             Ok(step) => step,
             Err(error) => {
                 let mut edges = vec![i];
@@ -823,7 +842,7 @@ struct Wedge {
     /// boolean split it into.
     whole_ring: Option<WholeRing>,
     /// The spelling of a bevel on a marched seat, built against the solid
-    /// as it stands when applied.
+    /// as it stands when its turn in the request comes.
     marched: Option<Chamfer>,
 }
 
@@ -860,11 +879,6 @@ impl Wedge {
         edge: &Shape,
         tol: Tolerances,
     ) -> OgeomResult<Built> {
-        if let Some(spec) = &self.marched {
-            let mut built = crate::chamfer_marched::marched_bevel(model, solid, edge, spec, tol)?;
-            crate::support::credit_new_faces(model, solid, edge, &mut built)?;
-            return Ok(built);
-        }
         let mut built = match self.solid {
             Some(wedge) => {
                 let mut result = if self.additive {
@@ -1208,4 +1222,148 @@ fn bevel(
         whole_ring: None,
         marched: None,
     })
+}
+
+/// The faces of `solid` holding `edge`.
+fn faces_holding(model: &Model, solid: &Shape, edge: &Shape) -> Result<Vec<Shape>, Blamed> {
+    let mut found = Vec::new();
+    for face in ogeom_topo::explore_unique(model, solid, ogeom_topo::ShapeType::Face)? {
+        if ogeom_topo::explore_unique(model, &face, ogeom_topo::ShapeType::Edge)?
+            .iter()
+            .any(|e| e.is_same(edge))
+        {
+            found.push(face);
+        }
+    }
+    Ok(found)
+}
+
+/// A bevel on a marched seat, applied to the solid the request's earlier
+/// bevels (`earlier`) left (`so_far`, with their history): the edge found
+/// again there between the faces `given` it lay between as asked, a face
+/// the spelling names followed to what those bevels made of it, each piece
+/// of the edge bevelled in turn.
+///
+/// A bevel runs on through a vertex where the crease carries on (an open
+/// marched bevel runs out as the marched fillet does), so an edge an
+/// earlier bevel of the same spelling meeting it at a vertex has taken
+/// away is bevelled already; one an earlier bevel of another spelling has
+/// taken is refused.
+fn marched_step(
+    model: &mut Model,
+    so_far: &Built,
+    edge: &Shape,
+    spec: &Chamfer,
+    given: &[Shape],
+    earlier: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let solid = &so_far.shape;
+    let faces_now = ogeom_topo::explore_unique(model, solid, ogeom_topo::ShapeType::Face)?;
+    let now = |named: &Shape| -> Shape {
+        if faces_now.iter().any(|f| f.is_same(named)) {
+            return named.clone();
+        }
+        so_far
+            .history
+            .modified(named)
+            .iter()
+            .find(|f| faces_now.iter().any(|g| g.is_same(f)))
+            .cloned()
+            .unwrap_or_else(|| named.clone())
+    };
+    let asked = spec;
+    let spec = &match spec {
+        Chamfer::Symmetric(d) => Chamfer::Symmetric(*d),
+        Chamfer::Distances {
+            face,
+            on_face,
+            on_other,
+        } => Chamfer::Distances {
+            face: now(face),
+            on_face: *on_face,
+            on_other: *on_other,
+        },
+        Chamfer::Angle {
+            face,
+            distance,
+            angle,
+        } => Chamfer::Angle {
+            face: now(face),
+            distance: *distance,
+            angle: *angle,
+        },
+    };
+    // An edge nothing of which is left is reported consumed.
+    let pieces = match crate::fillet::refind_edges(model, solid, edge, given, tol) {
+        Ok(pieces) => pieces,
+        Err(ogeom_core::OgeomError::Construction(_)) => Vec::new(),
+        Err(e) => return Err(e),
+    };
+    if pieces.is_empty() {
+        let ends = |e: &Shape| -> OgeomResult<Vec<ogeom_topo::TShapeId>> {
+            Ok(ogeom_algo::edge_vertices(model, e)?
+                .map(|(a, b)| vec![a.node(), b.node()])
+                .unwrap_or_default())
+        };
+        let own = ends(edge)?;
+        for (other, theirs) in earlier {
+            if same_spelling(theirs, asked, tol) && ends(other)?.iter().any(|v| own.contains(v)) {
+                let mut done = Built::from_nothing(solid.clone());
+                done.history.delete(edge);
+                return Ok(done);
+            }
+        }
+        ogeom_bail!(
+            Construction,
+            "a bevel on a marched seat whose edge an earlier bevel of the request, \
+             of another spelling, took away is not built"
+        );
+    }
+    let mut built = Built::from_nothing(solid.clone());
+    for piece in pieces {
+        let mut step =
+            crate::chamfer_marched::marched_bevel(model, &built.shape, &piece, spec, given, tol)?;
+        crate::support::credit_new_faces(model, &built.shape, &piece, &mut step)?;
+        step.history.delete(edge);
+        built = Built {
+            shape: step.shape.clone(),
+            history: built.history.then(&step.history),
+        };
+    }
+    Ok(built)
+}
+
+/// Whether two spellings bevel alike: the same kind, the same measures, the
+/// same face named.
+fn same_spelling(a: &Chamfer, b: &Chamfer, tol: Tolerances) -> bool {
+    let near = |x: f64, y: f64| (x - y).abs() <= tol.confusion();
+    match (a, b) {
+        (Chamfer::Symmetric(x), Chamfer::Symmetric(y)) => near(*x, *y),
+        (
+            Chamfer::Distances {
+                face: fa,
+                on_face: oa,
+                on_other: ra,
+            },
+            Chamfer::Distances {
+                face: fb,
+                on_face: ob,
+                on_other: rb,
+            },
+        ) => fa.is_same(fb) && near(*oa, *ob) && near(*ra, *rb),
+        (
+            Chamfer::Angle {
+                face: fa,
+                distance: da,
+                angle: aa,
+            },
+            Chamfer::Angle {
+                face: fb,
+                distance: db,
+                angle: ab,
+            },
+        ) => fa.is_same(fb) && near(*da, *db) && (aa - ab).abs() <= tol.angular(),
+        _ => false,
+    }
 }

@@ -3732,7 +3732,7 @@ fn same_circle(a: &ogeom_math::Circle, b: &ogeom_math::Circle, tol: Tolerances) 
 /// that host along the very line, a corner of the cap's and none of the
 /// edge's. A piece lies between the surfaces of `hosts`, the faces the
 /// edge lay between where it was asked for.
-fn refind_edges(
+pub(crate) fn refind_edges(
     model: &Model,
     solid: &Shape,
     edge: &Shape,

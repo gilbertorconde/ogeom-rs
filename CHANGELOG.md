@@ -85,6 +85,27 @@ bump may break the API and a patch bump may not.
     refused with a reason.
   - A corner of three bevels is closed as before.
 
+- **Bevels on marched seats meet at a shared vertex in one request, in any
+  order.** (#711)
+  - A request bevelling a marched edge after another bevel had changed its
+    faces was refused ("a marched fillet needs an edge shared by exactly
+    two faces, found 0"): the marched bevel looked for the edge as given.
+    It is now found again in the solid the request's earlier bevels left,
+    between the faces it lay between as asked, a face its spelling names
+    followed to what those bevels made of it.
+  - Its contacts are read against its faces as asked as well as as they
+    stand: a contact where an earlier bevel of the request cut its face
+    back stands in what that bevel took, as two bevels' mitre does.
+  - An open marched bevel runs on through a vertex where the crease
+    carries on, so a neighbouring edge it took away, asked alike, is
+    bevelled with it; asked otherwise it is refused by name.
+  - A slab's S-shaped crease split into two tangent halves, both bevelled
+    in each spelling: the volume less the whole crease's section times
+    its length, within 1e-6. The crease and the end wall's top edge
+    bevelled together at their corner: the same solid in either order
+    (to 1e-12), within the bound the crease's bend sets of the straight
+    corner's mitre.
+
 - **`fillet_edges_variable` rounds a chain of different seats continuing
   each other end to end.** (#716)
   - The top loop of a rounded-rectangle pad, its sides between two planes
