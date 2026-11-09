@@ -98,66 +98,48 @@ fn a_setback_of_the_radius_is_the_ball_s_corner() {
     assert!((a - c).abs() < 1e-12, "{a} against {c}");
 }
 
-/// The quads a setback corner of `continuity` builds at the block's corner,
-/// its bands stopped 5 from the vertex, and their worst tangency against
-/// the faces round them, as the edges they share with those faces.
-fn five_back(continuity: Continuity) -> (Model, Shape, Vec<Shape>, f64, Vec<Shape>) {
+/// The patch a setback corner of `continuity` builds at the block's
+/// corner, its bands stopped 5 from the vertex, and the patch's worst
+/// tangency against the faces round it.
+fn five_back(continuity: Continuity) -> (Model, Shape, Shape, f64) {
     let (mut m, b, v, _) = block();
     let rounded = round_vertex_setback(&mut m, &b, &v, 2.0, &even(5.0, continuity), T).unwrap();
     valid(&m, &rounded.shape);
-    let quads: Vec<Shape> = rounded.history.generated(&v).to_vec();
+    let patch = rounded.history.generated(&v)[0].clone();
+    let contacts = analyse_blend(&m, &rounded.shape, &patch, 17, T).unwrap();
     assert_eq!(
-        quads.len(),
+        contacts.len(),
         6,
-        "a quad round the centre at each corner of the opening"
+        "three band ends and three faces: {contacts:?}"
     );
-    let (tangency, outside) = beside(&m, &rounded.shape, &quads);
-    // Each of the opening's six sides is split in two, each half a quad's.
-    assert_eq!(
-        outside.len(),
-        12,
-        "three band ends and three faces, each in halves"
-    );
-    (m, rounded.shape, quads, tangency, outside)
-}
-
-/// The worst tangency of `quads` against the faces of `shape` round them,
-/// and the edges they share with those faces; across the quads' own spokes
-/// tangent too.
-fn beside(m: &Model, shape: &Shape, quads: &[Shape]) -> (f64, Vec<Shape>) {
-    let mut worst = 0.0_f64;
-    let mut outside = Vec::new();
-    for quad in quads {
-        for c in analyse_blend(m, shape, quad, 17, T).unwrap() {
-            worst = worst.max(c.tangency_error);
-            if !quads.iter().any(|q| q.is_same(&c.neighbour)) {
-                outside.push(c.edge.clone());
-            }
-        }
-    }
-    (worst, outside)
+    let tangency = contacts
+        .iter()
+        .map(|c| c.tangency_error)
+        .fold(0.0, f64::max);
+    (m, rounded.shape, patch, tangency)
 }
 
 #[test]
 fn a_setback_corner_stops_each_band_at_its_setback_tangent_to_the_patch() {
-    let (m, rounded, _, tangency, outside) = five_back(Continuity::G1);
+    let (m, rounded, patch, tangency) = five_back(Continuity::G1);
     assert!(
-        tangency < 2e-4,
-        "the quads meet their neighbours within {tangency} rad"
+        tangency < 1e-3,
+        "the patch meets its neighbours within {tangency} rad"
     );
-    // Every edge the quads share with a face or a band lies on a face or
-    // 5 along a band's edge from the vertex: on x = 5, y = 5 or z = 10 - 5.
-    for e in &outside {
-        let (c, (lo, hi)) = ogeom_algo::placed_edge_curve(&m, e, T).unwrap().unwrap();
+    // Every point of the patch's boundary on a band's end lies 5 along
+    // that band's edge from the vertex: on x = 5, y = 5 or z = 10 - 5.
+    for e in explore_unique(&m, &patch, ShapeType::Edge).unwrap() {
+        let (c, (lo, hi)) = ogeom_algo::placed_edge_curve(&m, &e, T).unwrap().unwrap();
         let p = c.point_at(f64::midpoint(lo, hi), T).unwrap();
         let on_face = p.x.abs() < 1e-6 || p.y.abs() < 1e-6 || (p.z - 10.0).abs() < 1e-6;
         let on_end =
-            (p.x - 5.0).abs() < 2e-4 || (p.y - 5.0).abs() < 2e-4 || (p.z - 5.0).abs() < 2e-4;
+            (p.x - 5.0).abs() < 1e-6 || (p.y - 5.0).abs() < 1e-6 || (p.z - 5.0).abs() < 1e-6;
         assert!(on_face || on_end, "a patch edge at {p:?}");
     }
     // The setback corner takes off more than the ball's corner does.
-    let (mut m2, b, _, edges) = block();
+    let (mut m2, b, v, edges) = block();
     let ball = fillet_edges(&mut m2, &b, &edges, 2.0, T).unwrap().shape;
+    let _ = v;
     assert!(volume(&m, &rounded) < volume(&m2, &ball));
 }
 
@@ -221,4 +203,135 @@ fn a_setback_shorter_than_the_ball_s_is_refused() {
         e.to_string().contains("inside the ball's own corner"),
         "{e}"
     );
+}
+
+fn probe_pyramid(m: &mut Model) -> Shape {
+    let base = ogeom_algo::make_box(m, at(-10.0, -10.0, -10.0), (20.0, 20.0, 20.0), T)
+        .unwrap()
+        .shape;
+    let mut solid = base;
+    for (nx, ny) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+        let normal = ogeom_math::Vector::new(nx, ny, 1.0);
+        let across = ogeom_math::Vector::new(-ny, nx, 0.0);
+        let side = normal.cross(across) / normal.cross(across).magnitude();
+        let corner = Point::new(0.0, 0.0, 10.0) - across * 40.0 - side * 40.0;
+        let frame = Frame::new(
+            corner,
+            Direction::new(normal, T).unwrap(),
+            Direction::new(across, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let away = ogeom_algo::make_box(m, frame, (80.0, 80.0, 40.0), T)
+            .unwrap()
+            .shape;
+        solid = ogeom_bool::cut(m, &solid, &away, T).unwrap().shape;
+    }
+    solid
+}
+
+#[test]
+fn probe_variants() {
+    for (r, s, uneven) in [
+        (1.0, 4.0, None),
+        (1.0, 6.0, None),
+        (1.5, 4.0, None),
+        (1.0, 3.0, None),
+        (1.0, 4.0, Some(6.0)),
+        (1.0, 3.0, Some(5.0)),
+        (0.5, 4.0, None),
+        (1.0, 8.0, None),
+    ] {
+        let mut m = Model::new();
+        let solid = probe_pyramid(&mut m);
+        let apex = vertex_at(&m, &solid, [0.0, 0.0, 10.0]);
+        let mut sb = even(s, Continuity::G1);
+        if let Some(other) = uneven {
+            let edges: Vec<Shape> = explore_unique(&m, &solid, ShapeType::Edge)
+                .unwrap()
+                .into_iter()
+                .filter(|e| {
+                    let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+                    a.is_same(&apex) || b.is_same(&apex)
+                })
+                .collect();
+            sb.per_edge = vec![(edges[0].clone(), other), (edges[2].clone(), other)];
+        }
+        match round_vertex_setback(&mut m, &solid, &apex, r, &sb, T) {
+            Ok(b) => eprintln!(
+                "PROBE r {r} s {s} uneven {uneven:?}: ok faces {} valid {}",
+                b.history.generated(&apex).len(),
+                ogeom_algo::check(&m, &b.shape, T).unwrap().is_valid()
+            ),
+            Err(e) => eprintln!("PROBE r {r} s {s} uneven {uneven:?}: {e}"),
+        }
+    }
+}
+
+#[test]
+fn probe_mixed() {
+    let quads = |m: &Model, s: &Shape| {
+        explore_unique(m, s, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .filter(|f| {
+                m.node(f)
+                    .and_then(|n| n.data().as_face())
+                    .and_then(|d| m.geometry().surface(d.surface))
+                    .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::BSpline(_)))
+            })
+            .count()
+    };
+    for radii in [
+        [1.0, 3.0, 2.0],
+        [1.0, 2.5, 2.0],
+        [1.0, 2.2, 2.0],
+        [1.5, 3.0, 2.0],
+        [1.0, 3.0, 3.0],
+        [1.0, 1.0, 3.0],
+    ] {
+        let (mut m, b, _, edges) = block();
+        let asked: Vec<(Shape, f64)> = edges.iter().cloned().zip(radii).collect();
+        match ogeom_fillet::fillet_edges_with(&mut m, &b, &asked, T) {
+            Ok(r) => eprintln!(
+                "PROBE box {radii:?}: ok bspline faces {} valid {}",
+                quads(&m, &r.shape),
+                ogeom_algo::check(&m, &r.shape, T).unwrap().is_valid()
+            ),
+            Err(e) => eprintln!(
+                "PROBE box {radii:?}: {}",
+                e.to_string().chars().take(120).collect::<String>()
+            ),
+        }
+    }
+    for radii in [
+        [1.0, 1.5, 1.0, 1.5],
+        [1.0, 2.0, 1.0, 2.0],
+        [1.0, 1.2, 1.4, 1.6],
+        [0.5, 1.5, 0.5, 1.5],
+    ] {
+        let mut m = Model::new();
+        let solid = probe_pyramid(&mut m);
+        let apex = vertex_at(&m, &solid, [0.0, 0.0, 10.0]);
+        let edges: Vec<Shape> = explore_unique(&m, &solid, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+                a.is_same(&apex) || b.is_same(&apex)
+            })
+            .collect();
+        let asked: Vec<(Shape, f64)> = edges.iter().cloned().zip(radii).collect();
+        match ogeom_fillet::fillet_edges_with(&mut m, &solid, &asked, T) {
+            Ok(r) => eprintln!(
+                "PROBE pyr {radii:?}: ok bspline faces {} valid {}",
+                quads(&m, &r.shape),
+                ogeom_algo::check(&m, &r.shape, T).unwrap().is_valid()
+            ),
+            Err(e) => eprintln!(
+                "PROBE pyr {radii:?}: {}",
+                e.to_string().chars().take(120).collect::<String>()
+            ),
+        }
+    }
 }

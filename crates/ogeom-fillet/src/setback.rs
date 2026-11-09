@@ -17,7 +17,7 @@ use ogeom_geom::{Continuity, Curve, Curve3d as _};
 use ogeom_math::{Direction, Plane, Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
-use crate::fill_n::FillBoundary;
+use crate::fill_n::{FillBoundary, make_filling_n};
 
 /// How far each band meeting a vertex stops from it, and how the patch
 /// between them meets the bands and the faces.
@@ -426,203 +426,251 @@ fn close_corner(
         fillers.push(filler);
     }
 
-    // The opening's loop: band 0's arc, face 1's conic, band 1's arc, and
-    // on round, each side run the loop's way. A band's arc runs from its
-    // end on the face before it to its end on the face after it.
-    let mut sides: Vec<ogeom_algo::LoopSide> = Vec::with_capacity(2 * n);
-    for k in 0..n {
-        let before = conics[(k + n - 1) % n].2;
-        let after = conics[k].1;
-        let Some((curve, (lo, hi))) = ogeom_algo::placed_edge_curve(model, &arcs[k].0, tol)? else {
-            ogeom_bail!(Construction, "a band's end arc has no curve");
+    // One patch over the opening where it meets the bands' target; where it
+    // does not, quads round a centre, kept only where they meet it too.
+    let forced = std::env::var_os("OGEOM_FORCE_QUADS").is_some();
+    let refusal = match if forced {
+        Err(ogeom_core::ogeom_err!(NotDone, "forced"))
+    } else {
+        make_filling_n(model, &boundary, &[], fit, tol)
+    } {
+        Ok(filled) => {
+            let patch = filled.built.shape.clone();
+            let mut faces = kept;
+            faces.extend(fillers);
+            faces.push(patch.clone());
+            let sewn = ogeom_algo::sew(model, &faces, tol)?;
+            if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
+                ogeom_bail!(Construction, "the setback corner's faces did not close");
+            }
+            let rounded = model.add_solid(std::slice::from_ref(&sewn.shells[0]))?;
+            let mut history: History = history;
+            history.generate(vertex, patch);
+            return Ok(Built::new(rounded, history));
+        }
+        Err(refusal @ ogeom_core::OgeomError::NotDone(_)) => refusal,
+        Err(other) => return Err(other),
+    };
+    let quads = (|| -> OgeomResult<Vec<Shape>> {
+        // The opening's loop: band 0's arc, face 1's conic, band 1's arc, and
+        // on round, each side run the loop's way. A band's arc runs from its
+        // end on the face before it to its end on the face after it.
+        let mut sides: Vec<ogeom_algo::LoopSide> = Vec::with_capacity(2 * n);
+        for k in 0..n {
+            let before = conics[(k + n - 1) % n].2;
+            let after = conics[k].1;
+            let Some((curve, (lo, hi))) = ogeom_algo::placed_edge_curve(model, &arcs[k].0, tol)?
+            else {
+                ogeom_bail!(Construction, "a band's end arc has no curve");
+            };
+            let (curve, range) = if curve.point_at(lo, tol)?.distance(before)
+                <= curve.point_at(hi, tol)?.distance(before)
+            {
+                (curve, (lo, hi))
+            } else {
+                use ogeom_geom::Reversible as _;
+                let (a, b) = ogeom_geom::Curve3d::domain(&curve);
+                (curve.reversed(), (a + b - hi, a + b - lo))
+            };
+            if curve.point_at(range.0, tol)?.distance(before) > fit
+                || curve.point_at(range.1, tol)?.distance(after) > fit
+            {
+                ogeom_bail!(
+                    Construction,
+                    "a band's end arc does not run from face to face"
+                );
+            }
+            sides.push(ogeom_algo::LoopSide {
+                curve,
+                range,
+                across: ogeom_algo::Across::Along(frame.d[k].vector()),
+            });
+            let (conic, _, _, normal) = &conics[k];
+            sides.push(ogeom_algo::LoopSide {
+                curve: conic.clone(),
+                range: (0.0, 1.0),
+                across: ogeom_algo::Across::Plane(*normal),
+            });
+        }
+        // The shape inside: the trimmed filling's finest patch, whether or not
+        // it meets the target, which only gives the quads points and spokes to
+        // fit; the quads hold every side and its support themselves. Its sides
+        // were given in the loop's order, arc then conic.
+        let seed = crate::fill_n::seed_filling(model, &boundary, fit, tol)?;
+        use ogeom_geom::{Curve2d as _, Surface as _};
+        let chart_at = |j: usize, f: f64| -> OgeomResult<ogeom_math::Point2> {
+            let trace = &seed.traces[j];
+            let (a, b) = trace.domain();
+            trace.point_at((b - a).mul_add(f, a), tol)
         };
-        let (curve, range) = if curve.point_at(lo, tol)?.distance(before)
-            <= curve.point_at(hi, tol)?.distance(before)
-        {
-            (curve, (lo, hi))
-        } else {
-            use ogeom_geom::Reversible as _;
-            let (a, b) = ogeom_geom::Curve3d::domain(&curve);
-            (curve.reversed(), (a + b - hi, a + b - lo))
+        // A side's chart point a share `f` along the loop's way: an arc's trace
+        // runs along its edge's own curve, which may run the other way.
+        let along_loop = |j: usize, f: f64| -> OgeomResult<ogeom_math::Point2> {
+            let side = &sides[j];
+            let start = side.curve.point_at(side.range.0, tol)?;
+            let (a, b) = seed.traces[j].domain();
+            let first = seed.surface.point_at(
+                seed.traces[j].point_at(a, tol)?.x,
+                seed.traces[j].point_at(a, tol)?.y,
+                tol,
+            )?;
+            let last = seed.surface.point_at(
+                seed.traces[j].point_at(b, tol)?.x,
+                seed.traces[j].point_at(b, tol)?.y,
+                tol,
+            )?;
+            let forward = first.distance(start) <= last.distance(start);
+            chart_at(j, if forward { f } else { 1.0 - f })
         };
-        if curve.point_at(range.0, tol)?.distance(before) > fit
-            || curve.point_at(range.1, tol)?.distance(after) > fit
-        {
-            ogeom_bail!(
-                Construction,
-                "a band's end arc does not run from face to face"
+        let m = sides.len();
+        let middles: Vec<ogeom_math::Point2> = (0..m)
+            .map(|j| along_loop(j, 0.5))
+            .collect::<OgeomResult<_>>()?;
+        let centre = {
+            let (mut x, mut y) = (0.0, 0.0);
+            for q in &middles {
+                x += q.x;
+                y += q.y;
+            }
+            #[allow(clippy::cast_precision_loss, reason = "a handful of sides")]
+            let count = m as f64;
+            ogeom_math::Point2::new(x / count, y / count)
+        };
+        let on_seed = |q: ogeom_math::Point2| seed.surface.point_at(q.x, q.y, tol);
+        let lerp = |a: ogeom_math::Point2, b: ogeom_math::Point2, f: f64| {
+            ogeom_math::Point2::new((b.x - a.x).mul_add(f, a.x), (b.y - a.y).mul_add(f, a.y))
+        };
+        const SPOKE: u32 = 32;
+        const QUAD: u32 = 40;
+        let mut spokes: Vec<Vec<Point>> = Vec::with_capacity(m);
+        for middle in &middles {
+            spokes.push(
+                (0..=SPOKE)
+                    .map(|i| on_seed(lerp(*middle, centre, f64::from(i) / f64::from(SPOKE))))
+                    .collect::<OgeomResult<_>>()?,
             );
         }
-        sides.push(ogeom_algo::LoopSide {
-            curve,
-            range,
-            across: ogeom_algo::Across::Along(frame.d[k].vector()),
-        });
-        let (conic, _, _, normal) = &conics[k];
-        sides.push(ogeom_algo::LoopSide {
-            curve: conic.clone(),
-            range: (0.0, 1.0),
-            across: ogeom_algo::Across::Plane(*normal),
-        });
-    }
-    // The shape inside: the trimmed filling's finest patch, whether or not
-    // it meets the target, which only gives the quads points and spokes to
-    // fit; the quads hold every side and its support themselves. Its sides
-    // were given in the loop's order, arc then conic.
-    let seed = crate::fill_n::seed_filling(model, &boundary, fit, tol)?;
-    use ogeom_geom::{Curve2d as _, Surface as _};
-    let chart_at = |j: usize, f: f64| -> OgeomResult<ogeom_math::Point2> {
-        let trace = &seed.traces[j];
-        let (a, b) = trace.domain();
-        trace.point_at((b - a).mul_add(f, a), tol)
-    };
-    // A side's chart point a share `f` along the loop's way: an arc's trace
-    // runs along its edge's own curve, which may run the other way.
-    let along_loop = |j: usize, f: f64| -> OgeomResult<ogeom_math::Point2> {
-        let side = &sides[j];
-        let start = side.curve.point_at(side.range.0, tol)?;
-        let (a, b) = seed.traces[j].domain();
-        let first = seed.surface.point_at(
-            seed.traces[j].point_at(a, tol)?.x,
-            seed.traces[j].point_at(a, tol)?.y,
-            tol,
-        )?;
-        let last = seed.surface.point_at(
-            seed.traces[j].point_at(b, tol)?.x,
-            seed.traces[j].point_at(b, tol)?.y,
-            tol,
-        )?;
-        let forward = first.distance(start) <= last.distance(start);
-        chart_at(j, if forward { f } else { 1.0 - f })
-    };
-    let m = sides.len();
-    let middles: Vec<ogeom_math::Point2> = (0..m)
-        .map(|j| along_loop(j, 0.5))
-        .collect::<OgeomResult<_>>()?;
-    let centre = {
-        let (mut x, mut y) = (0.0, 0.0);
-        for q in &middles {
-            x += q.x;
-            y += q.y;
-        }
-        #[allow(clippy::cast_precision_loss, reason = "a handful of sides")]
-        let count = m as f64;
-        ogeom_math::Point2::new(x / count, y / count)
-    };
-    let on_seed = |q: ogeom_math::Point2| seed.surface.point_at(q.x, q.y, tol);
-    let lerp = |a: ogeom_math::Point2, b: ogeom_math::Point2, f: f64| {
-        ogeom_math::Point2::new((b.x - a.x).mul_add(f, a.x), (b.y - a.y).mul_add(f, a.y))
-    };
-    const SPOKE: u32 = 32;
-    const QUAD: u32 = 40;
-    let mut spokes: Vec<Vec<Point>> = Vec::with_capacity(m);
-    for middle in &middles {
-        spokes.push(
-            (0..=SPOKE)
-                .map(|i| on_seed(lerp(*middle, centre, f64::from(i) / f64::from(SPOKE))))
-                .collect::<OgeomResult<_>>()?,
-        );
-    }
-    // The points: each quad's chart filled by the Coons patch of its own
-    // sides there (the two halves' traces, curved as the sides are, and
-    // the two spokes' straight lines), so none falls past a side.
-    let mut cloud: Vec<Point> = Vec::new();
-    for j in 0..m {
-        let next = (j + 1) % m;
-        let corner = along_loop(j, 1.0)?;
-        let (a, b) = (middles[j], middles[next]);
-        for i in 0..=QUAD {
-            let s = f64::from(i) / f64::from(QUAD);
-            // From middle `j` along its side to the corner, and from the
-            // centre to middle `j + 1`.
-            let bottom = along_loop(j, 0.5f64.mul_add(s, 0.5))?;
-            let top = lerp(centre, b, s);
-            for l in 0..=QUAD {
-                let t = f64::from(l) / f64::from(QUAD);
-                // From middle `j` to the centre, and from the corner along
-                // side `j + 1` to its middle.
-                let left = lerp(a, centre, t);
-                let right = along_loop(next, 0.5 * t)?;
-                let blend = |pick: fn(ogeom_math::Point2) -> f64| {
-                    (1.0 - t) * pick(bottom)
-                        + t * pick(top)
-                        + (1.0 - s) * pick(left)
-                        + s * pick(right)
-                        - ((1.0 - s) * (1.0 - t) * pick(a)
-                            + s * (1.0 - t) * pick(corner)
-                            + (1.0 - s) * t * pick(centre)
-                            + s * t * pick(b))
-                };
-                let q = ogeom_math::Point2::new(blend(|p| p.x), blend(|p| p.y));
-                cloud.push(on_seed(q)?);
+        // The points: each quad's chart filled by the Coons patch of its own
+        // sides there (the two halves' traces, curved as the sides are, and
+        // the two spokes' straight lines), so none falls past a side.
+        let mut cloud: Vec<Point> = Vec::new();
+        for j in 0..m {
+            let next = (j + 1) % m;
+            let corner = along_loop(j, 1.0)?;
+            let (a, b) = (middles[j], middles[next]);
+            for i in 0..=QUAD {
+                let s = f64::from(i) / f64::from(QUAD);
+                // From middle `j` along its side to the corner, and from the
+                // centre to middle `j + 1`.
+                let bottom = along_loop(j, 0.5f64.mul_add(s, 0.5))?;
+                let top = lerp(centre, b, s);
+                for l in 0..=QUAD {
+                    let t = f64::from(l) / f64::from(QUAD);
+                    // From middle `j` to the centre, and from the corner along
+                    // side `j + 1` to its middle.
+                    let left = lerp(a, centre, t);
+                    let right = along_loop(next, 0.5 * t)?;
+                    let blend = |pick: fn(ogeom_math::Point2) -> f64| {
+                        (1.0 - t) * pick(bottom)
+                            + t * pick(top)
+                            + (1.0 - s) * pick(left)
+                            + s * pick(right)
+                            - ((1.0 - s) * (1.0 - t) * pick(a)
+                                + s * (1.0 - t) * pick(corner)
+                                + (1.0 - s) * t * pick(centre)
+                                + s * t * pick(b))
+                    };
+                    if std::env::var_os("OGEOM_SKIP_BORDER").is_some() && (t < 0.1 || s > 0.9) {
+                        continue;
+                    }
+                    let q = ogeom_math::Point2::new(blend(|p| p.x), blend(|p| p.y));
+                    cloud.push(on_seed(q)?);
+                }
             }
         }
-    }
-    let index = ogeom_mesh::PointIndex::build(&cloud)?;
-    // The quads hold every side and its support exactly, and the seed meets
-    // them only as nearly as it does: they fit its points to the bands'
-    // target, or as nearly as an exactly tangent surface can come to the
-    // seed, whichever is the wider.
-    let tolerance = fit.max(seed.off);
-    let options = ogeom_algo::NetworkOptions {
-        tolerance,
-        // The fairing may cost the points no more than the target itself.
-        smoothing: tolerance * tolerance,
-        creases: Vec::new(),
-        // Two spans to every strip from the start: a spoke's span next to
-        // the centre, which holding the centre makes a quadratic of its
-        // own, then stops short of the spoke's held end on the side.
-        spans: 2,
-        most: 16,
-        held: Vec::new(),
-        across: Vec::new(),
-    };
-    let network = ogeom_algo::fit_loop_quads(model, &sides, &spokes, &index, &options, tol)?;
-    if std::env::var_os("OGEOM_DEBUG_QUADS").is_some() {
-        eprintln!(
-            "QUADS ended {:?} worst_tangent {} corners {:?} outside {} tol {tolerance} seed.off {}",
-            network.ended, network.worst_tangent, network.corners, network.outside, seed.off
-        );
-        for (q, surface) in network.surfaces.iter().enumerate() {
-            let mut worst = (0.0, Point::ORIGIN);
-            for p in &cloud {
-                let pr = ogeom_algo::project_on_surface(
-                    &ogeom_geom::SurfaceGeometry::BSpline(surface.clone()),
-                    *p,
-                    16,
-                    tol,
-                );
-                if let Ok(pr) = pr {
-                    let (u, v) = pr.parameters;
-                    if u > 1e-9 && u < 1.0 - 1e-9 && v > 1e-9 && v < 1.0 - 1e-9 {
-                        let d = pr.point.distance(*p);
-                        if d > worst.0 {
-                            worst = (d, *p);
-                        }
+        let index = ogeom_mesh::PointIndex::build(&cloud)?;
+        // The quads hold every side and its support exactly, and the seed meets
+        // them only as nearly as it does: they fit its points to the bands'
+        // target, or as nearly as an exactly tangent surface can come to the
+        // seed, whichever is the wider.
+        let tolerance = fit.max(seed.off);
+        let options = ogeom_algo::NetworkOptions {
+            tolerance,
+            // The fairing may cost the points no more than the target itself.
+            smoothing: tolerance * tolerance,
+            creases: Vec::new(),
+            // Two spans to every strip from the start: a spoke's span next to
+            // the centre, which holding the centre makes a quadratic of its
+            // own, then stops short of the spoke's held end on the side.
+            spans: 2,
+            most: 16,
+            held: Vec::new(),
+            across: Vec::new(),
+        };
+        let network = ogeom_algo::fit_loop_quads(model, &sides, &spokes, &index, &options, tol)?;
+        if forced {
+            let mut widest_gap = 0.0_f64;
+            for (h, edge) in network.edges.iter().take(2 * sides.len()).enumerate() {
+                let side = &sides[h / 2];
+                let (lo, hi) = side.range;
+                let mid = f64::midpoint(lo, hi);
+                let (a, b) = if h % 2 == 0 { (lo, mid) } else { (mid, hi) };
+                if let Some((c, (elo, ehi))) = ogeom_algo::placed_edge_curve(model, edge, tol)? {
+                    for i in 0..=64 {
+                        let f = f64::from(i) / 64.0;
+                        let p = c.point_at((ehi - elo).mul_add(f, elo), tol)?;
+                        let q = side.curve.point_at((b - a).mul_add(f, a), tol)?;
+                        widest_gap = widest_gap.max(p.distance(q));
                     }
                 }
             }
-            eprintln!("QUAD {q} worst inner {:?}", worst);
+            let worst = network
+                .per_patch
+                .iter()
+                .map(|p| p.worst)
+                .fold(0.0, f64::max);
+            eprintln!(
+                "FORCED ended {:?} worst {worst} tangent {} border-vs-exact {widest_gap} spans {:?}",
+                network.ended,
+                network.worst_tangent,
+                network
+                    .per_patch
+                    .iter()
+                    .map(|p| p.spans)
+                    .collect::<Vec<_>>()
+            );
         }
-    }
-    if network.ended != ogeom_geom::fit::Ended::Met {
-        ogeom_bail!(
-            NotDone,
-            "the setback corner's quads miss their target of {tolerance}: {:?}",
-            network.per_patch
-        );
-    }
+        // Kept only where every point is within the target and the quads are
+        // tangent to one another within it, across their spokes and at the
+        // centre; each quad meets its sides' supports tangent by construction.
+        let widest = network
+            .corners
+            .iter()
+            .map(|c| c.angle)
+            .fold(network.worst_tangent, f64::max);
+        if network.ended != ogeom_geom::fit::Ended::Met || widest > fit {
+            ogeom_bail!(
+                NotDone,
+                "the setback corner's quads miss their target of {tolerance}: {:?}, tangent within {widest}",
+                network.per_patch
+            );
+        }
+        Ok(network.faces)
+    })();
+    let Ok(quads) = quads else {
+        return Err(refusal);
+    };
     let mut faces = kept;
     faces.extend(fillers);
-    faces.extend(network.faces.iter().cloned());
+    faces.extend(quads.iter().cloned());
     let sewn = ogeom_algo::sew_within(model, &faces, fit, tol)?;
     if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
         ogeom_bail!(Construction, "the setback corner's faces did not close");
     }
     let rounded = model.add_solid(std::slice::from_ref(&sewn.shells[0]))?;
     let mut history: History = history;
-    for face in &network.faces {
-        history.generate(vertex, face.clone());
+    for face in quads {
+        history.generate(vertex, face);
     }
     Ok(Built::new(rounded, history))
 }

@@ -625,10 +625,6 @@ pub fn fit_network_chained(
         fit.corners = corners;
         fit.fans = fans;
         let (spans, current, ended) = fit.refine(options)?;
-        if std::env::var_os("OGEOM_DEBUG_QUADS").is_some() {
-            let worst = current.distances.iter().copied().fold(0.0, f64::max);
-            eprintln!("TRY {corners:?} fans {fans} ended {ended:?} held {} worst {worst} spans {spans:?}", current.held);
-        }
         if (ended == Ended::Met && current.held) || (corners == Corners::Loose && !fans) {
             settled = Some((spans, current, ended));
             break;
@@ -2352,12 +2348,6 @@ impl Fit<'_> {
             // A way of holding the corners that asks the held curves for
             // what they do not hold is a way that did not hold: its rows
             // go, and refinement moves on as from one that missed.
-            if std::env::var_os("OGEOM_DEBUG_QUADS").is_some() {
-                eprintln!(
-                    "CONFLICT corners {:?} fans {} spans {:?}",
-                    self.corners, self.fans, spans
-                );
-            }
             held = false;
             rows.truncate(corners_from);
             self.basis_known(&layout, &rows, &known)?
@@ -3631,11 +3621,7 @@ impl Fit<'_> {
                 continue;
             }
             let (near, far) = (loose[b].distance(loose[l]), loose[r].distance(loose[b]));
-            let ratio = if std::env::var_os("OGEOM_INVERSE_ASK").is_some() {
-                far / near
-            } else {
-                near / far
-            };
+            let ratio = near / far;
             let class = logs.len();
             logs.push(Some(ratio.ln()));
             asked.entry(k).or_default().push(Asked {
@@ -3647,9 +3633,6 @@ impl Fit<'_> {
             held_ends.insert(c, ratio);
         }
         if close_cycles(&corners, &asked, &mut logs).contains(&true) {
-            if std::env::var_os("OGEOM_DEBUG_QUADS").is_some() {
-                eprintln!("SPREAD cycles do not close; held ends {held_ends:?}");
-            }
             return None;
         }
         for (&k, asked) in &asked {
