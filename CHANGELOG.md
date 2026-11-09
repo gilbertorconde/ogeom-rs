@@ -579,6 +579,19 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **`solid_from_mesh` nests a mesh of many pieces in a fraction of the
+  time, to the same result.** (#706)
+  - Each closed piece was asked whether every other lies inside it by
+    rays against all its triangles. A piece whose vertex lies outside the
+    other's box is now answered without a ray: the other lies within its
+    box.
+  - Converting an n by n grid of spheres, every other one holding a void,
+    at one thread: 24 pieces 6.8 percent fewer instructions, 150 pieces 33
+    (8 with recognition), 600 pieces 70 (4.0 s to 1.6 s). The result is
+    the same to the bit there and on every part of `mesh_corpus`, and a
+    mesh of one piece costs the same. `ogeom-bench` gains
+    `mesh_to_solid_pieces`.
+
 - **`refine_solid` measures a converted body's volume with less repeated
   work, to the same result.** (#706)
   - On the 29,003-face solid converted from a real part's mesh at chord

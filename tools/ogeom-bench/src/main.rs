@@ -167,6 +167,7 @@ fn benchmarks() -> Vec<Bench> {
         ("sew_shell", Box::new(sew_shell)),
         ("mesh_to_solid", Box::new(mesh_to_solid)),
         ("mesh_to_solid_mid", Box::new(mesh_to_solid_mid)),
+        ("mesh_to_solid_pieces", Box::new(mesh_to_solid_pieces)),
         ("hlr_exact", Box::new(hlr_exact)),
         ("hlr_exact_mid", Box::new(hlr_exact_mid)),
         ("hlr_mesh", Box::new(hlr_mesh)),
@@ -713,6 +714,44 @@ const MESH_MID_PART: &str = "nist_ftc_08_asme1_rc.stp";
 /// over every built face on each build dominate.
 fn mesh_to_solid_mid() -> Option<Stats> {
     converted(MESH_MID_PART)
+}
+
+/// A b-rep from a mesh of many closed pieces: an 8 by 8 grid of spheres,
+/// every other one holding a smaller sphere as a void, taken as faceted
+/// solids. Each piece is asked whether it lies inside every other.
+fn mesh_to_solid_pieces() -> Option<Stats> {
+    let mut model = Model::new();
+    let deflection = Deflection::with_chord(0.02).ok()?;
+    let mut mesh = ogeom::topo::Triangulation::new();
+    for i in 0..8_u32 {
+        for j in 0..8_u32 {
+            let at = Point::new(3.0 * f64::from(i), 3.0 * f64::from(j), 0.0);
+            let frame = Frame::WORLD.with_origin(at);
+            let outer = ogeom::algo::make_sphere(&mut model, frame, 1.0, T)
+                .ok()?
+                .shape;
+            mesh.append(&ogeom::mesh::triangulate(&model, &outer, deflection, T).ok()?);
+            if (i + j) % 2 == 0 {
+                let inner = ogeom::algo::make_sphere(&mut model, frame, 0.5, T)
+                    .ok()?
+                    .shape;
+                let mut void = ogeom::mesh::triangulate(&model, &inner, deflection, T).ok()?;
+                for t in &mut void.triangles {
+                    t.swap(1, 2);
+                }
+                mesh.append(&void);
+            }
+        }
+    }
+    let options = ogeom::algo::MeshSolidOptions {
+        recognize: false,
+        ..Default::default()
+    };
+    Some(time(|| {
+        let mut model = Model::new();
+        let built = ogeom::algo::solid_from_mesh(&mut model, &mesh, &options, T).unwrap();
+        std::hint::black_box(&built);
+    }))
 }
 
 /// A corpus part's first solid tessellated, and the time to convert the

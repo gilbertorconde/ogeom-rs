@@ -316,11 +316,13 @@ impl Adjacency {
     }
 }
 
-/// One connected piece: its triangles, and whether it closes.
+/// One connected piece: its triangles, whether it closes, and the box of
+/// its vertices.
 #[derive(Clone)]
 pub(super) struct Piece {
     pub(super) triangles: Vec<u32>,
     pub(super) closed: bool,
+    pub(super) bounds: ogeom_math::Aabb,
 }
 
 /// Make windings agree across every shared edge, piece by piece; turn a
@@ -401,9 +403,16 @@ pub(super) fn orient(
             .map(|t| u32::try_from(t).unwrap_or(u32::MAX))
             .collect();
         members.sort_unstable();
+        let bounds = members
+            .iter()
+            .flat_map(|&t| triangles[t as usize])
+            .fold(ogeom_math::Aabb::EMPTY, |held, v| {
+                held.with_point(points[v as usize])
+            });
         pieces.push(Piece {
             triangles: members,
             closed,
+            bounds,
         });
     }
     pieces
@@ -417,6 +426,9 @@ fn signed_volume(points: &[Point], [a, b, c]: [u32; 3], apex: Point) -> f64 {
 
 /// Whether piece `inner` lies inside closed piece `outer`: a ray from one
 /// of its vertices crosses `outer` an odd number of times.
+///
+/// A vertex outside the box of `outer`'s vertices is outside `outer`, which
+/// lies within that box, and is answered without a ray.
 ///
 /// A ray through a shared edge or vertex of `outer` meets two triangles
 /// there, or none, and its count says nothing; so a ray passing that close
@@ -432,6 +444,9 @@ pub(super) fn inside(
         return false;
     };
     let origin = points[triangles[first as usize][0] as usize];
+    if !outer.bounds.contains(origin) {
+        return false;
+    }
     // Off-axis directions, so a ray along a mesh's grid lines is unlikely;
     // the crossing test needs no unit length.
     const DIRECTIONS: [[f64; 3]; 6] = [
