@@ -369,11 +369,22 @@ except:
 - on the sliver part, where a plane of two facets beside a torus keeps
   seams of 0.019 against a reach of 0.004.
 
-Design items, in order: those two; seams
-between two curved faces fitted to one spline (a torus beside a cylinder at
-0.09, nearly tangent, no point on both); junction rules (Benière et al.
-2012: a junction stays only if its faces are pairwise adjacent, dangling
-edges dropped).
+Design items, in order:
+
+- **Those two.** A facet with a curved face across every side needs a fan
+  that lifts all three of its sides, or a split into fans.
+- **Seams between two curved faces fitted to one spline.** On `mesh_corpus`
+  one such seam stands past its reach: on `nist_ctc_02`, a cone (half-angle
+  3°) beside a torus (major radius 112, tube 10), at 0.097 against a reach
+  of 0.093. They meet nearly tangent with no point on both, and the torus's
+  axis stands 2.0° off the cone's. Holding them tangent along a circle
+  needs them coaxial, and turning the torus onto the cone's axis moves its
+  samples millimetres off, past its fit; the fix lies in fits that share
+  their neighbours' tangency or take the spline whole. Every other seam
+  between two curved faces on the corpus holds within its reach.
+- **Junction rules** (Benière et al. 2012: a junction stays only if its
+  faces are pairwise adjacent, dangling edges dropped). No part of
+  `mesh_corpus` shows a junction they would change; they wait for one.
 
 Tracing a seam as a branch of the two fitted surfaces' intersection has
 nothing to trace on the measured parts. Of the 427 chords on `mesh_corpus`,
