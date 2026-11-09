@@ -451,9 +451,25 @@ fn segments_of(
             } else {
                 None
             };
-            let (pcurve, fit) = match own
-                .or_else(|| ogeom_intersect::exact_pcurve_over(&geometry, range, surface, tol))
+            let exact =
+                own.or_else(|| ogeom_intersect::exact_pcurve_over(&geometry, range, surface, tol));
+            if exact.is_none()
+                && let Some(pieces) = through_poles(&geometry, range, surface, cap, tol)?
             {
+                for (span, pcurve, fit) in pieces {
+                    out.push(segment(
+                        edge,
+                        geometry.clone(),
+                        pcurve,
+                        span,
+                        fit,
+                        surface,
+                        tol,
+                    )?);
+                }
+                return Ok(out);
+            }
+            let (pcurve, fit) = match exact {
                 Some(p) => (p, 0.0),
                 None => {
                     let (p, error, _, off, _) =
@@ -474,6 +490,185 @@ fn segments_of(
         }
     }
     Ok(out)
+}
+
+/// A piece of a curve: the range of its parameter, its trace, and how far
+/// the trace's fit misses it.
+type Piece = ((f64, f64), PlanarCurve, f64);
+
+/// A curve on a sphere that runs through a pole, cut there into pieces,
+/// each with its trace: `None` where the surface is no sphere or the curve
+/// meets no pole.
+///
+/// A trace in the sphere's chart jumps at a pole, from the longitude the
+/// curve arrives along to the one it leaves along, so no one trace follows
+/// it; each piece's trace ends on the pole's row at the longitude of the
+/// curve's own tangent there, and is fitted in space through the curve's
+/// chart positions, continued across the chart's period, to `cap`. The
+/// curve meets a pole where its nearest approach, found among samples and
+/// refined by golden sections to the parameter's resolution, comes within
+/// `cap` of it.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
+/// a piece's trace cannot be fitted within `cap`; whatever the curve
+/// refuses.
+fn through_poles(
+    curve: &Curve,
+    range: (f64, f64),
+    surface: &SurfaceGeometry,
+    cap: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<Piece>>> {
+    const SAMPLES: u32 = 256;
+    let SurfaceGeometry::Sphere(sphere) = surface else {
+        return Ok(None);
+    };
+    let sphere = sphere.sphere();
+    let frame = sphere.frame();
+    let (x, y, z) = (frame.x().vector(), frame.y().vector(), frame.z().vector());
+    let half = core::f64::consts::FRAC_PI_2;
+    let poles = [
+        (sphere.centre() + z * sphere.radius(), half),
+        (sphere.centre() - z * sphere.radius(), -half),
+    ];
+    let off = |t: f64| -> OgeomResult<(f64, usize)> {
+        let p = curve.point_at(t, tol)?;
+        let (n, s) = (p.distance(poles[0].0), p.distance(poles[1].0));
+        Ok(if n <= s { (n, 0) } else { (s, 1) })
+    };
+    let at = |k: u32| (range.1 - range.0).mul_add(f64::from(k) / f64::from(SAMPLES), range.0);
+    let distances = (0..=SAMPLES)
+        .map(|k| off(at(k)).map(|d| d.0))
+        .collect::<OgeomResult<Vec<_>>>()?;
+    let resolution = f64::EPSILON * range.0.abs().max(range.1.abs()).max(range.1 - range.0);
+    let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+    let mut hits: Vec<(f64, usize)> = Vec::new();
+    for k in 0..=SAMPLES {
+        let i = usize::try_from(k).unwrap_or(0);
+        let left = if k == 0 {
+            f64::INFINITY
+        } else {
+            distances[i - 1]
+        };
+        let right = if k == SAMPLES {
+            f64::INFINITY
+        } else {
+            distances[i + 1]
+        };
+        if distances[i] > left || distances[i] > right {
+            continue;
+        }
+        let (mut a, mut b) = (at(k.saturating_sub(1)), at((k + 1).min(SAMPLES)));
+        while b - a > resolution {
+            let (c, d) = ((b - a).mul_add(-ratio, b), (b - a).mul_add(ratio, a));
+            if off(c)?.0 <= off(d)?.0 {
+                b = d;
+            } else {
+                a = c;
+            }
+        }
+        let mut t = f64::midpoint(a, b);
+        let (d, pole) = off(t)?;
+        // A hit closer to an end of the range than its samples can stand
+        // apart is at that end.
+        let apart = resolution * f64::from(SAMPLES);
+        if t - range.0 <= apart {
+            t = range.0;
+        } else if range.1 - t <= apart {
+            t = range.1;
+        }
+        if d <= cap && hits.last().is_none_or(|h| t - h.0 > apart) {
+            hits.push((t, pole));
+        }
+    }
+    if hits.is_empty() {
+        return Ok(None);
+    }
+    let period = core::f64::consts::TAU;
+    let longitude = |v: ogeom_math::Vector| v.dot(y).atan2(v.dot(x));
+    let chart = |p: Point| {
+        let l = p - sphere.centre();
+        let (a, b, c) = (l.dot(x), l.dot(y), l.dot(z));
+        Point2::new(b.atan2(a), c.atan2(a.hypot(b)))
+    };
+    let mut cuts: Vec<f64> = vec![range.0];
+    cuts.extend(hits.iter().map(|h| h.0));
+    cuts.push(range.1);
+    let mut pieces = Vec::new();
+    for pair in cuts.windows(2) {
+        let (lo, hi) = (pair[0], pair[1]);
+        if hi <= lo {
+            continue;
+        }
+        // The pole ends, at the longitude the curve leaves or arrives
+        // along: its tangent, read in the sphere's frame.
+        let mut ends: Vec<(f64, Point2)> = Vec::new();
+        for &(t, pole) in &hits {
+            if t == lo {
+                ends.push((
+                    t,
+                    Point2::new(longitude(curve.d1_at(t, tol)?), poles[pole].1),
+                ));
+            } else if t == hi {
+                ends.push((
+                    t,
+                    Point2::new(longitude(-curve.d1_at(t, tol)?), poles[pole].1),
+                ));
+            }
+        }
+        let raw = |t: f64| -> OgeomResult<Point2> {
+            match ends.iter().find(|e| e.0 == t) {
+                Some(e) => Ok(e.1),
+                None => Ok(chart(curve.point_at(t, tol)?)),
+            }
+        };
+        let near = |uv: Point2, guide: Point2| {
+            Point2::new(
+                ((guide.x - uv.x) / period).round().mul_add(period, uv.x),
+                uv.y,
+            )
+        };
+        // The chart positions continued along the piece, at samples close
+        // enough that the longitude never turns a quarter period between
+        // two of them where the curve stays off the pole.
+        let ts: Vec<f64> = (0..=SAMPLES)
+            .map(|k| (hi - lo).mul_add(f64::from(k) / f64::from(SAMPLES), lo))
+            .collect();
+        let mut table: Vec<Point2> = Vec::with_capacity(ts.len());
+        for &t in &ts {
+            let uv = raw(t)?;
+            table.push(match table.last() {
+                Some(previous) => near(uv, *previous),
+                None => uv,
+            });
+        }
+        let continued = |t: f64| -> OgeomResult<Point2> {
+            let k = ts.partition_point(|s| *s <= t).clamp(1, ts.len() - 1);
+            let f = ((t - ts[k - 1]) / (ts[k] - ts[k - 1])).clamp(0.0, 1.0);
+            let guide = table[k - 1] + (table[k] - table[k - 1]) * f;
+            Ok(near(raw(t)?, guide))
+        };
+        let (fitted, image) = ogeom_geom::fit::fit_trace_sampled(
+            |t| Ok((curve.point_at(t, tol)?, continued(t)?)),
+            |uv| surface.point_at(uv.x, uv.y, tol),
+            &ts,
+            3,
+            cap,
+            tol,
+        )?;
+        if !fitted.met {
+            ogeom_bail!(
+                Construction,
+                "a curve to split along runs through the sphere's pole, and its trace \
+                 there misses it by {:.3e}, over the {cap:.3e} it may",
+                fitted.error
+            );
+        }
+        pieces.push(((lo, hi), image.into(), fitted.error));
+    }
+    Ok(Some(pieces))
 }
 
 /// A segment, its tolerance measured: how far the curve and the surface

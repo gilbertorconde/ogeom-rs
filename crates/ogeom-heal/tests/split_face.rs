@@ -1132,3 +1132,95 @@ fn a_closed_curve_across_the_low_end_of_a_periodic_faces_range_splits_it() {
         );
     }
 }
+
+#[test]
+fn a_circle_through_a_spheres_pole_cuts_off_its_cap() {
+    // The small circle 10 degrees about a point 10 degrees from the north
+    // pole runs through the pole, its trace jumping there from the
+    // longitude it arrives along to the one it leaves along: cut at the
+    // pole, as one edge or as two arcs meeting there, it cuts off the cap
+    // 2 pi R^2 (1 - cos 10 degrees).
+    let angle = 10.0_f64.to_radians();
+    let axis = Vector::new(0.0, -angle.sin(), angle.cos());
+    let centre = Point::from_vector(axis * (10.0 * angle.cos()));
+    let frame = Frame::new(
+        centre,
+        Direction::new(axis, T).unwrap(),
+        Direction::new(Vector::new(1.0, 0.0, 0.0), T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let circle = Circle::new(frame, 10.0 * angle.sin(), T).unwrap();
+    let cap = 2.0 * PI * 100.0 * (1.0 - angle.cos());
+    for ranges in [vec![(0.0, TAU)], vec![(0.0, TAU / 4.0), (TAU / 4.0, TAU)]] {
+        let mut model = Model::new();
+        let sphere = ogeom_algo::make_sphere(&mut model, Frame::WORLD, 10.0, T)
+            .unwrap()
+            .shape;
+        let face = faces(&model, &sphere)[0].clone();
+        let whole = area(&model, &face);
+        let edges: Vec<Shape> = ranges
+            .iter()
+            .map(|r| {
+                make_edge(&mut model, Curve::from(CircleCurve::new(circle)), *r, T)
+                    .unwrap()
+                    .shape
+            })
+            .collect();
+        let built = split_face(&mut model, &sphere, &face, &edges, Projection::OnFace, T).unwrap();
+        assert!(
+            ogeom_algo::check(&model, &built.shape, T)
+                .unwrap()
+                .is_usable()
+        );
+        let mut areas: Vec<f64> = built
+            .history
+            .trace(&face)
+            .iter()
+            .map(|p| area(&model, p))
+            .collect();
+        areas.sort_by(f64::total_cmp);
+        assert_eq!(areas.len(), 2, "{areas:?}");
+        assert!(
+            (areas[0] - cap).abs() <= cap * 1e-9,
+            "{areas:?} against {cap}"
+        );
+        assert!(
+            (areas[0] + areas[1] - whole).abs() <= whole * 1e-9,
+            "{areas:?}"
+        );
+    }
+}
+
+#[test]
+fn a_circle_through_a_spheres_pole_lands_on_the_sphere_within_the_confusion() {
+    // The chart a pcurve is projected into read a point at the pole a root
+    // of the rounding off the sphere: a projected pcurve of a circle
+    // through the pole stood 2.1e-7 off at radius 10, past the confusion,
+    // and was refused at that cap.
+    let angle = 10.0_f64.to_radians();
+    let axis = Vector::new(0.0, -angle.sin(), angle.cos());
+    let centre = Point::from_vector(axis * (10.0 * angle.cos()));
+    let frame = Frame::new(
+        centre,
+        Direction::new(axis, T).unwrap(),
+        Direction::new(Vector::new(1.0, 0.0, 0.0), T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let circle = Curve::from(CircleCurve::new(
+        Circle::new(frame, 10.0 * angle.sin(), T).unwrap(),
+    ));
+    let sphere: SurfaceGeometry =
+        ogeom_geom::SphereSurface::new(ogeom_math::Sphere::new(Frame::WORLD, 10.0, T).unwrap())
+            .into();
+    let (_, _, _, off, _) = ogeom_algo::pcurve_fit::fit_projected_pcurve_capped(
+        &circle,
+        (0.0, TAU),
+        &sphere,
+        T.confusion(),
+        T,
+    )
+    .unwrap();
+    assert!(off <= T.confusion(), "{off}");
+}

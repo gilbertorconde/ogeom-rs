@@ -600,6 +600,28 @@ bump may break the API and a patch bump may not.
     at the closed forms; all six placements were refused. At 2e-5 off,
     three placements are still refused as before (see docs/PLAN.md).
 
+- **A plain curve running through a sphere's pole splits the face, and every
+  projected pcurve on a sphere lands exactly near a pole.** (#729)
+  - The chart a projected pcurve is fitted in reads a sphere's latitude as
+    the arcsine of the height. Near a pole that loses half its digits: a
+    point on the sphere landed up to 2.1e-7 off at radius 10. A circle
+    through the pole was then refused by `split_face` ("the edge sits
+    2.11e-7 from the surface").
+  - Where the arcsine lands a point past the confusion distance, the
+    latitude read against the ring's radius is now taken, and the same
+    circle lands within 3e-15. Every landing within the confusion distance
+    is unchanged.
+  - On the real-world assemblies this moves the edge tolerances of 14 and
+    11 solids that have sphere edges reaching a pole, nearly all down. Two
+    rise by 5.9e-8, and eight volumes move by under 1e-9 relative.
+  - The trace of a curve through a pole jumps there, so no one pcurve
+    follows it: fitted whole, it missed by 0.04. `split_face` now cuts such
+    a curve at the pole. Each piece's trace ends on the pole's row at the
+    longitude of the curve's own tangent there, and the region closes along
+    the row.
+  - The circle 10° about a point 10° from the pole, as one edge or as two
+    arcs, cuts off its cap of 2πR²(1 − cos 10°) within 3e-11.
+
 - **A sheet on a sphere reads its landing's latitude against the ring's
   radius, not as the arcsine of its height.** (#729) Near a pole the
   arcsine loses half its digits: its error grows to the root of twice the
