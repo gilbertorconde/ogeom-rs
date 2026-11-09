@@ -11,6 +11,7 @@ mod chamfer_corner;
 mod chamfer_marched;
 mod chamfer_sphere;
 mod consumed;
+mod consumed_marched;
 mod consumed_rim;
 pub mod corner;
 pub mod corner2d;

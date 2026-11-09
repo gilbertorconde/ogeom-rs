@@ -179,6 +179,16 @@ impl PairSeat {
         &self.probes
     }
 
+    /// The stations of each run.
+    pub(crate) fn runs(&self) -> &[MarchedBlend] {
+        &self.runs
+    }
+
+    /// The crossing the ball was marched along.
+    pub(crate) const fn guide(&self) -> &Curve {
+        &self.guide
+    }
+
     /// Whether the round runs all the way round a closed seat.
     pub(crate) const fn closed(&self) -> bool {
         matches!(self.run, Run::Closed)
@@ -202,6 +212,23 @@ pub(crate) fn pair_seat(
     radius: f64,
     behind: bool,
     solid: Option<&Shape>,
+    tol: Tolerances,
+) -> OgeomResult<PairSeat> {
+    pair_seat_near(model, faces, hosts, radius, behind, solid, None, tol)
+}
+
+/// [`pair_seat`], taking only the crossing of the surfaces that passes
+/// nearest `near` where one is given: the corner beside a strip, where
+/// the surfaces cross along other corners too.
+#[allow(clippy::too_many_arguments, reason = "one seat, all its data")]
+pub(crate) fn pair_seat_near(
+    model: &mut Model,
+    faces: [&Shape; 2],
+    hosts: &Hosts,
+    radius: f64,
+    behind: bool,
+    solid: Option<&Shape>,
+    near: Option<Point>,
     tol: Tolerances,
 ) -> OgeomResult<PairSeat> {
     let hosts = hosts.clone();
@@ -252,6 +279,16 @@ pub(crate) fn pair_seat(
         }
     }
 
+    if let Some(p) = near {
+        let mut nearest: Option<(f64, Curve)> = None;
+        for guide in guides {
+            let d = project_on_curve(&guide, p, 256, tol)?.distance;
+            if nearest.as_ref().is_none_or(|(best, _)| d < *best) {
+                nearest = Some((d, guide));
+            }
+        }
+        guides = nearest.into_iter().map(|(_, g)| g).collect();
+    }
     let mut found = Vec::new();
     let mut why: Option<OgeomError> = None;
     for guide in guides {

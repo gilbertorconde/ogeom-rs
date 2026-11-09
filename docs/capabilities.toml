@@ -1216,7 +1216,13 @@ small-rounded boss's rim) whose far circle is on the wall: where the \
 ring lies wholly in the corner the ball touching the cap and the wall \
 takes off, the round is that ball's torus band, the ring going with the \
 corner, the edge then refused for its faces meeting tangent rounding \
-too. A concave straight edge beside such a strip whose far edge is straight and \
+too; and for a convex edge on a marched seat beside a strip between it \
+and one other face (a bevelled bore's rim on a drum), the strip closing \
+on itself: where the ball touching the faces either side of the strip \
+along their crossing keeps every face out of its lune, the strip stands \
+behind both surfaces and no other edge but seams comes within the \
+corner's reach, the round is that ball's marched band and the strip goes \
+with the corner. A concave straight edge beside such a strip whose far edge is straight and \
 convex (the seam of two solids fused at a slant) rounds with the ball \
 touching the other face and resting on that far edge, its centre on the \
 ellipse, or the line, where the plane a radius off the face meets the \
@@ -1285,6 +1291,7 @@ tests = [
     "crates/ogeom-fillet/tests/fillet.rs",
     "crates/ogeom-fillet/tests/radius_per_edge.rs",
     "crates/ogeom-fillet/tests/consumed_rim.rs",
+    "crates/ogeom-fillet/tests/consumed_marched.rs",
     "crates/ogeom-fillet/tests/concave.rs::a_round_rolls_on_the_far_edge_of_a_strip_narrower_than_its_setback",
     "crates/ogeom-fillet/tests/concave.rs::a_round_rolls_on_a_far_edge_parallel_to_the_face_it_touches",
     "crates/ogeom-fillet/tests/concave.rs::a_round_rolling_on_a_far_edge_refuses_where_the_ball_leaves_it",
