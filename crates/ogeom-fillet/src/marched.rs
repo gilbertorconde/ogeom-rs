@@ -62,14 +62,17 @@ pub(crate) fn marched_fillet(
     marched_fillet_by(model, solid, edge, radius, None, None, mates, tol)
 }
 
-/// Round a closed edge as [`marched_fillet`] does, the ball's radius
-/// following `law` round the edge from its start.
+/// Round an edge as [`marched_fillet`] does, the ball's radius following
+/// `law` along the edge from its start. `mates`, where given, are the
+/// request's edges by their ends, the edge's own at `index`: a mate
+/// continuing the crease at an end stops the band flush there.
 pub(crate) fn marched_fillet_law(
     model: &mut Model,
     solid: &Shape,
     edge: &Shape,
     law: &Profile,
     span: Option<(f64, f64)>,
+    mates: Option<(usize, &[crate::fillet::Mate])>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     marched_fillet_by(
@@ -79,7 +82,7 @@ pub(crate) fn marched_fillet_law(
         law.largest(),
         Some(law),
         span,
-        None,
+        mates,
         tol,
     )
 }

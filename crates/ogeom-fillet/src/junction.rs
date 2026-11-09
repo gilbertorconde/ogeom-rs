@@ -101,6 +101,12 @@ pub(crate) struct Junction {
     /// axis, and whose other is straight: that band, a torus band, its
     /// section the same at every turn about the axis.
     pub turned: Option<Turned>,
+    /// The creases continue each other through the vertex (a side of a
+    /// rounded rectangle running into its corner's arc): the bands' end
+    /// sections are one, and they meet flush in the plane square to both
+    /// creases there. Such a junction reads no host normals; `top` and
+    /// `sides` are zero.
+    pub tangent: bool,
 }
 
 /// The turned band of a crossed junction: its crease a circle about an
@@ -528,7 +534,49 @@ fn junction(
         top,
         sides: [side_0, side_1],
         turned,
+        tangent: false,
     }))
+}
+
+/// The junctions where two of `edges` (each with its mate, by its ends)
+/// share an end and continue each other there: each crease leaving the
+/// shared point exactly against the other, within `tol`'s angle. A band
+/// over each, stopped in its end section, meets the other's in the plane
+/// through the point square to both creases, where one ball touches the
+/// same two points from either side wherever the hosts on either side are
+/// tangent there; the join is held to that by sewing the two ends within
+/// the fit a marched band is held to.
+pub(crate) fn tangent_junctions(edges: &[Shape], mates: &[Mate], tol: Tolerances) -> Vec<Junction> {
+    let mut found = Vec::new();
+    for i in 0..edges.len() {
+        for j in i + 1..edges.len() {
+            for &(p, leaving_i) in &mates[i].ends {
+                for &(q, leaving_j) in &mates[j].ends {
+                    if p.distance(q) > tol.confusion() * 1e3 {
+                        continue;
+                    }
+                    let continues = leaving_i.cross(leaving_j).magnitude() <= 1e-7
+                        && leaving_i.dot(leaving_j) < 0.0;
+                    if !continues {
+                        continue;
+                    }
+                    found.push(Junction {
+                        at: p,
+                        pair: [i, j],
+                        outward: [-leaving_i, -leaving_j],
+                        reentrant: false,
+                        flush: (p, leaving_i),
+                        crossed: false,
+                        top: Vector::ZERO,
+                        sides: [Vector::ZERO, Vector::ZERO],
+                        turned: None,
+                        tangent: true,
+                    });
+                }
+            }
+        }
+    }
+    found
 }
 
 /// Where `edge` is a circle about an axis along the unit `top`, on a `wall`

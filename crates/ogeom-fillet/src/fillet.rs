@@ -2203,6 +2203,14 @@ fn fillet_edge_variable_own(
 /// - a seat pinched where its hosts turn tangent at an end (two equal
 ///   drums crossing): each station solved at the law's radius for its
 ///   place, the band pinching to the pole.
+/// - a chain of edges of different seats continuing each other end to
+///   end, open or closed (the top loop of a rounded-rectangle pad: its
+///   sides between two planes, its corners' arcs between the top and a
+///   drum). The run is walked from the first edge the way it runs; each
+///   edge takes the law over its own stretch of the run, its band stopped
+///   in its end sections, and the bands' wedges are joined across each
+///   junction, where one ball touches the same two points from either
+///   side, and applied in one boolean.
 ///
 /// A law holding one radius all along is [`fillet_edges`]' round.
 ///
@@ -2214,11 +2222,12 @@ fn fillet_edge_variable_own(
 /// [`OgeomError::Construction`] where the law states no usable radius
 /// (no points, a fraction off the chain or out of order, a radius not a
 /// positive length), where a linear law changes radius round a closed
-/// chain, where `chain` is empty, an open chain of more than one edge that
-/// is not arcs of one curve, a closed chain with a straight edge, a
+/// chain, where `chain` is empty, a chain of more than one edge whose
+/// creases turn where they meet or whose edges do not run end to end, a
 /// straight edge between faces that are neither two planes nor a drum and
-/// a face along its ruling, or a chain whose edges do not run end to end
-/// between the same two faces, where a law is given over one arc of a
+/// a face along its ruling (only two planes inside a chain of different
+/// seats), where two bands' end sections at a junction part by more than
+/// a marched band's fit, where a law is given over one arc of a
 /// crease that closes through other edges, or where the ball at the law's
 /// largest radius does not fit the edge's faces; and as [`fillet_edge`]
 /// for the seat itself.
@@ -2376,14 +2385,7 @@ fn fillet_chain_law_own(
     // curve its arcs cover end to end.
     let span = if chain.len() > 1 && !closed {
         let Some(span) = one_curve_span(model, solid, chain, tol)? else {
-            ogeom_bail!(
-                Construction,
-                "a variable radius over an open chain of {} edges is still \
-                 owed unless they are arcs of one curve between the same two \
-                 faces, end to end; a single edge or a closed loop is rounded; \
-                 see docs/CAPABILITIES.md, fillet.variable",
-                chain.len()
-            );
+            return tangent_chain_law(model, solid, chain, law, tol);
         };
         Some(span)
     } else {
@@ -2436,7 +2438,7 @@ fn fillet_chain_law_own(
     let mut built = if planar {
         straight_law_fillet(model, solid, edge, &profile, reversed, tol)?
     } else {
-        crate::marched::marched_fillet_law(model, solid, edge, &profile, span, tol)?
+        crate::marched::marched_fillet_law(model, solid, edge, &profile, span, None, tol)?
     };
     crate::support::credit_new_faces(model, solid, edge, &mut built)?;
     // The chain's other arcs went with the first: the one seat over them.
@@ -2444,6 +2446,198 @@ fn fillet_chain_law_own(
         for other in &chain[1..] {
             built.history.delete(other);
         }
+    }
+    Ok(built)
+}
+
+/// The request's edges by their ends, as a band asks of its mates: each
+/// end's point and the unit tangent leaving it along the edge.
+fn chain_mates(model: &Model, chain: &[Shape], tol: Tolerances) -> OgeomResult<Vec<Mate>> {
+    use ogeom_geom::Curve3d as _;
+    chain
+        .iter()
+        .map(|e| -> OgeomResult<Mate> {
+            let (curve, range) = edge_curve(model, e, tol)?;
+            let end_of = |t: f64, leaving: f64| -> OgeomResult<(Point, Vector)> {
+                let d = curve.d1_at(t, tol)?;
+                let m = d.magnitude();
+                let unit = if m > tol.confusion() {
+                    d / m
+                } else {
+                    Vector::ZERO
+                };
+                Ok((curve.point_at(t, tol)?, unit * leaving))
+            };
+            Ok(Mate {
+                ends: [end_of(range.0, 1.0)?, end_of(range.1, -1.0)?],
+                settled: [false, false],
+                meets: [false, false],
+                alone: [false, false],
+            })
+        })
+        .collect()
+}
+
+/// A chain of edges of different seats that continue each other end to
+/// end (the top loop of a rounded-rectangle pad: its sides between two
+/// planes, its corners' arcs between the top and a drum), rounded under
+/// `law` as one run.
+///
+/// The run is walked from the first edge the way it runs, on through the
+/// edges sharing its ends, and back from its start where it is open; the
+/// law's fraction is the run's arc length from where the walk starts, and
+/// the run closes where it comes back to its own start. Each edge takes
+/// the law over its own stretch of the run ([`Profile::window`], the law
+/// itself there), so the ball at a junction is one radius from either
+/// side. Each band is built against the solid as given and stopped in its
+/// end sections: a straight edge's are square to it by construction, and a
+/// marched band stops flush where a mate continues its crease. Where the
+/// creases continue each other and the hosts either side are tangent, one
+/// ball touches the same two points from both sides, so the two end
+/// sections are one; the bands' wedges are joined across each junction's
+/// plane into one wedge (sewn within the fit a marched band is held to,
+/// which refuses ends that part by more) and applied in one boolean.
+fn tangent_chain_law(
+    model: &mut Model,
+    solid: &Shape,
+    chain: &[Shape],
+    law: &RadiusLaw,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let mates = chain_mates(model, chain, tol)?;
+    // Each edge's ends the way it runs: its oriented start, then its end.
+    let runs: Vec<[Point; 2]> = chain
+        .iter()
+        .zip(&mates)
+        .map(|(e, m)| {
+            let [(a, _), (b, _)] = m.ends;
+            if e.orientation() == ogeom_topo::Orientation::Reversed {
+                [b, a]
+            } else {
+                [a, b]
+            }
+        })
+        .collect();
+    let near = |p: Point, q: Point| p.distance(q) <= tol.confusion() * 1e3;
+    // The walk: each step an edge and whether it runs with the walk.
+    let mut walk: Vec<(usize, bool)> = vec![(0, true)];
+    let mut used = vec![false; chain.len()];
+    used[0] = true;
+    let mut head = runs[0][1];
+    while let Some(k) =
+        (0..chain.len()).find(|&k| !used[k] && runs[k].iter().any(|p| near(*p, head)))
+    {
+        let with = near(runs[k][0], head);
+        used[k] = true;
+        head = if with { runs[k][1] } else { runs[k][0] };
+        walk.push((k, with));
+    }
+    let closed = near(head, runs[0][0]);
+    if !closed {
+        let mut tail = runs[0][0];
+        while let Some(k) =
+            (0..chain.len()).find(|&k| !used[k] && runs[k].iter().any(|p| near(*p, tail)))
+        {
+            let with = near(runs[k][1], tail);
+            used[k] = true;
+            tail = if with { runs[k][0] } else { runs[k][1] };
+            walk.insert(0, (k, with));
+        }
+    }
+    if used.iter().any(|u| !u) {
+        ogeom_bail!(
+            Construction,
+            "a variable radius over a chain whose edges do not run end to end \
+             rounds nothing; see docs/CAPABILITIES.md, fillet.variable"
+        );
+    }
+    let junctions: Vec<crate::junction::Junction> =
+        crate::junction::tangent_junctions(chain, &mates, tol)
+            .into_iter()
+            .filter(|j| j.tangent)
+            .collect();
+    let meetings = walk.len() - 1 + usize::from(closed);
+    if junctions.len() != meetings {
+        ogeom_bail!(
+            Construction,
+            "a variable radius over an open chain of {} edges is still owed \
+             where its creases turn where they meet; a chain continuing \
+             itself end to end, arcs of one curve, a single edge or a closed \
+             loop is rounded; see docs/CAPABILITIES.md, fillet.variable",
+            chain.len()
+        );
+    }
+    let profile = Profile::new(law, closed, tol)?;
+    if profile.level(tol) {
+        let radii = vec![profile.largest(); chain.len()];
+        return fillet_edges_meeting(model, solid, chain, &radii, tol);
+    }
+    // The run's arc length, edge by edge along the walk.
+    let mut lengths = Vec::with_capacity(walk.len());
+    for &(k, _) in &walk {
+        let (curve, range) = edge_curve(model, &chain[k], tol)?;
+        lengths.push(crate::law::Ruler::new(curve, range, false, tol)?.length());
+    }
+    let total: f64 = lengths.iter().sum();
+    let mut set_aside: Vec<(Vec<usize>, Shape, crate::support::Wedge)> = Vec::new();
+    let mut before = 0.0;
+    for (&(k, with), length) in walk.iter().zip(&lengths) {
+        let edge = &chain[k];
+        let (from, to) = (before / total, (before + length) / total);
+        before += length;
+        // Laid from the edge's own start the way it runs.
+        let own = if with {
+            profile.window(from, to)
+        } else {
+            profile.window(to, from)
+        };
+        crate::support::ball_fits(model, solid, edge, own.largest(), false, tol)?;
+        let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
+        let (curve, _) = edge_curve(model, edge, tol)?;
+        let (built, wedges) = crate::support::collecting_wedges(|| -> OgeomResult<Built> {
+            if matches!(curve, Curve::Line(_)) {
+                if !matches!(route(model, solid, edge, Rims::Exact, tol)?, Route::Planar) {
+                    ogeom_bail!(
+                        Construction,
+                        "a variable radius on a straight edge of a chain other \
+                         than one between two planes is still owed; see \
+                         docs/CAPABILITIES.md, fillet.variable"
+                    );
+                }
+                straight_law_fillet(model, solid, edge, &own, reversed, tol)
+            } else {
+                crate::marched::marched_fillet_law(
+                    model,
+                    solid,
+                    edge,
+                    &own,
+                    None,
+                    Some((k, &mates)),
+                    tol,
+                )
+            }
+        });
+        built?;
+        let [wedge] = <[crate::support::Wedge; 1]>::try_from(wedges).map_err(|w| {
+            ogeom_core::ogeom_err!(
+                Construction,
+                "a band of a chain under a law built {} wedges, not one",
+                w.len()
+            )
+        })?;
+        set_aside.push((vec![k], edge.clone(), wedge));
+    }
+    let joined = join_flush(model, set_aside, &junctions, &[], tol)?;
+    if joined.len() != 1 {
+        ogeom_bail!(
+            Construction,
+            "the bands of a chain under a law did not join into one wedge \
+             across its junctions"
+        );
+    }
+    let mut built = apply_set_aside(model, Built::from_nothing(solid.clone()), joined, tol)?;
+    for edge in chain {
+        built.history.delete(edge);
     }
     Ok(built)
 }

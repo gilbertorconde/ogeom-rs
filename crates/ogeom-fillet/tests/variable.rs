@@ -776,6 +776,147 @@ fn a_law_of_points_rounds_a_seam_pinched_where_two_drums_turn_tangent() {
     assert!(largest > 1.5, "the ball grows to {largest} along the seam");
 }
 
+/// Where a point stands against the rounded square a 10 mm block's top
+/// makes once its verticals are rounded at 2, the square [2, 8]^2 grown by
+/// 2: its distance from the square's border, and the arc length of its
+/// foot there from (2, 0) going round anticlockwise. Its foot is the
+/// nearest point of the inner square grown out along the way to the point.
+fn on_rounded_square(x: f64, y: f64) -> (f64, f64) {
+    use core::f64::consts::{FRAC_PI_2, PI};
+    let (cx, cy) = (x.clamp(2.0, 8.0), y.clamp(2.0, 8.0));
+    let (qx, qy) = (x - cx, y - cy);
+    let turned = (qy.atan2(qx) + FRAC_PI_2).rem_euclid(2.0 * PI);
+    let walked = if turned < FRAC_PI_2 {
+        cx - 2.0
+    } else if turned < PI {
+        6.0 + cy - 2.0
+    } else if turned < 3.0 * FRAC_PI_2 {
+        12.0 + 8.0 - cx
+    } else {
+        18.0 + 8.0 - cy
+    };
+    ((qx.hypot(qy) - 2.0).abs(), walked + 2.0 * turned)
+}
+
+/// The top loop of a rounded-rectangle pad, four
+/// sides between two planes and four quarter turns between the top and a
+/// drum, each continuing the next, rounded as one chain under a law of
+/// points that closes round the loop. The law `(0, 0.5), (0.5, 1)` on a
+/// closed chain is level at both points and reads the same either way
+/// round, so only where the run starts places it: at the first edge's own
+/// start. Each band's contact on a wall stands the law's radius below the
+/// top, straight under the crease, and its contact on the top the law's
+/// radius in from the crease; both are held to the law at the arc fraction
+/// of their foot on the crease, within the two tenths of a micron a
+/// marched band is fitted to. The round lies between the loop's
+/// constant rounds at the law's least and largest radius.
+#[test]
+fn a_law_of_points_rounds_the_top_loop_of_a_rounded_rectangle_pad() {
+    let mut model = Model::new();
+    let block = ogeom_algo::make_box(&mut model, at(0.0, 0.0, 0.0), (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let ends = |m: &Model, e: &Shape| {
+        let (c, (a, b)) = ogeom_algo::placed_edge_curve(m, e, T).unwrap().unwrap();
+        (c.point_at(a, T).unwrap(), c.point_at(b, T).unwrap())
+    };
+    let verticals: Vec<Shape> = explore_unique(&model, &block, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (a, b) = ends(&model, e);
+            (a.z - b.z).abs() > 5.0
+        })
+        .collect();
+    let pad = ogeom_fillet::fillet_edges(&mut model, &block, &verticals, 2.0, T)
+        .unwrap()
+        .shape;
+    let top_loop: Vec<Shape> = explore_unique(&model, &pad, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (a, b) = ends(&model, e);
+            (a.z - 10.0).abs() < 1e-9 && (b.z - 10.0).abs() < 1e-9
+        })
+        .collect();
+    assert_eq!(top_loop.len(), 8, "four sides and four quarter turns");
+    let law = RadiusLaw::Points(vec![(0.0, 0.5), (0.5, 1.0)]);
+    let closed_law = |s: f64| {
+        let (t, y0, y1) = if s <= 0.5 {
+            (s / 0.5, 0.5, 1.0)
+        } else {
+            ((s - 0.5) / 0.5, 1.0, 0.5)
+        };
+        (2.0 * t * t * t - 3.0 * t * t + 1.0) * y0 + (3.0 * t * t - 2.0 * t * t * t) * y1
+    };
+    let rounded = fillet_edges_variable(&mut model, &pad, &top_loop, &law, T).unwrap();
+    valid(&model, &rounded.shape);
+    for e in &top_loop {
+        assert!(rounded.history.is_deleted(e));
+    }
+
+    let perimeter = 24.0 + 4.0 * core::f64::consts::PI;
+    let foot = on_rounded_square;
+    let start = {
+        let (c, (a, b)) = ogeom_algo::placed_edge_curve(&model, &top_loop[0], T)
+            .unwrap()
+            .unwrap();
+        let t = if top_loop[0].orientation() == Orientation::Reversed {
+            b
+        } else {
+            a
+        };
+        let p = c.point_at(t, T).unwrap();
+        foot(p.x, p.y).1
+    };
+    let fraction = |l: f64| ((l - start) / perimeter).rem_euclid(1.0);
+    let (mut on_top, mut on_wall, mut worst) = (0, 0, 0.0_f64);
+    for e in explore_unique(&model, &rounded.shape, ShapeType::Edge).unwrap() {
+        let Some((c, (a, b))) = ogeom_algo::placed_edge_curve(&model, &e, T).unwrap() else {
+            continue;
+        };
+        let points: Vec<Point> = (0..=24)
+            .map(|i| c.point_at(a + (b - a) * f64::from(i) / 24.0, T).unwrap())
+            .collect();
+        let top_rail = points.iter().all(|p| {
+            let (d, _) = foot(p.x, p.y);
+            (p.z - 10.0).abs() < 1e-6 && d > 0.4 && d < 1.1
+        });
+        let wall_rail = points.iter().all(|p| {
+            let (d, _) = foot(p.x, p.y);
+            d < 1e-3 && 10.0 - p.z > 0.4 && 10.0 - p.z < 1.1
+        });
+        for p in &points {
+            let (d, l) = foot(p.x, p.y);
+            let off = if top_rail {
+                on_top += 1;
+                // The crease point the contact stands in from is a radius
+                // away along the inward normal; its foot is the contact's.
+                (d - closed_law(fraction(l))).abs()
+            } else if wall_rail {
+                on_wall += 1;
+                (10.0 - p.z - closed_law(fraction(l))).abs()
+            } else {
+                break;
+            };
+            assert!(off < 2e-4, "a contact at {p:?} stands {off} off the law");
+            worst = worst.max(off);
+        }
+    }
+    assert!(
+        on_top > 100 && on_wall > 100,
+        "{on_top} on the top, {on_wall} on the walls"
+    );
+
+    let v = volume(&model, &rounded.shape, 1e-3);
+    let mut constant = |r: f64| {
+        let built = ogeom_fillet::fillet_edges(&mut model, &pad, &top_loop, r, T).unwrap();
+        volume(&model, &built.shape, 1e-3)
+    };
+    let (thin, thick) = (constant(0.5), constant(1.0));
+    assert!(thick < v && v < thin, "{thick} < {v} < {thin}");
+}
+
 #[test]
 fn a_variable_radius_refuses_by_name_what_it_does_not_round() {
     let mut model = Model::new();
@@ -812,7 +953,7 @@ fn a_variable_radius_refuses_by_name_what_it_does_not_round() {
     ];
     let chain = refusal(fillet_edges_variable(&mut model, &block, &two, &hump(), T));
     assert!(
-        chain.contains("open chain of 2 edges is still owed unless"),
+        chain.contains("open chain of 2 edges is still owed where its creases turn"),
         "{chain}"
     );
     for (law, says) in [
