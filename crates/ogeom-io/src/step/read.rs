@@ -4426,7 +4426,8 @@ impl<'a> Reader<'a> {
         out
     }
 
-    /// The first `COLOUR_RGB` reachable from a presentation style, depth-bounded.
+    /// The first colour reachable from a presentation style, depth-bounded:
+    /// a `COLOUR_RGB`, or a `DRAUGHTING_PRE_DEFINED_COLOUR` by its name.
     ///
     /// The styled-item chain has five links and real files rearrange them, so
     /// the walk follows references rather than the textbook path.
@@ -4449,6 +4450,22 @@ impl<'a> Reader<'a> {
                 channel(2)?,
                 channel(3)?,
             ));
+        }
+        if keyword == "DRAUGHTING_PRE_DEFINED_COLOUR" {
+            let name = match args.first() {
+                Some(Arg::Str(name)) => name.as_str(),
+                _ => "",
+            };
+            let colour = predefined_colour(name);
+            if colour.is_none() {
+                // A name outside the eight leaves the item uncoloured; said
+                // once per entity, however many styles reach it.
+                let line = format!("#{id}: predefined colour '{name}' is not one of the eight");
+                if !self.report.warnings.contains(&line) {
+                    self.report.warnings.push(line);
+                }
+            }
+            return colour;
         }
         let mut refs: Vec<u64> = Vec::new();
         collect_refs(&args, &mut refs);
@@ -5946,6 +5963,24 @@ fn within_chart(
                 && (surface.is_periodic_v() || (p.y >= v0 - slack && p.y <= v1 + slack))
         })
     })
+}
+
+/// The colour a `DRAUGHTING_PRE_DEFINED_COLOUR` names: one of the eight the
+/// presentation schema defines, each channel fully on or off; any other name
+/// is no colour.
+fn predefined_colour(name: &str) -> Option<ogeom_doc::Colour> {
+    let (r, g, b) = match name.to_ascii_lowercase().as_str() {
+        "red" => (1.0, 0.0, 0.0),
+        "green" => (0.0, 1.0, 0.0),
+        "blue" => (0.0, 0.0, 1.0),
+        "yellow" => (1.0, 1.0, 0.0),
+        "magenta" => (1.0, 0.0, 1.0),
+        "cyan" => (0.0, 1.0, 1.0),
+        "black" => (0.0, 0.0, 0.0),
+        "white" => (1.0, 1.0, 1.0),
+        _ => return None,
+    };
+    Some(ogeom_doc::Colour::rgb(r, g, b))
 }
 
 /// Every reference in an argument tree, in order.
