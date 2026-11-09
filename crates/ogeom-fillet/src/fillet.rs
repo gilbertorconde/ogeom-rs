@@ -147,7 +147,8 @@ fn consuming(
         let Some(mut built) = rolled else {
             return match crate::consumed_rim::consumed_rim(model, solid, edge, radius, tol)? {
                 Some(rim) => rim_consuming(model, solid, edge, rim, radius, tol),
-                None => Err(refusal),
+                None => crate::consumed_marched::consumed_marched(model, solid, edge, radius, tol)?
+                    .ok_or(refusal),
             };
         };
         crate::support::credit_new_faces(model, solid, edge, &mut built)?;
@@ -196,10 +197,20 @@ fn or_rim_consumed(
                     rim_consuming(model, solid, edge, rim, radius, tol)
                 }
                 None => {
+                    // The tolerances the refused attempt widened stand, as
+                    // they do where the refusal stands.
                     model.keep_widened(mark);
-                    Err(refusal)
+                    crate::consumed_marched::consumed_marched(model, solid, edge, radius, tol)?
+                        .ok_or(refusal)
                 }
             }
+        }
+        // A strip beside a marched seat can leave the edge's own round
+        // nothing to stand on short of a construction refusal.
+        Err(refusal @ OgeomError::NotDone(_)) => {
+            model.keep_widened(mark);
+            crate::consumed_marched::consumed_marched(model, solid, edge, radius, tol)?
+                .ok_or(refusal)
         }
         other => {
             model.keep_widened(mark);

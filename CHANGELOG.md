@@ -37,6 +37,27 @@ bump may break the API and a patch bump may not.
   - Any other open chain (arcs of different curves, or a chain turning
     where its edges meet) is still refused by name.
 
+- **A round on a marched seat takes a narrow strip beside it off whole.**
+  (#719)
+  - A bore's rim on a drum, bevelled 0.5 and then rounded larger from either
+    edge of the bevel, was refused ("the face's boundary enclosed no
+    triangulable region").
+  - The ball now rolls on the faces either side of the strip, along the
+    crossing of their surfaces nearest it, as a round between two faces
+    that share no edge rolls. The strip goes with the corner where it lies
+    wholly in it:
+    - the ball touches both faces past the strip;
+    - no face reaches into its lune at any station;
+    - every point of the strip's mesh stands behind both surfaces, within
+      the strip's edges' tolerances;
+    - no edge but the strip's own and seams comes within the corner's
+      reach of the crossing.
+  - The bevelled rim rounded 1 from the drum's edge or the bore's equals
+    the plain rim rounded 1 within 1e-6 relative (about 2e-8 in 8858.41).
+    A bevel of 1.5 against a ball of 1 is still refused.
+  - It is tried only where the edge's own round is refused, so every
+    request main builds takes main's path unchanged.
+
 - **`fillet_edges_variable` rounds an open curved edge whose ball runs out
   past its ends.** (#716)
   - The law is laid along the edge's own arc length and, as on any open
