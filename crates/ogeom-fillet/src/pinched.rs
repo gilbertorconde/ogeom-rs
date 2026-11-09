@@ -14,14 +14,19 @@
 //! section closes the run exactly: both touch points on the pole, the
 //! ball's centre a radius off it along the normal the hosts share. The band
 //! and wedge are then the open band's, with no cap at a pinched end.
+//!
+//! Under a radius law each station is solved at the law's radius for its
+//! guide parameter, the pole's at the law's radius there: a station's seat
+//! holds its guide parameter, so the law enters only as that one value.
 
+use crate::law::{Profile, RadiusAlong, Ruler};
 use crate::march::{BlendStop, MarchedBlend, Sides, seat_section};
 use crate::support::edge_curve;
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve3d as _, Surface as _, SurfaceGeometry};
 use ogeom_math::{Point, Vector};
-use ogeom_topo::{Model, Shape};
+use ogeom_topo::{Model, Orientation, Shape};
 
 /// Stations across the edge, crowded toward its ends by a cosine spacing,
 /// where a pinched section changes fastest relative to its size.
@@ -63,7 +68,9 @@ fn unit_normal(surface: &SurfaceGeometry, u: f64, v: f64, tol: Tolerances) -> Og
 type Station = (f64, [f64; 4], Point, Point, Point);
 
 /// The fillet of a crease pinched at the ends marked in `pinched`, built as
-/// the open band over the edge's own window.
+/// the open band over the edge's own window. Under `law` the radius follows
+/// it by arc length along the edge from its start, the way it runs, and
+/// `radius` is the law's largest.
 #[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
 pub(crate) fn pinched_fillet(
     model: &mut Model,
@@ -73,15 +80,28 @@ pub(crate) fn pinched_fillet(
     sides: Sides,
     convex: bool,
     radius: f64,
+    law: Option<&Profile>,
     pinched: [bool; 2],
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let (guide, (lo, hi)) = edge_curve(model, edge, tol)?;
     let [(first, _), (second, _)] = hosts;
+    let along = match law {
+        Some(profile) => {
+            let ruler = Ruler::new(guide.clone(), (lo, hi), false, tol)?;
+            let reversed = edge.orientation() == Orientation::Reversed;
+            let origin = if reversed { 1.0 } else { 0.0 };
+            Some(RadiusAlong::new(profile.clone(), ruler, origin, reversed))
+        }
+        None => None,
+    };
+    let radius_at =
+        |t: f64| -> OgeomResult<f64> { along.as_ref().map_or(Ok(radius), |a| Ok(a.at(t, tol)?.0)) };
 
     // One solved section, or `None` where the seat does not converge to
     // two distinct touch points.
     let solve_at = |t: f64, near: [f64; 4]| -> Option<Station> {
+        let radius = radius_at(t).ok()?;
         let x = seat_section(first, second, radius, &guide, sides, t, near, tol).ok()?;
         let p1 = first.point_at(x[0], x[1], tol).ok()?;
         let p2 = second.point_at(x[2], x[3], tol).ok()?;
@@ -157,7 +177,7 @@ pub(crate) fn pinched_fillet(
         let at = guide.point_at(t, tol)?;
         let (n, a) = unit_normal_near(first, at, tol)?;
         let (_, b) = unit_normal_near(second, at, tol)?;
-        let centre = at + n * (f64::from(sides.first) * radius);
+        let centre = at + n * (f64::from(sides.first) * radius_at(t)?);
         Ok((t, [a.0, a.1, b.0, b.1], centre, at, at))
     };
     if pinched[0] {
@@ -185,7 +205,7 @@ pub(crate) fn pinched_fillet(
         blend.touch_first.push(p1);
         blend.touch_second.push(p2);
     }
-    crate::marched::build_open_band(
+    crate::marched::build_held_band_by(
         model,
         solid,
         Some(edge),
@@ -193,8 +213,10 @@ pub(crate) fn pinched_fillet(
         &guide,
         hosts,
         radius,
+        along.is_some(),
         convex,
         pinched,
+        None,
         tol,
     )
 }

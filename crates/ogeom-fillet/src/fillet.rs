@@ -2200,6 +2200,9 @@ fn fillet_edge_variable_own(
 ///   that curve its arcs cover.
 /// - a straight edge along a drum's ruling (a flat or a wall meeting a
 ///   drum, or two drums): marched with the law's radius station by station.
+/// - a seat pinched where its hosts turn tangent at an end (two equal
+///   drums crossing): each station solved at the law's radius for its
+///   place, the band pinching to the pole.
 ///
 /// A law holding one radius all along is [`fillet_edges`]' round.
 ///
