@@ -50,7 +50,12 @@ radius off them either side, cut at the closed forms. Still refused: a
 section whose image runs past the pole row by more than its tolerance ("a
 section through a sphere chart's pole is not resolved"); and a ball
 drilled with its wall 2e-5 of the radius inside the poles along -y ("the
-kept pieces did not close into a shell", not traced). A loop crossing the
+kept pieces did not close into a shell"). There the intersector returns
+the loop round the south pole traced three times round, 18.83 long against
+the loop's 6.30, its chart image crossing the pole row twice: the march's
+closure test misses the start on the first two passes, and the length
+stays inside the four bounding diagonals (306.9) a section is held to, so
+the triple loop is taken as one closed section and bounds no face. A loop crossing the
 sphere's seam within the window that reads a crossing as the seam's end
 vertex, the pole, ends in the chart off the pole row by that window over
 the radius and anywhere along it, the chart's free parameter shrinking to
