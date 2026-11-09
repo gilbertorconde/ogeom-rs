@@ -736,6 +736,12 @@ recorded count per bench, and a gate at a few percent.
 - The intersection walker: six or more unknowns still go to the heap
   solver, `Condition::system_at` allocates on every evaluation, and each
   step corrects from the last point rather than a tangent prediction.
+  Measured, and left alone: the correction evaluating the surface pair
+  into fixed storage, with no vectors per Newton step, takes 3.2 percent
+  fewer user instructions on `boolean_marched` and 0.8 percent on
+  `fillet_marched` (pinned, deterministic), to the same result; under a
+  5 percent bar. The blend's condition evaluates its guide through
+  `derivatives_at`, which allocates as well.
 - One jet call where separate point, first and second derivative calls
   are made: `CurveOnSurface::derivatives_at`, the mesh lift (point then
   normal), and the side probes of mass integration; allocation-free curve
