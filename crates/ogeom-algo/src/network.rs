@@ -1367,6 +1367,26 @@ impl Seeds {
             surfaces.push(surface);
             all_bounds.push([bu, bv]);
         }
+        // A three-sided patch where it meets four-sided ones is seeded so
+        // that its points' parameters glue to its neighbours' as the hold
+        // at that point asks.
+        for mixed in &topo.mixed {
+            for &(p, k) in &mixed.three {
+                if let Some(surface) = mixed_seed(&surfaces, topo, patches, (p, k), tol)? {
+                    if let SurfaceGeometry::BSpline(b) = &surface {
+                        boxes[p] = net_box(
+                            &b.grid()
+                                .points()
+                                .iter()
+                                .map(|w| w.point())
+                                .collect::<Vec<_>>(),
+                        );
+                    }
+                    searches[p] = SurfaceSeeds::over(&surface, 0, tol)?;
+                    surfaces[p] = surface;
+                }
+            }
+        }
         Ok(Self {
             surfaces,
             searches,
@@ -2100,6 +2120,155 @@ fn gamma_row(cross: &[(usize, f64)], slope: &[(usize, f64)], gamma: f64) -> Row 
         *row.entry(s).or_insert(0.0) += gamma * w;
     }
     row.into_iter().filter(|t| t.1 != 0.0).collect()
+}
+
+/// The seed of three-sided patch `p`, its side `k` shrunk to a point where
+/// it meets four-sided patches: its cross derivative along each curve into
+/// the point in the gluing the mixed hold asks,
+/// `D₃(s) = −b₁ s D₄(s) − c₁ s T(s)`, `s` the share of the way from the
+/// point, `D₄` the four-sided seed's own cross derivative into it and `T`
+/// the curve's derivative, `b₁` and `c₁` read where the curve meets the
+/// rim off the rim's own derivative there; across, the cubic Hermite blend
+/// of the two curves and those derivatives, and the rim restored by
+/// `s (rim(r) − H(1, r))`, which leaves the derivatives along the curves
+/// as they are where the rim's are matched. `None` where a curve has no
+/// four-sided seed beside it.
+fn mixed_seed(
+    surfaces: &[SurfaceGeometry],
+    topo: &Topology,
+    patches: &[ChainedPatch],
+    (p, k): (usize, usize),
+    tol: Tolerances,
+) -> OgeomResult<Option<SurfaceGeometry>> {
+    use ogeom_geom::Surface as _;
+    let SurfaceGeometry::BSpline(seed) = &surfaces[p] else {
+        return Ok(None);
+    };
+    let ((ua, ub), (va, vb)) = seed.domain();
+    // `(s, r)`: `s` from the point to the rim, `r` across, as `(u, v)`.
+    let to_uv = |s: f64, r: f64| -> (f64, f64) {
+        let (x, y) = match k {
+            3 => (s, r),
+            1 => (1.0 - s, r),
+            0 => (r, s),
+            _ => (r, 1.0 - s),
+        };
+        ((ub - ua).mul_add(x, ua), (vb - va).mul_add(y, va))
+    };
+    let from_xy = |x: f64, y: f64| -> (f64, f64) {
+        match k {
+            3 => (x, y),
+            1 => (1.0 - x, y),
+            0 => (y, x),
+            _ => (1.0 - y, x),
+        }
+    };
+    // `∂/∂s` and `∂/∂r` of the seed.
+    let derivatives = |s: f64, r: f64| -> OgeomResult<(Point, Vector, Vector)> {
+        let (u, v) = to_uv(s, r);
+        let (at, du, dv) = seed.point_d1_at(u, v, tol)?;
+        let (du, dv) = (du * (ub - ua), dv * (vb - va));
+        Ok(match k {
+            3 => (at, du, dv),
+            1 => (at, -du, dv),
+            0 => (at, dv, du),
+            _ => (at, -dv, du),
+        })
+    };
+    // The sides at `r = 0` and `r = 1`.
+    let sides = if k % 2 == 1 { [0, 2] } else { [3, 1] };
+    let mut cross: Vec<Box<dyn Fn(f64) -> OgeomResult<Vector> + '_>> = Vec::with_capacity(2);
+    for (side_r, &side) in sides.iter().enumerate() {
+        let Some(piece) = patches[p].sides[side].first() else {
+            return Ok(None);
+        };
+        let Some(&(q, _)) = topo.users[piece.curve].iter().find(|&&(q, _)| q != p) else {
+            return Ok(None);
+        };
+        let SurfaceGeometry::BSpline(four) = &surfaces[q] else {
+            return Ok(None);
+        };
+        let r = if side_r == 0 { 0.0 } else { 1.0 };
+        // Which of the four-sided seed's parameters runs across the curve,
+        // read halfway along it, and which way into the seed.
+        let ((qa, qb), (wa, wb)) = four.domain();
+        let half = ogeom_geom::project_on_surface(&surfaces[q], derivatives(0.5, r)?.0, 0, tol)?
+            .parameters;
+        let off = [
+            ((half.0 - qa).abs(), 0, 1.0),
+            ((half.0 - qb).abs(), 0, -1.0),
+            ((half.1 - wa).abs(), 1, 1.0),
+            ((half.1 - wb).abs(), 1, -1.0),
+        ];
+        let Some(&(_, axis, sign)) = off.iter().min_by(|a, b| a.0.total_cmp(&b.0)) else {
+            return Ok(None);
+        };
+        let d_four = move |s: f64| -> OgeomResult<Vector> {
+            let (at, _, _) = derivatives(s, r)?;
+            let (u, v) = ogeom_geom::project_on_surface(&surfaces[q], at, 0, tol)?.parameters;
+            let (u, v) = if axis == 0 {
+                (if sign > 0.0 { qa } else { qb }, v)
+            } else {
+                (u, if sign > 0.0 { wa } else { wb })
+            };
+            let (_, du, dv) = four.point_d1_at(u, v, tol)?;
+            Ok(if axis == 0 {
+                du * ((qb - qa) * sign)
+            } else {
+                dv * ((wb - wa) * sign)
+            })
+        };
+        // `b₁` and `c₁` from the rim's derivative into the patch where the
+        // curve meets it: `−b₁ D₄(1) − c₁ T(1) = ± ∂_r S(1, r)`.
+        let (_, t1, rim) = derivatives(1.0, r)?;
+        let target = if side_r == 0 { rim } else { -rim };
+        let d1 = d_four(1.0)?;
+        let (a, b) = (-d1, -t1);
+        let (aa, ab, bb) = (a.dot(a), a.dot(b), b.dot(b));
+        let det = aa.mul_add(bb, -ab * ab);
+        if det.is_nan() || det <= 0.0 {
+            return Ok(None);
+        }
+        let (at_, bt) = (a.dot(target), b.dot(target));
+        let b1 = bb.mul_add(at_, -ab * bt) / det;
+        let c1 = aa.mul_add(bt, -ab * at_) / det;
+        let into = if side_r == 0 { 1.0 } else { -1.0 };
+        cross.push(Box::new(move |s: f64| -> OgeomResult<Vector> {
+            let (_, t, _) = derivatives(s, r)?;
+            Ok((d_four(s)? * (-b1 * s) - t * (c1 * s)) * into)
+        }));
+    }
+    let hermite = |s: f64, r: f64| -> OgeomResult<Vector> {
+        let (r2, r3) = (r * r, r * r * r);
+        let (h00, h01) = (
+            2.0f64.mul_add(r3, -3.0 * r2) + 1.0,
+            (-2.0f64).mul_add(r3, 3.0 * r2),
+        );
+        let (h10, h11) = (r3 - 2.0 * r2 + r, r3 - r2);
+        let c0 = derivatives(s, 0.0)?.0.to_vector();
+        let c1 = derivatives(s, 1.0)?.0.to_vector();
+        Ok(c0 * h00 + c1 * h01 + cross[0](s)? * h10 + cross[1](s)? * h11)
+    };
+    let surface_at = |s: f64, r: f64| -> OgeomResult<Point> {
+        let rim = derivatives(1.0, r)?.0.to_vector();
+        Ok(Point::ORIGIN + hermite(s, r)? + (rim - hermite(1.0, r)?) * s)
+    };
+    let (ku, kv) = (seed.u_knots().clone(), seed.v_knots().clone());
+    let (nu, nv) = (ku.control_point_count(), kv.control_point_count());
+    let mut net: Vec<Point> = seed.grid().points().iter().map(|w| w.point()).collect();
+    let (xs, ys) = (greville(&ku), greville(&kv));
+    for i in 1..nu - 1 {
+        for j in 1..nv - 1 {
+            let x = (xs[i] - ua) / (ub - ua);
+            let y = (ys[j] - va) / (vb - va);
+            let (s, r) = from_xy(x, y);
+            net[i * nv + j] = surface_at(s, r)?;
+        }
+    }
+    let grid = ControlGrid::new(net, nu, nv)?;
+    Ok(Some(SurfaceGeometry::BSpline(BSplineSurface::new(
+        ku, kv, &grid, tol,
+    )?)))
 }
 
 /// The rows holding the poles `slots` in one plane through the pole `v`,
