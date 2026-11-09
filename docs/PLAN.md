@@ -352,9 +352,13 @@ with the law's radius per station, and an open curved edge whose ball runs
 out past its ends: the law is held at the end's radius past each end, so
 the run-out is the constant round's at that radius. An open chain of arcs of
 one curve (a crease split at a vertex) is that one seat over the window its
-arcs cover. Owed: any other open chain of several edges (the junctions of `fillet_edges` meet bands of one
-radius cap to cap; two bands of different end sections there need the
-re-entrant intersection path). A straight edge along a drum's ruling
+arcs cover. A chain of different seats continuing each other end to end
+(a rounded-rectangle pad's top loop) gives each edge the law over its own
+stretch, stops each band in its end sections and joins the wedges across
+each tangent junction's plane. Owed: a chain whose creases turn where they
+meet (two bands of different end sections there need the re-entrant
+intersection path, or a law pinned per edge with the corner placed first).
+A straight edge along a drum's ruling
 under a law is marched, the exact sweep of `ruled.rs` holding one section
 only; a seat pinched where its hosts turn tangent solves each station and
 its pole at the law's radius there.

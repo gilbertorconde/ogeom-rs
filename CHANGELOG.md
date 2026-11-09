@@ -13,6 +13,22 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fillet_edges_variable` rounds a chain of different seats continuing
+  each other end to end.** (#716)
+  - The top loop of a rounded-rectangle pad, its sides between two planes
+    and its corners' arcs between the top and a drum, as one chain under
+    a law of points that closes round the loop. Each edge takes the law
+    over its own stretch of the run (the law itself there, its value and
+    slope at the stretch's ends), its band stops in its end sections, and
+    the bands' wedges are joined across each tangent junction's plane,
+    where one ball touches the same two points from either side, then
+    applied in one boolean.
+  - A 10 mm block with verticals rounded at 2, its top loop under radii
+    0.5 and 1: 400 contacts on the top and the walls stand within 3.2e-5
+    of the law at their place round the loop, and the volume (961.16)
+    lies between the loop's constant rounds at 1 (958.12) and 0.5
+    (963.74).
+
 - **`fit_network` holds a patch's border tangent to a support, exactly.**
   (#718)
   - `NetworkOptions::across` names held border curves and how their patch

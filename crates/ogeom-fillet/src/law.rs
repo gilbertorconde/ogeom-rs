@@ -176,10 +176,10 @@ impl Profile {
                 return hermite(n - 1, 0, x0, h, s);
             }
         } else {
-            if s <= self.at[0] {
+            if s < self.at[0] {
                 return (self.radius[0], 0.0);
             }
-            if s >= self.at[n - 1] {
+            if s > self.at[n - 1] {
                 return (self.radius[n - 1], 0.0);
             }
         }
@@ -189,6 +189,36 @@ impl Profile {
             .saturating_sub(1)
             .min(n - 2);
         hermite(i, i + 1, self.at[i], self.at[i + 1] - self.at[i], s)
+    }
+
+    /// The law over one stretch of its chain, `from` to `to` (the
+    /// stretch's start and end by fraction, `to` below `from` where the
+    /// stretch runs against the chain), read by the fraction of the
+    /// stretch: an open law of the same radii. Each Hermite piece is
+    /// restricted with its value and slope at the stretch's ends, so the
+    /// window is the law itself there, not a fresh interpolation.
+    pub(crate) fn window(&self, from: f64, to: f64) -> Self {
+        let span = to - from;
+        let (lo, hi) = (from.min(to), from.max(to));
+        let mut nodes: Vec<(f64, f64, f64)> = Vec::new();
+        let mut push = |s: f64| {
+            let (r, m) = self.at(s);
+            nodes.push(((s - from) / span, r, m * span));
+        };
+        push(from);
+        push(to);
+        for &s in &self.at {
+            if s > lo && s < hi {
+                push(s);
+            }
+        }
+        nodes.sort_by(|a, b| a.0.total_cmp(&b.0));
+        Self {
+            at: nodes.iter().map(|n| n.0).collect(),
+            radius: nodes.iter().map(|n| n.1).collect(),
+            slope: nodes.iter().map(|n| n.2).collect(),
+            closed: false,
+        }
     }
 
     /// The largest radius the law reaches: at a given point, since no
@@ -401,5 +431,39 @@ impl RadiusAlong {
 
     pub(crate) fn largest(&self) -> f64 {
         self.profile.largest()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    use super::{Profile, RadiusLaw};
+    use ogeom_core::Tolerances;
+
+    /// A window is the law itself over its stretch, read by the stretch's
+    /// own fraction: forward, against the chain, and up to a closed chain's
+    /// end, where the law wraps.
+    #[test]
+    fn a_window_is_the_law_over_its_stretch() {
+        let tol = Tolerances::millimetres();
+        let law = RadiusLaw::Points(vec![(0.1, 0.5), (0.4, 1.5), (0.7, 0.8)]);
+        let closed = Profile::new(&law, true, tol).unwrap();
+        for (from, to) in [(0.05, 0.55), (0.9, 0.3), (0.65, 1.0), (0.2, 0.25)] {
+            let window = closed.window(from, to);
+            for i in 0..=100 {
+                let u = f64::from(i) / 100.0;
+                let (r, m) = window.at(u);
+                let (want, rate) = closed.at(from + (to - from) * u);
+                assert!(
+                    (r - want).abs() < 1e-12,
+                    "{from}..{to} at {u}: {r} against {want}"
+                );
+                assert!(
+                    (m - rate * (to - from)).abs() < 1e-9,
+                    "{from}..{to} at {u}: slope {m} against {}",
+                    rate * (to - from)
+                );
+            }
+        }
     }
 }
