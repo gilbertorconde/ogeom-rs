@@ -239,18 +239,40 @@ fn slab(m: &mut Model) -> (Shape, Shape, Shape, Shape) {
     (solid, crease, top, wall)
 }
 
-/// The slab's crease rounded at `radius`, and the slab with the crease
-/// first bevelled 0.5 rounded from the bevel's edge on the top face: both
-/// volumes, the second checked, the bevel gone.
-fn slab_rounded(radius: f64) -> (f64, f64) {
+/// The slab's spline crease turns through nothing between its ends, so a
+/// section swept along it takes off its area times the crease's length:
+/// the plain crease rounded at `radius` takes off `r² (1 - π/4) L`.
+fn plain_round(before: f64, radius: f64) -> f64 {
+    use ogeom_geom::Curve3d as _;
+    let curve = spline();
+    let nodes = [
+        (-0.861_136_311_594_052_6, 0.347_854_845_137_453_9),
+        (-0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+        (0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+        (0.861_136_311_594_052_6, 0.347_854_845_137_453_9),
+    ];
+    let mut length = 0.0;
+    for k in 0..256 {
+        let (a, b) = (f64::from(k) / 256.0, f64::from(k + 1) / 256.0);
+        for (x, w) in nodes {
+            let t = (b - a).mul_add(x, a + b) * 0.5;
+            length += w * (b - a) * 0.5 * curve.d1_at(t, T).unwrap().magnitude();
+        }
+    }
+    before - radius * radius * (1.0 - core::f64::consts::FRAC_PI_4) * length
+}
+
+/// The slab with its crease bevelled 0.5, rounded at `radius` from the
+/// bevel's edge nearest `from`: checked, the bevel gone; the volume and the
+/// slab's before the bevel.
+fn slab_rounded(radius: f64, from: [f64; 3]) -> (f64, f64) {
     let mut m = Model::new();
     let (solid, crease, _, _) = slab(&mut m);
-    let plain = fillet_edges(&mut m, &solid, std::slice::from_ref(&crease), radius, T).unwrap();
-    let plain = vol(&m, &plain.shape);
-    let bevelled = chamfer_edges(&mut m, &solid, &[crease], 0.5, T).unwrap().shape;
-    // The top / bevel edge, half a millimetre in from the crease over the
-    // spline's middle.
-    let edge = edge_near(&m, &bevelled, [5.0, 6.0, -1.0]);
+    let before = vol(&m, &solid);
+    let bevelled = chamfer_edges(&mut m, &solid, &[crease], 0.5, T)
+        .unwrap()
+        .shape;
+    let edge = edge_near(&m, &bevelled, from);
     let strip = faces_at(&m, &bevelled, &edge)
         .into_iter()
         .find(|f| {
@@ -272,70 +294,24 @@ fn slab_rounded(radius: f64) -> (f64, f64) {
             .any(|f| f.is_same(&strip)),
         "the bevel is gone"
     );
-    (plain, vol(&m, &built.shape))
+    (before, vol(&m, &built.shape))
 }
 
 #[test]
-fn a_bevelled_open_crease_rounds_as_the_plain_crease() {
-    // A ball of 2 sets back 2 tan(22.5 degrees), 0.83, across the top and
-    // the bevel, past the bevel's own width of 0.71: no round of the
+fn a_bevelled_open_crease_rounds_as_the_plain_crease_from_either_bevel_edge() {
+    // A ball of 2 or 3 sets back `r tan(π/8)`, 0.83 or 1.24, across the top
+    // and the bevel, past the bevel's own width of 0.71: no round of the
     // bevel's edge seats, and the round takes the bevel off whole.
-    let (plain, consumed) = slab_rounded(2.0);
-    close(consumed, plain);
-}
-
-#[test]
-fn zz_open_slab() {
-    for r in [2.0, 3.0] {
-        let mut m = Model::new();
-        let (solid, crease, _, _) = slab(&mut m);
-        let plain = fillet_edges(&mut m, &solid, std::slice::from_ref(&crease), r, T).map(|b| vol(&m, &b.shape));
-        let bevelled = chamfer_edges(&mut m, &solid, &[crease], 0.5, T).unwrap().shape;
-        for (name, p) in [("top", [5.0, 6.0, -1.0]), ("wall", [5.0, 5.5, -0.5])] {
-            let e = edge_near(&m, &bevelled, p);
-            let got = fillet_edges(&mut m, &bevelled, &[e], r, T).map(|b| vol(&m, &b.shape));
-            eprintln!("r {r} {name}: plain {:?} got {:?}", plain.as_ref().map_err(|e| e.to_string()), got.map_err(|e| e.to_string()));
-        }
-    }
-}
-
-/// A slab 6 thick along `y` whose profile in `y = 0` is the half ellipse
-/// of semi-axes 4 along `x` and 3 along `z` over the base `z = 0`: its top
-/// crease the elliptic arc, square to the base at both ends.
-fn elliptic_slab(m: &mut Model) -> (Shape, Shape) {
-    use ogeom_geom::EllipseCurve;
-    use ogeom_math::Ellipse;
-    let frame = Frame::new(Point::ORIGIN, Direction::new(Vector::new(0.0, -1.0, 0.0), T).unwrap(), Direction::X, T).unwrap();
-    let arc: Curve = EllipseCurve::new(Ellipse::new(frame, 4.0, 3.0, T).unwrap()).into();
-    let a = arc.point_at(0.0, T).unwrap();
-    let b = arc.point_at(core::f64::consts::PI, T).unwrap();
-    let va = ogeom_algo::make_vertex(m, a).shape;
-    let vb = ogeom_algo::make_vertex(m, b).shape;
-    let top = ogeom_algo::make_edge_between(m, arc, (0.0, core::f64::consts::PI), &va, &vb, T).unwrap().shape;
-    let base: Curve = LineCurve::new(Axis::new(b, Direction::new(a - b, T).unwrap())).into();
-    let base = ogeom_algo::make_edge_between(m, base, (0.0, a.distance(b)), &vb, &va, T).unwrap().shape;
-    let wire = ogeom_algo::make_wire(m, &[top, base], T).unwrap().shape;
-    let plane = ogeom_geom::PlaneSurface::over(Plane::through(Point::ORIGIN, Direction::Y), (-100.0, 100.0), (-100.0, 100.0)).unwrap();
-    let face = ogeom_algo::make_face(m, plane.into(), &[wire], T).unwrap().shape;
-    let solid = ogeom_algo::make_prism(m, &face, Vector::new(0.0, 6.0, 0.0), T).unwrap().shape;
-    let crease = edge_near(m, &solid, [0.0, 6.0, 3.0]);
-    (solid, crease)
-}
-
-#[test]
-fn zz_ellipse() {
-    let r = 1.5;
-    let mut m = Model::new();
-    let (solid, crease) = elliptic_slab(&mut m);
-    eprintln!("solid vol {}", vol(&m, &solid));
-    let plain = fillet_edges(&mut m, &solid, std::slice::from_ref(&crease), r, T).map(|b| vol(&m, &b.shape));
-    let ch = chamfer_edges(&mut m, &solid, std::slice::from_ref(&crease), 0.3, T).map(|b| b.shape);
-    eprintln!("plain {:?} chamfer {:?}", plain.as_ref().map_err(|e| e.to_string()), ch.as_ref().map(|_| ()).map_err(|e| e.to_string()));
-    if let Ok(ch) = ch {
-        for (name, p) in [("top", [0.0, 6.0, 2.7]), ("wall", [0.0, 5.7, 3.0])] {
-            let e = edge_near(&m, &ch, p);
-            let got = fillet_edges(&mut m, &ch, &[e], r, T).map(|b| (vol(&m, &b.shape), ogeom_algo::check(&m, &b.shape, T).unwrap().is_valid()));
-            eprintln!("{name}: {:?}", got.map_err(|e| e.to_string()));
+    for radius in [2.0, 3.0] {
+        // The top / bevel edge over the spline's middle, and the bevel /
+        // wall edge.
+        for from in [[5.0, 6.0, -1.0], [5.0, 5.5, -0.5]] {
+            let (before, v) = slab_rounded(radius, from);
+            let expected = plain_round(before, radius);
+            assert!(
+                (v - expected).abs() <= 1e-6 * expected,
+                "r {radius} from {from:?}: {v} against {expected}"
+            );
         }
     }
 }

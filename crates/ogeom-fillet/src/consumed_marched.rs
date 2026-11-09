@@ -60,8 +60,7 @@ pub(crate) fn consumed_marched(
         let Some(beyond) = strip_beyond(model, solid, strip, outer)? else {
             continue;
         };
-        let dbg = round_over(model, solid, edge, strip, [outer, &beyond], radius, tol);
-        match dbg {
+        match round_over(model, solid, edge, strip, [outer, &beyond], radius, tol) {
             Ok(Some(built)) => return Ok(Some(built)),
             Ok(None) | Err(OgeomError::Construction(_) | OgeomError::NotDone(_)) => {}
             Err(e) => return Err(e),
@@ -139,7 +138,9 @@ fn round_over(
 ) -> OgeomResult<Option<Built>> {
     let (curve, range) = crate::support::edge_curve(model, edge, tol)?;
     let near = curve.point_at(f64::midpoint(range.0, range.1), tol)?;
-    let hosts = crate::pair_marched::hosts_of(model, outer, radius, tol)?;
+    // The round is checked whole before it is taken, so its lines of contact
+    // may be held to the round's own fit where the tighter one misses.
+    let hosts = crate::pair_marched::hosts_of(model, outer, radius, tol)?.loosened();
     // The ball rolls behind both faces: a convex corner, cut off.
     let seat = crate::pair_marched::pair_seat_near(
         model,
@@ -202,6 +203,9 @@ fn round_over(
         return Ok(None);
     }
     let mut built = crate::pair_marched::apply_to_solid(model, solid, seat, radius, true, tol)?;
+    if !ogeom_algo::check(model, &built.shape, tol)?.is_valid() {
+        return Ok(None);
+    }
     built.history.delete(edge);
     crate::support::credit_new_faces(model, solid, edge, &mut built)?;
     Ok(Some(built))
@@ -232,7 +236,7 @@ fn strip_behind(
             slack = slack.max(t.get());
         }
     }
-    if let Some(p) = mesh.positions.iter().find(|p| !within(**p, slack)) {
+    if mesh.positions.iter().any(|p| !within(*p, slack)) {
         return Ok(false);
     }
     for face in outer {
