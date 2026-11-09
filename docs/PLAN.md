@@ -216,17 +216,24 @@ They refuse (`curved_face_blends_refuse_by_name` in `tests/blends.rs`,
   and a face on a plane along a straight run is cleared of every lune at
   once from the run's two end sections
   (`a_face_blend_rounds_a_bar_whose_far_faces_pass_just_behind_the_ball_s_centre`).
-  The marched path reads the ball's side inside its lune where no face
-  stands in the ball
-  (`a_marched_face_blend_fills_over_an_older_round_just_smaller`), but
-  still asks the whole ball, so a part thinner than its ball is refused
-  there. Owed: the marched seat's lunes, their planes turning along the
-  run. The obstacle: what is read of a face is its distance from a
-  centre, while a lune is a moving, turning sector of the ball. Clearing a
-  face of every lune between two stations needs that face's distance from
-  the sector, and a bound on how far the sector moves between stations
-  (the centre's travel and the radius times the turn of its plane), to
-  halve on as the ball's distance is halved. Neither exists yet. An older marched round just smaller than the ball (within a few
+  The marched path, where the section turns along the run, reads the
+  lunes too (`between.rs`, `TurningLunes`;
+  `a_marched_face_blend_rounds_a_part_thinner_than_its_ball_where_the_lune_stays_inside`,
+  `a_marched_face_blend_fills_over_an_older_round_just_smaller`): each
+  lune, from the centre to the contacts in the section through them, is
+  cut into cells of radius, of the way between the contacts' directions
+  and of the run between two stations. A cell's points lie within half
+  its radial stretch and its outer radius times its half-angle of its
+  middle point in the middle section, and move over its stretch of the
+  run by at most the centre's travel and the outer radius times the turn
+  of the direction, each contact's and the centre's travel bounded by
+  their arcs' chord and twice the height (the bound the centre's travel
+  is read by between stations). A cell whose middle stands farther from
+  the face is clear; else it is halved until the face's nearest point is
+  placed on some station's section plane by the secant and found inside
+  its sector. Owed: the travel bound assumes each arc between two
+  stations is convex, as the centre's already does; a proof needs the
+  march's step control to bound the arcs' curvature. An older marched round just smaller than the ball (within a few
   hundredths of it) is fitted to 2e-4 and reaches into the ball by a few
   micrometres beside a contact, where its border runs within its own
   tolerance of the face; the blend is refused there, as the fitted round

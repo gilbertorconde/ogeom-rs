@@ -1776,13 +1776,14 @@ fn face_inside_run(
     }
     let reach = step.mul_add(3.0, tol.confusion());
     let params = stations.clone();
-    let centre = |t: f64| -> OgeomResult<Point> {
+    // The ball's centre and its two contacts at a station.
+    let section = |t: f64| -> OgeomResult<[Point; 3]> {
         let k = (0..params.len())
             .min_by(|&j, &k| (params[j] - t).abs().total_cmp(&(params[k] - t).abs()))
             .unwrap_or(0);
         let i = index(k);
         if (params[k] - t).abs() <= tol.parametric() {
-            return Ok(blend.spine[i]);
+            return Ok([blend.spine[i], blend.touch_first[i], blend.touch_second[i]]);
         }
         let near = [
             blend.on_first[i].0,
@@ -1815,8 +1816,9 @@ fn face_inside_run(
                  clears the solid's other faces there cannot be read"
             );
         }
-        Ok(c)
+        Ok([c, p, second.point_at(x[2], x[3], tol)?])
     };
+    let centre = |t: f64| -> OgeomResult<Point> { Ok(section(t)?[0]) };
     let (lines, ends) = if closed {
         (vec![(guide.clone(), (lo, hi))], Vec::new())
     } else {
@@ -1831,13 +1833,23 @@ fn face_inside_run(
         }
         (vec![(crease, range)], ends)
     };
+    // The section turns along the run: a face inside a ball counts only
+    // inside its lune, read cell by cell over the turning sectors.
+    let lunes = crate::between::TurningLunes {
+        radius,
+        stations: &params,
+        section: &section,
+    };
+    let search = |_: &Model, _: &Shape, measure: &ogeom_algo::PointDistance, _: Option<Point>| {
+        lunes.face_inside(measure, tol)
+    };
     let rolling = crate::between::Rolling {
         radius,
         stations,
         centre: &centre,
         lines,
         ends,
-        lunes: None,
+        lunes: Some(&search),
     };
     crate::between::face_inside_balls(model, solid, faces, &rolling, tol)
 }

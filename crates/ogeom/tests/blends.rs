@@ -1014,6 +1014,112 @@ fn a_marched_face_blend_fills_over_an_older_round_just_smaller() {
     );
 }
 
+/// The solid common to a cylinder of radius 3 along x and one of radius 2
+/// along z: the narrow one's wall meets the wide one's top in a closed
+/// convex loop, the seat has no closed form, and the ball of radius 0.6
+/// blending the two is marched round it. A bore of radius 1.1 along z
+/// crosses the back of every ball: each centre stands 2 - 0.6 from the z
+/// axis and the ball reaches within 0.8 of it, while every point of the
+/// lune, the part of the ball between its centre and its arc, stands at
+/// least 1.4 from it (both contacts' directions lean away from the axis).
+/// The crease is first rounded at 0.2, inside the corner the blend takes
+/// off. That corner lies outside the bore, so the bored solid's blend is
+/// the whole solid's blend less the bore:
+/// `V(blend bored) = V(blend whole) - (V(whole) - V(bored))`, to the
+/// bands' fit.
+#[test]
+fn a_marched_face_blend_rounds_a_part_thinner_than_its_ball_where_the_lune_stays_inside() {
+    let (wide, narrow, bore, r) = (3.0_f64, 2.0_f64, 1.1_f64, 0.6_f64);
+    let mut model = Model::new();
+    let along = |model: &mut Model, at: Point, axis: Direction, x: Direction, radius: f64| {
+        let frame = Frame::new(at, axis, x, T).unwrap();
+        ogeom::algo::make_cylinder(model, frame, radius, 12.0, T)
+            .unwrap()
+            .shape
+    };
+    let a = along(
+        &mut model,
+        Point::new(-6.0, 0.0, 0.0),
+        Direction::X,
+        Direction::Y,
+        wide,
+    );
+    let b = along(
+        &mut model,
+        Point::new(0.0, 0.0, -6.0),
+        Direction::Z,
+        Direction::X,
+        narrow,
+    );
+    let whole = ogeom::boolean::common(&mut model, &a, &b, T).unwrap().shape;
+    let hole = along(
+        &mut model,
+        Point::new(0.0, 0.0, -6.0),
+        Direction::Z,
+        Direction::X,
+        bore,
+    );
+    let bored = ogeom::boolean::cut(&mut model, &whole, &hole, T)
+        .unwrap()
+        .shape;
+    // The narrow wall, and the wide wall's top.
+    let walls = |model: &Model, shape: &Shape| {
+        let on = |radius: f64| {
+            faces_on(model, shape, |s| {
+                matches!(s, ogeom::geom::SurfaceGeometry::Cylinder(c)
+                    if (c.cylinder().radius() - radius).abs() < 1e-12)
+            })
+        };
+        let side = on(narrow);
+        assert_eq!(side.len(), 1, "one narrow wall");
+        let top: Vec<Shape> = on(wide)
+            .into_iter()
+            .filter(|f| ogeom::algo::face_normal(model, f, T).unwrap().1.z > 0.5)
+            .collect();
+        assert_eq!(top.len(), 1, "one top");
+        (top[0].clone(), side[0].clone())
+    };
+    let mut blended = Vec::new();
+    for part in [&whole, &bored] {
+        // The crease rounded first at 0.2, so the two walls share no edge
+        // and the blend is the marched seat between the faces.
+        let (top, side) = walls(&model, part);
+        let crease = shared_edges(&model, &top, &side);
+        let part = &ogeom::fillet::fillet_edges(&mut model, part, &crease, 0.2, T)
+            .unwrap()
+            .shape;
+        let (top, side) = walls(&model, part);
+        assert!(!share_an_edge(&model, &top, &side));
+        let shape = ogeom::fillet::blend_faces(&mut model, part, &top, &side, r, T)
+            .unwrap_or_else(|e| panic!("{e}"))
+            .shape;
+        let diagnosis = ogeom::algo::check(&model, &shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        blended.push(shape);
+    }
+    let band_area: f64 = faces_on(&model, &blended[1], |s| {
+        matches!(s, ogeom::geom::SurfaceGeometry::BSpline(_))
+    })
+    .iter()
+    .map(|f| {
+        ogeom::algo::surface_properties(&model, f, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    })
+    .sum();
+    assert!(band_area > 0.0, "a fitted band");
+    let cut_away = exact_volume(&model, &whole) - exact_volume(&model, &bored);
+    let want = exact_volume(&model, &blended[0]) - cut_away;
+    let got = exact_volume(&model, &blended[1]);
+    let slack = 2e-4 * band_area;
+    eprintln!("the bored blend {got} against {want}, slack {slack:.3e}");
+    assert!(
+        (got - want).abs() < slack,
+        "{got} against {want}, off {:.3e} against {slack:.3e}",
+        got - want
+    );
+}
+
 /// A boss whose wall is a B-spline surface (the same drum, restated) on a
 /// block: the seat has no closed form, so the ball is marched round the
 /// foot and the round is a fitted band. It must ride the wall and the top
