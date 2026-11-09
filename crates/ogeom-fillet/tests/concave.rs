@@ -1582,3 +1582,90 @@ fn a_round_takes_a_flat_in_an_inside_corner_into_its_fill() {
     });
     assert!(cylinder, "the round is not the cylinder of its radius");
 }
+
+/// The staircase of `a_round_rests_on_the_lower_far_edge_of_a_staircase`,
+/// built long and cut to the slab between two parallel planes slanted 20
+/// degrees about `z`, `y = k x` and `y = 20 + k x`: its ends are not square
+/// to the seam. Every line along the seam between the planes is 20 long,
+/// so the fill, the section prism cut by the end planes, adds the section's
+/// area times 20, and every ball over the run, its ends straddling the
+/// slanted end faces, stands clear of the result.
+#[test]
+fn a_stepped_round_ends_on_faces_slanted_to_it() {
+    use ogeom_math::{Direction, Vector};
+    let k = 20.0_f64.to_radians().tan();
+    let block = |model: &mut ogeom_topo::Model, x: f64, z: f64, w: f64, h: f64| {
+        let at = Frame::new(Point::new(x, -20.0, z), Direction::Z, Direction::X, T).unwrap();
+        ogeom_algo::make_box(model, at, (w, 60.0, h), T)
+            .unwrap()
+            .shape
+    };
+    let radius = 6.0;
+    let mut model = ogeom_topo::Model::new();
+    let mut solid = block(&mut model, 0.0, -5.0, 30.0, 5.0);
+    for (w, h) in [(10.0, 6.0), (9.0, 7.0), (8.0, 20.0)] {
+        let part = block(&mut model, 0.0, 0.0, w, h);
+        solid = ogeom_bool::fuse(&mut model, &solid, &part, T)
+            .unwrap()
+            .shape;
+    }
+    // The half-spaces past each slanted end, boxes turned about z.
+    let along = Direction::new(Vector::new(1.0, k, 0.0), T).unwrap();
+    let across = Vector::new(-k, 1.0, 0.0) * (1.0 / k.hypot(1.0));
+    for (through, side) in [(0.0, -1.0), (20.0, 1.0)] {
+        let origin = Point::new(0.0, through, -50.0)
+            + along.vector() * -100.0
+            + across * if side < 0.0 { -100.0 } else { 0.0 };
+        let frame = Frame::new(origin, Direction::Z, along, T).unwrap();
+        let cutter = ogeom_algo::make_box(&mut model, frame, (200.0, 100.0, 100.0), T)
+            .unwrap()
+            .shape;
+        solid = ogeom_bool::cut(&mut model, &solid, &cutter, T)
+            .unwrap()
+            .shape;
+    }
+    let foot = explore(&model, &solid, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(&model, e).unwrap().unwrap();
+            [a, b].iter().all(|v| {
+                let p = model
+                    .node(v)
+                    .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                    .unwrap();
+                (p.x - 8.0).abs() < 1e-9 && (p.z - 7.0).abs() < 1e-9
+            })
+        })
+        .expect("the wall's foot on the upper step");
+    let before = volume(&model, &solid);
+    let rounded = ogeom_fillet::fillet_edge(&mut model, &solid, &foot, radius, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let (cx, cz) = (14.0, 6.0 + 20.0f64.sqrt());
+    let ring = [(8.0, 7.0), (8.0, cz), (10.0, 6.0), (9.0, 6.0), (9.0, 7.0)];
+    let polygon = (0..ring.len())
+        .map(|i| {
+            let (p, q) = (ring[i], ring[(i + 1) % ring.len()]);
+            p.0 * q.1 - q.0 * p.1
+        })
+        .sum::<f64>()
+        .abs()
+        / 2.0;
+    let angle = (((8.0 - cx) * (10.0 - cx)) / (radius * radius)).acos();
+    let segment = radius * radius * (angle - angle.sin()) / 2.0;
+    let want = (polygon - segment) * 20.0;
+    let got = volume(&model, &rounded.shape) - before;
+    eprintln!("slanted stepped round added {got} against {want}");
+    assert!(
+        (got - want).abs() <= want * 1e-6,
+        "the round added {got} against {want}"
+    );
+    let boundary = ogeom_algo::PointDistance::of(&model, &rounded.shape, T).unwrap();
+    for i in 0..=40 {
+        let y = k * cx + 20.0 * f64::from(i) / 40.0;
+        let c = Point::new(cx, y, cz);
+        let (d, _) = boundary.nearest(c, T).unwrap();
+        assert!(d >= radius - 1e-9, "a ball at {c:?} is {d} from the solid");
+    }
+}

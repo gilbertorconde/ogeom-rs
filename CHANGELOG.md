@@ -13,6 +13,25 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A stepped concave round ends on faces slanted to its seam.**
+  - A round resting beyond the narrow face beside a concave seam (a wall on
+    a staircase, a flat in an inside corner) was taken only where the seam
+    ended on faces square to it; with slanted ends it was refused ("the
+    ball runs past that edge's end").
+  - Each end of the seam may now lie on any planar face it leaves, every
+    line of the section running from one end plane to the other. The
+    fill is the section prism over the span the section reaches, cut by
+    the end planes.
+  - Every ball over that span is cleared of each planar face by the face's
+    least distance from the centre's segment, read in closed form: to the
+    face's sides, to the segment's ends whose feet land in it, or none
+    where the segment pierces it. This replaces reading the run in halved
+    intervals, so a face a ball touches exactly (an end face where the
+    touch line meets it) is cleared.
+  - The deep staircase cut to a slab between planes slanted 20 degrees, at
+    r 6, adds 34.98615499551 against the closed form 34.98615499551; the
+    square-ended rounds are unchanged to the bit.
+
 - **A concave round rests on what lies beyond the narrow face beside it:
   the far edge of a strip further on, or the face the strips run into.**
   (Part of #720)

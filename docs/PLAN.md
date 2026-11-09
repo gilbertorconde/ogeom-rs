@@ -211,10 +211,14 @@ face is a planar strip whose far edge turns the same way as the edge
 either side of the strip and, where the strip lies wholly in the corner
 it takes off, the strip goes with the corner (`consumed.rs`). The concave
 mirror (a flat in an inside corner) rounds where the strips are planes
-whose edges run parallel to the seam over its length and end on faces
-square to it: the ball touches the faces either side, and the fill is the
-prism of one section over the strips (`stepped.rs`). Owed there: ends not
-square to the edge, on both sides. Where the far edge turns the other way (a concave seam where two
+whose edges run parallel to the seam over its length and end on planar
+faces, square to it or slanted: the ball touches the faces either side,
+and the fill is the prism of one section over the strips, cut by the end
+planes (`stepped.rs`). Owed there: the convex seat's ends not square to
+the edge (`consumed.rs` takes its caps flush with ends square to the line
+its faces' planes meet on); slanted, the corner it takes off runs past
+the end face on one side, and the cut's caps need the end planes, as the
+concave fill's do. Where the far edge turns the other way (a concave seam where two
 solids are fused at a slant), the ball touches the other face and rests
 on the far edge, its centre on the ellipse where the plane a radius off
 that face meets the cylinder a radius about the edge, and where it rests
@@ -224,9 +228,13 @@ there by the end ball, lies behind the plane through that contact square
 to the ball's radius and is clear of every ball. Where the ball reaches
 the far edge of a strip beyond the narrow face (a wall on a staircase with
 a deep drop past its lower step, #720), and every strip between is a plane
-whose far edge runs parallel to the seam over its length, ending on faces
-square to it, the round is the cylinder about its centre's line and the
-fill the prism of one section fused on over the strips (`stepped.rs`).
+whose far edge runs parallel to the seam over its length, ending on two
+planar faces square to it or slanted, the round is the cylinder about its
+centre's line and the fill the prism of one section, cut by the end
+planes and fused on over the strips (`stepped.rs`). Every ball over the
+span is cleared of each planar face by its least distance from the
+centre's segment, in closed form, so the end faces the end balls touch are
+cleared exactly.
 A ball that comes down on the plane face the strips run into (the floor
 under a shallow staircase) touches it and the face it touches, the steps
 going into the fill. Owed there: such holds where the strips' edges are
