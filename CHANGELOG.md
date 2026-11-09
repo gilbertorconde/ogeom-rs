@@ -114,6 +114,33 @@ bump may break the API and a patch bump may not.
     section by Pappus within 1e-6; so does the rim of a spherical pocket in
     a block, its material outside the sphere.
 
+- **A sketch lays onto a curved face conformally, its stretch spread over
+  the whole sheet: `SheetMethod::LeastDistortion { resolution }`.** (#729)
+  - The sheet is the conformal flattening of the geodesic disc it covers,
+    stretching nothing along the disc's rim, scaled to keep the disc's area.
+    It is unique once the origin and the sheet's `+x` are fixed. On a sphere
+    it is the stereographic projection from the origin's antipode.
+  - It is solved on a polar mesh of the disc whose vertices land on the
+    surface exactly. One Poisson problem with the cotangent Laplacian gives
+    the scale's logarithm, held to zero on the rim. The rim is laid flat from
+    its lengths and turns, and the inside is the rim's harmonic extension.
+  - The rings double until two meshes agree within `resolution`. The map
+    back is a polynomial whose miss is measured at every vertex and
+    centroid. Carried curves are smooth and land on the surface exactly.
+  - `SurfaceSheet::flattening_error` reports the two together. It is an
+    estimate, not a bound: it bounds the departure from the smooth map
+    only if each doubling at least halves it. That is measured, not proved.
+    From 8 to 64 rings the moves shrank by 3.8 to 4.0 per doubling on a
+    sphere of radius 10 (7.9e-3, 2.1e-3, 5.2e-4, 1.3e-4) and on a torus
+    20/5. On the sphere the estimate is 5.9e-4 for 1e-3 asked.
+  - It is conformal, not area-keeping: lengths stretch alike in every
+    direction at a point, but by 0.968 to 1.031 over a sphere's sheet of
+    reach 5.
+  - The scaled stereographic constant varies by 2.8e-4 over the sheet. A
+    6 × 4 rectangle covers 25.0716 against the projection's closed form of
+    25.0691.
+  - A plane, a cylinder and a cone keep their exact development.
+
 - **Chamfers bevel a rim where a cone meets its cap, in all three
   spellings.** (#711)
   - The wall's leg runs its distance along the cone's slant, and the bevel is
@@ -606,6 +633,8 @@ bump may break the API and a patch bump may not.
     the same to the bit there and on every part of `mesh_corpus`, and a
     mesh of one piece costs the same. `ogeom-bench` gains
     `mesh_to_solid_pieces`.
+
+- `SheetMethod` is no longer `Eq`: its new variant carries a length. (#729)
 
 - **`refine_solid` measures a converted body's volume with less repeated
   work, to the same result.** (#706)
