@@ -1461,3 +1461,45 @@ fn a_ball_drilled_with_a_seam_piece_beside_its_pole_states_its_charts() {
     let wall = 4.0 * (1.0 - 1e-5);
     ogeom_bool::work::unturned(|| drilled(Vector::new(0.0, -wall, 0.0), 4.0)).unwrap();
 }
+
+/// Left on the ball's own chart, a drill whose wall stands two
+/// hundred-thousandths of its radius off both poles, outside the fit's
+/// tolerance. The loop round the north pole crosses the sphere's seam
+/// 1.9e-5 from the pole, and the paving reads that crossing as the seam's
+/// end vertex there, the pole. In the chart the section's end stood 1.9e-6
+/// rad off the pole row and 1.5e-4 along it from the seam's corner, the
+/// chart's free parameter shrinking to nothing at the pole: welded to
+/// nothing, it dangled, and the cap inside the loop was not formed. Carried
+/// onto the pole's line, where the pole is cut for it, the loop closes and
+/// the ball cuts at the closed forms.
+#[test]
+fn a_ball_drilled_with_a_loop_crossing_its_seam_beside_its_pole_cuts() {
+    let wall = 1.0 + 2e-5;
+    ogeom_bool::work::unturned(|| drilled(Vector::new(wall, 0.0, 0.0), 1.0)).unwrap();
+}
+
+/// The drill of
+/// [`a_ball_drilled_with_a_loop_crossing_its_seam_beside_its_pole_cuts`]
+/// in three directions, its wall two hundred-thousandths of its radius off
+/// the poles either side: each placement whose loop crosses the seam
+/// beside a pole cuts at the closed forms. Along -y inside the poles it is
+/// still refused (see docs/PLAN.md).
+#[test]
+#[ignore = "heavy"]
+fn drills_two_hundred_thousandths_off_both_poles_of_the_balls_own_chart() {
+    let mut failures = Vec::new();
+    for (dx, dy, off) in [
+        (0.0, -1.0, 2e-5),
+        (1.0, 0.0, 2e-5),
+        (1.0, 0.0, -2e-5),
+        (0.6, -0.8, 2e-5),
+        (0.6, -0.8, -2e-5),
+    ] {
+        let wall = 1.0 + off;
+        let offset = Vector::new(dx * wall, dy * wall, 0.0);
+        if let Err(e) = ogeom_bool::work::unturned(|| drilled(offset, 1.0)) {
+            failures.push(format!("({dx}, {dy}) at {wall}: {e}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

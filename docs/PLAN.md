@@ -49,19 +49,14 @@ them, and a ball drilled with it a hundred-thousandth to a hundredth of the
 radius off them either side, cut at the closed forms. Still refused: a
 section whose image runs past the pole row by more than its tolerance ("a
 section through a sphere chart's pole is not resolved"); and a ball
-drilled with its wall 2e-5 of the radius off the poles, outside the fit's
-tolerance of 1.1e-5, in two of three directions on one side and one on the
-other ("the kept pieces did not close into a shell", as on 0.17): the
-loop round the north pole passes 2e-6 rad off the chart's pole row, and
-the sphere's cap inside it is not formed, its section pieces left open
-round it. The sphere face's node snap is 1e-4 in its chart, a length in
-space taken as one in the chart because the chart shrinks along the pole
-row: there the loop's piece ends 1.9e-6 rad (1.9e-5 in space, past the
-section's 1.1e-5) off the pole row, is welded onto it, and the loop is
-pinched to the row. Across the parallels a chart radian is the sphere's
-radius, 10 here, so the weld reaches ten times the doubt it stands for.
-Resolving it needs the arrangement's weld read in space, or a snap per
-chart direction, where one scalar snap stands for both. "A branch
+drilled with its wall 2e-5 of the radius inside the poles along -y ("the
+kept pieces did not close into a shell", not traced). A loop crossing the
+sphere's seam within the window that reads a crossing as the seam's end
+vertex, the pole, ends in the chart off the pole row by that window over
+the radius and anywhere along it, the chart's free parameter shrinking to
+nothing there; the end is carried onto the pole's line at its foot, held to
+the line, and the pole is cut for it. At 2e-5 off, five of the six
+placements cut that way. "A branch
 passing beside a chart's pole fits nothing yet" stands where both fits
 miss. Only spheres' poles are measured; a patch's collapsed side takes the
 same path untested.

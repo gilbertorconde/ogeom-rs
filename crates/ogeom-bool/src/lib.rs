@@ -11974,6 +11974,44 @@ fn general_fuse_as(
                 sag,
             });
         }
+        // A section's end the paving read at a pole (its crossing within
+        // the window that reads a crossing as an edge's end vertex, at the
+        // pole vertex of a seam) stands beside the pole in space by at most
+        // that window, but in the chart that can be anywhere along the
+        // pole's line, the chart's free parameter shrinking to nothing
+        // there: off the pole row by the window over the radius, and along
+        // it by any amount, past the line's end where it crosses the seam
+        // beside the pole. It is the pole, and is carried onto the pole's
+        // line at its foot, held to the line (every point of which is the
+        // pole), where the pole is cut for it below.
+        for strand in &mut strands {
+            let Tag::Section { section, .. } = strand.tag else {
+                continue;
+            };
+            let s = &sections[section];
+            let reach = tol.confusion().max(s.tolerance * 2.0);
+            let window = (reach + honest(s.tolerance, tol)).max(tol.confusion() * 1e2);
+            let last = strand.polyline.len() - 1;
+            for end in [0, last] {
+                let at = strand.polyline[end];
+                let Ok(q) = face.surface.point_at(at.x, at.y, tol) else {
+                    continue;
+                };
+                for pole in &face.poles {
+                    let PlanarCurve::Line(line) = &pole.pcurve else {
+                        continue;
+                    };
+                    if q.distance(pole.point) > window {
+                        continue;
+                    }
+                    let axis = line.axis();
+                    let along = (at - axis.location)
+                        .dot(axis.direction.vector())
+                        .clamp(pole.prange.0, pole.prange.1);
+                    strand.polyline[end] = axis.point_at(along);
+                }
+            }
+        }
         // The poles, after the sections, because a section can end *on*
         // a pole (a plane through a ball's axis cuts it exactly there),
         // and the pole has to be cut where that happens or the two meet
