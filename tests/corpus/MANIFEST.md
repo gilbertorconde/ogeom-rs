@@ -541,3 +541,16 @@ bottom cap's frame facing down and turned 30 degrees so its circle runs the
 other way round from its edge's and a twelfth of a turn on. The reproducer
 for pcurves read without the file's units. Its volume is π·25.4²·50.8 mm³.
 This repository's own licence (LGPL-2.1-only).
+
+## kidney_pocket_floor_loop.ogeom
+
+One solid in this kernel's native format, as an application's pocket
+makes it (#723): a 30 x 30 x 10 block with a kidney-shaped pocket 5 deep,
+an annular sector of radii 6 and 12 over 120 degrees about (15, 8) with
+its ends rounded by radius-3 arcs. The pocket floor's boundary is a
+tangent loop of four arcs. Rounding it at r 1 builds each end arc's band
+as a torus that touches the outer and the inner wall each at a single
+point, where the arcs meet: an isolated touch whose curvatures differ by
+exactly a quarter of their larger difference on the outer wall. The
+reproducer for marching from seeds beside such a touch: each trace ran
+out of points within 2e-5 of it, and the rounding took 30 s.

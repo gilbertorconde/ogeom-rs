@@ -2459,3 +2459,66 @@ fn a_pocket_whose_floor_leans_a_hair_off_the_floor_cuts() {
         part - prism
     );
 }
+
+/// The kidney pocket's floor and the four arcs of its boundary, a tangent
+/// loop: see `kidney_pocket_floor_loop.ogeom` in the corpus manifest.
+fn kidney_floor() -> (
+    ogeom::topo::Model,
+    ogeom::topo::Shape,
+    Vec<ogeom::topo::Shape>,
+) {
+    let mut model = ogeom::topo::Model::new();
+    let text = corpus("kidney_pocket_floor_loop.ogeom");
+    let solid = ogeom::io::native::read_into(&mut model, &text)
+        .unwrap()
+        .shapes
+        .remove(0);
+    let floor = explore_unique(&model, &solid, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let b = ogeom::algo::shape_bounds(&model, f, T).unwrap();
+            (b.centre().unwrap().z - 5.0).abs() < 1e-3 && b.size().z < 1e-2
+        })
+        .unwrap();
+    let edges = explore_unique(&model, &floor, ShapeType::Edge).unwrap();
+    assert_eq!(edges.len(), 4);
+    (model, solid, edges)
+}
+
+/// The kidney pocket's floor rounded at r 1 all round: the loop's band
+/// adds 11.834, to a solid of 8304.9759153466, as each arc's band does
+/// alone.
+#[test]
+fn a_kidney_pocket_floor_loop_rounds_to_its_volume() {
+    let (mut model, solid, edges) = kidney_floor();
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &solid, &edges, 1.0, T).unwrap();
+    let diagnosis = ogeom::algo::check(&model, &rounded.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let fine = ogeom::mesh::Deflection {
+        chord: 1e-4,
+        ..ogeom::mesh::Deflection::default()
+    };
+    let volume = ogeom::algo::volume_properties(&model, &rounded.shape, fine, T)
+        .unwrap()
+        .mass;
+    assert!(
+        (volume - 8304.9759153466).abs() < 1e-6,
+        "rounded to {volume}"
+    );
+}
+
+/// The same rounding in well under a second where it took 30. Each end
+/// arc's band touches both pocket walls at isolated points, and every
+/// seed beside such a touch was traced until it ran out of points; such
+/// a touch is now decided once.
+#[test]
+#[ignore = "heavy"]
+fn a_kidney_pocket_floor_loop_rounds_in_time() {
+    let (mut model, solid, edges) = kidney_floor();
+    let started = ogeom::core::clock::Instant::now();
+    ogeom::fillet::fillet_edges(&mut model, &solid, &edges, 1.0, T).unwrap();
+    let took = started.elapsed();
+    eprintln!("kidney loop rounded in {took:?}");
+    assert!(took < std::time::Duration::from_secs(13), "took {took:?}");
+}

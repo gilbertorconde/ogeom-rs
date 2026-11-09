@@ -194,6 +194,235 @@ fn contact_direction(ja: &Jet, jb: &Jet, previous: Option<Vector>) -> Option<(Ve
     Some((direction, bend))
 }
 
+/// The two eigenvalues of the difference of the second fundamental forms
+/// at a contact, the second surface's normal turned to agree with the
+/// first's, in the common tangent plane: the smaller in size first, with a
+/// unit tangent along its eigenvector, then the larger with one along its.
+fn form_difference(ja: &Jet, jb: &Jet) -> Option<[(f64, Vector); 2]> {
+    let n = ja.n;
+    let (nb, _) = aligned(ja, jb);
+    let flat_u = ja.du - n * n.dot(ja.du);
+    let e1 = flat_u * (1.0 / flat_u.magnitude());
+    if !e1.x.is_finite() {
+        return None;
+    }
+    let e2 = n.cross(e1);
+    let fa = ja.second_form(n, e1, e2)?;
+    let fb = jb.second_form(nb, e1, e2)?;
+    let (p, q, r) = (fa[0] - fb[0], fa[1] - fb[1], fa[2] - fb[2]);
+    let half_sum = f64::midpoint(p, r);
+    let radius = ((p - r) * 0.5).hypot(q);
+    let (low, high) = (half_sum - radius, half_sum + radius);
+    let (small, large) = if low.abs() <= high.abs() {
+        (low, high)
+    } else {
+        (high, low)
+    };
+    let along = |value: f64| -> Option<Vector> {
+        let first = (q, value - p);
+        let second = (value - r, q);
+        let (x, y) = if first.0.hypot(first.1) >= second.0.hypot(second.1) {
+            first
+        } else {
+            second
+        };
+        let m = x.hypot(y);
+        (m > f64::MIN_POSITIVE).then(|| e1 * (x / m) + e2 * (y / m))
+    };
+    let weak = along(small)?;
+    Some([(small, weak), (large, n.cross(weak))])
+}
+
+/// Bounds on a surface near a point: its largest principal curvature, and
+/// how fast its shape operator, read as a symmetric map of space that is
+/// null along the normal, changes per unit length moved along it, both
+/// over the part within `within` of `near`. `None` for a surface with no
+/// closed form for them, or where the part reaches an axis or a torus's
+/// inner rim.
+///
+/// The shape operator is `Σ kᵢ eᵢ eᵢᵀ` over the principal curvatures and
+/// directions. Moving along a unit direction `α t₁ + β t₂` it changes by
+/// `α A + β B`, its rates along two orthogonal directions, which is at most
+/// `√(‖A‖² + ‖B‖²)` in norm.
+/// - A cylinder or a sphere of radius `R`: along a circle the direction
+///   round it turns as `ċ = −n/R` and the operator changes by
+///   `−(n cᵀ + c nᵀ)/R²`, of norm `1/R²`; along a cylinder's axis by
+///   nothing.
+/// - A cone of half angle `α` at a distance `ρ` from its axis bends
+///   `k = cos α/ρ` round it: along a generator the frame holds and `k`
+///   changes at `cos α sin α/ρ²`; round the axis `k` holds and the
+///   operator changes by `k/ρ`. Together `cos α √(1 + sin² α)/ρ²`.
+/// - A torus of radii `R > r` at tube angle `φ`, `ρ = R + r cos φ` from
+///   its axis, bends `1/r` along the meridian `m` and `k = cos φ/ρ` along
+///   the parallel `c`. Along the meridian the operator changes by
+///   `k′ c cᵀ − (n mᵀ + m nᵀ)/r²` with `|k′| = R |sin φ|/(r ρ²)`, of norm
+///   at most `max(1/r², R/(r ρ²))`; along the parallel by
+///   `(sin φ/ρ)(k − 1/r)(m cᵀ + c mᵀ) − k²(n cᵀ + c nᵀ)`, of norm at most
+///   `√(((1/r + 1/ρ)/ρ)² + 1/ρ⁴)`.
+fn shape_bounds(surface: &SurfaceGeometry, near: Point, within: f64) -> Option<(f64, f64)> {
+    let from_axis = |frame: ogeom_math::Frame| {
+        let d = near - frame.origin();
+        let z = frame.z().vector();
+        (d - z * d.dot(z)).magnitude()
+    };
+    match surface {
+        SurfaceGeometry::Plane(_) => Some((0.0, 0.0)),
+        SurfaceGeometry::Sphere(s) => {
+            let k = 1.0 / s.sphere().radius();
+            Some((k, k * k))
+        }
+        SurfaceGeometry::Cylinder(c) => {
+            let k = 1.0 / c.cylinder().radius();
+            Some((k, k * k))
+        }
+        SurfaceGeometry::Cone(c) => {
+            let cone = c.cone();
+            let rho = from_axis(cone.frame()) - within;
+            let (sine, cosine) = cone.half_angle().sin_cos();
+            (rho > 0.0).then(|| {
+                let k = cosine.abs() / rho;
+                (
+                    k,
+                    cosine.abs() * sine.mul_add(sine, 1.0).sqrt() / (rho * rho),
+                )
+            })
+        }
+        SurfaceGeometry::Torus(t) => {
+            let torus = t.torus();
+            let (big, small) = (torus.major_radius(), torus.minor_radius());
+            let rho = (from_axis(torus.frame()) - within).max(big - small);
+            (big > small && rho > 0.0).then(|| {
+                let k = (1.0 / small).max(1.0 / rho);
+                let meridian = (1.0 / (small * small)).max(big / (small * rho * rho));
+                let parallel = ((1.0 / small + 1.0 / rho) / rho).hypot(1.0 / (rho * rho));
+                (k, meridian.hypot(parallel))
+            })
+        }
+        SurfaceGeometry::Trimmed(t) => shape_bounds(t.basis(), near, within),
+        _ => None,
+    }
+}
+
+/// An isolated touch of two surfaces: see [`isolated_touch`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Touch {
+    /// The touch, on both surfaces.
+    pub at: Contact,
+    /// How far from it every point within the confusion distance of both
+    /// surfaces lies.
+    pub reach: f64,
+    /// Whether the contact walk names a direction to start along at the
+    /// touch itself.
+    pub walks: bool,
+}
+
+/// Whether [`contact_direction`] names no direction from the eigenvalues
+/// of the second forms' difference, with no direction carried in.
+fn names_none(small: f64, large: f64) -> bool {
+    !(large.abs() > f64::MIN_POSITIVE && small.abs() <= DISTINCT * large.abs())
+}
+
+/// An isolated touch beside a contact where the two surfaces meet nearly
+/// tangent, around which no section crosses.
+///
+/// The touch is where the separation is stationary, found from the
+/// contact, with the surfaces within the confusion distance `ε` there and
+/// their normals at a sine `σ` with `σ² ≤ 2κε`: past that they cross there
+/// measurably, as [`crosses_measurably`](crate::march::crosses_measurably)
+/// tells a crossing from a touch, and the stationary point is a point of
+/// the section, not a touch. Let `D` be the difference of the two second fundamental forms there,
+/// definite with eigenvalues `s` and `l`, `|s| ≤ |l|`, and `κ = |s|`. A
+/// point of a surface of curvature at most `K` within `ρ` of the touch is
+/// `ℓ = (2/K) asin(Kρ/2)` from it along the surface at most. Over a ball of
+/// radius `ρ` each surface's shape operator moves by at most its rate (see
+/// [`shape_bounds`]) times `ℓ`. The form is read in the first surface's
+/// tangent plane, where its own operator lives and the second's is null
+/// along its normal, so the plane turning by at most `Kₐ ℓ` moves the
+/// form's eigenvalues by at most `2 ‖D‖ Kₐ ℓ` more: the form read anywhere
+/// in the ball has eigenvalues within `e(ρ) = (Lₐ + L_b) ℓ + 2 ‖D‖ Kₐ ℓ` of
+/// `s` and `l` (Weyl), with `K ℓ ≤ 1/2`.
+///
+/// With `e ≤ κ/2` over the ball the surfaces part there by at least
+/// `κ|x|²/8 − σ|x| − ε` at `x` from the touch, so every point within `ε` of
+/// both lies where that is at most `2ε`, within `(4√2 + √56) √(ε/κ)` of it
+/// (`σ ≤ √(2κε)`): the reach. With that bound held out past
+/// the reach by the farthest the march joins branch ends across
+/// ([`joining_reach`](crate::march::joining_reach)), no other branch comes
+/// near anything traced inside the reach; with the normals within
+/// [`TANGENTIAL_SINE`](crate::march::TANGENTIAL_SINE) of each other over
+/// it, `(Kₐ + K_b) ℓ`, whatever is traced there is read as tangential, and
+/// its only use is
+/// to start the contact walk. Within the reach the form's eigenvalues are
+/// those at the touch to within `e`, so whether the walk names a direction
+/// to start along is read at the touch: the same everywhere in the reach
+/// but where the ratio of the eigenvalues lies within `e` of the walk's
+/// bound, and there it turns on where in the reach it is read.
+///
+/// `None` where any of this fails: no stationary approach within `ε`, a
+/// form indefinite or singular, a surface with no closed-form bounds, or a
+/// bound not met.
+pub(crate) fn isolated_touch(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    seed: Contact,
+    options: Marching,
+    tol: Tolerances,
+) -> Option<Touch> {
+    let eps = tol.confusion();
+    let (ja, jb) = (jet(a, seed.on_a, tol)?, jet(b, seed.on_b, tol)?);
+    if ja.n.cross(jb.n).magnitude() > BRANCH_POINT_SINE {
+        return None;
+    }
+    let (ua, va, ub, vb) = crate::extrema::stationary_surface_surface(
+        a,
+        b,
+        seed.on_a,
+        seed.on_b,
+        crate::march::STATIONARY_STEPS,
+        tol,
+    )?;
+    let (ta, tb) = (jet(a, (ua, va), tol)?, jet(b, (ub, vb), tol)?);
+    if ta.p.distance(tb.p) > eps {
+        return None;
+    }
+    let [(small, _), (large, _)] = form_difference(&ta, &tb)?;
+    let kappa = small.abs();
+    if small * large <= 0.0 || kappa <= f64::MIN_POSITIVE {
+        return None;
+    }
+    let sine = ta.n.cross(tb.n).magnitude();
+    if sine * sine > 2.0 * kappa * eps {
+        return None;
+    }
+    let reach = (4.0 * core::f64::consts::SQRT_2 + 56.0_f64.sqrt()) * (eps / kappa).sqrt();
+    let ball = reach + crate::march::joining_reach(options, tol);
+    let (ka, la) = shape_bounds(a, ta.p, ball)?;
+    let (kb, lb) = shape_bounds(b, tb.p, ball)?;
+    let k = ka.max(kb);
+    let along = |rho: f64| -> Option<f64> {
+        let length = if k > 0.0 {
+            2.0 / k * (k * rho * 0.5).min(1.0).asin()
+        } else {
+            rho
+        };
+        (k * length <= 0.5).then_some(length)
+    };
+    let far = (la + lb).mul_add(along(ball)?, 2.0 * large.abs() * ka * along(ball)?);
+    let tangential = (ka + kb) * along(reach)? <= crate::march::TANGENTIAL_SINE;
+    if far > kappa / 2.0 || !tangential || ta.p.distance(seed.point) > reach {
+        return None;
+    }
+    Some(Touch {
+        at: Contact {
+            point: ta.p.midpoint(tb.p),
+            on_a: (ua, va),
+            on_b: (ub, vb),
+        },
+        reach,
+        walks: !names_none(small, large),
+    })
+}
+
 /// The fourth condition of a correction: a step along the prediction, or a
 /// parameter held on a bound.
 #[derive(Debug, Clone, Copy)]
@@ -696,8 +925,8 @@ pub fn trace_tangential(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use ogeom_geom::{CylinderSurface, PlaneSurface, SphereSurface};
-    use ogeom_math::{Cylinder, Direction, Frame, Plane, Sphere};
+    use ogeom_geom::{CylinderSurface, PlaneSurface, SphereSurface, TorusSurface};
+    use ogeom_math::{Cylinder, Direction, Frame, Plane, Sphere, Torus};
 
     const T: Tolerances = Tolerances::millimetres();
 
@@ -756,6 +985,151 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("isolated point"), "{err}");
+    }
+
+    /// A drum of radius `drum` about the z axis, 10 tall, and a torus of
+    /// radii 2 and 1 about a parallel axis 9 off it at height 6, whose
+    /// outer equator meets the drum at one point.
+    fn torus_touching(drum: f64) -> (SurfaceGeometry, SurfaceGeometry, Point) {
+        let wall: SurfaceGeometry =
+            CylinderSurface::new(Cylinder::new(Frame::WORLD, drum, T).unwrap(), (0.0, 10.0))
+                .unwrap()
+                .into();
+        let at = Frame::new(Point::new(9.0, 0.0, 6.0), Direction::Z, Direction::X, T).unwrap();
+        let band: SurfaceGeometry = TorusSurface::new(Torus::new(at, 2.0, 1.0, T).unwrap()).into();
+        (wall, band, Point::new(drum, 0.0, 6.0))
+    }
+
+    #[test]
+    fn a_touch_whose_second_forms_differ_definitely_is_isolated_and_decided_there() {
+        // Inside a drum of 12 the torus bends a quarter more than the
+        // drum round it and 1 more down it: the forms differ by 1/4 and 1,
+        // a ratio at the walk's own bound, and the walk is read once at
+        // the touch. Outside a drum of 6 they differ by 1/2 and 1, and no
+        // walk starts. Points within the confusion distance of both lie
+        // within 13.2 √(ε/κ) of the touch. Marched at the default chord, a
+        // branch end may be carried 2400 chords onto a touch, further than
+        // the bounds hold the forms definite, and no touch is isolated.
+        let fine = Marching {
+            chord: 1e-5,
+            ..Marching::default()
+        };
+        for (drum, kappa) in [(12.0, 0.25), (6.0, 0.5)] {
+            let (wall, band, at) = torus_touching(drum);
+            let from = seed(&wall, &band, at);
+            assert!(isolated_touch(&wall, &band, from, Marching::default(), T).is_none());
+            let touch = isolated_touch(&wall, &band, from, fine, T).unwrap();
+            assert!(touch.at.point.distance(at) < 1e-6, "{:?}", touch.at.point);
+            let reach = (4.0 * core::f64::consts::SQRT_2 + 56.0_f64.sqrt())
+                * (T.confusion() / kappa).sqrt();
+            assert!(
+                (touch.reach - reach).abs() < 1e-6 * reach,
+                "{}",
+                touch.reach
+            );
+            let walked = trace_tangential(&wall, &band, touch.at, fine, T);
+            assert_eq!(touch.walks, walked.is_ok(), "drum {drum}: {walked:?}");
+            if drum < 10.0 {
+                assert!(!touch.walks);
+            }
+            for p in walked.map(|w| w.points).unwrap_or_default() {
+                for s in [&wall, &band] {
+                    let off = ogeom_geom::project_on_surface(s, p, 16, T)
+                        .unwrap()
+                        .distance;
+                    assert!(off <= T.confusion() * ACCEPT, "{off}");
+                }
+            }
+        }
+        // A ball on a plane, touching it off the ball's poles: the forms
+        // differ alike in every direction.
+        let at = Point::new(0.6, 0.0, 0.8);
+        let floor: SurfaceGeometry = PlaneSurface::over(
+            Plane::through(at, Direction::new(Vector::new(0.6, 0.0, 0.8), T).unwrap()),
+            (-4.0, 4.0),
+            (-4.0, 4.0),
+        )
+        .unwrap()
+        .into();
+        let ball = ball(1.0);
+        let touch = isolated_touch(&floor, &ball, seed(&floor, &ball, at), fine, T).unwrap();
+        assert!(!touch.walks);
+    }
+
+    #[test]
+    fn a_plane_cutting_a_ball_shallowly_is_a_crossing_not_a_touch() {
+        // A plane 1e-3 into a ball of 3 cuts a circle of radius 0.077: the
+        // separation is least, nought, all along it, and the forms there
+        // differ definitely, but the surfaces cross at a sine of 0.026 and
+        // the circle is a section to trace.
+        let ball: SurfaceGeometry =
+            SphereSurface::new(Sphere::centred(Point::ORIGIN, 3.0, T).unwrap()).into();
+        let lid: SurfaceGeometry = PlaneSurface::over(
+            Plane::through(Point::new(0.0, 0.0, 2.999), Direction::Z),
+            (-4.0, 4.0),
+            (-4.0, 4.0),
+        )
+        .unwrap()
+        .into();
+        let rim = (3.0_f64 * 3.0 - 2.999 * 2.999).sqrt();
+        let at = Point::new(rim * 0.6, rim * 0.8, 2.999);
+        let fine = Marching {
+            chord: 1e-5,
+            ..Marching::default()
+        };
+        assert!(isolated_touch(&ball, &lid, seed(&ball, &lid, at), fine, T).is_none());
+    }
+
+    #[test]
+    fn a_drum_lying_on_a_plane_touches_along_a_line_not_at_a_point() {
+        // The forms differ by the drum's 1 round it and nothing along it:
+        // singular, so no point of the line is an isolated touch.
+        let floor: SurfaceGeometry = PlaneSurface::over(
+            Plane::through(Point::ORIGIN, Direction::Z),
+            (-8.0, 8.0),
+            (-8.0, 8.0),
+        )
+        .unwrap()
+        .into();
+        let along = Frame::new(Point::new(0.0, 0.0, 1.0), Direction::X, Direction::Y, T).unwrap();
+        let drum: SurfaceGeometry =
+            CylinderSurface::new(Cylinder::new(along, 1.0, T).unwrap(), (-3.0, 3.0))
+                .unwrap()
+                .into();
+        let at = Point::new(0.5, 0.0, 0.0);
+        assert!(
+            isolated_touch(
+                &floor,
+                &drum,
+                seed(&floor, &drum, at),
+                Marching {
+                    chord: 1e-5,
+                    ..Marching::default()
+                },
+                T
+            )
+            .is_none()
+        );
+        // The section is still the line the drum rests on.
+        use ogeom_geom::Curve3d as _;
+        let crate::SurfaceIntersection::Along(curves) =
+            crate::intersect_surfaces(&floor, &drum, crate::IntersectOptions::default(), T)
+                .unwrap()
+        else {
+            panic!("a drum resting on a plane meets it along no curve");
+        };
+        assert_eq!(curves.len(), 1);
+        let (t0, t1) = curves[0].curve.domain();
+        for k in 0..=8 {
+            let p = curves[0]
+                .curve
+                .point_at(t0 + (t1 - t0) * f64::from(k) / 8.0, T)
+                .unwrap();
+            assert!(
+                p.y.abs() <= T.confusion() && p.z.abs() <= T.confusion(),
+                "{p:?}"
+            );
+        }
     }
 
     #[test]

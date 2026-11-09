@@ -843,6 +843,29 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **A tangent loop of arcs whose bands touch the pocket walls at single
+  points rounds in under a second, where it took 30.** (#723)
+  - A kidney pocket's floor (a tangent loop of four arcs, r 1) built each
+    end arc's band as a torus touching both pocket walls at one point,
+    where the arcs meet. The march seeded crossings beside each touch and
+    traced every one of them until it ran out of points, a few microns
+    across: 29.8 s, against 0.81 s now, at the same volume of
+    8304.9759153466.
+  - A touch is now read as isolated where the two surfaces' second forms
+    differ definitely there, and bounds on how fast each surface's
+    curvature can turn (in closed form for planes, spheres, drums, cones
+    and tori) hold that difference definite over every point the march
+    could trace or join near it. No section crosses there but at the
+    touch, so its seeds are not traced; whether a tangential contact runs
+    through it is decided once, at the touch. Every other pair is marched
+    as before.
+  - On the kidney, the two short contacts main reported at the outer
+    wall's touches are no longer reported. There the curvatures differ by
+    exactly the ratio at which a contact is followed, and main followed
+    one or not by rounding at the middle of a trace; read at the touch,
+    none is followed. The thirteen tangent circles of the bands are the
+    same to the bit.
+
 - **`solid_from_mesh` nests a mesh of many pieces in a fraction of the
   time, to the same result.** (#706)
   - Each closed piece was asked whether every other lies inside it by
@@ -855,6 +878,8 @@ bump may break the API and a patch bump may not.
     the same to the bit there and on every part of `mesh_corpus`, and a
     mesh of one piece costs the same. `ogeom-bench` gains
     `mesh_to_solid_pieces`.
+
+
 
 - `SheetMethod` is no longer `Eq`: its new variant carries a length. (#729)
 
