@@ -1940,6 +1940,15 @@ fn fillet_edge_variable_own(
     if (start_radius - end_radius).abs() <= tol.confusion() {
         return fillet_edge_own(model, solid, edge, start_radius, tol);
     }
+    let law = Profile::new(
+        &RadiusLaw::Linear {
+            start: start_radius,
+            end: end_radius,
+        },
+        false,
+        tol,
+    )?;
+    law_ball_on_faces(model, solid, edge, &law, tol)?;
     let seat = planar_seat(model, solid, edge, tol)?;
     let (first, second) = if seat
         .along
@@ -2444,10 +2453,9 @@ fn fillet_chain_law_own(
             }
         }
     }
-    // The ball at the law's largest radius sets back furthest: where that
-    // one fits each face, every smaller one does.
+    // Each ball sits on both faces of its edge all along the law.
     for e in chain {
-        crate::support::ball_fits(model, solid, e, profile.largest(), false, tol)?;
+        law_ball_on_faces(model, solid, e, &profile, tol)?;
     }
     let mut built = if planar {
         straight_law_fillet(model, solid, edge, &profile, reversed, (0.0, 1.0), tol)?
@@ -2462,6 +2470,42 @@ fn fillet_chain_law_own(
         }
     }
     Ok(built)
+}
+
+/// Whether the ball under `law` sits on both faces of `edge` all along it:
+/// [`crate::support::ball_fits`] at the law's least and largest radius,
+/// and every contact on its own face. A constant round whose contact runs
+/// off a narrow face beside the edge is cut off where the face ends, or
+/// takes the strip off whole; under a law the band's contacts change with
+/// the radius along the edge, and an envelope whose contact stands past
+/// its face would shave what lies beyond, which no ball on this edge
+/// touches. Such a seat is refused.
+fn law_ball_on_faces(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    law: &Profile,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    for radius in [law.least(), law.largest()] {
+        let deflection = ogeom_mesh::Deflection {
+            chord: (radius * 1e-3).max(tol.confusion() * 1e2),
+            ..ogeom_mesh::Deflection::default()
+        };
+        for contact in crate::support::ball_fits(model, solid, edge, radius, false, tol)? {
+            let on =
+                ogeom_algo::classify_on_face(model, &contact.face, contact.at, deflection, tol)?;
+            if on == ogeom_algo::Containment::Out {
+                ogeom_bail!(
+                    Construction,
+                    "a variable radius whose ball at radius {radius} runs off a \
+                     face beside the edge (a narrow face's far edge) is still \
+                     owed; see docs/CAPABILITIES.md, fillet.variable"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The request's edges by their ends, as a band asks of its mates: each
@@ -2761,7 +2805,7 @@ fn chain_law(
     let mut set_aside: Vec<(Vec<usize>, Shape, crate::support::Wedge)> = Vec::new();
     for ((&(k, _), own), _) in walk.iter().zip(&owns).zip(&lengths) {
         let edge = &chain[k];
-        crate::support::ball_fits(model, solid, edge, own.largest(), false, tol)?;
+        law_ball_on_faces(model, solid, edge, own, tol)?;
         let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
         let (curve, _) = edge_curve(model, edge, tol)?;
         if halved.contains(&k) {

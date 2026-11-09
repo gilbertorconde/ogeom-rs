@@ -1300,6 +1300,64 @@ fn a_law_across_a_re_entrant_corner_beside_a_drafted_wall_is_refused_by_name() {
     ogeom_fillet::fillet_edges(&mut model, &l, &top, 1.0, T).unwrap();
 }
 
+/// A block with a groove cut beside its front top edge, a strip 0.5 wide
+/// left on top between them. Under radii from 1 to 2 the ball's contact on
+/// the top stands past the strip, out over the groove and, past 1.5, on
+/// the block beyond it: the envelope there would shave material no ball
+/// on this edge touches. The edge alone, by points or linearly, and in a
+/// chain with its neighbour, is refused by name, a law reaching from a
+/// radius the strip holds to one landing beyond the groove too; the
+/// constant round stays built, cut off where the strip ends.
+#[test]
+fn a_law_whose_ball_runs_off_a_narrow_face_is_refused_by_name() {
+    let mut model = Model::new();
+    let block = ogeom_algo::make_box(&mut model, at(0.0, 0.0, 0.0), (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let groove = ogeom_algo::make_box(&mut model, at(-1.0, 0.5, 9.0), (22.0, 1.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let grooved = ogeom_bool::cut(&mut model, &block, &groove, T)
+        .unwrap()
+        .shape;
+    let front = edge_near(&model, &grooved, [10.0, 0.0, 10.0]);
+    let side = edge_near(&model, &grooved, [20.0, 0.25, 10.0]);
+    let says = |r: ogeom_core::OgeomResult<ogeom_algo::Built>| {
+        let why = r.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            why.contains("runs off a face beside the edge")
+                || why.contains("across a face that does not reach so far"),
+            "{why}"
+        );
+    };
+    says(fillet_edges_variable(
+        &mut model,
+        &grooved,
+        std::slice::from_ref(&front),
+        &hump(),
+        T,
+    ));
+    says(fillet_edge_variable(
+        &mut model, &grooved, &front, 1.0, 2.0, T,
+    ));
+    says(fillet_edges_variable(
+        &mut model,
+        &grooved,
+        &[front.clone(), side],
+        &hump(),
+        T,
+    ));
+    // From 0.3, which sits on the strip, to 2, whose contact lands on the
+    // block beyond the groove: only the contact standing off its own face
+    // says so.
+    let why = fillet_edge_variable(&mut model, &grooved, &front, 0.3, 2.0, T)
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(why.contains("runs off a face beside the edge"), "{why}");
+    fillet_edge(&mut model, &grooved, &front, 1.5, T).unwrap();
+}
+
 #[test]
 fn a_variable_radius_refuses_by_name_what_it_does_not_round() {
     let mut model = Model::new();
