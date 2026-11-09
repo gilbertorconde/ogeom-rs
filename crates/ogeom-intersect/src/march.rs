@@ -2814,6 +2814,28 @@ impl crate::walk::Condition for SurfacePair<'_> {
         ))
     }
 
+    fn system_into(
+        &self,
+        x: &[f64],
+        tol: Tolerances,
+        rows: &mut [f64],
+        matrix: &mut [f64],
+        gradient: &mut [Vector],
+    ) -> Option<Point> {
+        if rows.len() != 3 || matrix.len() != 12 || gradient.len() != 4 {
+            return None;
+        }
+        let (pa, au, av) = self.a.point_d1_at(x[0], x[1], tol).ok()?;
+        let (pb, bu, bv) = self.b.point_d1_at(x[2], x[3], tol).ok()?;
+        let gap = pa - pb;
+        rows.copy_from_slice(&[gap.x, gap.y, gap.z]);
+        matrix.copy_from_slice(&[
+            au.x, av.x, -bu.x, -bv.x, au.y, av.y, -bu.y, -bv.y, au.z, av.z, -bu.z, -bv.z,
+        ]);
+        gradient.copy_from_slice(&[au, av, Vector::ZERO, Vector::ZERO]);
+        Some(pa)
+    }
+
     fn clamp(&self, x: &mut [f64]) {
         let (ua, va) = clamp(self.a, x[0], x[1]);
         let (ub, vb) = clamp(self.b, x[2], x[3]);

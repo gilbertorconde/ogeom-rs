@@ -75,6 +75,41 @@ pub trait Condition {
         ))
     }
 
+    /// [`Condition::system_at`] written into the caller's storage: the
+    /// `n − 1` residuals into `rows`, the Jacobian's rows one after another
+    /// into `matrix`, `n` entries each, and the position gradient into
+    /// `gradient`; the position returned. `None` where the condition cannot
+    /// be evaluated, or answers in other lengths than the storage holds.
+    ///
+    /// The walker's correction asks this at every Newton step. The default
+    /// asks [`Condition::system_at`] and copies its answer; a condition
+    /// overrides it to write the same numbers without building vectors.
+    fn system_into(
+        &self,
+        x: &[f64],
+        tol: Tolerances,
+        rows: &mut [f64],
+        matrix: &mut [f64],
+        gradient: &mut [Vector],
+    ) -> Option<Point> {
+        let ((found, jacobian), point, moved) = self.system_at(x, tol)?;
+        let n = gradient.len();
+        if found.len() != rows.len()
+            || jacobian.len() != rows.len()
+            || moved.len() != n
+            || matrix.len() != rows.len() * n
+            || jacobian.iter().any(|row| row.len() != n)
+        {
+            return None;
+        }
+        rows.copy_from_slice(&found);
+        for (to, row) in matrix.chunks_exact_mut(n).zip(&jacobian) {
+            to.copy_from_slice(row);
+        }
+        gradient.copy_from_slice(&moved);
+        Some(point)
+    }
+
     /// Bring a parameter vector back into the region the condition is posed
     /// on. Called before every evaluation, so a condition may assume it.
     fn clamp(&self, x: &mut [f64]);
@@ -629,16 +664,9 @@ pub(crate) fn settle<const N: usize>(
 }
 
 /// One evaluation of a correction: the clamped state, its point, the
-/// condition's Jacobian rows, the position gradient, and the whole
-/// system's Jacobian and residual.
-type Evaluated<const N: usize> = (
-    [f64; N],
-    Point,
-    Vec<Vec<f64>>,
-    Vec<Vector>,
-    [[f64; N]; N],
-    [f64; N],
-);
+/// position gradient, and the whole system's Jacobian and residual, whose
+/// first `N − 1` rows are the condition's.
+type Evaluated<const N: usize> = ([f64; N], Point, [Vector; N], [[f64; N]; N], [f64; N]);
 
 /// [`correct`] for `N` unknowns, allocation-free in the solve, keeping the
 /// last evaluation so the landing hands back its Jacobian.
@@ -659,25 +687,23 @@ fn correct_fixed<C: Condition + ?Sized, const N: usize>(
         // so the damped step backs off; a zero there would read as a root.
         let mut residual = [f64::INFINITY; N];
         let mut jacobian = [[0.0; N]; N];
-        let Some(((rows, matrix), point, gradient)) = condition.system_at(&at, tol) else {
-            return (residual, jacobian);
+        let mut rows = [0.0; N];
+        let mut gradient = [Vector::ZERO; N];
+        let Some(point) = condition.system_into(
+            &at,
+            tol,
+            &mut rows[..N - 1],
+            jacobian[..N - 1].as_flattened_mut(),
+            &mut gradient,
+        ) else {
+            return (residual, [[0.0; N]; N]);
         };
-        if rows.len() + 1 != N
-            || matrix.len() + 1 != N
-            || gradient.len() != N
-            || matrix.iter().any(|row| row.len() != N)
-        {
-            return (residual, jacobian);
-        }
-        residual[..N - 1].copy_from_slice(&rows);
-        for (to, row) in jacobian.iter_mut().zip(&matrix) {
-            to.copy_from_slice(row);
-        }
+        residual[..N - 1].copy_from_slice(&rows[..N - 1]);
         residual[N - 1] = (point - anchor).dot(along) - reach;
         for (entry, g) in jacobian[N - 1].iter_mut().zip(&gradient) {
             *entry = g.dot(along);
         }
-        last.set(Some((at, point, matrix, gradient, jacobian, residual)));
+        last.set(Some((at, point, gradient, jacobian, residual)));
         (residual, jacobian)
     };
     let criteria = correction_criteria(tol);
@@ -695,7 +721,7 @@ fn correct_fixed<C: Condition + ?Sized, const N: usize>(
         system(&found);
         evaluated = last.take();
     }
-    if let Some((_, _, _, gradient, jacobian, residual)) = &evaluated
+    if let Some((_, _, gradient, jacobian, residual)) = &evaluated
         && let Some(settled) = settle(
             system,
             (found, residual),
@@ -708,10 +734,11 @@ fn correct_fixed<C: Condition + ?Sized, const N: usize>(
         evaluated = last.take();
     }
     let at = landed_at(&found);
-    if let Some((evaluated, point, matrix, gradient, _, _)) = evaluated
+    if let Some((evaluated, point, gradient, jacobian, _)) = evaluated
         && evaluated == at
     {
-        return Some((at.to_vec(), point, Some((matrix, gradient))));
+        let matrix = jacobian[..N - 1].iter().map(|row| row.to_vec()).collect();
+        return Some((at.to_vec(), point, Some((matrix, gradient.to_vec()))));
     }
     let point = condition.position(&at, tol)?;
     Some((at.to_vec(), point, None))
