@@ -8,20 +8,21 @@ use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{Point, Vector};
 use ogeom_topo::{Model, Shape};
 
-/// How a chamfer request closes a vertex where three of its bevels meet.
+/// How a chamfer request closes a vertex where three or more of its bevels
+/// meet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChamferCorner {
     /// The bevels mitre into one point, as
     /// [`chamfer_edges_with`](crate::chamfer_edges_with) leaves them.
     Point,
-    /// Each bevel stops at the plane through the three points where two
-    /// bevels' contact lines cross on the face they share, and the corner
-    /// is the triangle there.
+    /// Each bevel stops at the plane through the points where two bevels'
+    /// contact lines cross on the face they share, and the corner is the
+    /// polygon there: a triangle at a corner of three bevels.
     Facet,
 }
 
 /// [`chamfer_edges_with`](crate::chamfer_edges_with), the vertices where
-/// three of its bevels meet closed as `corner` says.
+/// three or more of its bevels meet closed as `corner` says.
 ///
 /// [`ChamferCorner::Point`] is exactly
 /// [`chamfer_edges_with`](crate::chamfer_edges_with). For
@@ -34,14 +35,23 @@ pub enum ChamferCorner {
 /// corner of three bevels `d` gains the triangle cutting each edge at `2d`
 /// from the corner, its point's tetrahedron `d³ / 12` taken off.
 ///
+/// At a vertex of `k > 3` bevels, every face there between two of them in
+/// turn round it, the `k` points where consecutive bevels' contact lines
+/// cross must lie on one plane, within the confusion distance, for a facet
+/// through them all to exist: as at a pyramid's apex beveled alike. The
+/// solid cut away is then the convex piece on the vertex's side of that
+/// plane and the solid's side of every bevel's plane, whose faces are the
+/// facet and the bevels' parts past it.
+///
 /// # Errors
 ///
 /// As [`chamfer_edges_with`](crate::chamfer_edges_with), and for
 /// [`ChamferCorner::Facet`]
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
-/// a vertex holds more than three of the request's bevels, or three of
-/// which one is not a straight convex edge between planes, two share no
-/// face, or the facet's points do not stand on the edges' own lengths.
+/// a vertex of three or more of the request's bevels holds one that is not
+/// a straight convex edge between planes, two in turn round it that share
+/// no face, facet points that do not stand on the edges' own lengths, or,
+/// past three, facet points off one plane.
 pub fn chamfer_edges_cornered(
     model: &mut Model,
     solid: &Shape,
@@ -52,10 +62,19 @@ pub fn chamfer_edges_cornered(
     if corner == ChamferCorner::Point {
         return crate::chamfer_edges_with(model, solid, specs, tol);
     }
-    let tetrahedra = facets(model, solid, specs, tol)?;
+    let cuts = facets(model, solid, specs, tol)?;
     let mut built = crate::chamfer_edges_with(model, solid, specs, tol)?;
-    for corners in tetrahedra {
-        let faces = tetrahedron(model, corners, tol)?;
+    for cut in cuts {
+        let faces = match cut {
+            Cut::Tetrahedron(corners) => tetrahedron(model, corners, tol)?,
+            Cut::Polytope(polygons) => {
+                let mut faces = Vec::with_capacity(polygons.len());
+                for (ring, outward) in &polygons {
+                    faces.push(planar_face(model, ring, *outward, tol)?);
+                }
+                faces
+            }
+        };
         let step = crate::support::apply_wedge(model, &built.shape, None, &faces, false, tol)?;
         built = Built {
             shape: step.shape.clone(),
@@ -65,14 +84,23 @@ pub fn chamfer_edges_cornered(
     Ok(built)
 }
 
-/// The tetrahedron each vertex of three bevels sheds: the bevels' shared
-/// point, then the three facet points.
+/// What a faceted corner sheds.
+enum Cut {
+    /// At a corner of three bevels: the bevels' shared point, then the
+    /// three facet points.
+    Tetrahedron([Point; 4]),
+    /// At a corner of more: the convex piece's faces, each a ring of
+    /// points with its outward normal.
+    Polytope(Vec<(Vec<Point>, Vector)>),
+}
+
+/// The piece each vertex of three or more bevels sheds.
 fn facets(
     model: &Model,
     solid: &Shape,
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
-) -> OgeomResult<Vec<[Point; 4]>> {
+) -> OgeomResult<Vec<Cut>> {
     let conf = tol.confusion();
     let mut ends: Vec<[ogeom_topo::TShapeId; 2]> = Vec::with_capacity(specs.len());
     let mut points: Vec<(ogeom_topo::TShapeId, Point)> = Vec::new();
@@ -100,11 +128,10 @@ fn facets(
     for v in vertices {
         let at: Vec<usize> = (0..specs.len()).filter(|&i| ends[i].contains(&v)).collect();
         let [i, j, k] = at.as_slice() else {
-            ogeom_bail!(
-                Construction,
-                "a facet closes a corner of three bevels, not {}",
-                at.len()
-            );
+            out.push(Cut::Polytope(polygon_corner(
+                model, solid, specs, &at, v, &points, tol,
+            )?));
+            continue;
         };
         // Each bevel's seat, its legs' distances, and its edge leaving the
         // vertex.
@@ -193,9 +220,212 @@ fn facets(
                 "the bevels' shared point stands on the facet's far side"
             );
         }
-        out.push([point, feet[0], feet[1], feet[2]]);
+        out.push(Cut::Tetrahedron([point, feet[0], feet[1], feet[2]]));
     }
     Ok(out)
+}
+
+/// A bevel's seat at vertex `v`, its legs' distances, its end at the
+/// vertex and its direction away from it.
+type Bevel = (crate::support::Seat, [f64; 2], Point, Vector);
+
+/// The faces of the convex piece a vertex of the `at` bevels, more than
+/// three, sheds: on the vertex's side of the plane through the points
+/// where consecutive bevels' contact lines cross on the face they share,
+/// and on the solid's side of every bevel's plane.
+fn polygon_corner(
+    model: &Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    at: &[usize],
+    v: ogeom_topo::TShapeId,
+    points: &[(ogeom_topo::TShapeId, Point)],
+    tol: Tolerances,
+) -> OgeomResult<Vec<(Vec<Point>, Vector)>> {
+    let conf = tol.confusion();
+    let Some(&(_, vertex)) = points.iter().find(|(id, _)| *id == v) else {
+        ogeom_bail!(Dangling, "a vertex is not in this model");
+    };
+    let mut bevels: Vec<Bevel> = Vec::with_capacity(at.len());
+    for &n in at {
+        let (edge, spec) = &specs[n];
+        let Legs::Straight(seat, distances) = legs(model, solid, edge, spec, tol)? else {
+            ogeom_bail!(
+                Construction,
+                "a facet closes a corner of bevels on straight edges between planes"
+            );
+        };
+        if !seat.convex {
+            ogeom_bail!(Construction, "a facet closes a convex corner");
+        }
+        let at_start = seat.start.distance(vertex) <= seat.end.distance(vertex);
+        let (end, away) = if at_start {
+            (seat.start, seat.along)
+        } else {
+            (seat.end, -seat.along)
+        };
+        bevels.push((seat, distances, end, away));
+    }
+    // The face two bevels share, as each one's leg index.
+    let shared = |m: usize, n: usize| -> Option<(usize, usize)> {
+        let pairs: Vec<(usize, usize)> = (0..2)
+            .flat_map(|a| (0..2).map(move |b| (a, b)))
+            .filter(|&(a, b)| bevels[m].0.faces[a].node() == bevels[n].0.faces[b].node())
+            .collect();
+        match pairs.as_slice() {
+            [one] => Some(*one),
+            _ => None,
+        }
+    };
+    // The bevels in turn round the vertex, each sharing a face with the
+    // next.
+    let mut ring = vec![0];
+    while ring.len() < bevels.len() {
+        let last = ring[ring.len() - 1];
+        let Some(next) =
+            (0..bevels.len()).find(|&n| !ring.contains(&n) && shared(last, n).is_some())
+        else {
+            ogeom_bail!(
+                Construction,
+                "two bevels in turn round a faceted corner share no single face"
+            );
+        };
+        ring.push(next);
+    }
+    if shared(ring[ring.len() - 1], ring[0]).is_none() {
+        ogeom_bail!(
+            Construction,
+            "two bevels in turn round a faceted corner share no single face"
+        );
+    }
+    // Where consecutive bevels' contact lines cross on their face.
+    let reach = |seat: &crate::support::Seat| seat.start.distance(seat.end);
+    let mut feet = Vec::with_capacity(ring.len());
+    for w in 0..ring.len() {
+        let (m, n) = (ring[w], ring[(w + 1) % ring.len()]);
+        let Some((a, b)) = shared(m, n) else {
+            ogeom_bail!(
+                Construction,
+                "two bevels in turn round a faceted corner share no single face"
+            );
+        };
+        let (sm, dm, vm, um) = &bevels[m];
+        let (sn, dn, vn, un) = &bevels[n];
+        let pm = *vm + sm.leg(a, tol)? * dm[a];
+        let pn = *vn + sn.leg(b, tol)? * dn[b];
+        let Some((s, t, gap)) = crossing(pm, *um, pn, *un) else {
+            ogeom_bail!(
+                Construction,
+                "two bevels of a faceted corner run parallel on their face"
+            );
+        };
+        if gap > conf * 10.0
+            || s <= conf
+            || t <= conf
+            || s >= reach(sm) - conf
+            || t >= reach(sn) - conf
+        {
+            ogeom_bail!(
+                Construction,
+                "the facet's point on a face stands off the edges' lengths"
+            );
+        }
+        feet.push(pm + *um * s);
+    }
+    // The facet's plane, by Newell's sum, and every point on it.
+    let mut normal = Vector::ZERO;
+    for w in 0..feet.len() {
+        let (p, q) = (
+            feet[w] - Point::ORIGIN,
+            feet[(w + 1) % feet.len()] - Point::ORIGIN,
+        );
+        normal += p.cross(q);
+    }
+    let size = normal.magnitude();
+    if size.is_nan() || size <= 0.0 {
+        ogeom_bail!(Construction, "the facet's points span no plane");
+    }
+    let normal = normal / size;
+    let centre = Point::ORIGIN
+        + feet
+            .iter()
+            .fold(Vector::ZERO, |sum, p| sum + (*p - Point::ORIGIN))
+            / f64::from(u32::try_from(feet.len()).unwrap_or(u32::MAX));
+    let off = feet
+        .iter()
+        .fold(0.0_f64, |worst, p| worst.max(normal.dot(*p - centre).abs()));
+    if off > conf {
+        ogeom_bail!(
+            Construction,
+            "the {} facet points of a corner stand {off:.3e} off one plane",
+            feet.len()
+        );
+    }
+    // The bounding planes as `(point, normal)`, each normal facing out of
+    // the piece: the facet's away from the vertex, each bevel's toward it.
+    let toward = if normal.dot(vertex - centre) > 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let mut planes: Vec<(Point, Vector)> = vec![(centre, normal * -toward)];
+    for (seat, d, _, _) in &bevels {
+        let a = seat.start + seat.leg(0, tol)? * d[0];
+        let b = seat.start + seat.leg(1, tol)? * d[1];
+        let mut n = seat.along.cross(b - a);
+        if n.dot(vertex - a) < 0.0 {
+            n = -n;
+        }
+        planes.push((a, n / n.magnitude()));
+    }
+    // The piece's corners: every three planes' shared point inside all.
+    let inside = |p: Point| planes.iter().all(|(q, n)| n.dot(p - *q) <= conf * 10.0);
+    let mut corners: Vec<Point> = Vec::new();
+    for x in 0..planes.len() {
+        for y in x + 1..planes.len() {
+            for z in y + 1..planes.len() {
+                let Some(p) = meet(&[planes[x], planes[y], planes[z]]) else {
+                    continue;
+                };
+                if inside(p) && !corners.iter().any(|c| c.distance(p) <= conf * 10.0) {
+                    corners.push(p);
+                }
+            }
+        }
+    }
+    let middle = Point::ORIGIN
+        + corners
+            .iter()
+            .fold(Vector::ZERO, |sum, p| sum + (*p - Point::ORIGIN))
+            / f64::from(u32::try_from(corners.len().max(1)).unwrap_or(u32::MAX));
+    // Each plane's face: the corners on it, in turn round its normal.
+    let mut faces = Vec::with_capacity(planes.len());
+    for (q, n) in &planes {
+        let mut on: Vec<Point> = corners
+            .iter()
+            .copied()
+            .filter(|p| n.dot(*p - *q).abs() <= conf * 10.0)
+            .collect();
+        if on.len() < 3 {
+            ogeom_bail!(
+                Construction,
+                "a faceted corner's piece has a plane touching it at fewer than three corners"
+            );
+        }
+        let mid = Point::ORIGIN
+            + on.iter()
+                .fold(Vector::ZERO, |sum, p| sum + (*p - Point::ORIGIN))
+                / f64::from(u32::try_from(on.len()).unwrap_or(u32::MAX));
+        let x = (on[0] - mid) / (on[0] - mid).magnitude();
+        let y = n.cross(x);
+        on.sort_by(|a, b| {
+            let angle = |p: &Point| (*p - mid).dot(y).atan2((*p - mid).dot(x));
+            angle(a).total_cmp(&angle(b))
+        });
+        let outward = if n.dot(mid - middle) >= 0.0 { *n } else { -*n };
+        faces.push((on, outward));
+    }
+    Ok(faces)
 }
 
 /// The point three planes, each a point and a normal, share.

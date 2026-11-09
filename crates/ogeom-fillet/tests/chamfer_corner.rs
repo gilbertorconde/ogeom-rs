@@ -113,3 +113,130 @@ fn a_facet_closes_unequal_bevels() {
     assert_eq!(faces(&m, &facet.shape), faces(&plain, &point.shape) + 1);
     assert!(vol(&m, &facet.shape) < vol(&plain, &point.shape));
 }
+
+/// A square pyramid, base 20 × 20 and apex 12 over its middle, and its four
+/// edges at the apex, each with `Symmetric(d)`.
+fn pyramid(m: &mut Model, d: f64) -> (Shape, Vec<(Shape, Chamfer)>) {
+    let points = [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(20.0, 0.0, 0.0),
+        Point::new(20.0, 20.0, 0.0),
+        Point::new(0.0, 20.0, 0.0),
+        Point::new(10.0, 10.0, 12.0),
+    ];
+    let rings = vec![
+        vec![0, 3, 2, 1],
+        vec![0, 1, 4],
+        vec![1, 2, 4],
+        vec![2, 3, 4],
+        vec![3, 0, 4],
+    ];
+    let p = ogeom_algo::make_polyhedron(m, &points, &rings, T)
+        .unwrap()
+        .shape;
+    let apex = points[4];
+    let specs = explore_unique(m, &p, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (c, (s, t)) = ogeom_algo::placed_edge_curve(m, e, T).unwrap().unwrap();
+            [s, t]
+                .iter()
+                .any(|&u| c.point_at(u, T).unwrap().distance(apex) < 1e-9)
+        })
+        .map(|e| (e, Chamfer::Symmetric(d)))
+        .collect();
+    (p, specs)
+}
+
+#[test]
+fn a_facet_closes_a_pyramid_s_apex_of_four_bevels_in_a_square() {
+    // On each side face, between apex edges `u` and `w` at angle `phi`, the
+    // two contact lines `d` from those edges cross on the bisector, `d /
+    // sin(phi / 2)` from the apex: the facet's four corners, a square. The
+    // mitred bevels meet on the axis, where bevel `i`'s plane, through its
+    // two contact lines, crosses it. The facet takes off the square pyramid
+    // on the facet with that point its apex.
+    use ogeom_math::Vector;
+    let d = 2.0;
+    let mut m = Model::new();
+    let (p, specs) = pyramid(&mut m, d);
+    assert_eq!(specs.len(), 4);
+    let mut plain = m.clone();
+    let mitre = chamfer_edges_with(&mut plain, &p, &specs, T).unwrap();
+    let facet = chamfer_edges_cornered(&mut m, &p, &specs, ChamferCorner::Facet, T).unwrap();
+    assert!(ogeom_algo::check(&m, &facet.shape, T).unwrap().is_usable());
+    assert_eq!(faces(&m, &facet.shape), faces(&plain, &mitre.shape) + 1);
+
+    let apex = Point::new(10.0, 10.0, 12.0);
+    let base = [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(20.0, 0.0, 0.0),
+        Point::new(20.0, 20.0, 0.0),
+        Point::new(0.0, 20.0, 0.0),
+    ];
+    let unit = |v: Vector| v / v.magnitude();
+    let edges: Vec<Vector> = base.iter().map(|b| unit(*b - apex)).collect();
+    let feet: Vec<Point> = (0..4)
+        .map(|i| {
+            let (u, w) = (edges[i], edges[(i + 1) % 4]);
+            let phi = u.dot(w).acos();
+            apex + unit(u + w) * (d / (phi / 2.0).sin())
+        })
+        .collect();
+    // Bevel 0's plane: through the lines `d` off edge 0 in its two faces.
+    let into = |u: Vector, w: Vector| unit(w - u * u.dot(w));
+    let (u, w1, w2) = (edges[0], into(edges[0], edges[1]), into(edges[0], edges[3]));
+    let normal = u.cross(w2 - w1);
+    let down = Vector::new(0.0, 0.0, -1.0);
+    let t = normal.dot(w1 * d) / normal.dot(down);
+    let point = apex + down * t;
+    let side = (feet[1] - feet[0]).magnitude();
+    let height = point.z - feet[0].z;
+    let piece = side * side * height / 3.0;
+    let expected = vol(&plain, &mitre.shape) - piece;
+    let got = vol(&m, &facet.shape);
+    assert!(
+        (got - expected).abs() <= expected * 1e-9,
+        "{got} against {expected}"
+    );
+}
+
+#[test]
+fn a_facet_through_four_points_off_one_plane_is_refused() {
+    // The apex moved off the middle: the four crossings no longer share a
+    // plane, and no facet passes through them all.
+    let mut m = Model::new();
+    let points = [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(20.0, 0.0, 0.0),
+        Point::new(20.0, 20.0, 0.0),
+        Point::new(0.0, 20.0, 0.0),
+        Point::new(5.0, 8.0, 12.0),
+    ];
+    let rings = vec![
+        vec![0, 3, 2, 1],
+        vec![0, 1, 4],
+        vec![1, 2, 4],
+        vec![2, 3, 4],
+        vec![3, 0, 4],
+    ];
+    let p = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+        .unwrap()
+        .shape;
+    let specs: Vec<(Shape, Chamfer)> = explore_unique(&m, &p, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (c, (s, t)) = ogeom_algo::placed_edge_curve(&m, e, T).unwrap().unwrap();
+            [s, t]
+                .iter()
+                .any(|&u| c.point_at(u, T).unwrap().distance(points[4]) < 1e-9)
+        })
+        .map(|e| (e, Chamfer::Symmetric(2.0)))
+        .collect();
+    let refused = chamfer_edges_cornered(&mut m, &p, &specs, ChamferCorner::Facet, T)
+        .expect_err("the facet should be refused")
+        .to_string();
+    assert!(refused.contains("off one plane"), "{refused}");
+}
