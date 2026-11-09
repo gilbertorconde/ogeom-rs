@@ -675,10 +675,15 @@ recorded count per bench, and a gate at a few percent.
   and bisects each sign change 60 times.
 - The mesh still draws an edge again for each face's rings and chords and
   in each settling round; its sealing passes build the edge-use map three
-  times.
-- Primitive refinement in the converter clones its parameters twice per
-  point and builds a new matrix every iteration; piece nesting ray-casts
-  every pair of pieces against every triangle with no box test.
+  times. Measured, and left alone: on `nist_ctc_02`, `nist_ctc_04` and
+  `nist_ftc_10` at a ten-thousandth of their diagonals, drawing each edge's
+  polyline once per call instead of once per face saves 2.4 to 2.8 percent
+  of the triangulation's instructions, under a 5 percent bar, and
+  everything after the faces (weld, folds, seal) is a tenth of it, the
+  edge-use maps about a hundredth.
+- Primitive refinement in the converter builds a new matrix every
+  iteration. Piece nesting answers a piece outside another's box without a
+  ray (`mesh_to_solid_pieces`).
 
 **Algorithms worth the work.**
 - Classify a boolean's pieces once per connected region, not per piece

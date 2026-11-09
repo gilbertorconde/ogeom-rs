@@ -1709,6 +1709,7 @@ impl Found {
                     reason = "a mesh's triangle count fits its u32 indices"
                 )]
                 let held = t as u32;
+                // The piece's box holds: the middle lies within the facet.
                 if let Some(piece) = found
                     .pieces
                     .iter_mut()
