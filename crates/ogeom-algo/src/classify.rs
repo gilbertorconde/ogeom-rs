@@ -841,9 +841,19 @@ struct Prepared {
     winding: std::sync::OnceLock<Option<std::sync::Arc<crate::winding::WindingMesh>>>,
     /// Each face's place among `faces`, found when first asked.
     places: std::sync::OnceLock<ogeom_core::FastMap<ogeom_topo::SameKey, u32>>,
+    /// The faces' bounds in a tree, built when first asked.
+    boxes: std::sync::OnceLock<FaceBoxes>,
 }
 
 impl Prepared {
+    /// The faces' bounds in a tree: see [`FaceBoxes`].
+    fn boxes(&self) -> &FaceBoxes {
+        self.boxes.get_or_init(|| {
+            let bounds: Vec<Aabb> = self.faces.iter().map(|f| f.bound).collect();
+            FaceBoxes::of(&bounds)
+        })
+    }
+
     /// The face prepared among these, as the solid holds it.
     fn face_of(&self, face: &Shape) -> Option<&std::sync::Arc<PreparedFace>> {
         let places = self.places.get_or_init(|| {
@@ -1118,6 +1128,7 @@ impl SolidBoundary {
                 solid: solid.clone(),
                 winding: std::sync::OnceLock::new(),
                 places: std::sync::OnceLock::new(),
+                boxes: std::sync::OnceLock::new(),
             },
             boxed,
             taken,
@@ -1159,7 +1170,8 @@ impl SolidBoundary {
         // On the boundary beats either side, and each face answers exactly:
         // projection distance against the true surface, trimming in parameter
         // space.
-        for prepared in faces {
+        for k in self.prepared.boxes().holding(point) {
+            let prepared = &faces[k];
             if !prepared.bound.contains(point) {
                 continue;
             }
@@ -1249,7 +1261,8 @@ impl SolidBoundary {
             ..Deflection::default()
         };
         let reach = tol.confusion();
-        for (prepared, rays) in faces.iter().zip(&self.rays) {
+        for k in self.prepared.boxes().meeting(from, to) {
+            let (prepared, rays) = (&faces[k], &self.rays[k]);
             let excepted = except.iter().any(|face| prepared.face.is_same(face));
             if (excepted && !at_start) || !segment_meets(&prepared.bound, from, to) {
                 continue;
@@ -1340,7 +1353,8 @@ impl SolidBoundary {
         }
         let to = from + along * length;
         let mut first: Option<f64> = None;
-        for (prepared, rays) in faces.iter().zip(&self.rays) {
+        for k in self.prepared.boxes().meeting(from, to) {
+            let (prepared, rays) = (&faces[k], &self.rays[k]);
             if !segment_meets(&prepared.bound, from, to) {
                 continue;
             }
@@ -1474,7 +1488,8 @@ impl SolidBoundary {
             ..Deflection::default()
         };
         let mut on = Vec::new();
-        for prepared in faces {
+        for k in self.prepared.boxes().holding(point) {
+            let prepared = &faces[k];
             if !prepared.bound.contains(point) {
                 continue;
             }
@@ -1518,7 +1533,8 @@ impl SolidBoundary {
             let mut crossings = 0_usize;
             let mut winding = 0_i64;
 
-            for (prepared, rays) in faces.iter().zip(&self.rays) {
+            for k in self.prepared.boxes().meeting(point, far) {
+                let (prepared, rays) = (&faces[k], &self.rays[k]);
                 if !segment_meets(&prepared.bound, point, far) {
                     continue;
                 }
@@ -1728,7 +1744,8 @@ impl SolidBoundary {
             let along = (foot - point) / length;
             let far = point + along * (length * 1.5);
             let margin = reach + ring_chord;
-            for (j, prepared) in faces.iter().enumerate() {
+            for j in self.prepared.boxes().meeting(point, far) {
+                let prepared = &faces[j];
                 if !segment_meets(&prepared.bound, point, far) {
                     continue;
                 }
@@ -2409,6 +2426,151 @@ fn closed_form(surface: &ogeom_geom::SurfaceGeometry) -> bool {
 }
 
 /// Whether the segment from `a` to `b` passes through the box, by slabs.
+/// Faces' bounds in a tree, for the faces a segment or a point may meet
+/// without asking each face's bound.
+///
+/// Each node's box is the union of its children's. [`segment_meets`] and
+/// [`Aabb::contains`] are monotone in the box: a box inside another gives
+/// a slab interval inside the other's, rounded alike, and passes every
+/// comparison the larger passes. So a node whose box a segment or point
+/// does not meet holds no face's bound that it meets, and every face the
+/// test would pass is among the candidates; a bound with a coordinate that
+/// is not finite, outside that ordering, is always a candidate. Callers
+/// still ask each candidate's own bound, in the faces' order, so they ask
+/// exactly what they asked of every face, of the same faces, in the same
+/// order.
+#[derive(Debug)]
+struct FaceBoxes {
+    nodes: Vec<BoxNode>,
+    /// The faces with a bound, ordered so that each leaf holds a run.
+    order: Vec<u32>,
+    /// The faces whose bound has a coordinate that is not finite.
+    always: Vec<u32>,
+}
+
+/// A node of [`FaceBoxes`]: its box, and either its two children or the
+/// run of `order` it holds.
+#[derive(Debug, Clone, Copy)]
+struct BoxNode {
+    bound: Aabb,
+    children: Option<(u32, u32)>,
+    run: (u32, u32),
+}
+
+/// The most faces a leaf of [`FaceBoxes`] holds.
+const LEAF_FACES: usize = 8;
+
+impl FaceBoxes {
+    fn of(bounds: &[Aabb]) -> Self {
+        let finite = |b: &Aabb| {
+            b.low()
+                .zip(b.high())
+                .is_some_and(|(l, h)| [l.x, l.y, l.z, h.x, h.y, h.z].iter().all(|c| c.is_finite()))
+        };
+        let mut order = Vec::new();
+        let mut always = Vec::new();
+        for (k, b) in bounds.iter().enumerate() {
+            let k = u32::try_from(k).unwrap_or(u32::MAX);
+            if finite(b) {
+                order.push(k);
+            } else if !b.is_empty() {
+                always.push(k);
+            }
+        }
+        let mut tree = Self {
+            nodes: Vec::new(),
+            order,
+            always,
+        };
+        if !tree.order.is_empty() {
+            tree.split(bounds, 0, tree.order.len());
+        }
+        tree
+    }
+
+    /// The node over `order[from..to]`, split at the median of the boxes'
+    /// middles along their widest spread; its index.
+    fn split(&mut self, bounds: &[Aabb], from: usize, to: usize) -> u32 {
+        let middle = |k: u32| bounds[k as usize].centre().unwrap_or(Point::ORIGIN);
+        let bound = self.order[from..to]
+            .iter()
+            .fold(Aabb::EMPTY, |b, &k| b.union(&bounds[k as usize]));
+        let at = u32::try_from(self.nodes.len()).unwrap_or(u32::MAX);
+        let run = (
+            u32::try_from(from).unwrap_or(u32::MAX),
+            u32::try_from(to).unwrap_or(u32::MAX),
+        );
+        self.nodes.push(BoxNode {
+            bound,
+            children: None,
+            run,
+        });
+        if to - from <= LEAF_FACES {
+            return at;
+        }
+        let spread = self.order[from..to]
+            .iter()
+            .fold(Aabb::EMPTY, |b, &k| b.with_point(middle(k)))
+            .size();
+        let axis = if spread.x >= spread.y && spread.x >= spread.z {
+            0
+        } else if spread.y >= spread.z {
+            1
+        } else {
+            2
+        };
+        let key = |k: u32| {
+            let m = middle(k);
+            [m.x, m.y, m.z][axis]
+        };
+        let half = from + (to - from) / 2;
+        self.order[from..to].select_nth_unstable_by(half - from, |&a, &b| {
+            key(a).total_cmp(&key(b)).then(a.cmp(&b))
+        });
+        let left = self.split(bounds, from, half);
+        let right = self.split(bounds, half, to);
+        self.nodes[at as usize].children = Some((left, right));
+        at
+    }
+
+    /// The faces whose bound the test may pass, in the faces' order.
+    fn candidates(&self, meets: impl Fn(&Aabb) -> bool) -> Vec<usize> {
+        let mut out: Vec<usize> = self.always.iter().map(|&k| k as usize).collect();
+        if !self.nodes.is_empty() {
+            let mut stack = vec![0_u32];
+            while let Some(n) = stack.pop() {
+                let node = &self.nodes[n as usize];
+                if !meets(&node.bound) {
+                    continue;
+                }
+                match node.children {
+                    Some((left, right)) => {
+                        stack.push(right);
+                        stack.push(left);
+                    }
+                    None => out.extend(
+                        self.order[node.run.0 as usize..node.run.1 as usize]
+                            .iter()
+                            .map(|&k| k as usize),
+                    ),
+                }
+            }
+        }
+        out.sort_unstable();
+        out
+    }
+
+    /// The faces whose bound the segment from `a` to `b` may meet.
+    fn meeting(&self, a: Point, b: Point) -> Vec<usize> {
+        self.candidates(|bound| segment_meets(bound, a, b))
+    }
+
+    /// The faces whose bound may hold `point`.
+    fn holding(&self, point: Point) -> Vec<usize> {
+        self.candidates(|bound| bound.contains(point))
+    }
+}
+
 fn segment_meets(bound: &Aabb, a: Point, b: Point) -> bool {
     let (Some(low), Some(high)) = (bound.low(), bound.high()) else {
         return false;
@@ -2441,6 +2603,82 @@ fn segment_meets(bound: &Aabb, a: Point, b: Point) -> bool {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// The tree's candidates hold every face whose bound a segment or a
+    /// point meets, in the faces' order: on boxes of every size scattered
+    /// by a fixed generator, among them empty ones, flat ones and one with
+    /// a coordinate that is not finite, against segments short and long,
+    /// along an axis and not, and points on box faces.
+    #[test]
+    fn face_boxes_hold_every_bound_a_probe_meets() {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut step = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            u32::try_from(state >> 40).unwrap()
+        };
+        let unit = |n: u32| f64::from(n) / f64::from(1_u32 << 24);
+        let mut bounds = Vec::new();
+        for k in 0..600 {
+            let low = Point::new(
+                unit(step()) * 100.0,
+                unit(step()) * 100.0,
+                unit(step()) * 100.0,
+            );
+            let size = if k % 50 == 0 {
+                0.0
+            } else {
+                unit(step()) * 20.0
+            };
+            let high = Point::new(low.x + size, low.y + unit(step()) * 20.0, low.z);
+            bounds.push(if k % 97 == 0 {
+                Aabb::EMPTY
+            } else {
+                Aabb::of_corners(low, high)
+            });
+        }
+        bounds.push(Aabb::of_corners(
+            Point::new(f64::NAN, 0.0, 0.0),
+            Point::new(1.0, 1.0, 1.0),
+        ));
+        let tree = FaceBoxes::of(&bounds);
+        for _ in 0..400 {
+            let a = Point::new(
+                unit(step()) * 120.0 - 10.0,
+                unit(step()) * 120.0 - 10.0,
+                unit(step()) * 120.0 - 10.0,
+            );
+            let b = if unit(step()) < 0.3 {
+                Point::new(a.x, a.y, unit(step()) * 120.0 - 10.0)
+            } else {
+                Point::new(
+                    unit(step()) * 120.0 - 10.0,
+                    unit(step()) * 120.0 - 10.0,
+                    unit(step()) * 120.0 - 10.0,
+                )
+            };
+            let along = tree.meeting(a, b);
+            assert!(along.windows(2).all(|w| w[0] < w[1]));
+            for (k, bound) in bounds.iter().enumerate() {
+                if segment_meets(bound, a, b) {
+                    assert!(
+                        along.binary_search(&k).is_ok(),
+                        "face {k} missed by {a:?}-{b:?}"
+                    );
+                }
+            }
+            let pick = usize::try_from(step() % 600).unwrap();
+            let at = bounds[pick].high().unwrap_or(a);
+            let held = tree.holding(at);
+            assert!(held.windows(2).all(|w| w[0] < w[1]));
+            for (k, bound) in bounds.iter().enumerate() {
+                if bound.contains(at) {
+                    assert!(held.binary_search(&k).is_ok(), "face {k} missed at {at:?}");
+                }
+            }
+        }
+    }
 
     /// A strip winding fourteen turns up a drum, as a thread's flank does,
     /// unrolled in the drum's chart: a parallelogram rising 0.7 a turn,
