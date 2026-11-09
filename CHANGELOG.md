@@ -58,6 +58,23 @@ bump may break the API and a patch bump may not.
   - It is tried only where the edge's own round is refused, so every
     request main builds takes main's path unchanged.
 
+- **A sketch curve running through a sphere's pole lays onto the face as
+  pieces, and `split_face` cuts along them.** (#729)
+  - `SurfaceSheet::chart_pieces` and `chart_edges` cut the carried curve
+    where it lands on the pole. Each piece ends on the pole's row of the
+    chart, at the longitude the curve arrives along or leaves along.
+  - `split_face` reads a path's two meetings with one pole, at different
+    places of its row, as inside the pole's degenerate edge. It cuts the
+    edge there and closes the region along the row. A path meeting a pole
+    once keeps its reading at the vertex: a pole-to-pole meridian splits a
+    sphere exactly as before.
+  - A sheet circle through the pole of a sphere of radius 10 cuts off its
+    cap of 2πR²(1 − cos 10°) within 1e-6. A sheet line over the pole of a
+    hemisphere halves it into quarter spheres of πR² within 1e-6.
+  - The sheet's edges are now stated same-parameter: an edge's curve is its
+    pcurve on the surface, so `split_face` takes that pcurve as it is
+    rather than fitting one by projection.
+
 - **`fillet_edges_variable` rounds an open curved edge whose ball runs out
   past its ends.** (#716)
   - The law is laid along the edge's own arc length and, as on any open
@@ -470,6 +487,15 @@ bump may break the API and a patch bump may not.
     2.0. A frustum's rim: `√5 / tan(acos(1/√5)/2)` = 3.6180340 within 1e-6.
 
 ### Fixed
+
+- **A sheet on a sphere reads its landing's latitude against the ring's
+  radius, not as the arcsine of its height.** (#729) Near a pole the
+  arcsine loses half its digits: its error grows to the root of twice the
+  rounding, 2e-8 rad. At radius 10 that is 2e-7 at the pole.
+- **`fit_trace_sampled` steps back to read the surface's speed where a
+  sample stands on the edge of its domain.** (#729) Before, a sample on a
+  sphere's pole failed the whole fit. A fit that read its speed before is
+  unchanged.
 
 - **`PointDistance::nearest` finds a curved face's nearer point inside its
   trim when the surface's nearest point lies outside it.**

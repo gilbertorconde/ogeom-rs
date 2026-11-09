@@ -1052,8 +1052,23 @@ pub fn fit_trace_sampled(
         let here = on_surface(uv)?;
         for (axis, step) in [(0, Point2::new(1.0, 0.0)), (1, Point2::new(0.0, 1.0))] {
             let h = 1e-6 * (1.0 + uv.x.abs().max(uv.y.abs()));
-            let moved = Point2::new(uv.x + step.x * h, uv.y + step.y * h);
-            speed[axis] = speed[axis].max(on_surface(moved)?.distance(here) / h);
+            // Stepped back where the step forward leaves the surface's
+            // domain, as at a sample on a sphere's pole.
+            let mut moved = None;
+            for sign in [1.0, -1.0] {
+                let at = Point2::new(uv.x + sign * step.x * h, uv.y + sign * step.y * h);
+                match on_surface(at) {
+                    Ok(p) => {
+                        moved = Some(p);
+                        break;
+                    }
+                    Err(ogeom_core::OgeomError::Domain(_)) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            if let Some(p) = moved {
+                speed[axis] = speed[axis].max(p.distance(here) / h);
+            }
         }
     }
     let weight = speed.map(|s| if s > 0.0 && s.is_finite() { s } else { 1.0 });

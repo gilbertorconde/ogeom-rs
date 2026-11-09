@@ -619,3 +619,128 @@ fn a_least_distortion_sheet_on_a_cylinder_is_its_development() {
     assert!((inside.area - 24.0).abs() <= 24.0 * 1e-6, "{}", inside.area);
     assert_eq!(sheet.distortion().area, (1.0, 1.0));
 }
+
+#[test]
+fn a_sheet_circle_through_the_spheres_pole_cuts_off_its_cap() {
+    // Laid ten degrees from the north pole, the sheet circle of radius ten
+    // degrees about the origin runs through the pole: carried as two
+    // pieces meeting at the pole, it cuts off the cap of geodesic radius
+    // ten degrees, 2 pi R^2 (1 - cos 10 degrees).
+    let mut model = Model::new();
+    let sphere = make_sphere(&mut model, Frame::WORLD, 10.0, T)
+        .unwrap()
+        .shape;
+    let face = faces(&model, &sphere)[0].clone();
+    let angle = 10.0_f64.to_radians();
+    let at = Point::new(0.0, -10.0 * angle.sin(), 10.0 * angle.cos());
+    let sheet = sheet_on(&model, &face, at, 2.0);
+    let circle: PlanarCurve =
+        Circle2d::new(Circle2::centred(Point2::ORIGIN, 10.0 * angle, T).unwrap()).into();
+    assert!(sheet.chart_curve(&circle, (0.0, TAU), FIT).is_err());
+    let edges = sheet
+        .chart_edges(&mut model, &circle, (0.0, TAU), FIT)
+        .unwrap();
+    assert_eq!(edges.len(), 2);
+    let whole = area(&model, &face);
+    let built = split_face(&mut model, &sphere, &face, &edges, Projection::OnFace, T).unwrap();
+    assert!(check(&model, &built.shape, T).unwrap().is_usable());
+    let mut areas: Vec<f64> = built
+        .history
+        .trace(&face)
+        .iter()
+        .map(|p| area(&model, p))
+        .collect();
+    areas.sort_by(f64::total_cmp);
+    assert_eq!(areas.len(), 2, "{areas:?}");
+    let cap = TAU * 100.0 * (1.0 - angle.cos());
+    assert!(
+        (areas[0] - cap).abs() <= cap * 1e-6,
+        "{areas:?} against {cap}"
+    );
+    assert!(
+        (areas[0] + areas[1] - whole).abs() <= whole * 1e-6,
+        "{areas:?}"
+    );
+}
+
+#[test]
+fn a_sheet_line_through_the_pole_halves_a_hemisphere() {
+    // The sphere cut at its equator, and its upper half cut by a sheet
+    // line laid at 45 degrees north along the meridian: the line runs from
+    // the equator over the pole to the equator opposite, carried as two
+    // pieces meeting at the pole, and halves the hemisphere into quarter
+    // spheres of pi R^2 each.
+    let mut model = Model::new();
+    let sphere = make_sphere(&mut model, Frame::WORLD, 10.0, T)
+        .unwrap()
+        .shape;
+    let face = faces(&model, &sphere)[0].clone();
+    let equator = {
+        let circle = ogeom::math::Circle::new(Frame::WORLD, 10.0, T).unwrap();
+        ogeom::algo::make_edge(
+            &mut model,
+            ogeom::geom::Curve::from(ogeom::geom::CircleCurve::new(circle)),
+            (0.0, TAU),
+            T,
+        )
+        .unwrap()
+        .shape
+    };
+    let halves = split_face(
+        &mut model,
+        &sphere,
+        &face,
+        &[equator],
+        Projection::OnFace,
+        T,
+    )
+    .unwrap();
+    let upper = halves
+        .history
+        .trace(&face)
+        .iter()
+        .find(|f| ogeom::algo::face_normal(&model, f, T).is_ok_and(|(p, _)| p.z > 0.0))
+        .cloned()
+        .unwrap();
+    let north = 45.0_f64.to_radians();
+    let at = Point::new(0.0, -10.0 * north.cos(), 10.0 * north.sin());
+    let sheet = sheet_on(&model, &upper, at, 24.0);
+    // From just below the equator behind the origin to just below it on
+    // the far side of the pole, 45 and 135 degrees of arc away.
+    let line: PlanarCurve = Line2d::segment(Point2::new(0.0, -8.0), Point2::new(0.0, 23.7), T)
+        .unwrap()
+        .into();
+    let range = line.domain();
+    let edges = sheet.chart_edges(&mut model, &line, range, FIT).unwrap();
+    assert_eq!(edges.len(), 2);
+    let built = split_face(
+        &mut model,
+        &halves.shape,
+        &upper,
+        &edges,
+        Projection::OnFace,
+        T,
+    )
+    .unwrap();
+    assert!(check(&model, &built.shape, T).unwrap().is_usable());
+    // The sphere's seam meridian runs through the quarter on the +x side
+    // and stays an edge of it, so that quarter comes back in two pieces.
+    let mut areas: Vec<f64> = built
+        .history
+        .trace(&upper)
+        .iter()
+        .map(|p| area(&model, p))
+        .collect();
+    areas.sort_by(f64::total_cmp);
+    let quarter = PI * 100.0;
+    let largest = areas.pop().unwrap();
+    let rest: f64 = areas.iter().sum();
+    assert!(
+        (largest - quarter).abs() <= quarter * 1e-6,
+        "{largest} against {quarter}"
+    );
+    assert!(
+        (rest - quarter).abs() <= quarter * 1e-6,
+        "{areas:?} against {quarter}"
+    );
+}

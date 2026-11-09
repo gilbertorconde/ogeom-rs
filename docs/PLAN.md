@@ -364,12 +364,13 @@ and needs such definitions built per placement; the second has no file at
 hand that writes one. The cut edge stays in the model unused, and a STEP style or shape
 aspect naming its file id lands on every piece.
 
-**A sketch curve through a chart pole (#729).** `SurfaceSheet` carries a
-curve going round a pole of the chart as one chart curve, and refuses one
-running through the pole point (a sheet line through the point that lands
-on a sphere's pole), whose chart curve jumps there. Owed: cutting it at
-the pole into pieces, and `split_face` taught to follow a path from one
-piece to the next along the pole's degenerate edge.
+**A sketch curve through a pole of a chart other than a sphere's (#729).**
+`SurfaceSheet::chart_pieces` cuts a curve where it lands on a sphere's pole,
+found in closed form; through a cone's apex or the collapsed side of a
+revolved or spline surface it is refused, since those landings are
+integrated and the pole's preimage on the sheet is not known in closed
+form. Owed: locating that preimage by the integrated map's own distance to
+the pole, as the sphere's is found.
 
 ### Mesh conversion
 

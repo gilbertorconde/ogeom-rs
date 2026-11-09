@@ -1178,7 +1178,64 @@ fn meetings(
             _ => out.push(m),
         }
     }
+    on_pole_rows(model, chart, &mut out, tol)?;
     Ok(out)
+}
+
+/// Meetings the path makes with one pole at two places of the pole's row,
+/// read as inside the pole's degenerate edge.
+///
+/// A pole is one point in space, so every meeting with it stands on its
+/// vertex there; in the chart the path reaches the pole's row at the
+/// longitude it arrives along, and a path through a pole and back to it
+/// (a circle through it) reaches the row at two longitudes. The region
+/// it closes runs along the row between them, so the row is cut at each,
+/// as any other boundary edge is. A path meeting a pole once is left at
+/// its vertex.
+fn on_pole_rows(
+    model: &Model,
+    chart: &Chart,
+    out: &mut [Meeting],
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    for i in 0..out.len() {
+        for j in i + 1..out.len() {
+            let (On::Vertex(a), On::Vertex(b)) = (&out[i].on, &out[j].on) else {
+                continue;
+            };
+            if a.node() != b.node() || out[i].at.distance(out[j].at) <= chart.eps {
+                continue;
+            }
+            let v = a.node();
+            for o in chart.rings.iter().flatten() {
+                let edge = forward(&o.edge);
+                if !edge_data(model, &edge)?.degenerate {
+                    continue;
+                }
+                let at_pole = edge_vertices(model, &edge)?
+                    .is_some_and(|(first, last)| first.node() == v || last.node() == v);
+                if !at_pole {
+                    continue;
+                }
+                let mut reread = Vec::with_capacity(2);
+                for k in [i, j] {
+                    let (s, near) = nearest_on(o, out[k].at, tol)?;
+                    if near.distance(out[k].at) > chart.eps {
+                        break;
+                    }
+                    let forward_s = if o.reversed() { 1.0 - s } else { s };
+                    reread.push((k, (forward_s * 1e12).round() / 1e12));
+                }
+                if reread.len() == 2 {
+                    for (k, s) in reread {
+                        out[k].on = On::Inside(edge.clone(), s);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Newton on `path(t) = o(s)` from a seed, in the chart.

@@ -366,11 +366,25 @@ impl SurfaceSheet {
             return Ok(BSpline2d::new(knots, control, tol)?.into());
         }
         let half = tolerance / 2.0;
+        let land = |t: f64| self.landed(curve.point_at(t, tol)?, half);
+        self.fitted_chart(&land, range, half)
+    }
+
+    /// The chart curve over `range` through the chart positions `land`
+    /// gives, continued across the chart's periods, fitted to `half` in
+    /// space.
+    fn fitted_chart(
+        &self,
+        land: &dyn Fn(f64) -> OgeomResult<Point2>,
+        range: (f64, f64),
+        half: f64,
+    ) -> OgeomResult<PlanarCurve> {
+        let tol = self.tol;
         let surface = &self.surface;
-        let lift = Unwrapped::along(self, curve, range, half)?;
+        let lift = Unwrapped::along(surface, land, range)?;
         let (fitted, image) = ogeom_geom::fit::fit_trace_sampled(
             |t| {
-                let uv = lift.at(self, curve, t, half)?;
+                let uv = lift.at(land, t)?;
                 Ok((surface.point_at(uv.x, uv.y, tol)?, uv))
             },
             |uv| surface.point_at(uv.x, uv.y, tol),
@@ -388,6 +402,165 @@ impl SurfaceSheet {
             );
         }
         Ok(image.into())
+    }
+
+    /// A planar curve over `range` carried onto the surface as chart
+    /// curves, cut where the curve runs through a pole of a sphere's
+    /// chart: each with the range of the curve's parameter it covers, in
+    /// order. A piece's end at a pole stands on the pole's row of the chart
+    /// at the longitude the curve arrives at or leaves the pole along (the
+    /// longitude of its tangent there), so the pieces meet the pole's
+    /// degenerate edge where [`split_face`](../../ogeom_heal/fn.split_face.html)
+    /// cuts it. Elsewhere, and on every other surface, the one chart curve
+    /// [`SurfaceSheet::chart_curve`] gives.
+    ///
+    /// # Errors
+    ///
+    /// As [`SurfaceSheet::chart_curve`], for each piece.
+    pub fn chart_pieces(
+        &self,
+        curve: &PlanarCurve,
+        range: (f64, f64),
+        tolerance: f64,
+    ) -> OgeomResult<Vec<(PlanarCurve, (f64, f64))>> {
+        let tol = self.tol;
+        if !(tolerance > 0.0 && tolerance.is_finite()) {
+            ogeom_bail!(Construction, "a tolerance of {tolerance} is not a length");
+        }
+        if range.0.is_nan() || range.1.is_nan() || range.1 <= range.0 {
+            ogeom_bail!(Construction, "a curve is carried over an increasing range");
+        }
+        let Chart::Sphere {
+            frame,
+            centre,
+            radius,
+        } = self.chart
+        else {
+            return Ok(vec![(self.chart_curve(curve, range, tolerance)?, range)]);
+        };
+        let poles = [
+            (
+                centre + frame.z().vector() * radius,
+                core::f64::consts::FRAC_PI_2,
+            ),
+            (
+                centre - frame.z().vector() * radius,
+                -core::f64::consts::FRAC_PI_2,
+            ),
+        ];
+        // Where the sheet point at `t` lands in space, through the pole.
+        let point = |t: f64| -> OgeomResult<Point> {
+            let p = curve.point_at(t, tol)?;
+            let q = self.flat.as_ref().map_or(p, |f| f.at(p).0);
+            let along = self.axes.0 * q.x + self.axes.1 * q.y;
+            self.on_sphere_point(along, q.x.hypot(q.y), centre, radius)
+        };
+        let off = |t: f64| -> OgeomResult<(f64, usize)> {
+            let p = point(t)?;
+            let (n, s) = (p.distance(poles[0].0), p.distance(poles[1].0));
+            Ok(if n <= s { (n, 0) } else { (s, 1) })
+        };
+        // The curve's nearest approaches to a pole: each local least of
+        // the distance among samples, refined by golden sections to the
+        // parameter's own resolution; a hit where it reaches the pole
+        // within the confusion distance.
+        const SAMPLES: u32 = 256;
+        let at = |k: u32| (range.1 - range.0).mul_add(f64::from(k) / f64::from(SAMPLES), range.0);
+        let distances = (0..=SAMPLES)
+            .map(|k| off(at(k)).map(|d| d.0))
+            .collect::<OgeomResult<Vec<_>>>()?;
+        let mut hits: Vec<(f64, usize)> = Vec::new();
+        for k in 0..=SAMPLES {
+            let i = usize::try_from(k).unwrap_or(0);
+            let left = if k == 0 {
+                f64::INFINITY
+            } else {
+                distances[i - 1]
+            };
+            let right = if k == SAMPLES {
+                f64::INFINITY
+            } else {
+                distances[i + 1]
+            };
+            if distances[i] > left || distances[i] > right {
+                continue;
+            }
+            let (mut a, mut b) = (at(k.saturating_sub(1)), at((k + 1).min(SAMPLES)));
+            let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
+            let resolution = f64::EPSILON * range.0.abs().max(range.1.abs()).max(range.1 - range.0);
+            while b - a > resolution {
+                let (c, d) = ((b - a).mul_add(-ratio, b), (b - a).mul_add(ratio, a));
+                if off(c)?.0 <= off(d)?.0 {
+                    b = d;
+                } else {
+                    a = c;
+                }
+            }
+            let t = f64::midpoint(a, b);
+            let (d, pole) = off(t)?;
+            if d <= tol.confusion() && hits.last().is_none_or(|h| t - h.0 > resolution) {
+                hits.push((t, pole));
+            }
+        }
+        if hits.is_empty() {
+            return Ok(vec![(self.chart_curve(curve, range, tolerance)?, range)]);
+        }
+        // The longitude of a direction at a pole, read in the sphere's frame.
+        let longitude = |d: Vector| d.dot(frame.y().vector()).atan2(d.dot(frame.x().vector()));
+        let half = tolerance / 2.0;
+        let mut cuts: Vec<f64> = vec![range.0];
+        cuts.extend(hits.iter().map(|h| h.0));
+        cuts.push(range.1);
+        let mut pieces = Vec::new();
+        for pair in cuts.windows(2) {
+            let (lo, hi) = (pair[0], pair[1]);
+            if hi - lo <= 0.0 {
+                continue;
+            }
+            // The one-sided difference's step, the root of the arithmetic's
+            // resolution of the parameter, balancing its truncation against
+            // its rounding.
+            let step = |t: f64| f64::EPSILON.sqrt() * t.abs().max(hi - lo);
+            let mut ends: Vec<(f64, Point2)> = Vec::new();
+            for &(t, pole) in &hits {
+                if t == lo {
+                    let d = point(t + step(t))? - point(t)?;
+                    ends.push((t, Point2::new(longitude(d), poles[pole].1)));
+                } else if t == hi {
+                    let d = point(t)? - point(t - step(t))?;
+                    ends.push((t, Point2::new(longitude(-d), poles[pole].1)));
+                }
+            }
+            let land = |t: f64| -> OgeomResult<Point2> {
+                match ends.iter().find(|e| e.0 == t) {
+                    Some(e) => Ok(e.1),
+                    None => self.landed(curve.point_at(t, tol)?, half),
+                }
+            };
+            pieces.push((self.fitted_chart(&land, (lo, hi), half)?, (lo, hi)));
+        }
+        Ok(pieces)
+    }
+
+    /// Edges on the surface along a planar curve carried by
+    /// [`SurfaceSheet::chart_pieces`], one per piece, each as
+    /// [`SurfaceSheet::chart_edge`] makes it.
+    ///
+    /// # Errors
+    ///
+    /// As [`SurfaceSheet::chart_pieces`] and [`make_edge`].
+    pub fn chart_edges(
+        &self,
+        model: &mut Model,
+        curve: &PlanarCurve,
+        range: (f64, f64),
+        tolerance: f64,
+    ) -> OgeomResult<Vec<Shape>> {
+        let mut out = Vec::new();
+        for (pcurve, piece) in self.chart_pieces(curve, range, tolerance)? {
+            out.push(self.edge_on(model, pcurve, piece)?);
+        }
+        Ok(out)
     }
 
     /// An edge on the surface along a planar curve carried by
@@ -412,17 +585,48 @@ impl SurfaceSheet {
             self.surface.clone(),
         )));
         let built = make_edge(model, on, range, self.tol)?;
-        if let Some(surface) = self.own {
-            attach_pcurve(
-                model,
-                &built.shape,
-                pcurve,
-                surface,
-                Location::identity(),
-                range,
-            )?;
-        }
+        self.own_pcurve(model, &built.shape, pcurve, range)?;
         Ok(built)
+    }
+
+    /// An edge whose curve is `pcurve` on the surface over `range`.
+    fn edge_on(
+        &self,
+        model: &mut Model,
+        pcurve: PlanarCurve,
+        range: (f64, f64),
+    ) -> OgeomResult<Shape> {
+        let on = Curve::OnSurface(Box::new(CurveOnSurface::new(
+            pcurve.clone(),
+            self.surface.clone(),
+        )));
+        let edge = make_edge(model, on, range, self.tol)?.shape;
+        self.own_pcurve(model, &edge, pcurve, range)?;
+        Ok(edge)
+    }
+
+    /// On a face standing unplaced, `pcurve` attached to `edge` on the
+    /// face's own surface, and the edge stated same-parameter: its curve is
+    /// that pcurve on that surface, so the two agree at every parameter.
+    fn own_pcurve(
+        &self,
+        model: &mut Model,
+        edge: &Shape,
+        pcurve: PlanarCurve,
+        range: (f64, f64),
+    ) -> OgeomResult<()> {
+        let Some(surface) = self.own else {
+            return Ok(());
+        };
+        attach_pcurve(model, edge, pcurve, surface, Location::identity(), range)?;
+        let Some(node) = model.node_mut(edge) else {
+            ogeom_bail!(Dangling, "edge is not in this model");
+        };
+        let ogeom_topo::NodeData::Edge(data) = node.data_mut() else {
+            ogeom_bail!(Construction, "edge node holds no edge data");
+        };
+        data.assert_same_parameter(true);
+        Ok(())
     }
 
     /// How far the sheet has stretched, over every sheet point carried so
@@ -572,15 +776,8 @@ impl SurfaceSheet {
         p: Point2,
     ) -> OgeomResult<(Point2, f64)> {
         let tol = self.tol;
-        let start = self.surface.point_at(self.origin.x, self.origin.y, tol)?;
-        let out = (start - centre) * (1.0 / radius);
+        let landed = self.on_sphere_point(t, r, centre, radius)?;
         let angle = r / radius;
-        let landed = if r > 0.0 {
-            let (s, c) = angle.sin_cos();
-            centre + (out * c + t * (s / r)) * radius
-        } else {
-            start
-        };
         let local = landed - centre;
         let (x, y, z) = (
             local.dot(frame.x().vector()),
@@ -593,7 +790,9 @@ impl SurfaceSheet {
                 "the sheet point {p:?} lands on a pole of the sphere's chart, at {landed:?}"
             );
         }
-        let latitude = (z / radius).clamp(-1.0, 1.0).asin();
+        // Latitude against the ring's radius, which stays exact near a pole
+        // where the sine of the latitude loses half its digits.
+        let latitude = z.atan2(x.hypot(y));
         let longitude = self.origin.x + wrapped(y.atan2(x) - self.origin.x);
         let stretch = if angle > 0.0 {
             angle.sin() / angle
@@ -601,6 +800,20 @@ impl SurfaceSheet {
             1.0
         };
         Ok((Point2::new(longitude, latitude), stretch))
+    }
+
+    /// The point of a sphere the great circle leaving the origin along `t`
+    /// reaches after length `r`, `t` of length `r`.
+    fn on_sphere_point(&self, t: Vector, r: f64, centre: Point, radius: f64) -> OgeomResult<Point> {
+        let start = self
+            .surface
+            .point_at(self.origin.x, self.origin.y, self.tol)?;
+        if r <= 0.0 {
+            return Ok(start);
+        }
+        let out = (start - centre) * (1.0 / radius);
+        let (s, c) = (r / radius).sin_cos();
+        Ok(centre + (out * c + t * (s / r)) * radius)
     }
 
     /// The geodesic leaving the origin along the unit-length direction
@@ -746,14 +959,12 @@ struct Unwrapped {
 }
 
 impl Unwrapped {
-    /// The table along `curve` over `range`, positions to `accuracy`.
+    /// The table over `range` of the chart positions `land` gives.
     fn along(
-        sheet: &SurfaceSheet,
-        curve: &PlanarCurve,
+        surface: &SurfaceGeometry,
+        land: &dyn Fn(f64) -> OgeomResult<Point2>,
         range: (f64, f64),
-        accuracy: f64,
     ) -> OgeomResult<Self> {
-        let surface = &sheet.surface;
         let ((ua, ub), (va, vb)) = surface.domain();
         let periods = [
             surface.is_periodic_u().then_some(ub - ua),
@@ -769,7 +980,7 @@ impl Unwrapped {
                 let ray = match seen.get(&t.to_bits()) {
                     Some(uv) => *uv,
                     None => {
-                        let uv = sheet.landed(curve.point_at(t, sheet.tol)?, accuracy)?;
+                        let uv = land(t)?;
                         seen.insert(t.to_bits(), uv);
                         uv
                     }
@@ -815,15 +1026,9 @@ impl Unwrapped {
         }
     }
 
-    /// The continued chart position at `t`.
-    fn at(
-        &self,
-        sheet: &SurfaceSheet,
-        curve: &PlanarCurve,
-        t: f64,
-        accuracy: f64,
-    ) -> OgeomResult<Point2> {
-        let ray = sheet.landed(curve.point_at(t, sheet.tol)?, accuracy)?;
+    /// The continued chart position at `t`, `land` the table's own.
+    fn at(&self, land: &dyn Fn(f64) -> OgeomResult<Point2>, t: f64) -> OgeomResult<Point2> {
+        let ray = land(t)?;
         let last = self.ts.len() - 1;
         let k = self.ts.partition_point(|s| *s <= t).clamp(1, last);
         let (t0, t1) = (self.ts[k - 1], self.ts[k]);
