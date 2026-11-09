@@ -28,6 +28,9 @@ pub(super) struct Basis {
     pub free: usize,
     /// Each slot's combination: `(unknown, coefficient)`.
     pub of_slot: Vec<Vec<(usize, f64)>>,
+    /// Each slot's constant part, where some slots are prescribed: the
+    /// slot is its combination plus this, coordinate by coordinate.
+    pub offset: Option<Vec<[f64; 3]>>,
 }
 
 impl Basis {
@@ -36,8 +39,139 @@ impl Basis {
         Self {
             free: slots,
             of_slot: (0..slots).map(|s| vec![(s, 1.0)]).collect(),
+            offset: None,
         }
     }
+}
+
+/// An expression in the free slots plus a constant, each coordinate of the
+/// constant with a bound on its rounding error.
+type Affine = (BTreeMap<usize, Term>, [Term; 3]);
+
+/// [`null_space`] where some slots are prescribed: each `(slot, value)` of
+/// `known` holds that slot at that value, which the rows then carry as
+/// constants, coordinate by coordinate.
+///
+/// The same elimination, each expression carrying its constant beside its
+/// terms. A row left with no term but a constant beyond its rounding bound
+/// asks the prescribed slots for what they do not hold: `None`.
+pub(super) fn null_space_known(
+    slots: usize,
+    rows: &[Vec<(usize, f64)>],
+    known: &[(usize, [f64; 3])],
+) -> Option<Basis> {
+    let zero = Term {
+        value: 0.0,
+        error: 0.0,
+    };
+    let mut solved: Vec<Option<Affine>> = vec![None; slots];
+    for &(s, value) in known {
+        let constant = value.map(|v| Term {
+            value: v,
+            error: 0.0,
+        });
+        solved[s] = Some((BTreeMap::new(), constant));
+    }
+    let mut order: Vec<usize> = Vec::new();
+    let shift = |c: &mut [Term; 3], by: &[Term; 3], a: f64, a_error: f64| {
+        for (to, from) in c.iter_mut().zip(by) {
+            let value = a * from.value;
+            to.value += value;
+            to.error += a.abs() * from.error
+                + a_error * from.value.abs()
+                + EPS * (value.abs() + to.value.abs());
+        }
+    };
+    for row in rows {
+        let mut reduced: BTreeMap<usize, Term> = BTreeMap::new();
+        let mut constant = [zero; 3];
+        for &(s, a) in row {
+            match &solved[s] {
+                Some((expr, c)) => {
+                    for (&t, b) in expr {
+                        add(&mut reduced, t, a * b.value, a.abs() * b.error);
+                    }
+                    shift(&mut constant, c, a, 0.0);
+                }
+                None => add(&mut reduced, s, a, 0.0),
+            }
+        }
+        reduced.retain(|_, t| t.value.abs() > t.error);
+        let mut largest: Option<(usize, Term)> = None;
+        for (&s, &t) in &reduced {
+            if largest.is_none_or(|(_, b)| t.value.abs() > b.value.abs()) {
+                largest = Some((s, t));
+            }
+        }
+        let Some((pivot, head)) = largest else {
+            if constant.iter().any(|c| c.value.abs() > c.error) {
+                return None;
+            }
+            continue;
+        };
+        let mut expr: BTreeMap<usize, Term> = BTreeMap::new();
+        for (&t, term) in &reduced {
+            if t == pivot {
+                continue;
+            }
+            let value = -term.value / head.value;
+            let error =
+                (term.error + value.abs() * head.error) / head.value.abs() + EPS * value.abs();
+            expr.insert(t, Term { value, error });
+        }
+        let pivot_constant = constant.map(|c| {
+            let value = -c.value / head.value;
+            Term {
+                value,
+                error: (c.error + value.abs() * head.error) / head.value.abs() + EPS * value.abs(),
+            }
+        });
+        for &s in &order {
+            let Some((other, other_constant)) = solved[s].as_mut() else {
+                continue;
+            };
+            let Some(at) = other.remove(&pivot) else {
+                continue;
+            };
+            for (&t, term) in &expr {
+                add(
+                    other,
+                    t,
+                    at.value * term.value,
+                    at.value.abs() * term.error + term.value.abs() * at.error,
+                );
+            }
+            other.retain(|_, t| t.value.abs() > t.error);
+            shift(other_constant, &pivot_constant, at.value, at.error);
+        }
+        solved[pivot] = Some((expr, pivot_constant));
+        order.push(pivot);
+    }
+    let mut unknown = vec![usize::MAX; slots];
+    let mut free = 0;
+    for (s, done) in solved.iter().enumerate() {
+        if done.is_none() {
+            unknown[s] = free;
+            free += 1;
+        }
+    }
+    let of_slot = (0..slots)
+        .map(|s| match &solved[s] {
+            None => vec![(unknown[s], 1.0)],
+            Some((expr, _)) => expr.iter().map(|(&t, c)| (unknown[t], c.value)).collect(),
+        })
+        .collect();
+    let offset = (0..slots)
+        .map(|s| match &solved[s] {
+            None => [0.0; 3],
+            Some((_, c)) => c.map(|t| t.value),
+        })
+        .collect();
+    Some(Basis {
+        free,
+        of_slot,
+        offset: Some(offset),
+    })
 }
 
 /// The slots left free by homogeneous linear constraints, each row a list
@@ -118,7 +252,11 @@ pub(super) fn null_space(slots: usize, rows: &[Vec<(usize, f64)>]) -> Basis {
             Some(expr) => expr.iter().map(|(&t, c)| (unknown[t], c.value)).collect(),
         })
         .collect();
-    Basis { free, of_slot }
+    Basis {
+        free,
+        of_slot,
+        offset: None,
+    }
 }
 
 /// Add `value`, itself in error by up to `error`, to the entry at `slot`.

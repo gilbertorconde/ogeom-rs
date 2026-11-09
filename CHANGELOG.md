@@ -59,6 +59,19 @@ bump may break the API and a patch bump may not.
     triangle times the crease's length (the crease turning through nothing
     between its ends) within 1e-6.
 
+- **`fit_network` holds a curve to the caller's own.** (#718)
+  - `NetworkOptions::held` names curves whose poles are the least-squares
+    projection of the caller's curve on that round's knots, ends at the
+    corners, which the fit then leaves where they are.
+  - A `CurveDef::Curve` is seeded and held at its own parameter over the
+    unit interval, so a curve the knots can carry is held exactly. A patch
+    whose side is a held cubic Bézier comes out with that side the cubic
+    within 2e-15, every point within the tolerance.
+  - Underneath, the solver takes prescribed poles: they enter the
+    elimination as constants coordinate by coordinate, so x, y and z still
+    share one factorisation. With nothing held, every network is fitted to
+    the bit as before.
+
 - **`fillet_edges_variable` rounds a straight edge along a drum's ruling.**
   (#716)
   - A flat or a wall meeting a drum along one of its rulings (or two drums

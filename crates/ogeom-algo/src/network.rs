@@ -144,7 +144,7 @@ use ogeom_math::{ControlGrid, KnotVector, Point, Vector};
 use ogeom_mesh::PointIndex;
 use ogeom_topo::{Model, Shape};
 
-use solve::{Basis, Lower, null_space, solve_spd};
+use solve::{Basis, Lower, null_space, null_space_known, solve_spd};
 use topology::Topology;
 
 /// The degree of every patch and curve: the least that is curvature
@@ -277,6 +277,14 @@ pub struct NetworkOptions {
     pub spans: usize,
     /// The most knot spans a strip may reach.
     pub most: usize,
+    /// The curves held to the caller's own: each one's poles are the
+    /// least-squares projection of the caller's curve on the curve's knots
+    /// at that round, its ends at the corners, and the fit moves them no
+    /// further. A [`CurveDef::Curve`] is read at its own parameter scaled
+    /// over the unit interval, so a curve the knots can carry (a cubic, a
+    /// spline on fewer knots) is the held curve exactly; a polyline is read
+    /// at its chord parameters.
+    pub held: Vec<usize>,
 }
 
 /// How one patch fits its points.
@@ -465,10 +473,48 @@ pub fn fit_network_chained(
         );
     }
     let topo = Topology::of(patches, curves.len(), &options.creases)?;
-    let drawn = drawn_curves(curves, tolerance, tol)?;
+    let mut drawn = drawn_curves(curves, tolerance, tol)?;
+    let mut held: Vec<Option<HeldCurve<'_>>> = vec![None; curves.len()];
+    for &c in &options.held {
+        let Some(def) = curves.get(c) else {
+            ogeom_bail!(Construction, "held curve {c} is not a curve of the network");
+        };
+        held[c] = Some(match def {
+            CurveDef::Curve { curve, range } => HeldCurve::Curve(curve, *range),
+            CurveDef::Polyline(points) => {
+                let mut at = vec![0.0];
+                for w in points.windows(2) {
+                    at.push(at[at.len() - 1] + w[0].distance(w[1]));
+                }
+                let total = at[at.len() - 1];
+                let at = at
+                    .iter()
+                    .map(|t| if total > 0.0 { t / total } else { 0.0 })
+                    .collect();
+                HeldCurve::Polyline(points, at)
+            }
+        });
+    }
+    // A held curve is seeded at the parameter it is held at, so the points
+    // take their parameters along it as the held poles place them: a
+    // curve's own, drawn at as many even steps as it has points.
+    let mut params: Vec<Option<Vec<f64>>> = vec![None; curves.len()];
+    for (c, held) in held.iter().enumerate() {
+        if let Some(curve @ HeldCurve::Curve(..)) = held {
+            let n = drawn[c].len().max(2) - 1;
+            let at: Vec<f64> = (0..=n).map(|i| precise(i) / precise(n)).collect();
+            drawn[c] = at
+                .iter()
+                .map(|&t| curve.at(t, tol))
+                .collect::<OgeomResult<_>>()?;
+            params[c] = Some(at);
+        }
+    }
     let corners = corner_points(&topo, &drawn, tolerance)?;
     let weights = strip_weights(&topo, &drawn);
-    let seeds = Seeds::new(&topo, patches, &drawn, &corners, &weights, options, tol)?;
+    let seeds = Seeds::new(
+        &topo, patches, &drawn, &corners, &weights, options, &params, tol,
+    )?;
     let cloud = points.points();
     let taken = seeds.take(&topo, patches, &cloud, tol)?;
 
@@ -480,6 +526,8 @@ pub fn fit_network_chained(
         smoothing: options.smoothing,
         corners: Corners::Loose,
         fans: false,
+        held: &held,
+        vertex_points: &corners,
         tol,
     };
     // A corner held exactly tangent binds its curves' cross derivatives to
@@ -664,6 +712,46 @@ fn drawn_curves(
         out.push(points);
     }
     Ok(out)
+}
+
+/// `A x = b` for a small dense `A` and three right-hand sides, by Gaussian
+/// elimination with partial pivoting; `None` where a pivot vanishes.
+fn solve_dense(mut a: Vec<Vec<f64>>, mut b: Vec<[f64; 3]>) -> Option<Vec<[f64; 3]>> {
+    let n = a.len();
+    for col in 0..n {
+        let pivot = (col..n).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs()))?;
+        if a[pivot][col] == 0.0 || !a[pivot][col].is_finite() {
+            return None;
+        }
+        a.swap(col, pivot);
+        b.swap(col, pivot);
+        let (head, tail) = a.split_at_mut(col + 1);
+        let (b_head, b_tail) = b.split_at_mut(col + 1);
+        let (pivot_row, pivot_b) = (&head[col], b_head[col]);
+        for (row, rhs) in tail.iter_mut().zip(b_tail.iter_mut()) {
+            let f = row[col] / pivot_row[col];
+            if f == 0.0 {
+                continue;
+            }
+            for (entry, p) in row[col..].iter_mut().zip(&pivot_row[col..]) {
+                *entry -= f * p;
+            }
+            for (entry, p) in rhs.iter_mut().zip(pivot_b) {
+                *entry -= f * p;
+            }
+        }
+    }
+    let mut x = vec![[0.0; 3]; n];
+    for row in (0..n).rev() {
+        let mut sum = b[row];
+        for (k, coefficient) in a[row].iter().enumerate().skip(row + 1) {
+            for (s, known) in sum.iter_mut().zip(x[k]) {
+                *s -= coefficient * known;
+            }
+        }
+        x[row] = sum.map(|s| s / a[row][row]);
+    }
+    Some(x)
 }
 
 /// Each vertex: the mean of the curve ends that meet there, all within the
@@ -1060,6 +1148,7 @@ struct Taken {
 
 impl Seeds {
     #[allow(clippy::too_many_lines, reason = "the seed curves, then the patches")]
+    #[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
     fn new(
         topo: &Topology,
         patches: &[ChainedPatch],
@@ -1067,12 +1156,18 @@ impl Seeds {
         corners: &[Point],
         weights: &[f64],
         options: &NetworkOptions,
+        params: &[Option<Vec<f64>>],
         tol: Tolerances,
     ) -> OgeomResult<Self> {
-        // Each curve's chord parameters over the unit interval.
+        // Each curve's chord parameters over the unit interval, or the
+        // parameters a held curve is drawn at.
         let chords: Vec<Vec<f64>> = drawn
             .iter()
-            .map(|d| {
+            .zip(params)
+            .map(|(d, given)| {
+                if let Some(given) = given {
+                    return given.clone();
+                }
                 let mut at = vec![0.0];
                 for w in d.windows(2) {
                     at.push(at[at.len() - 1] + w[0].distance(w[1]));
@@ -1390,6 +1485,47 @@ enum Corners {
     Spread,
 }
 
+/// A curve the caller holds, read at a parameter over the unit interval.
+#[derive(Debug, Clone)]
+enum HeldCurve<'a> {
+    /// A curve over its range.
+    Curve(&'a Curve, (f64, f64)),
+    /// A polyline at its chord parameters.
+    Polyline(&'a [Point], Vec<f64>),
+}
+
+impl HeldCurve<'_> {
+    /// The point at `t` over the unit interval.
+    fn at(&self, t: f64, tol: Tolerances) -> OgeomResult<Point> {
+        match self {
+            Self::Curve(curve, (lo, hi)) => {
+                use ogeom_geom::Curve3d as _;
+                curve.point_at((hi - lo).mul_add(t, *lo), tol)
+            }
+            Self::Polyline(points, at) => {
+                let k = at.partition_point(|x| *x <= t).clamp(1, points.len() - 1);
+                let (a, b) = (at[k - 1], at[k]);
+                let f = if b > a {
+                    ((t - a) / (b - a)).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                Ok(points[k - 1] + (points[k] - points[k - 1]) * f)
+            }
+        }
+    }
+}
+
+/// Five-point Gauss-Legendre nodes and weights on `[-1, 1]`: exact over a
+/// span for the products of two cubic pieces and more.
+const GAUSS: [(f64, f64); 5] = [
+    (0.0, 0.568_888_888_888_888_9),
+    (-0.538_469_310_105_683_1, 0.478_628_670_499_366_5),
+    (0.538_469_310_105_683_1, 0.478_628_670_499_366_5),
+    (-0.906_179_845_938_664, 0.236_926_885_056_189_1),
+    (0.906_179_845_938_664, 0.236_926_885_056_189_1),
+];
+
 /// The fitting problem, fixed across rounds.
 struct Fit<'a> {
     topo: &'a Topology,
@@ -1402,6 +1538,10 @@ struct Fit<'a> {
     corners: Corners,
     /// Whether the fans are held exactly tangent.
     fans: bool,
+    /// Each curve the caller holds, by index.
+    held: &'a [Option<HeldCurve<'a>>],
+    /// Where each corner stands.
+    vertex_points: &'a [Point],
     tol: Tolerances,
 }
 
@@ -2019,7 +2159,14 @@ impl Fit<'_> {
         // Without the tangency, for the ratios across each curve; the
         // patches held smooth across their junctions all the same.
         let (junctions, lines) = self.junction_rows(&layout, spans);
-        let loose_basis = if junctions.is_empty() {
+        let known = self.held_poles(&layout, &curve_knots)?;
+        let loose_basis = if !known.is_empty() {
+            self.basis_known(
+                &layout,
+                &junctions.values().cloned().collect::<Vec<_>>(),
+                &known,
+            )?
+        } else if junctions.is_empty() {
             Basis::identity(layout.slots)
         } else {
             null_space(
@@ -2108,7 +2255,11 @@ impl Fit<'_> {
                 None => held = false,
             }
         }
-        let basis = null_space(layout.slots, &rows);
+        let basis = if known.is_empty() {
+            null_space(layout.slots, &rows)
+        } else {
+            self.basis_known(&layout, &rows, &known)?
+        };
         let poles = self.solve(&layout, &locals, &basis)?;
         if self.fans && held {
             held = self.fans_regular(&layout, &patch_knots, &poles)?;
@@ -2320,10 +2471,32 @@ impl Fit<'_> {
         for (p, local) in locals.iter().enumerate() {
             let slot_of =
                 |r: usize| layout.slot(self.topo, self.patches, p, (r / local.nv, r % local.nv));
+            // With prescribed slots the least squares is over the free part
+            // alone: each patch's right-hand side less its normal matrix
+            // times the prescribed constants.
+            let shifted: Option<Vec<[f64; 3]>> = basis.offset.as_ref().map(|offset| {
+                let mut shifted = local.rhs.clone();
+                for (r, row) in local.lower.iter().enumerate() {
+                    for (d, &value) in row.iter().enumerate().take(local.band.min(r) + 1) {
+                        if value == 0.0 {
+                            continue;
+                        }
+                        let (cr, cc) = (offset[slot_of(r)], offset[slot_of(r - d)]);
+                        for axis in 0..3 {
+                            shifted[r][axis] -= value * cc[axis];
+                            if d > 0 {
+                                shifted[r - d][axis] -= value * cr[axis];
+                            }
+                        }
+                    }
+                }
+                shifted
+            });
+            let local_rhs = shifted.as_ref().unwrap_or(&local.rhs);
             for (r, row) in local.lower.iter().enumerate() {
                 let sr = &basis.of_slot[slot_of(r)];
                 for (y, z) in sr {
-                    for (side, value) in rhs.iter_mut().zip(local.rhs[r]) {
+                    for (side, value) in rhs.iter_mut().zip(local_rhs[r]) {
                         side[*y] += z * value;
                     }
                 }
@@ -2359,16 +2532,123 @@ impl Fit<'_> {
         Ok(basis
             .of_slot
             .iter()
-            .map(|combo| {
+            .enumerate()
+            .map(|(s, combo)| {
                 let mut p = [0.0; 3];
                 for &(y, z) in combo {
                     for (axis, value) in p.iter_mut().enumerate() {
                         *value += z * solved[axis][y];
                     }
                 }
+                if let Some(offset) = &basis.offset {
+                    for (value, constant) in p.iter_mut().zip(offset[s]) {
+                        *value += constant;
+                    }
+                }
                 Point::new(p[0], p[1], p[2])
             })
             .collect())
+    }
+
+    /// The slots the held curves prescribe at this round's knots: each
+    /// curve's inner poles the least-squares projection of the caller's
+    /// curve on `knots[c]`, read at the Gauss nodes of every span, with its
+    /// end poles at the corners.
+    fn held_poles(
+        &self,
+        layout: &Layout,
+        knots: &[KnotVector],
+    ) -> OgeomResult<Vec<(usize, [f64; 3])>> {
+        let mut known: Vec<(usize, [f64; 3])> = Vec::new();
+        for (c, held) in self.held.iter().enumerate() {
+            let Some(held) = held else {
+                continue;
+            };
+            let k = &knots[c];
+            let n = layout.along(c);
+            let (a, b) = self.topo.curve_ends[c];
+            let ends = [self.vertex_points[a], self.vertex_points[b]];
+            // The normal equations over the inner poles, the ends moved to
+            // the right-hand side.
+            let inner = n - 2;
+            let mut gram = vec![vec![0.0; inner]; inner];
+            let mut rhs = vec![[0.0; 3]; inner];
+            let t = k.knots();
+            for span in DEGREE..t.len() - DEGREE - 1 {
+                let (lo, hi) = (t[span], t[span + 1]);
+                if hi <= lo {
+                    continue;
+                }
+                let (mid, half) = (f64::midpoint(lo, hi), (hi - lo) / 2.0);
+                for (x, w) in GAUSS {
+                    let u = half.mul_add(x, mid);
+                    let basis = k.basis(span, u);
+                    let target = held.at(u, self.tol)?;
+                    let mut residual = target.to_vector();
+                    for (i, value) in basis.iter().enumerate() {
+                        let pole = span - DEGREE + i;
+                        if pole == 0 {
+                            residual -= ends[0].to_vector() * *value;
+                        } else if pole == n - 1 {
+                            residual -= ends[1].to_vector() * *value;
+                        }
+                    }
+                    let weight = w * half;
+                    for (i, vi) in basis.iter().enumerate() {
+                        let pi = span - DEGREE + i;
+                        if pi == 0 || pi == n - 1 {
+                            continue;
+                        }
+                        let row = pi - 1;
+                        rhs[row][0] += weight * vi * residual.x;
+                        rhs[row][1] += weight * vi * residual.y;
+                        rhs[row][2] += weight * vi * residual.z;
+                        for (j, vj) in basis.iter().enumerate() {
+                            let pj = span - DEGREE + j;
+                            if pj == 0 || pj == n - 1 {
+                                continue;
+                            }
+                            gram[row][pj - 1] += weight * vi * vj;
+                        }
+                    }
+                }
+            }
+            let poles = solve_dense(gram, rhs).ok_or_else(|| {
+                ogeom_core::ogeom_err!(
+                    Numeric,
+                    "held curve {c} does not settle its poles on its knots"
+                )
+            })?;
+            for (end, slot) in [
+                (ends[0], layout.curve_slot(self.topo, c, 0)),
+                (ends[1], layout.curve_slot(self.topo, c, n - 1)),
+            ] {
+                known.push((slot, [end.x, end.y, end.z]));
+            }
+            for (q, pole) in poles.into_iter().enumerate() {
+                known.push((layout.curve_slot(self.topo, c, q + 1), pole));
+            }
+        }
+        // A corner two held curves share is prescribed once.
+        known.sort_by_key(|&(slot, _)| slot);
+        known.dedup_by_key(|&mut (slot, _)| slot);
+        Ok(known)
+    }
+
+    /// The basis over `rows` with the held slots prescribed, refused by
+    /// name where a row asks the held curves for what they do not hold.
+    fn basis_known(
+        &self,
+        layout: &Layout,
+        rows: &[Row],
+        known: &[(usize, [f64; 3])],
+    ) -> OgeomResult<Basis> {
+        null_space_known(layout.slots, rows, known).ok_or_else(|| {
+            ogeom_core::ogeom_err!(
+                Construction,
+                "a held curve breaks a condition the network holds across it"
+            )
+        })
     }
 
     /// The curves held by the pole triples, as the corners and fans are
