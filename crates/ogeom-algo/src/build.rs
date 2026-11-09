@@ -2140,7 +2140,7 @@ pub fn make_revolution_band(
     // The seam runs along the surface's own iso-curve at the anchor angle,
     // parameterized by `v`, built along increasing `v`.
     let (va, vb) = (rings[0].row, rings[1].row);
-    let Some(seam_curve) = surface_iso_u_curve(surface, ua, tol) else {
+    let Some(seam_curve) = seam_iso_u_curve(surface, ua, tol) else {
         ogeom_bail!(
             Construction,
             "the surface's iso-curve has no closed form; no seam can be built"
@@ -2593,7 +2593,7 @@ pub fn make_band_of_rings(
     // occurrence climbing from the first ring to the second stands on the
     // column the first ring's walk ended at.
     let (va, vb) = (chart_a.y, chart_b.y);
-    let Some(seam_curve) = surface_iso_u_curve(surface, column, tol) else {
+    let Some(seam_curve) = seam_iso_u_curve(surface, column, tol) else {
         ogeom_bail!(
             Construction,
             "the surface's iso-curve has no closed form; no seam can be built"
@@ -2778,7 +2778,7 @@ pub fn make_band_between(
     let (seam, up_is_forward, chart_from, chart_to) = if dcol.abs() * stretch <= tol.confusion() {
         let column = start0.x;
         let (va, vb) = (start0.y, start1.y);
-        let Some(seam_curve) = surface_iso_u_curve(surface, column, tol) else {
+        let Some(seam_curve) = seam_iso_u_curve(surface, column, tol) else {
             ogeom_bail!(
                 Construction,
                 "the surface's iso-curve has no closed form; no seam can be built"
@@ -3193,10 +3193,36 @@ pub fn surface_iso_u_curve(
     }
 }
 
+/// The iso-curve a band's seam runs along at column `at`: the closed forms
+/// [`surface_iso_u_curve`] names, and an extrusion's generator, the line
+/// through its profile's point at `at` along the sweep, on which the
+/// chart's `v` is the distance swept.
+fn seam_iso_u_curve(
+    surface: &SurfaceGeometry,
+    at: f64,
+    tol: Tolerances,
+) -> Option<ogeom_geom::Curve> {
+    surface_iso_u_curve(surface, at, tol).or_else(|| match surface {
+        ogeom_geom::SurfaceGeometry::Extrusion(swept) => {
+            use ogeom_geom::Curve3d as _;
+            let location = swept.curve().point_at(at, tol).ok()?;
+            Some(
+                ogeom_geom::LineCurve::new(ogeom_math::Axis {
+                    location,
+                    direction: swept.direction(),
+                })
+                .into(),
+            )
+        }
+        _ => None,
+    })
+}
+
 /// The parameter on a surface's iso-curve that lands at chart row `v`.
 ///
 /// Identity for the kinds whose iso-curve is parameterized by `v` itself
-/// (a cylinder ruling, a torus tube circle, a sphere meridian) and the slant
+/// (a cylinder ruling, a torus tube circle, a sphere meridian, an
+/// extrusion's generator) and the slant
 /// rescale for a cone, whose ruling is arc-length parameterized while the
 /// chart's `v` is the height.
 fn iso_curve_parameter_at(surface: &SurfaceGeometry, v: f64) -> f64 {
