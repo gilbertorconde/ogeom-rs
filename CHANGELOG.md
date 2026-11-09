@@ -755,6 +755,15 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`fillet_edges_variable` and `fillet_edge_variable` refuse a law whose
+  ball runs off a face beside the edge.** (#798)
+  - Beside a narrow face (a strip left between the edge and a groove) the
+    straight envelope under a law put its contact past the strip and, at
+    radii reaching the material beyond, shaved what no ball on the edge
+    touches, with no refusal. Every law path now seats the ball at the
+    law's least and largest radius and refuses, by name, a contact standing
+    off its own face.
+  - The constant round keeps its narrow-face handling.
 - **A section crossing a sphere's seam beside its pole closes the cap
   inside it.**
   - The paving reads a crossing within its window of the seam's end vertex

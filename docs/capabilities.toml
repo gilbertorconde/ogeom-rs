@@ -1363,8 +1363,9 @@ straight band beside it would have to be built through that run-out), a \
 re-entrant turn whose bands' sections differ (the corner carries each \
 band on as one section from where the other reaches, which a law \
 changes before the vertex), a loop joined round a convex turn with no \
-straight band between two junctions to open it at, a chain one of whose balls rests on a narrow \
-face's far edge, two bands overlapping across a face they share, any \
+straight band between two junctions to open it at, a ball whose contact at any radius of the \
+law runs off a face beside the edge (a narrow face's far edge, alone or \
+in a chain), two bands overlapping across a face they share, any \
 other straight edge whose faces are not both planes (a drum's ruling \
 inside a chain among them), a law over one arc of a crease that closes through other \
 edges (the whole loop is given instead), and a ball at the law's largest radius that does not fit \
