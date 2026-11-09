@@ -76,6 +76,27 @@ bump may break the API and a patch bump may not.
     r 6, adds 34.98615499551 against the closed form 34.98615499551; the
     square-ended rounds are unchanged to the bit.
 
+- **Chamfers bevel a crease on a marched seat that closes on itself, in all
+  three spellings.** (#711)
+  - A bore's rim where it leaves a drum, a spatial curve between two
+    cylinders, was refused: "chamfering an edge that is neither straight
+    nor circular needs the marching blend machinery".
+  - At each station the section plane stands square to the crease. Each
+    leg runs its distance along its face's section curve, walked from the
+    crease and held on the face and the plane. `Angle` finds the other
+    contact where the line leaving the named contact at the angle, in that
+    plane, meets the other face's section.
+  - The bevel is the ruled band through the chords between the contacts,
+    fitted round the loop; the wedge is the marched fillet's, with the
+    chord in place of the ball's arc.
+  - A drum of radius 10 with a bore of radius 3 across it, its rim bevelled
+    `Symmetric(0.5)`, `Distances` or `Angle`: `check` clean, each contact
+    on its cylinder within the band's fit target and its chord to the
+    crease within the leg and the leg less its section's bend, at 32
+    stations; `Angle`'s rulings leave the drum at the angle within 1e-3.
+  - A crease that does not close on itself (a run-out, a mitre at a
+    vertex) is still refused.
+
 - **A concave round rests on what lies beyond the narrow face beside it:
   the far edge of a strip further on, or the face the strips run into.**
   (Part of #720)

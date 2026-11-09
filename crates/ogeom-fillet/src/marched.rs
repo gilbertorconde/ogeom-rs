@@ -87,233 +87,16 @@ fn marched_fillet_by(
     mates: Option<(usize, &[crate::fillet::Mate])>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    let (stored_guide, edge_range) = edge_curve(model, edge, tol)?;
-    let closed = ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
-    // A closed seat on a fitted seam (a bore's rim where it leaves a
-    // sphere, the two arcs of a boolean's seam joined end to end) is a
-    // loop whose join is a corner: the ends meet, the tangents do not. The
-    // march evaluates the guide's derivatives at every step and cannot
-    // cross a corner in them; it crawls onto the join and stalls. So the
-    // march steers by a *second* guide, the loop re-fitted smooth through
-    // its join. It guides the section planes only: the ball seats on the
-    // exact hosts, and every edge the wedge builds rides the seat's own
-    // curve, so its fit error costs the blend nothing it can measure.
-    let closure_of =
-        |guide: &Curve, guide_range: (f64, f64)| -> OgeomResult<(bool, Option<Curve>)> {
-            let loops = closed || {
-                let (lo, hi) = guide_range;
-                guide
-                    .point_at(lo, tol)
-                    .and_then(|p| guide.point_at(hi, tol).map(|q| p.distance(q)))
-                    .is_ok_and(|d| d <= tol.confusion() * 10.0)
-            };
-            let march_guide: Option<Curve> =
-                if loops && matches!(guide, Curve::BSpline(b) if !b.is_periodic()) {
-                    const SAMPLES: usize = 256;
-                    let (lo, hi) = guide_range;
-                    let mut points: Vec<Point> = Vec::with_capacity(SAMPLES + 1);
-                    for i in 0..=SAMPLES {
-                        #[allow(clippy::cast_precision_loss)]
-                        let t = lo + (hi - lo) * ((i % SAMPLES) as f64) / (SAMPLES as f64);
-                        points.push(guide.point_at(t, tol)?);
-                    }
-                    let fitted =
-                        ogeom_geom::fit::fit_points_closed(&points, 3, tol.confusion() * 1e2, tol)?;
-                    fitted.met.then_some(Curve::BSpline(fitted.curve))
-                } else {
-                    None
-                };
-            Ok((loops, march_guide))
-        };
-
-    // The two host faces at the edge, with their surfaces and outward signs.
-    let mut hosts: Vec<(Shape, SurfaceGeometry, f64)> = Vec::new();
-    for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
-        let touches = explore(model, &face, Filter::OfType(ShapeType::Edge))?
-            .iter()
-            .any(|e| crate::support::same_occurrence(model, e, edge, tol));
-        if !touches {
-            continue;
-        }
-        let Some(node) = model.node(&face) else {
-            ogeom_bail!(Dangling, "face is not in this model");
-        };
-        let NodeData::Face(data) = node.data() else {
-            ogeom_bail!(Construction, "face node holds no face data");
-        };
-        let surface_id = data.surface;
-        let Some(stored) = model.geometry().surface(surface_id).cloned() else {
-            ogeom_bail!(Dangling, "face refers to a surface not in this model");
-        };
-        // A fitted patch ends where its face ends, and a ball rolling out
-        // through a wall needs the host to go on past it: the patch is
-        // continued on every open side by a few radii, as itself, and
-        // *written back* as the face's own surface (the same parameters,
-        // a wider window, exactly as a reader widens a window to hold a
-        // face), so the legs built on it and the face they melt with
-        // stand on one chart, as an analytic host's windowed copy does.
-        let stored = match stored {
-            SurfaceGeometry::BSpline(patch) => {
-                let wider =
-                    SurfaceGeometry::BSpline(continued_patch(patch, radius * HOST_REACH, tol));
-                if let Some(held) = model.geometry_mut().surface_mut(surface_id) {
-                    *held = wider.clone();
-                }
-                wider
-            }
-            // A wall swept from a fitted profile ends where its profile
-            // ends, which is where the crease along its rim ends too: the
-            // ball's section past that vertex, where its arc plane leans,
-            // has no wall to stand on. The profile is continued the same
-            // way, under the same parameters, and the wall swept over it.
-            SurfaceGeometry::Extrusion(swept) => {
-                use ogeom_geom::Surface as _;
-                let wider = match swept.curve() {
-                    Curve::BSpline(profile)
-                        if !profile.is_periodic()
-                            && ends_apart(swept.curve(), profile.domain(), tol) =>
-                    {
-                        let longer = continued_curve(profile.clone(), radius * WALL_REACH, tol);
-                        let (_, extent) = swept.domain();
-                        ogeom_geom::ExtrusionSurface::over(
-                            Curve::BSpline(longer),
-                            swept.direction(),
-                            extent,
-                        )
-                        .ok()
-                    }
-                    _ => None,
-                };
-                match wider {
-                    Some(wider) => {
-                        let wider = SurfaceGeometry::Extrusion(Box::new(wider));
-                        if let Some(held) = model.geometry_mut().surface_mut(surface_id) {
-                            *held = wider.clone();
-                        }
-                        wider
-                    }
-                    None => SurfaceGeometry::Extrusion(swept),
-                }
-            }
-            other => other,
-        };
-        // Baked into the world: the face's surface lives wherever its
-        // placement puts it, and everything below (the march, the legs,
-        // the melt) speaks world coordinates.
-        let surface = {
-            use ogeom_geom::Transformable as _;
-            let placement = face.transform(model.datums())?;
-            stored.transformed(&placement, tol)?
-        };
-        // Any host the ball can seat on: the analytics invert their charts
-        // in closed form, and a fitted patch (or a swept or revolved
-        // surface) inverts by projection, warm-started from the last
-        // station. A trimmed or offset host is its basis with a story the
-        // march does not read.
-        if matches!(
-            surface,
-            SurfaceGeometry::Trimmed(_) | SurfaceGeometry::Offset(_)
-        ) {
-            ogeom_bail!(
-                Construction,
-                "a marched fillet's hosts must carry their own chart; a trimmed \
-                 or offset host is refused; see docs/CAPABILITIES.md, fillet.edge-blends"
-            );
-        }
-        let sign = if face.orientation() == Orientation::Reversed {
-            -1.0
-        } else {
-            1.0
-        };
-        hosts.push((face, surface, sign));
-    }
-    let [
-        (face_first, first, sign_first),
-        (face_second, second, sign_second),
-    ] = hosts.as_slice()
-    else {
-        ogeom_bail!(
-            Construction,
-            "a marched fillet needs an edge shared by exactly two faces, \
-             found {}",
-            hosts.len()
-        );
-    };
-    let (face_first, face_second) = (face_first.clone(), face_second.clone());
-    let (first, second) = (first.clone(), second.clone());
-    let (sign_first, sign_second) = (*sign_first, *sign_second);
-
-    // An open conic arc is either a piece of a crease the boolean split at
-    // its hosts' seams, whose seat is the whole loop (the apex ring runs
-    // the conic's full turn, and every arc of the old seat melts with the
-    // legs), or a crease that ends where its hosts stop meeting, whose seat
-    // is the arc alone. The two host faces answer: a crease that walks back
-    // to its start through the edges they share is the loop. The arc alone
-    // is marched on the conic trimmed some radii past both of its ends, in
-    // the conic's own parameters, so the ball can run out past an end that
-    // terminates and the edge's window still reads on it. A fitted seam
-    // already spans its loop.
-    let conic = matches!(stored_guide, Curve::Ellipse(_) | Curve::Circle(_));
-    let (guide, guide_range) = if closed {
-        (stored_guide, edge_range)
-    } else if conic
-        && crease_loop(
-            model,
-            edge,
-            &stored_guide,
-            edge_range,
-            [&face_first, &face_second],
-            tol,
-        )?
-        .is_none()
-    {
-        let arc = arc_run_out(&stored_guide, edge_range, radius, tol)?;
-        let domain = arc.domain();
-        (arc, domain)
-    } else {
-        match &stored_guide {
-            Curve::Ellipse(e) => {
-                let full: Curve = ogeom_geom::EllipseCurve::new(e.ellipse()).into();
-                let domain = full.domain();
-                (full, domain)
-            }
-            _ => {
-                let domain = stored_guide.domain();
-                (stored_guide, domain)
-            }
-        }
-    };
-    let (loops, march_guide) = closure_of(&guide, guide_range)?;
-
-    // A seat the boolean split into arcs at its hosts' seams, on a solid
-    // whose curves are the arcs themselves (a converted solid, an imported
-    // one) has no stored loop to run the whole turn on. The loop is put
-    // back through the neighbours the two hosts share, each continuing the
-    // last tangentially, and the seat becomes the whole turn as it is
-    // where the stored curve carries it.
-    let (guide, guide_range, edge_range, loops, march_guide) =
-        if !closed && ends_apart(&guide, guide_range, tol) {
-            match loop_through_neighbours(
-                model,
-                edge,
-                &guide,
-                edge_range,
-                [&face_first, &face_second],
-                tol,
-            )? {
-                Some((whole, seat)) => {
-                    // The whole turn is a loop where the arc was not: decided
-                    // again, or the station on the seam's column is bracketed
-                    // the long way round the turn and re-solved on its far side.
-                    let domain = whole.domain();
-                    let (loops, march_guide) = closure_of(&whole, domain)?;
-                    (whole, domain, seat, loops, march_guide)
-                }
-                None => (guide, guide_range, edge_range, loops, march_guide),
-            }
-        } else {
-            (guide, guide_range, edge_range, loops, march_guide)
-        };
+    let MarchedSeat {
+        faces: [face_first, face_second],
+        hosts: [(first, sign_first), (second, sign_second)],
+        guide,
+        guide_range,
+        edge_range,
+        closed,
+        loops,
+        march_guide,
+    } = marched_seat(model, solid, edge, radius, tol)?;
     // An open seat on a spline that ends with the edge (a converted
     // solid's every edge) leaves the ball nowhere to run out: the guide
     // is continued past both ends by a few radii. A run-out's caps and its
@@ -623,12 +406,290 @@ fn marched_fillet_by(
     )
 }
 
-/// A band's ball: one radius all along, or a radius by the seat's own
-/// curve's parameter.
+/// The seat a marched blend on `edge` stands on: its two host faces, their
+/// surfaces placed in the world with their outward signs, and the crease
+/// the blend runs along. `radius` is how far the blend reaches off the
+/// edge: a fitted host is continued that far past its open sides, several
+/// times over, and written back as its face's own surface.
+pub(crate) struct MarchedSeat {
+    /// The two faces either side of the edge.
+    pub faces: [Shape; 2],
+    /// Their surfaces, placed, and their outward signs.
+    pub hosts: [(SurfaceGeometry, f64); 2],
+    /// The crease, the whole loop where the edge is a piece of one.
+    pub guide: Curve,
+    /// The crease's range.
+    pub guide_range: (f64, f64),
+    /// The edge's own stretch of the crease.
+    pub edge_range: (f64, f64),
+    /// Whether the edge closes on itself.
+    pub closed: bool,
+    /// Whether the crease comes back to its start.
+    pub loops: bool,
+    /// The loop refitted smooth through its join, where the crease is a
+    /// fitted seam whose ends meet at a corner.
+    pub march_guide: Option<Curve>,
+}
+
+/// Read the seat of a marched blend on `edge` of `solid`, reaching
+/// `radius` off it: [`MarchedSeat`].
+pub(crate) fn marched_seat(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<MarchedSeat> {
+    let (stored_guide, edge_range) = edge_curve(model, edge, tol)?;
+    let closed = ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
+    // A closed seat on a fitted seam (a bore's rim where it leaves a
+    // sphere, the two arcs of a boolean's seam joined end to end) is a
+    // loop whose join is a corner: the ends meet, the tangents do not. The
+    // march evaluates the guide's derivatives at every step and cannot
+    // cross a corner in them; it crawls onto the join and stalls. So the
+    // march steers by a *second* guide, the loop re-fitted smooth through
+    // its join. It guides the section planes only: the ball seats on the
+    // exact hosts, and every edge the wedge builds rides the seat's own
+    // curve, so its fit error costs the blend nothing it can measure.
+    let closure_of =
+        |guide: &Curve, guide_range: (f64, f64)| -> OgeomResult<(bool, Option<Curve>)> {
+            let loops = closed || {
+                let (lo, hi) = guide_range;
+                guide
+                    .point_at(lo, tol)
+                    .and_then(|p| guide.point_at(hi, tol).map(|q| p.distance(q)))
+                    .is_ok_and(|d| d <= tol.confusion() * 10.0)
+            };
+            let march_guide: Option<Curve> =
+                if loops && matches!(guide, Curve::BSpline(b) if !b.is_periodic()) {
+                    const SAMPLES: usize = 256;
+                    let (lo, hi) = guide_range;
+                    let mut points: Vec<Point> = Vec::with_capacity(SAMPLES + 1);
+                    for i in 0..=SAMPLES {
+                        #[allow(clippy::cast_precision_loss)]
+                        let t = lo + (hi - lo) * ((i % SAMPLES) as f64) / (SAMPLES as f64);
+                        points.push(guide.point_at(t, tol)?);
+                    }
+                    let fitted =
+                        ogeom_geom::fit::fit_points_closed(&points, 3, tol.confusion() * 1e2, tol)?;
+                    fitted.met.then_some(Curve::BSpline(fitted.curve))
+                } else {
+                    None
+                };
+            Ok((loops, march_guide))
+        };
+
+    // The two host faces at the edge, with their surfaces and outward signs.
+    let mut hosts: Vec<(Shape, SurfaceGeometry, f64)> = Vec::new();
+    for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
+        let touches = explore(model, &face, Filter::OfType(ShapeType::Edge))?
+            .iter()
+            .any(|e| crate::support::same_occurrence(model, e, edge, tol));
+        if !touches {
+            continue;
+        }
+        let Some(node) = model.node(&face) else {
+            ogeom_bail!(Dangling, "face is not in this model");
+        };
+        let NodeData::Face(data) = node.data() else {
+            ogeom_bail!(Construction, "face node holds no face data");
+        };
+        let surface_id = data.surface;
+        let Some(stored) = model.geometry().surface(surface_id).cloned() else {
+            ogeom_bail!(Dangling, "face refers to a surface not in this model");
+        };
+        // A fitted patch ends where its face ends, and a ball rolling out
+        // through a wall needs the host to go on past it: the patch is
+        // continued on every open side by a few radii, as itself, and
+        // *written back* as the face's own surface (the same parameters,
+        // a wider window, exactly as a reader widens a window to hold a
+        // face), so the legs built on it and the face they melt with
+        // stand on one chart, as an analytic host's windowed copy does.
+        let stored = match stored {
+            SurfaceGeometry::BSpline(patch) => {
+                let wider =
+                    SurfaceGeometry::BSpline(continued_patch(patch, radius * HOST_REACH, tol));
+                if let Some(held) = model.geometry_mut().surface_mut(surface_id) {
+                    *held = wider.clone();
+                }
+                wider
+            }
+            // A wall swept from a fitted profile ends where its profile
+            // ends, which is where the crease along its rim ends too: the
+            // ball's section past that vertex, where its arc plane leans,
+            // has no wall to stand on. The profile is continued the same
+            // way, under the same parameters, and the wall swept over it.
+            SurfaceGeometry::Extrusion(swept) => {
+                use ogeom_geom::Surface as _;
+                let wider = match swept.curve() {
+                    Curve::BSpline(profile)
+                        if !profile.is_periodic()
+                            && ends_apart(swept.curve(), profile.domain(), tol) =>
+                    {
+                        let longer = continued_curve(profile.clone(), radius * WALL_REACH, tol);
+                        let (_, extent) = swept.domain();
+                        ogeom_geom::ExtrusionSurface::over(
+                            Curve::BSpline(longer),
+                            swept.direction(),
+                            extent,
+                        )
+                        .ok()
+                    }
+                    _ => None,
+                };
+                match wider {
+                    Some(wider) => {
+                        let wider = SurfaceGeometry::Extrusion(Box::new(wider));
+                        if let Some(held) = model.geometry_mut().surface_mut(surface_id) {
+                            *held = wider.clone();
+                        }
+                        wider
+                    }
+                    None => SurfaceGeometry::Extrusion(swept),
+                }
+            }
+            other => other,
+        };
+        // Baked into the world: the face's surface lives wherever its
+        // placement puts it, and everything below (the march, the legs,
+        // the melt) speaks world coordinates.
+        let surface = {
+            use ogeom_geom::Transformable as _;
+            let placement = face.transform(model.datums())?;
+            stored.transformed(&placement, tol)?
+        };
+        // Any host the ball can seat on: the analytics invert their charts
+        // in closed form, and a fitted patch (or a swept or revolved
+        // surface) inverts by projection, warm-started from the last
+        // station. A trimmed or offset host is its basis with a story the
+        // march does not read.
+        if matches!(
+            surface,
+            SurfaceGeometry::Trimmed(_) | SurfaceGeometry::Offset(_)
+        ) {
+            ogeom_bail!(
+                Construction,
+                "a marched fillet's hosts must carry their own chart; a trimmed \
+                 or offset host is refused; see docs/CAPABILITIES.md, fillet.edge-blends"
+            );
+        }
+        let sign = if face.orientation() == Orientation::Reversed {
+            -1.0
+        } else {
+            1.0
+        };
+        hosts.push((face, surface, sign));
+    }
+    let [
+        (face_first, first, sign_first),
+        (face_second, second, sign_second),
+    ] = hosts.as_slice()
+    else {
+        ogeom_bail!(
+            Construction,
+            "a marched fillet needs an edge shared by exactly two faces, \
+             found {}",
+            hosts.len()
+        );
+    };
+    let (face_first, face_second) = (face_first.clone(), face_second.clone());
+    let (first, second) = (first.clone(), second.clone());
+    let (sign_first, sign_second) = (*sign_first, *sign_second);
+
+    // An open conic arc is either a piece of a crease the boolean split at
+    // its hosts' seams, whose seat is the whole loop (the apex ring runs
+    // the conic's full turn, and every arc of the old seat melts with the
+    // legs), or a crease that ends where its hosts stop meeting, whose seat
+    // is the arc alone. The two host faces answer: a crease that walks back
+    // to its start through the edges they share is the loop. The arc alone
+    // is marched on the conic trimmed some radii past both of its ends, in
+    // the conic's own parameters, so the ball can run out past an end that
+    // terminates and the edge's window still reads on it. A fitted seam
+    // already spans its loop.
+    let conic = matches!(stored_guide, Curve::Ellipse(_) | Curve::Circle(_));
+    let (guide, guide_range) = if closed {
+        (stored_guide, edge_range)
+    } else if conic
+        && crease_loop(
+            model,
+            edge,
+            &stored_guide,
+            edge_range,
+            [&face_first, &face_second],
+            tol,
+        )?
+        .is_none()
+    {
+        let arc = arc_run_out(&stored_guide, edge_range, radius, tol)?;
+        let domain = arc.domain();
+        (arc, domain)
+    } else {
+        match &stored_guide {
+            Curve::Ellipse(e) => {
+                let full: Curve = ogeom_geom::EllipseCurve::new(e.ellipse()).into();
+                let domain = full.domain();
+                (full, domain)
+            }
+            _ => {
+                let domain = stored_guide.domain();
+                (stored_guide, domain)
+            }
+        }
+    };
+    let (loops, march_guide) = closure_of(&guide, guide_range)?;
+
+    // A seat the boolean split into arcs at its hosts' seams, on a solid
+    // whose curves are the arcs themselves (a converted solid, an imported
+    // one) has no stored loop to run the whole turn on. The loop is put
+    // back through the neighbours the two hosts share, each continuing the
+    // last tangentially, and the seat becomes the whole turn as it is
+    // where the stored curve carries it.
+    let (guide, guide_range, edge_range, loops, march_guide) =
+        if !closed && ends_apart(&guide, guide_range, tol) {
+            match loop_through_neighbours(
+                model,
+                edge,
+                &guide,
+                edge_range,
+                [&face_first, &face_second],
+                tol,
+            )? {
+                Some((whole, seat)) => {
+                    // The whole turn is a loop where the arc was not: decided
+                    // again, or the station on the seam's column is bracketed
+                    // the long way round the turn and re-solved on its far side.
+                    let domain = whole.domain();
+                    let (loops, march_guide) = closure_of(&whole, domain)?;
+                    (whole, domain, seat, loops, march_guide)
+                }
+                None => (guide, guide_range, edge_range, loops, march_guide),
+            }
+        } else {
+            (guide, guide_range, edge_range, loops, march_guide)
+        };
+    Ok(MarchedSeat {
+        faces: [face_first, face_second],
+        hosts: [(first, sign_first), (second, sign_second)],
+        guide,
+        guide_range,
+        edge_range,
+        closed,
+        loops,
+        march_guide,
+    })
+}
+
+/// What crosses a band from one touch to the other: a ball of one radius
+/// all along, a ball whose radius follows the seat's own curve's parameter,
+/// or a bevel's chord.
 #[derive(Clone, Copy)]
 pub(crate) enum Ball<'a> {
     Constant(f64),
     Law(&'a dyn Fn(f64) -> OgeomResult<f64>),
+    /// No ball: the straight chord between the touches, a bevel. The
+    /// station at a guide parameter, near the given host parameters, as
+    /// the march's state: both touches' parameters and the guide's.
+    Ruled(&'a dyn Fn(f64, [f64; 4]) -> Option<[f64; 5]>),
 }
 
 impl Ball<'_> {
@@ -637,6 +698,7 @@ impl Ball<'_> {
         match self {
             Self::Constant(radius) => Ok(radius),
             Self::Law(law) => law(t),
+            Self::Ruled(_) => ogeom_bail!(Invariant, "a bevel's section has no ball"),
         }
     }
 
@@ -644,7 +706,7 @@ impl Ball<'_> {
     const fn constant(self) -> Option<f64> {
         match self {
             Self::Constant(radius) => Some(radius),
-            Self::Law(_) => None,
+            Self::Law(_) | Self::Ruled(_) => None,
         }
     }
 }
@@ -800,17 +862,20 @@ pub(crate) fn closed_band_wedge(
                 blend.on_second[0].1,
             ];
             let station_at = |w: f64| -> Option<([f64; 5], f64)> {
-                let x = crate::march::seat_section(
-                    first,
-                    second,
-                    ball.at(fold(w)).ok()?,
-                    guide,
-                    blend.sides,
-                    fold(w),
-                    near,
-                    tol,
-                )
-                .ok()?;
+                let x = match ball {
+                    Ball::Ruled(station) => station(fold(w), near)?,
+                    _ => crate::march::seat_section(
+                        first,
+                        second,
+                        ball.at(fold(w)).ok()?,
+                        guide,
+                        blend.sides,
+                        fold(w),
+                        near,
+                        tol,
+                    )
+                    .ok()?,
+                };
                 Some((x, signed(u_of(&x))))
             };
             let mut bracket = (unwrap(blend.along[n - 1]), unwrap(blend.along[1]));
@@ -835,15 +900,19 @@ pub(crate) fn closed_band_wedge(
                     }
                 }
                 if let Some((x, w)) = solved
-                    && let (Ok(p1), Ok(p2), Ok((du, dv)), Ok(radius)) = (
+                    && let (Ok(p1), Ok(p2), Ok((du, dv))) = (
                         first.point_at(x[0], x[1], tol),
                         second.point_at(x[2], x[3], tol),
                         first.d1_at(x[0], x[1], tol),
-                        ball.at(fold(w)),
                     )
+                    && let Some(centre) = match ball {
+                        Ball::Ruled(_) => Some(p1.midpoint(p2)),
+                        _ => ball.at(fold(w)).ok().map(|radius| {
+                            let n1 = du.cross(dv);
+                            p1 + n1 / n1.magnitude() * (f64::from(blend.sides.first) * radius)
+                        }),
+                    }
                 {
-                    let n1 = du.cross(dv);
-                    let centre = p1 + n1 / n1.magnitude() * (f64::from(blend.sides.first) * radius);
                     blend.spine[0] = centre;
                     blend.touch_first[0] = p1;
                     blend.touch_second[0] = p2;
@@ -892,7 +961,10 @@ pub(crate) fn closed_band_wedge(
     // The blend surface: each station's exact ball arc, the loop of stations
     // fitted *closed*: the join is C1 wherever the seam lands, so anchoring
     // the seam column costs nothing.
-    let (fitted, rows) = fit_closed_band(&blend, ball.constant(), fit_target, tol)?;
+    let (fitted, rows) = match ball {
+        Ball::Ruled(_) => fit_closed_ruled(&blend, fit_target, tol)?,
+        _ => fit_closed_band(&blend, ball.constant(), fit_target, tol)?,
+    };
     if !fitted.met {
         ogeom_bail!(
             NotDone,
@@ -1109,7 +1181,22 @@ pub(crate) fn closed_band_wedge(
         let mid_v = f64::midpoint(v_dom.0, v_dom.1);
         let p = blend_geo.point_at(mid_u, mid_v, tol)?;
         let (du, dv) = blend_geo.d1_at(mid_u, mid_v, tol)?;
-        let towards_centre = (touching_ball(&blend.spine, p) - p).dot(du.cross(dv)) > 0.0;
+        // A bevel's wedge lies between it and the crease: its outward
+        // points away from the crease, as a ball's centre lies.
+        let reference = match ball {
+            Ball::Ruled(_) => {
+                let nearest = blend
+                    .spine
+                    .iter()
+                    .enumerate()
+                    .min_by(|a, b| a.1.distance(p).total_cmp(&b.1.distance(p)))
+                    .map_or(0, |(i, _)| i);
+                let crease = guide.point_at(blend.along[nearest], tol)?;
+                p + (p - crease)
+            }
+            _ => touching_ball(&blend.spine, p),
+        };
+        let towards_centre = (reference - p).dot(du.cross(dv)) > 0.0;
         if towards_centre {
             face
         } else {
@@ -1179,6 +1266,39 @@ pub(crate) fn owned_once(blend: &mut crate::march::MarchedBlend, tol: Tolerances
         blend.on_second.pop();
         blend.along.pop();
     }
+}
+
+/// The closed ruled band through each station's chord from the first
+/// support's touch to the second's, as [`fit_closed_band`] fits the
+/// ball's arcs: `u` across, `v` round the loop, closed, at the target
+/// `aim`.
+pub(crate) fn fit_closed_ruled(
+    blend: &crate::march::MarchedBlend,
+    aim: f64,
+    tol: Tolerances,
+) -> OgeomResult<(
+    ogeom_geom::fit::Fitted<ogeom_geom::BSplineSurface>,
+    Vec<Vec<Point>>,
+)> {
+    let n = blend.len();
+    let mut rows: Vec<Vec<Point>> = (0..ACROSS).map(|_| Vec::with_capacity(n + 1)).collect();
+    for i in 0..=n {
+        let at = i % n;
+        let (a, b) = (blend.touch_first[at], blend.touch_second[at]);
+        if a.distance(b) <= tol.confusion() {
+            ogeom_bail!(Construction, "a bevel's section collapsed at station {at}");
+        }
+        for (k, row) in rows.iter_mut().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let s = (k as f64) / ((ACROSS - 1) as f64);
+            row.push(a + (b - a) * s);
+        }
+    }
+    let loops: Vec<Vec<Point>> = (0..=n)
+        .map(|i| (0..ACROSS).map(|k| rows[k][i]).collect())
+        .collect();
+    let fitted = ogeom_geom::fit::fit_surface_grid_closed_v_chordal(&loops, 3, aim, tol)?;
+    Ok((fitted, rows))
 }
 
 /// The closed band through each station's exact ball arc, fitted round
@@ -4230,7 +4350,7 @@ fn period_v_of(surface: &SurfaceGeometry) -> Option<f64> {
 }
 
 /// Closed-form chart inversion, unwrapped against the previous sample.
-fn chart_of(
+pub(crate) fn chart_of(
     surface: &SurfaceGeometry,
     p: Point,
     prev: Option<Point2>,
