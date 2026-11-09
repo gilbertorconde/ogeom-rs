@@ -1,6 +1,6 @@
 //! The chamfer on a seat only the marching machinery speaks: a crease
 //! between two faces with no closed form (a bore's rim where it leaves a
-//! drum), closed on itself.
+//! drum, a spline's crease along a wall).
 //!
 //! No ball is rolled. At each station along the crease the section plane
 //! stands square to it, and each face meets that plane in a section curve
@@ -141,10 +141,11 @@ impl Walk<'_, '_> {
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
-/// the seat is not one closed crease between two faces, a named face does
-/// not meet the edge, a leg's walk leaves its face or the plane, a contact
-/// stands off its face at a station, or the angle's line never meets the
-/// other face; [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone)
+/// the seat is not a crease between two faces, a named face does not meet
+/// the edge, a leg's walk leaves its face or the plane anywhere along the
+/// edge, a contact stands off its face over the edge's own stretch, the
+/// angle's line never meets the other face, or an open seat's run-out is
+/// refused as the marched fillet's is; [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone)
 /// where the band through the chords does not meet its fit target.
 pub(crate) fn marched_bevel(
     model: &mut Model,
@@ -169,15 +170,17 @@ pub(crate) fn marched_bevel(
         guide,
         guide_range,
         edge_range,
+        closed,
         loops,
         ..
     } = marched_seat(model, solid, edge, reach, tol)?;
-    if !loops {
-        ogeom_bail!(
-            Construction,
-            "a chamfer on a marched seat that does not close on itself is not built"
-        );
-    }
+    // An open seat runs out past the edge's ends, along the crease
+    // continued where it ends with the edge.
+    let (guide, guide_range) = if loops {
+        (guide, guide_range)
+    } else {
+        crate::marched::run_out_guide(guide, guide_range, closed, [&first, &second], reach, tol)?
+    };
     let side = |face: &Shape| -> OgeomResult<usize> {
         if faces[0].is_same(face) {
             Ok(0)
@@ -251,11 +254,47 @@ pub(crate) fn marched_bevel(
         station_at(&hosts, &guide, law, convex, w, near, tol)
     };
 
-    // Stations evenly over the loop, as many as the band's fit needs.
+    // Stations evenly over the crease, as many as the band's fit needs:
+    // round the whole loop, or over the run around the edge on an open
+    // seat, which stops where a station no longer seats.
     let aim = crate::marched::band_fit_target(tol);
     let (lo, hi) = guide_range;
+    let mid = f64::midpoint(edge_range.0, edge_range.1);
     let mut count: u32 = 64;
     let blend = loop {
+        let mut found: Vec<Option<[f64; 5]>> = Vec::with_capacity(count as usize);
+        let mut near = None;
+        for k in 0..count {
+            let w = (hi - lo).mul_add(f64::from(k) / f64::from(count), lo);
+            let x = station(w, near);
+            if let Some(x) = x {
+                near = Some([x[0], x[1], x[2], x[3]]);
+            }
+            found.push(x);
+        }
+        if !loops {
+            // The run that holds the edge's middle, the rest dropped.
+            let at = |k: usize| {
+                let k = u32::try_from(k).unwrap_or(u32::MAX);
+                (hi - lo).mul_add(f64::from(k) / f64::from(count), lo)
+            };
+            let centre = (0..found.len())
+                .min_by(|a, b| (at(*a) - mid).abs().total_cmp(&(at(*b) - mid).abs()))
+                .unwrap_or(0);
+            let mut first_kept = centre;
+            while first_kept > 0 && found[first_kept - 1].is_some() {
+                first_kept -= 1;
+            }
+            let mut last_kept = centre;
+            while last_kept + 1 < found.len() && found[last_kept + 1].is_some() {
+                last_kept += 1;
+            }
+            for (k, x) in found.iter_mut().enumerate() {
+                if k < first_kept || k > last_kept {
+                    *x = None;
+                }
+            }
+        }
         let mut blend = MarchedBlend {
             spine: Vec::new(),
             on_first: Vec::new(),
@@ -267,19 +306,25 @@ pub(crate) fn marched_bevel(
                 first: 1,
                 second: 1,
             },
-            stopped: BlendStop::Closed,
+            stopped: if loops {
+                BlendStop::Closed
+            } else {
+                BlendStop::RanPastTheGuide
+            },
         };
-        let mut near = None;
-        for k in 0..count {
+        for (k, x) in found.into_iter().enumerate() {
+            let k = u32::try_from(k).unwrap_or(u32::MAX);
             let w = (hi - lo).mul_add(f64::from(k) / f64::from(count), lo);
-            let Some(x) = station(w, near) else {
-                ogeom_bail!(
-                    Construction,
-                    "a chamfer's leg runs off its face's section at {:?}",
-                    guide.point_at(w, tol)?
-                );
+            let Some(x) = x else {
+                if loops {
+                    ogeom_bail!(
+                        Construction,
+                        "a chamfer's leg runs off its face's section at {:?}",
+                        guide.point_at(w, tol)?
+                    );
+                }
+                continue;
             };
-            near = Some([x[0], x[1], x[2], x[3]]);
             let p1 = first.point_at(x[0], x[1], tol)?;
             let p2 = second.point_at(x[2], x[3], tol)?;
             blend.spine.push(p1.midpoint(p2));
@@ -289,15 +334,32 @@ pub(crate) fn marched_bevel(
             blend.touch_second.push(p2);
             blend.along.push(w);
         }
-        let fitted = crate::marched::fit_closed_ruled(&blend, aim, tol)?.0;
-        if fitted.met || count >= 1024 {
+        if blend.len() < 8 {
+            ogeom_bail!(
+                Construction,
+                "a chamfer's sections do not seat along the edge"
+            );
+        }
+        let met = if loops {
+            crate::marched::fit_closed_ruled(&blend, aim, tol)?.0.met
+        } else {
+            crate::marched::fit_open_ruled(&blend, tol).is_ok()
+        };
+        if met || count >= 1024 {
             break blend;
         }
         count *= 2;
     };
+    if !loops && (blend.along[0] > edge_range.0 || blend.along[blend.len() - 1] < edge_range.1) {
+        ogeom_bail!(
+            Construction,
+            "a chamfer's sections do not seat all along the edge"
+        );
+    }
 
-    // Each contact stands on its face at every station, or the wedge would
-    // cut past the face.
+    // Each contact over the edge's own stretch stands on its face, or the
+    // wedge would cut past the face; past an open edge's ends the run-out
+    // leaves the faces by design.
     keeping_face_meshes(|| -> OgeomResult<()> {
         let deflection = ogeom_mesh::Deflection {
             chord: reach * 1e-2,
@@ -307,7 +369,10 @@ pub(crate) fn marched_bevel(
             (&blend.touch_first, &faces[0]),
             (&blend.touch_second, &faces[1]),
         ] {
-            for p in touches {
+            for (p, w) in touches.iter().zip(&blend.along) {
+                if !loops && (*w < edge_range.0 || *w > edge_range.1) {
+                    continue;
+                }
                 if ogeom_algo::classify_on_face(model, face, *p, deflection, tol)?
                     == ogeom_algo::Containment::Out
                 {
@@ -322,6 +387,22 @@ pub(crate) fn marched_bevel(
     })?;
 
     let ruled = |w: f64, near: [f64; 4]| station(w, Some(near));
+    if !loops {
+        return crate::marched::open_ruled_wedge(
+            model,
+            solid,
+            edge,
+            blend,
+            &guide,
+            edge_range,
+            [(&first, sign_first), (&second, sign_second)],
+            [&faces[0], &faces[1]],
+            reach,
+            &ruled,
+            convex,
+            tol,
+        );
+    }
     crate::marched::closed_band_wedge(
         model,
         solid,
