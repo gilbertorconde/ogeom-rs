@@ -27,6 +27,31 @@ bump may break the API and a patch bump may not.
     sections differ (a drafted wall beside a square one), are refused by
     name under a law, each with what the construction lacks there.
 
+- **`blend_edges` rounds and bevels edges in one request, closing a vertex
+  where they meet as one corner whatever the request's order.** (#717)
+  - A request of one kind is `fillet_edges_with`, or `chamfer_edges_cornered`
+    with the corner style given, exactly.
+  - Where both kinds are asked, the bevels are cut and then the rounds, each
+    kind in its edges' node order. At a vertex where only one kind meets,
+    that is what the kind's own calls build.
+  - At a vertex where a round meets a bevel and every edge there is blended,
+    each band stops at the least setback where its section clears every
+    other band, and the corner is closed by one patch. That is the setback
+    corner, extended to bevels.
+  - The patch is tangent to each round's band, and to each face along a trim
+    between two rounds. It meets each bevel's end, and each trim from it, in
+    position only: the bevel meets its faces in a crease, and the patch
+    running along the bevel's end leaves each face at the bevel's angle.
+  - On a box corner of a bevel and two rounds, or two bevels and a round, at
+    2:
+    - every order of the request gives the same solid, bit for bit;
+    - the patch is tangent to the rounds within 3e-5 rad;
+    - every face away from the corner is on the same surface as the separate
+      build.
+  - A round meeting a bevel at a vertex where an edge is left sharp is
+    refused by name: the patch closing the round's opening would cross the
+    bevel's sharp end line, and would need two tangent planes there.
+
 - **`fillet_edges_variable` rounds a chain of straight edges turning
   where they meet.** (#716)
   - A block's top loop, an L-block's, or two edges meeting at a corner,
