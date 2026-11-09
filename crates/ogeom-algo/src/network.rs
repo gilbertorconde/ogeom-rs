@@ -610,6 +610,9 @@ pub fn fit_network_chained(
     if !topo.spread_corners.is_empty() {
         tries.push(Corners::Spread);
     }
+    if !topo.mixed.is_empty() {
+        tries.push(Corners::Mixed);
+    }
     tries.push(Corners::Loose);
     // Where there are fans, each way is first tried with them held too,
     // the near-tangent corners' way only kept where it comes within the
@@ -625,6 +628,10 @@ pub fn fit_network_chained(
         fit.corners = corners;
         fit.fans = fans;
         let (spans, current, ended) = fit.refine(options)?;
+        eprintln!(
+            "DBGTRY {corners:?} fans {fans} ended {ended:?} held {}",
+            current.held
+        );
         if (ended == Ended::Met && current.held) || (corners == Corners::Loose && !fans) {
             settled = Some((spans, current, ended));
             break;
@@ -1537,6 +1544,11 @@ enum Corners {
     /// corner, `γ` linear along each whole curve, every knot inside the
     /// curve's strip doubled and the curve held `C²` across each.
     Spread,
+    /// The points where three-sided patches meet four-sided ones, each
+    /// curve into such a point held by a gluing whose terms run along the
+    /// whole curve, every knot inside its strip doubled and the curve held
+    /// `C²` across each.
+    Mixed,
 }
 
 /// A curve the caller holds, read at a parameter over the unit interval.
@@ -2094,6 +2106,69 @@ fn gamma_row(cross: &[(usize, f64)], slope: &[(usize, f64)], gamma: f64) -> Row 
     row.into_iter().filter(|t| t.1 != 0.0).collect()
 }
 
+/// The rows holding the poles `slots` in one plane through the pole `v`,
+/// laid out as they lie in `loose` on the plane they lie nearest there:
+/// each held to two of them, the anchors, as
+/// `P − (1 − α − β) V − α A − β B = 0`, `α` and `β` its coordinates there
+/// against theirs, so the plane and the layout's scale and shear stay free
+/// through `A` and `B`; `None` where the poles do not spread over a plane.
+fn plane_rows(loose: &[Point], v: usize, slots: &[usize]) -> Option<Vec<Row>> {
+    let e = |slot: usize| loose[slot] - loose[v];
+    let mut spread = nalgebra::Matrix3::<f64>::zeros();
+    for &slot in slots {
+        let d = e(slot);
+        let d = nalgebra::Vector3::new(d.x, d.y, d.z);
+        spread += d * d.transpose();
+    }
+    let eigen = nalgebra::SymmetricEigen::new(spread);
+    let least = (0..3).min_by(|&i, &j| eigen.eigenvalues[i].total_cmp(&eigen.eigenvalues[j]))?;
+    let n = eigen.eigenvectors.column(least);
+    let normal = Vector::new(n[0], n[1], n[2]);
+    let first = e(slots[0]);
+    let x = first - normal * first.dot(normal);
+    let x = x / x.magnitude();
+    let y = normal.cross(x);
+    let flats: Vec<(f64, f64)> = slots
+        .iter()
+        .map(|&s| {
+            let d = e(s);
+            (d.dot(x), d.dot(y))
+        })
+        .collect();
+    let (ax, ay) = flats[0];
+    let cross = |(bx, by): (f64, f64)| ax.mul_add(by, -(ay * bx));
+    let b = (1..flats.len()).max_by(|&i, &j| {
+        let sine = |k: usize| {
+            let (bx, by) = flats[k];
+            cross(flats[k]).abs() / bx.hypot(by)
+        };
+        sine(i).total_cmp(&sine(j))
+    })?;
+    let det = cross(flats[b]);
+    if !(det.abs() > 0.0 && det.is_finite()) {
+        return None;
+    }
+    let (bx, by) = flats[b];
+    let mut rows = Vec::new();
+    for (i, &(px, py)) in flats.iter().enumerate() {
+        if i == 0 || i == b {
+            continue;
+        }
+        let alpha = px.mul_add(by, -(py * bx)) / det;
+        let beta = ax.mul_add(py, -(ay * px)) / det;
+        if !(alpha.is_finite() && beta.is_finite()) {
+            return None;
+        }
+        rows.push(vec![
+            (slots[i], 1.0),
+            (slots[0], -alpha),
+            (slots[b], -beta),
+            (v, alpha + beta - 1.0),
+        ]);
+    }
+    Some(rows)
+}
+
 /// The rows holding curve `c` `C²` across each doubled knot inside it,
 /// `knots` its knots: its second derivative the same either side, scaled
 /// by the square of the width of the span before.
@@ -2285,6 +2360,16 @@ impl Fit<'_> {
                     None => held = false,
                 }
             }
+            Corners::Mixed => {
+                let tangent = self.tangency(&layout, &loose, &junctions, &lines, &mut [])?;
+                rows = junction_rows(&tangent.relaxed);
+                rows.extend(tangent.rows);
+                triples = tangent.held;
+                match self.mixed_rows(&layout, &loose, &curve_knots) {
+                    Some(mixed) => rows.extend(mixed),
+                    None => held = false,
+                }
+            }
             Corners::Spans => {
                 let mut related: Vec<Related> = self
                     .topo
@@ -2342,6 +2427,13 @@ impl Fit<'_> {
         let poles = self.solve(&layout, &locals, &basis)?;
         if self.fans && held {
             held = self.fans_regular(&layout, &patch_knots, &poles)?;
+        }
+        if self.corners == Corners::Mixed && held {
+            for mixed in &topo.mixed {
+                if !self.rings_regular(&layout, &patch_knots, &poles, mixed.vertex, &mixed.three)? {
+                    held = false;
+                }
+            }
         }
 
         let mut surfaces = Vec::with_capacity(self.patches.len());
@@ -2857,6 +2949,13 @@ impl Fit<'_> {
         if self.corners == Corners::Spread {
             for (_, curves) in &topo.spread_corners {
                 for &c in curves {
+                    doubled[topo.curve_strip[c][0]].every = true;
+                }
+            }
+        }
+        if self.corners == Corners::Mixed {
+            for mixed in &topo.mixed {
+                for &(c, _) in &mixed.curves {
                     doubled[topo.curve_strip[c][0]].every = true;
                 }
             }
@@ -3425,48 +3524,262 @@ impl Fit<'_> {
         poles: &[Point],
     ) -> OgeomResult<bool> {
         for fan in &self.topo.fans {
-            let at = poles[fan.vertex];
-            for &(p, k) in &fan.patches {
-                let ring: Vec<Vector> = self
-                    .fan_ring(layout, (p, k))
-                    .iter()
-                    .map(|&s| poles[s] - at)
-                    .collect();
-                let segments = ogeom_math::bspline::to_bezier_segments(
-                    &patch_knots[p][k % 2],
-                    &ring,
-                    self.tol,
-                )?;
-                // `(R − V) × R'` over each span as a quintic, from the
-                // cubic's poles `b` and its derivative's, `Δb`: each
-                // coefficient the sum of `C(3,i) C(2,j) b_i × Δb_j` over
-                // `i + j = k`, over `C(5,k)`, dropping the derivative's
-                // positive scale.
-                const CUBIC: [f64; 4] = [1.0, 3.0, 3.0, 1.0];
-                const QUADRATIC: [f64; 3] = [1.0, 2.0, 1.0];
-                const QUINTIC: [f64; 6] = [1.0, 5.0, 10.0, 10.0, 5.0, 1.0];
-                let mut coefficients = Vec::new();
-                for (_, b) in &segments {
-                    let d: Vec<Vector> = b.windows(2).map(|w| w[1] - w[0]).collect();
-                    for (n, &q) in QUINTIC.iter().enumerate() {
-                        let mut sum = Vector::ZERO;
-                        for (i, &ci) in CUBIC.iter().enumerate() {
-                            if let Some(j) = n.checked_sub(i)
-                                && j < 3
-                            {
-                                sum += b[i].cross(d[j]) * (ci * QUADRATIC[j]);
-                            }
-                        }
-                        coefficients.push(sum / q);
-                    }
-                }
-                let normal = coefficients.iter().fold(Vector::ZERO, |a, &c| a + c);
-                if !coefficients.iter().all(|c| c.dot(normal) > 0.0) {
-                    return Ok(false);
-                }
+            if !self.rings_regular(layout, patch_knots, poles, fan.vertex, &fan.patches)? {
+                return Ok(false);
             }
         }
         Ok(true)
+    }
+
+    /// Whether every three-sided patch of `patches`, each with its missing
+    /// side, shrunk to vertex `v`, has its normal there defined all along
+    /// that side and pointing one way: the limit normal is `(R − V) × R'`
+    /// along the row `R` of poles one in from the side, a spline whose
+    /// Bernstein coefficients, span by span, all on one side of the plane
+    /// bound it off nought.
+    fn rings_regular(
+        &self,
+        layout: &Layout,
+        patch_knots: &[[KnotVector; 2]],
+        poles: &[Point],
+        v: usize,
+        patches: &[(usize, usize)],
+    ) -> OgeomResult<bool> {
+        let at = poles[v];
+        for &(p, k) in patches {
+            let ring: Vec<Vector> = self
+                .fan_ring(layout, (p, k))
+                .iter()
+                .map(|&s| poles[s] - at)
+                .collect();
+            let segments =
+                ogeom_math::bspline::to_bezier_segments(&patch_knots[p][k % 2], &ring, self.tol)?;
+            // `(R − V) × R'` over each span as a quintic, from the
+            // cubic's poles `b` and its derivative's, `Δb`: each
+            // coefficient the sum of `C(3,i) C(2,j) b_i × Δb_j` over
+            // `i + j = k`, over `C(5,k)`, dropping the derivative's
+            // positive scale.
+            const CUBIC: [f64; 4] = [1.0, 3.0, 3.0, 1.0];
+            const QUADRATIC: [f64; 3] = [1.0, 2.0, 1.0];
+            const QUINTIC: [f64; 6] = [1.0, 5.0, 10.0, 10.0, 5.0, 1.0];
+            let mut coefficients = Vec::new();
+            for (_, b) in &segments {
+                let d: Vec<Vector> = b.windows(2).map(|w| w[1] - w[0]).collect();
+                for (n, &q) in QUINTIC.iter().enumerate() {
+                    let mut sum = Vector::ZERO;
+                    for (i, &ci) in CUBIC.iter().enumerate() {
+                        if let Some(j) = n.checked_sub(i)
+                            && j < 3
+                        {
+                            sum += b[i].cross(d[j]) * (ci * QUADRATIC[j]);
+                        }
+                    }
+                    coefficients.push(sum / q);
+                }
+            }
+            let normal = coefficients.iter().fold(Vector::ZERO, |a, &c| a + c);
+            if !coefficients.iter().all(|c| c.dot(normal) > 0.0) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// The rows holding tangent every curve into a point where three-sided
+    /// patches meet four-sided ones; `None` where the gluing cannot be read
+    /// off the fit `loose`.
+    ///
+    /// Across such a curve the three-sided patch's cross derivative `D₃`
+    /// vanishes at the point, its whole row there being the point, and the
+    /// four-sided patch's `D₄` does not, so no ratio fixed along the curve
+    /// serves. The patches share a tangent plane wherever
+    /// `a D₃ + b D₄ + c T = 0`, `T` the curve's own derivative, with
+    /// `a = 1 + a₁s`, `b = b₁s` and `c = c₁s + c₂s²` in the share `s` of the
+    /// way from the point, read off `loose` by least squares; `b` and `c`
+    /// vanish at the point, where `D₃` does. Every knot inside the curve's
+    /// strip is doubled, so `D₃` and `D₄` are `C¹` across them, and the
+    /// curve held `C²` across each by [`smooth_rows`], so `T` is too: the
+    /// left side is a `C¹` quartic spline, nought where it is nought with
+    /// its derivative at every knot and at the middle of every span. At
+    /// the point its value vanishes of itself and its derivative holds the
+    /// three-sided patch's row next to the point in the tangent plane the
+    /// curves span there. Round the point each curve's rows bring in the
+    /// pole of its three-sided patch's second row beside it, which no other
+    /// curve's rows hold, so the twists round the point close no cycle.
+    fn mixed_rows(
+        &self,
+        layout: &Layout,
+        loose: &[Point],
+        curve_knots: &[KnotVector],
+    ) -> Option<Vec<Row>> {
+        let topo = self.topo;
+        let mut rows = Vec::new();
+        for mixed in &topo.mixed {
+            let v = mixed.vertex;
+            // One tangent plane at the point: every curve's pole next to it
+            // laid out as in `loose` on the plane they lie nearest. The
+            // inner poles of each three-sided patch's row next to the point
+            // follow, each curve's rows putting the one beside it at a
+            // combination of the curve's pole and the four-sided patch's.
+            let mut slots = Vec::new();
+            for &(c, _) in &mixed.curves {
+                let n = layout.along(c);
+                let next = if topo.curve_ends[c].0 == v { 1 } else { n - 2 };
+                slots.push(layout.curve_slot(topo, c, next));
+            }
+            // A three-sided patch whose row next to the point crosses more
+            // than one span has poles in it no curve's rows reach.
+            for &side in &mixed.three {
+                let ring = self.fan_ring(layout, side);
+                if ring.len() > 4 {
+                    slots.extend_from_slice(&ring[2..ring.len() - 2]);
+                }
+            }
+            rows.extend(plane_rows(loose, v, &slots)?);
+            for &(c, d) in &mixed.curves {
+                let knots = &curve_knots[c];
+                let starts = topo.curve_ends[c].0 == v;
+                let (three, four) = (topo.users[c][d], topo.users[c][1 - d]);
+                // The curve's poles at `x`: each with the poles beside it in
+                // the three- and four-sided patches, and its basis value,
+                // slope and bend.
+                let terms = |x: f64| {
+                    let span = knots.span_unchecked(x);
+                    let basis = knots.basis_derivatives(span, x, 2);
+                    (0..=DEGREE)
+                        .map(|i| {
+                            let q = span - DEGREE + i;
+                            (
+                                layout.curve_slot(topo, c, q),
+                                self.beside(layout, three, c, q),
+                                self.beside(layout, four, c, q),
+                                basis[0][i],
+                                basis[1][i],
+                                basis[2][i],
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let share = |x: f64| if starts { x } else { 1.0 - x };
+                let sense = if starts { 1.0 } else { -1.0 };
+                let distinct = knots.distinct();
+                let mut at: Vec<f64> = Vec::new();
+                for w in distinct.windows(2) {
+                    for f in [0.0, 0.25, 0.5, 0.75] {
+                        at.push((w[1].0 - w[0].0).mul_add(f, w[0].0));
+                    }
+                }
+                at.push(distinct[distinct.len() - 1].0);
+                // `a₁, b₁, b₂, c₁, c₂, c₃` by least squares on `loose` over
+                // `at`.
+                let mut normal = nalgebra::SMatrix::<f64, 6, 6>::zeros();
+                let mut right = nalgebra::SVector::<f64, 6>::zeros();
+                for &x in &at {
+                    let s = share(x);
+                    if s <= 0.0 {
+                        continue;
+                    }
+                    let (mut d3, mut d4, mut t) = (Vector::ZERO, Vector::ZERO, Vector::ZERO);
+                    for &(own, b3, b4, value, slope, _) in &terms(x) {
+                        d3 += (loose[b3] - loose[own]) * value;
+                        d4 += (loose[b4] - loose[own]) * value;
+                        t += loose[own].to_vector() * slope;
+                    }
+                    let columns = [
+                        d3 * s,
+                        d4 * s,
+                        d4 * (s * s),
+                        t * s,
+                        t * (s * s),
+                        t * (s * s * s),
+                    ];
+                    for axis in 0..3 {
+                        let pick = |w: Vector| [w.x, w.y, w.z][axis];
+                        let row = nalgebra::SVector::<f64, 6>::from_fn(|i, _| pick(columns[i]));
+                        normal += row * row.transpose();
+                        right -= row * pick(d3);
+                    }
+                }
+                if std::env::var_os("OGEOM_MIXED_QUARTIC").is_some() {
+                    for i in [2, 5] {
+                        normal.row_mut(i).fill(0.0);
+                        normal.column_mut(i).fill(0.0);
+                        normal[(i, i)] = 1.0;
+                        right[i] = 0.0;
+                    }
+                }
+                let solved = normal.lu().solve(&right)?;
+                if solved.iter().any(|g| !g.is_finite()) {
+                    return None;
+                }
+                let g = |s: f64| {
+                    (
+                        solved[0].mul_add(s, 1.0),
+                        solved[2].mul_add(s * s, solved[1] * s),
+                        solved[5].mul_add(s * s * s, solved[4].mul_add(s * s, solved[3] * s)),
+                    )
+                };
+                let dg = |s: f64| {
+                    (
+                        solved[0] * sense,
+                        (2.0 * solved[2]).mul_add(s, solved[1]) * sense,
+                        (3.0 * solved[5]).mul_add(s * s, (2.0 * solved[4]).mul_add(s, solved[3]))
+                            * sense,
+                    )
+                };
+                let push = |rows: &mut Vec<Row>, row: BTreeMap<usize, f64>| {
+                    let row: Row = row.into_iter().filter(|e| e.1 != 0.0).collect();
+                    if !row.is_empty() {
+                        rows.push(row);
+                    }
+                };
+                // The value at `x`, and, with `width`, the derivative.
+                let value_row = |x: f64| {
+                    let (a, b, cc) = g(share(x));
+                    let mut row: BTreeMap<usize, f64> = BTreeMap::new();
+                    for &(own, b3, b4, value, slope, _) in &terms(x) {
+                        *row.entry(b3).or_insert(0.0) += a * value;
+                        *row.entry(b4).or_insert(0.0) += b * value;
+                        *row.entry(own).or_insert(0.0) += cc.mul_add(slope, -(a + b) * value);
+                    }
+                    row
+                };
+                let derivative_row = |x: f64, width: f64| {
+                    let (a, b, cc) = g(share(x));
+                    let (da, db, dc) = dg(share(x));
+                    let mut row: BTreeMap<usize, f64> = BTreeMap::new();
+                    for &(own, b3, b4, value, slope, bend) in &terms(x) {
+                        let three_weight = da.mul_add(value, a * slope);
+                        let four_weight = db.mul_add(value, b * slope);
+                        *row.entry(b3).or_insert(0.0) += width * three_weight;
+                        *row.entry(b4).or_insert(0.0) += width * four_weight;
+                        *row.entry(own).or_insert(0.0) +=
+                            width * (dc.mul_add(slope, cc * bend) - three_weight - four_weight);
+                    }
+                    row
+                };
+                // A `C¹` quintic spline: its value and derivative at every
+                // knot, and its value at the thirds of every span.
+                let last = distinct.len() - 1;
+                for (k, &(x, _)) in distinct.iter().enumerate() {
+                    push(&mut rows, value_row(x));
+                    let width = if k < last {
+                        distinct[k + 1].0 - x
+                    } else {
+                        x - distinct[k - 1].0
+                    };
+                    push(&mut rows, derivative_row(x, width));
+                    if k < last {
+                        let next = distinct[k + 1].0;
+                        for f in [1.0 / 3.0, 2.0 / 3.0] {
+                            push(&mut rows, value_row((next - x).mul_add(f, x)));
+                        }
+                    }
+                }
+                rows.extend(smooth_rows(layout, topo, c, knots));
+            }
+        }
+        Some(rows)
     }
 
     fn beside(&self, layout: &Layout, user: (usize, usize), c: usize, q: usize) -> usize {

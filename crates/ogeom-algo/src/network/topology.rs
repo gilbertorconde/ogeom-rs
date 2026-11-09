@@ -158,6 +158,12 @@ pub(super) struct Topology {
     /// patches: each with its curves and its patches, each patch with its
     /// missing side.
     pub fans: Vec<Fan>,
+    /// The mixed points: points inside the network where three-sided
+    /// patches, their missing sides shrunk there, meet four-sided patches
+    /// cornered there, every curve into the point between one of each,
+    /// smooth, crossing one strip and ending at its other end on the
+    /// network's border.
+    pub mixed: Vec<Mixed>,
     /// As [`plain`](Self::plain), and every curve into a fan.
     pub plain_fans: Holding,
     /// As [`spanned`](Self::spanned), and every curve into a fan.
@@ -173,6 +179,18 @@ pub(super) struct Fan {
     pub curves: Vec<usize>,
     /// Its patches, each with its missing side.
     pub patches: Vec<(usize, usize)>,
+}
+
+/// A point where three-sided patches meet four-sided ones.
+#[derive(Debug, Clone)]
+pub(super) struct Mixed {
+    /// Its vertex.
+    pub vertex: usize,
+    /// The curves into it, each with which of its two users is the
+    /// three-sided patch.
+    pub curves: Vec<(usize, usize)>,
+    /// Its three-sided patches, each with its missing side.
+    pub three: Vec<(usize, usize)>,
 }
 
 /// Which curves the pole triples hold tangent, and how their ratios are
@@ -676,6 +694,52 @@ impl Topology {
             })
             .collect();
 
+        let mixed: Vec<Mixed> = (0..vertices)
+            .filter(|&v| apex[v] && !border[v] && !through(v))
+            .filter_map(|v| {
+                let mut three = Vec::new();
+                let mut four = 0;
+                for &(p, t) in &touching[v] {
+                    match missing_at(p) {
+                        Some((k, at)) if at == v => {
+                            if patch_strips[p][k % 2].len() != 1 {
+                                return None;
+                            }
+                            three.push((p, k));
+                        }
+                        _ => {
+                            if !matches!(t, Touch::Corner(_)) {
+                                return None;
+                            }
+                            four += 1;
+                        }
+                    }
+                }
+                if three.is_empty() || four == 0 {
+                    return None;
+                }
+                let mut out = Vec::new();
+                for c in at_vertex(v) {
+                    let far = far_of(c, v);
+                    if !(tangent[c] && curve_strip[c].len() == 1 && border[far]) {
+                        return None;
+                    }
+                    let degenerate: Vec<usize> = (0..2)
+                        .filter(|&i| three.iter().any(|&(p, _)| p == users[c][i].0))
+                        .collect();
+                    if degenerate.len() != 1 {
+                        return None;
+                    }
+                    out.push((c, degenerate[0]));
+                }
+                Some(Mixed {
+                    vertex: v,
+                    curves: out,
+                    three,
+                })
+            })
+            .collect();
+
         // Chains: held curves running straight on through a corner of four
         // patches, or through a junction of a split side, share their
         // ratio.
@@ -803,6 +867,7 @@ impl Topology {
             span_corners,
             spread_corners,
             fans,
+            mixed,
             plain_fans,
             spanned_fans,
         })

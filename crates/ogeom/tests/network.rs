@@ -2522,4 +2522,143 @@ fn a_loop_filled_as_quads_leaves_every_side_along_its_support() {
         }
     }
     assert!(lean < 1e-6, "a patch leans {lean} off its side's support");
+
+/// A cap of the ball round its top in `n` wedges between `n` spokes: the
+/// wedges in `three` three-sided, their rims one arc and their missing
+/// sides shrunk to the top, the others four-sided, their rims two arcs.
+fn mixed_cap(n: usize, three: &[usize]) -> (Vec<CurveDef>, Vec<PatchDef>) {
+    let step = TAU / n as f64;
+    let mut curves: Vec<CurveDef> = (0..n)
+        .map(|k| ball_arc(on_ball(0.0, 0.0, 1.0), on_ball_at(CAP, step * k as f64)))
+        .collect();
+    let rim = |a: f64, b: f64| {
+        CurveDef::Polyline(
+            (0..=64)
+                .map(|i| on_ball_at(CAP, (b - a).mul_add(f64::from(i) / 64.0, a)))
+                .collect(),
+        )
+    };
+    let side = |curve: usize, reversed: bool| Some(PatchSide { curve, reversed });
+    let mut patches = Vec::new();
+    for k in 0..n {
+        let a = step * k as f64;
+        let at = curves.len();
+        if three.contains(&k) {
+            curves.push(rim(a, a + step));
+            patches.push(PatchDef {
+                sides: [
+                    side(k, false),
+                    side(at, false),
+                    side((k + 1) % n, true),
+                    None,
+                ],
+            });
+        } else {
+            curves.push(rim(a, a + step / 2.0));
+            curves.push(rim(a + step / 2.0, a + step));
+            patches.push(PatchDef::four([
+                (k, false),
+                (at, false),
+                (at + 1, false),
+                ((k + 1) % n, true),
+            ]));
+        }
+    }
+    (curves, patches)
+}
+
+/// The widest angle between two surfaces' normals where a point of one's
+/// boundary lies on another's, read at 201 points along each side.
+fn across_any(network: &Network) -> f64 {
+    let geometry: Vec<_> = network
+        .surfaces
+        .iter()
+        .map(|s| ogeom::geom::SurfaceGeometry::BSpline(s.clone()))
+        .collect();
+    let mut widest = 0.0_f64;
+    for (a, s) in network.surfaces.iter().enumerate() {
+        for k in 0..4 {
+            for i in 0..=200 {
+                let (u, v) = on_side(k, f64::from(i) / 200.0);
+                let p = s.point_at(u, v, T).unwrap();
+                if p.distance(on_ball(0.0, 0.0, 1.0)) < 0.05 {
+                    continue;
+                }
+                let Ok(na) = s.normal_at(u, v, T) else {
+                    continue;
+                };
+                for (b, g) in geometry.iter().enumerate() {
+                    if b == a {
+                        continue;
+                    }
+                    let foot = ogeom::geom::project_on_surface(g, p, 0, T).unwrap();
+                    if foot.distance > 1e-9 {
+                        continue;
+                    }
+                    let Ok(nb) =
+                        network.surfaces[b].normal_at(foot.parameters.0, foot.parameters.1, T)
+                    else {
+                        continue;
+                    };
+                    let (na, nb) = (na.vector(), nb.vector());
+                    widest = widest.max(na.cross(nb).magnitude().atan2(na.dot(nb)));
+                }
+            }
+        }
+    }
+    widest
+}
+
+#[test]
+fn probe_mixed_points() {
+    for (n, three) in [(4usize, vec![0usize, 2])] {
+        let (curves, patches) = mixed_cap(n, &three);
+        for (noise, tol) in [(0.0, CLEAN_TOLERANCE), (NOISE, NOISY_TOLERANCE)] {
+            let cloud = cap_points(20_000, noise, 29);
+            let (_, network) = fit(&curves, &patches, &cloud, &options(tol, vec![]));
+            let worst = network
+                .per_patch
+                .iter()
+                .map(|p| p.worst)
+                .fold(0.0, f64::max);
+            // Every patch's normal at the top: at a corner there, or just
+            // inside a side shrunk to it, along that side.
+            let (tu, tv) = on_side(3, 0.5);
+            let top = network.surfaces[0].point_at(tu, tv, T).unwrap();
+            let mut normals = Vec::new();
+            for s in &network.surfaces {
+                for k in 0..4 {
+                    for i in 0..=20 {
+                        let (u, v) = on_side(k, f64::from(i) / 20.0);
+                        if s.point_at(u, v, T).unwrap().distance(top) > 1e-6 {
+                            continue;
+                        }
+                        let (u, v) = ((0.5 - u).mul_add(2e-6, u), (0.5 - v).mul_add(2e-6, v));
+                        if let Ok(n) = s.normal_at(u, v, T) {
+                            normals.push(n.vector());
+                        }
+                    }
+                }
+            }
+            let mut at_top = 0.0_f64;
+            for a in &normals {
+                for b in &normals {
+                    at_top = at_top.max(a.cross(*b).magnitude().atan2(a.dot(*b)));
+                }
+            }
+            eprintln!("MIXED top normals {} spread {at_top:.2e}", normals.len());
+            eprintln!(
+                "MIXED {n} {three:?} {noise}: {:?} tangent {:.2e} any {:.2e} worst {worst:.2e} off {:.2e} spans {:?}",
+                network.ended,
+                network.worst_tangent,
+                across_any(&network),
+                widest_off(&network, off_ball),
+                network
+                    .per_patch
+                    .iter()
+                    .map(|p| p.spans)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
 }
