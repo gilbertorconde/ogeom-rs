@@ -267,15 +267,24 @@ centre's segment, in closed form, so the end faces the end balls touch are
 cleared exactly.
 A ball that comes down on the plane face the strips run into (the floor
 under a shallow staircase) touches it and the face it touches, the steps
-going into the fill. Owed there: such holds where the strips' edges are
-not parallel to the seam, which needs the ellipse pieces of `carried.rs`
-held on edges and faces the seam does not bound. The obstacle is the
-fill: once the far edges turn off the seam's direction, the section
-changes along the run and the fill is no prism. The band builders
-(`build_held_band`, `build_chain_band`) give each side one leg on one
-host. A fill that takes strips in needs a leg made of several faces'
-stretches on the strips' side, each a face of the wedge, so the band
-builder needs a leg across several hosts first. Where the ball changes what it holds along the
+going into the fill. Where the strips' far edges are slanted to the seam, the ball may rest
+on a convex far edge of a strip beyond (`rolled.rs`, `stepped_rolled`):
+its centre runs on the ellipse about that edge's line, the round is the
+band through its arcs, and the fill is the band's wedge with a leg across
+several hosts, one face on each strip between (`StripPiece` in
+`marched.rs`). The walk takes each strip's far edge as the first edge it
+crosses square from the middle of the edge before, so a strip that runs
+past the seam's ends is walked too. A face is cleared only of its part in
+front of the touched face's plane, since every point on or behind that
+plane stands a radius off every centre; an end face the touch line meets
+is then cleared. Owed there: (1) the face hold (the ball coming down on
+the floor) over slanted strips, whose fill is the same wedge with the
+floor's leg; (2) a held far edge that ends on an end face the end ball
+touches at that end vertex: the clearance there is a second-order touch
+in the path parameter, which halving cannot prove, so it needs the face's
+least distance from the turning centre's arc in closed form (the same
+reading as the marched lunes below); the fixture keeps its lower strips
+running past the seam's ends for that reason. Where the ball changes what it holds along the
 crease, the round is a chain of bands meeting tangent where it holds
 three things at once (`carried.rs`): a face on each side (the cylinder
 between the planes), a face and the other face's edge (the ellipse), or a

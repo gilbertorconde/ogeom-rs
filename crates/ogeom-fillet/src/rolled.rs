@@ -219,6 +219,19 @@ pub(crate) struct Rolled {
     /// The centre's path and the run's span of its parameter.
     path: Path,
     span: (f64, f64),
+    /// The strips the fill reaches over, where the far edge the ball rests
+    /// on is a strip's beyond the narrow face; empty where it is the
+    /// narrow face's own.
+    strips: Vec<crate::marched::StripPiece>,
+}
+
+/// A far edge the ball may rest on beyond the narrow face: the edge, the
+/// strip whose far edge it is, and the strips from the narrow face out to
+/// that one with the far edges between them, in order from the crease.
+pub(crate) struct Held {
+    pub(crate) far: Shape,
+    pub(crate) strips: Vec<Shape>,
+    pub(crate) between: Vec<Shape>,
 }
 
 /// A planar face's plane as a point and its outward unit normal, and its
@@ -308,6 +321,74 @@ pub(crate) fn face_distance(face: &Flat, p: Point) -> f64 {
         .iter()
         .map(|s| segment_distance(p, *s))
         .fold(f64::INFINITY, f64::min)
+}
+
+/// The part of a planar face strictly in front of a plane, for the least
+/// distance to it: its sides clipped to that side, and the stretches of the
+/// plane's line across the face's plane that bound it. A point on the
+/// plane counts as behind it, so the stretches are where the line, moved
+/// off the plane into the front, lies inside the face, read by even-odd
+/// crossings.
+pub(crate) struct Front {
+    origin: Point,
+    normal: Vector,
+    sides: Vec<[Point; 2]>,
+}
+
+impl Front {
+    /// The part of `face` strictly on the side of the plane through
+    /// `origin` that `normal` points to.
+    pub(crate) fn of(face: &Flat, origin: Point, normal: Vector) -> Self {
+        let level = |x: Point| (x - origin).dot(normal);
+        let mut sides = Vec::new();
+        let mut cuts: Vec<Point> = Vec::new();
+        for &[a, b] in &face.sides {
+            let (da, db) = (level(a), level(b));
+            match (da > 0.0, db > 0.0) {
+                (true, true) => sides.push([a, b]),
+                (true, false) => {
+                    let x = a + (b - a) * (da / (da - db));
+                    sides.push([a, x]);
+                    cuts.push(x);
+                }
+                (false, true) => {
+                    let x = b + (a - b) * (db / (db - da));
+                    sides.push([x, b]);
+                    cuts.push(x);
+                }
+                (false, false) => {}
+            }
+        }
+        let line = face.normal.cross(normal);
+        if let Some(&first) = cuts.first() {
+            cuts.sort_by(|p, q| (*p - first).dot(line).total_cmp(&(*q - first).dot(line)));
+            for pair in cuts.as_chunks::<2>().0 {
+                sides.push(*pair);
+            }
+        }
+        Self {
+            origin,
+            normal,
+            sides,
+        }
+    }
+
+    /// A lower bound on the distance from `p` to this part of `face`: the
+    /// height over the face's plane where `p`'s foot lies in the face on
+    /// the kept side, else the least distance to the kept sides.
+    pub(crate) fn distance(&self, face: &Flat, p: Point) -> f64 {
+        let height = (p - face.origin).dot(face.normal);
+        let foot = p - face.normal * height;
+        if (foot - self.origin).dot(self.normal) > 0.0
+            && inside(&face.sides, foot, basis(face.normal))
+        {
+            return height.abs();
+        }
+        self.sides
+            .iter()
+            .map(|s| segment_distance(p, *s))
+            .fold(f64::INFINITY, f64::min)
+    }
 }
 
 /// Whether some stretch of the segment `side` lies inside the simple
@@ -406,14 +487,132 @@ pub(crate) fn rolled_run(
     // Clear of the narrow face's far edge, or past a concave one, the ball
     // may rest on the far edge of a strip beyond it or touch the face the
     // strips run into.
+    if let Some(run) = crate::stepped::stepped_run(model, solid, edge, &seat, radius, tol)? {
+        return Ok(Some(Run::Stepped(run)));
+    }
+    // Over strips whose far edges are not parallel to the crease, the ball
+    // may rest on a further strip's far edge, its centre on the ellipse.
     match (
-        crate::stepped::stepped_run(model, solid, edge, &seat, radius, tol)?,
+        stepped_rolled(model, solid, edge, &seat, radius, tol)?,
         named,
     ) {
-        (Some(run), _) => Ok(Some(Run::Stepped(run))),
+        (Some(run), _) => Ok(Some(Run::Rolled(run))),
         (None, Some(named)) => Err(named),
         (None, None) => Ok(None),
     }
+}
+
+/// The run of the ball resting on the far edge of a strip beyond the narrow
+/// face, walking the strips out from the crease: each a planar face whose
+/// far edge is the first met crossing it square from the middle of the
+/// edge it is reached across. At each convex far edge past the narrow face's own
+/// the ball is tried there, as [`across_to`] proves it, with the strips
+/// before it going into the fill; the walk stops at a face it has met.
+/// `None` where no such far edge holds the ball.
+///
+/// # Errors
+///
+/// Whatever reading the solid reports.
+fn stepped_rolled(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    seat: &Seat,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Rolled>> {
+    let faces = explore_unique(model, solid, ShapeType::Face)?.len();
+    for narrow in 0..2 {
+        let mut face = seat.faces[narrow].clone();
+        let mut near = edge.clone();
+        let mut walked = vec![seat.faces[1 - narrow].clone()];
+        let mut strips: Vec<Shape> = Vec::new();
+        let mut between: Vec<Shape> = Vec::new();
+        for _ in 0..faces {
+            if walked.iter().any(|w| w.is_same(&face)) || flat(model, &face, tol)?.is_none() {
+                break;
+            }
+            walked.push(face.clone());
+            strips.push(face.clone());
+            let Some(far) = across_face(model, &face, &near, tol)? else {
+                break;
+            };
+            let Some(far_seat) = seat_of(model, solid, &far, tol)? else {
+                break;
+            };
+            let Some(k) = far_seat.faces.iter().position(|f| !f.is_same(&face)) else {
+                break;
+            };
+            if far_seat.convex && strips.len() >= 2 {
+                let held = Held {
+                    far: far.clone(),
+                    strips: strips.clone(),
+                    between: between.clone(),
+                };
+                match across_to(model, solid, edge, seat, narrow, Some(&held), radius, tol) {
+                    Ok(Some(run)) => return Ok(Some(run)),
+                    Ok(None) | Err(OgeomError::Construction(_)) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            between.push(far.clone());
+            near = far;
+            face = far_seat.faces[k].clone();
+        }
+    }
+    Ok(None)
+}
+
+/// The first edge met crossing the planar `face` from the middle of its
+/// straight edge `near`, square to it, into the face; `None` where `near`
+/// or that edge is not straight, the face's side of `near` is not plain at
+/// its middle, or no edge is met.
+fn across_face(
+    model: &Model,
+    face: &Shape,
+    near: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<Shape>> {
+    let (Some(plane), Some([p, q])) = (flat(model, face, tol)?, segment(model, near, tol)?) else {
+        return Ok(None);
+    };
+    let normal = plane.normal;
+    let mid = p.midpoint(q);
+    let mut into = normal.cross(q - p);
+    into = into / into.magnitude();
+    let probe = (q - p).magnitude() * 1e-3;
+    let frame = basis(normal);
+    match (
+        inside(&plane.sides, mid + into * probe, frame),
+        inside(&plane.sides, mid - into * probe, frame),
+    ) {
+        (true, false) => {}
+        (false, true) => into = -into,
+        _ => return Ok(None),
+    }
+    let mut best: Option<(f64, Shape)> = None;
+    for g in explore_unique(model, face, ShapeType::Edge)? {
+        if same_occurrence(model, &g, near, tol) {
+            continue;
+        }
+        let Some([a, b]) = segment(model, &g, tol)? else {
+            return Ok(None);
+        };
+        let w = b - a;
+        let den = into.cross(w).dot(normal);
+        if den.abs() <= tol.angular() * w.magnitude() * into.magnitude() {
+            continue;
+        }
+        let s = (a - mid).cross(w).dot(normal) / den;
+        let u = (a - mid).cross(into).dot(normal) / den;
+        if s * into.magnitude() > tol.confusion()
+            && (0.0..=1.0).contains(&u)
+            && best.as_ref().is_none_or(|b| s < b.0)
+        {
+            best = Some((s, g));
+        }
+    }
+    Ok(best.map(|(_, g)| g))
 }
 
 /// The far edge the ball meets crossing face `narrow` from the middle of
@@ -490,23 +689,61 @@ fn across(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<Rolled>> {
+    across_to(model, solid, edge, seat, narrow, None, radius, tol)
+}
+
+/// [`across`], the ball resting on `held`'s far edge where it is given (a
+/// strip's beyond the narrow face, the strips between going into the
+/// fill), and on the narrow face's own far edge otherwise.
+#[allow(clippy::too_many_arguments, reason = "one run, all its data")]
+#[allow(clippy::too_many_lines, reason = "one run, read and proved end to end")]
+pub(crate) fn across_to(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    seat: &Seat,
+    narrow: usize,
+    held: Option<&Held>,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Rolled>> {
     let conf = tol.confusion();
     let (n1, n2) = (seat.normals[1 - narrow], seat.normals[narrow]);
     let (f1, f2) = (&seat.faces[1 - narrow], &seat.faces[narrow]);
-    let turn = n1.dot(n2).clamp(-1.0, 1.0).acos();
-    let setback = radius * (turn * 0.5).tan();
-    let Some(far) = far_edge(model, edge, seat, narrow, setback, tol)? else {
-        return Ok(None);
+    let far = match held {
+        Some(held) => held.far.clone(),
+        None => {
+            let turn = n1.dot(n2).clamp(-1.0, 1.0).acos();
+            let setback = radius * (turn * 0.5).tan();
+            let Some(far) = far_edge(model, edge, seat, narrow, setback, tol)? else {
+                return Ok(None);
+            };
+            far
+        }
     };
+    // The strip whose far edge holds the ball: the narrow face, or the
+    // last of the held strips.
+    let fk = match held {
+        Some(held) => match held.strips.last() {
+            Some(last) => last.clone(),
+            None => return Ok(None),
+        },
+        None => f2.clone(),
+    };
+    let fk = &fk;
     let Some(far_seat) = seat_of(model, solid, &far, tol)? else {
         return Ok(None);
     };
-    let Some(k3) = far_seat.faces.iter().position(|f| !f.is_same(f2)) else {
+    let Some(k3) = far_seat.faces.iter().position(|f| !f.is_same(fk)) else {
         return Ok(None);
     };
-    if !far_seat.convex || far_seat.faces.iter().all(|f| !f.is_same(f2)) {
+    if !far_seat.convex || far_seat.faces.iter().all(|f| !f.is_same(fk)) {
         return Ok(None);
     }
+    let nk = match held {
+        Some(_) => far_seat.normals[1 - k3],
+        None => n2,
+    };
     let f3 = &far_seat.faces[k3];
     if f3.is_same(f1) {
         return Ok(None);
@@ -533,7 +770,7 @@ fn across(
     let base = far_seat.start;
     let along = far_seat.along;
     let reach = far_seat.start.distance(far_seat.end);
-    let u = n2;
+    let u = nk;
     let v = {
         let w = n3 - u * n3.dot(u);
         w / w.magnitude()
@@ -693,10 +930,86 @@ fn across(
         leg1.push(path.centre(s) - n1 * radius);
     }
     let leg2 = vec![xa, xb, path.foot(sb), path.foot(sa)];
-    for (face, ring, normal, skip) in [
-        (f1, &leg1, n1, vec![edge.clone()]),
-        (f2, &leg2, n2, vec![edge.clone(), far.clone()]),
-    ] {
+    let mut legs = vec![(f1.clone(), leg1, n1, vec![edge.clone()])];
+    // Where the line through `p` along `d` crosses the section at `s`.
+    let at_section = |(p, d): (Point, Vector), s: f64| -> Option<Point> {
+        let normal = path.d1(s);
+        let rate = normal.dot(d);
+        (rate.abs() > tol.angular() * normal.magnitude())
+            .then(|| p + d * ((path.centre(s) - p).dot(normal) / rate))
+    };
+    // The lines the strips lie between, from the crease out to the far
+    // edge the ball rests on.
+    let mut lines: Vec<(Shape, (Point, Vector))> = vec![(edge.clone(), (e0, t))];
+    match held {
+        None => legs.push((f2.clone(), leg2, n2, vec![edge.clone(), far.clone()])),
+        Some(held) => {
+            for between in &held.between {
+                let Some([p, q]) = segment(model, between, tol)? else {
+                    return Ok(None);
+                };
+                lines.push((between.clone(), (p, (q - p) / p.distance(q))));
+            }
+            lines.push((far.clone(), (base, along)));
+            if lines.len() != held.strips.len() + 1 {
+                return Ok(None);
+            }
+            // Each strip holds its stretch between its two lines and the
+            // run's end sections.
+            for (j, strip) in held.strips.iter().enumerate() {
+                let (near, far_line) = (&lines[j], &lines[j + 1]);
+                let corners = [
+                    at_section(near.1, sa),
+                    at_section(near.1, sb),
+                    at_section(far_line.1, sb),
+                    at_section(far_line.1, sa),
+                ];
+                let [Some(a), Some(b), Some(c), Some(d)] = corners else {
+                    return Ok(None);
+                };
+                let Some(plane) = flat(model, strip, tol)? else {
+                    return Ok(None);
+                };
+                legs.push((
+                    strip.clone(),
+                    vec![a, b, c, d],
+                    plane.normal,
+                    vec![near.0.clone(), far_line.0.clone()],
+                ));
+            }
+            // The fill lies off the strips at the run's ends and middle:
+            // each section's ring, from the crease to the touch on the
+            // face, across the arc to the contact, and back over the
+            // strips' lines, has every strip's outward normal pointing
+            // into it.
+            let mut normals = vec![Some(n1), None];
+            for strip in held.strips.iter().rev() {
+                let Some(plane) = flat(model, strip, tol)? else {
+                    return Ok(None);
+                };
+                normals.push(Some(plane.normal));
+            }
+            for s in [sa, (sa + sb) * 0.5, sb] {
+                let d = path.d1(s);
+                let unit = d / d.magnitude();
+                let Some(x) = x_of(s) else {
+                    return Ok(None);
+                };
+                let mut ring = vec![x, path.centre(s) - n1 * radius, path.foot(s)];
+                for line in lines[1..lines.len() - 1].iter().rev() {
+                    let Some(p) = at_section(line.1, s) else {
+                        return Ok(None);
+                    };
+                    ring.push(p);
+                }
+                if !crate::stepped::fills_outside(&ring, &normals, unit, tol) {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+    for (face, ring, normal, skip) in &legs {
+        let (face, ring, normal) = (face, ring, *normal);
         for e in explore_unique(model, face, ShapeType::Edge)? {
             if skip.iter().any(|s| same_occurrence(model, &e, s, tol)) {
                 continue;
@@ -733,7 +1046,7 @@ fn across(
             .all(|p| (*p - base).dot(inward) >= -conf)
     };
     let to_narrow = {
-        let w = n2.cross(along);
+        let w = nk.cross(along);
         let w = w / w.magnitude();
         if (e0 - base).dot(w) >= 0.0 { w } else { -w }
     };
@@ -758,12 +1071,15 @@ fn across(
         let vertices: Vec<Point> = flat.sides.iter().flatten().copied().collect();
         if behind_first
             || path.behind_contact(&vertices, sa, sb, conf)
-            || face.is_same(f2) && one_side(&flat, to_narrow)
+            || face.is_same(fk) && one_side(&flat, to_narrow)
             || face.is_same(f3) && one_side(&flat, to_beyond)
         {
             continue;
         }
-        let clearance = |s: f64| face_distance(&flat, path.centre(s)) - radius;
+        // Only the face's part in front of the touched face's plane can come
+        // inside a ball.
+        let front = Front::of(&flat, e0, n1);
+        let clearance = |s: f64| front.distance(&flat, path.centre(s)) - radius;
         let mut intervals: Vec<(f64, f64, f64, f64, u32)> = Vec::new();
         for i in 0..STATIONS {
             let (a, b) = (station(i), station(i + 1));
@@ -790,9 +1106,30 @@ fn across(
     let Some((first_host, first_sign)) = host(model, f1, tol)? else {
         return Ok(None);
     };
-    let Some((second_host, second_sign)) = host(model, f2, tol)? else {
+    let Some((second_host, second_sign)) = host(model, fk, tol)? else {
         return Ok(None);
     };
+    let mut strips = Vec::new();
+    if let Some(held) = held {
+        for (j, strip) in held.strips.iter().enumerate() {
+            let Some(plane) = flat(model, strip, tol)? else {
+                return Ok(None);
+            };
+            let reach = (lines[j].1.0.distance(lines[j + 1].1.0) + length + radius) * 4.0;
+            let surface = ogeom_geom::PlaneSurface::over(
+                ogeom_math::Plane::through(
+                    plane.origin,
+                    ogeom_math::Direction::new(plane.normal, tol)?,
+                ),
+                (-reach, reach),
+                (-reach, reach),
+            )?;
+            strips.push(crate::marched::StripPiece {
+                plane: surface.into(),
+                far: (j + 1 < held.strips.len()).then(|| lines[j + 1].1),
+            });
+        }
+    }
     let mut blend = MarchedBlend {
         spine: Vec::with_capacity(STATIONS + 1),
         on_first: Vec::with_capacity(STATIONS + 1),
@@ -832,6 +1169,7 @@ fn across(
         rails: [Rail::Plane(e0, n1), Rail::Line(base, along)],
         path,
         span,
+        strips,
     }))
 }
 
@@ -976,6 +1314,7 @@ pub(crate) fn rolled_band(
     let exact = ExactBand {
         rails: run.rails,
         off: &off,
+        strips: &run.strips,
     };
     let [(first, first_sign), (second, second_sign)] = &run.hosts;
     crate::marched::build_held_band(
