@@ -154,7 +154,12 @@ They refuse (`curved_face_blends_refuse_by_name` in `tests/blends.rs`,
   Owed: corners whose polygons overlap while the corners do not, told
   apart by their own boundaries; and with `trim` over several corners,
   each later cut keeps the earlier rails, which a cut rebuilding them is
-  refused by name;
+  refused by name. Both are refusals, not wrong answers. A sweep of the
+  flat and drum blend (4 flat positions by 12 radii) builds valid and to
+  its Green's-theorem volume within 4e-14 wherever it builds. A sweep of
+  two fused drums rounded with and without `trim` (6 separations by 5
+  radii) gives every face's closed-form area exactly, and the trimmed
+  shells are usable;
 - a round crossing a face that stands between the two (a ball crossing a
   chamfer between the faces it rounds), where the solid beside the round is
   open where the seat says material, or the reverse. No ball rolls in that
@@ -186,7 +191,12 @@ They refuse (`curved_face_blends_refuse_by_name` in `tests/blends.rs`,
   (`a_marched_face_blend_fills_over_an_older_round_just_smaller`), but
   still asks the whole ball, so a part thinner than its ball is refused
   there. Owed: the marched seat's lunes, their planes turning along the
-  run. An older marched round just smaller than the ball (within a few
+  run. The obstacle: what is read of a face is its distance from a
+  centre, while a lune is a moving, turning sector of the ball. Clearing a
+  face of every lune between two stations needs that face's distance from
+  the sector, and a bound on how far the sector moves between stations
+  (the centre's travel and the radius times the turn of its plane), to
+  halve on as the ball's distance is halved. Neither exists yet. An older marched round just smaller than the ball (within a few
   hundredths of it) is fitted to 2e-4 and reaches into the ball by a few
   micrometres beside a contact, where its border runs within its own
   tolerance of the face; the blend is refused there, as the fitted round
@@ -195,7 +205,13 @@ They refuse (`curved_face_blends_refuse_by_name` in `tests/blends.rs`,
   ends, are where the round runs off (a crease running off a block's
   side) and are not asked. Owed: a face that ends the run without
   meeting either line or holding an end (a narrow face past the one a
-  line of contact leaves by) is asked as a face between. A face's distance
+  line of contact leaves by) is asked as a face between. The sound rule
+  would leave out a face lying wholly beyond a cap plane of the run, as
+  no part of the capped round reaches it. That holds only where every
+  ball's lune of the run stays on the run's side of that plane, which a
+  marched run curving back past its own end does not. The proof needs
+  each station's section read against both caps, and the case wants a
+  reproducer first. A face's distance
   is the kernel's point-to-face distance: the foot on its surface where it
   lands inside the trim, and where it lands outside on a curved face, the
   local feet inside it sought from samples of the face, as well as its
@@ -239,7 +255,13 @@ A ball that comes down on the plane face the strips run into (the floor
 under a shallow staircase) touches it and the face it touches, the steps
 going into the fill. Owed there: such holds where the strips' edges are
 not parallel to the seam, which needs the ellipse pieces of `carried.rs`
-held on edges and faces the seam does not bound. Where the ball changes what it holds along the
+held on edges and faces the seam does not bound. The obstacle is the
+fill: once the far edges turn off the seam's direction, the section
+changes along the run and the fill is no prism. The band builders
+(`build_held_band`, `build_chain_band`) give each side one leg on one
+host. A fill that takes strips in needs a leg made of several faces'
+stretches on the strips' side, each a face of the wedge, so the band
+builder needs a leg across several hosts first. Where the ball changes what it holds along the
 crease, the round is a chain of bands meeting tangent where it holds
 three things at once (`carried.rs`): a face on each side (the cylinder
 between the planes), a face and the other face's edge (the ellipse), or a
