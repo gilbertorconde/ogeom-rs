@@ -297,6 +297,25 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`PointDistance::nearest` finds a curved face's nearer point inside its
+  trim when the surface's nearest point lies outside it.**
+  - A face's candidate was its surface's nearest point, kept only where it
+    landed inside the face's trim; otherwise the face was read from its
+    edges alone. On a free-form face (a sheet with two domes, the nearer
+    one cut out by a hole), or at a centre with many nearest points (a
+    point on a cylinder's axis), a nearer point of the face can stand
+    inside the trim. The distance read was then too large.
+  - That distance is what the blends ask of every face between the two
+    they round, so a ball a face reached into could be read as clear.
+  - Where the foot lands outside the trim on a curved face, the local feet
+    inside the trim, sought from an 8 x 8 grid of the face's samples
+    inside it, are candidates too. Each is a point of the face, so the
+    distance can only fall to a true one. A plane, whose distance has one
+    minimum, is read as before.
+  - On the two-dome sheet, a point above its middle now reads 2.4112510,
+    against a fine grid's 2.4112614 over the face; it read 2.9467014, the
+    distance to its edges.
+
 - **`split_face` cuts across the seam of a chart that closes on itself
   without repeating, and a trimmed round of a B-spline tube's foot
   builds.**

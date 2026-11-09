@@ -136,7 +136,9 @@ impl PointDistance {
     /// The least distance from `p` to the shape's boundary and a point of it
     /// at that distance, as [`distance_between_shapes`] measures it from a
     /// vertex at `p`: to each vertex, the foot on each edge, and the foot on
-    /// each face where it lands inside the face's trimming.
+    /// each face where it lands inside the face's trimming. Where a curved
+    /// face's foot stands outside its trim, its local feet inside it, sought
+    /// from samples of the face, are candidates too.
     ///
     /// # Errors
     ///
@@ -160,6 +162,10 @@ impl PointDistance {
                     let foot = project_on_surface(&face.world, p, 32, tol)?;
                     if inside_trim(face, foot.point, tol)? {
                         keep(foot.distance, foot.point);
+                    } else if !matches!(face.local, SurfaceGeometry::Plane(_)) {
+                        for (d, q) in feet_inside(face, p, tol)? {
+                            keep(d, q);
+                        }
                     }
                 }
             }
@@ -168,6 +174,44 @@ impl PointDistance {
             ogeom_core::ogeom_err!(Construction, "a shape with no elements has no distance")
         })
     }
+}
+
+/// How many rows and columns of a face's parameter rectangle the local
+/// feet inside its trim are sought from.
+const LOCAL_SEEDS: u32 = 8;
+
+/// The local nearest points of `face`'s curved surface to `p` that land
+/// inside its trim, each with its distance: the surface's nearest point
+/// overall may stand outside the trim while a nearer point of the face
+/// than its edges stands inside it, at another local minimum (a second
+/// dip of a free-form sheet), or at another point of a set of nearest
+/// points (a centre on a cylinder's axis). Each is sought from the samples
+/// of the face's rectangle that lie inside the trim. A plane's distance
+/// has one minimum and no other: its edges hold the face's nearest point
+/// wherever its foot stands outside.
+fn feet_inside(face: &Prepared, p: Point, tol: Tolerances) -> OgeomResult<Vec<(f64, Point)>> {
+    use ogeom_geom::Surface as _;
+    let ((u0, u1), (v0, v1)) = face.world.domain();
+    if ![u0, u1, v0, v1].iter().all(|x| x.is_finite()) {
+        return Ok(Vec::new());
+    }
+    let mut found = Vec::new();
+    for i in 0..LOCAL_SEEDS {
+        for j in 0..LOCAL_SEEDS {
+            let at = |k: u32, lo: f64, hi: f64| {
+                lo + (hi - lo) * (f64::from(k) + 0.5) / f64::from(LOCAL_SEEDS)
+            };
+            let (u, v) = (at(i, u0, u1), at(j, v0, v1));
+            if !inside_trim(face, face.world.point_at(u, v, tol)?, tol)? {
+                continue;
+            }
+            let foot = ogeom_geom::project_on_surface_from(&face.world, p, (u, v), tol)?;
+            if inside_trim(face, foot.point, tol)? {
+                found.push((foot.distance, foot.point));
+            }
+        }
+    }
+    Ok(found)
 }
 
 /// The elements of a shape (its vertices, edges and faces, placed) for
