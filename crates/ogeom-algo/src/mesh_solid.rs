@@ -30,9 +30,9 @@
 //! share, a piece that cannot be oriented) does not fail: it comes back
 //! as open shells, with the report saying why.
 
-use ogeom_core::{FastMap, OgeomResult, Tolerances, ogeom_bail};
+use ogeom_core::{FastMap, FastSet, OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{Plane, Point};
-use ogeom_topo::{Model, Shape, Triangulation};
+use ogeom_topo::{Model, Shape, ShapeType, TShapeId, Triangulation, explore_unique};
 
 use crate::recognize::Canonical;
 
@@ -1193,6 +1193,35 @@ fn build_from(
                             report.patches_narrow = groups.refused.narrow;
                             report.patches_unverified = groups.refused.unverified;
                             report.free_edges_fitted = plan.free_fitted;
+                            // A facet alone beside a curved face whose seam
+                            // stands off it, as built, farther than a snapped
+                            // curve may (a chord the plan took within the
+                            // reach, widened where the build placed its
+                            // ends) is built as a fan onto that face, as one
+                            // the plan saw wide is.
+                            if options.recognize {
+                                let reach = flat * planner::REACH;
+                                let fanned: Vec<usize> = (0..triangles.len())
+                                    .filter(|t| !groups.fans.contains(t))
+                                    .filter(|&t| {
+                                        groups.fan_at(t, triangles, adjacency).is_some_and(|fan| {
+                                            fan.seams().any(|(_, c)| {
+                                                seam_built_wider(
+                                                    model,
+                                                    &built,
+                                                    groups.of[t],
+                                                    c,
+                                                    reach,
+                                                )
+                                            })
+                                        })
+                                    })
+                                    .collect();
+                                if !fanned.is_empty() {
+                                    groups.fans.extend(fanned);
+                                    continue 'build;
+                                }
+                            }
                             break 'build shape;
                         }
                         (culprits, reason)
@@ -1548,6 +1577,29 @@ impl Fan {
             .find(|&((a, b), _)| (a, b) == (p, q) || (b, a) == (p, q))
             .map(|(_, c)| c)
     }
+}
+
+/// Whether the built faces of groups `facet` and `curved` share an edge
+/// standing wider than `reach`.
+fn seam_built_wider(
+    model: &Model,
+    built: &[Option<Shape>],
+    facet: usize,
+    curved: usize,
+    reach: f64,
+) -> bool {
+    let (Some(Some(face)), Some(Some(other))) = (built.get(facet), built.get(curved)) else {
+        return false;
+    };
+    let edges = |face: &Shape| explore_unique(model, face, ShapeType::Edge).unwrap_or_default();
+    let theirs: FastSet<TShapeId> = edges(other).iter().map(Shape::node).collect();
+    edges(face).iter().any(|edge| {
+        theirs.contains(&edge.node())
+            && model
+                .node(edge)
+                .and_then(|n| n.data().as_edge())
+                .is_some_and(|d| d.tolerance.get() > reach)
+    })
 }
 
 impl Groups {
