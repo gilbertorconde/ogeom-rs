@@ -628,10 +628,6 @@ pub fn fit_network_chained(
         fit.corners = corners;
         fit.fans = fans;
         let (spans, current, ended) = fit.refine(options)?;
-        eprintln!(
-            "DBGTRY {corners:?} fans {fans} ended {ended:?} held {}",
-            current.held
-        );
         if (ended == Ended::Met && current.held) || (corners == Corners::Loose && !fans) {
             settled = Some((spans, current, ended));
             break;
