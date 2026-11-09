@@ -460,6 +460,13 @@ fn wedge_for(
         Legs::Rim(seat, on_wall, on_cap) => {
             revolved_bevel(model, edge, &seat, on_wall, on_cap, tol)
         }
+        Legs::Marched => Ok(Wedge {
+            faces: Vec::new(),
+            solid: None,
+            additive: false,
+            whole_ring: None,
+            marched: Some(spec.clone()),
+        }),
         Legs::Sphere(seat, on_wall, on_cap) => {
             // Each contact stays on its face at every station the walk
             // reads, or the wedge would cut past the face.
@@ -496,6 +503,7 @@ fn wedge_for(
                     on_wall,
                     on_cap,
                 }),
+                marched: None,
             })
         }
     }
@@ -617,6 +625,11 @@ pub fn largest_chamfer_distance(
             )?);
             on_wall.min(on_cap)
         }
+        Legs::Marched => ogeom_bail!(
+            NotDone,
+            "the largest distance of a chamfer on a marched seat is not read \
+             from the seat"
+        ),
         Legs::Sphere(seat, on_wall, on_cap) => {
             // The derived leg of an angle on a sphere's rim does not scale
             // with the measure: the wall's section is an arc.
@@ -653,6 +666,9 @@ pub(crate) enum Legs {
     /// A rim on a sphere: its legs down the sphere's great circle and along
     /// the cap.
     Sphere(SphereSeat, f64, f64),
+    /// A crease on a marched seat, its legs read station by station when
+    /// the bevel is built.
+    Marched,
 }
 
 /// Read one chamfer's seat and legs from `solid` as it stands.
@@ -669,6 +685,7 @@ pub(crate) fn legs(
                 let seat = planar_seat(model, solid, edge, tol)?;
                 Ok(Legs::Straight(seat, [*distance, *distance]))
             }
+            SeatKind::Marched => Ok(Legs::Marched),
             SeatKind::Rim(rim) => match rim_seat(model, solid, edge, &rim, tol)? {
                 RimSeat::Revolved(seat) => Ok(Legs::Rim(seat, *distance, *distance)),
                 RimSeat::Sphere(seat) => Ok(Legs::Sphere(seat, *distance, *distance)),
@@ -687,6 +704,7 @@ pub(crate) fn legs(
                 distances[1 - i] = *on_other;
                 Ok(Legs::Straight(seat, distances))
             }
+            SeatKind::Marched => Ok(Legs::Marched),
             SeatKind::Rim(rim) => match rim_seat(model, solid, edge, &rim, tol)? {
                 RimSeat::Revolved(seat) => {
                     let (on_wall, on_cap) =
@@ -738,6 +756,7 @@ pub(crate) fn legs(
                     distances[1 - i] = derived;
                     Ok(Legs::Straight(seat, distances))
                 }
+                SeatKind::Marched => Ok(Legs::Marched),
                 SeatKind::Rim(rim) => {
                     // In the rim's section the legs make the triangle with
                     // the bevel: `angle` at the named face's contact and the
@@ -801,6 +820,9 @@ struct Wedge {
     /// The whole ring a sphere's rim chamfers from any of the arcs a
     /// boolean split it into.
     whole_ring: Option<WholeRing>,
+    /// The spelling of a bevel on a marched seat, built against the solid
+    /// as it stands when applied.
+    marched: Option<Chamfer>,
 }
 
 /// A sphere rim's whole ring and the legs its bevel runs.
@@ -836,6 +858,11 @@ impl Wedge {
         edge: &Shape,
         tol: Tolerances,
     ) -> OgeomResult<Built> {
+        if let Some(spec) = &self.marched {
+            let mut built = crate::chamfer_marched::marched_bevel(model, solid, edge, spec, tol)?;
+            crate::support::credit_new_faces(model, solid, edge, &mut built)?;
+            return Ok(built);
+        }
         let mut built = match self.solid {
             Some(wedge) => {
                 let mut result = if self.additive {
@@ -859,6 +886,8 @@ enum SeatKind {
     Straight,
     /// A circular rim: the revolved wedge with a conical bevel.
     Rim(ogeom_geom::CircleCurve),
+    /// Any other crease: the marched seat, its bevel ruled.
+    Marched,
 }
 
 fn seat_kind(model: &Model, edge: &Shape, tol: Tolerances) -> OgeomResult<SeatKind> {
@@ -866,11 +895,7 @@ fn seat_kind(model: &Model, edge: &Shape, tol: Tolerances) -> OgeomResult<SeatKi
     match curve {
         Curve::Line(_) => Ok(SeatKind::Straight),
         Curve::Circle(c) => Ok(SeatKind::Rim(c)),
-        _ => ogeom_bail!(
-            Construction,
-            "chamfering an edge that is neither straight nor circular needs \
-             the marching blend machinery"
-        ),
+        _ => Ok(SeatKind::Marched),
     }
 }
 
@@ -987,6 +1012,7 @@ fn revolved_bevel(
         solid: None,
         additive: seat.additive(),
         whole_ring: None,
+        marched: None,
     })
 }
 
@@ -1066,6 +1092,7 @@ fn sector_bevel(
         solid: Some(solid),
         additive: seat.additive(),
         whole_ring: None,
+        marched: None,
     })
 }
 
@@ -1164,5 +1191,6 @@ fn bevel(
         solid: None,
         additive: !seat.convex,
         whole_ring: None,
+        marched: None,
     })
 }
