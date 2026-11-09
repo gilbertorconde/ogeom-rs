@@ -8,6 +8,7 @@ pub mod bridge;
 mod carried;
 pub mod chamfer;
 mod chamfer_corner;
+mod chamfer_sphere;
 mod consumed;
 mod consumed_rim;
 pub mod corner;

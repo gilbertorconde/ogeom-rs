@@ -38,6 +38,19 @@ bump may break the API and a patch bump may not.
   - An inside corner with a 0.5 flat, at r 2, takes the flat in:
     14.668146928204 against 14.668146928204.
 
+- **Chamfers bevel a rim where a plane meets a sphere, in all three
+  spellings.** (#711)
+  - The sphere's leg runs its distance down the great circle square to the
+    rim, and the bevel is the cone (or the cylinder) through the two
+    contact rings. `Angle` finds the other contact where the line leaving
+    the named face meets the other face in the rim's section.
+  - A rim a boolean split into arcs is bevelled as the whole ring it is.
+    An arc that stops short of its circle is still refused.
+  - A sphere of radius 5 with its cap above z = 2 cut off, its rim
+    chamfered `Symmetric(0.5)`, `Distances` or `Angle`, loses the revolved
+    section by Pappus within 1e-6; so does the rim of a spherical pocket in
+    a block, its material outside the sphere.
+
 - **Chamfers bevel a rim where a cone meets its cap, in all three
   spellings.** (#711)
   - The wall's leg runs its distance along the cone's slant, and the bevel is

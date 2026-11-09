@@ -18,6 +18,7 @@
 //! the same flanks the rim fillet builds, with the quarter-tube exchanged
 //! for the slant, and the same melt taking the legs away.
 
+use crate::chamfer_sphere::{SphereSeat, sphere_bevel, sphere_seat};
 use crate::support::{
     Blamed, RevolvedSeat, Seat, apply_wedge, edge_curve, planar_face, planar_seat, revolved_flanks,
     revolved_seat,
@@ -356,7 +357,27 @@ fn chamfer_edges_with_own(
         );
     }
     let mut built = Built::from_nothing(solid.clone());
+    let mut rings: Vec<(usize, WholeRing)> = Vec::new();
     for (i, ((edge, _), wedge)) in specs.iter().zip(wedges).enumerate() {
+        // The arcs a boolean split one sphere rim into each chamfer the
+        // whole ring: the first cuts it, the others asking the same legs
+        // are taken with it, and others asking other legs contradict it.
+        if let Some(ring) = wedge.whole_ring {
+            if let Some((j, first)) = rings.iter().find(|(_, r)| r.same_circle(&ring, tol)) {
+                if first.same_legs(&ring, tol) {
+                    continue;
+                }
+                return Err(Blamed {
+                    edges: vec![i, *j],
+                    error: ogeom_core::ogeom_err!(
+                        Construction,
+                        "two arcs of one sphere rim ask for different chamfers \
+                         of its whole ring"
+                    ),
+                });
+            }
+            rings.push((i, ring));
+        }
         let step = match wedge.apply(model, &built.shape, edge, tol) {
             Ok(step) => step,
             Err(error) => {
@@ -384,15 +405,26 @@ fn chamfer_edges_with_own(
 }
 
 /// The seat of a rim's bevel: a revolved seat, its wall a cylinder or a
-/// cone.
+/// cone, or a sphere centred on the rim's axis.
+enum RimSeat {
+    Revolved(RevolvedSeat),
+    Sphere(SphereSeat),
+}
+
 fn rim_seat(
     model: &Model,
     solid: &Shape,
     edge: &Shape,
     rim: &ogeom_geom::CircleCurve,
     tol: Tolerances,
-) -> OgeomResult<RevolvedSeat> {
-    revolved_seat(model, solid, edge, rim, tol)
+) -> OgeomResult<RimSeat> {
+    match revolved_seat(model, solid, edge, rim, tol) {
+        Ok(seat) => Ok(RimSeat::Revolved(seat)),
+        Err(refused) => match sphere_seat(model, solid, edge, rim, tol)? {
+            Some(seat) => Ok(RimSeat::Sphere(seat)),
+            None => Err(refused),
+        },
+    }
 }
 
 /// How far along the axis a leg of `on_wall` down the wall's ruling
@@ -428,6 +460,56 @@ fn wedge_for(
         Legs::Rim(seat, on_wall, on_cap) => {
             revolved_bevel(model, edge, &seat, on_wall, on_cap, tol)
         }
+        Legs::Sphere(seat, on_wall, on_cap) => {
+            // Each contact stays on its face at every station the walk
+            // reads, or the wedge would cut past the face.
+            let per = |face: &Shape| sphere_leg(&seat, face, on_wall, on_cap);
+            if crate::fits::legs_largest(model, solid, edge, 1.0, per, tol)? < 1.0 {
+                ogeom_bail!(
+                    Construction,
+                    "a chamfer on the rim between a plane and a sphere runs past \
+                     one of its faces"
+                );
+            }
+            let closed =
+                ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
+            let Curve::Circle(rim) = edge_curve(model, edge, tol)?.0 else {
+                ogeom_bail!(Construction, "a sphere's rim is not a circle");
+            };
+            let whole = closed
+                || crate::chamfer_sphere::rim_closes(model, solid, &seat, &rim.circle(), tol)?;
+            if !whole {
+                ogeom_bail!(
+                    Construction,
+                    "a chamfer along an arc of a rim between a plane and a sphere, \
+                     short of the whole circle, is not built"
+                );
+            }
+            Ok(Wedge {
+                faces: sphere_bevel(model, &seat, on_wall, on_cap, tol)?,
+                solid: None,
+                additive: seat.tau < 0.0,
+                whole_ring: Some(WholeRing {
+                    centre: seat.centre,
+                    radius: seat.radius,
+                    up: seat.up,
+                    on_wall,
+                    on_cap,
+                }),
+            })
+        }
+    }
+}
+
+/// How far a sphere seat's bevel runs along `face`: its leg on the wall or
+/// the cap, nothing on any other face.
+fn sphere_leg(seat: &SphereSeat, face: &Shape, on_wall: f64, on_cap: f64) -> f64 {
+    if face.is_same(&seat.wall_face) {
+        on_wall
+    } else if face.is_same(&seat.cap_face) {
+        on_cap
+    } else {
+        0.0
     }
 }
 
@@ -535,6 +617,27 @@ pub fn largest_chamfer_distance(
             )?);
             on_wall.min(on_cap)
         }
+        Legs::Sphere(seat, on_wall, on_cap) => {
+            // The derived leg of an angle on a sphere's rim does not scale
+            // with the measure: the wall's section is an arc.
+            if matches!(spec, Chamfer::Angle { .. }) {
+                ogeom_bail!(
+                    NotDone,
+                    "the largest distance of a chamfer at an angle on a sphere's \
+                     rim is not read from the seat"
+                );
+            }
+            let inward = seat.sigma * seat.tau * on_cap;
+            if inward > 0.0 {
+                largest = largest.min((seat.radius - 2.0 * conf) / inward);
+            }
+            largest = largest.min((seat.to_pole() - 2.0 * conf) / on_wall);
+            let per = |face: &Shape| sphere_leg(&seat, face, on_wall, on_cap);
+            largest = largest.min(crate::fits::legs_largest(
+                model, solid, edge, largest, per, tol,
+            )?);
+            on_wall.min(on_cap)
+        }
     };
     Ok((largest * shortest > conf).then_some(largest))
 }
@@ -547,6 +650,9 @@ pub(crate) enum Legs {
     /// A rim on a cylinder or a cone: its legs down the wall and in along the
     /// cap.
     Rim(RevolvedSeat, f64, f64),
+    /// A rim on a sphere: its legs down the sphere's great circle and along
+    /// the cap.
+    Sphere(SphereSeat, f64, f64),
 }
 
 /// Read one chamfer's seat and legs from `solid` as it stands.
@@ -563,10 +669,10 @@ pub(crate) fn legs(
                 let seat = planar_seat(model, solid, edge, tol)?;
                 Ok(Legs::Straight(seat, [*distance, *distance]))
             }
-            SeatKind::Rim(rim) => {
-                let seat = rim_seat(model, solid, edge, &rim, tol)?;
-                Ok(Legs::Rim(seat, *distance, *distance))
-            }
+            SeatKind::Rim(rim) => match rim_seat(model, solid, edge, &rim, tol)? {
+                RimSeat::Revolved(seat) => Ok(Legs::Rim(seat, *distance, *distance)),
+                RimSeat::Sphere(seat) => Ok(Legs::Sphere(seat, *distance, *distance)),
+            },
         },
         Chamfer::Distances {
             face,
@@ -581,11 +687,18 @@ pub(crate) fn legs(
                 distances[1 - i] = *on_other;
                 Ok(Legs::Straight(seat, distances))
             }
-            SeatKind::Rim(rim) => {
-                let seat = rim_seat(model, solid, edge, &rim, tol)?;
-                let (on_wall, on_cap) = revolved_side(&seat, face, *on_face, *on_other)?;
-                Ok(Legs::Rim(seat, on_wall, on_cap))
-            }
+            SeatKind::Rim(rim) => match rim_seat(model, solid, edge, &rim, tol)? {
+                RimSeat::Revolved(seat) => {
+                    let (on_wall, on_cap) =
+                        revolved_side(&seat.wall_face, &seat.cap_face, face, *on_face, *on_other)?;
+                    Ok(Legs::Rim(seat, on_wall, on_cap))
+                }
+                RimSeat::Sphere(seat) => {
+                    let (on_wall, on_cap) =
+                        revolved_side(&seat.wall_face, &seat.cap_face, face, *on_face, *on_other)?;
+                    Ok(Legs::Sphere(seat, on_wall, on_cap))
+                }
+            },
         },
         Chamfer::Angle {
             face,
@@ -632,7 +745,26 @@ pub(crate) fn legs(
                     // square, the derived distance the plain tangent; past
                     // the two angles' sum of a half turn the bevel walks
                     // away from the other face instead of toward it.
-                    let seat = rim_seat(model, solid, edge, &rim, tol)?;
+                    let seat = match rim_seat(model, solid, edge, &rim, tol)? {
+                        RimSeat::Revolved(seat) => seat,
+                        RimSeat::Sphere(seat) => {
+                            // On a sphere the section's wall is an arc: the
+                            // other contact is where the line meets it.
+                            let on_cap_face = if seat.cap_face.is_same(face) {
+                                true
+                            } else if seat.wall_face.is_same(face) {
+                                false
+                            } else {
+                                ogeom_bail!(
+                                    Construction,
+                                    "the named face does not meet the edge being chamfered"
+                                )
+                            };
+                            let (on_wall, on_cap) =
+                                seat.angle_legs(on_cap_face, distance, angle, tol)?;
+                            return Ok(Legs::Sphere(seat, on_wall, on_cap));
+                        }
+                    };
                     let corner = rim_corner(&seat);
                     let past = if seat.slope == 0.0 {
                         angle >= core::f64::consts::FRAC_PI_2 - tol.angular()
@@ -650,7 +782,8 @@ pub(crate) fn legs(
                     } else {
                         distance * angle.sin() / (angle + corner).sin()
                     };
-                    let (on_wall, on_cap) = revolved_side(&seat, face, distance, derived)?;
+                    let (on_wall, on_cap) =
+                        revolved_side(&seat.wall_face, &seat.cap_face, face, distance, derived)?;
                     Ok(Legs::Rim(seat, on_wall, on_cap))
                 }
             }
@@ -665,6 +798,34 @@ struct Wedge {
     /// The wedge already closed into a solid, where it was built as one.
     solid: Option<Shape>,
     additive: bool,
+    /// The whole ring a sphere's rim chamfers from any of the arcs a
+    /// boolean split it into.
+    whole_ring: Option<WholeRing>,
+}
+
+/// A sphere rim's whole ring and the legs its bevel runs.
+#[derive(Debug, Clone, Copy)]
+struct WholeRing {
+    centre: ogeom_math::Point,
+    radius: f64,
+    up: ogeom_math::Vector,
+    on_wall: f64,
+    on_cap: f64,
+}
+
+impl WholeRing {
+    /// Whether `other` is a ring on the same circle and the same cap.
+    fn same_circle(&self, other: &Self, tol: Tolerances) -> bool {
+        self.centre.distance(other.centre) <= tol.confusion()
+            && (self.radius - other.radius).abs() <= tol.confusion()
+            && self.up.dot(other.up) >= 1.0 - tol.angular()
+    }
+
+    /// Whether `other`'s legs are this ring's.
+    fn same_legs(&self, other: &Self, tol: Tolerances) -> bool {
+        (self.on_wall - other.on_wall).abs() <= tol.confusion()
+            && (self.on_cap - other.on_cap).abs() <= tol.confusion()
+    }
 }
 
 impl Wedge {
@@ -718,14 +879,15 @@ fn seat_kind(model: &Model, edge: &Shape, tol: Tolerances) -> OgeomResult<SeatKi
 /// On the wall the distance runs axially down from the rim; on the cap it
 /// runs radially in from it.
 fn revolved_side(
-    seat: &RevolvedSeat,
+    wall_face: &Shape,
+    cap_face: &Shape,
     face: &Shape,
     on_face: f64,
     on_other: f64,
 ) -> OgeomResult<(f64, f64)> {
-    if seat.wall_face.is_same(face) {
+    if wall_face.is_same(face) {
         Ok((on_face, on_other))
-    } else if seat.cap_face.is_same(face) {
+    } else if cap_face.is_same(face) {
         Ok((on_other, on_face))
     } else {
         ogeom_bail!(
@@ -824,6 +986,7 @@ fn revolved_bevel(
         faces: vec![flanks.wall_band, flanks.annulus, bevel_band],
         solid: None,
         additive: seat.additive(),
+        whole_ring: None,
     })
 }
 
@@ -902,6 +1065,7 @@ fn sector_bevel(
         faces: Vec::new(),
         solid: Some(solid),
         additive: seat.additive(),
+        whole_ring: None,
     })
 }
 
@@ -999,5 +1163,6 @@ fn bevel(
         faces: faces.to_vec(),
         solid: None,
         additive: !seat.convex,
+        whole_ring: None,
     })
 }

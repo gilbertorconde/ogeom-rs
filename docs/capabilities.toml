@@ -1298,6 +1298,7 @@ tests = [
     "crates/ogeom/tests/blends.rs", "crates/ogeom/tests/edge_chains.rs",
     "crates/ogeom-fillet/tests/chamfer_corner.rs",
     "crates/ogeom-fillet/tests/chamfer_cone_rim.rs",
+    "crates/ogeom-fillet/tests/chamfer_sphere_rim.rs",
 ]
 
 [[capability]]
