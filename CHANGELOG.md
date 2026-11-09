@@ -13,6 +13,23 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Chamfers bevel an open crease on a marched seat, in all three
+  spellings.** (#711)
+  - A crease that does not close on itself, a spline's top edge along its
+    wall between two end walls, was refused ("a chamfer on a marched seat
+    that does not close on itself is not built").
+  - The bevel runs out as the marched fillet does: its stations run on
+    along the crease continued past the edge's ends, the band carries on
+    through a wall the crease ends on until both contacts have left their
+    faces, and each end is capped in its section's plane, square to the
+    crease through the chord. The open wedge's band is fitted through the
+    chords, and its end arcs are measured from them.
+  - A slab 2 thick under an S-shaped spline from x = 0 to x = 10, square to
+    its end walls, its top crease bevelled `Symmetric(0.5)`, `Distances`
+    or `Angle`: `check` clean, and the volume less the section's right
+    triangle times the crease's length (the crease turning through nothing
+    between its ends) within 1e-6.
+
 - **`fillet_edges_variable` rounds a straight edge along a drum's ruling.**
   (#716)
   - A flat or a wall meeting a drum along one of its rulings (or two drums

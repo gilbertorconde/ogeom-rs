@@ -1376,6 +1376,7 @@ tests = [
     "crates/ogeom-fillet/tests/chamfer_cone_rim.rs",
     "crates/ogeom-fillet/tests/chamfer_sphere_rim.rs",
     "crates/ogeom-fillet/tests/chamfer_marched.rs",
+    "crates/ogeom-fillet/tests/chamfer_marched_open.rs",
 ]
 
 [[capability]]
