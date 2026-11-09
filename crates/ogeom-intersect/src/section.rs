@@ -1480,82 +1480,107 @@ fn marched(
     // the surfaces as given, whose chart the views share.
     let view_a = windows.0.and_then(|w| windowed(a, w, tol));
     let view_b = windows.1.and_then(|w| windowed(b, w, tol));
-    let traced = branches_from_touches(
-        view_a.as_ref().unwrap_or(a),
-        view_b.as_ref().unwrap_or(b),
-        options.marching,
-        tol,
-    )?;
-    if traced.is_empty() {
-        return Ok(SurfaceIntersection::Apart);
-    }
-    let mut out = Vec::with_capacity(traced.len());
-    let mut contacts: Vec<crate::march::Traced> = Vec::new();
-    // A stretch of a border of either chart lying in the other surface
-    // runs on that border, each point at the border's own parameter. It
-    // was kept only where the surface leaves the other at an angle there,
-    // which it is not asked again.
-    let domains = (
-        view_a.as_ref().unwrap_or(a).domain(),
-        view_b.as_ref().unwrap_or(b).domain(),
-    );
-    let on_border = |params: &[(f64, f64)], ((u0, u1), (v0, v1)): ((f64, f64), (f64, f64))| {
-        let Some(&(u, v)) = params.first() else {
-            return false;
-        };
-        ((u == u0 || u == u1) && params.iter().all(|p| p.0 == u))
-            || ((v == v0 || v == v1) && params.iter().all(|p| p.1 == v))
-    };
-    for (branch, crossing) in &traced {
-        // A branch along which the two surfaces share their normal is a
-        // tangency, not a crossing: the marcher's seeding cannot tell the
-        // noise floor of a tangential valley from a genuine sign change, and
-        // what it traces there is a stalled fragment of the valley, not a
-        // section. The valley is still a curve, though, and the tangential
-        // walker is the one that can follow it, so the fragment becomes a
-        // seed rather than a discard, and what comes back is marked as
-        // contact so nobody classifies by it. A branch leaving a touch
-        // along an arm, where the section crosses itself, is a crossing
-        // however shallow: near the touch no sample of it crosses
-        // measurably, and the valley walker would follow some other curve
-        // within its reach of both.
-        let lying = on_border(&branch.on_a, domains.0) || on_border(&branch.on_b, domains.1);
-        if !lying && !crossing && branch_is_tangential(a, b, branch, tol)? {
-            if let Some(contact) = walk_contact(a, b, branch, &contacts, options.marching, tol)? {
-                contacts.push(contact);
-            }
-            continue;
+    let mut pole_reach = 0.0;
+    let (mut out, contacts) = loop {
+        let traced = branches_from_touches(
+            view_a.as_ref().unwrap_or(a),
+            view_b.as_ref().unwrap_or(b),
+            options.marching,
+            pole_reach,
+            tol,
+        )?;
+        if traced.is_empty() {
+            return Ok(SurfaceIntersection::Apart);
         }
-        if branch.stopped == crate::march::Stopped::RanOut {
-            ogeom_bail!(
-                NotDone,
-                "a marched section ran out of its point budget before \
+        let mut out = Vec::with_capacity(traced.len());
+        let mut contacts: Vec<crate::march::Traced> = Vec::new();
+        let mut again: Option<f64> = None;
+        // A stretch of a border of either chart lying in the other surface
+        // runs on that border, each point at the border's own parameter. It
+        // was kept only where the surface leaves the other at an angle there,
+        // which it is not asked again.
+        let domains = (
+            view_a.as_ref().unwrap_or(a).domain(),
+            view_b.as_ref().unwrap_or(b).domain(),
+        );
+        let on_border = |params: &[(f64, f64)], ((u0, u1), (v0, v1)): ((f64, f64), (f64, f64))| {
+            let Some(&(u, v)) = params.first() else {
+                return false;
+            };
+            ((u == u0 || u == u1) && params.iter().all(|p| p.0 == u))
+                || ((v == v0 || v == v1) && params.iter().all(|p| p.1 == v))
+        };
+        for (branch, crossing) in &traced {
+            // A branch along which the two surfaces share their normal is a
+            // tangency, not a crossing: the marcher's seeding cannot tell the
+            // noise floor of a tangential valley from a genuine sign change, and
+            // what it traces there is a stalled fragment of the valley, not a
+            // section. The valley is still a curve, though, and the tangential
+            // walker is the one that can follow it, so the fragment becomes a
+            // seed rather than a discard, and what comes back is marked as
+            // contact so nobody classifies by it. A branch leaving a touch
+            // along an arm, where the section crosses itself, is a crossing
+            // however shallow: near the touch no sample of it crosses
+            // measurably, and the valley walker would follow some other curve
+            // within its reach of both.
+            let lying = on_border(&branch.on_a, domains.0) || on_border(&branch.on_b, domains.1);
+            if !lying && !crossing && branch_is_tangential(a, b, branch, tol)? {
+                if let Some(contact) = walk_contact(a, b, branch, &contacts, options.marching, tol)?
+                {
+                    contacts.push(contact);
+                }
+                continue;
+            }
+            if branch.stopped == crate::march::Stopped::RanOut {
+                ogeom_bail!(
+                    NotDone,
+                    "a marched section ran out of its point budget before \
                  finishing; the seam is longer than the chord affords and \
                  fitting the truncation would state a curve that is not there"
-            );
+                );
+            }
+            // A fit past its budget is still honest data: the error it reached
+            // is carried on the record and every consumer widens by it: an
+            // imported part's ragged pair can trace branches nothing fits, and
+            // those sections fall outside every trim downstream. Only a trace
+            // cut off by the point budget, refused above, states a curve that
+            // is not there. (A boolean marching an *exact* pair whose image has
+            // no closed form holds its own marched sections to a budget, in
+            // its own fallback, where a miss is a miss.)
+            let fitted = fitted_in_pieces(a, b, branch, options, tol)?;
+            // Fitted whole past a pole of either chart within its stated
+            // tolerance, the section passes through the pole as far as the fit
+            // can say: the pair is traced again, cut there as within the chord.
+            if pole_reach == 0.0 {
+                for f in &fitted {
+                    let stated = options.marching.chord + f.fit_error;
+                    if crate::march::passes_a_pole(&f.curve.clone().into(), [a, b], stated, tol) {
+                        again = Some(again.map_or(stated, |r: f64| r.max(stated)));
+                    }
+                }
+            }
+            for fitted in fitted {
+                out.push(SectionCurve {
+                    curve: fitted.curve.into(),
+                    on_a: Some(fitted.on_a.into()),
+                    on_b: Some(fitted.on_b.into()),
+                    // The sum of the stated parts: the trace is within its chord of
+                    // the truth, the fit within its error of the trace. Cut at a
+                    // pole within a reach, the trace passes the pole up to that
+                    // reach off the truth.
+                    tolerance: (options.marching.chord + fitted.fit_error).max(pole_reach),
+                    exact: false,
+                    closed: fitted.closed,
+                    tangential: false,
+                });
+            }
         }
-        // A fit past its budget is still honest data: the error it reached
-        // is carried on the record and every consumer widens by it: an
-        // imported part's ragged pair can trace branches nothing fits, and
-        // those sections fall outside every trim downstream. Only a trace
-        // cut off by the point budget, refused above, states a curve that
-        // is not there. (A boolean marching an *exact* pair whose image has
-        // no closed form holds its own marched sections to a budget, in
-        // its own fallback, where a miss is a miss.)
-        for fitted in fitted_in_pieces(a, b, branch, options, tol)? {
-            out.push(SectionCurve {
-                curve: fitted.curve.into(),
-                on_a: Some(fitted.on_a.into()),
-                on_b: Some(fitted.on_b.into()),
-                // The sum of the stated parts: the trace is within its chord of
-                // the truth, the fit within its error of the trace.
-                tolerance: options.marching.chord + fitted.fit_error,
-                exact: false,
-                closed: fitted.closed,
-                tangential: false,
-            });
+        if let Some(reach) = again {
+            pole_reach = reach;
+            continue;
         }
-    }
+        break (out, contacts);
+    };
     for contact in &contacts {
         let fitted = approximate_branch(a, b, contact, options.tolerance, tol)?;
         out.push(SectionCurve {
