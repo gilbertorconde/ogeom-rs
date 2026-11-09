@@ -30,6 +30,22 @@ bump may break the API and a patch bump may not.
     and takes the corner's material; it and an L-block's loop lie between
     their constant rounds at the law's least and largest radius.
 
+- **`chamfer_edges_cornered` closes a corner of four or more bevels with a
+  facet.** (#717)
+  - At a vertex of `k > 3` bevels, the bevels are taken in turn round it.
+    Each consecutive pair crosses its contact lines on the face it shares,
+    and where those `k` points lie on one plane the corner is the polygon
+    there.
+  - What is cut away is the convex piece on the vertex's side of the facet
+    and the solid's side of every bevel's plane. Each bevel ends on the
+    facet.
+  - A pyramid's apex of four `Symmetric(2)` bevels takes a square facet and
+    one more face than the mitre. Its volume is the mitre's less the square
+    pyramid from the facet up to the bevels' shared point, in closed form.
+  - Points off one plane, as at an apex off the pyramid's middle, are
+    refused with a reason.
+  - A corner of three bevels is closed as before.
+
 - **`fillet_edges_variable` rounds a chain of different seats continuing
   each other end to end.** (#716)
   - The top loop of a rounded-rectangle pad, its sides between two planes
