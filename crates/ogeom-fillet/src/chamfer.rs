@@ -26,7 +26,7 @@ use crate::support::{
 use ogeom_algo::{Built, make_revolution_band};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{ConeSurface, Curve, SurfaceGeometry};
-use ogeom_math::Cone;
+use ogeom_math::{Cone, Direction, Frame};
 use ogeom_topo::{Model, Shape};
 
 /// Bevel a straight edge of a solid, cutting `distance` back along each of
@@ -485,18 +485,20 @@ fn wedge_for(
             };
             let whole = closed
                 || crate::chamfer_sphere::rim_closes(model, solid, &seat, &rim.circle(), tol)?;
-            if !whole {
-                ogeom_bail!(
-                    Construction,
-                    "a chamfer along an arc of a rim between a plane and a sphere, \
-                     short of the whole circle, is not built"
-                );
-            }
+            // An arc that stops short of its circle is the section turned
+            // through the arc's own sweep.
+            let span = if whole {
+                None
+            } else {
+                let frame =
+                    Frame::new(seat.centre, Direction::new(seat.up, tol)?, seat.x_ref, tol)?;
+                Some(arc_window(model, edge, &frame, tol)?)
+            };
             Ok(Wedge {
-                faces: sphere_bevel(model, &seat, on_wall, on_cap, tol)?,
+                faces: sphere_bevel(model, &seat, on_wall, on_cap, span, tol)?,
                 solid: None,
                 additive: seat.tau < 0.0,
-                whole_ring: Some(WholeRing {
+                whole_ring: whole.then_some(WholeRing {
                     centre: seat.centre,
                     radius: seat.radius,
                     up: seat.up,
@@ -1026,7 +1028,6 @@ fn arc_span(
     seat: &RevolvedSeat,
     tol: Tolerances,
 ) -> OgeomResult<Option<(f64, f64)>> {
-    use ogeom_geom::Curve3d as _;
     let (curve, range) = edge_curve(model, edge, tol)?;
     let closed = ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
     let Curve::Circle(arc) = &curve else {
@@ -1036,8 +1037,22 @@ fn arc_span(
         return Ok(None);
     }
     let frame = seat.frame_at(seat.centre, tol)?;
+    Ok(Some(arc_window(model, edge, &frame, tol)?))
+}
+
+/// Where an arc of a rim starts and how far it turns, as angles about
+/// `frame`'s `z` from its `x`, whose origin is the rim's centre.
+fn arc_window(
+    model: &Model,
+    edge: &Shape,
+    frame: &Frame,
+    tol: Tolerances,
+) -> OgeomResult<(f64, f64)> {
+    use ogeom_geom::Curve3d as _;
+    let (curve, range) = edge_curve(model, edge, tol)?;
+    let centre = frame.origin();
     let angle = |t: f64| -> OgeomResult<f64> {
-        let d = curve.point_at(t, tol)? - seat.centre;
+        let d = curve.point_at(t, tol)? - centre;
         Ok(d.dot(frame.y().vector()).atan2(d.dot(frame.x().vector())))
     };
     let turn = core::f64::consts::TAU;
@@ -1055,7 +1070,7 @@ fn arc_span(
         b
     };
     let sweep = if start == a { forward } else { turn - forward };
-    Ok(Some((start, sweep)))
+    Ok((start, sweep))
 }
 
 /// The wedge of a chamfer along an arc of a rim: the bevel's cross-section,
