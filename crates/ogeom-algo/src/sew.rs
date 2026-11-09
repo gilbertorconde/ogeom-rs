@@ -1931,13 +1931,24 @@ fn carried_off(
             let mut breaks = crate::pcurve_gap::curve_breaks(curve, *range);
             breaks.extend(crate::pcurve_gap::pcurve_breaks(pcurve, prange));
             let wide = (range.1 - range.0).abs().max((prange.1 - prange.0).abs());
+            // The refinement stops within the confusion distance of the
+            // widest, so it may read that much short; the edge's own measure
+            // ([`crate::pcurve_gap::pcurve_gap`], the one every reader of the
+            // edge holds it to) is taken too, and the wider stands.
             let off = crate::pcurve_gap::widest_refined(
                 &gap,
                 &breaks,
                 reach,
                 tol.confusion(),
                 tol.parametric() / wide,
-            )?;
+            )?
+            .max(crate::pcurve_gap::pcurve_gap(
+                (curve, *range),
+                (pcurve, prange),
+                surface,
+                reach,
+                tol,
+            )?);
             if off > reach {
                 widest = Some(widest.map_or(off, |w| w.max(off)));
             }

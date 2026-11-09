@@ -679,6 +679,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A sewn edge states how far a pcurve carried onto it stands from its
+  curve, as the edge's own measure reads it.**
+  - The sew measured a carried pcurve's gap by a refinement that stops
+    within the confusion distance of the widest, so it could read up to
+    that much short, and the survivor stated less than its chart ran off.
+  - On a ball of radius 10 drilled on its own chart with a drill of radius
+    4 whose wall stands 4e-5 inside the poles, the section piece ending at
+    the south pole and the sphere's seam were sewn as one edge stating
+    4.006647e-5 while the carried chart ran 4.006739e-5 off.
+  - The carried pcurve is now also measured by `pcurve_gap`, the measure
+    every reader of the edge holds it to, and the wider reading stands.
+
 - **A section passing a sphere chart's pole within its fit's tolerance is
   cut there instead of refused.**
   - A marched branch is cut at a pole of either chart lying on the other

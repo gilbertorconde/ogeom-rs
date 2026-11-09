@@ -54,12 +54,7 @@ tolerance of 1.1e-5, in two of three directions on one side and one on the
 other ("the kept pieces did not close into a shell", as on 0.17): the
 loop round the north pole passes 2e-6 rad off the chart's pole row, and
 the sphere's cap inside it is not formed, its section pieces left open
-round it. Found while measuring, on 0.17 as on this change: a ball of radius 10
-drilled on its own chart by a drill of radius 4 whose wall stands 4e-5
-inside the poles along -y returns a common whose chart on the sphere runs
-4.0067e-5 off an edge stating 4.0066e-5, an invalid solid
-(`check` refuses it), where the drill's radius 1 and 2.66 placements cut
-or refuse. "A branch
+round it. "A branch
 passing beside a chart's pole fits nothing yet" stands where both fits
 miss. Only spheres' poles are measured; a patch's collapsed side takes the
 same path untested.
