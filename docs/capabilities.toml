@@ -1330,15 +1330,17 @@ arc; an open curved edge whose ball runs out past its ends (a half \
 drum's rim), the law laid along the edge and held at its end radius past \
 each end, where the ball runs out at that radius; an open chain of arcs \
 of one curve between the same two faces, end to end (a crease split at a \
-vertex), rounded as the one seat over the window its arcs cover; and a \
+vertex), rounded as the one seat over the window its arcs cover; a \
 straight edge along a drum's ruling (a flat or a wall meeting a drum, or \
-two drums), marched with the law's radius. Refused by name: a linear law \
+two drums), marched with the law's radius; and a seat pinched where its \
+hosts turn tangent at an end (two equal drums crossing), each station \
+solved at the law's radius for its place and the pole's at the law's \
+radius there. Refused by name: a linear law \
 changing radius round a closed chain (it jumps where the chain closes), \
 any other open chain of more than one edge (arcs of different curves, or \
 turning where they meet), any other straight edge whose faces are not \
 both planes, a law over one arc of a crease that closes through other \
-edges (the whole loop is given instead), a seat pinched where its hosts \
-are tangent, and a ball at the law's largest radius that does not fit \
+edges (the whole loop is given instead), and a ball at the law's largest radius that does not fit \
 the faces."""
 symbols = ["ogeom_fillet::fillet_edges_variable", "ogeom_fillet::RadiusLaw"]
 tests = ["crates/ogeom-fillet/tests/variable.rs"]

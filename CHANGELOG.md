@@ -13,6 +13,17 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fillet_edges_variable` rounds a seat pinched where its hosts turn
+  tangent.** (#716)
+  - Two equal drums crossing square meet on ellipses that end at the poles
+    where the drums touch, and the ball's section shrinks to nothing
+    there. Under a law each station is solved at the law's radius for its
+    place along the edge, and the pole's centre stands the law's radius
+    off it.
+  - A seam arc rounded under radii 1, 2, 1: the radius each rail point
+    implies in closed form stands within 1.1e-4 of the law at its
+    station's arc fraction over 56 points, the ball growing from 1 to 2.
+
 - **`fillet_edges_variable` rounds a straight edge along a drum's ruling.**
   (#716)
   - A flat or a wall meeting a drum along one of its rulings (or two drums

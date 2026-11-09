@@ -207,13 +207,6 @@ fn marched_fillet_by(
     };
 
     if pinched != [false, false] {
-        if law.is_some() {
-            ogeom_bail!(
-                Construction,
-                "a variable radius on a seat pinched where its hosts are \
-                 tangent is still owed; see docs/CAPABILITIES.md, fillet.variable"
-            );
-        }
         return crate::pinched::pinched_fillet(
             model,
             solid,
@@ -222,6 +215,7 @@ fn marched_fillet_by(
             sides,
             convex,
             radius,
+            law,
             pinched,
             tol,
         );
@@ -2024,7 +2018,7 @@ pub(crate) fn build_held_band(
 /// scale every reach is taken at.
 #[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
 #[allow(clippy::too_many_lines, reason = "one wedge, assembled end to end")]
-fn build_held_band_by(
+pub(crate) fn build_held_band_by(
     model: &mut Model,
     solid: &Shape,
     edge: Option<&Shape>,

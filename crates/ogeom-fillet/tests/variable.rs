@@ -633,6 +633,149 @@ fn a_law_of_points_rounds_a_flat_meeting_a_drum_along_its_ruling() {
     assert!(on_flat > 16 && on_drum > 16, "{on_flat} and {on_drum}");
 }
 
+/// Two drums of radius 5 crossing square, the upright one about z and the
+/// other about the line y = 0, z = 10, fused, and an edge of their seam:
+/// an arc of an ellipse `z = 10 ± x` on the upright drum, ending at a pole
+/// (0, ±5, 10) where the drums turn tangent.
+///
+/// The ball rolls outside both drums, its centre 5 + r from both axes; a
+/// touch on the upright drum at (x, y, z) then puts it at radius
+/// `5 |z - 10| / |x| - 5`, a touch on the other at `5 |x| / |z - 10| - 5`.
+/// Each station's section stands square to the seam at its first touch,
+/// so every rail point is held to the law at the seam's arc fraction of
+/// its own foot there or of its ball's other touch's.
+#[test]
+fn a_law_of_points_rounds_a_seam_pinched_where_two_drums_turn_tangent() {
+    let mut model = Model::new();
+    let upright = ogeom_algo::make_cylinder(&mut model, at(0.0, 0.0, 0.0), 5.0, 20.0, T)
+        .unwrap()
+        .shape;
+    let across_frame =
+        Frame::new(Point::new(-20.0, 0.0, 10.0), Direction::X, Direction::Y, T).unwrap();
+    let across = ogeom_algo::make_cylinder(&mut model, across_frame, 5.0, 40.0, T)
+        .unwrap()
+        .shape;
+    let joined = ogeom_bool::fuse(&mut model, &upright, &across, T)
+        .unwrap()
+        .shape;
+    let seam = explore_unique(&model, &joined, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let (c, (a, b)) = ogeom_algo::placed_edge_curve(&model, e, T)
+                .unwrap()
+                .unwrap();
+            [a, b].iter().any(|t| {
+                let p = c.point_at(*t, T).unwrap();
+                p.x.abs() < 1e-6 && (p.z - 10.0).abs() < 1e-6
+            }) && (0..=8).all(|i| {
+                let p = c.point_at(a + (b - a) * f64::from(i) / 8.0, T).unwrap();
+                (p.x.hypot(p.y) - 5.0).abs() < 1e-6 && (p.y.hypot(p.z - 10.0) - 5.0).abs() < 1e-6
+            })
+        })
+        .unwrap();
+
+    // The seam sampled by arc length, the way the edge runs.
+    let samples: Vec<(Point, f64)> = {
+        let (c, (a, b)) = ogeom_algo::placed_edge_curve(&model, &seam, T)
+            .unwrap()
+            .unwrap();
+        let mut points: Vec<Point> = (0..=20_000)
+            .map(|i| {
+                c.point_at(a + (b - a) * f64::from(i) / 20_000.0, T)
+                    .unwrap()
+            })
+            .collect();
+        if seam.orientation() == Orientation::Reversed {
+            points.reverse();
+        }
+        let mut run = vec![0.0];
+        for w in points.windows(2) {
+            run.push(run[run.len() - 1] + w[0].distance(w[1]));
+        }
+        let total = run[run.len() - 1];
+        points
+            .into_iter()
+            .zip(run.into_iter().map(|l| l / total))
+            .collect()
+    };
+    let fraction = |p: Point| {
+        samples
+            .iter()
+            .min_by(|a, b| a.0.distance(p).total_cmp(&b.0.distance(p)))
+            .unwrap()
+            .1
+    };
+
+    let rounded =
+        fillet_edges_variable(&mut model, &joined, std::slice::from_ref(&seam), &hump(), T)
+            .unwrap();
+    valid(&model, &rounded.shape);
+    assert!(rounded.history.is_deleted(&seam));
+
+    let on_upright = |p: &Point| (p.x.hypot(p.y) - 5.0).abs() < 1e-3;
+    let on_across = |p: &Point| (p.y.hypot(p.z - 10.0) - 5.0).abs() < 1e-3;
+    let near_a_pole = |p: &Point| p.x.hypot(p.z - 10.0) < 1.5;
+    let (mut held, mut largest) = (0, 0.0_f64);
+    for e in explore_unique(&model, &rounded.shape, ShapeType::Edge).unwrap() {
+        let Some((c, (a, b))) = ogeom_algo::placed_edge_curve(&model, &e, T).unwrap() else {
+            continue;
+        };
+        let points: Vec<Point> = (0..=32)
+            .map(|i| c.point_at(a + (b - a) * f64::from(i) / 32.0, T).unwrap())
+            .collect();
+        // A rail lies on one drum, a little off the other along all its run,
+        // and bends with the seam: a drum's own seam line is straight.
+        let (first, last) = (points[0], points[points.len() - 1]);
+        let chord = (last - first) / first.distance(last).max(1e-12);
+        if points
+            .iter()
+            .all(|p| ((*p - first) - chord * (*p - first).dot(chord)).magnitude() < 1e-6)
+        {
+            continue;
+        }
+        let upright_rail = points.iter().all(on_upright)
+            && points
+                .iter()
+                .all(|p| (p.y.hypot(p.z - 10.0) - 5.0).abs() < 3.0)
+            && points.iter().any(|p| !on_across(p));
+        let across_rail = points.iter().all(on_across)
+            && points.iter().all(|p| (p.x.hypot(p.y) - 5.0).abs() < 3.0)
+            && points.iter().any(|p| !on_upright(p));
+        if !upright_rail && !across_rail {
+            continue;
+        }
+        for p in points.iter().filter(|p| !near_a_pole(p)) {
+            let (r, other) = if upright_rail {
+                let k = (p.z - 10.0).abs() / p.x.abs();
+                let centre = Point::new(p.x * k, p.y * k, p.z);
+                let s = 5.0 / (5.0 * k);
+                let other = Point::new(centre.x, centre.y * s, 10.0 + (centre.z - 10.0) * s);
+                (5.0 * k - 5.0, other)
+            } else {
+                let k = p.x.abs() / (p.z - 10.0).abs();
+                let centre = Point::new(p.x, p.y * k, 10.0 + (p.z - 10.0) * k);
+                let s = 1.0 / k;
+                (
+                    5.0 * k - 5.0,
+                    Point::new(centre.x * s, centre.y * s, centre.z),
+                )
+            };
+            let off = (r - hump_open(fraction(*p)))
+                .abs()
+                .min((r - hump_open(fraction(other))).abs());
+            assert!(
+                off < 1e-3,
+                "a rail point {p:?} holds radius {r}, {off} off the law"
+            );
+            largest = largest.max(r);
+            held += 1;
+        }
+    }
+    assert!(held > 32, "{held} rail points");
+    assert!(largest > 1.5, "the ball grows to {largest} along the seam");
+}
+
 #[test]
 fn a_variable_radius_refuses_by_name_what_it_does_not_round() {
     let mut model = Model::new();
