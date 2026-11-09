@@ -315,8 +315,9 @@ the run-out is the constant round's at that radius. An open chain of arcs of
 one curve (a crease split at a vertex) is that one seat over the window its
 arcs cover. Owed: any other open chain of several edges (the junctions of `fillet_edges` meet bands of one
 radius cap to cap; two bands of different end sections there need the
-re-entrant intersection path), a straight edge between a plane and a drum
-(`ruled.rs` has no law), and a seat pinched where its hosts are tangent.
+re-entrant intersection path), and a seat pinched where its hosts are
+tangent. A straight edge along a drum's ruling under a law is marched, the
+exact sweep of `ruled.rs` holding one section only.
 
 **Setback corners beyond the one-ball planar vertex.** `round_vertex_setback`
 fits one trimmed patch G1 to the fit target at a convex planar corner one

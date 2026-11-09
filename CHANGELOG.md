@@ -13,6 +13,18 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fillet_edges_variable` rounds a straight edge along a drum's ruling.**
+  (#716)
+  - A flat or a wall meeting a drum along one of its rulings (or two drums
+    meeting so) has the same section all along under one radius, which
+    `ruled.rs` sweeps exactly; under a law every section changes with the
+    radius, so the march carries it, the ball seated on the exact hosts at
+    the law's radius station by station.
+  - A drum of radius 5 cut flat at x = 3 and rounded along the ruling
+    under radii 1, 2, 1: the contact on the flat stands within 4.4e-6 of
+    the closed form `sqrt((5 - r)^2 - (3 - r)^2)` at the law's radius,
+    and every contact on both rails within 1e-3.
+
 - **`fillet_edges_variable` rounds an open chain of arcs of one curve.**
   (#716)
   - A crease split at a vertex (a half drum's rim across its seam, two
