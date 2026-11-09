@@ -1298,12 +1298,15 @@ across it under a law of points); and a closed loop of curved edges \
 between the same two faces, one closed edge or the arcs it is split \
 into end to end (a drum's rim, a cut drum's oblique rim), marched with \
 the law's radius station by station and the band fitted through each \
-station's arc. Refused by name: a linear law changing radius round a \
-closed chain (it jumps where the chain closes), an open chain of more \
-than one edge, a straight edge whose faces are not both planes, an open \
-curved edge (the run-out caps of a varying ball are owed), a seat \
-pinched where its hosts are tangent, and a ball at the law's largest \
-radius that does not fit the faces."""
+station's arc; and an open curved edge whose ball runs out past its \
+ends (a half drum's rim), the law laid along the edge and held at its \
+end radius past each end, where the ball runs out at that radius. \
+Refused by name: a linear law changing radius round a closed chain (it \
+jumps where the chain closes), an open chain of more than one edge, a \
+straight edge whose faces are not both planes, a law over one arc of a \
+crease that closes through other edges (the whole loop is given \
+instead), a seat pinched where its hosts are tangent, and a ball at the \
+law's largest radius that does not fit the faces."""
 symbols = ["ogeom_fillet::fillet_edges_variable", "ogeom_fillet::RadiusLaw"]
 tests = ["crates/ogeom-fillet/tests/variable.rs"]
 

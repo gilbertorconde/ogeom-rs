@@ -335,6 +335,12 @@ fn a_law_of_points_rounds_a_marched_seat_tangent_to_both_faces() {
     let seat = chain[0].clone();
 
     let law = RadiusLaw::Points(vec![(0.0, 0.5), (0.5, 1.0)]);
+    // One arc alone is a crease that closes through the other: its law
+    // would be read round the whole loop the march walks.
+    match fillet_edges_variable(&mut model, &joined, &chain[..1], &law, T) {
+        Err(e) => assert!(e.to_string().contains("closes through"), "{e}"),
+        Ok(_) => panic!("one arc of a closed crease took a law of its own"),
+    }
     let rounded = fillet_edges_variable(&mut model, &joined, &chain, &law, T).unwrap();
     valid(&model, &rounded.shape);
     assert!(rounded.history.is_deleted(&seat));
@@ -386,6 +392,84 @@ fn a_law_of_points_rounds_a_marched_seat_tangent_to_both_faces() {
         removed > 0.0 && removed < most,
         "removed {removed} of at most {most}"
     );
+}
+
+/// A drum of radius 5 cut in half through its axis: its top's rim is an
+/// open half circle, a crease that ends where the cut meets it, so the
+/// round runs out through the cut at both ends.
+fn half_drum(model: &mut Model) -> (Shape, Shape) {
+    let drum = ogeom_algo::make_cylinder(model, at(0.0, 0.0, 0.0), 5.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let away = ogeom_algo::make_box(model, at(-10.0, -10.0, -1.0), (20.0, 10.0, 12.0), T)
+        .unwrap()
+        .shape;
+    let half = ogeom_bool::cut(model, &drum, &away, T).unwrap().shape;
+    let rim = edge_near(model, &half, [0.0, 5.0, 10.0]);
+    (half, rim)
+}
+
+/// An open curved edge under a law of points: the law is laid along the
+/// edge's own arc length and held at its end radius past each end, where
+/// the ball runs out at that one radius, as a constant round's does. Every
+/// contact on both rails stands at the law's setback for its place along
+/// the arc, and the round removes more than the constant round of the
+/// law's least radius and less than its largest's.
+#[test]
+fn a_law_of_points_rounds_an_open_arc_running_out_at_both_ends() {
+    let mut model = Model::new();
+    let (half, rim) = half_drum(&mut model);
+    let rounded =
+        fillet_edges_variable(&mut model, &half, std::slice::from_ref(&rim), &hump(), T).unwrap();
+    valid(&model, &rounded.shape);
+    assert!(rounded.history.is_deleted(&rim));
+
+    // The arc's fraction at a point: its angle round the axis from the
+    // rim's start, the way the rim runs, over the half turn.
+    let (start, ahead) = {
+        let (c, (lo, hi)) = ogeom_algo::placed_edge_curve(&model, &rim, T)
+            .unwrap()
+            .unwrap();
+        let (t, sense) = if rim.orientation() == Orientation::Reversed {
+            (hi, -1.0)
+        } else {
+            (lo, 1.0)
+        };
+        (c.point_at(t, T).unwrap(), c.d1_at(t, T).unwrap() * sense)
+    };
+    let fraction = |p: Point| {
+        let a0 = start.y.atan2(start.x);
+        let turn = if (start.x * ahead.y - start.y * ahead.x) > 0.0 {
+            1.0
+        } else {
+            -1.0
+        };
+        let a = p.y.atan2(p.x);
+        ((a - a0) * turn).rem_euclid(core::f64::consts::TAU) / core::f64::consts::PI
+    };
+    let (top, wall) = rim_contacts(&model, &rounded.shape, 5.0, 10.0, fraction);
+    assert!(
+        top.len() > 16 && wall.len() > 16,
+        "{} and {}",
+        top.len(),
+        wall.len()
+    );
+    for (s, setback) in top.iter().chain(&wall) {
+        let law = hump_open(s.clamp(0.0, 1.0));
+        assert!(
+            (setback - law).abs() < 1e-3,
+            "at {s} the contact stands {setback} from the rim, the law {law}"
+        );
+    }
+
+    let mut constant = |r: f64| {
+        let (d, e) = half_drum(&mut model);
+        fillet_edge(&mut model, &d, &e, r, T).unwrap().shape
+    };
+    let (one, two) = (constant(1.0), constant(2.0));
+    let v = volume(&model, &rounded.shape, 1e-3);
+    let (v1, v2) = (volume(&model, &one, 1e-3), volume(&model, &two, 1e-3));
+    assert!(v2 < v && v < v1, "{v2} < {v} < {v1}");
 }
 
 #[test]

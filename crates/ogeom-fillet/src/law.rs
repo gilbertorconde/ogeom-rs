@@ -205,6 +205,11 @@ impl Profile {
         self.radius.iter().copied().fold(f64::INFINITY, f64::min)
     }
 
+    /// Whether the law was laid on a chain that closes.
+    pub(crate) const fn closed(&self) -> bool {
+        self.closed
+    }
+
     /// Whether the law holds one radius all along.
     pub(crate) fn level(&self, tol: Tolerances) -> bool {
         self.largest() - self.least() <= tol.confusion()

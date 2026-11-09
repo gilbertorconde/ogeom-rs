@@ -2154,6 +2154,9 @@ fn fillet_edge_variable_own(
 ///   the loop: a drum's rim, a cut drum's oblique rim, a branch's seam. The
 ///   march carries the law's radius station by station round the whole
 ///   loop, and the band is fitted through each station's own arc.
+/// - an open curved edge whose ball runs out past its ends (a half drum's
+///   rim): the law is held at its end radius past each end, so the ball
+///   runs out there at that one radius, as a constant round's does.
 ///
 /// A law holding one radius all along is [`fillet_edges`]' round.
 ///
@@ -2167,9 +2170,9 @@ fn fillet_edge_variable_own(
 /// positive length), where a linear law changes radius round a closed
 /// chain, where `chain` is empty, an open chain of more than one edge, a
 /// closed chain with a straight edge, or a chain whose edges do not run
-/// end to end between the same two faces, where a curved chain is open
-/// (its round would run out past its ends), or where the ball at the
-/// law's largest radius does not fit the edge's faces; and as
+/// end to end between the same two faces, where a law is given over one
+/// arc of a crease that closes through other edges, or where the ball at
+/// the law's largest radius does not fit the edge's faces; and as
 /// [`fillet_edge`] for the seat itself.
 pub fn fillet_edges_variable(
     model: &mut Model,
@@ -2271,13 +2274,6 @@ fn fillet_chain_law_own(
                 );
             }
         }
-    }
-    if !planar && !closed {
-        ogeom_bail!(
-            Construction,
-            "a variable radius on an open curved edge is still owed; a \
-             closed loop is rounded; see docs/CAPABILITIES.md, fillet.variable"
-        );
     }
     // The ball at the law's largest radius sets back furthest: where that
     // one fits each face, every smaller one does.
