@@ -1325,6 +1325,28 @@ symbols = ["ogeom_fillet::fillet_edges_variable", "ogeom_fillet::RadiusLaw"]
 tests = ["crates/ogeom-fillet/tests/variable.rs"]
 
 [[capability]]
+id = "fillet.setback-corners"
+title = "Setback vertex corners: bands stopped a chosen distance along their edges, one patch over the opening"
+crate = "ogeom-fillet"
+verdict = "partial"
+restriction = """At a convex planar vertex one ball touches every face of (a box \
+corner, a square pyramid's apex), each band of the vertex's edges stops \
+at its own setback, cut square to its edge; on each face the trim runs \
+from one band's rail end to the next on a conic tangent to both rails, \
+and one patch fills the opening of arcs and conics, fitted G1 to every \
+band end and face within the bands' fit target. A setback equal to the \
+ball's own is the ball corner. Refused by name: G2 (a circular band meets \
+its face at G1, so its end arc bends the patch at 1/radius where the face \
+asks none; curvature-continuous band sections come first), a vertex a \
+curved face meets, planes sharing no tangent ball, a curved edge leaving \
+the vertex, and a setback inside the ball's own or past the edge's end. \
+Owed: the patch as a network of quads from the sides' midpoints to a \
+centre, held tangent exactly rather than to the fit; setbacks through \
+fillet_edges' own corners."""
+symbols = ["ogeom_fillet::round_vertex_setback", "ogeom_fillet::Setbacks"]
+tests = ["crates/ogeom-fillet/tests/setback.rs"]
+
+[[capability]]
 id = "fillet.chamfers"
 title = "Chamfering edges: symmetric, two-distance, distance-and-angle"
 crate = "ogeom-fillet"

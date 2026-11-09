@@ -4,8 +4,6 @@
 pub mod draft;
 pub mod feature;
 pub mod fill;
-mod fill_n;
-mod fill_patch;
 pub(crate) mod fixed;
 mod freeform;
 pub mod loft;

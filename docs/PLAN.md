@@ -318,6 +318,15 @@ radius cap to cap; two bands of different end sections there need the
 re-entrant intersection path), a straight edge between a plane and a drum
 (`ruled.rs` has no law), and a seat pinched where its hosts are tangent.
 
+**Setback corners beyond the one-ball planar vertex.** `round_vertex_setback`
+fits one trimmed patch G1 to the fit target at a convex planar corner one
+ball touches. Owed: G2 (needs band sections curvature continuous with their
+faces, so the end arcs stop bending the patch where the faces do not), the
+patch as N quads from the sides' midpoints to a centre fitted by
+`fit_network` so tangency holds exactly, vertices where a curved face
+meets or the planes share no tangent ball, and setbacks asked through
+`fillet_edges`' corners.
+
 ### Construction and exchange
 
 **STEP pcurves the file cannot state exactly.** The reader keeps a file's

@@ -16,6 +16,8 @@ pub mod corner;
 pub mod corner2d;
 mod corner_curved;
 pub mod facepair;
+mod fill_n;
+mod fill_patch;
 pub mod fillet;
 mod fits;
 mod junction;
@@ -26,6 +28,7 @@ mod pair_marched;
 mod pinched;
 mod rolled;
 mod ruled;
+mod setback;
 pub mod sheet;
 mod sheet_curved;
 mod stepped;
@@ -46,6 +49,7 @@ pub use chamfer_corner::{ChamferCorner, chamfer_edges_cornered};
 pub use corner::round_vertex;
 pub use corner2d::{chamfer_corner_2d, fillet_corner_2d};
 pub use facepair::blend_faces;
+pub use fill_n::{FillBoundary, FillSide, Filled, make_filling_n};
 pub use fillet::{
     fillet_edge, fillet_edge_variable, fillet_edges, fillet_edges_variable, fillet_edges_with,
 };
@@ -54,4 +58,5 @@ pub use law::RadiusLaw;
 pub use march::{
     BlendStop, MarchedBlend, Sides, march_blend, march_blend_seeded, march_blend_sided,
 };
+pub use setback::{Setbacks, round_vertex_setback};
 pub use sheet::{fillet_faces, fillet_sheet_edges};
