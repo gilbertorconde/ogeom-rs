@@ -285,6 +285,25 @@ pub struct NetworkOptions {
     /// spline on fewer knots) is the held curve exactly; a polyline is read
     /// at its chord parameters.
     pub held: Vec<usize>,
+    /// Held curves on the network's border whose patch leaves them as a
+    /// support asks: the poles one row in from each such curve are moved,
+    /// at every round, to the nearest point that steps off each pole of the
+    /// curve as [`Across`] says, and held there. The patch then meets the
+    /// support tangent along the curve exactly, up to the held curve's own
+    /// projection.
+    pub across: Vec<(usize, Across)>,
+}
+
+/// How a patch leaves a held border curve: the direction every step from a
+/// pole of the curve to the pole one row in may take.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Across {
+    /// Within the plane square to this normal: a planar face the patch
+    /// meets tangent along the curve.
+    Plane(Vector),
+    /// Along this direction: a ruled support, a cylinder say, whose rulings
+    /// run this way across the curve.
+    Along(Vector),
 }
 
 /// How one patch fits its points.
@@ -495,6 +514,40 @@ pub fn fit_network_chained(
             }
         });
     }
+    let mut across: Vec<Option<Across>> = vec![None; curves.len()];
+    for &(c, how) in &options.across {
+        if held.get(c).is_none_or(Option::is_none) {
+            ogeom_bail!(
+                Construction,
+                "curve {c} is held across but not held; its poles must stand still for \
+                 the step across them to be held"
+            );
+        }
+        let bounding = patches
+            .iter()
+            .flat_map(|patch| patch.sides.iter().flatten())
+            .filter(|side| side.curve == c)
+            .count();
+        if bounding != 1 {
+            ogeom_bail!(
+                Construction,
+                "curve {c} is held across but bounds {bounding} patches; only a border \
+                 curve has a side to be held across"
+            );
+        }
+        let (Across::Plane(v) | Across::Along(v)) = how;
+        if !(v.magnitude() > tol.confusion()
+            && v.x.is_finite()
+            && v.y.is_finite()
+            && v.z.is_finite())
+        {
+            ogeom_bail!(
+                Construction,
+                "curve {c} is held across a direction of no length"
+            );
+        }
+        across[c] = Some(how);
+    }
     // A held curve is seeded at the parameter it is held at, so the points
     // take their parameters along it as the held poles place them: a
     // curve's own, drawn at as many even steps as it has points.
@@ -527,6 +580,7 @@ pub fn fit_network_chained(
         corners: Corners::Loose,
         fans: false,
         held: &held,
+        across: &across,
         vertex_points: &corners,
         tol,
     };
@@ -1540,6 +1594,8 @@ struct Fit<'a> {
     fans: bool,
     /// Each curve the caller holds, by index.
     held: &'a [Option<HeldCurve<'a>>],
+    /// How the patch leaves each held border curve, where the caller says.
+    across: &'a [Option<Across>],
     /// Where each corner stands.
     vertex_points: &'a [Point],
     tol: Tolerances,
@@ -2255,6 +2311,7 @@ impl Fit<'_> {
                 None => held = false,
             }
         }
+        let known = self.across_poles(&layout, &loose, known);
         let basis = if known.is_empty() {
             null_space(layout.slots, &rows)
         } else {
@@ -2633,6 +2690,91 @@ impl Fit<'_> {
         known.sort_by_key(|&(slot, _)| slot);
         known.dedup_by_key(|&mut (slot, _)| slot);
         Ok(known)
+    }
+
+    /// `known` with the poles one row in from each curve held across
+    /// prescribed too: each moved from where the fit without them put it to
+    /// the nearest point at which its step off every pole of a held curve
+    /// beside it goes as that curve's [`Across`] says. A pole a held curve
+    /// already prescribes stays as it is.
+    fn across_poles(
+        &self,
+        layout: &Layout,
+        loose: &[Point],
+        mut known: Vec<(usize, [f64; 3])>,
+    ) -> Vec<(usize, [f64; 3])> {
+        if self.across.iter().all(Option::is_none) {
+            return known;
+        }
+        // Each inner slot's conditions: unit rows `a·P = a·B`.
+        let mut asked: BTreeMap<usize, Vec<(Vector, Point)>> = BTreeMap::new();
+        for (p, patch) in self.patches.iter().enumerate() {
+            let dims = layout.dims(p);
+            for (k, side) in patch.sides.iter().enumerate() {
+                let mut offset = 0;
+                for piece in side {
+                    let n = layout.along(piece.curve);
+                    if let Some(how) = self.across[piece.curve] {
+                        for w in offset..offset + n {
+                            let (base, inner) = side_pole(k, w, dims);
+                            let (bs, is) = (
+                                layout.slot(self.topo, self.patches, p, base),
+                                layout.slot(self.topo, self.patches, p, inner),
+                            );
+                            let b = loose[bs];
+                            let rows = asked.entry(is).or_default();
+                            match how {
+                                Across::Plane(normal) => {
+                                    rows.push((normal / normal.magnitude(), b));
+                                }
+                                Across::Along(along) => {
+                                    let d = along / along.magnitude();
+                                    let pick = if d.x.abs() < 0.9 {
+                                        Vector::new(1.0, 0.0, 0.0)
+                                    } else {
+                                        Vector::new(0.0, 1.0, 0.0)
+                                    };
+                                    let e1 = d.cross(pick);
+                                    let e1 = e1 / e1.magnitude();
+                                    rows.push((e1, b));
+                                    rows.push((d.cross(e1), b));
+                                }
+                            }
+                        }
+                    }
+                    offset += n - 1;
+                }
+            }
+        }
+        for (slot, rows) in asked {
+            if known.iter().any(|&(s, _)| s == slot) {
+                continue;
+            }
+            // The nearest point meeting every row: each row made
+            // orthogonal to those before it, a row that repeats them
+            // dropped, and the point moved along each in turn.
+            let mut p = loose[slot];
+            let mut basis: Vec<(Vector, f64)> = Vec::new();
+            for (a, b) in rows {
+                let mut a = a;
+                let mut target = a.dot(b.to_vector());
+                for &(q, t) in &basis {
+                    let along = a.dot(q);
+                    a -= q * along;
+                    target -= along * t;
+                }
+                let length = a.magnitude();
+                if length <= self.tol.angular().sqrt() {
+                    continue;
+                }
+                let (a, target) = (a / length, target / length);
+                basis.push((a, target));
+                p += a * (target - a.dot(p.to_vector()));
+            }
+            known.push((slot, [p.x, p.y, p.z]));
+        }
+        known.sort_by_key(|&(slot, _)| slot);
+        known
     }
 
     /// The basis over `rows` with the held slots prescribed, refused by

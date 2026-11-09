@@ -9,8 +9,8 @@ use core::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::time::Duration;
 
 use ogeom::algo::{
-    ChainedPatch, CurveDef, Network, NetworkOptions, PatchDef, PatchSide, check, fit_network,
-    fit_network_chained,
+    Across, ChainedPatch, CurveDef, Network, NetworkOptions, PatchDef, PatchSide, check,
+    fit_network, fit_network_chained,
 };
 use ogeom::core::clock::Instant;
 use ogeom::core::{OgeomError, Tolerances};
@@ -76,6 +76,7 @@ fn options(tolerance: f64, creases: Vec<usize>) -> NetworkOptions {
         spans: 1,
         most: 16,
         held: Vec::new(),
+        across: Vec::new(),
     }
 }
 
@@ -2323,6 +2324,90 @@ fn a_held_curve_is_the_caller_s_curve_to_rounding() {
     bad.held = vec![7];
     let index = PointIndex::build(&cloud).unwrap();
     let refused = fit_network(&mut Model::new(), &patches, &curves, &index, &bad, T);
+    assert!(
+        matches!(refused, Err(OgeomError::Construction(_))),
+        "{refused:?}"
+    );
+}
+
+/// A held curve held across: the patch over the cubic surface leaves its
+/// side along `y = 0` along `+y`, the surface's own direction across that
+/// side, at every pole. The patch's derivative across the side is then
+/// along `+y` to rounding; fitted without it, only near so.
+#[test]
+fn a_curve_held_across_leaves_its_patch_along_the_support_to_rounding() {
+    use ogeom::geom::BSplineCurve;
+    use ogeom::math::{KnotVector, Vector};
+    let bezier = BSplineCurve::new(
+        KnotVector::new(vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 3).unwrap(),
+        vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(4.0 / 3.0, 0.0, 0.0),
+            Point::new(8.0 / 3.0, 0.0, 0.0),
+            Point::new(4.0, 0.0, 3.2),
+        ],
+        T,
+    )
+    .unwrap();
+    let side = |f: &dyn Fn(f64) -> Point| -> CurveDef {
+        CurveDef::Polyline((0..=64).map(|i| f(f64::from(i) / 16.0)).collect())
+    };
+    let curves = vec![
+        CurveDef::Curve {
+            curve: Curve::BSpline(bezier),
+            range: (0.0, 1.0),
+        },
+        side(&|s| on_cubic(4.0, s)),
+        side(&|s| on_cubic(4.0 - s, 4.0)),
+        side(&|s| on_cubic(0.0, 4.0 - s)),
+    ];
+    let patches = vec![PatchDef::four([
+        (0, false),
+        (1, false),
+        (2, false),
+        (3, false),
+    ])];
+    let mut cloud = Vec::new();
+    for i in 0..=60 {
+        for j in 0..=60 {
+            cloud.push(on_cubic(f64::from(i) / 15.0, f64::from(j) / 15.0));
+        }
+    }
+    // The widest lean of the derivative across the side off `+y`.
+    let lean = |network: &Network| -> f64 {
+        (0..=64)
+            .map(|i| {
+                let (_, dv) = network.surfaces[0]
+                    .d1_at(f64::from(i) / 64.0, 0.0, T)
+                    .unwrap();
+                (dv.x.hypot(dv.z) / dv.y.abs()).atan()
+            })
+            .fold(0.0, f64::max)
+    };
+    let mut held = options(CLEAN_TOLERANCE, vec![]);
+    held.held = vec![0];
+    let (_, plain) = fit(&curves, &patches, &cloud, &held);
+    held.across = vec![(0, Across::Along(Vector::new(0.0, 1.0, 0.0)))];
+    let (model, network) = fit(&curves, &patches, &cloud, &held);
+    assert_sound_shell(&model, &network, 4);
+    let (exact, near) = (lean(&network), lean(&plain));
+    assert!(
+        exact < ROUNDING_ANGLE,
+        "the patch leans {exact} rad off its support"
+    );
+    assert!(near > exact, "held only, the patch leans {near} rad");
+    // Every point within the tolerance, as the network promises.
+    assert_eq!(network.ended, Ended::Met);
+    assert!(
+        network.per_patch[0].worst <= CLEAN_TOLERANCE,
+        "{:?}",
+        network.per_patch
+    );
+
+    let mut loose = options(CLEAN_TOLERANCE, vec![]);
+    loose.across = vec![(0, Across::Plane(Vector::new(0.0, 0.0, 1.0)))];
+    let index = PointIndex::build(&cloud).unwrap();
+    let refused = fit_network(&mut Model::new(), &patches, &curves, &index, &loose, T);
     assert!(
         matches!(refused, Err(OgeomError::Construction(_))),
         "{refused:?}"
