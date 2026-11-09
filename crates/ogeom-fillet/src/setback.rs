@@ -234,6 +234,20 @@ fn setback_own(
     )
 }
 
+/// How a band at a setback corner ends where the patch meets it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CornerEnd {
+    /// A round: its end arc on its section plane, which the patch meets at
+    /// the corner's continuity.
+    Round,
+    /// A bevel: the straight end of its face on its section plane, which
+    /// the patch meets in position only, as it meets the trims from that
+    /// end on the faces either side: the bevel meets those faces in a
+    /// crease, and the patch, running along the bevel's end, leaves each
+    /// face at the bevel's angle there.
+    Bevel,
+}
+
 /// The bands of `banded` meeting at `vertex`, whose corner reads as
 /// `frame`, stopped at `setback` along their edges and the opening between
 /// them filled by one patch at `continuity`.
@@ -243,6 +257,28 @@ fn close_corner(
     vertex: &Shape,
     frame: &crate::corner::CornerFrame,
     setback: &[f64],
+    continuity: Continuity,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let ends = vec![CornerEnd::Round; frame.d.len()];
+    close_corner_ends(
+        model, banded, vertex, frame, setback, &ends, continuity, tol,
+    )
+}
+
+/// As [`close_corner`], each band ending as `ends` says.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one corner, assembled end to end"
+)]
+pub(crate) fn close_corner_ends(
+    model: &mut Model,
+    banded: Built,
+    vertex: &Shape,
+    frame: &crate::corner::CornerFrame,
+    setback: &[f64],
+    ends: &[CornerEnd],
     continuity: Continuity,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
@@ -291,6 +327,10 @@ fn close_corner(
     }
     let mut arcs: Vec<(Shape, Shape)> = Vec::with_capacity(n);
     for (k, section) in sections.iter().enumerate() {
+        if ends[k] == CornerEnd::Bevel {
+            arcs.push(bevel_end(model, &kept, frame, *section, tol)?);
+            continue;
+        }
         let mut found: Option<(Shape, Shape)> = None;
         for face in &kept {
             let is_plane = model
@@ -412,12 +452,23 @@ fn close_corner(
         boundary.push(FillBoundary {
             edge: arcs[k].0.clone(),
             support: Some(arcs[k].1.clone()),
-            continuity,
+            continuity: match ends[k] {
+                CornerEnd::Round => continuity,
+                CornerEnd::Bevel => Continuity::C0,
+            },
         });
+        // A trim from a bevel's end meets its face in position only: the
+        // patch runs along the bevel's end there, which leaves the face at
+        // the bevel's angle, so it cannot take the face's tangent plane.
+        // Between two rounds both ends lie tangent to the face.
         boundary.push(FillBoundary {
             edge: trim,
             support: Some(filler.clone()),
-            continuity,
+            continuity: if ends[k] == CornerEnd::Round && ends[next] == CornerEnd::Round {
+                continuity
+            } else {
+                Continuity::C0
+            },
         });
         fillers.push(filler);
     }
@@ -435,6 +486,59 @@ fn close_corner(
     let mut history: History = history;
     history.generate(vertex, patch);
     Ok(Built::new(rounded, history))
+}
+
+/// A bevel's straight end on its section plane `section`, and the bevel's
+/// face: the planar face of `kept`, on none of the corner's host planes,
+/// with a straight edge lying on the section plane.
+fn bevel_end(
+    model: &Model,
+    kept: &[Shape],
+    frame: &crate::corner::CornerFrame,
+    section: (Vector, Point),
+    tol: Tolerances,
+) -> OgeomResult<(Shape, Shape)> {
+    let on_plane = |p: Point| section.0.dot(p - section.1).abs() <= tol.confusion() * 100.0;
+    for face in kept {
+        let Some(data) = model.node(face).and_then(|n| n.data().as_face()) else {
+            continue;
+        };
+        if !matches!(
+            model.geometry().surface(data.surface),
+            Some(ogeom_geom::SurfaceGeometry::Plane(_))
+        ) {
+            continue;
+        }
+        let (_, outward) = ogeom_algo::face_normal(model, face, tol)?;
+        let host = frame
+            .m
+            .iter()
+            .any(|mk| mk.cross(outward).magnitude() <= tol.angular() * 10.0);
+        if host || outward.cross(section.0).magnitude() <= tol.angular() * 10.0 {
+            continue;
+        }
+        for e in explore_unique(model, face, ShapeType::Edge)? {
+            let Some((c, (lo, hi))) = ogeom_algo::placed_edge_curve(model, &e, tol)? else {
+                continue;
+            };
+            if !matches!(c, Curve::Line(_)) {
+                continue;
+            }
+            let on = [lo, hi]
+                .iter()
+                .map(|t| c.point_at(*t, tol))
+                .collect::<OgeomResult<Vec<Point>>>()?
+                .into_iter()
+                .all(on_plane);
+            if on {
+                return Ok((e, face.clone()));
+            }
+        }
+    }
+    ogeom_bail!(
+        Construction,
+        "a bevel does not end in a straight edge on its section plane"
+    );
 }
 
 /// Close the corner at `vertex` of `banded`, where the bands of `request`
@@ -532,6 +636,22 @@ fn least_setbacks(
             }
         })
         .collect();
+    let widths: Vec<(f64, f64)> = reach.iter().map(|&w| (w, w)).collect();
+    least_setbacks_widths(frame, &widths, tol)
+}
+
+/// As [`least_setbacks`], each band taking `widths[k]` off the two faces of
+/// its edge, in the order of the corner's ring: the first on the plane
+/// `ring[k]`, the second on `ring[k + 1]`. Everything a band takes away
+/// lies within the larger of its two widths of its edge's line.
+pub(crate) fn least_setbacks_widths(
+    frame: &crate::corner::CornerFrame,
+    widths: &[(f64, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Vec<f64>> {
+    let n = frame.d.len();
+    let planes = |k: usize| (frame.m[frame.ring[k]], frame.m[frame.ring[(k + 1) % n]]);
+    let reach: Vec<f64> = widths.iter().map(|&(a, b)| a.max(b)).collect();
     let mut setback = vec![0.0_f64; n];
     let mut corners: Vec<[Vector; 3]> = Vec::with_capacity(n);
     for k in 0..n {
@@ -550,8 +670,8 @@ fn least_setbacks(
         };
         let offsets = [
             Vector::ZERO,
-            leg(ma, mb)? * reach[k],
-            leg(mb, ma)? * reach[k],
+            leg(ma, mb)? * widths[k].0,
+            leg(mb, ma)? * widths[k].1,
         ];
         let mut least = reach[k];
         for j in (0..n).filter(|&j| j != k) {

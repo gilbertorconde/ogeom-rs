@@ -4,6 +4,7 @@
 pub mod analyse;
 mod between;
 mod blame;
+mod blend;
 pub mod bridge;
 mod carried;
 pub mod chamfer;
@@ -41,6 +42,7 @@ pub use blame::{
     BlendRefusal, chamfer_edges_checked, chamfer_edges_partial, fillet_edges_checked,
     fillet_edges_partial,
 };
+pub use blend::{Blend, blend_edges};
 pub use bridge::{End, make_blend_curve, make_blend_surface};
 pub use chamfer::{
     Chamfer, chamfer_edge, chamfer_edge_angle, chamfer_edge_distances, chamfer_edges,

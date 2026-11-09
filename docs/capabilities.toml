@@ -1411,6 +1411,7 @@ symbols = [
     "ogeom_fillet::chamfer_edge_angle", "ogeom_fillet::chamfer_edges",
     "ogeom_fillet::chamfer_edges_with", "ogeom_fillet::Chamfer",
     "ogeom_fillet::chamfer_edges_cornered", "ogeom_fillet::ChamferCorner",
+    "ogeom_fillet::blend_edges", "ogeom_fillet::Blend",
 ]
 tests = [
     "crates/ogeom/tests/blends.rs", "crates/ogeom/tests/edge_chains.rs",
