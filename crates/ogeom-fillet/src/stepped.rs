@@ -506,7 +506,12 @@ fn ring(crease: Point, touch: Point, contact: Point, corners: &[Point]) -> Vec<P
 /// outward normal, from its corner to the next) has that normal pointing
 /// into the polygon, so the fill adds only what lies off the solid's faces
 /// there.
-fn fills_outside(ring: &[Point], normals: &[Option<Vector>], t: Vector, tol: Tolerances) -> bool {
+pub(crate) fn fills_outside(
+    ring: &[Point],
+    normals: &[Option<Vector>],
+    t: Vector,
+    tol: Tolerances,
+) -> bool {
     let n = ring.len();
     if n < 3 || normals.len() != n {
         return false;

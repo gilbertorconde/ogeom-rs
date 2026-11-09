@@ -1244,7 +1244,13 @@ ending on planar faces square to it or slanted, the ball may rest on the far edg
 beyond (a wall on a staircase with a deep drop past its lower step): the \
 round is the cylinder about the line its centre runs on, and the fill is \
 the prism of one section fused on, the strips it reaches over going into \
-it. Past a concave far edge the ball may touch the plane face the strips \
+it. Where those far edges are slanted to the edge, the ball may rest on a \
+convex far edge of a strip beyond, its centre on the ellipse about that \
+edge's line, the round the band through its arcs and the fill the band's \
+wedge with one face on each strip between, fused on; the walk takes each \
+strip's far edge as the first it crosses square from the edge before, and \
+a face is cleared only of its part in front of the touched face's plane. \
+Past a concave far edge the ball may touch the plane face the strips \
 run into instead (a flat in an inside corner, a staircase coming down on \
 a floor): the round is the cylinder a radius off that face and the \
 touched one, the strips between going into the fill. \

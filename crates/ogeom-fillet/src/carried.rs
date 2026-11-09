@@ -1454,6 +1454,7 @@ pub(crate) fn carried_band(
         .map(|(rails, off)| ExactBand {
             rails: *rails,
             off: off.as_ref(),
+            strips: &[],
         })
         .collect();
     let [(first, first_sign), (second, second_sign)] = &run.hosts;

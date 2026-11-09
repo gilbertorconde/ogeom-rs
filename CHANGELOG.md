@@ -115,6 +115,26 @@ bump may break the API and a patch bump may not.
     thread (9.69e11 to 7.22e11 instructions), with the refined solid and
     every part of `mesh_corpus` the same to the bit.
 
+- **A concave round rests on a lower strip's far edge slanted to its
+  seam.**
+  - A wall on a staircase whose steps' edges are slanted to the wall was
+    refused where the ball cleared the step beside the wall and came
+    down on a lower step's edge ("the ball's contact runs off the face it
+    touches").
+  - The ball may now rest on a convex far edge of a strip beyond the
+    narrow face, its centre on the ellipse about that edge's line. The
+    fill is the band's wedge with one face on each strip between, fused
+    on. The walk out over the strips takes each one's far edge as the
+    first edge it crosses square from the edge before, so a strip running
+    past the seam's ends is walked.
+  - A face is cleared only of its part in front of the touched face's
+    plane: every point on or behind that plane stands a radius off every
+    centre, so an end face the touch line meets is cleared.
+  - A wall on two steps slanted 1.15 and 1.72 degrees to it, rounded at
+    r 6, is valid, its band within 3.4e-5 of the exact balls, every ball
+    a radius clear of the result and touching the lower step's edge on
+    it.
+
 - **A convex round that takes a narrow strip off whole ends on faces
   slanted to it.**
   - A round wider than a bevel beside its edge takes the bevel off with
