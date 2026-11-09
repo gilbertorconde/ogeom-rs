@@ -54,7 +54,14 @@ tolerance of 1.1e-5, in two of three directions on one side and one on the
 other ("the kept pieces did not close into a shell", as on 0.17): the
 loop round the north pole passes 2e-6 rad off the chart's pole row, and
 the sphere's cap inside it is not formed, its section pieces left open
-round it. "A branch
+round it. The sphere face's node snap is 1e-4 in its chart, a length in
+space taken as one in the chart because the chart shrinks along the pole
+row: there the loop's piece ends 1.9e-6 rad (1.9e-5 in space, past the
+section's 1.1e-5) off the pole row, is welded onto it, and the loop is
+pinched to the row. Across the parallels a chart radian is the sphere's
+radius, 10 here, so the weld reaches ten times the doubt it stands for.
+Resolving it needs the arrangement's weld read in space, or a snap per
+chart direction, where one scalar snap stands for both. "A branch
 passing beside a chart's pole fits nothing yet" stands where both fits
 miss. Only spheres' poles are measured; a patch's collapsed side takes the
 same path untested.
