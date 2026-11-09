@@ -1265,8 +1265,7 @@ fn contact_line(
 
 /// The ball's line of contact on face `f` held to `target`, its image in
 /// the face's chart at the same parameters, unwrapped across a periodic
-/// chart's seam and fitted to a thousandth of `target`, and whether the
-/// image met that.
+/// chart's seam and fitted to a thousandth of `target`.
 #[allow(clippy::too_many_arguments, reason = "one line, all its data")]
 fn contact_image(
     blend: &MarchedBlend,
@@ -1276,7 +1275,7 @@ fn contact_image(
     radius: f64,
     target: f64,
     tol: Tolerances,
-) -> OgeomResult<(ContactLine, ogeom_geom::BSpline2d, bool)> {
+) -> OgeomResult<(ContactLine, ogeom_geom::fit::Fitted<ogeom_geom::BSpline2d>)> {
     let surface = &hosts.surfaces[f];
     let fitted = contact_line(blend, f, hosts, guide, radius, target, tol)?;
     let ((u0, u1), (v0, v1)) = surface.domain();
@@ -1306,7 +1305,7 @@ fn contact_image(
         }
     }
     let image = ogeom_geom::fit::fit_points_2d_at(&fitted.along, &chart, 3, target * 1e-3, tol)?;
-    Ok((fitted, image.curve, image.met))
+    Ok((fitted, image))
 }
 
 /// The face cut along the ball's line of contact: the touch points fitted
@@ -1344,25 +1343,26 @@ fn contact_cut(
         )
     };
     let first = match contact_image(blend, f, hosts, guide, radius, strict, tol) {
-        Ok((fitted, image, true)) => Ok(Some((fitted, image))),
-        Ok((fitted, image, false)) => {
-            if hosts.loose && lifted(&fitted, &image)? <= strict {
-                Ok(Some((fitted, image)))
+        Ok((fitted, image)) if image.met => Ok(Some((fitted, image.curve))),
+        Ok((fitted, image)) if hosts.loose => {
+            if lifted(&fitted, &image.curve)? <= strict {
+                Ok(Some((fitted, image.curve)))
             } else {
                 Ok(None)
             }
         }
-        Err(OgeomError::NotDone(why)) => Err(why),
+        Ok((_, image)) => ogeom_bail!(
+            NotDone,
+            "the chart image of the ball's line of contact on a face reached {} against a \
+             target of {}",
+            image.error,
+            strict * 1e-3
+        ),
+        Err(OgeomError::NotDone(why)) if hosts.loose => Err(why),
         Err(e) => return Err(e),
     };
     let (target, ContactLine { line, error, .. }, image) = match first {
         Ok(Some((fitted, image))) => (strict, fitted, image),
-        Ok(None) if !hosts.loose => ogeom_bail!(
-            NotDone,
-            "the chart image of the ball's line of contact on a face stands farther from the \
-             line, lifted, than its target of {strict}"
-        ),
-        Err(why) if !hosts.loose => return Err(OgeomError::NotDone(why)),
         missed => {
             let refusal = || match &missed {
                 Err(why) => OgeomError::NotDone(why.clone()),
@@ -1372,14 +1372,14 @@ fn contact_cut(
                      from the line, lifted, than its target of {strict}"
                 ),
             };
-            let Ok((fitted, image, _)) = contact_image(blend, f, hosts, guide, radius, usable, tol)
+            let Ok((fitted, image)) = contact_image(blend, f, hosts, guide, radius, usable, tol)
             else {
                 return Err(refusal());
             };
-            if lifted(&fitted, &image)? > usable {
+            if lifted(&fitted, &image.curve)? > usable {
                 return Err(refusal());
             }
-            (usable, fitted, image)
+            (usable, fitted, image.curve)
         }
     };
     let line = Curve::BSpline(line);
