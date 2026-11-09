@@ -27,18 +27,23 @@
 //! be a simple polygon lying outside the solid: every side of it on a face
 //! has that face's outward normal pointing into it, so the fill adds only
 //! what lies off the faces it stands on (the walk does not reach round the
-//! solid's far side). The crease ends on faces square to it, so each end
-//! of the prism lies in one. Every ball is in free space, proved for each face of the solid:
-//! behind `F1`'s plane,
-//! behind the plane through the other contact square to the ball's radius
-//! (the strips either side of a held edge and the end faces near it), at
-//! a distance read in closed form where the face is square to the crease
-//! (an end face: the centre's foot on its plane stands still), and
-//! otherwise read along the run, an interval halved until the centre's
-//! travel fits under its clearance.
+//! solid's far side).
+//!
+//! The crease ends on two planar faces, square to it or slanted, every
+//! line of the section (the touch on `F1`, each far edge, the contact)
+//! running from one end plane to the other. Every section square to the
+//! crease is then the same, and the fill is the prism of the section over
+//! the span the section's lines and arc reach between the end planes, cut
+//! by them. Every ball over that span is in free space, proved for each
+//! face of the solid: behind `F1`'s plane, behind the plane through the
+//! other contact square to the ball's radius (the strips either side of a
+//! held edge), and otherwise for a planar face by its least distance from
+//! the centre's segment, read in closed form, so a face the balls touch
+//! (an end face where the touch line meets it) is cleared exactly.
 
+use crate::carried::trig_max;
 use crate::consumed::{seat_of, segment};
-use crate::rolled::{Flat, enters, face_distance, flat};
+use crate::rolled::{Flat, basis, enters, face_distance, flat, inside};
 use crate::support::{Seat, edge_curve, same_occurrence};
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances};
@@ -46,16 +51,44 @@ use ogeom_geom::{CircleCurve, Curve, Curve3d as _, PlaneSurface, SurfaceGeometry
 use ogeom_math::{Circle, Direction, Frame, Plane, Point, Vector};
 use ogeom_topo::{Filter, Model, Shape, ShapeType, explore, explore_unique};
 
-/// How many equal stretches of the run a face's clearance is first read
-/// over before halving.
+/// How many equal stretches of the run a curved face's box is read over.
 const STATIONS: usize = 64;
 
-/// How many times an interval of the run is halved, at most, to show that
-/// the ball stays clear of a face between two stations.
-const HALVINGS: u32 = 24;
+/// The run's two end planes: each a point on it and its outward unit
+/// normal, the crease running from the first to the second along `t`.
+#[derive(Debug, Clone, Copy)]
+struct Ends {
+    e0: Point,
+    t: Vector,
+    length: f64,
+    planes: [(Point, Vector); 2],
+    /// Whether both planes stand square to the crease.
+    square: bool,
+}
 
-/// A stepped run: the ball's section at the crease's start and the run's
-/// length along the crease.
+impl Ends {
+    /// Where the line through `p` along the crease meets end plane `i`: the
+    /// `s` of `p + t s`. On square ends, read from the section through the
+    /// crease's start, the start plane is at 0 and the end plane at the
+    /// crease's length.
+    fn meets(&self, i: usize, p: Point) -> f64 {
+        if self.square {
+            return if i == 0 { 0.0 } else { self.length };
+        }
+        let (o, m) = self.planes[i];
+        (o - p).dot(m) / self.t.dot(m)
+    }
+
+    /// Whether `p` lies on end plane `i`.
+    fn holds(&self, i: usize, p: Point, conf: f64) -> bool {
+        let (o, m) = self.planes[i];
+        (p - o).dot(m).abs() <= conf
+    }
+}
+
+/// A stepped run: the ball's section in the plane square to the crease
+/// through its start, the run's ends, and the span of the crease's
+/// parameter the section's lines reach between the end planes.
 pub(crate) struct Stepped {
     /// The crease's start.
     crease: Point,
@@ -69,9 +102,10 @@ pub(crate) struct Stepped {
     between: Vec<Point>,
     /// The contact on the held far edge at the crease's start.
     contact: Point,
-    /// The crease's unit direction and length.
-    along: Vector,
-    length: f64,
+    ends: Ends,
+    /// The least and greatest `s` at which the section's lines and arc
+    /// meet the end planes.
+    span: (f64, f64),
 }
 
 /// The run of a ball of `radius` rounding the concave straight `edge`
@@ -109,25 +143,50 @@ pub(crate) fn stepped_run(
         return Ok(None);
     }
     let t = (e1 - e0) / length;
-    // Where along the crease a point stands, from its start.
-    let at = |p: Point| (p - e0).dot(t);
 
     let faces = explore_unique(model, solid, ShapeType::Face)?;
     let mut flats = Vec::with_capacity(faces.len());
     for face in &faces {
         flats.push((face.clone(), flat(model, face, tol)?));
     }
-    // Each end of the crease on a face square to it.
-    for end in [0.0, length] {
-        let square = flats.iter().any(|(_, found)| {
-            found.as_ref().is_some_and(|f| {
-                f.normal.cross(t).magnitude() <= tol.angular() && (at(f.origin) - end).abs() <= conf
-            })
-        });
-        if !square {
+    // Each end of the crease on one plane: the planar faces through it
+    // that the crease leaves, not along it, all on that plane, facing back
+    // along the crease at its start and on along it at its end.
+    let mut planes = [(e0, -t), (e1, t)];
+    for (i, end) in [e0, e1].into_iter().enumerate() {
+        let mut found: Option<Vector> = None;
+        for (face, plane) in &flats {
+            let Some(plane) = plane else { continue };
+            if seat.faces.iter().any(|f| f.is_same(face))
+                || face_distance(plane, end) > conf
+                || plane.normal.dot(t).abs() <= tol.angular()
+            {
+                continue;
+            }
+            match found {
+                Some(m) if m.cross(plane.normal).magnitude() > tol.angular() => return Ok(None),
+                _ => found = Some(plane.normal),
+            }
+        }
+        let Some(m) = found else {
+            return Ok(None);
+        };
+        let facing = if i == 0 { -m.dot(t) } else { m.dot(t) };
+        if facing <= tol.angular() {
             return Ok(None);
         }
+        planes[i] = (end, m);
     }
+    let square = planes
+        .iter()
+        .all(|(_, m)| m.cross(t).magnitude() <= tol.angular());
+    let ends = Ends {
+        e0,
+        t,
+        length,
+        planes,
+        square,
+    };
 
     for narrow in 0..2 {
         let f1 = &seat.faces[1 - narrow];
@@ -167,11 +226,12 @@ pub(crate) fn stepped_run(
                     continue;
                 }
                 count += 1;
-                let (ap, aq) = (at(p), at(q));
-                let spans = (ap.abs() <= conf && (aq - length).abs() <= conf)
-                    || (aq.abs() <= conf && (ap - length).abs() <= conf);
+                // From end plane to end plane; its foot in the section
+                // through the crease's start.
+                let spans = (ends.holds(0, p, conf) && ends.holds(1, q, conf))
+                    || (ends.holds(0, q, conf) && ends.holds(1, p, conf));
                 if spans {
-                    far = Some((g, if ap.abs() <= conf { p } else { q }));
+                    far = Some((g, p - t * (p - e0).dot(t)));
                 }
             }
             let (Some((far_edge, foot)), 1) = (far, count) else {
@@ -190,7 +250,7 @@ pub(crate) fn stepped_run(
                 && step >= 1
                 && let Some(run) = held(
                     &flats,
-                    (e0, t, length),
+                    &ends,
                     (f1, &f1_flat, n1, into),
                     (foot, &far_seat),
                     (&corners, &strips),
@@ -210,7 +270,7 @@ pub(crate) fn stepped_run(
             if !far_seat.convex
                 && let Some(run) = face_held(
                     &flats,
-                    (e0, t, length),
+                    &ends,
                     (f1, &f1_flat, n1, into),
                     (foot, &far_seat, k),
                     (&corners, &strips),
@@ -235,7 +295,7 @@ pub(crate) fn stepped_run(
 #[allow(clippy::too_many_arguments, reason = "one proof, all its data")]
 fn held(
     flats: &[(Shape, Option<Flat>)],
-    (e0, t, length): (Point, Vector, f64),
+    ends: &Ends,
     (f1, f1_flat, n1, into): (&Shape, &Flat, Vector, Vector),
     (foot, far_seat): (Point, &Seat),
     (corners, strips): (&[Point], &[Vector]),
@@ -245,6 +305,7 @@ fn held(
     tol: Tolerances,
 ) -> OgeomResult<Option<Stepped>> {
     let conf = tol.confusion();
+    let (e0, t) = (ends.e0, ends.t);
     // In the section through the crease's start: the centre is
     // `e0 + n1 r + b x`, a radius from the foot.
     let b = t.cross(n1);
@@ -277,7 +338,7 @@ fn held(
         let touch = centre - n1 * radius;
         // The touch stays on `F1`: no edge of it but the crease enters the
         // stretch from the crease to the line of contact.
-        let leg = [e0, e0 + t * length, touch + t * length, touch];
+        let leg = stretch(ends, e0, touch);
         let mut off_face = false;
         for g in explore_unique(model, f1, ShapeType::Edge)? {
             if same_occurrence(model, &g, edge, tol) {
@@ -296,13 +357,15 @@ fn held(
         }
         let mut normals = vec![Some(n1), None];
         normals.extend(strips.iter().rev().map(|n| Some(*n)));
-        if !fills_outside(&ring(e0, touch, foot, corners), &normals, t, tol) {
+        let section = ring(e0, touch, foot, corners);
+        if !fills_outside(&section, &normals, t, tol) {
             continue;
         }
+        let span = run_span(ends, &section, centre, radius);
         if !clear(
             model,
             flats,
-            (centre, t, length),
+            (ends, centre, span),
             (e0, n1),
             (foot, reach),
             radius,
@@ -316,8 +379,8 @@ fn held(
             centre,
             between: corners.iter().rev().copied().collect(),
             contact: foot,
-            along: t,
-            length,
+            ends: *ends,
+            span,
         }));
     }
     Ok(None)
@@ -330,7 +393,7 @@ fn held(
 #[allow(clippy::too_many_arguments, reason = "one proof, all its data")]
 fn face_held(
     flats: &[(Shape, Option<Flat>)],
-    (e0, t, length): (Point, Vector, f64),
+    ends: &Ends,
     (f1, f1_flat, n1, into): (&Shape, &Flat, Vector, Vector),
     (foot, far_seat, k): (Point, &Seat, usize),
     (corners, strips): (&[Point], &[Vector]),
@@ -345,6 +408,7 @@ fn face_held(
         return Ok(None);
     };
     let n3 = far_seat.normals[k];
+    let (e0, t) = (ends.e0, ends.t);
     // In the section through the crease's start: the centre is
     // `e0 + n1 r + b x`, a radius off the beyond face's plane.
     let b = t.cross(n1);
@@ -383,7 +447,7 @@ fn face_held(
         (f1, f1_flat, e0, touch, Some(edge.clone())),
         (beyond, &beyond_flat, foot, contact, far_edge),
     ] {
-        let leg = [from, from + t * length, to + t * length, to];
+        let leg = stretch(ends, from, to);
         for g in explore_unique(model, face, ShapeType::Edge)? {
             if skip
                 .as_ref()
@@ -401,13 +465,15 @@ fn face_held(
     }
     let mut normals = vec![Some(n1), None, Some(n3)];
     normals.extend(strips.iter().rev().map(|n| Some(*n)));
-    if !fills_outside(&ring(e0, touch, contact, corners), &normals, t, tol) {
+    let section = ring(e0, touch, contact, corners);
+    if !fills_outside(&section, &normals, t, tol) {
         return Ok(None);
     }
+    let span = run_span(ends, &section, centre, radius);
     if !clear(
         model,
         flats,
-        (centre, t, length),
+        (ends, centre, span),
         (e0, n1),
         (contact, n3 * radius),
         radius,
@@ -421,8 +487,8 @@ fn face_held(
         centre,
         between: corners.iter().rev().copied().collect(),
         contact,
-        along: t,
-        length,
+        ends: *ends,
+        span,
     }))
 }
 
@@ -493,30 +559,32 @@ fn fills_outside(ring: &[Point], normals: &[Option<Vector>], t: Vector, tol: Tol
     true
 }
 
-/// Whether every ball of the run, its centre on `centre + t s` for `s` in
-/// `[0, length]`, lies in free space: no face of the solid comes within
-/// its radius.
+/// Whether every ball of the run, its centre on `centre + t s` for `s` over
+/// `span`, lies in free space: no face of the solid comes within its
+/// radius. A planar face is read at its least distance from the centre's
+/// segment, in closed form: to each side of the face, to each end of the
+/// segment whose foot lands in the face, and none where the segment
+/// pierces it. A curved face is cleared only by its box.
 fn clear(
     model: &Model,
     flats: &[(Shape, Option<Flat>)],
-    (centre, t, length): (Point, Vector, f64),
+    (ends, centre, span): (&Ends, Point, (f64, f64)),
     (e0, n1): (Point, Vector),
     (foot, reach): (Point, Vector),
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<bool> {
     let conf = tol.confusion();
-    let at = |s: f64| centre + t * s;
-    #[allow(clippy::cast_precision_loss)]
-    let station = |i: usize| length * (i as f64) / (STATIONS as f64);
+    let (from, to) = (centre + ends.t * span.0, centre + ends.t * span.1);
     for (face, found) in flats {
         let Some(found) = found else {
-            // A curved face is cleared only by its box.
             let bounds = ogeom_algo::shape_bounds(model, face, tol)?;
             #[allow(clippy::cast_precision_loss)]
-            let step = length / (STATIONS as f64);
+            let step = (span.1 - span.0) / (STATIONS as f64);
             for i in 0..=STATIONS {
-                if bounds.distance_to(at(station(i))) <= radius + step {
+                #[allow(clippy::cast_precision_loss)]
+                let at = from + (to - from) * (i as f64 / STATIONS as f64);
+                if bounds.distance_to(at) <= radius + step {
                     return Ok(false);
                 }
             }
@@ -532,40 +600,136 @@ fn clear(
         {
             continue;
         }
-        // Square to the run: the centre's foot on the face's plane stands
-        // still, and the distance is least at the plane.
-        if found.normal.cross(t).magnitude() <= tol.angular() {
-            let height = (centre - found.origin).dot(found.normal);
-            let on_plane = centre - found.normal * height;
-            if face_distance(found, on_plane) < radius - conf {
-                return Ok(false);
-            }
-            continue;
-        }
-        let clearance = |s: f64| face_distance(found, at(s)) - radius;
-        let mut intervals: Vec<(f64, f64, f64, f64, u32)> = (0..STATIONS)
-            .map(|i| {
-                let (a, b) = (station(i), station(i + 1));
-                (a, b, clearance(a), clearance(b), 0)
-            })
-            .collect();
-        while let Some((a, b, ca, cb, depth)) = intervals.pop() {
-            if ca < -conf || cb < -conf {
-                return Ok(false);
-            }
-            if ca.min(cb) >= (b - a) * 0.5 {
-                continue;
-            }
-            if depth >= HALVINGS {
-                return Ok(false);
-            }
-            let m = (a + b) * 0.5;
-            let cm = clearance(m);
-            intervals.push((a, m, ca, cm, depth + 1));
-            intervals.push((m, b, cm, cb, depth + 1));
+        if segment_face_distance(found, from, to) < radius - conf {
+            return Ok(false);
         }
     }
     Ok(true)
+}
+
+/// The least distance between the segment from `a` to `b` and a planar
+/// face. The nearest point of the face to the segment lies on a side of the
+/// face, or inside it as the foot of a point of the segment, whose height
+/// over the plane is least at an end of the stretch of the segment over
+/// the face: at an end of the segment, at a side (where the side is no
+/// farther), or where the segment crosses the plane.
+fn segment_face_distance(face: &Flat, a: Point, b: Point) -> f64 {
+    let frame = basis(face.normal);
+    let height = |p: Point| (p - face.origin).dot(face.normal);
+    let over = |p: Point| inside(&face.sides, p - face.normal * height(p), frame);
+    let mut least = face
+        .sides
+        .iter()
+        .map(|&[p, q]| segment_segment_distance((a, b), (p, q)))
+        .fold(f64::INFINITY, f64::min);
+    for end in [a, b] {
+        if over(end) {
+            least = least.min(height(end).abs());
+        }
+    }
+    let (ha, hb) = (height(a), height(b));
+    if ha * hb < 0.0 && over(a + (b - a) * (ha / (ha - hb))) {
+        least = 0.0;
+    }
+    least
+}
+
+/// The least distance between two segments: over the square of their
+/// parameters, at the interior stationary point where the segments are
+/// not parallel, else on one of its four sides, each a point's distance to
+/// the other segment.
+fn segment_segment_distance((a, b): (Point, Point), (c, d): (Point, Point)) -> f64 {
+    let to_segment = |p: Point, (u, v): (Point, Point)| {
+        let w = v - u;
+        let l2 = w.dot(w);
+        let k = if l2 > 0.0 {
+            ((p - u).dot(w) / l2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        p.distance(u + w * k)
+    };
+    let mut least = to_segment(a, (c, d))
+        .min(to_segment(b, (c, d)))
+        .min(to_segment(c, (a, b)))
+        .min(to_segment(d, (a, b)));
+    let (e, f, r) = (b - a, d - c, a - c);
+    let (aa, ee, bb) = (e.dot(e), f.dot(f), e.dot(f));
+    let den = aa * ee - bb * bb;
+    if den > 0.0 {
+        let (cc, ff) = (e.dot(r), f.dot(r));
+        let s = (bb * ff - cc * ee) / den;
+        let t = (aa * ff - bb * cc) / den;
+        if (0.0..=1.0).contains(&s) && (0.0..=1.0).contains(&t) {
+            least = least.min((a + e * s).distance(c + f * t));
+        }
+    }
+    least
+}
+
+/// The four corners of the stretch of a plane between the lines through
+/// `from` and `to` along the crease, each run from end plane to end
+/// plane.
+fn stretch(ends: &Ends, from: Point, to: Point) -> [Point; 4] {
+    let t = ends.t;
+    [
+        from + t * ends.meets(0, from),
+        from + t * ends.meets(1, from),
+        to + t * ends.meets(1, to),
+        to + t * ends.meets(0, to),
+    ]
+}
+
+/// The least and greatest `s` at which the lines along the crease through
+/// the section's corners, and through the points of its arc from the touch
+/// (`ring[1]`) to the contact (`ring[2]`) about `centre`, meet the end
+/// planes. On each plane `s` is linear in the point, so over the arc it
+/// is a sum of a cosine and a sine of the arc's angle, its extremes read
+/// in closed form.
+fn run_span(ends: &Ends, ring: &[Point], centre: Point, radius: f64) -> (f64, f64) {
+    if ends.square {
+        return (0.0, ends.length);
+    }
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for p in ring {
+        lo = lo.min(ends.meets(0, *p));
+        hi = hi.max(ends.meets(1, *p));
+    }
+    let (sweep, x, y) = arc_frame(ends.t, centre, radius, ring[1], ring[2]);
+    for (i, (o, m)) in ends.planes.iter().enumerate() {
+        // s(theta) = base + p cos theta + q sin theta.
+        let scale = 1.0 / ends.t.dot(*m);
+        let base = (*o - centre).dot(*m) * scale;
+        let (p, q) = (-radius * x.dot(*m) * scale, -radius * y.dot(*m) * scale);
+        if i == 0 {
+            lo = lo.min(base - trig_max(-p, -q, 0.0, sweep));
+        } else {
+            hi = hi.max(base + trig_max(p, q, 0.0, sweep));
+        }
+    }
+    (lo, hi)
+}
+
+/// The ball's arc from `from` to `to` about `centre`, the short way round
+/// in the section: its sweep and the frame its angle is read in, `x`
+/// toward `from` and `y` a quarter turn on toward `to`.
+fn arc_frame(
+    t: Vector,
+    centre: Point,
+    radius: f64,
+    from: Point,
+    to: Point,
+) -> (f64, Vector, Vector) {
+    let x = (from - centre) / radius;
+    let y = t.cross(x);
+    let w = to - centre;
+    let angle = w.dot(y).atan2(w.dot(x));
+    if angle >= 0.0 {
+        (angle, x, y)
+    } else {
+        (-angle, x, -y)
+    }
 }
 
 /// Round `edge` with the stepped run's fill: the prism of its section,
@@ -582,9 +746,14 @@ pub(crate) fn stepped_band(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    let along = run.along;
+    let along = run.ends.t;
+    // The section where the run starts: the plane square to the crease at
+    // the least `s` its lines reach, so the prism covers both end planes.
+    let lift = along * run.span.0;
     let mut ring: Vec<Point> = vec![run.crease, run.touch, run.contact];
     ring.extend(run.between.iter().copied());
+    let ring: Vec<Point> = ring.into_iter().map(|p| p + lift).collect();
+    let (crease, touch, contact, centre) = (ring[0], ring[1], ring[2], run.centre + lift);
     let vertices: Vec<Shape> = ring
         .iter()
         .map(|p| ogeom_algo::make_vertex(model, *p).shape)
@@ -599,13 +768,13 @@ pub(crate) fn stepped_band(
     };
     // The ball's arc from the touch to the contact, the short way round,
     // which faces the crease.
-    let x_dir = (run.touch - run.centre) / radius;
+    let x_dir = (touch - centre) / radius;
     let y_dir = along.cross(x_dir);
-    let to = run.contact - run.centre;
+    let to = contact - centre;
     let angle = to.dot(y_dir).atan2(to.dot(x_dir));
     let normal = if angle >= 0.0 { along } else { -along };
     let frame = Frame::new(
-        run.centre,
+        centre,
         Direction::new(normal, tol)?,
         Direction::new(x_dir, tol)?,
         tol,
@@ -634,12 +803,9 @@ pub(crate) fn stepped_band(
     } else {
         -along
     };
-    let reach = ring
-        .iter()
-        .fold(radius, |m, p| m.max(p.distance(run.crease)))
-        * 4.0;
+    let reach = ring.iter().fold(radius, |m, p| m.max(p.distance(crease))) * 4.0;
     let plane: SurfaceGeometry = PlaneSurface::over(
-        Plane::through(run.crease, Direction::new(normal, tol)?),
+        Plane::through(crease, Direction::new(normal, tol)?),
         (-reach, reach),
         (-reach, reach),
     )?
@@ -650,10 +816,19 @@ pub(crate) fn stepped_band(
         edges.iter().rev().map(Shape::reversed).collect()
     };
     let section = ogeom_algo::make_face_with_pcurves(model, plane, &[loop_edges], tol)?.shape;
-    let wedge = ogeom_algo::make_prism(model, &section, along * run.length, tol)?.shape;
-    let wedge = explore(model, &wedge, Filter::OfType(ShapeType::Solid))?
+    let travel = along * (run.span.1 - run.span.0);
+    let wedge = ogeom_algo::make_prism(model, &section, travel, tol)?.shape;
+    let mut wedge = explore(model, &wedge, Filter::OfType(ShapeType::Solid))?
         .into_iter()
         .next()
         .unwrap_or(wedge);
+    // On slanted ends the prism runs past them; what lies beyond each end
+    // plane goes.
+    if !run.ends.square {
+        let span = (run.span.1 - run.span.0) + reach;
+        for (origin, outward) in run.ends.planes {
+            wedge = crate::support::trimmed_wedge(model, &wedge, (origin, -outward), span, tol)?;
+        }
+    }
     crate::support::apply_wedge_solid(model, solid, Some(edge), &wedge, true, tol)
 }
