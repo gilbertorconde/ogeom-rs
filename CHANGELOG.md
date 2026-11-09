@@ -313,6 +313,22 @@ bump may break the API and a patch bump may not.
     keeps 349.7345230 against 400 - 16π = 349.7345175 (the marched rail's
     fit), the tube 94.2477796 against 30π to 5e-13.
 
+- **A facet beside a curved face is fanned where its seam, as built,
+  stands past the reach, and not only where the plan saw it wide.** (#706)
+  - The plan fans a facet whose seam would be a chord wider than the
+    reach. A chord the plan took within the reach could come out wider
+    where the build placed its ends: on `nist_ctc_02`, three seams planned
+    at 0.083 to 0.092 against a reach of 0.093 were built at 0.13 and 0.16.
+  - Once built, a facet alone beside a curved face whose shared edge
+    stands past the reach is built as a fan onto that face, as the plan's
+    wide ones are, and the build is planned again.
+  - On `nist_ctc_02` every seam past the reach is now the two sides of one
+    facet with a curved face across every side, which no fan takes. Its
+    widest seam beside a plane of a facet or two is otherwise 0.089, and
+    the part stays valid and closed, its volume as near the part's
+    (6.69e-5 relative). The other fourteen parts of `mesh_corpus` come
+    back the same to the bit.
+
 - **A drill lowered 2e-7 under a plate top now cuts for every seam
   direction.**
   - `nist_ctc_03`'s plate-top drill lowered by 2e-7 was refused ("the

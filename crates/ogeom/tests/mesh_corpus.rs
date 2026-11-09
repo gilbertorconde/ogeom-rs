@@ -796,7 +796,8 @@ fn grid_point_on_a_diagonal_boundary() {
 }
 
 /// The widest edge between a curved face and a planar face of `edges`
-/// edges or fewer (three for a single facet, four for two in one plane) of a part
+/// edges or fewer (three for a single facet, four for two in one plane),
+/// other than a facet with a curved face across every side, of a part
 /// converted from its mesh at a thousandth of its diagonal, and the reach
 /// of that conversion: twenty coplanar distances, as far as a snapped curve
 /// may stand off its faces.
@@ -815,29 +816,41 @@ fn widest_facet_seam(name: &str, edges: usize) -> (f64, f64) {
     .unwrap();
     let mut back = Model::new();
     let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
-    // Each edge's faces: whether each is planar, and how many edges it has.
-    let mut owners: ogeom::core::FastMap<_, Vec<(bool, usize)>> = ogeom::core::FastMap::default();
-    for face in explore_unique(&back, &out.shape, ShapeType::Face).unwrap() {
-        let data = back.node(&face).unwrap().data().as_face().unwrap();
+    // Each edge's faces, by place: whether each is planar, and its edges.
+    let faces = explore_unique(&back, &out.shape, ShapeType::Face).unwrap();
+    let mut owners: ogeom::core::FastMap<_, Vec<usize>> = ogeom::core::FastMap::default();
+    let mut shapes: Vec<(bool, Vec<Shape>)> = Vec::new();
+    for (at, face) in faces.iter().enumerate() {
+        let data = back.node(face).unwrap().data().as_face().unwrap();
         let planar = matches!(
             back.geometry().surface(data.surface),
             Some(SurfaceGeometry::Plane(_))
         );
-        let edges = explore_unique(&back, &face, ShapeType::Edge).unwrap();
+        let edges = explore_unique(&back, face, ShapeType::Edge).unwrap();
         for edge in &edges {
-            owners
-                .entry(edge.node())
-                .or_default()
-                .push((planar, edges.len()));
+            owners.entry(edge.node()).or_default().push(at);
         }
+        shapes.push((planar, edges));
     }
+    // A facet with a curved face across every side is no fan's (a fan
+    // turns its seam onto one curved face, a wedge onto two) and is left
+    // out.
+    let enclosed = |at: usize| {
+        shapes[at].1.iter().all(|edge| {
+            owners[&edge.node()]
+                .iter()
+                .any(|&other| other != at && !shapes[other].0)
+        })
+    };
     let widest = explore_unique(&back, &out.shape, ShapeType::Edge)
         .unwrap()
         .iter()
         .filter(|e| {
             let faces = &owners[&e.node()];
-            faces.iter().any(|&(planar, n)| planar && n <= edges)
-                && faces.iter().any(|&(planar, _)| !planar)
+            faces
+                .iter()
+                .any(|&at| shapes[at].0 && shapes[at].1.len() <= edges && !enclosed(at))
+                && faces.iter().any(|&at| !shapes[at].0)
         })
         .map(|e| {
             back.node(e)
@@ -861,13 +874,16 @@ fn widest_facet_seam(name: &str, edges: usize) -> (f64, f64) {
 /// onto the curved face, its seam lifted onto that face, and so does a
 /// facet sharing its plane with one other, taken out of it: every edge
 /// between a curved face and a plane of one or two facets holds within the
-/// reach. On the sliver part, a plane of two facets beside a torus keeps
-/// its seams at 0.019 against a reach of 0.004 and is held to its single
-/// facets alone.
+/// reach, and so does a facet whose seam the plan took within the reach
+/// and the build placed past it. A facet with a curved face across every
+/// side is no fan's and is left out. On the sliver part, a plane of two
+/// facets beside a torus keeps its seams at 0.019 against a reach of 0.004
+/// and is held to its single facets alone.
 #[test]
 #[ignore = "heavy"]
 fn facets_beside_spline_pieces_meet_them_within_the_reach() {
     for (name, edges) in [
+        ("nist_ctc_02_asme1_rc.stp", 4),
         ("nist_ctc_04_asme1_rd.stp", 4),
         ("nist_ftc_07_asme1_rd.stp", 4),
         ("nist_ftc_10_asme1_rb.stp", 4),
