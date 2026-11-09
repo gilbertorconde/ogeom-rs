@@ -362,9 +362,15 @@ one curve (a crease split at a vertex) is that one seat over the window its
 arcs cover. A chain of different seats continuing each other end to end
 (a rounded-rectangle pad's top loop) gives each edge the law over its own
 stretch, stops each band in its end sections and joins the wedges across
-each tangent junction's plane. Owed: a chain whose creases turn where they
-meet (two bands of different end sections there need the re-entrant
-intersection path, or a law pinned per edge with the corner placed first).
+each tangent junction's plane. A chain of straight edges between planes
+turning on one shared planar host carries each band past a turning vertex
+at the law's radius there (the constant band of that radius, which the
+junction is read for): run out across a convex turn, carried to the
+bisecting plane across a re-entrant one. The law is kept as given over
+each edge, its value and slope at the edge's ends its own: a turn's mitre
+is G0 whatever the slope, so pinning the slope level there would change
+the law and buy nothing. Owed: a turn a curved crease meets (a marched
+band carried past its vertex), and a crossed re-entrant turn under a law.
 A straight edge along a drum's ruling
 under a law is marched, the exact sweep of `ruled.rs` holding one section
 only; a seat pinched where its hosts turn tangent solves each station and

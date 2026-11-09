@@ -1345,11 +1345,19 @@ drum), each edge under the law over its own stretch of the run, its band \
 stopped in its end sections, and the bands' wedges joined across each \
 junction's plane, where one ball touches the same two points from \
 either side, sewn within the marched band's fit, and applied in one \
-boolean. Refused by name: a linear law \
+boolean; and a chain of straight edges between planes turning where \
+they meet on one shared planar host (a block's top loop, an L-block's), \
+each band carried past a turning vertex at the law's radius there, as \
+the law holds level past an edge's end: the constant band of that \
+radius, running out across a convex turn as that band alone does, the \
+cuts taking the union, and carried to the plane bisecting a re-entrant \
+turn, where the two are joined. Refused by name: a linear law \
 changing radius round a closed chain (it jumps where the chain closes), \
-a chain whose creases turn where they meet, any other straight edge \
-whose faces are not both planes (a drum's ruling inside a chain among \
-them), a law over one arc of a crease that closes through other \
+a turn where a curved crease meets, or whose bands' sections differ \
+across a re-entrant turn, a chain one of whose balls rests on a narrow \
+face's far edge, two bands overlapping across a face they share, any \
+other straight edge whose faces are not both planes (a drum's ruling \
+inside a chain among them), a law over one arc of a crease that closes through other \
 edges (the whole loop is given instead), and a ball at the law's largest radius that does not fit \
 the faces."""
 symbols = ["ogeom_fillet::fillet_edges_variable", "ogeom_fillet::RadiusLaw"]

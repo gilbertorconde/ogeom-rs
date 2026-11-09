@@ -13,6 +13,23 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fillet_edges_variable` rounds a chain of straight edges turning
+  where they meet.** (#716)
+  - A block's top loop, an L-block's, or two edges meeting at a corner,
+    each straight between planes on one shared planar host, as one chain
+    under a law. Past a turning vertex each band goes on at the law's
+    radius there, as the law holds level past an edge's end: across a
+    convex turn it runs out as the constant band of that radius alone
+    does and the cuts take the union; across a re-entrant one it is
+    carried to the plane bisecting the turn, where the two are joined.
+    The request's checks (each ball on its faces, no two bands over each
+    other across a face they share) run at each edge's largest radius.
+  - Two square-turning edges and a block's top loop: every contact away
+    from the corners stands within 1e-6 of the law. A block with a corner
+    cut off at 45 degrees runs each band out past both oblique corners
+    and takes the corner's material; it and an L-block's loop lie between
+    their constant rounds at the law's least and largest radius.
+
 - **`fillet_edges_variable` rounds a chain of different seats continuing
   each other end to end.** (#716)
   - The top loop of a rounded-rectangle pad, its sides between two planes

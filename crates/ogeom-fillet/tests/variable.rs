@@ -917,6 +917,282 @@ fn a_law_of_points_rounds_the_top_loop_of_a_rounded_rectangle_pad() {
     assert!(thick < v && v < thin, "{thick} < {v} < {thin}");
 }
 
+/// The contacts of a law's round along a block's top edges, each held to
+/// the law at its place along the run away from the corners, where bands
+/// meet: on the top, the law's radius in from the crease; on the wall,
+/// the law's radius below the top. `crease` reads a point's distance from
+/// the nearest crease of the run in plan, and its place along the run.
+fn top_contacts(
+    model: &Model,
+    shape: &Shape,
+    height: f64,
+    crease: impl Fn(Point) -> Option<(f64, f64)>,
+    law: impl Fn(f64) -> f64,
+) -> (usize, usize, f64) {
+    let (mut on_top, mut on_wall, mut worst) = (0, 0, 0.0_f64);
+    for e in explore_unique(model, shape, ShapeType::Edge).unwrap() {
+        let Some((c, (a, b))) = ogeom_algo::placed_edge_curve(model, &e, T).unwrap() else {
+            continue;
+        };
+        let points: Vec<Point> = (0..=32)
+            .map(|i| c.point_at(a + (b - a) * f64::from(i) / 32.0, T).unwrap())
+            .collect();
+        // The points of it away from the corners, read against the run.
+        let (points, read): (Vec<Point>, Vec<(f64, f64)>) = points
+            .iter()
+            .filter_map(|p| crease(*p).map(|r| (*p, r)))
+            .unzip();
+        if points.len() < 8 {
+            continue;
+        }
+        let top_rail = points
+            .iter()
+            .zip(&read)
+            .all(|(p, (d, _))| (p.z - height).abs() < 1e-9 && *d > 0.5 && *d < 2.5);
+        let wall_rail = points
+            .iter()
+            .zip(&read)
+            .all(|(p, (d, _))| d.abs() < 1e-9 && height - p.z > 0.5 && height - p.z < 2.5);
+        for (p, (d, s)) in points.iter().zip(&read) {
+            let off = if top_rail {
+                on_top += 1;
+                (d - law(*s)).abs()
+            } else if wall_rail {
+                on_wall += 1;
+                (height - p.z - law(*s)).abs()
+            } else {
+                break;
+            };
+            assert!(off < 1e-6, "a contact at {p:?} stands {off} off the law");
+            worst = worst.max(off);
+        }
+    }
+    (on_top, on_wall, worst)
+}
+
+/// Two top edges of a block meeting square at a corner, one open chain
+/// under a law: each straight band's envelope exact under the law over its
+/// own stretch, the two meeting at the corner at the law's one radius
+/// there, the cuts taking their union as two constant bands' do. Away from
+/// the corner every contact stands at the law's radius for its place along
+/// the run; the round lies between the constant rounds of the chain at
+/// the law's least and largest radius.
+#[test]
+fn a_law_of_points_rounds_two_edges_turning_at_a_convex_corner() {
+    let mut model = Model::new();
+    let block = ogeom_algo::make_box(&mut model, at(0.0, 0.0, 0.0), (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let two = [
+        edge_near(&model, &block, [10.0, 0.0, 10.0]),
+        edge_near(&model, &block, [0.0, 10.0, 10.0]),
+    ];
+    let rounded = fillet_edges_variable(&mut model, &block, &two, &hump(), T).unwrap();
+    valid(&model, &rounded.shape);
+    for e in &two {
+        assert!(rounded.history.is_deleted(e));
+    }
+    // Along the run from the first edge's far end, through the corner, to
+    // the second's: the law reads the same either way along it.
+    let crease = |p: Point| -> Option<(f64, f64)> {
+        if p.x < 2.5 && p.y < 2.5 {
+            None
+        } else if p.y < p.x {
+            Some((p.y, (20.0 - p.x) / 40.0))
+        } else {
+            Some((p.x, (20.0 + p.y) / 40.0))
+        }
+    };
+    let (on_top, on_wall, worst) = top_contacts(&model, &rounded.shape, 10.0, crease, hump_open);
+    assert!(
+        on_top > 32 && on_wall > 32,
+        "{on_top} and {on_wall}, worst {worst}"
+    );
+
+    let v = volume(&model, &rounded.shape, 1e-3);
+    let mut constant = |r: f64| {
+        let built = ogeom_fillet::fillet_edges(&mut model, &block, &two, r, T).unwrap();
+        volume(&model, &built.shape, 1e-3)
+    };
+    let (one, two) = (constant(1.0), constant(2.0));
+    assert!(two < v && v < one, "{two} < {v} < {one}");
+}
+
+/// A block's whole top loop, four edges turning square at four convex
+/// corners, under a law of points that closes round it: `(0, 1), (0.5,
+/// 2)` on a closed chain is level at both points and reads the same either
+/// way round, so only the run's start, the first edge's own start, places
+/// it. Away from the corners every contact stands at the law's radius.
+#[test]
+fn a_law_of_points_rounds_a_block_s_top_loop_turning_at_its_corners() {
+    let mut model = Model::new();
+    let block = ogeom_algo::make_box(&mut model, at(0.0, 0.0, 0.0), (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let top: Vec<Shape> = [[10.0, 0.0], [20.0, 10.0], [10.0, 20.0], [0.0, 10.0]]
+        .iter()
+        .map(|[x, y]| edge_near(&model, &block, [*x, *y, 10.0]))
+        .collect();
+    let law = RadiusLaw::Points(vec![(0.0, 1.0), (0.5, 2.0)]);
+    let rounded = fillet_edges_variable(&mut model, &block, &top, &law, T).unwrap();
+    valid(&model, &rounded.shape);
+    let start = {
+        let (c, (a, b)) = ogeom_algo::placed_edge_curve(&model, &top[0], T)
+            .unwrap()
+            .unwrap();
+        let t = if top[0].orientation() == Orientation::Reversed {
+            b
+        } else {
+            a
+        };
+        c.point_at(t, T).unwrap()
+    };
+    // Place round the square anticlockwise from (0, 0), and the start's.
+    let round = |x: f64, y: f64| -> f64 {
+        if y <= x.min(20.0 - x) {
+            x
+        } else if 20.0 - x <= y.min(20.0 - y) {
+            20.0 + y
+        } else if 20.0 - y <= x.min(20.0 - x) {
+            40.0 + 20.0 - x
+        } else {
+            60.0 + 20.0 - y
+        }
+    };
+    let from = round(start.x, start.y);
+    let crease = |p: Point| -> Option<(f64, f64)> {
+        let near_corner = [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)]
+            .iter()
+            .any(|(cx, cy)| (p.x - cx).abs() < 2.5 && (p.y - cy).abs() < 2.5);
+        if near_corner {
+            return None;
+        }
+        let d = p.x.min(p.y).min(20.0 - p.x).min(20.0 - p.y);
+        Some((d, ((round(p.x, p.y) - from) / 80.0).rem_euclid(1.0)))
+    };
+    let closed_law = |s: f64| {
+        let (t, y0, y1) = if s <= 0.5 {
+            (s / 0.5, 1.0, 2.0)
+        } else {
+            ((s - 0.5) / 0.5, 2.0, 1.0)
+        };
+        (2.0 * t * t * t - 3.0 * t * t + 1.0) * y0 + (3.0 * t * t - 2.0 * t * t * t) * y1
+    };
+    let (on_top, on_wall, worst) = top_contacts(&model, &rounded.shape, 10.0, crease, closed_law);
+    assert!(
+        on_top > 64 && on_wall > 64,
+        "{on_top} and {on_wall}, worst {worst}"
+    );
+}
+
+/// A block with one vertical corner cut off at 45 degrees, its top loop
+/// of five edges under a law of points that closes round it. At the cut's
+/// two corners the turns are oblique: each band, carried past the vertex
+/// at the law's radius there, runs out as the constant band of that
+/// radius alone does, and the cuts take their union. The round is valid,
+/// takes the material at each oblique corner's crease, and lies between
+/// the loop's constant rounds at the law's least and largest radius.
+#[test]
+fn a_law_of_points_rounds_a_top_loop_turning_obliquely_at_a_cut_corner() {
+    let mut model = Model::new();
+    let block = ogeom_algo::make_box(&mut model, at(0.0, 0.0, 0.0), (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let slant = ogeom_math::Vector::new(1.0, -1.0, 0.0) / 2.0_f64.sqrt();
+    let along = ogeom_math::Vector::new(1.0, 1.0, 0.0) / 2.0_f64.sqrt();
+    let origin = Point::new(14.0, 0.0, -1.0) - along * 20.0;
+    let away = ogeom_algo::make_box(
+        &mut model,
+        Frame::new(origin, Direction::Z, Direction::new(slant, T).unwrap(), T).unwrap(),
+        (20.0, 40.0, 12.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let cut = ogeom_bool::cut(&mut model, &block, &away, T).unwrap().shape;
+    let top: Vec<Shape> = [
+        [7.0, 0.0],
+        [17.0, 3.0],
+        [20.0, 13.0],
+        [10.0, 20.0],
+        [0.0, 10.0],
+    ]
+    .iter()
+    .map(|[x, y]| edge_near(&model, &cut, [*x, *y, 10.0]))
+    .collect();
+    let law = RadiusLaw::Points(vec![(0.0, 1.0), (0.5, 2.0)]);
+    let rounded = fillet_edges_variable(&mut model, &cut, &top, &law, T).unwrap();
+    valid(&model, &rounded.shape);
+    // A point a fifth in from both walls and below the top at each oblique
+    // corner: in the block, and outside every ball of radius one or more
+    // rolled along there, so the round takes it.
+    for (corner, inward) in [
+        (
+            Point::new(14.0, 0.0, 10.0),
+            ogeom_math::Vector::new(-0.3827, 0.9239, 0.0),
+        ),
+        (
+            Point::new(20.0, 6.0, 10.0),
+            ogeom_math::Vector::new(-0.9239, 0.3827, 0.0),
+        ),
+    ] {
+        let probe = corner + inward * 0.2 - ogeom_math::Vector::new(0.0, 0.0, 0.2);
+        let given = ogeom_algo::classify_in_solid_exact(&model, &cut, probe, T).unwrap();
+        let left = ogeom_algo::classify_in_solid_exact(&model, &rounded.shape, probe, T).unwrap();
+        assert_eq!(given, ogeom_algo::Containment::In, "{probe:?}");
+        assert_eq!(left, ogeom_algo::Containment::Out, "{probe:?}");
+    }
+    let v = volume(&model, &rounded.shape, 1e-3);
+    let mut constant = |r: f64| {
+        let built = ogeom_fillet::fillet_edges(&mut model, &cut, &top, r, T).unwrap();
+        volume(&model, &built.shape, 1e-3)
+    };
+    let (one, two) = (constant(1.0), constant(2.0));
+    assert!(two < v && v < one, "{two} < {v} < {one}");
+}
+
+/// An L-shaped block's top loop, its six edges turning at five convex
+/// corners and one re-entrant one, under a law of points that closes
+/// round it: across the re-entrant turn each band is carried on at the
+/// law's radius there to the plane bisecting the turn and the two are
+/// joined in it, as two constant bands of that radius are. The round is
+/// valid and lies between the loop's constant rounds at the law's least
+/// and largest radius.
+#[test]
+fn a_law_of_points_rounds_an_l_block_s_top_loop_across_its_re_entrant_corner() {
+    let mut model = Model::new();
+    let block = ogeom_algo::make_box(&mut model, at(0.0, 0.0, 0.0), (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let notch = ogeom_algo::make_box(&mut model, at(10.0, 10.0, -1.0), (20.0, 20.0, 12.0), T)
+        .unwrap()
+        .shape;
+    let l = ogeom_bool::cut(&mut model, &block, &notch, T)
+        .unwrap()
+        .shape;
+    let top: Vec<Shape> = [
+        [10.0, 0.0],
+        [20.0, 5.0],
+        [15.0, 10.0],
+        [10.0, 15.0],
+        [5.0, 20.0],
+        [0.0, 10.0],
+    ]
+    .iter()
+    .map(|[x, y]| edge_near(&model, &l, [*x, *y, 10.0]))
+    .collect();
+    let law = RadiusLaw::Points(vec![(0.0, 1.0), (0.5, 2.0)]);
+    let rounded = fillet_edges_variable(&mut model, &l, &top, &law, T).unwrap();
+    valid(&model, &rounded.shape);
+    let v = volume(&model, &rounded.shape, 1e-3);
+    let mut constant = |r: f64| {
+        let built = ogeom_fillet::fillet_edges(&mut model, &l, &top, r, T).unwrap();
+        volume(&model, &built.shape, 1e-3)
+    };
+    let (one, two) = (constant(1.0), constant(2.0));
+    assert!(two < v && v < one, "{two} < {v} < {one}");
+}
+
 #[test]
 fn a_variable_radius_refuses_by_name_what_it_does_not_round() {
     let mut model = Model::new();
@@ -944,16 +1220,11 @@ fn a_variable_radius_refuses_by_name_what_it_does_not_round() {
         "{jump}"
     );
 
-    let block = ogeom_algo::make_box(&mut model, at(0.0, 0.0, 0.0), (20.0, 20.0, 10.0), T)
-        .unwrap()
-        .shape;
-    let two = [
-        edge_near(&model, &block, [10.0, 0.0, 10.0]),
-        edge_near(&model, &block, [0.0, 10.0, 10.0]),
-    ];
-    let chain = refusal(fillet_edges_variable(&mut model, &block, &two, &hump(), T));
+    let (half, rim) = half_drum(&mut model);
+    let two = [rim, edge_near(&model, &half, [0.0, 0.0, 10.0])];
+    let chain = refusal(fillet_edges_variable(&mut model, &half, &two, &hump(), T));
     assert!(
-        chain.contains("open chain of 2 edges is still owed where its creases turn"),
+        chain.contains("rounded only between straight creases"),
         "{chain}"
     );
     for (law, says) in [
@@ -968,13 +1239,7 @@ fn a_variable_radius_refuses_by_name_what_it_does_not_round() {
             "rounds nothing",
         ),
     ] {
-        let why = refusal(fillet_edges_variable(
-            &mut model,
-            &block,
-            &two[..1],
-            &law,
-            T,
-        ));
+        let why = refusal(fillet_edges_variable(&mut model, &half, &two[..1], &law, T));
         assert!(why.contains(says), "{why}");
     }
 }
