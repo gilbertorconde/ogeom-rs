@@ -96,7 +96,17 @@ crossings 1e-6 to 1e-2 inside the crown, 183 of 189 operations answer
 within 7.3e-7 of the closed form; 6 refuse, at a lean of 1e-5 with the
 crossing 1e-5 or 3e-5 inside ("a piece lies on the other solid's
 boundary" for the cut, fuse and common at 3e-5, "the kept pieces did not
-close" at 1e-5). At a lean of 1e-5 the faces the wall leaves on the
+close" at 1e-5). Traced on the cut at 3e-5: the end face's cap above the
+crossing, 3e-5 high and 0.035 wide, lies inside the band where the two
+planes stand within the confusion distance (1e-2 wide at this lean); its
+interior probe falls on the crossing line, and the first attempt finds it
+on the box's boundary with no partner. Settled from both sides it reads as
+the aligned contact, and the kept pieces then do not close. The attempts
+that do build a solid (at a wider confusion, and split at the rims) weld
+the crown's junctions across the band, three vertices widened to 1.3e-2,
+2.2e-2 and 3.9e-2, and are refused by the weld limit. Resolving it needs
+the arrangement to hold the cap's own short edges and vertices apart
+inside the band. At a lean of 1e-5 the faces the wall leaves on the
 arch's wall, a sliver 5e-5 thick at most, are measured on their own
 meshes, within 5.2e-9 of the closed form at a chord of 1e-3 as at 1e-4
 (#683). The cut
