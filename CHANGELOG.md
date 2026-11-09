@@ -13,6 +13,17 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`StepImport::faces` names each face read by the file's id for it.**
+  (#794)
+  - Every face read, with its `ADVANCED_FACE` / `FACE_SURFACE` id, in id
+    order; the shapes are the face nodes the solids hold, so a face found
+    in a solid finds its id by `is_partner`. A consumer keeping references
+    to imported faces (a sketch on a face of an imported part) has a name
+    for a face that holds across reads of the same file.
+  - A written box and `nist_ctc_01_asme1_rd.stp`: every face of every
+    solid has exactly one id, each a face entity of the file, none shared,
+    as many as the file's `ADVANCED_FACE` entities.
+
 - **`fillet_edges_variable` rounds a loop joined round one sharp
   corner.** (#716)
   - A rounded-rectangle pad with one vertical left sharp: its top loop's
