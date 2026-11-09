@@ -13,6 +13,19 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fit_network` holds a patch's border tangent to a support, exactly.**
+  (#718)
+  - `NetworkOptions::across` names held border curves and how their patch
+    leaves them: `Across::Plane(normal)` (a planar face beside it) or
+    `Across::Along(direction)` (a ruled support, a band's rulings). Each
+    round, the poles one row in are moved from where the fit without them
+    put them to the nearest point whose step off every pole of the curve
+    goes that way, and held there.
+  - A patch over a cubic surface, its side along `y = 0` held and held
+    across along `+y`, leaves that side along `+y` to 1.8e-20 rad. Held
+    only, it leans 0.19 rad off it. Every point stays within the
+    tolerance.
+
 - **`fillet_edges_variable` rounds a seat pinched where its hosts turn
   tangent.** (#716)
   - Two equal drums crossing square meet on ellipses that end at the poles
