@@ -709,6 +709,20 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A section crossing a sphere's seam beside its pole closes the cap
+  inside it.**
+  - The paving reads a crossing within its window of the seam's end vertex
+    as that vertex, the pole. In the chart the section's end then stands off
+    the pole row by the window over the radius and anywhere along it, the
+    chart's free parameter shrinking to nothing at the pole: on a ball of
+    radius 10 drilled on its own chart with the wall 2e-5 off the poles, 1.9e-6
+    rad off the row and 1.5e-4 along it from the seam's corner. Welded to
+    nothing, the end dangled, the cap inside the loop was not formed, and the
+    boolean was refused ("the kept pieces did not close into a shell").
+  - Such an end is now carried onto the pole's line at its foot, held to the
+    line, and the pole is cut for it. Five of six placements at 2e-5 off now
+    cut at the closed forms; along -y inside the poles one is still refused.
+
 - **A sewn edge states how far a pcurve carried onto it stands from its
   curve, as the edge's own measure reads it.**
   - The sew measured a carried pcurve's gap by a refinement that stops
