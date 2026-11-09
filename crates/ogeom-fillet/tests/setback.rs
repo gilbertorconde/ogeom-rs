@@ -98,48 +98,66 @@ fn a_setback_of_the_radius_is_the_ball_s_corner() {
     assert!((a - c).abs() < 1e-12, "{a} against {c}");
 }
 
-/// The patch a setback corner of `continuity` builds at the block's
-/// corner, its bands stopped 5 from the vertex, and the patch's worst
-/// tangency against the faces round it.
-fn five_back(continuity: Continuity) -> (Model, Shape, Shape, f64) {
+/// The quads a setback corner of `continuity` builds at the block's corner,
+/// its bands stopped 5 from the vertex, and their worst tangency against
+/// the faces round them, as the edges they share with those faces.
+fn five_back(continuity: Continuity) -> (Model, Shape, Vec<Shape>, f64, Vec<Shape>) {
     let (mut m, b, v, _) = block();
     let rounded = round_vertex_setback(&mut m, &b, &v, 2.0, &even(5.0, continuity), T).unwrap();
     valid(&m, &rounded.shape);
-    let patch = rounded.history.generated(&v)[0].clone();
-    let contacts = analyse_blend(&m, &rounded.shape, &patch, 17, T).unwrap();
+    let quads: Vec<Shape> = rounded.history.generated(&v).to_vec();
     assert_eq!(
-        contacts.len(),
+        quads.len(),
         6,
-        "three band ends and three faces: {contacts:?}"
+        "a quad round the centre at each corner of the opening"
     );
-    let tangency = contacts
-        .iter()
-        .map(|c| c.tangency_error)
-        .fold(0.0, f64::max);
-    (m, rounded.shape, patch, tangency)
+    let (tangency, outside) = beside(&m, &rounded.shape, &quads);
+    // Each of the opening's six sides is split in two, each half a quad's.
+    assert_eq!(
+        outside.len(),
+        12,
+        "three band ends and three faces, each in halves"
+    );
+    (m, rounded.shape, quads, tangency, outside)
+}
+
+/// The worst tangency of `quads` against the faces of `shape` round them,
+/// and the edges they share with those faces; across the quads' own spokes
+/// tangent too.
+fn beside(m: &Model, shape: &Shape, quads: &[Shape]) -> (f64, Vec<Shape>) {
+    let mut worst = 0.0_f64;
+    let mut outside = Vec::new();
+    for quad in quads {
+        for c in analyse_blend(m, shape, quad, 17, T).unwrap() {
+            worst = worst.max(c.tangency_error);
+            if !quads.iter().any(|q| q.is_same(&c.neighbour)) {
+                outside.push(c.edge.clone());
+            }
+        }
+    }
+    (worst, outside)
 }
 
 #[test]
 fn a_setback_corner_stops_each_band_at_its_setback_tangent_to_the_patch() {
-    let (m, rounded, patch, tangency) = five_back(Continuity::G1);
+    let (m, rounded, _, tangency, outside) = five_back(Continuity::G1);
     assert!(
-        tangency < 1e-3,
-        "the patch meets its neighbours within {tangency} rad"
+        tangency < 2e-4,
+        "the quads meet their neighbours within {tangency} rad"
     );
-    // Every point of the patch's boundary on a band's end lies 5 along
-    // that band's edge from the vertex: on x = 5, y = 5 or z = 10 - 5.
-    for e in explore_unique(&m, &patch, ShapeType::Edge).unwrap() {
-        let (c, (lo, hi)) = ogeom_algo::placed_edge_curve(&m, &e, T).unwrap().unwrap();
+    // Every edge the quads share with a face or a band lies on a face or
+    // 5 along a band's edge from the vertex: on x = 5, y = 5 or z = 10 - 5.
+    for e in &outside {
+        let (c, (lo, hi)) = ogeom_algo::placed_edge_curve(&m, e, T).unwrap().unwrap();
         let p = c.point_at(f64::midpoint(lo, hi), T).unwrap();
         let on_face = p.x.abs() < 1e-6 || p.y.abs() < 1e-6 || (p.z - 10.0).abs() < 1e-6;
         let on_end =
-            (p.x - 5.0).abs() < 1e-6 || (p.y - 5.0).abs() < 1e-6 || (p.z - 5.0).abs() < 1e-6;
+            (p.x - 5.0).abs() < 2e-4 || (p.y - 5.0).abs() < 2e-4 || (p.z - 5.0).abs() < 2e-4;
         assert!(on_face || on_end, "a patch edge at {p:?}");
     }
     // The setback corner takes off more than the ball's corner does.
-    let (mut m2, b, v, edges) = block();
+    let (mut m2, b, _, edges) = block();
     let ball = fillet_edges(&mut m2, &b, &edges, 2.0, T).unwrap().shape;
-    let _ = v;
     assert!(volume(&m, &rounded) < volume(&m2, &ball));
 }
 

@@ -193,6 +193,57 @@ pub fn make_filling_n(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Filled> {
+    match filling(model, boundary, constraints, tolerance, false, tol)? {
+        Fill::Face(filled) => Ok(filled),
+        Fill::Seed(_) => ogeom_bail!(Invariant, "a filling asked for its face built a seed"),
+    }
+}
+
+/// A filling's finest patch, as shape to fit something else to: the
+/// surface over the chart, and each side's trace in that chart over the
+/// side's own range, in the order the sides were given.
+pub(crate) struct Seed {
+    pub surface: BSplineSurface,
+    pub traces: Vec<PlanarCurve>,
+    /// How far a surface that meets every side's position and support
+    /// exactly may stand from this patch: the patch's own widest gap to a
+    /// side, and its widest angle to a support carried across the hole's
+    /// size.
+    pub off: f64,
+}
+
+/// What a filling hands back: its face, or as a seed, its finest patch
+/// whether or not that patch met the tolerance.
+enum Fill {
+    Face(Filled),
+    Seed(Seed),
+}
+
+/// The patch [`make_filling_n`] fits over the hole `boundary` bounds, at
+/// its finest net whether or not it meets `tolerance`, with no face built:
+/// a shape for another construction to take points from, not a result.
+pub(crate) fn seed_filling(
+    model: &mut Model,
+    boundary: &[FillBoundary],
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Seed> {
+    match filling(model, boundary, &[], tolerance, true, tol)? {
+        Fill::Seed(seed) => Ok(seed),
+        Fill::Face(_) => ogeom_bail!(Invariant, "a filling asked for a seed built a face"),
+    }
+}
+
+/// [`make_filling_n`], or with `seed` its finest patch however it misses.
+#[allow(clippy::too_many_lines, reason = "one filling, read end to end")]
+fn filling(
+    model: &mut Model,
+    boundary: &[FillBoundary],
+    constraints: &[Shape],
+    tolerance: f64,
+    seed: bool,
+    tol: Tolerances,
+) -> OgeomResult<Fill> {
     if !(tolerance.is_finite() && tolerance > 0.0) {
         ogeom_bail!(
             Construction,
@@ -303,6 +354,7 @@ pub fn make_filling_n(
     let mut last_miss = String::new();
     // The latest fit that met the tolerance.
     let mut fallback = None;
+    let mut finest: Option<(BSplineSurface, f64, f64)> = None;
     for base in NETS {
         #[expect(
             clippy::cast_possible_truncation,
@@ -359,6 +411,11 @@ pub fn make_filling_n(
         for (side, pcurve) in sides.iter().zip(&traces) {
             reports.push(measure_side(side, pcurve, &surface, 3 * samples + 1, tol)?);
         }
+        if seed {
+            let gap = reports.iter().map(|r| r.gap).fold(0.0, f64::max);
+            let angle = reports.iter().filter_map(|r| r.angle).fold(0.0, f64::max);
+            finest = Some((surface.clone(), gap, angle));
+        }
         let mut constraint_gap = 0.0f64;
         for (p, _) in &interior {
             let q = frame.chart(*p);
@@ -382,6 +439,19 @@ pub fn make_filling_n(
             break;
         }
     }
+    if seed {
+        let (surface, gap, angle) = finest.ok_or_else(|| {
+            ogeom_core::ogeom_err!(NotDone, "the filling fitted no patch: {last_miss}")
+        })?;
+        // How far a surface meeting every side exactly may stand from this
+        // patch: its own gap, and its worst angle carried across the hole.
+        let off = angle.mul_add(size, gap);
+        return Ok(Fill::Seed(Seed {
+            surface,
+            traces,
+            off,
+        }));
+    }
     let Some((surface, reports, constraint_gap)) = fallback else {
         ogeom_bail!(
             NotDone,
@@ -401,11 +471,11 @@ pub fn make_filling_n(
     for constraint in constraints {
         history.generate(constraint, face.clone());
     }
-    Ok(Filled {
+    Ok(Fill::Face(Filled {
         built: Built::new(face, history),
         sides: reports,
         constraint_gap,
-    })
+    }))
 }
 
 /// The surface a side's support lies on and the side's pcurve there.

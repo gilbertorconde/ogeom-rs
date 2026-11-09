@@ -2260,18 +2260,22 @@ impl Fit<'_> {
         let mut rows: Vec<Row>;
         let mut held = true;
         let triples;
+        // Where the rows that hold the corners begin.
+        let corners_from;
         match self.corners {
             Corners::Loose => {
                 let held = self.tangency(&layout, &loose, &junctions, &lines, &mut [], &known)?;
                 rows = junction_rows(&held.relaxed);
                 rows.extend(held.rows);
                 triples = held.held;
+                corners_from = rows.len();
             }
             Corners::Whole => {
                 let held = self.tangency(&layout, &loose, &junctions, &lines, &mut [], &known)?;
                 rows = junction_rows(&held.relaxed);
                 rows.extend(held.rows);
                 triples = held.held;
+                corners_from = rows.len();
                 rows.extend(self.corner_rows(&layout, &loose, &curve_knots));
             }
             Corners::Spread => {
@@ -2280,6 +2284,7 @@ impl Fit<'_> {
                 rows = junction_rows(&tangent.relaxed);
                 rows.extend(tangent.rows);
                 triples = tangent.held;
+                corners_from = rows.len();
                 match self.spread_rows(&layout, &loose, &curve_knots) {
                     Some(spread) => rows.extend(spread),
                     None => held = false,
@@ -2301,6 +2306,7 @@ impl Fit<'_> {
                 rows = junction_rows(&held.relaxed);
                 rows.extend(held.rows);
                 triples = held.held;
+                corners_from = rows.len();
                 let untied = held.untied;
                 let holding = &self.topo.spanned;
                 for corner in &related {
@@ -2336,7 +2342,14 @@ impl Fit<'_> {
         let known = self.across_poles(&layout, &loose, known);
         let basis = if known.is_empty() {
             null_space(layout.slots, &rows)
+        } else if let Some(basis) = null_space_known(layout.slots, &rows, &known) {
+            basis
         } else {
+            // A way of holding the corners that asks the held curves for
+            // what they do not hold is a way that did not hold: its rows
+            // go, and refinement moves on as from one that missed.
+            held = false;
+            rows.truncate(corners_from);
             self.basis_known(&layout, &rows, &known)?
         };
         let poles = self.solve(&layout, &locals, &basis)?;
