@@ -1029,6 +1029,22 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **Classifying points and probing faces against a solid of many faces
+  finds the faces a probe may meet without asking every face.** (#706)
+  - A solid's prepared boundary now holds its faces' bounds in a tree.
+    The step off each face that `check`'s inside-out probe takes, the
+    rays a point is classified by, and the point-on-face test ask only
+    the faces whose bound the tree says they may meet, in the faces'
+    order, and still test each one's bound as before: the faces asked,
+    and every answer, are the same to the bit.
+  - `refine_solid` on the 14,763-face solid converted from a carriage's
+    mesh at chord 0.005 probes every face on each of its builds. On one
+    thread it takes 41–44 s rather than 67–71 s, and 6.15e11 user
+    instructions rather than 8.38e11. At chord 0.002 the builds shrink the
+    solid to 1,695 faces early, and the work is all but unchanged (9.66e11
+    rather than 9.68e11 instructions). The refined solid is the same to
+    the bit at both chords.
+
 - **A tangent loop of arcs whose bands touch the pocket walls at single
   points rounds in under a second, where it took 30.** (#723)
   - A kidney pocket's floor (a tangent loop of four arcs, r 1) built each
