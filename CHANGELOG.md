@@ -21,6 +21,19 @@ bump may break the API and a patch bump may not.
     that holds across reads of the same file; the reader's map from id to
     face was private.
 
+- **A sketch curve through a cone's apex lays onto the face as pieces.**
+  (#729)
+  - `SurfaceSheet::chart_pieces` and `chart_edges` cut the carried curve where
+    its development reaches the apex. Each piece ends on the apex's row at
+    the angle the curve's development arrives or leaves along, as at a
+    sphere's pole.
+  - On a true cone of half angle 45°, a sheet line through the apex cuts the
+    wall into the sectors L²π/2 and the rest of πRL, the first within
+    1.9e-10.
+  - Along the sheet's ray from the origin through the apex, a straight line
+    has no one way on past the apex: it holds less than a whole turn, and
+    the development's angle wraps there.
+
 - **`fillet_edges_variable` rounds a loop joined round one sharp
   corner.** (#716)
   - A rounded-rectangle pad with one vertical left sharp: its top loop's

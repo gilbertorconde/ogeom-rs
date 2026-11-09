@@ -427,8 +427,10 @@ a fold of the map; as one chart curve, a curve running through a pole \
 of the chart, whose chart curve jumps there. On a sphere \
 `chart_pieces` and `chart_edges` carry such a curve as pieces meeting at \
 the pole, and `split_face` cuts a face along them, closing the region \
-along the pole's row; through a pole of any other chart (a cone's apex, \
-a revolved or spline surface's collapsed side) it is refused. \
+along the pole's row; on a cone they cut it at the apex alike, except \
+along the sheet's ray from the origin through the apex, where a straight \
+line has no one way on past a point holding less than a whole turn; \
+through a revolved or spline surface's collapsed side it is refused. \
 `SheetMethod::LeastDistortion` lays the \
 conformal flattening of the covered geodesic disc that stretches nothing \
 along its rim, scaled to keep the disc's area (on a sphere the \
