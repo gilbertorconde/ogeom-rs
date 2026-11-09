@@ -2315,7 +2315,7 @@ fn cut_along_rail(
         OgeomError::Construction(why) => ogeom_core::ogeom_err!(
             Construction,
             "cutting a face along the line the ball touches it on fails ({why}); the line \
-             crosses a seam of the face its chart does not wrap round, or leaves the face"
+             leaves the face"
         ),
         other => other,
     })?;
@@ -2386,8 +2386,7 @@ fn cut_along_rail(
         ogeom_bail!(
             Construction,
             "cutting a face along the line the ball touches it on does not part it into \
-             pieces covering it once; the line crosses a seam of the face its chart does not \
-             wrap round"
+             pieces covering it once"
         );
     }
     for scale in [1e-3, 1e-2, 5e-2] {

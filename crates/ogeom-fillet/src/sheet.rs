@@ -234,9 +234,7 @@ pub fn fillet_sheet_edges(
 ///   along where they (or their offsets) meet, a line of contact does not
 ///   cut its face from boundary to boundary, or more than one corner holds
 ///   a ball touching both faces; with `trim`, a line of contact closed
-///   round its face does not part it into pieces covering it once (it
-///   crosses a seam of a closed B-spline face whose chart does not wrap
-///   round);
+///   round its face does not part it into pieces covering it once;
 /// - two planes are parallel, or no ball of `radius` touches the front of
 ///   both surfaces, or it does not fit inside a curved face, or more than
 ///   one does and touches both faces in corners close enough that their

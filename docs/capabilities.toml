@@ -1152,9 +1152,9 @@ swept from one section where the surfaces share a direction or an axis, \
 marched where they cross otherwise. Between separate faces a marched \
 ball that touches both all the way round a closed seat (a tube through a \
 floor at a slant, two pipes crossing) gives a band fitted closed round \
-the loop, each face cut along its closed line of contact; a closed line \
-across the seam of a closed B-spline face whose chart does not wrap \
-round is refused by name, as the cut does not part the face. Where both \
+the loop, each face cut along its closed line of contact, across the \
+seam of a closed B-spline face whose chart closes on itself without \
+repeating as across a repeating one. Where both \
 faces let a marched ball go round a closed seat, never at the same place, \
 the round is a run over each stretch both hold it: capped and applied in \
 turn on a solid, and between separate faces a round over each run. A \
