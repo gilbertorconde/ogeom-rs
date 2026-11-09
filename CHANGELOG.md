@@ -24,6 +24,24 @@ bump may break the API and a patch bump may not.
     implies in closed form stands within 1.1e-4 of the law at its
     station's arc fraction over 56 points, the ball growing from 1 to 2.
 
+- **A pad of a closed periodic spline profile rounds and chamfers its top
+  edge.** (#711)
+  - Both were refused: "the surface's iso-curve has no closed form; no
+    seam can be built". The closed band a marched seat's wedge is built
+    of needs a seam along an iso-curve of each host, and the pad's wall,
+    an extrusion of the periodic spline, named none.
+  - An extrusion's iso-curve at a profile parameter is its generator: the
+    line through the profile's point there along the sweep, on which the
+    chart's height is the distance swept. The band builders now take it;
+    `surface_iso_u_curve`, which other callers read as a choice of path,
+    is unchanged.
+  - A pad 2 high of an eight-point periodic cubic: its top edge rounded
+    0.5, or chamfered `Symmetric(0.5)` or `Distances`, is `check` clean,
+    and the volume is the pad's less the section swept round the edge,
+    within 1e-6. The edge turns through a whole turn, so the section
+    sweeps the edge's length less a turn's worth of its centroid's depth
+    in from the wall.
+
 - **`fillet_edges_variable` rounds a straight edge along a drum's ruling.**
   (#716)
   - A flat or a wall meeting a drum along one of its rulings (or two drums
