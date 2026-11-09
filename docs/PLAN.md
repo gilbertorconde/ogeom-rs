@@ -311,8 +311,9 @@ edge's own vertex and can cross the hole. No measured part builds one.
 edge between planes under any law, a closed loop of curved edges marched
 with the law's radius per station, and an open curved edge whose ball runs
 out past its ends: the law is held at the end's radius past each end, so
-the run-out is the constant round's at that radius. Owed: an open
-chain of several edges (the junctions of `fillet_edges` meet bands of one
+the run-out is the constant round's at that radius. An open chain of arcs of
+one curve (a crease split at a vertex) is that one seat over the window its
+arcs cover. Owed: any other open chain of several edges (the junctions of `fillet_edges` meet bands of one
 radius cap to cap; two bands of different end sections there need the
 re-entrant intersection path), a straight edge between a plane and a drum
 (`ruled.rs` has no law), and a seat pinched where its hosts are tangent.

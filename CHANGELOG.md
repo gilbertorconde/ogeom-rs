@@ -13,6 +13,18 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fillet_edges_variable` rounds an open chain of arcs of one curve.**
+  (#716)
+  - A crease split at a vertex (a half drum's rim across its seam, two
+    arcs of one circle) is the one seat it was: the chain's arcs, end to
+    end between the same two faces and pieces of the same curve, are
+    rounded over the window of that curve they cover, the law laid along
+    their whole length, as one marched band that runs out at both ends.
+  - On that half drum under radii 1, 2, 1 every contact on both rails
+    stands within 1e-3 of the law along both arcs.
+  - Any other open chain (arcs of different curves, or a chain turning
+    where its edges meet) is still refused by name.
+
 - **`fillet_edges_variable` rounds an open curved edge whose ball runs out
   past its ends.** (#716)
   - The law is laid along the edge's own arc length and, as on any open
