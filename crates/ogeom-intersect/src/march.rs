@@ -601,7 +601,7 @@ fn extremum_seeds(
 /// the middle of a square. From that near, a regular approach converges in
 /// a handful; one that has not by then lies where the surfaces are all but
 /// tangent along a curve, and has no isolated approach to find.
-const STATIONARY_STEPS: usize = 12;
+pub(crate) const STATIONARY_STEPS: usize = 12;
 
 /// The signed separation of the first surface from the second at `on_a`:
 /// the gap to its nearest point on the second, along the second's normal
@@ -1603,22 +1603,28 @@ pub fn branches_cut_at_poles(
     reach: f64,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Traced>> {
-    Ok(branches_from_touches(a, b, options, reach, tol)?
+    let (traced, touched) = branches_from_touches(a, b, options, reach, tol)?;
+    Ok(traced
         .into_iter()
         .map(|(branch, _)| branch)
+        .chain(touched)
         .collect())
 }
 
 /// Every branch of the intersection, as [`branches`], each with whether it
 /// leaves a touch where the section crosses itself along one of the
-/// touch's arms: see [`ArmsOf::leaves`].
+/// touch's arms: see [`ArmsOf::leaves`]; then the tangential contacts
+/// walked through the isolated touches the seeds stood beside.
+pub(crate) type Branches = (Vec<(Traced, bool)>, Vec<Traced>);
+
+/// See [`Branches`].
 pub(crate) fn branches_from_touches(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
     options: Marching,
     pole_reach: f64,
     tol: Tolerances,
-) -> OgeomResult<Vec<(Traced, bool)>> {
+) -> OgeomResult<Branches> {
     let Seeded {
         found,
         beside_tangency,
@@ -1629,7 +1635,51 @@ pub(crate) fn branches_from_touches(
     let mut out: Vec<Traced> = lying;
     let mut again: Vec<Traced> = Vec::new();
     let reach = options.chord.max(tol.confusion()) * 8.0;
+    // The isolated touches decided, the contacts walked through them, and
+    // those whose seeds are traced as any other's.
+    let isolated: core::cell::RefCell<Vec<crate::contact::Touch>> =
+        core::cell::RefCell::new(Vec::new());
+    let touched: core::cell::RefCell<Vec<Traced>> = core::cell::RefCell::new(Vec::new());
+    let as_any: core::cell::RefCell<Vec<crate::contact::Touch>> =
+        core::cell::RefCell::new(Vec::new());
     let follow = |seed: Contact, out: &mut Vec<Traced>, again: &mut Vec<Traced>| {
+        // A seed within an isolated touch's reach (see
+        // [`isolated_touch`](crate::contact::isolated_touch)) lies on no
+        // crossing: a trace from it keeps within the confusion distance of
+        // both surfaces, so within the reach, until it runs out of points,
+        // and is read as a tangential fragment whose only use is to start
+        // the contact walk from its middle. No other branch comes near it.
+        // Whether that walk starts is decided once, at the touch: where the
+        // walk names a direction there, the contact is walked from the
+        // touch, and where it names none, the reach holds nothing. Main
+        // reads it at the fragment's middle instead, which agrees with the
+        // touch except where the curvatures' ratio lies within the form's
+        // drift over the reach of the walk's bound, and there turns on
+        // rounding. A touch whose walk fails is traced as any other.
+        let beside = |touches: &[crate::contact::Touch]| {
+            touches
+                .iter()
+                .any(|t| t.at.point.distance(seed.point) <= t.reach)
+        };
+        if beside(&isolated.borrow()) {
+            return;
+        }
+        if !beside(&as_any.borrow())
+            && let Some(touch) = crate::contact::isolated_touch(a, b, seed, options, tol)
+        {
+            if !touch.walks {
+                isolated.borrow_mut().push(touch);
+                return;
+            }
+            match crate::contact::trace_tangential(a, b, touch.at, options, tol) {
+                Ok(walked) if walked.points.len() >= 4 => {
+                    touched.borrow_mut().push(walked);
+                    isolated.borrow_mut().push(touch);
+                    return;
+                }
+                _ => as_any.borrow_mut().push(touch),
+            }
+        }
         // A seed that will not trace (a tangency) is reported by being
         // absent rather than by an error, since the other branches are still
         // real answers.
@@ -1739,7 +1789,7 @@ pub(crate) fn branches_from_touches(
             .collect::<Vec<_>>()
     };
     if beside_tangency.is_empty() {
-        return Ok(joined(out, again));
+        return Ok((joined(out, again), touched.take()));
     }
     // A contact held back beside a tangency lies on the section, so some
     // branch must pass it: where none does, it is followed in its own
@@ -1757,9 +1807,9 @@ pub(crate) fn branches_from_touches(
     let pieces = out.len() + again.len();
     follow_all(&missed, &mut out, &mut again, &mut followed);
     if out.len() + again.len() == pieces {
-        return Ok(first);
+        return Ok((first, touched.take()));
     }
-    Ok(joined(out, again))
+    Ok((joined(out, again), touched.take()))
 }
 
 /// The touches of an edge that end one branch alone, as contacts to follow
@@ -2594,6 +2644,13 @@ pub(crate) fn distance_to_segment(p: Point, a: Point, b: Point) -> f64 {
     }
     let t = ((p - a).dot(along) / length).clamp(0.0, 1.0);
     p.distance(a + along * t)
+}
+
+/// The farthest the march carries a stalled end onto a touch after the
+/// tracing (the `carry` of [`split_at_touches_as_traced`] and its kin):
+/// no join of branch ends spans more.
+pub(crate) fn joining_reach(options: Marching, tol: Tolerances) -> f64 {
+    options.chord.max(tol.confusion()) * 60.0 * 40.0
 }
 
 /// Follow the intersection from a starting point, in both directions.

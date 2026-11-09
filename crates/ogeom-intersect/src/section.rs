@@ -1481,15 +1481,15 @@ fn marched(
     let view_a = windows.0.and_then(|w| windowed(a, w, tol));
     let view_b = windows.1.and_then(|w| windowed(b, w, tol));
     let mut pole_reach = 0.0;
-    let (mut out, contacts) = loop {
-        let traced = branches_from_touches(
+    let (mut out, mut contacts, touched) = loop {
+        let (traced, touched) = branches_from_touches(
             view_a.as_ref().unwrap_or(a),
             view_b.as_ref().unwrap_or(b),
             options.marching,
             pole_reach,
             tol,
         )?;
-        if traced.is_empty() {
+        if traced.is_empty() && touched.is_empty() {
             return Ok(SurfaceIntersection::Apart);
         }
         let mut out = Vec::with_capacity(traced.len());
@@ -1579,8 +1579,19 @@ fn marched(
             pole_reach = reach;
             continue;
         }
-        break (out, contacts);
+        break (out, contacts, touched);
     };
+    // The contacts walked through isolated touches, after those walked from
+    // fragments, each kept unless it lies on one already.
+    for walked in touched {
+        let on_one = walked
+            .points
+            .get(walked.points.len() / 2)
+            .is_some_and(|&p| on_one_already(p, &contacts, options.marching, tol));
+        if !on_one {
+            contacts.push(walked);
+        }
+    }
     for contact in &contacts {
         let fitted = approximate_branch(a, b, contact, options.tolerance, tol)?;
         out.push(SectionCurve {
@@ -1821,22 +1832,8 @@ fn walk_contact(
     let Some(point) = fragment.points.get(middle).copied() else {
         return Ok(None);
     };
-    for traced in already {
-        // Traced points sit a step apart, so "on this curve" has to allow
-        // half a step of gap to the nearest sample plus the chord budget.
-        let spacing = traced
-            .points
-            .windows(2)
-            .map(|w| w[0].distance(w[1]))
-            .fold(0.0f64, f64::max);
-        let near = traced
-            .points
-            .iter()
-            .map(|p| p.distance(point))
-            .fold(f64::INFINITY, f64::min);
-        if near <= spacing.mul_add(0.5, marching.chord.max(tol.confusion())) {
-            return Ok(None);
-        }
+    if on_one_already(point, already, marching, tol) {
+        return Ok(None);
     }
     let seed = crate::march::Contact {
         point,
@@ -1850,6 +1847,30 @@ fn walk_contact(
     Ok(trace_tangential(a, b, seed, marching, tol)
         .ok()
         .filter(|traced| traced.points.len() >= 4))
+}
+
+/// Whether `point` lies on a contact of `already`: traced points sit a
+/// step apart, so "on this curve" allows half a step of gap to the
+/// nearest sample plus the chord budget.
+fn on_one_already(
+    point: Point,
+    already: &[crate::march::Traced],
+    marching: Marching,
+    tol: Tolerances,
+) -> bool {
+    already.iter().any(|traced| {
+        let spacing = traced
+            .points
+            .windows(2)
+            .map(|w| w[0].distance(w[1]))
+            .fold(0.0f64, f64::max);
+        let near = traced
+            .points
+            .iter()
+            .map(|p| p.distance(point))
+            .fold(f64::INFINITY, f64::min);
+        near <= spacing.mul_add(0.5, marching.chord.max(tol.confusion()))
+    })
 }
 
 /// Whether a traced branch runs along a tangency of the two surfaces:
