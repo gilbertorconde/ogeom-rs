@@ -25,6 +25,22 @@ bump may break the API and a patch bump may not.
     the closed form `sqrt((5 - r)^2 - (3 - r)^2)` at the law's radius,
     and every contact on both rails within 1e-3.
 
+- **`fillet_edges_with` closes a corner of three bands of different
+  radii with one patch.** (#713)
+  - No ball rolls round such a corner. Each band now stops one of its own
+    widths past the least distance at which its section clears every other
+    band there, and the setback corner's patch closes the opening G1 to
+    every band end and face. The bands built up to one another all lie
+    inside the cell the patch replaces, so the result does not depend on
+    the order of the request.
+  - A box corner at 2, 3 and 2.5 is `check` clean, the same in three
+    orders, tangent across all six of the patch's edges, its volume
+    between the all-2 and all-3 rounds. Radii as far apart as 1, 1.5 and 2
+    close too.
+  - At 1, 3 and 2 the patch meets the radius-1 band's end 5.7e-4 rad from
+    tangent at its finest net, past the 2e-4 target, and the request is
+    refused by name (`NotDone`) instead of returning a crease.
+
 - **`fillet_edges_variable` rounds an open chain of arcs of one curve.**
   (#716)
   - A crease split at a vertex (a half drum's rim across its seam, two

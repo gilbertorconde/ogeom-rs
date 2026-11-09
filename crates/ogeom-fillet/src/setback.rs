@@ -223,7 +223,30 @@ fn setback_own(
     if (0..n).all(|k| setback[k] <= own_setback[k] + tol.confusion()) {
         return Ok(banded);
     }
+    close_corner(
+        model,
+        banded,
+        vertex,
+        &frame,
+        &setback,
+        setbacks.continuity,
+        tol,
+    )
+}
 
+/// The bands of `banded` meeting at `vertex`, whose corner reads as
+/// `frame`, stopped at `setback` along their edges and the opening between
+/// them filled by one patch at `continuity`.
+fn close_corner(
+    model: &mut Model,
+    banded: Built,
+    vertex: &Shape,
+    frame: &crate::corner::CornerFrame,
+    setback: &[f64],
+    continuity: Continuity,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let n = frame.d.len();
     // The cell the patch replaces: in from every plane through the vertex,
     // and short of each band's section.
     let mut walls: Vec<(Vector, Point)> = frame.m.iter().map(|mk| (*mk, frame.corner)).collect();
@@ -389,12 +412,12 @@ fn setback_own(
         boundary.push(FillBoundary {
             edge: arcs[k].0.clone(),
             support: Some(arcs[k].1.clone()),
-            continuity: setbacks.continuity,
+            continuity,
         });
         boundary.push(FillBoundary {
             edge: trim,
             support: Some(filler.clone()),
-            continuity: setbacks.continuity,
+            continuity,
         });
         fillers.push(filler);
     }
@@ -412,4 +435,145 @@ fn setback_own(
     let mut history: History = history;
     history.generate(vertex, patch);
     Ok(Built::new(rounded, history))
+}
+
+/// Close the corner at `vertex` of `banded`, where the bands of `request`
+/// (each edge with its radius) meet at different radii and no ball rolls
+/// round: each band stopped one of its own widths past the least setback
+/// where its section clears every other band, and the opening filled G1
+/// as [`round_vertex_setback`] fills it.
+///
+/// `banded` holds the bands as they were built up to one another, the
+/// later run on through the earlier; all of that lies inside the cell the
+/// patch replaces, so what is left does not depend on the order they were
+/// built in.
+pub(crate) fn close_mixed_corner(
+    model: &mut Model,
+    banded: Built,
+    vertex: &Shape,
+    request: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let largest = request.iter().map(|(_, r)| *r).fold(0.0, f64::max);
+    let frame = crate::corner::corner_frame(model, &banded.shape, vertex, largest, tol)?;
+    let n = frame.d.len();
+    // Each corner edge's radius: the request edge leaving the vertex along
+    // it.
+    let mut radius: Vec<f64> = Vec::with_capacity(n);
+    for dk in &frame.d {
+        let mut best: Option<(f64, f64)> = None;
+        for (edge, r) in request {
+            let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
+                continue;
+            };
+            let far = if a.is_same(vertex) {
+                b
+            } else if b.is_same(vertex) {
+                a
+            } else {
+                continue;
+            };
+            let along = point_of(model, &far)? - frame.corner;
+            let length = along.magnitude();
+            if length <= tol.confusion() {
+                continue;
+            }
+            let cos = along.dot(dk.vector()) / length;
+            if best.is_none_or(|(c, _)| cos > c) {
+                best = Some((cos, *r));
+            }
+        }
+        match best {
+            Some((cos, r)) if cos >= 1.0 - tol.angular().sqrt() => radius.push(r),
+            _ => ogeom_bail!(
+                Construction,
+                "a corner of different radii where an edge of the vertex is not \
+                 rounded, or is curved, is still owed; see docs/CAPABILITIES.md, \
+                 fillet.setback-corners"
+            ),
+        }
+    }
+    let setback = least_setbacks(&frame, &radius, tol)?;
+    close_corner(model, banded, vertex, &frame, &setback, Continuity::G1, tol)
+}
+
+/// For each edge of the corner, the setback its band stops at: the least
+/// distance along the edge at which the band's section clears every other
+/// band of the corner, and past that the band's own width on its faces.
+/// At the least distance a rail's end stands on its neighbour's rail line
+/// and the face's trim would leave it square; one width further, the trim
+/// leaves each rail along a leg as long as its band is wide.
+///
+/// Band `k` of radius `r_k` between planes at an interior angle `phi_k`
+/// touches each plane `w_k = r_k (1 + cos phi_k) / sin phi_k` from its
+/// edge, and everything it takes away lies within `w_k` of the edge's
+/// line. Its section at distance `s` is the triangle of the edge's point
+/// and the two touch points; the distance from another edge's line is
+/// convex over it, so its corners decide. Each corner's distance to line
+/// `j` is `|A s + B|`, increasing past `s* = -A·B / A·A`; the band clears
+/// band `j` from the larger root of `|A s + B| = w_j`, or from `s*` where
+/// it is never nearer.
+fn least_setbacks(
+    frame: &crate::corner::CornerFrame,
+    radius: &[f64],
+    tol: Tolerances,
+) -> OgeomResult<Vec<f64>> {
+    let n = frame.d.len();
+    let planes = |k: usize| (frame.m[frame.ring[k]], frame.m[frame.ring[(k + 1) % n]]);
+    let reach: Vec<f64> = (0..n)
+        .map(|k| {
+            let (ma, mb) = planes(k);
+            let cos = -ma.dot(mb);
+            let sin = (1.0 - cos * cos).max(0.0).sqrt();
+            if sin <= tol.angular() {
+                f64::INFINITY
+            } else {
+                radius[k] * (1.0 + cos) / sin
+            }
+        })
+        .collect();
+    let mut setback = vec![0.0_f64; n];
+    for k in 0..n {
+        if !reach[k].is_finite() {
+            ogeom_bail!(
+                Construction,
+                "two faces at a corner meet flat; there is no edge to round"
+            );
+        }
+        let dk = frame.d[k].vector();
+        let (ma, mb) = planes(k);
+        // Into each face, square to the edge.
+        let leg = |own: Vector, other: Vector| -> OgeomResult<Vector> {
+            let u = own.cross(dk).normalized(tol)?;
+            Ok(if u.dot(other) < 0.0 { -u } else { u })
+        };
+        let offsets = [
+            Vector::ZERO,
+            leg(ma, mb)? * reach[k],
+            leg(mb, ma)? * reach[k],
+        ];
+        let mut least = reach[k];
+        for j in (0..n).filter(|&j| j != k) {
+            let dj = frame.d[j].vector();
+            let a = dk - dj * dk.dot(dj);
+            let aa = a.dot(a);
+            if aa <= tol.angular() {
+                ogeom_bail!(Construction, "two edges at a corner run together");
+            }
+            for o in offsets {
+                let b = o - dj * o.dot(dj);
+                let ab = a.dot(b);
+                let turn = -ab / aa;
+                let disc = ab * ab - aa * (b.dot(b) - reach[j] * reach[j]);
+                let from = if disc >= 0.0 {
+                    ((-ab + disc.sqrt()) / aa).max(turn)
+                } else {
+                    turn
+                };
+                least = least.max(from);
+            }
+        }
+        setback[k] = least + reach[k];
+    }
+    Ok(setback)
 }

@@ -519,11 +519,15 @@ pub fn fillet_edges(
 ///
 /// # Errors
 ///
-/// As [`fillet_edges`], and [`OgeomError::Construction`] where three or
-/// more of the edges meeting at a vertex do not share one radius: no ball
-/// rolls round such a corner, and closing it takes a patch between the
-/// bands' ends, which this does not build. An edge asked twice at two
-/// radii is refused likewise.
+/// As [`fillet_edges`], and as [`round_vertex_setback`](crate::round_vertex_setback)
+/// where three or more of the edges meeting at a vertex do not share one
+/// radius. No ball rolls round such a corner: each band is stopped one of
+/// its own widths past the least setback at which its section clears every
+/// other band there, and one patch closes the opening G1 to every band end
+/// and face. [`OgeomError::NotDone`] where that patch misses the bands' fit
+/// target, and [`OgeomError::Construction`] where the corner is not a
+/// convex planar one every edge of which the request rounds. An edge asked
+/// twice at two radii is refused likewise.
 pub fn fillet_edges_with(
     model: &mut Model,
     solid: &Shape,
@@ -570,12 +574,40 @@ fn fillet_edges_meeting(
             tol,
         )
     };
+    let mixed = mixed_corners(model, edges, radii)?;
     // A request of one edge is that edge alone, a ring beside a rim taken
     // off whole as there.
-    match (edges, radii) {
-        ([edge], [radius]) => or_rim_consumed(model, solid, edge, *radius, round, tol),
-        _ => round(model),
+    let mut built = match (edges, radii) {
+        ([edge], [radius]) => or_rim_consumed(model, solid, edge, *radius, round, tol)?,
+        _ => round(model)?,
+    };
+    for (vertex, request) in &mixed {
+        built = crate::setback::close_mixed_corner(model, built, vertex, request, tol)?;
     }
+    Ok(built)
+}
+
+/// A vertex of the request and the request's edges there with their radii.
+type Corner = (Shape, Vec<(Shape, f64)>);
+
+/// The vertices where three or more edges of the request meet at
+/// different radii, each with the request's edges there and their radii.
+fn mixed_corners(model: &Model, edges: &[Shape], radii: &[f64]) -> OgeomResult<Vec<Corner>> {
+    let mut corners: Vec<Corner> = Vec::new();
+    for (edge, &radius) in edges.iter().zip(radii) {
+        let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
+            continue;
+        };
+        for v in [a, b] {
+            if let Some(slot) = corners.iter_mut().find(|(held, _)| held.is_same(&v)) {
+                slot.1.push((edge.clone(), radius));
+            } else {
+                corners.push((v, vec![(edge.clone(), radius)]));
+            }
+        }
+    }
+    corners.retain(|(_, at)| at.len() >= 3 && at.iter().any(|&(_, r)| r != at[0].1));
+    Ok(corners)
 }
 
 /// Round with every cone rim's band an exact torus band, and where that
@@ -862,14 +894,9 @@ fn fillet_edges_own(
     corners.retain(|(_, at)| at.len() >= 3);
     // No ball rolls round a corner whose bands differ in radius: the
     // corner tool's ball would touch a band of another radius nowhere
-    // along its rim.
-    if corners.iter().any(|(_, at)| at.iter().any(|&r| r != at[0])) {
-        ogeom_bail!(
-            Construction,
-            "three or more bands of different radii meet at a corner, which no \
-             ball rolls round"
-        );
-    }
+    // along its rim. Such a corner is left to the bands here and closed by
+    // the setback patch once they stand ([`mixed_corners`]).
+    corners.retain(|(_, at)| at.iter().all(|&r| r == at[0]));
     // A corner the tool rounds, or the solid unchanged where it does not
     // speak the corner, which keeps the bands' caps.
     let round =
