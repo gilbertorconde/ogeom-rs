@@ -37,7 +37,7 @@ use crate::Built;
 use crate::build::{attach_pcurve, make_edge};
 
 /// How the flat sheet is carried away from its origin.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub enum SheetMethod {
     /// Geodesic polar coordinates: the sheet point at distance `r` and
@@ -45,6 +45,29 @@ pub enum SheetMethod {
     /// origin at angle `t` from the sheet's `+x` is after length `r` (the
     /// exponential map). Lengths along lines through the origin are kept.
     Geodesic,
+    /// The conformal flattening of the geodesic disc the sheet covers that
+    /// stretches nothing along the disc's rim, pinned at the origin with
+    /// its `+x` along the sheet's, and scaled to keep the disc's area as a
+    /// whole. On a sphere it is the stereographic projection from the
+    /// origin's antipode.
+    ///
+    /// It is conformal, not area-keeping: angles are kept, and lengths
+    /// stretch alike in every direction at a point but by different
+    /// amounts from point to point, so a region's area on the surface is
+    /// not its area on the sheet. On a sphere of radius 10 with reach 5
+    /// the stretch runs from 1.031 at the origin to 0.968 at the reach, and
+    /// a 6 x 4 rectangle at the origin covers 25.07 rather than 24.
+    ///
+    /// The flattening is computed on a mesh, and
+    /// [`SurfaceSheet::flattening_error`] is an estimate, not a bound, of
+    /// how far the laid map stands from the smooth one; see there for the
+    /// assumption it rests on. On a plane, a cylinder and a cone it is
+    /// their exact development, as `Geodesic` is.
+    LeastDistortion {
+        /// The estimated departure from the smooth flattening to refine
+        /// down to, as a length on the sheet.
+        resolution: f64,
+    },
 }
 
 /// How a flat sheet is laid on a face.
@@ -87,8 +110,15 @@ pub struct SurfaceSheet {
     axes: (Vector, Vector),
     reach: f64,
     tol: Tolerances,
-    /// The least and the most across-ray stretch carried so far.
-    stretch: core::cell::Cell<(f64, f64)>,
+    /// The geodesic sheet's own reach, past which no geodesic polar
+    /// position is landed.
+    geodesic_reach: f64,
+    /// The least-distortion sheet's map back to geodesic polar
+    /// coordinates.
+    flat: Option<Box<crate::sheet_flat::Flattening>>,
+    /// The least and the most length ratio, then area ratio, carried so
+    /// far.
+    seen: core::cell::Cell<[f64; 4]>,
 }
 
 /// How a surface's chart is reached from the sheet.
@@ -131,9 +161,6 @@ impl SurfaceSheet {
         reach: f64,
         tol: Tolerances,
     ) -> OgeomResult<Self> {
-        match placement.method {
-            SheetMethod::Geodesic => {}
-        }
         if model.kind_of(face)? != ShapeType::Face {
             ogeom_bail!(Construction, "a sheet is laid on a face");
         }
@@ -218,7 +245,11 @@ impl SurfaceSheet {
             }
             _ => Chart::Integrated,
         };
-        Ok(Self {
+        let most = match chart {
+            Chart::Sphere { radius, .. } => PI * radius,
+            _ => f64::INFINITY,
+        };
+        let mut sheet = Self {
             surface,
             own: unplaced.then_some(data.surface),
             chart,
@@ -226,8 +257,46 @@ impl SurfaceSheet {
             axes: (x, y),
             reach,
             tol,
-            stretch: core::cell::Cell::new((1.0, 1.0)),
-        })
+            geodesic_reach: reach,
+            flat: None,
+            seen: core::cell::Cell::new([1.0; 4]),
+        };
+        if let SheetMethod::LeastDistortion { resolution } = placement.method
+            && !matches!(chart, Chart::Plane | Chart::Cylinder | Chart::Cone { .. })
+        {
+            sheet.geodesic_reach = most;
+            let flat = {
+                let land = |q: Point2| -> OgeomResult<Point> {
+                    let (uv, _) = sheet.geodesic(q, tol.confusion())?;
+                    sheet.surface.point_at(uv.x, uv.y, tol)
+                };
+                crate::sheet_flat::Flattening::build(&land, reach, most, resolution)?
+            };
+            sheet.flat = Some(Box::new(flat));
+        }
+        Ok(sheet)
+    }
+
+    /// An estimate of how far the least-distortion sheet's map stands from
+    /// the smooth conformal flattening, as a length on the sheet: the most
+    /// a vertex shared by the last two meshes moved between them, and the
+    /// most the polynomial back to geodesic coordinates misses the finer
+    /// mesh's map at its vertices and triangle centroids, together. Zero
+    /// for a sheet laid by geodesic polar coordinates or by an exact
+    /// development, which have no mesh.
+    ///
+    /// It is a bound only if each doubling of the rings at least halves
+    /// the finer mesh's own departure from the smooth map, in which case
+    /// that departure is no more than the move between the two meshes.
+    /// That contraction is measured, not proved for this discretisation:
+    /// from 8 to 64 rings the moves shrank by 3.8 to 4.0 per doubling on a
+    /// sphere of radius 10 and a torus 20/5, second order as the
+    /// cotangent Laplacian is on such meshes, but nothing here shows it
+    /// holds on every surface. The polynomial's miss is measured at the
+    /// mesh's vertices and centroids only.
+    #[must_use]
+    pub fn flattening_error(&self) -> f64 {
+        self.flat.as_ref().map_or(0.0, |f| f.error)
     }
 
     /// The surface the sheet is laid on, as placed: the one the chart
@@ -360,15 +429,15 @@ impl SurfaceSheet {
     /// far.
     #[must_use]
     pub fn distortion(&self) -> SheetDistortion {
-        let (least, most) = self.stretch.get();
+        let [short, long, small, large] = self.seen.get();
         SheetDistortion {
-            length: (least.min(1.0), most.max(1.0)),
-            area: (least, most),
+            length: (short, long),
+            area: (small, large),
         }
     }
 
     /// The chart position a sheet point lands on, to `accuracy` in space,
-    /// its across-ray stretch recorded.
+    /// its stretch recorded.
     fn landed(&self, p: Point2, accuracy: f64) -> OgeomResult<Point2> {
         let r = p.x.hypot(p.y);
         if !r.is_finite() {
@@ -379,6 +448,45 @@ impl SurfaceSheet {
                 Construction,
                 "the sheet point {p:?} lies past the sheet's reach of {}",
                 self.reach
+            );
+        }
+        let (uv, short, long) = match &self.flat {
+            None => {
+                let (uv, stretch) = self.geodesic(p, accuracy)?;
+                (uv, stretch.min(1.0), stretch.max(1.0))
+            }
+            Some(flat) => {
+                let (q, d) = flat.at(p);
+                let (uv, stretch) = self.geodesic(q, accuracy)?;
+                let (short, long) = carried_stretch(q, stretch, d);
+                if short.is_nan() || short <= 0.0 {
+                    ogeom_bail!(
+                        Construction,
+                        "the least-distortion sheet folds over at the sheet point {p:?}"
+                    );
+                }
+                (uv, short, long)
+            }
+        };
+        let [a, b, c, e] = self.seen.get();
+        self.seen.set([
+            a.min(short),
+            b.max(long),
+            c.min(short * long),
+            e.max(short * long),
+        ]);
+        Ok(uv)
+    }
+
+    /// The chart position a geodesic polar position lands on, to
+    /// `accuracy` in space, and its across-ray stretch.
+    fn geodesic(&self, p: Point2, accuracy: f64) -> OgeomResult<(Point2, f64)> {
+        let r = p.x.hypot(p.y);
+        if !r.is_finite() || r > self.geodesic_reach + self.tol.confusion() {
+            ogeom_bail!(
+                Construction,
+                "the sheet point {p:?} lies past the sheet's reach of {}",
+                self.geodesic_reach
             );
         }
         let along = self.axes.0 * p.x + self.axes.1 * p.y;
@@ -403,9 +511,7 @@ impl SurfaceSheet {
                  {p:?}: the sheet folds there"
             );
         }
-        let (least, most) = self.stretch.get();
-        self.stretch.set((least.min(stretch), most.max(stretch)));
-        Ok(uv)
+        Ok((uv, stretch))
     }
 
     /// The chart step from the origin along the tangent vector `t` there,
@@ -739,6 +845,38 @@ fn nearest(uv: Point2, guide: Point2, periods: [Option<f64>; 2]) -> Point2 {
         near(uv.x, guide.x, periods[0]),
         near(uv.y, guide.y, periods[1]),
     )
+}
+
+/// The least and the most length ratio of the least-distortion map at a
+/// sheet point: the polynomial's derivative `d` there, carried to geodesic
+/// polar position `q`, followed by the geodesic sheet, which keeps the
+/// radial length and stretches across the ray by `stretch`. The singular
+/// values of the composite.
+fn carried_stretch(q: Point2, stretch: f64, d: [[f64; 2]; 2]) -> (f64, f64) {
+    let r = q.x.hypot(q.y);
+    let (c, s) = if r > 0.0 {
+        (q.x / r, q.y / r)
+    } else {
+        (1.0, 0.0)
+    };
+    // Rows of the geodesic sheet's derivative in the polar frame at `q`:
+    // the radial component kept, the across one stretched.
+    let m = [
+        [c * d[0][0] + s * d[1][0], c * d[0][1] + s * d[1][1]],
+        [
+            stretch * (-s * d[0][0] + c * d[1][0]),
+            stretch * (-s * d[0][1] + c * d[1][1]),
+        ],
+    ];
+    let frobenius = m[0][0].powi(2) + m[0][1].powi(2) + m[1][0].powi(2) + m[1][1].powi(2);
+    let det = m[0][0].mul_add(m[1][1], -m[0][1] * m[1][0]);
+    let spread = frobenius
+        .mul_add(frobenius, -4.0 * det * det)
+        .max(0.0)
+        .sqrt();
+    let long = (f64::midpoint(frobenius, spread)).sqrt();
+    let short = if det <= 0.0 { det } else { det / long };
+    (short, long)
 }
 
 /// The state `y` stepped `h` along the slope `k`.

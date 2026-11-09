@@ -353,17 +353,12 @@ and needs such definitions built per placement; the second has no file at
 hand that writes one. The cut edge stays in the model unused, and a STEP style or shape
 aspect naming its file id lands on every piece.
 
-**A least-distortion sheet over a whole region (#729).** `SurfaceSheet`
-lays a sketch by geodesic polar coordinates, which keep lengths along rays
-from the origin and stretch across them by the Jacobi field's ratio. Owed:
-the flattening of the covered region that spreads that stretch (an
-as-rigid-as-possible or conformal map of a mesh of the region, pinned at
-the origin), so a wide sketch on a sphere keeps its area rather than its
-rays; and a curve running through a pole of the chart (a sheet line
-through the point that lands on a sphere's pole), whose chart curve jumps
-there: it needs cutting at the pole into pieces, and `split_face` taught
-to follow a path from one piece to the next along the pole's degenerate
-edge. A curve going round a pole is carried as one chart curve.
+**A sketch curve through a chart pole (#729).** `SurfaceSheet` carries a
+curve going round a pole of the chart as one chart curve, and refuses one
+running through the pole point (a sheet line through the point that lands
+on a sphere's pole), whose chart curve jumps there. Owed: cutting it at
+the pole into pieces, and `split_face` taught to follow a path from one
+piece to the next along the pole's degenerate edge.
 
 ### Mesh conversion
 

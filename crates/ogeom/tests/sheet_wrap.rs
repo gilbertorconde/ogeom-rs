@@ -449,3 +449,173 @@ fn a_circle_round_the_spheres_pole_cuts_off_its_geodesic_cap() {
         "{areas:?}"
     );
 }
+
+/// The resolution asked of every least-distortion sheet.
+const RESOLUTION: f64 = 1e-3;
+
+fn flat_sheet_on(model: &Model, face: &Shape, at: Point, reach: f64) -> SurfaceSheet {
+    SurfaceSheet::new(
+        model,
+        face,
+        &SheetPlacement {
+            at,
+            x_direction: Direction::X,
+            method: SheetMethod::LeastDistortion {
+                resolution: RESOLUTION,
+            },
+        },
+        reach,
+        T,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_least_distortion_sheet_on_a_sphere_is_its_stereographic_projection() {
+    // A geodesic disc of a sphere flattened conformally about its centre
+    // is, by its symmetry, the stereographic projection from the antipode,
+    // scaled: the sheet point at radius r lands at the geodesic angle
+    // theta from the origin where r = c 2R tan(theta / 2), c one constant,
+    // on the ray at the sheet point's own angle.
+    let mut model = Model::new();
+    let sphere = make_sphere(&mut model, Frame::WORLD, 10.0, T)
+        .unwrap()
+        .shape;
+    let face = faces(&model, &sphere)[0].clone();
+    let at = Point::new(0.0, -10.0, 0.0);
+    let sheet = flat_sheet_on(&model, &face, at, 5.0);
+    assert!(
+        sheet.flattening_error() <= RESOLUTION,
+        "{}",
+        sheet.flattening_error()
+    );
+    let mut scales: Vec<f64> = Vec::new();
+    for k in 0..12 {
+        let angle = f64::from(k) * TAU / 12.0;
+        for r in [1.0, 2.5, 4.0, 5.0] {
+            let (s, c) = angle.sin_cos();
+            let uv = sheet.chart_point(Point2::new(r * c, r * s)).unwrap();
+            let p = sheet.surface().point_at(uv.x, uv.y, T).unwrap();
+            let theta = (-p.y / 10.0).clamp(-1.0, 1.0).acos();
+            scales.push(r / (20.0 * (theta / 2.0).tan()));
+            // On the ray at the sheet point's angle: x along the sheet's +x,
+            // z along its +y (the sphere's outward normal at the origin is
+            // -Y, and +X turned about it is +Z).
+            let turned = p.z.atan2(p.x);
+            let off = (turned - angle + PI).rem_euclid(TAU) - PI;
+            assert!(
+                off.abs() * 10.0 * theta.sin() <= RESOLUTION,
+                "{r} {angle}: {off}"
+            );
+        }
+    }
+    let (least, most) = scales
+        .iter()
+        .fold((f64::INFINITY, 0.0_f64), |(a, b), c| (a.min(*c), b.max(*c)));
+    // A miss of the resolution at radius 1 moves the constant by at most
+    // that fraction.
+    assert!(most - least <= RESOLUTION * most, "{least} {most}");
+    let distortion = sheet.distortion();
+    // Conformal: at each point every direction stretches alike, so the
+    // area ratio's range is the length ratio's squared.
+    let (l, a) = (distortion.length, distortion.area);
+    assert!((a.0 - l.0 * l.0).abs() <= 1e-2 * a.0, "{distortion:?}");
+    assert!((a.1 - l.1 * l.1).abs() <= 1e-2 * a.1, "{distortion:?}");
+}
+
+#[test]
+fn a_rectangle_laid_least_distorted_on_a_sphere_cuts_out_the_stereographic_area() {
+    // The sheet is the stereographic projection scaled, r = k tan(theta / 2),
+    // so a sheet region's area on the sphere is the integral over it of the
+    // squared stretch (2R / k)^2 / (1 + r^2 / k^2)^2; k is read off the
+    // sheet's own rim of reach.
+    let mut model = Model::new();
+    let sphere = make_sphere(&mut model, Frame::WORLD, 10.0, T)
+        .unwrap()
+        .shape;
+    let face = faces(&model, &sphere)[0].clone();
+    let sheet = flat_sheet_on(&model, &face, Point::new(0.0, -10.0, 0.0), 5.0);
+    let uv = sheet.chart_point(Point2::new(5.0, 0.0)).unwrap();
+    let p = sheet.surface().point_at(uv.x, uv.y, T).unwrap();
+    let theta = (-p.y / 10.0).clamp(-1.0, 1.0).acos();
+    let k = 5.0 / (theta / 2.0).tan();
+    let inside = rectangle_inside(&mut model, &sphere, &face, &sheet);
+    // Gauss-Legendre on five points a side, over a grid of 6 x 4 unit cells.
+    let nodes = [
+        (0.0, 0.568_888_888_888_888_9),
+        (-0.538_469_310_105_683_1, 0.478_628_670_499_366_5),
+        (0.538_469_310_105_683_1, 0.478_628_670_499_366_5),
+        (-0.906_179_845_938_664, 0.236_926_885_056_189_1),
+        (0.906_179_845_938_664, 0.236_926_885_056_189_1),
+    ];
+    let mut expected = 0.0;
+    for i in 0..6 {
+        for j in 0..4 {
+            for (sx, wx) in nodes {
+                for (sy, wy) in nodes {
+                    let x = f64::from(i) - 3.0 + 0.5 + sx / 2.0;
+                    let y = f64::from(j) - 2.0 + 0.5 + sy / 2.0;
+                    let ratio = (x * x + y * y) / (k * k);
+                    expected += wx * wy / 4.0 * (20.0 / k).powi(2) / (1.0 + ratio).powi(2);
+                }
+            }
+        }
+    }
+    // Each side may stand off the smooth map's by the stated error times
+    // the most stretch, and off its chart curve by the fit, over the
+    // rectangle's perimeter of 20.
+    let stretch = sheet.distortion().length.1;
+    let allowed = 20.0 * (sheet.flattening_error() * stretch + FIT);
+    assert!(
+        (inside.area - expected).abs() <= allowed,
+        "{} against {expected}, allowed {allowed}",
+        inside.area
+    );
+    assert!(inside.centroid.x.abs() <= 0.05 && inside.centroid.z.abs() <= 0.05);
+}
+
+#[test]
+fn a_rectangle_laid_least_distorted_on_a_torus_keeps_its_angles_and_place() {
+    let mut model = Model::new();
+    let torus = make_torus(&mut model, Frame::WORLD, 20.0, 5.0, T)
+        .unwrap()
+        .shape;
+    let face = faces(&model, &torus)[0].clone();
+    let sheet = flat_sheet_on(&model, &face, Point::new(0.0, -25.0, 0.0), 5.0);
+    assert!(
+        sheet.flattening_error() <= RESOLUTION,
+        "{}",
+        sheet.flattening_error()
+    );
+    let inside = rectangle_inside(&mut model, &torus, &face, &sheet);
+    assert!(inside.centroid.x.abs() <= 0.05 && inside.centroid.z.abs() <= 0.05);
+    // Conformal: the area ratio's range is the length ratio's squared.
+    let distortion = sheet.distortion();
+    let (l, a) = (distortion.length, distortion.area);
+    assert!((a.0 - l.0 * l.0).abs() <= 1e-2 * a.0, "{distortion:?}");
+    assert!((a.1 - l.1 * l.1).abs() <= 1e-2 * a.1, "{distortion:?}");
+    // The torus curves less than the sphere: the stretch stays within the
+    // sphere's own over the same reach.
+    assert!(
+        l.0 > 0.9 && l.1 < 1.1,
+        "{distortion:?}, area {}",
+        inside.area
+    );
+}
+
+#[test]
+fn a_least_distortion_sheet_on_a_cylinder_is_its_development() {
+    let mut model = Model::new();
+    let drum = make_cylinder(&mut model, Frame::WORLD, 10.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let wall = faces(&model, &drum)
+        .into_iter()
+        .find(|f| ogeom::algo::face_normal(&model, f, T).is_ok_and(|(_, n)| n.z.abs() < 0.5))
+        .unwrap();
+    let sheet = flat_sheet_on(&model, &wall, Point::new(0.0, -10.0, 5.0), 4.0);
+    assert_eq!(sheet.flattening_error(), 0.0);
+    let inside = rectangle_inside(&mut model, &drum, &wall, &sheet);
+    assert!((inside.area - 24.0).abs() <= 24.0 * 1e-6, "{}", inside.area);
+    assert_eq!(sheet.distortion().area, (1.0, 1.0));
+}

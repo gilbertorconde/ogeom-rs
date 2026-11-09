@@ -424,9 +424,19 @@ the chart is one chart curve winding a whole period. Refused: an origin \
 on a pole of the chart, a sphere's reach to its origin's antipode, a \
 point past the reach, on a pole, off a bounded surface's domain or past \
 a fold of the map; a curve running through a pole of the chart, whose \
-chart curve jumps there. The least-distortion flattening of \
-the covered region (as-rigid-as-possible or conformal) is not built: \
-`SheetMethod` has the geodesic method alone."""
+chart curve jumps there. `SheetMethod::LeastDistortion` lays the \
+conformal flattening of the covered geodesic disc that stretches nothing \
+along its rim, scaled to keep the disc's area (on a sphere the \
+stereographic projection): solved on a polar mesh by one Poisson problem \
+for the scale and a harmonic extension of the rim, rings doubled until \
+two meshes agree within the resolution asked, and mapped back by a \
+fitted polynomial; `flattening_error` estimates the departure from the \
+smooth map, a bound only where each ring doubling at least halves it \
+(measured near four times per doubling on a sphere and a torus, not \
+proved). It is conformal, not area-keeping point by point: a 6 x 4 \
+rectangle at R = 10 with reach 5 covers 25.07 on the sphere, as the \
+scaled stereographic projection does. As-rigid-as-possible flattening \
+is not built."""
 symbols = [
     "ogeom_algo::SurfaceSheet", "ogeom_algo::SheetPlacement",
     "ogeom_algo::SheetMethod", "ogeom_algo::SheetDistortion",

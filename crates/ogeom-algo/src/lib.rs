@@ -46,6 +46,7 @@ pub mod segments_2d;
 mod self_cross;
 pub mod sew;
 pub mod sheet;
+mod sheet_flat;
 pub mod sweep;
 pub mod text;
 pub mod thickness;
