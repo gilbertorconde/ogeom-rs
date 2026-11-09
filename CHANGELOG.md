@@ -707,6 +707,21 @@ bump may break the API and a patch bump may not.
   - The carried pcurve is now also measured by `pcurve_gap`, the measure
     every reader of the edge holds it to, and the wider reading stands.
 
+- **A round beside a bevel narrower than its setback, on a marched seat, is
+  refused rather than built wrong.** (#785)
+  - A slab under an S-shaped spline, its top crease bevelled 0.5, rounded
+    3 from the top / bevel edge, came out 446.871. No ball of 3 touches
+    both the top and the bevel, which is 0.707 wide against a setback of
+    1.243, and the plain crease rounded 3 is 430.574.
+  - The request check projected each contact's step onto its face's
+    surface. A fitted face's surface ends at its border and stopped the
+    projection there, and the face's trim held that foot. A foot stopped
+    at the window's bound, the step standing off it along the surface,
+    now stands short: the contact is the step's own end, held only on the
+    solid's boundary. The round is refused ("does not reach so far").
+  - At 1, within the bevel's width, the round is unchanged: 448.526356
+    against the swept section's 448.526332.
+
 - **A section passing a sphere chart's pole within its fit's tolerance is
   cut there instead of refused.**
   - A marched branch is cut at a pole of either chart lying on the other

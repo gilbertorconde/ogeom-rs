@@ -1306,6 +1306,7 @@ tests = [
     "crates/ogeom-fillet/tests/radius_per_edge.rs",
     "crates/ogeom-fillet/tests/consumed_rim.rs",
     "crates/ogeom-fillet/tests/consumed_marched.rs",
+    "crates/ogeom-fillet/tests/fillet_over_bevel.rs",
     "crates/ogeom-fillet/tests/concave.rs::a_round_rolls_on_the_far_edge_of_a_strip_narrower_than_its_setback",
     "crates/ogeom-fillet/tests/concave.rs::a_round_rolls_on_a_far_edge_parallel_to_the_face_it_touches",
     "crates/ogeom-fillet/tests/concave.rs::a_round_rolling_on_a_far_edge_refuses_where_the_ball_leaves_it",

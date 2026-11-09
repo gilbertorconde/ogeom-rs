@@ -2160,16 +2160,27 @@ pub(crate) fn ball_fits(
             let guess = p + step * setback;
             let found = ogeom_algo::project_on_surface(surface, guess, 16, tol)?;
             let (u, v) = found.parameters;
+            // A surface whose window ends short of the setback (a fitted
+            // face's own patch) hands back its border, which the face's
+            // trim holds; the contact stands off it along the surface, not
+            // across it. There the contact is the step's own end.
+            let short = clamped_short(surface, (u, v), guess, found.point, tol)?;
+            let (holds, at) = if short {
+                (false, guess)
+            } else {
+                (
+                    chart_holds(model, face, ogeom_math::Point2::new(u, v), tol)?,
+                    found.point,
+                )
+            };
             // On its own face, or on any face of the solid it has run on
             // to (a coplanar piece the face was split from, the next face
             // of a chain): anywhere on the boundary the ball can sit.
-            if !chart_holds(model, face, ogeom_math::Point2::new(u, v), tol)?
-                && !on_boundary(model, solid, found.point, tol)?
-            {
+            if !holds && !on_boundary(model, solid, at, tol)? {
                 // A convex seat's band is cut off where its contact stands
                 // behind a face the crease runs into: walking into the
                 // first face from a convex edge goes behind the second.
-                if d0.dot(n1) < 0.0 && trimmed_off(found.point) {
+                if d0.dot(n1) < 0.0 && trimmed_off(at) {
                     continue;
                 }
                 let refusal = format!(
@@ -2179,9 +2190,7 @@ pub(crate) fn ball_fits(
                 // A solid that bounds no inside says nothing of where the
                 // contact stands, and the station is let run off.
                 let cut_off = match probe.get(model, solid, tol)? {
-                    Some(probe) => {
-                        probe.holds(model, found.point, tol)? == ogeom_algo::Containment::Out
-                    }
+                    Some(probe) => probe.holds(model, at, tol)? == ogeom_algo::Containment::Out,
                     None => true,
                 };
                 if !cut_off {
@@ -2217,7 +2226,7 @@ pub(crate) fn ball_fits(
             }
             contacts.push(Contact {
                 face: face.clone(),
-                at: found.point,
+                at,
                 setback,
             });
         }
@@ -2597,6 +2606,37 @@ pub(crate) fn chart_holds(
         let pos = d1 > eps || d2 > eps || d3 > eps;
         !(neg && pos)
     }))
+}
+
+/// Whether a projection of `guess` onto `surface` was stopped at the edge
+/// of the surface's window short of it: its foot `(u, v)` stands on a
+/// bound of a direction the surface does not wrap in, and the guess
+/// stands off the foot along the surface, by more than the reach a point
+/// on the boundary is read within, rather than square to it.
+fn clamped_short(
+    surface: &SurfaceGeometry,
+    (u, v): (f64, f64),
+    guess: Point,
+    foot: Point,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    use ogeom_geom::Surface as _;
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let at_bound = |x: f64, (a, b): (f64, f64)| {
+        let eps = (b - a).abs() * 1e-9;
+        a.is_finite() && b.is_finite() && ((x - a).abs() <= eps || (b - x).abs() <= eps)
+    };
+    let on_edge = (!surface.is_periodic_u() && at_bound(u, (ua, ub)))
+        || (!surface.is_periodic_v() && at_bound(v, (va, vb)));
+    if !on_edge {
+        return Ok(false);
+    }
+    let Ok(normal) = surface.normal_at(u, v, tol) else {
+        return Ok(false);
+    };
+    let off = guess - foot;
+    let along = off - normal.vector() * off.dot(normal.vector());
+    Ok(along.magnitude() > tol.confusion() * 100.0)
 }
 
 /// Whether a point lies on some face of `solid`: on its surface, within
