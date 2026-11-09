@@ -755,6 +755,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A STEP colour named by `DRAUGHTING_PRE_DEFINED_COLOUR` reads as that
+  colour.** (#793)
+  - The reader followed a fill area style only down to a `COLOUR_RGB`; a
+    predefined colour has no references to follow, so the item stayed
+    uncoloured and the report said nothing. A 2.3 MB board assembly read
+    525 of its 767 styled items; its board and a pin header had no colour.
+  - The eight names of the standard read as their colours, each channel
+    fully on or off; that board assembly now reads all 767. A name outside
+    the eight leaves the item uncoloured with one warning naming the entity.
+
 - **A section crossing a sphere's seam beside its pole closes the cap
   inside it.**
   - The paving reads a crossing within its window of the seam's end vertex
