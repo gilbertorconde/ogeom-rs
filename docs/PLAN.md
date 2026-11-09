@@ -116,7 +116,22 @@ plane ever more shallowly toward the corner
 `crates/ogeom/tests/pipe_corners.rs`, the surfaces' normals parallel to
 1e-14 at the corner) states 2.2e-4: within the confusion distance of both
 surfaces the walk's correction can land a sample off the crossing, one by
-2.9e-5 in the skin's chart, and the fit follows it. A drum meeting a
+2.9e-5 in the skin's chart, and the fit follows it. Holding each span
+between stations to the curve at its middle (the condition solved halfway
+within the chord of the cubic the two stations' positions and tangents
+make, else the step halved) brings that section to 1.8e-5, but breaks the
+walk beside branch points: a band crossing a cone through its node
+(`a_band_crossing_a_cone_in_a_window_cut_by_its_node_has_no_section_along_the_cut`)
+and two equal cylinders crossed square
+(`large_equal_cylinders_crossed_square_come_back_as_four_halves`) lose their
+ends at the node and the touch, the halfway solve there landing on the other
+branch, the step halved to the floor and the walk creeping through. Judging
+only halfway solves within a quarter step of the chord keeps the branch
+points and loses the mitre (1.5e-4): the stations the check refuses there
+are the ones whose halfway solve lands as far off. Telling a station landed
+off a shallow crossing from the other branch at a touch needs the halfway
+solve read against the condition's own conditioning there, not a distance.
+A drum meeting a
 face blend's patch at a few ten-thousandths of a radian states up to
 5.2e-4 (the stress face-blend scenarios), where the section solved
 between two samples lands tens of chords off their chord and is not
