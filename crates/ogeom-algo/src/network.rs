@@ -625,6 +625,13 @@ pub fn fit_network_chained(
         fit.corners = corners;
         fit.fans = fans;
         let (spans, current, ended) = fit.refine(options)?;
+        if std::env::var_os("OGEOM_DEBUG_TRY").is_some() {
+            let worst = current.distances.iter().copied().fold(0.0, f64::max);
+            eprintln!(
+                "TRY {corners:?} ended {ended:?} held {} worst {worst}",
+                current.held
+            );
+        }
         if (ended == Ended::Met && current.held) || (corners == Corners::Loose && !fans) {
             settled = Some((spans, current, ended));
             break;
@@ -2301,6 +2308,26 @@ impl Fit<'_> {
                         relation: self.relate(&layout, &loose, *v, curves),
                     })
                     .collect();
+                // A curve whose other end the held curves pin is asked the
+                // ratio of its held poles there, as `Spread` asks it.
+                for corner in &mut related {
+                    let wanted: Vec<(usize, f64)> = corner
+                        .curves
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, &c)| {
+                            self.held_end_ratio(&layout, &loose, &known, c, corner.vertex)
+                                .map(|ratio| (i, ratio))
+                        })
+                        .collect();
+                    if wanted.is_empty() {
+                        continue;
+                    }
+                    let held = corner.relation.as_mut().is_some_and(|r| r.rescale(&wanted));
+                    if !held {
+                        corner.relation = None;
+                    }
+                }
                 let held =
                     self.tangency(&layout, &loose, &junctions, &lines, &mut related, &known)?;
                 rows = junction_rows(&held.relaxed);
@@ -3569,7 +3596,6 @@ impl Fit<'_> {
         curve_knots: &[KnotVector],
         known: &[(usize, [f64; 3])],
     ) -> Option<Vec<Row>> {
-        let prescribed = |slot: usize| known.binary_search_by_key(&slot, |&(s, _)| s).is_ok();
         let topo = self.topo;
         let mut corners = Vec::with_capacity(topo.spread_corners.len());
         for (v, curves) in &topo.spread_corners {
@@ -3609,19 +3635,10 @@ impl Fit<'_> {
         let mut held_ends: BTreeMap<usize, f64> = BTreeMap::new();
         for (&c, at) in ends.iter().filter(|(_, at)| at.len() == 1) {
             let (k, i) = at[0];
-            let v = corners[k].vertex;
-            let n = layout.along(c);
-            let q = if topo.curve_ends[c].0 == v { n - 1 } else { 0 };
-            let (b, l, r) = (
-                layout.curve_slot(topo, c, q),
-                self.beside(layout, topo.users[c][0], c, q),
-                self.beside(layout, topo.users[c][1], c, q),
-            );
-            if !(prescribed(b) && prescribed(l) && prescribed(r)) {
+            let Some(ratio) = self.held_end_ratio(layout, loose, known, c, corners[k].vertex)
+            else {
                 continue;
-            }
-            let (near, far) = (loose[b].distance(loose[l]), loose[r].distance(loose[b]));
-            let ratio = near / far;
+            };
             let class = logs.len();
             logs.push(Some(ratio.ln()));
             asked.entry(k).or_default().push(Asked {
@@ -3680,6 +3697,32 @@ impl Fit<'_> {
             }
         }
         Some(rows)
+    }
+
+    /// The ratio of curve `c`'s poles at its end away from corner `v`,
+    /// where held curves prescribe all three of them there: they stand on
+    /// one line, so that is the ratio the curve is held at.
+    fn held_end_ratio(
+        &self,
+        layout: &Layout,
+        loose: &[Point],
+        known: &[(usize, [f64; 3])],
+        c: usize,
+        v: usize,
+    ) -> Option<f64> {
+        let topo = self.topo;
+        let prescribed = |slot: usize| known.binary_search_by_key(&slot, |&(s, _)| s).is_ok();
+        let n = layout.along(c);
+        let q = if topo.curve_ends[c].0 == v { n - 1 } else { 0 };
+        let (b, l, r) = (
+            layout.curve_slot(topo, c, q),
+            self.beside(layout, topo.users[c][0], c, q),
+            self.beside(layout, topo.users[c][1], c, q),
+        );
+        if !(prescribed(b) && prescribed(l) && prescribed(r)) {
+            return None;
+        }
+        Some(loose[b].distance(loose[l]) / loose[r].distance(loose[b]))
     }
 
     /// How the curves into corner `v` of other than four patches relate
