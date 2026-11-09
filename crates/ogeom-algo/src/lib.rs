@@ -96,8 +96,8 @@ pub use mesh_solid::{
     single_precision_quantum, solid_from_mesh,
 };
 pub use network::{
-    Across, ChainedPatch, CurveDef, IrregularCorner, Network, NetworkOptions, PatchDef, PatchFit,
-    PatchSide, fit_network, fit_network_chained,
+    Across, ChainedPatch, CurveDef, IrregularCorner, LoopSide, Network, NetworkOptions, PatchDef,
+    PatchFit, PatchSide, fit_loop_quads, fit_network, fit_network_chained,
 };
 pub use out_and_back::{Notch, OutAndBack, edge_uses, is_tail, notch_of, out_and_back};
 pub use outline::{Outline, Piece2, Wire2d, fit_outline};

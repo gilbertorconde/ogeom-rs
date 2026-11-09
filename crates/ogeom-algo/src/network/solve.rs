@@ -68,7 +68,7 @@ pub(super) fn null_space_known(
     for &(s, value) in known {
         let constant = value.map(|v| Term {
             value: v,
-            error: 0.0,
+            error: EPS * v.abs(),
         });
         solved[s] = Some((BTreeMap::new(), constant));
     }
