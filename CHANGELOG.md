@@ -13,6 +13,20 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fillet_edges_variable` rounds a loop joined round one sharp
+  corner.** (#716)
+  - A rounded-rectangle pad with one vertical left sharp: its top loop's
+    tangent junctions join the bands into one run from one side of the
+    sharp corner round to the other, which would be one wedge overlapping
+    itself there. A straight band between two junctions is built in two
+    halves, their shared section the same arc, so the run opens into two
+    wedges meeting flush there and overlapping only at the corner, where
+    the cuts take their union. The round is valid and lies between the
+    loop's constant rounds.
+  - A turn where a curved crease meets, and a re-entrant turn whose bands'
+    sections differ (a drafted wall beside a square one), are refused by
+    name under a law, each with what the construction lacks there.
+
 - **`fillet_edges_variable` rounds a chain of straight edges turning
   where they meet.** (#716)
   - A block's top loop, an L-block's, or two edges meeting at a corner,

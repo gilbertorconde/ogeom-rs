@@ -1352,10 +1352,18 @@ each band carried past a turning vertex at the law's radius there, as \
 the law holds level past an edge's end: the constant band of that \
 radius, running out across a convex turn as that band alone does, the \
 cuts taking the union, and carried to the plane bisecting a re-entrant \
-turn, where the two are joined. Refused by name: a linear law \
+turn, where the two are joined; a loop the tangent junctions join round \
+to one convex turn (a pad with one vertical left sharp) is opened at a \
+straight band between two of them, built in two halves meeting flush, \
+so no wedge overlaps itself at the turn. Refused by name: a linear law \
 changing radius round a closed chain (it jumps where the chain closes), \
-a turn where a curved crease meets, or whose bands' sections differ \
-across a re-entrant turn, a chain one of whose balls rests on a narrow \
+a turn where a curved crease meets (its marched band's run-out ends in \
+a section the law's slope tilts off a wall square to the crease, and the \
+straight band beside it would have to be built through that run-out), a \
+re-entrant turn whose bands' sections differ (the corner carries each \
+band on as one section from where the other reaches, which a law \
+changes before the vertex), a loop joined round a convex turn with no \
+straight band between two junctions to open it at, a chain one of whose balls rests on a narrow \
 face's far edge, two bands overlapping across a face they share, any \
 other straight edge whose faces are not both planes (a drum's ruling \
 inside a chain among them), a law over one arc of a crease that closes through other \

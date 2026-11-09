@@ -371,8 +371,15 @@ junction is read for): run out across a convex turn, carried to the
 bisecting plane across a re-entrant one. The law is kept as given over
 each edge, its value and slope at the edge's ends its own: a turn's mitre
 is G0 whatever the slope, so pinning the slope level there would change
-the law and buy nothing. Owed: a turn a curved crease meets (a marched
-band carried past its vertex), and a crossed re-entrant turn under a law.
+the law and buy nothing. A loop joined round one convex turn is opened at
+a straight band built in two halves. Owed: a turn a curved crease meets
+(the marched run-out under a law ends in a section the law's slope tilts
+off a wall square to the crease, which the boolean does not melt, and the
+straight band beside it must be built through that run-out in rounds, as
+`fillet_edges` builds it); a re-entrant turn whose sections differ (the
+constant corner carries each band on as one section from where the other
+reaches; under a law that needs a corner whose carried band follows the
+law to the vertex and holds level past it).
 A straight edge along a drum's ruling
 under a law is marched, the exact sweep of `ruled.rs` holding one section
 only; a seat pinched where its hosts turn tangent solves each station and

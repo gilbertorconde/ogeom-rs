@@ -2217,7 +2217,9 @@ fn fillet_edge_variable_own(
 ///   law holds level past an edge's end: across a convex turn it runs out
 ///   as the constant band of that radius alone does and the cuts take the
 ///   union; across a re-entrant one it is carried to the plane bisecting
-///   the turn, where the two are joined.
+///   the turn, where the two are joined. A loop the tangent junctions join
+///   round to one convex turn (a pad with one vertical left sharp) is
+///   opened at a straight band between two of them, built in two halves.
 ///
 /// A law holding one radius all along is [`fillet_edges`]' round.
 ///
@@ -2231,7 +2233,9 @@ fn fillet_edge_variable_own(
 /// positive length), where a linear law changes radius round a closed
 /// chain, where `chain` is empty, a chain of more than one edge whose
 /// edges do not run end to end, a turn where a curved crease meets or
-/// whose bands' sections differ across a re-entrant turn, a ball resting
+/// whose bands' sections differ across a re-entrant turn, a loop joined
+/// round a convex turn with no straight band between two of its junctions
+/// to open it at, a ball resting
 /// on a narrow face's far edge or two bands overlapping across a face
 /// they share at an edge's largest radius, a
 /// straight edge between faces that are neither two planes nor a drum and
@@ -2446,7 +2450,7 @@ fn fillet_chain_law_own(
         crate::support::ball_fits(model, solid, e, profile.largest(), false, tol)?;
     }
     let mut built = if planar {
-        straight_law_fillet(model, solid, edge, &profile, reversed, tol)?
+        straight_law_fillet(model, solid, edge, &profile, reversed, (0.0, 1.0), tol)?
     } else {
         crate::marched::marched_fillet_law(model, solid, edge, &profile, span, None, tol)?
     };
@@ -2644,13 +2648,34 @@ fn chain_law(
         });
         let convex = turning.crossed && !turning.reentrant;
         let reentrant = !turning.crossed && turning.reentrant;
+        // Across a re-entrant turn whose bands' sections differ, the corner
+        // of two constant bands cuts each band back as far as the other
+        // reaches and carries its section on from there as one prism; under
+        // a law the section changes between there and the vertex, so that
+        // prism is not the band.
+        if turning.crossed && turning.reentrant {
+            ogeom_bail!(
+                Construction,
+                "a variable radius across a re-entrant turn whose two bands' \
+                 sections differ (a drafted wall beside a square one) is still \
+                 owed: the corner carries each band on as one section from \
+                 where the other reaches, which a law changes before the \
+                 vertex; see docs/CAPABILITIES.md, fillet.variable"
+            );
+        }
+        // A curved crease at a turn is refused: its marched band's run-out
+        // past the vertex ends in a section the law's slope tilts off a wall
+        // square to the crease, which the boolean does not melt, and the
+        // straight band beside it would have to be built through that
+        // run-out, as `fillet_edges` builds it in rounds.
         if !straight || !(convex || reentrant) {
             ogeom_bail!(
                 Construction,
                 "a variable radius over a chain turning where it meets is \
-                 rounded only between straight creases, across a convex turn or \
-                 a re-entrant one whose bands meet in a plane; see \
-                 docs/CAPABILITIES.md, fillet.variable"
+                 rounded only between straight creases, across a convex turn \
+                 or a re-entrant one whose bands meet in a plane; a curved \
+                 crease at a turn is still owed; see docs/CAPABILITIES.md, \
+                 fillet.variable"
             );
         }
         junctions.push(turning);
@@ -2689,12 +2714,80 @@ fn chain_law(
             );
         }
     }
+    // Bands the junctions join into one wedge, by the group each edge's
+    // band falls in. A group holding both bands of a convex turn (a loop of
+    // tangent junctions closing on one sharp corner) would be one wedge
+    // overlapping itself there; one straight band of it between two
+    // junctions it joins is built in two halves instead, the halves'
+    // shared section the same arc, so the group opens into two wedges that
+    // meet flush there and overlap only at the corner, where the cuts take
+    // their union.
+    let mut group: Vec<usize> = (0..chain.len()).collect();
+    for junction in junctions.iter().filter(|j| !j.crossed) {
+        let [a, b] = junction.pair;
+        let (from, to) = (group[a], group[b]);
+        for g in &mut group {
+            if *g == from {
+                *g = to;
+            }
+        }
+    }
+    let mut halved: Vec<usize> = Vec::new();
+    for junction in junctions.iter().filter(|j| j.crossed && !j.reentrant) {
+        let [a, b] = junction.pair;
+        if group[a] != group[b] || halved.iter().any(|&h| group[h] == group[a]) {
+            continue;
+        }
+        let between = (0..chain.len()).find(|&m| {
+            group[m] == group[a]
+                && junctions
+                    .iter()
+                    .filter(|j| !j.crossed && j.slot(m).is_some())
+                    .count()
+                    == 2
+                && edge_curve(model, &chain[m], tol).is_ok_and(|(c, _)| matches!(c, Curve::Line(_)))
+        });
+        let Some(m) = between else {
+            ogeom_bail!(
+                Construction,
+                "a variable radius over a loop joined end to end round a convex \
+                 turn with no straight edge between two of its junctions to \
+                 open it at is still owed; see docs/CAPABILITIES.md, \
+                 fillet.variable"
+            );
+        };
+        halved.push(m);
+    }
     let mut set_aside: Vec<(Vec<usize>, Shape, crate::support::Wedge)> = Vec::new();
     for ((&(k, _), own), _) in walk.iter().zip(&owns).zip(&lengths) {
         let edge = &chain[k];
         crate::support::ball_fits(model, solid, edge, own.largest(), false, tol)?;
         let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
         let (curve, _) = edge_curve(model, edge, tol)?;
+        if halved.contains(&k) {
+            // Each half of the edge by its stored parameter, its law laid
+            // from its own start the way the edge runs.
+            for (part, (from, to)) in [((0.0, 0.5), (0.0, 0.5)), ((0.5, 1.0), (0.5, 1.0))] {
+                let law = if reversed {
+                    own.window(1.0 - to, 1.0 - from)
+                } else {
+                    own.window(from, to)
+                };
+                let (built, wedges) = crate::support::collecting_wedges(|| {
+                    straight_law_fillet(model, solid, edge, &law, reversed, part, tol)
+                });
+                built?;
+                let [wedge] = <[crate::support::Wedge; 1]>::try_from(wedges).map_err(|w| {
+                    ogeom_core::ogeom_err!(
+                        Construction,
+                        "a half band of a chain under a law built {} wedges, not one",
+                        w.len()
+                    )
+                })?;
+                set_aside.push((vec![k], edge.clone(), wedge));
+            }
+            continue;
+        }
         let (built, wedges) = crate::support::collecting_wedges(|| -> OgeomResult<Built> {
             if matches!(curve, Curve::Line(_)) {
                 if !matches!(route(model, solid, edge, Rims::Exact, tol)?, Route::Planar) {
@@ -2705,7 +2798,7 @@ fn chain_law(
                          docs/CAPABILITIES.md, fillet.variable"
                     );
                 }
-                straight_law_fillet(model, solid, edge, own, reversed, tol)
+                straight_law_fillet(model, solid, edge, own, reversed, (0.0, 1.0), tol)
             } else {
                 crate::marched::marched_fillet_law(
                     model,
@@ -2772,6 +2865,10 @@ fn chain_law(
                 )?;
                 continue;
             }
+            // A marched band ran out past the vertex as it was built.
+            if !edge_curve(model, &edge, tol).is_ok_and(|(c, _)| matches!(c, Curve::Line(_))) {
+                continue;
+            }
             // The constant band alone, and what of it stands past the
             // vertex: its run-out, where it runs out there.
             let (built, wedges) = crate::support::collecting_wedges(|| {
@@ -2827,16 +2924,23 @@ fn chain_law(
 /// the same basis has the Greville points for control points. Each row of
 /// the net is that apex control point moved out along the section's arm
 /// by the law's control radius, which is the section's arc at every
-/// parameter, since both are affine in the net.
+/// parameter, since both are affine in the net. `part` is the stretch of
+/// the edge built, by fractions of its stored parameter, `(0, 1)` for the
+/// whole: the law is laid over that stretch, and the band is capped
+/// square to the edge at its ends.
 fn straight_law_fillet(
     model: &mut Model,
     solid: &Shape,
     edge: &Shape,
     law: &Profile,
     reversed: bool,
+    part: (f64, f64),
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    let seat = planar_seat(model, solid, edge, tol)?;
+    let mut seat = planar_seat(model, solid, edge, tol)?;
+    let (whole_start, whole_end) = (seat.start, seat.end);
+    seat.start = whole_start + (whole_end - whole_start) * part.0;
+    seat.end = whole_start + (whole_end - whole_start) * part.1;
     let (first, second) = if seat
         .along
         .dot(seat.normals[0].cross(seat.normals[1]))
