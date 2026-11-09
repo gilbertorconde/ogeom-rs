@@ -14,16 +14,20 @@
 //! rim, to the latitude `psi0 - tau on_wall / S`. The bevel is the cone
 //! (a cylinder where the radii agree) through the two contact rings, and
 //! the wedge between it, the cap's annulus and the sphere's band is the
-//! section turned the whole turn about the axis: a closed rim, or the arcs
-//! a boolean split one into.
+//! section turned about the axis: the whole turn for a closed rim, or the
+//! arcs a boolean split one into, the arc's own sweep for an arc that
+//! stops short of its circle.
 
-use crate::support::{edge_curve, revolved_annulus, same_occurrence};
-use ogeom_algo::make_revolution_band;
+use crate::support::{
+    edge_curve, face_from_edges, revolved_annulus, same_occurrence, segment_between,
+};
+use ogeom_algo::{make_edge_between, make_revolution_band, make_vertex};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{
-    CircleCurve, ConeSurface, Curve, Curve3d as _, CylinderSurface, SphereSurface, SurfaceGeometry,
+    CircleCurve, ConeSurface, Curve, Curve3d as _, CylinderSurface, PlaneSurface, SphereSurface,
+    SurfaceGeometry, Transformable as _,
 };
-use ogeom_math::{Circle, Cone, Cylinder, Direction, Frame, Point, Sphere, Vector};
+use ogeom_math::{Circle, Cone, Cylinder, Direction, Frame, Plane, Point, Sphere, Vector};
 use ogeom_topo::{Filter, Model, NodeData, Orientation, Shape, ShapeType, explore};
 
 /// A rim between a planar cap and a sphere centred on the rim's axis.
@@ -49,6 +53,8 @@ pub(crate) struct SphereSeat {
     pub cap_face: Shape,
     /// The sphere.
     pub wall_face: Shape,
+    /// The sphere's own surface, placed: the chart the solid's face is on.
+    pub wall_surface: SurfaceGeometry,
 }
 
 impl SphereSeat {
@@ -178,7 +184,7 @@ pub(crate) fn sphere_seat(
     let rim_radius = rim_circle.radius();
     let rim_axis = rim_circle.frame().z().vector();
     let mut cap: Option<(Shape, Vector)> = None;
-    let mut wall: Option<(Shape, Point, f64, f64)> = None;
+    let mut wall: Option<(Shape, Point, f64, f64, SurfaceGeometry)> = None;
     for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
         let touches = explore(model, &face, Filter::OfType(ShapeType::Edge))?
             .iter()
@@ -228,13 +234,16 @@ pub(crate) fn sphere_seat(
                     );
                 }
                 let sigma = if reversed { -1.0 } else { 1.0 };
-                wall = Some((face.clone(), centre, sphere.radius(), sigma));
+                let placed = SurfaceGeometry::Sphere(*s).transformed(&placement, tol)?;
+                wall = Some((face.clone(), centre, sphere.radius(), sigma, placed));
             }
             _ => return Ok(None),
         }
     }
-    let (Some((cap_face, up_raw)), Some((wall_face, sphere_centre, sphere_radius, sigma))) =
-        (cap, wall)
+    let (
+        Some((cap_face, up_raw)),
+        Some((wall_face, sphere_centre, sphere_radius, sigma, wall_surface)),
+    ) = (cap, wall)
     else {
         return Ok(None);
     };
@@ -250,6 +259,7 @@ pub(crate) fn sphere_seat(
         tau: 0.0,
         cap_face,
         wall_face,
+        wall_surface,
     };
     // Which side of the cap's plane the wall runs, read at the edge itself:
     // just off the rim along the great circle each way, the wall stands on
@@ -292,14 +302,16 @@ pub(crate) fn sphere_seat(
     Ok(Some(seat))
 }
 
-/// The bevel's wedge on a sphere's rim over the whole turn: legs
-/// `on_wall` down the sphere's great circle and `on_cap` along the cap,
-/// the bevel the cone through the two contact rings.
+/// The bevel's wedge on a sphere's rim: legs `on_wall` down the sphere's
+/// great circle and `on_cap` along the cap, the bevel the cone through
+/// the two contact rings, over the whole turn or over the arc `span`
+/// (its start about the seat's `x_ref` and its sweep).
 pub(crate) fn sphere_bevel(
     model: &mut Model,
     seat: &SphereSeat,
     on_wall: f64,
     on_cap: f64,
+    span: Option<(f64, f64)>,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Shape>> {
     let conf = tol.confusion();
@@ -361,9 +373,14 @@ pub(crate) fn sphere_bevel(
         cap_rho,
         wall_rho,
         wall_h,
+        rim_latitude: seat.rim_latitude(),
+        wall_latitude: latitude,
         bevel_turned,
     };
-    whole_turn(model, seat, &geometry, tol)
+    match span {
+        None => whole_turn(model, seat, &geometry, tol),
+        Some((start, sweep)) => sector(model, seat, &geometry, start, sweep, tol),
+    }
 }
 
 /// The section of the wedge in the meridian.
@@ -371,6 +388,8 @@ struct Section {
     cap_rho: f64,
     wall_rho: f64,
     wall_h: f64,
+    rim_latitude: f64,
+    wall_latitude: f64,
     /// Whether the bevel's face turns against its cone's natural normal.
     bevel_turned: bool,
 }
@@ -460,6 +479,204 @@ fn whole_turn(
         }
     };
     Ok(vec![wall_band, annulus, bevel_band])
+}
+
+/// The wedge over an arc of the rim, from `start` about the seat's `x_ref`
+/// through `sweep`: the three revolved patches and the two section faces
+/// closing its ends in the meridian half-planes.
+fn sector(
+    model: &mut Model,
+    seat: &SphereSeat,
+    section: &Section,
+    start: f64,
+    sweep: f64,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Shape>> {
+    let up = Direction::new(seat.up, tol)?;
+    let seat_frame = Frame::new(seat.centre, up, seat.x_ref, tol)?;
+    let dir_at = |theta: f64| -> Vector {
+        seat_frame.x().vector() * theta.cos() + seat_frame.y().vector() * theta.sin()
+    };
+    let (theta0, theta1) = (start, start + sweep);
+    let x0 = Direction::new(dir_at(theta0), tol)?;
+    let wedge_frame_at = |origin: Point| Frame::new(origin, up, x0, tol);
+    let wall_level = seat.centre + seat.up * section.wall_h;
+    let apex_at = |theta: f64| seat.centre + dir_at(theta) * seat.radius;
+    let wall_at = |theta: f64| wall_level + dir_at(theta) * section.wall_rho;
+    let cap_at = |theta: f64| seat.centre + dir_at(theta) * section.cap_rho;
+
+    let va0 = make_vertex(model, apex_at(theta0)).shape;
+    let va1 = make_vertex(model, apex_at(theta1)).shape;
+    let vw0 = make_vertex(model, wall_at(theta0)).shape;
+    let vw1 = make_vertex(model, wall_at(theta1)).shape;
+    let vc0 = make_vertex(model, cap_at(theta0)).shape;
+    let vc1 = make_vertex(model, cap_at(theta1)).shape;
+
+    let ring_arc = |model: &mut Model,
+                    origin: Point,
+                    r: f64,
+                    from: &Shape,
+                    to: &Shape|
+     -> OgeomResult<Shape> {
+        let circle = Circle::new(wedge_frame_at(origin)?, r, tol)?;
+        let curve = Curve::Circle(CircleCurve::new(circle));
+        Ok(make_edge_between(model, curve, (0.0, sweep), from, to, tol)?.shape)
+    };
+    // The great circle's arc in the meridian at `theta`, from the rim to
+    // the wall's contact.
+    let sphere_centre = seat.centre + seat.up * seat.height;
+    let meridian =
+        |model: &mut Model, theta: f64, rim: &Shape, contact: &Shape| -> OgeomResult<Shape> {
+            let dir = dir_at(theta);
+            let (lo, hi, from, to) = if section.wall_latitude < section.rim_latitude {
+                (section.wall_latitude, section.rim_latitude, contact, rim)
+            } else {
+                (section.rim_latitude, section.wall_latitude, rim, contact)
+            };
+            let x = Direction::new(dir * lo.cos() + seat.up * lo.sin(), tol)?;
+            let z = Direction::new(dir.cross(seat.up), tol)?;
+            let circle = Circle::new(
+                Frame::new(sphere_centre, z, x, tol)?,
+                seat.sphere_radius,
+                tol,
+            )?;
+            let curve = Curve::Circle(CircleCurve::new(circle));
+            let edge = make_edge_between(model, curve, (0.0, hi - lo), from, to, tol)?.shape;
+            Ok(if from.is_same(rim) {
+                edge
+            } else {
+                edge.reversed()
+            })
+        };
+
+    let arc_apex = ring_arc(model, seat.centre, seat.radius, &va0, &va1)?;
+    let arc_wall = ring_arc(model, wall_level, section.wall_rho, &vw0, &vw1)?;
+    let arc_cap = ring_arc(model, seat.centre, section.cap_rho, &vc0, &vc1)?;
+    let meridian0 = meridian(model, theta0, &va0, &vw0)?;
+    let meridian1 = meridian(model, theta1, &va1, &vw1)?.reversed();
+    let radial0 = segment_between(model, (&vc0, cap_at(theta0)), (&va0, apex_at(theta0)), tol)?;
+    let radial1 = segment_between(model, (&va1, apex_at(theta1)), (&vc1, cap_at(theta1)), tol)?;
+    let bevel0 = segment_between(model, (&vw0, wall_at(theta0)), (&vc0, cap_at(theta0)), tol)?;
+    let bevel1 = segment_between(model, (&vw1, wall_at(theta1)), (&vc1, cap_at(theta1)), tol)?;
+    let walked = |edges: Vec<Shape>, back: bool| -> Vec<Shape> {
+        if back {
+            edges.iter().rev().map(Shape::reversed).collect()
+        } else {
+            edges
+        }
+    };
+
+    // The sphere's patch, on the solid's own chart of the sphere, so the
+    // melt reads the two as one. In a chart whose angle runs about `up`
+    // and whose latitude runs up it, the ring of contact ring forward and
+    // rim back is anticlockwise where the contact stands below the rim;
+    // that is its turn about the outward normal, which the solid's chart
+    // keeps where its own normal points out and turns where it points in.
+    let wall_patch = {
+        let surface = seat.wall_surface.clone();
+        let inward = {
+            use ogeom_geom::Surface as _;
+            let ((u, _), (v0, v1)) = surface.domain();
+            let v = f64::midpoint(v0, v1);
+            let normal = surface.normal_at(u, v, tol)?.vector();
+            normal.dot(surface.point_at(u, v, tol)? - sphere_centre) < 0.0
+        };
+        let edges = walked(
+            vec![
+                arc_wall.clone(),
+                meridian1.clone(),
+                arc_apex.reversed(),
+                meridian0.clone(),
+            ],
+            (seat.tau < 0.0) != inward,
+        );
+        let face = face_from_edges(model, surface, &edges, tol)?;
+        if (seat.sigma * seat.tau < 0.0) != inward {
+            face.reversed()
+        } else {
+            face
+        }
+    };
+
+    // The cap's sector between the rim and the contact ring, as the rim
+    // fillet's.
+    let reach = (seat.radius + section.wall_h.abs() + section.cap_rho + 1.0) * 2.0;
+    let cap_sector = {
+        let plane = Plane::through(seat.centre, Direction::new(seat.up * seat.tau, tol)?);
+        let surface: SurfaceGeometry =
+            PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
+        let rim_wider = seat.radius > section.cap_rho;
+        let edges = walked(
+            vec![
+                arc_apex.clone(),
+                radial1.clone(),
+                arc_cap.reversed(),
+                radial0.clone(),
+            ],
+            rim_wider != (seat.tau > 0.0),
+        );
+        face_from_edges(model, surface, &edges, tol)?
+    };
+
+    // The bevel's patch: its chart's height runs up the axis, so the ring
+    // of wall contact forward and cap contact back is anticlockwise where
+    // the wall's contact stands below the cap.
+    let bevel_patch = {
+        let surface = bevel_surface(wedge_frame_at(seat.centre)?, section, tol)?;
+        let edges = walked(
+            vec![
+                arc_wall.clone(),
+                bevel1.clone(),
+                arc_cap.reversed(),
+                bevel0.reversed(),
+            ],
+            section.wall_h > 0.0,
+        );
+        let face = face_from_edges(model, surface, &edges, tol)?;
+        if section.bevel_turned {
+            face.reversed()
+        } else {
+            face
+        }
+    };
+
+    // The ends: the section in the meridian half-planes, outward along
+    // the rim's travel, each ring walked back where its corners turn
+    // against `outward`.
+    let tangent_at = |theta: f64| seat.up.cross(dir_at(theta));
+    let end_cap = |model: &mut Model,
+                   theta: f64,
+                   outward: Vector,
+                   edges: Vec<Shape>,
+                   [p, q, r]: [Point; 3]|
+     -> OgeomResult<Shape> {
+        let plane = Plane::through(apex_at(theta), Direction::new(outward, tol)?);
+        let surface: SurfaceGeometry =
+            PlaneSurface::over(plane, (-reach, reach), (-reach, reach))?.into();
+        let edges = walked(edges, (q - p).cross(r - p).dot(outward) < 0.0);
+        face_from_edges(model, surface, &edges, tol)
+    };
+    let cap_start = end_cap(
+        model,
+        theta0,
+        -tangent_at(theta0),
+        vec![meridian0.clone(), bevel0.clone(), radial0.clone()],
+        [apex_at(theta0), wall_at(theta0), cap_at(theta0)],
+    )?;
+    let cap_end = end_cap(
+        model,
+        theta1,
+        tangent_at(theta1),
+        vec![meridian1.clone(), radial1.clone(), bevel1.reversed()],
+        [wall_at(theta1), apex_at(theta1), cap_at(theta1)],
+    )?;
+    Ok(vec![
+        wall_patch,
+        cap_sector,
+        bevel_patch,
+        cap_start,
+        cap_end,
+    ])
 }
 
 /// Whether the rims on the seat's circle run its whole turn between them:

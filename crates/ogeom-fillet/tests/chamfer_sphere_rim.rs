@@ -297,36 +297,106 @@ fn a_pocket_rim_chamfers_to_the_revolved_section() {
     close(vol(&m, &built.shape), expected);
 }
 
-#[test]
-fn an_arc_of_a_sphere_rim_short_of_its_circle_is_refused() {
-    // The rim arcs round a square hole stop at the hole's corners. A
-    // bevel turned through such an arc alone is not built: refused, in
-    // every spelling, rather than cut.
+/// A rim's section in its meridian half-plane, `(rho, h)` from the rim's
+/// centre with `h` along the cap's outward normal, the sphere's centre at
+/// height `centre` on the axis: the rim, the cap's contact `on_cap` in,
+/// and the sphere's `on_sphere` down its arc away from the cap; then the
+/// area the cut takes off (the triangle and the circular segment between
+/// the chord to the sphere's contact and the sphere's arc) and its
+/// centroid's distance from the axis.
+fn section_about(on_cap: f64, on_sphere: f64, centre: f64) -> (f64, f64) {
+    let r = (25.0 - centre * centre).sqrt();
+    let rim_lat = (-centre).atan2(r);
+    let lat = rim_lat - on_sphere / 5.0;
+    let (a, b, c) = (
+        (r, 0.0),
+        (r - on_cap, 0.0),
+        (5.0 * lat.cos(), 5.0f64.mul_add(lat.sin(), centre)),
+    );
+    let tri = 0.5 * ((b.0 - a.0) * (c.1 - a.1) - (c.0 - a.0) * (b.1 - a.1)).abs();
+    let tri_rho = (a.0 + b.0 + c.0) / 3.0;
+    let turn = on_sphere / 5.0;
+    let seg = 12.5 * (turn - turn.sin());
+    let seg_rho = 4.0 * 5.0 * (0.5 * turn).sin().powi(3) / (3.0 * (turn - turn.sin()))
+        * (rim_lat - 0.5 * turn).cos();
+    let area = tri + seg;
+    (area, (tri * tri_rho + seg * seg_rho) / area)
+}
+
+/// Where the line from the cap's contact `d` in, leaving the cap at `angle`
+/// away from it toward the rim, meets the sphere about `(0, centre)`: the
+/// arc length from the rim to it.
+fn cap_angle_contact_about(d: f64, angle: f64, centre: f64) -> f64 {
+    let r = (25.0 - centre * centre).sqrt();
+    let c = (r - d, 0.0 - centre);
+    let dir = (angle.cos(), -angle.sin());
+    let b = c.0.mul_add(dir.0, c.1 * dir.1);
+    let k = c.0.mul_add(c.0, c.1 * c.1) - 25.0;
+    let t = -b + b.mul_add(b, -k).sqrt();
+    let p = (t.mul_add(dir.0, c.0), t.mul_add(dir.1, c.1));
+    5.0 * ((-centre).atan2(r) - p.1.atan2(p.0))
+}
+
+/// The square hole with every rim arc chamfered by `spec`, checked; its
+/// volume and the hole's before.
+fn hole_chamfered(spec: &dyn Fn(&Shape, &Shape) -> Chamfer) -> (f64, f64) {
     let mut m = Model::new();
     let s = square_hole(&mut m);
+    let before = vol(&m, &s);
+    // Each opening's four arcs, as the pieces the boolean leaves.
     let found = rims(&m, &s);
-    assert!(!found.is_empty(), "the hole's rim arcs");
-    for (e, flat, _) in found {
-        for spec in [
-            Chamfer::Symmetric(0.5),
-            Chamfer::Distances {
-                face: flat.clone(),
-                on_face: 0.8,
-                on_other: 0.4,
-            },
-            Chamfer::Angle {
-                face: flat.clone(),
-                distance: 0.6,
-                angle: 40.0_f64.to_radians(),
-            },
-        ] {
-            let refused = chamfer_edges_with(&mut m, &s, &[(e.clone(), spec)], T).unwrap_err();
-            assert!(
-                refused
-                    .to_string()
-                    .contains("arc of a rim between a plane and a sphere"),
-                "{refused}"
-            );
-        }
+    assert!(found.len() >= 8, "the hole's rim arcs");
+    let specs: Vec<(Shape, Chamfer)> = found
+        .iter()
+        .map(|(e, flat, wall)| (e.clone(), spec(flat, wall)))
+        .collect();
+    let built = chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+    let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    for (rim, _, _) in &found {
+        assert!(built.history.is_deleted(rim), "a rim kept");
     }
+    (before, vol(&m, &built.shape))
+}
+
+/// The eight arcs' worth of the section on a wall of the hole: each wall
+/// stands 2 off the sphere's centre with the centre beyond it, so past
+/// the rim the sphere closes toward the axis, and each arc turns through
+/// 2 asin(2/√21) about its own axis. Every contact stands nearer the axis
+/// than the rim, so the wedges on two walls meeting at a corner of the
+/// hole stand apart.
+fn eight_arcs(on_cap: f64, on_sphere: f64) -> f64 {
+    let sweep = 2.0 * (2.0 / 21.0_f64.sqrt()).asin();
+    let (area, rho) = section_about(on_cap, on_sphere, 2.0);
+    8.0 * area * sweep * rho
+}
+
+#[test]
+fn a_square_hole_through_a_sphere_chamfers_its_rim_arcs_symmetric() {
+    let (before, v) = hole_chamfered(&|_, _| Chamfer::Symmetric(0.5));
+    close(v, before - eight_arcs(0.5, 0.5));
+}
+
+#[test]
+fn a_square_hole_through_a_sphere_chamfers_its_rim_arcs_by_two_distances() {
+    let (before, v) = hole_chamfered(&|flat, _| Chamfer::Distances {
+        face: flat.clone(),
+        on_face: 0.8,
+        on_other: 0.4,
+    });
+    close(v, before - eight_arcs(0.8, 0.4));
+}
+
+#[test]
+fn a_square_hole_through_a_sphere_chamfers_its_rim_arcs_by_distance_and_angle() {
+    let (d, angle) = (0.6, 40.0_f64.to_radians());
+    let (before, v) = hole_chamfered(&|flat, _| Chamfer::Angle {
+        face: flat.clone(),
+        distance: d,
+        angle,
+    });
+    close(
+        v,
+        before - eight_arcs(d, cap_angle_contact_about(d, angle, 2.0)),
+    );
 }

@@ -55,6 +55,22 @@ bump may break the API and a patch bump may not.
     only, it leans 0.19 rad off it. Every point stays within the
     tolerance.
 
+- **Chamfers bevel an arc of a sphere's rim that stops short of its
+  circle.** (#711)
+  - The rim arcs round a square hole through a sphere, ending at the
+    hole's corners, were refused ("a chamfer along an arc of a rim between
+    a plane and a sphere, short of the whole circle, is not built").
+  - The bevel's section is turned through the arc's own sweep and closed
+    by the section at each end, its sphere patch on the solid's own chart
+    of the sphere so the melt reads the two as one.
+  - A sphere of radius 5 with a 4 by 4 hole through it, all eight rim arcs
+    chamfered `Symmetric(0.5)`, `Distances` or `Angle`: `check` clean, and
+    the volume less eight arcs' worth of the wall's section by Pappus over
+    the arc's sweep, within 1e-6. Each wall stands 2 off the centre with
+    the centre beyond it, so past the rim the sphere closes toward the
+    axis; every contact stands nearer the axis than the rim, and the
+    wedges either side of a corner stand apart.
+
 - **`fillet_edges_variable` rounds a seat pinched where its hosts turn
   tangent.** (#716)
   - Two equal drums crossing square meet on ellipses that end at the poles
