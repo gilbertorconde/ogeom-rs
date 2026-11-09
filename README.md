@@ -84,6 +84,41 @@ capability ledger):
 bash tools/check.sh   # needs mdbook: cargo install mdbook --locked
 ```
 
+### In your own crate
+
+The workspace's release profile does not reach a crate that depends on
+ogeom, and neither does a target CPU. Two settings in the dependent crate
+make the kernel faster with results the same to the bit:
+
+```toml
+# Cargo.toml of the crate that depends on ogeom
+[profile.release]
+lto = "thin"
+codegen-units = 1
+```
+
+```toml
+# .cargo/config.toml, where every machine it runs on has AVX2 and FMA
+# (x86-64-v3: Intel Haswell, AMD Excavator and later)
+[build]
+rustflags = ["-C", "target-cpu=x86-64-v3"]
+```
+
+Without a target CPU each of the kernel's fused multiply-adds is a call
+into the C library rather than one instruction. Both are rounded once, so
+the answers do not change. Measured converting and refining a 29,003-face
+solid on one thread, against a dependent crate's default release build:
+
+| Settings | Instructions | CPU time |
+| --- | --- | --- |
+| default | 9.69e11 | 60.6 s |
+| thin LTO, one codegen unit | 9.39e11 (-3%) | 57.1 s (-6%) |
+| `x86-64-v3` | 7.44e11 (-23%) | 46.9 s (-23%) |
+| both | 7.22e11 (-26%) | 45.7 s (-25%) |
+
+The refined solid, and each of `mesh_corpus`'s fifteen parts converted
+back, came out the same to the bit under all four.
+
 ## License
 
 The GNU Lesser General Public License, version 2.1, and no other version:

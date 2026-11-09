@@ -746,10 +746,13 @@ the region classification and the parallel read-only phases need. Mesh
 conversion moved to its own crate would stop it rebuilding the whole
 graph.
 
-**Consumers' builds.** Workspace profiles do not reach a dependent crate,
-and without a target CPU every `mul_add` (515 of them) is a call into libm.
-Measure `--release` against the default profile and `x86-64-v3` against
-the baseline target, and document what a consumer should set.
+**Consumers' builds.** Measured and documented in the README ("In your own
+crate"): on a dependent crate, `x86-64-v3` takes 23 percent fewer
+instructions and CPU time converting and refining a 29,003-face solid, thin
+LTO with one codegen unit 3 percent fewer instructions and 6 percent less
+time, both 26 and 25 percent, to the same result on that solid and on
+`mesh_corpus`. The workspace keeps the baseline target: a consumer chooses
+what its machines run.
 
 ## How this project works
 

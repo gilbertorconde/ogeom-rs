@@ -13,6 +13,15 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **The README says what a crate depending on ogeom should set to build it
+  fast.** (#706)
+  - The workspace's release profile and target CPU do not reach a
+    dependent crate. Thin LTO with one codegen unit, and `x86-64-v3`
+    where its machines have AVX2 and FMA, take a 29,003-face solid's
+    conversion and refinement from 60.6 s to 45.7 s of CPU time on one
+    thread (9.69e11 to 7.22e11 instructions), with the refined solid and
+    every part of `mesh_corpus` the same to the bit.
+
 - **A stepped concave round ends on faces slanted to its seam.**
   - A round resting beyond the narrow face beside a concave seam (a wall on
     a staircase, a flat in an inside corner) was taken only where the seam
