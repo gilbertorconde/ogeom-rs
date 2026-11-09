@@ -2522,6 +2522,7 @@ fn a_loop_filled_as_quads_leaves_every_side_along_its_support() {
         }
     }
     assert!(lean < 1e-6, "a patch leans {lean} off its side's support");
+}
 
 /// A cap of the ball round its top in `n` wedges between `n` spokes: the
 /// wedges in `three` three-sided, their rims one arc and their missing

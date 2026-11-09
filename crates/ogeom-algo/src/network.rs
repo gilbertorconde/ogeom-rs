@@ -2357,7 +2357,8 @@ impl Fit<'_> {
                 }
             }
             Corners::Mixed => {
-                let tangent = self.tangency(&layout, &loose, &junctions, &lines, &mut [])?;
+                let tangent =
+                    self.tangency(&layout, &loose, &junctions, &lines, &mut [], &known)?;
                 rows = junction_rows(&tangent.relaxed);
                 rows.extend(tangent.rows);
                 triples = tangent.held;
