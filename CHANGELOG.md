@@ -127,6 +127,35 @@ bump may break the API and a patch bump may not.
     (to 1e-12), within the bound the crease's bend sets of the straight
     corner's mitre.
 
+- **A convex and a concave round meeting at one vertex close as one corner,
+  whatever the request's order.** (#712)
+  - Where a convex band and a concave band of one `fillet_edges` request
+    met at a vertex (an L-bracket's front edges at its re-entrant edge),
+    whichever was asked first took the corner, and the two orders gave
+    different solids: 3502.58 against 3506.01 for the bracket's front edge
+    and re-entrant edge at r 2, and 3489.70 against 3494.85 with the
+    upright's front edge as well.
+  - With all three edges of such a vertex asked (three planar faces, three
+    straight edges), the corner is now closed as a setback corner. Each
+    band stops one of its own widths past the least setback at which its
+    section clears the others. The box square to the three edges, from
+    each section back past the vertex, is cut away, and one patch closes
+    the opening of three arcs and three conics, G1 to every band end and
+    face. On a face reflex at the vertex, the face kept inside the box is
+    the side of its conic away from the vertex. Coplanar faces a fusion
+    left at the vertex count as one.
+  - With an edge of such a vertex left sharp, the request is refused by
+    name in either order. The opening between the band ends would cross
+    that edge, and a patch tangent to both its faces there would need two
+    tangent planes at one point. Such requests used to round, in the order
+    asked; one stress case (`fillet/stepped/15`) and one case of a fillet
+    test of slanted seams are now refused this way.
+  - The bracket's three edges at r 2, asked in all six orders, give one
+    solid, the same to the bit (3497.668). Its patch meets its six
+    neighbours within 4.1e-5 rad. Its band ends stand at their setbacks of
+    4, and outside the cut box it is the three bands built one after
+    another, to 1e-9.
+
 - **`fillet_edges_variable` rounds a chain of different seats continuing
   each other end to end.** (#716)
   - The top loop of a rounded-rectangle pad, its sides between two planes

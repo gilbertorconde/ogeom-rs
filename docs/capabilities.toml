@@ -1390,7 +1390,16 @@ ball's own is the ball corner. fillet_edges_with closes a corner of three \
 bands of different radii the same way, each band stopped its own width past \
 the least setback at which its section clears the others; where the patch \
 misses the bands' fit target (a box corner at 1, 3 and 2: 5.7e-4 rad) it is \
-refused by name. Refused by name: G2 (a circular band meets \
+refused by name. Where a convex and a concave band of one request meet \
+at a vertex of three planar faces and three straight edges, all rounded \
+(an L-bracket's front edges at its re-entrant edge), fillet_edges closes \
+it the same way whatever the request's order, the same solid to the bit: \
+each band its own width past the least setback, and on a face reflex at \
+the vertex the face kept on the side of its conic away from it; coplanar \
+faces a fusion left there count as one. With an edge of such a vertex \
+left sharp the request is refused by name in either order, as the \
+opening would cross that edge and no patch is tangent to both its faces \
+at one point. Refused by name: G2 (a circular band meets \
 its face at G1, so its end arc bends the patch at 1/radius where the face \
 asks none; curvature-continuous band sections come first), a vertex a \
 curved face meets, planes sharing no tangent ball, a curved edge leaving \
@@ -1402,6 +1411,7 @@ symbols = ["ogeom_fillet::round_vertex_setback", "ogeom_fillet::Setbacks"]
 tests = [
     "crates/ogeom-fillet/tests/setback.rs",
     "crates/ogeom-fillet/tests/radius_per_edge.rs::three_radii_at_a_corner_close_with_one_patch_in_any_order",
+    "crates/ogeom-fillet/tests/mixed_vertex.rs",
 ]
 
 [[capability]]

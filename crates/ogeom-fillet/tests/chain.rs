@@ -226,11 +226,13 @@ fn a_corner_rounds_at_any_radius() {
     }
 }
 
-/// Every edge of an L-bracket, in either order. The step's inner corner,
-/// where its re-entrant edge meets two convex ones, is no convex corner,
-/// and whichever blend comes first there takes it.
+/// Every edge of an L-bracket, in either order. The step's inner corners,
+/// where its re-entrant edge meets two convex ones, are no convex corners:
+/// each closes with one setback patch, and the two orders give the same
+/// solid.
 #[test]
 fn every_edge_of_an_l_bracket_rounds_in_either_order() {
+    let mut volumes = Vec::new();
     for reversed in [false, true] {
         let mut model = ogeom_topo::Model::new();
         let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T)
@@ -254,7 +256,12 @@ fn every_edge_of_an_l_bracket_rounds_in_either_order() {
         assert!(ogeom_algo::check(&model, &rounded, T).unwrap().is_valid());
         let v = volume(&model, &rounded, 1e-4);
         assert!((v - 6.0).abs() < 0.1, "reversed {reversed}: {v}");
+        volumes.push(v.to_bits());
     }
+    assert_eq!(
+        volumes[0], volumes[1],
+        "the two orders round different solids"
+    );
 }
 
 /// Every edge of a slab rounded at half its thickness: the blends on each

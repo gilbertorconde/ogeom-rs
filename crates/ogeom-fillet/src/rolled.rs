@@ -237,6 +237,7 @@ pub(crate) struct Held {
 /// A planar face's plane as a point and its outward unit normal, and its
 /// boundary as straight segments; `None` where it is curved or bounded by
 /// anything else.
+#[derive(Clone)]
 pub(crate) struct Flat {
     pub(crate) origin: Point,
     pub(crate) normal: Vector,
