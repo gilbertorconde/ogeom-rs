@@ -1392,6 +1392,7 @@ tests = [
     "crates/ogeom-fillet/tests/chamfer_sphere_rim.rs",
     "crates/ogeom-fillet/tests/chamfer_marched.rs",
     "crates/ogeom-fillet/tests/periodic_pad.rs",
+    "crates/ogeom-fillet/tests/chamfer_marched_open.rs",
 ]
 
 [[capability]]

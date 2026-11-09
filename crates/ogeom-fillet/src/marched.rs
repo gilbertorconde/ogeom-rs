@@ -111,23 +111,8 @@ fn marched_fillet_by(
         loops,
         march_guide,
     } = marched_seat_over(model, solid, edge, radius, span, tol)?;
-    // An open seat on a spline that ends with the edge (a converted
-    // solid's every edge) leaves the ball nowhere to run out: the guide
-    // is continued past both ends by a few radii. A run-out's caps and its
-    // crease stand on that continuation, so it must run where the hosts
-    // still meet: continued as itself, a fitted crease bends off them by
-    // whatever its end derivatives miss, and is then put back on them.
-    let (guide, guide_range) = match (&guide, closed) {
-        (Curve::BSpline(spline), false)
-            if !spline.is_periodic() && ends_apart(&guide, guide_range, tol) =>
-        {
-            let longer = continued_curve(spline.clone(), radius * CREASE_REACH, tol);
-            let longer = crease_continued(spline, longer, [&first, &second], radius, tol)?;
-            let domain = longer.domain();
-            (Curve::BSpline(longer), domain)
-        }
-        _ => (guide, guide_range),
-    };
+    let (guide, guide_range) =
+        run_out_guide(guide, guide_range, closed, [&first, &second], radius, tol)?;
 
     // A seat running through a point where its hosts are tangent (the
     // crossing of two equal drums) has no section there: the ball's arc
@@ -375,6 +360,7 @@ fn marched_fillet_by(
             mates,
             radius,
             along.as_ref(),
+            None,
             convex,
             tol,
         );
@@ -412,6 +398,34 @@ fn marched_fillet_by(
         convex,
         tol,
     )
+}
+
+/// The crease an open seat runs out along. An open seat on a spline that
+/// ends with the edge (a converted solid's every edge) leaves the blend
+/// nowhere to run out: the guide is continued past both ends by a few
+/// times `radius`. A run-out's caps and its crease stand on that
+/// continuation, so it must run where the hosts still meet: continued as
+/// itself, a fitted crease bends off them by whatever its end derivatives
+/// miss, and is then put back on them.
+pub(crate) fn run_out_guide(
+    guide: Curve,
+    guide_range: (f64, f64),
+    closed: bool,
+    hosts: [&SurfaceGeometry; 2],
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<(Curve, (f64, f64))> {
+    Ok(match (&guide, closed) {
+        (Curve::BSpline(spline), false)
+            if !spline.is_periodic() && ends_apart(&guide, guide_range, tol) =>
+        {
+            let longer = continued_curve(spline.clone(), radius * CREASE_REACH, tol);
+            let longer = crease_continued(spline, longer, hosts, radius, tol)?;
+            let domain = longer.domain();
+            (Curve::BSpline(longer), domain)
+        }
+        _ => (guide, guide_range),
+    })
 }
 
 /// The seat a marched blend on `edge` stands on: its two host faces, their
@@ -702,6 +716,11 @@ fn marched_seat_over(
     })
 }
 
+/// A bevel's station at a guide parameter, near the given host
+/// parameters, as the march's state: both touches' parameters and the
+/// guide's; `None` where no section seats there.
+pub(crate) type Station<'a> = &'a dyn Fn(f64, [f64; 4]) -> Option<[f64; 5]>;
+
 /// What crosses a band from one touch to the other: a ball of one radius
 /// all along, a ball whose radius follows the seat's own curve's parameter,
 /// or a bevel's chord.
@@ -712,7 +731,7 @@ pub(crate) enum Ball<'a> {
     /// No ball: the straight chord between the touches, a bevel. The
     /// station at a guide parameter, near the given host parameters, as
     /// the march's state: both touches' parameters and the guide's.
-    Ruled(&'a dyn Fn(f64, [f64; 4]) -> Option<[f64; 5]>),
+    Ruled(Station<'a>),
 }
 
 impl Ball<'_> {
@@ -1398,6 +1417,7 @@ fn open_runout_wedge(
     mates: Option<(usize, &[crate::fillet::Mate])>,
     radius: f64,
     law: Option<&crate::law::RadiusAlong>,
+    ruled: Option<Station<'_>>,
     convex: bool,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
@@ -1741,6 +1761,17 @@ fn open_runout_wedge(
             // The ball at the end station: under a law, the law's radius
             // there, which past the edge's end is held at the end's own.
             let section = |w: f64| -> OgeomResult<([f64; 5], Point, Point, Point)> {
+                // A bevel's station stands square to the crease at `w`, the
+                // vertex on its plane; its chord's middle stands for the
+                // ball's centre.
+                if let Some(station) = ruled {
+                    let Some(x) = station(w, near) else {
+                        ogeom_bail!(Construction, "a bevel has no section at its run's end");
+                    };
+                    let p1 = first.point_at(x[0], x[1], tol)?;
+                    let p2 = second.point_at(x[2], x[3], tol)?;
+                    return Ok((x, p1, p2, p1.midpoint(p2)));
+                }
                 let radius = match law {
                     Some(law) => law.at(w, tol)?.0,
                     None => radius,
@@ -1894,6 +1925,7 @@ fn open_runout_wedge(
         hosts,
         radius,
         law.is_some(),
+        ruled.is_some(),
         convex,
         [false, false],
         None,
@@ -1910,6 +1942,42 @@ fn open_runout_wedge(
         }
         other => other,
     }
+}
+
+/// The open seat's wedge for a bevel: [`open_runout_wedge`] over the
+/// stations `station` reads, its chord in place of the ball's arc, its
+/// reach off the crease `reach`.
+#[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
+pub(crate) fn open_ruled_wedge(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    blend: crate::march::MarchedBlend,
+    guide: &Curve,
+    edge_range: (f64, f64),
+    hosts: [(&SurfaceGeometry, f64); 2],
+    host_faces: [&Shape; 2],
+    reach: f64,
+    station: Station<'_>,
+    convex: bool,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    open_runout_wedge(
+        model,
+        solid,
+        edge,
+        blend,
+        guide,
+        edge_range,
+        hosts,
+        host_faces,
+        None,
+        reach,
+        None,
+        Some(station),
+        convex,
+        tol,
+    )
 }
 
 /// The band and wedge over an open run of stations that spans exactly the
@@ -2008,7 +2076,7 @@ pub(crate) fn build_held_band(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     build_held_band_by(
-        model, solid, edge, blend, guide, hosts, radius, false, convex, pinched, exact, tol,
+        model, solid, edge, blend, guide, hosts, radius, false, false, convex, pinched, exact, tol,
     )
 }
 
@@ -2027,6 +2095,7 @@ pub(crate) fn build_held_band_by(
     hosts: [(&SurfaceGeometry, f64); 2],
     radius: f64,
     varies: bool,
+    ruled: bool,
     convex: bool,
     pinched: [bool; 2],
     exact: Option<&ExactBand<'_>>,
@@ -2035,6 +2104,9 @@ pub(crate) fn build_held_band_by(
     use ogeom_geom::Surface as _;
     let [(first, sign_first), (second, sign_second)] = hosts;
     let additive = !convex;
+    if ruled && pinched != [false, false] {
+        ogeom_bail!(Construction, "a bevel's band does not pinch");
+    }
     let n = blend.len();
     let fit_target = band_fit_target(tol);
     // The cap at each end stands in the end section's *own* plane: the
@@ -2044,6 +2116,21 @@ pub(crate) fn build_held_band_by(
     // is where the crease crosses the arc plane: a whisker off the end
     // parameter, found by one-dimensional Newton along the guide.
     let section_plane = |end: usize| -> OgeomResult<ogeom_math::Plane> {
+        // A bevel's chord and the crease point stand in the section's
+        // plane, square to the crease.
+        if ruled {
+            let (a, b) = (blend.touch_first[end], blend.touch_second[end]);
+            let crease = guide.point_at(blend.along[end], tol)?;
+            let n = (b - a).cross(crease - a);
+            let m = n.magnitude();
+            if m <= tol.confusion() * (b - a).magnitude() {
+                ogeom_bail!(Construction, "a run-out section has no plane to cap in");
+            }
+            return Ok(ogeom_math::Plane::through(
+                a,
+                ogeom_math::Direction::new(n / m, tol)?,
+            ));
+        }
         let centre = blend.spine[end];
         let a = (blend.touch_first[end] - centre) / radius;
         let b = (blend.touch_second[end] - centre) / radius;
@@ -2087,7 +2174,11 @@ pub(crate) fn build_held_band_by(
     } else {
         Some(section_plane(n - 1)?)
     };
-    let fitted = fit_open_band_by(blend, (!varies).then_some(radius), pinched, tol)?;
+    let fitted = if ruled {
+        fit_open_ruled(blend, tol)?
+    } else {
+        fit_open_band_by(blend, (!varies).then_some(radius), pinched, tol)?
+    };
     let (u_knots, v_knots) = (fitted.u_knots().clone(), fitted.v_knots().clone());
     let (k_count, l_count, mut net) = {
         let grid = fitted.grid();
@@ -2264,10 +2355,20 @@ pub(crate) fn build_held_band_by(
         } else {
             radius
         };
+        // A bevel's end is measured from its chord, a ball's from its arc.
+        let (a, b) = (blend.touch_first[station], blend.touch_second[station]);
+        let chord = (b - a) / (b - a).magnitude();
         let mut off: f64 = 0.0;
         for k in 0..=64 {
             let t = lo + (hi - lo) * f64::from(k) / 64.0;
-            off = off.max((curve.point_at(t, tol)?.distance(centre) - ball).abs());
+            let p = curve.point_at(t, tol)?;
+            let from = if ruled {
+                let along = p - a;
+                (along - chord * along.dot(chord)).magnitude()
+            } else {
+                (p.distance(centre) - ball).abs()
+            };
+            off = off.max(from);
         }
         widen_edge(model, arc, off * 2.0)?;
     }
@@ -2449,7 +2550,20 @@ pub(crate) fn build_held_band_by(
         let mid_v = f64::midpoint(v_dom.0, v_dom.1);
         let p = blend_geo.point_at(mid_u, mid_v, tol)?;
         let (du, dv) = blend_geo.d1_at(mid_u, mid_v, tol)?;
-        let towards_centre = (touching_ball(&blend.spine, p) - p).dot(du.cross(dv)) > 0.0;
+        // A bevel's wedge lies between it and the crease: its outward
+        // points away from the crease, as a ball's centre lies.
+        let reference = if ruled {
+            let nearest = blend
+                .spine
+                .iter()
+                .enumerate()
+                .min_by(|a, b| a.1.distance(p).total_cmp(&b.1.distance(p)))
+                .map_or(0, |(i, _)| i);
+            p + (p - guide.point_at(blend.along[nearest], tol)?)
+        } else {
+            touching_ball(&blend.spine, p)
+        };
+        let towards_centre = (reference - p).dot(du.cross(dv)) > 0.0;
         if towards_centre {
             face
         } else {
@@ -3167,6 +3281,42 @@ fn fit_open_band_by(
         ogeom_bail!(
             NotDone,
             "the blend surface reached {} against a target of {fit_target}",
+            fitted.error
+        );
+    }
+    Ok(fitted.curve)
+}
+
+/// The open ruled band through each station's chord from the first
+/// support's touch to the second's, as [`fit_open_band`] fits the ball's
+/// arcs, and held to the same target.
+pub(crate) fn fit_open_ruled(
+    blend: &crate::march::MarchedBlend,
+    tol: Tolerances,
+) -> OgeomResult<ogeom_geom::BSplineSurface> {
+    const ACROSS_OPEN: usize = 17;
+    let fit_target = band_fit_target(tol);
+    let mut stations: Vec<Vec<Point>> = Vec::with_capacity(blend.len());
+    for at in 0..blend.len() {
+        let (a, b) = (blend.touch_first[at], blend.touch_second[at]);
+        if a.distance(b) <= tol.confusion() {
+            ogeom_bail!(Construction, "a bevel's section collapsed at station {at}");
+        }
+        stations.push(
+            (0..ACROSS_OPEN)
+                .map(|k| {
+                    #[allow(clippy::cast_precision_loss)]
+                    let s = (k as f64) / ((ACROSS_OPEN - 1) as f64);
+                    a + (b - a) * s
+                })
+                .collect(),
+        );
+    }
+    let fitted = ogeom_geom::fit::fit_surface_grid_chordal(&stations, 3, fit_target * 0.5, tol)?;
+    if fitted.error > fit_target {
+        ogeom_bail!(
+            NotDone,
+            "the bevel's surface reached {} against a target of {fit_target}",
             fitted.error
         );
     }
