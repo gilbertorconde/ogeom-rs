@@ -514,7 +514,7 @@ fn close_corner(
         ogeom_math::Point2::new((b.x - a.x).mul_add(f, a.x), (b.y - a.y).mul_add(f, a.y))
     };
     const SPOKE: u32 = 32;
-    const QUAD: u32 = 20;
+    const QUAD: u32 = 40;
     let mut spokes: Vec<Vec<Point>> = Vec::with_capacity(m);
     for middle in &middles {
         spokes.push(
@@ -569,23 +569,36 @@ fn close_corner(
         // The fairing may cost the points no more than the target itself.
         smoothing: tolerance * tolerance,
         creases: Vec::new(),
-        spans: 1,
+        // Two spans to every strip from the start: a spoke's span next to
+        // the centre, which holding the centre makes a quadratic of its
+        // own, then stops short of the spoke's held end on the side.
+        spans: 2,
         most: 16,
         held: Vec::new(),
         across: Vec::new(),
     };
     let network = ogeom_algo::fit_loop_quads(model, &sides, &spokes, &index, &options, tol)?;
     if std::env::var_os("OGEOM_DEBUG_QUADS").is_some() {
-        eprintln!("QUADS ended {:?} worst_tangent {} corners {:?} outside {} tol {tolerance} seed.off {}", network.ended, network.worst_tangent, network.corners, network.outside, seed.off);
+        eprintln!(
+            "QUADS ended {:?} worst_tangent {} corners {:?} outside {} tol {tolerance} seed.off {}",
+            network.ended, network.worst_tangent, network.corners, network.outside, seed.off
+        );
         for (q, surface) in network.surfaces.iter().enumerate() {
             let mut worst = (0.0, Point::ORIGIN);
             for p in &cloud {
-                let pr = ogeom_algo::project_on_surface(&ogeom_geom::SurfaceGeometry::BSpline(surface.clone()), *p, 16, tol);
+                let pr = ogeom_algo::project_on_surface(
+                    &ogeom_geom::SurfaceGeometry::BSpline(surface.clone()),
+                    *p,
+                    16,
+                    tol,
+                );
                 if let Ok(pr) = pr {
                     let (u, v) = pr.parameters;
                     if u > 1e-9 && u < 1.0 - 1e-9 && v > 1e-9 && v < 1.0 - 1e-9 {
                         let d = pr.point.distance(*p);
-                        if d > worst.0 { worst = (d, *p); }
+                        if d > worst.0 {
+                            worst = (d, *p);
+                        }
                     }
                 }
             }

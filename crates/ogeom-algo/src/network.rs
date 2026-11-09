@@ -625,6 +625,10 @@ pub fn fit_network_chained(
         fit.corners = corners;
         fit.fans = fans;
         let (spans, current, ended) = fit.refine(options)?;
+        if std::env::var_os("OGEOM_DEBUG_QUADS").is_some() {
+            let worst = current.distances.iter().copied().fold(0.0, f64::max);
+            eprintln!("TRY {corners:?} fans {fans} ended {ended:?} held {} worst {worst} spans {spans:?}", current.held);
+        }
         if (ended == Ended::Met && current.held) || (corners == Corners::Loose && !fans) {
             settled = Some((spans, current, ended));
             break;
@@ -2285,7 +2289,7 @@ impl Fit<'_> {
                 rows.extend(tangent.rows);
                 triples = tangent.held;
                 corners_from = rows.len();
-                match self.spread_rows(&layout, &loose, &curve_knots) {
+                match self.spread_rows(&layout, &loose, &curve_knots, &known) {
                     Some(spread) => rows.extend(spread),
                     None => held = false,
                 }
@@ -2348,6 +2352,12 @@ impl Fit<'_> {
             // A way of holding the corners that asks the held curves for
             // what they do not hold is a way that did not hold: its rows
             // go, and refinement moves on as from one that missed.
+            if std::env::var_os("OGEOM_DEBUG_QUADS").is_some() {
+                eprintln!(
+                    "CONFLICT corners {:?} fans {} spans {:?}",
+                    self.corners, self.fans, spans
+                );
+            }
             held = false;
             rows.truncate(corners_from);
             self.basis_known(&layout, &rows, &known)?
@@ -2927,6 +2937,9 @@ impl Fit<'_> {
         }
         // Each held triple: (curve, B, L, R) slots.
         let mut triples: Vec<(usize, usize, usize, usize)> = Vec::new();
+        // The triples whose three poles held curves prescribe: they stand on
+        // one line already, and pin their curve's ratio to their own.
+        let mut prescribed_triples: Vec<(usize, usize, usize, usize)> = Vec::new();
         for (c, [at_start, at_end]) in skipped.into_iter().enumerate() {
             if !holding.held[c] {
                 continue;
@@ -2946,8 +2959,13 @@ impl Fit<'_> {
                 // it, and the triple holds nothing. Where held curves
                 // prescribe all three, they already stand on one line (a
                 // held curve leaves its ends along the caller's
-                // derivative), and the triple would only ask them a ratio.
-                if (b == l && b == r) || (prescribed(b) && prescribed(l) && prescribed(r)) {
+                // derivative): the triple asks nothing of the fit, and its
+                // ratio is the one its curve is held at.
+                if b == l && b == r {
+                    continue;
+                }
+                if prescribed(b) && prescribed(l) && prescribed(r) {
+                    prescribed_triples.push((c, b, l, r));
                     continue;
                 }
                 triples.push((c, b, l, r));
@@ -2988,6 +3006,13 @@ impl Fit<'_> {
                     None => unpinned.push(chain),
                 }
             }
+        }
+        for &(c, b, l, r) in &prescribed_triples {
+            let Some((chain, inverse)) = holding.chain[c] else {
+                continue;
+            };
+            let (near, far) = (loose[b].distance(loose[l]), loose[r].distance(loose[b]));
+            pin(chain, if inverse { (far, near) } else { (near, far) });
         }
         let mut sums = vec![(0.0, 0.0); holding.chains];
         for &(c, b, l, r) in &triples {
@@ -3552,7 +3577,9 @@ impl Fit<'_> {
         layout: &Layout,
         loose: &[Point],
         curve_knots: &[KnotVector],
+        known: &[(usize, [f64; 3])],
     ) -> Option<Vec<Row>> {
+        let prescribed = |slot: usize| known.binary_search_by_key(&slot, |&(s, _)| s).is_ok();
         let topo = self.topo;
         let mut corners = Vec::with_capacity(topo.spread_corners.len());
         for (v, curves) in &topo.spread_corners {
@@ -3586,7 +3613,43 @@ impl Fit<'_> {
             }
             logs.push(Some(sum / 2.0));
         }
+        // A curve whose other end the held curves pin, its three poles
+        // there prescribed on one line, is asked their ratio: the corner's
+        // relation must give it that ratio for its rows to hold there.
+        let mut held_ends: BTreeMap<usize, f64> = BTreeMap::new();
+        for (&c, at) in ends.iter().filter(|(_, at)| at.len() == 1) {
+            let (k, i) = at[0];
+            let v = corners[k].vertex;
+            let n = layout.along(c);
+            let q = if topo.curve_ends[c].0 == v { n - 1 } else { 0 };
+            let (b, l, r) = (
+                layout.curve_slot(topo, c, q),
+                self.beside(layout, topo.users[c][0], c, q),
+                self.beside(layout, topo.users[c][1], c, q),
+            );
+            if !(prescribed(b) && prescribed(l) && prescribed(r)) {
+                continue;
+            }
+            let (near, far) = (loose[b].distance(loose[l]), loose[r].distance(loose[b]));
+            let ratio = if std::env::var_os("OGEOM_INVERSE_ASK").is_some() {
+                far / near
+            } else {
+                near / far
+            };
+            let class = logs.len();
+            logs.push(Some(ratio.ln()));
+            asked.entry(k).or_default().push(Asked {
+                curve: i,
+                class,
+                odd: false,
+                inverse: false,
+            });
+            held_ends.insert(c, ratio);
+        }
         if close_cycles(&corners, &asked, &mut logs).contains(&true) {
+            if std::env::var_os("OGEOM_DEBUG_QUADS").is_some() {
+                eprintln!("SPREAD cycles do not close; held ends {held_ends:?}");
+            }
             return None;
         }
         for (&k, asked) in &asked {
@@ -3616,12 +3679,19 @@ impl Fit<'_> {
                 corners[k].vertex,
                 relation.weights[i],
                 &curve_knots[c],
-                other,
+                // At a held end the poles stand on one line at the
+                // relation's ratio, so `γ` is nought there.
+                other.or(held_ends.contains_key(&c).then_some(0.0)),
             ));
             rows.extend(smooth_rows(layout, topo, c, &curve_knots[c]));
         }
         let doubled = self.doubled();
         for (c, strips) in topo.curve_strip.iter().enumerate() {
+            // A held curve is the caller's curve on its knots, doubled or
+            // not, and asks no smoothing of the fit.
+            if self.held[c].is_some() {
+                continue;
+            }
             if !ends.contains_key(&c) && strips.iter().any(|&s| doubled[s].every) {
                 rows.extend(smooth_rows(layout, topo, c, &curve_knots[c]));
             }

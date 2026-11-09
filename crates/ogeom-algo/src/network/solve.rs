@@ -105,6 +105,9 @@ pub(super) fn null_space_known(
         }
         let Some((pivot, head)) = largest else {
             if constant.iter().any(|c| c.value.abs() > c.error) {
+                if std::env::var_os("OGEOM_DEBUG_QUADS").is_some() {
+                    eprintln!("ROW-CONFLICT row {row:?} constant {:?}", constant.iter().map(|c| (c.value, c.error)).collect::<Vec<_>>());
+                }
                 return None;
             }
             continue;
