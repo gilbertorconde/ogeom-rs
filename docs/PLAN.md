@@ -230,11 +230,10 @@ mirror (a flat in an inside corner) rounds where the strips are planes
 whose edges run parallel to the seam over its length and end on planar
 faces, square to it or slanted: the ball touches the faces either side,
 and the fill is the prism of one section over the strips, cut by the end
-planes (`stepped.rs`). Owed there: the convex seat's ends not square to
-the edge (`consumed.rs` takes its caps flush with ends square to the line
-its faces' planes meet on); slanted, the corner it takes off runs past
-the end face on one side, and the cut's caps need the end planes, as the
-concave fill's do. Where the far edge turns the other way (a concave seam where two
+planes (`stepped.rs`). The convex seat's ends may be slanted to the edge
+too: the corner it takes off is the section's prism between the end
+planes, each face's stretch and each end face's trace asked there, and
+the cut is cut back to the planes (`consumed_slanted` in `consumed.rs`). Where the far edge turns the other way (a concave seam where two
 solids are fused at a slant), the ball touches the other face and rests
 on the far edge, its centre on the ellipse where the plane a radius off
 that face meets the cylinder a radius about the edge, and where it rests

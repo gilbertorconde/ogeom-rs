@@ -2068,3 +2068,75 @@ fn the_top_loop_of_a_block_with_rounded_verticals_rounds_on_the_turns() {
         props.mass
     );
 }
+
+/// The bevelled square of `a_round_wider_than_a_bevel_beside_it_takes_the_bevel_off_whole`,
+/// its prism built long and cut to the slab between two parallel planes
+/// slanted 20 degrees about `z`, `x = k y - 7` and `x = k y - 3`: the
+/// bevel's ends are not square to it. Rounded on either bevel edge at a
+/// radius whose ball no longer touches the bevel, the corner the ball takes
+/// off is cut back to the slanted ends, and every line along the edge
+/// between them is 4 long: the prism keeps its unbevelled profile less the
+/// rounded corner, `r^2 (cot(a/2) - (pi - a)/2)` at the right angle, times
+/// 4.
+#[test]
+fn a_round_wider_than_a_bevel_takes_it_off_between_slanted_ends() {
+    use core::f64::consts::PI;
+    use ogeom_math::{Direction, Frame, Vector};
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-4,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let c = 0.1;
+    let profile = [
+        (0.0, 0.0),
+        (2.0, 0.0),
+        (2.0, 2.0 - c),
+        (2.0 - c, 2.0),
+        (0.0, 2.0),
+    ];
+    let k = 20.0_f64.to_radians().tan();
+    let along = Direction::new(Vector::new(k, 1.0, 0.0), T).unwrap();
+    // The box's own y, `z` across `along`, points to lesser `x`.
+    let across = Vector::new(1.0, -k, 0.0) * (1.0 / k.hypot(1.0));
+    for radius in [0.5, 1.0] {
+        let want = (4.0 - radius * radius * (1.0 - (PI - PI / 2.0) / 2.0)) * 4.0;
+        for (y, z) in [(2.0 - c, 2.0), (2.0, 2.0 - c)] {
+            let mut model = ogeom_topo::Model::new();
+            let mut prism = profile_prism(&mut model, &profile, 10.0);
+            // The half-spaces past each slanted end: `x < k y - 7` and
+            // `x > k y - 3`, boxes turned about z.
+            for (through, side) in [(-7.0, -1.0), (-3.0, 1.0)] {
+                let origin = Point::new(through, 0.0, -50.0)
+                    + along.vector() * -100.0
+                    + across * if side < 0.0 { 0.0 } else { 100.0 };
+                let frame = Frame::new(origin, Direction::Z, along, T).unwrap();
+                let cutter = ogeom_algo::make_box(&mut model, frame, (200.0, 100.0, 100.0), T)
+                    .unwrap()
+                    .shape;
+                prism = ogeom_bool::cut(&mut model, &prism, &cutter, T)
+                    .unwrap()
+                    .shape;
+            }
+            let before = ogeom_algo::volume_properties(&model, &prism, fine, T)
+                .unwrap()
+                .mass;
+            assert!(
+                (before - (4.0 - c * c / 2.0) * 4.0).abs() < 1e-9,
+                "the slab holds {before}"
+            );
+            let edge = edge_with_midpoint(&model, &prism, Point::new(k * y - 5.0, y, z));
+            let rounded = ogeom_fillet::fillet_edge(&mut model, &prism, &edge, radius, T)
+                .unwrap_or_else(|e| panic!("radius {radius} at ({y}, {z}): {e}"));
+            let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+            let got = ogeom_algo::volume_properties(&model, &rounded.shape, fine, T)
+                .unwrap()
+                .mass;
+            eprintln!("radius {radius} at ({y}, {z}): {got} against {want}");
+            assert!(
+                (got - want).abs() < 1e-6,
+                "radius {radius} at ({y}, {z}): {got} against {want}"
+            );
+        }
+    }
+}
