@@ -75,6 +75,7 @@ fn options(tolerance: f64, creases: Vec<usize>) -> NetworkOptions {
         creases,
         spans: 1,
         most: 16,
+        held: Vec::new(),
     }
 }
 
@@ -2238,4 +2239,92 @@ fn a_fan_of_three_sided_patches_is_held_exactly_tangent_at_its_point() {
         assert!(off_ball(top) <= near, "{n}: {top:?}");
         assert_sound_shell(&model, &network, n);
     }
+}
+
+/// The surface `z = 0.05 x³ - 0.1 y²` over `[0, 4]²`.
+fn on_cubic(x: f64, y: f64) -> Point {
+    Point::new(x, y, 0.05 * x * x * x - 0.1 * y * y)
+}
+
+/// A curve held to the caller's: a patch over the cubic surface, its side
+/// along `y = 0` the cubic `(4t, 0, 3.2 t³)` given as its Bézier, held.
+/// The patch's boundary there is that cubic to rounding, a cubic being a
+/// spline on any knots of degree three; the side fitted instead of held
+/// only comes within the tolerance.
+#[test]
+fn a_held_curve_is_the_caller_s_curve_to_rounding() {
+    use ogeom::geom::BSplineCurve;
+    use ogeom::math::KnotVector;
+    let bezier = BSplineCurve::new(
+        KnotVector::new(vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 3).unwrap(),
+        vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(4.0 / 3.0, 0.0, 0.0),
+            Point::new(8.0 / 3.0, 0.0, 0.0),
+            Point::new(4.0, 0.0, 3.2),
+        ],
+        T,
+    )
+    .unwrap();
+    let side = |f: &dyn Fn(f64) -> Point| -> CurveDef {
+        CurveDef::Polyline((0..=64).map(|i| f(f64::from(i) / 16.0)).collect())
+    };
+    let curves = vec![
+        CurveDef::Curve {
+            curve: Curve::BSpline(bezier.clone()),
+            range: (0.0, 1.0),
+        },
+        side(&|s| on_cubic(4.0, s)),
+        side(&|s| on_cubic(4.0 - s, 4.0)),
+        side(&|s| on_cubic(0.0, 4.0 - s)),
+    ];
+    let patches = vec![PatchDef::four([
+        (0, false),
+        (1, false),
+        (2, false),
+        (3, false),
+    ])];
+    let mut cloud = Vec::new();
+    for i in 0..=60 {
+        for j in 0..=60 {
+            cloud.push(on_cubic(f64::from(i) / 15.0, f64::from(j) / 15.0));
+        }
+    }
+    let mut held = options(CLEAN_TOLERANCE, vec![]);
+    held.held = vec![0];
+    let (model, network) = fit(&curves, &patches, &cloud, &held);
+    assert_sound_shell(&model, &network, 4);
+    use ogeom::geom::Curve3d as _;
+    let surface = &network.surfaces[0];
+    let widest = (0..=64)
+        .map(|i| {
+            let t = f64::from(i) / 64.0;
+            surface
+                .point_at(t, 0.0, T)
+                .unwrap()
+                .distance(bezier.point_at(t, T).unwrap())
+        })
+        .fold(0.0, f64::max);
+    assert!(
+        widest < ROUNDING_GAP,
+        "the held side stands {widest} off its cubic"
+    );
+    // Off the surface along its normal, to first order.
+    let off = widest_off(&network, |p| {
+        let (fx, fy) = (0.15 * p.x * p.x, -0.2 * p.y);
+        (p.z - on_cubic(p.x, p.y).z).abs() / fx.mul_add(fx, fy.mul_add(fy, 1.0)).sqrt()
+    });
+    assert!(
+        off < CLEAN_TOLERANCE,
+        "the patch stands {off} off the surface"
+    );
+
+    let mut bad = options(CLEAN_TOLERANCE, vec![]);
+    bad.held = vec![7];
+    let index = PointIndex::build(&cloud).unwrap();
+    let refused = fit_network(&mut Model::new(), &patches, &curves, &index, &bad, T);
+    assert!(
+        matches!(refused, Err(OgeomError::Construction(_))),
+        "{refused:?}"
+    );
 }
