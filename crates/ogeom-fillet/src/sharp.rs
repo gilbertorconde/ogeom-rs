@@ -30,7 +30,7 @@ use ogeom_geom::{Continuity, Curve, Curve3d as _};
 use ogeom_math::{Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
-use crate::fill_n::{FillBoundary, make_filling_n};
+use crate::fill_n::{FillBoundary, make_filling_n_within};
 use crate::setback::{
     CornerEnd, Setbacks, bevel_end, corner_edges, filler_inside, point_of, round_end, trim_conic,
 };
@@ -262,6 +262,9 @@ pub(crate) fn close_sharp_corner(
     // The cell the patches replace: in from every plane through the vertex
     // and short of each edge's section, the sharp edge's included.
     let mut walls: Vec<(Vector, Point)> = frame.m.iter().map(|mk| (*mk, frame.corner)).collect();
+    // The vertex's planes by their outward normals: the corner is convex,
+    // so what stands past one of them lies outside the solid.
+    let within: Vec<(Vector, Point)> = frame.m.iter().map(|mk| (-*mk, frame.corner)).collect();
     let sections: Vec<(Vector, Point)> = (0..n)
         .map(|k| {
             let dk = frame.d[k].vector();
@@ -521,6 +524,15 @@ pub(crate) fn close_sharp_corner(
             turned = turned.max(now);
         }
         let at_q = network.faces[0].clone();
+        // Neither patch may stand past a plane of the vertex: the corner is
+        // convex, so what stands past one lies outside the solid.
+        let past = past_planes(model, &at_q, &within, tol)?;
+        if past > fit {
+            ogeom_bail!(
+                NotDone,
+                "the patch at the sharp edge stands {past} past a face of the vertex"
+            );
+        }
         // The rest of the opening: the trim from `Q`'s second half, band
         // `r1`'s arc, the trim between the bands, band `r2`'s arc, the trim
         // back to `Q`'s first half, and the curve along the patch at `Q`,
@@ -549,7 +561,7 @@ pub(crate) fn close_sharp_corner(
             side(&trims[r2].edges[0], &trims[r2].filler, round(r2)),
             side(&network.edges[1], &at_q, true),
         ];
-        let filled = make_filling_n(model, &boundary, &[], fit, tol)?;
+        let filled = make_filling_n_within(model, &boundary, &[], fit, &within, tol)?;
         Ok((at_q, filled.built.shape))
     };
     let mut made = None;
@@ -612,4 +624,25 @@ struct Trim {
     edges: Vec<Shape>,
     normal: Vector,
     filler: Shape,
+}
+
+/// How far `face` stands past the planes `within` (each an outward unit
+/// normal and a point), read at the vertices of its mesh drawn at a quarter
+/// of the bands' fit target.
+fn past_planes(
+    model: &Model,
+    face: &Shape,
+    within: &[(Vector, Point)],
+    tol: Tolerances,
+) -> OgeomResult<f64> {
+    let deflection = ogeom_mesh::Deflection {
+        chord: crate::marched::band_fit_target(tol) * 0.25,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let mesh = ogeom_mesh::triangulate_face(model, face, deflection, tol)?;
+    Ok(mesh
+        .positions
+        .iter()
+        .flat_map(|p| within.iter().map(move |(n, at)| n.dot(*p - *at)))
+        .fold(f64::NEG_INFINITY, f64::max))
 }

@@ -243,6 +243,13 @@ fn sharp_corner(
     )
     .unwrap();
     valid(&m, &rounded.shape);
+    // Nothing of it stands outside the block.
+    let past = farthest_out(&m, &rounded.shape, |p| {
+        [-p.x, -p.y, -p.z, p.x - 20.0, p.y - 20.0, p.z - 10.0]
+            .into_iter()
+            .fold(f64::NEG_INFINITY, f64::max)
+    });
+    assert!(past <= 2e-4, "the corner stands {past} outside the block");
     let patches = rounded.history.generated(&v);
     assert_eq!(
         patches.len(),
@@ -280,19 +287,15 @@ fn sharp_corner(
 /// both patches meet every band end and face tangent.
 #[test]
 fn a_setback_corner_leaving_an_edge_sharp_runs_its_patch_into_that_edge() {
-    let cases: [SharpCase; 10] = [
+    let cases: [SharpCase; 6] = [
         // The top edges rounded, the upright left sharp, all set back 5.
         (2, 2.0, &[], 5.0),
-        // The sharp edge cut nearer the bands' rails, and farther off.
-        (2, 2.0, &[(2, 3.0)], 5.0),
+        // The sharp edge cut farther off.
         (2, 2.0, &[(2, 8.0)], 5.0),
-        // Uneven bands: at 6 and 4, the sharp edge cut at 5 and at 3.
+        // Uneven bands: at 6 and 4.
         (2, 2.0, &[(0, 6.0), (1, 4.0)], 5.0),
-        (2, 2.0, &[(0, 6.0), (1, 4.0), (2, 3.0)], 5.0),
         // A top edge left sharp, the other top edge and the upright rounded.
         (0, 1.5, &[], 4.0),
-        (1, 1.0, &[(0, 3.0), (2, 5.0)], 4.0),
-        (0, 2.0, &[(1, 7.0)], 5.0),
         // A smaller and a larger radius.
         (2, 1.0, &[], 3.0),
         (2, 3.0, &[], 8.0),
@@ -316,6 +319,44 @@ fn a_setback_corner_leaving_an_edge_sharp_runs_its_patch_into_that_edge() {
         );
         assert!(turns.windows(2).all(|w| w[1] >= w[0] - 1e-9), "{turns:?}");
         assert!(volume < 4000.0);
+    }
+}
+
+/// Corners whose patch, tangent to every band end and face, would stand
+/// past a face of the block (by 0.01 to 0.11): no net holds it within the
+/// vertex's planes, and each is refused by name rather than built outside
+/// the solid.
+#[test]
+fn a_sharp_corner_whose_patch_would_leave_the_block_is_refused_by_name() {
+    let cases: [SharpCase; 4] = [
+        (2, 2.0, &[(2, 3.0)], 5.0),
+        (2, 2.0, &[(0, 6.0), (1, 4.0), (2, 3.0)], 5.0),
+        (1, 1.0, &[(0, 3.0), (2, 5.0)], 4.0),
+        (0, 2.0, &[(1, 7.0)], 5.0),
+    ];
+    for (sharp, radius, per_edge, default) in cases {
+        let (mut m, b, v, edges) = block();
+        let setbacks = Setbacks {
+            per_edge: per_edge
+                .iter()
+                .map(|(k, s)| (edges[*k].clone(), *s))
+                .collect(),
+            default,
+            continuity: Continuity::G1,
+        };
+        let refused = ogeom_fillet::round_vertex_setback_sharp(
+            &mut m,
+            &b,
+            &v,
+            &edges[sharp],
+            radius,
+            &setbacks,
+            T,
+        );
+        let Err(ogeom_core::OgeomError::NotDone(why)) = refused else {
+            panic!("{sharp} {radius} {per_edge:?}: built, or refused otherwise: {refused:?}");
+        };
+        eprintln!("{sharp} {radius} {per_edge:?}: {why}");
     }
 }
 
@@ -461,4 +502,153 @@ fn setback_corners_meeting_along_an_edge_or_missing_an_edge_are_refused_by_name(
     )
     .unwrap_err();
     assert!(err.to_string().contains("named twice"), "{err}");
+}
+
+/// The farthest any point of `shape`'s mesh stands by `out`, a signed
+/// distance outside the original solid.
+fn farthest_out(m: &Model, shape: &Shape, out: impl Fn(Point) -> f64) -> f64 {
+    let deflection = ogeom_mesh::Deflection {
+        chord: 1e-3,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let mut worst = f64::NEG_INFINITY;
+    for f in explore_unique(m, shape, ShapeType::Face).unwrap() {
+        for p in ogeom_mesh::triangulate_face(m, &f, deflection, T)
+            .unwrap()
+            .positions
+        {
+            worst = worst.max(out(p));
+        }
+    }
+    worst
+}
+
+/// A prism on a parallelogram of sides 20, its second side at `angle`
+/// degrees from x, raised along (`tilt`, 0, 10): the solid, the top of the
+/// origin's edge, that vertex's edges (along x, along the slanted side, the
+/// raised one), and how far a point stands outside the prism.
+#[allow(clippy::type_complexity, reason = "test helper")]
+fn prism(
+    m: &mut Model,
+    angle: f64,
+    tilt: f64,
+) -> (Shape, Shape, [Shape; 3], Box<dyn Fn(Point) -> f64>) {
+    use ogeom_math::Vector;
+    let a = angle.to_radians();
+    let side = Vector::new(a.cos(), a.sin(), 0.0) * 20.0;
+    let x = Vector::new(20.0, 0.0, 0.0);
+    let pts = [
+        Point::ORIGIN,
+        Point::ORIGIN + x,
+        Point::ORIGIN + x + side,
+        Point::ORIGIN + side,
+    ];
+    let wire = ogeom_algo::make_polygon(m, &pts, true, T).unwrap().shape;
+    let plane: ogeom_geom::SurfaceGeometry = ogeom_geom::PlaneSurface::over(
+        ogeom_math::Plane::through(Point::ORIGIN, Direction::Z),
+        (-1e3, 1e3),
+        (-1e3, 1e3),
+    )
+    .unwrap()
+    .into();
+    let face = ogeom_algo::make_face(m, plane, &[wire], T).unwrap().shape;
+    let up = Vector::new(tilt, 0.0, 10.0);
+    let made = ogeom_algo::make_prism(m, &face, up, T).unwrap().shape;
+    let solid = explore_unique(m, &made, ShapeType::Solid)
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap_or(made);
+    let top = Point::ORIGIN + up;
+    let vertex = explore_unique(m, &solid, ShapeType::Vertex)
+        .unwrap()
+        .into_iter()
+        .find(|v| {
+            let p = m.node(v).unwrap().data().as_vertex().unwrap().point;
+            v.transform(m.datums()).unwrap().apply(p).distance(top) < 1e-7
+        })
+        .expect("the prism's corner");
+    let edges = [
+        edge_near(m, &solid, [top.x + 5.0, top.y, top.z]),
+        edge_near(
+            m,
+            &solid,
+            [top.x + side.x / 4.0, top.y + side.y / 4.0, top.z],
+        ),
+        edge_near(m, &solid, [tilt / 2.0, 0.0, 5.0]),
+    ];
+    // The prism's six planes, each by a point and its outward normal.
+    let inner = Point::ORIGIN + x * 0.5 + side * 0.5 + up * 0.5;
+    let mut planes: Vec<(Point, Vector)> = vec![
+        (Point::ORIGIN, Vector::new(0.0, 0.0, -1.0)),
+        (top, Vector::new(0.0, 0.0, 1.0)),
+    ];
+    for (on, along) in [
+        (Point::ORIGIN, x),
+        (Point::ORIGIN + side, x),
+        (Point::ORIGIN, side),
+        (Point::ORIGIN + x, side),
+    ] {
+        let n = along.cross(up);
+        let mut n = n / n.magnitude();
+        if (inner - on).dot(n) > 0.0 {
+            n = -n;
+        }
+        planes.push((on, n));
+    }
+    let out = move |p: Point| {
+        planes
+            .iter()
+            .map(|(o, n)| (p - *o).dot(*n))
+            .fold(f64::NEG_INFINITY, f64::max)
+    };
+    (solid, vertex, edges, Box::new(out))
+}
+
+/// The two corners whose patch stood farthest outside its solid: a setback
+/// corner on a prism raised aslant, radius 0.5 set back 1, 4 and 2 (0.153
+/// out), and one with its upright left sharp where the walls meet at 60
+/// degrees, radius 2 set back 5 (0.096 out). Each is refused by name or
+/// built with no point of it outside the solid past the bands' target.
+#[test]
+fn a_setback_corner_never_stands_outside_its_solid() {
+    let check = |name: &str,
+                 built: ogeom_core::OgeomResult<ogeom_algo::Built>,
+                 m: &Model,
+                 out: &dyn Fn(Point) -> f64| {
+        match built {
+            Ok(b) => {
+                valid(m, &b.shape);
+                let past = farthest_out(m, &b.shape, out);
+                assert!(
+                    past <= 2e-4,
+                    "{name}: the corner stands {past} outside its solid"
+                );
+            }
+            Err(ogeom_core::OgeomError::NotDone(why)) => eprintln!("{name}: refused: {why}"),
+            Err(e) => panic!("{name}: refused otherwise: {e}"),
+        }
+    };
+    let mut m = Model::new();
+    let (solid, vertex, edges, out) = prism(&mut m, 90.0, 3.0);
+    let setbacks = Setbacks {
+        per_edge: edges.iter().cloned().zip([1.0, 4.0, 2.0]).collect(),
+        default: 5.0,
+        continuity: Continuity::G1,
+    };
+    let built = round_vertex_setback(&mut m, &solid, &vertex, 0.5, &setbacks, T);
+    check("aslant", built, &m, &out);
+
+    let mut m = Model::new();
+    let (solid, vertex, edges, out) = prism(&mut m, 60.0, 0.0);
+    let built = ogeom_fillet::round_vertex_setback_sharp(
+        &mut m,
+        &solid,
+        &vertex,
+        &edges[2],
+        2.0,
+        &even(5.0, Continuity::G1),
+        T,
+    );
+    check("sixty", built, &m, &out);
 }

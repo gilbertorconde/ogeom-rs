@@ -17,7 +17,7 @@ use ogeom_geom::{Continuity, Curve, Curve3d as _};
 use ogeom_math::{Direction, Plane, Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
-use crate::fill_n::{FillBoundary, make_filling_n};
+use crate::fill_n::{FillBoundary, make_filling_n, make_filling_n_within};
 
 /// How far each band meeting a vertex stops from it, and how the patch
 /// between them meets the bands and the faces.
@@ -711,7 +711,10 @@ pub(crate) fn close_corner_ends(
         fillers.push(filler);
     }
 
-    let filled = make_filling_n(model, &boundary, &[], fit, tol)?;
+    // The vertex is convex, so what of the patch stands past one of its
+    // planes lies outside the solid: the patch is held within them.
+    let within: Vec<(Vector, Point)> = frame.m.iter().map(|m| (-*m, frame.corner)).collect();
+    let filled = make_filling_n_within(model, &boundary, &[], fit, &within, tol)?;
     let patch = filled.built.shape.clone();
     let mut faces = kept;
     faces.extend(fillers);

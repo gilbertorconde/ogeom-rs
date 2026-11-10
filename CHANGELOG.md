@@ -1053,6 +1053,27 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A setback corner's patch no longer stands outside the solid.** (#839)
+  - The N-sided patch that closes a convex setback corner was fitted
+    tangent to every band end and face, but nothing kept it within the
+    vertex's planes. It could bulge past one, giving a solid with material
+    outside the original that still checked valid. Read off each result's
+    mesh against the original's own planes: 0.153 outside on a prism raised
+    aslant (`round_vertex_setback`, radius 0.5, set back 1, 4 and 2); 0.096
+    with the upright left sharp where the walls meet at 60 degrees
+    (`round_vertex_setback_sharp`); 0.018 on the box corner at radii 1, 3
+    and 2 (`fillet_edges_with`); 5.3e-4 on the block's corner with its
+    upright left sharp, all set back 5.
+  - `setback::close_corner_ends` and the edge-left-sharp closer now hold the
+    patch within the vertex's planes. A net whose patch stands past one by
+    more than the bands' fit target misses, and the net is refined on. The
+    patch at the sharp edge is held the same way, and a miss there tries the
+    next fullness. Where no net holds, the corner is refused by name.
+  - The block's corner with its upright left sharp now closes one net finer,
+    within the block. The box corner at 1, 3 and 2 is refused, and so are
+    four of the ten edge-left-sharp corners on the block, each of which
+    stood 0.005 to 0.107 outside before. Every other corner the tests build
+    is the same to the bit. `make_filling_n` itself is unchanged.
 - **A boolean on a ball whose pole stands beside the other operand is
   refused by name where the ball's turned chart does not resolve it,
   rather than taken on the ball's own chart.** (#835)

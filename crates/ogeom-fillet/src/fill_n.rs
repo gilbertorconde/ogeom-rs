@@ -199,6 +199,24 @@ pub fn make_filling_n(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Filled> {
+    make_filling_n_within(model, boundary, constraints, tolerance, &[], tol)
+}
+
+/// [`make_filling_n`], the patch also held inside the half-spaces
+/// `within`, each an outward unit normal and a point on its plane: a net
+/// whose patch stands past any of them by more than `tolerance` inside the
+/// hole misses as a side does, and the net is refined on; where no net
+/// holds it, the filling is refused by name. A corner closed against the
+/// planes of a convex vertex passes those planes, so the patch takes
+/// nothing outside the solid. With none it is [`make_filling_n`].
+pub(crate) fn make_filling_n_within(
+    model: &mut Model,
+    boundary: &[FillBoundary],
+    constraints: &[Shape],
+    tolerance: f64,
+    within: &[(Vector, Point)],
+    tol: Tolerances,
+) -> OgeomResult<Filled> {
     if !(tolerance.is_finite() && tolerance > 0.0) {
         ogeom_bail!(
             Construction,
@@ -384,6 +402,17 @@ pub fn make_filling_n(
                 controls.0, controls.1
             );
             continue;
+        }
+        if !within.is_empty() {
+            let (past, at) = past_planes(&surface, &chart_outline, domain, within, tol)?;
+            if past > tolerance {
+                last_miss = format!(
+                    "at {}x{} controls, the patch stands {past} past a plane it is \
+                     held within, at {at:?}",
+                    controls.0, controls.1
+                );
+                continue;
+            }
         }
         fallback = Some((surface, reports, constraint_gap));
         // A residual-led net is refined; see [`smoothing_for`].
@@ -1598,6 +1627,51 @@ fn traced_outline(
 /// Whether a free patch folds over inside the hole: on a grid over the
 /// chart, inside its outline, the normal vanishes against the largest, or
 /// turns over between neighbouring samples.
+/// How far `surface` stands past the planes `within` (each an outward unit
+/// normal and a point) over the hole `outline` bounds in its chart, read on
+/// a grid over `domain` fine against the patch's own spans: the worst, and
+/// where. The hole's boundary lies on or within the planes, so a point the
+/// grid reads just inside it stands past them by no more than the patch's
+/// own miss there.
+fn past_planes(
+    surface: &BSplineSurface,
+    outline: &[Point2],
+    domain: ((f64, f64), (f64, f64)),
+    within: &[(Vector, Point)],
+    tol: Tolerances,
+) -> OgeomResult<(f64, Point)> {
+    let ((ua, ub), (va, vb)) = domain;
+    let spans = surface
+        .u_knots()
+        .control_point_count()
+        .max(surface.v_knots().control_point_count());
+    let grid = (4 * spans).max(64);
+    let mut worst = (f64::NEG_INFINITY, Point::ORIGIN);
+    for i in 0..=grid {
+        for j in 0..=grid {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "a grid index, far below the mantissa"
+            )]
+            let q = Point2::new(
+                (ub - ua).mul_add(i as f64 / grid as f64, ua),
+                (vb - va).mul_add(j as f64 / grid as f64, va),
+            );
+            if !inside(outline, q) {
+                continue;
+            }
+            let p = surface.point_at(q.x, q.y, tol)?;
+            for (normal, on) in within {
+                let d = normal.dot(p - *on);
+                if d > worst.0 {
+                    worst = (d, p);
+                }
+            }
+        }
+    }
+    Ok(worst)
+}
+
 fn folds(
     surface: &BSplineSurface,
     outline: &[Point2],
