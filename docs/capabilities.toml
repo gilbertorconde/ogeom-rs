@@ -1443,7 +1443,11 @@ is cut at its own setback, at a point Q, and the opening runs into Q, \
 where a three-sided patch with its fourth side shrunk to Q, held tangent \
 to both of the sharp edge's faces exactly up to the held trims' \
 projection, turns its normal from one face's to the other's; one patch \
-G1 within the bands' fit target closes the rest. Signed corners with an \
+G1 within the bands' fit target closes the rest. blend_edges closes a \
+convex corner of one round, one bevel and one edge left sharp so, in any \
+request order, the sharp edge cut as far out as the farther band and the \
+rest meeting the bevel's end and the trims from it in position only. \
+Signed corners with an \
 edge left sharp, and sharp edges at vertices of more than three edges, \
 are still refused by name. Refused by name: G2 (a circular band meets \
 its face at G1, so its end arc bends the patch at 1/radius where the face \
@@ -1461,6 +1465,7 @@ tests = [
     "crates/ogeom-fillet/tests/setback.rs",
     "crates/ogeom-fillet/tests/radius_per_edge.rs::three_radii_at_a_corner_close_with_one_patch_in_any_order",
     "crates/ogeom-fillet/tests/mixed_vertex.rs",
+    "crates/ogeom-fillet/tests/blend_edges.rs::a_round_meeting_a_bevel_beside_a_sharp_edge_closes_whatever_the_order",
 ]
 
 [[capability]]

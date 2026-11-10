@@ -227,20 +227,97 @@ fn two_bevels_and_a_round_meeting_close_as_one_patch_whatever_the_order() {
     closes_as_one_patch([0, 0, 1], false);
 }
 
+/// A round of 2 meeting a bevel `Symmetric(2)` at the box's corner, the
+/// third edge left sharp, each edge taking each part in turn and the
+/// request asked both ways round. The opening crosses the sharp edge at a
+/// point, where a patch held across both of its faces turns its normal
+/// from one face's to the other's, and one patch closes the rest: the two
+/// orders build the same solid to the bit, valid, its patches tangent to
+/// the round's band and, at the sharp edge, to both its faces, and meeting
+/// every face they border in position.
 #[test]
-fn a_round_meeting_a_bevel_beside_a_sharp_edge_is_refused() {
-    let mut m = Model::new();
-    let (b, e) = corner(&mut m);
-    let refused = blend_edges(
-        &mut m,
-        &b,
-        &request(&e, [0, 1, 2], [0, 1, 2]),
-        ChamferCorner::Point,
-        T,
-    )
-    .expect_err("the corner should be refused")
-    .to_string();
-    assert!(refused.contains("left sharp"), "{refused}");
+fn a_round_meeting_a_bevel_beside_a_sharp_edge_closes_whatever_the_order() {
+    use ogeom_geom::SurfaceGeometry;
+    for kinds in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        let mut first: Option<(u64, Vec<[u64; 3]>)> = None;
+        for order in [[0usize, 1, 2], [2, 1, 0]] {
+            let mut m = Model::new();
+            let (b, e) = corner(&mut m);
+            let r = blend_edges(
+                &mut m,
+                &b,
+                &request(&e, kinds, order),
+                ChamferCorner::Point,
+                T,
+            )
+            .unwrap_or_else(|why| panic!("{kinds:?} {order:?}: {why}"));
+            let diagnosis = ogeom_algo::check(&m, &r.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{kinds:?}: {:?}", diagnosis.problems);
+            let key = (vol(&m, &r.shape).to_bits(), points(&m, &r.shape));
+            match &first {
+                None => first = Some(key),
+                Some(held) => assert_eq!(held, &key, "{kinds:?}: order {order:?}"),
+            }
+            if order != [0, 1, 2] {
+                continue;
+            }
+            let all = explore_unique(&m, &r.shape, ShapeType::Face).unwrap();
+            let patches: Vec<&Shape> = all
+                .iter()
+                .filter(|f| matches!(surface(&m, f), SurfaceGeometry::BSpline(_)))
+                .collect();
+            assert_eq!(
+                patches.len(),
+                2,
+                "{kinds:?}: the patch at the sharp edge and the rest"
+            );
+            let sharp = (0..3).find(|&i| kinds[i] == 2).unwrap();
+            // The faces of the sharp edge: the planes through the corner
+            // square to the other two axes.
+            let on_sharp_face = |n: ogeom_math::Vector| {
+                (0..3).any(|i| i != sharp && ([n.x, n.y, n.z][i].abs() - 1.0).abs() < 1e-9)
+            };
+            let mut worst_round = 0.0_f64;
+            let mut at_q_faces = 0;
+            for patch in &patches {
+                for c in ogeom_fillet::analyse_blend(&m, &r.shape, patch, 17, T).unwrap() {
+                    assert!(
+                        c.gap <= FIT,
+                        "{kinds:?}: a patch stands {} off a face",
+                        c.gap
+                    );
+                    match surface(&m, &c.neighbour) {
+                        SurfaceGeometry::Cylinder(_) => {
+                            worst_round = worst_round.max(c.tangency_error);
+                        }
+                        SurfaceGeometry::Plane(_) => {
+                            let (_, n) = ogeom_algo::face_normal(&m, &c.neighbour, T).unwrap();
+                            if on_sharp_face(n) && c.tangency_error <= FIT {
+                                at_q_faces += 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            eprintln!("{kinds:?}: the patches meet the round within {worst_round} rad");
+            assert!(
+                worst_round <= FIT,
+                "{kinds:?}: the patches meet the round {worst_round} rad off tangent"
+            );
+            assert!(
+                at_q_faces >= 2,
+                "{kinds:?}: the patches are tangent to {at_q_faces} trims on the sharp edge's faces"
+            );
+        }
+    }
 }
 
 #[test]

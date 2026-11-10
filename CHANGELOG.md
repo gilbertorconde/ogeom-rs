@@ -58,6 +58,25 @@ bump may break the API and a patch bump may not.
     before this change.
 
 
+- **`blend_edges` closes a round meeting a bevel beside an edge left
+  sharp.** (#717)
+  - A round and a bevel meeting at a vertex whose third edge was left sharp
+    were refused ("a round meets a bevel at a vertex where an edge is left
+    sharp"): the opening between the band ends crosses the sharp edge,
+    where one patch would need two tangent planes.
+  - The corner now closes as `round_vertex_setback_sharp` closes one. The
+    sharp edge is cut as far out as the farther band, at a point `Q`. A
+    three-sided patch held across both of the sharp edge's faces turns its
+    normal at `Q` from one face's to the other's. One patch over the rest
+    is tangent to the round's band and to the faces between rounds. It
+    meets the bevel's end and the trims from it in position only, as #803's
+    corners do.
+  - On a 20 × 20 × 10 box's corner, a round of 2 and a bevel `Symmetric(2)`
+    in every arrangement of round, bevel and sharp edge (six), each asked
+    both ways round, give the same solid to the bit. Each is valid, its
+    patches tangent to the round within 5.1e-5 rad and, at the sharp edge,
+    to both its faces.
+
 - **`fillet_edges_variable` rounds a chain turning where marched bands
   meet, in rounds.** (#798)
   - A drum cut flat: its ruling and its top rim, turning where they meet,

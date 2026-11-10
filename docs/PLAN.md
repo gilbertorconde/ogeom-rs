@@ -459,10 +459,13 @@ such an opening on a convex corner (`sharp.rs`,
 by `fit_network` with its halves of the trims from `Q` held and held across
 the two faces, its normal turning from one face's to the other's along the
 shrunk side, and one `make_filling_n` patch G1 to it, the bands and the
-faces over the rest. Owed: the same at a signed corner (the L-bracket of
-#712, where the cell is not convex) and through `fillet_edges`' own
-corners (#717's `blend_edges`); signed corners of more than three edges or
-with a curved face, refused by name.
+faces over the rest. `blend_edges` closes a convex corner of one round,
+one bevel and one edge left sharp the same way (`close_sharp_corner`): the
+sharp edge cut as far out as the farther band, and the rest meeting the
+bevel's end and the trims from it in position only, as #803's corners do.
+Owed: the same at a signed corner (the L-bracket of #712, where the cell is
+not convex) and through `fillet_edges`' own corners; signed corners of
+more than three edges or with a curved face, refused by name.
 
 ### Construction and exchange
 
