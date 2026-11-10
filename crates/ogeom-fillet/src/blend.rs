@@ -39,15 +39,22 @@ pub enum Blend {
 /// only: the bevel meets its faces in a crease, so where its end meets a
 /// face the patch takes the face's tangent plane.
 ///
+/// A vertex of three edges where one round meets one bevel and the third
+/// edge is left sharp closes as
+/// [`round_vertex_setback_sharp`](crate::round_vertex_setback_sharp)
+/// closes a corner: the sharp edge is cut as far out as the farther band,
+/// at `Q`, where a three-sided patch held across both of its faces turns
+/// its normal from one face's to the other's, and one patch over the rest
+/// meets the round's band and the faces between rounds tangent, and the
+/// bevel's end and the trims from it in position only.
+///
 /// # Errors
 ///
 /// As the rounds' and the bevels' own calls, and
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
 /// an edge is asked twice, or a round meets a bevel at a vertex where an
-/// edge is left sharp: the patch closing the round's opening would have to
-/// cross the bevel's sharp end line on the face beside it, and be tangent
-/// there to both the bevel and the face, two planes; or where that vertex
-/// is not a convex corner of planes.
+/// edge is left sharp other than one beside one round and one bevel; or
+/// where that vertex is not a convex corner of planes.
 pub fn blend_edges(
     model: &mut Model,
     solid: &Shape,
@@ -106,13 +113,17 @@ pub fn blend_edges(
                 meeting += 1;
             }
         }
-        if meeting != r.len() + b.len() {
+        // One edge left sharp beside one round and one bevel: the opening
+        // crosses it at a point, where the patch's normal turns.
+        let one_sharp = meeting == 3 && r.len() == 1 && b.len() == 1;
+        if meeting != r.len() + b.len() && !one_sharp {
             ogeom_bail!(
                 Construction,
                 "a round meets a bevel at a vertex where an edge is left sharp: the \
                  patch closing the round's opening would cross the bevel's sharp end \
                  line on the face beside it and be tangent there to two planes; blend \
-                 every edge at the vertex"
+                 every edge at the vertex, or leave one sharp beside one round and one \
+                 bevel"
             );
         }
         mixed.push((vertex, r, b));
@@ -127,6 +138,7 @@ pub fn blend_edges(
         let n = frame.d.len();
         let mut widths = Vec::with_capacity(n);
         let mut kinds = Vec::with_capacity(n);
+        let mut sharp: Option<usize> = None;
         for k in 0..n {
             let (ma, mb) = (frame.m[frame.ring[k]], frame.m[frame.ring[(k + 1) % n]]);
             let dk = frame.d[k].vector();
@@ -179,7 +191,13 @@ pub fn blend_edges(
                     found = Some(((d[ja], d[jb]), CornerEnd::Bevel));
                 }
             }
-            let Some((w, kind)) = found else {
+            let Some((w, kind)) = found.or_else(|| {
+                // The one edge left sharp: a band of no width.
+                (sharp.is_none() && n == 3 && r.len() + b.len() == 2).then(|| {
+                    sharp = Some(k);
+                    ((0.0, 0.0), CornerEnd::Round)
+                })
+            }) else {
                 ogeom_bail!(
                     Construction,
                     "an edge at a corner of rounds and bevels is not one of the request's, \
@@ -189,8 +207,16 @@ pub fn blend_edges(
             widths.push(w);
             kinds.push(kind);
         }
-        let setback = crate::setback::least_setbacks_widths(&frame, &widths, tol)?;
-        corners.push((vertex.clone(), frame, setback, kinds));
+        let mut setback = crate::setback::least_setbacks_widths(&frame, &widths, tol)?;
+        if let Some(ks) = sharp {
+            // The sharp edge cut as far out as the farther of the bands
+            // beside it, clear of their corner.
+            setback[ks] = (0..n)
+                .filter(|&k| k != ks)
+                .map(|k| setback[k])
+                .fold(0.0, f64::max);
+        }
+        corners.push((vertex.clone(), frame, setback, kinds, sharp));
     }
 
     // The bevels, then the rounds on what they leave.
@@ -211,17 +237,22 @@ pub fn blend_edges(
         shape: rounded.shape.clone(),
         history: beveled.history.then(&rounded.history),
     };
-    for (vertex, frame, setback, kinds) in &corners {
-        built = crate::setback::close_corner_ends(
-            model,
-            built,
-            vertex,
-            frame,
-            setback,
-            kinds,
-            Continuity::G1,
-            tol,
-        )?;
+    for (vertex, frame, setback, kinds, sharp) in &corners {
+        built = match sharp {
+            Some(ks) => crate::sharp::close_sharp_corner(
+                model, built, vertex, frame, setback, *ks, kinds, tol,
+            )?,
+            None => crate::setback::close_corner_ends(
+                model,
+                built,
+                vertex,
+                frame,
+                setback,
+                kinds,
+                Continuity::G1,
+                tol,
+            )?,
+        };
     }
     Ok(built)
 }

@@ -31,7 +31,9 @@ use ogeom_math::{Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
 use crate::fill_n::{FillBoundary, make_filling_n};
-use crate::setback::{Setbacks, corner_edges, filler_inside, point_of, round_end, trim_conic};
+use crate::setback::{
+    CornerEnd, Setbacks, bevel_end, corner_edges, filler_inside, point_of, round_end, trim_conic,
+};
 
 /// How many points along the curve between the two patches.
 const ALONG: u32 = 32;
@@ -228,7 +230,32 @@ fn sharp_own(
         .map(|k| edges[k].clone())
         .collect();
     let banded = crate::fillet::fillet_edges(model, solid, &rounded, radius, tol)?;
+    let kinds = vec![CornerEnd::Round; n];
+    close_sharp_corner(model, banded, vertex, &frame, &setback, ks, &kinds, tol)
+}
 
+/// The bands of `banded` meeting at `vertex`, whose corner reads as
+/// `frame`, each stopped at its `setback`, edge `ks` left sharp and cut at
+/// its own, and the opening closed by the patch at `Q` and one patch over
+/// the rest, as [`round_vertex_setback_sharp`] closes it. Each other edge
+/// ends as `kinds` says: a round's end arc, or a bevel's straight end, which
+/// the rest meets in position only, as it meets the trims from that end:
+/// the bevel meets those faces in a crease. The patch at `Q` is held
+/// across both faces of the sharp edge whatever the bands are, so its
+/// normal turns there from one face's to the other's.
+#[allow(clippy::too_many_lines, reason = "one corner, assembled end to end")]
+#[allow(clippy::too_many_arguments, reason = "one corner and its reading")]
+pub(crate) fn close_sharp_corner(
+    model: &mut Model,
+    banded: Built,
+    vertex: &Shape,
+    frame: &crate::corner::CornerFrame,
+    setback: &[f64],
+    ks: usize,
+    kinds: &[CornerEnd],
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let n = frame.d.len();
     // The cell the patches replace: in from every plane through the vertex
     // and short of each edge's section, the sharp edge's included.
     let mut walls: Vec<(Vector, Point)> = frame.m.iter().map(|mk| (*mk, frame.corner)).collect();
@@ -277,6 +304,8 @@ fn sharp_own(
     for (k, section) in sections.iter().enumerate() {
         arcs.push(if k == ks {
             None
+        } else if kinds[k] == CornerEnd::Bevel {
+            Some(bevel_end(model, &kept, frame, *section, tol)?)
         } else {
             Some(round_end(model, &kept, k, *section, tol)?)
         });
@@ -482,18 +511,29 @@ fn sharp_own(
         // `r1`'s arc, the trim between the bands, band `r2`'s arc, the trim
         // back to `Q`'s first half, and the curve along the patch at `Q`,
         // filled by one patch G1 to every side.
-        let g1 = |edge: &Shape, support: &Shape| FillBoundary {
+        // G1 to a round's end and to a trim between rounds; a bevel's end,
+        // and a trim from it, in position only.
+        let side = |edge: &Shape, support: &Shape, tangent: bool| FillBoundary {
             edge: edge.clone(),
             support: Some(support.clone()),
-            continuity: Continuity::G1,
+            continuity: if tangent {
+                Continuity::G1
+            } else {
+                Continuity::C0
+            },
         };
+        let round = |k: usize| kinds[k] == CornerEnd::Round;
         let boundary = vec![
-            g1(&trims[ks].edges[1], &trims[ks].filler),
-            g1(&arc1.0, &arc1.1),
-            g1(&trims[r1].edges[0], &trims[r1].filler),
-            g1(&arc2.0, &arc2.1),
-            g1(&trims[r2].edges[0], &trims[r2].filler),
-            g1(&network.edges[1], &at_q),
+            side(&trims[ks].edges[1], &trims[ks].filler, round(r1)),
+            side(&arc1.0, &arc1.1, round(r1)),
+            side(
+                &trims[r1].edges[0],
+                &trims[r1].filler,
+                round(r1) && round(r2),
+            ),
+            side(&arc2.0, &arc2.1, round(r2)),
+            side(&trims[r2].edges[0], &trims[r2].filler, round(r2)),
+            side(&network.edges[1], &at_q, true),
         ];
         let filled = make_filling_n(model, &boundary, &[], fit, tol)?;
         Ok((at_q, filled.built.shape))

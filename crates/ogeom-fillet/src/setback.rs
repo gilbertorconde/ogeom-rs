@@ -587,7 +587,7 @@ pub(crate) fn round_end(
 /// A bevel's straight end on its section plane `section`, and the bevel's
 /// face: the planar face of `kept`, on none of the corner's host planes,
 /// with a straight edge lying on the section plane.
-fn bevel_end(
+pub(crate) fn bevel_end(
     model: &Model,
     kept: &[Shape],
     frame: &crate::corner::CornerFrame,
@@ -816,7 +816,9 @@ pub(crate) fn least_setbacks_widths(
         let mut moved = false;
         for k in 0..n {
             let far = ties(&setback, k);
-            if far >= setback[k] {
+            // An edge of no width (one left sharp) moves only where it is
+            // passed, or it would be moved by nothing for ever.
+            if far > setback[k] || (far >= setback[k] && reach[k] > 0.0) {
                 setback[k] = far + reach[k];
                 moved = true;
             }
