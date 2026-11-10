@@ -1186,6 +1186,16 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **`fit_network` says a point where a three-sided patch meets four-sided
+  ones is fitted near tangent, not tangent.** (#653)
+  - The fit there is left near tangent, its angle measured into
+    `Network::worst_tangent` (on a ball's cap of four wedges, two
+    three-sided, clean at 0.001: 1.2e-3 rad, 2.3e-4 off the ball). The
+    docs now say so and why: the gluing a three-sided patch needs against
+    a four-sided one misses the fit's own cross derivatives by 2 to 4.5
+    per cent however fine the spans, and held to it the patches stand
+    further off the shape.
+
 - **Classifying points and probing faces against a solid of many faces
   finds the faces a probe may meet without asking every face.** (#706)
   - A solid's prepared boundary now holds its faces' bounds in a tree.
