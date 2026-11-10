@@ -232,6 +232,10 @@ pub(crate) struct Held {
     pub(crate) far: Shape,
     pub(crate) strips: Vec<Shape>,
     pub(crate) between: Vec<Shape>,
+    /// Whether the last strip is a face the ball comes down on (a floor)
+    /// rather than one whose far edge it rests on; `far` is then that
+    /// face's near edge, the last of `between`.
+    pub(crate) floor: bool,
 }
 
 /// A planar face's plane as a point and its outward unit normal, and its
@@ -544,11 +548,31 @@ fn stepped_rolled(
             let Some(k) = far_seat.faces.iter().position(|f| !f.is_same(&face)) else {
                 break;
             };
+            if !far_seat.convex && !strips.is_empty() {
+                // Past a concave far edge the ball may come down on the face
+                // the strips run into.
+                let mut onto = strips.clone();
+                onto.push(far_seat.faces[k].clone());
+                let mut across = between.clone();
+                across.push(far.clone());
+                let held = Held {
+                    far: far.clone(),
+                    strips: onto,
+                    between: across,
+                    floor: true,
+                };
+                match across_to(model, solid, edge, seat, narrow, Some(&held), radius, tol) {
+                    Ok(Some(run)) => return Ok(Some(run)),
+                    Ok(None) | Err(OgeomError::Construction(_)) => {}
+                    Err(e) => return Err(e),
+                }
+            }
             if far_seat.convex && strips.len() >= 2 {
                 let held = Held {
                     far: far.clone(),
                     strips: strips.clone(),
                     between: between.clone(),
+                    floor: false,
                 };
                 match across_to(model, solid, edge, seat, narrow, Some(&held), radius, tol) {
                     Ok(Some(run)) => return Ok(Some(run)),
@@ -732,20 +756,23 @@ pub(crate) fn across_to(
         None => f2.clone(),
     };
     let fk = &fk;
+    let floor = held.is_some_and(|h| h.floor);
     let Some(far_seat) = seat_of(model, solid, &far, tol)? else {
         return Ok(None);
     };
     let Some(k3) = far_seat.faces.iter().position(|f| !f.is_same(fk)) else {
         return Ok(None);
     };
-    if !far_seat.convex || far_seat.faces.iter().all(|f| !f.is_same(fk)) {
+    if far_seat.convex == floor || far_seat.faces.iter().all(|f| !f.is_same(fk)) {
         return Ok(None);
     }
+    // On a floor, the face the ball comes down on: the far edge's face
+    // that is the last strip, its normal, and the plane a radius off it.
     let nk = match held {
         Some(_) => far_seat.normals[1 - k3],
         None => n2,
     };
-    let f3 = &far_seat.faces[k3];
+    let f3 = if floor { fk } else { &far_seat.faces[k3] };
     if f3.is_same(f1) {
         return Ok(None);
     }
@@ -768,9 +795,41 @@ pub(crate) fn across_to(
     // normal, `v` square to it toward the beyond face's, which stands at
     // `phi3` round from `u`. The ball rests on the edge alone where its
     // centre stands between the two normals.
-    let base = far_seat.start;
-    let along = far_seat.along;
-    let reach = far_seat.start.distance(far_seat.end);
+    let (base, along, reach) = if floor {
+        // The centre runs on the line a radius off both the touched face
+        // and the floor, along the crease; the contact on the floor runs a
+        // radius below it.
+        let Some(plane) = flat(model, fk, tol)? else {
+            return Ok(None);
+        };
+        let line = n1.cross(nk);
+        let size = line.magnitude();
+        if size <= tol.angular() || line.cross(t).magnitude() > tol.angular() * size {
+            return Ok(None);
+        }
+        let along = if line.dot(t) > 0.0 {
+            line / size
+        } else {
+            -line / size
+        };
+        // The centre at the crease's start section: a radius off both
+        // planes, on the section square to the crease through `e0`.
+        let walls = [
+            (n1, e0 + n1 * radius),
+            (nk, plane.origin + nk * radius),
+            (along, e0),
+        ];
+        let Some(c0) = crate::corner::planes_meet(&walls[0], &walls[1], &walls[2]) else {
+            return Ok(None);
+        };
+        (c0 - nk * radius, along, f64::INFINITY)
+    } else {
+        (
+            far_seat.start,
+            far_seat.along,
+            far_seat.start.distance(far_seat.end),
+        )
+    };
     let u = nk;
     let v = {
         let w = n3 - u * n3.dot(u);
@@ -782,7 +841,13 @@ pub(crate) fn across_to(
     let (au, av) = (n1.dot(u), n1.dot(v));
     // The edge counts as parallel to the face where its height over the
     // face changes by less than the confusion along the crease.
-    let path = if k.abs() * length > conf {
+    let path = if floor {
+        Path::Line {
+            base,
+            along,
+            w: nk * radius,
+        }
+    } else if k.abs() * length > conf {
         Path::Ellipse {
             base,
             along,
@@ -951,6 +1016,9 @@ pub(crate) fn across_to(
                 };
                 lines.push((between.clone(), (p, (q - p) / p.distance(q))));
             }
+            // The held edge's line; on a floor, the contact line there,
+            // which no edge holds, the floor's near edge standing in for it
+            // where edges are skipped.
             lines.push((far.clone(), (base, along)));
             if lines.len() != held.strips.len() + 1 {
                 return Ok(None);
@@ -1167,7 +1235,14 @@ pub(crate) fn across_to(
         blend,
         guide: curve,
         hosts: [(first_host, first_sign), (second_host, second_sign)],
-        rails: [Rail::Plane(e0, n1), Rail::Line(base, along)],
+        rails: [
+            Rail::Plane(e0, n1),
+            if floor {
+                Rail::Plane(base, nk)
+            } else {
+                Rail::Line(base, along)
+            },
+        ],
         path,
         span,
         strips,

@@ -90,6 +90,23 @@ bump may break the API and a patch bump may not.
     contact line does not cross its face from boundary to boundary, and
     the ball does not seat between two stations of its march.
 
+- **A concave round comes down on the floor past steps slanted to its
+  seam.** (#720)
+  - A wall on low steps slanted to it, rounded wide enough that the ball
+    clears both steps' edges and comes down on the floor, was refused
+    ("the ball's contact runs off the face it touches"): over slanted
+    strips the ball could rest on a strip's far edge but not on the face
+    the strips run into.
+  - Past a concave far edge, the walk over the strips now tries the ball
+    touching the wall and that face, its centre on the line a radius off
+    both. The face goes into the fill as the last strip, its far line the
+    contact line. A face on or behind its plane stands a radius off every
+    centre.
+  - A wall on two steps 1.5 and 1 high, slanted 1.15 and 1.72 degrees to
+    it, rounded at r 6, is valid. Its band lies within 2.3e-5 of the exact
+    balls, every ball stands a radius clear of the result, both lines of
+    contact lie on it, and both steps' tops went into the fill.
+
 - **`StepImport::faces`: the file's own id for every face read.** (#794)
   - Every face a STEP read builds, with its `ADVANCED_FACE` or
     `FACE_SURFACE` id, in id order, each the face as the solids and shells

@@ -307,10 +307,12 @@ crosses square from the middle of the edge before, so a strip that runs
 past the seam's ends is walked too. A face is cleared only of its part in
 front of the touched face's plane, since every point on or behind that
 plane stands a radius off every centre; an end face the touch line meets
-is then cleared. Owed there: (1) the face hold (the ball coming down on
-the floor) over slanted strips, whose fill is the same wedge with the
-floor's leg; (2) a held far edge that ends on an end face the end ball
-touches at that end vertex: the clearance there is a second-order touch
+is then cleared. Past a concave far edge over slanted strips the ball may
+come down on the face the strips run into (a floor), its centre on the
+line a radius off that face and the touched one: the floor goes in as the
+last strip, its far line the contact line, and a face on or behind the
+floor's plane stands a radius off every centre. Owed there: a held far
+edge that ends on an end face the end ball touches at that end vertex: the clearance there is a second-order touch
 in the path parameter, which halving cannot prove, so it needs the face's
 least distance from the turning centre's arc in closed form (the same
 reading as the marched lunes below); the fixture keeps its lower strips
