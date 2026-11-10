@@ -2270,8 +2270,8 @@ fn fillet_edge_variable_own(
 /// (no points, a fraction off the chain or out of order, a radius not a
 /// positive length), where a linear law changes radius round a closed
 /// chain, where `chain` is empty, a chain of more than one edge whose
-/// edges do not run end to end, a turn where a curved crease meets or
-/// whose bands' sections differ across a re-entrant turn, a loop joined
+/// edges do not run end to end, a turn where a curved crease meets, a
+/// loop joined
 /// round a convex turn with no straight band between two of its junctions
 /// to open it at, a ball resting
 /// on a narrow face's far edge or two bands overlapping across a face

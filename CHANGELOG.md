@@ -13,6 +13,26 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A radius law rounds a re-entrant turn whose bands' sections differ.**
+  (#798)
+  - `fillet_edges_variable` no longer refuses a chain turning at a
+    re-entrant corner beside a drafted wall (an L-block whose inner wall
+    leans). Each band follows the law to the vertex and is carried on past
+    it level, at the law's radius there. What stands past its wall is
+    added as a prism from where the other band reaches, and the corner
+    takes what lies above both, as the constant corner does.
+  - On the drafted L-block's two inner top edges under a linear law from 1
+    to 2, the round is valid and its volume lies between the constant
+    rounds at 1 and 2. Away from the corner every contact on the top
+    stands within 1e-6 of the law: a radius off the crease on the square
+    wall's band, `tan 40°` of it on the drafted one. The same chain builds
+    under linear laws ending anywhere from 0.5 to 3, in either order.
+  - The constant corner is unchanged: a level law still goes to
+    `fillet_edges`.
+  - Still not closed: the drafted L-block's whole top loop. Its convex turn
+    beside the drafted wall fails under a law (`NotDone`), as it did
+    before this change.
+
 - **`StepImport::faces`: the file's own id for every face read.** (#794)
   - Every face a STEP read builds, with its `ADVANCED_FACE` or
     `FACE_SURFACE` id, in id order, each the face as the solids and shells

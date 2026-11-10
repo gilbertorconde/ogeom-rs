@@ -44,7 +44,9 @@
 //! on, what stands past a band's wall's plane lying above that band as much
 //! as what its ball rolls off, so each band is carried on with its section
 //! widened past its wall and the two are intersected in one boolean, which
-//! bounds the corner by the bands' own intersection ([`corner`]). Across a
+//! bounds the corner by the bands' own intersection ([`corner`]). Under a
+//! radius law each band keeps the law up to the vertex and is carried on
+//! level past it, its widening a prism of its own. Across a
 //! convex turn of two straight creases the junction is crossed whatever the
 //! sections, as above; so too where one crease turns about an axis along
 //! the shared host's normal on a drum beside a crease of another kind (a
