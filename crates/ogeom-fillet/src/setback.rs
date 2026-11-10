@@ -87,7 +87,7 @@ pub fn round_vertex_setback(
 }
 
 /// The point a vertex stands at.
-fn point_of(model: &Model, vertex: &Shape) -> OgeomResult<Point> {
+pub(crate) fn point_of(model: &Model, vertex: &Shape) -> OgeomResult<Point> {
     let Some(raw) = model
         .node(vertex)
         .and_then(|n| n.data().as_vertex().map(|d| d.point))
@@ -134,52 +134,7 @@ fn setback_own(
     let frame = crate::corner::corner_frame(model, solid, vertex, radius, tol)?;
     let n = frame.d.len();
 
-    // The solid's edge along each of the corner's edge directions.
-    let at_vertex: Vec<Shape> = explore_unique(model, solid, ShapeType::Edge)?
-        .into_iter()
-        .filter(|e| {
-            ogeom_algo::edge_vertices(model, e)
-                .ok()
-                .flatten()
-                .is_some_and(|(a, b)| a.is_same(vertex) || b.is_same(vertex))
-        })
-        .collect();
-    let mut edges: Vec<Shape> = Vec::with_capacity(n);
-    let mut reach: Vec<f64> = Vec::with_capacity(n);
-    for dk in &frame.d {
-        let mut best: Option<(f64, Shape, f64)> = None;
-        for e in &at_vertex {
-            let Some((a, b)) = ogeom_algo::edge_vertices(model, e)? else {
-                continue;
-            };
-            let far = if a.is_same(vertex) { b } else { a };
-            let along = point_of(model, &far)? - frame.corner;
-            let length = along.magnitude();
-            if length <= tol.confusion() {
-                continue;
-            }
-            let cos = along.dot(dk.vector()) / length;
-            if best.as_ref().is_none_or(|(c, _, _)| cos > *c) {
-                best = Some((cos, e.clone(), length));
-            }
-        }
-        let Some((cos, edge, length)) = best else {
-            ogeom_bail!(
-                Construction,
-                "no edge of the solid leaves the vertex along a corner edge"
-            );
-        };
-        if cos < 1.0 - tol.angular().sqrt() {
-            ogeom_bail!(
-                Construction,
-                "a setback corner rounds straight edges; an edge leaving the \
-                 vertex is curved, which is still owed; see \
-                 docs/CAPABILITIES.md, fillet.setback-corners"
-            );
-        }
-        edges.push(edge);
-        reach.push(length);
-    }
+    let (edges, reach) = corner_edges(model, solid, vertex, &frame, tol)?;
     let setback: Vec<f64> = edges
         .iter()
         .map(|e| {
@@ -232,6 +187,65 @@ fn setback_own(
         setbacks.continuity,
         tol,
     )
+}
+
+/// The solid's edge along each of `frame`'s edge directions from `vertex`,
+/// and each one's length; refused by name where none does, or where the
+/// nearest is curved.
+pub(crate) fn corner_edges(
+    model: &Model,
+    solid: &Shape,
+    vertex: &Shape,
+    frame: &crate::corner::CornerFrame,
+    tol: Tolerances,
+) -> OgeomResult<(Vec<Shape>, Vec<f64>)> {
+    let n = frame.d.len();
+    let at_vertex: Vec<Shape> = explore_unique(model, solid, ShapeType::Edge)?
+        .into_iter()
+        .filter(|e| {
+            ogeom_algo::edge_vertices(model, e)
+                .ok()
+                .flatten()
+                .is_some_and(|(a, b)| a.is_same(vertex) || b.is_same(vertex))
+        })
+        .collect();
+    let mut edges: Vec<Shape> = Vec::with_capacity(n);
+    let mut reach: Vec<f64> = Vec::with_capacity(n);
+    for dk in &frame.d {
+        let mut best: Option<(f64, Shape, f64)> = None;
+        for e in &at_vertex {
+            let Some((a, b)) = ogeom_algo::edge_vertices(model, e)? else {
+                continue;
+            };
+            let far = if a.is_same(vertex) { b } else { a };
+            let along = point_of(model, &far)? - frame.corner;
+            let length = along.magnitude();
+            if length <= tol.confusion() {
+                continue;
+            }
+            let cos = along.dot(dk.vector()) / length;
+            if best.as_ref().is_none_or(|(c, _, _)| cos > *c) {
+                best = Some((cos, e.clone(), length));
+            }
+        }
+        let Some((cos, edge, length)) = best else {
+            ogeom_bail!(
+                Construction,
+                "no edge of the solid leaves the vertex along a corner edge"
+            );
+        };
+        if cos < 1.0 - tol.angular().sqrt() {
+            ogeom_bail!(
+                Construction,
+                "a setback corner rounds straight edges; an edge leaving the \
+                 vertex is curved, which is still owed; see \
+                 docs/CAPABILITIES.md, fillet.setback-corners"
+            );
+        }
+        edges.push(edge);
+        reach.push(length);
+    }
+    Ok((edges, reach))
 }
 
 /// How a band at a setback corner ends where the patch meets it.
@@ -331,41 +345,7 @@ pub(crate) fn close_corner_ends(
             arcs.push(bevel_end(model, &kept, frame, *section, tol)?);
             continue;
         }
-        let mut found: Option<(Shape, Shape)> = None;
-        for face in &kept {
-            let is_plane = model
-                .node(face)
-                .and_then(|n| n.data().as_face())
-                .and_then(|d| model.geometry().surface(d.surface))
-                .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::Plane(_)));
-            if is_plane {
-                continue;
-            }
-            for e in explore_unique(model, face, ShapeType::Edge)? {
-                let Some((c, (lo, hi))) = ogeom_algo::placed_edge_curve(model, &e, tol)? else {
-                    continue;
-                };
-                if matches!(c, Curve::Line(_)) {
-                    continue;
-                }
-                let on = [lo, f64::midpoint(lo, hi), hi]
-                    .iter()
-                    .map(|t| c.point_at(*t, tol))
-                    .collect::<OgeomResult<Vec<Point>>>()?
-                    .into_iter()
-                    .all(|p| on_plane(p, *section));
-                if on {
-                    found = Some((e, face.clone()));
-                }
-            }
-        }
-        let Some(found) = found else {
-            ogeom_bail!(
-                Construction,
-                "band {k} does not end in an arc on its section plane"
-            );
-        };
-        arcs.push(found);
+        arcs.push(round_end(model, &kept, k, *section, tol)?);
     }
 
     // On host plane `ring[k + 1]`, between band `k` and band `k + 1`: each
@@ -401,54 +381,9 @@ pub(crate) fn close_corner_ends(
         // The rails run along the edges: each conic leaves its band's rail
         // along that edge's direction, towards the vertex.
         let (t0, t1) = (-frame.d[k].vector(), -frame.d[next].vector());
-        let apex = {
-            // p0 + a t0 = p1 + b t1, in the plane.
-            let w = p1 - p0;
-            let c = t0.cross(t1);
-            let cc = c.dot(c);
-            if cc <= tol.angular() {
-                ogeom_bail!(Construction, "two rails on a face are parallel");
-            }
-            let a = w.cross(t1).dot(c) / cc;
-            p0 + t0 * a
-        };
-        if (apex - p0).dot(t0) <= 0.0 || (apex - p1).dot(t1) <= 0.0 {
-            ogeom_bail!(
-                Construction,
-                "the rails on a face do not run towards each other past their setbacks"
-            );
-        }
-        let (u0, u1) = ((apex - p0).normalized(tol)?, (p1 - apex).normalized(tol)?);
-        let weight = ((1.0 + u0.dot(u1)) / 2.0).max(0.0).sqrt();
-        let knots = ogeom_math::KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)?;
-        let control = vec![
-            ogeom_math::Weighted::new(p0, 1.0, tol)?,
-            ogeom_math::Weighted::new(apex, weight, tol)?,
-            ogeom_math::Weighted::new(p1, 1.0, tol)?,
-        ];
-        let conic = Curve::BSpline(ogeom_geom::BSplineCurve::rational(knots, control)?);
-        let trim = ogeom_algo::make_edge_between(model, conic, (0.0, 1.0), &v0, &v1, tol)?.shape;
-        let vq = ogeom_algo::make_vertex(model, q).shape;
-        let ring = vec![
-            trim.clone(),
-            crate::support::segment_between(model, (&v1, p1), (&vq, q), tol)?,
-            crate::support::segment_between(model, (&vq, q), (&v0, p0), tol)?,
-        ];
-        let outward = -plane.0;
-        let reach = (p0.distance(q) + p1.distance(q) + apex.distance(q)) * 2.0 + 1.0;
-        let surface: ogeom_geom::SurfaceGeometry = ogeom_geom::PlaneSurface::over(
-            Plane::through(q, Direction::new(outward, tol)?),
-            (-reach, reach),
-            (-reach, reach),
-        )?
-        .into();
-        let turn = (p0 - q).cross(p1 - q);
-        let ring: Vec<Shape> = if turn.dot(outward) > 0.0 {
-            ring
-        } else {
-            ring.iter().rev().map(Shape::reversed).collect()
-        };
-        let filler = ogeom_algo::make_face_with_pcurves(model, surface, &[ring], tol)?.shape;
+        let (conic, apex) = trim_conic((p0, t0), (p1, t1), tol)?;
+        let (trim, filler) =
+            trim_and_filler(model, conic, apex, (&v0, p0), (&v1, p1), q, plane, tol)?;
         boundary.push(FillBoundary {
             edge: arcs[k].0.clone(),
             support: Some(arcs[k].1.clone()),
@@ -486,6 +421,167 @@ pub(crate) fn close_corner_ends(
     let mut history: History = history;
     history.generate(vertex, patch);
     Ok(Built::new(rounded, history))
+}
+
+/// The edge on `conic` from `v0` to `v1`, and the face's filler inside the
+/// corner's cell: the planar face on `plane` bounded by the trim and the
+/// two section lines from its ends to `q`, where they meet.
+#[allow(clippy::too_many_arguments, reason = "one face's trim and its filler")]
+pub(crate) fn trim_and_filler(
+    model: &mut Model,
+    conic: Curve,
+    apex: Point,
+    (v0, p0): (&Shape, Point),
+    (v1, p1): (&Shape, Point),
+    q: Point,
+    plane: (Vector, Point),
+    tol: Tolerances,
+) -> OgeomResult<(Shape, Shape)> {
+    let trim = ogeom_algo::make_edge_between(model, conic, (0.0, 1.0), v0, v1, tol)?.shape;
+    let filler = filler_inside(
+        model,
+        vec![trim.clone()],
+        apex,
+        (v0, p0),
+        (v1, p1),
+        q,
+        plane,
+        tol,
+    )?;
+    Ok((trim, filler))
+}
+
+/// The face's filler inside the corner's cell: the planar face on `plane`
+/// bounded by `trim`, the edges in order from `v0` to `v1` along a trim
+/// whose middle control point is `apex`, and the two section lines from
+/// its ends to `q`, where they meet.
+#[allow(clippy::too_many_arguments, reason = "one face's filler")]
+pub(crate) fn filler_inside(
+    model: &mut Model,
+    trim: Vec<Shape>,
+    apex: Point,
+    (v0, p0): (&Shape, Point),
+    (v1, p1): (&Shape, Point),
+    q: Point,
+    plane: (Vector, Point),
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let vq = ogeom_algo::make_vertex(model, q).shape;
+    let mut ring = trim;
+    ring.push(crate::support::segment_between(
+        model,
+        (v1, p1),
+        (&vq, q),
+        tol,
+    )?);
+    ring.push(crate::support::segment_between(
+        model,
+        (&vq, q),
+        (v0, p0),
+        tol,
+    )?);
+    let outward = -plane.0;
+    let reach = (p0.distance(q) + p1.distance(q) + apex.distance(q)) * 2.0 + 1.0;
+    let surface: ogeom_geom::SurfaceGeometry = ogeom_geom::PlaneSurface::over(
+        Plane::through(q, Direction::new(outward, tol)?),
+        (-reach, reach),
+        (-reach, reach),
+    )?
+    .into();
+    let turn = (p0 - q).cross(p1 - q);
+    let ring: Vec<Shape> = if turn.dot(outward) > 0.0 {
+        ring
+    } else {
+        ring.iter().rev().map(Shape::reversed).collect()
+    };
+    Ok(ogeom_algo::make_face_with_pcurves(model, surface, &[ring], tol)?.shape)
+}
+
+/// The conic from `p0` to `p1` on a face, tangent at each end to the line
+/// from it along its `t` (pointing into the conic), and its middle control
+/// point, where those lines meet; weighted by the cosine of half the turn
+/// between them, refused by name where the lines are parallel or do not run
+/// towards each other.
+pub(crate) fn trim_conic(
+    (p0, t0): (Point, Vector),
+    (p1, t1): (Point, Vector),
+    tol: Tolerances,
+) -> OgeomResult<(Curve, Point)> {
+    let apex = {
+        // p0 + a t0 = p1 + b t1, in the plane.
+        let w = p1 - p0;
+        let c = t0.cross(t1);
+        let cc = c.dot(c);
+        if cc <= tol.angular() {
+            ogeom_bail!(Construction, "two rails on a face are parallel");
+        }
+        let a = w.cross(t1).dot(c) / cc;
+        p0 + t0 * a
+    };
+    if (apex - p0).dot(t0) <= 0.0 || (apex - p1).dot(t1) <= 0.0 {
+        ogeom_bail!(
+            Construction,
+            "the rails on a face do not run towards each other past their setbacks"
+        );
+    }
+    let (u0, u1) = ((apex - p0).normalized(tol)?, (p1 - apex).normalized(tol)?);
+    let weight = ((1.0 + u0.dot(u1)) / 2.0).max(0.0).sqrt();
+    let knots = ogeom_math::KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)?;
+    let control = vec![
+        ogeom_math::Weighted::new(p0, 1.0, tol)?,
+        ogeom_math::Weighted::new(apex, weight, tol)?,
+        ogeom_math::Weighted::new(p1, 1.0, tol)?,
+    ];
+    Ok((
+        Curve::BSpline(ogeom_geom::BSplineCurve::rational(knots, control)?),
+        apex,
+    ))
+}
+
+/// Band `k`'s end arc on its section plane `section`, and the band face it
+/// ends: the curved edge of a curved face of `kept` lying on the plane.
+pub(crate) fn round_end(
+    model: &Model,
+    kept: &[Shape],
+    k: usize,
+    section: (Vector, Point),
+    tol: Tolerances,
+) -> OgeomResult<(Shape, Shape)> {
+    let mut found: Option<(Shape, Shape)> = None;
+    for face in kept {
+        let is_plane = model
+            .node(face)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| model.geometry().surface(d.surface))
+            .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::Plane(_)));
+        if is_plane {
+            continue;
+        }
+        for e in explore_unique(model, face, ShapeType::Edge)? {
+            let Some((c, (lo, hi))) = ogeom_algo::placed_edge_curve(model, &e, tol)? else {
+                continue;
+            };
+            if matches!(c, Curve::Line(_)) {
+                continue;
+            }
+            let on = [lo, f64::midpoint(lo, hi), hi]
+                .iter()
+                .map(|t| c.point_at(*t, tol))
+                .collect::<OgeomResult<Vec<Point>>>()?
+                .into_iter()
+                .all(|p| section.0.dot(p - section.1).abs() <= tol.confusion() * 100.0);
+            if on {
+                found = Some((e, face.clone()));
+            }
+        }
+    }
+    let Some(found) = found else {
+        ogeom_bail!(
+            Construction,
+            "band {k} does not end in an arc on its section plane"
+        );
+    };
+    Ok(found)
 }
 
 /// A bevel's straight end on its section plane `section`, and the bevel's

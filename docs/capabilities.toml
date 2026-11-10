@@ -1412,7 +1412,15 @@ the vertex the face kept on the side of its conic away from it; coplanar \
 faces a fusion left there count as one. With an edge of such a vertex \
 left sharp the request is refused by name in either order, as the \
 opening would cross that edge and no patch is tangent to both its faces \
-at one point. Refused by name: G2 (a circular band meets \
+at one point. round_vertex_setback_sharp closes a box-like corner with \
+two of its three edges rounded and the third left sharp: the sharp edge \
+is cut at its own setback, at a point Q, and the opening runs into Q, \
+where a three-sided patch with its fourth side shrunk to Q, held tangent \
+to both of the sharp edge's faces exactly up to the held trims' \
+projection, turns its normal from one face's to the other's; one patch \
+G1 within the bands' fit target closes the rest. Signed corners with an \
+edge left sharp, and sharp edges at vertices of more than three edges, \
+are still refused by name. Refused by name: G2 (a circular band meets \
 its face at G1, so its end arc bends the patch at 1/radius where the face \
 asks none; curvature-continuous band sections come first), a vertex a \
 curved face meets, planes sharing no tangent ball, a curved edge leaving \
@@ -1420,7 +1428,10 @@ the vertex, and a setback inside the ball's own or past the edge's end. \
 Owed: the patch as a network of quads from the sides' midpoints to a \
 centre, held tangent exactly rather than to the fit; setbacks through \
 fillet_edges' own corners."""
-symbols = ["ogeom_fillet::round_vertex_setback", "ogeom_fillet::Setbacks"]
+symbols = [
+    "ogeom_fillet::round_vertex_setback", "ogeom_fillet::Setbacks",
+    "ogeom_fillet::round_vertex_setback_sharp",
+]
 tests = [
     "crates/ogeom-fillet/tests/setback.rs",
     "crates/ogeom-fillet/tests/radius_per_edge.rs::three_radii_at_a_corner_close_with_one_patch_in_any_order",

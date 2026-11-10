@@ -31,6 +31,7 @@ mod pinched;
 mod rolled;
 mod ruled;
 mod setback;
+mod sharp;
 pub mod sheet;
 mod sheet_curved;
 mod stepped;
@@ -62,4 +63,5 @@ pub use march::{
     BlendStop, MarchedBlend, Sides, march_blend, march_blend_seeded, march_blend_sided,
 };
 pub use setback::{Setbacks, round_vertex_setback};
+pub use sharp::round_vertex_setback_sharp;
 pub use sheet::{fillet_faces, fillet_sheet_edges};

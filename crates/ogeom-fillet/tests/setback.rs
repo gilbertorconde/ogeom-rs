@@ -204,3 +204,132 @@ fn a_setback_shorter_than_the_ball_s_is_refused() {
         "{e}"
     );
 }
+
+/// A sharp corner's case: the edge left sharp, the radius, the setbacks
+/// named by edge index, and the default.
+type SharpCase = (usize, f64, &'static [(usize, f64)], f64);
+
+/// The block's corner with edge `sharp` of [`block`]'s left sharp and the
+/// other two rounded at `radius`, set back as `per_edge` names by index
+/// and `default` otherwise: valid, two patches, the
+/// worst tangency of either against its neighbours, and, along the shrunk
+/// side of the patch at the sharp edge, how its normal turns.
+fn sharp_corner(
+    sharp: usize,
+    radius: f64,
+    per_edge: &[(usize, f64)],
+    default: f64,
+) -> (f64, Vec<f64>, f64) {
+    use ogeom_geom::Surface as _;
+    let (mut m, b, v, edges) = block();
+    let setbacks = Setbacks {
+        per_edge: per_edge
+            .iter()
+            .map(|(k, s)| (edges[*k].clone(), *s))
+            .collect(),
+        default,
+        continuity: Continuity::G1,
+    };
+    let rounded = ogeom_fillet::round_vertex_setback_sharp(
+        &mut m,
+        &b,
+        &v,
+        &edges[sharp],
+        radius,
+        &setbacks,
+        T,
+    )
+    .unwrap();
+    valid(&m, &rounded.shape);
+    let patches = rounded.history.generated(&v);
+    assert_eq!(
+        patches.len(),
+        2,
+        "a patch at the sharp edge and one over the rest"
+    );
+    let mut worst = 0.0_f64;
+    for patch in patches {
+        for c in analyse_blend(&m, &rounded.shape, patch, 17, T).unwrap() {
+            worst = worst.max(c.tangency_error);
+        }
+    }
+    let data = m.node(&patches[0]).unwrap().data().as_face().unwrap();
+    let ogeom_geom::SurfaceGeometry::BSpline(surface) = m.geometry().surface(data.surface).unwrap()
+    else {
+        panic!("the patch at the sharp edge is a B-spline");
+    };
+    let turns: Vec<f64> = (0..=32)
+        .map(|j| {
+            let (du, dv) = surface.d1_at(1e-7, f64::from(j) / 32.0, T).unwrap();
+            let n = du.cross(dv);
+            let n = n / n.magnitude();
+            let (start, _) = surface.d1_at(1e-7, 0.0, T).unwrap();
+            let (_, dv0) = surface.d1_at(1e-7, 0.0, T).unwrap();
+            let n0 = start.cross(dv0);
+            (n.dot(n0 / n0.magnitude())).clamp(-1.0, 1.0).acos()
+        })
+        .collect();
+    (worst, turns, volume(&m, &rounded.shape))
+}
+
+/// The block's corner with two edges rounded and the third left sharp: the
+/// patch runs into the sharp edge at its setback, a three-sided patch there
+/// turning its normal from one of the edge's faces to the other's, and
+/// both patches meet every band end and face tangent.
+#[test]
+fn a_setback_corner_leaving_an_edge_sharp_runs_its_patch_into_that_edge() {
+    let cases: [SharpCase; 10] = [
+        // The top edges rounded, the upright left sharp, all set back 5.
+        (2, 2.0, &[], 5.0),
+        // The sharp edge cut nearer the bands' rails, and farther off.
+        (2, 2.0, &[(2, 3.0)], 5.0),
+        (2, 2.0, &[(2, 8.0)], 5.0),
+        // Uneven bands: at 6 and 4, the sharp edge cut at 5 and at 3.
+        (2, 2.0, &[(0, 6.0), (1, 4.0)], 5.0),
+        (2, 2.0, &[(0, 6.0), (1, 4.0), (2, 3.0)], 5.0),
+        // A top edge left sharp, the other top edge and the upright rounded.
+        (0, 1.5, &[], 4.0),
+        (1, 1.0, &[(0, 3.0), (2, 5.0)], 4.0),
+        (0, 2.0, &[(1, 7.0)], 5.0),
+        // A smaller and a larger radius.
+        (2, 1.0, &[], 3.0),
+        (2, 3.0, &[], 8.0),
+    ];
+    for (sharp, radius, per_edge, default) in cases {
+        let (worst, turns, volume) = sharp_corner(sharp, radius, per_edge, default);
+        eprintln!(
+            "MEASURE sharp {sharp} worst {worst} volume {volume} turns {:?}",
+            turns.iter().step_by(8).collect::<Vec<_>>()
+        );
+        assert!(
+            worst < 2e-4,
+            "the patches meet their neighbours within {worst} rad"
+        );
+        // The normal turns from one face's to the other's, a right angle,
+        // one way all along the shrunk side.
+        let last = turns[turns.len() - 1];
+        assert!(
+            (last - core::f64::consts::FRAC_PI_2).abs() < 1e-6,
+            "turns {last}"
+        );
+        assert!(turns.windows(2).all(|w| w[1] >= w[0] - 1e-9), "{turns:?}");
+        assert!(volume < 4000.0);
+    }
+}
+
+/// A sharp edge cut no farther from the vertex than the bands' rails stand
+/// from its faces leaves no room for the trims from it: refused by name.
+#[test]
+fn a_sharp_edge_cut_inside_the_bands_is_refused_by_name() {
+    let (mut m, b, v, edges) = block();
+    let setbacks = Setbacks {
+        per_edge: vec![(edges[2].clone(), 1.5)],
+        default: 5.0,
+        continuity: Continuity::G1,
+    };
+    let err =
+        ogeom_fillet::round_vertex_setback_sharp(&mut m, &b, &v, &edges[2], 2.0, &setbacks, T)
+            .unwrap_err()
+            .to_string();
+    assert!(err.contains("edge left sharp"), "{err}");
+}

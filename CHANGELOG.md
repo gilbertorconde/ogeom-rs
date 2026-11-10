@@ -13,6 +13,27 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`round_vertex_setback_sharp`: a setback corner with one edge left
+  sharp.** (#712, #717)
+  - At a box-like corner with two edges rounded and the third left sharp,
+    the bands stop at their setbacks and the opening between them crosses
+    the sharp edge. There one patch would have to be tangent to both of
+    that edge's faces at a single point, two tangent planes at once, which
+    no patch with a tangent plane there has; every filler refused it.
+  - The sharp edge is now cut at its own setback, at `Q`, and the opening
+    runs into `Q`. There a three-sided patch with its fourth side shrunk
+    to `Q` turns its normal along that side from one face's to the
+    other's, a cone at `Q`. It is fitted by `fit_network`, its halves of
+    the trims from `Q` held to them and held across the faces, so it is
+    tangent to both exactly up to the held curves' projection. One patch
+    G1 to the bands, the faces and the patch at `Q` closes the rest.
+  - On the 20 x 20 x 10 block's corner, at ten radii and even and uneven
+    setbacks with either kind of edge left sharp, the result passes
+    `check`, both patches meet every neighbour within 1.5e-4 rad (the
+    bands' target is 2e-4), and the normal at `Q` turns from one face's to
+    the other's one way, through a right angle.
+  - A sharp edge cut inside the bands' own corner is refused by name.
+
 - **`SheetMethod::AsRigidAsPossible`: a sheet laid on a curved face with
   lengths and areas stretched as little as they can be together.** (#729)
   - The geodesic disc the sheet covers is flattened as rigidly as
