@@ -435,6 +435,58 @@ pub(crate) fn seam_other_side(
     image.transformed(&ogeom_math::Transform2::translation(shift), tol)
 }
 
+/// An image a wire walks once along a seam column of a periodic chart,
+/// moved onto the column the face lies against: the face's interior is on
+/// the left of its walked boundary in the chart, so walking the column
+/// toward `+v` the face lies at smaller `u` and the column is the chart's
+/// high bound, and walking toward `-v` it is the low bound (likewise for a
+/// `v` seam, the face to the right of a walk toward `+u`). An image along
+/// no seam column, or on the right one already, is returned as it is.
+///
+/// At a pole any column meets the edge before, so chaining images end to
+/// end cannot tell the two columns of a seam apart; the side the face lies
+/// on can. `backwards` says the wire walks the edge against its curve.
+pub(crate) fn onto_inner_column(
+    image: &PlanarCurve,
+    range: (f64, f64),
+    backwards: bool,
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> OgeomResult<PlanarCurve> {
+    use ogeom_geom::Curve2d as _;
+    use ogeom_geom::Surface as _;
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let (a, b) = (image.point_at(range.0, tol)?, image.point_at(range.1, tol)?);
+    let mid = image.point_at(f64::midpoint(range.0, range.1), tol)?;
+    let (start, end) = if backwards { (b, a) } else { (a, b) };
+    let near = |x: f64, y: f64| (x - y).abs() <= tol.parametric();
+    let shift = if surface.is_periodic_u()
+        && near(a.x, b.x)
+        && near(a.x, mid.x)
+        && (near(a.x, ua) || near(a.x, ub))
+        && !near(start.y, end.y)
+    {
+        // Toward +v the face lies toward -u: the high column.
+        let column = if end.y > start.y { ub } else { ua };
+        ogeom_math::Vector2::new(column - a.x, 0.0)
+    } else if surface.is_periodic_v()
+        && near(a.y, b.y)
+        && near(a.y, mid.y)
+        && (near(a.y, va) || near(a.y, vb))
+        && !near(start.x, end.x)
+    {
+        // Toward +u the face lies toward +v: the low row.
+        let row = if end.x > start.x { va } else { vb };
+        ogeom_math::Vector2::new(0.0, row - a.y)
+    } else {
+        return Ok(image.clone());
+    };
+    if shift.magnitude() <= tol.parametric() {
+        return Ok(image.clone());
+    }
+    image.transformed(&ogeom_math::Transform2::translation(shift), tol)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "test code")]
