@@ -536,6 +536,12 @@ pub(crate) fn close_sharp_corner(
             side(&network.edges[1], &at_q, true),
         ];
         let filled = make_filling_n(model, &boundary, &[], fit, tol)?;
+        {
+            let planes: Vec<(Vector, Point)> = frame.m.iter().map(|m| (*m, frame.corner)).collect();
+            let (b, at) = crate::setback::patch_bulge(model, &filled.built.shape, &planes, tol)?;
+            let (bq, atq) = crate::setback::patch_bulge(model, &at_q, &planes, tol)?;
+            eprintln!("DBGBULGE sharp patch {b:e} at {at:?}; at_q {bq:e} at {atq:?}");
+        }
         Ok((at_q, filled.built.shape))
     };
     let mut made = None;

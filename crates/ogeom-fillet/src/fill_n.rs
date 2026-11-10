@@ -310,7 +310,7 @@ pub fn make_filling_n(
     // The latest fit that met the tolerance.
     let mut fallback = None;
     for (round, base) in NETS.into_iter().chain(FURTHER).enumerate() {
-        if round >= NETS.len() && fallback.is_some() {
+        if round >= NETS.len() && fallback.is_some() && std::env::var_os("OGEOM_FILL_ALL").is_none() {
             break;
         }
         #[expect(
@@ -387,7 +387,7 @@ pub fn make_filling_n(
         }
         fallback = Some((surface, reports, constraint_gap));
         // A residual-led net is refined; see [`smoothing_for`].
-        if fit.residual <= smoothing {
+        if fit.residual <= smoothing && std::env::var_os("OGEOM_FILL_ALL").is_none() {
             break;
         }
     }

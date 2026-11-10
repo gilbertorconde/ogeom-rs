@@ -587,6 +587,11 @@ pub(crate) fn close_corner_ends(
 
     let filled = make_filling_n(model, &boundary, &[], fit, tol)?;
     let patch = filled.built.shape.clone();
+    {
+        let planes: Vec<(Vector, Point)> = frame.m.iter().map(|m| (*m, frame.corner)).collect();
+        let (b, at) = patch_bulge(model, &patch, &planes, tol)?;
+        eprintln!("DBGBULGE ends {b:e} at {at:?}");
+    }
     let mut faces = kept;
     faces.extend(fillers);
     faces.push(patch.clone());
@@ -1758,4 +1763,30 @@ pub(crate) fn close_signed_corner(
     let mut history: History = history;
     history.generate(&c.vertex, patch);
     Ok(Built::new(rounded, history))
+}
+
+/// How far the patch stands past the planes `planes` (each an outward unit
+/// normal and a point), read at the vertices of its mesh: the worst, and
+/// where.
+pub(crate) fn patch_bulge(
+    model: &Model,
+    patch: &Shape,
+    planes: &[(Vector, Point)],
+    tol: Tolerances,
+) -> OgeomResult<(f64, Point)> {
+    let deflection = ogeom_mesh::Deflection {
+        chord: crate::marched::band_fit_target(tol) * 0.25,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let mesh = ogeom_mesh::triangulate_face(model, patch, deflection, tol)?;
+    let mut worst = (f64::NEG_INFINITY, Point::ORIGIN);
+    for p in &mesh.positions {
+        for (n, at) in planes {
+            let d = n.dot(*p - *at);
+            if d > worst.0 {
+                worst = (d, *p);
+            }
+        }
+    }
+    Ok(worst)
 }
