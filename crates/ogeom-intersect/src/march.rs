@@ -1778,7 +1778,10 @@ pub(crate) fn branches_from_touches(
     };
     follow_all(&found, &mut out, &mut again, &mut followed);
     let joined = |out: Vec<Traced>, again: Vec<Traced>| {
-        let stitched = stitch_stalled(out, a, b, options, tol);
+        let stitched: Vec<Traced> = stitch_stalled(out, a, b, options, tol)
+            .into_iter()
+            .map(|branch| first_lap(branch, options.chord.max(tol.confusion())))
+            .collect();
         split_at_touches(stitched, again, a, b, options, tol)
             .into_iter()
             .flat_map(|(branch, crossing)| {
@@ -2157,6 +2160,45 @@ fn pole_parameter(
         }
     }
     Some(place(f64::midpoint(left, right)))
+}
+
+/// A closed branch held to its first lap: where an interior segment passes
+/// over the branch's own start within `near`, heading the way the branch
+/// left it, the loop was complete there and what follows goes round again.
+/// A section traced twice round states a curve of twice its length whose
+/// image crosses the chart's seams and poles twice, and no face is bounded
+/// by it. A single lap passes its start only at its ends, or across it.
+fn first_lap(branch: Traced, near: f64) -> Traced {
+    let n = branch.points.len();
+    if !branch.closed() || n < 5 {
+        return branch;
+    }
+    let start = branch.points[0];
+    let leaving = branch.points[1] - start;
+    for j in 1..n - 2 {
+        let (p, q) = (branch.points[j], branch.points[j + 1]);
+        let along = q - p;
+        let length = along.square_magnitude();
+        if length <= f64::MIN_POSITIVE || along.dot(leaving) <= 0.0 {
+            continue;
+        }
+        let t = (start - p).dot(along) / length;
+        if t > 0.0 && t < 1.0 && start.distance(p + along * t) <= near {
+            let mut points = branch.points[..=j].to_vec();
+            let mut on_a = branch.on_a[..=j].to_vec();
+            let mut on_b = branch.on_b[..=j].to_vec();
+            points.push(start);
+            on_a.push(branch.on_a[0]);
+            on_b.push(branch.on_b[0]);
+            return Traced {
+                points,
+                on_a,
+                on_b,
+                stopped: branch.stopped,
+            };
+        }
+    }
+    branch
 }
 
 /// A branch cut where it runs through a pole of either surface's chart:
@@ -7612,6 +7654,55 @@ mod tests {
     use ogeom_math::{Cylinder, Direction, Frame, Plane, Sphere};
 
     const T: Tolerances = Tolerances::millimetres();
+
+    /// A unit circle in the xy plane sampled `per_lap` times a lap for
+    /// `laps` laps, closed on its start, each sample's chart state its
+    /// angle.
+    fn circle_laps(per_lap: usize, laps: usize) -> Traced {
+        let n = per_lap * laps;
+        let at = |k: usize| {
+            #[allow(clippy::cast_precision_loss)]
+            let angle = core::f64::consts::TAU * (k % per_lap) as f64 / per_lap as f64;
+            (Point::new(angle.cos(), angle.sin(), 0.0), (angle, 0.0))
+        };
+        let samples: Vec<(Point, (f64, f64))> = (0..=n).map(|k| at(k % n.max(1))).collect();
+        Traced {
+            points: samples.iter().map(|s| s.0).collect(),
+            on_a: samples.iter().map(|s| s.1).collect(),
+            on_b: samples.iter().map(|s| s.1).collect(),
+            stopped: Stopped::Closed,
+        }
+    }
+
+    /// A closed branch traced three times round is held to its first lap,
+    /// ending on its start; a single lap, and an open branch, are kept as
+    /// they are.
+    #[test]
+    fn a_loop_traced_round_again_is_held_to_its_first_lap() {
+        // Each lap's samples shifted a hair along the circle, so the second
+        // lap's segment passes over the start rather than through a sample.
+        let mut three = circle_laps(64, 3);
+        for (k, p) in three
+            .points
+            .iter_mut()
+            .enumerate()
+            .skip(64)
+            .take(64 * 2 - 1)
+        {
+            let angle = p.y.atan2(p.x) + 1e-3 * if k < 128 { 1.0 } else { 2.0 };
+            *p = Point::new(angle.cos(), angle.sin(), 0.0);
+        }
+        let held = first_lap(three, 1e-2);
+        let lap = circle_laps(64, 1).points.len();
+        assert_eq!(held.points.len(), lap, "{} samples", held.points.len());
+        assert!(held.points[held.points.len() - 1].distance(held.points[0]) <= 0.0);
+        assert_eq!(held.on_a.len(), held.points.len());
+        let one = circle_laps(64, 1);
+        assert_eq!(first_lap(one.clone(), 1e-2), one);
+        let mut open = circle_laps(64, 3);
+        open.stopped = Stopped::LeftTheDomain;
+        assert_eq!(first_lap(open.clone(), 1e-2), open);
+    }
 
     fn cylinder(origin: Point, axis: Vector, radius: f64, height: (f64, f64)) -> SurfaceGeometry {
         let frame = Frame::new(

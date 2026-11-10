@@ -296,6 +296,8 @@ pub(crate) fn walk_one_way_past<C: Condition + ?Sized>(
     // step's turn: the same question the next step opens with, asked with
     // the same heading, so it is answered once.
     let mut ahead: Option<Option<Vector>> = None;
+    // The heading the walk left its start along.
+    let mut start_heading: Option<Vector> = None;
 
     while points.len() < options.max_points {
         ogeom_core::progress::checkpoint()?;
@@ -382,6 +384,21 @@ pub(crate) fn walk_one_way_past<C: Condition + ?Sized>(
             stopped = Stopped::Closed;
             break;
         }
+        // Or a step that passes over the start, heading the way the walk
+        // left it: the loop is complete, though the step onto the start
+        // was never one the correction could take (beside a chart's pole
+        // the condition solved onto the start lands anywhere along the
+        // pole's line). Past the start the test above cannot close the
+        // loop again, and the walk would go round once more.
+        if points.len() > 3
+            && start_heading.is_some_and(|h| h.dot(direction) > 0.0)
+            && passes_over(from, here, next_point, options.chord.max(tol.confusion()))
+        {
+            states.push(states[0].clone());
+            points.push(from);
+            stopped = Stopped::Closed;
+            break;
+        }
         if condition.outside(&next_state, tol) {
             stopped = Stopped::LeftTheDomain;
             past = Some((next_state, next_point));
@@ -389,6 +406,7 @@ pub(crate) fn walk_one_way_past<C: Condition + ?Sized>(
         }
 
         heading = Some(direction);
+        start_heading.get_or_insert(direction);
         states.push(next_state);
         points.push(next_point);
         at.clone_from(&states[states.len() - 1]);
@@ -441,6 +459,18 @@ fn closes<C: Condition + ?Sized>(
         return false;
     };
     distance_to_segment(middle, here, from) <= near
+}
+
+/// Whether the segment from `a` to `b` passes `p` within `near`, its
+/// nearest point strictly between the ends.
+fn passes_over(p: Point, a: Point, b: Point, near: f64) -> bool {
+    let along = b - a;
+    let length = along.square_magnitude();
+    if length <= f64::MIN_POSITIVE {
+        return false;
+    }
+    let t = (p - a).dot(along) / length;
+    t > 0.0 && t < 1.0 && p.distance(a + along * t) <= near
 }
 
 /// Distance from a point to a segment.

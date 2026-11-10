@@ -1481,15 +1481,14 @@ fn a_ball_drilled_with_a_loop_crossing_its_seam_beside_its_pole_cuts() {
 /// The drill of
 /// [`a_ball_drilled_with_a_loop_crossing_its_seam_beside_its_pole_cuts`]
 /// in three directions, its wall two hundred-thousandths of its radius off
-/// the poles either side: each placement whose loop crosses the seam
-/// beside a pole cuts at the closed forms. Along -y inside the poles it is
-/// still refused (see docs/PLAN.md).
+/// the poles either side: each placement cuts at the closed forms.
 #[test]
 #[ignore = "heavy"]
 fn drills_two_hundred_thousandths_off_both_poles_of_the_balls_own_chart() {
     let mut failures = Vec::new();
     for (dx, dy, off) in [
         (0.0, -1.0, 2e-5),
+        (0.0, -1.0, -2e-5),
         (1.0, 0.0, 2e-5),
         (1.0, 0.0, -2e-5),
         (0.6, -0.8, 2e-5),
@@ -1502,4 +1501,18 @@ fn drills_two_hundred_thousandths_off_both_poles_of_the_balls_own_chart() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Left on the ball's own chart, a drill whose wall stands two
+/// hundred-thousandths of its radius inside both poles along -y. The march
+/// round the south pole starts 2e-5 from the pole, and coming back the
+/// step onto the start is one the correction cannot take there, the
+/// condition solved onto it landing anywhere along the pole's line: the
+/// walk passed over its start and went round twice more, and the section
+/// three times round bounded no face. The step that passes over the start
+/// closes the loop, and the ball cuts at the closed forms.
+#[test]
+fn a_ball_drilled_with_a_loop_starting_beside_its_pole_closes_in_one_lap() {
+    let wall = 1.0 - 2e-5;
+    ogeom_bool::work::unturned(|| drilled(Vector::new(0.0, -wall, 0.0), 1.0)).unwrap();
 }
