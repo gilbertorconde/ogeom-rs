@@ -442,8 +442,17 @@ smooth map, a bound only where each ring doubling at least halves it \
 (measured near four times per doubling on a sphere and a torus, not \
 proved). It is conformal, not area-keeping point by point: a 6 x 4 \
 rectangle at R = 10 with reach 5 covers 25.07 on the sphere, as the \
-scaled stereographic projection does. As-rigid-as-possible flattening \
-is not built."""
+scaled stereographic projection does. \
+`SheetMethod::AsRigidAsPossible` lays the as-rigid-as-possible \
+flattening of the same disc, settled by local and global rounds from the \
+conformal one on a mesh of 32 rings, and not scaled; its energy is not \
+convex, and the sheet is judged by its measured stretch, not by any \
+distance from a smooth map. Its length ratio against the surface's metric \
+is measured at the flattened mesh's vertices and centroids within the \
+reach (not bounded between them) and the sheet is refused past the \
+stretch asked, or where a triangle folds or the rim crosses itself. On a \
+sphere of radius 10 with reach 5 it measures 0.969 to 1.017 in length and \
+0.970 to 1.034 in area, against the conformal 0.938 to 1.063 in area."""
 symbols = [
     "ogeom_algo::SurfaceSheet", "ogeom_algo::SheetPlacement",
     "ogeom_algo::SheetMethod", "ogeom_algo::SheetDistortion",

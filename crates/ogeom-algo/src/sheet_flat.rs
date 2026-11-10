@@ -44,9 +44,19 @@ pub(crate) struct Flattening {
     y: Vec<f64>,
     scale: f64,
     /// The estimated departure from the smooth conformal map, on the
-    /// sheet: the mesh's and the polynomial's together.
+    /// sheet: the mesh's and the polynomial's together. For the rigid
+    /// flattening, the polynomial's miss of the mesh's own map alone.
     pub(crate) error: f64,
+    /// The flattened mesh's vertices and triangle centroids within the
+    /// reach, where the rigid flattening's stretch is measured.
+    pub(crate) samples: Vec<Point2>,
 }
+
+/// How many rings the rigid flattening is meshed with.
+const RIGID_RINGS: usize = 32;
+
+/// The most local-global rounds the rigid flattening takes.
+const RIGID_ROUNDS: usize = 400;
 
 /// A polar mesh of the geodesic disc of radius `radius`, `rings` rings.
 struct Mesh {
@@ -69,6 +79,7 @@ impl Flattening {
         reach: f64,
         most: f64,
         resolution: f64,
+        rigid: bool,
     ) -> OgeomResult<Self> {
         if !(resolution > 0.0 && resolution.is_finite()) {
             ogeom_bail!(
@@ -81,16 +92,29 @@ impl Flattening {
         // geodesic one wherever the surface curves away; the disc is
         // widened by the shortfall until its flattening covers the reach.
         loop {
-            let (mesh, flat, departure) = resolved(land, radius, resolution)?;
+            let (mesh, flat, departure) = if rigid {
+                let mesh = mesh(land, radius, RIGID_RINGS)?;
+                let flat = rigid_flattening(&mesh, flattened(&mesh)?)?;
+                (mesh, flat, 0.0)
+            } else {
+                resolved(land, radius, resolution)?
+            };
             let rim = rim_distance(&mesh, &flat);
             if rim >= reach {
                 let (degree, x, y, scale, miss) = fitted(&mesh, &flat, rim, resolution)?;
+                let mut samples: Vec<Point2> = flat.clone();
+                samples.extend(mesh.triangles.iter().map(|tri| {
+                    let [a, b, c] = tri.map(|v| flat[v]);
+                    Point2::new((a.x + b.x + c.x) / 3.0, (a.y + b.y + c.y) / 3.0)
+                }));
+                samples.retain(|p| p.x.hypot(p.y) <= reach);
                 return Ok(Self {
                     degree,
                     x,
                     y,
                     scale,
                     error: departure + miss,
+                    samples,
                 });
             }
             let wider = radius * reach / rim;
@@ -442,6 +466,210 @@ fn flattened(mesh: &Mesh) -> OgeomResult<Vec<Point2>> {
     Ok(flat)
 }
 
+/// The as-rigid-as-possible flattening of `mesh`, started from `start`:
+/// the flat positions whose triangles are each nearest a rotation of the
+/// triangle on the surface, every edge weighed by its cotangent weight.
+///
+/// Local and global steps alternate: each triangle's best rotation onto
+/// its flat image (in the plane, the angle of the weighted sum of its
+/// edges' cross and dot products), then the flat positions that best take
+/// every rotated edge, a cotangent Laplacian solve with the origin held.
+/// Neither step raises the energy, and the rounds stop where a round
+/// lowers it by less than `EPSILON^(1/2)` of itself. The energy is not
+/// convex and the positions found are the minimum the rounds settle in
+/// from the conformal start, not a unique one: the sheet is judged by the
+/// stretch it is measured to have, not by its distance from any smooth
+/// map. Pinned as the conformal flattening is, the origin at the origin
+/// and the first ring turned to its geodesic directions, and not scaled.
+///
+/// Refused where a triangle folds over, or the rim crosses itself, so the
+/// mesh's map from the sheet is one to one where it is accepted.
+#[allow(
+    clippy::needless_range_loop,
+    reason = "a triangle's corners and the edges opposite them are indexed together"
+)]
+fn rigid_flattening(mesh: &Mesh, start: Vec<Point2>) -> OgeomResult<Vec<Point2>> {
+    let n = mesh.sheet.len();
+    // Each triangle laid flat by itself, and its edges' half cotangent
+    // weights: `own[t][k]` its corner `k`, `half[t][k]` the edge opposite.
+    let mut own: Vec<[Point2; 3]> = Vec::with_capacity(mesh.triangles.len());
+    let mut half: Vec<[f64; 3]> = Vec::with_capacity(mesh.triangles.len());
+    for tri in &mesh.triangles {
+        let p = tri.map(|v| mesh.space[v]);
+        let (ab, ac) = (p[1] - p[0], p[2] - p[0]);
+        let along = ab.magnitude();
+        let across = ab.cross(ac).magnitude();
+        if !(along > 0.0 && across > 0.0) || across.is_nan() {
+            ogeom_bail!(
+                Construction,
+                "the as-rigid-as-possible sheet's mesh has a triangle of no area on the surface"
+            );
+        }
+        own.push([
+            Point2::ORIGIN,
+            Point2::new(along, 0.0),
+            Point2::new(ab.dot(ac) / along, across / along),
+        ]);
+        let mut h = [0.0_f64; 3];
+        for (k, w) in h.iter_mut().enumerate() {
+            let (a, b) = (p[(k + 1) % 3] - p[k], p[(k + 2) % 3] - p[k]);
+            *w = a.dot(b) / a.cross(b).magnitude() / 2.0;
+        }
+        half.push(h);
+    }
+    // The cotangent Laplacian over every vertex but the origin, held at
+    // the origin: positive definite, the Laplacian being semi-definite
+    // with the constants its only null space.
+    let mut weight: Vec<ogeom_core::FastMap<usize, f64>> = vec![Default::default(); n];
+    for (tri, h) in mesh.triangles.iter().zip(&half) {
+        for k in 0..3 {
+            let (i, j) = (tri[(k + 1) % 3], tri[(k + 2) % 3]);
+            *weight[i].entry(j).or_insert(0.0) += h[k];
+            *weight[j].entry(i).or_insert(0.0) += h[k];
+        }
+    }
+    let mut triplets = Vec::new();
+    for v in 1..n {
+        let mut diagonal = 0.0;
+        for (&w, &c) in &weight[v] {
+            diagonal += c;
+            if w != 0 {
+                triplets.push((v - 1, w - 1, -c));
+            }
+        }
+        triplets.push((v - 1, v - 1, diagonal));
+    }
+    let system = SparseMatrix::from_triplets(n - 1, n - 1, &triplets);
+    let mut flat = start;
+    let origin = flat[0];
+    for f in &mut flat {
+        *f = Point2::new(f.x - origin.x, f.y - origin.y);
+    }
+    let energy = |flat: &[Point2], turns: &[(f64, f64)]| -> f64 {
+        let mut e = 0.0;
+        for (t, tri) in mesh.triangles.iter().enumerate() {
+            let (cos, sin) = turns[t];
+            for k in 0..3 {
+                let (i, j) = ((k + 1) % 3, (k + 2) % 3);
+                let l = own[t][i] - own[t][j];
+                let f = flat[tri[i]] - flat[tri[j]];
+                let r = (cos.mul_add(l.x, -sin * l.y), sin.mul_add(l.x, cos * l.y));
+                e += half[t][k] * ((f.x - r.0).powi(2) + (f.y - r.1).powi(2));
+            }
+        }
+        e
+    };
+    let best_turns = |flat: &[Point2]| -> Vec<(f64, f64)> {
+        mesh.triangles
+            .iter()
+            .enumerate()
+            .map(|(t, tri)| {
+                let (mut cross, mut dot) = (0.0, 0.0);
+                for k in 0..3 {
+                    let (i, j) = ((k + 1) % 3, (k + 2) % 3);
+                    let l = own[t][i] - own[t][j];
+                    let f = flat[tri[i]] - flat[tri[j]];
+                    cross += half[t][k] * l.x.mul_add(f.y, -l.y * f.x);
+                    dot += half[t][k] * l.x.mul_add(f.x, l.y * f.y);
+                }
+                let angle = cross.atan2(dot);
+                (angle.cos(), angle.sin())
+            })
+            .collect()
+    };
+    let mut turns = best_turns(&flat);
+    let mut previous = energy(&flat, &turns);
+    for _ in 0..RIGID_ROUNDS {
+        // The global step: each vertex takes its edges' rotated lengths.
+        let mut rhs = [vec![0.0_f64; n - 1], vec![0.0_f64; n - 1]];
+        for (t, tri) in mesh.triangles.iter().enumerate() {
+            let (cos, sin) = turns[t];
+            for k in 0..3 {
+                let (i, j) = ((k + 1) % 3, (k + 2) % 3);
+                let l = own[t][i] - own[t][j];
+                let r = (cos.mul_add(l.x, -sin * l.y), sin.mul_add(l.x, cos * l.y));
+                let c = half[t][k];
+                if tri[i] != 0 {
+                    rhs[0][tri[i] - 1] += c * r.0;
+                    rhs[1][tri[i] - 1] += c * r.1;
+                }
+                if tri[j] != 0 {
+                    rhs[0][tri[j] - 1] -= c * r.0;
+                    rhs[1][tri[j] - 1] -= c * r.1;
+                }
+            }
+        }
+        let xs = conjugate_gradient(&system, &rhs[0])?;
+        let ys = conjugate_gradient(&system, &rhs[1])?;
+        for v in 1..n {
+            flat[v] = Point2::new(xs[v - 1], ys[v - 1]);
+        }
+        turns = best_turns(&flat);
+        let now = energy(&flat, &turns);
+        let settled = previous - now <= f64::EPSILON.sqrt() * previous;
+        previous = now;
+        if settled {
+            break;
+        }
+    }
+    for tri in &mesh.triangles {
+        let [a, b, c] = tri.map(|v| flat[v]);
+        let signed = ((b - a).x * (c - a).y - (b - a).y * (c - a).x) / 2.0;
+        if signed.is_nan() || signed <= 0.0 {
+            ogeom_bail!(
+                Construction,
+                "the as-rigid-as-possible sheet's flattening folds a triangle over"
+            );
+        }
+    }
+    if rim_crosses(&mesh.outer, &flat) {
+        ogeom_bail!(
+            Construction,
+            "the as-rigid-as-possible sheet's flattened rim crosses itself"
+        );
+    }
+    // The first ring turned to its geodesic directions on the mean, as the
+    // conformal flattening is.
+    let turn = (1..=6)
+        .map(|v| {
+            let (f, q) = (flat[v], mesh.sheet[v]);
+            let d = f.y.atan2(f.x) - q.y.atan2(q.x);
+            (d + core::f64::consts::PI).rem_euclid(TAU) - core::f64::consts::PI
+        })
+        .sum::<f64>()
+        / 6.0;
+    let (sin, cos) = (-turn).sin_cos();
+    for f in &mut flat {
+        *f = Point2::new(cos.mul_add(f.x, -sin * f.y), sin.mul_add(f.x, cos * f.y));
+    }
+    Ok(flat)
+}
+
+/// Whether the flattened rim, the closed path through `rim` in turn,
+/// crosses itself: two edges that share no vertex meet.
+fn rim_crosses(rim: &[usize], flat: &[Point2]) -> bool {
+    let m = rim.len();
+    let orient = |a: Point2, b: Point2, c: Point2| {
+        let (u, v) = (b - a, c - a);
+        u.x.mul_add(v.y, -u.y * v.x)
+    };
+    for i in 0..m {
+        let (a, b) = (flat[rim[i]], flat[rim[(i + 1) % m]]);
+        for j in i + 2..m {
+            if (j + 1) % m == i {
+                continue;
+            }
+            let (c, d) = (flat[rim[j]], flat[rim[(j + 1) % m]]);
+            let (o1, o2) = (orient(a, b, c), orient(a, b, d));
+            let (o3, o4) = (orient(c, d, a), orient(c, d, b));
+            if o1 * o2 <= 0.0 && o3 * o4 <= 0.0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// The solution of `a x = b`, `a` symmetric positive definite, by
 /// conjugate gradients from zero, until the residual stands within
 /// `EPSILON^(3/4)` of `b`, which leaves the solution's own error far under
@@ -546,6 +774,7 @@ fn fitted(mesh: &Mesh, flat: &[Point2], rim: f64, resolution: f64) -> OgeomResul
             y,
             scale,
             error: 0.0,
+            samples: Vec::new(),
         };
         let mut miss: f64 = 0.0;
         for (f, q) in from.iter().zip(&to) {

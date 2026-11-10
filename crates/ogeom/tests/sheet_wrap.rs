@@ -844,3 +844,157 @@ fn model_surface(model: &Model, face: &Shape) -> ogeom::geom::SurfaceGeometry {
     let data = model.node(face).unwrap().data().as_face().unwrap();
     model.geometry().surface(data.surface).unwrap().clone()
 }
+
+fn rigid_sheet_on(
+    model: &Model,
+    face: &Shape,
+    at: Point,
+    reach: f64,
+    stretch: f64,
+) -> ogeom::core::OgeomResult<SurfaceSheet> {
+    SurfaceSheet::new(
+        model,
+        face,
+        &SheetPlacement {
+            at,
+            x_direction: Direction::X,
+            method: SheetMethod::AsRigidAsPossible {
+                resolution: RESOLUTION,
+                stretch,
+            },
+        },
+        reach,
+        T,
+    )
+}
+
+/// The length ratios a sheet's landed map shows between sheet points a
+/// small step apart, along and across, measured in space against the
+/// surface's own points: independent of how the sheet measures itself.
+fn stepped_ratios(sheet: &SurfaceSheet, reach: f64) -> (f64, f64) {
+    let lift = |p: Point2| {
+        let uv = sheet.chart_point(p).unwrap();
+        sheet.surface().point_at(uv.x, uv.y, T).unwrap()
+    };
+    let h = 1e-3;
+    let (mut least, mut most) = (f64::INFINITY, 0.0_f64);
+    for k in 0..16 {
+        let angle = f64::from(k) * TAU / 16.0;
+        for r in [0.5, 2.0, 3.5, reach - 2.0 * h] {
+            let p = Point2::new(r * angle.cos(), r * angle.sin());
+            for (dx, dy) in [(h, 0.0), (0.0, h), (h * 0.6, h * 0.8)] {
+                let a = lift(Point2::new(p.x - dx / 2.0, p.y - dy / 2.0));
+                let b = lift(Point2::new(p.x + dx / 2.0, p.y + dy / 2.0));
+                let ratio = a.distance(b) / h;
+                least = least.min(ratio);
+                most = most.max(ratio);
+            }
+        }
+    }
+    (least, most)
+}
+
+#[test]
+fn a_rigid_sheet_on_a_sphere_stretches_and_covers_less_than_the_conformal_one() {
+    // The as-rigid-as-possible sheet of reach 5 on a ball of radius 10
+    // keeps its length ratio within 5 percent of one, as asked, and its
+    // area ratio nearer one than the conformal sheet's 0.938 to 1.063. Its
+    // landed points stand apart as its stated range says, measured in
+    // space; and the 6 x 4 rectangle laid on it cuts out an area within
+    // the area ratios it states, nearer 24 than the conformal sheet's
+    // 25.07.
+    let mut model = Model::new();
+    let sphere = make_sphere(&mut model, Frame::WORLD, 10.0, T)
+        .unwrap()
+        .shape;
+    let face = faces(&model, &sphere)[0].clone();
+    let at = Point::new(0.0, -10.0, 0.0);
+    let rigid = rigid_sheet_on(&model, &face, at, 5.0, 0.05).unwrap();
+    assert!(rigid.flattening_error() <= RESOLUTION / 2.0);
+    let stated = rigid.distortion();
+    let (l, a) = (stated.length, stated.area);
+    assert!(l.0 >= 1.0 / 1.05 && l.1 <= 1.05, "{stated:?}");
+    let conformal = flat_sheet_on(&model, &face, at, 5.0);
+    let spread = |s: &SurfaceSheet| {
+        let (a0, a1) = s.distortion().area;
+        a1 - a0
+    };
+    let measured = stepped_ratios(&rigid, 5.0);
+    let slack = 2.0 * rigid.flattening_error() + 1e-3;
+    assert!(
+        measured.0 >= l.0 - slack && measured.1 <= l.1 + slack,
+        "{measured:?} against {stated:?}"
+    );
+    // The conformal sheet's range over the points carried, its area range
+    // its length range squared.
+    stepped_ratios(&conformal, 5.0);
+    let (c0, c1) = conformal.distortion().length;
+    assert!(spread(&rigid) < (c1 * c1 - c0 * c0) / 1.5, "{stated:?}");
+    let inside = rectangle_inside(&mut model, &sphere, &face, &rigid);
+    let allowed = 20.0 * (rigid.flattening_error() * l.1 + FIT);
+    assert!(
+        inside.area >= 24.0 * a.0 - allowed && inside.area <= 24.0 * a.1 + allowed,
+        "{} against 24 x {a:?}",
+        inside.area
+    );
+    assert!(
+        (inside.area - 24.0).abs() < 25.069 - 24.0,
+        "{}",
+        inside.area
+    );
+    assert!(inside.centroid.x.abs() <= 0.05 && inside.centroid.z.abs() <= 0.05);
+}
+
+#[test]
+fn a_rigid_sheet_past_the_stretch_asked_is_refused() {
+    // No flattening of a geodesic disc of reach 5 on a ball of radius 10
+    // keeps every length within one percent: the rigid one measures 0.969
+    // to 1.017, and is refused, naming what it measured.
+    let mut model = Model::new();
+    let sphere = make_sphere(&mut model, Frame::WORLD, 10.0, T)
+        .unwrap()
+        .shape;
+    let face = faces(&model, &sphere)[0].clone();
+    let refused = rigid_sheet_on(&model, &face, Point::new(0.0, -10.0, 0.0), 5.0, 0.01)
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("stretches lengths by"), "{refused}");
+}
+
+#[test]
+fn a_rigid_sheet_on_a_torus_keeps_its_place_and_stretch() {
+    let mut model = Model::new();
+    let torus = make_torus(&mut model, Frame::WORLD, 20.0, 5.0, T)
+        .unwrap()
+        .shape;
+    let face = faces(&model, &torus)[0].clone();
+    let sheet = rigid_sheet_on(&model, &face, Point::new(0.0, -25.0, 0.0), 5.0, 0.05).unwrap();
+    let stated = sheet.distortion();
+    let measured = stepped_ratios(&sheet, 5.0);
+    let slack = 2.0 * sheet.flattening_error() + 1e-3;
+    assert!(
+        measured.0 >= stated.length.0 - slack && measured.1 <= stated.length.1 + slack,
+        "{measured:?} against {stated:?}"
+    );
+    let inside = rectangle_inside(&mut model, &torus, &face, &sheet);
+    assert!(inside.centroid.x.abs() <= 0.05 && inside.centroid.z.abs() <= 0.05);
+}
+
+#[test]
+fn a_rigid_sheet_on_a_cylinder_is_its_development() {
+    let mut model = Model::new();
+    let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 10.0, 20.0, T)
+        .unwrap()
+        .shape;
+    let face = faces(&model, &drum)
+        .into_iter()
+        .find(|f| area(&model, f) > 1000.0)
+        .unwrap();
+    let sheet = rigid_sheet_on(&model, &face, Point::new(0.0, -10.0, 10.0), 5.0, 1e-6).unwrap();
+    assert_eq!(sheet.flattening_error(), 0.0);
+    let measured = stepped_ratios(&sheet, 5.0);
+    assert!(
+        (measured.0 - 1.0).abs() < 1e-6 && (measured.1 - 1.0).abs() < 1e-6,
+        "{measured:?}"
+    );
+}
