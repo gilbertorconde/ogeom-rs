@@ -1861,3 +1861,119 @@ fn a_round_rests_on_a_lower_far_edge_slanted_to_its_seam() {
         "the upper step's top still bounds the result ({above})"
     );
 }
+
+/// A wall on two low steps whose far edges are not parallel to the wall's
+/// foot, on a floor: the upper step's top runs from the wall at `x = 8` to
+/// a far edge from (8.5, 0) to (8.9, 20) at height 1.5, the lower step's
+/// from there to one from (10, 0) to (10.6, 20) at height 1, the floor at
+/// height 0 running on past both ends. Rounded at radius 6, the ball
+/// touching the wall clears both far edges and comes down on the floor:
+/// its centre runs on the line `x = 14`, `z = 6`. The band lies on the
+/// envelope of those balls, every ball stands clear of the result, the
+/// lines of contact on the wall and the floor lie on it, and both steps'
+/// tops went into the fill.
+#[test]
+fn a_round_comes_down_on_the_floor_past_steps_slanted_to_its_seam() {
+    use ogeom_geom::{Curve, LineCurve, PlaneSurface};
+    use ogeom_math::{Direction, Plane, Vector};
+    let radius = 6.0;
+    let mut model = ogeom_topo::Model::new();
+    let raised = |model: &mut ogeom_topo::Model, corners: &[(f64, f64)], z0: f64, h: f64| {
+        let points: Vec<Point> = corners.iter().map(|&(x, y)| Point::new(x, y, z0)).collect();
+        let v: Vec<_> = points
+            .iter()
+            .map(|p| ogeom_algo::make_vertex(model, *p).shape)
+            .collect();
+        let n = points.len();
+        let edges: Vec<_> = (0..n)
+            .map(|i| {
+                use ogeom_geom::Curve3d as _;
+                let line: Curve = LineCurve::segment(points[i], points[(i + 1) % n], T)
+                    .unwrap()
+                    .into();
+                let range = line.domain();
+                ogeom_algo::make_edge_between(model, line, range, &v[i], &v[(i + 1) % n], T)
+                    .unwrap()
+                    .shape
+            })
+            .collect();
+        let wire = ogeom_algo::make_wire(model, &edges, T).unwrap().shape;
+        let plane = Plane::new(
+            Frame::new(Point::new(0.0, 0.0, z0), Direction::Z, Direction::X, T).unwrap(),
+        );
+        let surface = PlaneSurface::over(plane, (-100.0, 100.0), (-100.0, 100.0)).unwrap();
+        let face = ogeom_algo::make_face(model, surface.into(), &[wire], T)
+            .unwrap()
+            .shape;
+        ogeom_algo::make_prism(model, &face, Vector::new(0.0, 0.0, h), T)
+            .unwrap()
+            .shape
+    };
+    let mut solid = raised(
+        &mut model,
+        &[(0.0, -5.0), (30.0, -5.0), (30.0, 25.0), (0.0, 25.0)],
+        -5.0,
+        5.0,
+    );
+    for (corners, h) in [
+        (
+            vec![(0.0, 0.0), (10.0, 0.0), (10.6, 20.0), (0.0, 20.0)],
+            1.0,
+        ),
+        (vec![(0.0, 0.0), (8.5, 0.0), (8.9, 20.0), (0.0, 20.0)], 1.5),
+        (vec![(0.0, 0.0), (8.0, 0.0), (8.0, 20.0), (0.0, 20.0)], 20.0),
+    ] {
+        let part = raised(&mut model, &corners, 0.0, h);
+        solid = ogeom_bool::fuse(&mut model, &solid, &part, T)
+            .unwrap()
+            .shape;
+    }
+    let foot = explore(&model, &solid, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(&model, e).unwrap().unwrap();
+            [a, b].iter().all(|v| {
+                let p = model
+                    .node(v)
+                    .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                    .unwrap();
+                (p.x - 8.0).abs() < 1e-9 && (p.z - 1.5).abs() < 1e-9
+            })
+        })
+        .expect("the wall's foot on the upper step");
+    let rounded = ogeom_fillet::fillet_edge(&mut model, &solid, &foot, radius, T)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let centre = |y: f64| Point::new(8.0 + radius, y, radius);
+    let off = |p: Point| Vector::new(p.x - 8.0 - radius, 0.0, p.z - radius).magnitude() - radius;
+    let generated = rounded.history.generated(&foot).to_vec();
+    let (worst, _) = fitted_round(&model, &generated, &off);
+    eprintln!("the floor-held band stands {worst} off the balls");
+    assert!(worst < 2e-4, "the round stands {worst} off the balls");
+    let boundary = ogeom_algo::PointDistance::of(&model, &rounded.shape, T).unwrap();
+    for k in 1..40 {
+        let y = 20.0 * f64::from(k) / 40.0;
+        let (gap, _) = boundary.nearest(centre(y), T).unwrap();
+        assert!(
+            gap >= radius - worst,
+            "a ball at {y} is {gap} from the solid"
+        );
+        for contact in [Point::new(8.0, y, radius), Point::new(8.0 + radius, y, 0.0)] {
+            let (on, _) = boundary.nearest(contact, T).unwrap();
+            assert!(
+                on <= worst.max(1e-7),
+                "the contact {contact:?} stands {on} off"
+            );
+        }
+    }
+    // Both steps' tops went into the fill.
+    for p in [Point::new(8.2, 10.0, 1.5), Point::new(9.5, 10.0, 1.0)] {
+        let (above, _) = boundary.nearest(p, T).unwrap();
+        assert!(
+            above > 0.1,
+            "a step's top at {p:?} still bounds the result ({above})"
+        );
+    }
+}
