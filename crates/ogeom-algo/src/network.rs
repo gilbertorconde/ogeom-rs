@@ -89,9 +89,18 @@
 //!   the point. Each way of holding the corners is first tried with the
 //!   fans held, and only where none of them comes within the tolerance are
 //!   the fans left near tangent. A point where a three-sided patch meets
-//!   four-sided ones is left near tangent: there the three-sided patch's
-//!   cross derivative vanishes and the other's does not, which no ratio
-//!   fixed along the curve serves.
+//!   four-sided ones is left near tangent, its angle measured into
+//!   [`Network::worst_tangent`]: exact tangency is not offered there. The
+//!   three-sided patch's cross derivative vanishes at the point and the
+//!   other's does not, so no ratio fixed along the curve serves, and the
+//!   gluing that does, `a D₃ + b D₄ + c T = 0` with polynomial `a`, `b`,
+//!   `c`, is not the one the seed's parameters give the points: fitted to
+//!   the fit without the constraints, the best such gluing misses its cross
+//!   derivatives by 2 to 4.5 per cent, however fine the spans. Held to it,
+//!   the patches shear off the points' parameters and stand further off
+//!   the shape than the fit near tangent does (on a ball's cap of four
+//!   wedges, two three-sided, clean at 0.001: near tangent at 1.2e-3 rad,
+//!   2.3e-4 off the ball).
 //! - **a side may be a chain of curves.** A curve may end on the middle of
 //!   a patch's side (a T-junction), the side then a chain of curves meeting
 //!   there ([`ChainedPatch`]). The patch takes a knot of multiplicity three
@@ -397,7 +406,10 @@ pub struct Network {
 /// held tangent, the network is refined from the start with each way of
 /// holding them the [module documentation](self) describes in turn, until
 /// one comes within the tolerance; failing that, with those corners near
-/// tangent. Where that misses too, each held way is finished from its
+/// tangent. A point where a three-sided patch meets four-sided ones is
+/// always left near tangent, its angle measured into
+/// [`Network::worst_tangent`]: exact tangency is not offered there, for the
+/// reason the [module documentation](self) gives. Where that misses too, each held way is finished from its
 /// spans, its points re-taken at their nearest points on it and the fit
 /// refined on, as the module documentation describes, and the first to
 /// come within the tolerance is kept. The points a patch fits ([`PatchFit::points`]) are then those it
