@@ -1585,6 +1585,63 @@ fn a_law_of_points_rounds_a_drum_s_ruling_turning_into_its_rim() {
     assert!(two < v && v < one, "{two} < {v} < {one}");
 }
 
+/// A block with its front top edge bevelled 0.3 back, the bevel a strip
+/// too narrow for a ball of the law's least radius to sit on. Rounded
+/// under the hump along the edge between the bevel and the front wall,
+/// the strip is taken off whole at every radius of the law, as the
+/// constant round takes it off at one: the band is the law's exact
+/// envelope between the front wall and the top, so the round is the plain
+/// block's front top edge rounded under the same law, the bevel inside
+/// the corner it takes. By points and linearly, the two volumes agree.
+#[test]
+fn a_law_takes_a_narrow_strip_beside_its_edge_off_whole() {
+    let mut model = Model::new();
+    let plain = ogeom_algo::make_box(&mut model, at(0.0, 0.0, 0.0), (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let top_front = edge_near(&model, &plain, [10.0, 0.0, 10.0]);
+    let bevelled = ogeom_fillet::chamfer_edge(&mut model, &plain, &top_front, 0.3, T)
+        .unwrap()
+        .shape;
+    let beside = edge_near(&model, &bevelled, [10.0, 0.0, 9.7]);
+    let plain_round = fillet_edges_variable(
+        &mut model,
+        &plain,
+        std::slice::from_ref(&top_front),
+        &hump(),
+        T,
+    )
+    .unwrap();
+    let bevel_round = fillet_edges_variable(
+        &mut model,
+        &bevelled,
+        std::slice::from_ref(&beside),
+        &hump(),
+        T,
+    )
+    .unwrap();
+    valid(&model, &bevel_round.shape);
+    let (a, b) = (
+        volume(&model, &plain_round.shape, 1e-3),
+        volume(&model, &bevel_round.shape, 1e-3),
+    );
+    assert!(
+        (a - b).abs() < 1e-4,
+        "the plain round takes {a}, the bevelled {b}"
+    );
+    let plain_linear = fillet_edge_variable(&mut model, &plain, &top_front, 1.0, 2.0, T).unwrap();
+    let bevel_linear = fillet_edge_variable(&mut model, &bevelled, &beside, 1.0, 2.0, T).unwrap();
+    valid(&model, &bevel_linear.shape);
+    let (a, b) = (
+        volume(&model, &plain_linear.shape, 1e-3),
+        volume(&model, &bevel_linear.shape, 1e-3),
+    );
+    assert!(
+        (a - b).abs() < 1e-4,
+        "linearly, the plain round takes {a}, the bevelled {b}"
+    );
+}
+
 #[test]
 fn a_variable_radius_refuses_by_name_what_it_does_not_round() {
     let mut model = Model::new();

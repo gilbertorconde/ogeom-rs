@@ -2010,6 +2010,9 @@ fn fillet_edge_variable_own(
         false,
         tol,
     )?;
+    if let Some(built) = consumed_law(model, solid, edge, &law, false, tol)? {
+        return Ok(built);
+    }
     law_ball_on_faces(model, solid, edge, &law, Some(false), tol)?;
     let seat = planar_seat(model, solid, edge, tol)?;
     let (first, second) = if seat
@@ -2296,6 +2299,9 @@ fn fillet_edge_variable_own(
 ///   a later round builds stands over what the earlier left of its edge,
 ///   under its own window of the law, and runs on through the earlier
 ///   band at the law's radius there.
+/// - a straight edge alone beside a narrow strip the ball takes off whole
+///   at every radius of the law: the exact envelope over the seat between
+///   the faces either side of the strip.
 ///
 /// A law holding one radius all along is [`fillet_edges`]' round.
 ///
@@ -2520,6 +2526,14 @@ fn fillet_chain_law_own(
             }
         }
     }
+    // A narrow strip beside a straight edge alone, taken off whole at every
+    // radius of the law, as the constant round takes it off at one.
+    if planar
+        && chain.len() == 1
+        && let Some(built) = consumed_law(model, solid, edge, &profile, reversed, tol)?
+    {
+        return Ok(built);
+    }
     // Each ball sits on both faces of its edge all along the law.
     let stations = (planar && chain.len() == 1).then_some(reversed);
     for e in chain {
@@ -2663,6 +2677,32 @@ fn law_piece(
         wedge = crate::junction::joined(model, [&wedge, &run_out], (at, outward), at, gap, tol)?.0;
     }
     crate::support::apply_wedge_solid(model, solid, Some(piece), &wedge, band.additive, tol)
+}
+
+/// The straight edge's band under `law` where a narrow strip beside it is
+/// taken off whole at every radius of the law, as the constant round
+/// takes it off at one ([`crate::consumed::consumed_seat`]): the exact
+/// envelope over the seat between the faces either side of the strip.
+/// Each of that seat's conditions grows with the radius or is linear in
+/// it, so where the law's least and largest radius both take the strip
+/// off, every radius between does. `None` where they do not.
+fn consumed_law(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    law: &Profile,
+    reversed: bool,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let Some(_) = crate::consumed::consumed_seat(model, solid, edge, law.least(), tol)? else {
+        return Ok(None);
+    };
+    let Some(seat) = crate::consumed::consumed_seat(model, solid, edge, law.largest(), tol)? else {
+        return Ok(None);
+    };
+    let mut built = straight_law_on(model, solid, edge, seat, law, reversed, (0.0, 1.0), tol)?;
+    crate::support::credit_new_faces(model, solid, edge, &mut built)?;
+    Ok(Some(built))
 }
 
 /// How many pieces a straight edge under a law is read in for whether
@@ -3249,7 +3289,24 @@ fn straight_law_fillet(
     part: (f64, f64),
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    let mut seat = planar_seat(model, solid, edge, tol)?;
+    let seat = planar_seat(model, solid, edge, tol)?;
+    straight_law_on(model, solid, edge, seat, law, reversed, part, tol)
+}
+
+/// [`straight_law_fillet`] on `seat`, the edge's own or one its band takes
+/// a narrow strip beside it off whole on, running the way the edge does.
+#[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
+#[allow(clippy::too_many_lines, reason = "one wedge, assembled end to end")]
+fn straight_law_on(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    mut seat: crate::support::Seat,
+    law: &Profile,
+    reversed: bool,
+    part: (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     let (whole_start, whole_end) = (seat.start, seat.end);
     seat.start = whole_start + (whole_end - whole_start) * part.0;
     seat.end = whole_start + (whole_end - whole_start) * part.1;

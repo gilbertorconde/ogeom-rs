@@ -13,6 +13,15 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fillet_edges_variable` and `fillet_edge_variable` take a narrow
+  strip beside a straight edge off whole under a law.** (#798)
+  - Where the ball at the law's least and at its largest radius both take
+    the strip off whole (the seat's conditions each grow with the radius
+    or are linear in it, so every radius between does too), the band is
+    the law's exact envelope over the seat between the faces either side
+    of the strip. A block's edge bevelled 0.3 back, rounded under a law
+    along the bevel's edge, gives the plain block's edge rounded under the
+    same law, by points and linearly, within 1e-4 of its volume.
 - **A radius law rounds a re-entrant turn whose bands' sections differ.**
   (#798)
   - `fillet_edges_variable` no longer refuses a chain turning at a
