@@ -387,10 +387,16 @@ face's own plane. A chain turning where marched bands meet is met in
 a turn where a marched band meets a straight band between planes (the
 constant round's band there is an exact torus band; under a law it is
 fitted, and its end meets the straight band in what the boolean does not
-melt, built first or second, capped in its wall or run out); a re-entrant turn whose sections differ (the
-constant corner carries each band on as one section from where the other
-reaches; under a law that needs a corner whose carried band follows the
-law to the vertex and holds level past it).
+melt, built first or second, capped in its wall or run out); a convex turn beside a drafted wall whose foot
+leans out under the far face (the drafted L-block's corner at `(10, 20)`,
+#798): the law band's cap square to its crease and the constant run-out
+joined to it at the vertex plane, which stands inside the material below
+the top there, and the cut leaves that seam open (`NotDone`, on main
+before #798's re-entrant corner too). A re-entrant turn whose sections
+differ keeps each band under the law to the vertex and carries its end
+section on level past it, the widening past its wall a prism from behind
+where the other band reaches, so no face of it lies in the other band's
+wall.
 A straight edge along a drum's ruling
 under a law is marched, the exact sweep of `ruled.rs` holding one section
 only; a seat pinched where its hosts turn tangent solves each station and

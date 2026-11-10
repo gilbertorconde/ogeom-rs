@@ -1242,7 +1242,7 @@ fn fillet_edges_own(
         if round_of[index] != this_round {
             this_round = round_of[index];
             if let Some(b) = built.take() {
-                let halves = with_corners(model, &mut set_aside, &junctions, &b.shape, tol)?;
+                let halves = with_corners(model, &mut set_aside, &junctions, &b.shape, false, tol)?;
                 let joined = join_flush(
                     model,
                     core::mem::take(&mut set_aside),
@@ -1451,7 +1451,7 @@ fn fillet_edges_own(
         }
     }
     let built = built.unwrap_or_else(|| unreachable!());
-    let halves = with_corners(model, &mut set_aside, &junctions, &built.shape, tol)?;
+    let halves = with_corners(model, &mut set_aside, &junctions, &built.shape, false, tol)?;
     let joined = join_flush(model, set_aside, &junctions, &halves, tol)?;
     apply_set_aside(model, built, joined, tol)
 }
@@ -1550,11 +1550,14 @@ fn joinable(
 /// band of its own end section, joined into its own corner, and the two
 /// corners' wedges are joined again across that plane, where both hold the
 /// band's one section. Returns those planes, each with the band's index.
+/// `law` says the bands are under a radius law, their sections changing up
+/// to the vertex, as [`crate::junction::corner`] takes them.
 fn with_corners(
     model: &mut Model,
     set_aside: &mut Vec<(Vec<usize>, Shape, crate::support::Wedge)>,
     junctions: &[crate::junction::Junction],
     solid: &Shape,
+    law: bool,
     tol: Tolerances,
 ) -> OgeomResult<Vec<(usize, (Point, Vector))>> {
     let crossed: Vec<&crate::junction::Junction> = junctions
@@ -1660,6 +1663,7 @@ fn with_corners(
             [&set_aside[a].2.solid, &set_aside[b].2.solid],
             junction,
             solid,
+            law,
             tol,
         )?;
         let second = set_aside[b].1.clone();
@@ -2305,8 +2309,7 @@ fn fillet_edge_variable_own(
 /// positive length), where a linear law changes radius round a closed
 /// chain, where `chain` is empty, a chain of more than one edge whose
 /// edges do not run end to end, a turn where a marched band meets a
-/// straight one between planes or
-/// whose bands' sections differ across a re-entrant turn, a loop joined
+/// straight one between planes, a loop joined
 /// round a convex turn with no straight band between two of its junctions
 /// to open it at, a ball resting
 /// on a narrow face's far edge or two bands overlapping across a face
@@ -2915,30 +2918,15 @@ fn chain_law(
             continue;
         }
         let convex = turning.crossed && !turning.reentrant;
-        let reentrant = !turning.crossed && turning.reentrant;
-        // Across a re-entrant turn whose bands' sections differ, the corner
-        // of two constant bands cuts each band back as far as the other
-        // reaches and carries its section on from there as one prism; under
-        // a law the section changes between there and the vertex, so that
-        // prism is not the band.
-        if turning.crossed && turning.reentrant {
-            ogeom_bail!(
-                Construction,
-                "a variable radius across a re-entrant turn whose two bands' \
-                 sections differ (a drafted wall beside a square one) is still \
-                 owed: the corner carries each band on as one section from \
-                 where the other reaches, which a law changes before the \
-                 vertex; see docs/CAPABILITIES.md, fillet.variable"
-            );
-        }
+        let reentrant = turning.reentrant;
         if !straight || !(convex || reentrant) {
             ogeom_bail!(
                 Construction,
                 "a variable radius over a chain turning where it meets is \
-                 rounded between straight creases across a convex turn or a \
-                 re-entrant one whose bands meet in a plane, and a curved \
-                 crease across a convex turn; any other turn is still owed; \
-                 see docs/CAPABILITIES.md, fillet.variable"
+                 rounded between straight creases across a convex or a \
+                 re-entrant turn, and a curved crease across a convex turn; \
+                 any other turn is still owed; see docs/CAPABILITIES.md, \
+                 fillet.variable"
             );
         }
         junctions.push(turning);
@@ -3137,6 +3125,12 @@ fn chain_law(
                 continue;
             };
             let outward = junction.outward[slot];
+            // Across a re-entrant turn whose sections differ, the corner
+            // joins the two bands, each followed under the law to the
+            // vertex and carried on level past it.
+            if junction.crossed && junction.reentrant {
+                continue;
+            }
             if junction.reentrant {
                 let Some(cap) =
                     crate::junction::cap_at(model, &entry.2.solid, junction.at, outward, tol)?
@@ -3203,7 +3197,8 @@ fn chain_law(
             entry.2.solid = solid_joined;
         }
     }
-    let joined = join_flush(model, set_aside, &junctions, &[], tol)?;
+    let halves = with_corners(model, &mut set_aside, &junctions, solid, true, tol)?;
+    let joined = join_flush(model, set_aside, &junctions, &halves, tol)?;
     let mut built = apply_set_aside(model, Built::from_nothing(solid.clone()), joined, tol)?;
     for edge in chain {
         built.history.delete(edge);

@@ -1244,17 +1244,13 @@ fn a_law_of_points_rounds_an_l_block_s_top_loop_across_its_re_entrant_corner() {
     assert!(two < v && v < one, "{two} < {v} < {one}");
 }
 
-/// An L-shaped block whose inner wall along y leans 10 degrees, its foot
-/// out under the notch, so the two bands meeting at the re-entrant corner
-/// have sections no reflection carries onto each other. The corner two
-/// constant bands make there carries each band on as one section from as
-/// far back as the other reaches, which a law changes before the vertex:
-/// under a law the loop is refused by name, while its constant round is
-/// built.
-#[test]
-fn a_law_across_a_re_entrant_corner_beside_a_drafted_wall_is_refused_by_name() {
-    let mut model = Model::new();
-    let block = ogeom_algo::make_box(&mut model, at(0.0, 0.0, 0.0), (20.0, 20.0, 10.0), T)
+/// An L-shaped block whose inner wall along y leans 10 degrees off
+/// upright, its foot out under the notch: the wall through `x = 10` beside
+/// the notch, the square one through `y = 10`. The two bands meeting at
+/// the re-entrant corner `(10, 10, 10)` have sections no reflection
+/// carries onto each other.
+fn drafted_l(model: &mut Model) -> Shape {
+    let block = ogeom_algo::make_box(model, at(0.0, 0.0, 0.0), (20.0, 20.0, 10.0), T)
         .unwrap()
         .shape;
     let lean = 10.0_f64.to_radians();
@@ -1262,7 +1258,7 @@ fn a_law_across_a_re_entrant_corner_beside_a_drafted_wall_is_refused_by_name() {
     let up = ogeom_math::Vector::new(-lean.sin(), 0.0, lean.cos());
     let origin = Point::new(10.0, 10.0, 10.0) - up * 15.0;
     let notch = ogeom_algo::make_box(
-        &mut model,
+        model,
         Frame::new(
             origin,
             Direction::new(up, T).unwrap(),
@@ -1275,29 +1271,86 @@ fn a_law_across_a_re_entrant_corner_beside_a_drafted_wall_is_refused_by_name() {
     )
     .unwrap()
     .shape;
-    let l = ogeom_bool::cut(&mut model, &block, &notch, T)
-        .unwrap()
-        .shape;
-    let top: Vec<Shape> = [
-        [10.0, 0.0],
-        [20.0, 5.0],
-        [15.0, 10.0],
-        [10.0, 15.0],
-        [5.0, 20.0],
-        [0.0, 10.0],
-    ]
-    .iter()
-    .map(|[x, y]| edge_near(&model, &l, [*x, *y, 10.0]))
-    .collect();
-    let law = RadiusLaw::Points(vec![(0.0, 1.0), (0.5, 2.0)]);
-    let why = fillet_edges_variable(&mut model, &l, &top, &law, T)
-        .err()
-        .map(|e| e.to_string())
-        .unwrap_or_default();
-    assert!(why.contains("sections differ"), "{why}");
-    // The constant round of the same loop is built: what is owed is the
-    // corner under a law.
-    ogeom_fillet::fillet_edges(&mut model, &l, &top, 1.0, T).unwrap();
+    ogeom_bool::cut(model, &block, &notch, T).unwrap().shape
+}
+
+/// The drafted L-block's two top edges meeting at its re-entrant corner,
+/// one chain under a linear law from 1 to 2. Each band follows the law to
+/// the vertex and holds level past it, and the corner takes what lies
+/// above both. The round is valid and lies between the constant rounds at
+/// 1 and 2. Away from the corner every contact on the top stands at the
+/// law's radius for its place along the run: on the square wall's band a
+/// radius off the crease, on the drafted one `tan 40°` of it, the walls
+/// standing 90 and 80 degrees off the top's normal.
+#[test]
+fn a_linear_law_rounds_a_re_entrant_corner_beside_a_drafted_wall() {
+    let mut model = Model::new();
+    let l = drafted_l(&mut model);
+    let chain = [
+        edge_near(&model, &l, [15.0, 10.0, 10.0]),
+        edge_near(&model, &l, [10.0, 15.0, 10.0]),
+    ];
+    let law = RadiusLaw::Linear {
+        start: 1.0,
+        end: 2.0,
+    };
+    let rounded = fillet_edges_variable(&mut model, &l, &chain, &law, T).unwrap();
+    valid(&model, &rounded.shape);
+    let v = volume(&model, &rounded.shape, 1e-3);
+    let mut constant = |r: f64| {
+        let built = ogeom_fillet::fillet_edges(&mut model, &l, &chain, r, T).unwrap();
+        volume(&model, &built.shape, 1e-3)
+    };
+    let (one, two) = (constant(1.0), constant(2.0));
+    assert!(two < v && v < one, "{two} < {v} < {one}");
+    // The run starts at the first edge's start: at (20, 10) where it runs
+    // into the corner, else at (10, 20), the second edge's far end.
+    let first_start = {
+        let (c, (a, b)) = ogeom_algo::placed_edge_curve(&model, &chain[0], T)
+            .unwrap()
+            .unwrap();
+        let t = if chain[0].orientation() == Orientation::Reversed {
+            b
+        } else {
+            a
+        };
+        c.point_at(t, T).unwrap()
+    };
+    let from_square_end = first_start.x > 15.0;
+    let draft = 40.0_f64.to_radians().tan();
+    let mut read = 0;
+    for e in explore_unique(&model, &rounded.shape, ShapeType::Edge).unwrap() {
+        let Some((c, (a, b))) = ogeom_algo::placed_edge_curve(&model, &e, T).unwrap() else {
+            continue;
+        };
+        for i in 0..=128 {
+            let p = c.point_at(a + (b - a) * f64::from(i) / 128.0, T).unwrap();
+            if (p.z - 10.0).abs() > 1e-9 || p.distance(Point::new(10.0, 10.0, 10.0)) < 4.0 {
+                continue;
+            }
+            // Along the run from the square wall's far end, and the
+            // contact's offset from its crease over the law's radius.
+            let (along, off, scale) = if p.x > 10.0 && p.y < 10.0 && p.x < 19.5 {
+                (20.0 - p.x, 10.0 - p.y, 1.0)
+            } else if p.y > 10.0 && p.x < 10.0 && p.y < 19.5 {
+                (p.y, 10.0 - p.x, draft)
+            } else {
+                continue;
+            };
+            if !(0.3..3.0).contains(&off) {
+                continue;
+            }
+            let s = if from_square_end {
+                along / 20.0
+            } else {
+                1.0 - along / 20.0
+            };
+            let miss = (off - (1.0 + s) * scale).abs();
+            assert!(miss < 1e-6, "a contact at {p:?} stands {miss} off the law");
+            read += 1;
+        }
+    }
+    assert!(read > 64, "{read} contacts read");
 }
 
 /// A block with a groove cut beside its front top edge, a strip 0.5 wide
