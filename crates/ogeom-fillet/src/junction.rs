@@ -44,7 +44,9 @@
 //! on, what stands past a band's wall's plane lying above that band as much
 //! as what its ball rolls off, so each band is carried on with its section
 //! widened past its wall and the two are intersected in one boolean, which
-//! bounds the corner by the bands' own intersection ([`corner`]). Across a
+//! bounds the corner by the bands' own intersection ([`corner`]). Under a
+//! radius law each band keeps the law up to the vertex and is carried on
+//! level past it, its widening a prism of its own. Across a
 //! convex turn of two straight creases the junction is crossed whatever the
 //! sections, as above; so too where one crease turns about an axis along
 //! the shared host's normal on a drum beside a crease of another kind (a
@@ -991,11 +993,22 @@ fn in_plane(model: &Model, face: &Shape, at: Point, normal: Vector, gap: f64) ->
 /// far side leaves it), and where it holds all that each band carried on
 /// keeps past the other's wall, which lies above both. Elsewhere this
 /// refuses, and the request rounds without crossed junctions.
+///
+/// Under a radius law (`law`) each wedge is a band whose section the law
+/// changes up to its cap, so no prism of one section stands for it before
+/// the cap. Each band is kept as built to its cap and carried on past it
+/// as the straight band of its cap's section, the law held level past the
+/// edge's end. What its section gains past its wall depends on the
+/// section only through the crease and the wall's and host's planes, all
+/// one along a straight crease, so the widening is that gain's prism from
+/// as far back as the other's wedge reaches to the continuation's far end,
+/// fused onto the band. Each wedge's hull is then its own bound's corners.
 pub(crate) fn corner(
     model: &mut Model,
     wedges: [&Shape; 2],
     junction: &Junction,
     solid: &Shape,
+    law: bool,
     tol: Tolerances,
 ) -> OgeomResult<(Shape, Vec<Shape>)> {
     let at = junction.at;
@@ -1055,6 +1068,10 @@ pub(crate) fn corner(
                     );
                 }
             }
+            hulls.push(ogeom_algo::shape_bounds(model, wedge, tol)?.corners());
+            continue;
+        }
+        if law {
             hulls.push(ogeom_algo::shape_bounds(model, wedge, tol)?.corners());
             continue;
         }
@@ -1201,6 +1218,17 @@ pub(crate) fn corner(
             .fold(0.0_f64, f64::max)
             + reach[slot];
         spans[slot] = span;
+        if law {
+            carried[slot] = Some(carried_law(
+                model,
+                (wedges[slot], &caps[slot], &sections[slot]),
+                along,
+                (at, behind + reach[slot], ahead[slot]),
+                (junction.top, span),
+                tol,
+            )?);
+            continue;
+        }
         // A turned band is carried on from its cap, and widened before it
         // over its part below.
         let turned = junction.turned.is_some_and(|t| t.slot == slot);
@@ -1702,6 +1730,37 @@ impl Section {
         span: f64,
         near: f64,
     ) -> OgeomResult<(Self, Vec<(Point, Point)>)> {
+        let Gained {
+            crease,
+            on_top,
+            on_wall,
+            deep,
+            wide,
+            level,
+        } = self.gained(top, span, near)?;
+        let gained = vec![
+            (on_wall, deep),
+            (deep, wide),
+            (wide, level),
+            (level, crease),
+        ];
+        let mut lines = gained.clone();
+        lines.push((crease, on_top));
+        let mut closing = gained;
+        closing.push((crease, on_wall));
+        Ok((
+            Self {
+                lines,
+                curve: self.curve.clone(),
+                arc: self.arc.clone(),
+                plane: self.plane,
+            },
+            closing,
+        ))
+    }
+
+    /// What [`Section::widened`] gains past the wall, by its corners.
+    fn gained(&self, top: Vector, span: f64, near: f64) -> OgeomResult<Gained> {
         let [(a, b), (c, d)] = self.lines.as_slice() else {
             ogeom_core::ogeom_bail!(Construction, "a band's end cap has no two straight legs");
         };
@@ -1738,26 +1797,28 @@ impl Section {
         let deep = on_wall + down * span;
         let wide = deep + out * span;
         let level = crease + past * span;
-        let gained = vec![
-            (on_wall, deep),
-            (deep, wide),
-            (wide, level),
-            (level, crease),
-        ];
-        let mut lines = gained.clone();
-        lines.push((crease, on_top));
-        let mut closing = gained;
-        closing.push((crease, on_wall));
-        Ok((
-            Self {
-                lines,
-                curve: self.curve.clone(),
-                arc: self.arc.clone(),
-                plane: self.plane,
-            },
-            closing,
-        ))
+        Ok(Gained {
+            crease,
+            on_top,
+            on_wall,
+            deep,
+            wide,
+            level,
+        })
     }
+}
+
+/// The corners of what a section widened past its wall gains: the crease,
+/// its legs' far ends on the shared host and on the wall, and the wall's
+/// leg carried on down past its contact (`deep`), out past the wall
+/// (`wide`) and back up to the host's plane past the crease (`level`).
+struct Gained {
+    crease: Point,
+    on_top: Point,
+    on_wall: Point,
+    deep: Point,
+    wide: Point,
+    level: Point,
 }
 
 /// `wedge` carried on past its planar end face `cap` along `along`, the
@@ -1889,6 +1950,56 @@ fn carried_widened(
     )?);
     faces.extend(swept_past(model, &section, along, plane, &mut rings, tol)?);
     closed_wedge(model, &faces, rings.near, tol)
+}
+
+/// A band under a law carried on past its cap `cap` (of section `section`)
+/// along `along` to the plane a distance `ahead` past `at`, the vertex, and
+/// fused with what its section gains past its wall under the shared host
+/// with outward unit normal `top` within `span`, as a prism from `behind`
+/// before the vertex to that plane.
+fn carried_law(
+    model: &mut Model,
+    (wedge, cap, section): (&Shape, &Shape, &Section),
+    along: Vector,
+    (at, behind, ahead): (Point, f64, f64),
+    (top, span): (Vector, f64),
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let near = tol.confusion() * 1e3;
+    let band = carried_to(model, wedge, cap, along, (at + along * ahead, along), tol)?;
+    let Gained {
+        crease,
+        deep,
+        wide,
+        level,
+        ..
+    } = section.gained(top, span, near)?;
+    // The gain's corners moved back along the crease to `behind` before
+    // the vertex, from the cap's plane where they stand.
+    let back = along * ((at - crease).dot(along) - behind.max(0.0));
+    let corners: Vec<Point> = [crease, deep, wide, level]
+        .into_iter()
+        .map(|p| p + back)
+        .collect();
+    let wire = ogeom_algo::make_polygon(model, &corners, true, tol)?.shape;
+    let face = ogeom_algo::make_face(
+        model,
+        plane_through((corners[0], along), tol)?,
+        &[wire],
+        tol,
+    )?
+    .shape;
+    let length = behind.max(0.0) + ahead;
+    let prism = ogeom_algo::make_prism(model, &face, along * length, tol)?.shape;
+    let fused = ogeom_bool::fuse(model, &band, &prism, tol)?.shape;
+    let solids = explore_unique(model, &fused, ShapeType::Solid)?;
+    let [one] = solids.as_slice() else {
+        ogeom_core::ogeom_bail!(
+            Construction,
+            "a band under a law widened past its wall is not one solid"
+        );
+    };
+    Ok(one.clone())
 }
 
 /// A face on `surface` bounded by `edges`, in any order.
