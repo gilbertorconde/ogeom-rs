@@ -466,12 +466,14 @@ aspect naming its file id lands on every piece.
 **A sketch curve through a pole of an integrated chart (#729).**
 `SurfaceSheet::chart_pieces` cuts a curve where it lands on a sphere's pole
 or a cone's apex, both found in closed form; through the collapsed side of
-a revolved or spline surface it is refused, since those landings are
-integrated, the pole's preimage on the sheet is not known in closed form,
-and a geodesic passing near the pole is integrated through a chart whose
-metric degenerates there. Owed: locating that preimage by the integrated
-map's own distance to the pole, with the geodesic near it followed in a
-chart regular there.
+a revolved or spline surface it is refused by name ("crosses a pole of
+the surface's chart"): a geodesic integrated in the chart that would run
+on across the collapsed side is stopped there, the chart's metric having
+degenerated, and no landing is integrated past the pole. Those landings
+are integrated, so the pole's preimage on the sheet is not known in closed
+form. Building it needs that preimage located by the integrated map's own
+distance to the pole, with the geodesic near it followed in a chart
+regular there.
 
 **A network's mixed point, held tangent where that fits better (#653).**
 `fit_network` leaves a point where a three-sided patch meets four-sided

@@ -1051,6 +1051,26 @@ impl SurfaceSheet {
         let off_u = !self.surface.is_periodic_u() && (u < ua - slack || u > ub + slack);
         let off_v = !self.surface.is_periodic_v() && (v < va - slack || v > vb + slack);
         if off_u || off_v {
+            // Across a side of the chart that collapses to a point (a
+            // surface of revolution meeting its axis, a spline's
+            // degenerate side) the geodesic runs on past the pole on the
+            // far side of it, half a turn round in the chart, where the
+            // chart's metric has degenerated and no integrated step
+            // follows it.
+            let side = if off_v {
+                (0, if v > vb { vb } else { va })
+            } else {
+                (1, if u > ub { ub } else { ua })
+            };
+            if collapsed_side(&self.surface, side, tol) {
+                ogeom_bail!(
+                    Construction,
+                    "the geodesic to the sheet point {p:?} crosses a pole of the \
+                     surface's chart, its side collapsed to a point at chart \
+                     position ({u}, {v}); a sheet laid by integrated geodesics \
+                     is not carried past a pole"
+                );
+            }
             ogeom_bail!(
                 Construction,
                 "the sheet point {p:?} runs off the surface's domain at chart \
@@ -1082,6 +1102,32 @@ impl SurfaceSheet {
         let gaussian = l.mul_add(n, -m * m) / det;
         Ok([a, b, accel_u, accel_v, y[5], -gaussian * y[4]])
     }
+}
+
+/// Whether the chart's side `(axis, bound)` collapses to one point in
+/// space: the row of the other parameter at `bound`, `axis` naming which
+/// parameter runs along it (0 for u at a v bound, 1 for v at a u bound),
+/// lifting within the confusion distance of its first point at every one
+/// of evenly spaced samples.
+fn collapsed_side(surface: &SurfaceGeometry, (axis, bound): (usize, f64), tol: Tolerances) -> bool {
+    const PIECES: u32 = 16;
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let (lo, hi) = if axis == 0 { (ua, ub) } else { (va, vb) };
+    if !(lo.is_finite() && hi.is_finite() && bound.is_finite()) {
+        return false;
+    }
+    let at = |k: u32| {
+        let t = (hi - lo).mul_add(f64::from(k) / f64::from(PIECES), lo);
+        if axis == 0 {
+            surface.point_at(t, bound, tol)
+        } else {
+            surface.point_at(bound, t, tol)
+        }
+    };
+    let Ok(first) = at(0) else {
+        return false;
+    };
+    (1..=PIECES).all(|k| at(k).is_ok_and(|q| q.distance(first) <= tol.confusion()))
 }
 
 /// A carried curve's chart positions continued along it: each periodic

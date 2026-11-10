@@ -430,7 +430,9 @@ the pole, and `split_face` cuts a face along them, closing the region \
 along the pole's row; on a cone they cut it at the apex alike, except \
 along the sheet's ray from the origin through the apex, where a straight \
 line has no one way on past a point holding less than a whole turn; \
-through a revolved or spline surface's collapsed side it is refused. \
+through a revolved or spline surface's collapsed side it is refused by \
+name, a geodesic integrated in its chart never carried past the pole \
+("crosses a pole of the surface's chart"). \
 `SheetMethod::LeastDistortion` lays the \
 conformal flattening of the covered geodesic disc that stretches nothing \
 along its rim, scaled to keep the disc's area (on a sphere the \
