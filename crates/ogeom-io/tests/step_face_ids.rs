@@ -78,3 +78,46 @@ fn a_nist_part_reads_with_an_id_for_each_face() {
     assert_eq!(face_entities(&text).len(), 139);
     faces_named_once(&text);
 }
+
+/// A box written, its `ADVANCED_FACE`s then made `FACE_SURFACE`s, the
+/// supertype with the same arguments: each face is named by its entity
+/// all the same.
+#[test]
+fn face_surfaces_read_with_an_id_for_each_face() {
+    let mut model = Model::new();
+    let solid = ogeom_algo::make_box(&mut model, Frame::WORLD, (1.0, 2.0, 3.0), T)
+        .unwrap()
+        .shape;
+    let mut document = ogeom_doc::Document::over(model);
+    document.add_part("part", solid);
+    let text = ogeom_io::write_step(&document, T)
+        .unwrap()
+        .replace("ADVANCED_FACE(", "FACE_SURFACE(");
+    assert_eq!(face_entities(&text).len(), 6);
+    faces_named_once(&text);
+}
+
+/// Two solids of one shell: each face is held by both, and named once.
+#[test]
+fn faces_two_solids_share_are_named_once() {
+    let mut model = Model::new();
+    let solid = ogeom_algo::make_box(&mut model, Frame::WORLD, (1.0, 2.0, 3.0), T)
+        .unwrap()
+        .shape;
+    let mut document = ogeom_doc::Document::over(model);
+    document.add_part("part", solid);
+    let text = ogeom_io::write_step(&document, T).unwrap();
+    let start = text.find("MANIFOLD_SOLID_BREP(").unwrap();
+    let end = start + text[start..].find(';').unwrap();
+    let brep = &text[start..end];
+    let data_end = text.rfind("ENDSEC;").unwrap();
+    let text = format!(
+        "{}#999999={brep};\n{}",
+        &text[..data_end],
+        &text[data_end..]
+    );
+    let import = ogeom_io::read_step(&text, T).unwrap();
+    assert_eq!(import.solids.len(), 2);
+    assert_eq!(import.faces.len(), 6);
+    faces_named_once(&text);
+}
