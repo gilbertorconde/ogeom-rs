@@ -380,10 +380,12 @@ is G0 whatever the slope, so pinning the slope level there would change
 the law and buy nothing. A loop joined round one convex turn is opened at
 a straight band built in two halves. A marched band whose crease ends on
 a planar face holding its end section stops at the vertex, capped in that
-face's own plane. Owed: a turn a curved crease meets (the straight band
-beside it must be built through the curved band's end, after it, in
-rounds, as `fillet_edges` builds it; built against the solid as given its
-square cap touches the drum along a line); a re-entrant turn whose sections differ (the
+face's own plane. A chain turning where marched bands meet is met in
+`fillet_edges`' own rounds, each piece under its window of the law. Owed:
+a turn where a marched band meets a straight band between planes (the
+constant round's band there is an exact torus band; under a law it is
+fitted, and its end meets the straight band in what the boolean does not
+melt, built first or second, capped in its wall or run out); a re-entrant turn whose sections differ (the
 constant corner carries each band on as one section from where the other
 reaches; under a law that needs a corner whose carried band follows the
 law to the vertex and holds level past it).

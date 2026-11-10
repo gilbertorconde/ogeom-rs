@@ -707,7 +707,7 @@ fn fillet_edges_meeting_with(
         }
     }
     if !shared {
-        return fillet_edges_own(model, solid, edges, radii, None, rims, tol);
+        return fillet_edges_own(model, solid, edges, radii, None, rims, None, tol);
     }
     // What an attempt changes of the given solid where it stands: the
     // tolerances it widens, which the model's journal notes, and, once a
@@ -722,7 +722,16 @@ fn fillet_edges_meeting_with(
             crossed,
             ..Taken::default()
         };
-        match fillet_edges_own(model, solid, edges, radii, Some(&mut taken), rims, tol) {
+        match fillet_edges_own(
+            model,
+            solid,
+            edges,
+            radii,
+            Some(&mut taken),
+            rims,
+            None,
+            tol,
+        ) {
             Ok(built) => {
                 model.keep_widened(mark);
                 return Ok(built);
@@ -755,7 +764,7 @@ fn fillet_edges_meeting_with(
             }
         }
     }
-    fillet_edges_own(model, solid, edges, radii, None, rims, tol)
+    fillet_edges_own(model, solid, edges, radii, None, rims, None, tol)
 }
 
 /// The checks a request's bands pass before any is built: each ball sits
@@ -874,6 +883,7 @@ struct Taken {
 
 /// [`fillet_edges`] on a shape every node below which is its own, with
 /// junctions where `meeting` asks, which notes there what it took.
+#[allow(clippy::too_many_arguments, reason = "one request's settings")]
 fn fillet_edges_own(
     model: &mut Model,
     solid: &Shape,
@@ -881,6 +891,7 @@ fn fillet_edges_own(
     radii: &[f64],
     meeting: Option<&mut Taken>,
     cones: Rims,
+    laws: Option<&[Profile]>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     if edges.is_empty() {
@@ -888,6 +899,9 @@ fn fillet_edges_own(
     }
     let rolled = match request_fits(model, solid, edges, radii, tol) {
         Ok(rolled) => rolled,
+        Err(crate::support::Blamed { error: refusal, .. }) if laws.is_some() => {
+            return Err(refusal);
+        }
         // A request of one edge is that edge alone, a strip beside it taken
         // off whole as there.
         Err(crate::support::Blamed { error: refusal, .. }) => {
@@ -917,6 +931,14 @@ fn fillet_edges_own(
         }
     }
     corners.retain(|(_, at)| at.len() >= 3);
+    if laws.is_some() && (!corners.is_empty() || rolled.iter().any(|&r| r)) {
+        ogeom_bail!(
+            Construction,
+            "a variable radius over a chain three of whose edges meet at a \
+             vertex, or one of whose balls rests on a narrow face's far edge, \
+             is still owed; see docs/CAPABILITIES.md, fillet.variable"
+        );
+    }
     // No ball rolls round a corner whose bands differ in radius: the
     // corner tool's ball would touch a band of another radius nowhere
     // along its rim. Such a corner is left to the bands here and closed by
@@ -1324,6 +1346,17 @@ fn fillet_edges_own(
                         };
                         crate::support::credit_new_faces(model, &current, target, &mut built)?;
                         return Ok(built);
+                    }
+                    if let Some(laws) = laws {
+                        return law_piece(
+                            model,
+                            &current,
+                            &edges[index],
+                            target,
+                            &laws[index],
+                            (index, &mates),
+                            tol,
+                        );
                     }
                     fillet_edge_meeting(
                         model,
@@ -2254,6 +2287,11 @@ fn fillet_edge_variable_own(
 ///   the turn, where the two are joined. A loop the tangent junctions join
 ///   round to one convex turn (a pad with one vertical left sharp) is
 ///   opened at a straight band between two of them, built in two halves.
+/// - a chain turning where marched bands meet (a drum's ruling turning
+///   into its rim), met in rounds as [`fillet_edges`] meets it: each band
+///   a later round builds stands over what the earlier left of its edge,
+///   under its own window of the law, and runs on through the earlier
+///   band at the law's radius there.
 ///
 /// A law holding one radius all along is [`fillet_edges`]' round.
 ///
@@ -2266,7 +2304,8 @@ fn fillet_edge_variable_own(
 /// (no points, a fraction off the chain or out of order, a radius not a
 /// positive length), where a linear law changes radius round a closed
 /// chain, where `chain` is empty, a chain of more than one edge whose
-/// edges do not run end to end, a turn where a curved crease meets or
+/// edges do not run end to end, a turn where a marched band meets a
+/// straight one between planes or
 /// whose bands' sections differ across a re-entrant turn, a loop joined
 /// round a convex turn with no straight band between two of its junctions
 /// to open it at, a ball resting
@@ -2497,6 +2536,131 @@ fn fillet_chain_law_own(
     Ok(built)
 }
 
+/// The band over `piece`, what an earlier round of a chain left of the
+/// chain's edge `whole`, under `law`: the law over `whole` from its own
+/// start the way it runs, read over the stretch of it the piece covers.
+///
+/// A straight piece between planes is the exact envelope of that stretch;
+/// where the constant band of the radius at an end runs on past it
+/// (through a blend an earlier round built, as `fillet_edges` runs a
+/// later band through an earlier one), what of that band stands past the
+/// end is joined on, the law held level there at the end's radius. Any
+/// other piece is marched under the law with the request's mates, which
+/// run it out past an end as the constant band would.
+fn law_piece(
+    model: &mut Model,
+    solid: &Shape,
+    whole: &Shape,
+    piece: &Shape,
+    law: &Profile,
+    (index, mates): (usize, &[Mate]),
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    use ogeom_geom::Curve3d as _;
+    let (curve, range) = edge_curve(model, whole, tol)?;
+    let ruler = crate::law::Ruler::new(curve.clone(), range, false, tol)?;
+    let whole_reversed = whole.orientation() == ogeom_topo::Orientation::Reversed;
+    // The fraction of the whole edge, from its own start the way it runs,
+    // at a point of it.
+    let fraction = |p: Point| -> OgeomResult<f64> {
+        let t = ogeom_algo::project_on_curve(&curve, p, 64, tol)?.parameter;
+        let s = ruler.fraction(t, tol)?.0;
+        Ok(if whole_reversed { 1.0 - s } else { s })
+    };
+    let (piece_curve, (lo, hi)) = edge_curve(model, piece, tol)?;
+    let reversed = piece.orientation() == ogeom_topo::Orientation::Reversed;
+    let (start, end) = if reversed {
+        (
+            piece_curve.point_at(hi, tol)?,
+            piece_curve.point_at(lo, tol)?,
+        )
+    } else {
+        (
+            piece_curve.point_at(lo, tol)?,
+            piece_curve.point_at(hi, tol)?,
+        )
+    };
+    let (from, to) = (fraction(start)?, fraction(end)?);
+    if (to - from).abs() <= tol.parametric() {
+        ogeom_bail!(
+            Construction,
+            "a piece of a chain's edge under a law has no length"
+        );
+    }
+    let own = law.window(from, to);
+    let planar = matches!(piece_curve, Curve::Line(_))
+        && matches!(route(model, solid, piece, Rims::Exact, tol)?, Route::Planar);
+    if !planar {
+        return crate::marched::marched_fillet_law(
+            model,
+            solid,
+            piece,
+            &own,
+            None,
+            Some((index, mates)),
+            tol,
+        );
+    }
+    let (built, wedges) = crate::support::collecting_wedges(|| {
+        straight_law_fillet(model, solid, piece, &own, reversed, (0.0, 1.0), tol)
+    });
+    built?;
+    let [band] = <[crate::support::Wedge; 1]>::try_from(wedges).map_err(|w| {
+        ogeom_core::ogeom_err!(
+            Construction,
+            "a piece of a chain's edge under a law built {} wedges, not one",
+            w.len()
+        )
+    })?;
+    let mut wedge = band.solid;
+    let gap = crate::marched::band_fit_target(tol) * 2.0;
+    let seat = planar_seat(model, solid, piece, tol)?;
+    for (at, outward, radius) in [
+        (
+            seat.start,
+            -seat.along,
+            if reversed {
+                own.at(1.0).0
+            } else {
+                own.at(0.0).0
+            },
+        ),
+        (
+            seat.end,
+            seat.along,
+            if reversed {
+                own.at(0.0).0
+            } else {
+                own.at(1.0).0
+            },
+        ),
+    ] {
+        let (alone, wedges) = crate::support::collecting_wedges(|| {
+            planar_fillet(model, solid, piece, radius, Some((index, mates)), tol)
+        });
+        alone?;
+        let Some(alone) = wedges.into_iter().next() else {
+            continue;
+        };
+        // A straight band's sections stand square to its crease, so its
+        // vertices reach as far past the end as any point of it.
+        let mut past = f64::NEG_INFINITY;
+        for vertex in explore_unique(model, &alone.solid, ShapeType::Vertex)? {
+            if let Some(data) = model.node(&vertex).and_then(|n| n.data().as_vertex()) {
+                let p = vertex.transform(model.datums())?.apply(data.point);
+                past = past.max((p - at).dot(outward));
+            }
+        }
+        if past <= gap {
+            continue;
+        }
+        let span = ogeom_algo::shape_bounds(model, &alone.solid, tol)?.diagonal() * 2.0;
+        let run_out = crate::support::trimmed_wedge(model, &alone.solid, (at, outward), span, tol)?;
+        wedge = crate::junction::joined(model, [&wedge, &run_out], (at, outward), at, gap, tol)?.0;
+    }
+    crate::support::apply_wedge_solid(model, solid, Some(piece), &wedge, band.additive, tol)
+}
+
 /// Whether the ball under `law` sits on both faces of `edge` all along it:
 /// [`crate::support::ball_fits`] at the law's least and largest radius,
 /// and every contact on its own face. A constant round whose contact runs
@@ -2671,6 +2835,10 @@ fn chain_law(
     // junction; any other is the junction two bands of the meeting's
     // radius make there, read as `fillet_edges` reads it.
     let mut junctions: Vec<crate::junction::Junction> = Vec::new();
+    // Whether a turn is met in rounds, as `fillet_edges` meets a curved
+    // crease's band and the band beside it: the one built first, the other
+    // against what it left, running on through it.
+    let mut in_rounds = false;
     for &([i, j], at, radius) in &meetings {
         if let Some(found) = tangent
             .iter()
@@ -2702,19 +2870,50 @@ fn chain_law(
         )?
         .into_iter()
         .find(|t| near(t.at, at));
+        let planar = |model: &Model, k: usize| -> OgeomResult<bool> {
+            Ok(
+                edge_curve(model, &chain[k], tol).is_ok_and(|(c, _)| matches!(c, Curve::Line(_)))
+                    && matches!(
+                        route(model, solid, &chain[k], Rims::Exact, tol)?,
+                        Route::Planar
+                    ),
+            )
+        };
+        let straight = planar(model, i)? && planar(model, j)?;
+        // Met in rounds, a marched band and a straight one between planes
+        // are refused: under a law the marched band has no exact form (its
+        // law runs by arc length, which no rational parameter of a circle
+        // does), and its fitted end meets the straight band beside it in
+        // what the boolean does not melt, whichever is built first and
+        // whether it stops in the wall it ends on or runs out past it. The
+        // constant round's band there is an exact torus band.
+        let mixed = planar(model, i)? != planar(model, j)?;
+        let in_turn = |mixed: bool| -> OgeomResult<()> {
+            if mixed {
+                ogeom_bail!(
+                    Construction,
+                    "a variable radius over a chain turning where a marched \
+                     band meets a straight one between planes is still owed: \
+                     under a law the marched band is fitted, and its end meets \
+                     the straight band in what the boolean does not melt; see \
+                     docs/CAPABILITIES.md, fillet.variable"
+                );
+            }
+            Ok(())
+        };
         let Some(mut turning) = turning else {
-            ogeom_bail!(
-                Construction,
-                "a variable radius over a chain whose creases turn where they \
-                 meet other than as two bands meeting at a corner of one shared \
-                 planar host is still owed; see docs/CAPABILITIES.md, \
-                 fillet.variable"
-            );
+            // No junction on one shared planar host: the two bands meet as
+            // `fillet_edges`' do, in rounds.
+            in_turn(mixed)?;
+            in_rounds = true;
+            continue;
         };
         turning.pair = [i, j];
-        let straight = [i, j].iter().all(|&k| {
-            edge_curve(model, &chain[k], tol).is_ok_and(|(c, _)| matches!(c, Curve::Line(_)))
-        });
+        if !straight && turning.crossed && !turning.reentrant {
+            in_turn(mixed)?;
+            in_rounds = true;
+            continue;
+        }
         let convex = turning.crossed && !turning.reentrant;
         let reentrant = !turning.crossed && turning.reentrant;
         // Across a re-entrant turn whose bands' sections differ, the corner
@@ -2732,20 +2931,14 @@ fn chain_law(
                  vertex; see docs/CAPABILITIES.md, fillet.variable"
             );
         }
-        // A curved crease at a turn is refused: the straight band beside
-        // it would have to be built through the curved band's end, after
-        // it, as `fillet_edges` builds the two in rounds; built against the
-        // solid as given, the straight band's cap square to its crease
-        // touches the curved band's host along a line (a drum's tangent
-        // plane at the vertex), which neither cut resolves.
         if !straight || !(convex || reentrant) {
             ogeom_bail!(
                 Construction,
                 "a variable radius over a chain turning where it meets is \
-                 rounded only between straight creases, across a convex turn \
-                 or a re-entrant one whose bands meet in a plane; a curved \
-                 crease at a turn is still owed; see docs/CAPABILITIES.md, \
-                 fillet.variable"
+                 rounded between straight creases across a convex turn or a \
+                 re-entrant one whose bands meet in a plane, and a curved \
+                 crease across a convex turn; any other turn is still owed; \
+                 see docs/CAPABILITIES.md, fillet.variable"
             );
         }
         junctions.push(turning);
@@ -2762,6 +2955,38 @@ fn chain_law(
         } else {
             profile.window(to, from)
         });
+    }
+    // A chain met in rounds goes to `fillet_edges`' own rounds, each edge
+    // under its own window of the law; its other meetings must then be
+    // turns too, met the same way.
+    if in_rounds {
+        if !junctions.is_empty() {
+            ogeom_bail!(
+                Construction,
+                "a variable radius over a chain that turns where a curved \
+                 crease meets and also joins bands across another junction is \
+                 still owed; see docs/CAPABILITIES.md, fillet.variable"
+            );
+        }
+        let mut laws: Vec<Profile> = owns.clone();
+        let mut radii: Vec<f64> = vec![0.0; chain.len()];
+        for (&(k, _), own) in walk.iter().zip(&owns) {
+            laws[k] = own.clone();
+            radii[k] = own.largest();
+        }
+        for (edge, own) in chain.iter().zip(&laws) {
+            law_ball_on_faces(model, solid, edge, own, tol)?;
+        }
+        return fillet_edges_own(
+            model,
+            solid,
+            chain,
+            &radii,
+            None,
+            Rims::Exact,
+            Some(&laws),
+            tol,
+        );
     }
     // The request's checks at each edge's largest radius, where its ball
     // sets back furthest: each ball on its faces, and no band over another

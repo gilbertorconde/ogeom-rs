@@ -1371,10 +1371,16 @@ cuts taking the union, and carried to the plane bisecting a re-entrant \
 turn, where the two are joined; a loop the tangent junctions join round \
 to one convex turn (a pad with one vertical left sharp) is opened at a \
 straight band between two of them, built in two halves meeting flush, \
-so no wedge overlaps itself at the turn. Refused by name: a linear law \
+so no wedge overlaps itself at the turn; and a chain turning where \
+marched bands meet (a drum's ruling turning into its rim), met in rounds \
+as `fillet_edges` meets it, each piece an earlier round leaves under its \
+own window of the law and run on through the earlier band at the law's \
+radius there. Refused by name: a linear law \
 changing radius round a closed chain (it jumps where the chain closes), \
-a turn where a curved crease meets (the straight band beside it would \
-have to be built through the curved band's end, after it, in rounds), a \
+a turn where a marched band meets a straight band between planes (under \
+a law the marched band is fitted, the constant round's there an exact \
+torus band, and its end meets the straight band in what the boolean does \
+not melt, whichever is built first and however it ends), a \
 re-entrant turn whose bands' sections differ (the corner carries each \
 band on as one section from where the other reaches, which a law \
 changes before the vertex), a loop joined round a convex turn with no \
