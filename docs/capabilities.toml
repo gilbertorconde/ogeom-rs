@@ -1182,7 +1182,11 @@ box corner's sphere octant, a pyramid apex's sphere or spheres and \
 cylinders; a corner the tool does not speak keeps the bands' caps. \
 `blend_faces` and `fillet_faces` round curved faces that share no edge: \
 swept from one section where the surfaces share a direction or an axis, \
-marched where they cross otherwise. Between separate faces a marched \
+marched where they cross otherwise; a swept round whose crease's edges \
+end on a planar face oblique to the crease runs on past that end until \
+the ball's section has left the solid across the face within four radii, \
+cut back to the face's plane, as a chamfer along an arc of a rim ending \
+so does. Between separate faces a marched \
 ball that touches both all the way round a closed seat (a tube through a \
 floor at a slant, two pipes crossing) gives a band fitted closed round \
 the loop, each face cut along its closed line of contact, across the \

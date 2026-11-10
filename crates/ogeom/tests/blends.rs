@@ -301,6 +301,33 @@ fn upright_foot_fill(off: f64, r: f64) -> f64 {
     total
 }
 
+/// What a bevel of legs `d` cuts into the corner at the foot of an upright
+/// drum of radius 6 whose axis stands at (20, 40 + `off`) over a block
+/// whose side is y = 40: the right triangle of legs `d` between the wall
+/// and the top, at every turn about the axis, where it stands over the
+/// block, y <= 40. In closed form across the meridian (its height over the
+/// top at radius rho is 6 + d - rho), the midpoint over the turn.
+fn upright_foot_bevel(off: f64, d: f64) -> f64 {
+    let drum = 6.0;
+    let turns = 200_000_u32;
+    let step = core::f64::consts::TAU / f64::from(turns);
+    let outer = drum + d;
+    let primitive = |rho: f64| outer * rho * rho / 2.0 - rho * rho * rho / 3.0;
+    let mut total = 0.0;
+    for k in 0..turns {
+        let sin = ((f64::from(k) + 0.5) * step).sin();
+        if sin >= 0.0 {
+            continue;
+        }
+        let rho_min = (-off / sin).max(drum);
+        if rho_min >= outer {
+            continue;
+        }
+        total += (primitive(outer) - primitive(rho_min)) * step;
+    }
+    total
+}
+
 /// A cylinder boss fused on a block: its wall meets the block's top along
 /// a circle, a concave corner. Blending the wall and the top rolls the ball
 /// round the boss's foot and fills the corner with a torus.
@@ -1804,8 +1831,9 @@ fn past_the_side(model: &Model, shape: &Shape, axis: Vector, slack: f64) -> Vec<
 /// past the side, where the arc meets the side obliquely, the corner run on
 /// past each end and cut back to the side ([`upright_foot_fill`]), and
 /// nothing stands past the block's side but the drum. A chamfer of the
-/// foot bevels the arc between its ends: its fill is the share of the ring
-/// a right triangle of legs `d` turns, by Pappus.
+/// foot bevels it the same way: with the axis on the side its fill is the
+/// share of the ring a right triangle of legs `d` turns, by Pappus, and
+/// past the side the triangle over the block ([`upright_foot_bevel`]).
 #[test]
 fn an_edge_round_stops_where_an_upright_drum_s_foot_runs_off_the_block() {
     let r = 2.0;
@@ -1837,8 +1865,10 @@ fn an_edge_round_stops_where_an_upright_drum_s_foot_runs_off_the_block() {
                 "{} faces stand past the side",
                 stray.len()
             );
-            let want = if chamfer || off == 0.0 {
+            let want = if off == 0.0 {
                 ring * share
+            } else if chamfer {
+                upright_foot_bevel(off, r)
             } else {
                 upright_foot_fill(off, r)
             };
@@ -1980,19 +2010,23 @@ fn a_face_blend_ends_where_the_crease_runs_off_the_block_s_side() {
 /// The same drum upright, its axis on the block's top edge or 0.5 past it,
 /// its wall parted above the foot. The wall and the top share an axis, so
 /// the round is an exact torus; the crease runs off the block's side where
-/// the foot's circle crosses y = 40, so the round ends there, capped in the
-/// meridian plane through that crossing, and nothing but the drum stands
-/// past the side. The fill is the ring's share of the turn the foot's arc
-/// makes on the block. With the axis on the side that is what the edge
-/// round of the sharp foot fills; with it past the side the edge round runs
-/// on past the foot's oblique ends to the side and fills the corner over
-/// the block whole.
+/// the foot's circle crosses y = 40. With the axis on the side the round
+/// ends there in the meridian plane through that crossing, which is the
+/// side's, and fills the ring's half; past the side the crossing is
+/// oblique, and the round runs on past it until the ball's section has
+/// left the block, cut back to the side, filling the corner over the block
+/// whole ([`upright_foot_fill`]). Nothing but the drum stands past the
+/// side, and the blend fills what the edge round of the sharp foot does.
 #[test]
 fn an_upright_drum_s_face_blend_ends_where_the_crease_runs_off_the_block() {
     let r = 2.0;
     let pi = core::f64::consts::PI;
     for off in [0.0, 0.5] {
-        let want = rim_ring(6.0, r, -1.0) * (pi - 2.0 * (off / 6.0_f64).asin()) / (2.0 * pi);
+        let want = if off == 0.0 {
+            rim_ring(6.0, r, -1.0) * (pi - 2.0 * (off / 6.0_f64).asin()) / (2.0 * pi)
+        } else {
+            upright_foot_fill(off, r)
+        };
         let mut model = Model::new();
         let sharp = drum_leaning_x(&mut model, (20.0, 40.0 + off), 0.0);
         let before = exact_volume(&model, &sharp);
@@ -2014,9 +2048,11 @@ fn an_upright_drum_s_face_blend_ends_where_the_crease_runs_off_the_block() {
             stray.len()
         );
         let filled = exact_volume(&model, &blended) - before;
+        // The ring's half is exact; the corner over the block past the side
+        // is integrated to a few parts in 1e8.
         assert!(
-            (filled - want).abs() < want * 1e-9,
-            "the arc's share of the ring: {filled} against {want}"
+            (filled - want).abs() < want * 1e-6,
+            "the corner over the block: {filled} against {want}"
         );
 
         let mut other = Model::new();
@@ -2030,20 +2066,10 @@ fn an_upright_drum_s_face_blend_ends_where_the_crease_runs_off_the_block() {
             .unwrap()
             .shape;
         let edge_fill = exact_volume(&other, &rounded) - exact_volume(&other, &sharp);
-        if off == 0.0 {
-            assert!(
-                (filled - edge_fill).abs() < want * 1e-9,
-                "the blend fills what the edge round does: {filled} against {edge_fill}"
-            );
-        } else {
-            // The edge round runs on past the foot's oblique ends to the
-            // side; the face blend stops in the meridian planes there.
-            let past = upright_foot_fill(off, r);
-            assert!(
-                (edge_fill - past).abs() < past * 1e-6,
-                "the edge round fills {edge_fill} against the corner over the block {past}"
-            );
-        }
+        assert!(
+            (filled - edge_fill).abs() < want * 1e-6,
+            "the blend fills what the edge round does: {filled} against {edge_fill}"
+        );
     }
 }
 

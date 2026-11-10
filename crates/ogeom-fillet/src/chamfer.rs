@@ -477,7 +477,7 @@ fn wedge_for(
     match legs(model, solid, edge, spec, tol)? {
         Legs::Straight(seat, distances) => bevel(model, &seat, distances, tol),
         Legs::Rim(seat, on_wall, on_cap) => {
-            revolved_bevel(model, edge, &seat, on_wall, on_cap, tol)
+            revolved_bevel(model, solid, edge, &seat, on_wall, on_cap, tol)
         }
         Legs::Marched => Ok(Wedge {
             faces: Vec::new(),
@@ -943,6 +943,7 @@ fn revolved_side(
 /// cap, and the cone between the two tangency rings as the bevel.
 fn revolved_bevel(
     model: &mut Model,
+    solid: &Shape,
     edge: &Shape,
     seat: &RevolvedSeat,
     on_wall: f64,
@@ -974,7 +975,8 @@ fn revolved_bevel(
         );
     }
     if let Some((start, sweep)) = arc_span(model, edge, seat, tol)? {
-        return sector_bevel(model, seat, depth, cap_rho, start, sweep, tol);
+        let legs = (depth, cap_rho, on_wall.max(on_cap));
+        return sector_bevel(model, solid, edge, seat, legs, (start, sweep), tol);
     }
     let flanks = revolved_flanks(model, seat, depth, cap_rho, tol)?;
 
@@ -1093,32 +1095,77 @@ fn arc_window(
 /// bevel meeting the arc at a tangent ends in, so the bevels of a chain of
 /// lines and arcs abut exactly; a whole ring would cut the material on the
 /// far side of the axis as well.
+///
+/// Where the arc ends on a planar face oblique to the crease there, the
+/// section in the meridian through that end would stop short of the face
+/// and leave the corner between them: the bevel runs on past the end until
+/// its section has left the solid across that face, within four of its
+/// longer leg, as a straight band's run-out is read, and is cut back to the
+/// face's plane.
 fn sector_bevel(
     model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
     seat: &RevolvedSeat,
-    depth: f64,
-    cap_rho: f64,
-    start: f64,
-    sweep: f64,
+    (depth, cap_rho, leg): (f64, f64, f64),
+    (start, sweep): (f64, f64),
     tol: Tolerances,
 ) -> OgeomResult<Wedge> {
     let frame = seat.frame_at(seat.centre, tol)?;
-    let radial = frame.x().vector() * start.cos() + frame.y().vector() * start.sin();
-    let rim = seat.centre + radial * seat.radius;
-    let wall = if seat.slope == 0.0 {
-        rim - seat.up * (seat.tau * depth)
-    } else {
-        let height = -seat.tau * depth;
-        seat.centre + seat.up * height + radial * seat.radius_at(height)
+    let radial_at =
+        |theta: f64| frame.x().vector() * theta.cos() + frame.y().vector() * theta.sin();
+    let section_at = |theta: f64| -> [ogeom_math::Point; 3] {
+        let radial = radial_at(theta);
+        let rim = seat.centre + radial * seat.radius;
+        let wall = if seat.slope == 0.0 {
+            rim - seat.up * (seat.tau * depth)
+        } else {
+            let height = -seat.tau * depth;
+            seat.centre + seat.up * height + radial * seat.radius_at(height)
+        };
+        [rim, wall, seat.centre + radial * cap_rho]
     };
-    let cap = seat.centre + radial * cap_rho;
-    let across = seat.up.cross(radial);
+    let mut window = [start, start + sweep];
+    let mut trims = Vec::new();
+    let hosts = [&seat.cap_face, &seat.wall_face];
+    for (slot, sign) in [(0_usize, -1.0), (1, 1.0)] {
+        let end = window[slot];
+        let at = seat.centre + radial_at(end) * seat.radius;
+        let ahead = seat.up.cross(radial_at(end)) * sign;
+        if !crate::marched::crease_terminates_at(model, solid, edge, hosts, at, tol)? {
+            continue;
+        }
+        let Some(face) = crate::support::oblique_end_face(model, solid, at, ahead, tol)? else {
+            continue;
+        };
+        let step = (leg / seat.radius) / 8.0;
+        let reach = 4.0 * leg / seat.radius;
+        let section = |t: f64| Ok(section_at(end + sign * t));
+        if let Some(past) =
+            crate::support::run_out_past(model, solid, face, step, reach, &section, tol)?
+        {
+            window[slot] = end + sign * past;
+            trims.push(face);
+        }
+    }
+    // A bevel that would close the turn running on keeps its ends.
+    if window[1] - window[0] >= core::f64::consts::TAU - tol.angular() {
+        window = [start, start + sweep];
+        trims.clear();
+    }
+    let [rim, wall, cap] = section_at(window[0]);
+    let across = seat.up.cross(radial_at(window[0]));
     let profile = crate::support::planar_face(model, &[rim, wall, cap], across, tol)?;
     let axis = ogeom_math::Axis::new(seat.centre, frame.z());
-    let solid = ogeom_algo::make_revolution(model, &profile, axis, sweep, tol)?.shape;
+    let turn = window[1] - window[0];
+    let mut wedge = ogeom_algo::make_revolution(model, &profile, axis, turn, tol)?.shape;
+    let span = (seat.radius + leg) * 4.0;
+    for plane in trims {
+        wedge = crate::support::trimmed_wedge(model, &wedge, plane, span, tol)?;
+    }
     Ok(Wedge {
         faces: Vec::new(),
-        solid: Some(solid),
+        solid: Some(wedge),
         additive: seat.additive(),
         whole_ring: None,
         marched: None,
