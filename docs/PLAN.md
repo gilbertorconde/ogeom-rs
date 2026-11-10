@@ -405,6 +405,25 @@ from tangent at its finest net and the request is refused. That corner waits
 on a patch whose border tangency to the bands and faces is held exactly, not
 fitted: `fit_network` holds tangency between its own patches only, and a
 border held tangent to a support is a new condition there.
+Where a convex and a concave band of one request meet at a vertex
+(`setback.rs`, `signed_corners`; #712), the request is rounded in one
+order whatever its own, and a vertex of three planar faces and three
+straight edges, all rounded, is closed as one corner: each band stopped
+its own width past the least setback at which its section clears the
+others, the box square to the three edges from each section back to
+twice the widest band behind the vertex cut away, and the opening of
+three arcs and three conics filled by one patch G1 to every band end and
+face. On a face reflex at the vertex (an L-bracket's front) the face's
+part kept in the box is the side of its conic away from the vertex, out
+to the box's walls; coplanar faces a fusion left at the vertex count as
+one. Where an edge of the vertex is left sharp, the request is refused by
+name in either order: the opening between the band ends crosses that
+edge, and a patch tangent to both its faces there needs two tangent
+planes at one point. Owed there: a patch with a collapsed side at the
+crossing (a fan, the normal turning from one face's to the other's at one
+point), which neither `make_filling_n` nor `fit_network` fits against
+outside supports; signed corners of more than three edges or with a
+curved face, refused by name.
 
 ### Construction and exchange
 

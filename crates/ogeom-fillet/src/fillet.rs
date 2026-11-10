@@ -475,10 +475,13 @@ fn route(
 /// Only two blends that round the same way trim each other. A wedge's cut
 /// would eat a fill, and a fill cannot run on through a wedge's band, so
 /// where a convex edge meets a concave one (an L-bracket's front edge at
-/// its re-entrant edge) whichever is asked first takes the corner and the
-/// other stops flush against its rail. The two orders then land on
-/// different solids, each exact, because the corner is genuinely one
-/// rounding or the other and no ball rolls round both.
+/// its re-entrant edge) no ball rolls round both. There the request is
+/// rounded in one order whatever its own, and a vertex of three planar
+/// faces and three straight edges, all of them asked, is closed as
+/// [`round_vertex_setback`](crate::round_vertex_setback) closes a corner:
+/// each band stopped one of its own widths past the least setback at which
+/// its section clears the others, and one patch G1 to every band end and
+/// face, the same solid in any order.
 ///
 /// What `solid` shares with other shapes is copied before it is
 /// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
@@ -487,7 +490,12 @@ fn route(
 ///
 /// As [`fillet_edge`] per edge, and additionally if an earlier blend
 /// consumed or split a later edge: a chain whose members interfere is
-/// refused rather than guessed at. A request of two or more edges also
+/// refused rather than guessed at. Where a convex and a concave edge of the
+/// request meet at a vertex that is not three planar faces and three
+/// straight edges all asked, the request is refused by name in any order:
+/// with an edge of it left sharp, the opening between the band ends would
+/// cross that edge, and no patch is tangent to both its faces at one
+/// point. A request of two or more edges also
 /// refuses a ball that sets back past the far side of a face anywhere
 /// along an edge that shares a face or a vertex with another of the
 /// request, since each band's contacts are checked against the others'
@@ -565,6 +573,19 @@ fn fillet_edges_meeting(
     radii: &[f64],
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    // Where a convex and a concave band meet at a vertex, the bands are
+    // built in one order whatever the request's, and the corner closed
+    // after.
+    let request: Vec<(Shape, f64)> = edges.iter().cloned().zip(radii.iter().copied()).collect();
+    let signed = crate::setback::signed_corners(model, solid, &request, tol)?;
+    let (edges, radii): (Vec<Shape>, Vec<f64>) = if signed.is_empty() {
+        (edges.to_vec(), radii.to_vec())
+    } else {
+        let mut sorted = request.clone();
+        sorted.sort_by_key(|(edge, _)| edge.node());
+        sorted.into_iter().unzip()
+    };
+    let (edges, radii) = (edges.as_slice(), radii.as_slice());
     let round = |model: &mut Model| {
         with_fitted_rims(
             model,
@@ -574,7 +595,8 @@ fn fillet_edges_meeting(
             tol,
         )
     };
-    let mixed = mixed_corners(model, edges, radii)?;
+    let mut mixed = mixed_corners(model, edges, radii)?;
+    mixed.retain(|(vertex, _)| !signed.iter().any(|c| c.vertex.is_same(vertex)));
     // A request of one edge is that edge alone, a ring beside a rim taken
     // off whole as there.
     let mut built = match (edges, radii) {
@@ -583,6 +605,9 @@ fn fillet_edges_meeting(
     };
     for (vertex, request) in &mixed {
         built = crate::setback::close_mixed_corner(model, built, vertex, request, tol)?;
+    }
+    for corner in &signed {
+        built = crate::setback::close_signed_corner(model, built, corner, tol)?;
     }
     Ok(built)
 }

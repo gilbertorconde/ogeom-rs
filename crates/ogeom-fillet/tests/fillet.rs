@@ -1108,7 +1108,9 @@ fn edges_between(
 /// radius, so the same multiple of the radius cubed as at the small
 /// radius (none where no two edges meet). Each edge's band is a cylinder
 /// of the radius. Before, a band sharing a face or a corner with another
-/// refused any station whose contact ran off.
+/// refused any station whose contact ran off. The third case's convex and
+/// concave edges meet beside an edge left sharp, and it is refused by name
+/// in either order.
 #[test]
 fn seams_whose_ball_runs_off_a_narrow_face_round_beside_other_edges() {
     type Case = ([BoxSpec; 2], f64, [([f64; 3], [f64; 3]); 3]);
@@ -1275,6 +1277,24 @@ fn seams_whose_ball_runs_off_a_narrow_face_round_beside_other_edges() {
                 .mass
         };
         let before = volume(&model, &part);
+        if k == 2 {
+            // Two of its edges, a convex one and a concave one, meet at a
+            // vertex whose third edge is left sharp: the request is refused
+            // by name in either order rather than rounded in the order
+            // asked.
+            for order in [edges.clone(), edges.iter().rev().cloned().collect()] {
+                let mut own = model.clone();
+                let Err(why) = ogeom_fillet::fillet_edges(&mut own, &part, &order, SMALL, T) else {
+                    panic!("case {k}: a mixed corner beside a sharp edge rounded");
+                };
+                assert!(
+                    why.to_string()
+                        .contains("the request rounds every edge of the vertex"),
+                    "case {k}: {why}"
+                );
+            }
+            continue;
+        }
         // What the request moves past what its edges move alone, over the
         // cube of the radius, and the request's result.
         let past_alone = |r: f64| {
