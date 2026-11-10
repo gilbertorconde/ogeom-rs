@@ -55,6 +55,7 @@ mod sub_shapes;
 pub mod work;
 
 pub use ball_chart::TOUCHING as POLE_TOUCHING;
+pub use ball_chart::{POLE_MARGIN, Recharted, rechart_clear_of_poles};
 pub use defeature::remove_faces;
 pub use mesh_region::cut_by_mesh_region;
 pub use section_face::section_face;

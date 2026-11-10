@@ -1412,6 +1412,51 @@ impl Model {
         Ok(Shape::of(node))
     }
 
+    /// Restate `face` in place on `surface`, bounded by `wires`: the same
+    /// face read on another chart of the same points, held by every shape
+    /// that held it. For a builder that has re-charted a face (a sphere
+    /// face turned so its poles stand clear of its trim) and whose shells,
+    /// documents and tables already name the face: none of them has to
+    /// learn a new one.
+    ///
+    /// The face's kept triangulation and box are forgotten, as is what is
+    /// kept of every shape holding it.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+    /// if `face` is not a face, a wire is not a wire, or `wires` is empty;
+    /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if `face`
+    /// is not in this model.
+    pub fn rechart_face(
+        &mut self,
+        face: &Shape,
+        surface: SurfaceId,
+        wires: &[Shape],
+    ) -> OgeomResult<()> {
+        if self.kind_of(face)? != ShapeType::Face {
+            ogeom_bail!(Construction, "only a face can be re-charted");
+        }
+        if wires.is_empty() {
+            ogeom_bail!(Construction, "a re-charted face needs its boundary");
+        }
+        self.check_children(ShapeType::Wire, wires)?;
+        self.sync_face_boxes();
+        self.forget_boxes_above(face.node());
+        let Some(node) = self.nodes.get_mut(face.node()) else {
+            ogeom_bail!(Dangling, "face is not in this model");
+        };
+        let NodeData::Face(data) = node.data_mut() else {
+            ogeom_bail!(Construction, "face node holds no face data");
+        };
+        data.surface = surface;
+        data.natural_restriction = false;
+        data.triangulation = None;
+        *node.children_mut() = wires.to_vec();
+        self.link_children(face.node(), false);
+        Ok(())
+    }
+
     /// Add a shell from a set of faces.
     ///
     /// # Errors

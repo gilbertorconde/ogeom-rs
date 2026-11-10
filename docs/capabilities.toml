@@ -505,6 +505,11 @@ every body they build), diagnose again, and report what it did and \
 what remains. Beneath it: reanchoring periodic rings, sewing, validity \
 diagnosis, the reader's inline heal sequence, and the instructed fixes: \
 fix_face_pcurves fits the trims the reader refused at a caller's cap, and \
+re-charts a sphere face whose trim runs within 0.05 rad of a pole of its \
+chart without running through it (rechart_clear_of_poles, which the STEP \
+and IGES readers run on every face they read): the same sphere charted \
+about the candidate axis whose poles stand furthest from the trim, the \
+face restated in place, a face no chart clears refused by name; and \
 reanchor_boundaries moves a boundary onto the surface it bounds with the \
 displacement recorded in widened tolerances, both measured on community \
 assemblies with boundaries millimetres off. fix_small_faces collapses \
@@ -523,10 +528,12 @@ symbols = [
     "ogeom_heal::reanchor_periodic_rings", "ogeom_algo::sew",
     "ogeom_algo::restore_containment",
     "ogeom_algo::check", "ogeom_algo::chart_crossings", "ogeom_algo::out_and_back", "ogeom_algo::self_crossings", "ogeom_bool::self_union",
+    "ogeom_bool::rechart_clear_of_poles",
 ]
 tests = [
     "crates/ogeom/tests/fix_shape.rs",
     "crates/ogeom-bool/tests/self_union.rs",
+    "crates/ogeom/tests/sphere_pole_trim.rs",
     "crates/ogeom/tests/exchange_tolerances.rs",
     "crates/ogeom-heal/src/reanchor.rs",
     "crates/ogeom/tests/imported_corpus.rs",

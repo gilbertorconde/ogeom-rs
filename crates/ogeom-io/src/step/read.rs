@@ -254,6 +254,12 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
             });
         }
     }
+    crate::bodies::rechart_beside_poles(
+        &mut reader.model,
+        solids.iter().chain(shells.iter()),
+        &mut reader.report.warnings,
+        tol,
+    )?;
     let construction = reader.construction_sets()?;
     if solids.is_empty() && shells.is_empty() && construction.is_empty() {
         ogeom_bail!(

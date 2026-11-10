@@ -650,6 +650,12 @@ fn read_parsed(file: &File, library: &Library, tol: Tolerances) -> OgeomResult<I
              their tolerances grew to say so"
         ));
     }
+    crate::bodies::rechart_beside_poles(
+        &mut reader.model,
+        solids.iter().map(|(_, s)| s).chain(sheets.iter()),
+        &mut reader.report.warnings,
+        tol,
+    )?;
     let (callouts, dimensions) = reader.annotations();
     // Groups and level lists become layers once the document stands.
     for (de, entity) in &file.entities {

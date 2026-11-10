@@ -27,6 +27,9 @@ ogeom-math.workspace = true
 ogeom-geom.workspace = true
 ogeom-topo.workspace = true
 ogeom-algo.workspace = true
+# A sphere face whose trim runs beside a pole of its chart is re-charted
+# the way the booleans restate a ball.
+ogeom-bool.workspace = true
 ogeom-intersect.workspace = true
 ogeom-mesh.workspace = true
 

@@ -633,6 +633,16 @@ struct Pinned {
 /// placement, has a pole, and its other edges chain head to
 /// tail into closed loops one way only.
 fn pinned_sphere(model: &Model, face: &Shape) -> OgeomResult<Option<Pinned>> {
+    pinned_sphere_with(model, face, true)
+}
+
+/// [`pinned_sphere`], with `need_poles` false also for a face whose trim
+/// keeps clear of both poles (no pole edge in its boundary).
+fn pinned_sphere_with(
+    model: &Model,
+    face: &Shape,
+    need_poles: bool,
+) -> OgeomResult<Option<Pinned>> {
     let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
         return Ok(None);
     };
@@ -697,7 +707,7 @@ fn pinned_sphere(model: &Model, face: &Shape) -> OgeomResult<Option<Pinned>> {
         }
         kept.push((edge, start, end));
     }
-    if poles.is_empty() || kept.is_empty() {
+    if (need_poles && poles.is_empty()) || kept.is_empty() {
         return Ok(None);
     }
     // A pole vertex a kept edge still ends at is a corner of the trim.
@@ -791,7 +801,7 @@ fn face_turned(
     }
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
     for (_, axis) in scored {
-        if let Some(made) = restated(model, face, pinned, axis, &clearance, tol)? {
+        if let Some(made) = restated(model, face, pinned, axis, &clearance, None, tol)? {
             return Ok(Some(made));
         }
     }
@@ -1161,6 +1171,7 @@ fn restated(
     pinned: &Pinned,
     axis: Vector,
     clearance: &dyn Fn(Point) -> f64,
+    known: Option<[bool; 2]>,
     tol: Tolerances,
 ) -> OgeomResult<Option<(Shape, Vec<Split>)>> {
     use core::f64::consts::{FRAC_PI_2, TAU};
@@ -1168,12 +1179,16 @@ fn restated(
     let (centre, radius) = (pinned.sphere.centre(), pinned.sphere.radius());
     let deflection = ogeom_mesh::Deflection::default();
     let mut inside = [false; 2];
-    for (k, sign) in [1.0, -1.0].into_iter().enumerate() {
-        let pole = centre + axis * (radius * sign);
-        match ogeom_algo::classify_on_face(model, face, pole, deflection, tol)? {
-            Containment::In => inside[k] = true,
-            Containment::Out => {}
-            Containment::On => return Ok(None),
+    if let Some(known) = known {
+        inside = known;
+    } else {
+        for (k, sign) in [1.0, -1.0].into_iter().enumerate() {
+            let pole = centre + axis * (radius * sign);
+            match ogeom_algo::classify_on_face(model, face, pole, deflection, tol)? {
+                Containment::In => inside[k] = true,
+                Containment::Out => {}
+                Containment::On => return Ok(None),
+            }
         }
     }
     // A pole inside alone is put north.
@@ -1666,4 +1681,219 @@ fn seam_between(
         (0.0, top - bottom),
     )?;
     Ok(seam)
+}
+
+/// How near, in radians round the sphere's centre, a sphere face's trim
+/// may come to a pole of its chart, which it does not run through, before
+/// the face is re-charted. Beside a pole the trim's image sweeps half a
+/// turn of longitude within twice its distance from the pole, and no
+/// fitted image follows it there.
+pub const POLE_MARGIN: f64 = 0.05;
+
+/// What [`rechart_clear_of_poles`] did with a face.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Recharted {
+    /// The face is no sphere face, or its trim keeps clear of its chart's
+    /// poles, or runs through them: left as it is.
+    Untouched,
+    /// The face now lies on its sphere charted about another axis, whose
+    /// poles stand clear of its trim.
+    Restated,
+    /// The trim comes within [`POLE_MARGIN`] of a pole and no chart about
+    /// another axis clears it: why, by name.
+    Refused(String),
+}
+
+/// Re-chart `face` in place where it is a sphere face whose trim comes
+/// within [`POLE_MARGIN`] of a pole of its chart without running through
+/// it: the same sphere charted about the axis, among a ball's candidate
+/// axes, whose poles stand furthest from the trim, its trim edges given
+/// images on that chart, and the seam and pole edges it needs. The surface,
+/// the edges and their curves are unchanged; only the chart and the
+/// pcurves are. A face whose trim runs through a pole (a meridian rim) or
+/// keeps clear of both is left untouched, read and not changed.
+///
+/// # Errors
+///
+/// Whatever reading or building the face reports.
+pub fn rechart_clear_of_poles(
+    model: &mut Model,
+    face: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Recharted> {
+    let bare = face
+        .located(ogeom_topo::Location::identity())
+        .oriented(Orientation::Forward);
+    let Some(NodeData::Face(data)) = model.node(&bare).map(|n| n.data()) else {
+        return Ok(Recharted::Untouched);
+    };
+    if !matches!(
+        model.geometry().surface(data.surface),
+        Some(SurfaceGeometry::Sphere(_))
+    ) {
+        return Ok(Recharted::Untouched);
+    }
+    let Some(pinned) = pinned_sphere_with(model, &bare, false)? else {
+        return Ok(Recharted::Untouched);
+    };
+    if pinned.sphere.frame().handedness() != ogeom_math::Handedness::Right {
+        return Ok(Recharted::Untouched);
+    }
+    let (centre, radius) = (pinned.sphere.centre(), pinned.sphere.radius());
+    let mut trim: Vec<Point> = Vec::new();
+    let mut corners: Vec<Point> = Vec::new();
+    for ring in &pinned.rings {
+        trim.extend(ring_points(model, ring, tol)?);
+        for edge in ring {
+            if let Some((start, _)) = ogeom_algo::edge_vertices(model, edge)?
+                && let Some(NodeData::Vertex(v)) = model.node(&start).map(|n| n.data())
+            {
+                corners.push(v.point);
+            }
+        }
+    }
+    // The angle round the centre from `p` to the pole along `axis`.
+    let angle = |p: Point, axis: Vector| -> f64 {
+        let d = p - centre;
+        let length = d.magnitude();
+        if length <= 0.0 {
+            return 0.0;
+        }
+        (d.dot(axis) / length).clamp(-1.0, 1.0).acos()
+    };
+    let nearest = |axis: Vector| -> f64 {
+        trim.iter()
+            .map(|&p| angle(p, axis).min(angle(p, -axis)))
+            .fold(f64::INFINITY, f64::min)
+    };
+    // A pole the trim runs through (a pole edge, or a corner on it) is the
+    // chart's to cut there, and is not read as one the trim passes beside.
+    let reach = tol.confusion().max(data.tolerance.get());
+    let z = pinned.sphere.frame().z().vector();
+    let mut beside = f64::INFINITY;
+    for pole_axis in [z, -z] {
+        let pole = centre + pole_axis * radius;
+        let through = pinned.poles.iter().any(|p| p.distance(pole) <= reach)
+            || corners.iter().any(|p| p.distance(pole) <= reach);
+        if through {
+            continue;
+        }
+        let near = trim
+            .iter()
+            .map(|&p| angle(p, pole_axis))
+            .fold(f64::INFINITY, f64::min);
+        beside = beside.min(near);
+    }
+    if beside > POLE_MARGIN {
+        return Ok(Recharted::Untouched);
+    }
+    let frame = pinned.sphere.frame();
+    let mut scored: Vec<(f64, Vector)> = Vec::new();
+    for candidate in candidate_axes(frame.x().vector(), z) {
+        let Ok(axis) = candidate.normalized(tol) else {
+            continue;
+        };
+        let score = nearest(axis);
+        if score > CLEAR_OF_TRIM {
+            scored.push((score, axis));
+        }
+    }
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let near_trim = |p: Point| -> f64 {
+        trim.iter()
+            .map(|q| q.distance(p))
+            .fold(f64::INFINITY, f64::min)
+    };
+    let mut ring_samples: Vec<Vec<Point>> = Vec::with_capacity(pinned.rings.len());
+    for ring in &pinned.rings {
+        ring_samples.push(ring_points(model, ring, tol)?);
+    }
+    for (_, axis) in scored {
+        let Some(known) = poles_inside(centre, axis, frame.x().vector(), &ring_samples, tol) else {
+            continue;
+        };
+        let Some((made, cut)) =
+            restated(model, &bare, &pinned, axis, &near_trim, Some(known), tol)?
+        else {
+            continue;
+        };
+        // Cutting the trim edges another face holds is a change to that
+        // face too; in place, only a face whose own boundary takes the new
+        // chart's seam and poles is restated.
+        if !cut.is_empty() {
+            continue;
+        }
+        let Some(NodeData::Face(new)) = model.node(&made).map(|n| n.data()) else {
+            continue;
+        };
+        let surface = new.surface;
+        let wires = model.children_of(&made.oriented(Orientation::Forward))?;
+        model.rechart_face(&bare, surface, &wires)?;
+        return Ok(Recharted::Restated);
+    }
+    Ok(Recharted::Refused(format!(
+        "a sphere face's trim passes {beside:.3e} rad from a pole of its chart, and no chart \
+         of its sphere about another axis keeps the trim {CLEAR_OF_TRIM} rad clear of its \
+         poles; see docs/CAPABILITIES.md, bool.booleans"
+    )))
+}
+
+/// Which poles of the sphere about `centre` charted about `axis` lie
+/// inside a face whose loops, as the face runs them, pass through `rings`:
+/// the north pole first. Read off the loops alone, never off the face's
+/// own chart, which beside its old poles is the thing in doubt.
+///
+/// A face keeps its interior on the left of each loop about its outward
+/// normal. A loop winding once round the axis counter-clockwise, seen from
+/// outside, keeps the north pole on its left and the south pole on its
+/// right; winding clockwise, the other way about. A loop winding no turn
+/// keeps both poles on its left where it runs clockwise in the chart (a
+/// hole) and neither where it runs counter-clockwise (round a patch of its
+/// own). A pole is inside where every loop keeps it on its left. `None`
+/// for a loop winding more than once.
+fn poles_inside(
+    centre: Point,
+    axis: Vector,
+    reference: Vector,
+    rings: &[Vec<Point>],
+    tol: Tolerances,
+) -> Option<[bool; 2]> {
+    let across = axis
+        .cross(reference)
+        .normalized(tol)
+        .or_else(|_| {
+            axis.cross(axis.cross(reference) + reference)
+                .normalized(tol)
+        })
+        .ok()?;
+    let frame = Frame::new(
+        centre,
+        Direction::new(axis, tol).ok()?,
+        Direction::new(across, tol).ok()?,
+        tol,
+    )
+    .ok()?;
+    let mut inside = [true, true];
+    for ring in rings {
+        let us = longitudes(&frame, ring);
+        match winding(&us) {
+            1 => inside[1] = false,
+            -1 => inside[0] = false,
+            0 => {
+                let vs: Vec<f64> = ring.iter().map(|&p| chart_of(&frame, p).1).collect();
+                let n = us.len();
+                let area: f64 = (0..n)
+                    .map(|i| {
+                        let j = (i + 1) % n;
+                        us[i] * vs[j] - us[j] * vs[i]
+                    })
+                    .sum();
+                if area > 0.0 {
+                    inside = [false, false];
+                }
+            }
+            _ => return None,
+        }
+    }
+    Some(inside)
 }
