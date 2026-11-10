@@ -400,11 +400,13 @@ face's own plane. A chain turning where marched bands meet is met in
 `fillet_edges`' own rounds, each piece under its window of the law. A straight edge between planes rounded alone whose
 contact runs off a face beside it (a strip beside a groove) is read
 station by station at the law's radius as the constant round reads its
-own, cut off in the open and refused in the material, and owed the same
-beside a narrow face in a chain (the constant round carries such a band's
-contacts past the face's side for the other bands to be checked against,
-`carried_contacts`, which under a law change along the edge) and on a
-marched seat. Owed:
+own, cut off in the open and refused in the material; in a chain joined
+across tangent junctions or turning on a shared plane too, each station's
+contacts carried past the face's side and checked against the other
+bands; and on a marched seat, a curved edge alone or a closed loop of
+arcs of one curve, the law laid by arc length as the march lays it.
+Owed the same over an open chain of arcs of one curve (its window of the
+curve) and in a chain met in rounds. Owed:
 a turn where a marched band meets a straight band between planes (the
 constant round's band there is an exact torus band; under a law it is
 fitted, and its end meets the straight band in what the boolean does not

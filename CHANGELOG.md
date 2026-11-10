@@ -13,6 +13,36 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A law round a marched rim beside a narrow face is cut off as the
+  constant round is.** (#798)
+  - A drum of radius 10 with a ring groove cut into its cap, leaving a
+    ring 0.5 wide beside the rim: under a closed law from 1.6 to 2.4 the
+    ball's contact on the cap stands over the groove and on the cap beyond
+    it. It was refused; each arc of the rim is now read station by station
+    at the law's radius there, laid round the loop by arc length as the
+    march lays it, and the marched band is cut off over the groove.
+  - The round takes off the section at the law's radius in each plane
+    through the axis, turned round it (Pappus): 34.648792 against
+    34.648741, 1.5e-6, the march's fit; between the constant rounds at 1.6
+    and 2.4. A ring raised beside the rim's strip, where the contact
+    stands in the material, is refused, as the constant round is.
+
+- **A law over a chain beside a narrow face is cut off as the constant
+  round is.** (#798)
+  - The grooved block's front edge in a chain, split in two across a
+    tangent junction or turning into the strip's 0.5 end edge, was refused
+    under a law. Each straight edge between planes is now read station by
+    station at its own window of the law, its contacts carried past the
+    strip's side where they run off and checked against the other bands,
+    as the constant request reads a band sharing a vertex with another.
+  - Across the tangent junction the round takes off the section at the
+    law's radius integrated along both pieces, within 3.5e-8. Across the
+    convex turn, under a law level at 1.6 over the end edge and the last
+    4.1 of the front, it is the constant chain's corner at 1.6 and the
+    law's section along the front past it, within 3.5e-11. A chain whose
+    contact stands in a raised step's material is refused, as the
+    constant round is.
+
 - **`fillet_edges_cornered`: setback corners asked through `fillet_edges`.**
   (#718)
   - `fillet_edges_cornered(model, solid, edges, radius, &[(vertex,
