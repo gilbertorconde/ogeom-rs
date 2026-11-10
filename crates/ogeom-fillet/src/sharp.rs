@@ -231,7 +231,9 @@ fn sharp_own(
         .collect();
     let banded = crate::fillet::fillet_edges(model, solid, &rounded, radius, tol)?;
     let kinds = vec![CornerEnd::Round; n];
-    close_sharp_corner(model, banded, vertex, &frame, &setback, ks, &kinds, tol)
+    close_sharp_corner(
+        model, solid, banded, vertex, &frame, &setback, ks, &kinds, tol,
+    )
 }
 
 /// The bands of `banded` meeting at `vertex`, whose corner reads as
@@ -247,6 +249,7 @@ fn sharp_own(
 #[allow(clippy::too_many_arguments, reason = "one corner and its reading")]
 pub(crate) fn close_sharp_corner(
     model: &mut Model,
+    solid: &Shape,
     banded: Built,
     vertex: &Shape,
     frame: &crate::corner::CornerFrame,
@@ -268,6 +271,17 @@ pub(crate) fn close_sharp_corner(
     walls.extend(sections.iter().copied());
     let cell = crate::corner::convex_block(model, &walls, tol)?;
     let cut = ogeom_bool::cut(model, &banded.shape, &cell, tol)?;
+    let planes: Vec<(Vector, Point)> = frame.m.iter().map(|mk| (*mk, frame.corner)).collect();
+    crate::setback::guard_cell(
+        model,
+        solid,
+        &banded.shape,
+        &cut.shape,
+        vertex,
+        &planes,
+        &walls,
+        tol,
+    )?;
     let history = banded.history.then(&cut.history);
     let near = tol.confusion() * 100.0;
     let on_plane = |p: Point, (normal, at): (Vector, Point)| normal.dot(p - at).abs() <= near;

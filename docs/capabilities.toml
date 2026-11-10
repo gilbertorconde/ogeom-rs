@@ -1465,7 +1465,10 @@ request order, the sharp edge cut as far out as the farther band and the \
 rest meeting the bevel's end and the trims from it in position only. \
 Signed corners with an \
 edge left sharp, and sharp edges at vertices of more than three edges, \
-are still refused by name. Refused by name: G2 (a circular band meets \
+are still refused by name. Refused by name: a corner whose cell holds \
+anything of the solid but the corner (a void, a hole, another feature: a \
+face neither meeting the vertex nor on one of its planes, taken whole or \
+cut through by the cell, or a shell dropped), G2 (a circular band meets \
 its face at G1, so its end arc bends the patch at 1/radius where the face \
 asks none; curvature-continuous band sections come first), a vertex a \
 curved face meets, planes sharing no tangent ball, a curved edge leaving \
@@ -1484,6 +1487,7 @@ tests = [
     "crates/ogeom-fillet/tests/setback.rs",
     "crates/ogeom-fillet/tests/radius_per_edge.rs::three_radii_at_a_corner_close_with_one_patch_in_any_order",
     "crates/ogeom-fillet/tests/mixed_vertex.rs",
+    "crates/ogeom-fillet/tests/cell_guard.rs",
     "crates/ogeom-fillet/tests/blend_edges.rs::a_round_meeting_a_bevel_beside_a_sharp_edge_closes_whatever_the_order",
 ]
 

@@ -1100,6 +1100,29 @@ bump may break the API and a patch bump may not.
     where its section leaves the block, and the corner's vertex goes with
     it, as the straight band's does there; the other two edges then round
     in either order to one solid.
+
+- **A setback corner no longer removes another feature inside its cell.**
+  (#834)
+  - Every setback corner cuts a cell out round its vertex, drops the faces
+    the cut leaves on the cell's walls and sews back only its fillers and
+    patches. Anything else of the solid in that cell (a void, a hole,
+    another feature) was removed and never put back, and the result still
+    checked valid. A 20 × 20 × 10 block with a 1 × 1 × 1 void near a
+    corner, set back 5 there, came out with one shell, at the volume of
+    the block without the void.
+  - Each corner now refuses by name ("another feature of the solid lies
+    inside the setback corner's cell"). It does so where the cut takes
+    whole, or passes through, a face of the solid that neither meets the
+    vertex nor lies on one of the corner's planes, or where the cut drops
+    a shell. The bands, bevels and the ball's own corner are made by the
+    rounding, on surfaces of their own, and are not asked.
+  - This covers `round_vertex_setback`, `fillet_edges_cornered`, corners
+    of different radii in `fillet_edges_with`, `blend_edges`' corners
+    (every edge blended, or one left sharp), `round_vertex_setback_sharp`
+    and the mixed convex/concave vertex in `fillet_edges`. Each refuses a
+    void in its cell. Every corner without foreign geometry in its cell
+    builds as before.
+
 - **A refused as-rigid-as-possible sheet names itself and the bound it
   missed.** Where the polynomial back from its flattening missed by more
   than half the resolution, the refusal called it the least-distortion
