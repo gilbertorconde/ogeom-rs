@@ -13,6 +13,20 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fillet_edges_variable` rounds a chain turning where marched bands
+  meet, in rounds.** (#798)
+  - A drum cut flat: its ruling and its top rim, turning where they meet,
+    under a law. The chain goes to `fillet_edges`' own rounds, each edge
+    under its own window of the law: a band a later round builds stands
+    over what the earlier left of its edge (its window the stretch that
+    piece covers) and runs on through the earlier band at the law's
+    radius there. Contacts on the flat stand within 1e-3 of the law; the
+    round is valid and lies between the chain's constant rounds.
+  - A turn where a marched band meets a straight one between planes (a
+    half drum's rim beside its chord) is refused by name: under a law the
+    marched band is fitted where the constant round's is an exact torus
+    band, and its end meets the straight band in what the boolean does
+    not melt, whichever is built first and however it ends.
 - **`round_vertex_setback_sharp`: a setback corner with one edge left
   sharp.** (#712, #717)
   - At a box-like corner with two edges rounded and the third left sharp,

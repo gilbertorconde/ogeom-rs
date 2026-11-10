@@ -1358,6 +1358,72 @@ fn a_law_whose_ball_runs_off_a_narrow_face_is_refused_by_name() {
     fillet_edge(&mut model, &grooved, &front, 1.5, T).unwrap();
 }
 
+/// A drum cut flat at x = 3: the ruling where the flat meets the drum and
+/// the drum's top rim, turning where they meet, under the hump law. The
+/// ruling's band is marched under its window of the law (a flat beside a
+/// drum has one section only at one radius); the two meet in rounds. The
+/// round is valid and lies between the chain's constant rounds at the
+/// law's least and largest radius.
+#[test]
+fn a_law_of_points_rounds_a_drum_s_ruling_turning_into_its_rim() {
+    let mut model = Model::new();
+    let drum = ogeom_algo::make_cylinder(&mut model, at(0.0, 0.0, 0.0), 5.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let away = ogeom_algo::make_box(&mut model, at(3.0, -10.0, -1.0), (10.0, 20.0, 12.0), T)
+        .unwrap()
+        .shape;
+    let flat = ogeom_bool::cut(&mut model, &drum, &away, T).unwrap().shape;
+    let chain = [
+        edge_near(&model, &flat, [3.0, 4.0, 5.0]),
+        edge_near(&model, &flat, [-5.0, 0.0, 10.0]),
+    ];
+    let rounded = fillet_edges_variable(&mut model, &flat, &chain, &hump(), T).unwrap();
+    valid(&model, &rounded.shape);
+    // The run is the ruling and the rim's arc round the far side, from
+    // (3, -4) to (3, 4): the hump reads the same either way along it, so a
+    // height z up the ruling stands at z / length of the run. On the flat
+    // beside the ruling, away from the corner, the contact stands at
+    // y = sqrt((5 - r)^2 - (3 - r)^2) for the law's radius there.
+    let run = 10.0 + 5.0 * (core::f64::consts::TAU - 2.0 * 4.0_f64.atan2(3.0));
+    let mut on_flat = 0;
+    for e in explore_unique(&model, &rounded.shape, ShapeType::Edge).unwrap() {
+        let Some((c, (a, b))) = ogeom_algo::placed_edge_curve(&model, &e, T).unwrap() else {
+            continue;
+        };
+        let points: Vec<Point> = (0..=32)
+            .map(|i| c.point_at(a + (b - a) * f64::from(i) / 32.0, T).unwrap())
+            .filter(|p| p.z > 0.5 && p.z < 7.0)
+            .collect();
+        if points.len() < 8
+            || !points
+                .iter()
+                .all(|p| (p.x - 3.0).abs() < 1e-6 && p.y > 0.5 && p.y < 4.0 - 1e-3)
+        {
+            continue;
+        }
+        for p in &points {
+            let r = hump_open(p.z / run);
+            let want = ((5.0 - r).powi(2) - (3.0 - r).powi(2)).sqrt();
+            assert!(
+                (p.y - want).abs() < 1e-3,
+                "on the flat at z {}: y {} against {want}",
+                p.z,
+                p.y
+            );
+            on_flat += 1;
+        }
+    }
+    assert!(on_flat > 8, "{on_flat} contacts on the flat");
+    let v = volume(&model, &rounded.shape, 1e-3);
+    let mut constant = |r: f64| {
+        let built = ogeom_fillet::fillet_edges(&mut model, &flat, &chain, r, T).unwrap();
+        volume(&model, &built.shape, 1e-3)
+    };
+    let (one, two) = (constant(1.0), constant(2.0));
+    assert!(two < v && v < one, "{two} < {v} < {one}");
+}
+
 #[test]
 fn a_variable_radius_refuses_by_name_what_it_does_not_round() {
     let mut model = Model::new();
@@ -1386,24 +1452,11 @@ fn a_variable_radius_refuses_by_name_what_it_does_not_round() {
     );
 
     let (half, rim) = half_drum(&mut model);
-    let drum = ogeom_algo::make_cylinder(&mut model, at(0.0, 0.0, 0.0), 5.0, 10.0, T)
-        .unwrap()
-        .shape;
-    let away = ogeom_algo::make_box(&mut model, at(3.0, -10.0, -1.0), (10.0, 20.0, 12.0), T)
-        .unwrap()
-        .shape;
-    let flat = ogeom_bool::cut(&mut model, &drum, &away, T).unwrap().shape;
-    let ruled = [
-        edge_near(&model, &flat, [3.0, 4.0, 5.0]),
-        edge_near(&model, &flat, [-5.0, 0.0, 10.0]),
-    ];
-    let chain = refusal(fillet_edges_variable(&mut model, &flat, &ruled, &hump(), T));
-    assert!(chain.contains("one shared planar host"), "{chain}");
     let two = [rim, edge_near(&model, &half, [0.0, 0.0, 10.0])];
-    let curved = refusal(fillet_edges_variable(&mut model, &half, &two, &hump(), T));
+    let mixed = refusal(fillet_edges_variable(&mut model, &half, &two, &hump(), T));
     assert!(
-        curved.contains("a curved crease at a turn is still owed"),
-        "{curved}"
+        mixed.contains("a marched band meets a straight one"),
+        "{mixed}"
     );
     for (law, says) in [
         (RadiusLaw::Points(vec![]), "no points"),
