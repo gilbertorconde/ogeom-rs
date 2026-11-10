@@ -69,6 +69,21 @@ bump may break the API and a patch bump may not.
     the other's one way, through a right angle.
   - A sharp edge cut inside the bands' own corner is refused by name.
 
+- **A law on a straight edge beside a narrow face is cut off as the
+  constant round is.** (#798)
+  - A block with a groove beside its front top edge, a strip 0.5 wide left
+    between them: under radii from 1 to 2 the ball's contact on the top
+    stands past the strip, over the groove and then on the block beyond.
+    The constant round builds there, cut off over the open; under a law it
+    was refused. Each station is now read at the law's radius there as
+    the constant round reads its own, the band cut off where its contact
+    stands in the open.
+  - Every section of the straight band under a law is the exact arc at the
+    law's radius, so the round takes off the section area at that radius
+    integrated along the edge: the hump (1, 2, 1) and linear laws from 1.5
+    to 2.5, either way, and from 0.3 to 2 match it within 1e-6 (about
+    3e-8). A law level at 2 is the constant round at 2.
+
 - **`SheetMethod::AsRigidAsPossible`: a sheet laid on a curved face with
   lengths and areas stretched as little as they can be together.** (#729)
   - The geodesic disc the sheet covers is flattened as rigidly as
@@ -958,14 +973,17 @@ bump may break the API and a patch bump may not.
     them leaves the item uncoloured, with one warning naming the entity.
 
 - **`fillet_edges_variable` and `fillet_edge_variable` refuse a law whose
-  ball runs off a face beside the edge.** (#798)
-  - Beside a narrow face (a strip left between the edge and a groove) the
-    straight envelope under a law put its contact past the strip and, at
-    radii reaching the material beyond, shaved what no ball on the edge
-    touches, with no refusal. Every law path now seats the ball at the
-    law's least and largest radius and refuses, by name, a contact standing
-    off its own face.
-  - The constant round keeps its narrow-face handling.
+  ball runs off a face beside the edge into the material.** (#798)
+  - The law paths read nowhere whether the ball's contact stayed on its
+    face beside the edge, so a band could be built past a narrow face with
+    nothing asked of what lay there.
+  - A straight edge between two planes rounded alone is now read station
+    by station at the law's radius as the constant round reads its own: a
+    contact standing in the material past its face refuses by name (a step
+    raised beside a strip). In a chain, and on any seat but two planes,
+    every contact must stand on its own face, at the law's least and
+    largest radius.
+
 - **A section crossing a sphere's seam beside its pole closes the cap
   inside it.**
   - The paving reads a crossing within its window of the seam's end vertex

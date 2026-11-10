@@ -1353,62 +1353,170 @@ fn a_linear_law_rounds_a_re_entrant_corner_beside_a_drafted_wall() {
     assert!(read > 64, "{read} contacts read");
 }
 
-/// A block with a groove cut beside its front top edge, a strip 0.5 wide
-/// left on top between them. Under radii from 1 to 2 the ball's contact on
-/// the top stands past the strip, out over the groove and, past 1.5, on
-/// the block beyond it: the envelope there would shave material no ball
-/// on this edge touches. The edge alone, by points or linearly, and in a
-/// chain with its neighbour, is refused by name, a law reaching from a
-/// radius the strip holds to one landing beyond the groove too; the
-/// constant round stays built, cut off where the strip ends.
+/// A block with a groove 1 wide and 1 deep cut beside its front top edge,
+/// a strip 0.5 wide left on top between them.
+fn grooved(model: &mut Model) -> (Shape, Shape) {
+    let block = ogeom_algo::make_box(model, at(0.0, 0.0, 0.0), (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let groove = ogeom_algo::make_box(model, at(-1.0, 0.5, 9.0), (22.0, 1.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let grooved = ogeom_bool::cut(model, &block, &groove, T).unwrap().shape;
+    let front = edge_near(model, &grooved, [10.0, 0.0, 10.0]);
+    (grooved, front)
+}
+
+/// What a round of radius `r` on the grooved block's front edge takes off
+/// in its section: the square corner's `r² (1 - π/4)` less the groove's
+/// air inside it, where the ball's arc, about `(r, 10 - r)`, runs over the
+/// groove between `y = 0.5` and `1.5`.
+fn grooved_section(r: f64) -> f64 {
+    let (a, b) = (0.5_f64, 1.5_f64.min(r));
+    let mut air = 0.0;
+    if b > a {
+        let n = 2000;
+        let h = (b - a) / f64::from(n);
+        for k in 0..n {
+            let y = h.mul_add(f64::from(k) + 0.5, a);
+            let arc = 10.0 - r + (y - r).mul_add(-(y - r), r * r).max(0.0).sqrt();
+            air += (10.0 - arc.max(9.0)).max(0.0) * h;
+        }
+    }
+    r * r * (1.0 - core::f64::consts::FRAC_PI_4) - air
+}
+
+/// A law's radius at a fraction of its edge, in closed form.
+type Radius = fn(f64) -> f64;
+
+/// Under radii from 1 to 2 the ball's contact on the grooved block's top
+/// stands past the strip: over the groove, where the solid is open, up to
+/// 1.5, and on the block beyond it past that. The constant round reads
+/// such a contact so (on any face of the solid it holds; in the open the
+/// band runs on over it and is cut off there), and so does a law, station
+/// by station at its own radius. Every section of the straight band under
+/// a law is the ball's exact arc at the law's radius there, so the round
+/// takes off the section area at that radius integrated along the edge.
 #[test]
-fn a_law_whose_ball_runs_off_a_narrow_face_is_refused_by_name() {
+fn a_law_whose_ball_runs_off_a_narrow_face_is_cut_off_as_the_constant_round() {
+    let along = |radius: &dyn Fn(f64) -> f64| {
+        let n = 4000;
+        (0..n)
+            .map(|k| grooved_section(radius((f64::from(k) + 0.5) / f64::from(n))))
+            .sum::<f64>()
+            * 20.0
+            / f64::from(n)
+    };
+    let linear = |s: f64, e: f64| RadiusLaw::Linear { start: s, end: e };
+    let laws: [(RadiusLaw, Radius); 4] = [
+        (hump(), hump_open),
+        (linear(1.5, 2.5), |f| 1.5 + f),
+        (linear(2.5, 1.5), |f| 2.5 - f),
+        // From the strip, over the groove, onto the block beyond.
+        (linear(0.3, 2.0), |f| 1.7f64.mul_add(f, 0.3)),
+    ];
+    for (law, radius) in laws {
+        let mut model = Model::new();
+        let (solid, front) = grooved(&mut model);
+        let before = volume(&model, &solid, 1e-4);
+        let built =
+            fillet_edges_variable(&mut model, &solid, std::slice::from_ref(&front), &law, T)
+                .unwrap_or_else(|e| panic!("{law:?}: {e}"));
+        valid(&model, &built.shape);
+        let taken = before - volume(&model, &built.shape, 1e-4);
+        let expected = along(&radius);
+        assert!(
+            (taken - expected).abs() <= 1e-6 * expected,
+            "{law:?}: {taken} against {expected}"
+        );
+    }
+    // A law level at 2 is the constant round at 2, and between the
+    // constant rounds' sections at its least and largest radius lies the
+    // hump's.
+    let mut model = Model::new();
+    let (solid, front) = grooved(&mut model);
+    let before = volume(&model, &solid, 1e-4);
+    let level = fillet_edges_variable(
+        &mut model,
+        &solid,
+        std::slice::from_ref(&front),
+        &linear(2.0, 2.0),
+        T,
+    )
+    .unwrap();
+    let constant = fillet_edge(&mut model, &solid, &front, 2.0, T).unwrap();
+    let (a, b) = (
+        volume(&model, &level.shape, 1e-4),
+        volume(&model, &constant.shape, 1e-4),
+    );
+    assert!((a - b).abs() <= 1e-9 * b, "{a} against {b}");
+    assert!((before - b - 20.0 * grooved_section(2.0)).abs() <= 1e-6 * b);
+    let hump_taken = along(&hump_open);
+    assert!(20.0 * grooved_section(1.0) < hump_taken && hump_taken < 20.0 * grooved_section(2.0));
+}
+
+/// A block with a step raised beside its front top edge, a strip 0.5 wide
+/// left on top below it: past the strip the ball's contact on the top's
+/// plane stands in the step's material, where a band would cut under the
+/// step touching no face. The constant round is refused there, and a law
+/// reaching past the strip anywhere along the edge is refused too; so is a
+/// law on the groove's strip in a chain, whose bands are not cut off where
+/// a contact runs off.
+#[test]
+fn a_law_whose_ball_runs_off_a_narrow_face_into_the_material_is_refused_by_name() {
     let mut model = Model::new();
     let block = ogeom_algo::make_box(&mut model, at(0.0, 0.0, 0.0), (20.0, 20.0, 10.0), T)
         .unwrap()
         .shape;
-    let groove = ogeom_algo::make_box(&mut model, at(-1.0, 0.5, 9.0), (22.0, 1.0, 2.0), T)
+    let step = ogeom_algo::make_box(&mut model, at(0.0, 0.5, 10.0), (20.0, 19.5, 2.0), T)
         .unwrap()
         .shape;
-    let grooved = ogeom_bool::cut(&mut model, &block, &groove, T)
+    let stepped = ogeom_bool::fuse(&mut model, &block, &step, T)
         .unwrap()
         .shape;
-    let front = edge_near(&model, &grooved, [10.0, 0.0, 10.0]);
-    let side = edge_near(&model, &grooved, [20.0, 0.25, 10.0]);
+    let front = edge_near(&model, &stepped, [10.0, 0.0, 10.0]);
     let says = |r: ogeom_core::OgeomResult<ogeom_algo::Built>| {
         let why = r.err().map(|e| e.to_string()).unwrap_or_default();
         assert!(
-            why.contains("runs off a face beside the edge")
-                || why.contains("across a face that does not reach so far"),
+            why.contains("across a face that does not reach so far"),
             "{why}"
         );
     };
-    says(fillet_edges_variable(
-        &mut model,
-        &grooved,
-        std::slice::from_ref(&front),
-        &hump(),
-        T,
-    ));
+    for law in [
+        hump(),
+        RadiusLaw::Linear {
+            start: 0.3,
+            end: 2.0,
+        },
+        RadiusLaw::Linear {
+            start: 1.5,
+            end: 2.5,
+        },
+    ] {
+        says(fillet_edges_variable(
+            &mut model,
+            &stepped,
+            std::slice::from_ref(&front),
+            &law,
+            T,
+        ));
+    }
     says(fillet_edge_variable(
-        &mut model, &grooved, &front, 1.0, 2.0, T,
+        &mut model, &stepped, &front, 0.3, 2.0, T,
     ));
-    says(fillet_edges_variable(
-        &mut model,
-        &grooved,
-        &[front.clone(), side],
-        &hump(),
-        T,
-    ));
-    // From 0.3, which sits on the strip, to 2, whose contact lands on the
-    // block beyond the groove: only the contact standing off its own face
-    // says so.
-    let why = fillet_edge_variable(&mut model, &grooved, &front, 0.3, 2.0, T)
+    says(fillet_edge(&mut model, &stepped, &front, 1.5, T));
+
+    let (solid, front) = grooved(&mut model);
+    let side = edge_near(&model, &solid, [20.0, 0.25, 10.0]);
+    let why = fillet_edges_variable(&mut model, &solid, &[front, side], &hump(), T)
         .err()
         .map(|e| e.to_string())
         .unwrap_or_default();
-    assert!(why.contains("runs off a face beside the edge"), "{why}");
-    fillet_edge(&mut model, &grooved, &front, 1.5, T).unwrap();
+    assert!(
+        why.contains("runs off a face beside the edge")
+            || why.contains("across a face that does not reach so far"),
+        "{why}"
+    );
 }
 
 /// A drum cut flat at x = 3: the ruling where the flat meets the drum and
