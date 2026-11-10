@@ -13,6 +13,14 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`StepImport::faces`: the file's own id for every face read.** (#794)
+  - Every face a STEP read builds, with its `ADVANCED_FACE` or
+    `FACE_SURFACE` id, in id order, each the face as the solids and shells
+    hold it (`Shape::is_partner` finds it there). A consumer that refers to
+    an imported part's faces in its own history now has a name for each
+    that holds across reads of the same file; the reader's map from id to
+    face was private.
+
 - **`fillet_edges_variable` rounds a loop joined round one sharp
   corner.** (#716)
   - A rounded-rectangle pad with one vertical left sharp: its top loop's
