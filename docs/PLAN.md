@@ -317,16 +317,20 @@ crosses square from the middle of the edge before, so a strip that runs
 past the seam's ends is walked too. A face is cleared only of its part in
 front of the touched face's plane, since every point on or behind that
 plane stands a radius off every centre; an end face the touch line meets
-is then cleared. Past a concave far edge over slanted strips the ball may
-come down on the face the strips run into (a floor), its centre on the
-line a radius off that face and the touched one: the floor goes in as the
-last strip, its far line the contact line, and a face on or behind the
-floor's plane stands a radius off every centre. Owed there: a held far
-edge that ends on an end face the end ball touches at that end vertex: the clearance there is a second-order touch
-in the path parameter, which halving cannot prove, so it needs the face's
-least distance from the turning centre's arc in closed form (the same
-reading as the marched lunes below); the fixture keeps its lower strips
-running past the seam's ends for that reason. Where the ball changes what it holds along the
+is then cleared. Over each interval halved, the part of a face behind the
+planes through the far edge's line square to the ball's radius at both
+its ends is behind every station's plane between (the interval under a
+half turn), so only the part in front of the touched plane and of one of
+those is read; a held far edge ending where the end ball touches an end
+face is cleared so, each plane moved back by the confusion. Past a
+concave far edge over slanted strips the ball may come down on the face
+the strips run into (a floor), its centre on the line a radius off that
+face and the touched one: the floor goes in as the last strip, its far
+line the contact line, and a face on or behind the floor's plane stands a
+radius off every centre. Owed there: a ball that changes what it holds
+partway along the crease over strips beyond the narrow face (a chain of
+`carried.rs` pieces held on edges and faces the seam does not bound): no
+run proves its balls over the whole crease, so it is not built. Where the ball changes what it holds along the
 crease, the round is a chain of bands meeting tangent where it holds
 three things at once (`carried.rs`): a face on each side (the cylinder
 between the planes), a face and the other face's edge (the ellipse), or a

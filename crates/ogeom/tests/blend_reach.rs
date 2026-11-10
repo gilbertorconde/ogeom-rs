@@ -113,10 +113,16 @@ fn a_rim_fillet_wider_than_its_cap_is_refused() {
 }
 
 /// The inside edge of an L, where the fillet adds material: 3 fits the
-/// 4 mm of floor beside the wall and 5 does not.
+/// 4 mm of floor beside the wall. At 5 the ball touching the wall clears
+/// the floor and rests on its far edge, (6, 2), its centre at
+/// (7, 2 + 24^(1/2)) and its touch on the wall below the wall's top at 8:
+/// the round runs from the wall to that edge, and the fill is the
+/// triangle from the crease to the two contacts less the ball's segment
+/// over its chord, over the L's length. At 7 that touch would stand above
+/// the wall's top, and the fillet is refused.
 #[test]
 fn a_concave_fillet_wider_than_its_floor_is_refused() {
-    for (r, fits) in [(3.0, true), (5.0, false)] {
+    for (r, fits) in [(3.0, true), (5.0, true), (7.0, false)] {
         let mut model = Model::new();
         let pts = [
             (0.0, 0.0),
@@ -147,8 +153,32 @@ fn a_concave_fillet_wider_than_its_floor_is_refused() {
                     && (hi.z - 2.0).abs() < 1e-3
             })
             .expect("the inside edge");
+        let before = volume_properties(&model, &l, fine(), T).unwrap().mass;
         let result = ogeom::fillet::fillet_edges(&mut model, &l, &[inner], r, T);
         assert_eq!(result.is_ok(), fits, "radius {r}: {:?}", result.err());
+        if r == 5.0 {
+            let rounded = result.unwrap().shape;
+            let diagnosis = ogeom::algo::check(&model, &rounded, T).unwrap();
+            assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+            let rise = (r * r - 1.0_f64).sqrt();
+            let chord = 4.0_f64.hypot(rise);
+            let angle = 2.0 * (chord / (2.0 * r)).asin();
+            let section = 0.5 * 4.0 * rise - 0.5 * r * r * (angle - angle.sin());
+            let exact = 10.0 * section;
+            let added = volume_properties(&model, &rounded, fine(), T).unwrap().mass - before;
+            eprintln!("the round over the floor's far edge adds {added} against {exact}");
+            assert!(
+                (added - exact).abs() <= 1e-5 * exact,
+                "the round over the floor's far edge adds {added} against {exact}"
+            );
+        }
+    }
+}
+
+fn fine() -> Deflection {
+    Deflection {
+        chord: 1e-4,
+        ..Deflection::default()
     }
 }
 

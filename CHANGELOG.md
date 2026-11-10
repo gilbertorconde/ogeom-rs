@@ -13,6 +13,21 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A concave round resting on a far edge, the narrow face's or a slanted
+  strip's beyond it, now holds it up to an end face its end ball touches
+  at that edge's end.** (#720)
+  - Over each interval of the run, only the part of a face in front of the
+    touched face's plane and of the planes through the edge's line square
+    to the ball's radius at the interval's ends is read: the part behind
+    them is a radius off every ball between, so the second-order touch at
+    the end vertex no longer defeats the proof.
+  - An L whose 4 mm floor is narrower than a radius-5 round's setback was
+    refused; it now builds the round resting on the floor's far edge,
+    adding the closed-form fill to 7e-7.
+  - The staircase whose lower far edge holds the ball, cut whole to the
+    run's end sections, now builds, its band within 3.4e-5 of the exact
+    balls.
+
 - **`fillet_edges_variable` and `fillet_edge_variable` take a narrow
   strip beside a straight edge off whole under a law.** (#798)
   - Where the ball at the law's least and at its largest radius both take
