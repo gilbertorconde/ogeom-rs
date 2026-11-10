@@ -1334,7 +1334,9 @@ end (a drum's rim, a cut drum's oblique rim), marched with the law's \
 radius station by station and the band fitted through each station's \
 arc; an open curved edge whose ball runs out past its ends (a half \
 drum's rim), the law laid along the edge and held at its end radius past \
-each end, where the ball runs out at that radius; an open chain of arcs \
+each end, where the ball runs out at that radius, or, where the crease \
+ends on a planar face whose plane holds the ball's section there (a cut \
+square to it), stops at the vertex capped in that face's plane; an open chain of arcs \
 of one curve between the same two faces, end to end (a crease split at a \
 vertex), rounded as the one seat over the window its arcs cover; a \
 straight edge along a drum's ruling (a flat or a wall meeting a drum, or \
@@ -1359,9 +1361,8 @@ to one convex turn (a pad with one vertical left sharp) is opened at a \
 straight band between two of them, built in two halves meeting flush, \
 so no wedge overlaps itself at the turn. Refused by name: a linear law \
 changing radius round a closed chain (it jumps where the chain closes), \
-a turn where a curved crease meets (its marched band's run-out ends in \
-a section the law's slope tilts off a wall square to the crease, and the \
-straight band beside it would have to be built through that run-out), a \
+a turn where a curved crease meets (the straight band beside it would \
+have to be built through the curved band's end, after it, in rounds), a \
 re-entrant turn whose bands' sections differ (the corner carries each \
 band on as one section from where the other reaches, which a law \
 changes before the vertex), a loop joined round a convex turn with no \
