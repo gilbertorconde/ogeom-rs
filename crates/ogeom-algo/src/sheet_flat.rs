@@ -101,7 +101,12 @@ impl Flattening {
             };
             let rim = rim_distance(&mesh, &flat);
             if rim >= reach {
-                let (degree, x, y, scale, miss) = fitted(&mesh, &flat, rim, resolution)?;
+                let method = if rigid {
+                    "as-rigid-as-possible"
+                } else {
+                    "least-distortion"
+                };
+                let (degree, x, y, scale, miss) = fitted(&mesh, &flat, rim, resolution, method)?;
                 let mut samples: Vec<Point2> = flat.clone();
                 samples.extend(mesh.triangles.iter().map(|tri| {
                     let [a, b, c] = tri.map(|v| flat[v]);
@@ -734,10 +739,16 @@ fn rim_distance(mesh: &Mesh, flat: &[Point2]) -> f64 {
 /// coordinates, its degree raised until its miss at every vertex and
 /// every triangle's centroid is within half `resolution`: the degree, the
 /// coefficients of each coordinate, the scale they are read in, and the
-/// miss.
+/// miss. A refusal names the sheet by `method`.
 type Fitted = (usize, Vec<f64>, Vec<f64>, f64, f64);
 
-fn fitted(mesh: &Mesh, flat: &[Point2], rim: f64, resolution: f64) -> OgeomResult<Fitted> {
+fn fitted(
+    mesh: &Mesh,
+    flat: &[Point2],
+    rim: f64,
+    resolution: f64,
+    method: &str,
+) -> OgeomResult<Fitted> {
     // The samples: every vertex, and every triangle's centroid with the
     // mesh's own linear map there.
     let mut from: Vec<Point2> = flat.to_vec();
@@ -796,13 +807,14 @@ fn fitted(mesh: &Mesh, flat: &[Point2], rim: f64, resolution: f64) -> OgeomResul
         Some(b) if b.4 <= resolution / 2.0 => Ok(b),
         Some(b) => ogeom_bail!(
             Construction,
-            "the least-distortion sheet's map cannot be held to {resolution}: its best \
-             polynomial misses the flattening by {:.3e}",
+            "the {method} sheet's map cannot be held within {:.3e}, half its resolution of \
+             {resolution}: its best polynomial misses the flattening by {:.3e}",
+            resolution / 2.0,
             b.4
         ),
         None => ogeom_bail!(
             Construction,
-            "the least-distortion sheet's map folds over at every degree tried"
+            "the {method} sheet's map folds over at every degree tried"
         ),
     }
 }
