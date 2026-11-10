@@ -227,12 +227,13 @@ fn a_corner_rounds_at_any_radius() {
 }
 
 /// Every edge of an L-bracket, in either order. The step's inner corners,
-/// where its re-entrant edge meets two convex ones, are no convex corners:
-/// each closes with one setback patch, and the two orders give the same
-/// solid.
+/// where its re-entrant edge meets two convex ones, are no convex corners,
+/// and the one setback patch that would close each, tangent to every band
+/// end and face, stands 0.016 (a sixth of the radius) into the concave
+/// round's own ball, where neither the bracket nor any round puts
+/// material: refused by name in either order.
 #[test]
-fn every_edge_of_an_l_bracket_rounds_in_either_order() {
-    let mut volumes = Vec::new();
+fn every_edge_of_an_l_bracket_is_refused_where_a_corner_patch_leaves_the_solid() {
     for reversed in [false, true] {
         let mut model = ogeom_topo::Model::new();
         let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T)
@@ -250,18 +251,15 @@ fn every_edge_of_an_l_bracket_rounds_in_either_order() {
         if reversed {
             edges.reverse();
         }
-        let rounded = ogeom_fillet::fillet_edges(&mut model, &bracket, &edges, 0.1, T)
-            .unwrap_or_else(|e| panic!("reversed {reversed}: {e}"))
-            .shape;
-        assert!(ogeom_algo::check(&model, &rounded, T).unwrap().is_valid());
-        let v = volume(&model, &rounded, 1e-4);
-        assert!((v - 6.0).abs() < 0.1, "reversed {reversed}: {v}");
-        volumes.push(v.to_bits());
+        let why = ogeom_fillet::fillet_edges(&mut model, &bracket, &edges, 0.1, T)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(
+            why.contains("outside what the solid and its concave rounds hold"),
+            "reversed {reversed}: {why}"
+        );
     }
-    assert_eq!(
-        volumes[0], volumes[1],
-        "the two orders round different solids"
-    );
 }
 
 /// Every edge of a slab rounded at half its thickness: the blends on each
