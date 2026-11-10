@@ -13,6 +13,29 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **Signed corners close again, held out of the concave round's ball.**
+  (#846)
+  - #847 refused the corners where a convex and a concave round meet
+    (#809's three rounds, #838's with an edge left sharp, every edge of an
+    L-bracket): their patches stood 0.1 to 0.46 into the concave round's
+    own ball. They now close, every patch within the bands' fit target of
+    the bracket and its concave fill, read off the result's mesh.
+  - The patches are fitted with `make_filling_n_region` (#848) against the
+    region the solid and its concave rounds hold near the vertex, given
+    with its outward normal (`signed_region`). Where the hold pass holds no
+    net, a firmer pass holds the points still astray again at twice their
+    weight and goes on to a net of 202 controls. Every filling the first
+    pass holds is unchanged to the bit.
+  - At a sharp edge's point, the arcs the patch there is seeded on leave
+    each trim along the face, turned as little as keeps them inside the
+    convex piece about the edge, which the solid holds. The convex
+    callers' arcs are unchanged.
+  - On the L-bracket: #809's corner at radius 2 in all six orders is the
+    same solid to the bit, valid, its patch tangent to its neighbours within
+    5.6e-5 rad. #838's corner at radii 1, 1.5 and 2 in both orders is
+    tangent within 7.1e-5 rad. Every edge of the 2 x 2 x 2 L-bracket at 0.1
+    rounds again in either order, valid.
+
 - **`fillet_edges` closes a convex and a concave round beside an edge
   left sharp as one corner, whatever the order.** (#712)
   - The L-bracket's front edge and re-entrant edge, asked without the

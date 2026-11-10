@@ -487,12 +487,13 @@ vertex are refused by name. A signed corner's patches are measured against
 what the solid and its concave rounds hold near the vertex (the three
 face half-spaces, met across a convex edge and joined across a concave
 one, and each concave round's fill), and refused by name past the bands'
-fit target: on the L-bracket every such patch, with or without the sharp
-edge, stands 0.1 to 0.46 into the concave round's own ball, so these
-corners are refused today. Owed: a signed patch that stays out of the
-concave round's ball while meeting every side tangent; the same through
-`fillet_edges`' own corners; signed corners of more than three edges or
-with a curved face, refused by name.
+fit target. The patches are fitted held inside that region
+(`make_filling_n_region`'s hold pass, with a firmer second pass where the
+first holds no net), and the arcs of the patch at a sharp edge's point
+are kept inside the convex piece about that edge, so the L-bracket's
+corners close inside it, with or without the sharp edge. Owed: the same
+through `fillet_edges`' own corners; signed corners of more than three
+edges or with a curved face, refused by name.
 
 ### Construction and exchange
 
