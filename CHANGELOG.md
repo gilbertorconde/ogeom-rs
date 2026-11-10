@@ -13,6 +13,27 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A radius law rounds a convex turn beside a drafted wall, and the
+  drafted L-block's whole top loop.** (#798)
+  - At a convex turn where the two bands' sections differ (a drafted
+    wall whose foot leans out under the far face), the band that runs out
+    past the vertex was the law's band joined to the constant run-out at
+    the vertex. That seam stood inside the material, the other band crossed
+    it there, and the cut did not close (`NotDone`). That band is now built
+    on past the vertex as one surface, the law held level past the edge's
+    end, as far as the constant band of the meeting's radius runs out.
+    Where that constant band is trimmed by a face it runs into instead of
+    ending square, the join is kept.
+  - The law's B-spline now keeps a join where its slope steps, with a
+    triple knot. Before, a doubled knot made every join C1, which a level
+    stretch beside a sloped piece is not; no law built before this has
+    such a join.
+  - On the drafted L-block, the drafted edge and the edge it turns into
+    under a linear law from 1 to 1.5: valid, between the constant rounds
+    at 1 and 1.5, and every top contact away from the corners within 1e-6
+    of the law. The whole top loop under `(0, 1), (0.5, 2)` (#798's case 2)
+    builds, valid, between its constant rounds at 1 and 2.
+
 - **A radius law rounds a re-entrant turn whose bands' sections differ.**
   (#798)
   - `fillet_edges_variable` no longer refuses a chain turning at a

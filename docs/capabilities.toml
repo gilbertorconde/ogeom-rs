@@ -1374,7 +1374,12 @@ turn, where the two are joined; across a re-entrant turn whose bands' \
 sections differ (a drafted wall beside a square one), each band follows \
 the law to the vertex and is carried on level past it with what stands \
 past its wall, and the corner takes what lies above both, as the \
-constant corner does; a loop the tangent junctions join round \
+constant corner does; across a convex turn whose bands' sections \
+differ (a drafted wall's foot leaning out under the far face), a band \
+that runs out past the vertex is built on past it as one surface, the \
+law held level past the edge's end as far as the constant band runs \
+out, where that band ends square to its crease; a loop the tangent \
+junctions join round \
 to one convex turn (a pad with one vertical left sharp) is opened at a \
 straight band between two of them, built in two halves meeting flush, \
 so no wedge overlaps itself at the turn; and a chain turning where \
@@ -1394,11 +1399,7 @@ in a chain), two bands overlapping across a face they share, any \
 other straight edge whose faces are not both planes (a drum's ruling \
 inside a chain among them), a law over one arc of a crease that closes through other \
 edges (the whole loop is given instead), and a ball at the law's largest radius that does not fit \
-the faces. Not closed: a convex turn beside a drafted wall whose foot \
-leans out under the far face (a drafted L-block's outside corner beside \
-its drafted wall), where the law band's square cap and the constant \
-run-out joined to it stand inside the material below the top and the \
-cut does not close (NotDone)."""
+the faces."""
 symbols = ["ogeom_fillet::fillet_edges_variable", "ogeom_fillet::RadiusLaw"]
 tests = ["crates/ogeom-fillet/tests/variable.rs"]
 

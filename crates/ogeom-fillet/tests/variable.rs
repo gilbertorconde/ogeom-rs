@@ -1436,7 +1436,7 @@ fn a_linear_law_rounds_a_convex_turn_beside_a_drafted_wall() {
 }
 
 /// The drafted L-block's whole top loop under a law of points that closes
-/// round it, as #798 states it: across its re-entrant corner and its
+/// round it: across its re-entrant corner and its
 /// convex turn beside the drafted wall, valid, and between the loop's
 /// constant rounds at the law's least and largest radius.
 #[test]
