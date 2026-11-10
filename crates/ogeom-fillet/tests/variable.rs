@@ -1936,3 +1936,135 @@ fn a_law_over_a_chain_beside_a_narrow_face_is_cut_off_across_a_convex_turn() {
         "{why}"
     );
 }
+
+/// A drum of radius 10 and height 10 with a ring groove 1 wide and 1 deep
+/// cut into its top, from radius 8.5 to 9.5, leaving a ring 0.5 wide on
+/// the cap beside the rim; and the rim's arcs.
+fn ringed_drum(model: &mut Model) -> (Shape, Vec<Shape>) {
+    let drum = ogeom_algo::make_cylinder(model, at(0.0, 0.0, 0.0), 10.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let outer = ogeom_algo::make_cylinder(model, at(0.0, 0.0, 9.0), 9.5, 2.0, T)
+        .unwrap()
+        .shape;
+    let inner = ogeom_algo::make_cylinder(model, at(0.0, 0.0, 9.0), 8.5, 2.0, T)
+        .unwrap()
+        .shape;
+    let ring = ogeom_bool::cut(model, &outer, &inner, T).unwrap().shape;
+    let solid = ogeom_bool::cut(model, &drum, &ring, T).unwrap().shape;
+    let rim = rim_arcs(model, &solid);
+    (solid, rim)
+}
+
+/// The edges of `solid` on the circle of radius 10 at height 10.
+fn rim_arcs(model: &Model, solid: &Shape) -> Vec<Shape> {
+    explore_unique(model, solid, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let Some((c, (a, b))) = ogeom_algo::placed_edge_curve(model, e, T).unwrap() else {
+                return false;
+            };
+            (0..=8).all(|i| {
+                let p = c
+                    .point_at((b - a).mul_add(f64::from(i) / 8.0, a), T)
+                    .unwrap();
+                (p.z - 10.0).abs() < 1e-9 && (p.x.hypot(p.y) - 10.0).abs() < 1e-9
+            })
+        })
+        .collect()
+}
+
+/// What a round of radius `r` on the ringed drum's rim takes off, turned
+/// once round the axis, per unit angle: the moment about the axis of its
+/// section, the corner between the cap and the wall outside the ball's
+/// arc about `(10 - r, 10 - r)`, less the groove's air inside it.
+fn ringed_moment(r: f64) -> f64 {
+    let n = 4000;
+    let h = r / f64::from(n);
+    let a = 10.0 - r;
+    (0..n)
+        .map(|k| {
+            let rho = h.mul_add(f64::from(k) + 0.5, a);
+            let arc = a + (rho - a).mul_add(-(rho - a), r * r).max(0.0).sqrt();
+            let mut top = 10.0 - arc;
+            if (8.5..=9.5).contains(&rho) {
+                top -= (10.0 - arc.max(9.0)).max(0.0);
+            }
+            rho * top * h
+        })
+        .sum()
+}
+
+/// The law `(0, 1.6), (0.5, 2.4)` round a closed chain in closed form:
+/// every slope level, the secants either side of each point changing sign.
+fn ring_law(s: f64) -> f64 {
+    let t = (0.5 - (s - 0.5).abs()) / 0.5;
+    0.8f64.mul_add(t * t * 2.0f64.mul_add(-t, 3.0), 1.6)
+}
+
+/// The ringed drum's rim under a closed law from 1.6 to 2.4: past the ring
+/// the ball's contact on the cap stands over the groove, then on the cap
+/// beyond it, and the marched band is cut off over the groove as the
+/// constant torus band is. The section at the law's radius in each plane
+/// through the axis, turned round it, is what the round takes off, within
+/// the march's fit (measured 1.5e-6), between the constant rounds at the
+/// law's least and largest radius. A ring raised beside the rim's strip,
+/// where the contact stands in the material, is refused, as the constant
+/// round is.
+#[test]
+fn a_law_round_a_marched_rim_beside_a_narrow_face_is_cut_off_as_the_constant_round() {
+    let law = RadiusLaw::Points(vec![(0.0, 1.6), (0.5, 2.4)]);
+    let mut model = Model::new();
+    let (solid, rim) = ringed_drum(&mut model);
+    let before = volume(&model, &solid, 1e-4);
+    let built =
+        fillet_edges_variable(&mut model, &solid, &rim, &law, T).unwrap_or_else(|e| panic!("{e}"));
+    valid(&model, &built.shape);
+    let taken = before - volume(&model, &built.shape, 1e-4);
+    let n = 400;
+    let expected = core::f64::consts::TAU
+        * (0..n)
+            .map(|k| ringed_moment(ring_law((f64::from(k) + 0.5) / f64::from(n))))
+            .sum::<f64>()
+        / f64::from(n);
+    assert!(
+        (taken - expected).abs() <= 1e-5 * expected,
+        "{taken} against {expected}"
+    );
+    let (least, largest) = (
+        core::f64::consts::TAU * ringed_moment(1.6),
+        core::f64::consts::TAU * ringed_moment(2.4),
+    );
+    assert!(
+        least < taken && taken < largest,
+        "{least} < {taken} < {largest}"
+    );
+
+    let drum = ogeom_algo::make_cylinder(&mut model, at(0.0, 0.0, 0.0), 10.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let raised = ogeom_algo::make_cylinder(&mut model, at(0.0, 0.0, 10.0), 9.5, 2.0, T)
+        .unwrap()
+        .shape;
+    let stepped = ogeom_bool::fuse(&mut model, &drum, &raised, T)
+        .unwrap()
+        .shape;
+    let rim = rim_arcs(&model, &stepped);
+    let why = fillet_edges_variable(&mut model, &stepped, &rim, &law, T)
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(
+        why.contains("across a face that does not reach so far"),
+        "{why}"
+    );
+    let why = ogeom_fillet::fillet_edges(&mut model, &stepped, &rim, 1.6, T)
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(
+        why.contains("across a face that does not reach so far"),
+        "{why}"
+    );
+}

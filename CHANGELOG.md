@@ -13,6 +13,20 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A law round a marched rim beside a narrow face is cut off as the
+  constant round is.** (#798)
+  - A drum of radius 10 with a ring groove cut into its cap, leaving a
+    ring 0.5 wide beside the rim: under a closed law from 1.6 to 2.4 the
+    ball's contact on the cap stands over the groove and on the cap beyond
+    it. It was refused; each arc of the rim is now read station by station
+    at the law's radius there, laid round the loop by arc length as the
+    march lays it, and the marched band is cut off over the groove.
+  - The round takes off the section at the law's radius in each plane
+    through the axis, turned round it (Pappus): 34.648792 against
+    34.648741, 1.5e-6, the march's fit; between the constant rounds at 1.6
+    and 2.4. A ring raised beside the rim's strip, where the contact
+    stands in the material, is refused, as the constant round is.
+
 - **A law over a chain beside a narrow face is cut off as the constant
   round is.** (#798)
   - The grooved block's front edge in a chain, split in two across a

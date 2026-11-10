@@ -403,7 +403,10 @@ station by station at the law's radius as the constant round reads its
 own, cut off in the open and refused in the material; in a chain joined
 across tangent junctions or turning on a shared plane too, each station's
 contacts carried past the face's side and checked against the other
-bands. Owed the same on a marched seat and in a chain met in rounds. Owed:
+bands; and on a marched seat, a curved edge alone or a closed loop of
+arcs of one curve, the law laid by arc length as the march lays it.
+Owed the same over an open chain of arcs of one curve (its window of the
+curve) and in a chain met in rounds. Owed:
 a turn where a marched band meets a straight band between planes (the
 constant round's band there is an exact torus band; under a law it is
 fitted, and its end meets the straight band in what the boolean does not

@@ -2535,9 +2535,15 @@ fn fillet_chain_law_own(
         return Ok(built);
     }
     // Each ball sits on both faces of its edge all along the law.
-    let stations = (planar && chain.len() == 1).then_some(reversed);
-    for e in chain {
-        law_ball_on_faces(model, solid, e, &profile, stations, tol)?;
+    let stations = (chain.len() == 1 && span.is_none()).then_some(reversed);
+    if closed && chain.len() > 1 && !law_loop_fits(model, solid, chain, &profile, tol)? {
+        for e in chain {
+            law_ball_on_faces(model, solid, e, &profile, None, tol)?;
+        }
+    } else if !(closed && chain.len() > 1) {
+        for e in chain {
+            law_ball_on_faces(model, solid, e, &profile, stations, tol)?;
+        }
     }
     let mut built = if planar {
         straight_law_fillet(model, solid, edge, &profile, reversed, (0.0, 1.0), tol)?
@@ -2705,6 +2711,76 @@ fn consumed_law(
     Ok(Some(built))
 }
 
+/// The law's radius at a fraction of `edge`'s curve range, start to end:
+/// the law laid by arc length from where the edge starts, the way it runs
+/// (from the curve's end where `reversed`), as the band is built under it.
+fn law_on_edge<'a>(
+    model: &Model,
+    edge: &Shape,
+    law: &'a Profile,
+    reversed: bool,
+    tol: Tolerances,
+) -> OgeomResult<Box<dyn Fn(f64) -> f64 + 'a>> {
+    let (curve, range) = edge_curve(model, edge, tol)?;
+    let flip = move |s: f64| if reversed { 1.0 - s } else { s };
+    if matches!(curve, Curve::Line(_)) {
+        return Ok(Box::new(move |f: f64| law.at(flip(f)).0));
+    }
+    let ruler = crate::law::Ruler::new(curve, range, false, tol)?;
+    Ok(Box::new(move |f: f64| {
+        let t = (range.1 - range.0).mul_add(f, range.0);
+        let s = ruler.fraction(t, tol).map_or(f, |(s, _)| s);
+        law.at(flip(s)).0
+    }))
+}
+
+/// Whether the ball under `law` sits on its faces round a closed loop of
+/// arcs of one curve, the one seat the march walks: each arc read station
+/// by station at the law's radius there, as [`law_ball_on_faces`] reads one
+/// edge alone, the law laid by arc length round the first arc's curve from
+/// where that arc starts, the way it runs, as the march lays it.
+/// `Ok(false)` where the first arc's curve does not close on itself, for
+/// the loop to be read as [`law_ball_on_faces`] reads any other.
+fn law_loop_fits(
+    model: &Model,
+    solid: &Shape,
+    chain: &[Shape],
+    law: &Profile,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    use ogeom_geom::Curve3d as _;
+    let (stored, (lo, hi)) = edge_curve(model, &chain[0], tol)?;
+    if !stored.is_periodic() {
+        return Ok(false);
+    }
+    let ruler = crate::law::Ruler::new(stored.clone(), stored.domain(), true, tol)?;
+    let (start, heading) = if chain[0].orientation() == ogeom_topo::Orientation::Reversed {
+        (stored.point_at(hi, tol)?, -stored.d1_at(hi, tol)?)
+    } else {
+        (stored.point_at(lo, tol)?, stored.d1_at(lo, tol)?)
+    };
+    let at = ogeom_algo::project_on_curve(&stored, start, 256, tol)?.parameter;
+    let against = stored.d1_at(at, tol)?.dot(heading) < 0.0;
+    let origin = ruler.fraction(at, tol)?.0;
+    let fractions: Vec<f64> = (1..LAW_STATIONS)
+        .map(|k| f64::from(k) / f64::from(LAW_STATIONS))
+        .collect();
+    for edge in chain {
+        let (curve, (a, b)) = edge_curve(model, edge, tol)?;
+        let radius_at = |f: f64| -> f64 {
+            let read = || -> OgeomResult<f64> {
+                let p = curve.point_at((b - a).mul_add(f, a), tol)?;
+                let t = ogeom_algo::project_on_curve(&stored, p, 64, tol)?.parameter;
+                let s = ruler.fraction(t, tol)?.0 - origin;
+                Ok(law.at((if against { -s } else { s }).rem_euclid(1.0)).0)
+            };
+            read().unwrap_or_else(|_| law.largest())
+        };
+        crate::support::ball_fits_by(model, solid, edge, &radius_at, &fractions, false, tol)?;
+    }
+    Ok(true)
+}
+
 /// Whether the balls of a chain under a law sit on their faces, and no
 /// band overlaps another across a face they share.
 ///
@@ -2734,9 +2810,15 @@ fn law_chain_fits(
             && matches!(route(model, solid, edge, Rims::Exact, tol)?, Route::Planar);
         if planar {
             let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
-            let radius_at = |f: f64| law.at(if reversed { 1.0 - f } else { f }).0;
+            let radius_at = law_on_edge(model, edge, law, reversed, tol)?;
             contacts.push(crate::support::ball_fits_by(
-                model, solid, edge, &radius_at, &fractions, true, tol,
+                model,
+                solid,
+                edge,
+                &*radius_at,
+                &fractions,
+                true,
+                tol,
             )?);
         } else {
             law_ball_on_faces(model, solid, edge, law, None, tol)?;
@@ -2785,8 +2867,8 @@ fn law_ball_on_faces(
         let fractions: Vec<f64> = (1..LAW_STATIONS)
             .map(|k| f64::from(k) / f64::from(LAW_STATIONS))
             .collect();
-        let radius_at = |f: f64| law.at(if reversed { 1.0 - f } else { f }).0;
-        crate::support::ball_fits_by(model, solid, edge, &radius_at, &fractions, false, tol)?;
+        let radius_at = law_on_edge(model, edge, law, reversed, tol)?;
+        crate::support::ball_fits_by(model, solid, edge, &*radius_at, &fractions, false, tol)?;
         return Ok(());
     }
     for radius in [law.least(), law.largest()] {
