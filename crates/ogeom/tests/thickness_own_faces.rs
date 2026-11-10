@@ -594,7 +594,22 @@ fn points_inside_a_corpus_part_s_faces_read_as_before() {
     for (((p, ray), ball), &(_, _, was_ray, was_ball)) in
         points.iter().zip(rays).zip(balls).zip(INSIDE)
     {
-        assert_eq!(ray.map(f64::to_bits), was_ray, "rays at {p:?}");
-        assert_eq!(ball.map(f64::to_bits), was_ball, "ball at {p:?}");
+        assert_reads_as(ray, was_ray, "rays", p);
+        assert_reads_as(ball, was_ball, "ball", p);
+    }
+}
+
+/// `read` matches the pinned bits `was` to within a few units in the last
+/// place. The walls go through the platform's `sin`, `cos` and `atan2`,
+/// whose last bits differ between C libraries, so exact bits would pin the
+/// runner rather than the kernel; a change in which faces a point reads
+/// moves the wall by far more than this.
+fn assert_reads_as(read: Option<f64>, was: Option<u64>, how: &str, p: &Point) {
+    match (read, was.map(f64::from_bits)) {
+        (Some(r), Some(w)) => assert!(
+            (r - w).abs() <= 1e-13 * w.abs().max(1.0),
+            "{how} at {p:?}: read {r}, pinned {w}"
+        ),
+        (r, w) => assert_eq!(r, w, "{how} at {p:?}"),
     }
 }
