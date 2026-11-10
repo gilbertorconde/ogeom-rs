@@ -76,12 +76,23 @@ fn corners_of(m: &Model, s: &Shape) -> Vec<[u64; 3]> {
     all
 }
 
-/// With the third edge at the vertex left sharp, the opening between the
-/// two bands' ends would cross it, and no one patch is tangent to both of
-/// its faces there: the request is refused by name in either order, where
-/// it once took whichever corner was asked first.
+/// The issue's request: the front edge and the re-entrant edge rounded at
+/// 2, the upright's front edge left sharp. The opening between the two
+/// bands' ends crosses the sharp edge; it runs into a point there, where a
+/// patch with a shrunk side turns its normal from the front face's to the
+/// upright's, and one patch closes the rest. Both orders give the same
+/// solid to the bit, valid, every patch tangent to its neighbours, each
+/// band stopped short of the vertex on its section plane.
 #[test]
-fn a_convex_and_a_concave_round_beside_an_edge_left_sharp_are_refused_in_either_order() {
+fn a_convex_and_a_concave_round_beside_an_edge_left_sharp_close_one_corner_in_either_order() {
+    for radius in [2.0, 1.0, 1.5] {
+        two_edges_in_either_order(radius);
+    }
+}
+
+/// The issue's two edges rounded at `radius`, in both orders.
+fn two_edges_in_either_order(radius: f64) {
+    let mut first: Option<(Vec<[u64; 3]>, usize, u64)> = None;
     for flip in [false, true] {
         let mut m = Model::new();
         let l = bracket(&mut m);
@@ -91,13 +102,79 @@ fn a_convex_and_a_concave_round_beside_an_edge_left_sharp_are_refused_in_either_
         } else {
             vec![front, crease]
         };
-        let Err(e) = ogeom_fillet::fillet_edges(&mut m, &l, &edges, 2.0, T) else {
-            panic!("flip {flip}: a corner taken in the order asked");
-        };
+        let rounded = ogeom_fillet::fillet_edges(&mut m, &l, &edges, radius, T)
+            .unwrap_or_else(|e| panic!("flip {flip}: {e}"))
+            .shape;
+        let diagnosis = ogeom_algo::check(&m, &rounded, T).unwrap();
         assert!(
-            e.to_string()
-                .contains("the request rounds every edge of the vertex"),
-            "flip {flip}: {e}"
+            diagnosis.is_valid(),
+            "flip {flip}: {:?}",
+            diagnosis.problems
+        );
+        let faces = explore_unique(&m, &rounded, ShapeType::Face).unwrap();
+        let got = (
+            corners_of(&m, &rounded),
+            faces.len(),
+            volume(&m, &rounded).to_bits(),
+        );
+        match &first {
+            None => first = Some(got),
+            Some(want) => assert!(*want == got, "flip {flip} lands on another solid"),
+        }
+        // The two fitted faces: the patch at the sharp edge and the rest.
+        let patches: Vec<Shape> = faces
+            .into_iter()
+            .filter(|f| {
+                let d = m.node(f).unwrap().data().as_face().unwrap();
+                matches!(
+                    m.geometry().surface(d.surface),
+                    Some(ogeom_geom::SurfaceGeometry::BSpline(_))
+                )
+            })
+            .collect();
+        assert_eq!(
+            patches.len(),
+            2,
+            "flip {flip}: a patch at the sharp edge and one over the rest"
+        );
+        let mut worst = 0.0_f64;
+        let mut ends = (false, false);
+        for patch in &patches {
+            for c in ogeom_fillet::analyse_blend(&m, &rounded, patch, 17, T).unwrap() {
+                worst = worst.max(c.tangency_error);
+            }
+            // Each band's end arc lies on its section, short of the vertex:
+            // the front band's on a plane x = c past 5, the re-entrant
+            // band's on a plane y = c past 0.
+            for e in explore_unique(&m, patch, ShapeType::Edge).unwrap() {
+                // The patch at the sharp edge's point has a side shrunk to
+                // it, an edge with no curve.
+                let Some((c, (lo, hi))) = ogeom_algo::placed_edge_curve(&m, &e, T).unwrap() else {
+                    continue;
+                };
+                let p: Vec<Point> = [lo, f64::midpoint(lo, hi), hi]
+                    .iter()
+                    .map(|t| c.point_at(*t, T).unwrap())
+                    .collect();
+                let flat = |f: fn(&Point) -> f64| {
+                    (f(&p[0]) - f(&p[1])).abs() < 1e-9 && (f(&p[0]) - f(&p[2])).abs() < 1e-9
+                };
+                if flat(|q| q.x) && p[0].x > 5.0 + 1e-6 && p[1].y > 1e-6 {
+                    ends.0 = true;
+                }
+                if flat(|q| q.y) && p[0].y > 1e-6 && p[1].x > 5.0 + 1e-6 {
+                    ends.1 = true;
+                }
+            }
+        }
+        eprintln!(
+            "flip {flip}: the patches meet their neighbours within {worst} rad, volume {}",
+            volume(&m, &rounded)
+        );
+        assert!(worst < 2e-4, "flip {flip}: tangent within {worst} rad");
+        assert!(
+            ends.0 && ends.1,
+            "flip {flip}: a band ends on the other's rail: {ends:?}"
         );
     }
 }
@@ -209,6 +286,32 @@ fn three_rounds_of_both_kinds_at_a_vertex_close_one_corner_whatever_the_order() 
             "the signed corner {} against the stepwise bands {}",
             volume(&m, &rounded),
             volume(&m, &stepwise)
+        );
+    }
+}
+
+/// Bands as wide as the upright is thick: the cell the corner cuts reaches
+/// twice the widest band behind the vertex, through the upright's far
+/// face, which nothing would put back. Refused by name, with all three
+/// edges rounded or the upright's front edge left sharp, as the cell
+/// guard refuses any other feature inside the cell.
+#[test]
+fn a_signed_corner_whose_cell_reaches_through_the_wall_is_refused_by_name() {
+    for three in [false, true] {
+        let mut m = Model::new();
+        let l = bracket(&mut m);
+        let [front, crease, upright] = corner_edges(&m, &l);
+        let mut edges = vec![front, crease];
+        if three {
+            edges.push(upright);
+        }
+        let err = ogeom_fillet::fillet_edges(&mut m, &l, &edges, 3.0, T)
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("another feature of the solid lies inside the setback corner's cell"),
+            "three {three}: {err}"
         );
     }
 }

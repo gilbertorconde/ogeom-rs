@@ -464,11 +464,10 @@ three arcs and three conics filled by one patch G1 to every band end and
 face. On a face reflex at the vertex (an L-bracket's front) the face's
 part kept in the box is the side of its conic away from the vertex, out
 to the box's walls; coplanar faces a fusion left at the vertex count as
-one. Where an edge of the vertex is left sharp, the request is refused by
-name in either order: the opening between the band ends crosses that
-edge, and a patch tangent to both its faces there needs two tangent
-planes at one point. A patch with a collapsed side at the crossing closes
-such an opening on a convex corner (`sharp.rs`,
+one. Where an edge of the vertex is left sharp, the opening between the
+band ends crosses that edge, and a patch tangent to both its faces there
+needs two tangent planes at one point. A patch with a collapsed side at
+the crossing closes such an opening on a convex corner (`sharp.rs`,
 `round_vertex_setback_sharp`): the sharp edge cut at its own setback at
 `Q`, a three-sided patch there with its fourth side shrunk to `Q`, fitted
 by `fit_network` with its halves of the trims from `Q` held and held across
@@ -478,9 +477,13 @@ faces over the rest. `blend_edges` closes a convex corner of one round,
 one bevel and one edge left sharp the same way (`close_sharp_corner`): the
 sharp edge cut as far out as the farther band, and the rest meeting the
 bevel's end and the trims from it in position only, as #803's corners do.
-Owed: the same at a signed corner (the L-bracket of #712, where the cell is
-not convex) and through `fillet_edges`' own corners; signed corners of
-more than three edges or with a curved face, refused by name.
+A signed corner with a convex edge left sharp (the L-bracket of #712)
+closes the same way inside its own cell, the trim on a face reflex at the
+vertex a cubic swinging round it; a concave edge left sharp, a setback
+reaching its edge's end and a cell reaching through the solid behind the
+vertex are refused by name. Owed: the same through `fillet_edges`' own
+corners; signed corners of more than three edges or with a curved face,
+refused by name.
 
 ### Construction and exchange
 

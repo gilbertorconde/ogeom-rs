@@ -13,6 +13,29 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fillet_edges` closes a convex and a concave round beside an edge
+  left sharp as one corner, whatever the order.** (#712)
+  - The L-bracket's front edge and re-entrant edge, asked without the
+    upright's front edge, were refused by name: the opening between the
+    set-back bands crosses that sharp edge, where one patch would need two
+    tangent planes.
+  - The sharp edge is now read as a band of no width, cut at its setback
+    at `Q`, and the opening runs into `Q` as `round_vertex_setback_sharp`'s
+    does: a patch at `Q` with its fourth side shrunk there, turning its
+    normal from the front face's to the upright's, and one patch over the
+    rest. On the front face, reflex at the vertex, the trim from `Q` is a
+    cubic swinging round the vertex inside the face.
+  - At radii 1, 1.5 and 2 both orders give the same solid to the bit,
+    `check` clean, every patch tangent to its neighbours within 5e-5 rad,
+    each band ending on its section plane short of the vertex.
+  - Refused by name: a concave edge left sharp, a band whose setback
+    reaches its edge's far end, and, through the cell guard (#843), a
+    corner whose cell (twice the widest band behind the vertex) reaches
+    through the solid's far side, as on the 20-wide bracket at radius 2.5
+    and up, or holds a void.
+  - The stress run's one refused fillet case (`fillet/stepped/15`, such a
+    corner) now rounds; the baseline is 140 of 140.
+
 - **A law round a marched rim beside a narrow face is cut off as the
   constant round is.** (#798)
   - A drum of radius 10 with a ring groove cut into its cap, leaving a

@@ -220,6 +220,19 @@ fn a_convex_and_a_concave_round_with_a_void_in_their_cell_are_refused_by_name() 
         edge_near(&m, &s, [5.0, 10.0, 5.0]),
         edge_near(&m, &s, [5.0, 0.0, 12.5]),
     ];
-    let got = ogeom_fillet::fillet_edges(&mut m, &s, &edges, 2.0, T);
-    refused("fillet_edges at a signed corner", got, &m);
+    // All three edges rounded, and the upright's front edge left sharp,
+    // in either order.
+    for asked in [
+        edges.clone(),
+        edges[..2].to_vec(),
+        vec![edges[1].clone(), edges[0].clone()],
+    ] {
+        let mut own = m.clone();
+        let got = ogeom_fillet::fillet_edges(&mut own, &s, &asked, 2.0, T);
+        refused(
+            &format!("fillet_edges at a signed corner, {} edges", asked.len()),
+            got,
+            &own,
+        );
+    }
 }

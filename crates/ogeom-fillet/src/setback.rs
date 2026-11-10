@@ -1188,6 +1188,11 @@ pub(crate) struct SignedCorner {
     /// Edge `i`'s legs: the unit directions square to it into face `i - 1`
     /// and face `i`, its two faces.
     legs: Vec<[Vector; 2]>,
+    /// The edge the request leaves sharp, by its place in the ring: a band
+    /// of no width, its radius nought.
+    sharp: Option<usize>,
+    /// Each edge's length, from the vertex to its far end.
+    reach: Vec<f64>,
 }
 
 /// A request edge with its radius and whether it is convex.
@@ -1197,10 +1202,11 @@ type Kinded = (Shape, f64, bool);
 /// each read as a [`SignedCorner`]; refused by name where such a vertex is
 /// not one this closes.
 ///
-/// No one patch closes such a vertex unless every edge of it is rounded:
-/// with an edge left sharp, the opening between the bands' ends crosses
-/// it, and a patch tangent to both faces there would need two tangent
-/// planes at one point.
+/// An edge of such a vertex the request leaves sharp is read as a band of
+/// no width: the opening between the bands' ends crosses it, and is closed
+/// through a point on it where a patch turns its normal from one of its
+/// faces to the other's ([`crate::sharp::close_through_q`]). Such an edge
+/// is to be convex.
 pub(crate) fn signed_corners(
     model: &Model,
     solid: &Shape,
@@ -1312,10 +1318,8 @@ fn signed_refusal(why: &str) -> ogeom_core::OgeomError {
     ogeom_core::ogeom_err!(
         Construction,
         "a convex and a concave round meeting at one vertex close as one corner \
-         only where {why}; no one patch is tangent to both faces where the opening \
-         between the bands crosses an edge left sharp, and the two rounds alone \
-         would take the corner in the order asked; see docs/CAPABILITIES.md, \
-         fillet.setback-corners"
+         only where {why}; the two rounds alone would take the corner in the \
+         order asked; see docs/CAPABILITIES.md, fillet.setback-corners"
     )
 }
 
@@ -1392,11 +1396,19 @@ fn signed_corner(
     let mut radius_of = Vec::with_capacity(3);
     let mut dir = Vec::with_capacity(3);
     let mut reach = Vec::with_capacity(3);
-    for e in &at_vertex {
-        let Some((_, r, _)) = request.iter().find(|(asked, _, _)| asked.is_same(e)) else {
-            return Err(signed_refusal(
-                "the request rounds every edge of the vertex",
-            ));
+    let mut sharp_edge: Option<usize> = None;
+    for (k, e) in at_vertex.iter().enumerate() {
+        let r = match request.iter().find(|(asked, _, _)| asked.is_same(e)) {
+            Some((_, r, _)) => *r,
+            None if sharp_edge.is_none() => {
+                sharp_edge = Some(k);
+                0.0
+            }
+            None => {
+                return Err(signed_refusal(
+                    "the request rounds all but at most one edge of the vertex",
+                ));
+            }
         };
         let Some([p, q]) = crate::consumed::segment(model, e, tol)? else {
             return Err(signed_refusal("every edge of the vertex is straight"));
@@ -1409,7 +1421,7 @@ fn signed_corner(
         let along = far - corner;
         reach.push(along.magnitude());
         dir.push(along.normalized(tol)?);
-        radius_of.push(*r);
+        radius_of.push(r);
     }
     // Each face's two edges at the vertex.
     let flats: Vec<crate::rolled::Flat> = groups.iter().map(|(_, g)| g.clone()).collect();
@@ -1445,6 +1457,7 @@ fn signed_corner(
     }
     let d: Vec<Vector> = ring_edges.iter().map(|&k| dir[k]).collect();
     let radius: Vec<f64> = ring_edges.iter().map(|&k| radius_of[k]).collect();
+    let length: Vec<f64> = ring_edges.iter().map(|&k| reach[k]).collect();
     let normal: Vec<Vector> = ring_faces.iter().map(|&f| flats[f].normal).collect();
     // Into a face square to an edge: the side a point just off the edge's
     // middle lies inside the face on.
@@ -1472,6 +1485,15 @@ fn signed_corner(
         let after = ring_faces[i];
         legs.push([into(before, k)?, into(after, k)?]);
     }
+    let sharp = sharp_edge.and_then(|k| ring_edges.iter().position(|&e| e == k));
+    // A sharp edge's patch is a cone at its point, which turns outward
+    // across a convex edge: the face after it leans in from the face
+    // before's outward side.
+    if let Some(i) = sharp
+        && legs[i][1].dot(normal[(i + 2) % 3]) >= 0.0
+    {
+        return Err(signed_refusal("an edge the request leaves sharp is convex"));
+    }
     Ok(SignedCorner {
         vertex: vertex.clone(),
         corner,
@@ -1479,6 +1501,8 @@ fn signed_corner(
         radius,
         normal,
         legs,
+        sharp,
+        reach: length,
     })
 }
 
@@ -1513,7 +1537,7 @@ fn signed_setbacks(c: &SignedCorner, width: &[f64], tol: Tolerances) -> OgeomRes
             c.legs[k][1] * width[k],
         ];
         let mut least = width[k];
-        for j in (0..3).filter(|&j| j != k) {
+        for j in (0..3).filter(|&j| j != k && c.sharp != Some(j)) {
             let dj = c.d[j];
             let a = dk - dj * dk.dot(dj);
             let aa = a.dot(a);
@@ -1535,6 +1559,22 @@ fn signed_setbacks(c: &SignedCorner, width: &[f64], tol: Tolerances) -> OgeomRes
         }
         setback[k] = least + width[k];
     }
+    // The sharp edge is cut past where the bands reach along it by the
+    // widest band, so the trims from its point have room to turn into the
+    // bands' rails.
+    if let Some(k) = c.sharp {
+        setback[k] += width.iter().copied().fold(0.0, f64::max);
+    }
+    // Each edge is cut short of its far end, where its band's section
+    // would fall on the face there and leave no end arc.
+    for (s, length) in setback.iter().zip(&c.reach) {
+        if *s >= length - tol.confusion() * 100.0 {
+            return Err(signed_refusal(
+                "each edge runs on past its band's setback, its own width beyond \
+                 the least at which its section clears the others",
+            ));
+        }
+    }
     Ok(setback)
 }
 
@@ -1551,6 +1591,13 @@ fn signed_setbacks(c: &SignedCorner, width: &[f64], tol: Tolerances) -> OgeomRes
 /// trim runs on a conic from one band's rail end to the next one's,
 /// tangent to both; the face's part kept inside the box is the side of the
 /// conic away from the vertex, out to the box's walls.
+///
+/// With an edge left sharp, that edge is cut at its setback, at `Q`, and
+/// the trims beside it run from `Q` into the bands' rails, split at their
+/// middles; on a face reflex at the vertex the trim is a cubic swinging
+/// round the vertex inside the face. The opening is then closed as
+/// [`crate::round_vertex_setback_sharp`] closes it: a patch at `Q`, its
+/// fourth side shrunk there, and one over the rest.
 #[allow(clippy::too_many_lines, reason = "one corner, assembled end to end")]
 pub(crate) fn close_signed_corner(
     model: &mut Model,
@@ -1630,8 +1677,12 @@ pub(crate) fn close_signed_corner(
         }
     }
     // Each band's end arc on its section plane, and the band face it ends.
-    let mut arcs: Vec<(Shape, Shape)> = Vec::with_capacity(3);
+    let mut arcs: Vec<Option<(Shape, Shape)>> = Vec::with_capacity(3);
     for (k, section) in sections.iter().enumerate() {
+        if c.sharp == Some(k) {
+            arcs.push(None);
+            continue;
+        }
         let mut found: Option<(Shape, Shape)> = None;
         for face in &kept {
             if is_plane(face, model) {
@@ -1661,60 +1712,128 @@ pub(crate) fn close_signed_corner(
                 "band {k} of a signed corner does not end in an arc on its section plane"
             );
         };
-        arcs.push(found);
+        arcs.push(Some(found));
     }
-    let end_on =
-        |model: &Model, arc: &Shape, plane: (Vector, Point)| -> OgeomResult<(Shape, Point)> {
-            let Some((a, b)) = ogeom_algo::edge_vertices(model, arc)? else {
-                ogeom_bail!(Construction, "a band's end arc has no vertices");
+    // Where the cut leaves the sharp edge, at its setback: `Q`.
+    let at_q: Option<(Shape, Point)> = match c.sharp {
+        None => None,
+        Some(k) => {
+            let q = sections[k].1;
+            let Some(v) = explore_unique(model, &cut.shape, ShapeType::Vertex)?
+                .into_iter()
+                .find(|v| point_of(model, v).is_ok_and(|p| p.distance(q) <= slack))
+            else {
+                ogeom_bail!(
+                    Construction,
+                    "the cut does not leave the sharp edge of a signed corner at its setback"
+                );
             };
-            for v in [a, b] {
-                let p = point_of(model, &v)?;
-                if on_plane(p, plane) {
-                    return Ok((v, p));
-                }
-            }
-            ogeom_bail!(Construction, "a band's end arc does not reach its face");
+            Some((v, q))
+        }
+    };
+    let end_on = |model: &Model, k: usize, plane: (Vector, Point)| -> OgeomResult<(Shape, Point)> {
+        let Some((arc, _)) = &arcs[k] else {
+            return at_q
+                .clone()
+                .ok_or_else(|| ogeom_core::ogeom_err!(Construction, "a band has no end arc"));
         };
+        let Some((a, b)) = ogeom_algo::edge_vertices(model, arc)? else {
+            ogeom_bail!(Construction, "a band's end arc has no vertices");
+        };
+        for v in [a, b] {
+            let p = point_of(model, &v)?;
+            if on_plane(p, plane) {
+                return Ok((v, p));
+            }
+        }
+        ogeom_bail!(Construction, "a band's end arc does not reach its face");
+    };
     let fit = crate::marched::band_fit_target(tol);
     let mut boundary: Vec<FillBoundary> = Vec::with_capacity(6);
     let mut fillers: Vec<Shape> = Vec::with_capacity(3);
+    let mut trims: Vec<crate::sharp::Trim> = Vec::with_capacity(3);
+    #[allow(
+        clippy::needless_range_loop,
+        reason = "face k lies between edge k and edge k + 1"
+    )]
     for k in 0..3 {
         let next = (k + 1) % 3;
         let plane = (c.normal[k], c.corner);
-        let (v0, p0) = end_on(model, &arcs[k].0, plane)?;
-        let (v1, p1) = end_on(model, &arcs[next].0, plane)?;
-        let (t0, t1) = (-c.d[k], -c.d[next]);
-        let apex = {
-            let w = p1 - p0;
-            let cr = t0.cross(t1);
-            let cc = cr.dot(cr);
-            if cc <= tol.angular() {
-                ogeom_bail!(Construction, "two rails on a face are parallel");
+        let (v0, p0) = end_on(model, k, plane)?;
+        let (v1, p1) = end_on(model, next, plane)?;
+        // A rail's trim leaves it along its edge, towards the vertex; one
+        // from the sharp edge's point heads for the band's rail half way
+        // back to the vertex.
+        let into = |from: (usize, Point), to: (usize, Point)| -> OgeomResult<Vector> {
+            if c.sharp == Some(from.0) {
+                let aim = to.1 - c.d[to.0] * (setback[to.0] / 2.0);
+                Ok((aim - from.1).normalized(tol)?)
+            } else {
+                Ok(-c.d[from.0])
             }
-            p0 + t0 * (w.cross(t1).dot(cr) / cc)
         };
-        if (apex - p0).dot(t0) <= 0.0 || (apex - p1).dot(t1) <= 0.0 {
-            ogeom_bail!(
-                Construction,
-                "the rails on a face do not run towards each other past their setbacks"
-            );
-        }
-        let (u0, u1) = ((apex - p0).normalized(tol)?, (p1 - apex).normalized(tol)?);
-        let weight = ((1.0 + u0.dot(u1)) / 2.0).max(0.0).sqrt();
-        let knots = ogeom_math::KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)?;
-        let control = vec![
-            ogeom_math::Weighted::new(p0, 1.0, tol)?,
-            ogeom_math::Weighted::new(apex, weight, tol)?,
-            ogeom_math::Weighted::new(p1, 1.0, tol)?,
-        ];
-        let conic = ogeom_geom::BSplineCurve::rational(knots, control)?;
+        // On a face reflex at the vertex, beside the sharp edge, the trim
+        // from its point swings round the vertex inside the face: a cubic
+        // leaving the point into the face half way between the sharp edge,
+        // back towards the vertex, and square across it, and coming onto
+        // the band's rail from a band's width past the sharp edge's line.
+        let reflex = c.sharp.and_then(|ks| {
+            let (band, leg) = if k == ks {
+                (next, c.legs[ks][1])
+            } else if next == ks {
+                (k, c.legs[ks][0])
+            } else {
+                return None;
+            };
+            (c.d[band].dot(leg) < 0.0).then_some((ks, band, leg))
+        });
+        let conic = if let Some((ks, band, leg)) = reflex {
+            let (q, rail) = if k == ks { (p0, p1) } else { (p1, p0) };
+            let w = width[band];
+            let back = -c.d[band];
+            let near_q = q + (leg - c.d[ks]) * (w / 2.0);
+            let past = rail + back * ((rail - q).dot(-back) + w);
+            let poles = if k == ks {
+                vec![q, near_q, past, rail]
+            } else {
+                vec![rail, past, near_q, q]
+            };
+            let knots =
+                ogeom_math::KnotVector::new(vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 3)?;
+            ogeom_geom::BSplineCurve::new(knots, poles, tol)?
+        } else {
+            let (t0, t1) = (into((k, p0), (next, p1))?, into((next, p1), (k, p0))?);
+            let apex = {
+                let w = p1 - p0;
+                let cr = t0.cross(t1);
+                let cc = cr.dot(cr);
+                if cc <= tol.angular() {
+                    ogeom_bail!(Construction, "two rails on a face are parallel");
+                }
+                p0 + t0 * (w.cross(t1).dot(cr) / cc)
+            };
+            if (apex - p0).dot(t0) <= 0.0 || (apex - p1).dot(t1) <= 0.0 {
+                ogeom_bail!(
+                    Construction,
+                    "the rails on a face do not run towards each other past their setbacks"
+                );
+            }
+            let (u0, u1) = ((apex - p0).normalized(tol)?, (p1 - apex).normalized(tol)?);
+            let weight = ((1.0 + u0.dot(u1)) / 2.0).max(0.0).sqrt();
+            let knots = ogeom_math::KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)?;
+            let control = vec![
+                ogeom_math::Weighted::new(p0, 1.0, tol)?,
+                ogeom_math::Weighted::new(apex, weight, tol)?,
+                ogeom_math::Weighted::new(p1, 1.0, tol)?,
+            ];
+            ogeom_geom::BSplineCurve::rational(knots, control)?
+        };
         let samples: Vec<Point> = (0..=16)
             .map(|i| conic.point_at(f64::from(i) / 16.0, tol))
             .collect::<OgeomResult<_>>()?;
-        let trim =
-            ogeom_algo::make_edge_between(model, Curve::BSpline(conic), (0.0, 1.0), &v0, &v1, tol)?
-                .shape;
+        let conic = Curve::BSpline(conic);
+        let at_sharp = c.sharp == Some(k) || c.sharp == Some(next);
+        let trim = crate::sharp::trim_edges(model, &conic, (&v0, &v1), at_sharp, tol)?;
         // The face's plane inside the box: a convex polygon, ordered round
         // its middle.
         let outward = c.normal[k];
@@ -1840,7 +1959,7 @@ pub(crate) fn close_signed_corner(
             from = p;
         }
         stops.pop();
-        let mut ring = vec![trim.clone()];
+        let mut ring = trim.clone();
         let mut prev = (v1.clone(), p1);
         for p in &stops {
             let v = ogeom_algo::make_vertex(model, *p).shape;
@@ -1884,29 +2003,59 @@ pub(crate) fn close_signed_corner(
         )?
         .into();
         let filler = ogeom_algo::make_face_with_pcurves(model, surface, &[ring], tol)?.shape;
-        boundary.push(FillBoundary {
-            edge: arcs[k].0.clone(),
-            support: Some(arcs[k].1.clone()),
-            continuity: Continuity::G1,
-        });
-        boundary.push(FillBoundary {
-            edge: trim,
-            support: Some(filler.clone()),
-            continuity: Continuity::G1,
+        if let Some((arc, face)) = &arcs[k] {
+            boundary.push(FillBoundary {
+                edge: arc.clone(),
+                support: Some(face.clone()),
+                continuity: Continuity::G1,
+            });
+        }
+        if let [whole] = trim.as_slice() {
+            boundary.push(FillBoundary {
+                edge: whole.clone(),
+                support: Some(filler.clone()),
+                continuity: Continuity::G1,
+            });
+        }
+        trims.push(crate::sharp::Trim {
+            curve: conic,
+            edges: trim,
+            normal: outward,
+            filler: filler.clone(),
         });
         fillers.push(filler);
     }
-    let filled = make_filling_n(model, &boundary, &[], fit, tol)?;
-    let patch = filled.built.shape.clone();
     let mut faces = kept;
     faces.extend(fillers);
-    faces.push(patch.clone());
-    let sewn = ogeom_algo::sew(model, &faces, tol)?;
-    if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
-        ogeom_bail!(Construction, "the signed corner's faces did not close");
-    }
-    let rounded = model.add_solid(std::slice::from_ref(&sewn.shells[0]))?;
     let mut history: History = history;
-    history.generate(&c.vertex, patch);
-    Ok(Built::new(rounded, history))
+    let Some(ks) = c.sharp else {
+        let filled = make_filling_n(model, &boundary, &[], fit, tol)?;
+        let patch = filled.built.shape.clone();
+        faces.push(patch.clone());
+        let sewn = ogeom_algo::sew(model, &faces, tol)?;
+        if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
+            ogeom_bail!(Construction, "the signed corner's faces did not close");
+        }
+        let rounded = model.add_solid(std::slice::from_ref(&sewn.shells[0]))?;
+        history.generate(&c.vertex, patch);
+        return Ok(Built::new(rounded, history));
+    };
+    // The opening runs into the sharp edge's point: a patch there turning
+    // its normal from one of the edge's faces to the other's, and one over
+    // the rest.
+    let (r1, r2) = ((ks + 1) % 3, (ks + 2) % 3);
+    let (Some(arc1), Some(arc2)) = (&arcs[r1], &arcs[r2]) else {
+        ogeom_bail!(Construction, "a rounded edge has no end arc");
+    };
+    let patches = crate::sharp::close_through_q(
+        model,
+        [&trims[ks], &trims[r1], &trims[r2]],
+        [arc1, arc2],
+        [true; 5],
+        // A signed corner is not convex (the bracket's front is reflex at
+        // the vertex), so its planes do not bound the solid there.
+        &[],
+        tol,
+    )?;
+    crate::sharp::sew_corner(model, faces, patches, &c.vertex, history, tol)
 }

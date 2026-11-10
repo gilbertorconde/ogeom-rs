@@ -374,30 +374,7 @@ pub(crate) fn close_sharp_corner(
             (p1, into((next, p1), (k, p0))?),
             tol,
         )?;
-        let pieces: &[(f64, f64)] = if k == ks || next == ks {
-            &[(0.0, 0.5), (0.5, 1.0)]
-        } else {
-            &[(0.0, 1.0)]
-        };
-        let mut ends = vec![v0.clone()];
-        if pieces.len() == 2 {
-            ends.push(ogeom_algo::make_vertex(model, conic.point_at(0.5, tol)?).shape);
-        }
-        ends.push(v1.clone());
-        let mut edges = Vec::with_capacity(pieces.len());
-        for (piece, range) in pieces.iter().enumerate() {
-            edges.push(
-                ogeom_algo::make_edge_between(
-                    model,
-                    conic.clone(),
-                    *range,
-                    &ends[piece],
-                    &ends[piece + 1],
-                    tol,
-                )?
-                .shape,
-            );
-        }
+        let edges = trim_edges(model, &conic, (&v0, &v1), k == ks || next == ks, tol)?;
         let filler = filler_inside(
             model,
             edges.clone(),
@@ -418,23 +395,66 @@ pub(crate) fn close_sharp_corner(
     }
     let (r1, r2) = ((ks + 1) % n, (ks + 2) % n);
 
+    let (Some(arc1), Some(arc2)) = (&arcs[r1], &arcs[r2]) else {
+        ogeom_bail!(Construction, "a rounded edge has no end arc");
+    };
+    // G1 to a round's end and to a trim between rounds; a bevel's end, and
+    // a trim from it, in position only.
+    let round = |k: usize| kinds[k] == CornerEnd::Round;
+    let (at_q, patch) = close_through_q(
+        model,
+        [&trims[ks], &trims[r1], &trims[r2]],
+        [arc1, arc2],
+        [
+            round(r1),
+            round(r1),
+            round(r1) && round(r2),
+            round(r2),
+            round(r2),
+        ],
+        &within,
+        tol,
+    )?;
+    let mut faces = kept;
+    faces.extend(fillers);
+    sew_corner(model, faces, (at_q, patch), vertex, history, tol)
+}
+
+/// Close an opening that runs into `Q`, a point on a sharp edge: `out` the
+/// trim from `Q` to the first band's end, `middle` the trim from that band
+/// to the second, `back` the trim from the second band's end to `Q`, each
+/// built by [`trim_edges`], those from `Q` split at their middles; `arcs`
+/// the two bands' end arcs and their faces. The patch at `Q`, three-sided,
+/// its fourth side shrunk to `Q`, tangent to both faces of the sharp edge
+/// exactly up to the held trims' projection, and the patch over the rest,
+/// meeting the second half of `out`, the first arc, `middle`, the second
+/// arc and the first half of `back` at G1 where `rest` says and in
+/// position elsewhere, and the patch at `Q` at G1. Neither patch may stand
+/// past the half-spaces `within` (each an outward unit normal and a point
+/// on its plane): a convex vertex's planes, past which lies nothing of the
+/// solid; none where the vertex is not convex.
+pub(crate) fn close_through_q(
+    model: &mut Model,
+    [out, middle, back]: [&Trim; 3],
+    [arc1, arc2]: [&(Shape, Shape); 2],
+    rest: [bool; 5],
+    within: &[(Vector, Point)],
+    tol: Tolerances,
+) -> OgeomResult<(Shape, Shape)> {
     // The patch at `Q`: the first half of the trim from `Q`, a curve from
     // its middle to the middle of the trim back to `Q`, and that trim's
     // second half, its fourth side shrunk to `Q`.
     let out_half = Side {
-        curve: trims[ks].curve.clone(),
+        curve: out.curve.clone(),
         range: (0.0, 0.5),
     };
     let back_half = Side {
-        curve: trims[r2].curve.clone(),
+        curve: back.curve.clone(),
         range: (0.5, 1.0),
     };
     let across = |normal: Vector, along: Vector, towards: Vector| -> OgeomResult<Vector> {
         let d = normal.cross(along).normalized(tol)?;
         Ok(if d.dot(towards) >= 0.0 { d } else { -d })
-    };
-    let (Some(arc1), Some(arc2)) = (&arcs[r1], &arcs[r2]) else {
-        ogeom_bail!(Construction, "a rounded edge has no end arc");
     };
     let fit = crate::marched::band_fit_target(tol);
     // The patch at `Q` seeded on arcs of fullness `full`, and the rest of
@@ -446,12 +466,8 @@ pub(crate) fn close_sharp_corner(
         // The last is the curve between the patch and the rest.
         let arc = |d: f64, w: f64| -> OgeomResult<Point> {
             let (from, to) = (out_half.at(d, tol)?, back_half.at(1.0 - d, tol)?);
-            let leave = across(trims[ks].normal, out_half.tangent(d, tol)?, to - from)?;
-            let arrive = -across(
-                trims[r2].normal,
-                back_half.tangent(1.0 - d, tol)?,
-                from - to,
-            )?;
+            let leave = across(out.normal, out_half.tangent(d, tol)?, to - from)?;
+            let arrive = -across(back.normal, back_half.tangent(1.0 - d, tol)?, from - to)?;
             let reach = from.distance(to) * full;
             let (w2, w3) = (w * w, w * w * w);
             let (h00, h10) = (2.0 * w3 - 3.0 * w2 + 1.0, w3 - 2.0 * w2 + w);
@@ -494,8 +510,8 @@ pub(crate) fn close_sharp_corner(
             most: 16,
             held: vec![0, 2],
             across: vec![
-                (0, Across::Plane(trims[ks].normal)),
-                (2, Across::Plane(trims[r2].normal)),
+                (0, Across::Plane(out.normal)),
+                (2, Across::Plane(back.normal)),
             ],
         };
         let network = ogeom_algo::fit_network(model, &patches, &curves, &index, &options, tol)?;
@@ -505,7 +521,9 @@ pub(crate) fn close_sharp_corner(
         let surface = &network.surfaces[0];
         let limit = |w: f64| -> OgeomResult<Vector> {
             let (du, dw) = ogeom_geom::Surface::d1_at(surface, AT_Q, w, tol)?;
-            du.cross(dw).normalized(tol)
+            // `dw` shrinks with the distance from `Q`; scaled back, the
+            // cross product is the limit normal's own size.
+            du.cross(dw * (1.0 / AT_Q)).normalized(tol)
         };
         let first = limit(0.0)?;
         let mut turned = 0.0_f64;
@@ -526,7 +544,7 @@ pub(crate) fn close_sharp_corner(
         let at_q = network.faces[0].clone();
         // Neither patch may stand past a plane of the vertex: the corner is
         // convex, so what stands past one lies outside the solid.
-        let past = past_planes(model, &at_q, &within, tol)?;
+        let past = past_planes(model, &at_q, within, tol)?;
         if past > fit {
             ogeom_bail!(
                 NotDone,
@@ -537,8 +555,6 @@ pub(crate) fn close_sharp_corner(
         // `r1`'s arc, the trim between the bands, band `r2`'s arc, the trim
         // back to `Q`'s first half, and the curve along the patch at `Q`,
         // filled by one patch G1 to every side.
-        // G1 to a round's end and to a trim between rounds; a bevel's end,
-        // and a trim from it, in position only.
         let side = |edge: &Shape, support: &Shape, tangent: bool| FillBoundary {
             edge: edge.clone(),
             support: Some(support.clone()),
@@ -548,20 +564,15 @@ pub(crate) fn close_sharp_corner(
                 Continuity::C0
             },
         };
-        let round = |k: usize| kinds[k] == CornerEnd::Round;
         let boundary = vec![
-            side(&trims[ks].edges[1], &trims[ks].filler, round(r1)),
-            side(&arc1.0, &arc1.1, round(r1)),
-            side(
-                &trims[r1].edges[0],
-                &trims[r1].filler,
-                round(r1) && round(r2),
-            ),
-            side(&arc2.0, &arc2.1, round(r2)),
-            side(&trims[r2].edges[0], &trims[r2].filler, round(r2)),
+            side(&out.edges[1], &out.filler, rest[0]),
+            side(&arc1.0, &arc1.1, rest[1]),
+            side(&middle.edges[0], &middle.filler, rest[2]),
+            side(&arc2.0, &arc2.1, rest[3]),
+            side(&back.edges[0], &back.filler, rest[4]),
             side(&network.edges[1], &at_q, true),
         ];
-        let filled = make_filling_n_within(model, &boundary, &[], fit, &within, tol)?;
+        let filled = make_filling_n_within(model, &boundary, &[], fit, within, tol)?;
         Ok((at_q, filled.built.shape))
     };
     let mut made = None;
@@ -575,11 +586,24 @@ pub(crate) fn close_sharp_corner(
             Err(e) => return Err(e),
         }
     }
-    let Some((at_q, patch)) = made else {
+    let Some(both) = made else {
         ogeom_bail!(NotDone, "no fullness was tried");
     };
-    let mut faces = kept;
-    faces.extend(fillers);
+    Ok(both)
+}
+
+/// Sew `faces`, what the corner keeps and its fillers, with the patch at a
+/// sharp edge's point and the patch over the rest into one solid, each
+/// patch recorded as generated by `vertex`.
+pub(crate) fn sew_corner(
+    model: &mut Model,
+    mut faces: Vec<Shape>,
+    (at_q, patch): (Shape, Shape),
+    vertex: &Shape,
+    history: History,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let fit = crate::marched::band_fit_target(tol);
     faces.push(at_q.clone());
     faces.push(patch.clone());
     let sewn = ogeom_algo::sew_within(model, &faces, fit, tol)?;
@@ -616,14 +640,50 @@ pub(crate) fn close_sharp_corner(
     Ok(Built::new(rounded, history))
 }
 
+/// A trim's edges on `conic` from `v0` to `v1`: one, or two split at its
+/// middle where the patch at a sharp edge's point ends.
+pub(crate) fn trim_edges(
+    model: &mut Model,
+    conic: &Curve,
+    (v0, v1): (&Shape, &Shape),
+    split: bool,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Shape>> {
+    let pieces: &[(f64, f64)] = if split {
+        &[(0.0, 0.5), (0.5, 1.0)]
+    } else {
+        &[(0.0, 1.0)]
+    };
+    let mut ends = vec![v0.clone()];
+    if split {
+        ends.push(ogeom_algo::make_vertex(model, conic.point_at(0.5, tol)?).shape);
+    }
+    ends.push(v1.clone());
+    let mut edges = Vec::with_capacity(pieces.len());
+    for (piece, range) in pieces.iter().enumerate() {
+        edges.push(
+            ogeom_algo::make_edge_between(
+                model,
+                conic.clone(),
+                *range,
+                &ends[piece],
+                &ends[piece + 1],
+                tol,
+            )?
+            .shape,
+        );
+    }
+    Ok(edges)
+}
+
 /// A face's trim: its conic, run from the end on the edge before it to the
 /// end on the edge after, the edges it is built as, the face's normal and
 /// its filler inside the cell.
-struct Trim {
-    curve: Curve,
-    edges: Vec<Shape>,
-    normal: Vector,
-    filler: Shape,
+pub(crate) struct Trim {
+    pub curve: Curve,
+    pub edges: Vec<Shape>,
+    pub normal: Vector,
+    pub filler: Shape,
 }
 
 /// How far `face` stands past the planes `within` (each an outward unit
