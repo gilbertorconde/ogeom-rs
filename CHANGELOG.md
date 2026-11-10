@@ -763,6 +763,22 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A marched loop round a sphere's pole closes in one lap.**
+  - A march closed a loop on a step onto its start that the correction
+    could take. Starting beside a sphere chart's pole, the condition solved
+    onto the start lands anywhere along the pole's line, so the step onto it
+    was never taken: the walk passed over its start and went round again.
+    On a ball of radius 10 drilled on its own chart with the wall 2e-5
+    inside the poles along -y, the loop round the south pole came back three
+    times round (18.83 long against 6.30) and the boolean was refused.
+  - A step that passes over the start, heading the way the walk left it,
+    now closes the loop. Separately, a closed branch passing over its own
+    start mid-way is held to its first lap, so a section traced round again
+    never reaches the boolean.
+  - Every march that closed before closes where it did: past its start the
+    old test cannot close a loop, so the new one only acts where the walk
+    went round again.
+
 - **`read_step` reads a colour named by `DRAUGHTING_PRE_DEFINED_COLOUR`.**
   (#793)
   - Exporters write the eight colours the standard defines (black, red,

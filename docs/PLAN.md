@@ -48,20 +48,16 @@ drill's wall through the poles or a ten-millionth of the radius beside
 them, and a ball drilled with it a hundred-thousandth to a hundredth of the
 radius off them either side, cut at the closed forms. Still refused: a
 section whose image runs past the pole row by more than its tolerance ("a
-section through a sphere chart's pole is not resolved"); and a ball
-drilled with its wall 2e-5 of the radius inside the poles along -y ("the
-kept pieces did not close into a shell"). There the intersector returns
-the loop round the south pole traced three times round, 18.83 long against
-the loop's 6.30, its chart image crossing the pole row twice: the march's
-closure test misses the start on the first two passes, and the length
-stays inside the four bounding diagonals (306.9) a section is held to, so
-the triple loop is taken as one closed section and bounds no face. A loop crossing the
-sphere's seam within the window that reads a crossing as the seam's end
-vertex, the pole, ends in the chart off the pole row by that window over
-the radius and anywhere along it, the chart's free parameter shrinking to
-nothing there; the end is carried onto the pole's line at its foot, held to
-the line, and the pole is cut for it. At 2e-5 off, five of the six
-placements cut that way. "A branch
+section through a sphere chart's pole is not resolved"). A loop crossing
+the sphere's seam within the window that reads a crossing as the seam's
+end vertex, the pole, ends in the chart off the pole row by that window
+over the radius and anywhere along it, the chart's free parameter
+shrinking to nothing there; the end is carried onto the pole's line at its
+foot, held to the line, and the pole is cut for it. A march round a pole
+that starts beside it closes on the step that passes over its start (the
+step onto the start, solved there, lands anywhere along the pole's line),
+and a closed branch passing over its own start mid-way is held to its
+first lap. All six placements at 2e-5 off cut at the closed forms. "A branch
 passing beside a chart's pole fits nothing yet" stands where both fits
 miss. Only spheres' poles are measured; a patch's collapsed side takes the
 same path untested.
