@@ -2689,9 +2689,13 @@ fn law_piece(
 /// taken off whole at every radius of the law, as the constant round
 /// takes it off at one ([`crate::consumed::consumed_seat`]): the exact
 /// envelope over the seat between the faces either side of the strip.
-/// Each of that seat's conditions grows with the radius or is linear in
-/// it, so where the law's least and largest radius both take the strip
-/// off, every radius between does. `None` where they do not.
+/// The constant round takes it off where its ball does not sit on the
+/// edge's faces and the seat beyond the strip holds; each of that seat's
+/// conditions grows with the radius or is linear in it, and a ball that
+/// does not sit on the strip at one radius sits on it at no larger one, so
+/// where the law's least and largest radius both take the strip off,
+/// every radius between does. `None` where neither does; a law taking it
+/// off at one and not the other is refused by name.
 fn consumed_law(
     model: &mut Model,
     solid: &Shape,
@@ -2700,11 +2704,26 @@ fn consumed_law(
     reversed: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
-    let Some(_) = crate::consumed::consumed_seat(model, solid, edge, law.least(), tol)? else {
-        return Ok(None);
+    // The constant round takes the strip off only where its ball does not
+    // sit on the edge's faces: at a radius the strip holds, it rounds the
+    // edge as any other.
+    let mut consumes = |radius: f64| -> OgeomResult<Option<crate::support::Seat>> {
+        if crate::support::ball_fits(model, solid, edge, radius, false, tol).is_ok() {
+            return Ok(None);
+        }
+        crate::consumed::consumed_seat(model, solid, edge, radius, tol)
     };
-    let Some(seat) = crate::consumed::consumed_seat(model, solid, edge, law.largest(), tol)? else {
-        return Ok(None);
+    let (least, largest) = (consumes(law.least())?, consumes(law.largest())?);
+    let seat = match (least, largest) {
+        (Some(_), Some(seat)) => seat,
+        (None, None) => return Ok(None),
+        _ => ogeom_bail!(
+            Construction,
+            "a variable radius whose ball sits on a narrow face beside the \
+             edge at some radii of the law and takes it off whole at others \
+             is still owed: the constant round changes construction between \
+             them; see docs/CAPABILITIES.md, fillet.variable"
+        ),
     };
     let mut built = straight_law_on(model, solid, edge, seat, law, reversed, (0.0, 1.0), tol)?;
     crate::support::credit_new_faces(model, solid, edge, &mut built)?;
