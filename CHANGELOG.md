@@ -11,6 +11,52 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-10
+
+A minor release: `StepImport` gains a public `faces` field, so code that
+builds the struct by its fields must add it; no other existing signature
+changes.
+
+Fillets and chamfers grow the most. Setback vertex corners close with one
+G1 patch (`round_vertex_setback`, and `fillet_edges_cornered` for any number
+of named corners), including where an edge at the vertex is left sharp
+(`round_vertex_setback_sharp`) and where convex and concave rounds meet, in
+any request order. `fillet_edges_with` rounds each edge at its own radius,
+`blend_edges` mixes rounds and bevels in one request, and
+`chamfer_edges_cornered` closes a corner of bevels with a point or a facet.
+Chamfers bevel every edge the rounds do: cone and sphere rims, spline and
+marched creases, open and closed. Variable radii take a law on chains that
+turn, on curved and ruled seats, past narrow faces and round re-entrant
+turns beside drafted walls. Concave rounds roll over narrow and slanted
+strips and come down on the floor beyond them. `largest_fillet_radius`
+answers the largest radius or distance that fits.
+
+Patch networks hold borders and curves to the caller's own, fill a loop
+with corner quads, and say plainly that a point where three- and four-sided
+patches meet is fitted near tangent. Sheets lay a flat sketch onto spheres,
+tori, cones (through the apex) and any curved face, conformally or as rigid
+as possible. `offset_shape` offsets free-form faces. STEP reads
+predefined colours and names every face read by its file id.
+
+A sweep of the new work found and fixed wrong solids before release: a
+round where no ball fits beside a narrow bevel, a law taking a strip off
+where its ball still sits, slivers left at the ends of open rim arcs (edge
+rounds, face blends and chamfers), a setback corner losing a feature inside
+its cell, and corner patches standing outside the solid or into a concave
+round's ball. Those corners now build, held inside the region the solid and
+its rounds occupy: the box corner at radii 1, 3 and 2, and the L-bracket's
+signed corners, every edge rounded included. Booleans close the cap beside a
+sphere's pole in every tested placement, and refuse rather than fall back to
+the ball's own chart near a pole (#835 stays open for the proper fix).
+
+Exchange and meshing fix two wrong answers on valid solids: a solid bounded
+by its sphere's seam meridian (a half ball, or a half-ball pocket) keeps its
+side through STEP and IGES, and a sphere face trimmed beside a pole of its
+chart is re-charted, exactly, so it meshes and classifies right on import
+and from `fix_face_pcurves` (`Model::rechart_face`). `refine_solid` takes
+about a quarter of its former time on a large converted solid, with the
+same result.
+
 ### Added
 
 - **Signed corners close again, held out of the concave round's ball.**
@@ -13973,7 +14019,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.17.1...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.17.1...v0.18.0
 [0.17.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.15.1...v0.16.0
