@@ -6,6 +6,10 @@
 //! half ball or ball is drilled through its pole. A ball cut to a slab
 //! through both poles is drilled with the wall through them.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+#![allow(
+    clippy::neg_cmp_op_on_partial_ord,
+    reason = "each comparison is negated so that a NaN on either side fails"
+)]
 
 use ogeom::algo::{check, make_box, make_cylinder, make_sphere, volume_properties};
 use ogeom::core::Tolerances;
@@ -23,16 +27,71 @@ fn volume(model: &Model, shape: &Shape) -> f64 {
 }
 
 /// The ball's volume inside a vertical drill of radius `r` whose axis
-/// stands at `(cx, cy)`: twice the ball's half height integrated over the
-/// drill's disc (which lies within the ball's outline).
+/// stands at `(cx, cy)`, the drill's disc inside the ball's outline or
+/// running past it.
+///
+/// The ball's height `2 sqrt(R^2 - rho^2)` over each circle of radius `rho`
+/// about the ball's axis, times that circle's arc inside the drill's disc,
+/// `rho theta(rho)`, in closed form. It is read with `rho = R sin phi`,
+/// which takes the square root's end at the outline away, by tanh-sinh
+/// quadrature between the breakpoints where the arc's closed form changes,
+/// whose ends that quadrature takes in its stride.
 fn drilled_volume(cx: f64, cy: f64, r: f64) -> f64 {
-    over_disc(cx, cy, r, |x, y| 2.0 * (BALL * BALL - x * x - y * y).sqrt())
+    use core::f64::consts::{FRAC_PI_2, TAU};
+    let d = cx.hypot(cy);
+    let theta = |rho: f64| -> f64 {
+        if rho + d <= r {
+            TAU
+        } else if rho >= r + d || rho <= d - r {
+            0.0
+        } else {
+            2.0 * ((rho * rho + d * d - r * r) / (2.0 * rho * d))
+                .clamp(-1.0, 1.0)
+                .acos()
+        }
+    };
+    let f = |phi: f64| {
+        let (s, c) = phi.sin_cos();
+        2.0 * BALL * c * BALL * s * theta(BALL * s) * BALL * c
+    };
+    let mut cuts = vec![0.0, FRAC_PI_2];
+    for rho in [(r - d).abs(), r + d] {
+        if rho > 0.0 && rho < BALL {
+            cuts.push((rho / BALL).asin());
+        }
+    }
+    cuts.sort_by(f64::total_cmp);
+    let tanh_sinh = |a: f64, b: f64| -> f64 {
+        let h = 1.0 / 64.0;
+        let (half, mid) = ((b - a) / 2.0, f64::midpoint(a, b));
+        let mut sum = 0.0;
+        for k in -256_i32..=256 {
+            let t = f64::from(k) * h;
+            let u = FRAC_PI_2 * t.sinh();
+            let w = FRAC_PI_2 * t.cosh() / u.cosh().powi(2);
+            if w > 1e-300 {
+                sum += w * f(half.mul_add(u.tanh(), mid));
+            }
+        }
+        sum * h * half
+    };
+    let total: f64 = cuts.windows(2).map(|w| tanh_sinh(w[0], w[1])).sum();
+    assert!(total.is_finite(), "the drilled volume came out {total}");
+    total
 }
 
 /// `height` integrated over the disc of radius `r` about `(cx, cy)`, in the
 /// disc's own polar coordinates, where the integrand is smooth: Simpson
 /// along each spoke.
+///
+/// The disc must lie inside the ball's outline, where every height here is
+/// a square root of something positive; past it the integral is NaN, and a
+/// comparison against NaN passes. Both are asserted.
 fn over_disc(cx: f64, cy: f64, r: f64, height: impl Fn(f64, f64) -> f64) -> f64 {
+    assert!(
+        cx.hypot(cy) + r < BALL,
+        "the disc of radius {r} about ({cx}, {cy}) runs past the ball's outline"
+    );
     let (rings, spokes) = (2000_u32, 2000_u32);
     let ds = r / f64::from(rings);
     let dpsi = core::f64::consts::TAU / f64::from(spokes);
@@ -55,7 +114,9 @@ fn over_disc(cx: f64, cy: f64, r: f64, height: impl Fn(f64, f64) -> f64) -> f64 
         }
         total += line * ds / 3.0;
     }
-    total * dpsi
+    let total = total * dpsi;
+    assert!(total.is_finite(), "the disc integral came out {total}");
+    total
 }
 
 /// Cut and common of the ball with a drill along its axis, against the
@@ -110,13 +171,50 @@ fn drilled(offset: Vector, r: f64) -> Result<(), String> {
     let whole = 4.0 / 3.0 * core::f64::consts::PI * BALL.powi(3);
     let inside = drilled_volume(offset.x, offset.y, r);
     let (cut, common) = (volumes[0], volumes[1]);
-    if ((cut + common) - whole).abs() > whole * 1e-6 {
+    if !(((cut + common) - whole).abs() <= whole * 1e-6) {
         return Err(format!("cut {cut} + common {common} against {whole}"));
     }
-    if (common - inside).abs() > inside * 1e-6 {
+    if !((common - inside).abs() <= inside * 1e-6) {
         return Err(format!("common {common} against {inside}"));
     }
     Ok(())
+}
+
+/// The drilled volume against closed forms: a drill on the ball's axis
+/// leaves `4/3 pi (R^3 - (R^2 - r^2)^(3/2))`, inside the outline or past it
+/// in no part, and a drill off the axis whose disc lies inside the outline
+/// agrees with the ball's height integrated over the disc.
+#[test]
+fn the_drilled_volume_holds_to_its_closed_forms() {
+    for r in [1.0, 6.0, 9.5] {
+        let exact =
+            4.0 / 3.0 * core::f64::consts::PI * (BALL.powi(3) - (BALL * BALL - r * r).powf(1.5));
+        let got = drilled_volume(0.0, 0.0, r);
+        assert!(
+            (got - exact).abs() <= exact * 1e-12,
+            "r {r}: {got} against {exact}"
+        );
+    }
+    let r = 2.664_527_471_227_642;
+    for wall in [r * (1.0 - 2e-5), r * (1.0 + 1e-6), r * 1.001] {
+        let disc = over_disc(0.0, -wall, r, |x, y| {
+            2.0 * (BALL * BALL - x * x - y * y).sqrt()
+        });
+        let got = drilled_volume(0.0, -wall, r);
+        assert!(
+            (got - disc).abs() <= disc * 1e-11,
+            "wall {wall}: {got} against {disc}"
+        );
+    }
+}
+
+/// A disc running past the ball's outline has no integral of the ball's
+/// height here: asked for one, the integral refuses rather than return the
+/// NaN a comparison would let through.
+#[test]
+#[should_panic(expected = "runs past the ball's outline")]
+fn the_disc_integral_refuses_a_disc_past_the_balls_outline() {
+    over_disc(6.0, 0.0, 6.0, |x, y| (BALL * BALL - x * x - y * y).sqrt());
 }
 
 #[test]
@@ -283,10 +381,10 @@ fn dome_drilled(dome: Dome, offset: Vector, r: f64) -> Result<(), String> {
     }
     let (cut, common) = (volumes[0], volumes[1]);
     let (whole, inside) = (dome.whole(), dome.inside(offset.x, offset.y, r));
-    if ((cut + common) - whole).abs() > whole * 1e-8 {
+    if !(((cut + common) - whole).abs() <= whole * 1e-8) {
         return Err(format!("cut {cut} + common {common} against {whole}"));
     }
-    if (common - inside).abs() > inside * 1e-6 {
+    if !((common - inside).abs() <= inside * 1e-6) {
         return Err(format!("common {common} against {inside}"));
     }
     Ok(())
@@ -395,18 +493,18 @@ fn tilted_with_drum(
         ("half ball", a, 2.0 / 3.0 * pi * BALL.powi(3)),
         ("drum", b, pi * radius * radius * height),
     ] {
-        if (measured - exact).abs() > exact * 1e-6 {
+        if !((measured - exact).abs() <= exact * 1e-6) {
             return Err(format!("{name} {measured} against {exact}"));
         }
     }
     let (fuse, cut, common) = (volumes[0], volumes[1], volumes[2]);
-    if ((fuse + common) - (a + b)).abs() > (a + b) * 1e-8 {
+    if !(((fuse + common) - (a + b)).abs() <= (a + b) * 1e-8) {
         return Err(format!("fuse {fuse} + common {common} against {}", a + b));
     }
-    if ((cut + common) - a).abs() > a * 1e-8 {
+    if !(((cut + common) - a).abs() <= a * 1e-8) {
         return Err(format!("cut {cut} + common {common} against {a}"));
     }
-    if (common - inside).abs() > a * 1e-6 {
+    if !((common - inside).abs() <= a * 1e-6) {
         return Err(format!("common {common} against {inside}"));
     }
     Ok(())
@@ -590,10 +688,10 @@ fn placed_drilled(placed: Placed, whole_ball: bool) -> Result<(), String> {
     };
     let (whole, inside) = (whole * cube, inside * cube);
     let (cut, common) = (volumes[0], volumes[1]);
-    if ((cut + common) - whole).abs() > whole * 1e-6 {
+    if !(((cut + common) - whole).abs() <= whole * 1e-6) {
         return Err(format!("cut {cut} + common {common} against {whole}"));
     }
-    if (common - inside).abs() > inside * 1e-6 {
+    if !((common - inside).abs() <= inside * 1e-6) {
         return Err(format!("common {common} against {inside}"));
     }
     Ok(())
@@ -1114,7 +1212,7 @@ fn meridian_moved(model: &mut Model, solid: &Shape, turns: f64) {
             stated.point_at(range.1, T).unwrap(),
         );
         // A meridian: one column, pole to pole.
-        if (a.x - b.x).abs() > 1e-9 {
+        if !((a.x - b.x).abs() <= 1e-9) {
             continue;
         }
         let shift =
@@ -1311,7 +1409,7 @@ fn slab_drilled(half: f64, r: f64, cx: f64, cy: f64, turned: bool) -> Result<(),
         // The volume integrates the exact faces to far below this; the
         // reference is a quadrature converged to well under it.
         let got = volume(&model, &made.shape);
-        if (got - want).abs() > want * 1e-6 {
+        if !((got - want).abs() <= want * 1e-6) {
             return Err(format!("{name}: volume {got} against {want}"));
         }
     }
