@@ -744,3 +744,103 @@ fn a_sheet_line_through_the_pole_halves_a_hemisphere() {
         "{areas:?} against {quarter}"
     );
 }
+
+#[test]
+fn a_sheet_line_through_a_cone_s_apex_cuts_its_wall_into_two_sectors() {
+    // A true cone of base radius 10 and height 10: half angle 45 degrees,
+    // slant L = 10 sqrt 2, its wall developed into a sector of angle
+    // 2 pi sin 45 degrees. A sheet line through the apex, laid at 60 degrees
+    // to the generator through the origin, develops into two rays from the
+    // apex pi apart, carried as two pieces meeting there, and cuts the wall
+    // into the sectors L^2 pi / 2 and the rest of pi R L. (A line through
+    // the origin and the apex would run on past the apex along the ray the
+    // development's angle wraps at: a cone's apex holds less than a whole
+    // turn, so a straight line has no one way on through it there.)
+    let mut model = Model::new();
+    let cone = make_cone(&mut model, Frame::WORLD, 10.0, 0.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let wall = faces(&model, &cone)
+        .into_iter()
+        .find(|f| {
+            matches!(
+                model_surface(&model, f),
+                ogeom::geom::SurfaceGeometry::Cone(_)
+            )
+        })
+        .unwrap();
+    let at = Point::new(0.0, -5.0, 5.0);
+    let up = Direction::new(Vector::new(0.0, 5.0, 5.0), T).unwrap();
+    let sheet = SurfaceSheet::new(
+        &model,
+        &wall,
+        &SheetPlacement {
+            at,
+            x_direction: up,
+            method: SheetMethod::Geodesic,
+        },
+        25.0,
+        T,
+    )
+    .unwrap();
+    let slant = 200.0_f64.sqrt();
+    // The apex on the sheet, and the line through it to the base, slant
+    // L from the apex, either way.
+    let apex = Point2::new(slant / 2.0, 0.0);
+    let (sw, cw) = 60.0_f64.to_radians().sin_cos();
+    let line: PlanarCurve = Line2d::segment(
+        Point2::new(apex.x - slant * cw, apex.y - slant * sw),
+        Point2::new(apex.x + slant * cw, apex.y + slant * sw),
+        T,
+    )
+    .unwrap()
+    .into();
+    let range = line.domain();
+    assert!(sheet.chart_curve(&line, range, FIT).is_err());
+    let edges = sheet.chart_edges(&mut model, &line, range, FIT).unwrap();
+    assert_eq!(edges.len(), 2);
+    let whole = area(&model, &wall);
+    let built = split_face(&mut model, &cone, &wall, &edges, Projection::OnFace, T).unwrap();
+    assert!(check(&model, &built.shape, T).unwrap().is_usable());
+    let areas: Vec<f64> = built
+        .history
+        .trace(&wall)
+        .iter()
+        .map(|p| area(&model, p))
+        .collect();
+    let (sector, rest) = (
+        slant * slant * PI / 2.0,
+        PI * 10.0 * slant - slant * slant * PI / 2.0,
+    );
+    assert!(
+        (areas.iter().sum::<f64>() - whole).abs() <= whole * 1e-6,
+        "{areas:?}"
+    );
+    // The seam runs down one generator inside one of the sectors, which
+    // comes back as two pieces; the other comes back whole.
+    let close = |a: f64, b: f64| (a - b).abs() <= b * 1e-6;
+    let whole_one = areas
+        .iter()
+        .position(|&a| close(a, sector) || close(a, rest))
+        .unwrap_or_else(|| panic!("{areas:?} against {sector} and {rest}"));
+    let other = if close(areas[whole_one], sector) {
+        rest
+    } else {
+        sector
+    };
+    let others: f64 = areas
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i != whole_one)
+        .map(|(_, a)| a)
+        .sum();
+    assert!(
+        close(others, other),
+        "{areas:?} against {sector} and {rest}"
+    );
+}
+
+fn model_surface(model: &Model, face: &Shape) -> ogeom::geom::SurfaceGeometry {
+    let data = model.node(face).unwrap().data().as_face().unwrap();
+    model.geometry().surface(data.surface).unwrap().clone()
+}

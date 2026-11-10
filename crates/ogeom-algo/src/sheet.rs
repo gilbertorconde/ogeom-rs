@@ -430,35 +430,82 @@ impl SurfaceSheet {
         if range.0.is_nan() || range.1.is_nan() || range.1 <= range.0 {
             ogeom_bail!(Construction, "a curve is carried over an increasing range");
         }
-        let Chart::Sphere {
-            frame,
-            centre,
-            radius,
-        } = self.chart
-        else {
-            return Ok(vec![(self.chart_curve(curve, range, tolerance)?, range)]);
-        };
-        let poles = [
-            (
-                centre + frame.z().vector() * radius,
-                core::f64::consts::FRAC_PI_2,
-            ),
-            (
-                centre - frame.z().vector() * radius,
-                -core::f64::consts::FRAC_PI_2,
-            ),
-        ];
-        // Where the sheet point at `t` lands in space, through the pole.
-        let point = |t: f64| -> OgeomResult<Point> {
-            let p = curve.point_at(t, tol)?;
-            let q = self.flat.as_ref().map_or(p, |f| f.at(p).0);
-            let along = self.axes.0 * q.x + self.axes.1 * q.y;
-            self.on_sphere_point(along, q.x.hypot(q.y), centre, radius)
-        };
-        let off = |t: f64| -> OgeomResult<(f64, usize)> {
-            let p = point(t)?;
-            let (n, s) = (p.distance(poles[0].0), p.distance(poles[1].0));
-            Ok(if n <= s { (n, 0) } else { (s, 1) })
+        // How far the sheet point at `t` lands from the nearest pole, which,
+        // and the chart position a piece ending there at `t` takes, the
+        // curve arriving at the pole or leaving it.
+        type Off<'a> = Box<dyn Fn(f64) -> OgeomResult<(f64, usize)> + 'a>;
+        type End<'a> = Box<dyn Fn(f64, bool, usize, f64) -> OgeomResult<Point2> + 'a>;
+        let (off, end): (Off<'_>, End<'_>) = match self.chart {
+            Chart::Sphere {
+                frame,
+                centre,
+                radius,
+            } => {
+                let poles = [
+                    (
+                        centre + frame.z().vector() * radius,
+                        core::f64::consts::FRAC_PI_2,
+                    ),
+                    (
+                        centre - frame.z().vector() * radius,
+                        -core::f64::consts::FRAC_PI_2,
+                    ),
+                ];
+                // Where the sheet point at `t` lands in space, through the
+                // pole.
+                let point = move |t: f64| -> OgeomResult<Point> {
+                    let p = curve.point_at(t, tol)?;
+                    let q = self.flat.as_ref().map_or(p, |f| f.at(p).0);
+                    let along = self.axes.0 * q.x + self.axes.1 * q.y;
+                    self.on_sphere_point(along, q.x.hypot(q.y), centre, radius)
+                };
+                // The longitude of a direction at a pole, read in the
+                // sphere's frame.
+                let longitude =
+                    move |d: Vector| d.dot(frame.y().vector()).atan2(d.dot(frame.x().vector()));
+                (
+                    Box::new(move |t: f64| {
+                        let p = point(t)?;
+                        let (n, s) = (p.distance(poles[0].0), p.distance(poles[1].0));
+                        Ok(if n <= s { (n, 0) } else { (s, 1) })
+                    }),
+                    Box::new(move |t: f64, leaving: bool, pole: usize, step: f64| {
+                        let d = if leaving {
+                            point(t + step)? - point(t)?
+                        } else {
+                            point(t)? - point(t - step)?
+                        };
+                        let d = if leaving { d } else { -d };
+                        Ok(Point2::new(longitude(d), poles[pole].1))
+                    }),
+                )
+            }
+            Chart::Cone {
+                sin,
+                tan,
+                reference,
+            } if self.flat.is_none() => {
+                // The developed point: the apex at its origin, so its length
+                // is the distance to the apex on the surface.
+                let developed = move |t: f64| -> OgeomResult<(Vector2, f64, f64)> {
+                    let p = curve.point_at(t, tol)?;
+                    self.cone_developed(self.axes.0 * p.x + self.axes.1 * p.y, sin, tan, reference)
+                };
+                let u0 = self.origin.x;
+                (
+                    Box::new(move |t: f64| Ok((developed(t)?.0.magnitude(), 0))),
+                    // The developed point just past the apex on the curve's
+                    // side, read as `developed_cone` reads a point.
+                    Box::new(move |t: f64, leaving: bool, _, step: f64| {
+                        let near = if leaving { t + step } else { t - step };
+                        let (d, rho, phi) = developed(near)?;
+                        let sign = rho.signum();
+                        let turn = wrapped((d.y * sign).atan2(d.x * sign) - phi);
+                        Ok(Point2::new(u0 + turn / sin, -reference / tan))
+                    }),
+                )
+            }
+            _ => return Ok(vec![(self.chart_curve(curve, range, tolerance)?, range)]),
         };
         // The curve's nearest approaches to a pole: each local least of
         // the distance among samples, refined by golden sections to the
@@ -505,8 +552,6 @@ impl SurfaceSheet {
         if hits.is_empty() {
             return Ok(vec![(self.chart_curve(curve, range, tolerance)?, range)]);
         }
-        // The longitude of a direction at a pole, read in the sphere's frame.
-        let longitude = |d: Vector| d.dot(frame.y().vector()).atan2(d.dot(frame.x().vector()));
         let half = tolerance / 2.0;
         let mut cuts: Vec<f64> = vec![range.0];
         cuts.extend(hits.iter().map(|h| h.0));
@@ -524,11 +569,9 @@ impl SurfaceSheet {
             let mut ends: Vec<(f64, Point2)> = Vec::new();
             for &(t, pole) in &hits {
                 if t == lo {
-                    let d = point(t + step(t))? - point(t)?;
-                    ends.push((t, Point2::new(longitude(d), poles[pole].1)));
+                    ends.push((t, end(t, true, pole, step(t))?));
                 } else if t == hi {
-                    let d = point(t)? - point(t - step(t))?;
-                    ends.push((t, Point2::new(longitude(-d), poles[pole].1)));
+                    ends.push((t, end(t, false, pole, step(t))?));
                 }
             }
             let land = |t: f64| -> OgeomResult<Point2> {
@@ -737,17 +780,8 @@ impl SurfaceSheet {
         reference: f64,
         p: Point2,
     ) -> OgeomResult<Point2> {
-        let (u0, v0) = (self.origin.x, self.origin.y);
-        let (su, sv) = self.surface.d1_at(u0, v0, self.tol)?;
-        let step = in_chart(su, sv, t)?;
-        // Slant `rho = radius / sin`, signed, and developed angle `u sin`.
-        let rho = tan.mul_add(v0, reference) / sin;
-        let phi = u0 * sin;
-        let (s, c) = phi.sin_cos();
-        let start = Vector2::new(rho * c, rho * s);
-        let du = Vector2::new(-rho * sin * s, rho * sin * c);
-        let dv = Vector2::new(c, s) * (tan / sin);
-        let d = start + du * step.x + dv * step.y;
+        let u0 = self.origin.x;
+        let (d, rho, phi) = self.cone_developed(t, sin, tan, reference)?;
         let slant = d.magnitude();
         if slant <= self.tol.confusion() {
             ogeom_bail!(
@@ -760,6 +794,29 @@ impl SurfaceSheet {
         let turn = wrapped((d.y * sign).atan2(d.x * sign) - phi);
         let rho = slant * sign;
         Ok(Point2::new(u0 + turn / sin, (rho * sin - reference) / tan))
+    }
+
+    /// A cone's developed point for the tangent step `t` from the origin,
+    /// with the origin's signed slant `rho = radius / sin` from the apex and
+    /// developed angle `phi = u sin`: the apex at the development's origin.
+    fn cone_developed(
+        &self,
+        t: Vector,
+        sin: f64,
+        tan: f64,
+        reference: f64,
+    ) -> OgeomResult<(Vector2, f64, f64)> {
+        let (u0, v0) = (self.origin.x, self.origin.y);
+        let (su, sv) = self.surface.d1_at(u0, v0, self.tol)?;
+        let step = in_chart(su, sv, t)?;
+        // Slant `rho = radius / sin`, signed, and developed angle `u sin`.
+        let rho = tan.mul_add(v0, reference) / sin;
+        let phi = u0 * sin;
+        let (s, c) = phi.sin_cos();
+        let start = Vector2::new(rho * c, rho * s);
+        let du = Vector2::new(-rho * sin * s, rho * sin * c);
+        let dv = Vector2::new(c, s) * (tan / sin);
+        Ok((start + du * step.x + dv * step.y, rho, phi))
     }
 
     /// A sphere's exponential map: the great circle leaving the origin
