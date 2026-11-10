@@ -472,6 +472,18 @@ metric degenerates there. Owed: locating that preimage by the integrated
 map's own distance to the pole, with the geodesic near it followed in a
 chart regular there.
 
+**A network's mixed point, held tangent where that fits better (#653).**
+`fit_network` leaves a point where a three-sided patch meets four-sided
+ones near tangent, its angle in `Network::worst_tangent`: the gluing
+there misses the fit's cross derivatives by 2 to 4.5 per cent however fine
+the spans. Holding it anyway, with the points' parameters corrected under
+the hold (branch `wip/network-mixed-gluing`), is exactly tangent and fits
+better on a noisy ball's cap (9.3e-3 off against 1.5e-2 near tangent) but
+stalls on the clean one (1.6e-3 against 2.3e-4). Owed: run the held fit
+beside the near-tangent one and keep it only where it is exactly tangent
+and no further off the points than the near-tangent fit, so no result
+gets worse.
+
 ### Mesh conversion
 
 `solid_from_mesh` rebuilds planes, the four canonical surfaces, extrusions,
