@@ -1629,8 +1629,8 @@ fn a_law_takes_a_narrow_strip_beside_its_edge_off_whole() {
         (a - b).abs() < 1e-4,
         "the plain round takes {a}, the bevelled {b}"
     );
-    let plain_linear = fillet_edge_variable(&mut model, &plain, &top_front, 1.0, 2.0, T).unwrap();
-    let bevel_linear = fillet_edge_variable(&mut model, &bevelled, &beside, 1.0, 2.0, T).unwrap();
+    let plain_linear = fillet_edge_variable(&mut model, &plain, &top_front, 1.2, 2.0, T).unwrap();
+    let bevel_linear = fillet_edge_variable(&mut model, &bevelled, &beside, 1.2, 2.0, T).unwrap();
     valid(&model, &bevel_linear.shape);
     let (a, b) = (
         volume(&model, &plain_linear.shape, 1e-3),
