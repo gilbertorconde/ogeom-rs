@@ -30,7 +30,7 @@ use ogeom_geom::{Continuity, Curve, Curve3d as _};
 use ogeom_math::{Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
-use crate::fill_n::{FillBoundary, make_filling_n_within};
+use crate::fill_n::{FillBoundary, Region, make_filling_n_region, make_filling_n_within};
 use crate::setback::{
     CornerEnd, Setbacks, bevel_end, corner_edges, filler_inside, point_of, round_end, trim_conic,
 };
@@ -412,7 +412,11 @@ pub(crate) fn close_sharp_corner(
             round(r2),
             round(r2),
         ],
-        &within,
+        &Held {
+            within: &within,
+            seam: &[],
+            region: None,
+        },
         tol,
     )?;
     let mut faces = kept;
@@ -430,17 +434,20 @@ pub(crate) fn close_sharp_corner(
 /// meeting the second half of `out`, the first arc, `middle`, the second
 /// arc and the first half of `back` at G1 where `rest` says and in
 /// position elsewhere, and the patch at `Q` at G1. Neither patch may stand
-/// past the half-spaces `within` (each an outward unit normal and a point
-/// on its plane): a convex vertex's planes, past which lies nothing of the
-/// solid; none where the vertex is not convex.
+/// outside what `held` holds them in.
 pub(crate) fn close_through_q(
     model: &mut Model,
     [out, middle, back]: [&Trim; 3],
     [arc1, arc2]: [&(Shape, Shape); 2],
     rest: [bool; 5],
-    within: &[(Vector, Point)],
+    held: &Held<'_>,
     tol: Tolerances,
 ) -> OgeomResult<(Shape, Shape)> {
+    let Held {
+        within,
+        seam,
+        region,
+    } = *held;
     // The patch at `Q`: the first half of the trim from `Q`, a curve from
     // its middle to the middle of the trim back to `Q`, and that trim's
     // second half, its fourth side shrunk to `Q`.
@@ -466,9 +473,26 @@ pub(crate) fn close_through_q(
         // The last is the curve between the patch and the rest.
         let arc = |d: f64, w: f64| -> OgeomResult<Point> {
             let (from, to) = (out_half.at(d, tol)?, back_half.at(1.0 - d, tol)?);
+            let reach0 = from.distance(to) * full;
             let leave = across(out.normal, out_half.tangent(d, tol)?, to - from)?;
+            let leave = turned_within(leave, out.normal, from, reach0, seam, tol)?;
             let arrive = -across(back.normal, back_half.tangent(1.0 - d, tol)?, from - to)?;
-            let reach = from.distance(to) * full;
+            let arrive = -turned_within(-arrive, back.normal, to, reach0, seam, tol)?;
+            // Each arc lies within the hull of its Bezier points, the ends
+            // and a third of the way along each tangent: held inside the
+            // planes `seam` asks (the convex piece about the sharp edge,
+            // which the solid holds), the arc stays inside them.
+            let mut reach = reach0;
+            for (normal, on) in seam {
+                let lift = normal.dot(leave);
+                if lift > 0.0 {
+                    reach = reach.min(3.0 * (-normal.dot(from - *on)).max(0.0) / lift);
+                }
+                let lift = -normal.dot(arrive);
+                if lift > 0.0 {
+                    reach = reach.min(3.0 * (-normal.dot(to - *on)).max(0.0) / lift);
+                }
+            }
             let (w2, w3) = (w * w, w * w * w);
             let (h00, h10) = (2.0 * w3 - 3.0 * w2 + 1.0, w3 - 2.0 * w2 + w);
             let (h01, h11) = (-2.0 * w3 + 3.0 * w2, w3 - w2);
@@ -572,7 +596,12 @@ pub(crate) fn close_through_q(
             side(&back.edges[0], &back.filler, rest[4]),
             side(&network.edges[1], &at_q, true),
         ];
-        let filled = make_filling_n_within(model, &boundary, &[], fit, within, tol)?;
+        // Held inside the region the caller names where the vertex is not
+        // convex, and inside the vertex's planes where it is.
+        let filled = match region {
+            Some(region) => make_filling_n_region(model, &boundary, &[], fit, region, tol)?,
+            None => make_filling_n_within(model, &boundary, &[], fit, within, tol)?,
+        };
         Ok((at_q, filled.built.shape))
     };
     let mut made = None;
@@ -679,6 +708,21 @@ pub(crate) fn trim_edges(
 /// A face's trim: its conic, run from the end on the edge before it to the
 /// end on the edge after, the edges it is built as, the face's normal and
 /// its filler inside the cell.
+/// What [`close_through_q`] holds its patches in.
+#[derive(Clone, Copy)]
+pub(crate) struct Held<'a> {
+    /// Half-spaces, each an outward unit normal and a point on its plane,
+    /// neither patch may stand past: a convex vertex's planes, past which
+    /// lies nothing of the solid; none where the vertex is not convex.
+    pub within: &'a [(Vector, Point)],
+    /// Half-spaces the arcs of the patch at `Q` are kept inside: the convex
+    /// piece about the sharp edge, where the vertex is not convex.
+    pub seam: &'a [(Vector, Point)],
+    /// The region the patch over the rest is held inside, where the vertex
+    /// is not convex; the half-spaces `within` hold it otherwise.
+    pub region: Option<Region<'a>>,
+}
+
 pub(crate) struct Trim {
     pub curve: Curve,
     pub edges: Vec<Shape>,
@@ -705,4 +749,41 @@ fn past_planes(
         .iter()
         .flat_map(|p| within.iter().map(move |(n, at)| n.dot(*p - *at)))
         .fold(f64::NEG_INFINITY, f64::max))
+}
+
+/// `dir`, a unit direction in the plane with unit normal `face` leaving
+/// `from`, turned within that plane as little as keeps the point a third of
+/// `reach` along it inside every plane of `seam` (an outward unit normal
+/// and a point): its Bezier point stays in the convex piece they bound.
+/// Where a quarter turn does not reach, `dir` is returned and the reach is
+/// held instead.
+fn turned_within(
+    dir: Vector,
+    face: Vector,
+    from: Point,
+    reach: f64,
+    seam: &[(Vector, Point)],
+    tol: Tolerances,
+) -> OgeomResult<Vector> {
+    let mut d = dir;
+    if reach <= tol.confusion() {
+        return Ok(d);
+    }
+    for (normal, on) in seam {
+        let room = 3.0 * (-normal.dot(from - *on)).max(0.0) / reach;
+        let a = d.dot(*normal);
+        if a <= room {
+            continue;
+        }
+        let side = face.cross(d).normalized(tol)?;
+        let side = if side.dot(*normal) < 0.0 { side } else { -side };
+        let b = side.dot(*normal);
+        let r = a.hypot(b);
+        let turn = b.atan2(a) + (room / r).min(1.0).acos();
+        if !(0.0..=core::f64::consts::FRAC_PI_2).contains(&turn) {
+            return Ok(dir);
+        }
+        d = d * turn.cos() + side * turn.sin();
+    }
+    Ok(d)
 }

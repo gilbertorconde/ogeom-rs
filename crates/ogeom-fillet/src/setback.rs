@@ -17,7 +17,7 @@ use ogeom_geom::{Continuity, Curve, Curve3d as _};
 use ogeom_math::{Direction, Plane, Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
-use crate::fill_n::{FillBoundary, make_filling_n, make_filling_n_within};
+use crate::fill_n::{FillBoundary, make_filling_n_region, make_filling_n_within};
 
 /// How far each band meeting a vertex stops from it, and how the patch
 /// between them meets the bands and the faces.
@@ -2028,8 +2028,11 @@ pub(crate) fn close_signed_corner(
     let mut faces = kept;
     faces.extend(fillers);
     let mut history: History = history;
+    // The patches are held inside what the solid and its concave rounds
+    // hold near the vertex: out of each concave round's ball.
+    let region = |p: Point| signed_region(c, p);
     let Some(ks) = c.sharp else {
-        let filled = make_filling_n(model, &boundary, &[], fit, tol)?;
+        let filled = make_filling_n_region(model, &boundary, &[], fit, &region, tol)?;
         let patch = filled.built.shape.clone();
         signed_patch_within(model, c, &[&patch], tol)?;
         faces.push(patch.clone());
@@ -2053,9 +2056,16 @@ pub(crate) fn close_signed_corner(
         [&trims[ks], &trims[r1], &trims[r2]],
         [arc1, arc2],
         [true; 5],
-        // A signed corner is not convex (the bracket's front is reflex at
-        // the vertex), so its planes do not bound the solid there.
-        &[],
+        &crate::sharp::Held {
+            // A signed corner is not convex (the bracket's front is reflex
+            // at the vertex), so its planes do not bound the solid there.
+            within: &[],
+            // The sharp edge is convex: the solid holds the piece within its
+            // two faces' planes there, and the arcs of the patch at `Q` are
+            // kept inside it.
+            seam: &[(c.normal[(ks + 2) % 3], c.corner), (c.normal[ks], c.corner)],
+            region: Some(&region),
+        },
         tol,
     )?;
     signed_patch_within(model, c, &[&patches.0, &patches.1], tol)?;
@@ -2108,24 +2118,34 @@ fn signed_patch_within(
 /// ball and short of the chord between the ball's contacts, along the edge
 /// from the vertex.
 fn signed_outside(c: &SignedCorner, p: Point) -> f64 {
+    signed_region(c, p).0
+}
+
+/// [`signed_outside`] with the outward unit normal of the boundary piece
+/// that decides it at `p`: a face's plane, a concave round's ball, the
+/// chord between the ball's contacts, or the plane square to the edge
+/// through the vertex.
+fn signed_region(c: &SignedCorner, p: Point) -> (f64, Vector) {
     let x = p - c.corner;
-    let h = |f: usize| c.normal[f].dot(x);
+    let h = |f: usize| (c.normal[f].dot(x), c.normal[f]);
+    let most = |a: (f64, Vector), b: (f64, Vector)| if b.0 > a.0 { b } else { a };
+    let least = |a: (f64, Vector), b: (f64, Vector)| if b.0 < a.0 { b } else { a };
     // Edge `k` lies between face `k - 1` and face `k`; it is convex where
     // its leg into face `k` runs inside face `k - 1`.
     let concave: Vec<usize> = (0..3)
         .filter(|&k| c.legs[k][1].dot(c.normal[(k + 2) % 3]) >= 0.0)
         .collect();
     let solid = match concave.as_slice() {
-        [k] => h((k + 1) % 3).max(h((k + 2) % 3).min(h(*k))),
+        [k] => most(h((k + 1) % 3), least(h((k + 2) % 3), h(*k))),
         [k1, k2] => {
             let faces = |k: usize| [(k + 2) % 3, k];
             let shared = (0..3)
                 .find(|f| faces(*k1).contains(f) && faces(*k2).contains(f))
                 .unwrap_or(0);
             let others: Vec<usize> = (0..3).filter(|&f| f != shared).collect();
-            h(shared).min(h(others[0]).max(h(others[1])))
+            least(h(shared), most(h(others[0]), h(others[1])))
         }
-        _ => (0..3).map(h).fold(f64::NEG_INFINITY, f64::max),
+        _ => most(most(h(0), h(1)), h(2)),
     };
     let mut out = solid;
     for &k in &concave {
@@ -2139,12 +2159,21 @@ fn signed_outside(c: &SignedCorner, p: Point) -> f64 {
         let contact = centre - na * r;
         let towards = na + nb;
         let towards = towards / towards.magnitude();
-        let fill = (-na.dot(x))
-            .max(-nb.dot(x))
-            .max(r - (across - centre).magnitude())
-            .max(towards.dot(across - contact))
-            .max(-d.dot(x));
-        out = out.min(fill);
+        let off = across - centre;
+        let reach = off.magnitude();
+        let ball = if reach > 0.0 {
+            (r - reach, off * (-1.0 / reach))
+        } else {
+            (r, -towards)
+        };
+        let fill = most(
+            most(
+                most((-na.dot(x), -na), (-nb.dot(x), -nb)),
+                most(ball, (towards.dot(across - contact), towards)),
+            ),
+            (-d.dot(x), -d),
+        );
+        out = least(out, fill);
     }
     out
 }

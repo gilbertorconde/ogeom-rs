@@ -227,13 +227,12 @@ fn a_corner_rounds_at_any_radius() {
 }
 
 /// Every edge of an L-bracket, in either order. The step's inner corners,
-/// where its re-entrant edge meets two convex ones, are no convex corners,
-/// and the one setback patch that would close each, tangent to every band
-/// end and face, stands 0.016 (a sixth of the radius) into the concave
-/// round's own ball, where neither the bracket nor any round puts
-/// material: refused by name in either order.
+/// where its re-entrant edge meets two convex ones, are no convex corners:
+/// each closes with one setback patch, and the two orders give the same
+/// solid.
 #[test]
-fn every_edge_of_an_l_bracket_is_refused_where_a_corner_patch_leaves_the_solid() {
+fn every_edge_of_an_l_bracket_rounds_in_either_order() {
+    let mut volumes = Vec::new();
     for reversed in [false, true] {
         let mut model = ogeom_topo::Model::new();
         let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (2.0, 2.0, 2.0), T)
@@ -251,15 +250,44 @@ fn every_edge_of_an_l_bracket_is_refused_where_a_corner_patch_leaves_the_solid()
         if reversed {
             edges.reverse();
         }
-        let why = ogeom_fillet::fillet_edges(&mut model, &bracket, &edges, 0.1, T)
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+        let rounded = ogeom_fillet::fillet_edges(&mut model, &bracket, &edges, 0.1, T)
+            .unwrap_or_else(|e| panic!("reversed {reversed}: {e}"))
+            .shape;
+        assert!(ogeom_algo::check(&model, &rounded, T).unwrap().is_valid());
+        // Nothing of it outside the bracket and the re-entrant edge's
+        // concave fill: the convex rounds only take material off.
+        let deflection = ogeom_mesh::Deflection {
+            chord: 1e-4,
+            ..ogeom_mesh::Deflection::default()
+        };
+        let mut past = f64::NEG_INFINITY;
+        for f in explore_unique(&model, &rounded, ShapeType::Face).unwrap() {
+            for p in ogeom_mesh::triangulate_face(&model, &f, deflection, T)
+                .unwrap()
+                .positions
+            {
+                let in_box = [-p.x, -p.y, -p.z, p.x - 2.0, p.y - 2.0, p.z - 2.0]
+                    .into_iter()
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let bracket = in_box.max((p.x - 1.0).min(p.z - 1.0));
+                let fill = [1.0 - p.x, p.x - 1.1, 1.0 - p.z, p.z - 1.1, -p.y, p.y - 2.0]
+                    .into_iter()
+                    .fold(0.1 - (p.x - 1.1).hypot(p.z - 1.1), f64::max);
+                past = past.max(bracket.min(fill));
+            }
+        }
         assert!(
-            why.contains("outside what the solid and its concave rounds hold"),
-            "reversed {reversed}: {why}"
+            past <= 2e-4,
+            "reversed {reversed}: {past} outside the bracket and its fill"
         );
+        let v = volume(&model, &rounded, 1e-4);
+        assert!((v - 6.0).abs() < 0.1, "reversed {reversed}: {v}");
+        volumes.push(v.to_bits());
     }
+    assert_eq!(
+        volumes[0], volumes[1],
+        "the two orders round different solids"
+    );
 }
 
 /// Every edge of a slab rounded at half its thickness: the blends on each

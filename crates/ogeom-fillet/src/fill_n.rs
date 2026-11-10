@@ -488,9 +488,17 @@ fn filling(
             region,
             outline: &chart_outline,
         };
-        match held.fit(from, tol)? {
+        // Held as the rounds hold it first; where no net holds the patch so,
+        // again with the points still astray held firmer.
+        match held.fit(from, false, tol)? {
             Ok(found) => fallback = Some(found),
-            Err(miss) => last_miss = format!("{last_miss}; held within its planes, {miss}"),
+            Err(miss) => match held.fit(from, true, tol)? {
+                Ok(found) => fallback = Some(found),
+                Err(firm) => {
+                    last_miss =
+                        format!("{last_miss}; held within its planes, {miss}; held firmer, {firm}");
+                }
+            },
         }
     }
     let Some((surface, reports, constraint_gap)) = fallback else {
@@ -1746,6 +1754,16 @@ fn past_planes(
 /// strayed past a plane, before a finer net is tried.
 const HOLD_ROUNDS: usize = 16;
 
+/// Further rounds, in a second pass tried only where the first held no net
+/// inside the region: in it a point held before and still astray is held
+/// again at the plane it strays past now, at twice its weight.
+const FIRM_ROUNDS: usize = 32;
+
+/// A finer net the firmer pass goes on to: where a side's support turns
+/// from a round's curvature into a flat face at a corner, the patch's
+/// tangency and its stray there close about twofold a net.
+const FIRMER: [usize; 1] = [202];
+
 /// A height-field filling's fit held inside half-spaces: what
 /// [`make_filling_n_within`] has read off the hole.
 struct HeldFit<'a> {
@@ -1775,12 +1793,19 @@ impl HeldFit<'_> {
     fn fit(
         &self,
         from: usize,
+        firm: bool,
         tol: Tolerances,
     ) -> OgeomResult<Result<(BSplineSurface, Vec<FillSide>, f64), String>> {
         let ((ua, ub), (va, vb)) = self.domain;
         let (du, dv) = (ub - ua, vb - va);
         let mut miss = String::new();
-        for base in NETS.into_iter().chain(FURTHER).skip(from) {
+        let firmer: &[usize] = if firm { &FIRMER } else { &[] };
+        for base in NETS
+            .into_iter()
+            .chain(FURTHER)
+            .chain(firmer.iter().copied())
+            .skip(from)
+        {
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -1815,7 +1840,15 @@ impl HeldFit<'_> {
             // A held point weighs as a side's whole run of points does.
             let weight = 1.0 / self.size;
             let mut held: Vec<Point2> = Vec::new();
-            for _ in 0..HOLD_ROUNDS {
+            // Each held point's condition, by its place among the
+            // conditions, and its weight.
+            let mut holds: Vec<(usize, f64)> = Vec::new();
+            let rounds = if firm {
+                HOLD_ROUNDS + FIRM_ROUNDS
+            } else {
+                HOLD_ROUNDS
+            };
+            for _ in 0..rounds {
                 let fit = fit_height(
                     self.frame,
                     self.domain,
@@ -1851,10 +1884,10 @@ impl HeldFit<'_> {
                 // Points within half the tolerance of a plane (the patch's
                 // own sides lie on the faces' planes) are left free.
                 for (q, d, normal, p) in strays.into_iter().filter(|s| s.1 > 0.5 * self.tolerance) {
-                    if held
+                    let before = held
                         .iter()
-                        .any(|h| (h.x - q.x).abs() + (h.y - q.y).abs() <= 1e-12)
-                    {
+                        .position(|h| (h.x - q.x).abs() + (h.y - q.y).abs() <= 1e-12);
+                    if before.is_some() && !firm {
                         continue;
                     }
                     // The region's boundary there, as the plane through
@@ -1868,8 +1901,15 @@ impl HeldFit<'_> {
                     // inside the plane, straight above its chart point.
                     let foot = self.frame.origin + self.frame.e1 * q.x + self.frame.e2 * q.y;
                     let height = (-0.5 * self.tolerance - normal.dot(foot - on)) / lift;
-                    conditions.push(Condition::partial(q, (0, 0), [height], weight));
-                    held.push(q);
+                    if let Some(k) = before {
+                        let (at, w) = holds[k];
+                        holds[k].1 = w * 2.0;
+                        conditions[at] = Condition::partial(q, (0, 0), [height], w * 2.0);
+                    } else {
+                        conditions.push(Condition::partial(q, (0, 0), [height], weight));
+                        holds.push((conditions.len() - 1, weight));
+                        held.push(q);
+                    }
                     added = true;
                 }
                 if !added {

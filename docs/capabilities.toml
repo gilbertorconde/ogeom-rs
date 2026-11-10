@@ -1464,10 +1464,9 @@ trim on a face reflex at the vertex a cubic swinging round it; both \
 orders give the same solid to the bit. Refused by name there: a concave \
 edge left sharp, a band whose setback reaches its edge's far end, a \
 cell (twice the widest band behind the vertex) reaching through the \
-solid's far side, and a patch standing past what the solid and its \
-concave rounds hold near the vertex by more than the bands' fit target, \
-which on the L-bracket every such patch does (0.1 to 0.46 into the \
-concave round's ball), so those corners are refused. round_vertex_setback_sharp closes a box-like corner with \
+solid's far side, and a patch that no net holds within what the solid \
+and its concave rounds hold near the vertex (out of each concave round's \
+ball) within the bands' fit target. round_vertex_setback_sharp closes a box-like corner with \
 two of its three edges rounded and the third left sharp: the sharp edge \
 is cut at its own setback, at a point Q, and the opening runs into Q, \
 where a three-sided patch with its fourth side shrunk to Q, held tangent \
