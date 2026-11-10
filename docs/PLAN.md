@@ -441,9 +441,14 @@ patch as N quads from the sides' midpoints to a centre fitted by
 `fit_network` so tangency holds exactly, vertices where a curved face
 meets or the planes share no tangent ball. Setbacks are asked through
 `fillet_edges`' corners with `fillet_edges_cornered`. `fillet_edges_with` closes corners of three
-different radii with the same patch, a box corner at 1, 3 and 2 included (its
-narrow band's end turns into a face's trim, and the patch's tangency there
-closes about twofold a net; it meets the target at 135 controls). The
+different radii with the same patch. The patch of a convex corner is held
+within the vertex's planes, and a corner no net holds within them is
+refused by name: a box corner at 1, 3 and 2, whose patch tangent to every
+band end and face stands 0.018 past the face at x = 0; slanted and acute
+corners, and four of the edge-left-sharp corners on the block, likewise.
+Owed: a patch that meets every side tangent and stays within the planes
+there (a fill that bounds the patch by the planes rather than measuring
+it, or the quads below). The
 quads round a centre with every side held exactly (`fit_loop_quads`) meet a
 pyramid's apex but not yet a box corner's six-sided opening: the centre's
 corner holding cannot follow the larger opening (branch
