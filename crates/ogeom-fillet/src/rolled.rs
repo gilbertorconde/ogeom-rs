@@ -337,7 +337,7 @@ pub(crate) fn face_distance(face: &Flat, p: Point) -> f64 {
 pub(crate) struct Front {
     origin: Point,
     normal: Vector,
-    sides: Vec<[Point; 2]>,
+    pub(crate) sides: Vec<[Point; 2]>,
 }
 
 impl Front {
@@ -1146,13 +1146,44 @@ pub(crate) fn across_to(
             continue;
         }
         // Only the face's part in front of the touched face's plane can come
-        // inside a ball.
-        let front = Front::of(&flat, e0, n1);
-        let clearance = |s: f64| front.distance(&flat, path.centre(s)) - radius;
+        // inside a ball. Nor can its part behind the plane through the far
+        // edge's line square to the ball's radius at both ends of an
+        // interval shorter than a half turn: that radius at every station
+        // between is a sum of the two with no negative weight, so such a
+        // part is behind every station's plane, which holds the contact
+        // with the centre a radius in front. Over an interval the part in
+        // front of the touched face's plane and of either of those is
+        // fixed, its distance from the centre falling by at most the
+        // centre's travel. Each plane is moved back by the confusion, the
+        // turning ones scaled by the cosine of half the interval's turn
+        // (the weights summing to at most its secant), so a point dropped
+        // stands a radius less the confusion off every centre: an end face
+        // the end ball touches where the touch line meets it and at the
+        // far edge's end vertex is cleared so.
+        let front = Front::of(&flat, e0 + n1 * conf, n1);
+        // That part as a face of its own: its sides close it.
+        let first = Flat {
+            origin: flat.origin,
+            normal: flat.normal,
+            sides: front.sides.clone(),
+        };
+        let clearance = |a: f64, b: f64, s: f64| {
+            let c = path.centre(s);
+            let turn = (b - a).abs();
+            if turn >= core::f64::consts::PI {
+                return front.distance(&flat, c) - radius;
+            }
+            let back = conf * (turn * 0.5).cos() / radius;
+            let part = |at: f64| {
+                let reach = path.reach(at);
+                Front::of(&first, base + reach * back, reach).distance(&first, c)
+            };
+            part(a).min(part(b)) - radius
+        };
         let mut intervals: Vec<(f64, f64, f64, f64, u32)> = Vec::new();
         for i in 0..STATIONS {
             let (a, b) = (station(i), station(i + 1));
-            intervals.push((a, b, clearance(a), clearance(b), 0));
+            intervals.push((a, b, clearance(a, b, a), clearance(a, b, b), 0));
         }
         while let Some((a, b, ca, cb, depth)) = intervals.pop() {
             if ca < -conf || cb < -conf {
@@ -1165,9 +1196,8 @@ pub(crate) fn across_to(
                 return Err(refuse("the ball comes within its radius of another face"));
             }
             let m = (a + b) * 0.5;
-            let cm = clearance(m);
-            intervals.push((a, m, ca, cm, depth + 1));
-            intervals.push((m, b, cm, cb, depth + 1));
+            intervals.push((a, m, clearance(a, m, a), clearance(a, m, m), depth + 1));
+            intervals.push((m, b, clearance(m, b, m), clearance(m, b, b), depth + 1));
         }
     }
 

@@ -1683,6 +1683,22 @@ fn a_stepped_round_ends_on_faces_slanted_to_it() {
 /// fill.
 #[test]
 fn a_round_rests_on_a_lower_far_edge_slanted_to_its_seam() {
+    slanted_staircase(false);
+}
+
+/// The staircase of [`a_round_rests_on_a_lower_far_edge_slanted_to_its_seam`]
+/// with the whole solid cut to the run's end sections, so the lower far
+/// edge ends where each end ball touches it, on the end faces: the end
+/// balls touch those faces at those vertices, and the run still builds and
+/// holds the same balls.
+#[test]
+fn a_round_rests_on_a_slanted_far_edge_that_ends_where_the_end_balls_touch() {
+    slanted_staircase(true);
+}
+
+/// The slanted staircase rounded at radius 6, its upper part cut to the
+/// run's end sections, and with `cut_all` the whole solid.
+fn slanted_staircase(cut_all: bool) {
     use ogeom_geom::{Curve, LineCurve, PlaneSurface};
     use ogeom_math::{Direction, Plane, Vector};
     let radius = 6.0;
@@ -1750,6 +1766,11 @@ fn a_round_rests_on_a_lower_far_edge_slanted_to_its_seam() {
         }
     }
     let mut upper = upper.unwrap();
+    if cut_all {
+        upper = ogeom_bool::fuse(&mut model, &solid, &upper, T)
+            .unwrap()
+            .shape;
+    }
     // The centre at height y along the wall: x = 14, a radius from the
     // lower far edge's line.
     let (p0, d) = {
@@ -1801,9 +1822,13 @@ fn a_round_rests_on_a_lower_far_edge_slanted_to_its_seam() {
             .unwrap()
             .shape;
     }
-    let solid = ogeom_bool::fuse(&mut model, &solid, &upper, T)
-        .unwrap()
-        .shape;
+    let solid = if cut_all {
+        upper
+    } else {
+        ogeom_bool::fuse(&mut model, &solid, &upper, T)
+            .unwrap()
+            .shape
+    };
     let foot = explore(&model, &solid, Filter::OfType(ShapeType::Edge))
         .unwrap()
         .into_iter()
