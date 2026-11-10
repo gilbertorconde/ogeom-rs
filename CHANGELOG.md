@@ -755,6 +755,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`read_step` reads a colour named by `DRAUGHTING_PRE_DEFINED_COLOUR`.**
+  (#793)
+  - Exporters write the eight colours the standard defines (black, red,
+    green, blue, yellow, magenta, cyan, white) by name rather than as
+    `COLOUR_RGB`. The reader followed only the latter, so an item coloured
+    by name read uncoloured, and nothing said so.
+  - Each of the eight now reads as its colour, every channel fully on or
+    off. A name that is none of them leaves the item uncoloured, with one
+    warning naming the entity.
+
 - **`fillet_edges_variable` and `fillet_edge_variable` refuse a law whose
   ball runs off a face beside the edge.** (#798)
   - Beside a narrow face (a strip left between the edge and a groove) the
