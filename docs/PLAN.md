@@ -429,11 +429,16 @@ its pole at the law's radius there.
 **Setback corners beyond the one-ball planar vertex.** `round_vertex_setback`
 fits one trimmed patch G1 to the fit target at a convex planar corner one
 ball touches. Owed: G2 (needs band sections curvature continuous with their
-faces, so the end arcs stop bending the patch where the faces do not), the
+faces, so the end arcs stop bending the patch where the faces do not; G2
+to the band ends alone with G1 to the faces is consistent where a trim
+meets an arc, both asking a curvature of 1/radius across the band and none
+along it, but the one patch misses the fit target: on the 20 x 20 x 10
+block's corner at setback 5 a face trim stays 1.6e-3 rad from tangent at
+131 x 135 controls, against 2e-4), the
 patch as N quads from the sides' midpoints to a centre fitted by
 `fit_network` so tangency holds exactly, vertices where a curved face
-meets or the planes share no tangent ball, and setbacks asked through
-`fillet_edges`' corners. `fillet_edges_with` closes corners of three
+meets or the planes share no tangent ball. Setbacks are asked through
+`fillet_edges`' corners with `fillet_edges_cornered`. `fillet_edges_with` closes corners of three
 different radii with the same patch, a box corner at 1, 3 and 2 included (its
 narrow band's end turns into a face's trim, and the patch's tangency there
 closes about twofold a net; it meets the target at 135 controls). The

@@ -3,7 +3,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;
-use ogeom_fillet::{Setbacks, analyse_blend, fillet_edges, round_vertex_setback};
+use ogeom_fillet::{
+    Setbacks, analyse_blend, fillet_edges, fillet_edges_cornered, round_vertex_setback,
+};
 use ogeom_geom::{Continuity, Curve3d as _};
 use ogeom_math::{Direction, Frame, Point};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
@@ -332,4 +334,131 @@ fn a_sharp_edge_cut_inside_the_bands_is_refused_by_name() {
             .unwrap_err()
             .to_string();
     assert!(err.contains("edge left sharp"), "{err}");
+}
+
+/// The block with all twelve edges to round, and its two top corners on
+/// the edge y = 0, z = 10: (0, 0, 10) and (20, 0, 10).
+fn two_corners() -> (Model, Shape, Vec<Shape>, [Shape; 2]) {
+    let (m, b, _, _) = block();
+    let edges = explore_unique(&m, &b, ShapeType::Edge).unwrap();
+    let corners = [
+        vertex_at(&m, &b, [0.0, 0.0, 10.0]),
+        vertex_at(&m, &b, [20.0, 0.0, 10.0]),
+    ];
+    (m, b, edges, corners)
+}
+
+#[test]
+fn two_setback_corners_on_one_edge_each_take_off_what_it_does_alone() {
+    let (mut m, b, edges, [v0, v1]) = two_corners();
+    let ball = fillet_edges(&mut m, &b, &edges, 2.0, T).unwrap().shape;
+    let cornered = |m: &mut Model, at: &[&Shape]| {
+        let corners: Vec<(Shape, Setbacks)> = at
+            .iter()
+            .map(|v| ((*v).clone(), even(5.0, Continuity::G1)))
+            .collect();
+        fillet_edges_cornered(m, &b, &edges, 2.0, &corners, T).unwrap()
+    };
+    let first = cornered(&mut m, &[&v0]).shape;
+    let second = cornered(&mut m, &[&v1]).shape;
+    let both = cornered(&mut m, &[&v0, &v1]);
+    let swapped = cornered(&mut m, &[&v1, &v0]).shape;
+    valid(&m, &both.shape);
+    valid(&m, &swapped);
+    for v in [&v0, &v1] {
+        let patch = both.history.generated(v)[0].clone();
+        let contacts = analyse_blend(&m, &both.shape, &patch, 17, T).unwrap();
+        assert_eq!(contacts.len(), 6, "{contacts:?}");
+        let tangency = contacts
+            .iter()
+            .map(|c| c.tangency_error)
+            .fold(0.0, f64::max);
+        assert!(
+            tangency < 1e-3,
+            "a patch meets its neighbours within {tangency} rad"
+        );
+    }
+    // The cells lie 10 apart along the shared edge, so each corner takes
+    // off what it takes off alone, in either order.
+    let vb = volume(&m, &ball);
+    let alone = [vb - volume(&m, &first), vb - volume(&m, &second)];
+    assert!(alone.iter().all(|a| *a > 0.0), "{alone:?}");
+    for together in [vb - volume(&m, &both.shape), vb - volume(&m, &swapped)] {
+        assert!(
+            (together - alone[0] - alone[1]).abs() < 1e-9 * vb,
+            "two corners take off {together}, each alone {alone:?}"
+        );
+    }
+}
+
+#[test]
+fn setback_corners_at_the_radius_are_the_balls_corners() {
+    let (mut m, b, edges, [v0, v1]) = two_corners();
+    let ball = fillet_edges(&mut m, &b, &edges, 2.0, T).unwrap().shape;
+    let cornered = fillet_edges_cornered(
+        &mut m,
+        &b,
+        &edges,
+        2.0,
+        &[
+            (v0, even(2.0, Continuity::G1)),
+            (v1, even(2.0, Continuity::G1)),
+        ],
+        T,
+    )
+    .unwrap()
+    .shape;
+    valid(&m, &cornered);
+    let (a, c) = (volume(&m, &cornered), volume(&m, &ball));
+    assert!((a - c).abs() < 1e-12, "{a} against {c}");
+}
+
+#[test]
+fn setback_corners_meeting_along_an_edge_or_missing_an_edge_are_refused_by_name() {
+    let (mut m, b, edges, _) = two_corners();
+    // (0, 0, 10) and (0, 0, 0) share the vertical edge, 10 long.
+    let top = vertex_at(&m, &b, [0.0, 0.0, 10.0]);
+    let bottom = vertex_at(&m, &b, [0.0, 0.0, 0.0]);
+    let err = fillet_edges_cornered(
+        &mut m,
+        &b,
+        &edges,
+        2.0,
+        &[
+            (top.clone(), even(5.0, Continuity::G1)),
+            (bottom, even(5.0, Continuity::G1)),
+        ],
+        T,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("meet"), "{err}");
+    // A setback corner rounds every edge at its vertex.
+    let (mut m2, b2, v2, _) = block();
+    let only_two: Vec<Shape> = [[10.0, 0.0, 10.0], [0.0, 10.0, 10.0]]
+        .iter()
+        .map(|p| edge_near(&m2, &b2, *p))
+        .collect();
+    let err = fillet_edges_cornered(
+        &mut m2,
+        &b2,
+        &only_two,
+        2.0,
+        &[(v2.clone(), even(5.0, Continuity::G1))],
+        T,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("not among the edges"), "{err}");
+    let err = fillet_edges_cornered(
+        &mut m,
+        &b,
+        &edges,
+        2.0,
+        &[
+            (top.clone(), even(5.0, Continuity::G1)),
+            (top, even(5.0, Continuity::G1)),
+        ],
+        T,
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("named twice"), "{err}");
 }

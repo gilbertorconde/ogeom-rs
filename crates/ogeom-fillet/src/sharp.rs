@@ -305,9 +305,9 @@ pub(crate) fn close_sharp_corner(
         arcs.push(if k == ks {
             None
         } else if kinds[k] == CornerEnd::Bevel {
-            Some(bevel_end(model, &kept, frame, *section, tol)?)
+            Some(bevel_end(model, &kept, frame, *section, &walls, tol)?)
         } else {
-            Some(round_end(model, &kept, k, *section, tol)?)
+            Some(round_end(model, &kept, k, *section, &walls, tol)?)
         });
     }
     let host = |t: usize| -> (Vector, Point) { (frame.m[frame.ring[t]], frame.corner) };

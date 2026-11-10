@@ -97,16 +97,39 @@ pub(crate) fn point_of(model: &Model, vertex: &Shape) -> OgeomResult<Point> {
     Ok(vertex.transform(model.datums())?.apply(raw))
 }
 
-/// [`round_vertex_setback`] on a shape every node below which is its own.
-#[allow(clippy::too_many_lines, reason = "one corner, assembled end to end")]
-fn setback_own(
-    model: &mut Model,
+/// A setback corner read off the solid before its edges are rounded: the
+/// corner's frame, the solid's edge along each of its edge directions with
+/// that edge's length, and each edge's setback and the ball's own setback
+/// along it.
+struct SetbackCorner {
+    frame: crate::corner::CornerFrame,
+    edges: Vec<Shape>,
+    reach: Vec<f64>,
+    setback: Vec<f64>,
+    own_setback: Vec<f64>,
+}
+
+impl SetbackCorner {
+    /// Whether every setback is the ball's own, the corner `fillet_edges`
+    /// closes.
+    fn is_the_balls(&self, tol: Tolerances) -> bool {
+        self.setback
+            .iter()
+            .zip(&self.own_setback)
+            .all(|(s, own)| *s <= own + tol.confusion())
+    }
+}
+
+/// The setback corner at `vertex` of `solid`, its edges not yet rounded,
+/// checked as [`round_vertex_setback`] states.
+fn read_corner(
+    model: &Model,
     solid: &Shape,
     vertex: &Shape,
     radius: f64,
     setbacks: &Setbacks,
     tol: Tolerances,
-) -> OgeomResult<Built> {
+) -> OgeomResult<SetbackCorner> {
     if !radius.is_finite() || radius <= tol.confusion() {
         ogeom_bail!(Construction, "a blend radius must be a positive distance");
     }
@@ -171,22 +194,168 @@ fn setback_own(
             );
         }
     }
+    Ok(SetbackCorner {
+        frame,
+        edges,
+        reach,
+        setback,
+        own_setback,
+    })
+}
+
+/// [`round_vertex_setback`] on a shape every node below which is its own.
+fn setback_own(
+    model: &mut Model,
+    solid: &Shape,
+    vertex: &Shape,
+    radius: f64,
+    setbacks: &Setbacks,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let corner = read_corner(model, solid, vertex, radius, setbacks, tol)?;
 
     // The bands, meeting in the ball's corner: all that a setback equal to
     // the ball's own asks for.
-    let banded = crate::fillet::fillet_edges(model, solid, &edges, radius, tol)?;
-    if (0..n).all(|k| setback[k] <= own_setback[k] + tol.confusion()) {
+    let banded = crate::fillet::fillet_edges(model, solid, &corner.edges, radius, tol)?;
+    if corner.is_the_balls(tol) {
         return Ok(banded);
     }
     close_corner(
         model,
         banded,
         vertex,
-        &frame,
-        &setback,
+        &corner.frame,
+        &corner.setback,
         setbacks.continuity,
         tol,
     )
+}
+
+/// Round `edges` of `solid` at `radius`, as [`fillet_edges`](crate::fillet_edges)
+/// does, with each vertex of `corners` closed as a setback corner, as
+/// [`round_vertex_setback`] closes it.
+///
+/// Every corner is read off the solid before its edges are rounded, the
+/// edges are rounded once, and each corner is then cut back to its
+/// setbacks and its opening filled. Vertices not named close in the
+/// ball's own corner. A setback corner rounds every edge that meets its
+/// vertex, so each of them must be in `edges`. Along an edge between two
+/// named corners, the two setbacks must stop short of each other.
+///
+/// What `solid` shares with other shapes is copied before it is worked on
+/// ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
+///
+/// # Errors
+///
+/// As [`round_vertex_setback`] for each corner and
+/// [`fillet_edges`](crate::fillet_edges) for the edges;
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+/// where a vertex is named twice, an edge meeting a named vertex is not in
+/// `edges`, or the setbacks at both ends of an edge meet.
+pub fn fillet_edges_cornered(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    radius: f64,
+    corners: &[(Shape, Setbacks)],
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let mut own: Vec<Shape> = edges.to_vec();
+    own.extend(corners.iter().map(|(v, _)| v.clone()));
+    for (_, setbacks) in corners {
+        own.extend(setbacks.per_edge.iter().map(|(e, _)| e.clone()));
+    }
+    ogeom_algo::on_own_nodes(model, solid, &own, |model, solid, parts| {
+        let (edges, rest) = parts.split_at(edges.len());
+        let (vertices, mut named) = rest.split_at(corners.len());
+        let mut own_corners = Vec::with_capacity(corners.len());
+        for (vertex, (_, setbacks)) in vertices.iter().zip(corners) {
+            let (these, others) = named.split_at(setbacks.per_edge.len());
+            named = others;
+            own_corners.push((
+                vertex.clone(),
+                Setbacks {
+                    per_edge: these
+                        .iter()
+                        .zip(&setbacks.per_edge)
+                        .map(|(e, (_, s))| (e.clone(), *s))
+                        .collect(),
+                    default: setbacks.default,
+                    continuity: setbacks.continuity,
+                },
+            ));
+        }
+        cornered_own(model, solid, edges, radius, &own_corners, tol)
+    })
+}
+
+/// [`fillet_edges_cornered`] on a shape every node below which is its own.
+fn cornered_own(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    radius: f64,
+    corners: &[(Shape, Setbacks)],
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let mut read: Vec<SetbackCorner> = Vec::with_capacity(corners.len());
+    for (i, (vertex, setbacks)) in corners.iter().enumerate() {
+        if corners[..i].iter().any(|(v, _)| v.is_same(vertex)) {
+            ogeom_bail!(Construction, "a vertex is named twice as a setback corner");
+        }
+        let corner = read_corner(model, solid, vertex, radius, setbacks, tol)?;
+        if corner
+            .edges
+            .iter()
+            .any(|e| !edges.iter().any(|asked| asked.is_same(e)))
+        {
+            ogeom_bail!(
+                Construction,
+                "a setback corner rounds every edge meeting its vertex, and an edge \
+                 meeting a named corner is not among the edges to round"
+            );
+        }
+        read.push(corner);
+    }
+    // Two corners on one edge cut it back from both ends: the cells must
+    // stop short of each other along it, each band's middle left whole.
+    for (i, a) in read.iter().enumerate() {
+        for b in &read[i + 1..] {
+            for (ka, ea) in a.edges.iter().enumerate() {
+                for (kb, eb) in b.edges.iter().enumerate() {
+                    if ea.is_same(eb)
+                        && a.setback[ka] + b.setback[kb] >= a.reach[ka] - tol.confusion()
+                    {
+                        ogeom_bail!(
+                            Construction,
+                            "the setbacks of {} and {} at both ends of an edge {} long \
+                             meet; a band's middle must be left between two setback \
+                             corners",
+                            a.setback[ka],
+                            b.setback[kb],
+                            a.reach[ka]
+                        );
+                    }
+                }
+            }
+        }
+    }
+    let mut built = crate::fillet::fillet_edges(model, solid, edges, radius, tol)?;
+    for ((vertex, setbacks), corner) in corners.iter().zip(&read) {
+        if corner.is_the_balls(tol) {
+            continue;
+        }
+        built = close_corner(
+            model,
+            built,
+            vertex,
+            &corner.frame,
+            &corner.setback,
+            setbacks.continuity,
+            tol,
+        )?;
+    }
+    Ok(built)
 }
 
 /// The solid's edge along each of `frame`'s edge directions from `vertex`,
@@ -325,10 +494,18 @@ pub(crate) fn close_corner_ends(
             return Ok(None);
         }
         let (origin, outward) = ogeom_algo::face_normal(model, face, tol)?;
-        Ok((0..n).find(|&k| {
+        let Some(k) = (0..n).find(|&k| {
             outward.cross(sections[k].0).magnitude() <= tol.angular() * 10.0
                 && on_plane(origin, sections[k])
-        }))
+        }) else {
+            return Ok(None);
+        };
+        for v in explore_unique(model, face, ShapeType::Vertex)? {
+            if !in_cell(&walls, point_of(model, &v)?, tol) {
+                return Ok(None);
+            }
+        }
+        Ok(Some(k))
     };
 
     // Each band's end arc, on its section plane, and the band face it ends.
@@ -342,10 +519,10 @@ pub(crate) fn close_corner_ends(
     let mut arcs: Vec<(Shape, Shape)> = Vec::with_capacity(n);
     for (k, section) in sections.iter().enumerate() {
         if ends[k] == CornerEnd::Bevel {
-            arcs.push(bevel_end(model, &kept, frame, *section, tol)?);
+            arcs.push(bevel_end(model, &kept, frame, *section, &walls, tol)?);
             continue;
         }
-        arcs.push(round_end(model, &kept, k, *section, tol)?);
+        arcs.push(round_end(model, &kept, k, *section, &walls, tol)?);
     }
 
     // On host plane `ring[k + 1]`, between band `k` and band `k + 1`: each
@@ -418,8 +595,12 @@ pub(crate) fn close_corner_ends(
         ogeom_bail!(Construction, "the setback corner's faces did not close");
     }
     let rounded = model.add_solid(std::slice::from_ref(&sewn.shells[0]))?;
-    let mut history: History = history;
-    history.generate(vertex, patch);
+    // Sewing may rebuild a face whose edges it joins: an earlier corner's
+    // patch, as well as this one, is followed to the face it became.
+    let mut history: History = history.then(&sewn.history);
+    for image in sewn.history.trace(&patch) {
+        history.generate(vertex, image.clone());
+    }
     Ok(Built::new(rounded, history))
 }
 
@@ -538,13 +719,24 @@ pub(crate) fn trim_conic(
     ))
 }
 
+/// Whether `p` lies inside the convex cell bounded by `walls`, each an
+/// inward normal and a point on it, to the slack the corner's planes are
+/// read to: this corner's, not another's on the same planes.
+pub(crate) fn in_cell(walls: &[(Vector, Point)], p: Point, tol: Tolerances) -> bool {
+    walls
+        .iter()
+        .all(|(normal, at)| normal.dot(p - *at) >= -tol.confusion() * 100.0)
+}
+
 /// Band `k`'s end arc on its section plane `section`, and the band face it
-/// ends: the curved edge of a curved face of `kept` lying on the plane.
+/// ends: the curved edge of a curved face of `kept` lying on the plane
+/// inside the cell `walls` bound.
 pub(crate) fn round_end(
     model: &Model,
     kept: &[Shape],
     k: usize,
     section: (Vector, Point),
+    walls: &[(Vector, Point)],
     tol: Tolerances,
 ) -> OgeomResult<(Shape, Shape)> {
     let mut found: Option<(Shape, Shape)> = None;
@@ -569,7 +761,10 @@ pub(crate) fn round_end(
                 .map(|t| c.point_at(*t, tol))
                 .collect::<OgeomResult<Vec<Point>>>()?
                 .into_iter()
-                .all(|p| section.0.dot(p - section.1).abs() <= tol.confusion() * 100.0);
+                .all(|p| {
+                    section.0.dot(p - section.1).abs() <= tol.confusion() * 100.0
+                        && in_cell(walls, p, tol)
+                });
             if on {
                 found = Some((e, face.clone()));
             }
@@ -586,15 +781,19 @@ pub(crate) fn round_end(
 
 /// A bevel's straight end on its section plane `section`, and the bevel's
 /// face: the planar face of `kept`, on none of the corner's host planes,
-/// with a straight edge lying on the section plane.
+/// with a straight edge lying on the section plane inside the cell `walls`
+/// bound.
 pub(crate) fn bevel_end(
     model: &Model,
     kept: &[Shape],
     frame: &crate::corner::CornerFrame,
     section: (Vector, Point),
+    walls: &[(Vector, Point)],
     tol: Tolerances,
 ) -> OgeomResult<(Shape, Shape)> {
-    let on_plane = |p: Point| section.0.dot(p - section.1).abs() <= tol.confusion() * 100.0;
+    let on_plane = |p: Point| {
+        section.0.dot(p - section.1).abs() <= tol.confusion() * 100.0 && in_cell(walls, p, tol)
+    };
     for face in kept {
         let Some(data) = model.node(face).and_then(|n| n.data().as_face()) else {
             continue;
