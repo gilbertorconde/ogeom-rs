@@ -34,6 +34,7 @@ bump may break the API and a patch bump may not.
   - A bevelled elliptic slab stays refused, for causes of its own: the
     contact line does not cross its face from boundary to boundary, and
     the ball does not seat between two stations of its march.
+
 - **`StepImport::faces`: the file's own id for every face read.** (#794)
   - Every face a STEP read builds, with its `ADVANCED_FACE` or
     `FACE_SURFACE` id, in id order, each the face as the solids and shells
