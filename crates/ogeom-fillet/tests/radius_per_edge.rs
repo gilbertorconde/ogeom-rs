@@ -170,12 +170,14 @@ fn three_radii_at_a_corner_close_with_one_patch_in_any_order() {
     );
 }
 
-/// The issue's corner at 1, 3 and 2: the patch that meets every band end
-/// and face tangent stands up to 0.018 past the face at x = 0, outside the
-/// block, so no net holds it within the vertex's planes and the corner is
-/// refused by name, whatever the order asked.
+/// The issue's corner at 1, 3 and 2. The patch that meets every band end
+/// and face tangent, fitted freely, stands 0.018 past the face at x = 0,
+/// outside the block; held inside the vertex's planes where it strays, it
+/// closes the corner tangent to every side and within the block, the same
+/// solid whatever the order asked, its volume between the corner rounded
+/// at 1 and at 3.
 #[test]
-fn the_issue_s_three_radii_are_refused_where_the_patch_leaves_the_block() {
+fn the_issue_s_three_radii_close_within_the_block_in_any_order() {
     let mut m = Model::new();
     let b = bx(&mut m, [20.0, 20.0, 10.0]);
     let edges = [
@@ -184,17 +186,73 @@ fn the_issue_s_three_radii_are_refused_where_the_patch_leaves_the_block() {
         edge_at(&m, &b, [0.0, 0.0, 5.0]),
     ];
     let asked: Vec<(Shape, f64)> = edges.iter().cloned().zip([1.0, 3.0, 2.0]).collect();
-    for order in [[0, 1, 2], [2, 0, 1], [1, 2, 0]] {
+    let mut volumes = Vec::new();
+    for order in [[0, 1, 2], [2, 0, 1], [1, 2, 0], [2, 1, 0]] {
         let request: Vec<(Shape, f64)> = order.iter().map(|&i| asked[i].clone()).collect();
-        let why = fillet_edges_with(&mut m, &b, &request, T)
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
-        assert!(
-            why.contains("past a plane it is held within"),
-            "{order:?}: {why}"
+        let rounded =
+            fillet_edges_with(&mut m, &b, &request, T).unwrap_or_else(|e| panic!("{order:?}: {e}"));
+        let found = ogeom_algo::check(&m, &rounded.shape, T).unwrap();
+        assert!(found.is_valid(), "{order:?}: {:?}", found.problems);
+        let patch = explore_unique(&m, &rounded.shape, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .find(|f| {
+                let spline = m
+                    .node(f)
+                    .and_then(|n| n.data().as_face())
+                    .and_then(|d| m.geometry().surface(d.surface))
+                    .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::BSpline(_)));
+                spline && explore_unique(&m, f, ShapeType::Edge).unwrap().len() == 6
+            })
+            .expect("the corner patch");
+        let contacts = ogeom_fillet::analyse_blend(&m, &rounded.shape, &patch, 17, T).unwrap();
+        assert_eq!(contacts.len(), 6, "{contacts:?}");
+        let worst = contacts
+            .iter()
+            .map(|c| c.tangency_error)
+            .fold(0.0, f64::max);
+        assert!(worst < 2e-4, "{order:?}: tangent within {worst} rad");
+        // Within the block: read on the patch's own mesh, finer than the
+        // bands' fit target.
+        let mesh = ogeom_mesh::triangulate_face(
+            &m,
+            &patch,
+            ogeom_mesh::Deflection {
+                chord: 2e-5,
+                ..ogeom_mesh::Deflection::default()
+            },
+            T,
+        )
+        .unwrap();
+        let past = mesh
+            .positions
+            .iter()
+            .map(|p| (-p.x).max(-p.y).max(p.z - 10.0))
+            .fold(f64::NEG_INFINITY, f64::max);
+        eprintln!(
+            "{order:?}: tangent within {worst} rad, {past} past the block's faces, volume {}",
+            vol(&m, &rounded.shape)
         );
+        assert!(
+            past <= 2e-4,
+            "{order:?}: the patch stands {past} outside the block"
+        );
+        volumes.push(vol(&m, &rounded.shape));
     }
+    for v in &volumes {
+        assert!((v - volumes[0]).abs() <= volumes[0] * 1e-9, "{volumes:?}");
+    }
+    let mut at = |r: f64| {
+        let request: Vec<(Shape, f64)> = edges.iter().cloned().map(|e| (e, r)).collect();
+        let s = fillet_edges_with(&mut m, &b, &request, T).unwrap().shape;
+        vol(&m, &s)
+    };
+    let (one, three) = (at(1.0), at(3.0));
+    assert!(
+        three < volumes[0] && volumes[0] < one,
+        "{three} < {} < {one}",
+        volumes[0]
+    );
 }
 
 /// A square pyramid, its apex at (0, 0, 10).

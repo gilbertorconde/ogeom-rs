@@ -322,18 +322,20 @@ fn a_setback_corner_leaving_an_edge_sharp_runs_its_patch_into_that_edge() {
     }
 }
 
-/// Corners whose patch, tangent to every band end and face, would stand
-/// past a face of the block (by 0.01 to 0.11): no net holds it within the
-/// vertex's planes, and each is refused by name rather than built outside
-/// the solid.
+/// Corners whose patch, tangent to every band end and face and fitted
+/// freely, stands past a face of the block (by 0.01 to 0.11): each is
+/// either closed with its patches held inside the vertex's planes, valid,
+/// tangent to every neighbour and within the block, or refused by name;
+/// never built outside the solid.
 #[test]
-fn a_sharp_corner_whose_patch_would_leave_the_block_is_refused_by_name() {
+fn a_sharp_corner_whose_free_patch_would_leave_the_block_closes_within_it_or_is_refused() {
     let cases: [SharpCase; 4] = [
         (2, 2.0, &[(2, 3.0)], 5.0),
         (2, 2.0, &[(0, 6.0), (1, 4.0), (2, 3.0)], 5.0),
         (1, 1.0, &[(0, 3.0), (2, 5.0)], 4.0),
         (0, 2.0, &[(1, 7.0)], 5.0),
     ];
+    let mut built = 0;
     for (sharp, radius, per_edge, default) in cases {
         let (mut m, b, v, edges) = block();
         let setbacks = Setbacks {
@@ -344,7 +346,7 @@ fn a_sharp_corner_whose_patch_would_leave_the_block_is_refused_by_name() {
             default,
             continuity: Continuity::G1,
         };
-        let refused = ogeom_fillet::round_vertex_setback_sharp(
+        let got = ogeom_fillet::round_vertex_setback_sharp(
             &mut m,
             &b,
             &v,
@@ -353,11 +355,49 @@ fn a_sharp_corner_whose_patch_would_leave_the_block_is_refused_by_name() {
             &setbacks,
             T,
         );
-        let Err(ogeom_core::OgeomError::NotDone(why)) = refused else {
-            panic!("{sharp} {radius} {per_edge:?}: built, or refused otherwise: {refused:?}");
-        };
-        eprintln!("{sharp} {radius} {per_edge:?}: {why}");
+        match got {
+            Ok(rounded) => {
+                valid(&m, &rounded.shape);
+                let mut worst = 0.0_f64;
+                let mut past = f64::NEG_INFINITY;
+                for patch in rounded.history.generated(&v) {
+                    for c in analyse_blend(&m, &rounded.shape, patch, 17, T).unwrap() {
+                        worst = worst.max(c.tangency_error);
+                    }
+                    let mesh = ogeom_mesh::triangulate_face(
+                        &m,
+                        patch,
+                        ogeom_mesh::Deflection {
+                            chord: 2e-5,
+                            ..ogeom_mesh::Deflection::default()
+                        },
+                        T,
+                    )
+                    .unwrap();
+                    for p in &mesh.positions {
+                        past = past.max((-p.x).max(-p.y).max(p.z - 10.0));
+                    }
+                }
+                eprintln!(
+                    "{sharp} {radius} {per_edge:?}: built, tangent within {worst} rad, {past} past the block"
+                );
+                assert!(
+                    worst < 2e-4,
+                    "{sharp} {radius} {per_edge:?}: tangent within {worst}"
+                );
+                assert!(
+                    past <= 2e-4,
+                    "{sharp} {radius} {per_edge:?}: {past} outside the block"
+                );
+                built += 1;
+            }
+            Err(ogeom_core::OgeomError::NotDone(why)) => {
+                eprintln!("{sharp} {radius} {per_edge:?}: refused: {why}");
+            }
+            Err(e) => panic!("{sharp} {radius} {per_edge:?}: refused otherwise: {e}"),
+        }
     }
+    eprintln!("{built} of 4 built within the block");
 }
 
 /// A sharp edge cut no farther from the vertex than the bands' rails stand
