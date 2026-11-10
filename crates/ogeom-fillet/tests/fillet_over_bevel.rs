@@ -179,10 +179,11 @@ fn length_and_turn() -> (f64, f64) {
 /// of `0.5 √2` the round is the ball's, and the corner it takes off is the
 /// section `r² (tan(π/8) - π/8)` swept along the top's crease, which, a
 /// constant offset of a crease turning through nothing, is as long as it.
-/// Past that width no ball touches the bevel itself, and the round is
-/// refused rather than seated on the bevel's surface continued past it.
+/// Past that width no ball touches the bevel itself: the round is not
+/// seated on the bevel's surface continued past it, and takes the bevel off
+/// whole instead, as the plain crease's round (`consumed_marched.rs`).
 #[test]
-fn a_round_beside_a_bevel_seats_on_the_bevel_or_is_refused() {
+fn a_round_beside_a_bevel_seats_on_the_bevel_or_takes_it_off_whole() {
     let (length, turn) = length_and_turn();
     assert!(turn.abs() < 1e-12, "{turn}");
     let eighth = core::f64::consts::FRAC_PI_8;
@@ -197,20 +198,14 @@ fn a_round_beside_a_bevel_seats_on_the_bevel_or_is_refused() {
         // The top / bevel edge, half a millimetre in from the crease over
         // the spline's middle.
         let edge = edge_near(&m, &bevelled, [5.0, 6.0, -1.0]);
-        let built = fillet_edges(&mut m, &bevelled, &[edge], radius, T);
-        if !fits {
-            let refused = built.expect_err("no ball touches the bevel itself");
-            assert!(
-                refused.to_string().contains("does not reach so far"),
-                "{refused}"
-            );
-            continue;
-        }
-        let built = built.unwrap();
+        let built = fillet_edges(&mut m, &bevelled, &[edge], radius, T).unwrap();
         let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
         assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
-        let expected =
-            before - 0.5 * 0.5 * 0.5 * length - radius * radius * (eighth.tan() - eighth) * length;
+        let expected = if fits {
+            before - 0.5 * 0.5 * 0.5 * length - radius * radius * (eighth.tan() - eighth) * length
+        } else {
+            before - radius * radius * (1.0 - core::f64::consts::FRAC_PI_4) * length
+        };
         let v = vol(&m, &built.shape);
         assert!(
             (v - expected).abs() <= 1e-6 * expected,

@@ -13,6 +13,28 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A round on an open marched seat takes a bevel beside it off whole.**
+  (#719)
+  - A slab whose crease follows an S-shaped spline, bevelled 0.5 and then
+    rounded 2 or 3 from either edge of the bevel, was refused ("sets back
+    0.83 across a face that does not reach so far"). It now equals the
+    plain crease rounded alike, `r² (1 - π/4) L` off, within 1e-6 relative
+    (about 1e-7 in 441.37).
+  - The strip may run out at the solid's end faces; the face beyond is the
+    one sharing the most of the strip's edge length, and the checks behind
+    the strip hold between the run's end caps. The built solid must check
+    valid or the round is refused.
+  - Where the contact line's chart image misses its 1e-9 fit, this path
+    alone retries: first accepting the image if its lifted 3D gap stays
+    within ten times the confusion tolerance, then fitting line and image
+    at the band's fit target (2e-4), the target every marched band's rails
+    already meet, and stating the measured gap as the edge's tolerance.
+    `fillet_faces` and every round built today keep the first try alone
+    and are unchanged.
+  - A bevelled elliptic slab stays refused, for causes of its own: the
+    contact line does not cross its face from boundary to boundary, and
+    the ball does not seat between two stations of its march.
+
 - **`StepImport::faces`: the file's own id for every face read.** (#794)
   - Every face a STEP read builds, with its `ADVANCED_FACE` or
     `FACE_SURFACE` id, in id order, each the face as the solids and shells

@@ -57,6 +57,19 @@ pub(crate) struct Hosts {
     /// One where the face runs with its surface's normal, minus one where
     /// it runs against it.
     signs: [f64; 2],
+    /// Whether a line of contact whose fit misses ten confusion distances,
+    /// or whose chart image misses a thousandth of that, may be taken held
+    /// to the round's own fit: for a caller that checks what it builds.
+    loose: bool,
+}
+
+impl Hosts {
+    /// These hosts, a line of contact on them taken at the round's own fit
+    /// where the tighter fit misses (see [`contact_cut`]).
+    pub(crate) fn loosened(mut self) -> Self {
+        self.loose = true;
+        self
+    }
 }
 
 /// The two faces' surfaces, carried on past the faces once for every seat
@@ -114,6 +127,7 @@ pub(crate) fn hosts_of(
         ids: [ids[0], ids[1]],
         surfaces: [first, second],
         signs,
+        loose: false,
     })
 }
 
@@ -1249,32 +1263,23 @@ fn contact_line(
     Ok(best)
 }
 
-/// The face cut along the ball's line of contact: the touch points fitted
-/// at the guide's parameters with their places in the face's chart.
-/// `None` where the line misses the face.
-#[allow(clippy::too_many_arguments, reason = "one cut, all its data")]
-fn contact_cut(
-    model: &mut Model,
-    face: &Shape,
-    f: usize,
+/// The ball's line of contact on face `f` held to `target`, its image in
+/// the face's chart at the same parameters, unwrapped across a periodic
+/// chart's seam and fitted to a thousandth of `target`.
+#[allow(clippy::too_many_arguments, reason = "one line, all its data")]
+fn contact_image(
     blend: &MarchedBlend,
+    f: usize,
     hosts: &Hosts,
     guide: &Curve,
     radius: f64,
+    target: f64,
     tol: Tolerances,
-) -> OgeomResult<Option<ContactCut>> {
+) -> OgeomResult<(ContactLine, ogeom_geom::fit::Fitted<ogeom_geom::BSpline2d>)> {
     let surface = &hosts.surfaces[f];
-    let target = tol.confusion() * 10.0;
-    let ContactLine {
-        along,
-        on,
-        line,
-        error,
-    } = contact_line(blend, f, hosts, guide, radius, target, tol)?;
-    // The chart image at the same parameters, unwrapped across a periodic
-    // chart's seam.
+    let fitted = contact_line(blend, f, hosts, guide, radius, target, tol)?;
     let ((u0, u1), (v0, v1)) = surface.domain();
-    let mut chart: Vec<Point2> = on.iter().map(|&(u, v)| Point2::new(u, v)).collect();
+    let mut chart: Vec<Point2> = fitted.on.iter().map(|&(u, v)| Point2::new(u, v)).collect();
     for (periodic, span, pick) in [
         (surface.is_periodic_u(), u1 - u0, 0),
         (surface.is_periodic_v(), v1 - v0, 1),
@@ -1299,19 +1304,87 @@ fn contact_cut(
             }
         }
     }
-    let image = ogeom_geom::fit::fit_points_2d_at(&along, &chart, 3, target * 1e-3, tol)?;
-    if !image.met {
-        ogeom_bail!(
+    let image = ogeom_geom::fit::fit_points_2d_at(&fitted.along, &chart, 3, target * 1e-3, tol)?;
+    Ok((fitted, image))
+}
+
+/// The face cut along the ball's line of contact: the touch points fitted
+/// at the guide's parameters with their places in the face's chart.
+/// `None` where the line misses the face.
+#[allow(clippy::too_many_arguments, reason = "one cut, all its data")]
+fn contact_cut(
+    model: &mut Model,
+    face: &Shape,
+    f: usize,
+    blend: &MarchedBlend,
+    hosts: &Hosts,
+    guide: &Curve,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<ContactCut>> {
+    let surface = &hosts.surfaces[f];
+    // Ten confusion distances along the face, a thousandth of that in its
+    // chart. On loosened hosts, where only the chart image misses, it is
+    // taken where, lifted onto the face, it stays within the line's own
+    // target of the line: the chart's units are not lengths, the lifted gap
+    // is. Where the line itself misses, it and its image are held to the
+    // round's own fit, to which the band's rails and corners are widened.
+    // The edge states the gap it measures either way.
+    let strict = tol.confusion() * 10.0;
+    let usable = band_fit_target(tol);
+    let lifted = |fitted: &ContactLine, image: &ogeom_geom::BSpline2d| -> OgeomResult<f64> {
+        let domain = (fitted.along[0], fitted.along[fitted.along.len() - 1]);
+        ogeom_algo::pcurve_fit::lifted_gap(
+            (&Curve::BSpline(fitted.line.clone()), domain),
+            (&PlanarCurve::from(image.clone()), domain),
+            surface,
+            false,
+            tol,
+        )
+    };
+    let first = match contact_image(blend, f, hosts, guide, radius, strict, tol) {
+        Ok((fitted, image)) if image.met => Ok(Some((fitted, image.curve))),
+        Ok((fitted, image)) if hosts.loose => {
+            if lifted(&fitted, &image.curve)? <= strict {
+                Ok(Some((fitted, image.curve)))
+            } else {
+                Ok(None)
+            }
+        }
+        Ok((_, image)) => ogeom_bail!(
             NotDone,
             "the chart image of the ball's line of contact on a face reached {} against a \
              target of {}",
             image.error,
-            target * 1e-3
-        );
-    }
+            strict * 1e-3
+        ),
+        Err(OgeomError::NotDone(why)) if hosts.loose => Err(why),
+        Err(e) => return Err(e),
+    };
+    let (target, ContactLine { line, error, .. }, image) = match first {
+        Ok(Some((fitted, image))) => (strict, fitted, image),
+        missed => {
+            let refusal = || match &missed {
+                Err(why) => OgeomError::NotDone(why.clone()),
+                _ => ogeom_core::ogeom_err!(
+                    NotDone,
+                    "the chart image of the ball's line of contact on a face stands farther \
+                     from the line, lifted, than its target of {strict}"
+                ),
+            };
+            let Ok((fitted, image)) = contact_image(blend, f, hosts, guide, radius, usable, tol)
+            else {
+                return Err(refusal());
+            };
+            if lifted(&fitted, &image.curve)? > usable {
+                return Err(refusal());
+            }
+            (usable, fitted, image.curve)
+        }
+    };
     let line = Curve::BSpline(line);
     let domain = line.domain();
-    let image = PlanarCurve::from(image.curve);
+    let image = PlanarCurve::from(image);
     // The line and its image were fitted apart through the same stations;
     // the edge states how far the image, lifted, stands from the line
     // anywhere along it, how far the line stands from the ball's true
@@ -2635,6 +2708,7 @@ mod tests {
             ids,
             surfaces,
             signs: [1.0, sign],
+            loose: false,
         }
     }
 
