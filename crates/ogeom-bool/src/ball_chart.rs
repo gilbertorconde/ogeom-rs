@@ -42,16 +42,24 @@ struct Ball {
     x: Vector,
 }
 
+/// How many charts of a ball whose poles stand clear of the other operand
+/// a boolean is tried on, the best first, before it is refused.
+const CHARTS_TRIED: usize = 6;
+
 /// `run` on the operands, where either is or holds a whole ball or a sphere
 /// face with a pole on or beside the other's surfaces, with that ball or
 /// face first charted about an axis whose poles stand clear; the history
 /// then runs from the operands as given. Otherwise `run` on the operands
 /// as given.
 ///
-/// Where the turned run refuses, the boolean is refused by name: on the
-/// chart the operands come with, a section beside a pole can close where
-/// the chart's longitude has collapsed and give a cut that is valid but
-/// short, or a face wound inward, so that run's result is not taken.
+/// Where the run on the best such chart refuses, it is run on the next
+/// best, up to [`CHARTS_TRIED`] charts: each is the same ball, restated
+/// exactly, so any that resolves the boolean resolves it rightly. Where
+/// every one refuses, the boolean is refused by name, the last refusal
+/// with it. The chart the operands come with is not taken: there a
+/// section beside a pole can close where the chart's longitude has
+/// collapsed, and give a cut that is valid but short, or a face wound
+/// inward.
 pub(crate) fn with_poles_clear(
     model: &mut Model,
     a: &Shape,
@@ -63,9 +71,13 @@ pub(crate) fn with_poles_clear(
     if crate::work::is_unturned() {
         return run(model, a, b);
     }
-    if let Some((ta, tb, before)) = turned(model, a, b, tol)? {
+    let mut last: Option<OgeomError> = None;
+    for rank in 0..CHARTS_TRIED {
+        let Some((ta, tb, before)) = turned(model, a, b, rank, tol)? else {
+            break;
+        };
         #[cfg(feature = "test-hooks")]
-        let refused = crate::work::is_turn_refused();
+        let refused = crate::work::is_turn_refused(rank);
         #[cfg(not(feature = "test-hooks"))]
         let refused = false;
         let result = if refused {
@@ -76,18 +88,22 @@ pub(crate) fn with_poles_clear(
         } else {
             run(model, &ta, &tb)
         };
-        return match result {
-            Ok(built) => Ok(Built::new(built.shape, before.then(&built.history))),
-            Err(e @ (OgeomError::Cancelled | OgeomError::Dangling(_))) => Err(e),
-            Err(e) => Err(ogeom_core::ogeom_err!(
-                NotDone,
-                "a ball's pole stands on or beside the other operand, and the boolean on the \
-                 ball charted clear of its poles is refused ({e}); on its own chart a section \
-                 beside a pole is not resolved soundly; see docs/CAPABILITIES.md, bool.booleans"
-            )),
-        };
+        match result {
+            Ok(built) => return Ok(Built::new(built.shape, before.then(&built.history))),
+            Err(e @ (OgeomError::Cancelled | OgeomError::Dangling(_))) => return Err(e),
+            Err(e) => last = Some(e),
+        }
     }
-    run(model, a, b)
+    match last {
+        Some(e) => Err(ogeom_core::ogeom_err!(
+            NotDone,
+            "a ball's pole stands on or beside the other operand, and the boolean on every \
+             chart of the ball whose poles stand clear of it is refused (the last: {e}); on \
+             its own chart a section beside a pole is not resolved soundly; see \
+             docs/CAPABILITIES.md, bool.booleans"
+        )),
+        None => run(model, a, b),
+    }
 }
 
 /// The operands with each whole ball whose pole stands on or beside the
@@ -97,13 +113,14 @@ fn turned(
     model: &mut Model,
     a: &Shape,
     b: &Shape,
+    rank: usize,
     tol: Tolerances,
 ) -> OgeomResult<Option<(Shape, Shape, History)>> {
     let mut before = History::new();
     let mut any = false;
     let (mut ta, mut tb) = (a.clone(), b.clone());
     for (operand, other) in [(&mut ta, b), (&mut tb, a)] {
-        if let Some((made, history)) = operand_turned(model, operand, other, tol)? {
+        if let Some((made, history)) = operand_turned(model, operand, other, rank, tol)? {
             before = before.then(&history);
             *operand = made;
             any = true;
@@ -120,6 +137,7 @@ fn operand_turned(
     model: &mut Model,
     operand: &Shape,
     other: &Shape,
+    rank: usize,
     tol: Tolerances,
 ) -> OgeomResult<Option<(Shape, History)>> {
     if model.kind_of(operand)? == ShapeType::Compound {
@@ -127,7 +145,7 @@ fn operand_turned(
         let mut any = false;
         let mut members = Vec::new();
         for member in model.children_of(operand)? {
-            if let Some((made, history)) = operand_turned(model, &member, other, tol)? {
+            if let Some((made, history)) = operand_turned(model, &member, other, rank, tol)? {
                 before = before.then(&history);
                 members.push(made);
                 any = true;
@@ -143,7 +161,7 @@ fn operand_turned(
         return Ok(Some((made, before)));
     }
     let Some(ball) = whole_ball(model, operand, tol)? else {
-        return faces_turned(model, operand, other, tol);
+        return faces_turned(model, operand, other, rank, tol);
     };
     let walls = walls_of(model, other, tol)?;
     let clearance = |p: Point| clearance_of(&walls, p, tol);
@@ -154,27 +172,27 @@ fn operand_turned(
         return Ok(None);
     }
     // Candidate axes in the ball's own frame: its other two axes, the
-    // diagonals of each pair, and the four diagonals of the cube. The
-    // one whose nearer pole stands furthest from the other's surfaces.
+    // diagonals of each pair, and the four diagonals of the cube, ranked by
+    // how far the nearer pole stands from the other's surfaces (the earlier
+    // candidate first among equals). The axis of rank `rank` among those
+    // whose poles stand clear: the best at rank 0.
     let candidates = candidate_axes(ball.x, ball.axis);
     let x = ball.x;
     let y = ball.axis.cross(ball.x);
-    let mut best: Option<(f64, Vector)> = None;
+    let mut ranked: Vec<(f64, Vector)> = Vec::new();
     for candidate in candidates {
         let Ok(axis) = candidate.normalized(tol) else {
             continue;
         };
         let score = poles(axis);
-        if best.is_none_or(|(s, _)| score > s) {
-            best = Some((score, axis));
+        if score > ball.radius * TOUCHING {
+            ranked.push((score, axis));
         }
     }
-    let Some((score, axis)) = best else {
+    ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let Some(&(_, axis)) = ranked.get(rank) else {
         return Ok(None);
     };
-    if score <= ball.radius * TOUCHING {
-        return Ok(None);
-    }
     // The seam on the side of the new axis that stands furthest from
     // the other's surfaces, read at the seam's point on the equator.
     let across = if axis.cross(x).magnitude() > 0.5 {
@@ -399,6 +417,7 @@ fn faces_turned(
     model: &mut Model,
     solid: &Shape,
     other: &Shape,
+    rank: usize,
     tol: Tolerances,
 ) -> OgeomResult<Option<(Shape, History)>> {
     if model.kind_of(solid)? != ShapeType::Solid {
@@ -427,7 +446,7 @@ fn faces_turned(
         let baked = ogeom_algo::baked_shape(model, solid, tol)?;
         (baked.shape, Some(baked.history))
     };
-    let Some((made, records)) = rigid_faces_turned(model, &target, other, tol)? else {
+    let Some((made, records)) = rigid_faces_turned(model, &target, other, rank, tol)? else {
         return Ok(None);
     };
     let mut history = History::new();
@@ -449,6 +468,7 @@ fn rigid_faces_turned(
     model: &mut Model,
     solid: &Shape,
     other: &Shape,
+    rank: usize,
     tol: Tolerances,
 ) -> OgeomResult<Option<(Shape, Vec<Record>)>> {
     // The solid's own node is restated in its own frame, `other`'s walls
@@ -482,7 +502,7 @@ fn rigid_faces_turned(
                             .collect::<OgeomResult<_>>()?,
                     ),
                 };
-                if let Some((new, cut)) = face_turned(model, face, &pinned, walls, tol)? {
+                if let Some((new, cut)) = face_turned(model, face, &pinned, walls, rank, tol)? {
                     records.push((face.clone(), Some(new.clone())));
                     for gone in &pinned.dropped {
                         records.push((gone.clone(), None));
@@ -754,6 +774,7 @@ fn face_turned(
     face: &Shape,
     pinned: &Pinned,
     walls: &[SurfaceGeometry],
+    rank: usize,
     tol: Tolerances,
 ) -> OgeomResult<Option<(Shape, Vec<Split>)>> {
     // The curved walls rank the candidate axes, as for a face no plane
@@ -800,9 +821,14 @@ fn face_turned(
         }
     }
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+    // The restatement of rank `rank` among those that hold: the best at 0.
+    let mut held = 0;
     for (_, axis) in scored {
         if let Some(made) = restated(model, face, pinned, axis, &clearance, None, tol)? {
-            return Ok(Some(made));
+            if held == rank {
+                return Ok(Some(made));
+            }
+            held += 1;
         }
     }
     Ok(None)

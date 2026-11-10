@@ -42,7 +42,7 @@ thread_local! {
     };
     static UNSEATED: Cell<bool> = const { Cell::new(false) };
     static UNTURNED: Cell<bool> = const { Cell::new(false) };
-    static TURN_REFUSED: Cell<bool> = const { Cell::new(false) };
+    static TURN_REFUSED: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Run `f` and count the work the booleans it runs on this thread do.
@@ -101,20 +101,28 @@ pub(crate) fn is_unturned() -> bool {
 }
 
 /// Run `f` with every boolean on this thread that restates a ball or a
-/// sphere face on a chart whose poles stand clear taking that run as
-/// refused, as if the turned operands had not resolved.
+/// sphere face on a chart whose poles stand clear taking the run on the
+/// best such chart as refused, as if the turned operands had not resolved
+/// there: the next best is then tried.
 pub fn turn_refused<R>(f: impl FnOnce() -> R) -> R {
-    struct Restore(bool);
+    turns_refused(1, f)
+}
+
+/// [`turn_refused`], with the runs on the `count` best charts taken as
+/// refused.
+pub fn turns_refused<R>(count: usize, f: impl FnOnce() -> R) -> R {
+    struct Restore(usize);
     impl Drop for Restore {
         fn drop(&mut self) {
             TURN_REFUSED.set(self.0);
         }
     }
-    let _restore = Restore(TURN_REFUSED.replace(true));
+    let _restore = Restore(TURN_REFUSED.replace(count));
     f()
 }
 
-/// Whether the booleans on this thread take a turned run as refused.
-pub(crate) fn is_turn_refused() -> bool {
-    TURN_REFUSED.get()
+/// Whether the booleans on this thread take the run on the chart of rank
+/// `rank` (the best at 0) as refused.
+pub(crate) fn is_turn_refused(rank: usize) -> bool {
+    rank < TURN_REFUSED.get()
 }

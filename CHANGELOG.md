@@ -11,6 +11,24 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A boolean on a ball whose pole stands beside the other operand is
+  tried on the ball's next charts clear of it before it is refused.**
+  (#835)
+  - Such a boolean runs on the ball restated about an axis whose poles
+    stand clear of the other operand. Where that run refused, the boolean
+    was refused (#842), since the ball's own chart can give a cut that is
+    valid but short beside a pole.
+  - It is now tried on the next best of those charts, up to six, each the
+    same ball restated exactly, so any that resolves the boolean resolves
+    it rightly. Only where every one refuses is the boolean refused by
+    name, the last refusal with it. The own chart is never taken.
+  - On a ball of radius 10 drilled with the wall from 1e-6 to 3e-4 of the
+    drill's radius off both poles, at 392 placements, with the best chart's
+    run taken as refused: every cut and common is valid and holds the exact
+    volume to 1e-14.
+
 ## [0.18.0] - 2026-11-10
 
 A minor release: `StepImport` gains a public `faces` field, so code that
