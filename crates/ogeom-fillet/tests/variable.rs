@@ -1323,8 +1323,8 @@ fn a_linear_law_rounds_a_re_entrant_corner_beside_a_drafted_wall() {
         let Some((c, (a, b))) = ogeom_algo::placed_edge_curve(&model, &e, T).unwrap() else {
             continue;
         };
-        for i in 0..=32 {
-            let p = c.point_at(a + (b - a) * f64::from(i) / 32.0, T).unwrap();
+        for i in 0..=128 {
+            let p = c.point_at(a + (b - a) * f64::from(i) / 128.0, T).unwrap();
             if (p.z - 10.0).abs() > 1e-9 || p.distance(Point::new(10.0, 10.0, 10.0)) < 4.0 {
                 continue;
             }
@@ -1503,4 +1503,83 @@ fn a_variable_radius_refuses_by_name_what_it_does_not_round() {
         let why = refusal(fillet_edges_variable(&mut model, &half, &two[..1], &law, T));
         assert!(why.contains(says), "{why}");
     }
+}
+
+#[test]
+#[ignore = "probe"]
+fn probe_798() {
+    let end: f64 = std::env::var("OGEOM_798_END").unwrap().parse().unwrap();
+    let rev = std::env::var("OGEOM_798_REV").is_ok_and(|v| !v.is_empty());
+    let mut model = Model::new();
+    let l = drafted_l(&mut model);
+    let mut chain = vec![
+        edge_near(&model, &l, [15.0, 10.0, 10.0]),
+        edge_near(&model, &l, [10.0, 15.0, 10.0]),
+    ];
+    if rev {
+        chain.reverse();
+    }
+    let law = RadiusLaw::Linear { start: 1.0, end };
+    let r = fillet_edges_variable(&mut model, &l, &chain, &law, T);
+    eprintln!("PROBE end {end} rev {rev}: {:?}", r.as_ref().err());
+}
+
+#[test]
+#[ignore = "probe"]
+fn probe_798_loop() {
+    let peak: f64 = std::env::var("OGEOM_798_END").unwrap().parse().unwrap();
+    let at0: f64 = std::env::var("OGEOM_798_AT").map_or(0.0, |v| v.parse().unwrap());
+    let mut model = Model::new();
+    let l = drafted_l(&mut model);
+    let top: Vec<Shape> = [
+        [10.0, 0.0],
+        [20.0, 5.0],
+        [15.0, 10.0],
+        [10.0, 15.0],
+        [5.0, 20.0],
+        [0.0, 10.0],
+    ]
+    .iter()
+    .map(|[x, y]| edge_near(&model, &l, [*x, *y, 10.0]))
+    .collect();
+    let law = RadiusLaw::Points(vec![(at0, 1.0), (at0 + 0.5, peak)]);
+    let r = fillet_edges_variable(&mut model, &l, &top, &law, T);
+    eprintln!(
+        "PROBE loop peak {peak} at {at0}: {:?}",
+        r.as_ref()
+            .err()
+            .map(|e| e.to_string().chars().take(80).collect::<String>())
+    );
+}
+
+#[test]
+#[ignore = "probe"]
+fn probe_798_convex() {
+    let end: f64 = std::env::var("OGEOM_798_END").unwrap().parse().unwrap();
+    let mut model = Model::new();
+    let l = drafted_l(&mut model);
+    let chain = vec![
+        edge_near(&model, &l, [10.0, 15.0, 10.0]),
+        edge_near(&model, &l, [5.0, 20.0, 10.0]),
+    ];
+    let law = RadiusLaw::Linear { start: 1.0, end };
+    let r = fillet_edges_variable(&mut model, &l, &chain, &law, T);
+    eprintln!(
+        "PROBE convex end {end}: {:?}",
+        r.as_ref()
+            .err()
+            .map(|e| e.to_string().chars().take(80).collect::<String>())
+    );
+    let three = vec![
+        edge_near(&model, &l, [15.0, 10.0, 10.0]),
+        edge_near(&model, &l, [10.0, 15.0, 10.0]),
+        edge_near(&model, &l, [5.0, 20.0, 10.0]),
+    ];
+    let r = fillet_edges_variable(&mut model, &l, &three, &law, T);
+    eprintln!(
+        "PROBE three end {end}: {:?}",
+        r.as_ref()
+            .err()
+            .map(|e| e.to_string().chars().take(80).collect::<String>())
+    );
 }
