@@ -2696,6 +2696,103 @@ fn on_boundary(model: &Model, solid: &Shape, point: Point, tol: Tolerances) -> O
     Ok(false)
 }
 
+/// A planar face of `solid` through `at` (a vertex of it there) standing
+/// oblique to a crease leaving `at` along the unit `ahead`: its normal
+/// neither square to `ahead` (a face continuing the crease, or holding it)
+/// nor along it (a face square to the crease, which a section there caps
+/// flush). The face's plane as a point on it and its unit normal facing
+/// back over the crease, where one does.
+pub(crate) fn oblique_end_face(
+    model: &Model,
+    solid: &Shape,
+    at: Point,
+    ahead: Vector,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Point, Vector)>> {
+    use ogeom_geom::Transformable as _;
+    let near = tol.confusion() * 1e3;
+    for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
+        let Some(NodeData::Face(data)) = model.node(&face).map(|n| n.data()) else {
+            continue;
+        };
+        let Some(SurfaceGeometry::Plane(plane)) = model.geometry().surface(data.surface) else {
+            continue;
+        };
+        let SurfaceGeometry::Plane(placed) =
+            SurfaceGeometry::Plane(*plane).transformed(&face.transform(model.datums())?, tol)?
+        else {
+            continue;
+        };
+        let plane = placed.plane();
+        if plane.signed_distance_to(at).abs() > tol.confusion() * 10.0 {
+            continue;
+        }
+        let mut meets = false;
+        for v in explore(model, &face, Filter::OfType(ShapeType::Vertex))? {
+            if let Some(NodeData::Vertex(d)) = model.node(&v).map(|n| n.data())
+                && v.transform(model.datums())?.apply(d.point).distance(at) <= near
+            {
+                meets = true;
+                break;
+            }
+        }
+        let normal = plane.normal().vector();
+        let lean = normal.dot(ahead).abs();
+        if meets && lean > 1e-6 && lean < 1.0 - 1e-6 {
+            let back = if normal.dot(ahead) > 0.0 {
+                -normal
+            } else {
+                normal
+            };
+            return Ok(Some((plane.origin(), back)));
+        }
+    }
+    Ok(None)
+}
+
+/// How far past an end a band runs out across the oblique face
+/// `(on, back)` the crease ends on, as a straight band's run-out is read:
+/// `section(t)` the band's section corners (the crease and its two
+/// contacts, each on a host) `t` past the end, read a hundredth of the way
+/// in towards the others, stepping `step` at a time while `t` stays within
+/// `reach`. The first `t` at which all three stand clear of the material,
+/// two steps further; `None` where a corner leaves the material other than
+/// across that face (a ledge), or the section is not clear within `reach`
+/// (a step), where the band stops at the end.
+pub(crate) fn run_out_past(
+    model: &Model,
+    solid: &Shape,
+    (on, back): (Point, Vector),
+    step: f64,
+    reach: f64,
+    section: &dyn Fn(f64) -> OgeomResult<[Point; 3]>,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let probe = material_probe(model, solid, tol)?;
+    let mut k = 1.0_f64;
+    while k * step <= reach {
+        let [a, b, c] = section(k * step)?;
+        let inside = [
+            a + ((b - a) + (c - a)) * 0.01,
+            b + ((a - b) + (c - b)) * 0.01,
+            c + ((a - c) + (b - c)) * 0.01,
+        ];
+        let mut clear = true;
+        for p in inside {
+            if probe.holds(model, p, tol)? == ogeom_algo::Containment::In {
+                clear = false;
+            } else if (p - on).dot(back) > tol.confusion() {
+                return Ok(None);
+            }
+        }
+        if clear {
+            return Ok(Some((k + 2.0) * step));
+        }
+        k += 1.0;
+    }
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "test code")]

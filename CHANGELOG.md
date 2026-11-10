@@ -1053,6 +1053,23 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`blend_faces` and `chamfer_edges` round and bevel an arc of a rim ending
+  obliquely on a face without leaving a sliver.** (#836)
+  - Both stopped the band in the section through the end: `blend_faces`'
+    swept corner where the solid's edges along the crease end, and a
+    chamfer along an arc of a rim in the meridian half-plane. Where that
+    end meets a planar face oblique to the crease (a drum's foot running
+    off a block's side), the corner between that section and the face
+    stayed unfilled or uncut, as #829's edge round left it. Each now runs
+    on past such an end until its section has left the solid across that
+    face within four radii (four of the bevel's longer leg), as a straight
+    band's run-out is read, and is cut back to the face's plane. A run
+    that would close the turn running on keeps its ends.
+  - A drum of radius 6 standing 0.5 past a block's side: the face blend of
+    its wall and the top fills 16.526061, the edge round's figure and the
+    corner over the block integrated (it filled 16.461948); a chamfer of
+    legs 2 cuts the triangle over the block, 39.885995 integrated (it cut
+    39.663100).
 - **A setback corner's patch no longer stands outside the solid.** (#839)
   - The N-sided patch that closes a convex setback corner was fitted
     tangent to every band end and face, but nothing kept it within the

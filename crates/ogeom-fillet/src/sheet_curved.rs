@@ -2375,6 +2375,7 @@ pub(crate) fn corner_wedge(
              the round to take off or fill"
         );
     };
+    let mut stopped = [false, false];
     let (s0, turn) = match seat.span {
         Some((mut lo, mut hi)) => {
             let ends = crate::pair_marched::crease_edge_ends(
@@ -2387,13 +2388,66 @@ pub(crate) fn corner_wedge(
             )?;
             if let Some((s, _)) = ends[0] {
                 lo = s;
+                stopped[0] = true;
             }
             if let Some((s, _)) = ends[1] {
                 hi = s;
+                stopped[1] = true;
             }
             (lo, hi - lo)
         }
         None => (0.0, TAU),
+    };
+    // Where the crease's edges end on a planar face oblique to the crease,
+    // the section there would stop short of the face and leave the corner
+    // between them: the sweep runs on past that end until its section has
+    // left the solid across that face, within four radii, as a straight
+    // band's run-out is read, and the wedge is cut back to the face's
+    // plane. The run the round is read over stays the crease's own.
+    let run = (s0, turn);
+    let (s0, turn, trims) = {
+        let speed = {
+            let h = 1e-6;
+            layout
+                .lift(crease, s0 + h)
+                .distance(layout.lift(crease, s0))
+                / h
+        };
+        let mut window = [s0, s0 + turn];
+        let mut trims = Vec::new();
+        for (slot, sign) in [(0_usize, -1.0), (1, 1.0)] {
+            if !stopped[slot] || speed <= tol.confusion() {
+                continue;
+            }
+            let end = window[slot];
+            let at = layout.lift(crease, end);
+            let ahead = (layout.lift(crease, end + sign * 1e-6) - at) / (1e-6 * speed);
+            let Some(face) = crate::support::oblique_end_face(model, solid, at, ahead, tol)? else {
+                continue;
+            };
+            let step = exact.radius / 8.0 / speed;
+            let reach = 4.0 * exact.radius / speed;
+            let section = |t: f64| {
+                let s = end + sign * t;
+                Ok([
+                    layout.lift(crease, s),
+                    exact.contact(0, s),
+                    exact.contact(1, s),
+                ])
+            };
+            if let Some(past) =
+                crate::support::run_out_past(model, solid, face, step, reach, &section, tol)?
+            {
+                window[slot] = end + sign * past;
+                trims.push(face);
+            }
+        }
+        // A run that would close the turn running on keeps its ends.
+        if layout.turns() && window[1] - window[0] >= TAU - tol.angular() {
+            (s0, turn, Vec::new())
+        } else {
+            (window[0], window[1] - window[0], trims)
+        }
     };
     for contact in section.contacts {
         if norm2(sub2(contact, crease)) <= tol.confusion() {
@@ -2456,7 +2510,7 @@ pub(crate) fn corner_wedge(
         &[legs[0].clone(), arc, legs[1].reversed()],
         tol,
     )?;
-    let wedge = match layout {
+    let mut wedge = match layout {
         Layout::Extruded { along, .. } => {
             ogeom_algo::make_prism(model, &face, along * turn, tol)?.shape
         }
@@ -2468,6 +2522,9 @@ pub(crate) fn corner_wedge(
             ogeom_algo::make_revolution(model, &face, axis, turn, tol)?.shape
         }
     };
+    for plane in trims {
+        wedge = crate::support::trimmed_wedge(model, &wedge, plane, reach * 4.0, tol)?;
+    }
 
     // Just off the middle of the ball's arc, toward the crease.
     let bisector = add2(
@@ -2483,11 +2540,11 @@ pub(crate) fn corner_wedge(
     let off = gap.min(exact.radius) * 0.1;
     let probe = add2(on_arc, scale2(toward, off));
     let within = add2(on_arc, scale2(bisector, -off / norm2(bisector)));
-    let middle = s0 + turn / 2.0;
+    let middle = run.0 + run.1 / 2.0;
     Ok((
         wedge,
         [layout.lift(probe, middle), layout.lift(within, middle)],
-        (s0, turn),
+        run,
     ))
 }
 
