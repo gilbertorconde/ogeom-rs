@@ -1516,3 +1516,42 @@ fn a_ball_drilled_with_a_loop_starting_beside_its_pole_closes_in_one_lap() {
     let wall = 1.0 - 2e-5;
     ogeom_bool::work::unturned(|| drilled(Vector::new(0.0, -wall, 0.0), 1.0)).unwrap();
 }
+
+/// The drills within 4e-5 of the radius off both poles whose cut or common
+/// on the ball's own chart is valid but short or wound inward. Where the
+/// boolean on the ball charted clear of its poles is refused, the boolean
+/// is refused by name rather than taken on the own chart; on the turned
+/// chart each one cuts at the closed forms.
+#[test]
+fn a_refused_turned_run_beside_a_pole_is_refused_not_taken_on_the_own_chart() {
+    let s = core::f64::consts::FRAC_1_SQRT_2;
+    let r = 2.664_527_471_227_642;
+    let mut failures = Vec::new();
+    for (dx, dy, radius, rel) in [
+        (1.0, 0.0, 6.0, 3e-6),
+        (0.0, 1.0, 6.0, -2e-5),
+        (0.0, -1.0, 1.0, -4e-5),
+        (0.0, -1.0, r, -2e-5),
+        (0.0, -1.0, r, -1e-6),
+        (0.0, -1.0, r, 1e-6),
+        (0.0, -1.0, r, 2e-5),
+        (s, s, r, -4e-5),
+        (s, s, 6.0, 3e-6),
+        (s, s, 6.0, 1e-5),
+        (s, s, 6.0, 2e-5),
+        (0.6, -0.8, 6.0, 4e-5),
+    ] {
+        let wall = radius * (1.0 + rel);
+        let offset = Vector::new(dx * wall, dy * wall, 0.0);
+        match ogeom_bool::work::turn_refused(|| drilled(offset, radius)) {
+            Err(e) if e.contains("charted clear of its poles is refused") => {}
+            got => failures.push(format!(
+                "({dx}, {dy}) r {radius} at {rel:e}, refused turn: {got:?}"
+            )),
+        }
+        if let Err(e) = drilled(offset, radius) {
+            failures.push(format!("({dx}, {dy}) r {radius} at {rel:e}, turned: {e}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

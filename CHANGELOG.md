@@ -1053,6 +1053,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A boolean on a ball whose pole stands beside the other operand is
+  refused by name where the ball's turned chart does not resolve it,
+  rather than taken on the ball's own chart.** (#835)
+  - On its own chart, a ball drilled with the wall within 4e-5 of its
+    radius off both poles gave, at 12 of 392 placements, a cut that was
+    valid but short (by up to 0.17 of 4188.79) or a face wound inward.
+    Every boolean on such a ball is first run on a chart turned clear of
+    its poles, where all 392 are right; only where that run refused was
+    the own chart's result taken.
+  - That fallback now refuses, naming the turned run's refusal. No test
+    in the workspace and no solid of the real-world imports reaches it.
+
 - **A law round a rim crossing a bevel's width is refused by name.**
   (#798)
   - A drum's rim bevelled 0.3, the bevel's lower edge rounded under a

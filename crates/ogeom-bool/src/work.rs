@@ -42,6 +42,7 @@ thread_local! {
     };
     static UNSEATED: Cell<bool> = const { Cell::new(false) };
     static UNTURNED: Cell<bool> = const { Cell::new(false) };
+    static TURN_REFUSED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Run `f` and count the work the booleans it runs on this thread do.
@@ -97,4 +98,23 @@ pub fn unturned<R>(f: impl FnOnce() -> R) -> R {
 /// they come with.
 pub(crate) fn is_unturned() -> bool {
     UNTURNED.get()
+}
+
+/// Run `f` with every boolean on this thread that restates a ball or a
+/// sphere face on a chart whose poles stand clear taking that run as
+/// refused, as if the turned operands had not resolved.
+pub fn turn_refused<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TURN_REFUSED.set(self.0);
+        }
+    }
+    let _restore = Restore(TURN_REFUSED.replace(true));
+    f()
+}
+
+/// Whether the booleans on this thread take a turned run as refused.
+pub(crate) fn is_turn_refused() -> bool {
+    TURN_REFUSED.get()
 }
