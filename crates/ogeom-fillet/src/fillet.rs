@@ -2705,6 +2705,54 @@ fn consumed_law(
     Ok(Some(built))
 }
 
+/// Whether the balls of a chain under a law sit on their faces, and no
+/// band overlaps another across a face they share.
+///
+/// A straight edge between two planes is read station by station at its
+/// own law's radius as [`law_ball_on_faces`] reads one alone, its contacts
+/// carried past a face's side where its ball runs off a narrow face
+/// ([`crate::support::ball_fits_by`] with `carry`), as a request's band
+/// sharing a vertex with another is read; any other edge is read as
+/// [`law_ball_on_faces`] reads it, every contact on its own face at the
+/// law's least and largest radius. The contacts of every station are then
+/// checked against the other edges' bands
+/// ([`crate::support::bands_clear`]).
+fn law_chain_fits(
+    model: &Model,
+    solid: &Shape,
+    chain: &[Shape],
+    laws: &[&Profile],
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    let fractions: Vec<f64> = (1..LAW_STATIONS)
+        .map(|k| f64::from(k) / f64::from(LAW_STATIONS))
+        .collect();
+    let mut contacts = Vec::with_capacity(chain.len());
+    for (edge, law) in chain.iter().zip(laws) {
+        let (curve, _) = edge_curve(model, edge, tol)?;
+        let planar = matches!(curve, Curve::Line(_))
+            && matches!(route(model, solid, edge, Rims::Exact, tol)?, Route::Planar);
+        if planar {
+            let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
+            let radius_at = |f: f64| law.at(if reversed { 1.0 - f } else { f }).0;
+            contacts.push(crate::support::ball_fits_by(
+                model, solid, edge, &radius_at, &fractions, true, tol,
+            )?);
+        } else {
+            law_ball_on_faces(model, solid, edge, law, None, tol)?;
+            contacts.push(crate::support::ball_fits(
+                model,
+                solid,
+                edge,
+                law.largest(),
+                true,
+                tol,
+            )?);
+        }
+    }
+    crate::support::bands_clear(model, chain, &contacts, tol).map_err(|b| b.error)
+}
+
 /// How many pieces a straight edge under a law is read in for whether
 /// its ball sits on both faces: a station at each inner end.
 const LAW_STATIONS: u32 = 32;
@@ -3103,10 +3151,20 @@ fn chain_law(
         };
         halved.push(m);
     }
+    {
+        let mut laws: Vec<Option<&Profile>> = vec![None; chain.len()];
+        for (&(k, _), own) in walk.iter().zip(&owns) {
+            laws[k] = Some(own);
+        }
+        let laws: Vec<&Profile> = laws.into_iter().flatten().collect();
+        if laws.len() != chain.len() {
+            ogeom_bail!(Invariant, "a chain's walk takes every edge once");
+        }
+        law_chain_fits(model, solid, chain, &laws, tol)?;
+    }
     let mut set_aside: Vec<(Vec<usize>, Shape, crate::support::Wedge)> = Vec::new();
     for ((&(k, _), own), _) in walk.iter().zip(&owns).zip(&lengths) {
         let edge = &chain[k];
-        law_ball_on_faces(model, solid, edge, own, None, tol)?;
         let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
         let (curve, _) = edge_curve(model, edge, tol)?;
         if halved.contains(&k) {

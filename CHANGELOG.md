@@ -13,6 +13,22 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **A law over a chain beside a narrow face is cut off as the constant
+  round is.** (#798)
+  - The grooved block's front edge in a chain, split in two across a
+    tangent junction or turning into the strip's 0.5 end edge, was refused
+    under a law. Each straight edge between planes is now read station by
+    station at its own window of the law, its contacts carried past the
+    strip's side where they run off and checked against the other bands,
+    as the constant request reads a band sharing a vertex with another.
+  - Across the tangent junction the round takes off the section at the
+    law's radius integrated along both pieces, within 3.5e-8. Across the
+    convex turn, under a law level at 1.6 over the end edge and the last
+    4.1 of the front, it is the constant chain's corner at 1.6 and the
+    law's section along the front past it, within 3.5e-11. A chain whose
+    contact stands in a raised step's material is refused, as the
+    constant round is.
+
 - **`fillet_edges_cornered`: setback corners asked through `fillet_edges`.**
   (#718)
   - `fillet_edges_cornered(model, solid, edges, radius, &[(vertex,

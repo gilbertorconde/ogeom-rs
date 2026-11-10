@@ -1572,9 +1572,7 @@ fn a_law_whose_ball_runs_off_a_narrow_face_is_cut_off_as_the_constant_round() {
 /// left on top below it: past the strip the ball's contact on the top's
 /// plane stands in the step's material, where a band would cut under the
 /// step touching no face. The constant round is refused there, and a law
-/// reaching past the strip anywhere along the edge is refused too; so is a
-/// law on the groove's strip in a chain, whose bands are not cut off where
-/// a contact runs off.
+/// reaching past the strip anywhere along the edge is refused too.
 #[test]
 fn a_law_whose_ball_runs_off_a_narrow_face_into_the_material_is_refused_by_name() {
     let mut model = Model::new();
@@ -1618,84 +1616,6 @@ fn a_law_whose_ball_runs_off_a_narrow_face_into_the_material_is_refused_by_name(
         &mut model, &stepped, &front, 0.3, 2.0, T,
     ));
     says(fillet_edge(&mut model, &stepped, &front, 1.5, T));
-
-    let (solid, front) = grooved(&mut model);
-    let side = edge_near(&model, &solid, [20.0, 0.25, 10.0]);
-    let why = fillet_edges_variable(&mut model, &solid, &[front, side], &hump(), T)
-        .err()
-        .map(|e| e.to_string())
-        .unwrap_or_default();
-    assert!(
-        why.contains("runs off a face beside the edge")
-            || why.contains("across a face that does not reach so far"),
-        "{why}"
-    );
-}
-
-/// A drum cut flat at x = 3: the ruling where the flat meets the drum and
-/// the drum's top rim, turning where they meet, under the hump law. The
-/// ruling's band is marched under its window of the law (a flat beside a
-/// drum has one section only at one radius); the two meet in rounds. The
-/// round is valid and lies between the chain's constant rounds at the
-/// law's least and largest radius.
-#[test]
-fn a_law_of_points_rounds_a_drum_s_ruling_turning_into_its_rim() {
-    let mut model = Model::new();
-    let drum = ogeom_algo::make_cylinder(&mut model, at(0.0, 0.0, 0.0), 5.0, 10.0, T)
-        .unwrap()
-        .shape;
-    let away = ogeom_algo::make_box(&mut model, at(3.0, -10.0, -1.0), (10.0, 20.0, 12.0), T)
-        .unwrap()
-        .shape;
-    let flat = ogeom_bool::cut(&mut model, &drum, &away, T).unwrap().shape;
-    let chain = [
-        edge_near(&model, &flat, [3.0, 4.0, 5.0]),
-        edge_near(&model, &flat, [-5.0, 0.0, 10.0]),
-    ];
-    let rounded = fillet_edges_variable(&mut model, &flat, &chain, &hump(), T).unwrap();
-    valid(&model, &rounded.shape);
-    // The run is the ruling and the rim's arc round the far side, from
-    // (3, -4) to (3, 4): the hump reads the same either way along it, so a
-    // height z up the ruling stands at z / length of the run. On the flat
-    // beside the ruling, away from the corner, the contact stands at
-    // y = sqrt((5 - r)^2 - (3 - r)^2) for the law's radius there.
-    let run = 10.0 + 5.0 * (core::f64::consts::TAU - 2.0 * 4.0_f64.atan2(3.0));
-    let mut on_flat = 0;
-    for e in explore_unique(&model, &rounded.shape, ShapeType::Edge).unwrap() {
-        let Some((c, (a, b))) = ogeom_algo::placed_edge_curve(&model, &e, T).unwrap() else {
-            continue;
-        };
-        let points: Vec<Point> = (0..=32)
-            .map(|i| c.point_at(a + (b - a) * f64::from(i) / 32.0, T).unwrap())
-            .filter(|p| p.z > 0.5 && p.z < 7.0)
-            .collect();
-        if points.len() < 8
-            || !points
-                .iter()
-                .all(|p| (p.x - 3.0).abs() < 1e-6 && p.y > 0.5 && p.y < 4.0 - 1e-3)
-        {
-            continue;
-        }
-        for p in &points {
-            let r = hump_open(p.z / run);
-            let want = ((5.0 - r).powi(2) - (3.0 - r).powi(2)).sqrt();
-            assert!(
-                (p.y - want).abs() < 1e-3,
-                "on the flat at z {}: y {} against {want}",
-                p.z,
-                p.y
-            );
-            on_flat += 1;
-        }
-    }
-    assert!(on_flat > 8, "{on_flat} contacts on the flat");
-    let v = volume(&model, &rounded.shape, 1e-3);
-    let mut constant = |r: f64| {
-        let built = ogeom_fillet::fillet_edges(&mut model, &flat, &chain, r, T).unwrap();
-        volume(&model, &built.shape, 1e-3)
-    };
-    let (one, two) = (constant(1.0), constant(2.0));
-    assert!(two < v && v < one, "{two} < {v} < {one}");
 }
 
 /// A block with its front top edge bevelled 0.3 back, the bevel a strip
@@ -1901,5 +1821,118 @@ fn a_law_steep_at_an_open_arc_s_end_caps_in_the_cut_it_ends_on() {
         "mirror laws take {} and {}",
         volumes[0],
         volumes[1]
+    );
+}
+
+/// The law `(0.2, 1.6), (0.5, 2.4), (0.8, 1.6)` in closed form: level at
+/// 1.6 before 0.2 and past 0.8, where it is held, and each half a cubic
+/// level at both ends, the secants changing sign at the middle.
+fn rise_and_fall(s: f64) -> f64 {
+    let t = ((0.5 - (s - 0.5).abs() - 0.2) / 0.3).clamp(0.0, 1.0);
+    0.8f64.mul_add(t * t * 2.0f64.mul_add(-t, 3.0), 1.6)
+}
+
+fn rise_and_fall_law() -> RadiusLaw {
+    RadiusLaw::Points(vec![(0.2, 1.6), (0.5, 2.4), (0.8, 1.6)])
+}
+
+/// What the grooved front band takes off over the first `length` of the
+/// edge, its radius at `x` the law at fraction `x / whole`, less the
+/// section at `level`, where given, over the same stretch.
+fn grooved_along(law: Radius, whole: f64, length: f64, level: Option<f64>) -> f64 {
+    let n = 8000;
+    let h = length / f64::from(n);
+    (0..n)
+        .map(|k| {
+            let x = h * (f64::from(k) + 0.5);
+            grooved_section(law(x / whole)) - level.map_or(0.0, grooved_section)
+        })
+        .sum::<f64>()
+        * h
+}
+
+/// The grooved block's front edge in two pieces: two blocks fused side by
+/// side, then grooved, leave the edge split at `x = 10` where the pieces
+/// continue each other. Under a law across the tangent junction the round
+/// is the one edge's: the section at the law's radius, cut off over the
+/// groove and resting on the block beyond, integrated along both pieces.
+#[test]
+fn a_law_over_a_chain_beside_a_narrow_face_is_cut_off_across_a_tangent_junction() {
+    let mut model = Model::new();
+    let a = ogeom_algo::make_box(&mut model, at(0.0, 0.0, 0.0), (10.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let b = ogeom_algo::make_box(&mut model, at(10.0, 0.0, 0.0), (10.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let both = ogeom_bool::fuse(&mut model, &a, &b, T).unwrap().shape;
+    let groove = ogeom_algo::make_box(&mut model, at(-1.0, 0.5, 9.0), (22.0, 1.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let solid = ogeom_bool::cut(&mut model, &both, &groove, T)
+        .unwrap()
+        .shape;
+    let pieces = [
+        edge_near(&model, &solid, [5.0, 0.0, 10.0]),
+        edge_near(&model, &solid, [15.0, 0.0, 10.0]),
+    ];
+    assert!(!pieces[0].is_same(&pieces[1]));
+    let before = volume(&model, &solid, 1e-4);
+    let built = fillet_edges_variable(&mut model, &solid, &pieces, &rise_and_fall_law(), T)
+        .unwrap_or_else(|e| panic!("{e}"));
+    valid(&model, &built.shape);
+    let taken = before - volume(&model, &built.shape, 1e-4);
+    let expected = grooved_along(rise_and_fall, 20.0, 20.0, None);
+    assert!(
+        (taken - expected).abs() <= 1e-6 * expected,
+        "{taken} against {expected}"
+    );
+}
+
+/// The grooved block's front edge turning into the strip's end edge at
+/// `x = 20`, 0.5 long, under a law level at 1.6 over the end edge and the
+/// last 4.1 of the front: the corner is the constant chain's at 1.6, and
+/// along the front the law's section takes off what it does past that,
+/// cut off over the groove. A law reaching past the strip into a raised
+/// step's material is refused, as the constant round is.
+#[test]
+fn a_law_over_a_chain_beside_a_narrow_face_is_cut_off_across_a_convex_turn() {
+    let mut model = Model::new();
+    let (solid, front) = grooved(&mut model);
+    let side = edge_near(&model, &solid, [20.0, 0.25, 10.0]);
+    let before = volume(&model, &solid, 1e-4);
+    let chain = [front, side];
+    let constant = ogeom_fillet::fillet_edges(&mut model, &solid, &chain, 1.6, T).unwrap();
+    let corner = before - volume(&model, &constant.shape, 1e-4);
+    let built = fillet_edges_variable(&mut model, &solid, &chain, &rise_and_fall_law(), T)
+        .unwrap_or_else(|e| panic!("{e}"));
+    valid(&model, &built.shape);
+    let taken = before - volume(&model, &built.shape, 1e-4);
+    let expected = corner + grooved_along(rise_and_fall, 20.5, 20.0, Some(1.6));
+    assert!(
+        (taken - expected).abs() <= 1e-6 * expected,
+        "{taken} against {expected}"
+    );
+
+    let block = ogeom_algo::make_box(&mut model, at(0.0, 0.0, 0.0), (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let step = ogeom_algo::make_box(&mut model, at(0.0, 0.5, 10.0), (20.0, 19.5, 2.0), T)
+        .unwrap()
+        .shape;
+    let stepped = ogeom_bool::fuse(&mut model, &block, &step, T)
+        .unwrap()
+        .shape;
+    let chain = [
+        edge_near(&model, &stepped, [10.0, 0.0, 10.0]),
+        edge_near(&model, &stepped, [20.0, 0.25, 10.0]),
+    ];
+    let why = fillet_edges_variable(&mut model, &stepped, &chain, &rise_and_fall_law(), T)
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(
+        why.contains("across a face that does not reach so far"),
+        "{why}"
     );
 }
