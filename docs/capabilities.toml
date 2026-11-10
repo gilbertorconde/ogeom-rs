@@ -1386,7 +1386,10 @@ planes rounded alone whose ball's contact runs off a face beside it (a \
 strip left beside a groove) is read station by station at the law's \
 radius as the constant round reads its own: a contact on any face of \
 the solid holds, one in the open is cut off there, the band running on \
-over it, and one in the material refuses. Refused by name: a linear law \
+over it, and one in the material refuses; and a straight edge alone \
+beside a narrow strip the ball takes off whole at every radius of the \
+law, the exact envelope over the seat between the faces either side of \
+the strip. Refused by name: a linear law \
 changing radius round a closed chain (it jumps where the chain closes), \
 a turn where a marched band meets a straight band between planes (under \
 a law the marched band is fitted, the constant round's there an exact \
