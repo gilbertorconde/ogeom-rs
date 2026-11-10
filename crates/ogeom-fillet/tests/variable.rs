@@ -1770,6 +1770,77 @@ fn a_law_sitting_on_a_narrow_strip_at_one_end_and_taking_it_off_at_the_other_is_
     );
 }
 
+/// A drum cut flat at x = 3: the ruling where the flat meets the drum and
+/// the drum's top rim, turning where they meet, under the hump law. The
+/// ruling's band is marched under its window of the law (a flat beside a
+/// drum has one section only at one radius); the two meet in rounds. The
+/// round is valid, takes at least what the rim alone takes at the law's
+/// least radius and at most what both edges alone take at its largest.
+#[test]
+fn a_law_of_points_rounds_a_drum_s_ruling_turning_into_its_rim() {
+    let mut model = Model::new();
+    let drum = ogeom_algo::make_cylinder(&mut model, at(0.0, 0.0, 0.0), 5.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let away = ogeom_algo::make_box(&mut model, at(3.0, -10.0, -1.0), (10.0, 20.0, 12.0), T)
+        .unwrap()
+        .shape;
+    let flat = ogeom_bool::cut(&mut model, &drum, &away, T).unwrap().shape;
+    let chain = [
+        edge_near(&model, &flat, [3.0, 4.0, 5.0]),
+        edge_near(&model, &flat, [-5.0, 0.0, 10.0]),
+    ];
+    let rounded = fillet_edges_variable(&mut model, &flat, &chain, &hump(), T).unwrap();
+    valid(&model, &rounded.shape);
+    // The run is the ruling and the rim's arc round the far side, from
+    // (3, -4) to (3, 4): the hump reads the same either way along it, so a
+    // height z up the ruling stands at z / length of the run. On the flat
+    // beside the ruling, away from the corner, the contact stands at
+    // y = sqrt((5 - r)^2 - (3 - r)^2) for the law's radius there.
+    let run = 10.0 + 5.0 * (core::f64::consts::TAU - 2.0 * 4.0_f64.atan2(3.0));
+    let mut on_flat = 0;
+    for e in explore_unique(&model, &rounded.shape, ShapeType::Edge).unwrap() {
+        let Some((c, (a, b))) = ogeom_algo::placed_edge_curve(&model, &e, T).unwrap() else {
+            continue;
+        };
+        let points: Vec<Point> = (0..=32)
+            .map(|i| c.point_at(a + (b - a) * f64::from(i) / 32.0, T).unwrap())
+            .filter(|p| p.z > 0.5 && p.z < 7.0)
+            .collect();
+        if points.len() < 8
+            || !points
+                .iter()
+                .all(|p| (p.x - 3.0).abs() < 1e-6 && p.y > 0.5 && p.y < 4.0 - 1e-3)
+        {
+            continue;
+        }
+        for p in &points {
+            let r = hump_open(p.z / run);
+            let want = ((5.0 - r).powi(2) - (3.0 - r).powi(2)).sqrt();
+            assert!(
+                (p.y - want).abs() < 1e-3,
+                "on the flat at z {}: y {} against {want}",
+                p.z,
+                p.y
+            );
+            on_flat += 1;
+        }
+    }
+    assert!(on_flat > 8, "{on_flat} contacts on the flat");
+    // What the chain takes is at least what its rim alone takes at the
+    // law's least radius, and at most what both edges alone take at its
+    // largest, as any round of the two together is.
+    let given = volume(&model, &flat, 1e-3);
+    let mut alone = |edge: &Shape, r: f64| {
+        let built = fillet_edge(&mut model, &flat, edge, r, T).unwrap();
+        given - volume(&model, &built.shape, 1e-3)
+    };
+    let least = alone(&chain[1], 1.0);
+    let most = alone(&chain[0], 2.0) + alone(&chain[1], 2.0);
+    let taken = given - volume(&model, &rounded.shape, 1e-3);
+    assert!(least < taken && taken < most, "{least} < {taken} < {most}");
+}
+
 #[test]
 fn a_variable_radius_refuses_by_name_what_it_does_not_round() {
     let mut model = Model::new();
