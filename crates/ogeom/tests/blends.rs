@@ -267,6 +267,40 @@ fn rim_ring(reach: f64, r: f64, sign: f64) -> f64 {
     2.0 * pi * sign.mul_add(-inset, reach) * area
 }
 
+/// What a round of radius `r` fills at the foot of an upright drum of
+/// radius 6 whose axis stands at (20, 40 + `off`) over a block whose side
+/// is y = 40: at every turn about the axis, the meridian corner between the
+/// wall and the top that the ball leaves, where it stands over the block,
+/// y <= 40. The corner's height over the ball's arc is r (1 - cos t) at
+/// rho = 6 + r - r sin t: Simpson over t, the midpoint over the turn.
+fn upright_foot_fill(off: f64, r: f64) -> f64 {
+    let drum = 6.0;
+    let turns = 40_000_u32;
+    let step = core::f64::consts::TAU / f64::from(turns);
+    let mut total = 0.0;
+    for k in 0..turns {
+        let sin = ((f64::from(k) + 0.5) * step).sin();
+        // y = 40 + off + rho sin <= 40.
+        if sin >= 0.0 {
+            continue;
+        }
+        let rho_min = (-off / sin).max(drum);
+        if rho_min >= drum + r {
+            continue;
+        }
+        let t_max = ((drum + r - rho_min) / r).min(1.0).asin();
+        let n = 2000_u32;
+        let dt = t_max / f64::from(n);
+        let f = |t: f64| (drum + r - r * t.sin()) * r * (1.0 - t.cos()) * r * t.cos();
+        let mut sum = f(0.0) + f(t_max);
+        for i in 1..n {
+            sum += f(dt * f64::from(i)) * if i % 2 == 1 { 4.0 } else { 2.0 };
+        }
+        total += sum * dt / 3.0 * step;
+    }
+    total
+}
+
 /// A cylinder boss fused on a block: its wall meets the block's top along
 /// a circle, a concave corner. Blending the wall and the top rolls the ball
 /// round the boss's foot and fills the corner with a torus.
@@ -1727,7 +1761,7 @@ fn a_face_blend_rounds_two_runs_where_a_face_lets_the_ball_go_at_two_places() {
 /// The faces of `shape` that reach past the block's side at y = 40 by more
 /// than `slack` and are not the drum's own: anything but a cylinder of the
 /// drum's radius or a plane square to its `axis`. A face's bounds reach
-/// past its geometry by its vertices' tolerance, which `slack` covers.
+/// past its geometry by its vertices' tolerance, which is added to `slack`.
 fn past_the_side(model: &Model, shape: &Shape, axis: Vector, slack: f64) -> Vec<Shape> {
     faces_on(model, shape, |_| true)
         .into_iter()
@@ -1738,7 +1772,13 @@ fn past_the_side(model: &Model, shape: &Shape, axis: Vector, slack: f64) -> Vec<
                 .iter()
                 .map(|p| p.y)
                 .fold(f64::NEG_INFINITY, f64::max);
-            if reach <= 40.0 + slack {
+            let held = explore_unique(model, f, ShapeType::Vertex)
+                .unwrap()
+                .iter()
+                .filter_map(|v| model.tolerance_of(v).unwrap())
+                .map(|t| t.get())
+                .fold(0.0_f64, f64::max);
+            if reach <= 40.0 + slack + held {
                 return false;
             }
             let data = model.node(f).unwrap().data().as_face().unwrap();
@@ -1759,11 +1799,13 @@ fn past_the_side(model: &Model, shape: &Shape, axis: Vector, slack: f64) -> Vec<
 /// A drum standing upright over the block's side, its axis `off` past
 /// y = 40: its foot is an arc of a circle that runs off the top at both
 /// ends, and its wall goes on down past the block beside it. Rounding the
-/// foot as an edge rounds that arc only, a torus over the turn between the
-/// arc's ends capped in the meridian planes there, so the fill is the
-/// torus ring's share of that turn and nothing stands past the block's
-/// side but the drum. A chamfer of the foot bevels the same arc: its fill
-/// is the share of the ring a right triangle of legs `d` turns, by Pappus.
+/// foot as an edge fills the corner wherever the ball still stands over
+/// the block: with the axis on the side, the torus ring's half; with it
+/// past the side, where the arc meets the side obliquely, the corner run on
+/// past each end and cut back to the side ([`upright_foot_fill`]), and
+/// nothing stands past the block's side but the drum. A chamfer of the
+/// foot bevels the arc between its ends: its fill is the share of the ring
+/// a right triangle of legs `d` turns, by Pappus.
 #[test]
 fn an_edge_round_stops_where_an_upright_drum_s_foot_runs_off_the_block() {
     let r = 2.0;
@@ -1795,7 +1837,11 @@ fn an_edge_round_stops_where_an_upright_drum_s_foot_runs_off_the_block() {
                 "{} faces stand past the side",
                 stray.len()
             );
-            let want = ring * share;
+            let want = if chamfer || off == 0.0 {
+                ring * share
+            } else {
+                upright_foot_fill(off, r)
+            };
             let filled = exact_volume(&model, &done) - before;
             assert!(
                 (filled - want).abs() < want * 1e-6,
@@ -1937,7 +1983,10 @@ fn a_face_blend_ends_where_the_crease_runs_off_the_block_s_side() {
 /// the foot's circle crosses y = 40, so the round ends there, capped in the
 /// meridian plane through that crossing, and nothing but the drum stands
 /// past the side. The fill is the ring's share of the turn the foot's arc
-/// makes on the block, and what the edge round of the sharp foot fills.
+/// makes on the block. With the axis on the side that is what the edge
+/// round of the sharp foot fills; with it past the side the edge round runs
+/// on past the foot's oblique ends to the side and fills the corner over
+/// the block whole.
 #[test]
 fn an_upright_drum_s_face_blend_ends_where_the_crease_runs_off_the_block() {
     let r = 2.0;
@@ -1981,10 +2030,20 @@ fn an_upright_drum_s_face_blend_ends_where_the_crease_runs_off_the_block() {
             .unwrap()
             .shape;
         let edge_fill = exact_volume(&other, &rounded) - exact_volume(&other, &sharp);
-        assert!(
-            (filled - edge_fill).abs() < want * 1e-9,
-            "the blend fills what the edge round does: {filled} against {edge_fill}"
-        );
+        if off == 0.0 {
+            assert!(
+                (filled - edge_fill).abs() < want * 1e-9,
+                "the blend fills what the edge round does: {filled} against {edge_fill}"
+            );
+        } else {
+            // The edge round runs on past the foot's oblique ends to the
+            // side; the face blend stops in the meridian planes there.
+            let past = upright_foot_fill(off, r);
+            assert!(
+                (edge_fill - past).abs() < past * 1e-6,
+                "the edge round fills {edge_fill} against the corner over the block {past}"
+            );
+        }
     }
 }
 
@@ -3234,47 +3293,87 @@ fn a_curved_corner_closes_the_same_way_round_either_order() {
     assert!((a - b).abs() < 1e-9 * a, "{a} one call, {b} one at a time");
 }
 
-/// The rim arc's band first, then the straight band and the ruling's in
-/// either order: the straight band's section through the rim's torus runs
-/// tangent to the torus's end meridian into the corner below the rim, and
-/// ends at that vertex. The corner tool then closes the same solid the
-/// ruling-first order does.
+/// The rim arc's band first: alone it meets the side `x = 0` and the side
+/// `y = 0` obliquely at its ends, and runs on past each, as a band across a
+/// boss does, until its section has left the solid. It takes off exactly
+/// the ball's corner over the turn from the side `x = 0` round to `y = 0`
+/// within the block, integrated, and the corner's vertex goes with it. The
+/// straight band and the ruling's then round in either order to one solid.
 #[test]
 #[ignore = "heavy"]
 fn a_curved_corner_closes_with_the_rim_s_band_first() {
     let fine = ogeom::mesh::Deflection::with_chord(1e-3).unwrap();
-    let mut volumes = Vec::new();
-    for order in [[2, 0, 1], [1, 0, 2], [1, 2, 0]] {
-        let mut model = Model::new();
-        let (part, corner, mids) = shaved_cube(&mut model);
-        let v = vertex_near(&model, &part, corner);
-        let mut current = part.clone();
-        for i in order {
-            let live = edge_near(&model, &current, mids[i]);
-            current = ogeom::fillet::fillet_edge(&mut model, &current, &live, 1.0, T)
-                .unwrap_or_else(|e| panic!("{order:?} at {i}: {e}"))
-                .shape;
-            let diagnosis = ogeom::algo::check(&model, &current, T).unwrap();
-            assert!(
-                diagnosis.is_valid(),
-                "{order:?} at {i}: {:?}",
-                diagnosis.problems
-            );
+    let volume = |model: &Model, shape: &Shape| {
+        ogeom::algo::volume_properties(model, shape, fine, T)
+            .unwrap()
+            .mass
+    };
+    let mut model = Model::new();
+    let (part, corner, mids) = shaved_cube(&mut model);
+    let before = volume(&model, &part);
+    let rim = edge_near(&model, &part, mids[1]);
+    let banded = ogeom::fillet::fillet_edge(&mut model, &part, &rim, 1.0, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &banded, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    // The ball's corner about the drum's axis (5, 5), radius 6, over the
+    // quarter turn facing the block's corner, within the block: at each
+    // turn the meridian square beyond the ball's arc, from rho = 5 out to
+    // where the turn's ray leaves the block. Its height over the arc is
+    // 1 - cos t at rho = 5 + sin t.
+    let want = {
+        let turns = 80_000_u32;
+        let step = core::f64::consts::FRAC_PI_2 / f64::from(turns);
+        let mut total = 0.0;
+        for k in 0..turns {
+            let phi = core::f64::consts::PI + (f64::from(k) + 0.5) * step;
+            let out = (5.0 / phi.cos().abs()).min(5.0 / phi.sin().abs()).min(6.0);
+            if out <= 5.0 {
+                continue;
+            }
+            let t_max = (out - 5.0).min(1.0).asin();
+            let n = 2000_u32;
+            let dt = t_max / f64::from(n);
+            let f = |t: f64| (5.0 + t.sin()) * (1.0 - t.cos()) * t.cos();
+            let mut sum = f(0.0) + f(t_max);
+            for i in 1..n {
+                sum += f(dt * f64::from(i)) * if i % 2 == 1 { 4.0 } else { 2.0 };
+            }
+            total += sum * dt / 3.0 * step;
         }
-        let rounded = ogeom::fillet::round_vertex(&mut model, &current, &v, 1.0, T)
-            .unwrap_or_else(|e| panic!("{order:?} corner: {e}"))
-            .shape;
-        let diagnosis = ogeom::algo::check(&model, &rounded, T).unwrap();
+        total
+    };
+    let removed = before - volume(&model, &banded);
+    assert!(
+        (removed - want).abs() < want * 1e-5,
+        "took off {removed}, the ball's corner within the block {want}"
+    );
+    let left = vertex_near(&model, &banded, corner);
+    let at = model.node(&left).unwrap().data().as_vertex().unwrap().point;
+    assert!(at.distance(corner) > 0.5, "the corner stands at {at:?}");
+
+    // What is left of the straight edge, past where the rim's band ran on
+    // to, and of the ruling.
+    let straight = Point::new(0.0, 7.5, 10.0);
+    let mut measured = Vec::new();
+    for order in [[straight, mids[2]], [mids[2], straight]] {
+        let mut copy = model.clone();
+        let mut current = banded.clone();
+        for near in order {
+            let live = edge_near(&copy, &current, near);
+            current = ogeom::fillet::fillet_edge(&mut copy, &current, &live, 1.0, T)
+                .unwrap_or_else(|e| panic!("{order:?} at {near:?}: {e}"))
+                .shape;
+        }
+        let diagnosis = ogeom::algo::check(&copy, &current, T).unwrap();
         assert!(diagnosis.is_valid(), "{order:?}: {:?}", diagnosis.problems);
-        volumes.push(
-            ogeom::algo::volume_properties(&model, &rounded, fine, T)
-                .unwrap()
-                .mass,
-        );
+        measured.push(volume(&copy, &current));
     }
-    for v in &volumes {
-        assert!((v - volumes[0]).abs() < 1e-7 * volumes[0], "{volumes:?}");
-    }
+    assert!(
+        (measured[0] - measured[1]).abs() < 1e-7 * measured[0],
+        "{measured:?}"
+    );
 }
 
 /// What the top edge along the side `x = 0` takes off rounded alone at

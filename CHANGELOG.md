@@ -1053,6 +1053,29 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`fillet_edge` rounds an arc of a rim ending obliquely on a face without
+  leaving a sliver.** (#829)
+  - The arc's torus band stopped in the meridian half-plane through each
+    end, so where the arc ends on a planar face oblique to that plane (a
+    drum's top rim cut flat, a drum's foot running off a block's side),
+    the corner the ball still rolls through between that cap and the face
+    stayed: a sliver of sharp crease, or of unfilled corner, that `check`
+    passes. The torus band now runs on past such an end, with no other edge
+    of the request there, until the ball's section has left the solid
+    across that face within four radii, as a straight band's run-out is
+    read; a fill is cut back to the face's plane. A face continuing the
+    crease tangentially, or square to it, keeps the meridian cap.
+  - Against the ball's corner within the solid, integrated in closed form
+    across the meridian: the cut drum's rim at radii 0.5, 1 and 1.5 within
+    1e-4 (it took 0.074 too little at 1, 0.254 at 1.5); a drum's foot 0.5
+    and 1.5 past a block's side within 1e-6 (it filled 0.064 too little at
+    0.5); the shaved cube's rim within 1e-5. A chain of an arc and a
+    straight edge takes 0.002505 more at the arc's far end, the corner
+    past it, the same at every turn.
+  - Rounded alone first, the shaved cube's rim runs on along the side to
+    where its section leaves the block, and the corner's vertex goes with
+    it, as the straight band's does there; the other two edges then round
+    in either order to one solid.
 - **A refused as-rigid-as-possible sheet names itself and the bound it
   missed.** Where the polynomial back from its flattening missed by more
   than half the resolution, the refusal called it the least-distortion

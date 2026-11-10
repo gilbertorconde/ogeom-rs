@@ -2160,3 +2160,89 @@ fn a_round_wider_than_a_bevel_takes_it_off_between_slanted_ends() {
         }
     }
 }
+
+/// A drum of radius 5 cut flat at x = 3: its top rim is an arc ending on
+/// the flat obliquely at (3, ±4, 10). Rounded alone, the ball rolls on
+/// past each end through the corner it still finds in the solid while its
+/// contact on the top stands on the top, so the round takes the ball's
+/// corner region (the meridian square beyond the ball's arc, at every
+/// angle) where it lies in the solid, x <= 3: no sliver of sharp crease
+/// stays between a cap and the flat. That region integrated in closed
+/// form across the meridian (rho = c + r sin t, its height over the arc
+/// r (1 - cos t)) and by Simpson and midpoint over t and the angle.
+#[test]
+fn a_rim_arc_ending_obliquely_on_a_flat_rounds_on_past_its_ends() {
+    let mut model = ogeom_topo::Model::new();
+    let frame = |x: f64, y: f64, z: f64| {
+        Frame::new(
+            Point::new(x, y, z),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap()
+    };
+    let drum = ogeom_algo::make_cylinder(&mut model, frame(0.0, 0.0, 0.0), 5.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let away = ogeom_algo::make_box(&mut model, frame(3.0, -10.0, -1.0), (10.0, 20.0, 12.0), T)
+        .unwrap()
+        .shape;
+    let flat = ogeom_bool::cut(&mut model, &drum, &away, T).unwrap().shape;
+    let rim = ogeom_topo::explore_unique(&model, &flat, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let (c, (a, b)) = ogeom_algo::placed_edge_curve(&model, e, T)
+                .unwrap()
+                .unwrap();
+            (0..=64).any(|i| {
+                ogeom_geom::Curve3d::point_at(&c, a + (b - a) * f64::from(i) / 64.0, T)
+                    .unwrap()
+                    .distance(Point::new(-5.0, 0.0, 10.0))
+                    < 1e-6
+            })
+        })
+        .unwrap();
+    let volume = |model: &ogeom_topo::Model, shape: &ogeom_topo::Shape| {
+        ogeom_algo::volume_properties(
+            model,
+            shape,
+            ogeom_mesh::Deflection::with_chord(1e-3).unwrap(),
+            T,
+        )
+        .unwrap()
+        .mass
+    };
+    let given = volume(&model, &flat);
+    for r in [0.5, 1.0, 1.5] {
+        let c = 5.0 - r;
+        let turns = 40_000_u32;
+        let step = core::f64::consts::TAU / f64::from(turns);
+        let mut exact = 0.0;
+        for k in 0..turns {
+            let cos = ((f64::from(k) + 0.5) * step).cos();
+            let rho_max = if cos > 0.0 { (3.0 / cos).min(5.0) } else { 5.0 };
+            if rho_max <= c {
+                continue;
+            }
+            let t_max = ((rho_max - c) / r).min(1.0).asin();
+            let n = 2000_u32;
+            let dt = t_max / f64::from(n);
+            let f = |t: f64| (c + r * t.sin()) * r * (1.0 - t.cos()) * r * t.cos();
+            let mut sum = f(0.0) + f(t_max);
+            for i in 1..n {
+                sum += f(dt * f64::from(i)) * if i % 2 == 1 { 4.0 } else { 2.0 };
+            }
+            exact += sum * dt / 3.0 * step;
+        }
+        let rounded = ogeom_fillet::fillet_edge(&mut model, &flat, &rim, r, T).unwrap();
+        let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let removed = given - volume(&model, &rounded.shape);
+        assert!(
+            (removed - exact).abs() < exact * 1e-4,
+            "at radius {r} the round takes {removed}, the ball's corner {exact}"
+        );
+    }
+}

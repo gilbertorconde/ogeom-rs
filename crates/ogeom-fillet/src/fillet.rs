@@ -356,11 +356,91 @@ fn fillet_edge_seat(
             if whole_turn {
                 revolved_fillet(model, solid, edge, &c, radius, tol)
             } else {
-                revolved_arc_fillet(model, solid, edge, &c, radius, tol)
+                revolved_arc_fillet(model, solid, edge, &c, radius, mates, tol)
             }
         }
         Route::Marched => crate::marched::marched_fillet(model, solid, edge, radius, mates, tol),
     }
+}
+
+/// Whether an open rim arc's torus band, capped in the meridian half-plane
+/// through its end `at` (the crease leaving along `ahead` past it), would
+/// stop short of a face the arc ends on: the crease terminates there, no
+/// mate of the request ends there, and a planar face there stands oblique
+/// to the crease, its normal neither square to the crease's direction (a
+/// wall continuing the crease tangentially, which meets the cap square) nor
+/// along it (a wall square to the crease, which is the cap). Past such an
+/// end the ball still rolls through material between the meridian cap and
+/// the face while its contact on the cap stands on it. The face's plane,
+/// facing back over the arc, where it does.
+#[allow(clippy::too_many_arguments, reason = "one question, all its data")]
+fn rim_end_stops_short(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    seat: &crate::support::RevolvedSeat,
+    mates: Option<(usize, &[Mate])>,
+    at: Point,
+    ahead: Vector,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Point, Vector)>> {
+    let hosts = [&seat.cap_face, &seat.wall_face];
+    let met = mates.is_some_and(|(index, mates)| {
+        mates.iter().enumerate().any(|(i, mate)| {
+            i != index
+                && mate
+                    .ends
+                    .iter()
+                    .any(|(p, _)| p.distance(at) <= tol.confusion() * 1e3)
+        })
+    });
+    if met || !crate::marched::crease_terminates_at(model, solid, edge, hosts, at, tol)? {
+        return Ok(None);
+    }
+    for face in explore_unique(model, solid, ShapeType::Face)? {
+        if hosts.iter().any(|h| h.is_same(&face)) {
+            continue;
+        }
+        let Some(data) = model.node(&face).and_then(|n| n.data().as_face()) else {
+            continue;
+        };
+        let Some(SurfaceGeometry::Plane(plane)) = model.geometry().surface(data.surface) else {
+            continue;
+        };
+        use ogeom_geom::Transformable as _;
+        let SurfaceGeometry::Plane(placed) =
+            SurfaceGeometry::Plane(*plane).transformed(&face.transform(model.datums())?, tol)?
+        else {
+            continue;
+        };
+        let plane = placed.plane();
+        if plane.signed_distance_to(at).abs() > tol.confusion() * 10.0 {
+            continue;
+        }
+        let meets = explore_unique(model, &face, ShapeType::Vertex)?
+            .iter()
+            .any(|v| {
+                model
+                    .node(v)
+                    .and_then(|n| n.data().as_vertex())
+                    .zip(v.transform(model.datums()).ok())
+                    .is_some_and(|(d, place)| {
+                        place.apply(d.point).distance(at) <= tol.confusion() * 1e3
+                    })
+            });
+        let normal = plane.normal().vector();
+        let lean = normal.dot(ahead).abs();
+        if meets && lean > 1e-6 && lean < 1.0 - 1e-6 {
+            // Facing back over the arc: the side of the face the arc lies on.
+            let back = if normal.dot(ahead) > 0.0 {
+                -normal
+            } else {
+                normal
+            };
+            return Ok(Some((plane.origin(), back)));
+        }
+    }
+    Ok(None)
 }
 
 /// Which construction rounds a rim on a planar cap and a coaxial cone.
@@ -4524,6 +4604,7 @@ fn revolved_arc_fillet(
     edge: &Shape,
     rim: &CircleCurve,
     radius: f64,
+    mates: Option<(usize, &[Mate])>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     use ogeom_geom::Curve3d as _;
@@ -4567,6 +4648,81 @@ fn revolved_arc_fillet(
     if theta1 - theta0 <= tol.angular() {
         ogeom_bail!(Construction, "the rim arc has no length to blend along");
     }
+    let dir_of = |theta: f64| -> Vector {
+        seat_frame.x().vector() * theta.cos() + seat_frame.y().vector() * theta.sin()
+    };
+    // At an end where the meridian cap would stop short of an oblique face
+    // the arc ends on, the band runs on past the end, its window widened
+    // until the ball's section stands clear of the material (a plane leaves
+    // the section's triangle last at a corner: the rim, the wall's contact
+    // and the cap's), and a quarter radius further; the cut trims it
+    // against the face, as a straight band's run-out is.
+    let mut trims: Vec<(Point, Vector)> = Vec::new();
+    let (theta0, theta1) = {
+        let mut window = [theta0, theta1];
+        let step = (radius / seat.radius) / 8.0;
+        for (slot, sign) in [(0_usize, -1.0), (1, 1.0)] {
+            let end = window[slot];
+            let at = seat.centre + dir_of(end) * seat.radius;
+            let ahead = seat.up.cross(dir_of(end)) * sign;
+            let Some(face) = rim_end_stops_short(model, solid, edge, &seat, mates, at, ahead, tol)?
+            else {
+                continue;
+            };
+            let probe = crate::support::material_probe(model, solid, tol)?;
+            let (on, back) = face;
+            let mut past = None;
+            let mut k = 1.0_f64;
+            // Over four radii along the rim, as a straight band's run-out
+            // is read: a section that has not left the material by then, or
+            // whose corner leaves it other than across the face the arc ends
+            // on, meets a step or a ledge past the end rather than a ramp
+            // across it, and the band stops at the end.
+            while k * step * seat.radius <= radius * 4.0 {
+                let theta = end + sign * k * step;
+                // The corners stand on the hosts; each is read a hundredth
+                // of the way in towards the others, inside the corner.
+                let (apex, wall, cap) = (
+                    seat.centre + dir_of(theta) * seat.radius,
+                    wall_level + dir_of(theta) * ball.wall_rho,
+                    seat.centre + dir_of(theta) * tube_rho,
+                );
+                let section = [
+                    apex + ((wall - apex) + (cap - apex)) * 0.01,
+                    wall + (apex - wall) * 0.01 + (cap - wall) * 0.01,
+                    cap + (apex - cap) * 0.01 + (wall - cap) * 0.01,
+                ];
+                let mut clear = true;
+                let mut ledge = false;
+                for p in section {
+                    if probe.holds(model, p, tol)? == ogeom_algo::Containment::In {
+                        clear = false;
+                    } else if (p - on).dot(back) > tol.confusion() {
+                        ledge = true;
+                    }
+                }
+                if ledge {
+                    break;
+                }
+                if clear {
+                    past = Some(k * step + 2.0 * step);
+                    break;
+                }
+                k += 1.0;
+            }
+            if let Some(past) = past {
+                window[slot] = end + sign * past;
+                trims.push(face);
+            }
+        }
+        if window[1] - window[0] >= tau_turn - tol.angular() {
+            ogeom_bail!(
+                Construction,
+                "a rim arc's band run on past both its ends would close the turn"
+            );
+        }
+        (window[0], window[1])
+    };
     let sweep = theta1 - theta0;
 
     // Corner points at each end: A on the rim, W down the wall, C in on the
@@ -4754,5 +4910,13 @@ fn revolved_arc_fillet(
     )?;
 
     let faces = [wall_patch, cap_sector, blend_patch, cap_start, cap_end];
-    apply_wedge(model, solid, Some(edge), &faces, seat.additive(), tol)
+    if !seat.additive() || trims.is_empty() {
+        return apply_wedge(model, solid, Some(edge), &faces, seat.additive(), tol);
+    }
+    let mut wedge = crate::support::wedge_solid(model, &faces, false, tol)?;
+    let span = (seat.radius + radius) * 4.0;
+    for plane in trims {
+        wedge = crate::support::trimmed_wedge(model, &wedge, plane, span, tol)?;
+    }
+    crate::support::apply_wedge_solid(model, solid, Some(edge), &wedge, true, tol)
 }

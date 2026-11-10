@@ -1743,17 +1743,20 @@ fn curved_turn(
 /// 178 degrees back, the continuations reach that plane only past the
 /// solid's far side: no junction is taken, and the request rounds exactly
 /// as it does with none. Those figures are what the rounding without
-/// junctions takes.
+/// junctions takes; each holds the arc's band running on past its far end
+/// at (8, 3), where the arc meets the wall x = 8 obliquely, through the
+/// corner its ball still finds in the solid there: 0.002505, the torus
+/// corner past that end within x <= 8, the same at every turn.
 #[test]
 fn rounds_at_a_curved_crease_turning_nearly_back_on_itself() {
     let mut model = ogeom_topo::Model::new();
     let (prism, edges) = curved_turn(&mut model, 150.0_f64.to_radians());
     let removed = removed_both_ways(&model, &prism, &edges, 0.5);
     assert!((removed[0] - removed[1]).abs() < 2e-6, "{removed:?}");
-    assert!((removed[0] - 0.429_067).abs() < 2e-6, "{removed:?}");
+    assert!((removed[0] - 0.431_572).abs() < 2e-6, "{removed:?}");
     for (degrees, want) in [
-        (170.0_f64, [0.379_278, 0.380_335]),
-        (178.0, [0.379_036, 0.379_246]),
+        (170.0_f64, [0.381_783, 0.382_840]),
+        (178.0, [0.381_542, 0.381_751]),
     ] {
         let mut model = ogeom_topo::Model::new();
         let (prism, edges) = curved_turn(&mut model, degrees.to_radians());

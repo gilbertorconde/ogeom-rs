@@ -1018,7 +1018,12 @@ and variable radius, and the corner where three blends meet is closed: \
 a rim where a flat cap meets a coaxial cylinder or cone (a drum's top, a \
 frustum's foot, a tapered bore) rounds to its exact torus band, where the \
 tube stands clear of its axis, and to the fitted band where that is what \
-builds. \
+builds; an arc of such a rim ending on a planar face oblique to it, with \
+no other edge of the request there, runs its torus band on past the end \
+until the ball's section has left the solid across that face within four \
+radii, as a straight band's run-out is read (a fill cut back to the \
+face's plane), where a cap in the meridian there would leave a sliver of \
+the corner. \
 a corner blend applied through the boolean's tangency at a face's own vertex. The marched fillet carries the \
 rolling ball to topology on seats no closed form speaks (a fitted seam \
 between two analytic walls, a conic seat re-opened to its full loop), with \
