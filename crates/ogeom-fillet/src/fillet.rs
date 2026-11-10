@@ -684,10 +684,10 @@ fn fillet_edges_meeting(
         _ => round(model)?,
     };
     for (vertex, request) in &mixed {
-        built = crate::setback::close_mixed_corner(model, built, vertex, request, tol)?;
+        built = crate::setback::close_mixed_corner(model, solid, built, vertex, request, tol)?;
     }
     for corner in &signed {
-        built = crate::setback::close_signed_corner(model, built, corner, tol)?;
+        built = crate::setback::close_signed_corner(model, solid, built, corner, tol)?;
     }
     Ok(built)
 }

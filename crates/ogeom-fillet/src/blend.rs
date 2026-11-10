@@ -240,10 +240,11 @@ pub fn blend_edges(
     for (vertex, frame, setback, kinds, sharp) in &corners {
         built = match sharp {
             Some(ks) => crate::sharp::close_sharp_corner(
-                model, built, vertex, frame, setback, *ks, kinds, tol,
+                model, solid, built, vertex, frame, setback, *ks, kinds, tol,
             )?,
             None => crate::setback::close_corner_ends(
                 model,
+                solid,
                 built,
                 vertex,
                 frame,

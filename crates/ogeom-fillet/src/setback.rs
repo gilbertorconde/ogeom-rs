@@ -222,6 +222,7 @@ fn setback_own(
     }
     close_corner(
         model,
+        solid,
         banded,
         vertex,
         &corner.frame,
@@ -347,6 +348,7 @@ fn cornered_own(
         }
         built = close_corner(
             model,
+            solid,
             built,
             vertex,
             &corner.frame,
@@ -431,11 +433,123 @@ pub(crate) enum CornerEnd {
     Bevel,
 }
 
+/// Refused by name unless the cell cut from `banded` at `vertex` holds
+/// nothing of `solid`, the solid the corner was asked on, but the corner
+/// itself. What is foreign is a face of `solid` that does not meet the
+/// vertex and lies on none of the corner's own planes through it
+/// (`planes`, each a normal and a point): the bands, the bevels and the
+/// ball's own corner are made by the rounding, on surfaces of their own.
+/// Refused where the cut takes a face on a foreign surface whole (every
+/// corner of it inside the cell, `walls`, each an inward normal and a
+/// point), where a face on a foreign surface that the cut leaves has an
+/// edge on a wall inside the cell (the cut passed through it), or where the
+/// cut leaves fewer shells. Any of these (a void, a hole, another feature)
+/// would be left out of what is sewn back, and the solid would close
+/// without it.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one cell and what it is read against"
+)]
+pub(crate) fn guard_cell(
+    model: &Model,
+    solid: &Shape,
+    banded: &Shape,
+    cut: &Shape,
+    vertex: &Shape,
+    planes: &[(Vector, Point)],
+    walls: &[(Vector, Point)],
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    let near = tol.confusion() * 100.0;
+    let surface_of = |face: &Shape| {
+        model
+            .node(face)
+            .and_then(|n| n.data().as_face())
+            .map(|d| d.surface)
+    };
+    let on_a_plane = |face: &Shape| -> OgeomResult<bool> {
+        let planar = model
+            .node(face)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| model.geometry().surface(d.surface))
+            .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::Plane(_)));
+        if !planar {
+            return Ok(false);
+        }
+        let (origin, outward) = ogeom_algo::face_normal(model, face, tol)?;
+        Ok(planes.iter().any(|(normal, at)| {
+            outward.cross(*normal).magnitude() <= tol.angular() * 10.0
+                && normal.dot(origin - *at).abs() <= near
+        }))
+    };
+    let mut foreign = Vec::new();
+    for face in explore_unique(model, solid, ShapeType::Face)? {
+        let meets = explore_unique(model, &face, ShapeType::Vertex)?
+            .iter()
+            .any(|v| v.is_same(vertex));
+        if !meets
+            && !on_a_plane(&face)?
+            && let Some(surface) = surface_of(&face)
+        {
+            foreign.push(surface);
+        }
+    }
+    let is_foreign = |face: &Shape| surface_of(face).is_some_and(|s| foreign.contains(&s));
+    let inside = |p: Point| walls.iter().all(|(n, at)| n.dot(p - *at) >= -near);
+    let refused = || {
+        ogeom_core::ogeom_err!(
+            Construction,
+            "another feature of the solid lies inside the setback corner's cell (a face \
+             that is neither one of the corner's faces nor made by its bands, or a shell \
+             of its own), and cutting the cell would remove it; see \
+             docs/CAPABILITIES.md, fillet.setback-corners"
+        )
+    };
+    // A face the cut takes whole.
+    for face in explore_unique(model, banded, ShapeType::Face)? {
+        if !is_foreign(&face) {
+            continue;
+        }
+        let mut all_in = true;
+        for v in explore_unique(model, &face, ShapeType::Vertex)? {
+            if !inside(point_of(model, &v)?) {
+                all_in = false;
+                break;
+            }
+        }
+        if all_in {
+            return Err(refused());
+        }
+    }
+    // A face the cut passes through.
+    for face in explore_unique(model, cut, ShapeType::Face)? {
+        if !is_foreign(&face) {
+            continue;
+        }
+        for e in explore_unique(model, &face, ShapeType::Edge)? {
+            let Some((curve, (lo, hi))) = ogeom_algo::placed_edge_curve(model, &e, tol)? else {
+                continue;
+            };
+            let mid = curve.point_at(f64::midpoint(lo, hi), tol)?;
+            if walls.iter().any(|(n, at)| n.dot(mid - *at).abs() <= near) && inside(mid) {
+                return Err(refused());
+            }
+        }
+    }
+    let shells = |shape: &Shape| explore_unique(model, shape, ShapeType::Shell).map(|s| s.len());
+    if shells(cut)? < shells(banded)? {
+        return Err(refused());
+    }
+    Ok(())
+}
+
 /// The bands of `banded` meeting at `vertex`, whose corner reads as
 /// `frame`, stopped at `setback` along their edges and the opening between
 /// them filled by one patch at `continuity`.
+#[allow(clippy::too_many_arguments, reason = "one corner and its reading")]
 fn close_corner(
     model: &mut Model,
+    solid: &Shape,
     banded: Built,
     vertex: &Shape,
     frame: &crate::corner::CornerFrame,
@@ -445,7 +559,7 @@ fn close_corner(
 ) -> OgeomResult<Built> {
     let ends = vec![CornerEnd::Round; frame.d.len()];
     close_corner_ends(
-        model, banded, vertex, frame, setback, &ends, continuity, tol,
+        model, solid, banded, vertex, frame, setback, &ends, continuity, tol,
     )
 }
 
@@ -457,6 +571,7 @@ fn close_corner(
 )]
 pub(crate) fn close_corner_ends(
     model: &mut Model,
+    solid: &Shape,
     banded: Built,
     vertex: &Shape,
     frame: &crate::corner::CornerFrame,
@@ -478,6 +593,17 @@ pub(crate) fn close_corner_ends(
     walls.extend(sections.iter().copied());
     let cell = crate::corner::convex_block(model, &walls, tol)?;
     let cut = ogeom_bool::cut(model, &banded.shape, &cell, tol)?;
+    let planes: Vec<(Vector, Point)> = frame.m.iter().map(|mk| (*mk, frame.corner)).collect();
+    guard_cell(
+        model,
+        solid,
+        &banded.shape,
+        &cut.shape,
+        vertex,
+        &planes,
+        &walls,
+        tol,
+    )?;
     let history = banded.history.then(&cut.history);
 
     let on_plane = |p: Point, (normal, at): (Vector, Point)| -> bool {
@@ -848,6 +974,7 @@ pub(crate) fn bevel_end(
 /// built in.
 pub(crate) fn close_mixed_corner(
     model: &mut Model,
+    solid: &Shape,
     banded: Built,
     vertex: &Shape,
     request: &[(Shape, f64)],
@@ -893,7 +1020,16 @@ pub(crate) fn close_mixed_corner(
         }
     }
     let setback = least_setbacks(&frame, &radius, tol)?;
-    close_corner(model, banded, vertex, &frame, &setback, Continuity::G1, tol)
+    close_corner(
+        model,
+        solid,
+        banded,
+        vertex,
+        &frame,
+        &setback,
+        Continuity::G1,
+        tol,
+    )
 }
 
 /// For each edge of the corner, the setback its band stops at: the least
@@ -1415,6 +1551,7 @@ fn signed_setbacks(c: &SignedCorner, width: &[f64], tol: Tolerances) -> OgeomRes
 #[allow(clippy::too_many_lines, reason = "one corner, assembled end to end")]
 pub(crate) fn close_signed_corner(
     model: &mut Model,
+    solid: &Shape,
     banded: Built,
     c: &SignedCorner,
     tol: Tolerances,
@@ -1429,6 +1566,17 @@ pub(crate) fn close_signed_corner(
     walls.extend((0..3).map(|k| (c.d[k], c.corner - c.d[k] * back)));
     let cell = crate::corner::convex_block(model, &walls, tol)?;
     let cut = ogeom_bool::cut(model, &banded.shape, &cell, tol)?;
+    let planes: Vec<(Vector, Point)> = c.normal.iter().map(|n| (*n, c.corner)).collect();
+    guard_cell(
+        model,
+        solid,
+        &banded.shape,
+        &cut.shape,
+        &c.vertex,
+        &planes,
+        &walls,
+        tol,
+    )?;
     let history = banded.history.then(&cut.history);
     let slack = tol.confusion() * 100.0;
     let on_plane =
