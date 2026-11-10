@@ -481,9 +481,16 @@ A signed corner with a convex edge left sharp (the L-bracket of #712)
 closes the same way inside its own cell, the trim on a face reflex at the
 vertex a cubic swinging round it; a concave edge left sharp, a setback
 reaching its edge's end and a cell reaching through the solid behind the
-vertex are refused by name. Owed: the same through `fillet_edges`' own
-corners; signed corners of more than three edges or with a curved face,
-refused by name.
+vertex are refused by name. A signed corner's patches are measured against
+what the solid and its concave rounds hold near the vertex (the three
+face half-spaces, met across a convex edge and joined across a concave
+one, and each concave round's fill), and refused by name past the bands'
+fit target: on the L-bracket every such patch, with or without the sharp
+edge, stands 0.1 to 0.46 into the concave round's own ball, so these
+corners are refused today. Owed: a signed patch that stays out of the
+concave round's ball while meeting every side tangent; the same through
+`fillet_edges`' own corners; signed corners of more than three edges or
+with a curved face, refused by name.
 
 ### Construction and exchange
 

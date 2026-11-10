@@ -1076,6 +1076,28 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A signed corner's patch no longer stands where no round puts
+  material.** (#712)
+  - Where a convex and a concave round meet at a vertex (#809), with or
+    without an edge left sharp (#838), the patches closing the corner were
+    fitted tangent to every band end and face but never checked against the
+    solid. The front face is reflex at the vertex, so #844's planes do not
+    bound it there. On the L-bracket every such patch stands into the
+    concave round's own ball: 0.10, 0.15 and 0.21 at radii 1, 1.5 and 2
+    with the upright's front edge left sharp, and 0.19 to 0.46 with all
+    three edges rounded. Material there lies outside both the bracket and
+    every round of the request. This was read off the result's mesh
+    against the bracket and the concave round's fill, and confirmed by
+    point classification against the concave round alone.
+  - The patches are now measured against what the solid and its concave
+    rounds hold near the vertex: the three face half-spaces, met across a
+    convex edge and joined across a concave one, and each concave round's
+    fill between its faces and its ball. Past the bands' fit target the
+    corner is refused by name. Both of #712's bracket corners are refused
+    today, in every order and at every radius tried, and so is rounding
+    every edge of an L-bracket (2 x 2 x 2 at 0.1), whose inner corners'
+    patches stood 0.016 into the concave ball.
+
 - **`blend_faces` and `chamfer_edges` round and bevel an arc of a rim ending
   obliquely on a face without leaving a sliver.** (#836)
   - Both stopped the band in the section through the end: `blend_faces`'

@@ -2031,6 +2031,7 @@ pub(crate) fn close_signed_corner(
     let Some(ks) = c.sharp else {
         let filled = make_filling_n(model, &boundary, &[], fit, tol)?;
         let patch = filled.built.shape.clone();
+        signed_patch_within(model, c, &[&patch], tol)?;
         faces.push(patch.clone());
         let sewn = ogeom_algo::sew(model, &faces, tol)?;
         if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
@@ -2057,5 +2058,93 @@ pub(crate) fn close_signed_corner(
         &[],
         tol,
     )?;
+    signed_patch_within(model, c, &[&patches.0, &patches.1], tol)?;
     crate::sharp::sew_corner(model, faces, patches, &c.vertex, history, tol)
+}
+
+/// Refuses by name where a signed corner's patches stand outside what the
+/// solid and its concave rounds hold near the vertex, by more than the
+/// bands' fit target, read at the vertices of their meshes. A convex
+/// round only takes material off and a concave one adds no more than the
+/// fill between its faces and its ball, so a patch past both stands where
+/// no round of the request puts material.
+fn signed_patch_within(
+    model: &Model,
+    c: &SignedCorner,
+    patches: &[&Shape],
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    let fit = crate::marched::band_fit_target(tol);
+    let deflection = ogeom_mesh::Deflection {
+        chord: fit * 0.25,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let mut worst = (f64::NEG_INFINITY, Point::ORIGIN);
+    for patch in patches {
+        let mesh = ogeom_mesh::triangulate_face(model, patch, deflection, tol)?;
+        for p in &mesh.positions {
+            let out = signed_outside(c, *p);
+            if out > worst.0 {
+                worst = (out, *p);
+            }
+        }
+    }
+    if worst.0 > fit {
+        ogeom_bail!(
+            NotDone,
+            "the signed corner's patch stands {} outside what the solid and its \
+             concave rounds hold, at {:?}",
+            worst.0,
+            worst.1
+        );
+    }
+    Ok(())
+}
+
+/// How far `p` stands outside the solid near the corner's vertex together
+/// with each concave round's fill there (negative inside): the vertex's
+/// three face half-spaces, met across a convex edge and joined across a
+/// concave one, and each concave edge's fill between its two faces, off its
+/// ball and short of the chord between the ball's contacts, along the edge
+/// from the vertex.
+fn signed_outside(c: &SignedCorner, p: Point) -> f64 {
+    let x = p - c.corner;
+    let h = |f: usize| c.normal[f].dot(x);
+    // Edge `k` lies between face `k - 1` and face `k`; it is convex where
+    // its leg into face `k` runs inside face `k - 1`.
+    let concave: Vec<usize> = (0..3)
+        .filter(|&k| c.legs[k][1].dot(c.normal[(k + 2) % 3]) >= 0.0)
+        .collect();
+    let solid = match concave.as_slice() {
+        [k] => h((k + 1) % 3).max(h((k + 2) % 3).min(h(*k))),
+        [k1, k2] => {
+            let faces = |k: usize| [(k + 2) % 3, k];
+            let shared = (0..3)
+                .find(|f| faces(*k1).contains(f) && faces(*k2).contains(f))
+                .unwrap_or(0);
+            let others: Vec<usize> = (0..3).filter(|&f| f != shared).collect();
+            h(shared).min(h(others[0]).max(h(others[1])))
+        }
+        _ => (0..3).map(h).fold(f64::NEG_INFINITY, f64::max),
+    };
+    let mut out = solid;
+    for &k in &concave {
+        let r = c.radius[k];
+        if r <= 0.0 {
+            continue;
+        }
+        let (na, nb, d) = (c.normal[(k + 2) % 3], c.normal[k], c.d[k]);
+        let centre = (na + nb) * (r / (1.0 + na.dot(nb)));
+        let across = x - d * d.dot(x);
+        let contact = centre - na * r;
+        let towards = na + nb;
+        let towards = towards / towards.magnitude();
+        let fill = (-na.dot(x))
+            .max(-nb.dot(x))
+            .max(r - (across - centre).magnitude())
+            .max(towards.dot(across - contact))
+            .max(-d.dot(x));
+        out = out.min(fill);
+    }
+    out
 }
