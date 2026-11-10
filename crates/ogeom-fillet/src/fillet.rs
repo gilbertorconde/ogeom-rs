@@ -3228,10 +3228,10 @@ fn chain_law(
 /// constant run-out is what the cut leaves open. Each such band is built
 /// again over its edge and past it as far as the constant band of the
 /// meeting's radius runs out alone, the law held level past the edge's
-/// end: one surface through the vertex. What it gains past the vertex
-/// beyond that constant band holds no material, or this refuses, so the cut
-/// takes there what the constant band takes. Returns each band's index
-/// with the vertex it runs on past.
+/// end: one surface through the vertex, which past the vertex is that
+/// constant band itself where it ends square to its crease. A constant band
+/// trimmed by a face it runs into is left to the join. Returns each band's
+/// index with the vertex it runs on past.
 fn run_on_past_turns(
     model: &mut Model,
     solid: &Shape,
@@ -3243,7 +3243,7 @@ fn run_on_past_turns(
 ) -> OgeomResult<Vec<(usize, Point)>> {
     let gap = crate::marched::band_fit_target(tol) * 2.0;
     // How far past each end of its oriented run, as fractions of its
-    // length, and the constant band alone at each turn it runs on past.
+    // length, and each turn it runs on past.
     let mut ends: Vec<[f64; 2]> = vec![[0.0; 2]; chain.len()];
     let mut alone_at: Vec<(usize, Point)> = Vec::new();
     for (junction, &(_, _, radius)) in junctions.iter().zip(meetings) {
@@ -3330,9 +3330,6 @@ fn run_on_past_turns(
                 w.len()
             )
         })?;
-        for (_, at) in alone_at.iter().filter(|(k, _)| *k == index) {
-            run_on.push((index, *at));
-        }
         let Some(entry) = set_aside
             .iter_mut()
             .find(|(held, _, _)| held.contains(&index))
@@ -3340,6 +3337,9 @@ fn run_on_past_turns(
             continue;
         };
         entry.2 = wedge;
+        for (_, at) in alone_at.iter().filter(|(k, _)| *k == index) {
+            run_on.push((index, *at));
+        }
     }
     Ok(run_on)
 }
