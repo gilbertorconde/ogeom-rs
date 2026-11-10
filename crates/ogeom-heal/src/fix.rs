@@ -17,6 +17,11 @@ pub struct FixedTrims {
     /// Edges refused (farther from the surface than the cap), with the
     /// offset each was measured at.
     pub refused: Vec<(Shape, f64)>,
+    /// Whether the face, a sphere face whose trim came within
+    /// [`ogeom_bool::POLE_MARGIN`] of a pole of its chart, was re-charted
+    /// about an axis whose poles stand clear of it
+    /// ([`ogeom_bool::rechart_clear_of_poles`]).
+    pub recharted: bool,
 }
 
 /// Give a face's pcurve-less edges the trims projection can honestly fit.
@@ -30,11 +35,19 @@ pub struct FixedTrims {
 /// What the face shares with other shapes is copied first
 /// ([`Model::unshare`]), so their edges keep the trims they have.
 ///
+/// A sphere face whose trim, once every edge has its trim, comes within
+/// [`ogeom_bool::POLE_MARGIN`] of a pole of its chart without running
+/// through it is then re-charted about an axis whose poles stand clear of
+/// it: beside a pole no fitted trim follows the curve, and the face would
+/// mesh short and classify wrong.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
 /// `face` is not a face, holds no surface, or an edge carries no space
-/// curve to project.
+/// curve to project; [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone)
+/// naming why where such a sphere face cannot be re-charted clear of its
+/// trim.
 pub fn fix_face_pcurves(
     model: &mut Model,
     face: &Shape,
@@ -46,6 +59,15 @@ pub fn fix_face_pcurves(
     let mut report = FixedTrims::default();
     for (plan, fits) in [plan].into_iter().zip(fits) {
         attach_trims(model, plan, fits, tol, &mut report)?;
+    }
+    if report.refused.is_empty() {
+        match ogeom_bool::rechart_clear_of_poles(model, face, tol)? {
+            ogeom_bool::Recharted::Untouched => {}
+            ogeom_bool::Recharted::Restated => report.recharted = true,
+            ogeom_bool::Recharted::Refused(why) => {
+                ogeom_bail!(NotDone, "{why}");
+            }
+        }
     }
     Ok(report)
 }

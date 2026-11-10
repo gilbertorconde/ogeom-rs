@@ -1099,6 +1099,33 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A sphere face trimmed a hair beside a pole of its chart meshes whole
+  and classifies right.** (#850)
+  - The face is the ball's cap beyond `x = delta`, its rim passing `delta`
+    from both poles of a sphere charted about `+z`. It can be built by hand,
+    or read from a STEP or IGES file that keeps the sphere's own axis.
+  - The rim's image sweeps half a turn of longitude within twice that
+    distance of the pole, and no fitted trim follows it there. At
+    `delta = 1e-6` to `1e-4` the mesh dropped 81 to 100 percent of the cap,
+    and the classifier read up to a third of a sample of points on the
+    wrong side. `check` called the solid valid, and its closed-form volume
+    was exact.
+  - `ogeom_bool::rechart_clear_of_poles` now restates such a face in place
+    on the same sphere, charted about the axis, among a ball's candidate
+    axes, whose poles stand furthest from its trim. The surface, the edges
+    and their curves are unchanged: only the chart, the trims and the seam
+    and pole edges the new chart needs. A trim within `POLE_MARGIN`
+    (0.05 rad) of a pole it does not run through triggers it. A face whose
+    trim runs through a pole, or keeps clear of both, is only read.
+  - `fix_face_pcurves`, and the STEP and IGES readers after a file is read,
+    re-chart every such face. A face no chart clears is refused by name: a
+    `NotDone` from `fix_face_pcurves`, a warning in the import's report.
+  - `Model::rechart_face` restates a face on a new surface and boundary in
+    place, so the shells, documents and face tables that name it keep it.
+  - The cap now meshes within the chord's own error (8.2e-6, as an ordinary
+    ball does) and reads every point right, built by hand and through STEP
+    and IGES.
+
 - **A solid bounded by its sphere's seam meridian on one side keeps that
   side through STEP and IGES.** A ball cut by the plane through its seam
   (or a block cut by a ball there, leaving a half-ball pocket) has the

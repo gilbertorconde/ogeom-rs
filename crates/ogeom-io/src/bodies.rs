@@ -125,3 +125,32 @@ pub(crate) fn restates(surface: &ogeom_geom::SurfaceGeometry, through: bool) -> 
 pub(crate) fn turned_in_file(placement: &ogeom_math::Transform, restated: bool) -> bool {
     !placement.preserves_handedness() != restated
 }
+
+/// Re-chart every sphere face of `bodies` whose trim runs beside a pole of
+/// its chart without running through it ([`ogeom_bool::rechart_clear_of_poles`]),
+/// noting in `warnings` each that no chart clears: such a face meshes short
+/// and classifies wrong on the chart it came on. Each face is asked once.
+pub(crate) fn rechart_beside_poles<'a>(
+    model: &mut Model,
+    bodies: impl IntoIterator<Item = &'a Shape>,
+    warnings: &mut Vec<String>,
+    tol: ogeom_core::Tolerances,
+) -> OgeomResult<()> {
+    let mut seen: ogeom_core::FastSet<ogeom_topo::TShapeId> = ogeom_core::FastSet::default();
+    let mut faces = Vec::new();
+    for body in bodies {
+        for face in ogeom_topo::explore_unique(model, body, ShapeType::Face)? {
+            if seen.insert(face.node()) {
+                faces.push(face);
+            }
+        }
+    }
+    for face in faces {
+        if let ogeom_bool::Recharted::Refused(why) =
+            ogeom_bool::rechart_clear_of_poles(model, &face, tol)?
+        {
+            warnings.push(why);
+        }
+    }
+    Ok(())
+}
