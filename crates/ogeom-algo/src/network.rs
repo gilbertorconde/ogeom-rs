@@ -628,7 +628,10 @@ pub fn fit_network_chained(
         fit.corners = corners;
         fit.fans = fans;
         let (spans, current, ended) = fit.refine(options)?;
-        if (ended == Ended::Met && current.held) || (corners == Corners::Loose && !fans) {
+        let forced = corners == Corners::Mixed
+            && current.held
+            && std::env::var_os("OGEOM_MIXED_FORCE").is_some();
+        if (ended == Ended::Met && current.held) || forced || (corners == Corners::Loose && !fans) {
             settled = Some((spans, current, ended));
             break;
         }
@@ -643,8 +646,13 @@ pub fn fit_network_chained(
     // is finished at its spans, in the order they were tried: the points
     // re-taken at their nearest points on the fit.
     let mut retaken = None;
-    if ended != Ended::Met {
+    let force_mixed = std::env::var_os("OGEOM_MIXED_FINISH").is_some()
+        && missed.iter().any(|m| m.0 == Corners::Mixed);
+    if ended != Ended::Met || force_mixed {
         for (corners, fans, at, round) in missed {
+            if force_mixed && corners != Corners::Mixed {
+                continue;
+            }
             let held = Fit {
                 corners,
                 fans,
@@ -1372,6 +1380,9 @@ impl Seeds {
         // at that point asks.
         for mixed in &topo.mixed {
             for &(p, k) in &mixed.three {
+                if std::env::var_os("OGEOM_MIXED_NO_RESEED").is_some() {
+                    continue;
+                }
                 if let Some(surface) = mixed_seed(&surfaces, topo, patches, (p, k), tol)? {
                     if let SurfaceGeometry::BSpline(b) = &surface {
                         boxes[p] = net_box(
@@ -4467,6 +4478,15 @@ impl Fit<'_> {
         let mut spans = spans.to_vec();
         let mut current = start;
         for step in 0..=FINISH_STEPS {
+            if self.corners == Corners::Mixed {
+                eprintln!(
+                    "DBGFIN step {step} worst {:.3e} square {:.3e} spans {:?} held {}",
+                    widest(&current),
+                    current.square(),
+                    spans,
+                    current.held
+                );
+            }
             if current.held && current.distances.iter().all(|d| *d <= tolerance) {
                 return Ok(Some((spans, current, taken)));
             }
@@ -4489,6 +4509,17 @@ impl Fit<'_> {
                 && worst(&refit, &next) <= worst(&fit, &current)
                 && widest(&next) <= widest(&current);
             if !kept {
+                if self.corners == Corners::Mixed {
+                    eprintln!(
+                        "DBGFIN refused: square {:.3e} -> {:.3e} (needs drop > {:.3e}) worst {:.3e} -> {:.3e} held {}",
+                        current.square(),
+                        next.square(),
+                        2.0 * variance,
+                        widest(&current),
+                        widest(&next),
+                        next.held
+                    );
+                }
                 return Ok(None);
             }
             // Refined on from there, the points where they now lie and

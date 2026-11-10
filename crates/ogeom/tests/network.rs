@@ -2612,44 +2612,31 @@ fn across_any(network: &Network) -> f64 {
 
 #[test]
 fn probe_mixed_points() {
-    for (n, three) in [(4usize, vec![0usize, 2])] {
-        let (curves, patches) = mixed_cap(n, &three);
-        for (noise, tol) in [(0.0, CLEAN_TOLERANCE), (NOISE, NOISY_TOLERANCE)] {
-            let cloud = cap_points(20_000, noise, 29);
-            let (_, network) = fit(&curves, &patches, &cloud, &options(tol, vec![]));
+    let (curves, patches) = mixed_cap(4, &[0, 2]);
+    let chained: Vec<ChainedPatch> = patches.iter().copied().map(ChainedPatch::from).collect();
+    for (noise, tol) in [(0.0, CLEAN_TOLERANCE), (NOISE, NOISY_TOLERANCE)] {
+        let cloud = cap_points(20_000, noise, 29);
+        for corrections in [0usize, 8, 32, 128] {
+            let mut model = Model::new();
+            let index = PointIndex::build(&cloud).unwrap();
+            let start = Instant::now();
+            let network = fit_network_chained(
+                &mut model,
+                &chained,
+                &curves,
+                &index,
+                &options(tol, vec![]),
+                corrections,
+                T,
+            )
+            .unwrap();
             let worst = network
                 .per_patch
                 .iter()
                 .map(|p| p.worst)
                 .fold(0.0, f64::max);
-            // Every patch's normal at the top: at a corner there, or just
-            // inside a side shrunk to it, along that side.
-            let (tu, tv) = on_side(3, 0.5);
-            let top = network.surfaces[0].point_at(tu, tv, T).unwrap();
-            let mut normals = Vec::new();
-            for s in &network.surfaces {
-                for k in 0..4 {
-                    for i in 0..=20 {
-                        let (u, v) = on_side(k, f64::from(i) / 20.0);
-                        if s.point_at(u, v, T).unwrap().distance(top) > 1e-6 {
-                            continue;
-                        }
-                        let (u, v) = ((0.5 - u).mul_add(2e-6, u), (0.5 - v).mul_add(2e-6, v));
-                        if let Ok(n) = s.normal_at(u, v, T) {
-                            normals.push(n.vector());
-                        }
-                    }
-                }
-            }
-            let mut at_top = 0.0_f64;
-            for a in &normals {
-                for b in &normals {
-                    at_top = at_top.max(a.cross(*b).magnitude().atan2(a.dot(*b)));
-                }
-            }
-            eprintln!("MIXED top normals {} spread {at_top:.2e}", normals.len());
             eprintln!(
-                "MIXED {n} {three:?} {noise}: {:?} tangent {:.2e} any {:.2e} worst {worst:.2e} off {:.2e} spans {:?}",
+                "MIXED {noise} corrections {corrections}: {:?} tangent {:.2e} any {:.2e} worst {worst:.2e} off {:.2e} spans {:?} took {:.1}s",
                 network.ended,
                 network.worst_tangent,
                 across_any(&network),
@@ -2658,7 +2645,8 @@ fn probe_mixed_points() {
                     .per_patch
                     .iter()
                     .map(|p| p.spans)
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>(),
+                start.elapsed().as_secs_f64()
             );
         }
     }
