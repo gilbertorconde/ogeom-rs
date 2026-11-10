@@ -1353,6 +1353,119 @@ fn a_linear_law_rounds_a_re_entrant_corner_beside_a_drafted_wall() {
     assert!(read > 64, "{read} contacts read");
 }
 
+/// The drafted L-block's drafted top edge and the top edge it turns into
+/// at the outside corner `(10, 20, 10)`, one chain under a linear law from
+/// 1 to 1.5. The drafted wall's foot leans out under the far face there,
+/// so the far edge's band runs on past the vertex below the top, inside
+/// the material, before it leaves through the drafted wall. The round is
+/// valid and lies between the constant rounds at 1 and 1.5, and away from
+/// the corners every contact on the top stands at the law's radius for its
+/// place along the run: a radius off the crease on the square face's band,
+/// `tan 40°` of it on the drafted one.
+#[test]
+fn a_linear_law_rounds_a_convex_turn_beside_a_drafted_wall() {
+    let mut model = Model::new();
+    let l = drafted_l(&mut model);
+    let chain = [
+        edge_near(&model, &l, [10.0, 15.0, 10.0]),
+        edge_near(&model, &l, [5.0, 20.0, 10.0]),
+    ];
+    let law = RadiusLaw::Linear {
+        start: 1.0,
+        end: 1.5,
+    };
+    let rounded = fillet_edges_variable(&mut model, &l, &chain, &law, T).unwrap();
+    valid(&model, &rounded.shape);
+    let v = volume(&model, &rounded.shape, 1e-3);
+    let mut constant = |r: f64| {
+        let built = ogeom_fillet::fillet_edges(&mut model, &l, &chain, r, T).unwrap();
+        volume(&model, &built.shape, 1e-3)
+    };
+    let (one, most) = (constant(1.0), constant(1.5));
+    assert!(most < v && v < one, "{most} < {v} < {one}");
+    // The run starts at the first edge's start: at (10, 10) where it runs
+    // into the corner, else at (0, 20), the second edge's far end.
+    let first_start = {
+        let (c, (a, b)) = ogeom_algo::placed_edge_curve(&model, &chain[0], T)
+            .unwrap()
+            .unwrap();
+        let t = if chain[0].orientation() == Orientation::Reversed {
+            b
+        } else {
+            a
+        };
+        c.point_at(t, T).unwrap()
+    };
+    let from_drafted_end = first_start.y < 15.0;
+    let draft = 40.0_f64.to_radians().tan();
+    let mut read = 0;
+    for e in explore_unique(&model, &rounded.shape, ShapeType::Edge).unwrap() {
+        let Some((c, (a, b))) = ogeom_algo::placed_edge_curve(&model, &e, T).unwrap() else {
+            continue;
+        };
+        for i in 0..=128 {
+            let p = c.point_at(a + (b - a) * f64::from(i) / 128.0, T).unwrap();
+            let corner = p.distance(Point::new(10.0, 20.0, 10.0)) < 4.0
+                || p.distance(Point::new(10.0, 10.0, 10.0)) < 4.0;
+            if (p.z - 10.0).abs() > 1e-9 || corner {
+                continue;
+            }
+            // Along the run from the drafted edge's far end, and the
+            // contact's offset from its crease over the law's radius.
+            let (along, off, scale) = if p.x < 10.0 && p.x > 7.0 && p.y > 10.0 && p.y < 17.0 {
+                (p.y - 10.0, 10.0 - p.x, draft)
+            } else if p.y < 20.0 && p.y > 17.0 && p.x > 0.5 && p.x < 7.0 {
+                (20.0 - p.x, 20.0 - p.y, 1.0)
+            } else {
+                continue;
+            };
+            if !(0.3..3.0).contains(&off) {
+                continue;
+            }
+            let s = if from_drafted_end {
+                along / 20.0
+            } else {
+                1.0 - along / 20.0
+            };
+            let miss = (off - 0.5f64.mul_add(s, 1.0) * scale).abs();
+            assert!(miss < 1e-6, "a contact at {p:?} stands {miss} off the law");
+            read += 1;
+        }
+    }
+    assert!(read > 64, "{read} contacts read");
+}
+
+/// The drafted L-block's whole top loop under a law of points that closes
+/// round it, as #798 states it: across its re-entrant corner and its
+/// convex turn beside the drafted wall, valid, and between the loop's
+/// constant rounds at the law's least and largest radius.
+#[test]
+fn a_law_of_points_rounds_a_drafted_l_block_s_top_loop() {
+    let mut model = Model::new();
+    let l = drafted_l(&mut model);
+    let top: Vec<Shape> = [
+        [10.0, 0.0],
+        [20.0, 5.0],
+        [15.0, 10.0],
+        [10.0, 15.0],
+        [5.0, 20.0],
+        [0.0, 10.0],
+    ]
+    .iter()
+    .map(|[x, y]| edge_near(&model, &l, [*x, *y, 10.0]))
+    .collect();
+    let law = RadiusLaw::Points(vec![(0.0, 1.0), (0.5, 2.0)]);
+    let rounded = fillet_edges_variable(&mut model, &l, &top, &law, T).unwrap();
+    valid(&model, &rounded.shape);
+    let v = volume(&model, &rounded.shape, 1e-3);
+    let mut constant = |r: f64| {
+        let built = ogeom_fillet::fillet_edges(&mut model, &l, &top, r, T).unwrap();
+        volume(&model, &built.shape, 1e-3)
+    };
+    let (one, two) = (constant(1.0), constant(2.0));
+    assert!(two < v && v < one, "{two} < {v} < {one}");
+}
+
 /// A block with a groove cut beside its front top edge, a strip 0.5 wide
 /// left on top between them. Under radii from 1 to 2 the ball's contact on
 /// the top stands past the strip, out over the groove and, past 1.5, on
