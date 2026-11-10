@@ -13,6 +13,17 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`fillet_edges_cornered`: setback corners asked through `fillet_edges`.**
+  (#718)
+  - `fillet_edges_cornered(model, solid, edges, radius, &[(vertex,
+    Setbacks)], tol)` rounds the edges once and closes each named vertex
+    as `round_vertex_setback` does; vertices not named keep the ball's
+    corner. On a 20 × 20 × 10 block with all twelve edges rounded at 2,
+    two corners at setback 5 on one top edge each take off what they take
+    off alone, to 1e-9 of the volume, in either order, and each patch
+    meets its six neighbours within 1e-3 rad.
+  - Refused by name: a vertex named twice, an edge at a named vertex left
+    out of `edges`, and two setbacks along one edge that meet.
 - **A radius law rounds a convex turn beside a drafted wall, and the
   drafted L-block's whole top loop.** (#798)
   - At a convex turn where the two bands' sections differ (a drafted

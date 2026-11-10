@@ -1455,12 +1455,15 @@ its face at G1, so its end arc bends the patch at 1/radius where the face \
 asks none; curvature-continuous band sections come first), a vertex a \
 curved face meets, planes sharing no tangent ball, a curved edge leaving \
 the vertex, and a setback inside the ball's own or past the edge's end. \
-Owed: the patch as a network of quads from the sides' midpoints to a \
-centre, held tangent exactly rather than to the fit; setbacks through \
-fillet_edges' own corners."""
+fillet_edges_cornered asks setbacks through fillet_edges' corners: the \
+edges rounded once, each named vertex closed the same way, refused by name \
+where an edge at a named vertex is not rounded or two setbacks along one \
+edge meet. Owed: the patch as a network of quads from the sides' midpoints \
+to a centre, held tangent exactly rather than to the fit."""
 symbols = [
     "ogeom_fillet::round_vertex_setback", "ogeom_fillet::Setbacks",
     "ogeom_fillet::round_vertex_setback_sharp",
+    "ogeom_fillet::fillet_edges_cornered",
 ]
 tests = [
     "crates/ogeom-fillet/tests/setback.rs",
