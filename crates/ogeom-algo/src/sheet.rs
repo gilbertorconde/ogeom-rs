@@ -68,6 +68,33 @@ pub enum SheetMethod {
         /// down to, as a length on the sheet.
         resolution: f64,
     },
+    /// The as-rigid-as-possible flattening of the geodesic disc the sheet
+    /// covers: each triangle of a mesh of the disc as near a rotation of
+    /// itself on the surface as the whole allows, so lengths stretch as
+    /// little as they can in every direction at once, and areas with them.
+    /// Pinned at the origin with its `+x` along the sheet's, and not
+    /// scaled.
+    ///
+    /// The flattening is a minimum of a non-convex energy, settled from
+    /// the conformal flattening, and not unique: nothing is said of how
+    /// far it stands from any smooth map. The sheet is judged by what it
+    /// does. Its length ratio, against the surface's own metric, is
+    /// measured at every vertex and triangle centroid of the flattened mesh
+    /// within the reach, and the sheet is refused where any falls outside
+    /// `1 / (1 + stretch)` to `1 + stretch`, or where it folds over. These
+    /// are measurements at those points, not a bound between them.
+    /// [`SurfaceSheet::distortion`] starts from the range measured.
+    /// [`SurfaceSheet::flattening_error`] is the miss of the smooth map
+    /// carried, a polynomial, against the mesh's own map, within half of
+    /// `resolution` at the same points. On a plane, a cylinder and a cone it
+    /// is their exact development.
+    AsRigidAsPossible {
+        /// How closely the smooth map carried follows the flattened mesh,
+        /// as a length on the sheet.
+        resolution: f64,
+        /// How far the length ratio may stand from one, as a fraction.
+        stretch: f64,
+    },
 }
 
 /// How a flat sheet is laid on a face.
@@ -261,7 +288,23 @@ impl SurfaceSheet {
             flat: None,
             seen: core::cell::Cell::new([1.0; 4]),
         };
-        if let SheetMethod::LeastDistortion { resolution } = placement.method
+        let (resolution, rigid) = match placement.method {
+            SheetMethod::Geodesic => (None, None),
+            SheetMethod::LeastDistortion { resolution } => (Some(resolution), None),
+            SheetMethod::AsRigidAsPossible {
+                resolution,
+                stretch,
+            } => {
+                if !(stretch > 0.0 && stretch.is_finite()) {
+                    ogeom_bail!(
+                        Construction,
+                        "an as-rigid-as-possible sheet's stretch of {stretch} is not a fraction"
+                    );
+                }
+                (Some(resolution), Some(stretch))
+            }
+        };
+        if let Some(resolution) = resolution
             && !matches!(chart, Chart::Plane | Chart::Cylinder | Chart::Cone { .. })
         {
             sheet.geodesic_reach = most;
@@ -270,8 +313,46 @@ impl SurfaceSheet {
                     let (uv, _) = sheet.geodesic(q, tol.confusion())?;
                     sheet.surface.point_at(uv.x, uv.y, tol)
                 };
-                crate::sheet_flat::Flattening::build(&land, reach, most, resolution)?
+                crate::sheet_flat::Flattening::build(
+                    &land,
+                    reach,
+                    most,
+                    resolution,
+                    rigid.is_some(),
+                )?
             };
+            if let Some(stretch) = rigid {
+                let (least, most) = (1.0 / (1.0 + stretch), 1.0 + stretch);
+                let mut seen = [f64::INFINITY, 0.0, f64::INFINITY, 0.0];
+                for &p in &flat.samples {
+                    let (q, d) = flat.at(p);
+                    let (_, across) = sheet.geodesic(q, tol.confusion())?;
+                    let (short, long) = carried_stretch(q, across, d);
+                    if short.is_nan() || short <= 0.0 {
+                        ogeom_bail!(
+                            Construction,
+                            "the as-rigid-as-possible sheet folds over at the sheet point {p:?}"
+                        );
+                    }
+                    seen = [
+                        seen[0].min(short),
+                        seen[1].max(long),
+                        seen[2].min(short * long),
+                        seen[3].max(short * long),
+                    ];
+                }
+                if seen[0] < least || seen[1] > most {
+                    ogeom_bail!(
+                        Construction,
+                        "the as-rigid-as-possible sheet of reach {reach} stretches lengths by \
+                         {:.4} to {:.4}, past the {least:.4} to {most:.4} its stretch of \
+                         {stretch} allows",
+                        seen[0],
+                        seen[1]
+                    );
+                }
+                sheet.seen.set(seen);
+            }
             sheet.flat = Some(Box::new(flat));
         }
         Ok(sheet)

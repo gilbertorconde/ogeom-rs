@@ -13,6 +13,26 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **`SheetMethod::AsRigidAsPossible`: a sheet laid on a curved face with
+  lengths and areas stretched as little as they can be together.** (#729)
+  - The geodesic disc the sheet covers is flattened as rigidly as
+    possible: each triangle of a 32-ring mesh of it held as near a rotation
+    of itself on the surface as the whole allows, by local and global
+    rounds from the conformal flattening, pinned at the origin and `+x`
+    and not scaled.
+  - The sheet is judged by what it does. Its length ratio against the
+    surface's own metric is measured at every vertex and centroid of the
+    flattened mesh within the reach, and it is refused past the `stretch`
+    asked, or where a triangle folds or its rim crosses itself. These are
+    measurements at those points, not a bound between them; nothing is
+    claimed of the flattening's distance from any smooth map, its energy
+    being non-convex.
+  - On a sphere of radius 10 with reach 5: length 0.969 to 1.017 and area
+    0.970 to 1.034, against the conformal sheet's 0.968 to 1.031 and 0.938
+    to 1.063. A 6 x 4 rectangle laid on it cuts out an area nearer 24 than
+    the conformal sheet's 25.07. On a plane, a cylinder and a cone it is
+    their exact development.
+
 - **A round on an open marched seat takes a bevel beside it off whole.**
   (#719)
   - A slab whose crease follows an S-shaped spline, bevelled 0.5 and then
