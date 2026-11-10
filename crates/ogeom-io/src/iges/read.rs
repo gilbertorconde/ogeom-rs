@@ -2832,10 +2832,18 @@ impl<'a> Reader<'a> {
                 }
                 (false, _) => {
                     let (forward, reversed) = walked;
+                    let backwards = edge.orientation() == ogeom_topo::Orientation::Reversed;
+                    let placed = crate::pcurves::onto_inner_column(
+                        &forward.or(reversed).unwrap_or(image),
+                        range,
+                        backwards,
+                        surface,
+                        self.tol,
+                    )?;
                     ogeom_algo::attach_pcurve(
                         &mut self.model,
                         edge,
-                        forward.or(reversed).unwrap_or(image),
+                        placed,
                         surface_id,
                         ogeom_topo::Location::identity(),
                         range,

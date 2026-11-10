@@ -628,3 +628,107 @@ fn a_solid_written_as_iges_reads_back() {
         }
     }
 }
+
+/// Solids whose sphere face is bounded by its own seam meridian on one side
+/// only, walked once by the face: a ball cut by the plane through its seam
+/// (keeping `y > 0`, the face forward), and a block cut by a whole ball
+/// centred on its face at `y = 0` (a half-ball pocket, the face reversed).
+/// Written out and read back through STEP and IGES, each solid is valid,
+/// holds its exact volume, and every point of a fixed grid off its boundary
+/// reads in or out as its membership says. A `SEAM_CURVE` carrying both of
+/// the seam's sides for one walk read back on the far side, and an IGES
+/// image chained across the poles took either column: the sphere face then
+/// faced into its material and half the points read wrong.
+#[test]
+fn solids_bounded_by_a_seam_meridian_keep_their_side_through_exchange() {
+    use ogeom::algo::{Containment, SolidBoundary};
+    use ogeom::math::{Direction, Frame, Point, Vector};
+    let frame = |x: f64, y: f64, z: f64| {
+        Frame::new(Point::new(x, y, z), Direction::Z, Direction::X, T).unwrap()
+    };
+    let ball_volume = 4.0 / 3.0 * core::f64::consts::PI * 1000.0;
+    for pocket in [false, true] {
+        let mut model = Model::new();
+        let ball = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 10.0, T)
+            .unwrap()
+            .shape;
+        let (solid, want): (Shape, f64) = if pocket {
+            let block =
+                ogeom::algo::make_box(&mut model, frame(-20.0, 0.0, -20.0), (40.0, 20.0, 40.0), T)
+                    .unwrap()
+                    .shape;
+            let cut = ogeom::boolean::cut(&mut model, &block, &ball, T)
+                .unwrap()
+                .shape;
+            (cut, 40.0 * 20.0 * 40.0 - ball_volume / 2.0)
+        } else {
+            let below = ogeom::algo::make_box(
+                &mut model,
+                frame(-20.0, -20.0, -20.0),
+                (40.0, 20.0, 40.0),
+                T,
+            )
+            .unwrap()
+            .shape;
+            let cut = ogeom::boolean::cut(&mut model, &ball, &below, T)
+                .unwrap()
+                .shape;
+            (cut, ball_volume / 2.0)
+        };
+        let inside = |p: Point| {
+            let in_ball = Vector::new(p.x, p.y, p.z).magnitude() < 10.0;
+            if pocket {
+                p.x.abs() < 20.0 && p.y > 0.0 && p.y < 20.0 && p.z.abs() < 20.0 && !in_ball
+            } else {
+                in_ball && p.y > 0.0
+            }
+        };
+        assert!(check(&model, &solid, T).unwrap().is_valid());
+        let mut document = ogeom::doc::Document::over(model);
+        document.add_part("part", solid);
+        let step = ogeom::io::read_step(&ogeom::io::write_step(&document, T).unwrap(), T).unwrap();
+        let iges = ogeom::io::read_iges(&ogeom::io::write_iges(&document, T).unwrap(), T).unwrap();
+        for (format, model, solid) in [
+            ("STEP", step.document.model(), &step.solids[0]),
+            ("IGES", iges.document.model(), &iges.solids[0]),
+        ] {
+            let name = format!("{format}, {}", if pocket { "pocket" } else { "half ball" });
+            let diagnosis = check(model, solid, T).unwrap();
+            assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+            let got = ogeom::algo::volume_properties(model, solid, Deflection::default(), T)
+                .unwrap()
+                .mass;
+            assert!(
+                (got - want).abs() <= want * 1e-9,
+                "{name}: volume {got} against {want}"
+            );
+            let boundary = SolidBoundary::of(model, solid, 1e-3, T).unwrap();
+            let mut wrong = Vec::new();
+            for i in -4..=4 {
+                for j in -4..=4 {
+                    for k in -4..=4 {
+                        let p = Point::new(
+                            4.3 * f64::from(i) + 0.1,
+                            4.3 * f64::from(j) + 0.1,
+                            4.3 * f64::from(k) + 0.1,
+                        );
+                        let read = boundary.holds(model, p, T).unwrap();
+                        let right = matches!(
+                            (read, inside(p)),
+                            (Containment::In, true) | (Containment::Out, false)
+                        );
+                        if !right {
+                            wrong.push(p);
+                        }
+                    }
+                }
+            }
+            assert!(
+                wrong.is_empty(),
+                "{name}: {} points read wrong, e.g. {:?}",
+                wrong.len(),
+                wrong.first()
+            );
+        }
+    }
+}

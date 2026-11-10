@@ -1099,6 +1099,23 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A solid bounded by its sphere's seam meridian on one side keeps that
+  side through STEP and IGES.** A ball cut by the plane through its seam
+  (or a block cut by a ball there, leaving a half-ball pocket) has the
+  seam's halves bounding the sphere face once each.
+  - STEP wrote them as `SEAM_CURVE`s carrying both sides of the seam for a
+    single walk, and the reader took the far side. IGES, which carries no
+    pcurves, chained each image across the poles, where either column
+    meets, and could take either.
+  - Read back, the sphere face faced into its material: `check` called the
+    solid broken, and classification read more than half of a sample of
+    points on the wrong side.
+  - The STEP writer now states an edge a face walks once by the side that
+    face walks, as a `SURFACE_CURVE`, read off its neighbours in the ring.
+    The IGES reader puts an image a wire walks once along a seam column on
+    the column the face lies against, the one whose side the walk keeps on
+    its left.
+
 - **A setback corner's patch that strays past a face is held inside it,
   and #713's box corner at 1, 3 and 2 closes again, within the block.**
   (#713)

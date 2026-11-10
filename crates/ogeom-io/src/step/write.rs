@@ -27,6 +27,7 @@
 use ogeom_core::FastMap;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_doc::{Document, ProductId, ProductKind};
+use ogeom_geom::Curve2d as _;
 use ogeom_geom::Curve3d as _;
 use ogeom_geom::Surface as _;
 use ogeom_geom::Transformable as _;
@@ -577,14 +578,23 @@ impl Writer<'_> {
         } else {
             ".F."
         };
+        let wires = self.model.children_of(face)?;
+        // How many times the face walks each edge: a seam edge walked once
+        // bounds the face on one side of its surface's seam only.
+        let mut uses: FastMap<ogeom_topo::TShapeId, usize> = FastMap::default();
+        for wire in &wires {
+            for edge in self.model.ordered_children_of(wire)? {
+                *uses.entry(edge.node()).or_default() += 1;
+            }
+        }
         let mut bounds = Vec::new();
-        for (index, wire) in self.model.children_of(face)?.iter().enumerate() {
+        for (index, wire) in wires.iter().enumerate() {
             let keyword = if index == 0 {
                 "FACE_OUTER_BOUND"
             } else {
                 "FACE_BOUND"
             };
-            let loop_id = self.wire(wire, chart)?;
+            let loop_id = self.wire(wire, chart, &uses)?;
             bounds.push(self.entity(format!("{keyword}('',#{loop_id},{along})")));
         }
         let list = bounds
@@ -608,7 +618,12 @@ impl Writer<'_> {
     /// degenerate: a pole or an apex has no curve to serialize, and STEP's
     /// own spelling for it is the loop of one vertex. Each edge's pcurve on
     /// `chart`, the face's surface and its entity, is noted for its edge.
-    fn wire(&mut self, wire: &Shape, chart: Option<(SurfaceId, u64)>) -> OgeomResult<u64> {
+    fn wire(
+        &mut self,
+        wire: &Shape,
+        chart: Option<(SurfaceId, u64)>,
+        uses: &FastMap<ogeom_topo::TShapeId, usize>,
+    ) -> OgeomResult<u64> {
         let children = self.model.ordered_children_of(wire)?;
         let degenerate = |edge: &Shape| {
             self.model
@@ -625,13 +640,20 @@ impl Writer<'_> {
             return Ok(self.entity(format!("VERTEX_LOOP('',#{vertex_id})")));
         }
         let mut oriented = Vec::new();
-        for edge in &children {
+        for (k, edge) in children.iter().enumerate() {
             if degenerate(edge) {
                 continue;
             }
             let edge_id = self.edge(edge)?;
             if let Some(chart) = chart {
-                self.note_pcurves(edge, edge_id, chart);
+                let side = if uses.get(&edge.node()).copied().unwrap_or(0) == 1 {
+                    let n = children.len();
+                    let neighbours = (&children[(k + n - 1) % n], &children[(k + 1) % n]);
+                    self.seam_side_walked(edge, neighbours, chart.0)
+                } else {
+                    None
+                };
+                self.note_pcurves(edge, edge_id, chart, side);
             }
             let sense = if edge.orientation() == ogeom_topo::Orientation::Reversed {
                 ".F."
@@ -703,10 +725,76 @@ impl Writer<'_> {
         Ok(id)
     }
 
+    /// Which of a seam edge's two pcurves on surface `held` a face walking
+    /// it once uses: the one whose ends, walked as the face walks the edge,
+    /// meet the ends of the edges before and after it in the ring (`true`
+    /// for its forward pcurve). `None` where `edge` holds no seam there or
+    /// neither neighbour states a single pcurve to read the joints off.
+    fn seam_side_walked(
+        &self,
+        edge: &Shape,
+        (before, after): (&Shape, &Shape),
+        held: SurfaceId,
+    ) -> Option<bool> {
+        let walked = |shape: &Shape, id: ogeom_topo::PCurveId, range: (f64, f64)| {
+            let pcurve = self.model.geometry().pcurve(id)?;
+            let (a, b) = (
+                pcurve.point_at(range.0, self.tol).ok()?,
+                pcurve.point_at(range.1, self.tol).ok()?,
+            );
+            Some(
+                if shape.orientation() == ogeom_topo::Orientation::Reversed {
+                    (b, a)
+                } else {
+                    (a, b)
+                },
+            )
+        };
+        let single = |shape: &Shape| -> Option<(Point2, Point2)> {
+            let data = self.model.node(shape)?.data().as_edge()?;
+            match data.pcurve_for(held, shape.location()) {
+                Some(EdgeRepr::PCurve { curve, range, .. }) => walked(shape, *curve, *range),
+                _ => None,
+            }
+        };
+        let data = self.model.node(edge)?.data().as_edge()?;
+        let Some(EdgeRepr::Seam {
+            forward,
+            reversed,
+            range,
+            ..
+        }) = data.pcurve_for(held, edge.location())
+        else {
+            return None;
+        };
+        let (prior, next) = (single(before), single(after));
+        if prior.is_none() && next.is_none() {
+            return None;
+        }
+        let miss = |id: ogeom_topo::PCurveId| -> Option<f64> {
+            let (start, end) = walked(edge, id, *range)?;
+            Some(
+                prior.map_or(0.0, |(_, e)| e.distance(start))
+                    + next.map_or(0.0, |(s, _)| end.distance(s)),
+            )
+        };
+        let (on_forward, on_reversed) = (miss(*forward)?, miss(*reversed)?);
+        (on_forward != on_reversed).then_some(on_forward < on_reversed)
+    }
+
     /// Note the pcurves `edge` holds on a face's surface, the surface and
     /// the entity written for it, where they state the edge over its own
-    /// range in a form the file carries exactly.
-    fn note_pcurves(&mut self, edge: &Shape, edge_id: u64, (held, surface_id): (SurfaceId, u64)) {
+    /// range in a form the file carries exactly. Of a seam the face walks
+    /// once, only the side `side` names (see [`Self::seam_side_walked`]):
+    /// a `SEAM_CURVE` states an edge a face walks twice, and a reader
+    /// handed both sides for one walk may take the wrong one.
+    fn note_pcurves(
+        &mut self,
+        edge: &Shape,
+        edge_id: u64,
+        (held, surface_id): (SurfaceId, u64),
+        side: Option<bool>,
+    ) {
         let Some(record) = self.surface_curves.get_mut(&edge_id) else {
             return;
         };
@@ -723,7 +811,11 @@ impl Writer<'_> {
                 reversed,
                 range,
                 ..
-            }) => (vec![*forward, *reversed], *range),
+            }) => match side {
+                Some(true) => (vec![*forward], *range),
+                Some(false) => (vec![*reversed], *range),
+                None => (vec![*forward, *reversed], *range),
+            },
             _ => return,
         };
         let Some(pace) = Pace::between(record.range, range, self.tol.parametric()) else {
