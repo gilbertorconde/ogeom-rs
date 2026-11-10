@@ -140,8 +140,8 @@ pub struct SurfaceSheet {
     /// The geodesic sheet's own reach, past which no geodesic polar
     /// position is landed.
     geodesic_reach: f64,
-    /// The least-distortion sheet's map back to geodesic polar
-    /// coordinates.
+    /// A flattened sheet's map back to geodesic polar coordinates: the
+    /// least-distortion or the as-rigid-as-possible one.
     flat: Option<Box<crate::sheet_flat::Flattening>>,
     /// The least and the most length ratio, then area ratio, carried so
     /// far.
@@ -362,7 +362,8 @@ impl SurfaceSheet {
     /// the smooth conformal flattening, as a length on the sheet: the most
     /// a vertex shared by the last two meshes moved between them, and the
     /// most the polynomial back to geodesic coordinates misses the finer
-    /// mesh's map at its vertices and triangle centroids, together. Zero
+    /// mesh's map at its vertices and triangle centroids, together. For
+    /// the as-rigid-as-possible sheet, the polynomial's miss alone. Zero
     /// for a sheet laid by geodesic polar coordinates or by an exact
     /// development, which have no mesh.
     ///

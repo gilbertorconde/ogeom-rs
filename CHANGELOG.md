@@ -978,6 +978,14 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A refused as-rigid-as-possible sheet names itself and the bound it
+  missed.** Where the polynomial back from its flattening missed by more
+  than half the resolution, the refusal called it the least-distortion
+  sheet and quoted the whole resolution as the bound. It now names the
+  as-rigid-as-possible sheet and quotes half the resolution, the bound
+  applied. `flattening_error` says that for this sheet it is the
+  polynomial's miss alone.
+
 - **A marched band whose crease ends on a planar face holding its end
   section stops at the vertex, capped in that face's plane.** (#798)
   - A half drum's rim ends on the cut, whose plane holds the ball's section

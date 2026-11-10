@@ -962,6 +962,26 @@ fn a_rigid_sheet_past_the_stretch_asked_is_refused() {
 }
 
 #[test]
+fn a_rigid_sheet_whose_map_back_misses_is_refused_by_its_own_name() {
+    // A geodesic disc of reach 15 on a ball of radius 25: the polynomial
+    // back from the rigid flattening misses it by 5.2e-4, past half the
+    // resolution of 1e-3, and the refusal names the sheet it is and the
+    // bound it was held to.
+    let mut model = Model::new();
+    let sphere = make_sphere(&mut model, Frame::WORLD, 25.0, T)
+        .unwrap()
+        .shape;
+    let face = faces(&model, &sphere)[0].clone();
+    let refused = rigid_sheet_on(&model, &face, Point::new(0.0, -25.0, 0.0), 15.0, 0.1)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("the as-rigid-as-possible sheet's map cannot be held within 5.000e-4"),
+        "{refused}"
+    );
+}
+
+#[test]
 fn a_rigid_sheet_on_a_torus_keeps_its_place_and_stretch() {
     let mut model = Model::new();
     let torus = make_torus(&mut model, Frame::WORLD, 20.0, 5.0, T)
