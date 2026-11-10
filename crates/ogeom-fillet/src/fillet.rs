@@ -2010,7 +2010,7 @@ fn fillet_edge_variable_own(
         false,
         tol,
     )?;
-    law_ball_on_faces(model, solid, edge, &law, tol)?;
+    law_ball_on_faces(model, solid, edge, &law, Some(false), tol)?;
     let seat = planar_seat(model, solid, edge, tol)?;
     let (first, second) = if seat
         .along
@@ -2521,8 +2521,9 @@ fn fillet_chain_law_own(
         }
     }
     // Each ball sits on both faces of its edge all along the law.
+    let stations = (planar && chain.len() == 1).then_some(reversed);
     for e in chain {
-        law_ball_on_faces(model, solid, e, &profile, tol)?;
+        law_ball_on_faces(model, solid, e, &profile, stations, tol)?;
     }
     let mut built = if planar {
         straight_law_fillet(model, solid, edge, &profile, reversed, (0.0, 1.0), tol)?
@@ -2664,21 +2665,42 @@ fn law_piece(
     crate::support::apply_wedge_solid(model, solid, Some(piece), &wedge, band.additive, tol)
 }
 
-/// Whether the ball under `law` sits on both faces of `edge` all along it:
-/// [`crate::support::ball_fits`] at the law's least and largest radius,
-/// and every contact on its own face. A constant round whose contact runs
-/// off a narrow face beside the edge is cut off where the face ends, or
-/// takes the strip off whole; under a law the band's contacts change with
-/// the radius along the edge, and an envelope whose contact stands past
-/// its face would shave what lies beyond, which no ball on this edge
-/// touches. Such a seat is refused.
+/// How many pieces a straight edge under a law is read in for whether
+/// its ball sits on both faces: a station at each inner end.
+const LAW_STATIONS: u32 = 32;
+
+/// Whether the ball under `law` sits on both faces of `edge` all along it.
+///
+/// Where `stations` is given (a straight edge between two planes rounded
+/// alone, the law laid from the curve's start, or from its end where
+/// `reversed`), the ball at each station has the law's radius there and is
+/// read as the constant round reads its own
+/// ([`crate::support::ball_fits_by`]): a contact on its face or on any face
+/// of the solid holds; one past its face outside the solid is cut off
+/// there, the band running on over the open as the constant round's does;
+/// one standing in the material refuses, and so does a ball held at no
+/// station. Where the law is level that is the constant round's own
+/// reading at that radius.
+///
+/// Elsewhere [`crate::support::ball_fits`] is read at the law's least and
+/// largest radius and every contact must stand on its own face: a chain's
+/// bands and a marched band are not cut off where a contact runs off.
 fn law_ball_on_faces(
     model: &Model,
     solid: &Shape,
     edge: &Shape,
     law: &Profile,
+    stations: Option<bool>,
     tol: Tolerances,
 ) -> OgeomResult<()> {
+    if let Some(reversed) = stations {
+        let fractions: Vec<f64> = (1..LAW_STATIONS)
+            .map(|k| f64::from(k) / f64::from(LAW_STATIONS))
+            .collect();
+        let radius_at = |f: f64| law.at(if reversed { 1.0 - f } else { f }).0;
+        crate::support::ball_fits_by(model, solid, edge, &radius_at, &fractions, false, tol)?;
+        return Ok(());
+    }
     for radius in [law.least(), law.largest()] {
         let deflection = ogeom_mesh::Deflection {
             chord: (radius * 1e-3).max(tol.confusion() * 1e2),
@@ -2963,7 +2985,7 @@ fn chain_law(
             radii[k] = own.largest();
         }
         for (edge, own) in chain.iter().zip(&laws) {
-            law_ball_on_faces(model, solid, edge, own, tol)?;
+            law_ball_on_faces(model, solid, edge, own, None, tol)?;
         }
         return fillet_edges_own(
             model,
@@ -3044,7 +3066,7 @@ fn chain_law(
     let mut set_aside: Vec<(Vec<usize>, Shape, crate::support::Wedge)> = Vec::new();
     for ((&(k, _), own), _) in walk.iter().zip(&owns).zip(&lengths) {
         let edge = &chain[k];
-        law_ball_on_faces(model, solid, edge, own, tol)?;
+        law_ball_on_faces(model, solid, edge, own, None, tol)?;
         let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
         let (curve, _) = edge_curve(model, edge, tol)?;
         if halved.contains(&k) {

@@ -241,7 +241,17 @@ They refuse (`curved_face_blends_refuse_by_name` in `tests/blends.rs`,
   placed on some station's section plane by the secant and found inside
   its sector. Owed: the travel bound assumes each arc between two
   stations is convex, as the centre's already does; a proof needs the
-  march's step control to bound the arcs' curvature. An older marched round just smaller than the ball (within a few
+  march's step control to bound the arcs' curvature. On every face-blend
+  run of `blends.rs`, `sheet_fillets.rs` and `consumed_marched.rs` (77
+  runs) the centre's true travel from the nearer station, at 64 samples
+  an interval, stays within the bound (worst 0.9999 of it on a curved
+  path, equal on a straight one), so no case breaks it yet. Owed with it:
+  a second-order clearance near the contacts. Eight faceblend stress
+  refusals at seeds 1 to 8 where a ball rolls (tee/76, tee/102, tee/115,
+  leaning/23, /75 and /114) are a crease first rounded just smaller than
+  the ball (0.1597 under 0.1625 at tee/76): the older round stands about
+  6e-6 off the lune, which the cells' first-order bounds cannot show in
+  65536 cells, and the blend is refused by name. An older marched round just smaller than the ball (within a few
   hundredths of it) is fitted to 2e-4 and reaches into the ball by a few
   micrometres beside a contact, where its border runs within its own
   tolerance of the face; the blend is refused there, as the fitted round
@@ -383,7 +393,14 @@ the law and buy nothing. A loop joined round one convex turn is opened at
 a straight band built in two halves. A marched band whose crease ends on
 a planar face holding its end section stops at the vertex, capped in that
 face's own plane. A chain turning where marched bands meet is met in
-`fillet_edges`' own rounds, each piece under its window of the law. Owed:
+`fillet_edges`' own rounds, each piece under its window of the law. A straight edge between planes rounded alone whose
+contact runs off a face beside it (a strip beside a groove) is read
+station by station at the law's radius as the constant round reads its
+own, cut off in the open and refused in the material, and owed the same
+beside a narrow face in a chain (the constant round carries such a band's
+contacts past the face's side for the other bands to be checked against,
+`carried_contacts`, which under a law change along the edge) and on a
+marched seat. Owed:
 a turn where a marched band meets a straight band between planes (the
 constant round's band there is an exact torus band; under a law it is
 fitted, and its end meets the straight band in what the boolean does not

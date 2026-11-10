@@ -2014,6 +2014,35 @@ pub(crate) fn ball_fits(
     carry: bool,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Contact>> {
+    ball_fits_by(
+        model,
+        solid,
+        edge,
+        &|_| radius,
+        &[0.25, 0.5, 0.75],
+        carry,
+        tol,
+    )
+}
+
+/// [`ball_fits`] with the ball's radius at each station its own: read by
+/// `radius_at` at the station's fraction of the edge's curve range, start
+/// to end, at each of `fractions`. Each station is held, cut off or
+/// refused as [`ball_fits`] holds, cuts off or refuses a ball of that
+/// radius there.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "ball_fits' own, and the radius per station"
+)]
+pub(crate) fn ball_fits_by(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    radius_at: &dyn Fn(f64) -> f64,
+    fractions: &[f64],
+    carry: bool,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Contact>> {
     use ogeom_geom::Surface as _;
     let mut contacts = Vec::new();
     let Ok((curve, range)) = edge_curve(model, edge, tol) else {
@@ -2092,7 +2121,8 @@ pub(crate) fn ball_fits(
     let mut missed: Option<String> = None;
     let mut held = false;
     let mut probe = LazyProbe::default();
-    'stations: for fraction in [0.25, 0.5, 0.75] {
+    'stations: for &fraction in fractions {
+        let radius = radius_at(fraction);
         let t = range.0 + (range.1 - range.0) * fraction;
         let p = curve.point_at(t, tol)?;
         let d = curve.d1_at(t, tol)?;
