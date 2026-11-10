@@ -854,6 +854,18 @@ bump may break the API and a patch bump may not.
     line, and the pole is cut for it. Five of six placements at 2e-5 off now
     cut at the closed forms; along -y inside the poles one is still refused.
 
+- **The N-sided filling refines two rounds further, and #713's corner at
+  1, 3 and 2 closes.** (#713) `make_filling_n` refined its net up to 60
+  controls. Where a side's support turns tightly into a corner beside a
+  flat one, the tangency there closes only about twofold a round. On the
+  box corner at radii 1, 3 and 2, the radius-1 band's end meets the face's
+  trim with 0.053, 0.020, 0.0051, 0.0038, 0.0019 and 5.7e-4 rad of tangency
+  error, against a 2e-4 target, at its last t ≥ 0.99. The net now goes on
+  to 90 and 135 controls, half again each round. The corner meets the
+  target at 135 (1.2e-4 rad), and `fillet_edges_with` closes it the same
+  whatever the order. A filling that met its tolerance before stops where
+  it did, to the bit.
+
 - **A sewn edge states how far a pcurve carried onto it stands from its
   curve, as the edge's own measure reads it.**
   - The sew measured a carried pcurve's gap by a refinement that stops

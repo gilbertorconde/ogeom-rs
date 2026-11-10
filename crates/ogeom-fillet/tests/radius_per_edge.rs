@@ -170,24 +170,57 @@ fn three_radii_at_a_corner_close_with_one_patch_in_any_order() {
     );
 }
 
-/// The issue's corner at 1, 3 and 2: its bands and cut stand, but the
-/// patch meets the radius-1 band's end about 5.7e-4 rad from tangent at
-/// its finest net, past the bands' fit target, and the request says so
-/// rather than return a crease.
+/// The issue's corner at 1, 3 and 2: the patch meets the radius-1 band's
+/// end tangent within the bands' target once the net is fine enough (the
+/// miss sits where that end turns into the face's trim), closing the
+/// corner the same whatever the order asked, between the rounds at 1 and 3.
 #[test]
-fn three_radii_whose_patch_misses_tangency_are_refused_by_name() {
+fn the_issue_s_three_radii_close_with_one_patch_in_any_order() {
     let mut m = Model::new();
     let b = bx(&mut m, [20.0, 20.0, 10.0]);
-    let asked = [
-        (edge_at(&m, &b, [10.0, 0.0, 10.0]), 1.0),
-        (edge_at(&m, &b, [0.0, 10.0, 10.0]), 3.0),
-        (edge_at(&m, &b, [0.0, 0.0, 5.0]), 2.0),
+    let edges = [
+        edge_at(&m, &b, [10.0, 0.0, 10.0]),
+        edge_at(&m, &b, [0.0, 10.0, 10.0]),
+        edge_at(&m, &b, [0.0, 0.0, 5.0]),
     ];
-    let refusal = fillet_edges_with(&mut m, &b, &asked, T).unwrap_err();
+    let asked: Vec<(Shape, f64)> = edges.iter().cloned().zip([1.0, 3.0, 2.0]).collect();
+    let mut volumes = Vec::new();
+    for order in [[0, 1, 2], [2, 0, 1], [1, 2, 0]] {
+        let request: Vec<(Shape, f64)> = order.iter().map(|&i| asked[i].clone()).collect();
+        let rounded = fillet_edges_with(&mut m, &b, &request, T).unwrap();
+        let found = ogeom_algo::check(&m, &rounded.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        let patch = explore_unique(&m, &rounded.shape, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .find(|f| {
+                m.node(f)
+                    .and_then(|n| n.data().as_face())
+                    .and_then(|d| m.geometry().surface(d.surface))
+                    .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::BSpline(_)))
+                    && explore_unique(&m, f, ShapeType::Edge).unwrap().len() == 6
+            })
+            .expect("the corner patch");
+        let contacts = ogeom_fillet::analyse_blend(&m, &rounded.shape, &patch, 17, T).unwrap();
+        assert_eq!(contacts.len(), 6, "{contacts:?}");
+        for c in &contacts {
+            assert!(c.tangency_error < 2e-4, "a crease across the patch: {c:?}");
+        }
+        volumes.push(vol(&m, &rounded.shape));
+    }
+    for v in &volumes {
+        assert!((v - volumes[0]).abs() <= volumes[0] * 1e-9, "{volumes:?}");
+    }
+    let mut at = |r: f64| {
+        let request: Vec<(Shape, f64)> = edges.iter().cloned().map(|e| (e, r)).collect();
+        let s = fillet_edges_with(&mut m, &b, &request, T).unwrap().shape;
+        vol(&m, &s)
+    };
+    let (one, three) = (at(1.0), at(3.0));
     assert!(
-        matches!(refusal, ogeom_core::OgeomError::NotDone(_))
-            && refusal.to_string().contains("from tangent"),
-        "{refusal}"
+        three < volumes[0] && volumes[0] < one,
+        "{three} < {} < {one}",
+        volumes[0]
     );
 }
 

@@ -81,6 +81,12 @@ const OUTLINE_SAMPLES: usize = 64;
 const MARGIN: f64 = 0.05;
 /// The control counts across the larger extent, round by round.
 const NETS: [usize; 6] = [8, 12, 18, 27, 40, 60];
+/// Further control counts, each half again the last, tried only while no
+/// round has met the tolerance: where a side's support turns tightly into
+/// a corner beside a flat one (a narrow band's end meeting a face's trim),
+/// the tangency there closes about twofold a round. A filling that met its
+/// tolerance stops on [`NETS`] as it would without them.
+const FURTHER: [usize; 2] = [90, 135];
 /// The share of the tolerance the bending energy may cost the conditions;
 /// see [`smoothing_for`].
 const BUDGET: f64 = 0.1;
@@ -303,7 +309,10 @@ pub fn make_filling_n(
     let mut last_miss = String::new();
     // The latest fit that met the tolerance.
     let mut fallback = None;
-    for base in NETS {
+    for (round, base) in NETS.into_iter().chain(FURTHER).enumerate() {
+        if round >= NETS.len() && fallback.is_some() {
+            break;
+        }
         #[expect(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,

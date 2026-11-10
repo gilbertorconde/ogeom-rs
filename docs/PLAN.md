@@ -399,12 +399,13 @@ patch as N quads from the sides' midpoints to a centre fitted by
 `fit_network` so tangency holds exactly, vertices where a curved face
 meets or the planes share no tangent ball, and setbacks asked through
 `fillet_edges`' corners. `fillet_edges_with` closes corners of three
-different radii with the same patch; where the radii differ threefold (a box
-corner at 1, 3 and 2) the trimmed patch meets the smallest band 5.7e-4 rad
-from tangent at its finest net and the request is refused. That corner waits
-on a patch whose border tangency to the bands and faces is held exactly, not
-fitted: `fit_network` holds tangency between its own patches only, and a
-border held tangent to a support is a new condition there.
+different radii with the same patch, a box corner at 1, 3 and 2 included (its
+narrow band's end turns into a face's trim, and the patch's tangency there
+closes about twofold a net; it meets the target at 135 controls). The
+quads round a centre with every side held exactly (`fit_loop_quads`) meet a
+pyramid's apex but not yet a box corner's six-sided opening: the centre's
+corner holding cannot follow the larger opening (branch
+`feat/corner-quads`, #718).
 Where a convex and a concave band of one request meet at a vertex
 (`setback.rs`, `signed_corners`; #712), the request is rounded in one
 order whatever its own, and a vertex of three planar faces and three
