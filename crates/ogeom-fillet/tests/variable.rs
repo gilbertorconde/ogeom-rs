@@ -1637,11 +1637,14 @@ fn a_law_takes_a_narrow_strip_beside_its_edge_off_whole() {
         .unwrap()
         .shape;
     let beside = edge_near(&model, &bevelled, [10.0, 0.0, 9.7]);
+    // From 1.2 the ball no longer sits on the bevel, whose width is 0.424
+    // against a setback of 0.414 r.
+    let high_hump = RadiusLaw::Points(vec![(0.0, 1.2), (0.5, 2.0), (1.0, 1.2)]);
     let plain_round = fillet_edges_variable(
         &mut model,
         &plain,
         std::slice::from_ref(&top_front),
-        &hump(),
+        &high_hump,
         T,
     )
     .unwrap();
@@ -1649,7 +1652,7 @@ fn a_law_takes_a_narrow_strip_beside_its_edge_off_whole() {
         &mut model,
         &bevelled,
         std::slice::from_ref(&beside),
-        &hump(),
+        &high_hump,
         T,
     )
     .unwrap();
@@ -1662,8 +1665,8 @@ fn a_law_takes_a_narrow_strip_beside_its_edge_off_whole() {
         (a - b).abs() < 1e-4,
         "the plain round takes {a}, the bevelled {b}"
     );
-    let plain_linear = fillet_edge_variable(&mut model, &plain, &top_front, 1.0, 2.0, T).unwrap();
-    let bevel_linear = fillet_edge_variable(&mut model, &bevelled, &beside, 1.0, 2.0, T).unwrap();
+    let plain_linear = fillet_edge_variable(&mut model, &plain, &top_front, 1.2, 2.0, T).unwrap();
+    let bevel_linear = fillet_edge_variable(&mut model, &bevelled, &beside, 1.2, 2.0, T).unwrap();
     valid(&model, &bevel_linear.shape);
     let (a, b) = (
         volume(&model, &plain_linear.shape, 1e-3),
@@ -1672,6 +1675,98 @@ fn a_law_takes_a_narrow_strip_beside_its_edge_off_whole() {
     assert!(
         (a - b).abs() < 1e-4,
         "linearly, the plain round takes {a}, the bevelled {b}"
+    );
+}
+
+/// A block's front top edge bevelled 0.3 back, and the edge between the
+/// bevel and the front wall: the bevel is 0.424 wide, and a ball of
+/// radius r on that edge touches it 0.414 r back, so it sits on the bevel
+/// up to r = 1.024 and takes it off whole past that.
+fn bevelled_block(model: &mut Model) -> (Shape, Shape) {
+    let plain = ogeom_algo::make_box(model, at(0.0, 0.0, 0.0), (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let top_front = edge_near(model, &plain, [10.0, 0.0, 10.0]);
+    let bevelled = ogeom_fillet::chamfer_edge(model, &plain, &top_front, 0.3, T)
+        .unwrap()
+        .shape;
+    let beside = edge_near(model, &bevelled, [10.0, 0.0, 9.7]);
+    (bevelled, beside)
+}
+
+/// What a law of points rising from `r` to `r + raise` at the middle of
+/// the bevelled block's edge and back takes off, less what the constant
+/// round at `r` takes off.
+fn raised_beyond_constant(r: f64, raise: f64) -> f64 {
+    let mut model = Model::new();
+    let (bevelled, beside) = bevelled_block(&mut model);
+    let constant = fillet_edge(&mut model, &bevelled, &beside, r, T).unwrap();
+    let law = RadiusLaw::Points(vec![(0.0, r), (0.5, r + raise), (1.0, r)]);
+    let lawful = fillet_edges_variable(
+        &mut model,
+        &bevelled,
+        std::slice::from_ref(&beside),
+        &law,
+        T,
+    )
+    .unwrap();
+    valid(&model, &lawful.shape);
+    volume(&model, &constant.shape, 1e-3) - volume(&model, &lawful.shape, 1e-3)
+}
+
+#[test]
+fn a_law_whose_ball_sits_on_a_narrow_strip_rounds_the_edge_beside_it() {
+    // Level laws raised a little at r = 1, where the ball sits on the
+    // bevel, and at r = 1.2, where it takes it off: either way the law's
+    // extra take-off shrinks with the raise, ten times less for a raise
+    // ten times less, as a law tending to the constant round does.
+    for r in [1.0, 1.2] {
+        let (small, large) = (
+            raised_beyond_constant(r, 1e-3),
+            raised_beyond_constant(r, 1e-2),
+        );
+        assert!(
+            small > 0.0 && large > 0.0,
+            "at {r}, raises take off {small} and {large} more"
+        );
+        let ratio = large / small;
+        assert!(
+            (ratio - 10.0).abs() < 1.0,
+            "at {r}, raises of 1e-3 and 1e-2 take off {small} and {large} more: {ratio}"
+        );
+    }
+    // A law from 0.9 to 1, the ball on the bevel throughout, takes off
+    // between what the constant rounds at its ends take off.
+    let mut model = Model::new();
+    let (bevelled, beside) = bevelled_block(&mut model);
+    let given = volume(&model, &bevelled, 1e-3);
+    let taken = |model: &Model, s: &Shape| given - volume(model, s, 1e-3);
+    let low = fillet_edge(&mut model, &bevelled, &beside, 0.9, T).unwrap();
+    let high = fillet_edge(&mut model, &bevelled, &beside, 1.0, T).unwrap();
+    let linear = fillet_edge_variable(&mut model, &bevelled, &beside, 0.9, 1.0, T).unwrap();
+    valid(&model, &linear.shape);
+    let (low, high, linear) = (
+        taken(&model, &low.shape),
+        taken(&model, &high.shape),
+        taken(&model, &linear.shape),
+    );
+    assert!(
+        low < linear && linear < high,
+        "0.9 takes off {low}, 1 {high}, the law between them {linear}"
+    );
+}
+
+#[test]
+fn a_law_sitting_on_a_narrow_strip_at_one_end_and_taking_it_off_at_the_other_is_refused() {
+    let mut model = Model::new();
+    let (bevelled, beside) = bevelled_block(&mut model);
+    let refusal = fillet_edge_variable(&mut model, &bevelled, &beside, 1.0, 1.5, T)
+        .map(|_| ())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refusal.contains("sits on a narrow face beside the edge"),
+        "{refusal}"
     );
 }
 
