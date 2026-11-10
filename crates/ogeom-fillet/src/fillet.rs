@@ -3173,6 +3173,15 @@ fn chain_law(
     // does and the cuts take their union; across a re-entrant one each is
     // carried on to the plane the two meet in, where they are joined.
     let gap = crate::marched::band_fit_target(tol) * 2.0;
+    let run_on = run_on_past_turns(
+        model,
+        solid,
+        chain,
+        (&walk, &owns, &halved),
+        (&junctions, &meetings),
+        &mut set_aside,
+        tol,
+    )?;
     for (junction, &(_, _, radius)) in junctions.iter().zip(&meetings) {
         if junction.tangent {
             continue;
@@ -3216,8 +3225,13 @@ fn chain_law(
                 )?;
                 continue;
             }
-            // A marched band ran out past the vertex as it was built.
-            if !edge_curve(model, &edge, tol).is_ok_and(|(c, _)| matches!(c, Curve::Line(_))) {
+            // A marched band ran out past the vertex as it was built, and a
+            // band run on past it is built so.
+            if !edge_curve(model, &edge, tol).is_ok_and(|(c, _)| matches!(c, Curve::Line(_)))
+                || run_on
+                    .iter()
+                    .any(|&(k, at)| k == index && at.distance(junction.at) <= tol.confusion())
+            {
                 continue;
             }
             // The constant band alone, and what of it stands past the
@@ -3266,6 +3280,134 @@ fn chain_law(
         built.history.delete(edge);
     }
     Ok(built)
+}
+
+/// A meeting of a chain under a law: its two edges, where they meet, and
+/// the law's radius there.
+type Meeting = ([usize; 2], Point, f64);
+
+/// The straight bands of a chain under a law that run on past a convex
+/// turn rather than meet a constant run-out there: where the two end
+/// sections are no reflection of each other in the plane bisecting the turn
+/// (a drafted wall beside a square one), the other band crosses this one's
+/// run-out near the vertex, and a seam there between the law's band and the
+/// constant run-out is what the cut leaves open. Each such band is built
+/// again over its edge and past it as far as the constant band of the
+/// meeting's radius runs out alone, the law held level past the edge's
+/// end: one surface through the vertex, which past the vertex is that
+/// constant band itself where it ends square to its crease. A constant band
+/// trimmed by a face it runs into is left to the join. Returns each band's
+/// index with the vertex it runs on past.
+fn run_on_past_turns(
+    model: &mut Model,
+    solid: &Shape,
+    chain: &[Shape],
+    (walk, owns, halved): (&[(usize, bool)], &[Profile], &[usize]),
+    (junctions, meetings): (&[crate::junction::Junction], &[Meeting]),
+    set_aside: &mut [(Vec<usize>, Shape, crate::support::Wedge)],
+    tol: Tolerances,
+) -> OgeomResult<Vec<(usize, Point)>> {
+    let gap = crate::marched::band_fit_target(tol) * 2.0;
+    // How far past each end of its oriented run, as fractions of its
+    // length, and each turn it runs on past.
+    let mut ends: Vec<[f64; 2]> = vec![[0.0; 2]; chain.len()];
+    let mut alone_at: Vec<(usize, Point)> = Vec::new();
+    for (junction, &(_, _, radius)) in junctions.iter().zip(meetings) {
+        if junction.tangent || junction.reentrant || !junction.crossed {
+            continue;
+        }
+        let (meet, bisector) = junction.flush;
+        let reflect = |v: Vector| v - bisector * (2.0 * v.dot(bisector));
+        let miss = radius.mul_add(
+            (reflect(junction.sides[0]) - junction.sides[1]).magnitude(),
+            2.0 * (junction.at - meet).dot(bisector).abs(),
+        );
+        if miss <= crate::marched::band_fit_target(tol) {
+            continue;
+        }
+        for slot in 0..2 {
+            let index = junction.pair[slot];
+            let edge = &chain[index];
+            let (curve, range) = edge_curve(model, edge, tol)?;
+            if !matches!(curve, Curve::Line(_)) || halved.contains(&index) {
+                continue;
+            }
+            let outward = junction.outward[slot];
+            let (built, wedges) = crate::support::collecting_wedges(|| {
+                planar_fillet(model, solid, edge, radius, None, tol)
+            });
+            built?;
+            let Some(alone) = wedges.into_iter().next() else {
+                continue;
+            };
+            let mut past = f64::NEG_INFINITY;
+            for vertex in explore_unique(model, &alone.solid, ShapeType::Vertex)? {
+                if let Some(data) = model.node(&vertex).and_then(|n| n.data().as_vertex()) {
+                    let p = vertex.transform(model.datums())?.apply(data.point);
+                    past = past.max((p - junction.at).dot(outward));
+                }
+            }
+            // The constant band runs out as the straight band of its
+            // section, ended square to its crease where it has left the
+            // solid; one trimmed by a face's plane it runs into is met as
+            // before.
+            let far = junction.at + outward * past;
+            if past <= gap
+                || !crate::junction::ends_in(model, &alone.solid, (far, outward), far, gap, tol)?
+            {
+                continue;
+            }
+            let first = ogeom_geom::Curve3d::point_at(&curve, range.0, tol)?;
+            let last = ogeom_geom::Curve3d::point_at(&curve, range.1, tol)?;
+            let start = if edge.orientation() == ogeom_topo::Orientation::Reversed {
+                last
+            } else {
+                first
+            };
+            let end = usize::from(start.distance(junction.at) > first.distance(last) / 2.0);
+            ends[index][end] = ends[index][end].max(past / first.distance(last));
+            alone_at.push((index, junction.at));
+        }
+    }
+    let mut run_on = Vec::new();
+    for (index, &[before, after]) in ends.iter().enumerate() {
+        if before == 0.0 && after == 0.0 {
+            continue;
+        }
+        let Some(slot) = walk.iter().position(|&(k, _)| k == index) else {
+            continue;
+        };
+        let edge = &chain[index];
+        let law = owns[slot].stretched(before, after);
+        let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
+        let part = if reversed {
+            (-after, 1.0 + before)
+        } else {
+            (-before, 1.0 + after)
+        };
+        let (built, wedges) = crate::support::collecting_wedges(|| {
+            straight_law_fillet(model, solid, edge, &law, reversed, part, tol)
+        });
+        built?;
+        let [wedge] = <[crate::support::Wedge; 1]>::try_from(wedges).map_err(|w| {
+            ogeom_core::ogeom_err!(
+                Construction,
+                "a band run on past its turns built {} wedges, not one",
+                w.len()
+            )
+        })?;
+        let Some(entry) = set_aside
+            .iter_mut()
+            .find(|(held, _, _)| held.contains(&index))
+        else {
+            continue;
+        };
+        entry.2 = wedge;
+        for (_, at) in alone_at.iter().filter(|(k, _)| *k == index) {
+            run_on.push((index, *at));
+        }
+    }
+    Ok(run_on)
 }
 
 /// The straight planar seat under a law of points: the envelope exact, a

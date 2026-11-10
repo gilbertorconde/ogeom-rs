@@ -221,6 +221,19 @@ impl Profile {
         }
     }
 
+    /// The law over a stretch reaching `before` past its start and `after`
+    /// past its end, as fractions of its own length, held level over each:
+    /// the law past an edge's end. An open law only.
+    pub(crate) fn stretched(&self, before: f64, after: f64) -> Self {
+        let whole = 1.0 + before + after;
+        Self {
+            at: self.at.iter().map(|&s| (s + before) / whole).collect(),
+            radius: self.radius.clone(),
+            slope: self.slope.iter().map(|&m| m * whole).collect(),
+            closed: false,
+        }
+    }
+
     /// The largest radius the law reaches: at a given point, since no
     /// piece overshoots its ends.
     pub(crate) fn largest(&self) -> f64 {
@@ -246,7 +259,8 @@ impl Profile {
     }
 
     /// The open law as a cubic B-spline over the fraction: the knots,
-    /// doubled inside (C1), and the radii's control values. Each piece is
+    /// doubled inside (C1) or tripled where the slope steps (C0), and the
+    /// radii's control values. Each piece is
     /// its Hermite cubic's own Bezier form, and the C1 join is the point
     /// knot removal drops.
     pub(crate) fn spline(&self, tol: Tolerances) -> (Vec<f64>, Vec<f64>) {
@@ -285,14 +299,25 @@ impl Profile {
         pieces[last].1 = 1.0;
         let mut knots = vec![0.0; 4];
         let mut values = vec![pieces[0].2[0]];
-        for (k, (_, x1, bezier)) in pieces.iter().enumerate() {
+        for (k, &(x0, x1, bezier)) in pieces.iter().enumerate() {
             values.push(bezier[1]);
             values.push(bezier[2]);
             if k == last {
                 values.push(bezier[3]);
                 knots.extend([1.0; 4]);
+                continue;
+            }
+            // A join where the slope steps (a law held level past an
+            // edge's end beside a piece that is not) keeps its own value
+            // under a triple knot; elsewhere the doubled knot drops it.
+            let (y0, y1, next) = (x0, x1, pieces[k + 1]);
+            let before = (bezier[3] - bezier[2]) / (y1 - y0);
+            let after = (next.2[1] - next.2[0]) / (next.1 - next.0);
+            if (before - after).abs() > tol.parametric() {
+                values.push(bezier[3]);
+                knots.extend([x1; 3]);
             } else {
-                knots.extend([*x1, *x1]);
+                knots.extend([x1, x1]);
             }
         }
         (knots, values)
