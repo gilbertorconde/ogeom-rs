@@ -217,6 +217,54 @@ pub(crate) fn make_filling_n_within(
     within: &[(Vector, Point)],
     tol: Tolerances,
 ) -> OgeomResult<Filled> {
+    if within.is_empty() {
+        return filling(model, boundary, constraints, tolerance, None, tol);
+    }
+    // The half-spaces as one region: how far past the plane the point
+    // stands farthest past, and that plane's normal.
+    let region = |p: Point| -> (f64, Vector) {
+        let mut worst = (f64::NEG_INFINITY, within[0].0);
+        for (normal, on) in within {
+            let d = normal.dot(p - *on);
+            if d > worst.0 {
+                worst = (d, *normal);
+            }
+        }
+        worst
+    };
+    make_filling_n_region(model, boundary, constraints, tolerance, &region, tol)
+}
+
+/// What a region a filling is held inside says of a point: its signed
+/// distance outside (positive outside) and the outward unit normal of the
+/// region's boundary nearest it.
+pub(crate) type Region<'a> = &'a dyn Fn(Point) -> (f64, Vector);
+
+/// [`make_filling_n`], the patch held inside `region`: a net whose patch
+/// stands outside it by more than `tolerance` inside the hole misses as a
+/// side does, as [`make_filling_n_within`] holds it inside half-spaces,
+/// which are one such region.
+pub(crate) fn make_filling_n_region(
+    model: &mut Model,
+    boundary: &[FillBoundary],
+    constraints: &[Shape],
+    tolerance: f64,
+    region: Region<'_>,
+    tol: Tolerances,
+) -> OgeomResult<Filled> {
+    filling(model, boundary, constraints, tolerance, Some(region), tol)
+}
+
+/// [`make_filling_n_region`], or [`make_filling_n`] with no region.
+#[allow(clippy::too_many_lines, reason = "one filling, read, fitted and built")]
+fn filling(
+    model: &mut Model,
+    boundary: &[FillBoundary],
+    constraints: &[Shape],
+    tolerance: f64,
+    within: Option<Region<'_>>,
+    tol: Tolerances,
+) -> OgeomResult<Filled> {
     if !(tolerance.is_finite() && tolerance > 0.0) {
         ogeom_bail!(
             Construction,
@@ -327,6 +375,8 @@ pub(crate) fn make_filling_n_within(
     let mut last_miss = String::new();
     // The latest fit that met the tolerance.
     let mut fallback = None;
+    // The first round whose net met every side, within the planes or not.
+    let mut sides_met: Option<usize> = None;
     for (round, base) in NETS.into_iter().chain(FURTHER).enumerate() {
         if round >= NETS.len() && fallback.is_some() {
             break;
@@ -396,6 +446,7 @@ pub(crate) fn make_filling_n_within(
             last_miss = format!("at {}x{} controls, {miss}", controls.0, controls.1);
             continue;
         }
+        sides_met.get_or_insert(round);
         if free && folds(&surface, &chart_outline, domain, tol)? {
             last_miss = format!(
                 "at {}x{} controls, the patch folds over inside the hole",
@@ -403,8 +454,8 @@ pub(crate) fn make_filling_n_within(
             );
             continue;
         }
-        if !within.is_empty() {
-            let (past, at) = past_planes(&surface, &chart_outline, domain, within, tol)?;
+        if let Some(region) = within {
+            let (past, at) = past_planes(&surface, &chart_outline, domain, region, tol)?;
             if past > tolerance {
                 last_miss = format!(
                     "at {}x{} controls, the patch stands {past} past a plane it is \
@@ -418,6 +469,28 @@ pub(crate) fn make_filling_n_within(
         // A residual-led net is refined; see [`smoothing_for`].
         if fit.residual <= smoothing {
             break;
+        }
+    }
+    // Where nets met every side but none within the planes, the patch is
+    // held inside them where it strayed past, and fitted again, from the
+    // first such net on: holding it does not bring a side nearer.
+    if let (None, false, Some(region), Some(from)) = (&fallback, free, within, sides_met) {
+        let held = HeldFit {
+            sides: &sides,
+            lengths: &lengths,
+            traces: &traces,
+            frame: &frame,
+            domain,
+            size,
+            interior: &interior,
+            smoothing,
+            tolerance,
+            region,
+            outline: &chart_outline,
+        };
+        match held.fit(from, tol)? {
+            Ok(found) => fallback = Some(found),
+            Err(miss) => last_miss = format!("{last_miss}; held within its planes, {miss}"),
         }
     }
     let Some((surface, reports, constraint_gap)) = fallback else {
@@ -1627,17 +1700,16 @@ fn traced_outline(
 /// Whether a free patch folds over inside the hole: on a grid over the
 /// chart, inside its outline, the normal vanishes against the largest, or
 /// turns over between neighbouring samples.
-/// How far `surface` stands past the planes `within` (each an outward unit
-/// normal and a point) over the hole `outline` bounds in its chart, read on
-/// a grid over `domain` fine against the patch's own spans: the worst, and
-/// where. The hole's boundary lies on or within the planes, so a point the
-/// grid reads just inside it stands past them by no more than the patch's
-/// own miss there.
+/// How far `surface` stands outside `region` over the hole `outline` bounds
+/// in its chart, read on a grid over `domain` fine against the patch's own
+/// spans: the worst, and where. The hole's boundary lies on or inside the
+/// region, so a point the grid reads just inside it stands outside by no
+/// more than the patch's own miss there.
 fn past_planes(
     surface: &BSplineSurface,
     outline: &[Point2],
     domain: ((f64, f64), (f64, f64)),
-    within: &[(Vector, Point)],
+    region: Region<'_>,
     tol: Tolerances,
 ) -> OgeomResult<(f64, Point)> {
     let ((ua, ub), (va, vb)) = domain;
@@ -1661,15 +1733,193 @@ fn past_planes(
                 continue;
             }
             let p = surface.point_at(q.x, q.y, tol)?;
-            for (normal, on) in within {
-                let d = normal.dot(p - *on);
-                if d > worst.0 {
-                    worst = (d, p);
-                }
+            let (d, _) = region(p);
+            if d > worst.0 {
+                worst = (d, p);
             }
         }
     }
     Ok(worst)
+}
+
+/// How many times a net is fitted again, holding the patch at the points it
+/// strayed past a plane, before a finer net is tried.
+const HOLD_ROUNDS: usize = 16;
+
+/// A height-field filling's fit held inside half-spaces: what
+/// [`make_filling_n_within`] has read off the hole.
+struct HeldFit<'a> {
+    sides: &'a [Side],
+    lengths: &'a [f64],
+    traces: &'a [PlanarCurve],
+    frame: &'a PlaneFrame,
+    domain: ((f64, f64), (f64, f64)),
+    size: f64,
+    interior: &'a [(Point, f64)],
+    smoothing: f64,
+    tolerance: f64,
+    region: Region<'a>,
+    outline: &'a [Point2],
+}
+
+impl HeldFit<'_> {
+    /// Each net in turn from round `from`, fitted to the sides and the
+    /// interior points as
+    /// [`make_filling_n_within`] fits it; wherever the patch stands past a
+    /// plane inside the hole, a condition there holds its height half the
+    /// tolerance inside the plane, and the net is fitted again, until it
+    /// stands past none by more than the tolerance or misses a side. The
+    /// first net that meets every side within the planes, or why the
+    /// finest did not.
+    #[allow(clippy::type_complexity, reason = "a fit, or why none held")]
+    fn fit(
+        &self,
+        from: usize,
+        tol: Tolerances,
+    ) -> OgeomResult<Result<(BSplineSurface, Vec<FillSide>, f64), String>> {
+        let ((ua, ub), (va, vb)) = self.domain;
+        let (du, dv) = (ub - ua, vb - va);
+        let mut miss = String::new();
+        for base in NETS.into_iter().chain(FURTHER).skip(from) {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                clippy::cast_precision_loss,
+                reason = "a control count of a few dozen, from a positive ratio"
+            )]
+            let count = |extent: f64| -> usize {
+                ((base as f64 * extent / self.size).round() as usize).max(DEGREE + 2)
+            };
+            let controls = (count(du), count(dv));
+            let samples = 4 * controls.0.max(controls.1) + 8;
+            let mut conditions = Vec::new();
+            for (side, length) in self.sides.iter().zip(self.lengths) {
+                side_conditions(
+                    side,
+                    *length / self.size,
+                    self.size,
+                    samples,
+                    self.frame,
+                    &mut conditions,
+                    tol,
+                )?;
+            }
+            for (p, share) in self.interior {
+                conditions.push(Condition::partial(
+                    self.frame.chart(*p),
+                    (0, 0),
+                    [self.frame.height(*p)],
+                    share.sqrt() / self.size,
+                ));
+            }
+            // A held point weighs as a side's whole run of points does.
+            let weight = 1.0 / self.size;
+            let mut held: Vec<Point2> = Vec::new();
+            for _ in 0..HOLD_ROUNDS {
+                let fit = fit_height(
+                    self.frame,
+                    self.domain,
+                    controls,
+                    &conditions,
+                    self.smoothing,
+                    tol,
+                )?;
+                let surface = fit.surface;
+                let mut reports = Vec::with_capacity(self.sides.len());
+                for (side, pcurve) in self.sides.iter().zip(self.traces) {
+                    reports.push(measure_side(side, pcurve, &surface, 3 * samples + 1, tol)?);
+                }
+                let mut gap = 0.0f64;
+                for (p, _) in self.interior {
+                    let q = self.frame.chart(*p);
+                    gap = gap.max(surface.point_at(q.x, q.y, tol)?.distance(*p));
+                }
+                if let Some(side) = first_miss(self.sides, &reports, gap, self.tolerance) {
+                    miss = format!("at {}x{} controls, {side}", controls.0, controls.1);
+                    break;
+                }
+                let strays = strays(&surface, self.outline, self.domain, self.region, tol)?;
+                let past = strays.iter().map(|s| s.1).fold(f64::NEG_INFINITY, f64::max);
+                if past <= self.tolerance {
+                    return Ok(Ok((surface, reports, gap)));
+                }
+                miss = format!(
+                    "at {}x{} controls, the patch stands {past} past a plane it is held within",
+                    controls.0, controls.1
+                );
+                let mut added = false;
+                // Points within half the tolerance of a plane (the patch's
+                // own sides lie on the faces' planes) are left free.
+                for (q, d, normal, p) in strays.into_iter().filter(|s| s.1 > 0.5 * self.tolerance) {
+                    if held
+                        .iter()
+                        .any(|h| (h.x - q.x).abs() + (h.y - q.y).abs() <= 1e-12)
+                    {
+                        continue;
+                    }
+                    // The region's boundary there, as the plane through
+                    // the nearest point on it, square to its normal.
+                    let on = p - normal * d;
+                    let lift = normal.dot(self.frame.n);
+                    if lift.abs() < MIN_LIFT {
+                        continue;
+                    }
+                    // The height that puts the point half the tolerance
+                    // inside the plane, straight above its chart point.
+                    let foot = self.frame.origin + self.frame.e1 * q.x + self.frame.e2 * q.y;
+                    let height = (-0.5 * self.tolerance - normal.dot(foot - on)) / lift;
+                    conditions.push(Condition::partial(q, (0, 0), [height], weight));
+                    held.push(q);
+                    added = true;
+                }
+                if !added {
+                    break;
+                }
+            }
+        }
+        Ok(Err(miss))
+    }
+}
+
+/// The grid points inside the hole, sampled as [`past_planes`] samples
+/// them, where the patch stands outside `region`: each point's chart
+/// position, how far outside, the region's outward normal there, and the
+/// point itself.
+fn strays(
+    surface: &BSplineSurface,
+    outline: &[Point2],
+    domain: ((f64, f64), (f64, f64)),
+    region: Region<'_>,
+    tol: Tolerances,
+) -> OgeomResult<Vec<(Point2, f64, Vector, Point)>> {
+    let ((ua, ub), (va, vb)) = domain;
+    let spans = surface
+        .u_knots()
+        .control_point_count()
+        .max(surface.v_knots().control_point_count());
+    let grid = (4 * spans).max(64);
+    let mut found = Vec::new();
+    for i in 0..=grid {
+        for j in 0..=grid {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "a grid index, far below the mantissa"
+            )]
+            let q = Point2::new(
+                (ub - ua).mul_add(i as f64 / grid as f64, ua),
+                (vb - va).mul_add(j as f64 / grid as f64, va),
+            );
+            if !inside(outline, q) {
+                continue;
+            }
+            let p = surface.point_at(q.x, q.y, tol)?;
+            let (d, normal) = region(p);
+            if d > 0.0 {
+                found.push((q, d, normal, p));
+            }
+        }
+    }
+    Ok(found)
 }
 
 fn folds(

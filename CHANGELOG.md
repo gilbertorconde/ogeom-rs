@@ -1076,6 +1076,28 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A setback corner's patch that strays past a face is held inside it,
+  and #713's box corner at 1, 3 and 2 closes again, within the block.**
+  (#713)
+  - Since #844 the patch of a convex corner is measured against the
+    vertex's planes, and the box corner at radii 1, 3 and 2 was refused:
+    the patch tangent to every band end and face, fitted freely, stands
+    0.018 past the face at x = 0, outside the block.
+  - Where every net that meets the sides strays past a plane, the filling
+    now holds the patch half its tolerance inside the plane at each point
+    that stands past it by more than half the tolerance, and fits the same
+    net again, until no point stands past by more than the tolerance (the
+    check #844 makes, unchanged) or a side misses.
+  - The box corner closes in every order, the same solid, `check` clean,
+    every side tangent within 7.5e-5 rad, no point of the patch more than
+    1.1e-4 past the block's faces, its volume between the corner rounded at
+    1 and at 3. Three of the four edge-left-sharp corners on the block #844
+    refused now close the same way; the fourth, and the slanted prism, are
+    still refused by name.
+  - A filling whose nets met the planes before is unchanged to the bit.
+    The region is any given by its signed distance and normal; half-spaces
+    are one.
+
 - **A signed corner's patch no longer stands where no round puts
   material.** (#712)
   - Where a convex and a concave round meet at a vertex (#809), with or

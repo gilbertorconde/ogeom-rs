@@ -1447,9 +1447,11 @@ band end and face within the bands' fit target. A setback equal to the \
 ball's own is the ball corner. fillet_edges_with closes a corner of three \
 bands of different radii the same way, each band stopped its own width past \
 the least setback at which its section clears the others, and short of \
-where any other band reaches its section plane; where the patch misses the \
-bands' fit target, or stands past a plane of the vertex by more than it on \
-no net (a box corner at 1, 3 and 2), it is refused by name. Where a convex and a concave band of one request meet \
+where any other band reaches its section plane. A patch fitted freely \
+that strays past a plane of the vertex is held inside it where it strayed \
+and fitted again, so the box corner at 1, 3 and 2 closes within the block; \
+where the patch misses the bands' fit target, or no held net keeps it \
+within the planes, it is refused by name. Where a convex and a concave band of one request meet \
 at a vertex of three planar faces and three straight edges, all rounded \
 (an L-bracket's front edges at its re-entrant edge), fillet_edges closes \
 it the same way whatever the request's order, the same solid to the bit: \
