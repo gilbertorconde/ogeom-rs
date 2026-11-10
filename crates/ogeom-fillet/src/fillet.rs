@@ -3220,6 +3220,10 @@ fn chain_law(
     Ok(built)
 }
 
+/// A meeting of a chain under a law: its two edges, where they meet, and
+/// the law's radius there.
+type Meeting = ([usize; 2], Point, f64);
+
 /// The straight bands of a chain under a law that run on past a convex
 /// turn rather than meet a constant run-out there: where the two end
 /// sections are no reflection of each other in the plane bisecting the turn
@@ -3237,7 +3241,7 @@ fn run_on_past_turns(
     solid: &Shape,
     chain: &[Shape],
     (walk, owns, halved): (&[(usize, bool)], &[Profile], &[usize]),
-    (junctions, meetings): (&[crate::junction::Junction], &[([usize; 2], Point, f64)]),
+    (junctions, meetings): (&[crate::junction::Junction], &[Meeting]),
     set_aside: &mut [(Vec<usize>, Shape, crate::support::Wedge)],
     tol: Tolerances,
 ) -> OgeomResult<Vec<(usize, Point)>> {
