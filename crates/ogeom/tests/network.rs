@@ -2523,3 +2523,179 @@ fn a_loop_filled_as_quads_leaves_every_side_along_its_support() {
     }
     assert!(lean < 1e-6, "a patch leans {lean} off its side's support");
 }
+
+/// A cone with its apex at the origin, tangent to the plane `y = 0` along
+/// one generator and to `x = 0` along another: its axis leans down between
+/// them, at `θ` from each plane. The point a radius `r` along the cone at
+/// angle `φ` round it.
+fn on_cone(r: f64, phi: f64) -> Point {
+    use ogeom::math::Vector;
+    // Axis down the bisector of the two planes, `α` below the horizontal;
+    // half-angle `θ` with `sin θ = w·ŷ` so the cone just touches each plane.
+    let alpha = 0.6_f64;
+    let w = Vector::new(
+        alpha.cos() / 2f64.sqrt(),
+        alpha.cos() / 2f64.sqrt(),
+        -alpha.sin(),
+    );
+    let theta = w.y.asin();
+    let u = Vector::new(1.0, -1.0, 0.0) / 2f64.sqrt();
+    let v = w.cross(u);
+    let dir = w * theta.cos() + (u * phi.cos() + v * phi.sin()) * theta.sin();
+    Point::ORIGIN + dir * r
+}
+
+/// The angles round the cone at which it touches `y = 0` and `x = 0`.
+fn cone_touches() -> (f64, f64) {
+    // Search the generator nearest each plane: the touching one lies in it.
+    let nearest = |plane: fn(Point) -> f64| {
+        let mut best = (f64::INFINITY, 0.0);
+        for i in 0..=20000 {
+            let phi = core::f64::consts::TAU * f64::from(i) / 20000.0;
+            let d = plane(on_cone(1.0, phi)).abs();
+            if d < best.0 {
+                best = (d, phi);
+            }
+        }
+        best.1
+    };
+    (nearest(|p| p.y), nearest(|p| p.x))
+}
+
+/// A degenerate corner: one three-sided patch whose missing side shrinks
+/// to the apex of a cone fanning between two planes at a right angle, its
+/// two sides the generators the cone touches the planes along, each held
+/// and held across its plane. The patch meets each plane tangent along its
+/// side to rounding, and at the apex its normal turns from one plane's to
+/// the other's along the shrunk side: one patch tangent to two planes at a
+/// point, which no patch with a tangent plane there is.
+#[test]
+fn a_shrunk_side_turns_its_normal_between_two_held_planes() {
+    use ogeom::math::Vector;
+    let (pa, pb) = cone_touches();
+    // The far side: the circle of the cone at radius 4 between the two.
+    let span = {
+        let mut d = pb - pa;
+        if d < 0.0 {
+            d += core::f64::consts::TAU;
+        }
+        d
+    };
+    let (a_end, b_end) = (on_cone(4.0, pa), on_cone(4.0, pb));
+    let curves = vec![
+        CurveDef::Polyline(vec![Point::ORIGIN, a_end]),
+        CurveDef::Polyline(
+            (0..=64)
+                .map(|i| on_cone(4.0, pa + span * f64::from(i) / 64.0))
+                .collect(),
+        ),
+        CurveDef::Polyline(vec![Point::ORIGIN, b_end]),
+    ];
+    // Side 0 out along the generator in `y = 0`, side 1 round the circle,
+    // side 2 back along the generator in `x = 0`, side 3 shrunk to the apex.
+    let patches = vec![PatchDef {
+        sides: [
+            Some(PatchSide {
+                curve: 0,
+                reversed: false,
+            }),
+            Some(PatchSide {
+                curve: 1,
+                reversed: false,
+            }),
+            Some(PatchSide {
+                curve: 2,
+                reversed: true,
+            }),
+            None,
+        ],
+    }];
+    let mut cloud = Vec::new();
+    for i in 1..=60 {
+        for j in 0..=60 {
+            cloud.push(on_cone(
+                4.0 * f64::from(i) / 60.0,
+                pa + span * f64::from(j) / 60.0,
+            ));
+        }
+    }
+    let mut held = options(CLEAN_TOLERANCE, vec![]);
+    held.held = vec![0, 2];
+    held.across = vec![
+        (0, Across::Plane(Vector::new(0.0, 1.0, 0.0))),
+        (2, Across::Plane(Vector::new(1.0, 0.0, 0.0))),
+    ];
+    let index = PointIndex::build(&cloud).unwrap();
+    let mut model = Model::new();
+    let network = fit_network(&mut model, &patches, &curves, &index, &held, T).unwrap();
+    assert_eq!(network.ended, Ended::Met, "{:?}", network.per_patch);
+    let surface = &network.surfaces[0];
+    let normal = |u: f64, v: f64| {
+        let (du, dv) = surface.d1_at(u, v, T).unwrap();
+        let n = du.cross(dv);
+        n / n.magnitude()
+    };
+    // Along each held side, the patch's normal is its plane's.
+    let mut lean = 0.0_f64;
+    for i in 1..=32 {
+        let t = f64::from(i) / 32.0;
+        lean = lean.max(normal(t, 0.0).cross(Vector::new(0.0, 1.0, 0.0)).magnitude());
+        lean = lean.max(normal(t, 1.0).cross(Vector::new(1.0, 0.0, 0.0)).magnitude());
+    }
+    // Just off the apex, along the shrunk side, the normal sweeps from one
+    // plane's to the other's.
+    let near = 1e-6;
+    let (start, end) = (normal(near, 0.0), normal(near, 1.0));
+    eprintln!(
+        "MEASURE lean {lean} start {start:?} end {end:?} worst {:?}",
+        network.per_patch
+    );
+    assert!(lean < 1e-6, "the patch leans {lean} off its planes");
+    assert!(
+        start.cross(Vector::new(0.0, 1.0, 0.0)).magnitude() < 1e-3,
+        "{start:?}"
+    );
+    assert!(
+        end.cross(Vector::new(1.0, 0.0, 0.0)).magnitude() < 1e-3,
+        "{end:?}"
+    );
+    // The sweep turns one way, from `ŷ` to `x̂`, without doubling back.
+    let turned = |v: f64| {
+        normal(near, v)
+            .dot(Vector::new(0.0, 1.0, 0.0))
+            .clamp(-1.0, 1.0)
+            .acos()
+    };
+    let mut last = turned(0.0);
+    for i in 1..=64 {
+        let now = turned(f64::from(i) / 64.0);
+        assert!(
+            now >= last - 1e-9,
+            "the normal turns back at v = {}: {last} then {now}",
+            f64::from(i) / 64.0
+        );
+        last = now;
+    }
+    // The patch keeps to the cone it was fitted to: a point at angle `β`
+    // from the axis stands `|p| sin(β − θ)` off it.
+    let alpha = 0.6_f64;
+    let axis = Vector::new(
+        alpha.cos() / 2f64.sqrt(),
+        alpha.cos() / 2f64.sqrt(),
+        -alpha.sin(),
+    );
+    let theta = axis.y.asin();
+    let mut off = 0.0_f64;
+    for i in 1..=32 {
+        for j in 0..=32 {
+            let p = surface
+                .point_at(f64::from(i) / 32.0, f64::from(j) / 32.0, T)
+                .unwrap()
+                - Point::ORIGIN;
+            let beta = (p.dot(axis) / p.magnitude()).clamp(-1.0, 1.0).acos();
+            off = off.max((p.magnitude() * (beta - theta).sin()).abs());
+        }
+    }
+    eprintln!("MEASURE off {off}");
+    assert!(off < 1e-3, "the patch stands {off} off its cone");
+}

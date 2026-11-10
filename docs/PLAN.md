@@ -421,11 +421,17 @@ to the box's walls; coplanar faces a fusion left at the vertex count as
 one. Where an edge of the vertex is left sharp, the request is refused by
 name in either order: the opening between the band ends crosses that
 edge, and a patch tangent to both its faces there needs two tangent
-planes at one point. Owed there: a patch with a collapsed side at the
-crossing (a fan, the normal turning from one face's to the other's at one
-point), which neither `make_filling_n` nor `fit_network` fits against
-outside supports; signed corners of more than three edges or with a
-curved face, refused by name.
+planes at one point. A patch with a collapsed side at the crossing closes
+such an opening on a convex corner (`sharp.rs`,
+`round_vertex_setback_sharp`): the sharp edge cut at its own setback at
+`Q`, a three-sided patch there with its fourth side shrunk to `Q`, fitted
+by `fit_network` with its halves of the trims from `Q` held and held across
+the two faces, its normal turning from one face's to the other's along the
+shrunk side, and one `make_filling_n` patch G1 to it, the bands and the
+faces over the rest. Owed: the same at a signed corner (the L-bracket of
+#712, where the cell is not convex) and through `fillet_edges`' own
+corners (#717's `blend_edges`); signed corners of more than three edges or
+with a curved face, refused by name.
 
 ### Construction and exchange
 
