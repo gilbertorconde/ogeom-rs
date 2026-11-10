@@ -4476,14 +4476,15 @@ impl<'a> Reader<'a> {
             ));
         }
         // A colour named rather than mixed: one of the eight the standard
-        // (ISO 10303-46) defines, each channel fully on or off. Any other
-        // name is no colour, said once for the entity.
+        // (ISO 10303-46) defines, each channel fully on or off, read in any
+        // case and with any spaces around it. Any other name is no colour,
+        // said once for the entity.
         if keyword == "DRAUGHTING_PRE_DEFINED_COLOUR" {
             let name = match args.first() {
                 Some(Arg::Str(name)) => name.as_str(),
                 _ => "",
             };
-            let channels = match name.to_ascii_lowercase().as_str() {
+            let channels = match name.trim().to_ascii_lowercase().as_str() {
                 "black" => Some((0.0, 0.0, 0.0)),
                 "red" => Some((1.0, 0.0, 0.0)),
                 "green" => Some((0.0, 1.0, 0.0)),

@@ -770,8 +770,8 @@ bump may break the API and a patch bump may not.
     `COLOUR_RGB`. The reader followed only the latter, so an item coloured
     by name read uncoloured, and nothing said so.
   - Each of the eight now reads as its colour, every channel fully on or
-    off. A name that is none of them leaves the item uncoloured, with one
-    warning naming the entity.
+    off, in any case and with any spaces about it. A name that is none of
+    them leaves the item uncoloured, with one warning naming the entity.
 
 - **`fillet_edges_variable` and `fillet_edge_variable` refuse a law whose
   ball runs off a face beside the edge.** (#798)
