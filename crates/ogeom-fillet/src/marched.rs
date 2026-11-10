@@ -1473,6 +1473,9 @@ fn open_runout_wedge(
     // window, and solve the exact section at each end: the caps stand on
     // those, not on wherever the walker's last step landed.
     let mut ends_on_a_wall = false;
+    // Per end (start, then end), the plane of a wall the end section lies
+    // in, where the band stops at the vertex capped in that plane.
+    let mut walls: [Option<(Point, Vector)>; 2] = [None, None];
     {
         let span = edge_range.1 - edge_range.0;
         if span <= 0.0 {
@@ -1589,6 +1592,51 @@ fn open_runout_wedge(
                 .is_some_and(|(index, mates)| crate::fillet::Mate::meets_at(mates, index, at, tol))
             {
                 continue;
+            }
+            // Where the crease ends on a planar face whose plane holds the
+            // section at the vertex (a cut square to the crease, a drum's
+            // half beside its rim), nothing of the section stands past the
+            // vertex in the material: the band stops there, its cap in that
+            // face's own plane. Run out instead, it would end a step past
+            // the vertex, its cap a hair off the face, which the boolean
+            // reads as two faces nearly coincident; under a law the
+            // section's tilt at the vertex is no wider than the march's own
+            // tolerance there.
+            {
+                let w = if end { w0 } else { w1 };
+                let nearest = (0..blend.len())
+                    .min_by(|&i, &j| {
+                        (blend.along[i] - w)
+                            .abs()
+                            .total_cmp(&(blend.along[j] - w).abs())
+                    })
+                    .unwrap_or(0);
+                let near = [
+                    blend.on_first[nearest].0,
+                    blend.on_first[nearest].1,
+                    blend.on_second[nearest].0,
+                    blend.on_second[nearest].1,
+                ];
+                let r = match law {
+                    Some(law) => law.at(w, tol)?.0,
+                    None => radius,
+                };
+                let solved = if ruled.is_none() {
+                    crate::march::seat_section(first, second, r, guide, blend.sides, w, near, tol)
+                        .ok()
+                } else {
+                    None
+                };
+                if let Some(x) = solved {
+                    let p1 = first.point_at(x[0], x[1], tol)?;
+                    let p2 = second.point_at(x[2], x[3], tol)?;
+                    if let Some(wall) =
+                        wall_holding(model, solid, edge, host_faces, at, &[at, p1, p2], tol)?
+                    {
+                        walls[usize::from(!end)] = Some(wall);
+                        continue;
+                    }
+                }
             }
             // Where every face at the end turns back behind the crease (a
             // re-entrant turn of the wall, however slight), the crease's
@@ -1932,6 +1980,7 @@ fn open_runout_wedge(
         convex,
         [false, false],
         None,
+        walls,
         tol,
     ) {
         Err(ogeom_core::OgeomError::NotDone(e)) if ends_on_a_wall => {
@@ -2079,7 +2128,20 @@ pub(crate) fn build_held_band(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     build_held_band_by(
-        model, solid, edge, blend, guide, hosts, radius, false, false, convex, pinched, exact, tol,
+        model,
+        solid,
+        edge,
+        blend,
+        guide,
+        hosts,
+        radius,
+        false,
+        false,
+        convex,
+        pinched,
+        exact,
+        [None, None],
+        tol,
     )
 }
 
@@ -2102,6 +2164,7 @@ pub(crate) fn build_held_band_by(
     convex: bool,
     pinched: [bool; 2],
     exact: Option<&ExactBand<'_>>,
+    walls: [Option<(Point, Vector)>; 2],
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     use ogeom_geom::Surface as _;
@@ -2167,15 +2230,33 @@ pub(crate) fn build_held_band_by(
     };
     // A pinched end has no section plane: its apex is the pole itself,
     // at the station's own parameter.
+    // An end whose section lies in a wall caps in the wall's own plane,
+    // facing as the section's plane does, so the cap and the wall are one
+    // plane to the boolean.
+    let capped = |end: usize, wall: Option<(Point, Vector)>| -> OgeomResult<ogeom_math::Plane> {
+        let own = section_plane(end)?;
+        let Some((on, normal)) = wall else {
+            return Ok(own);
+        };
+        let normal = if normal.dot(own.normal().vector()) < 0.0 {
+            -normal
+        } else {
+            normal
+        };
+        Ok(ogeom_math::Plane::through(
+            on,
+            ogeom_math::Direction::new(normal, tol)?,
+        ))
+    };
     let plane0 = if pinched[0] {
         None
     } else {
-        Some(section_plane(0)?)
+        Some(capped(0, walls[0])?)
     };
     let plane1 = if pinched[1] {
         None
     } else {
-        Some(section_plane(n - 1)?)
+        Some(capped(n - 1, walls[1])?)
     };
     let fitted = if ruled {
         fit_open_ruled(blend, tol)?
@@ -3463,6 +3544,70 @@ pub(crate) fn crease_terminates_at(
         }
     }
     Ok(true)
+}
+
+/// The plane of a planar face other than the hosts at the crease's end
+/// vertex nearest `at` that holds every point of `section` (the crease's
+/// end and the ball's two touches there) within the march's own
+/// tolerance, as a point on it and its unit normal; `None` where no face
+/// there does.
+pub(crate) fn wall_holding(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    host_faces: [&Shape; 2],
+    at: Point,
+    section: &[Point],
+    tol: Tolerances,
+) -> OgeomResult<Option<(Point, Vector)>> {
+    use ogeom_geom::Transformable as _;
+    let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
+        return Ok(None);
+    };
+    let point_of = |v: &Shape| -> OgeomResult<Point> {
+        let Some(data) = model.node(v).and_then(|n| n.data().as_vertex().cloned()) else {
+            ogeom_bail!(Construction, "vertex node holds no point");
+        };
+        Ok(v.transform(model.datums())?.apply(data.point))
+    };
+    let vertex = if point_of(&a)?.distance(at) <= point_of(&b)?.distance(at) {
+        a
+    } else {
+        b
+    };
+    let held = tol.confusion() * 10.0;
+    for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
+        if host_faces.iter().any(|h| h.is_same(&face)) {
+            continue;
+        }
+        let meets = explore(model, &face, Filter::OfType(ShapeType::Vertex))?
+            .iter()
+            .any(|v| v.is_same(&vertex));
+        if !meets {
+            continue;
+        }
+        let Some(data) = model.node(&face).and_then(|n| n.data().as_face()) else {
+            continue;
+        };
+        let Some(surface @ SurfaceGeometry::Plane(_)) =
+            model.geometry().surface(data.surface).cloned()
+        else {
+            continue;
+        };
+        let SurfaceGeometry::Plane(placed) =
+            surface.transformed(&face.transform(model.datums())?, tol)?
+        else {
+            continue;
+        };
+        let plane = placed.plane();
+        if section
+            .iter()
+            .all(|p| plane.signed_distance_to(*p).abs() <= held)
+        {
+            return Ok(Some((plane.origin(), plane.normal().vector())));
+        }
+    }
+    Ok(None)
 }
 
 /// Whether every face other than the hosts at the crease's end vertex

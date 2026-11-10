@@ -805,6 +805,17 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A marched band whose crease ends on a planar face holding its end
+  section stops at the vertex, capped in that face's plane.** (#798)
+  - A half drum's rim ends on the cut, whose plane holds the ball's section
+    at the vertex at every radius. The band ran a step past the vertex
+    and capped a hair off the cut, two nearly coincident faces the
+    boolean refused under some laws (one steep at an end of the arc). It
+    now stops at the vertex with its cap in the cut's own plane, so the
+    boolean sees one plane.
+  - Under laws steep at either end, the rim rounds, valid; the two mirror
+    laws take the same volume within 1e-6, every contact stands within
+    1e-3 of the law, and each lies between the constant rounds.
 - **A marched loop round a sphere's pole closes in one lap.**
   - A march closed a loop on a step onto its start that the correction
     could take. Starting beside a sphere chart's pole, the condition solved

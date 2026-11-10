@@ -1421,3 +1421,101 @@ fn a_variable_radius_refuses_by_name_what_it_does_not_round() {
         assert!(why.contains(says), "{why}");
     }
 }
+
+/// The half drum's rim under laws steep at one end of the arc or the
+/// other. The crease ends on the cut, whose plane holds the ball's section
+/// at the vertex at every radius (the touches square to the rim there), so
+/// the band stops at the vertex capped in the cut's own plane rather than
+/// running a step past it with a cap a hair off the cut. Each builds, valid;
+/// the two laws are mirror images over a half drum symmetric about the
+/// plane x = 0, and their rounds take the same volume; every contact
+/// stands at the law's setback for its place along the arc; each lies
+/// between the constant rounds of the law's least and largest radius.
+#[test]
+fn a_law_steep_at_an_open_arc_s_end_caps_in_the_cut_it_ends_on() {
+    let mut model = Model::new();
+    let mut volumes = Vec::new();
+    for law in [
+        RadiusLaw::Points(vec![(0.0, 1.0), (0.15, 2.0), (1.0, 2.0)]),
+        RadiusLaw::Points(vec![(0.0, 2.0), (0.85, 2.0), (1.0, 1.0)]),
+    ] {
+        let (half, rim) = half_drum(&mut model);
+        let rounded =
+            fillet_edges_variable(&mut model, &half, std::slice::from_ref(&rim), &law, T).unwrap();
+        valid(&model, &rounded.shape);
+        let (start, ahead) = {
+            let (c, (lo, hi)) = ogeom_algo::placed_edge_curve(&model, &rim, T)
+                .unwrap()
+                .unwrap();
+            let (t, sense) = if rim.orientation() == Orientation::Reversed {
+                (hi, -1.0)
+            } else {
+                (lo, 1.0)
+            };
+            (c.point_at(t, T).unwrap(), c.d1_at(t, T).unwrap() * sense)
+        };
+        let fraction = |p: Point| {
+            let a0 = start.y.atan2(start.x);
+            let turn = if (start.x * ahead.y - start.y * ahead.x) > 0.0 {
+                1.0
+            } else {
+                -1.0
+            };
+            ((p.y.atan2(p.x) - a0) * turn).rem_euclid(core::f64::consts::TAU)
+                / core::f64::consts::PI
+        };
+        let profile = |s: f64| {
+            let RadiusLaw::Points(points) = &law else {
+                unreachable!()
+            };
+            // Fritsch-Butland over three points, as the law reads them.
+            let (x, y): (Vec<f64>, Vec<f64>) = points.iter().copied().unzip();
+            let secant = [(y[1] - y[0]) / (x[1] - x[0]), (y[2] - y[1]) / (x[2] - x[1])];
+            let middle = if secant[0] * secant[1] > 0.0 {
+                let (h0, h1) = (x[1] - x[0], x[2] - x[1]);
+                let (w0, w1) = (2.0 * h1 + h0, 2.0 * h0 + h1);
+                (w0 + w1) / (w0 / secant[0] + w1 / secant[1])
+            } else {
+                0.0
+            };
+            let slopes = [secant[0], middle, secant[1]];
+            let i = usize::from(s > x[1]);
+            let h = x[i + 1] - x[i];
+            let t = ((s - x[i]) / h).clamp(0.0, 1.0);
+            let (t2, t3) = (t * t, t * t * t);
+            (2.0 * t3 - 3.0 * t2 + 1.0) * y[i]
+                + (t3 - 2.0 * t2 + t) * slopes[i] * h
+                + (3.0 * t2 - 2.0 * t3) * y[i + 1]
+                + (t3 - t2) * slopes[i + 1] * h
+        };
+        let (top, wall) = rim_contacts(&model, &rounded.shape, 5.0, 10.0, fraction);
+        assert!(
+            top.len() > 16 && wall.len() > 16,
+            "{} and {}",
+            top.len(),
+            wall.len()
+        );
+        for (s, setback) in top.iter().chain(&wall) {
+            let want = profile(s.clamp(0.0, 1.0));
+            assert!(
+                (setback - want).abs() < 1e-3,
+                "at {s} the contact stands {setback} from the rim, the law {want}"
+            );
+        }
+        let v = volume(&model, &rounded.shape, 1e-3);
+        let mut constant = |r: f64| {
+            let (d, e) = half_drum(&mut model);
+            let built = fillet_edge(&mut model, &d, &e, r, T).unwrap().shape;
+            volume(&model, &built, 1e-3)
+        };
+        let (one, two) = (constant(1.0), constant(2.0));
+        assert!(two < v && v < one, "{two} < {v} < {one}");
+        volumes.push(v);
+    }
+    assert!(
+        (volumes[0] - volumes[1]).abs() < 1e-6,
+        "mirror laws take {} and {}",
+        volumes[0],
+        volumes[1]
+    );
+}

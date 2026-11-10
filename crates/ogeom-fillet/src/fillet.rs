@@ -2732,11 +2732,12 @@ fn chain_law(
                  vertex; see docs/CAPABILITIES.md, fillet.variable"
             );
         }
-        // A curved crease at a turn is refused: its marched band's run-out
-        // past the vertex ends in a section the law's slope tilts off a wall
-        // square to the crease, which the boolean does not melt, and the
-        // straight band beside it would have to be built through that
-        // run-out, as `fillet_edges` builds it in rounds.
+        // A curved crease at a turn is refused: the straight band beside
+        // it would have to be built through the curved band's end, after
+        // it, as `fillet_edges` builds the two in rounds; built against the
+        // solid as given, the straight band's cap square to its crease
+        // touches the curved band's host along a line (a drum's tangent
+        // plane at the vertex), which neither cut resolves.
         if !straight || !(convex || reentrant) {
             ogeom_bail!(
                 Construction,
