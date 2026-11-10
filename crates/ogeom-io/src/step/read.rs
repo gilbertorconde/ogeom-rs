@@ -134,6 +134,11 @@ pub struct StepImport {
     /// to close: the file did not call it a solid, and the document carries
     /// it under its product exactly as the file placed it.
     pub shells: Vec<Shape>,
+    /// Every face read, with its `ADVANCED_FACE` or `FACE_SURFACE` id, in id
+    /// order: the face as the solids and shells above hold it, so that
+    /// [`Shape::is_partner`] finds it in them. The id names the face across
+    /// reads of the same file, as no handle does.
+    pub faces: Vec<(u64, Shape)>,
     /// What happened along the way.
     pub report: StepReport,
 }
@@ -257,6 +262,21 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
              BREP_WITH_VOIDS, SHELL_BASED_SURFACE_MODEL or geometric set to read"
         );
     }
+    // Each face read, by the file's id for it, as the bodies hold it: a face
+    // the reader turned or rebuilt after first building it is the one its
+    // map holds last, and the body's own occurrence is handed out.
+    let mut held: FastMap<ogeom_topo::TShapeId, Shape> = FastMap::default();
+    for body in solids.iter().chain(shells.iter()) {
+        for face in ogeom_topo::explore_unique(&reader.model, body, ogeom_topo::ShapeType::Face)? {
+            held.entry(face.node()).or_insert(face);
+        }
+    }
+    let mut faces: Vec<(u64, Shape)> = reader
+        .faces
+        .iter()
+        .filter_map(|(&id, face)| Some((id, held.get(&face.node())?.clone())))
+        .collect();
+    faces.sort_unstable_by_key(|&(id, _)| id);
     let document = reader.document(&by_item, &solids, &shells, construction)?;
 
     // Everything never visited, counted by its leading keyword.
@@ -274,6 +294,7 @@ pub fn read_step(text: &str, tol: Tolerances) -> OgeomResult<StepImport> {
         document,
         solids,
         shells,
+        faces,
         report: reader.report,
     })
 }
