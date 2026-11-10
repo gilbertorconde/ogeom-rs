@@ -1053,6 +1053,18 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A law round a rim crossing a bevel's width is refused by name.**
+  (#798)
+  - A drum's rim bevelled 0.3, the bevel's lower edge rounded under a
+    closed law from 1 to 1.15: the ball sits on the bevel at 1 and runs
+    off it over the cap at every station past about 1.02, where the
+    constant round takes the bevel off whole or refuses. The station
+    reading (#837) would have cut the band off under the cap there; the
+    boolean happened to refuse the result. A curved edge alone, a closed
+    loop of arcs and a straight edge read station by station now also
+    hold the constant round's reading at the law's largest radius, as a
+    chain's request already did.
+
 - **`fillet_edge` rounds an arc of a rim ending obliquely on a face without
   leaving a sliver.** (#829)
   - The arc's torus band stopped in the meridian half-plane through each
