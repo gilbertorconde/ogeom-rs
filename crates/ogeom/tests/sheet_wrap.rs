@@ -998,3 +998,57 @@ fn a_rigid_sheet_on_a_cylinder_is_its_development() {
         "{measured:?}"
     );
 }
+
+#[test]
+fn a_sheet_line_past_a_spline_s_collapsed_side_is_refused_at_the_pole() {
+    // The ball converted to a spline patch, its poles the patch's collapsed
+    // sides, laid on ten degrees from the north pole: a sheet line along
+    // the meridian through the pole and on past it, and the sheet circle
+    // through the pole, are each refused by name where their geodesics
+    // would be integrated on across the pole. The chart's metric
+    // degenerates there, and no integrated step follows a geodesic past
+    // it. From three directions about the pole (from the fourth the sheet
+    // circle crosses the patch's seam before it reaches the pole).
+    let mut model = Model::new();
+    let ball = make_sphere(&mut model, Frame::WORLD, 10.0, T)
+        .unwrap()
+        .shape;
+    let ball = ogeom::algo::to_nurbs(&mut model, &ball, T).unwrap().shape;
+    let face = faces(&model, &ball)[0].clone();
+    let angle = 10.0_f64.to_radians();
+    let line: PlanarCurve = Line2d::segment(Point2::new(0.0, -1.5), Point2::new(0.0, 1.9), T)
+        .unwrap()
+        .into();
+    let circle: PlanarCurve =
+        Circle2d::new(Circle2::centred(Point2::ORIGIN, 10.0 * angle, T).unwrap()).into();
+    for (x, y) in [(-1.0_f64, 0.0_f64), (1.0, 0.0), (0.0, 1.0)] {
+        let at = Point::new(
+            10.0 * angle.sin() * x,
+            10.0 * angle.sin() * y,
+            10.0 * angle.cos(),
+        );
+        let sheet = SurfaceSheet::new(
+            &model,
+            &face,
+            &SheetPlacement {
+                at,
+                x_direction: Direction::new(Vector::new(-y, x, 0.0), T).unwrap(),
+                method: SheetMethod::Geodesic,
+            },
+            2.0,
+            T,
+        )
+        .unwrap();
+        for (name, curve) in [("line", &line), ("circle", &circle)] {
+            let range = curve.domain();
+            let refusal = sheet
+                .chart_edges(&mut model, curve, range, FIT)
+                .expect_err(name)
+                .to_string();
+            assert!(
+                refusal.contains("crosses a pole of the surface's chart"),
+                "({x}, {y}) {name}: {refusal}"
+            );
+        }
+    }
+}

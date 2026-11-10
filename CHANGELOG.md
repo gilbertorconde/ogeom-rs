@@ -1239,6 +1239,15 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **A sheet curve past a spline's or revolved surface's collapsed side is
+  refused at the pole, by name.** (#729)
+  - `SurfaceSheet` lays a spline or revolved surface by integrating its
+    geodesics in its chart. One that would run on across a side of the chart
+    collapsed to a point was refused as running off the surface's domain.
+  - It is now refused as crossing a pole of the surface's chart: the chart's
+    metric degenerates there, and no landing is integrated past the pole.
+    Other domain exits keep their message.
+
 - **`fit_network` says a point where a three-sided patch meets four-sided
   ones is fitted near tangent, not tangent.** (#653)
   - The fit there is left near tangent, its angle measured into
