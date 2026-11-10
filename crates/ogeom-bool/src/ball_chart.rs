@@ -45,8 +45,13 @@ struct Ball {
 /// `run` on the operands, where either is or holds a whole ball or a sphere
 /// face with a pole on or beside the other's surfaces, with that ball or
 /// face first charted about an axis whose poles stand clear; the history
-/// then runs from the operands as given. Where that refuses, and
-/// otherwise, `run` on the operands as given.
+/// then runs from the operands as given. Otherwise `run` on the operands
+/// as given.
+///
+/// Where the turned run refuses, the boolean is refused by name: on the
+/// chart the operands come with, a section beside a pole can close where
+/// the chart's longitude has collapsed and give a cut that is valid but
+/// short, or a face wound inward, so that run's result is not taken.
 pub(crate) fn with_poles_clear(
     model: &mut Model,
     a: &Shape,
@@ -59,11 +64,28 @@ pub(crate) fn with_poles_clear(
         return run(model, a, b);
     }
     if let Some((ta, tb, before)) = turned(model, a, b, tol)? {
-        match run(model, &ta, &tb) {
-            Ok(built) => return Ok(Built::new(built.shape, before.then(&built.history))),
-            Err(e @ (OgeomError::Cancelled | OgeomError::Dangling(_))) => return Err(e),
-            Err(_) => {}
-        }
+        #[cfg(feature = "test-hooks")]
+        let refused = crate::work::is_turn_refused();
+        #[cfg(not(feature = "test-hooks"))]
+        let refused = false;
+        let result = if refused {
+            Err(ogeom_core::ogeom_err!(
+                NotDone,
+                "the turned run is taken as refused"
+            ))
+        } else {
+            run(model, &ta, &tb)
+        };
+        return match result {
+            Ok(built) => Ok(Built::new(built.shape, before.then(&built.history))),
+            Err(e @ (OgeomError::Cancelled | OgeomError::Dangling(_))) => Err(e),
+            Err(e) => Err(ogeom_core::ogeom_err!(
+                NotDone,
+                "a ball's pole stands on or beside the other operand, and the boolean on the \
+                 ball charted clear of its poles is refused ({e}); on its own chart a section \
+                 beside a pole is not resolved soundly; see docs/CAPABILITIES.md, bool.booleans"
+            )),
+        };
     }
     run(model, a, b)
 }
