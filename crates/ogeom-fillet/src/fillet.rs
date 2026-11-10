@@ -572,10 +572,10 @@ fn route(
 /// consumed or split a later edge: a chain whose members interfere is
 /// refused rather than guessed at. Where a convex and a concave edge of the
 /// request meet at a vertex that is not three planar faces and three
-/// straight edges all asked, the request is refused by name in any order:
-/// with an edge of it left sharp, the opening between the band ends would
-/// cross that edge, and no patch is tangent to both its faces at one
-/// point. A request of two or more edges also
+/// straight edges, all asked or one left sharp and convex, the request is
+/// refused by name in any order, and so where a band's setback reaches its
+/// edge's far end or the corner's cell reaches through the solid behind
+/// the vertex. A request of two or more edges also
 /// refuses a ball that sets back past the far side of a face anywhere
 /// along an edge that shares a face or a vertex with another of the
 /// request, since each band's contacts are checked against the others'

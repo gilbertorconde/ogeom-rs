@@ -1109,8 +1109,8 @@ fn edges_between(
 /// radius (none where no two edges meet). Each edge's band is a cylinder
 /// of the radius. Before, a band sharing a face or a corner with another
 /// refused any station whose contact ran off. The third case's convex and
-/// concave edges meet beside an edge left sharp, and it is refused by name
-/// in either order.
+/// concave edges meet beside a concave edge left sharp, and it is refused
+/// by name in either order.
 #[test]
 fn seams_whose_ball_runs_off_a_narrow_face_round_beside_other_edges() {
     type Case = ([BoxSpec; 2], f64, [([f64; 3], [f64; 3]); 3]);
@@ -1279,9 +1279,10 @@ fn seams_whose_ball_runs_off_a_narrow_face_round_beside_other_edges() {
         let before = volume(&model, &part);
         if k == 2 {
             // Two of its edges, a convex one and a concave one, meet at a
-            // vertex whose third edge is left sharp: the request is refused
-            // by name in either order rather than rounded in the order
-            // asked.
+            // vertex whose third edge, left sharp, is concave: the patch at
+            // a sharp edge's point is a cone turning outward across a
+            // convex edge, so the request is refused by name in either
+            // order rather than rounded in the order asked.
             for order in [edges.clone(), edges.iter().rev().cloned().collect()] {
                 let mut own = model.clone();
                 let Err(why) = ogeom_fillet::fillet_edges(&mut own, &part, &order, SMALL, T) else {
@@ -1289,7 +1290,7 @@ fn seams_whose_ball_runs_off_a_narrow_face_round_beside_other_edges() {
                 };
                 assert!(
                     why.to_string()
-                        .contains("the request rounds every edge of the vertex"),
+                        .contains("an edge the request leaves sharp is convex"),
                     "case {k}: {why}"
                 );
             }

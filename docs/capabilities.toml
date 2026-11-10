@@ -1455,10 +1455,14 @@ at a vertex of three planar faces and three straight edges, all rounded \
 it the same way whatever the request's order, the same solid to the bit: \
 each band its own width past the least setback, and on a face reflex at \
 the vertex the face kept on the side of its conic away from it; coplanar \
-faces a fusion left there count as one. With an edge of such a vertex \
-left sharp the request is refused by name in either order, as the \
-opening would cross that edge and no patch is tangent to both its faces \
-at one point. round_vertex_setback_sharp closes a box-like corner with \
+faces a fusion left there count as one. With a convex edge of such a \
+vertex left sharp (the L-bracket's upright front edge), the opening runs \
+into a point Q on that edge as round_vertex_setback_sharp's does, the \
+trim on a face reflex at the vertex a cubic swinging round it; both \
+orders give the same solid to the bit. Refused by name there: a concave \
+edge left sharp, a band whose setback reaches its edge's far end, and a \
+cell (twice the widest band behind the vertex) reaching through the \
+solid's far side. round_vertex_setback_sharp closes a box-like corner with \
 two of its three edges rounded and the third left sharp: the sharp edge \
 is cut at its own setback, at a point Q, and the opening runs into Q, \
 where a three-sided patch with its fourth side shrunk to Q, held tangent \
@@ -1468,12 +1472,11 @@ G1 within the bands' fit target closes the rest. blend_edges closes a \
 convex corner of one round, one bevel and one edge left sharp so, in any \
 request order, the sharp edge cut as far out as the farther band and the \
 rest meeting the bevel's end and the trims from it in position only. \
-Signed corners with an \
-edge left sharp, and sharp edges at vertices of more than three edges, \
-are still refused by name. Refused by name: a corner whose cell holds \
-anything of the solid but the corner (a void, a hole, another feature: a \
-face neither meeting the vertex nor on one of its planes, taken whole or \
-cut through by the cell, or a shell dropped), G2 (a circular band meets \
+Sharp edges at vertices of more than three edges are still refused by \
+name. Refused by name: a corner whose cell holds anything of the solid \
+but the corner (a void, a hole, another feature: a face neither meeting \
+the vertex nor on one of its planes, taken whole or cut through by the \
+cell, or a shell dropped), G2 (a circular band meets \
 its face at G1, so its end arc bends the patch at 1/radius where the face \
 asks none; curvature-continuous band sections come first), a vertex a \
 curved face meets, planes sharing no tangent ball, a curved edge leaving \

@@ -4009,11 +4009,12 @@ fn vertex_near(model: &Model, shape: &Shape, near: Point) -> Shape {
 /// The bracket's re-entrant edge and the leg's front edge asked together,
 /// both ways round. They meet at a vertex whose third edge is left sharp:
 /// a wedge's cut would eat a fill and a fill cannot run on through a
-/// wedge's band, so no ball rolls round the corner, and a setback patch
-/// over the opening between the two band ends would cross the sharp edge,
-/// where no patch is tangent to both its faces. The request is refused by
-/// name in either order, where once whichever was asked first took the
-/// corner and the two orders landed on different solids.
+/// wedge's band, so no ball rolls round the corner, and the corner is
+/// closed by bands set back from it. On this bracket, its legs as thick as
+/// two of the bands are wide, the front band's setback reaches the far end
+/// of its edge, where its section would fall on the end face. The request
+/// is refused by name in either order, where once whichever was asked
+/// first took the corner and the two orders landed on different solids.
 #[test]
 fn a_fill_and_a_wedge_meeting_beside_a_sharp_edge_are_refused_in_either_order() {
     let r = 0.5_f64;
@@ -4032,7 +4033,7 @@ fn a_fill_and_a_wedge_meeting_beside_a_sharp_edge_are_refused_in_either_order() 
         };
         assert!(
             why.to_string()
-                .contains("the request rounds every edge of the vertex"),
+                .contains("each edge runs on past its band's setback"),
             "fill first {fill_first}: {why}"
         );
     }

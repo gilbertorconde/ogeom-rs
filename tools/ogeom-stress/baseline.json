@@ -3,7 +3,7 @@
   "chain": { "ok": 60, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 },
   "drill": { "ok": 224, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 },
   "faceblend": { "ok": 113, "refused": 7, "invalid": 0, "wrong": 0, "panic": 0 },
-  "fillet": { "ok": 139, "refused": 1, "invalid": 0, "wrong": 0, "panic": 0 },
+  "fillet": { "ok": 140, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 },
   "hollow": { "ok": 60, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 },
   "oblique": { "ok": 120, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 },
   "offset": { "ok": 60, "refused": 0, "invalid": 0, "wrong": 0, "panic": 0 },
