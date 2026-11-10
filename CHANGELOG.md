@@ -92,14 +92,26 @@ bump may break the API and a patch bump may not.
     balls.
 
 - **`fillet_edges_variable` and `fillet_edge_variable` take a narrow
-  strip beside a straight edge off whole under a law.** (#798)
+  strip beside a straight edge off whole under a law.** (#798, #831)
   - Where the ball at the law's least and at its largest radius both take
-    the strip off whole (the seat's conditions each grow with the radius
-    or are linear in it, so every radius between does too), the band is
+    the strip off whole, as the constant round does (the ball does not sit
+    on the edge's faces, and the seat beyond the strip holds; a ball off
+    the strip at one radius is off it at every larger one, and the seat's
+    conditions each grow with the radius or are linear in it), the band is
     the law's exact envelope over the seat between the faces either side
     of the strip. A block's edge bevelled 0.3 back, rounded under a law
-    along the bevel's edge, gives the plain block's edge rounded under the
-    same law, by points and linearly, within 1e-4 of its volume.
+    from 1.2 to 2 along the bevel's edge, gives the plain block's edge
+    rounded under the same law, by points and linearly, within 1e-4 of its
+    volume.
+  - A law whose ball sits on the strip throughout rounds the edge beside
+    it, as the constant round does: on that block a law from 0.9 to 1
+    takes off between the constant rounds at 0.9 and 1, and laws raised
+    1e-3 and 1e-2 above a level 1 take off ten times more for the larger
+    raise, tending to the constant round. They took off the whole bevel,
+    2.97 more than the round at 1, however small the raise.
+  - A law whose ball sits on the strip at one end and takes it off at the
+    other is refused by name: the constant round changes construction
+    between them.
 - **A radius law rounds a re-entrant turn whose bands' sections differ.**
   (#798)
   - `fillet_edges_variable` no longer refuses a chain turning at a

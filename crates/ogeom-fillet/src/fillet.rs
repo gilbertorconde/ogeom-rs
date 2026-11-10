@@ -2707,11 +2707,14 @@ fn consumed_law(
     // The constant round takes the strip off only where its ball does not
     // sit on the edge's faces: at a radius the strip holds, it rounds the
     // edge as any other.
-    let mut consumes = |radius: f64| -> OgeomResult<Option<crate::support::Seat>> {
-        if crate::support::ball_fits(model, solid, edge, radius, false, tol).is_ok() {
-            return Ok(None);
+    let consumes = |radius: f64| -> OgeomResult<Option<crate::support::Seat>> {
+        match crate::support::ball_fits(model, solid, edge, radius, false, tol) {
+            Ok(_) => Ok(None),
+            Err(OgeomError::Construction(_)) => {
+                crate::consumed::consumed_seat(model, solid, edge, radius, tol)
+            }
+            Err(e) => Err(e),
         }
-        crate::consumed::consumed_seat(model, solid, edge, radius, tol)
     };
     let (least, largest) = (consumes(law.least())?, consumes(law.largest())?);
     let seat = match (least, largest) {
