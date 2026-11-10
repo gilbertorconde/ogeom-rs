@@ -2879,6 +2879,9 @@ fn law_loop_fits(
             read().unwrap_or_else(|_| law.largest())
         };
         crate::support::ball_fits_by(model, solid, edge, &radius_at, &fractions, false, tol)?;
+        // As one edge alone is read: the constant round at the law's
+        // largest radius holds the ball at some station.
+        crate::support::ball_fits(model, solid, edge, law.largest(), false, tol)?;
     }
     Ok(true)
 }
@@ -2971,6 +2974,12 @@ fn law_ball_on_faces(
             .collect();
         let radius_at = law_on_edge(model, edge, law, reversed, tol)?;
         crate::support::ball_fits_by(model, solid, edge, &*radius_at, &fractions, false, tol)?;
+        // The constant round at the law's largest radius, as a chain's
+        // request is read before its stations: a contact that runs off a
+        // strip past the solid at one radius runs off at every larger one,
+        // and a ball held at no station there is one the constant round
+        // takes the strip off for, or refuses, not a band cut off.
+        crate::support::ball_fits(model, solid, edge, law.largest(), false, tol)?;
         return Ok(());
     }
     for radius in [law.least(), law.largest()] {

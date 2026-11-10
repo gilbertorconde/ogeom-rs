@@ -2234,3 +2234,47 @@ fn a_law_round_a_marched_rim_beside_a_narrow_face_is_cut_off_as_the_constant_rou
         "{why}"
     );
 }
+
+/// A drum's rim bevelled 0.3, the edge between the bevel and the wall
+/// rounded under a closed law from 1 to 1.15: at 1 the ball sits on the
+/// bevel, setting back 0.414 against its 0.424, and past about 1.02 it
+/// runs off it over the cap at every station, where the constant round
+/// would take the bevel off whole or refuse (at 1.15 it refuses), not cut
+/// the band off under the cap. The law is refused by name, at its largest
+/// radius, as the constant round is there.
+#[test]
+fn a_law_round_a_rim_crossing_a_bevel_s_width_is_refused_by_name() {
+    let mut model = Model::new();
+    let drum = ogeom_algo::make_cylinder(&mut model, at(0.0, 0.0, 0.0), 10.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let rim = rim_arcs(&model, &drum);
+    let bevelled = ogeom_fillet::chamfer_edges(&mut model, &drum, &rim, 0.3, T)
+        .unwrap()
+        .shape;
+    let low: Vec<Shape> = explore_unique(&model, &bevelled, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let Some((c, (u, v))) = ogeom_algo::placed_edge_curve(&model, e, T).unwrap() else {
+                return false;
+            };
+            (0..=8).all(|i| {
+                let p = c
+                    .point_at((v - u).mul_add(f64::from(i) / 8.0, u), T)
+                    .unwrap();
+                (p.z - 9.7).abs() < 1e-6 && (p.x.hypot(p.y) - 10.0).abs() < 1e-6
+            })
+        })
+        .collect();
+    assert!(!low.is_empty());
+    let law = RadiusLaw::Points(vec![(0.0, 1.0), (0.5, 1.15)]);
+    let why = fillet_edges_variable(&mut model, &bevelled, &low, &law, T)
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(
+        why.contains("across a face that does not reach so far"),
+        "{why}"
+    );
+}
