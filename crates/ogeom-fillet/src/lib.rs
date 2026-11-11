@@ -17,6 +17,7 @@ mod consumed_rim;
 pub mod corner;
 pub mod corner2d;
 mod corner_curved;
+mod cusp;
 pub mod facepair;
 mod fill_n;
 mod fill_patch;

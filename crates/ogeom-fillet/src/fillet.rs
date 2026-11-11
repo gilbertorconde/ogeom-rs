@@ -734,7 +734,8 @@ fn fillet_edges_meeting(
     // after.
     let request: Vec<(Shape, f64)> = edges.iter().cloned().zip(radii.iter().copied()).collect();
     let signed = crate::setback::signed_corners(model, solid, &request, tol)?;
-    let (edges, radii): (Vec<Shape>, Vec<f64>) = if signed.is_empty() {
+    let cusps = crate::setback::cusp_corners(model, solid, &request, tol)?;
+    let (edges, radii): (Vec<Shape>, Vec<f64>) = if signed.is_empty() && cusps.is_empty() {
         (edges.to_vec(), radii.to_vec())
     } else {
         let mut sorted = request.clone();
@@ -752,7 +753,10 @@ fn fillet_edges_meeting(
         )
     };
     let mut mixed = mixed_corners(model, edges, radii)?;
-    mixed.retain(|(vertex, _)| !signed.iter().any(|c| c.vertex.is_same(vertex)));
+    mixed.retain(|(vertex, _)| {
+        !signed.iter().any(|c| c.vertex.is_same(vertex))
+            && !cusps.iter().any(|c| c.vertex.is_same(vertex))
+    });
     // A request of one edge is that edge alone, a ring beside a rim taken
     // off whole as there.
     let mut built = match (edges, radii) {
@@ -764,6 +768,9 @@ fn fillet_edges_meeting(
     }
     for corner in &signed {
         built = crate::setback::close_signed_corner(model, solid, built, corner, tol)?;
+    }
+    for corner in &cusps {
+        built = crate::cusp::close_cusp(model, solid, built, corner, tol)?;
     }
     Ok(built)
 }

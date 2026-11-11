@@ -1213,6 +1213,47 @@ pub(crate) fn signed_corners(
     request: &[(Shape, f64)],
     tol: Tolerances,
 ) -> OgeomResult<Vec<SignedCorner>> {
+    let mut corners = Vec::new();
+    for (vertex, at) in signed_vertices(model, solid, request, tol)? {
+        if runs_through(model, solid, &vertex, &at, tol)?
+            || crate::cusp::cusp_corner(model, solid, &vertex, &at, tol)?.is_some()
+        {
+            continue;
+        }
+        corners.push(signed_corner(model, solid, &vertex, &at, tol)?);
+    }
+    Ok(corners)
+}
+
+/// The cusp corners of the request: vertices where its convex and concave
+/// bands meet that [`crate::cusp::cusp_corner`] reads as one.
+pub(crate) fn cusp_corners(
+    model: &Model,
+    solid: &Shape,
+    request: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Vec<crate::cusp::CuspCorner>> {
+    // Read in node order, so the corner and its sides are the same in any
+    // order asked.
+    let mut sorted = request.to_vec();
+    sorted.sort_by_key(|(edge, _)| edge.node());
+    let mut corners = Vec::new();
+    for (vertex, at) in signed_vertices(model, solid, &sorted, tol)? {
+        if let Some(c) = crate::cusp::cusp_corner(model, solid, &vertex, &at, tol)? {
+            corners.push(c);
+        }
+    }
+    Ok(corners)
+}
+
+/// The vertices two or more of the request's edges meet at, bands of both
+/// kinds among them, each with its edges, radii and kinds.
+fn signed_vertices(
+    model: &Model,
+    solid: &Shape,
+    request: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Vec<(Shape, Vec<Kinded>)>> {
     // The vertices two or more of the request's edges meet at.
     let mut by_vertex: Vec<(Shape, Vec<(Shape, f64)>)> = Vec::new();
     for (edge, radius) in request {
@@ -1256,18 +1297,10 @@ pub(crate) fn signed_corners(
         }
         signed.push((vertex, known));
     }
-    let by_vertex = signed;
-    let mut corners = Vec::new();
-    for (vertex, at) in by_vertex {
-        if !(at.iter().any(|e| e.2) && at.iter().any(|e| !e.2)) {
-            continue;
-        }
-        if runs_through(model, solid, &vertex, &at, tol)? {
-            continue;
-        }
-        corners.push(signed_corner(model, solid, &vertex, &at, tol)?);
-    }
-    Ok(corners)
+    Ok(signed
+        .into_iter()
+        .filter(|(_, at)| at.iter().any(|e| e.2) && at.iter().any(|e| !e.2))
+        .collect())
 }
 
 /// Whether the request's two edges at `vertex`, one convex and one

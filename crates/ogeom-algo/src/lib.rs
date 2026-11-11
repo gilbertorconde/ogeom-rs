@@ -62,6 +62,7 @@ pub use build::{
     make_edge, make_edge_between, make_face, make_face_on, make_face_with_pcurves,
     make_natural_face, make_polygon, make_revolution_band, make_shell, make_solid, make_vertex,
     make_wire, placed_edge_curve, rings_are_parallels, split_ring_on_column, surface_iso_u_curve,
+    trimmed_or_fitted_where_bare,
 };
 pub use chart_cross::{ChartCrossing, chart_crossings};
 pub use check::{
