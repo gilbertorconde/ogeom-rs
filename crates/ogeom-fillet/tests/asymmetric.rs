@@ -506,34 +506,29 @@ fn what_is_not_built_is_refused_by_name() {
         "past that face's side",
     );
 
-    // A circular rim.
+    // The straight edge where a half drum's flat side meets its cylinder.
     let drum = ogeom_algo::make_cylinder(&mut m, Frame::WORLD, 5.0, 4.0, T)
         .unwrap()
         .shape;
-    let rim = explore_unique(&m, &drum, ShapeType::Edge)
+    let at = Frame::new(Point::new(-6.0, -6.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let half = ogeom_algo::make_box(&mut m, at, (6.0, 12.0, 6.0), T)
         .unwrap()
-        .into_iter()
-        .find(|e| {
-            let (c, _) = ogeom_algo::placed_edge_curve(&m, e, T).unwrap().unwrap();
-            matches!(c, ogeom_geom::Curve::Circle(_))
-                && ogeom_algo::edge_vertices(&m, e)
-                    .unwrap()
-                    .is_some_and(|(a, _)| (point_of(&m, &a).z - 4.0).abs() < 1e-9)
-        })
-        .expect("the top rim");
-    let cap = face_at(&m, &drum, Point::new(0.0, 0.0, 4.0));
+        .shape;
+    let d = ogeom_bool::cut(&mut m, &drum, &half, T).unwrap().shape;
+    let side = edge_where(&m, &d, |p| p.x.abs() < 1e-9 && (p.y - 5.0).abs() < 1e-9);
+    let flat = face_at(&m, &d, Point::new(0.0, 0.0, 2.0));
     refused(
         e(
             &mut m,
-            &drum,
-            &rim,
-            &cap,
+            &d,
+            &side,
+            &flat,
             1.0,
             0.5,
             RoundProfile::Elliptical,
             T,
         ),
-        "straight edge between two planes",
+        "straight edge between two planes or a rim",
     );
 }
 
@@ -686,8 +681,17 @@ fn segment_centroid(w: f64) -> f64 {
 /// its area, and its centroid's distance from each face, from the face of
 /// the second leg and from the face of the first.
 fn square_corner(d1: f64, d2: f64, w: f64) -> (f64, [f64; 2]) {
-    let triangle = 0.5 * d1 * d2;
-    let area = corner_area(d1, d2, FRAC_PI_2, w);
+    corner(d1, d2, FRAC_PI_2, w)
+}
+
+/// The corner a conic section takes off an edge whose legs `d1` and `d2`
+/// meet at `alpha`: its area, and its centroid as so far along each unit
+/// leg from the crease. The triangle's centroid stands a third along each
+/// leg and the segment's on the line from the chord's middle to the
+/// crease; both are affine, so they hold in the legs' own frame.
+fn corner(d1: f64, d2: f64, alpha: f64, w: f64) -> (f64, [f64; 2]) {
+    let triangle = 0.5 * d1 * d2 * alpha.sin();
+    let area = corner_area(d1, d2, alpha, w);
     let segment = triangle - area;
     let shrink = 1.0 - segment_centroid(w);
     let centroid = [d1, d2].map(|d| (triangle * d / 3.0 - segment * shrink * d * 0.5) / area);
@@ -824,4 +828,499 @@ fn an_asymmetric_round_running_up_under_a_roof_stops_on_it() {
             assert_eq!(volumes[0], volumes[1], "naming the other face first");
         }
     }
+}
+
+/// The circle edge of `s` of radius `r` whose centre stands at height `z`
+/// on the z axis through (`cx`, `cy`).
+fn ring_edge(m: &Model, s: &Shape, (cx, cy, z): (f64, f64, f64), r: f64) -> Shape {
+    explore_unique(m, s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let (c, _) = ogeom_algo::placed_edge_curve(m, e, T).unwrap().unwrap();
+            let ogeom_geom::Curve::Circle(c) = c else {
+                return false;
+            };
+            let o = c.circle().centre();
+            (c.circle().radius() - r).abs() < 1e-9
+                && (o.x - cx).abs() < 1e-9
+                && (o.y - cy).abs() < 1e-9
+                && (o.z - z).abs() < 1e-9
+        })
+        .expect("the rim")
+}
+
+/// Checks a rim's round: valid, its volume `exact` within 1e-8, and its
+/// band tangent to the cap and the wall along two rings, each of the
+/// radius and height one of `rings` names about the axis through
+/// (`cx`, `cy`); its volume.
+fn rim_holds(
+    m: &Model,
+    s: &Shape,
+    exact: f64,
+    (cx, cy): (f64, f64),
+    rings: [(f64, f64); 2],
+) -> f64 {
+    let diagnosis = ogeom_algo::check(m, s, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let v = volume(m, s);
+    assert!(
+        (v - exact).abs() <= 1e-8,
+        "volume {v} against the exact {exact}"
+    );
+    // The rings each contact runs along, as each ring's arcs name them.
+    let mut found = [false; 2];
+    for f in explore_unique(m, s, ShapeType::Face).unwrap() {
+        let data = m.node(&f).unwrap().data().as_face().unwrap();
+        if !matches!(
+            m.geometry().surface(data.surface),
+            Some(ogeom_geom::SurfaceGeometry::Revolution(_))
+        ) {
+            continue;
+        }
+        for c in ogeom_fillet::analyse_blend(m, s, &f, 17, T).unwrap() {
+            let (curve, _) = ogeom_algo::placed_edge_curve(m, &c.edge, T)
+                .unwrap()
+                .unwrap();
+            let ogeom_geom::Curve::Circle(circle) = curve else {
+                continue;
+            };
+            assert!(
+                c.tangency_error <= 1e-7,
+                "the band meets a face at {} rad",
+                c.tangency_error
+            );
+            let o = circle.circle().centre();
+            let r = circle.circle().radius();
+            assert!(
+                (o.x - cx).abs() < 1e-9 && (o.y - cy).abs() < 1e-9,
+                "a contact ring off the axis"
+            );
+            let ring = rings
+                .iter()
+                .position(|(rr, z)| (r - rr).abs() < 1e-9 && (o.z - z).abs() < 1e-9);
+            let Some(ring) = ring else {
+                panic!(
+                    "a contact ring of radius {r} at {} where no distance puts one",
+                    o.z
+                );
+            };
+            found[ring] = true;
+        }
+    }
+    assert_eq!(
+        found, [true; 2],
+        "the band meets the cap and the wall along rings"
+    );
+    v
+}
+
+/// Rounds `edge` of `s` with `profile`, naming `cap` with `d_cap` and then
+/// `wall` with `d_wall`, and checks each as [`rim_holds`] does, and that
+/// both are the same solid to the bit.
+#[allow(clippy::too_many_arguments, reason = "test fixture")]
+fn rim_both_ways(
+    m: &mut Model,
+    s: &Shape,
+    edge: &Shape,
+    (cap, d_cap): (&Shape, f64),
+    (wall, d_wall): (&Shape, f64),
+    profile: RoundProfile,
+    exact: f64,
+    axis: (f64, f64),
+    rings: [(f64, f64); 2],
+) {
+    let a =
+        ogeom_fillet::fillet_edge_distances(m, s, edge, cap, d_cap, d_wall, profile, T).unwrap();
+    let b =
+        ogeom_fillet::fillet_edge_distances(m, s, edge, wall, d_wall, d_cap, profile, T).unwrap();
+    let va = rim_holds(m, &a.shape, exact, axis, rings);
+    let vb = rim_holds(m, &b.shape, exact, axis, rings);
+    assert_eq!(va.to_bits(), vb.to_bits(), "naming the other face first");
+    assert_eq!(vertex_bits(m, &a.shape), vertex_bits(m, &b.shape));
+    assert!(a.history.is_deleted(edge));
+}
+
+/// A drum's top rim, convex, cylinder and cap square: the band takes the
+/// corner of area A whose centroid stands c in from the wall, and Pappus
+/// sums it round the axis, 2 pi (R - c) A.
+#[test]
+fn a_drum_s_rim_takes_its_conic_corner_round_the_axis() {
+    let (radius, height, d_cap, d_wall) = (5.0, 4.0, 1.5, 0.8);
+    for profile in PROFILES {
+        let mut m = Model::new();
+        let drum = ogeom_algo::make_cylinder(&mut m, Frame::WORLD, radius, height, T)
+            .unwrap()
+            .shape;
+        let rim = ring_edge(&m, &drum, (0.0, 0.0, height), radius);
+        let cap = face_at(&m, &drum, Point::new(0.0, 0.0, height));
+        let wall = face_at(
+            &m,
+            &drum,
+            Point::new(radius * FRAC_1_SQRT_2, radius * FRAC_1_SQRT_2, height * 0.5),
+        );
+        let (area, c) = square_corner(d_cap, d_wall, weight_of(profile));
+        let exact = core::f64::consts::PI * radius * radius * height
+            - 2.0 * core::f64::consts::PI * (radius - c[0]) * area;
+        rim_both_ways(
+            &mut m,
+            &drum,
+            &rim,
+            (&cap, d_cap),
+            (&wall, d_wall),
+            profile,
+            exact,
+            (0.0, 0.0),
+            [(radius - d_cap, height), (radius, height - d_wall)],
+        );
+    }
+}
+
+/// A bore's rim through a block: convex, the material outside the wall, so
+/// the corner's centroid stands c out from it, 2 pi (R + c) A.
+#[test]
+fn a_bore_s_rim_takes_its_conic_corner_round_the_axis() {
+    let (radius, d_cap, d_wall) = (4.0, 1.2, 2.0);
+    for profile in PROFILES {
+        let mut m = Model::new();
+        let block = ogeom_algo::make_box(&mut m, Frame::WORLD, (20.0, 20.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let at = Frame::new(Point::new(10.0, 10.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+        let tool = ogeom_algo::make_cylinder(&mut m, at, radius, 12.0, T)
+            .unwrap()
+            .shape;
+        let s = ogeom_bool::cut(&mut m, &block, &tool, T).unwrap().shape;
+        let rim = ring_edge(&m, &s, (10.0, 10.0, 10.0), radius);
+        let cap = face_at(&m, &s, Point::new(1.0, 1.0, 10.0));
+        let wall = face_at(&m, &s, Point::new(10.0 - radius, 10.0, 5.0));
+        let (area, c) = square_corner(d_cap, d_wall, weight_of(profile));
+        let exact = 4000.0
+            - core::f64::consts::PI * radius * radius * 10.0
+            - 2.0 * core::f64::consts::PI * (radius + c[0]) * area;
+        rim_both_ways(
+            &mut m,
+            &s,
+            &rim,
+            (&cap, d_cap),
+            (&wall, d_wall),
+            profile,
+            exact,
+            (10.0, 10.0),
+            [(radius + d_cap, 10.0), (radius, 10.0 - d_wall)],
+        );
+    }
+}
+
+/// A boss's foot on a plate: concave, the band fills the corner outside
+/// the boss, 2 pi (R + c) A more, and nothing past its contacts.
+#[test]
+fn a_boss_s_foot_fills_with_its_conic_corner_round_the_axis() {
+    let (radius, d_cap, d_wall) = (3.0, 1.5, 1.0);
+    for profile in PROFILES {
+        let mut m = Model::new();
+        let plate = ogeom_algo::make_box(&mut m, Frame::WORLD, (20.0, 20.0, 4.0), T)
+            .unwrap()
+            .shape;
+        let at = Frame::new(Point::new(10.0, 10.0, 4.0), Direction::Z, Direction::X, T).unwrap();
+        let boss = ogeom_algo::make_cylinder(&mut m, at, radius, 6.0, T)
+            .unwrap()
+            .shape;
+        let s = ogeom_bool::fuse(&mut m, &plate, &boss, T).unwrap().shape;
+        let rim = ring_edge(&m, &s, (10.0, 10.0, 4.0), radius);
+        let cap = face_at(&m, &s, Point::new(1.0, 1.0, 4.0));
+        let wall = face_at(&m, &s, Point::new(10.0 - radius, 10.0, 7.0));
+        let (area, c) = square_corner(d_cap, d_wall, weight_of(profile));
+        let exact = 1600.0
+            + core::f64::consts::PI * radius * radius * 6.0
+            + 2.0 * core::f64::consts::PI * (radius + c[0]) * area;
+        rim_both_ways(
+            &mut m,
+            &s,
+            &rim,
+            (&cap, d_cap),
+            (&wall, d_wall),
+            profile,
+            exact,
+            (10.0, 10.0),
+            [(radius + d_cap, 4.0), (radius, 4.0 + d_wall)],
+        );
+    }
+}
+
+/// A frustum's top rim: the cone leans in, so the cap and the wall meet at
+/// alpha past a right angle and the corner's centroid stands c1 in along
+/// the cap and c2 down the wall, which leans out by its own share.
+#[test]
+fn a_frustum_s_rim_takes_the_conic_of_its_own_dihedral() {
+    let (base, top, height, d_cap, d_wall) = (6.0, 4.0, 4.0, 1.0, 1.5);
+    let down = Vector::new(base - top, 0.0, -height);
+    let down = down / down.magnitude();
+    let alpha = (-down.x).acos();
+    for profile in [RoundProfile::Elliptical, RoundProfile::Conic(0.35)] {
+        let w = match profile {
+            RoundProfile::Elliptical => elliptical(alpha),
+            RoundProfile::Conic(rho) => conic(rho),
+        };
+        let mut m = Model::new();
+        let cone = ogeom_algo::make_cone(&mut m, Frame::WORLD, base, top, height, T)
+            .unwrap()
+            .shape;
+        let rim = ring_edge(&m, &cone, (0.0, 0.0, height), top);
+        let cap = face_at(&m, &cone, Point::new(0.0, 0.0, height));
+        let wall = face_at(
+            &m,
+            &cone,
+            Point::new(-(base + top) * 0.5, 0.0, height * 0.5),
+        );
+        let (area, c) = corner(d_cap, d_wall, alpha, w);
+        let reach = top - c[0] + c[1] * down.x;
+        let frustum = core::f64::consts::PI * height / 3.0 * (base * base + base * top + top * top);
+        let exact = frustum - 2.0 * core::f64::consts::PI * reach * area;
+        rim_both_ways(
+            &mut m,
+            &cone,
+            &rim,
+            (&cap, d_cap),
+            (&wall, d_wall),
+            profile,
+            exact,
+            (0.0, 0.0),
+            [
+                (top - d_cap, height),
+                (top + d_wall * down.x, height + d_wall * down.z),
+            ],
+        );
+    }
+}
+
+#[test]
+fn equal_elliptical_distances_on_a_rim_are_its_torus_round() {
+    // A drum's square rim: the radius is the distance.
+    let mut m = Model::new();
+    let drum = ogeom_algo::make_cylinder(&mut m, Frame::WORLD, 5.0, 4.0, T)
+        .unwrap()
+        .shape;
+    let rim = ring_edge(&m, &drum, (0.0, 0.0, 4.0), 5.0);
+    let cap = face_at(&m, &drum, Point::new(0.0, 0.0, 4.0));
+    let asked = ogeom_fillet::fillet_edge_distances(
+        &mut m,
+        &drum,
+        &rim,
+        &cap,
+        1.2,
+        1.2,
+        RoundProfile::Elliptical,
+        T,
+    )
+    .unwrap();
+    let round = ogeom_fillet::fillet_edge(&mut m, &drum, &rim, 1.2, T).unwrap();
+    assert_eq!(
+        volume(&m, &asked.shape).to_bits(),
+        volume(&m, &round.shape).to_bits()
+    );
+    assert_eq!(vertex_bits(&m, &asked.shape), vertex_bits(&m, &round.shape));
+
+    // A frustum's rim: the radius is the distance times tan(alpha / 2).
+    let mut m = Model::new();
+    let cone = ogeom_algo::make_cone(&mut m, Frame::WORLD, 6.0, 4.0, 4.0, T)
+        .unwrap()
+        .shape;
+    let rim = ring_edge(&m, &cone, (0.0, 0.0, 4.0), 4.0);
+    let wall = face_at(&m, &cone, Point::new(-5.0, 0.0, 2.0));
+    let down = Vector::new(2.0, 0.0, -4.0);
+    let down = down / down.magnitude();
+    let alpha = (-down.x).acos();
+    let radius = 1.0 * alpha.sin() / (1.0 + alpha.cos());
+    let asked = ogeom_fillet::fillet_edge_distances(
+        &mut m,
+        &cone,
+        &rim,
+        &wall,
+        1.0,
+        1.0,
+        RoundProfile::Elliptical,
+        T,
+    )
+    .unwrap();
+    // That radius is tan(alpha / 2) rounded, and the call's own reading of
+    // the angle may round its last bit otherwise: the same round within
+    // rounding.
+    let round = ogeom_fillet::fillet_edge(&mut m, &cone, &rim, radius, T).unwrap();
+    let (va, vr) = (volume(&m, &asked.shape), volume(&m, &round.shape));
+    assert!(
+        (va - vr).abs() <= 1e-12 * vr,
+        "{va} against the torus round's {vr}"
+    );
+    let points = |s: &Shape| {
+        let mut p: Vec<Point> = explore_unique(&m, s, ShapeType::Vertex)
+            .unwrap()
+            .iter()
+            .map(|v| point_of(&m, v))
+            .collect();
+        p.sort_by(|a, b| a.z.total_cmp(&b.z).then(a.x.total_cmp(&b.x)));
+        p
+    };
+    let (pa, pr) = (points(&asked.shape), points(&round.shape));
+    assert_eq!(pa.len(), pr.len());
+    for (a, r) in pa.iter().zip(&pr) {
+        assert!(a.distance(*r) <= 1e-12, "{a:?} against {r:?}");
+    }
+}
+
+#[test]
+fn the_revolved_conic_of_the_circle_s_own_weight_is_the_torus_round() {
+    let rho = FRAC_1_SQRT_2 / (1.0 + FRAC_1_SQRT_2);
+    let mut m = Model::new();
+    let drum = ogeom_algo::make_cylinder(&mut m, Frame::WORLD, 5.0, 4.0, T)
+        .unwrap()
+        .shape;
+    let rim = ring_edge(&m, &drum, (0.0, 0.0, 4.0), 5.0);
+    let cap = face_at(&m, &drum, Point::new(0.0, 0.0, 4.0));
+    let conic = ogeom_fillet::fillet_edge_distances(
+        &mut m,
+        &drum,
+        &rim,
+        &cap,
+        1.2,
+        1.2,
+        RoundProfile::Conic(rho),
+        T,
+    )
+    .unwrap();
+    let round = ogeom_fillet::fillet_edge(&mut m, &drum, &rim, 1.2, T).unwrap();
+    let (vc, vr) = (volume(&m, &conic.shape), volume(&m, &round.shape));
+    assert!(
+        (vc - vr).abs() <= 1e-9 * vr,
+        "conic {vc} against the torus {vr}"
+    );
+}
+
+#[test]
+fn what_a_rim_does_not_build_is_refused_by_name() {
+    let mut m = Model::new();
+    let drum = ogeom_algo::make_cylinder(&mut m, Frame::WORLD, 5.0, 4.0, T)
+        .unwrap()
+        .shape;
+    let rim = ring_edge(&m, &drum, (0.0, 0.0, 4.0), 5.0);
+    let cap = face_at(&m, &drum, Point::new(0.0, 0.0, 4.0));
+    let bottom = face_at(&m, &drum, Point::new(0.0, 0.0, 0.0));
+    let e = ogeom_fillet::fillet_edge_distances;
+    let refused = |r: ogeom_core::OgeomResult<ogeom_algo::Built>, words: &str| {
+        let message = r.expect_err("refused").to_string();
+        assert!(message.contains(words), "{message}");
+    };
+    refused(
+        e(
+            &mut m,
+            &drum,
+            &rim,
+            &bottom,
+            1.0,
+            0.5,
+            RoundProfile::Elliptical,
+            T,
+        ),
+        "not one of the edge's two faces",
+    );
+    refused(
+        e(
+            &mut m,
+            &drum,
+            &rim,
+            &cap,
+            6.0,
+            0.5,
+            RoundProfile::Elliptical,
+            T,
+        ),
+        "reaches the axis",
+    );
+    refused(
+        e(
+            &mut m,
+            &drum,
+            &rim,
+            &cap,
+            1.0,
+            4.5,
+            RoundProfile::Elliptical,
+            T,
+        ),
+        "past the side of a face",
+    );
+
+    // Half a drum: its top rim is an open arc.
+    let mut m = Model::new();
+    let drum = ogeom_algo::make_cylinder(&mut m, Frame::WORLD, 5.0, 4.0, T)
+        .unwrap()
+        .shape;
+    let at = Frame::new(Point::new(-6.0, -6.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let half = ogeom_algo::make_box(&mut m, at, (6.0, 12.0, 6.0), T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::cut(&mut m, &drum, &half, T).unwrap().shape;
+    let arc = ring_edge(&m, &s, (0.0, 0.0, 4.0), 5.0);
+    let cap = face_at(&m, &s, Point::new(2.0, 0.0, 4.0));
+    refused(
+        e(
+            &mut m,
+            &s,
+            &arc,
+            &cap,
+            1.0,
+            0.5,
+            RoundProfile::Elliptical,
+            T,
+        ),
+        "open arc of a rim",
+    );
+}
+
+/// A drum's top rim asked as an asymmetric round beside a round of its
+/// bottom rim, which it does not meet: each takes its own corner, Pappus
+/// for the conic and the ball's corner, 2 pi (R - c) (1 - pi / 4) r^2,
+/// for the round.
+#[test]
+fn blend_edges_takes_an_asymmetric_rim_beside_a_round_rim() {
+    use core::f64::consts::PI;
+    let (radius, height, r) = (5.0, 4.0, 1.0);
+    let (d_cap, d_wall) = (1.5, 0.8);
+    let profile = RoundProfile::Conic(0.45);
+    let mut m = Model::new();
+    let drum = ogeom_algo::make_cylinder(&mut m, Frame::WORLD, radius, height, T)
+        .unwrap()
+        .shape;
+    let top = ring_edge(&m, &drum, (0.0, 0.0, height), radius);
+    let bottom = ring_edge(&m, &drum, (0.0, 0.0, 0.0), radius);
+    let cap = face_at(&m, &drum, Point::new(0.0, 0.0, height));
+    let built = ogeom_fillet::blend_edges(
+        &mut m,
+        &drum,
+        &[
+            (bottom, Blend::Round(r)),
+            (
+                top,
+                Blend::RoundDistances {
+                    face: cap,
+                    on_face: d_cap,
+                    on_other: d_wall,
+                    profile,
+                },
+            ),
+        ],
+        ChamferCorner::Point,
+        T,
+    )
+    .unwrap();
+    let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let (area, c) = square_corner(d_cap, d_wall, weight_of(profile));
+    let ball = (1.0 - PI / 4.0) * r * r;
+    let ball_reach = r * (10.0 - 3.0 * PI) / (3.0 * (4.0 - PI));
+    let exact = PI * radius * radius * height
+        - 2.0 * PI * (radius - c[0]) * area
+        - 2.0 * PI * (radius - ball_reach) * ball;
+    let v = volume(&m, &built.shape);
+    assert!((v - exact).abs() <= 1e-8, "volume {v} against {exact}");
 }

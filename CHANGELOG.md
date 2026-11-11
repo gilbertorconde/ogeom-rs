@@ -67,6 +67,22 @@ bump may break the API and a patch bump may not.
     distances, corners where it meets another blended edge, and
     `largest_fillet_radius` for the pair.
 
+- **Asymmetric rounds on circular rims.** (#877)
+  - `fillet_edge_distances` and `Blend::RoundDistances` round a whole rim
+    where a planar cap meets a coaxial cylinder or cone: a drum's top, a
+    bore's mouth, a boss's foot (concave, filled), a frustum's top. The
+    band is the elliptical or conic section revolved about the axis, an
+    exact surface of revolution, tangent to cap and wall along its contact
+    rings. Equal distances with the elliptical section are the torus round
+    of `fillet_edge`, by the same call.
+  - `ogeom_algo::make_profile_revolution_band` builds the closed band of a
+    curve revolved a whole turn between the parallels through its ends;
+    `make_revolution_band` refuses such a surface as before.
+  - Measured by Pappus (the section's area times the turn of its centroid)
+    on all four rims, elliptical and conic: within 1e-8 of the exact
+    volume, both faces named first alike to the bit.
+  - Refused by name: an open arc of a rim, and a contact reaching the axis.
+
 ### Changed
 
 - **`threemf::read_package` holds a package to 4096 entries and 4 GiB
