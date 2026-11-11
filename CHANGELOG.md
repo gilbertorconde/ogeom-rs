@@ -13,6 +13,34 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **The L-bracket's convex-concave corner builds in under a second, not
+  sixteen.** (#870)
+  - The corner #712 closes took about 16 s an order in a release build on
+    the issue's bracket: 9 s in a second hold pass that went on to a net
+    of 202 controls, 4 s in #847's check meshing the patches at a chord of
+    5e-5, and five refits of the 135-control net. Each order now takes
+    0.8 to 0.9 s, threaded or not.
+  - The hold pass holds the worst stray point in each span cell of the
+    net, not every stray grid point: it no longer over-holds the net until
+    a side misses, and the corner closes on the 135-control net. A refit
+    after a round takes the rows of the factored system no new hold
+    reaches from the last round's, the same to the bit, and the first round
+    starts from the plain fit at that net.
+  - #847's check is now a proof rather than a sample. Over each Bezier
+    piece of the patch the region's planes are bounded by the piece's
+    control points and the concave round's ball by their hull's distance
+    from its axis; a piece the bound does not clear is split, and a piece
+    wholly outside the face's trim is passed over. It is at least as
+    strict as the mesh it replaced, against which a unit test checks it
+    both ways.
+  - The banded factorisation sums in eight interleaved parts, and the
+    grid the hold reads is found by the edges that cross each row.
+  - A different patch closes the corners the hold reaches, equally within
+    the region and tangent to its neighbours. On the issue's bracket at
+    radius 2 the volume is 3505.598967 in both orders, where 0.18.0 gave
+    3505.693820; 3506.861, #712's figure, was #838's solid, which stood
+    into the concave round's ball and was refused by #847.
+
 - **A boolean on a ball whose pole stands beside the other operand is
   tried on the ball's next charts clear of it before it is refused.**
   (#835)

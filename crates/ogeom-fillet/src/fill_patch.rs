@@ -127,62 +127,97 @@ impl Banded {
         }
     }
 
-    fn get(&self, i: usize, j: usize) -> f64 {
-        let (hi, lo) = if i >= j { (i, j) } else { (j, i) };
-        let d = hi - lo;
-        if d > self.band { 0.0 } else { self.rows[hi][d] }
-    }
-
-    /// The banded Cholesky factor, `factor[k][d]` being `L(k, k - d)`;
-    /// `None` where the matrix is not positive definite to working
-    /// precision.
-    fn factor(&self) -> Option<Vec<Vec<f64>>> {
+    /// The banded Cholesky factor, held row by row, entry `d` of row `k`
+    /// (at `k * (band + 1) + d`) being `L(k, k - d)`; `None` where the
+    /// matrix is not positive definite to working precision. Its rows
+    /// before `from` are taken from `kept`, the
+    /// factor of a matrix whose rows before `from` are this one's: each row
+    /// of the factor is found from the matrix's row and the factor's rows
+    /// before it alone, so those rows are the same to the bit.
+    fn factor_from(&self, kept: Option<(&[f64], usize)>) -> Option<Vec<f64>> {
         let n = self.size;
         let b = self.band;
-        let mut factor = vec![vec![0.0f64; b + 1]; n];
-        for k in 0..n {
+        let w = b + 1;
+        let (mut factor, start) = match kept {
+            Some((rows, from)) if rows.len() == n * w => {
+                let from = from.min(n);
+                let mut factor = rows.to_vec();
+                factor[from * w..].fill(0.0);
+                (factor, from)
+            }
+            _ => (vec![0.0f64; n * w], 0),
+        };
+        for k in start..n {
             let first = k.saturating_sub(b);
+            let row = k * w;
             for j in first..=k {
-                let mut sum = self.get(k, j);
                 let from = first.max(j.saturating_sub(b));
-                for m in from..j {
-                    sum -= factor[k][k - m] * factor[j][j - m];
-                }
+                // Row `k`'s entries at columns `from..j` and row `j`'s at the
+                // same columns, each held backwards from its diagonal.
+                let sum = self.rows[k][k - j]
+                    - dot(
+                        &factor[row + k - j + 1..=row + k - from],
+                        &factor[j * w + 1..=j * w + j - from],
+                    );
                 if j == k {
                     if sum <= 0.0 || !sum.is_finite() {
                         return None;
                     }
-                    factor[k][0] = sum.sqrt();
+                    factor[row] = sum.sqrt();
                 } else {
-                    factor[k][k - j] = sum / factor[j][0];
+                    factor[row + k - j] = sum / factor[j * w];
                 }
             }
         }
         Some(factor)
     }
 
-    /// Solve with the factor [`Banded::factor`] gave.
-    fn solve(&self, factor: &[Vec<f64>], rhs: &[f64]) -> Vec<f64> {
+    /// Solve with the factor [`Banded::factor_from`] gave.
+    fn solve(&self, factor: &[f64], rhs: &[f64]) -> Vec<f64> {
         let n = self.size;
         let b = self.band;
+        let w = b + 1;
         let mut y = vec![0.0f64; n];
         for k in 0..n {
+            let from = k.saturating_sub(b);
+            // `L(k, m)` for `m` in `from..k`, against `y[m]` backwards.
+            let row = &factor[k * w + 1..=k * w + k - from];
             let mut sum = rhs[k];
-            for m in k.saturating_sub(b)..k {
-                sum -= factor[k][k - m] * y[m];
+            for (a, ym) in row.iter().zip(y[from..k].iter().rev()) {
+                sum -= a * ym;
             }
-            y[k] = sum / factor[k][0];
+            y[k] = sum / factor[k * w];
         }
         let mut x = vec![0.0f64; n];
         for k in (0..n).rev() {
             let mut sum = y[k];
             for m in (k + 1)..n.min(k + b + 1) {
-                sum -= factor[m][m - k] * x[m];
+                sum -= factor[m * w + m - k] * x[m];
             }
-            x[k] = sum / factor[k][0];
+            x[k] = sum / factor[k * w];
         }
         x
     }
+}
+
+/// The sum of `a[i] * b[i]`, in eight interleaved partial sums so the
+/// additions do not wait on one another.
+fn dot(a: &[f64], b: &[f64]) -> f64 {
+    debug_assert_eq!(a.len(), b.len(), "dot of unequal lengths");
+    let mut part = [0.0f64; 8];
+    let (a8, a_rest) = a.as_chunks::<8>();
+    let (b8, b_rest) = b.as_chunks::<8>();
+    for (x, y) in a8.iter().zip(b8) {
+        for i in 0..8 {
+            part[i] += x[i] * y[i];
+        }
+    }
+    let mut sum =
+        ((part[0] + part[4]) + (part[1] + part[5])) + ((part[2] + part[6]) + (part[3] + part[7]));
+    for (x, y) in a_rest.iter().zip(b_rest) {
+        sum += x * y;
+    }
+    sum
 }
 
 /// The non-zero basis functions and their first two derivatives at `t`:
@@ -247,6 +282,13 @@ struct Net<const D: usize> {
     v_knots: KnotVector,
     values: Vec<[f64; D]>,
     residual: f64,
+    factor: Factor,
+}
+
+/// A fit's factored system, kept so a fit of the same net whose conditions
+/// change only in some can take its unchanged rows.
+pub(crate) struct Factor {
+    rows: Vec<f64>,
 }
 
 /// Fit `D` components over `domain` with `controls` controls per
@@ -258,6 +300,7 @@ fn solve_net<const D: usize>(
     controls: (usize, usize),
     conditions: &[Condition<D>],
     smoothing: f64,
+    again: Option<(&Factor, &[usize])>,
 ) -> OgeomResult<Net<D>> {
     let (nu, nv) = controls;
     let ((ua, ub), (va, vb)) = domain;
@@ -321,7 +364,17 @@ fn solve_net<const D: usize>(
         rows.push((row, target));
     }
 
-    let Some(factor) = matrix.factor() else {
+    // The first row of the factor a changed condition reaches: its least
+    // control's index, the conditions' rows listed in index order.
+    let kept = again.map(|(factor, changed)| {
+        let from = changed
+            .iter()
+            .filter_map(|&c| rows.get(c).and_then(|(row, _)| row.first().map(|e| e.0)))
+            .min()
+            .unwrap_or(size);
+        (factor.rows.as_slice(), from)
+    });
+    let Some(factor) = matrix.factor_from(kept) else {
         ogeom_bail!(
             Numeric,
             "the filling's system is singular at {nu}x{nv} controls"
@@ -346,11 +399,16 @@ fn solve_net<const D: usize>(
         v_knots,
         values,
         residual,
+        factor: Factor { rows: factor },
     })
 }
 
 /// Fit the height over `domain` with `controls` control heights per
-/// direction to `conditions`, with the thin-plate energy at `smoothing`.
+/// direction to `conditions`, with the thin-plate energy at `smoothing`;
+/// with the fit, its factored system. Given `again` (the factor of a fit
+/// of the same net and the indices of the conditions changed since, every
+/// other condition the same and in the same place), the factor's rows no
+/// changed condition reaches are taken from it: the same fit to the bit.
 ///
 /// # Errors
 ///
@@ -358,16 +416,17 @@ fn solve_net<const D: usize>(
 /// the control counts cannot carry the degree, and
 /// [`OgeomError::Numeric`](ogeom_core::OgeomError::Numeric) if the system
 /// is singular.
-pub(crate) fn fit_height(
+pub(crate) fn fit_height_with(
     frame: &PlaneFrame,
     domain: ((f64, f64), (f64, f64)),
     controls: (usize, usize),
     conditions: &[Condition<1>],
     smoothing: f64,
+    again: Option<(&Factor, &[usize])>,
     tol: Tolerances,
-) -> OgeomResult<PatchFit> {
+) -> OgeomResult<(PatchFit, Factor)> {
     let (nu, nv) = controls;
-    let net = solve_net(domain, controls, conditions, smoothing)?;
+    let net = solve_net(domain, controls, conditions, smoothing, again)?;
     // Greville abscissae carry the plane part exactly.
     let greville = |knots: &KnotVector, i: usize| -> f64 {
         let k = knots.knots();
@@ -386,10 +445,13 @@ pub(crate) fn fit_height(
         }
     }
     let grid = ControlGrid::new(control, nu, nv)?;
-    Ok(PatchFit {
-        surface: BSplineSurface::new(net.u_knots, net.v_knots, &grid, tol)?,
-        residual: net.residual,
-    })
+    Ok((
+        PatchFit {
+            surface: BSplineSurface::new(net.u_knots, net.v_knots, &grid, tol)?,
+            residual: net.residual,
+        },
+        net.factor,
+    ))
 }
 
 /// Fit a patch whose control points' three coordinates are all free over
@@ -401,7 +463,7 @@ pub(crate) fn fit_height(
 ///
 /// # Errors
 ///
-/// As [`fit_height`].
+/// As [`fit_height_with`].
 pub(crate) fn fit_free(
     domain: ((f64, f64), (f64, f64)),
     controls: (usize, usize),
@@ -410,7 +472,7 @@ pub(crate) fn fit_free(
     tol: Tolerances,
 ) -> OgeomResult<PatchFit> {
     let (nu, nv) = controls;
-    let net = solve_net(domain, controls, conditions, smoothing)?;
+    let net = solve_net(domain, controls, conditions, smoothing, None)?;
     let control: Vec<Point> = net
         .values
         .iter()
@@ -457,15 +519,17 @@ mod tests {
                 ));
             }
         }
-        let patch = fit_height(
+        let patch = fit_height_with(
             &flat(),
             ((-1.0, 1.0), (-1.0, 1.0)),
             (7, 6),
             &conditions,
             1e-12,
+            None,
             T,
         )
         .unwrap()
+        .0
         .surface;
         for (x, y) in [(0.13, -0.71), (-0.9, 0.4), (0.55, 0.55)] {
             let p = patch.point_at(x, y, T).unwrap();
@@ -496,15 +560,17 @@ mod tests {
                 ));
             }
         }
-        let patch = fit_height(
+        let patch = fit_height_with(
             &flat(),
             ((-1.0, 1.0), (-1.0, 1.0)),
             (6, 6),
             &conditions,
             1e-9,
+            None,
             T,
         )
         .unwrap()
+        .0
         .surface;
         let (du, dv) = patch.d1_at(0.0, 0.3, T).unwrap();
         assert!((du.z - 0.5).abs() < 1e-6, "{du:?}");
