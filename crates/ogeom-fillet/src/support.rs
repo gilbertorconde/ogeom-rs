@@ -2837,6 +2837,33 @@ fn clamped_short(
     Ok(along.magnitude() > tol.confusion() * 100.0)
 }
 
+/// Whether a point lies on `face`, read in its chart, or failing that on
+/// some other face of `solid` ([`on_boundary`]).
+pub(crate) fn on_face_or_boundary(
+    model: &Model,
+    solid: &Shape,
+    face: &Shape,
+    point: Point,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    use ogeom_geom::Transformable as _;
+    if let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data())
+        && let Some(surface) = model.geometry().surface(data.surface)
+    {
+        let placed = surface
+            .clone()
+            .transformed(&face.transform(model.datums())?, tol)?;
+        let found = ogeom_algo::project_on_surface(&placed, point, 16, tol)?;
+        let (u, v) = found.parameters;
+        if found.distance <= tol.confusion() * 100.0
+            && chart_holds(model, face, ogeom_math::Point2::new(u, v), tol)?
+        {
+            return Ok(true);
+        }
+    }
+    on_boundary(model, solid, point, tol)
+}
+
 /// Whether a point lies on some face of `solid`: on its surface, within
 /// the model's reach, and inside its chart region.
 fn on_boundary(model: &Model, solid: &Shape, point: Point, tol: Tolerances) -> OgeomResult<bool> {

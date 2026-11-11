@@ -2,6 +2,7 @@
 //! and their 2D counterparts.
 
 pub mod analyse;
+mod asym;
 mod between;
 mod blame;
 mod blend;
@@ -40,6 +41,7 @@ mod support;
 mod turned_pole;
 
 pub use analyse::{BlendContact, analyse_blend, face_curvature_samples};
+pub use asym::{RoundProfile, fillet_edge_distances};
 pub use blame::{
     BlendRefusal, chamfer_edges_checked, chamfer_edges_partial, fillet_edges_checked,
     fillet_edges_partial,

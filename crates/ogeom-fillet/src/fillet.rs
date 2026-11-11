@@ -11,6 +11,7 @@
 //! solid's own faces by same-domain resolution, and the envelope stays as
 //! the blend.
 
+use crate::asym::Section;
 use crate::law::{Profile, RadiusLaw};
 use crate::support::{
     Seat, apply_wedge, apply_wedge_solid, edge_curve, face_from_edges, planar_face, planar_seat,
@@ -401,7 +402,7 @@ fn fillet_edge_seat(
         ogeom_bail!(Construction, "a fillet of radius {radius} rounds nothing");
     }
     match route(model, solid, edge, rims, tol)? {
-        Route::Planar => planar_fillet(model, solid, edge, radius, mates, tol),
+        Route::Planar => planar_fillet(model, solid, edge, Section::Ball(radius), mates, tol),
         Route::Ruled(seat) => {
             crate::ruled::ruled_fillet(model, solid, edge, radius, mates, seat, tol)
         }
@@ -2823,7 +2824,14 @@ fn law_piece(
         ),
     ] {
         let (alone, wedges) = crate::support::collecting_wedges(|| {
-            planar_fillet(model, solid, piece, radius, Some((index, mates)), tol)
+            planar_fillet(
+                model,
+                solid,
+                piece,
+                Section::Ball(radius),
+                Some((index, mates)),
+                tol,
+            )
         });
         alone?;
         let Some(alone) = wedges.into_iter().next() else {
@@ -3571,7 +3579,7 @@ fn chain_law(
             // The constant band alone, and what of it stands past the
             // vertex: its run-out, where it runs out there.
             let (built, wedges) = crate::support::collecting_wedges(|| {
-                planar_fillet(model, solid, &edge, radius, None, tol)
+                planar_fillet(model, solid, &edge, Section::Ball(radius), None, tol)
             });
             built?;
             let Some(alone) = wedges.into_iter().next() else {
@@ -3668,7 +3676,7 @@ fn run_on_past_turns(
             }
             let outward = junction.outward[slot];
             let (built, wedges) = crate::support::collecting_wedges(|| {
-                planar_fillet(model, solid, edge, radius, None, tol)
+                planar_fillet(model, solid, edge, Section::Ball(radius), None, tol)
             });
             built?;
             let Some(alone) = wedges.into_iter().next() else {
@@ -4025,14 +4033,15 @@ fn straight_law_on(
 }
 
 /// The straight-edge fillet: the rolling ball's envelope is a cylinder.
-fn planar_fillet(
+pub(crate) fn planar_fillet(
     model: &mut Model,
     solid: &Shape,
     edge: &Shape,
-    radius: f64,
+    section: Section,
     mates: Option<(usize, &[Mate])>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    let radius = section.size();
     let mut seat = planar_seat(model, solid, edge, tol)?;
     // Where a convex crease runs into a face overhanging its corner (a rib
     // running up under a slanted roof), the band is trimmed by that face's
@@ -4058,14 +4067,15 @@ fn planar_fillet(
         else {
             continue;
         };
-        let Some(inward) = seat_centre(&seat, radius, tol)? else {
+        let Some(inward) = section.centre(&seat, tol)? else {
             continue;
         };
         // Where each point of the section crosses the plane, carried along
         // `outward`: a plane passes a section last at one of its corners.
         let rate = -outward.dot(normal);
-        let crossings =
-            section_at(&seat, at, inward, radius).map(|p| (origin - p).dot(normal) / rate);
+        let crossings = section
+            .points(&seat, at, inward, tol)?
+            .map(|p| (origin - p).dot(normal) / rate);
         if crossings.iter().all(|c| c.abs() <= tol.confusion() * 1e3) {
             continue;
         }
@@ -4131,7 +4141,7 @@ fn planar_fillet(
             continue;
         }
         // The ball's centre line, a radius in from both hosts.
-        let Some(inward) = seat_centre(&seat, radius, tol)? else {
+        let Some(inward) = section.centre(&seat, tol)? else {
             continue;
         };
         let centre_at = |s: f64| at + outward * s + inward;
@@ -4157,7 +4167,7 @@ fn planar_fillet(
             // out as it does alone: where another band of the request ends
             // at the vertex with no junction there, the two meet as before,
             // the later running on through the earlier.
-            let section = section_at(&seat, at, inward, radius);
+            let points = section.points(&seat, at, inward, tol)?;
             let boss = mates.is_none_or(|(index, mates)| Mate::alone_at(mates, index, at, tol));
             reach = crate::support::run_out_reach(
                 model,
@@ -4165,7 +4175,7 @@ fn planar_fillet(
                 edge,
                 hosts,
                 (at, outward),
-                &section,
+                &points,
                 (radius, boss),
                 &mut probes,
                 tol,
@@ -4203,13 +4213,24 @@ fn planar_fillet(
             seat.end += seat.along * reach;
         }
     }
-    seated_fillet(model, solid, &seat, radius, Some(edge), &trims, tol)
+    match section {
+        Section::Ball(radius) => {
+            seated_fillet(model, solid, &seat, radius, Some(edge), &trims, tol)
+        }
+        Section::Conic { .. } => {
+            crate::asym::seated_conic(model, solid, &seat, section, Some(edge), &trims, tol)
+        }
+    }
 }
 
 /// From a point of a straight seat's crease to the ball's centre in the
 /// section square to the crease there; `None` where the faces meet too
 /// sharply or too flat to seat a ball.
-fn seat_centre(seat: &Seat, radius: f64, tol: Tolerances) -> OgeomResult<Option<Vector>> {
+pub(crate) fn seat_centre(
+    seat: &Seat,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vector>> {
     let sign = if seat.convex { 1.0 } else { -1.0 };
     let bisector = seat.leg(0, tol)? * sign + seat.leg(1, tol)? * sign;
     let m = bisector.magnitude();
@@ -4226,7 +4247,7 @@ fn seat_centre(seat: &Seat, radius: f64, tol: Tolerances) -> OgeomResult<Option<
 /// Points of a straight seat's band section square to the crease at `at`,
 /// the ball's centre `inward` of it: the section's corners (the crease and
 /// the two contacts) first, then each leg's middle and the arc's.
-fn section_at(seat: &Seat, at: Point, inward: Vector, radius: f64) -> [Point; 6] {
+pub(crate) fn section_at(seat: &Seat, at: Point, inward: Vector, radius: f64) -> [Point; 6] {
     let centre = at + inward;
     let sign = if seat.convex { 1.0 } else { -1.0 };
     let touch = [0, 1].map(|i| centre + seat.normals[i] * (radius * sign));
