@@ -1262,9 +1262,63 @@ pub(crate) fn signed_corners(
         if !(at.iter().any(|e| e.2) && at.iter().any(|e| !e.2)) {
             continue;
         }
+        if runs_through(model, solid, &vertex, &at, tol)? {
+            continue;
+        }
         corners.push(signed_corner(model, solid, &vertex, &at, tol)?);
     }
     Ok(corners)
+}
+
+/// Whether the request's two edges at `vertex`, one convex and one
+/// concave, run on through it into each other, tangent there and leaving
+/// it opposite ways, where a face of the vertex is curved: a tangent chain
+/// turning from convex to concave where a wall runs tangent into a curved
+/// one (a plate's side into a boss). The two bands then lie either side of
+/// the vertex and meet only across their end sections there, so there is
+/// no corner to close: each is built as the request's own bands are, and
+/// refused as they are where its face narrows to a cusp there and would
+/// leave the band's fill over nothing.
+fn runs_through(
+    model: &Model,
+    solid: &Shape,
+    vertex: &Shape,
+    at: &[Kinded],
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let [(first, _, _), (second, _, _)] = at else {
+        return Ok(false);
+    };
+    let corner = point_of(model, vertex)?;
+    // Each edge's unit tangent at the vertex, pointing away from it.
+    let leaving = |edge: &Shape| -> OgeomResult<Option<Vector>> {
+        let Some((curve, (lo, hi))) = ogeom_algo::placed_edge_curve(model, edge, tol)? else {
+            return Ok(None);
+        };
+        let (at_lo, at_hi) = (curve.point_at(lo, tol)?, curve.point_at(hi, tol)?);
+        let (t, sense) = if at_lo.distance(corner) <= at_hi.distance(corner) {
+            (lo, 1.0)
+        } else {
+            (hi, -1.0)
+        };
+        Ok(Some(curve.d1_at(t, tol)?.normalized(tol)? * sense))
+    };
+    let (Some(a), Some(b)) = (leaving(first)?, leaving(second)?) else {
+        return Ok(false);
+    };
+    if a.dot(b) > -1.0 + tol.angular() * 10.0 {
+        return Ok(false);
+    }
+    for f in explore_unique(model, solid, ShapeType::Face)? {
+        if explore_unique(model, &f, ShapeType::Vertex)?
+            .iter()
+            .any(|v| v.is_same(vertex))
+            && crate::rolled::flat(model, &f, tol)?.is_none()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Whether `edge` of `solid` is convex: from its planar seat, else read on

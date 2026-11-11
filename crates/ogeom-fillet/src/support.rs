@@ -1972,6 +1972,12 @@ pub(crate) fn face_reach(
     Ok(reach)
 }
 
+/// Where along a curved edge, as fractions of its curve's range, a concave
+/// band's contacts are also read, nearer its ends than the stations: a
+/// face narrowing to a cusp at an end (a wall running tangent into a
+/// curved one) stops holding the band there.
+const REACH_PROBES: [f64; 6] = [0.02, 0.06, 0.12, 0.88, 0.94, 0.98];
+
 /// Whether a rolling ball of `radius` sits on both faces along `edge`: at
 /// stations along it, each face's contact is set back into the face by
 /// `radius · tan(φ/2)` (φ the turn between the faces' outward normals,
@@ -2121,7 +2127,20 @@ pub(crate) fn ball_fits_by(
     let mut missed: Option<String> = None;
     let mut held = false;
     let mut probe = LazyProbe::default();
-    'stations: for &fraction in fractions {
+    // Whether every station read the edge concave: near its ends, where its
+    // faces change, a probe's own reading is not taken.
+    let mut concave_seat: Option<bool> = None;
+    // A straight seat's band is cut off at the side of a face its contact
+    // runs past; a curved edge's band is not, so its contacts are held to
+    // its faces.
+    let curved = !matches!(curve, Curve::Line(_));
+    // The stations, then the reach probes near each end, which hold a
+    // concave band's contacts to its faces and add none.
+    let stations = fractions
+        .iter()
+        .map(|f| (*f, false))
+        .chain(REACH_PROBES.iter().map(|f| (*f, true)));
+    'stations: for (fraction, probing) in stations {
         let radius = radius_at(fraction);
         let t = range.0 + (range.1 - range.0) * fraction;
         let p = curve.point_at(t, tol)?;
@@ -2183,6 +2202,15 @@ pub(crate) fn ball_fits_by(
         else {
             continue;
         };
+        // Walking into a face from a convex edge goes behind the other.
+        let convex = d0.dot(n1) < 0.0;
+        if probing {
+            if !curved || concave_seat != Some(true) {
+                continue;
+            }
+        } else {
+            concave_seat = Some(concave_seat.unwrap_or(true) && !convex);
+        }
         let mut station_missed = false;
         for (face, surface, step, normals) in
             [(face0, &s0, d0, [n0, n1]), (face1, &s1, d1, [n1, n0])]
@@ -2206,11 +2234,28 @@ pub(crate) fn ball_fits_by(
             // On its own face, or on any face of the solid it has run on
             // to (a coplanar piece the face was split from, the next face
             // of a chain): anywhere on the boundary the ball can sit.
-            if !holds && !on_boundary(model, solid, at, tol)? {
+            let off = !holds && !on_boundary(model, solid, at, tol)?;
+            // A concave band adds what it rolls over: on a curved edge, a
+            // contact off every face of the solid lays its fill over
+            // nothing, past the side of a face that narrows to a cusp or
+            // ends short of the band.
+            if off && curved && (probing || !convex) {
+                ogeom_bail!(
+                    Construction,
+                    "a concave blend of radius {radius} on the edge through {p:?} sets \
+                     back {setback} across a face that does not reach so far, and would \
+                     lay its fill past that face's side over nothing; see \
+                     docs/CAPABILITIES.md, fillet.edge-blends"
+                );
+            }
+            if probing {
+                continue;
+            }
+            if off {
                 // A convex seat's band is cut off where its contact stands
                 // behind a face the crease runs into: walking into the
                 // first face from a convex edge goes behind the second.
-                if d0.dot(n1) < 0.0 && trimmed_off(at) {
+                if convex && trimmed_off(at) {
                     continue;
                 }
                 let refusal = format!(
@@ -2239,7 +2284,7 @@ pub(crate) fn ball_fits_by(
                     normals,
                     setback,
                     radius,
-                    convex: d0.dot(n1) < 0.0,
+                    convex,
                 };
                 let Some(carried) = carried_contacts(model, solid, face, &station, tol)? else {
                     ogeom_bail!(
@@ -2254,11 +2299,17 @@ pub(crate) fn ball_fits_by(
                 station_missed = true;
                 continue;
             }
+            if probing {
+                continue;
+            }
             contacts.push(Contact {
                 face: face.clone(),
                 at,
                 setback,
             });
+        }
+        if probing {
+            continue;
         }
         held |= !station_missed;
     }
