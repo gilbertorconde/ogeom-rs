@@ -11,6 +11,23 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-11-11
+
+A patch release with no breaking API change.
+
+- **Speed:** the convex-concave corner that 0.18.0 closes now builds in under a
+  second, down from about 16 s on the L-bracket. The corner patch is now
+  held inside the solid by a different rule, so its volume moves slightly:
+  3505.598967 on the L-bracket at radius 2, the same in both orders. It
+  still passes the same region check and tangency target.
+- **Wrong solid now refused:** 0.17.1 and 0.18.0 built a concave round on a
+  curved edge whose face narrows to a cusp (a boss's foot running tangent
+  into a plate's side) hanging up to a radius past the face. It is now
+  refused by name.
+- **Ball booleans:** a boolean on a ball whose pole stands beside the other
+  operand tries the ball's other charts clear of that operand before
+  refusing. #835's placements now build and match the exact volume.
+
 ### Fixed
 
 - **A concave round on a curved edge whose face narrows to a cusp is
@@ -14086,7 +14103,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.18.1...HEAD
+[0.18.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.17.1...v0.18.0
 [0.17.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.17.0...v0.17.1
 [0.17.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.16.0...v0.17.0
