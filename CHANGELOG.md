@@ -110,6 +110,22 @@ bump may break the API and a patch bump may not.
     STEP file in the corpus, both real-world assemblies and printCAD's
     fixtures still read.
 
+- **A 3MF package whose entries overlap is refused before any is read,
+  and a package read can be held to limits.** (#859)
+  - `threemf::read_package` keeps every entry in memory. It bounded each
+    entry by its declared size, but nothing stopped many directory records
+    naming one entry's bytes: a 114 KiB file of a thousand records over one
+    64 KiB entry read as 64 MiB, and with a deflated entry as much as a
+    thousand times more.
+  - ZIP records never share bytes. `read_package` and `read_3mf` now refuse
+    a directory whose records overlap, naming two of them. A package
+    therefore expands at most as far as its own bytes deflate from. The
+    corpus's 3MF packages (deflated, ZIP64, components, painted) still read.
+  - New `threemf::read_package_within` with `PackageLimits`: a most entry
+    count and a most total of expanded bytes, both checked against the
+    central directory before anything is inflated. `read_package` keeps no
+    limit past the archive's own.
+
 - **A concave round on a curved edge running past its face's side is cut
   off flush at that side.** (#871)
   - Since 0.18.1 a foot round where a plate's side runs tangent into a boss
