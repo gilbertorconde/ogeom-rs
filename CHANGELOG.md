@@ -83,6 +83,22 @@ bump may break the API and a patch bump may not.
     volume, both faces named first alike to the bit.
   - Refused by name: an open arc of a rim, and a contact reaching the axis.
 
+- **Asymmetric rounds whose distances vary along a straight edge.** (#877)
+  - `fillet_edge_distances_variable` takes a `RadiusLaw` for each distance,
+    read by the fraction of the edge from its start: linear, or through
+    points (C1, no overshoot), on a straight edge between two planes,
+    convex or concave.
+  - The band is exact: over each stretch where both laws are one cubic it
+    is the section's rational arc with its control points carried along
+    the laws' cubics, a rational B-spline cubic along the edge, tangent to
+    both faces along its contact curves. Laws holding one distance each
+    are `fillet_edge_distances`, by the same call.
+  - Measured against the integral of the section's area along the edge
+    for linear laws, on a box edge and an L-bracket's concave edge: within
+    1e-8; a law of points puts its contact at each point's distance.
+  - Its ends are capped square; an end meeting a face not square to the
+    edge is refused by name.
+
 ### Changed
 
 - **`threemf::read_package` holds a package to 4096 entries and 4 GiB

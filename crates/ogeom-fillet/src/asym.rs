@@ -46,7 +46,7 @@ pub enum RoundProfile {
 impl RoundProfile {
     /// The middle control point's weight for a section whose faces' legs
     /// from the crease make the cosine `cos_alpha` with each other.
-    fn weight(self, cos_alpha: f64) -> OgeomResult<f64> {
+    pub(crate) fn weight(self, cos_alpha: f64) -> OgeomResult<f64> {
         match self {
             Self::Elliptical => Ok(((1.0 - cos_alpha) * 0.5).max(0.0).sqrt()),
             Self::Conic(rho) => {
@@ -130,7 +130,7 @@ impl Section {
 
 /// On each face of the seat, the unit direction square to the crease that
 /// runs along the face away from it.
-fn legs(seat: &Seat, tol: Tolerances) -> OgeomResult<[Vector; 2]> {
+pub(crate) fn legs(seat: &Seat, tol: Tolerances) -> OgeomResult<[Vector; 2]> {
     let sign = if seat.convex { 1.0 } else { -1.0 };
     Ok([seat.leg(0, tol)? * sign, seat.leg(1, tol)? * sign])
 }
@@ -277,6 +277,25 @@ const WEIGHT_RANGE: (f64, f64) = (0.7, 1.25);
 /// standard arcs of weight `sqrt((1 + w) / 2)` each, the same curve; the
 /// pieces meet at double knots.
 fn conic_arc(p: [Point; 3], w: f64, tol: Tolerances) -> OgeomResult<Curve> {
+    let (control, weight, knots) = conic_pieces(p, w);
+    let control = control
+        .into_iter()
+        .enumerate()
+        .map(|(i, q)| Weighted::new(q, if i % 2 == 1 { weight } else { 1.0 }, tol))
+        .collect::<OgeomResult<Vec<_>>>()?;
+    Ok(Curve::BSpline(BSplineCurve::rational(
+        KnotVector::new(knots, 2)?,
+        control,
+    )?))
+}
+
+/// The pieces [`conic_arc`] splits its arc into: their control points end
+/// to end (each piece's first, middle and, for the last, its end), the
+/// middle points' common weight, the end points' being 1, and the knots
+/// on `[0, 1]`. Each control point is an affine combination of `p` whose
+/// coefficients depend on `w` alone, so a family of arcs whose control
+/// points move affinely splits into control points that move alike.
+pub(crate) fn conic_pieces(p: [Point; 3], w: f64) -> (Vec<Point>, f64, Vec<f64>) {
     let mut pieces = vec![p];
     let mut weight = w;
     for _ in 0..8 {
@@ -300,20 +319,17 @@ fn conic_arc(p: [Point; 3], w: f64, tol: Tolerances) -> OgeomResult<Curve> {
     let mut knots = vec![0.0; 3];
     let mut control = Vec::with_capacity(2 * n + 1);
     for (i, [p0, a, _]) in pieces.iter().enumerate() {
-        control.push(Weighted::new(*p0, 1.0, tol)?);
-        control.push(Weighted::new(*a, weight, tol)?);
+        control.push(*p0);
+        control.push(*a);
         if i + 1 < n {
             #[allow(clippy::cast_precision_loss, reason = "at most 256 pieces")]
             let k = (i + 1) as f64 / n as f64;
             knots.extend([k, k]);
         }
     }
-    control.push(Weighted::new(pieces[n - 1][2], 1.0, tol)?);
+    control.push(pieces[n - 1][2]);
     knots.extend([1.0; 3]);
-    Ok(Curve::BSpline(BSplineCurve::rational(
-        KnotVector::new(knots, 2)?,
-        control,
-    )?))
+    (control, weight, knots)
 }
 
 /// Round a straight edge between two planar faces with a band that meets
@@ -429,6 +445,28 @@ pub(crate) fn straight_section(
     profile: RoundProfile,
     tol: Tolerances,
 ) -> OgeomResult<Option<Section>> {
+    let (seat, named) = straight_seat(model, solid, edge, face, tol)?;
+    if profile == RoundProfile::Elliptical && on_face == on_other {
+        return Ok(None);
+    }
+    let mut d = [0.0; 2];
+    d[named] = on_face;
+    d[1 - named] = on_other;
+    let f = legs(&seat, tol)?;
+    let w = profile.weight(f[0].dot(f[1]).clamp(-1.0, 1.0))?;
+    Ok(Some(Section::Conic { d, w }))
+}
+
+/// The straight seat of an asymmetric round, and which of its faces is
+/// `face`; refused by name where the edge is not straight between two
+/// planes or `face` is not beside it.
+pub(crate) fn straight_seat(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    face: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<(Seat, usize)> {
     let (curve, _) = crate::support::edge_curve(model, edge, tol)?;
     if !matches!(curve, Curve::Line(_)) || !crate::support::hosts_planar(model, solid, edge, tol)? {
         ogeom_bail!(
@@ -450,15 +488,7 @@ pub(crate) fn straight_section(
              edge's two faces"
         );
     };
-    if profile == RoundProfile::Elliptical && on_face == on_other {
-        return Ok(None);
-    }
-    let mut d = [0.0; 2];
-    d[named] = on_face;
-    d[1 - named] = on_other;
-    let f = legs(&seat, tol)?;
-    let w = profile.weight(f[0].dot(f[1]).clamp(-1.0, 1.0))?;
-    Ok(Some(Section::Conic { d, w }))
+    Ok((seat, named))
 }
 
 /// The radius of the circular round an elliptical round of `distance` on

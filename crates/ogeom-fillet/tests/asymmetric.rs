@@ -1324,3 +1324,317 @@ fn blend_edges_takes_an_asymmetric_rim_beside_a_round_rim() {
     let v = volume(&m, &built.shape);
     assert!((v - exact).abs() <= 1e-8, "volume {v} against {exact}");
 }
+
+/// The band's contact curves with a varying law: each edge the band
+/// shares with a face whose two ends stand `length` apart along `along`,
+/// with the worst angle between the band's and the face's normals on it.
+fn rails(m: &Model, s: &Shape, along: Vector, length: f64) -> Vec<(Shape, f64)> {
+    let mut out = Vec::new();
+    for f in explore_unique(m, s, ShapeType::Face).unwrap() {
+        let data = m.node(&f).unwrap().data().as_face().unwrap();
+        if !matches!(
+            m.geometry().surface(data.surface),
+            Some(ogeom_geom::SurfaceGeometry::BSpline(_))
+        ) {
+            continue;
+        }
+        for c in ogeom_fillet::analyse_blend(m, s, &f, 33, T).unwrap() {
+            let (a, b) = ogeom_algo::edge_vertices(m, &c.edge).unwrap().unwrap();
+            let run = (point_of(m, &b) - point_of(m, &a)).dot(along).abs();
+            if (run - length).abs() <= 1e-9 {
+                out.push((c.edge, c.tangency_error));
+            }
+        }
+    }
+    out
+}
+
+/// Where a contact curve crosses the plane `x = at`: its curve walked by
+/// bisection, the rail running monotonically along x.
+fn rail_at(m: &Model, rail: &Shape, at: f64) -> Point {
+    use ogeom_geom::Curve3d as _;
+    let (curve, (mut lo, mut hi)) = ogeom_algo::placed_edge_curve(m, rail, T).unwrap().unwrap();
+    let x = |t: f64| curve.point_at(t, T).unwrap().x;
+    if x(lo) > x(hi) {
+        core::mem::swap(&mut lo, &mut hi);
+    }
+    for _ in 0..200 {
+        let mid = 0.5 * (lo + hi);
+        if x(mid) < at {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    curve.point_at(0.5 * (lo + hi), T).unwrap()
+}
+
+/// Linear laws on a box edge: at a fraction t the section is the conic
+/// corner of legs d1(t), d2(t), its area d1 d2 times the square corner's
+/// share, so the band takes that share of the length times the integral
+/// of d1 d2: for d1 = a + b t and d2 = c + e t, a c + (a e + b c) / 2 +
+/// b e / 3.
+#[test]
+fn distances_varying_linearly_take_the_integral_of_their_corners() {
+    use ogeom_fillet::RadiusLaw;
+    let (a, b, c, e) = (1.0, 2.0, 2.0, -1.0);
+    let top_law = RadiusLaw::Linear {
+        start: a,
+        end: a + b,
+    };
+    let front_law = RadiusLaw::Linear {
+        start: c,
+        end: c + e,
+    };
+    for profile in PROFILES {
+        let mut m = Model::new();
+        let (s, edge, top, front) = block(&mut m);
+        let x = ogeom_fillet::fillet_edge_distances_variable(
+            &mut m, &s, &edge, &top, &top_law, &front_law, profile, T,
+        )
+        .unwrap();
+        let y = ogeom_fillet::fillet_edge_distances_variable(
+            &mut m, &s, &edge, &front, &front_law, &top_law, profile, T,
+        )
+        .unwrap();
+        let unit = corner_area(1.0, 1.0, FRAC_PI_2, weight_of(profile));
+        let integral = a * c + (a * e + b * c) / 2.0 + b * e / 3.0;
+        let exact = 4000.0 - 20.0 * unit * integral;
+        let mut volumes = Vec::new();
+        for r in [&x, &y] {
+            let diagnosis = ogeom_algo::check(&m, &r.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+            let v = volume(&m, &r.shape);
+            assert!(
+                (v - exact).abs() <= 1e-8,
+                "{profile:?}: volume {v} against {exact}"
+            );
+            let found = rails(&m, &r.shape, X, 20.0);
+            assert_eq!(
+                found.len(),
+                2,
+                "the band meets the top and the front along curves"
+            );
+            for (_, tangency) in &found {
+                assert!(*tangency <= 1e-7, "the band meets a face at {tangency} rad");
+            }
+            // Each contact stands where its law puts it, a third of the way
+            // along.
+            let at = |t: f64| 20.0 * t;
+            let mut hit = [false; 2];
+            for (rail, _) in &found {
+                let p = rail_at(&m, rail, at(1.0 / 3.0));
+                if (p.z - 10.0).abs() <= 1e-9 {
+                    assert!((p.y - (a + b / 3.0)).abs() <= 1e-9, "top contact at {p:?}");
+                    hit[0] = true;
+                } else {
+                    assert!(
+                        p.y.abs() <= 1e-9 && (10.0 - p.z - (c + e / 3.0)).abs() <= 1e-9,
+                        "front contact at {p:?}"
+                    );
+                    hit[1] = true;
+                }
+            }
+            assert_eq!(hit, [true; 2]);
+            volumes.push(v.to_bits());
+        }
+        assert_eq!(volumes[0], volumes[1], "naming the other face first");
+        assert_eq!(vertex_bits(&m, &x.shape), vertex_bits(&m, &y.shape));
+    }
+}
+
+/// The same laws on the L-bracket's concave edge fill that integral.
+#[test]
+fn distances_varying_linearly_fill_a_concave_edge_with_the_integral() {
+    use ogeom_fillet::RadiusLaw;
+    let floor_law = RadiusLaw::Linear {
+        start: 1.0,
+        end: 3.0,
+    };
+    let wall_law = RadiusLaw::Linear {
+        start: 2.0,
+        end: 1.0,
+    };
+    for profile in PROFILES {
+        let mut m = Model::new();
+        let (s, edge, floor, _) = l_bracket(&mut m);
+        let r = ogeom_fillet::fillet_edge_distances_variable(
+            &mut m, &s, &edge, &floor, &floor_law, &wall_law, profile, T,
+        )
+        .unwrap();
+        let diagnosis = ogeom_algo::check(&m, &r.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let unit = corner_area(1.0, 1.0, FRAC_PI_2, weight_of(profile));
+        let integral = 2.0 + (-1.0 + 4.0) / 2.0 - 2.0 / 3.0;
+        let exact = 8000.0 - 12.0 * 12.0 * 20.0 + 20.0 * unit * integral;
+        let v = volume(&m, &r.shape);
+        assert!(
+            (v - exact).abs() <= 1e-8,
+            "{profile:?}: volume {v} against {exact}"
+        );
+        let found = rails(&m, &r.shape, Y, 20.0);
+        assert_eq!(found.len(), 2);
+        for (_, tangency) in &found {
+            assert!(*tangency <= 1e-7, "the band meets a face at {tangency} rad");
+        }
+        let bounds = ogeom_algo::shape_bounds(&m, &r.shape, T).unwrap();
+        let before = ogeom_algo::shape_bounds(&m, &s, T).unwrap();
+        assert!(
+            (bounds.low().unwrap() - before.low().unwrap()).magnitude() <= 1e-7
+                && (bounds.high().unwrap() - before.high().unwrap()).magnitude() <= 1e-7,
+            "the fill overhangs the bracket"
+        );
+    }
+}
+
+/// A law of points passes through each of its distances: the contact on
+/// the top stands at each point's distance at its fraction of the edge,
+/// and the band takes no less than the least corner and no more than the
+/// largest along the length.
+#[test]
+fn a_law_of_points_passes_its_contact_through_each_point() {
+    use ogeom_fillet::RadiusLaw;
+    let points = vec![(0.0, 1.0), (0.4, 2.5), (1.0, 1.5)];
+    let top_law = RadiusLaw::Points(points.clone());
+    let front_law = RadiusLaw::Linear {
+        start: 1.2,
+        end: 1.2,
+    };
+    let mut m = Model::new();
+    let (s, edge, top, _) = block(&mut m);
+    let r = ogeom_fillet::fillet_edge_distances_variable(
+        &mut m,
+        &s,
+        &edge,
+        &top,
+        &top_law,
+        &front_law,
+        RoundProfile::Elliptical,
+        T,
+    )
+    .unwrap();
+    let diagnosis = ogeom_algo::check(&m, &r.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let found = rails(&m, &r.shape, X, 20.0);
+    assert_eq!(found.len(), 2);
+    let top_rail = found
+        .iter()
+        .find(|(rail, _)| (rail_at(&m, rail, 10.0).z - 10.0).abs() <= 1e-9)
+        .expect("the top's contact");
+    for (t, d) in points {
+        let p = rail_at(&m, &top_rail.0, 20.0 * t);
+        assert!(
+            (p.y - d).abs() <= 1e-9,
+            "at {t} the top's contact stands {} off, not {d}",
+            p.y
+        );
+    }
+    for (_, tangency) in &found {
+        assert!(*tangency <= 1e-7, "the band meets a face at {tangency} rad");
+    }
+    let unit = corner_area(1.0, 1.0, FRAC_PI_2, elliptical(FRAC_PI_2));
+    let removed = 4000.0 - volume(&m, &r.shape);
+    assert!(removed >= 20.0 * unit * 1.0 * 1.2 && removed <= 20.0 * unit * 2.5 * 1.2);
+}
+
+#[test]
+fn level_laws_are_the_constant_asymmetric_round_and_oblique_ends_are_refused() {
+    use ogeom_fillet::RadiusLaw;
+    let mut m = Model::new();
+    let (s, edge, top, front) = block(&mut m);
+    let level = ogeom_fillet::fillet_edge_distances_variable(
+        &mut m,
+        &s,
+        &edge,
+        &top,
+        &RadiusLaw::Linear {
+            start: 3.0,
+            end: 3.0,
+        },
+        &RadiusLaw::Points(vec![(0.5, 1.5)]),
+        RoundProfile::Conic(0.4),
+        T,
+    )
+    .unwrap();
+    let constant = ogeom_fillet::fillet_edge_distances(
+        &mut m,
+        &s,
+        &edge,
+        &top,
+        3.0,
+        1.5,
+        RoundProfile::Conic(0.4),
+        T,
+    )
+    .unwrap();
+    assert_eq!(
+        volume(&m, &level.shape).to_bits(),
+        volume(&m, &constant.shape).to_bits()
+    );
+
+    let refused = |r: ogeom_core::OgeomResult<ogeom_algo::Built>, words: &str| {
+        let message = r.expect_err("refused").to_string();
+        assert!(message.contains(words), "{message}");
+    };
+    let up = RadiusLaw::Linear {
+        start: 1.0,
+        end: 2.0,
+    };
+    refused(
+        ogeom_fillet::fillet_edge_distances_variable(
+            &mut m,
+            &s,
+            &edge,
+            &front,
+            &RadiusLaw::Linear {
+                start: 1.0,
+                end: 12.0,
+            },
+            &up,
+            RoundProfile::Elliptical,
+            T,
+        ),
+        "past that face's side",
+    );
+    // A block whose end at x = 20 leans: its top front edge ends at a face
+    // not square to it.
+    let mut m = Model::new();
+    let points = [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(20.0, 0.0, 0.0),
+        Point::new(25.0, 20.0, 0.0),
+        Point::new(0.0, 20.0, 0.0),
+    ];
+    let wire = ogeom_algo::make_polygon(&mut m, &points, true, T)
+        .unwrap()
+        .shape;
+    let plane = ogeom_geom::PlaneSurface::over(
+        Plane::through(Point::ORIGIN, Direction::Z),
+        (-100.0, 100.0),
+        (-100.0, 100.0),
+    )
+    .unwrap();
+    let face = ogeom_algo::make_face(&mut m, plane.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    let leaning = ogeom_algo::make_prism(&mut m, &face, Vector::new(0.0, 0.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edge = edge_where(&m, &leaning, |p| {
+        p.y.abs() < 1e-9 && (p.z - 10.0).abs() < 1e-9
+    });
+    let top = face_at(&m, &leaning, Point::new(10.0, 10.0, 10.0));
+    refused(
+        ogeom_fillet::fillet_edge_distances_variable(
+            &mut m,
+            &leaning,
+            &edge,
+            &top,
+            &up,
+            &up,
+            RoundProfile::Elliptical,
+            T,
+        ),
+        "capped square",
+    );
+}
