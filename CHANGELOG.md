@@ -11,6 +11,38 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **A plate's top edge rounded into a boss's foot through the cusp where
+  the boss runs tangent into the plate's side turns through an S.** (#868)
+  - printCAD's chain: the foot and the plate's top edge along that side,
+    one tangent chain through the tangent point. 0.17.1 built a wrong solid
+    there (the foot's band past the side, nothing under it); 0.18.0 and
+    0.18.1 refuse it.
+  - Near the tangent point the top is too narrow for both bands. Each band
+    is now stopped past where their rails cross on the top, and either side
+    of the tangent point one patch closes the opening: G1 to both bands'
+    ends, the top, the side and the wall, held inside the solid and the
+    foot band's own fill. On the side it meets the S's own foot; on the
+    wall it leaves the tangent point straight up the wall, then bends onto
+    the S's contact with the wall. A smooth patch tangent to both the side
+    and the wall at that point can only turn its normal like both along
+    its two trims if one of them leaves vertically.
+  - On a 40 × 40 × 5 plate with a boss of radius 6 tangent to its side,
+    at radius 1, in either order the same solid to the bit:
+    - valid, the patches tangent within 1.73e-4 rad;
+    - every point inside the plate and boss or the foot's fill, no face
+      looking down over the side;
+    - at most 0.094 from the S, section by section;
+    - volume 0.218 over the S's section integral, within the patches'
+      measured departure from it (0.239).
+  - Refused by name:
+    - other radii (0.25 to 1.5 tried): the patch misses its tangency or
+      its trims miss their vertices;
+    - bands of a quarter of the wall's radius and up;
+    - a cusp rounded on one side of the tangent point only (the arm and
+      hub in #868).
+
 ### Fixed
 
 - **A concave round on a curved edge running past its face's side is cut
@@ -32,8 +64,7 @@ bump may break the API and a patch bump may not.
   - The tangent chain from the plate's top edge into the foot through that
     point now rounds too, in either order to the same solid, every point
     inside the plate and boss or in the foot's fill, its volume the closed
-    form within 1e-10. printCAD's chain, the foot and both halves of the
-    edge on one cusp, is still refused by name (#868).
+    form within 1e-10.
 
 
 ## [0.18.1] - 2026-11-11
