@@ -99,6 +99,22 @@ bump may break the API and a patch bump may not.
   - Its ends are capped square; an end meeting a face not square to the
     edge is refused by name.
 
+- **Asymmetric rounds on open rim arcs and round tangent chains.** (#877)
+  - An open arc of a rim takes the elliptical or conic section revolved
+    over the arc, exact, its ends the circular round's: capped in the
+    meridian where the next edge carries on, run out across a face the arc
+    ends on obliquely.
+  - `blend_edges` closes a tangent chain of asymmetric rounds asked naming
+    one face with the same distances and section, straight edges and rim
+    arcs alike: a pad's top loop, convex, or a pocket's floor loop,
+    concave. Each band is capped in its end sections, which the bands
+    either side of a junction share, and the bands are applied together.
+  - Measured on a pad's top loop and a pocket's floor loop, both with
+    rounded corners: the section's area along the straight edges plus
+    Pappus' quarter turn round each corner, within 1e-8.
+  - Refused by name: asymmetric rounds meeting at a vertex other than as
+    one tangent chain naming one face with the same distances and section.
+
 ### Changed
 
 - **`threemf::read_package` holds a package to 4096 entries and 4 GiB

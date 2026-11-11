@@ -423,7 +423,7 @@ fn fillet_edge_seat(
             if whole_turn {
                 revolved_fillet(model, solid, edge, &c, radius, tol)
             } else {
-                revolved_arc_fillet(model, solid, edge, &c, radius, mates, tol)
+                revolved_arc_fillet(model, solid, edge, &c, radius, None, mates, tol)
             }
         }
         Route::Marched => crate::marched::marched_fillet(model, solid, edge, radius, mates, tol),
@@ -2009,7 +2009,7 @@ fn join_flush(
 /// and the pieces of rims a tangent chain's arcs round sit on, where nothing
 /// else reaches into them, and straight bands running at a block's corner
 /// into a band an earlier group rounded.
-fn apply_set_aside(
+pub(crate) fn apply_set_aside(
     model: &mut Model,
     mut built: Built,
     set_aside: Vec<(Shape, crate::support::Wedge)>,
@@ -4711,19 +4711,24 @@ pub(crate) fn refind_edges(
 /// planar triangle, every edge an arc or a segment, every pcurve exact,
 /// which is what lets a chain's neighbouring wedges melt at their shared
 /// caps.
-fn revolved_arc_fillet(
+#[allow(clippy::too_many_arguments, reason = "the seat's own, and the section")]
+pub(crate) fn revolved_arc_fillet(
     model: &mut Model,
     solid: &Shape,
     edge: &Shape,
     rim: &CircleCurve,
     radius: f64,
+    conic: Option<&crate::asym::RimConic>,
     mates: Option<(usize, &[Mate])>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     use ogeom_geom::Curve3d as _;
     let seat = revolved_seat(model, solid, edge, rim, tol)?;
 
-    let ball = seat.ball(radius);
+    // The ball's place in the meridian, or the conic section's contacts;
+    // and how far the section reaches, which scales its run-out.
+    let ball = conic.map_or_else(|| seat.ball(radius), |c| c.contacts(&seat));
+    let radius = conic.map_or(radius, crate::asym::RimConic::size);
     let tube_rho = ball.rho;
     if tube_rho <= tol.confusion() {
         ogeom_bail!(
@@ -4881,6 +4886,17 @@ fn revolved_arc_fillet(
     // the cap contact: the tube's own circle, in the meridian plane, a
     // quarter of it beside a cylinder.
     let quarter = |model: &mut Model, theta: f64, from: &Shape, to: &Shape| -> OgeomResult<Shape> {
+        if let Some(c) = conic {
+            return Ok(make_edge_between(
+                model,
+                c.meridian(&seat, theta, tol)?,
+                (0.0, 1.0),
+                from,
+                to,
+                tol,
+            )?
+            .shape);
+        }
         let dir = dir_at(theta);
         let centre_m = tube_level + dir * tube_rho;
         let x_dir = Direction::new((dir - seat.up * seat.slope) * (seat.sigma * seat.tau), tol)?;
@@ -4967,7 +4983,15 @@ fn revolved_arc_fillet(
     // ring runs the wall's contact forward and the cap's back, anticlockwise
     // in the torus chart where the tube's angle grows from the wall's contact
     // to the cap's, which is where `sigma` is positive.
-    let blend_patch = {
+    let blend_patch = if let Some(c) = conic {
+        c.band_sector(
+            model,
+            &seat,
+            (theta0, sweep),
+            [&arc_wall, &arc_cap, &quarter0, &quarter1],
+            tol,
+        )?
+    } else {
         let surface: SurfaceGeometry = TorusSurface::new(Torus::new(
             wedge_frame_at(tube_level)?,
             tube_rho,

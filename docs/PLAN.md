@@ -500,9 +500,10 @@ edges or with a curved face, refused by name.
 between two planes, and a whole rim where a cap meets a coaxial cylinder or
 cone, with a different distance onto each face, elliptical or conic;
 `fillet_edge_distances_variable` lets each distance vary along a straight
-edge. Refused by name until built, in this order: tangent chains, open rim
-arcs, distances varying on a rim or past an oblique end, curved, spline and
-marched creases,
+edge, and `blend_edges` closes a tangent chain of them (straight edges and
+rim arcs). Refused by name until built, in this order: distances varying on
+a rim, along a chain or past an oblique end, curved, spline and marched
+creases,
 corners where an asymmetric round meets another band or a bevel, and the
 largest fitting pair in `largest_fillet_radius`.
 

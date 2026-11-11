@@ -1249,32 +1249,6 @@ fn what_a_rim_does_not_build_is_refused_by_name() {
         ),
         "past the side of a face",
     );
-
-    // Half a drum: its top rim is an open arc.
-    let mut m = Model::new();
-    let drum = ogeom_algo::make_cylinder(&mut m, Frame::WORLD, 5.0, 4.0, T)
-        .unwrap()
-        .shape;
-    let at = Frame::new(Point::new(-6.0, -6.0, -1.0), Direction::Z, Direction::X, T).unwrap();
-    let half = ogeom_algo::make_box(&mut m, at, (6.0, 12.0, 6.0), T)
-        .unwrap()
-        .shape;
-    let s = ogeom_bool::cut(&mut m, &drum, &half, T).unwrap().shape;
-    let arc = ring_edge(&m, &s, (0.0, 0.0, 4.0), 5.0);
-    let cap = face_at(&m, &s, Point::new(2.0, 0.0, 4.0));
-    refused(
-        e(
-            &mut m,
-            &s,
-            &arc,
-            &cap,
-            1.0,
-            0.5,
-            RoundProfile::Elliptical,
-            T,
-        ),
-        "open arc of a rim",
-    );
 }
 
 /// A drum's top rim asked as an asymmetric round beside a round of its
@@ -1636,5 +1610,286 @@ fn level_laws_are_the_constant_asymmetric_round_and_oblique_ends_are_refused() {
             T,
         ),
         "capped square",
+    );
+}
+
+/// Half a drum, its flat side through the axis: an arc of its top rim
+/// ends square on the flat or flush where the next arc carries on, and the
+/// band takes Pappus' corner over the arc's own turn.
+#[test]
+fn a_rim_arc_takes_its_conic_corner_over_its_own_turn() {
+    use core::f64::consts::PI;
+    let (radius, height, d_cap, d_wall) = (5.0, 4.0, 1.5, 0.8);
+    for profile in PROFILES {
+        let mut m = Model::new();
+        let drum = ogeom_algo::make_cylinder(&mut m, Frame::WORLD, radius, height, T)
+            .unwrap()
+            .shape;
+        let at = Frame::new(Point::new(-6.0, -6.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+        let half = ogeom_algo::make_box(&mut m, at, (6.0, 12.0, 6.0), T)
+            .unwrap()
+            .shape;
+        let s = ogeom_bool::cut(&mut m, &drum, &half, T).unwrap().shape;
+        let arc = ring_edge(&m, &s, (0.0, 0.0, height), radius);
+        let cap = face_at(&m, &s, Point::new(2.0, 0.0, height));
+        let wall = face_at(
+            &m,
+            &s,
+            Point::new(radius * FRAC_1_SQRT_2, radius * FRAC_1_SQRT_2, 2.0),
+        );
+        // The arc's own turn: the drum's rim halves part the half turn.
+        let (_, (t0, t1)) = ogeom_algo::placed_edge_curve(&m, &arc, T).unwrap().unwrap();
+        let sweep = (t1 - t0).abs();
+        assert!(
+            sweep > 0.1 && sweep < PI + 1e-9,
+            "the rim arc turns {sweep}"
+        );
+        let (area, c) = square_corner(d_cap, d_wall, weight_of(profile));
+        let exact = PI * radius * radius * height / 2.0 - sweep * (radius - c[0]) * area;
+        let a =
+            ogeom_fillet::fillet_edge_distances(&mut m, &s, &arc, &cap, d_cap, d_wall, profile, T)
+                .unwrap();
+        let b =
+            ogeom_fillet::fillet_edge_distances(&mut m, &s, &arc, &wall, d_wall, d_cap, profile, T)
+                .unwrap();
+        let va = rim_holds(
+            &m,
+            &a.shape,
+            exact,
+            (0.0, 0.0),
+            [(radius - d_cap, height), (radius, height - d_wall)],
+        );
+        let vb = rim_holds(
+            &m,
+            &b.shape,
+            exact,
+            (0.0, 0.0),
+            [(radius - d_cap, height), (radius, height - d_wall)],
+        );
+        assert_eq!(va.to_bits(), vb.to_bits(), "naming the other face first");
+    }
+}
+
+/// A pad whose upright corners are rounded at R: its top loop is four
+/// straight edges between planes and four quarter rims, tangent at every
+/// vertex. Asked as one asymmetric round on each edge, naming the top,
+/// the loop closes: along the straight edges the band takes A per unit
+/// length, round each rim Pappus' quarter turn, so the whole takes
+/// A (L + 2 pi (R - c)), L the straight edges' length.
+#[test]
+fn a_tangent_loop_of_asymmetric_rounds_closes_round_a_pad() {
+    use core::f64::consts::PI;
+    let (dx, dy, dz, corner) = (20.0, 12.0, 4.0, 3.0);
+    let (d_top, d_side) = (1.0, 0.6);
+    for profile in PROFILES {
+        let mut m = Model::new();
+        let block = ogeom_algo::make_box(&mut m, Frame::WORLD, (dx, dy, dz), T)
+            .unwrap()
+            .shape;
+        let uprights: Vec<Shape> = explore_unique(&m, &block, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+                let (pa, pb) = (point_of(&m, &a), point_of(&m, &b));
+                (pa.x - pb.x).abs() < 1e-9 && (pa.y - pb.y).abs() < 1e-9
+            })
+            .collect();
+        assert_eq!(uprights.len(), 4);
+        let pad = ogeom_fillet::fillet_edges(&mut m, &block, &uprights, corner, T)
+            .unwrap()
+            .shape;
+        let before = volume(&m, &pad);
+        let top = face_at(&m, &pad, Point::new(dx * 0.5, dy * 0.5, dz));
+        let loop_edges: Vec<Shape> = explore_unique(&m, &top, ShapeType::Edge).unwrap();
+        assert_eq!(
+            loop_edges.len(),
+            8,
+            "the top loop of four sides and four arcs"
+        );
+        let request: Vec<(Shape, Blend)> = loop_edges
+            .iter()
+            .map(|e| {
+                (
+                    e.clone(),
+                    Blend::RoundDistances {
+                        face: top.clone(),
+                        on_face: d_top,
+                        on_other: d_side,
+                        profile,
+                    },
+                )
+            })
+            .collect();
+        let built =
+            ogeom_fillet::blend_edges(&mut m, &pad, &request, ChamferCorner::Point, T).unwrap();
+        let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(
+            diagnosis.is_valid(),
+            "{profile:?}: {:?}",
+            diagnosis.problems
+        );
+        let (area, c) = square_corner(d_top, d_side, weight_of(profile));
+        let straight = 2.0 * ((dx - 2.0 * corner) + (dy - 2.0 * corner));
+        let exact = before - area * (straight + 2.0 * PI * (corner - c[0]));
+        let v = volume(&m, &built.shape);
+        assert!(
+            (v - exact).abs() <= 1e-8,
+            "{profile:?}: volume {v} against {exact}"
+        );
+    }
+}
+
+/// A pocket whose upright corners are rounded at R: its floor loop is
+/// four concave straight edges and four concave quarter rims, tangent at
+/// every vertex. Asked as one asymmetric round on each, naming the floor,
+/// the loop fills: A along the straight edges and Pappus' quarter turn
+/// round each rim, the fill standing in toward the corner's axis.
+#[test]
+fn a_tangent_loop_of_asymmetric_rounds_fills_round_a_pocket_s_floor() {
+    use core::f64::consts::PI;
+    let (dx, dy, depth, corner) = (20.0, 12.0, 6.0, 3.0);
+    let (d_floor, d_wall) = (1.0, 0.6);
+    for profile in PROFILES {
+        let mut m = Model::new();
+        let block = ogeom_algo::make_box(&mut m, Frame::WORLD, (30.0, 20.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let at = Frame::new(
+            Point::new(5.0, 4.0, 10.0 - depth),
+            Direction::Z,
+            Direction::X,
+            T,
+        )
+        .unwrap();
+        let hole = ogeom_algo::make_box(&mut m, at, (dx, dy, depth + 1.0), T)
+            .unwrap()
+            .shape;
+        let pocket = ogeom_bool::cut(&mut m, &block, &hole, T).unwrap().shape;
+        let uprights: Vec<Shape> = explore_unique(&m, &pocket, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+                let (pa, pb) = (point_of(&m, &a), point_of(&m, &b));
+                (pa.x - pb.x).abs() < 1e-9
+                    && (pa.y - pb.y).abs() < 1e-9
+                    && pa.x > 1.0
+                    && pa.x < 29.0
+                    && pa.y > 1.0
+                    && pa.y < 19.0
+            })
+            .collect();
+        assert_eq!(uprights.len(), 4, "the pocket's upright corners");
+        let rounded = ogeom_fillet::fillet_edges(&mut m, &pocket, &uprights, corner, T)
+            .unwrap()
+            .shape;
+        let before = volume(&m, &rounded);
+        let floor = face_at(&m, &rounded, Point::new(15.0, 10.0, 10.0 - depth));
+        let loop_edges: Vec<Shape> = explore_unique(&m, &floor, ShapeType::Edge).unwrap();
+        assert_eq!(
+            loop_edges.len(),
+            8,
+            "the floor loop of four sides and four arcs"
+        );
+        let request: Vec<(Shape, Blend)> = loop_edges
+            .iter()
+            .map(|e| {
+                (
+                    e.clone(),
+                    Blend::RoundDistances {
+                        face: floor.clone(),
+                        on_face: d_floor,
+                        on_other: d_wall,
+                        profile,
+                    },
+                )
+            })
+            .collect();
+        let built =
+            ogeom_fillet::blend_edges(&mut m, &rounded, &request, ChamferCorner::Point, T).unwrap();
+        let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(
+            diagnosis.is_valid(),
+            "{profile:?}: {:?}",
+            diagnosis.problems
+        );
+        let (area, c) = square_corner(d_floor, d_wall, weight_of(profile));
+        let straight = 2.0 * ((dx - 2.0 * corner) + (dy - 2.0 * corner));
+        let exact = before + area * (straight + 2.0 * PI * (corner - c[0]));
+        let v = volume(&m, &built.shape);
+        assert!(
+            (v - exact).abs() <= 1e-8,
+            "{profile:?}: volume {v} against {exact}"
+        );
+    }
+}
+
+#[test]
+fn asymmetric_rounds_meeting_other_than_as_a_tangent_chain_are_refused() {
+    let mut m = Model::new();
+    let (s, edge, top, _) = block(&mut m);
+    // The top's left edge meets the front edge square at the corner.
+    let left = edge_where(&m, &s, |p| p.x.abs() < 1e-9 && (p.z - 10.0).abs() < 1e-9);
+    let asked = |on_face: f64| Blend::RoundDistances {
+        face: top.clone(),
+        on_face,
+        on_other: 1.0,
+        profile: RoundProfile::Conic(0.4),
+    };
+    let message = ogeom_fillet::blend_edges(
+        &mut m,
+        &s,
+        &[(edge.clone(), asked(2.0)), (left.clone(), asked(2.0))],
+        ChamferCorner::Point,
+        T,
+    )
+    .expect_err("refused")
+    .to_string();
+    assert!(
+        message.contains("other than as one tangent chain"),
+        "{message}"
+    );
+
+    // A pad's tangent loop asked with two distances on the top.
+    let mut m = Model::new();
+    let block = ogeom_algo::make_box(&mut m, Frame::WORLD, (20.0, 12.0, 4.0), T)
+        .unwrap()
+        .shape;
+    let uprights: Vec<Shape> = explore_unique(&m, &block, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+            let (pa, pb) = (point_of(&m, &a), point_of(&m, &b));
+            (pa.x - pb.x).abs() < 1e-9 && (pa.y - pb.y).abs() < 1e-9
+        })
+        .collect();
+    let pad = ogeom_fillet::fillet_edges(&mut m, &block, &uprights, 3.0, T)
+        .unwrap()
+        .shape;
+    let top = face_at(&m, &pad, Point::new(10.0, 6.0, 4.0));
+    let request: Vec<(Shape, Blend)> = explore_unique(&m, &top, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .enumerate()
+        .map(|(k, e)| {
+            (
+                e,
+                Blend::RoundDistances {
+                    face: top.clone(),
+                    on_face: if k == 0 { 1.2 } else { 1.0 },
+                    on_other: 0.6,
+                    profile: RoundProfile::Elliptical,
+                },
+            )
+        })
+        .collect();
+    let message = ogeom_fillet::blend_edges(&mut m, &pad, &request, ChamferCorner::Point, T)
+        .expect_err("refused")
+        .to_string();
+    assert!(
+        message.contains("other than as one tangent chain"),
+        "{message}"
     );
 }

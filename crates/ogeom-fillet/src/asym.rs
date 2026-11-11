@@ -412,7 +412,22 @@ fn fillet_edge_distances_own(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     if let Some(rim) = rim_conic(model, solid, edge, face, on_face, on_other, profile, tol)? {
-        let mut built = rim_round(model, solid, edge, &rim, tol)?;
+        let mut built = if rim.whole {
+            rim_round(model, solid, edge, &rim, tol)?
+        } else {
+            rim_fits(model, solid, edge, &rim, tol)?;
+            let size = rim.size();
+            crate::fillet::revolved_arc_fillet(
+                model,
+                solid,
+                edge,
+                &rim.circle,
+                size,
+                Some(&rim),
+                None,
+                tol,
+            )?
+        };
         crate::support::credit_new_faces(model, solid, edge, &mut built)?;
         return Ok(built);
     }
@@ -599,23 +614,34 @@ pub(crate) fn after_symmetric(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     asymmetric.sort_by_key(|a| a.edge.node());
-    let ends = |model: &Model, edge: &Shape| -> OgeomResult<Vec<ogeom_topo::TShapeId>> {
+    let ends = |model: &Model, edge: &Shape| -> OgeomResult<Vec<Shape>> {
         Ok(match ogeom_algo::edge_vertices(model, edge)? {
-            Some((a, b)) => vec![a.node(), b.node()],
+            Some((a, b)) if a.is_same(&b) => vec![a],
+            Some((a, b)) => vec![a, b],
             None => Vec::new(),
         })
     };
+    let n = asymmetric.len();
+    // Each round's chain, as the least index in it.
+    let mut chain: Vec<usize> = (0..n).collect();
+    let root = |chain: &[usize], mut i: usize| {
+        while chain[i] != i {
+            i = chain[i];
+        }
+        i
+    };
+    let mut meeting: std::collections::BTreeMap<ogeom_topo::TShapeId, usize> =
+        std::collections::BTreeMap::new();
     for (i, a) in asymmetric.iter().enumerate() {
         let own = ends(model, &a.edge)?;
-        let other_edges = others.iter().chain(
-            asymmetric
+        for v in &own {
+            *meeting.entry(v.node()).or_default() += 1;
+        }
+        for other in others {
+            if ends(model, other)?
                 .iter()
-                .enumerate()
-                .filter(|(j, _)| *j != i)
-                .map(|(_, b)| &b.edge),
-        );
-        for other in other_edges {
-            if ends(model, other)?.iter().any(|v| own.contains(v)) {
+                .any(|v| own.iter().any(|w| w.is_same(v)))
+            {
                 ogeom_bail!(
                     Construction,
                     "an asymmetric round meets another blended edge at a vertex, and the \
@@ -624,64 +650,168 @@ pub(crate) fn after_symmetric(
                 );
             }
         }
+        for (j, b) in asymmetric.iter().enumerate().skip(i + 1) {
+            let theirs = ends(model, &b.edge)?;
+            let Some(v) = own.iter().find(|v| theirs.iter().any(|w| w.is_same(v))) else {
+                continue;
+            };
+            if !continues(model, a, b, v, tol)? {
+                ogeom_bail!(
+                    Construction,
+                    "two asymmetric rounds meet at a vertex other than as one tangent chain \
+                     naming one face with the same distances and section, and the corner \
+                     where they meet is not closed yet; see docs/CAPABILITIES.md, \
+                     fillet.asymmetric-rounds"
+                );
+            }
+            let (ri, rj) = (root(&chain, i), root(&chain, j));
+            chain[ri.max(rj)] = ri.min(rj);
+        }
+    }
+    if meeting.values().any(|&k| k > 2) {
+        ogeom_bail!(
+            Construction,
+            "three asymmetric rounds meet at a vertex, and the corner where they meet is \
+             not closed yet; see docs/CAPABILITIES.md, fillet.asymmetric-rounds"
+        );
     }
     let mut built = symmetric(model)?;
-    for a in &asymmetric {
-        let images = built.history.trace(&a.edge);
-        // A rim's band takes its whole turn from any arc of it, so a rim
-        // split into arcs by the others stands for itself.
-        let one_rim = !images.is_empty() && {
-            let circle = |e: &Shape| match crate::support::edge_curve(model, e, tol) {
-                Ok((Curve::Circle(c), _)) => Some(c.circle()),
-                _ => None,
-            };
-            match circle(&a.edge) {
-                Some(rim) => images.iter().all(|e| {
-                    circle(e).is_some_and(|c| {
-                        c.centre().distance(rim.centre()) <= tol.confusion()
-                            && (c.radius() - rim.radius()).abs() <= tol.confusion()
-                    })
-                }),
-                None => false,
+    let mut groups: std::collections::BTreeMap<usize, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    for i in 0..n {
+        groups.entry(root(&chain, i)).or_default().push(i);
+    }
+    for members in groups.into_values() {
+        let mut traced = Vec::with_capacity(members.len());
+        for &i in &members {
+            traced.push(trace_request(model, &built, &asymmetric[i], tol)?);
+        }
+        if let [(edge, face)] = traced.as_slice() {
+            let a = &asymmetric[members[0]];
+            let next = fillet_edge_distances(
+                model,
+                &built.shape,
+                edge,
+                face,
+                a.on_face,
+                a.on_other,
+                a.profile,
+                tol,
+            )?;
+            built = Built::new(next.shape.clone(), built.history.then(&next.history));
+            continue;
+        }
+        // A tangent chain: each band set aside capped in its end sections,
+        // which the bands either side of a junction share, and the bands
+        // then applied together.
+        let solid = built.shape.clone();
+        let (made, wedges) = crate::support::collecting_wedges(|| -> OgeomResult<()> {
+            for (&i, (edge, face)) in members.iter().zip(&traced) {
+                let a = &asymmetric[i];
+                fillet_edge_distances_own(
+                    model, &solid, edge, face, a.on_face, a.on_other, a.profile, tol,
+                )?;
             }
-        };
-        let edge = match images {
-            [edge] => edge.clone(),
-            [edge, ..] if one_rim => edge.clone(),
-            _ => ogeom_bail!(
-                Construction,
-                "an asymmetric round's edge does not come through the request's other \
-                 blends as one edge"
-            ),
-        };
-        // The named face's image beside the edge, on what the request's
-        // other blends left.
-        let beside = faces_beside(model, &built.shape, &edge, tol)?;
-        let images = built.history.trace(&a.face);
-        let Some(face) = beside
-            .iter()
-            .find(|f| images.iter().any(|g| g.is_same(f)))
-            .cloned()
-        else {
-            ogeom_bail!(
-                Construction,
-                "the face an asymmetric round's first distance runs along is not one of the \
-                 edge's two faces"
-            );
-        };
-        let next = fillet_edge_distances(
-            model,
-            &built.shape,
-            &edge,
-            &face,
-            a.on_face,
-            a.on_other,
-            a.profile,
-            tol,
-        )?;
-        built = Built::new(next.shape.clone(), built.history.then(&next.history));
+            Ok(())
+        });
+        made?;
+        let set_aside = wedges
+            .into_iter()
+            .filter_map(|w| w.edges.first().cloned().map(|e| (e, w)))
+            .collect();
+        built = crate::fillet::apply_set_aside(model, built, set_aside, tol)?;
     }
     Ok(built)
+}
+
+/// Whether two asymmetric rounds meeting at `vertex` continue each other:
+/// the same face named, the same distances and section, and their edges
+/// tangent there.
+fn continues(
+    model: &Model,
+    a: &Asymmetric,
+    b: &Asymmetric,
+    vertex: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    if !a.face.is_same(&b.face)
+        || a.on_face != b.on_face
+        || a.on_other != b.on_other
+        || a.profile != b.profile
+    {
+        return Ok(false);
+    }
+    let at = {
+        let Some(data) = model.node(vertex).and_then(|n| n.data().as_vertex()) else {
+            return Ok(false);
+        };
+        vertex.transform(model.datums())?.apply(data.point)
+    };
+    let tangent = |edge: &Shape| -> OgeomResult<Vector> {
+        use ogeom_geom::Curve3d as _;
+        let (curve, (t0, t1)) = crate::support::edge_curve(model, edge, tol)?;
+        let t = if curve.point_at(t0, tol)?.distance(at) <= curve.point_at(t1, tol)?.distance(at) {
+            t0
+        } else {
+            t1
+        };
+        let d = curve.d1_at(t, tol)?;
+        Ok(d / d.magnitude())
+    };
+    Ok(tangent(&a.edge)?.cross(tangent(&b.edge)?).magnitude() <= tol.angular() * 10.0)
+}
+
+/// An asymmetric round's edge and named face as they stand on what the
+/// request's rounds and bevels of one radius built.
+fn trace_request(
+    model: &Model,
+    built: &Built,
+    a: &Asymmetric,
+    tol: Tolerances,
+) -> OgeomResult<(Shape, Shape)> {
+    let images = built.history.trace(&a.edge);
+    // A rim's band takes its whole turn from any arc of it, so a rim split
+    // into arcs by the others stands for itself.
+    let one_rim = !images.is_empty() && {
+        let circle = |e: &Shape| match crate::support::edge_curve(model, e, tol) {
+            Ok((Curve::Circle(c), _)) => Some(c.circle()),
+            _ => None,
+        };
+        match circle(&a.edge) {
+            Some(rim) => images.iter().all(|e| {
+                circle(e).is_some_and(|c| {
+                    c.centre().distance(rim.centre()) <= tol.confusion()
+                        && (c.radius() - rim.radius()).abs() <= tol.confusion()
+                })
+            }),
+            None => false,
+        }
+    };
+    let edge = match images {
+        [edge] => edge.clone(),
+        [edge, ..] if one_rim => edge.clone(),
+        _ => ogeom_bail!(
+            Construction,
+            "an asymmetric round's edge does not come through the request's other blends \
+             as one edge"
+        ),
+    };
+    // The named face's image beside the edge, on what the request's other
+    // blends left.
+    let beside = faces_beside(model, &built.shape, &edge, tol)?;
+    let images = built.history.trace(&a.face);
+    let Some(face) = beside
+        .iter()
+        .find(|f| images.iter().any(|g| g.is_same(f)))
+        .cloned()
+    else {
+        ogeom_bail!(
+            Construction,
+            "the face an asymmetric round's first distance runs along is not one of the \
+             edge's two faces"
+        );
+    };
+    Ok((edge, face))
 }
 
 /// An asymmetric round's section on a rim where a planar cap meets a
@@ -690,6 +820,10 @@ pub(crate) fn after_symmetric(
 pub(crate) struct RimConic {
     /// The rim.
     seat: crate::support::RevolvedSeat,
+    /// The edge's circle.
+    circle: ogeom_geom::CircleCurve,
+    /// Whether the rims on the circle run its whole turn.
+    whole: bool,
     /// The wall's contact's depth along the axis from the cap's plane.
     wall_depth: f64,
     /// The cap's contact ring's radius.
@@ -702,6 +836,115 @@ pub(crate) struct RimConic {
 }
 
 impl RimConic {
+    /// How far the section reaches from the rim: the farther distance.
+    pub(crate) fn size(&self) -> f64 {
+        let [wall, rim, cap] = self.points;
+        wall.distance(rim).max(cap.distance(rim))
+    }
+
+    /// The contacts in the meridian, as a ball's would stand: the cap's
+    /// ring's radius and the wall's ring's radius and height. The ball's
+    /// own centre height and arc sweep stand for nothing here.
+    pub(crate) fn contacts(
+        &self,
+        seat: &crate::support::RevolvedSeat,
+    ) -> crate::support::RevolvedBall {
+        let wall_height = -seat.tau * self.wall_depth;
+        crate::support::RevolvedBall {
+            rho: self.cap_rho,
+            height: 0.0,
+            wall_rho: seat.radius_at(wall_height),
+            wall_height,
+            sweep: 0.0,
+        }
+    }
+
+    /// The section in the meridian half-plane at `theta` from the seat's
+    /// reference direction, from the wall's contact to the cap's.
+    pub(crate) fn meridian(
+        &self,
+        seat: &crate::support::RevolvedSeat,
+        theta: f64,
+        tol: Tolerances,
+    ) -> OgeomResult<Curve> {
+        let turn = ogeom_math::Transform::rotation(
+            ogeom_math::Axis {
+                location: seat.centre,
+                direction: Direction::new(seat.up, tol)?,
+            },
+            theta,
+        );
+        conic_arc(self.points.map(|p| turn.apply(p)), self.w, tol)
+    }
+
+    /// The band over the window of `sweep` from `theta0`: the section at
+    /// `theta0` revolved through `sweep`, bounded by the wall's and the
+    /// cap's contact arcs (framed from `theta0`, on `(0, sweep)`) and the
+    /// meridian sections at both ends, each given its line in the band's
+    /// chart, facing away from the rim.
+    pub(crate) fn band_sector(
+        &self,
+        model: &mut Model,
+        seat: &crate::support::RevolvedSeat,
+        (theta0, sweep): (f64, f64),
+        [wall, cap, start, end]: [&Shape; 4],
+        tol: Tolerances,
+    ) -> OgeomResult<Shape> {
+        use ogeom_geom::Surface as _;
+        let axis = ogeom_math::Axis {
+            location: seat.centre,
+            direction: Direction::new(seat.up, tol)?,
+        };
+        let profile = self.meridian(seat, theta0, tol)?;
+        let surface: ogeom_geom::SurfaceGeometry =
+            ogeom_geom::RevolutionSurface::over(profile, axis, (0.0, sweep))?.into();
+        let surface_id = model.geometry_mut().add_surface(surface.clone());
+        let line = |from: (f64, f64),
+                    along: (f64, f64),
+                    to: f64|
+         -> OgeomResult<ogeom_geom::PlanarCurve> {
+            Ok(ogeom_geom::Line2d::over(
+                ogeom_math::Axis2::new(
+                    ogeom_math::Point2::new(from.0, from.1),
+                    ogeom_math::Direction2::new(ogeom_math::Vector2::new(along.0, along.1), tol)?,
+                ),
+                0.0,
+                to,
+            )?
+            .into())
+        };
+        for (edge, pcurve, range) in [
+            (wall, line((0.0, 0.0), (1.0, 0.0), sweep)?, (0.0, sweep)),
+            (cap, line((0.0, 1.0), (1.0, 0.0), sweep)?, (0.0, sweep)),
+            (start, line((0.0, 0.0), (0.0, 1.0), 1.0)?, (0.0, 1.0)),
+            (end, line((sweep, 0.0), (0.0, 1.0), 1.0)?, (0.0, 1.0)),
+        ] {
+            ogeom_algo::attach_pcurve(
+                model,
+                edge,
+                pcurve,
+                surface_id,
+                ogeom_topo::Location::identity(),
+                range,
+            )?;
+        }
+        let wire = ogeom_algo::make_wire(
+            model,
+            &[wall.clone(), end.clone(), cap.reversed(), start.reversed()],
+            tol,
+        )?
+        .shape;
+        let face =
+            ogeom_algo::make_face_on(model, surface_id, std::slice::from_ref(&wire), tol)?.shape;
+        let middle = surface.point_at(sweep * 0.5, 0.5, tol)?;
+        let (du, dv) = surface.d1_at(sweep * 0.5, 0.5, tol)?;
+        let rim = ogeom_math::Transform::rotation(axis, theta0 + sweep * 0.5).apply(self.points[1]);
+        Ok(if du.cross(dv).dot(middle - rim) >= 0.0 {
+            face
+        } else {
+            face.reversed()
+        })
+    }
     /// The radius of the circular round whose ball touches cap and wall
     /// `distance` from the rim: the section's legs meet at the angle
     /// `alpha` there, and the ball's tangents from the rim are
@@ -746,13 +989,7 @@ fn rim_conic(
         Err(e) => return Err(e),
     };
     let closed = ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
-    if !closed && !crate::support::runs_whole_turn(model, &seat, &circle, range, tol)? {
-        ogeom_bail!(
-            Construction,
-            "an asymmetric round on an open arc of a rim is not built yet; see \
-             docs/CAPABILITIES.md, fillet.asymmetric-rounds"
-        );
-    }
+    let whole = closed || crate::support::runs_whole_turn(model, &seat, &circle, range, tol)?;
     let (on_cap, on_wall) = if seat.cap_face.is_same(face) {
         (on_face, on_other)
     } else if seat.wall_face.is_same(face) {
@@ -789,6 +1026,8 @@ fn rim_conic(
     let w = profile.weight(a.dot(b).clamp(-1.0, 1.0))?;
     Ok(Some(RimConic {
         seat,
+        circle,
+        whole,
         wall_depth,
         cap_rho,
         points,
@@ -808,31 +1047,7 @@ fn rim_round(
 ) -> OgeomResult<Built> {
     use ogeom_geom::{Curve3d as _, Surface as _};
     let seat = &rim.seat;
-    // The contact rings stand on their faces at a third of a turn apart.
-    let x = seat.x_ref.vector();
-    let y = seat.up.cross(x);
-    for k in 0..3 {
-        let angle = core::f64::consts::TAU * f64::from(k) / 3.0;
-        let (sin, cos) = angle.sin_cos();
-        let turn = |p: Point| {
-            let off = p - seat.centre;
-            let height = off.dot(seat.up);
-            let r = (off - seat.up * height).magnitude();
-            seat.centre + seat.up * height + (x * cos + y * sin) * r
-        };
-        for (face, p) in [
-            (&seat.wall_face, rim.points[0]),
-            (&seat.cap_face, rim.points[2]),
-        ] {
-            if !crate::support::on_face_or_boundary(model, solid, face, turn(p), tol)? {
-                ogeom_bail!(
-                    Construction,
-                    "an asymmetric round on a rim sets back past the side of a face beside \
-                     it; see docs/CAPABILITIES.md, fillet.asymmetric-rounds"
-                );
-            }
-        }
-    }
+    rim_fits(model, solid, edge, rim, tol)?;
     let flanks = crate::support::revolved_flanks(model, seat, rim.wall_depth, rim.cap_rho, tol)?;
     let profile = conic_arc(rim.points, rim.w, tol)?;
     let middle = profile.point_at(0.5, tol)?;
@@ -875,4 +1090,45 @@ fn faces_beside(
         return Ok([seat.cap_face, seat.wall_face]);
     }
     Ok(crate::support::planar_seat(model, solid, edge, tol)?.faces)
+}
+
+/// Refuses by name where the rim's contacts stand off their faces, read
+/// across from a quarter, the middle and three quarters of the edge.
+fn rim_fits(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    rim: &RimConic,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    use ogeom_geom::Curve3d as _;
+    let seat = &rim.seat;
+    let (curve, (t0, t1)) = crate::support::edge_curve(model, edge, tol)?;
+    for fraction in [0.25, 0.5, 0.75] {
+        let on_rim = curve.point_at(t0 + (t1 - t0) * fraction, tol)?;
+        let radial = {
+            let off = on_rim - seat.centre;
+            let r = off - seat.up * off.dot(seat.up);
+            r / r.magnitude()
+        };
+        let across = |p: Point| {
+            let off = p - seat.centre;
+            let height = off.dot(seat.up);
+            let r = (off - seat.up * height).magnitude();
+            seat.centre + seat.up * height + radial * r
+        };
+        for (face, p) in [
+            (&seat.wall_face, rim.points[0]),
+            (&seat.cap_face, rim.points[2]),
+        ] {
+            if !crate::support::on_face_or_boundary(model, solid, face, across(p), tol)? {
+                ogeom_bail!(
+                    Construction,
+                    "an asymmetric round on a rim sets back past the side of a face beside \
+                     it; see docs/CAPABILITIES.md, fillet.asymmetric-rounds"
+                );
+            }
+        }
+    }
+    Ok(())
 }
