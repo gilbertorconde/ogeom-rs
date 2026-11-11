@@ -739,6 +739,10 @@ fn past_planes(
     within: &[(Vector, Point)],
     tol: Tolerances,
 ) -> OgeomResult<f64> {
+    // No plane to stand past (a vertex that is not convex): nothing to mesh.
+    if within.is_empty() {
+        return Ok(f64::NEG_INFINITY);
+    }
     let deflection = ogeom_mesh::Deflection {
         chord: crate::marched::band_fit_target(tol) * 0.25,
         ..ogeom_mesh::Deflection::default()

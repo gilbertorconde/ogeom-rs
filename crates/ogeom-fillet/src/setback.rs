@@ -2074,7 +2074,7 @@ pub(crate) fn close_signed_corner(
 
 /// Refuses by name where a signed corner's patches stand outside what the
 /// solid and its concave rounds hold near the vertex, by more than the
-/// bands' fit target, read at the vertices of their meshes. A convex
+/// bands' fit target, proved over every point by [`certify_within`]. A convex
 /// round only takes material off and a concave one adds no more than the
 /// fill between its faces and its ball, so a patch past both stands where
 /// no round of the request puts material.
@@ -2085,30 +2085,584 @@ fn signed_patch_within(
     tol: Tolerances,
 ) -> OgeomResult<()> {
     let fit = crate::marched::band_fit_target(tol);
-    let deflection = ogeom_mesh::Deflection {
-        chord: fit * 0.25,
-        ..ogeom_mesh::Deflection::default()
-    };
-    let mut worst = (f64::NEG_INFINITY, Point::ORIGIN);
     for patch in patches {
-        let mesh = ogeom_mesh::triangulate_face(model, patch, deflection, tol)?;
-        for p in &mesh.positions {
-            let out = signed_outside(c, *p);
-            if out > worst.0 {
-                worst = (out, *p);
-            }
+        let certified = certify_within(model, c, patch, fit, tol)?;
+        if let Err((out, at)) = certified {
+            ogeom_bail!(
+                NotDone,
+                "the signed corner's patch stands {out} outside what the solid and its \
+                 concave rounds hold, at {at:?}"
+            );
         }
     }
-    if worst.0 > fit {
-        ogeom_bail!(
-            NotDone,
-            "the signed corner's patch stands {} outside what the solid and its \
-             concave rounds hold, at {:?}",
-            worst.0,
-            worst.1
-        );
-    }
     Ok(())
+}
+
+/// The worst any vertex of `patch`'s mesh, drawn at a quarter of the
+/// band's fit target, stands outside [`signed_region`], and where: the sampled check the
+/// certified one replaced, kept to cross-check it.
+fn mesh_outside(
+    model: &Model,
+    c: &SignedCorner,
+    patch: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<(f64, Point)> {
+    let deflection = ogeom_mesh::Deflection {
+        chord: crate::marched::band_fit_target(tol) * 0.25,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let mesh = ogeom_mesh::triangulate_face(model, patch, deflection, tol)?;
+    let mut worst = (f64::NEG_INFINITY, Point::ORIGIN);
+    for p in &mesh.positions {
+        let out = signed_outside(c, *p);
+        if out > worst.0 {
+            worst = (out, *p);
+        }
+    }
+    Ok(worst)
+}
+
+/// How finely a span of a patch is split before a part of it no bound
+/// certifies is taken as standing outside.
+const CERTIFY_DEPTH: u32 = 12;
+
+/// Whether every point of `patch` lies within `fit` of [`signed_region`]:
+/// `Ok` when proved, or a point of the patch that stands farther out and
+/// by how much (a point the proof could not clear, where none is found).
+///
+/// The patch's surface is a B-spline whose weights are all positive, so
+/// over each span it lies in the convex hull of that span's control
+/// points, and over any rectangle of its parameters in the hull of the
+/// control points of its segment there. Each piece of the region bounds
+/// itself over a hull: a plane's height by its largest at the hull's
+/// points, a concave round's ball by the hull's distance from its axis;
+/// and the region's maxima and minima of pieces bound by the same of the
+/// pieces' bounds. A rectangle whose bound is within `fit` is cleared; one
+/// wholly outside the face's trim is passed over; the rest is split in
+/// four, down to [`CERTIFY_DEPTH`] halvings of a span, a point inside the
+/// trim read at each split.
+fn certify_within(
+    model: &Model,
+    c: &SignedCorner,
+    patch: &Shape,
+    fit: f64,
+    tol: Tolerances,
+) -> OgeomResult<Result<(), (f64, Point)>> {
+    let surface = model
+        .node(patch)
+        .and_then(|n| n.data().as_face())
+        .and_then(|d| model.geometry().surface(d.surface));
+    let Some(ogeom_geom::SurfaceGeometry::BSpline(surface)) = surface else {
+        // Not a B-spline: read on the mesh as before.
+        let (out, at) = mesh_outside(model, c, patch, tol)?;
+        return Ok(if out > fit { Err((out, at)) } else { Ok(()) });
+    };
+    let grid = surface.grid();
+    if grid.points().iter().any(|w| w.weight <= 0.0) {
+        let (out, at) = mesh_outside(model, c, patch, tol)?;
+        return Ok(if out > fit { Err((out, at)) } else { Ok(()) });
+    }
+    let place = patch.transform(model.datums())?;
+    // The trim in the surface's parameters, and how far its polylines may
+    // stand from the trim itself.
+    let chord = crate::marched::band_fit_target(tol) * 0.25;
+    let rings = ogeom_mesh::face_boundary(
+        model,
+        patch,
+        ogeom_mesh::Deflection {
+            chord,
+            ..ogeom_mesh::Deflection::default()
+        },
+        tol,
+    )?;
+    let slack = chord * 16.0;
+    let index = TrimIndex::of(&rings);
+    let near_trim = |lo: ogeom_math::Point2, hi: ogeom_math::Point2| -> bool {
+        let centre = ogeom_math::Point2::new(f64::midpoint(lo.x, hi.x), f64::midpoint(lo.y, hi.y));
+        let half = (hi.x - lo.x).hypot(hi.y - lo.y) * 0.5;
+        index.near(centre, half + slack) || index.inside(centre)
+    };
+    let (u_knots, v_knots) = (surface.u_knots(), surface.v_knots());
+    let (pu, pv) = (u_knots.degree(), v_knots.degree());
+    let (un, vn) = (grid.u_count(), grid.v_count());
+    let points: Vec<Point> = grid
+        .points()
+        .iter()
+        .map(|w| place.apply(w.point()))
+        .collect();
+    let rational = grid.points().iter().any(|w| w.weight != 1.0);
+    if rational {
+        // Weighted: each rectangle's segment, its hull that of its
+        // projected control points, the weights all positive.
+        let us: Vec<f64> = u_knots.distinct().iter().map(|k| k.0).collect();
+        let vs: Vec<f64> = v_knots.distinct().iter().map(|k| k.0).collect();
+        for w in us.windows(2) {
+            for z in vs.windows(2) {
+                let rect = (
+                    ogeom_math::Point2::new(w[0], z[0]),
+                    ogeom_math::Point2::new(w[1], z[1]),
+                );
+                if let Err(found) =
+                    certify_segment(surface, c, &place, rect, fit, &near_trim, &rings, 0, tol)?
+                {
+                    return Ok(Err(found));
+                }
+            }
+        }
+        return Ok(Ok(()));
+    }
+    // Polynomial: the patch's Bezier pieces, along u for each column of
+    // control points and then along v for each row of those.
+    let mut columns: Vec<Vec<ogeom_math::bspline::BezierSegment<Point>>> = Vec::with_capacity(vn);
+    for j in 0..vn {
+        let column: Vec<Point> = (0..un).map(|i| points[i * vn + j]).collect();
+        columns.push(ogeom_math::bspline::to_bezier_segments(
+            u_knots, &column, tol,
+        )?);
+    }
+    // Each column of pieces along u on its own worker; the first piece
+    // found standing outside, in the pieces' order, whatever the count.
+    let spans: Vec<usize> = (0..columns[0].len()).collect();
+    let found = ogeom_core::parallel::map_ordered(&spans, |_, &s_u| {
+        let (ua, ub) = columns[0][s_u].0;
+        let mut rows: Vec<Vec<ogeom_math::bspline::BezierSegment<Point>>> =
+            Vec::with_capacity(pu + 1);
+        for k in 0..=pu {
+            let row: Vec<Point> = columns.iter().map(|col| col[s_u].1[k]).collect();
+            rows.push(ogeom_math::bspline::to_bezier_segments(v_knots, &row, tol)?);
+        }
+        for s_v in 0..rows[0].len() {
+            let (va, vb) = rows[0][s_v].0;
+            let net: Vec<Point> = rows.iter().flat_map(|r| r[s_v].1.iter().copied()).collect();
+            let rect = (
+                ogeom_math::Point2::new(ua, va),
+                ogeom_math::Point2::new(ub, vb),
+            );
+            let piece = Bezier { net, pu, pv };
+            if let Err(found) = certify_bezier(
+                surface, c, &place, &piece, rect, fit, &near_trim, &rings, 0, tol,
+            )? {
+                return Ok(Err(found));
+            }
+        }
+        Ok(Ok(()))
+    });
+    for result in found {
+        if let Err(found) = result? {
+            return Ok(Err(found));
+        }
+    }
+    Ok(Ok(()))
+}
+
+/// A Bezier patch's control net, `pv + 1` points along v for each of its
+/// `pu + 1` rows along u.
+struct Bezier {
+    net: Vec<Point>,
+    pu: usize,
+    pv: usize,
+}
+
+impl Bezier {
+    /// The two halves split at the middle of u, then of v: four pieces, in
+    /// the order of their rectangles' corners (low u low v, high u low v,
+    /// low u high v, high u high v).
+    fn quarters(&self) -> [Self; 4] {
+        let (pu, pv) = (self.pu, self.pv);
+        let at = |net: &[Point], i: usize, j: usize| net[i * (pv + 1) + j];
+        // de Casteljau at a half along u, for each column.
+        let mut low = vec![Point::ORIGIN; self.net.len()];
+        let mut high = vec![Point::ORIGIN; self.net.len()];
+        for j in 0..=pv {
+            let mut line: Vec<Point> = (0..=pu).map(|i| at(&self.net, i, j)).collect();
+            for r in 0..=pu {
+                low[r * (pv + 1) + j] = line[0];
+                high[(pu - r) * (pv + 1) + j] = line[pu - r];
+                for k in 0..pu - r {
+                    line[k] = line[k].midpoint(line[k + 1]);
+                }
+            }
+        }
+        let split_v = |net: &[Point]| -> (Vec<Point>, Vec<Point>) {
+            let mut a = vec![Point::ORIGIN; net.len()];
+            let mut b = vec![Point::ORIGIN; net.len()];
+            for i in 0..=pu {
+                let mut line: Vec<Point> = (0..=pv).map(|j| net[i * (pv + 1) + j]).collect();
+                for r in 0..=pv {
+                    a[i * (pv + 1) + r] = line[0];
+                    b[i * (pv + 1) + pv - r] = line[pv - r];
+                    for k in 0..pv - r {
+                        line[k] = line[k].midpoint(line[k + 1]);
+                    }
+                }
+            }
+            (a, b)
+        };
+        let (ll, lh) = split_v(&low);
+        let (hl, hh) = split_v(&high);
+        [ll, hl, lh, hh].map(|net| Self { net, pu, pv })
+    }
+}
+
+/// [`certify_within`] over one Bezier piece of a polynomial patch, over
+/// rectangle `(lo, hi)` of its parameters: cleared by its net's hull, or
+/// split in four by de Casteljau.
+#[allow(clippy::too_many_arguments, reason = "one piece of a recursion")]
+fn certify_bezier(
+    surface: &ogeom_geom::BSplineSurface,
+    c: &SignedCorner,
+    place: &ogeom_math::Transform,
+    piece: &Bezier,
+    (lo, hi): (ogeom_math::Point2, ogeom_math::Point2),
+    fit: f64,
+    near_trim: &dyn Fn(ogeom_math::Point2, ogeom_math::Point2) -> bool,
+    rings: &[Vec<ogeom_math::Point2>],
+    depth: u32,
+    tol: Tolerances,
+) -> OgeomResult<Result<(), (f64, Point)>> {
+    if !near_trim(lo, hi) {
+        return Ok(Ok(()));
+    }
+    let bound = signed_bound(c, &piece.net);
+    if bound <= fit {
+        return Ok(Ok(()));
+    }
+    // A point of the face here that stands past `fit` settles it.
+    let mid = ogeom_math::Point2::new(f64::midpoint(lo.x, hi.x), f64::midpoint(lo.y, hi.y));
+    let p = place.apply(ogeom_geom::Surface::point_at(surface, mid.x, mid.y, tol)?);
+    if ogeom_mesh::inside_boundary(rings, mid) {
+        let out = signed_outside(c, p);
+        if out > fit {
+            return Ok(Err((out, p)));
+        }
+    }
+    if depth >= CERTIFY_DEPTH {
+        return Ok(Err((bound, p)));
+    }
+    let quarters = piece.quarters();
+    let rects = [
+        (lo, mid),
+        (
+            ogeom_math::Point2::new(mid.x, lo.y),
+            ogeom_math::Point2::new(hi.x, mid.y),
+        ),
+        (
+            ogeom_math::Point2::new(lo.x, mid.y),
+            ogeom_math::Point2::new(mid.x, hi.y),
+        ),
+        (mid, hi),
+    ];
+    for (quarter, rect) in quarters.iter().zip(rects) {
+        if let Err(found) = certify_bezier(
+            surface,
+            c,
+            place,
+            quarter,
+            rect,
+            fit,
+            near_trim,
+            rings,
+            depth + 1,
+            tol,
+        )? {
+            return Ok(Err(found));
+        }
+    }
+    Ok(Ok(()))
+}
+
+/// [`certify_within`] over one rectangle of a weighted patch, split in four
+/// while its segment's hull does not clear it.
+#[allow(clippy::too_many_arguments, reason = "one rectangle of a recursion")]
+fn certify_segment(
+    surface: &ogeom_geom::BSplineSurface,
+    c: &SignedCorner,
+    place: &ogeom_math::Transform,
+    (lo, hi): (ogeom_math::Point2, ogeom_math::Point2),
+    fit: f64,
+    near_trim: &dyn Fn(ogeom_math::Point2, ogeom_math::Point2) -> bool,
+    rings: &[Vec<ogeom_math::Point2>],
+    depth: u32,
+    tol: Tolerances,
+) -> OgeomResult<Result<(), (f64, Point)>> {
+    if !near_trim(lo, hi) {
+        return Ok(Ok(()));
+    }
+    let piece = surface.segment((lo.x, hi.x), (lo.y, hi.y), tol)?;
+    let hull: Vec<Point> = piece
+        .grid()
+        .points()
+        .iter()
+        .map(|w| place.apply(w.point()))
+        .collect();
+    let bound = signed_bound(c, &hull);
+    if bound <= fit {
+        return Ok(Ok(()));
+    }
+    let mid = ogeom_math::Point2::new(f64::midpoint(lo.x, hi.x), f64::midpoint(lo.y, hi.y));
+    let p = place.apply(ogeom_geom::Surface::point_at(surface, mid.x, mid.y, tol)?);
+    if ogeom_mesh::inside_boundary(rings, mid) {
+        let out = signed_outside(c, p);
+        if out > fit {
+            return Ok(Err((out, p)));
+        }
+    }
+    if depth >= CERTIFY_DEPTH {
+        return Ok(Err((bound, p)));
+    }
+    for rect in [
+        (lo, mid),
+        (
+            ogeom_math::Point2::new(mid.x, lo.y),
+            ogeom_math::Point2::new(hi.x, mid.y),
+        ),
+        (
+            ogeom_math::Point2::new(lo.x, mid.y),
+            ogeom_math::Point2::new(mid.x, hi.y),
+        ),
+        (mid, hi),
+    ] {
+        if let Err(found) = certify_segment(
+            surface,
+            c,
+            place,
+            rect,
+            fit,
+            near_trim,
+            rings,
+            depth + 1,
+            tol,
+        )? {
+            return Ok(Err(found));
+        }
+    }
+    Ok(Ok(()))
+}
+
+/// A face's trim rings, bucketed: their segments on a grid of cells over
+/// their bounds, for the nearest within a reach, and by bands of height,
+/// for the crossings a point's ray to `+x` makes.
+struct TrimIndex {
+    segments: Vec<(ogeom_math::Point2, ogeom_math::Point2)>,
+    lo: ogeom_math::Point2,
+    hi: ogeom_math::Point2,
+    step: (f64, f64),
+    cells: Vec<Vec<usize>>,
+    bands: Vec<Vec<usize>>,
+}
+
+/// The cells of a [`TrimIndex`] each way.
+const TRIM_CELLS: usize = 64;
+
+impl TrimIndex {
+    fn of(rings: &[Vec<ogeom_math::Point2>]) -> Self {
+        let mut segments = Vec::new();
+        for ring in rings {
+            for k in 0..ring.len() {
+                segments.push((ring[k], ring[(k + 1) % ring.len()]));
+            }
+        }
+        let (mut lo, mut hi) = (
+            ogeom_math::Point2::new(f64::INFINITY, f64::INFINITY),
+            ogeom_math::Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+        );
+        for (a, b) in &segments {
+            for p in [a, b] {
+                lo = ogeom_math::Point2::new(lo.x.min(p.x), lo.y.min(p.y));
+                hi = ogeom_math::Point2::new(hi.x.max(p.x), hi.y.max(p.y));
+            }
+        }
+        #[expect(clippy::cast_precision_loss, reason = "a cell count of sixty-four")]
+        let count = TRIM_CELLS as f64;
+        let step = (
+            ((hi.x - lo.x) / count).max(f64::MIN_POSITIVE),
+            ((hi.y - lo.y) / count).max(f64::MIN_POSITIVE),
+        );
+        let mut index = Self {
+            segments,
+            lo,
+            hi,
+            step,
+            cells: vec![Vec::new(); TRIM_CELLS * TRIM_CELLS],
+            bands: vec![Vec::new(); TRIM_CELLS],
+        };
+        for (k, (a, b)) in index.segments.iter().enumerate() {
+            let (i0, j0) = index.cell(ogeom_math::Point2::new(a.x.min(b.x), a.y.min(b.y)));
+            let (i1, j1) = index.cell(ogeom_math::Point2::new(a.x.max(b.x), a.y.max(b.y)));
+            for i in i0..=i1 {
+                for j in j0..=j1 {
+                    index.cells[i * TRIM_CELLS + j].push(k);
+                }
+            }
+            for j in j0..=j1 {
+                index.bands[j].push(k);
+            }
+        }
+        index
+    }
+
+    /// The cell holding `p`, clamped onto the grid.
+    fn cell(&self, p: ogeom_math::Point2) -> (usize, usize) {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a cell index, clamped into the grid"
+        )]
+        let at = |t: f64, lo: f64, step: f64| -> usize {
+            (((t - lo) / step).floor().max(0.0) as usize).min(TRIM_CELLS - 1)
+        };
+        (
+            at(p.x, self.lo.x, self.step.0),
+            at(p.y, self.lo.y, self.step.1),
+        )
+    }
+
+    /// Whether a segment comes within `reach` of `p`: those of the cells
+    /// the square of side `2 reach` about `p` meets, every segment
+    /// within `reach` lying in one of them.
+    fn near(&self, p: ogeom_math::Point2, reach: f64) -> bool {
+        let (i0, j0) = self.cell(ogeom_math::Point2::new(p.x - reach, p.y - reach));
+        let (i1, j1) = self.cell(ogeom_math::Point2::new(p.x + reach, p.y + reach));
+        (i0..=i1).any(|i| {
+            (j0..=j1).any(|j| {
+                self.cells[i * TRIM_CELLS + j].iter().any(|&k| {
+                    let (a, b) = self.segments[k];
+                    segment_distance(p, a, b) <= reach
+                })
+            })
+        })
+    }
+
+    /// Whether `p` lies inside the rings, by the parity of the crossings
+    /// its ray to `+x` makes: only segments of its band of height can
+    /// cross it.
+    fn inside(&self, p: ogeom_math::Point2) -> bool {
+        if p.y < self.lo.y || p.y > self.hi.y {
+            return false;
+        }
+        let (_, j) = self.cell(p);
+        let mut crossings = 0usize;
+        for &k in &self.bands[j] {
+            let (a, b) = self.segments[k];
+            if (a.y > p.y) != (b.y > p.y) {
+                let x = a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
+                if x > p.x {
+                    crossings += 1;
+                }
+            }
+        }
+        crossings % 2 == 1
+    }
+}
+
+/// The distance from `p` to the segment from `a` to `b`.
+fn segment_distance(p: ogeom_math::Point2, a: ogeom_math::Point2, b: ogeom_math::Point2) -> f64 {
+    let (ux, uy) = (b.x - a.x, b.y - a.y);
+    let length = ux.mul_add(ux, uy * uy);
+    let t = if length > 0.0 {
+        (((p.x - a.x) * ux + (p.y - a.y) * uy) / length).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p.x - (a.x + ux * t)).hypot(p.y - (a.y + uy * t))
+}
+
+/// An upper bound of [`signed_outside`] over the convex hull of `points`:
+/// each piece of the region bounded over the hull, a plane's height by its
+/// largest at the points (it is affine), a concave round's ball by the
+/// hull's least distance from its axis, and combined as the region
+/// combines the pieces, a maximum's bound the maximum of bounds and a
+/// minimum's the minimum.
+fn signed_bound(c: &SignedCorner, points: &[Point]) -> f64 {
+    let xs: Vec<Vector> = points.iter().map(|p| *p - c.corner).collect();
+    let top = |n: Vector| {
+        xs.iter()
+            .map(|x| n.dot(*x))
+            .fold(f64::NEG_INFINITY, f64::max)
+    };
+    let h = |f: usize| top(c.normal[f]);
+    let concave: Vec<usize> = (0..3)
+        .filter(|&k| c.legs[k][1].dot(c.normal[(k + 2) % 3]) >= 0.0)
+        .collect();
+    let solid = match concave.as_slice() {
+        [k] => h((k + 1) % 3).max(h((k + 2) % 3).min(h(*k))),
+        [k1, k2] => {
+            let faces = |k: usize| [(k + 2) % 3, k];
+            let shared = (0..3)
+                .find(|f| faces(*k1).contains(f) && faces(*k2).contains(f))
+                .unwrap_or(0);
+            let others: Vec<usize> = (0..3).filter(|&f| f != shared).collect();
+            h(shared).min(h(others[0]).max(h(others[1])))
+        }
+        _ => h(0).max(h(1)).max(h(2)),
+    };
+    let mut out = solid;
+    for &k in &concave {
+        let r = c.radius[k];
+        if r <= 0.0 {
+            continue;
+        }
+        let (na, nb, d) = (c.normal[(k + 2) % 3], c.normal[k], c.d[k]);
+        let centre = (na + nb) * (r / (1.0 + na.dot(nb)));
+        let contact = centre - na * r;
+        let towards = na + nb;
+        let towards = towards / towards.magnitude();
+        // The hull seen along the edge: its least distance from the ball's
+        // axis, nought where the axis passes through it.
+        let (e1, e2) = crate::rolled::basis(d);
+        let flat: Vec<(f64, f64)> = xs.iter().map(|x| (e1.dot(*x), e2.dot(*x))).collect();
+        let axis = (e1.dot(centre), e2.dot(centre));
+        let ball = r - hull_distance(&flat, axis);
+        let fill = top(-na)
+            .max(top(-nb))
+            .max(ball)
+            .max(top(towards) - towards.dot(contact))
+            .max(top(-d));
+        out = out.min(fill);
+    }
+    out
+}
+
+/// The distance from `p` to the convex hull of `points` in the plane:
+/// nought where `p` lies inside it.
+fn hull_distance(points: &[(f64, f64)], p: (f64, f64)) -> f64 {
+    let mut sorted: Vec<(f64, f64)> = points.to_vec();
+    sorted.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    sorted.dedup();
+    if sorted.len() == 1 {
+        return (sorted[0].0 - p.0).hypot(sorted[0].1 - p.1);
+    }
+    let cross = |o: (f64, f64), a: (f64, f64), b: (f64, f64)| {
+        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+    };
+    let mut hull: Vec<(f64, f64)> = Vec::with_capacity(2 * sorted.len());
+    for &q in sorted.iter().chain(sorted.iter().rev().skip(1)) {
+        while hull.len() >= 2 && cross(hull[hull.len() - 2], hull[hull.len() - 1], q) <= 0.0 {
+            hull.pop();
+        }
+        hull.push(q);
+    }
+    hull.pop();
+    let n = hull.len();
+    let edge = |a: (f64, f64), b: (f64, f64)| {
+        segment_distance(
+            ogeom_math::Point2::new(p.0, p.1),
+            ogeom_math::Point2::new(a.0, a.1),
+            ogeom_math::Point2::new(b.0, b.1),
+        )
+    };
+    if n < 3 {
+        return (0..n)
+            .map(|k| edge(hull[k], hull[(k + 1) % n]))
+            .fold(f64::INFINITY, f64::min);
+    }
+    // Counter-clockwise: inside where `p` is left of every edge.
+    if (0..n).all(|k| cross(hull[k], hull[(k + 1) % n], p) >= 0.0) {
+        return 0.0;
+    }
+    (0..n)
+        .map(|k| edge(hull[k], hull[(k + 1) % n]))
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// How far `p` stands outside the solid near the corner's vertex together
@@ -2176,4 +2730,106 @@ fn signed_region(c: &SignedCorner, p: Point) -> (f64, Vector) {
         out = least(out, fill);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+
+    use super::{SignedCorner, certify_within, mesh_outside, signed_corners};
+    use ogeom_core::Tolerances;
+    use ogeom_geom::{Curve3d as _, SurfaceGeometry};
+    use ogeom_math::{Direction, Frame, Point};
+    use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    fn edge_near(m: &Model, s: &Shape, q: Point) -> Shape {
+        let d = |e: &Shape| {
+            let (c, (a, b)) = ogeom_algo::placed_edge_curve(m, e, T).unwrap().unwrap();
+            (0..=64)
+                .map(|i| {
+                    c.point_at(a + (b - a) * f64::from(i) / 64.0, T)
+                        .unwrap()
+                        .distance(q)
+                })
+                .fold(f64::INFINITY, f64::min)
+        };
+        explore_unique(m, s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .min_by(|a, b| d(a).total_cmp(&d(b)))
+            .unwrap()
+    }
+
+    /// The L-bracket's corner rounded at `radius` on `edges` (of the front
+    /// edge, the re-entrant edge and the upright's front edge), its signed
+    /// corner, and the fitted faces the rounding closed it with.
+    fn corner(radius: f64, three: bool) -> (Model, SignedCorner, Vec<Shape>) {
+        let mut m = Model::new();
+        let frame = Frame::new(Point::ORIGIN, Direction::Z, Direction::X, T).unwrap();
+        let a = ogeom_algo::make_box(&mut m, frame, (20.0, 20.0, 5.0), T)
+            .unwrap()
+            .shape;
+        let b = ogeom_algo::make_box(&mut m, frame, (5.0, 20.0, 20.0), T)
+            .unwrap()
+            .shape;
+        let l = ogeom_bool::fuse(&mut m, &a, &b, T).unwrap().shape;
+        let mut edges = vec![
+            edge_near(&m, &l, Point::new(12.5, 0.0, 5.0)),
+            edge_near(&m, &l, Point::new(5.0, 10.0, 5.0)),
+        ];
+        if three {
+            edges.push(edge_near(&m, &l, Point::new(5.0, 0.0, 12.5)));
+        }
+        let request: Vec<(Shape, f64)> = edges.iter().map(|e| (e.clone(), radius)).collect();
+        let c = signed_corners(&m, &l, &request, T)
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("the bracket's signed corner");
+        let rounded = crate::fillet_edges(&mut m, &l, &edges, radius, T)
+            .unwrap()
+            .shape;
+        let patches: Vec<Shape> = explore_unique(&m, &rounded, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .filter(|f| {
+                let data = m.node(f).unwrap().data().as_face().unwrap();
+                matches!(
+                    m.geometry().surface(data.surface),
+                    Some(SurfaceGeometry::BSpline(_))
+                ) && ogeom_algo::shape_bounds(&m, f, T)
+                    .unwrap()
+                    .distance_to(Point::new(5.0, 0.0, 5.0))
+                    < 2.0 * radius
+            })
+            .collect();
+        assert!(!patches.is_empty(), "the corner's patches");
+        (m, c, patches)
+    }
+
+    /// The certified check proves what the fine mesh it replaced samples:
+    /// on the bracket's corners, with and without the upright's edge left
+    /// sharp, both clear every patch at the bands' fit target; asked to
+    /// keep the patch a tenth of that target inside the region, which the
+    /// patch's sides on the faces cannot, the mesh finds a point past it
+    /// and the proof clears nothing the mesh does not.
+    #[test]
+    fn the_certified_check_agrees_with_the_fine_mesh() {
+        let fit = crate::marched::band_fit_target(T);
+        for (radius, three) in [(2.0, false), (2.0, true)] {
+            let (m, c, patches) = corner(radius, three);
+            for patch in &patches {
+                let sampled = mesh_outside(&m, &c, patch, T).unwrap();
+                let proved = certify_within(&m, &c, patch, fit, T).unwrap();
+                assert!(sampled.0 <= fit, "the mesh finds {} outside", sampled.0);
+                assert!(proved.is_ok(), "the proof refuses {proved:?}");
+                let strict = -0.1 * fit;
+                let proved = certify_within(&m, &c, patch, strict, T).unwrap();
+                assert!(sampled.0 > strict, "the mesh finds every point well inside");
+                assert!(proved.is_err(), "the proof clears what the mesh does not");
+            }
+        }
+    }
 }
