@@ -1022,10 +1022,12 @@ crate = "ogeom-fillet"
 verdict = "partial"
 restriction = """Single edges, tangent chains and full rims blend, constant \
 and variable radius, and the corner where three blends meet is closed. A \
-concave band on a curved edge whose contact leaves its face onto no other \
-face (a boss's foot where the plate's side runs tangent into the boss, \
-the plate's top narrowing to a cusp there) is refused by name rather than \
-laid over nothing: \
+concave band on a curved edge whose contact leaves its face past the \
+face's side (a boss's foot where the plate's side runs tangent into the \
+boss, the plate's top narrowing to a cusp there) is cut off at that side's \
+plane, its fill ending flush with the side; where the solid stands beyond \
+that plane, or no planar side bounds the face there, it is refused by \
+name rather than laid over nothing: \
 a rim where a flat cap meets a coaxial cylinder or cone (a drum's top, a \
 frustum's foot, a tapered bore) rounds to its exact torus band, where the \
 tube stands clear of its axis, and to the fitted band where that is what \

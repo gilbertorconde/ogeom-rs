@@ -2240,6 +2240,13 @@ pub(crate) fn ball_fits_by(
             // nothing, past the side of a face that narrows to a cusp or
             // ends short of the band.
             if off && curved && (probing || !convex) {
+                // Where a caller cuts the band off at the face's side after
+                // building it, the plane of that side is handed over.
+                if let Some((origin, normal)) = side_plane(model, solid, face, p, at, tol)?
+                    && cut_off_at(origin, normal, [p, at], radius)
+                {
+                    continue;
+                }
                 ogeom_bail!(
                     Construction,
                     "a concave blend of radius {radius} on the edge through {p:?} sets \
@@ -2605,6 +2612,116 @@ pub(crate) fn distance_to_edge(
         }
     }
     Ok(at(f64::midpoint(lo, hi))?.min(best.1))
+}
+
+/// Where a concave band on a curved edge runs past the side of the face it
+/// rolls on: that side's plane, by a point and its outward normal, the
+/// points of the band's edge and contacts read there, and the band's
+/// radius.
+#[derive(Debug, Clone)]
+pub(crate) struct CutOff {
+    pub origin: Point,
+    pub normal: Vector,
+    pub points: Vec<Point>,
+    pub radius: f64,
+}
+
+thread_local! {
+    /// The cut-offs read while a caller that cuts bands off at a face's
+    /// side builds them; none outside such a caller, where a band running
+    /// past its face is refused.
+    static CUT_OFFS: std::cell::RefCell<Option<Vec<CutOff>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with the cut-offs it reads kept, and hand them back with its
+/// result.
+pub(crate) fn with_cut_offs<T>(f: impl FnOnce() -> T) -> (T, Vec<CutOff>) {
+    struct Restore(Option<Vec<CutOff>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let outer = self.0.take();
+            CUT_OFFS.with(|held| *held.borrow_mut() = outer);
+        }
+    }
+    let outer = CUT_OFFS.with(|held| held.borrow_mut().replace(Vec::new()));
+    let restore = Restore(outer);
+    let out = f();
+    let found = CUT_OFFS
+        .with(|held| held.borrow_mut().take())
+        .unwrap_or_default();
+    drop(restore);
+    (out, found)
+}
+
+/// Keep a cut-off at the plane through `origin` square to `normal`, with
+/// `points` read there, where a caller keeps them: whether one does.
+fn cut_off_at(origin: Point, normal: Vector, points: [Point; 2], radius: f64) -> bool {
+    CUT_OFFS.with(|held| {
+        let mut held = held.borrow_mut();
+        let Some(list) = held.as_mut() else {
+            return false;
+        };
+        let same = list.iter_mut().find(|c| {
+            c.normal.dot(normal) > 1.0 - 1e-9 && c.normal.dot(origin - c.origin).abs() <= 1e-9
+        });
+        match same {
+            Some(c) => {
+                c.points.extend(points);
+                c.radius = c.radius.max(radius);
+            }
+            None => list.push(CutOff {
+                origin,
+                normal,
+                points: points.to_vec(),
+                radius,
+            }),
+        }
+        true
+    })
+}
+
+/// The planar face of `solid` beside `face` that a step from `p`, on the
+/// edge, to `at`, past `face`'s side, first crosses: its plane by a point
+/// and its outward normal, `p` behind it and `at` in front.
+fn side_plane(
+    model: &Model,
+    solid: &Shape,
+    face: &Shape,
+    p: Point,
+    at: Point,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Point, Vector)>> {
+    let near = tol.confusion() * 100.0;
+    let edges = ogeom_topo::explore_unique(model, face, ShapeType::Edge)?;
+    let mut best: Option<(f64, Point, Vector)> = None;
+    for other in ogeom_topo::explore_unique(model, solid, ShapeType::Face)? {
+        if other.is_same(face) {
+            continue;
+        }
+        let planar = model
+            .node(&other)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| model.geometry().surface(d.surface))
+            .is_some_and(|s| matches!(s, SurfaceGeometry::Plane(_)));
+        if !planar
+            || !ogeom_topo::explore_unique(model, &other, ShapeType::Edge)?
+                .iter()
+                .any(|e| edges.iter().any(|f| f.is_same(e)))
+        {
+            continue;
+        }
+        let (origin, normal) = ogeom_algo::face_normal(model, &other, tol)?;
+        let (behind, ahead) = ((p - origin).dot(normal), (at - origin).dot(normal));
+        if behind > near || ahead <= near {
+            continue;
+        }
+        let t = -behind / (ahead - behind);
+        if best.as_ref().is_none_or(|(b, _, _)| t < *b) {
+            best = Some((t, origin, normal));
+        }
+    }
+    Ok(best.map(|(_, origin, normal)| (origin, normal)))
 }
 
 thread_local! {
