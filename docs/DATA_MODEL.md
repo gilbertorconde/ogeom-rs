@@ -315,6 +315,9 @@ can change without touching any algorithm.
 Tolerance constants live in `ogeom-core`. The model's unit scale is
 **explicit**, not assumed to be millimetres. Kernels often assume millimetres,
 and then misbehave silently on models authored in metres or inches.
+`Tolerances::with_scale` accepts a scale only where every linear tolerance
+below, and its square, is a normal `f64`: from about `7.5e-161` to about
+`6.7e144` millimetres per unit, micrometres to kilometres with room to spare.
 
 | Constant | Value at unit scale | Meaning |
 |---|---|---|

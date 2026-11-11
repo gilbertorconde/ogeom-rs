@@ -86,6 +86,21 @@ bump may break the API and a patch bump may not.
     of a translation by 1 so raised places at +2^31 exactly, and composing
     it with the placement gives the identity structurally.
 
+- **A unit scale whose tolerances overflow or underflow is refused by
+  name.** (#856)
+  - `Tolerances::with_scale` took any finite positive scale and divides
+    the linear tolerances by it: at `1e-320` millimetres per unit the
+    confusion distance was infinite, so every two lengths compared equal;
+    at `f64::MIN_POSITIVE` its square overflowed; at `f64::MAX` the
+    intersection target was subnormal.
+  - A scale is now accepted only where every linear tolerance and its
+    square is a normal `f64`: about `7.5e-161` to `6.7e144` millimetres per
+    unit.
+  - One part, a 20 mm cube notched and bored, stated in micrometres,
+    millimetres, inches, metres and kilometres, cuts valid, reads back
+    from a native file at its scale, and measures its closed-form volume
+    within 6e-16 in each.
+
 
 ## [0.18.1] - 2026-11-11
 
