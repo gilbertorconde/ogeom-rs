@@ -45,6 +45,16 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A STEP parameter list with a missing or extra comma is refused at the
+  byte where it breaks.** (#857)
+  - Part 21 writes a list as `( [ parameter { , parameter } ] )`. The
+    parser took `X(1 2)` as two parameters and dropped the comma in
+    `X(1,)`, `X(,1)` and `X(1,,2)`, so a damaged file read as a different
+    one, parameters shifted or missing.
+  - Now a parameter must be followed by `,` or `)`, and a comma by a
+    parameter. The error names the byte. Every STEP file in the corpus,
+    both real-world assemblies and printCAD's fixtures still parse.
+
 - **A concave round on a curved edge running past its face's side is cut
   off flush at that side.** (#871)
   - Since 0.18.1 a foot round where a plate's side runs tangent into a boss

@@ -429,19 +429,37 @@ impl Parser<'_> {
         listed
     }
 
+    /// `( [ parameter { , parameter } ] )`: empty, or parameters each
+    /// followed by a comma or the closing parenthesis.
     fn argument_list(&mut self) -> OgeomResult<Vec<Arg>> {
         self.expect(b'(')?;
         let mut out = Vec::with_capacity(4);
+        if self.peek(b')') {
+            self.at += 1;
+            return Ok(out);
+        }
         loop {
             self.skip_noise();
-            if self.peek(b')') {
-                self.expect(b')')?;
-                break;
+            if matches!(self.bytes.get(self.at), Some(b',' | b')')) {
+                ogeom_bail!(
+                    Construction,
+                    "a list leaves a parameter empty at byte {} of the exchange file",
+                    self.at
+                );
             }
             out.push(self.argument()?);
             self.skip_noise();
-            if self.peek(b',') {
-                self.expect(b',')?;
+            match self.bytes.get(self.at) {
+                Some(b',') => self.at += 1,
+                Some(b')') => {
+                    self.at += 1;
+                    break;
+                }
+                _ => ogeom_bail!(
+                    Construction,
+                    "expected ',' or ')' after a parameter at byte {} of the exchange file",
+                    self.at
+                ),
             }
         }
         Ok(out)
@@ -719,6 +737,39 @@ END-ISO-10303-21;
         let file = parse("ISO-10303-21;HEADER;ENDSEC;DATA;#1=X('it''s');ENDSEC;END-ISO-10303-21;")
             .unwrap();
         assert_eq!(file.data[&1].parts[0].1[0], Arg::Str("it's".into()));
+    }
+
+    fn one_instance(instance: &str) -> String {
+        format!("ISO-10303-21;HEADER;ENDSEC;DATA;{instance}ENDSEC;END-ISO-10303-21;")
+    }
+
+    /// Part 21 separates a list's parameters by commas: `(a b)` drops one
+    /// and `(a,)` or `(,a)` leaves one empty. Each is refused at the place
+    /// it breaks, in argument lists, nested lists and typed values alike.
+    #[test]
+    fn a_list_needs_exactly_one_comma_between_its_parameters() {
+        for (instance, at) in [
+            ("#1=X(1 2);", "#1=X(1 "),
+            ("#1=X(1,);", "#1=X(1,"),
+            ("#1=X(,1);", "#1=X("),
+            ("#1=X(1,,2);", "#1=X(1,"),
+            ("#1=X((1.,2.)(3.,4.));", "#1=X((1.,2.)"),
+            ("#1=X('',(1.,2.,));", "#1=X('',(1.,2.,"),
+            ("#1=X(Y(1,));", "#1=X(Y(1,"),
+            ("#1=X(,);", "#1=X("),
+        ] {
+            let text = one_instance(instance);
+            let byte = text.find(instance).unwrap() + at.len();
+            let message = parse(&text).unwrap_err().to_string();
+            assert!(
+                message.contains(&format!("byte {byte} ")),
+                "{instance}: {message}"
+            );
+        }
+        // An empty list and a single parameter are both well formed.
+        for instance in ["#1=X();", "#1=X(());", "#1=X(1);", "#1=X( 1 , ( ) , $ );"] {
+            assert!(parse(&one_instance(instance)).is_ok(), "{instance}");
+        }
     }
 
     #[test]
