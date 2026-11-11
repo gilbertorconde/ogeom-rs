@@ -119,7 +119,8 @@ pub struct Exchange {
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) on malformed
-/// syntax, with the byte offset where reading stopped making sense.
+/// syntax, with the byte offset where reading stopped making sense, or on an
+/// instance number defined twice, naming it.
 pub fn parse(text: &str) -> OgeomResult<Exchange> {
     let (header, instances) = parse_instances(text)?;
     Ok(Exchange {
@@ -143,9 +144,9 @@ pub(crate) enum Instances {
 }
 
 impl Instances {
-    /// The table for these instances, a later number winning over an
-    /// earlier one, as a repeated definition in the file does.
-    fn new(list: Vec<(u64, Instance)>) -> Self {
+    /// The table for these instances, refusing a number defined twice:
+    /// Part 21 names each instance once within the exchange structure.
+    fn new(list: Vec<(u64, Instance)>) -> OgeomResult<Self> {
         let top = list.iter().map(|(id, _)| *id).max().unwrap_or(0);
         match usize::try_from(top) {
             Ok(top) if top <= list.len().saturating_mul(4).saturating_add(1024) => {
@@ -154,12 +155,24 @@ impl Instances {
                 for (id, instance) in list {
                     // In range: no number exceeds `top`.
                     if let Some(slot) = usize::try_from(id).ok().and_then(|i| slots.get_mut(i)) {
+                        if slot.is_some() {
+                            defined_twice(id)?;
+                        }
                         *slot = Some(instance);
                     }
                 }
-                Self::Dense(slots)
+                Ok(Self::Dense(slots))
             }
-            _ => Self::Sparse(list.into_iter().collect()),
+            _ => {
+                let mut map = ogeom_core::FastMap::default();
+                map.reserve(list.len());
+                for (id, instance) in list {
+                    if map.insert(id, instance).is_some() {
+                        defined_twice(id)?;
+                    }
+                }
+                Ok(Self::Sparse(map))
+            }
         }
     }
 
@@ -211,6 +224,14 @@ impl Instances {
             Self::Sparse(map) => Box::new(map.into_iter()),
         }
     }
+}
+
+fn defined_twice(id: u64) -> OgeomResult<()> {
+    ogeom_bail!(
+        Construction,
+        "the instance #{id} is defined twice in the exchange file; Part 21 names each \
+         instance once"
+    );
 }
 
 /// Header entries, each a keyword and its arguments, in order.
@@ -289,7 +310,7 @@ pub(crate) fn parse_instances(text: &str) -> OgeomResult<(Header, Instances)> {
     }
 
     p.expect_keyword("END-ISO-10303-21")?;
-    Ok((header, Instances::new(data)))
+    Ok((header, Instances::new(data)?))
 }
 
 struct Parser<'a> {
@@ -769,6 +790,22 @@ END-ISO-10303-21;
         // An empty list and a single parameter are both well formed.
         for instance in ["#1=X();", "#1=X(());", "#1=X(1);", "#1=X( 1 , ( ) , $ );"] {
             assert!(parse(&one_instance(instance)).is_ok(), "{instance}");
+        }
+    }
+
+    /// Part 21 gives each instance a name unique within the exchange
+    /// structure. A second `#2` is refused by name, whichever table the
+    /// numbers would fill, rather than overwriting the first.
+    #[test]
+    fn an_instance_named_twice_is_refused() {
+        for (first, second) in [(1, 2), (1, 1_000_000)] {
+            let text = format!(
+                "ISO-10303-21;HEADER;ENDSEC;DATA;#{first}=X(1);#{second}=Y(2);\
+                 #{second}=Z(3);ENDSEC;END-ISO-10303-21;"
+            );
+            let message = parse(&text).unwrap_err().to_string();
+            assert!(message.contains(&format!("#{second} ")), "{message}");
+            assert!(super::parse_instances(&text).is_err());
         }
     }
 
