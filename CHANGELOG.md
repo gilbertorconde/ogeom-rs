@@ -71,6 +71,21 @@ bump may break the API and a patch bump may not.
 
 - `Blend` has a new variant, `RoundDistances`; an exhaustive match on
   `Blend` needs an arm for it. (#877)
+- **`mesh::simplify` to a triangle count or an error budget takes the
+  same collapses about eighty times faster on a 100 000-triangle mesh.**
+  (#861)
+  - Each collapse used to walk every live edge for the cheapest, so the
+    time grew with the square of the mesh: 70.6 s to halve a closed torus
+    mesh of 99 856 triangles, 104.5 s to decimate it to 0.01.
+  - The edges now wait in a queue, and a collapse weighs again only the
+    edges about it, the only ones whose cost, place or validity it can
+    change. An entry is taken only where its edge weighs the same now, so
+    the collapses and their order, ties to the edge the walk meets first,
+    are those of the walk, to the bit: 0.83 s and 1.20 s (median of three
+    paired runs), and a million triangles halve in about 10 s. Peak memory
+    is 37 MB where it was 21 MB.
+  - A mesh with a coordinate past 2^100, where a cost could overflow and
+    compare as NaN, is still decimated by the walk.
 
 ### Fixed
 

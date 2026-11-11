@@ -38,6 +38,9 @@
 //! then measures the result against the source both ways, pins what fails
 //! and decimates again; see [`Deviation`] for what it reports.
 
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
+
 use ogeom_core::{FastMap, FastSet};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::Point;
@@ -202,16 +205,12 @@ pub fn simplify(mesh: &Triangulation, target: Target, tol: Tolerances) -> OgeomR
     };
     let mut state = State::new(mesh, tol);
 
-    let mut worst = 0.0_f64;
-    let mut collapsed = 0;
-    while state.live_triangles() > floor {
-        let Some((cost, from, to, at)) = state.cheapest(budget) else {
-            break;
-        };
-        state.collapse(from, to, at);
-        worst = worst.max(cost);
-        collapsed += 1;
-    }
+    // Within reach the queue makes the collapses the scan makes, sooner.
+    let (worst, collapsed) = if mesh.positions.iter().all(|p| within_reach(*p)) {
+        state.decimate_by_queue(budget, floor)
+    } else {
+        state.decimate_by_scan(budget, floor)
+    };
 
     let target_met = match target {
         Target::Triangles(n) => state.live_triangles() <= n,
@@ -228,6 +227,64 @@ pub fn simplify(mesh: &Triangulation, target: Target, tol: Tolerances) -> OgeomR
         deviation: None,
         result_vertex: state.result_vertex(&renumbered),
     })
+}
+
+/// Whether every coordinate of `p` is at most 2^100 in size. A quadric
+/// summed over at most 2^32 triangles of such points, weighed at such a
+/// point, stays below 2^645 term by term, so no cost overflows to infinity
+/// or turns NaN, and costs compare as numbers.
+fn within_reach(p: Point) -> bool {
+    const REACH: f64 = 1_267_650_600_228_229_401_496_703_205_376.0; // 2^100
+    [p.x, p.y, p.z].iter().all(|c| c.abs() <= REACH)
+}
+
+/// A collapse [`State::cheapest`] would make, as the queue holds it:
+/// cheapest first, ties to the edge the scan of live triangles meets
+/// first.
+#[derive(Debug, Clone, Copy)]
+struct Candidate {
+    cost: f64,
+    /// Three times the index of the first live triangle holding the edge,
+    /// plus the edge's slot in it.
+    place: u64,
+    /// The edge's ends, as that triangle walks it.
+    from: u32,
+    to: u32,
+}
+
+impl Candidate {
+    /// Whether two candidates are the same collapse at the same cost.
+    fn same(&self, other: &Self) -> bool {
+        self.cost.to_bits() == other.cost.to_bits()
+            && self.place == other.place
+            && self.from == other.from
+            && self.to == other.to
+    }
+}
+
+impl PartialEq for Candidate {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == core::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Candidate {}
+
+impl PartialOrd for Candidate {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Candidate {
+    /// By cost, as [`State::cheapest`] compares them (costs within reach
+    /// are numbers, so this is a total order), then by place.
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.cost
+            .partial_cmp(&other.cost)
+            .unwrap_or(core::cmp::Ordering::Equal)
+            .then(self.place.cmp(&other.place))
+    }
 }
 
 /// A 4x4 symmetric quadric, as its upper triangle.
@@ -366,12 +423,11 @@ impl State {
         self.remaining
     }
 
-    /// The cheapest collapse still worth making, within a squared-error budget.
+    /// The cheapest collapse still worth making, within a squared-error budget,
+    /// ties to the edge met first walking the live triangles in order.
     ///
-    /// Recomputed each round rather than kept in a heap. The mesh is small
-    /// enough that the difference is not what makes decimation slow, and a heap
-    /// of costs that go stale on every collapse needs invalidation logic that is
-    /// its own source of wrong answers.
+    /// The whole mesh is walked at every call. [`State::decimate_by_queue`]
+    /// takes the same collapses in the same order from a queue.
     fn cheapest(&self, budget: f64) -> Option<(f64, u32, u32, Point)> {
         let mut best: Option<(f64, u32, u32, Point)> = None;
         let mut seen: FastSet<(u32, u32)> = FastSet::default();
@@ -411,6 +467,148 @@ impl State {
             }
         }
         best
+    }
+
+    /// Collapse the cheapest edge within `budget`, by [`State::cheapest`],
+    /// while more than `floor` triangles remain: the worst cost accepted
+    /// and how many collapses were made.
+    fn decimate_by_scan(&mut self, budget: f64, floor: usize) -> (f64, usize) {
+        let mut worst = 0.0_f64;
+        let mut collapsed = 0;
+        while self.live_triangles() > floor {
+            let Some((cost, from, to, at)) = self.cheapest(budget) else {
+                break;
+            };
+            self.collapse(from, to, at);
+            worst = worst.max(cost);
+            collapsed += 1;
+        }
+        (worst, collapsed)
+    }
+
+    /// [`State::decimate_by_scan`] from a queue: the same collapses in the
+    /// same order, each found without walking the whole mesh.
+    ///
+    /// The queue holds every collapse [`State::cheapest`] would weigh, at
+    /// the weight it would give it at this step, and stale entries
+    /// besides. A collapse
+    /// changes the weighing only of the edges with an end among the
+    /// vertices about either end of the collapsed edge, before or after,
+    /// or the merged vertex itself: their cost, the first live triangle
+    /// holding them, and whether they fold or break the manifold read
+    /// nothing else. Those are weighed again and queued. An entry is taken
+    /// only where its edge weighs the same when it comes up, so the first
+    /// taken is the cheapest edge, ties to the one the scan meets first,
+    /// which is what the scan takes. The queue is built afresh once it
+    /// holds more than three entries a live triangle, half of them stale
+    /// at least.
+    fn decimate_by_queue(&mut self, budget: f64, floor: usize) -> (f64, usize) {
+        let mut worst = 0.0_f64;
+        let mut collapsed = 0;
+        let mut queue = self.queue(budget);
+        let mut fresh: FastSet<(u32, u32)> = FastSet::default();
+        while self.live_triangles() > floor {
+            let Some(Reverse(taken)) = queue.pop() else {
+                break;
+            };
+            let Some((now, at)) = self.candidate(taken.from, taken.to, budget) else {
+                continue;
+            };
+            if !now.same(&taken) {
+                continue;
+            }
+            let mut near = self.ring(now.from);
+            near.extend(self.ring(now.to));
+            self.collapse(now.from, now.to, at);
+            near.extend(self.ring(now.to));
+            near.push(now.to);
+            near.sort_unstable();
+            near.dedup();
+            fresh.clear();
+            for &v in &near {
+                for w in self.ring(v) {
+                    if fresh.insert((v.min(w), v.max(w)))
+                        && let Some((again, _)) = self.candidate(v, w, budget)
+                    {
+                        queue.push(Reverse(again));
+                    }
+                }
+            }
+            worst = worst.max(now.cost);
+            collapsed += 1;
+            // Each live triangle holds three edge sides and each live edge
+            // two: past three entries a triangle, at least half are stale.
+            if queue.len() > 3 * self.live_triangles() {
+                queue = self.queue(budget);
+            }
+        }
+        (worst, collapsed)
+    }
+
+    /// Every collapse [`State::cheapest`] would weigh now, queued.
+    fn queue(&self, budget: f64) -> BinaryHeap<Reverse<Candidate>> {
+        let mut queue = BinaryHeap::new();
+        let mut seen: FastSet<(u32, u32)> = FastSet::default();
+        for (i, triangle) in self.triangles.iter().enumerate() {
+            if !self.live[i] {
+                continue;
+            }
+            for k in 0..3 {
+                let (a, b) = (triangle[k], triangle[(k + 1) % 3]);
+                if seen.insert((a.min(b), a.max(b)))
+                    && let Some((c, _)) = self.candidate(a, b, budget)
+                {
+                    queue.push(Reverse(c));
+                }
+            }
+        }
+        queue
+    }
+
+    /// The collapse of the edge between `a` and `b` as [`State::cheapest`]
+    /// weighs it, and the point it merges at: `None` where no live triangle
+    /// holds the edge, an end is pinned, the cost is past `budget`, or the
+    /// collapse would fold or break the manifold.
+    fn candidate(&self, a: u32, b: u32, budget: f64) -> Option<(Candidate, Point)> {
+        if self.pinned[a as usize] || self.pinned[b as usize] {
+            return None;
+        }
+        let mut first: Option<(u64, u32, u32)> = None;
+        for &index in &self.around[a as usize] {
+            if !self.live[index as usize] {
+                continue;
+            }
+            let t = self.triangles[index as usize];
+            for k in 0..3 {
+                let (x, y) = (t[k], t[(k + 1) % 3]);
+                if (x == a && y == b) || (x == b && y == a) {
+                    let place = 3 * u64::from(index) + k as u64;
+                    if first.is_none_or(|f| place < f.0) {
+                        first = Some((place, x, y));
+                    }
+                }
+            }
+        }
+        let (place, from, to) = first?;
+        let at = Point::from_vector(
+            (self.positions[from as usize].to_vector() + self.positions[to as usize].to_vector())
+                * 0.5,
+        );
+        let mut merged = self.quadrics[from as usize];
+        merged.add(&self.quadrics[to as usize]);
+        let cost = merged.at(at).max(0.0);
+        if cost > budget || self.would_fold(from, to, at) || !self.keeps_manifold(from, to) {
+            return None;
+        }
+        Some((
+            Candidate {
+                cost,
+                place,
+                from,
+                to,
+            },
+            at,
+        ))
     }
 
     /// Whether merging two vertices would turn any surviving triangle over.
@@ -837,5 +1035,74 @@ mod tests {
         broken.positions = vec![Point::ORIGIN];
         broken.triangles = vec![[0, 1, 2]];
         assert!(simplify(&broken, Target::Triangles(1), T).is_err());
+    }
+
+    /// A torus of `n` by `m` grid squares, each cut into two triangles,
+    /// its tube's radius waved by `wave`; with `open`, one ring of squares
+    /// left out, so the grid has a border to hold.
+    fn torus_grid(n: usize, m: usize, wave: f64, open: bool) -> Triangulation {
+        use core::f64::consts::TAU;
+        let mut grid = Triangulation::new();
+        for i in 0..n {
+            for j in 0..m {
+                #[allow(clippy::cast_precision_loss)]
+                let (u, v) = (TAU * i as f64 / n as f64, TAU * j as f64 / m as f64);
+                let r = wave.mul_add((3.0 * u).sin() * (2.0 * v).cos(), 5.0);
+                let rho = r.mul_add(v.cos(), 20.0);
+                grid.positions
+                    .push(Point::new(rho * u.cos(), rho * u.sin(), r * v.sin()));
+            }
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let at = |i: usize, j: usize| ((i % n) * m + (j % m)) as u32;
+        for i in 0..(if open { n - 1 } else { n }) {
+            for j in 0..m {
+                let (a, b, c, d) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+                grid.triangles.push([a, b, c]);
+                grid.triangles.push([a, c, d]);
+            }
+        }
+        grid
+    }
+
+    #[test]
+    fn the_queue_makes_the_collapses_the_scan_makes() {
+        // The queue only finds the scan's choice sooner: on an even grid,
+        // where many edges cost the same to the bit and ties go to the
+        // edge met first, on one with a border, and on a mesher's sphere,
+        // both make the same collapses to the bit.
+        let meshes = [
+            torus_grid(40, 20, 0.0, false),
+            torus_grid(40, 20, 0.5, false),
+            torus_grid(40, 20, 0.5, true),
+            sphere(0.05),
+        ];
+        for mesh in &meshes {
+            // A budget the halving reached, so a run held to it collapses
+            // some edges and stops on the budget, not the count.
+            let halved = State::new(mesh, T).decimate_by_scan(f64::MAX, mesh.triangles.len() / 2);
+            for (budget, floor) in [
+                (f64::MAX, mesh.triangles.len() / 2),
+                (f64::MAX, mesh.triangles.len() / 10),
+                (halved.0, 1),
+            ] {
+                let mut scan = State::new(mesh, T);
+                let mut queue = State::new(mesh, T);
+                let by_scan = scan.decimate_by_scan(budget, floor);
+                let by_queue = queue.decimate_by_queue(budget, floor);
+                assert!(by_scan.1 > 0);
+                assert_eq!(by_scan.0.to_bits(), by_queue.0.to_bits());
+                assert_eq!(by_scan.1, by_queue.1);
+                assert_eq!(scan.triangles, queue.triangles);
+                assert_eq!(scan.live, queue.live);
+                assert_eq!(scan.merged_into, queue.merged_into);
+                for (a, b) in scan.positions.iter().zip(&queue.positions) {
+                    assert_eq!(
+                        [a.x, a.y, a.z].map(f64::to_bits),
+                        [b.x, b.y, b.z].map(f64::to_bits)
+                    );
+                }
+            }
+        }
     }
 }
