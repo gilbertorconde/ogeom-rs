@@ -84,8 +84,74 @@ pub fn fillet_edge(
         model,
         solid,
         std::slice::from_ref(edge),
-        |model, solid, parts| fillet_edge_own(model, solid, &parts[0], radius, tol),
+        |model, solid, parts| {
+            cut_off_bands(
+                model,
+                solid,
+                |model| fillet_edge_own(model, solid, &parts[0], radius, tol),
+                tol,
+            )
+        },
     )
+}
+
+/// Build with `build`, and cut each concave band on a curved edge that ran
+/// past the side of the face it rolls on off at that side's plane: what
+/// stands in front of the plane, within twice the band's radius of where
+/// it ran past, goes, so the band's fill ends flush with the face's side.
+/// Refused by name where `solid` itself holds anything there.
+fn cut_off_bands(
+    model: &mut Model,
+    solid: &Shape,
+    build: impl FnOnce(&mut Model) -> OgeomResult<Built>,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let (built, cuts) = crate::support::with_cut_offs(|| build(model));
+    let mut built = built?;
+    for cut in cuts {
+        let reach = 2.0 * cut.radius;
+        let (mut lo, mut hi) = (cut.points[0], cut.points[0]);
+        for p in &cut.points {
+            lo = Point::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+            hi = Point::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+        }
+        let (lo, hi) = (
+            lo - Vector::new(reach, reach, reach),
+            hi + Vector::new(reach, reach, reach),
+        );
+        let walls = [
+            (cut.normal, cut.origin),
+            (Vector::new(1.0, 0.0, 0.0), lo),
+            (Vector::new(0.0, 1.0, 0.0), lo),
+            (Vector::new(0.0, 0.0, 1.0), lo),
+            (Vector::new(-1.0, 0.0, 0.0), hi),
+            (Vector::new(0.0, -1.0, 0.0), hi),
+            (Vector::new(0.0, 0.0, -1.0), hi),
+        ];
+        let tool = crate::corner::convex_block(model, &walls, tol)?;
+        // The solid itself stands behind the plane there: the cut takes the
+        // band's overhang and nothing it was given.
+        let shared = ogeom_bool::common(model, solid, &tool, tol)?.shape;
+        let held = if explore_unique(model, &shared, ShapeType::Face)?.is_empty() {
+            0.0
+        } else {
+            ogeom_algo::volume_properties(model, &shared, ogeom_mesh::Deflection::default(), tol)?
+                .mass
+                .abs()
+        };
+        if held > tol.confusion() {
+            ogeom_bail!(
+                Construction,
+                "a concave blend of radius {} runs past the side of the face it rolls on \
+                 where the solid stands beyond that side, so its fill cannot be cut off \
+                 there; see docs/CAPABILITIES.md, fillet.edge-blends",
+                cut.radius
+            );
+        }
+        let trimmed = ogeom_bool::cut(model, &built.shape, &tool, tol)?;
+        built = Built::new(trimmed.shape, built.history.then(&trimmed.history));
+    }
+    Ok(built)
 }
 
 /// [`fillet_edge`] on a shape every node below which is its own.
@@ -590,7 +656,12 @@ pub fn fillet_edges(
 ) -> OgeomResult<Built> {
     let radii = vec![radius; edges.len()];
     ogeom_algo::on_own_nodes(model, solid, edges, |model, solid, parts| {
-        fillet_edges_meeting(model, solid, parts, &radii, tol)
+        cut_off_bands(
+            model,
+            solid,
+            |model| fillet_edges_meeting(model, solid, parts, &radii, tol),
+            tol,
+        )
     })
 }
 
@@ -639,7 +710,12 @@ pub fn fillet_edges_with(
         }
     }
     ogeom_algo::on_own_nodes(model, solid, &shapes, |model, solid, parts| {
-        fillet_edges_meeting(model, solid, parts, &radii, tol)
+        cut_off_bands(
+            model,
+            solid,
+            |model| fillet_edges_meeting(model, solid, parts, &radii, tol),
+            tol,
+        )
     })
 }
 

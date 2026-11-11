@@ -11,6 +11,31 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A concave round on a curved edge running past its face's side is cut
+  off flush at that side.** (#871)
+  - Since 0.18.1 a foot round where a plate's side runs tangent into a boss
+    was refused: within about 3.5 of the tangent point the plate's top
+    narrows below the band's width, and the band would have hung past the
+    side over nothing.
+  - The band is now built and cut off at the plane of the face's side it
+    runs past, what stands in front of that plane within twice its radius
+    of where it ran past taken away, so its fill ends flush with the side.
+    It is refused by name where the solid itself stands there, or where no
+    planar side bounds the face.
+  - On the plate with a boss of radius 6 tangent to its side, the foot
+    rounded at 1, half beside the tangent point or whole: valid, nothing
+    past the side (read on the mesh against the side's plane), and the
+    volume the plate and boss plus the band (Pappus) less its part past
+    the side (a section integral), within 2e-10.
+  - The tangent chain from the plate's top edge into the foot through that
+    point now rounds too, in either order to the same solid, every point
+    inside the plate and boss or in the foot's fill, its volume the closed
+    form within 1e-10. printCAD's chain, the foot and both halves of the
+    edge on one cusp, is still refused by name (#868).
+
+
 ## [0.18.1] - 2026-11-11
 
 A patch release with no breaking API change.
