@@ -1617,11 +1617,12 @@ fn a_ball_drilled_with_a_loop_starting_beside_its_pole_closes_in_one_lap() {
 
 /// The drills within 4e-5 of the radius off both poles whose cut or common
 /// on the ball's own chart is valid but short or wound inward. Where the
-/// boolean on the ball charted clear of its poles is refused, the boolean
-/// is refused by name rather than taken on the own chart; on the turned
-/// chart each one cuts at the closed forms.
+/// boolean on the best chart of the ball whose poles stand clear is
+/// refused, the next best is tried, and each drill cuts at the closed forms
+/// there, as on the best; where every such chart refuses, the boolean is
+/// refused by name rather than taken on the own chart.
 #[test]
-fn a_refused_turned_run_beside_a_pole_is_refused_not_taken_on_the_own_chart() {
+fn a_refused_turned_run_beside_a_pole_is_resolved_on_the_next_chart() {
     let s = core::f64::consts::FRAC_1_SQRT_2;
     let r = 2.664_527_471_227_642;
     let mut failures = Vec::new();
@@ -1641,14 +1642,19 @@ fn a_refused_turned_run_beside_a_pole_is_refused_not_taken_on_the_own_chart() {
     ] {
         let wall = radius * (1.0 + rel);
         let offset = Vector::new(dx * wall, dy * wall, 0.0);
-        match ogeom_bool::work::turn_refused(|| drilled(offset, radius)) {
-            Err(e) if e.contains("charted clear of its poles is refused") => {}
-            got => failures.push(format!(
-                "({dx}, {dy}) r {radius} at {rel:e}, refused turn: {got:?}"
-            )),
+        if let Err(e) = ogeom_bool::work::turn_refused(|| drilled(offset, radius)) {
+            failures.push(format!(
+                "({dx}, {dy}) r {radius} at {rel:e}, best chart refused: {e}"
+            ));
         }
         if let Err(e) = drilled(offset, radius) {
             failures.push(format!("({dx}, {dy}) r {radius} at {rel:e}, turned: {e}"));
+        }
+        match ogeom_bool::work::turns_refused(usize::MAX, || drilled(offset, radius)) {
+            Err(e) if e.contains("on every chart of the ball whose poles stand clear") => {}
+            got => failures.push(format!(
+                "({dx}, {dy}) r {radius} at {rel:e}, every chart refused: {got:?}"
+            )),
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
