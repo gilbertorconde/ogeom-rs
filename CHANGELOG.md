@@ -13,6 +13,27 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **A concave round on a curved edge whose face narrows to a cusp is
+  refused by name, not hung past the face.** (#871, part of #868)
+  - Where a plate's side runs tangent into a boss's wall, the plate's top
+    between the side and the boss's foot narrows to a cusp, x²/12 wide
+    beside the tangent point. Rounding the foot at 1 built a `check`-clean
+    solid whose torus band ran on past the plate's side over nothing,
+    carried on a ledge out to (0, -7, 5), a full radius outside the solid.
+    The same happened on 0.17.1, and in printCAD's tangent-boss case its
+    band reached (20.95, 0, 5.001).
+  - A concave band on a curved edge now has its contacts read near the
+    edge's ends too (2, 6 and 12 percent in from each), and one that
+    leaves its face onto no other face of the solid refuses the request by
+    name: "a concave blend … would lay its fill past that face's side over
+    nothing". A straight seat's band is cut off at such a face's side, as
+    before; a convex band, which takes away what it rolls over, runs off
+    as before. The probes add no contacts, so every band that stays on its
+    faces is built exactly as before.
+  - A tangent chain turning from the plate's top edge into the foot
+    through that cusp reaches the same refusal, in either order, instead of
+    the signed corner's "every face of the vertex is planar".
+
 - **The L-bracket's convex-concave corner builds in under a second, not
   sixteen.** (#870)
   - The corner #712 closes took about 16 s an order in a release build on
