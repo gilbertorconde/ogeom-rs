@@ -1030,7 +1030,15 @@ face's side (a boss's foot where the plate's side runs tangent into the \
 boss, the plate's top narrowing to a cusp there) is cut off at that side's \
 plane, its fill ending flush with the side; where the solid stands beyond \
 that plane, or no planar side bounds the face there, it is refused by \
-name rather than laid over nothing: \
+name rather than laid over nothing. Where the request also rounds the \
+plate's top edge along that side, one tangent chain through the tangent \
+point, the edge's convex round turns into the foot's concave one through \
+an S on each side of that point: two patches G1 to the bands, the top, \
+the side and the wall, held inside the solid and the foot's fill. A cusp \
+rounded on one side of the tangent point only (an arm's side edge and its \
+arc into a hub) closes the same way with one patch. It builds at radius 1 \
+on a wall of radius 6 (printCAD's case, and the arm and hub); other radii \
+are refused by name. Also in this restriction: \
 a rim where a flat cap meets a coaxial cylinder or cone (a drum's top, a \
 frustum's foot, a tapered bore) rounds to its exact torus band, where the \
 tube stands clear of its axis, and to the fitted band where that is what \
@@ -1357,6 +1365,7 @@ tests = [
     "crates/ogeom-fillet/tests/concave.rs::a_round_rolls_round_the_corner_of_a_narrow_triangle",
     "crates/ogeom-fillet/tests/marched_blend.rs::a_cylinder_square_on_a_plane_rounds_the_same_on_patches",
     "crates/ogeom-fillet/tests/marched_blend.rs::a_straight_seat_between_two_patches_runs_off_their_ends",
+    "crates/ogeom-fillet/tests/tangent_chain.rs",
 ]
 
 [[capability]]

@@ -252,13 +252,18 @@ pub(crate) fn close_cusp(
         ogeom_bail!(Construction, "a cusp corner has no side");
     };
     let along = *along;
-    if c.sides.len() != 2 {
-        ogeom_bail!(
+    // The signs of the sides rounded along `along`: both ways from the
+    // tangent point, or one way only, the cell then ending on the plane
+    // through the tangent point and the wall's axis, square to the side.
+    let signs: &[f64] = match c.sides.len() {
+        1 => &[1.0],
+        2 if c.sides[1].dot(along) < -0.5 => &[1.0, -1.0],
+        _ => ogeom_bail!(
             Construction,
-            "a cusp on one side of the tangent point only is still owed; see \
-             docs/CAPABILITIES.md, fillet.edge-blends"
-        );
-    }
+            "a cusp corner's sides do not run apart along one line"
+        ),
+    };
+    let both = signs.len() == 2;
     // The rails cross on the top `2 sqrt(R r)` along the side from the
     // tangent point. The convex band stops past that on a plane square to
     // the side, the concave band on a plane through the axis at an angle
@@ -285,15 +290,17 @@ pub(crate) fn close_cusp(
         let n = if n.dot(c.corner - axis) >= 0.0 { n } else { -n };
         (n, axis)
     };
-    let walls: Vec<(Vector, Point)> = vec![
-        (-along, c.corner + along * stop),
-        (along, c.corner - along * stop),
-        wedge(1.0),
-        wedge(-1.0),
+    let mut walls: Vec<(Vector, Point)> = vec![(-along, c.corner + along * stop), wedge(1.0)];
+    if both {
+        walls.extend([(along, c.corner - along * stop), wedge(-1.0)]);
+    } else {
+        walls.push((along, c.corner));
+    }
+    walls.extend([
         (-c.out, c.corner + c.out * r),
         (c.up, c.corner - c.up * 2.0 * r),
         (-c.up, c.corner + c.up * 2.0 * r),
-    ];
+    ]);
     let cell = crate::corner::convex_block(model, &walls, tol)?;
     let cut = ogeom_bool::cut(model, &banded.shape, &cell, tol)?;
     let planes = [(c.up, c.corner), (c.out, c.corner)];
@@ -412,6 +419,7 @@ pub(crate) fn close_cusp(
     };
 
     struct Side {
+        dir: Vector,
         convex: (Shape, Shape),
         concave: (Shape, Shape),
         trim: Shape,
@@ -422,7 +430,7 @@ pub(crate) fn close_cusp(
         high_at: (Shape, Point),
     }
     let mut sides: Vec<Side> = Vec::new();
-    for sign in [1.0, -1.0] {
+    for &sign in signs {
         let side = along * sign;
         let slab = (-side, c.corner + side * stop);
         let fan = wedge(sign);
@@ -493,11 +501,16 @@ pub(crate) fn close_cusp(
         // quarter of the way out: nearer the S, the patch at r 1 misses its
         // tangency on the trim (1.0 r and 0.1 r both miss).
         let bump = 0.3;
+        // Where the wall's end stands short of the S's full turn, the S's
+        // sections are stretched along the wall to reach it there.
+        let full = 2.0 * (r * (big - r)).sqrt();
+        let reach = (full / (big * angle.sin())).max(1.0);
         let high_curve = {
             let fitted = ogeom_geom::fit::fit_curve_sampled(
                 |u| {
                     let phi = angle * u * u;
-                    let rise = r * c.turn(big * phi.sin()).sin() + bump * r * u * (1.0 - u).powi(3);
+                    let rise = r * c.turn(big * phi.sin() * reach).sin()
+                        + bump * r * u * (1.0 - u).powi(3);
                     Ok(axis + radial(sign * phi) * big + c.up * rise)
                 },
                 &ts,
@@ -515,6 +528,7 @@ pub(crate) fn close_cusp(
         let high =
             ogeom_algo::make_edge_between(model, high_curve, (b0, b1), &tip, &v_ww, tol)?.shape;
         sides.push(Side {
+            dir: side,
             convex,
             concave,
             trim,
@@ -535,21 +549,36 @@ pub(crate) fn close_cusp(
             (ogeom_algo::make_vertex(model, p).shape, p)
         })
         .collect();
-    let side_ring = vec![
-        sides[0].low.clone(),
-        segment(
-            model,
-            (&sides[0].low_at.0, sides[0].low_at.1),
-            (&floor[0].0, floor[0].1),
-        )?,
-        segment(model, (&floor[0].0, floor[0].1), (&floor[1].0, floor[1].1))?,
-        segment(
-            model,
-            (&floor[1].0, floor[1].1),
-            (&sides[1].low_at.0, sides[1].low_at.1),
-        )?,
-        sides[1].low.reversed(),
-    ];
+    let side_ring = if both {
+        vec![
+            sides[0].low.clone(),
+            segment(
+                model,
+                (&sides[0].low_at.0, sides[0].low_at.1),
+                (&floor[0].0, floor[0].1),
+            )?,
+            segment(model, (&floor[0].0, floor[0].1), (&floor[1].0, floor[1].1))?,
+            segment(
+                model,
+                (&floor[1].0, floor[1].1),
+                (&sides[1].low_at.0, sides[1].low_at.1),
+            )?,
+            sides[1].low.reversed(),
+        ]
+    } else {
+        // Down the line the side and the wall share, from the tangent point.
+        let under = ogeom_algo::make_vertex(model, bottom).shape;
+        vec![
+            sides[0].low.clone(),
+            segment(
+                model,
+                (&sides[0].low_at.0, sides[0].low_at.1),
+                (&floor[0].0, floor[0].1),
+            )?,
+            segment(model, (&floor[0].0, floor[0].1), (&under, bottom))?,
+            segment(model, (&under, bottom), (&tip, c.corner))?,
+        ]
+    };
     let side_surface: SurfaceGeometry = ogeom_geom::PlaneSurface::over(
         Plane::through(c.corner, Direction::new(c.out, tol)?),
         (-4.0 * stop, 4.0 * stop),
@@ -577,10 +606,12 @@ pub(crate) fn close_cusp(
         let d = p - crown;
         d.dot(c.up.cross(c.out)).atan2(d.dot(c.out))
     };
-    let tops: Vec<(Shape, Point)> = [1.0, -1.0]
+    // The crown's ends: over each side's wedge, or over the tangent point
+    // where the cell ends there.
+    let tops: Vec<(Shape, Point)> = [angle, if both { -angle } else { 0.0 }]
         .iter()
-        .map(|sign| {
-            let p = crown + radial(sign * angle) * big;
+        .map(|phi| {
+            let p = crown + radial(*phi) * big;
             (ogeom_algo::make_vertex(model, p).shape, p)
         })
         .collect();
@@ -596,13 +627,20 @@ pub(crate) fn close_cusp(
     } else {
         crown_edge.reversed()
     };
-    let wall_ring = vec![
-        sides[1].high.clone(),
-        segment(
-            model,
-            (&sides[1].high_at.0, sides[1].high_at.1),
-            (&tops[1].0, tops[1].1),
-        )?,
+    let mut wall_ring = if both {
+        vec![
+            sides[1].high.clone(),
+            segment(
+                model,
+                (&sides[1].high_at.0, sides[1].high_at.1),
+                (&tops[1].0, tops[1].1),
+            )?,
+        ]
+    } else {
+        // Up the wall's line through the tangent point.
+        vec![segment(model, (&tip, c.corner), (&tops[1].0, tops[1].1))?]
+    };
+    wall_ring.extend([
         crown_edge,
         segment(
             model,
@@ -610,7 +648,7 @@ pub(crate) fn close_cusp(
             (&sides[0].high_at.0, sides[0].high_at.1),
         )?,
         sides[0].high.reversed(),
-    ];
+    ]);
     let wall_surface = {
         let mut found = None;
         for face in &kept {
@@ -686,7 +724,28 @@ pub(crate) fn close_cusp(
             g1(&s.high, &wall_face),
             g1(&s.low, &side_face),
         ];
-        let filled = make_filling_n_region(model, &boundary, &[], fit, &region, tol)?;
+        // The S itself through the middle of its reach, a section every
+        // 0.15 of it from 0.3 to 0.9: each arc's middle and the point the
+        // two arcs meet at, for the patch to pass near.
+        let mut guides: Vec<Shape> = Vec::new();
+        let full = 2.0 * (r * (big - r)).sqrt();
+        for f in [0.3, 0.45, 0.6, 0.75, 0.9] {
+            let at = full * f;
+            let w = c.width(at);
+            let half = 0.5 * c.turn(at);
+            let rise = r * c.turn(at).sin();
+            let base = c.corner + s.dir * at;
+            let convex = base - c.out * r - c.up * rise;
+            let concave = base - c.out * (w - r) + c.up * rise;
+            for p in [
+                convex + c.out * (r * half.cos()) + c.up * (r * half.sin()),
+                base - c.out * (0.5 * w),
+                concave - c.out * (r * half.cos()) - c.up * (r * half.sin()),
+            ] {
+                guides.push(ogeom_algo::make_vertex(model, p).shape);
+            }
+        }
+        let filled = make_filling_n_region(model, &boundary, &guides, fit, &region, tol)?;
         patches.push(filled.built.shape);
         tops_kept.push(s.top.clone());
     }
