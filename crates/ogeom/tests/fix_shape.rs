@@ -1535,6 +1535,68 @@ fn free_edges_chain_into_the_rims_of_each_opening() {
     }
 }
 
+/// Two placed occurrences of one open face, or of one open tube, are two
+/// openings each: an edge is free per occurrence, its node shared or not,
+/// and each rim chains through its own occurrence's vertices. The tube's
+/// walls still share their upright edges within each occurrence.
+#[test]
+fn each_placed_occurrence_of_an_open_face_keeps_its_own_rims() {
+    use ogeom::math::{Transform, Vector};
+    let mut model = Model::new();
+    let shell = box_shell(&mut model, Point::ORIGIN, Point::new(10.0, 10.0, 10.0));
+    let faces = explore_unique(&model, &shell, ShapeType::Face).unwrap();
+    let level = |model: &Model, face: &Shape| {
+        surface_properties(model, face, Deflection::default(), T)
+            .unwrap()
+            .centre
+            .z
+    };
+    let (caps, walls): (Vec<Shape>, Vec<Shape>) = faces.iter().cloned().partition(|f| {
+        let z = level(&model, f);
+        z.abs() < 1e-9 || (z - 10.0).abs() < 1e-9
+    });
+    let lid = caps[0].clone();
+    let tube = model.add_shell(&walls).unwrap();
+    let up = Transform::translation(Vector::new(0.0, 0.0, 20.0));
+    let lid_up = model.placed(&lid, up);
+    let tube_up = model.placed(&tube, up);
+    // Edges of `occurrence` as its faces place them.
+    let edges_of = |model: &Model, occurrence: &Shape| {
+        explore_unique(model, occurrence, ShapeType::Edge).unwrap()
+    };
+    for (occurrences, rims) in [
+        (vec![lid.clone(), lid_up.clone()], 2),
+        (vec![lid.clone(), lid.clone()], 1),
+        (vec![tube.clone(), tube_up.clone()], 4),
+    ] {
+        let both = make_compound(&mut model, &occurrences).unwrap().shape;
+        let bounds = ogeom::heal::free_bounds(&model, &both).unwrap();
+        assert!(bounds.open.is_empty(), "{occurrences:?}");
+        assert_eq!(bounds.closed.len(), rims, "{occurrences:?}");
+        for rim in &bounds.closed {
+            assert_eq!(rim.len(), 4);
+            let home = occurrences
+                .iter()
+                .find(|o| edges_of(&model, o).iter().any(|e| e.is_same(&rim[0])))
+                .unwrap();
+            let own = edges_of(&model, home);
+            for pair in 0..4 {
+                assert!(
+                    own.iter().any(|e| e.is_same(&rim[pair])),
+                    "one occurrence's rim"
+                );
+                let (_, end) = ogeom::algo::edge_vertices(&model, &rim[pair])
+                    .unwrap()
+                    .unwrap();
+                let (start, _) = ogeom::algo::edge_vertices(&model, &rim[(pair + 1) % 4])
+                    .unwrap()
+                    .unwrap();
+                assert!(end.is_same(&start), "head to tail");
+            }
+        }
+    }
+}
+
 /// A face on the XY plane walking `ring`: each edge a straight line from
 /// one point to another (its curve and its pcurve alike), bounded by the
 /// vertices named by index, each vertex at its point with its tolerance.

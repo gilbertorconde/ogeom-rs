@@ -10,13 +10,16 @@
 //! stops where no free edge carries on (two openings meeting at vertices
 //! the model holds apart, or faces that disagree in orientation) is open.
 //!
+//! An edge or vertex is one per placed occurrence: two placements of one
+//! open face are two openings, though they share every node.
+//!
 //! Nothing is joined here. Free edges within the tolerances they state are
 //! already one edge to sewing, and [`fix_shape`](crate::fix_shape()) says
 //! which pairs farther apart are each other's twins.
 
 use ogeom_algo::edge_vertices;
 use ogeom_core::{FastMap, OgeomResult};
-use ogeom_topo::{Model, Shape, ShapeType, TShapeId, explore_unique};
+use ogeom_topo::{Model, SameKey, Shape, ShapeType, explore_unique};
 
 /// The free edges of a shape, chained.
 #[derive(Debug, Clone, Default)]
@@ -54,8 +57,8 @@ impl FreeBounds {
 /// One free edge as its face walks it.
 struct Free {
     edge: Shape,
-    from: TShapeId,
-    to: TShapeId,
+    from: SameKey,
+    to: SameKey,
     /// The free edge its wire walks next, where that is one.
     next_in_wire: Option<usize>,
 }
@@ -74,18 +77,18 @@ struct Free {
 pub fn free_bounds(model: &Model, shape: &Shape) -> OgeomResult<FreeBounds> {
     let faces = explore_unique(model, shape, ShapeType::Face)?;
     let mut walks: Vec<Vec<Shape>> = Vec::new();
-    let mut uses: FastMap<TShapeId, usize> = FastMap::default();
+    let mut uses: FastMap<SameKey, usize> = FastMap::default();
     for face in &faces {
         for wire in model.ordered_children_of(face)? {
             let edges = model.ordered_children_of(&wire)?;
             for edge in &edges {
-                *uses.entry(edge.node()).or_default() += 1;
+                *uses.entry(SameKey(edge.clone())).or_default() += 1;
             }
             walks.push(edges);
         }
     }
     let is_free = |edge: &Shape| {
-        uses.get(&edge.node()) == Some(&1)
+        uses.get(&SameKey(edge.clone())) == Some(&1)
             && !model
                 .node(edge)
                 .and_then(|n| n.data().as_edge())
@@ -104,7 +107,7 @@ pub fn free_bounds(model: &Model, shape: &Shape) -> OgeomResult<FreeBounds> {
                 at.push(None);
                 continue;
             };
-            let (from, to) = (start.node(), end.node());
+            let (from, to) = (SameKey(start), SameKey(end));
             at.push(Some(free.len()));
             free.push(Free {
                 edge: edge.clone(),
@@ -123,11 +126,11 @@ pub fn free_bounds(model: &Model, shape: &Shape) -> OgeomResult<FreeBounds> {
         }
     }
 
-    let mut leaving: FastMap<TShapeId, Vec<usize>> = FastMap::default();
-    let mut arriving: FastMap<TShapeId, usize> = FastMap::default();
+    let mut leaving: FastMap<SameKey, Vec<usize>> = FastMap::default();
+    let mut arriving: FastMap<SameKey, usize> = FastMap::default();
     for (k, f) in free.iter().enumerate() {
-        leaving.entry(f.from).or_default().push(k);
-        *arriving.entry(f.to).or_default() += 1;
+        leaving.entry(f.from.clone()).or_default().push(k);
+        *arriving.entry(f.to.clone()).or_default() += 1;
     }
     let mut used = vec![false; free.len()];
     let mut out = FreeBounds::default();
