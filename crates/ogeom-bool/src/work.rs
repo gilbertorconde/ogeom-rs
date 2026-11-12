@@ -12,6 +12,9 @@ pub struct Work {
     pub faces_gathered: usize,
     /// Pairs of faces whose boxes meet, each asked for its sections.
     pub face_pairs: usize,
+    /// Pairs of faces whose exact section had no chart image on one of
+    /// them, marched instead.
+    pub marched_pairs: usize,
     /// Pieces the gathered faces were split into and classified.
     pub pieces: usize,
     /// Cuts made by trimming the faces a tool's wedges sit on, with no
@@ -33,6 +36,7 @@ thread_local! {
         Cell::new(Work {
             faces_gathered: 0,
             face_pairs: 0,
+            marched_pairs: 0,
             pieces: 0,
             seated_cuts: 0,
             seated_fills: 0,

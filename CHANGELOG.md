@@ -150,6 +150,27 @@ bump may break the API and a patch bump may not.
   other limits, or none with `PackageLimits::NONE`. `read_3mf` is
   unchanged.
 
+- **A common of solids touching face to face a rounding off coplanar,
+  beside a bore square to the contact, takes about a quarter of the time.**
+  (#892)
+  - printCAD's drag with collisions on asks it per mouse move: a 10 cube on
+    a plate with four bores, placed by a single-precision solver at a tilt
+    of 1.4e-8 rad, took 69 ms where the coplanar pose takes 4 ms.
+  - The contact plane cuts a bore's wall in a circle that much off square
+    to its axis, which climbs a hair (1e-9) past the wall's top round half
+    its turn. Its image on the wall, fitted from the circle's points, was
+    checked by lifting it with the wall's own window, which refuses a point
+    past its end, so the pair was marched instead, three times. A cylinder
+    is now read past its window there in closed form, as a cone already
+    is; the window is the face's trim, and the check still measures the
+    image against the circle. Nothing else reaches it: across the
+    workspace's tests the new reading is taken only by this case.
+  - 17.7 ms (medians of five paired runs of 30, 69.4 ms before), the same
+    empty common. The rest is the boolean reading the contact, which parts
+    by up to 2e-7 across the cube's face against a confusion of 1e-7, as
+    crossing on its first attempt and settling it from both sides on the
+    retry; the coplanar pose needs one attempt.
+
 - `Blend` has a new variant, `RoundDistances`; an exhaustive match on
   `Blend` needs an arm for it. (#877)
 - **`mesh::simplify` to a triangle count or an error budget takes the
