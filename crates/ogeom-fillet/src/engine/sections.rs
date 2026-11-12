@@ -53,6 +53,7 @@ pub(crate) enum Strip {
 pub(crate) fn law(section: &Section) -> Box<dyn SectionLaw + '_> {
     match section {
         Section::Chamfer { on } => Box::new(ChamferLaw { on }),
+        Section::Round { radius } => Box::new(RoundLaw { radius: *radius }),
     }
 }
 
@@ -86,5 +87,39 @@ impl SectionLaw for ChamferLaw<'_> {
             corners.second[0],
             corners.second[1],
         ]))
+    }
+}
+
+/// A round: the rolling ball of `radius`, touching each face where its
+/// contact line stands `r cot(theta / 2)` in from the edge, `theta` the
+/// dihedral's opening on the ball's side (the material's at a convex edge,
+/// the open side's at a concave one). Its strip is curved, built by
+/// [`super::rounds`].
+struct RoundLaw {
+    radius: f64,
+}
+
+impl SectionLaw for RoundLaw {
+    fn setbacks(&self, seat: &Seat, _planar: &Planar) -> OgeomResult<[f64; 2]> {
+        let theta = if seat.convex {
+            seat.opening
+        } else {
+            core::f64::consts::TAU - seat.opening
+        };
+        if !(theta > 0.0 && theta < core::f64::consts::PI) {
+            ogeom_bail!(
+                Construction,
+                "a round's faces meet too flat or too sharply to seat it"
+            );
+        }
+        let d = self.radius / (theta * 0.5).tan();
+        Ok([d, d])
+    }
+
+    fn strip(&self, _seat: &Seat, _corners: StripCorners) -> OgeomResult<Strip> {
+        ogeom_bail!(
+            Invariant,
+            "a round's strip is curved: the round sheet builds it, not the planar rings"
+        )
     }
 }

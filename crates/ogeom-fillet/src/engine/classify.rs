@@ -45,13 +45,11 @@ pub(crate) struct Seat {
     /// Outward unit normals of the two faces.
     pub normals: [Vector; 2],
     /// Unit direction from `ends.0` to `ends.1`.
-    #[expect(dead_code, reason = "read by the round section laws")]
     pub along: Vector,
     /// Material inside the dihedral: a blend there takes material away.
     pub convex: bool,
     /// The dihedral's opening inside the material, in radians: a quarter
     /// turn at a box's edge, three quarters at an inside corner's.
-    #[expect(dead_code, reason = "read by the round section laws")]
     pub opening: f64,
 }
 

@@ -28,6 +28,15 @@ pub(crate) enum Section {
     /// A flat bevel: its distance in from the edge on each of the edge's
     /// two faces, each face named.
     Chamfer { on: [(Shape, f64); 2] },
+    /// A round: the rolling ball of this radius.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "fillet_edges routes its rounds here once the M2 corpus passes on the engine"
+        )
+    )]
+    Round { radius: f64 },
 }
 
 impl Request {
@@ -68,5 +77,35 @@ impl Request {
             });
         }
         Ok(Some(Self { blends }))
+    }
+
+    /// Each edge rounded at its radius, as one request.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+    /// for an edge asked twice or a radius that rounds nothing.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "fillet_edges routes its rounds here once the M2 corpus passes on the engine"
+        )
+    )]
+    pub fn from_rounds(rounds: &[(Shape, f64)], tol: Tolerances) -> OgeomResult<Self> {
+        let mut blends: Vec<Blend> = Vec::with_capacity(rounds.len());
+        for (edge, radius) in rounds {
+            if blends.iter().any(|b| b.edge.is_same(edge)) {
+                ogeom_bail!(Construction, "an edge is asked to be rounded twice");
+            }
+            if !(radius.is_finite() && *radius > tol.confusion()) {
+                ogeom_bail!(Construction, "a fillet of radius {radius} rounds nothing");
+            }
+            blends.push(Blend {
+                edge: edge.clone(),
+                section: Section::Round { radius: *radius },
+            });
+        }
+        Ok(Self { blends })
     }
 }
