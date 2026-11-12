@@ -15,7 +15,7 @@ use ogeom_algo::{Built, HalfSpaces, History};
 use ogeom_core::{FastMap, OgeomResult, Tolerances};
 use ogeom_geom::SurfaceGeometry;
 use ogeom_math::Point;
-use ogeom_topo::Model;
+use ogeom_topo::{Model, Orientation, Shape, ShapeType, explore_unique};
 
 use super::Id;
 use super::assemble::{SheetEdge, SheetFace, build_faces};
@@ -74,22 +74,26 @@ pub(crate) fn assemble(
     }
     let edge_seat: FastMap<Id, &Seat> = keys.iter().map(|k| (seats[k].edge, &seats[k])).collect();
 
-    // Each strip's station at each end: both its faces' setback corners
-    // there stand at one station along the edge, or the strip's end is not
-    // its section and this class does not hold it.
+    // Each strip's end at each of its vertices: the station along its edge
+    // of each face's setback corner there, and their middle. Where they
+    // stand level the end is the section's arc there; else the strip ends
+    // skew, through both corners.
     let reach = tol.confusion() * 100.0;
+    let mut level: FastMap<(Id, Id), [f64; 2]> = FastMap::default();
     let mut station: FastMap<(Id, Id), f64> = FastMap::default();
     for (edge, (section, _)) in &sections {
         let seat = edge_seat[edge];
         for v in [seat.ends.0, seat.ends.1] {
             let s = [0, 1]
                 .map(|k| (corners[&(seat.faces[k], v)] - section.crease(0.0)).dot(seat.along));
-            if (s[0] - s[1]).abs() > reach {
-                return Ok(None);
-            }
+            level.insert((*edge, v), s);
             station.insert((*edge, v), 0.5 * (s[0] + s[1]));
         }
     }
+    let stands_level = |edge: Id, v: Id| {
+        let s = level[&(edge, v)];
+        (s[0] - s[1]).abs() <= reach
+    };
 
     // A face set back to a line or a point, or past one of its sides, is
     // not a class this builds.
@@ -136,7 +140,7 @@ pub(crate) fn assemble(
                     planar.faces[third].normal.cross(seat.along).magnitude() <= tol.angular();
                 let s = station[&(seat.edge, v)];
                 let at_end = s.abs() <= reach || (s - section_length(planar, seat)).abs() <= reach;
-                if !(square && at_end) {
+                if !(square && at_end && stands_level(seat.edge, v)) {
                     return Ok(None);
                 }
                 flush.insert(v, (third, seat.edge));
@@ -145,25 +149,29 @@ pub(crate) fn assemble(
             (3, 3) => {
                 let radius = sections[&blended[0].edge].1;
                 let convex = blended[0].convex;
-                if blended
-                    .iter()
-                    .any(|s| s.convex != convex || sections[&s.edge].1 != radius)
-                {
-                    return Ok(None);
-                }
+                let alike = blended.iter().all(|s| {
+                    s.convex == convex && sections[&s.edge].1 == radius && stands_level(s.edge, v)
+                });
                 let planes = [round[0], round[1], round[2]]
                     .map(|f| (planar.faces[f].normal, planar.points[&v]));
-                let Some((_, feet)) =
+                let ball = if alike {
                     crate::round::sphere::corner_ball(planes, radius, convex, tol)
-                else {
-                    return Ok(None);
+                } else {
+                    None
                 };
-                for (k, f) in round.iter().enumerate() {
-                    if feet[k].distance(corners[&(*f, v)]) > reach {
-                        return Ok(None);
+                // One ball touching the three faces at their setback
+                // corners, or the patch.
+                match ball {
+                    Some((_, feet))
+                        if round
+                            .iter()
+                            .enumerate()
+                            .all(|(k, f)| feet[k].distance(corners[&(*f, v)]) <= reach) =>
+                    {
+                        RoundVertex::Sphere
                     }
+                    _ => RoundVertex::Patch,
                 }
-                RoundVertex::Sphere
             }
             _ => return Ok(None),
         };
@@ -221,8 +229,14 @@ pub(crate) fn assemble(
         let (section, _) = &sections[edge];
         let seat = edge_seat[edge];
         for v in [seat.ends.0, seat.ends.1] {
-            let (curve, range) = section.arc_at(station[&(*edge, v)], tol)?;
-            let [from_face, _] = section.order();
+            let order = section.order();
+            let [from_face, _] = order;
+            let (curve, range) = if stands_level(*edge, v) {
+                section.arc_at(station[&(*edge, v)], tol)?
+            } else {
+                let s = level[&(*edge, v)];
+                section.skew_end(order, [s[order[0]], s[order[1]]], tol)?
+            };
             let (p0, p1) = (at[&(seat.faces[0], v)], at[&(seat.faces[1], v)]);
             // The arc runs from the first face of its order's contact.
             let ends = if from_face == 0 { (p0, p1) } else { (p1, p0) };
@@ -298,13 +312,14 @@ pub(crate) fn assemble(
         faces.push((SheetFace { surface, ring }, out));
         origins.push(Ok(fi));
     }
+    // Each strip's face in the sheet, by its edge.
+    let mut strip_face: FastMap<Id, usize> = FastMap::default();
     // The strips: along the first face's contact backward, the arc at the
     // edge's start, along the second face's contact, the arc at its end.
     for edge in &strip_list {
         let (section, _) = &sections[edge];
         let seat = edge_seat[edge];
         let (a, b) = seat.ends;
-        let (s0, s1) = (station[&(*edge, a)], station[&(*edge, b)]);
         let mut ring = Vec::with_capacity(4);
         ring.push(segment(
             &mut edges,
@@ -320,8 +335,15 @@ pub(crate) fn assemble(
         ));
         let (arc_b, _) = arcs[&(*edge, b)];
         ring.push((arc_b, edges[arc_b].ends.0 == at[&(seat.faces[1], b)]));
-        let length = (s1 - s0).abs().max(tol.confusion());
-        let surface = section.surface((s0.min(s1) - length, s0.max(s1) + length), tol)?;
+        // Over the strip's own stations, from the least of its four corners'
+        // to the greatest, no farther: a surface reaching past its face's
+        // trim is one more thing a later operation reads.
+        let (lo, hi) = (
+            level[&(*edge, a)][0].min(level[&(*edge, a)][1]),
+            level[&(*edge, b)][0].max(level[&(*edge, b)][1]),
+        );
+        let surface = section.surface((lo, hi), tol)?;
+        strip_face.insert(*edge, faces.len());
         faces.push((
             SheetFace {
                 surface: Some(surface),
@@ -342,45 +364,9 @@ pub(crate) fn assemble(
             .filter(|(a, b)| *a == v || *b == v)
             .map(|k| &seats[k])
             .collect();
-        let mut pending: Vec<(usize, usize, usize)> = here
-            .iter()
-            .map(|s| {
-                let (arc, _) = arcs[&(s.edge, v)];
-                (arc, edges[arc].ends.0, edges[arc].ends.1)
-            })
-            .collect();
-        // Each strip walks its arc at `v` one way; the sphere the other.
-        let strip_walk = |s: &Seat| -> bool {
-            let (arc, _) = arcs[&(s.edge, v)];
-            if v == s.ends.0 {
-                edges[arc].ends.0 == at[&(s.faces[0], v)]
-            } else {
-                edges[arc].ends.0 == at[&(s.faces[1], v)]
-            }
+        let Some(ring) = hole_at(&here, &arcs, &edges, &at, v) else {
+            return Ok(None);
         };
-        let walks: FastMap<usize, bool> = here
-            .iter()
-            .map(|s| (arcs[&(s.edge, v)].0, !strip_walk(s)))
-            .collect();
-        let mut ring: Vec<(usize, bool)> = Vec::new();
-        let (first, ..) = pending.remove(0);
-        ring.push((first, walks[&first]));
-        let mut tip = if walks[&first] {
-            edges[first].ends.1
-        } else {
-            edges[first].ends.0
-        };
-        while !pending.is_empty() {
-            let Some(k) = pending
-                .iter()
-                .position(|(arc, a, b)| (walks[arc] && *a == tip) || (!walks[arc] && *b == tip))
-            else {
-                return Ok(None);
-            };
-            let (arc, a, b) = pending.remove(k);
-            ring.push((arc, walks[&arc]));
-            tip = if walks[&arc] { b } else { a };
-        }
         let seat = here[0];
         let radius = sections[&seat.edge].1;
         let round = faces_round(&planar.faces, v).unwrap_or_default();
@@ -418,11 +404,64 @@ pub(crate) fn assemble(
         })
         .collect();
     let built = build_faces(model, &points, &edges, &sheet, tol)?;
-    let built: Vec<_> = built
+    let mut built: Vec<_> = built
         .into_iter()
         .zip(&faces)
         .map(|(f, (_, out))| if *out { f } else { f.reversed() })
         .collect();
+    // The patches, each through its hole's strip ends as built, tangent
+    // to the strips, held to the bands' fit target.
+    let fit = crate::marched::band_fit_target(tol);
+    for &v in &vertices {
+        if method[&v] != RoundVertex::Patch {
+            continue;
+        }
+        let here = seats_at(&keys, seats, v);
+        let Some(ring) = hole_at(&here, &arcs, &edges, &at, v) else {
+            return Ok(None);
+        };
+        // Each end's strip, by its arc.
+        let owner: FastMap<usize, Id> = here
+            .iter()
+            .map(|s| (arcs[&(s.edge, v)].0, s.edge))
+            .collect();
+        let mut sides = Vec::with_capacity(3);
+        for (e, walk) in &ring {
+            let strip = strip_face[&owner[e]];
+            let (a, b) = edges[*e].ends;
+            let Some(edge) = edge_between(model, &built[strip], points[a], points[b], reach)?
+            else {
+                return Ok(None);
+            };
+            let (Some((curve, range)), Some(support)) =
+                (edges[*e].curve.clone(), faces[strip].0.surface.clone())
+            else {
+                return Ok(None);
+            };
+            sides.push(crate::round::transfinite::HoleSide {
+                edge,
+                curve,
+                range,
+                forward: *walk,
+                support,
+            });
+        }
+        let Ok(sides) = <[crate::round::transfinite::HoleSide; 3]>::try_from(sides) else {
+            return Ok(None);
+        };
+        let patch = crate::round::transfinite::corner_patch(model, &sides, tol)?;
+        if !(patch.gap <= fit && patch.angle <= fit) {
+            ogeom_core::ogeom_bail!(
+                Construction,
+                "a round vertex's patch misses the bands' fit target: {:.1e} off its strips' \
+                 ends, {:.1e} rad off their tangent planes",
+                patch.gap,
+                patch.angle
+            );
+        }
+        built.push(patch.face);
+        origins.push(Err(v));
+    }
     let shell = ogeom_algo::make_shell(model, &built)?.shape;
     let solid = ogeom_algo::make_solid(model, &[shell])?.shape;
     super::guards::solid_fits(model, &solid, tol)?;
@@ -467,7 +506,128 @@ pub(crate) fn assemble(
             Err(element) => history.generate(&planar.shapes[element], face.clone()),
         }
     }
+    // Each edge left sharp, to what of it the setbacks leave: the edge of
+    // its first face on its line. Each vertex left sharp, to the vertex at
+    // its point. A later step finds them so.
+    let at_point = |v: &Shape| {
+        model
+            .node(v)
+            .and_then(|n| n.data().as_vertex().map(|d| d.point))
+    };
+    for key in &keys {
+        let seat = &seats[key];
+        if sections.contains_key(&seat.edge) {
+            continue;
+        }
+        let (p, q) = (planar.points[&seat.ends.0], planar.points[&seat.ends.1]);
+        let on_line = |x: Point| {
+            let d = q - p;
+            let t = ((x - p).dot(d) / d.dot(d)).clamp(0.0, 1.0);
+            (p + d * t).distance(x) <= reach
+        };
+        for e in explore_unique(model, &built[seat.faces[0]], ShapeType::Edge)? {
+            let Some((a, b)) = ogeom_algo::edge_vertices(model, &e)? else {
+                continue;
+            };
+            if let (Some(x), Some(y)) = (at_point(&a), at_point(&b))
+                && on_line(x)
+                && on_line(y)
+                && x.distance(y) > reach
+            {
+                history.modify(&planar.shapes[&seat.edge], e.oriented(Orientation::Forward));
+                break;
+            }
+        }
+    }
+    for &v in &vertices {
+        if method[&v] != RoundVertex::Sharp {
+            continue;
+        }
+        let point = planar.points[&v];
+        let Some(round) = faces_round(&planar.faces, v) else {
+            continue;
+        };
+        if let Some(kept) = explore_unique(model, &built[round[0]], ShapeType::Vertex)?
+            .into_iter()
+            .find(|w| at_point(w).is_some_and(|x| x.distance(point) <= reach))
+        {
+            history.modify(&planar.shapes[&v], kept);
+        }
+    }
     Ok(Some(Built::new(solid, history)))
+}
+
+/// The strips' ends at `v`, each walked against its strip, chained end to
+/// end into the ring of the hole they bound; `None` where they do not
+/// close into one.
+fn hole_at(
+    here: &[&Seat],
+    arcs: &FastMap<(Id, Id), (usize, bool)>,
+    edges: &[SheetEdge],
+    at: &FastMap<(usize, Id), usize>,
+    v: Id,
+) -> Option<Vec<(usize, bool)>> {
+    // Each strip walks its end at `v` from its first face's contact at the
+    // edge's start, from its second's at the edge's end; the hole the
+    // other way.
+    let mut pending: Vec<(usize, bool)> = here
+        .iter()
+        .map(|s| {
+            let (arc, _) = arcs[&(s.edge, v)];
+            let face = if v == s.ends.0 {
+                s.faces[0]
+            } else {
+                s.faces[1]
+            };
+            (arc, edges[arc].ends.0 != at[&(face, v)])
+        })
+        .collect();
+    let ends = |(e, walk): (usize, bool)| {
+        let (a, b) = edges[e].ends;
+        if walk { (a, b) } else { (b, a) }
+    };
+    let first = pending.remove(0);
+    let start = ends(first).0;
+    let mut tip = ends(first).1;
+    let mut ring = vec![first];
+    while !pending.is_empty() {
+        let k = pending.iter().position(|m| ends(*m).0 == tip)?;
+        let next = pending.remove(k);
+        tip = ends(next).1;
+        ring.push(next);
+    }
+    (tip == start).then_some(ring)
+}
+
+/// The edge of `face` running between `from` and `to`, as a node (its own
+/// orientation forward).
+fn edge_between(
+    model: &Model,
+    face: &Shape,
+    from: Point,
+    to: Point,
+    reach: f64,
+) -> OgeomResult<Option<Shape>> {
+    for edge in explore_unique(model, face, ShapeType::Edge)? {
+        let edge = edge.oriented(Orientation::Forward);
+        let Some((a, b)) = ogeom_algo::edge_vertices(model, &edge)? else {
+            continue;
+        };
+        let at = |v: &Shape| {
+            model
+                .node(v)
+                .and_then(|n| n.data().as_vertex().map(|d| d.point))
+        };
+        let (Some(p), Some(q)) = (at(&a), at(&b)) else {
+            continue;
+        };
+        if (p.distance(from) <= reach && q.distance(to) <= reach)
+            || (p.distance(to) <= reach && q.distance(from) <= reach)
+        {
+            return Ok(Some(edge));
+        }
+    }
+    Ok(None)
 }
 
 /// The seats of the edges meeting at `v`, in `keys`' order.
@@ -742,6 +902,228 @@ mod tests {
         let (m, forward) = rounded(<[Shape]>::to_vec, 1.5);
         let (n, backward) = rounded(|all| all.iter().rev().cloned().collect(), 1.5);
         assert_eq!(bits(&m, &forward.unwrap()), bits(&n, &backward.unwrap()));
+    }
+
+    /// The faces of `s` on a surface of `kind`, counted.
+    fn count_of(m: &Model, s: &Shape, kind: ogeom_geom::SurfaceKind) -> usize {
+        use ogeom_geom::Surface as _;
+        explore_unique(m, s, ShapeType::Face)
+            .unwrap()
+            .iter()
+            .filter(|f| {
+                let d = m.node(f).unwrap().data().as_face().unwrap();
+                m.geometry().surface(d.surface).unwrap().kind() == kind
+            })
+            .count()
+    }
+
+    /// The vertices of `s` as bits, sorted, and its volume's bits.
+    fn bits(m: &Model, s: &Shape) -> (u64, Vec<[u64; 3]>) {
+        let mut out: Vec<[u64; 3]> = explore_unique(m, s, ShapeType::Vertex)
+            .unwrap()
+            .iter()
+            .map(|v| {
+                let p = m
+                    .node(v)
+                    .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                    .unwrap();
+                [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]
+            })
+            .collect();
+        out.sort_unstable();
+        (volume(m, s).to_bits(), out)
+    }
+
+    /// Every edge of `s` rounded at `radius(edge)`, in the order given and
+    /// reversed: built by the engine both ways, valid, the same to the bit.
+    fn rounded_both_ways(
+        m: &mut Model,
+        s: &Shape,
+        radius: impl Fn(&Model, &Shape) -> f64,
+    ) -> Shape {
+        let all = explore_unique(m, s, ShapeType::Edge).unwrap();
+        let asked: Vec<(Shape, f64)> = all.iter().map(|e| (e.clone(), radius(m, e))).collect();
+        let mut built = Vec::new();
+        for order in [asked.clone(), asked.iter().rev().cloned().collect()] {
+            let request = Request::from_rounds(&order, T).unwrap();
+            let b = run(m, s, &request, T).unwrap().unwrap().shape;
+            let found = ogeom_algo::check(m, &b, T).unwrap();
+            assert!(found.is_valid(), "{:?}", found.problems);
+            built.push(b);
+        }
+        assert_eq!(bits(m, &built[0]), bits(m, &built[1]));
+        built.remove(0)
+    }
+
+    /// A 20 by 14 by 9 box, its edges along `x`, `y` and `z` rounded at 1,
+    /// 1.5 and 2: no ball fits any corner, so each is a patch through the
+    /// three strips' ends, skew where two radii differ on a face. The
+    /// solid is valid, its patches pass the engine's measures and P5, and
+    /// it holds less than the box less the strips short of the corners and
+    /// more than the box less the whole strips and a corner cell each.
+    #[test]
+    fn a_box_of_three_radii_closes_each_corner_with_a_patch() {
+        let (a, b, c) = (20.0, 14.0, 9.0);
+        let mut m = Model::new();
+        let s = ogeom_algo::make_box(&mut m, Frame::WORLD, (a, b, c), T)
+            .unwrap()
+            .shape;
+        let radius = |m: &Model, e: &Shape| {
+            let (p, q) = ogeom_algo::edge_vertices(m, e).unwrap().unwrap();
+            let at = |v: &Shape| {
+                m.node(v)
+                    .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                    .unwrap()
+            };
+            let d = at(&q) - at(&p);
+            if d.x.abs() > 1e-9 {
+                1.0
+            } else if d.y.abs() > 1e-9 {
+                1.5
+            } else {
+                2.0
+            }
+        };
+        let built = rounded_both_ways(&mut m, &s, radius);
+        assert_eq!(count_of(&m, &built, ogeom_geom::SurfaceKind::BSpline), 8);
+        assert_eq!(count_of(&m, &built, ogeom_geom::SurfaceKind::Cylinder), 12);
+        let corner = |r: f64| (1.0 - core::f64::consts::FRAC_PI_4) * r * r;
+        let edges = [(1.0, a), (1.5, b), (2.0, c)];
+        let whole: f64 = edges.iter().map(|(r, l)| 4.0 * corner(*r) * l).sum();
+        let short: f64 = edges
+            .iter()
+            .map(|(r, l)| 4.0 * corner(*r) * (l - 4.0))
+            .sum();
+        let v = volume(&m, &built);
+        assert!(
+            v < a * b * c - short && v > a * b * c - whole - 8.0 * 8.0,
+            "{v}"
+        );
+    }
+
+    /// An L-shaped prism with every edge rounded at 0.5: its two vertices
+    /// at the concave edge's ends meet two convex rounds and one concave,
+    /// where no ball fits, and close with patches across the caps' reflex
+    /// corners; the rest are spheres. Valid, and the same to the bit in
+    /// either order.
+    #[test]
+    fn an_l_prism_s_mixed_corners_close_with_patches() {
+        use ogeom_math::{Direction, Plane, Point, Vector};
+        let mut m = Model::new();
+        let profile = [
+            (0.0, 0.0),
+            (6.0, 0.0),
+            (6.0, 2.0),
+            (2.0, 2.0),
+            (2.0, 5.0),
+            (0.0, 5.0),
+        ];
+        let points: Vec<Point> = profile
+            .iter()
+            .map(|&(y, z)| Point::new(0.0, y, z))
+            .collect();
+        let wire = ogeom_algo::make_polygon(&mut m, &points, true, T)
+            .unwrap()
+            .shape;
+        let plane = ogeom_geom::PlaneSurface::over(
+            Plane::through(Point::ORIGIN, Direction::X),
+            (-100.0, 100.0),
+            (-100.0, 100.0),
+        )
+        .unwrap();
+        let face = ogeom_algo::make_face(&mut m, plane.into(), &[wire], T)
+            .unwrap()
+            .shape;
+        let swept = ogeom_algo::make_prism(&mut m, &face, Vector::new(10.0, 0.0, 0.0), T)
+            .unwrap()
+            .shape;
+        let s = ogeom_algo::baked_shape(&mut m, &swept, T).unwrap().shape;
+        let built = rounded_both_ways(&mut m, &s, |_, _| 0.5);
+        assert_eq!(count_of(&m, &built, ogeom_geom::SurfaceKind::BSpline), 2);
+        assert_eq!(count_of(&m, &built, ogeom_geom::SurfaceKind::Sphere), 10);
+    }
+
+    /// The corpus's L channel (walls 5 thick, swept 30) with every edge
+    /// rounded at 1: at each end of its concave edge the two convex strips'
+    /// skew ends meet on the cap at its setback corner running straight on,
+    /// a corner of the hole where the patch's chart has no normal; the
+    /// patch is still tangent to every strip within the fit target, and
+    /// the solid valid, the same in either order.
+    #[test]
+    fn an_l_channel_s_corners_patch_where_the_hole_runs_straight_on() {
+        use ogeom_math::{Direction, Plane, Point, Vector};
+        let mut m = Model::new();
+        let profile = [
+            (0.0, 0.0),
+            (20.0, 0.0),
+            (20.0, 5.0),
+            (5.0, 5.0),
+            (5.0, 20.0),
+            (0.0, 20.0),
+        ];
+        let points: Vec<Point> = profile
+            .iter()
+            .map(|&(y, z)| Point::new(0.0, y, z))
+            .collect();
+        let wire = ogeom_algo::make_polygon(&mut m, &points, true, T)
+            .unwrap()
+            .shape;
+        let plane = ogeom_geom::PlaneSurface::over(
+            Plane::through(Point::ORIGIN, Direction::X),
+            (-100.0, 100.0),
+            (-100.0, 100.0),
+        )
+        .unwrap();
+        let face = ogeom_algo::make_face(&mut m, plane.into(), &[wire], T)
+            .unwrap()
+            .shape;
+        let swept = ogeom_algo::make_prism(&mut m, &face, Vector::new(30.0, 0.0, 0.0), T)
+            .unwrap()
+            .shape;
+        let s = ogeom_algo::baked_shape(&mut m, &swept, T).unwrap().shape;
+        let built = rounded_both_ways(&mut m, &s, |_, _| 1.0);
+        assert_eq!(count_of(&m, &built, ogeom_geom::SurfaceKind::BSpline), 2);
+    }
+
+    /// A box with one edge rounded: every edge left sharp comes through the
+    /// history as one edge of the result between two of its faces, on its
+    /// own line; every vertex left sharp as a vertex at its own point.
+    #[test]
+    fn edges_and_vertices_left_sharp_come_through_the_history() {
+        let mut m = Model::new();
+        let s = ogeom_algo::make_box(&mut m, Frame::WORLD, (10.0, 8.0, 6.0), T)
+            .unwrap()
+            .shape;
+        let all = explore_unique(&m, &s, ShapeType::Edge).unwrap();
+        let request = Request::from_rounds(&[(all[0].clone(), 1.5)], T).unwrap();
+        let built = run(&mut m, &s, &request, T).unwrap().unwrap();
+        let point = |v: &Shape| {
+            m.node(v)
+                .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                .unwrap()
+        };
+        for e in &all[1..] {
+            let images = built.history.trace(e);
+            assert_eq!(images.len(), 1);
+            let faces =
+                ogeom_topo::ancestors_of(&m, &built.shape, &images[0], ShapeType::Face).unwrap();
+            assert_eq!(faces.len(), 2);
+            let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+            let (x, y) = ogeom_algo::edge_vertices(&m, &images[0]).unwrap().unwrap();
+            let d = point(&b) - point(&a);
+            for p in [point(&x), point(&y)] {
+                assert!((p - point(&a)).cross(d).magnitude() < 1e-9);
+            }
+        }
+        let (a, b) = ogeom_algo::edge_vertices(&m, &all[0]).unwrap().unwrap();
+        for v in explore_unique(&m, &s, ShapeType::Vertex).unwrap() {
+            if v.is_same(&a) || v.is_same(&b) {
+                continue;
+            }
+            let images = built.history.trace(&v);
+            assert_eq!(images.len(), 1);
+            assert!(point(&images[0]).distance(point(&v)) < 1e-12);
+        }
     }
 
     /// A box with every edge rounded: the exact rounded box,
