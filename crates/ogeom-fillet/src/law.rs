@@ -258,14 +258,11 @@ impl Profile {
         self.largest() - self.least() <= tol.confusion()
     }
 
-    /// The open law as a cubic B-spline over the fraction: the knots,
-    /// doubled inside (C1) or tripled where the slope steps (C0), and the
-    /// radii's control values. Each piece is
-    /// its Hermite cubic's own Bezier form, and the C1 join is the point
-    /// knot removal drops.
-    pub(crate) fn spline(&self, tol: Tolerances) -> (Vec<f64>, Vec<f64>) {
-        // The pieces over the whole chain: the level runs before the first
-        // point and after the last, and the Hermite pieces between.
+    /// The open law's cubic pieces over the whole fraction, each its
+    /// Hermite cubic's Bezier form: from where to where, and the four
+    /// control values. The level runs before the first point and after
+    /// the last.
+    pub(crate) fn pieces(&self, tol: Tolerances) -> Vec<(f64, f64, [f64; 4])> {
         let mut pieces: Vec<(f64, f64, [f64; 4])> = Vec::new();
         let n = self.at.len();
         let level = |x0: f64, x1: f64, r: f64| (x0, x1, [r, r, r, r]);
@@ -297,6 +294,17 @@ impl Profile {
         let last = pieces.len() - 1;
         pieces[0].0 = 0.0;
         pieces[last].1 = 1.0;
+        pieces
+    }
+
+    /// The open law as a cubic B-spline over the fraction: the knots,
+    /// doubled inside (C1) or tripled where the slope steps (C0), and the
+    /// radii's control values. Each piece is
+    /// its Hermite cubic's own Bezier form, and the C1 join is the point
+    /// knot removal drops.
+    pub(crate) fn spline(&self, tol: Tolerances) -> (Vec<f64>, Vec<f64>) {
+        let pieces = self.pieces(tol);
+        let last = pieces.len() - 1;
         let mut knots = vec![0.0; 4];
         let mut values = vec![pieces[0].2[0]];
         for (k, &(x0, x1, bezier)) in pieces.iter().enumerate() {
