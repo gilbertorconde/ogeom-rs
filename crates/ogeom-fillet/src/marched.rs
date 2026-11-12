@@ -731,10 +731,192 @@ pub(crate) type Station<'a> = &'a dyn Fn(f64, [f64; 4]) -> Option<[f64; 5]>;
 pub(crate) enum Ball<'a> {
     Constant(f64),
     Law(&'a dyn Fn(f64) -> OgeomResult<f64>),
-    /// No ball: the straight chord between the touches, a bevel. The
-    /// station at a guide parameter, near the given host parameters, as
-    /// the march's state: both touches' parameters and the guide's.
-    Ruled(Station<'a>),
+    /// No ball: the chord between the touches, straight (a bevel) or a
+    /// conic tangent to the hosts' sections at the touches (an asymmetric
+    /// round). The station at a guide parameter, near the given host
+    /// parameters, as the march's state: both touches' parameters and the
+    /// guide's.
+    Ruled(Station<'a>, Chord),
+}
+
+/// What a band with no ball crosses from one touch to the other.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Chord {
+    /// The straight segment: a bevel.
+    Straight,
+    /// The conic arc tangent to each host's section at its touch, through
+    /// the shoulder where those tangents meet, of the weight `ConicWeight`
+    /// gives: an asymmetric round.
+    Conic(ConicWeight),
+}
+
+/// The shoulder's weight of a [`Chord::Conic`] section.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ConicWeight {
+    /// The ellipse's: the sine of half the angle the tangents make at the
+    /// shoulder, station by station.
+    Elliptical,
+    /// One weight all along.
+    Fixed(f64),
+}
+
+/// The conic section of a station: the touch on the first host, the
+/// shoulder, the touch on the second, and the shoulder's weight. The
+/// section stands in the plane through the touches and the crease point
+/// `crease`; each host's section leaves its touch along its tangent plane
+/// within that plane, toward the crease; the two tangents meet at the
+/// shoulder. `None` where they do not meet in front of both touches.
+pub(crate) fn conic_section(
+    touches: [Point; 2],
+    normals: [Vector; 2],
+    crease: Point,
+    weight: ConicWeight,
+    tol: Tolerances,
+) -> Option<([Point; 3], f64)> {
+    let [a, b] = touches;
+    let plane = (b - a).cross(crease - a);
+    let pm = plane.magnitude();
+    if pm <= tol.confusion() * (b - a).magnitude() {
+        return None;
+    }
+    let plane = plane / pm;
+    let tangent = |n: Vector, from: Point| -> Option<Vector> {
+        let t = n.cross(plane);
+        let m = t.magnitude();
+        if m <= tol.angular() {
+            return None;
+        }
+        let t = t / m;
+        Some(if t.dot(crease - from) < 0.0 { -t } else { t })
+    };
+    let (t1, t2) = (tangent(normals[0], a)?, tangent(normals[1], b)?);
+    let c = t1.cross(t2);
+    let c2 = c.dot(c);
+    if c2 <= tol.angular() * tol.angular() {
+        return None;
+    }
+    let d = b - a;
+    let s = d.cross(t2).dot(c) / c2;
+    let r = d.cross(t1).dot(c) / c2;
+    if s <= tol.confusion() || r <= tol.confusion() {
+        return None;
+    }
+    let shoulder = a + t1 * s;
+    let w = match weight {
+        ConicWeight::Fixed(w) => w,
+        ConicWeight::Elliptical => {
+            let (u, v) = (a - shoulder, b - shoulder);
+            let cos = (u.dot(v) / (u.magnitude() * v.magnitude())).clamp(-1.0, 1.0);
+            ((1.0 - cos) * 0.5).sqrt()
+        }
+    };
+    Some(([a, shoulder, b], w))
+}
+
+/// The point of the rational quadratic arc `p`, of middle weight `w`, at
+/// `t` in `[0, 1]`.
+pub(crate) fn conic_point(p: [Point; 3], w: f64, t: f64) -> Point {
+    let (b0, b1, b2) = ((1.0 - t) * (1.0 - t), 2.0 * t * (1.0 - t) * w, t * t);
+    let sum = b0 + b1 + b2;
+    Point::from_vector(
+        (p[0].to_vector() * b0 + p[1].to_vector() * b1 + p[2].to_vector() * b2) / sum,
+    )
+}
+
+/// Each station's conic section, as [`conic_section`] reads it off the
+/// touches, the hosts' normals there and the crease.
+pub(crate) fn conic_sections(
+    blend: &crate::march::MarchedBlend,
+    [first, second]: [&SurfaceGeometry; 2],
+    guide: &Curve,
+    weight: ConicWeight,
+    tol: Tolerances,
+) -> OgeomResult<Vec<([Point; 3], f64)>> {
+    let mut out = Vec::with_capacity(blend.len());
+    for at in 0..blend.len() {
+        let normal =
+            |s: &SurfaceGeometry, (u, v): (f64, f64)| crate::march::unit_normal(s, u, v, tol);
+        let (Some(n1), Some(n2)) = (
+            normal(first, blend.on_first[at]),
+            normal(second, blend.on_second[at]),
+        ) else {
+            ogeom_bail!(
+                Construction,
+                "a host has no normal at an asymmetric round's touch"
+            );
+        };
+        let crease = guide.point_at(blend.along[at], tol)?;
+        let Some(section) = conic_section(
+            [blend.touch_first[at], blend.touch_second[at]],
+            [n1, n2],
+            crease,
+            weight,
+            tol,
+        ) else {
+            ogeom_bail!(
+                Construction,
+                "an asymmetric round's faces leave their contacts at {:?} along tangents \
+                 that do not meet in front of the crease; see docs/CAPABILITIES.md, \
+                 fillet.asymmetric-rounds",
+                crease
+            );
+        };
+        out.push(section);
+    }
+    Ok(out)
+}
+
+/// How many samples cross each conic section: more than a ball's arc
+/// takes, the conic's curvature gathering toward its shoulder.
+const ACROSS_CONIC: usize = 33;
+
+/// The share of the band's fit target a conic band is fitted to: tighter
+/// than a ball's, so its tangent planes at the rails stand within the
+/// hosts' own along the contacts.
+const CONIC_AIM: f64 = 0.5;
+
+/// The conic arc of each section sampled at `count` points along it,
+/// spaced by the cosine so they gather toward both ends, first station
+/// repeated at the end where `closed`: one row per station.
+fn conic_stations(sections: &[([Point; 3], f64)], count: usize, closed: bool) -> Vec<Vec<Point>> {
+    const FINE: u32 = 512;
+    let n = sections.len();
+    (0..n + usize::from(closed))
+        .map(|i| {
+            let (p, w) = sections[i % n];
+            // The arc's length from its start at each of a fine run of
+            // parameters, read back at evenly spaced lengths.
+            let mut run = Vec::with_capacity(FINE as usize + 1);
+            let mut total = 0.0;
+            let mut last = p[0];
+            for k in 0..=FINE {
+                let t = f64::from(k) / f64::from(FINE);
+                let q = conic_point(p, w, t);
+                total += q.distance(last);
+                last = q;
+                run.push((t, total));
+            }
+            (0..count)
+                .map(|k| {
+                    // Gathered toward both contacts, where the fit's
+                    // tangent is the band's tangency with each host.
+                    #[allow(clippy::cast_precision_loss)]
+                    let share = (k as f64) / ((count - 1) as f64);
+                    let target = total * 0.5 * (1.0 - (core::f64::consts::PI * share).cos());
+                    let j = run
+                        .partition_point(|(_, l)| *l < target)
+                        .clamp(1, run.len() - 1);
+                    let ((t0, l0), (t1, l1)) = (run[j - 1], run[j]);
+                    let t = if l1 > l0 {
+                        t0 + (t1 - t0) * (target - l0) / (l1 - l0)
+                    } else {
+                        t1
+                    };
+                    conic_point(p, w, t)
+                })
+                .collect()
+        })
+        .collect()
 }
 
 impl Ball<'_> {
@@ -743,7 +925,7 @@ impl Ball<'_> {
         match self {
             Self::Constant(radius) => Ok(radius),
             Self::Law(law) => law(t),
-            Self::Ruled(_) => ogeom_bail!(Invariant, "a bevel's section has no ball"),
+            Self::Ruled(..) => ogeom_bail!(Invariant, "a bevel's section has no ball"),
         }
     }
 
@@ -751,7 +933,7 @@ impl Ball<'_> {
     const fn constant(self) -> Option<f64> {
         match self {
             Self::Constant(radius) => Some(radius),
-            Self::Law(_) | Self::Ruled(_) => None,
+            Self::Law(_) | Self::Ruled(..) => None,
         }
     }
 }
@@ -908,7 +1090,7 @@ pub(crate) fn closed_band_wedge(
             ];
             let station_at = |w: f64| -> Option<([f64; 5], f64)> {
                 let x = match ball {
-                    Ball::Ruled(station) => station(fold(w), near)?,
+                    Ball::Ruled(station, _) => station(fold(w), near)?,
                     _ => crate::march::seat_section(
                         first,
                         second,
@@ -951,7 +1133,7 @@ pub(crate) fn closed_band_wedge(
                         first.d1_at(x[0], x[1], tol),
                     )
                     && let Some(centre) = match ball {
-                        Ball::Ruled(_) => Some(p1.midpoint(p2)),
+                        Ball::Ruled(..) => Some(p1.midpoint(p2)),
                         _ => ball.at(fold(w)).ok().map(|radius| {
                             let n1 = du.cross(dv);
                             p1 + n1 / n1.magnitude() * (f64::from(blend.sides.first) * radius)
@@ -1007,7 +1189,11 @@ pub(crate) fn closed_band_wedge(
     // fitted *closed*: the join is C1 wherever the seam lands, so anchoring
     // the seam column costs nothing.
     let (fitted, rows) = match ball {
-        Ball::Ruled(_) => fit_closed_ruled(&blend, fit_target, tol)?,
+        Ball::Ruled(_, Chord::Straight) => fit_closed_ruled(&blend, fit_target, tol)?,
+        Ball::Ruled(_, Chord::Conic(weight)) => {
+            let sections = conic_sections(&blend, [first, second], guide, weight, tol)?;
+            fit_closed_conic(&sections, fit_target, tol)?
+        }
         _ => fit_closed_band(&blend, ball.constant(), fit_target, tol)?,
     };
     if !fitted.met {
@@ -1229,7 +1415,7 @@ pub(crate) fn closed_band_wedge(
         // A bevel's wedge lies between it and the crease: its outward
         // points away from the crease, as a ball's centre lies.
         let reference = match ball {
-            Ball::Ruled(_) => {
+            Ball::Ruled(..) => {
                 let nearest = blend
                     .spine
                     .iter()
@@ -1420,7 +1606,7 @@ fn open_runout_wedge(
     mates: Option<(usize, &[crate::fillet::Mate])>,
     radius: f64,
     law: Option<&crate::law::RadiusAlong>,
-    ruled: Option<Station<'_>>,
+    ruled: Option<(Station<'_>, Chord)>,
     convex: bool,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
@@ -1815,7 +2001,7 @@ fn open_runout_wedge(
                 // A bevel's station stands square to the crease at `w`, the
                 // vertex on its plane; its chord's middle stands for the
                 // ball's centre.
-                if let Some(station) = ruled {
+                if let Some((station, _)) = ruled {
                     let Some(x) = station(w, near) else {
                         ogeom_bail!(Construction, "a bevel has no section at its run's end");
                     };
@@ -1976,7 +2162,7 @@ fn open_runout_wedge(
         hosts,
         radius,
         law.is_some(),
-        ruled.is_some(),
+        ruled.map(|(_, chord)| chord),
         convex,
         [false, false],
         None,
@@ -2011,6 +2197,7 @@ pub(crate) fn open_ruled_wedge(
     host_faces: [&Shape; 2],
     reach: f64,
     station: Station<'_>,
+    chord: Chord,
     convex: bool,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
@@ -2026,7 +2213,7 @@ pub(crate) fn open_ruled_wedge(
         None,
         reach,
         None,
-        Some(station),
+        Some((station, chord)),
         convex,
         tol,
     )
@@ -2136,7 +2323,7 @@ pub(crate) fn build_held_band(
         hosts,
         radius,
         false,
-        false,
+        None,
         convex,
         pinched,
         exact,
@@ -2160,7 +2347,7 @@ pub(crate) fn build_held_band_by(
     hosts: [(&SurfaceGeometry, f64); 2],
     radius: f64,
     varies: bool,
-    ruled: bool,
+    ruled: Option<Chord>,
     convex: bool,
     pinched: [bool; 2],
     exact: Option<&ExactBand<'_>>,
@@ -2170,7 +2357,7 @@ pub(crate) fn build_held_band_by(
     use ogeom_geom::Surface as _;
     let [(first, sign_first), (second, sign_second)] = hosts;
     let additive = !convex;
-    if ruled && pinched != [false, false] {
+    if ruled.is_some() && pinched != [false, false] {
         ogeom_bail!(Construction, "a bevel's band does not pinch");
     }
     let n = blend.len();
@@ -2184,7 +2371,7 @@ pub(crate) fn build_held_band_by(
     let section_plane = |end: usize| -> OgeomResult<ogeom_math::Plane> {
         // A bevel's chord and the crease point stand in the section's
         // plane, square to the crease.
-        if ruled {
+        if ruled.is_some() {
             let (a, b) = (blend.touch_first[end], blend.touch_second[end]);
             let crease = guide.point_at(blend.along[end], tol)?;
             let n = (b - a).cross(crease - a);
@@ -2258,10 +2445,17 @@ pub(crate) fn build_held_band_by(
     } else {
         Some(capped(n - 1, walls[1])?)
     };
-    let fitted = if ruled {
-        fit_open_ruled(blend, tol)?
-    } else {
-        fit_open_band_by(blend, (!varies).then_some(radius), pinched, tol)?
+    // An asymmetric round's sections, where the band crosses conics.
+    let conics = match ruled {
+        Some(Chord::Conic(weight)) => {
+            Some(conic_sections(blend, [first, second], guide, weight, tol)?)
+        }
+        _ => None,
+    };
+    let fitted = match (ruled, &conics) {
+        (Some(_), Some(sections)) => fit_open_conic(sections, tol)?,
+        (Some(_), None) => fit_open_ruled(blend, tol)?,
+        (None, _) => fit_open_band_by(blend, (!varies).then_some(radius), pinched, tol)?,
     };
     let (u_knots, v_knots) = (fitted.u_knots().clone(), fitted.v_knots().clone());
     let (k_count, l_count, mut net) = {
@@ -2446,7 +2640,13 @@ pub(crate) fn build_held_band_by(
         for k in 0..=64 {
             let t = lo + (hi - lo) * f64::from(k) / 64.0;
             let p = curve.point_at(t, tol)?;
-            let from = if ruled {
+            let from = if let Some(sections) = &conics {
+                // The exact conic, read on a fine polygon of it.
+                let (q, w) = sections[station];
+                (0..=256)
+                    .map(|i| conic_point(q, w, f64::from(i) / 256.0).distance(p))
+                    .fold(f64::INFINITY, f64::min)
+            } else if ruled.is_some() {
                 let along = p - a;
                 (along - chord * along.dot(chord)).magnitude()
             } else {
@@ -2636,7 +2836,7 @@ pub(crate) fn build_held_band_by(
         let (du, dv) = blend_geo.d1_at(mid_u, mid_v, tol)?;
         // A bevel's wedge lies between it and the crease: its outward
         // points away from the crease, as a ball's centre lies.
-        let reference = if ruled {
+        let reference = if ruled.is_some() {
             let nearest = blend
                 .spine
                 .iter()
@@ -3405,6 +3605,64 @@ pub(crate) fn fit_open_ruled(
         );
     }
     Ok(fitted.curve)
+}
+
+/// Whether the band through `blend`'s conic sections holds the target
+/// `aim`, closed round the loop where `loops`.
+pub(crate) fn conic_fit_met(
+    blend: &crate::march::MarchedBlend,
+    hosts: [&SurfaceGeometry; 2],
+    guide: &Curve,
+    weight: ConicWeight,
+    loops: bool,
+    aim: f64,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let sections = conic_sections(blend, hosts, guide, weight, tol)?;
+    Ok(if loops {
+        fit_closed_conic(&sections, aim, tol)?.0.met
+    } else {
+        fit_open_conic(&sections, tol).is_ok()
+    })
+}
+
+/// The open band through each station's conic section, as
+/// [`fit_open_ruled`] fits the chords, held to the same target.
+fn fit_open_conic(
+    sections: &[([Point; 3], f64)],
+    tol: Tolerances,
+) -> OgeomResult<ogeom_geom::BSplineSurface> {
+    let fit_target = band_fit_target(tol);
+    let stations = conic_stations(sections, ACROSS_CONIC, false);
+    let fitted =
+        ogeom_geom::fit::fit_surface_grid_chordal(&stations, 3, fit_target * 0.5 * CONIC_AIM, tol)?;
+    if fitted.error > fit_target {
+        ogeom_bail!(
+            NotDone,
+            "the asymmetric round's surface reached {} against a target of {fit_target}",
+            fitted.error
+        );
+    }
+    Ok(fitted.curve)
+}
+
+/// The closed band through each station's conic section round the loop,
+/// as [`fit_closed_ruled`] fits the chords: the fit and the rows across.
+fn fit_closed_conic(
+    sections: &[([Point; 3], f64)],
+    aim: f64,
+    tol: Tolerances,
+) -> OgeomResult<(
+    ogeom_geom::fit::Fitted<ogeom_geom::BSplineSurface>,
+    Vec<Vec<Point>>,
+)> {
+    let aim = aim * CONIC_AIM;
+    let loops = conic_stations(sections, ACROSS_CONIC, true);
+    let rows: Vec<Vec<Point>> = (0..ACROSS_CONIC)
+        .map(|k| loops.iter().map(|station| station[k]).collect())
+        .collect();
+    let fitted = ogeom_geom::fit::fit_surface_grid_closed_v_chordal(&loops, 3, aim, tol)?;
+    Ok((fitted, rows))
 }
 
 /// Whether the crease between the two hosts is convex, read from the solid

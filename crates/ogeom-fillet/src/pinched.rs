@@ -214,7 +214,7 @@ pub(crate) fn pinched_fillet(
         hosts,
         radius,
         along.is_some(),
-        false,
+        None,
         convex,
         pinched,
         None,

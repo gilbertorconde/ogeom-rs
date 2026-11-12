@@ -15,7 +15,7 @@
 
 use crate::chamfer::Chamfer;
 use crate::march::{BlendStop, MarchedBlend, Sides};
-use crate::marched::{Ball, MarchedSeat, chart_of, crease_convexity, marched_seat};
+use crate::marched::{Ball, Chord, MarchedSeat, chart_of, crease_convexity, marched_seat};
 use crate::support::keeping_face_meshes;
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -156,6 +156,25 @@ pub(crate) fn marched_bevel(
     given: &[Shape],
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    marched_bevel_with(model, solid, edge, spec, given, Chord::Straight, tol)
+}
+
+/// [`marched_bevel`], the band crossing each station by `chord`: the
+/// straight segment of a bevel, or an asymmetric round's conic.
+pub(crate) fn marched_bevel_with(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    spec: &Chamfer,
+    given: &[Shape],
+    chord: Chord,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    // What the refusals name: the bevel, or the round its chord stands for.
+    let what = match chord {
+        Chord::Straight => "a chamfer",
+        Chord::Conic(_) => "an asymmetric round",
+    };
     let reach = match spec {
         Chamfer::Symmetric(d) => *d,
         Chamfer::Distances {
@@ -321,7 +340,7 @@ pub(crate) fn marched_bevel(
                 if loops {
                     ogeom_bail!(
                         Construction,
-                        "a chamfer's leg runs off its face's section at {:?}",
+                        "{what}'s leg runs off its face's section at {:?}",
                         guide.point_at(w, tol)?
                     );
                 }
@@ -337,15 +356,20 @@ pub(crate) fn marched_bevel(
             blend.along.push(w);
         }
         if blend.len() < 8 {
-            ogeom_bail!(
-                Construction,
-                "a chamfer's sections do not seat along the edge"
-            );
+            ogeom_bail!(Construction, "{what}'s sections do not seat along the edge");
         }
-        let met = if loops {
-            crate::marched::fit_closed_ruled(&blend, aim, tol)?.0.met
-        } else {
-            crate::marched::fit_open_ruled(&blend, tol).is_ok()
+        let met = match chord {
+            Chord::Straight if loops => crate::marched::fit_closed_ruled(&blend, aim, tol)?.0.met,
+            Chord::Straight => crate::marched::fit_open_ruled(&blend, tol).is_ok(),
+            Chord::Conic(weight) => crate::marched::conic_fit_met(
+                &blend,
+                [&first, &second],
+                &guide,
+                weight,
+                loops,
+                aim,
+                tol,
+            )?,
         };
         if met || count >= 1024 {
             break blend;
@@ -355,7 +379,7 @@ pub(crate) fn marched_bevel(
     if !loops && (blend.along[0] > edge_range.0 || blend.along[blend.len() - 1] < edge_range.1) {
         ogeom_bail!(
             Construction,
-            "a chamfer's sections do not seat all along the edge"
+            "{what}'s sections do not seat all along the edge"
         );
     }
 
@@ -391,10 +415,7 @@ pub(crate) fn marched_bevel(
                     }
                 }
                 if off(face)? && !on_given {
-                    ogeom_bail!(
-                        Construction,
-                        "a chamfer's contact at {p:?} runs past its face"
-                    );
+                    ogeom_bail!(Construction, "{what}'s contact at {p:?} runs past its face");
                 }
             }
         }
@@ -414,6 +435,7 @@ pub(crate) fn marched_bevel(
             [&faces[0], &faces[1]],
             reach,
             &ruled,
+            chord,
             convex,
             tol,
         );
@@ -427,7 +449,7 @@ pub(crate) fn marched_bevel(
         guide_range,
         loops,
         [(&first, sign_first), (&second, sign_second)],
-        Ball::Ruled(&ruled),
+        Ball::Ruled(&ruled, chord),
         convex,
         tol,
     )
