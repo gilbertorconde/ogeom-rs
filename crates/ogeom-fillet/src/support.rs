@@ -18,6 +18,7 @@ use ogeom_topo::{EdgeRepr, Filter, Model, NodeData, Orientation, Shape, ShapeTyp
 
 /// Where a blend sits on a solid: a straight edge and the two planar faces
 /// meeting there, reduced to the numbers the wedge construction runs on.
+#[derive(Debug, Clone)]
 pub(crate) struct Seat {
     /// The edge's start, at its lower parameter.
     pub start: Point,

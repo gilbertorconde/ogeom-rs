@@ -4262,25 +4262,36 @@ pub(crate) fn section_at(seat: &Seat, at: Point, inward: Vector, radius: f64) ->
     ]
 }
 
-/// The cylindrical blend of a seat, whatever found the seat.
-///
-/// A blend's construction cares about the seat (where the ball rolls and
-/// which way the two planes face) and not at all about whether an edge of
-/// the solid runs along it. An edge gives one; two faces that share nothing
-/// give the same one through their planes' own intersection, and everything
-/// from here down is common to both.
-pub(crate) fn seated_fillet(
-    model: &mut Model,
-    solid: &Shape,
-    seat: &Seat,
-    radius: f64,
-    edge: Option<&Shape>,
-    trims: &[(Point, Vector)],
-    tol: Tolerances,
-) -> OgeomResult<Built> {
+/// Where the rolling ball of `radius` seats between a straight seat's two
+/// planes: the faces in the order that turns positively about the crease,
+/// so the ball's arc and the cylinder's chart run from the first face's
+/// contact to the second's; their normals; the sign that mirrors every
+/// direction onto a concave seat's open side; the ball's centre from the
+/// crease, square to it; and the arc's sweep.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BallSeat {
+    /// The seat's face the arc starts on.
+    pub first: usize,
+    /// The face it ends on.
+    pub second: usize,
+    /// The first face's outward normal.
+    pub n1: Vector,
+    /// The second's.
+    pub n2: Vector,
+    /// `1` on a convex seat, `-1` on a concave one.
+    pub sign: f64,
+    /// From a point of the crease to the ball's centre.
+    pub offset: Vector,
+    /// The angle the arc turns through, about the crease.
+    pub sweep: f64,
+}
+
+/// [`BallSeat`] of `seat` at `radius`; refused where the faces meet too
+/// sharply or are parallel.
+pub(crate) fn ball_seat(seat: &Seat, radius: f64, tol: Tolerances) -> OgeomResult<BallSeat> {
     // Order the two faces so the blend arc sweeps positively about the edge
-    // direction: the cylinder's parameterization and every arc below then
-    // run from the first face's tangency line to the second's.
+    // direction: the cylinder's parameterization and every arc then run
+    // from the first face's tangency line to the second's.
     let (first, second) = if seat
         .along
         .dot(seat.normals[0].cross(seat.normals[1]))
@@ -4313,11 +4324,47 @@ pub(crate) fn seated_fillet(
     if depth <= tol.angular() {
         ogeom_bail!(Construction, "the faces meet too sharply to seat a fillet");
     }
-    let centre = seat.start + bisector * (radius / depth);
+    let offset = bisector * (radius / depth);
     let sweep = seat.along.dot(n1.cross(n2)).atan2(n1.dot(n2));
     if sweep <= tol.angular() {
         ogeom_bail!(Construction, "the faces are parallel; there is no corner");
     }
+    Ok(BallSeat {
+        first,
+        second,
+        n1,
+        n2,
+        sign,
+        offset,
+        sweep,
+    })
+}
+
+/// The cylindrical blend of a seat, whatever found the seat.
+///
+/// A blend's construction cares about the seat (where the ball rolls and
+/// which way the two planes face) and not at all about whether an edge of
+/// the solid runs along it. An edge gives one; two faces that share nothing
+/// give the same one through their planes' own intersection, and everything
+/// from here down is common to both.
+pub(crate) fn seated_fillet(
+    model: &mut Model,
+    solid: &Shape,
+    seat: &Seat,
+    radius: f64,
+    edge: Option<&Shape>,
+    trims: &[(Point, Vector)],
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let BallSeat {
+        n1,
+        n2,
+        sign,
+        offset,
+        sweep,
+        ..
+    } = ball_seat(seat, radius, tol)?;
+    let centre = seat.start + offset;
 
     let travel = seat.end - seat.start;
     let length = travel.magnitude();

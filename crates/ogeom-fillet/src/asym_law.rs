@@ -122,78 +122,17 @@ fn varying(
         }
     }
 
-    // The faces in the order that turns positively about the crease, so the
-    // section runs from the first face's contact to the second's.
-    let (first, second) = if seat
-        .along
-        .dot(seat.normals[0].cross(seat.normals[1]))
-        .is_sign_positive()
-    {
-        (0, 1)
-    } else {
-        (1, 0)
-    };
     let sign = if seat.convex { 1.0 } else { -1.0 };
-
-    // Along the edge: the union of both laws' pieces, each law one cubic
-    // over each stretch, in Bezier form.
-    let pieces = [law(first).pieces(tol), law(second).pieces(tol)];
-    let mut breaks: Vec<f64> = pieces
-        .iter()
-        .flat_map(|p| p.iter().flat_map(|(a, b, _)| [*a, *b]))
-        .collect();
-    breaks.sort_by(f64::total_cmp);
-    breaks.dedup_by(|a, b| (*a - *b).abs() <= tol.parametric());
-    let windowed = |which: usize, a: f64, b: f64| -> [f64; 4] {
-        let middle = 0.5 * (a + b);
-        let &(x0, x1, bezier) = pieces[which]
-            .iter()
-            .find(|(x0, x1, _)| *x0 <= middle && middle <= *x1)
-            .unwrap_or(&pieces[which][0]);
-        bezier_window(bezier, (x0, x1), (a, b))
-    };
-    // The distances' control values along the edge, end to end, and the
-    // crease's at the same places.
-    let mut along: Vec<(f64, f64, Point)> = Vec::new();
-    for (k, span) in breaks.windows(2).enumerate() {
-        let (a, b) = (span[0], span[1]);
-        let (da, db) = (windowed(0, a, b), windowed(1, a, b));
-        for i in usize::from(k > 0)..4 {
-            #[allow(clippy::cast_precision_loss, reason = "a Bezier index")]
-            let t = a + (b - a) * i as f64 / 3.0;
-            along.push((da[i], db[i], crease(t)));
-        }
-    }
-    let mut u_knots = vec![0.0; 4];
-    for &k in &breaks[1..breaks.len() - 1] {
-        u_knots.extend([k; 3]);
-    }
-    u_knots.extend([1.0; 4]);
-
-    // Across: the section's pieces, one row of the net per control value
-    // along the edge.
-    let row = |(da, db, apex): (f64, f64, Point)| {
-        conic_pieces([apex + f[first] * da, apex, apex + f[second] * db], w)
-    };
-    let (_, weight, v_knots) = row(along[0]);
-    let rows: Vec<Vec<Point>> = along.iter().map(|&c| row(c).0).collect();
+    let VaryingNet {
+        first,
+        second,
+        rows,
+        weight,
+        u_knots,
+        v_knots,
+        surface,
+    } = varying_net(&seat, [law(0), law(1)], f, w, tol)?;
     let (nu, nv) = (rows.len(), rows[0].len());
-    let mut net = Vec::with_capacity(nu * nv);
-    for r in &rows {
-        for (j, q) in r.iter().enumerate() {
-            net.push(Weighted::new(
-                *q,
-                if j % 2 == 1 { weight } else { 1.0 },
-                tol,
-            )?);
-        }
-    }
-    let surface: SurfaceGeometry = BSplineSurface::rational(
-        KnotVector::new(u_knots.clone(), 3)?,
-        KnotVector::new(v_knots.clone(), 2)?,
-        ControlGrid::new(net, nu, nv)?,
-    )?
-    .into();
     let surface_id = model.geometry_mut().add_surface(surface.clone());
 
     let apex = [seat.start, seat.end];
@@ -355,6 +294,121 @@ fn varying(
     let faces = [leg_a, leg_b, cap0, cap1, band];
     let wedge = crate::support::wedge_solid(model, &faces, false, tol)?;
     crate::support::apply_wedge_solid(model, solid, Some(edge), &wedge, !seat.convex, tol)
+}
+
+/// The band of a varying asymmetric round on a straight seat between two
+/// planes: the faces in the order the section runs, the net's rows (one
+/// per control value along the edge, each the section's pieces across),
+/// the pieces' middle weight, both knot vectors, and the surface.
+pub(crate) struct VaryingNet {
+    /// The seat's face the section starts on.
+    pub first: usize,
+    /// The face it ends on.
+    pub second: usize,
+    /// The control points, row by row along the edge.
+    pub rows: Vec<Vec<Point>>,
+    /// The weight of every middle control point across.
+    pub weight: f64,
+    /// The knots along the edge, on the edge's fraction.
+    pub u_knots: Vec<f64>,
+    /// The knots across, on `[0, 1]`.
+    pub v_knots: Vec<f64>,
+    /// The band.
+    pub surface: SurfaceGeometry,
+}
+
+/// [`VaryingNet`] of `seat` whose distance on each face, in the seat's
+/// face order, follows `laws` by the fraction of the edge, its legs `f`
+/// and its section's weight `w`.
+pub(crate) fn varying_net(
+    seat: &crate::support::Seat,
+    laws: [&Profile; 2],
+    f: [Vector; 2],
+    w: f64,
+    tol: Tolerances,
+) -> OgeomResult<VaryingNet> {
+    let length = seat.start.distance(seat.end);
+    let crease = |s: f64| seat.start + seat.along * (length * s);
+    // The faces in the order that turns positively about the crease, so the
+    // section runs from the first face's contact to the second's.
+    let (first, second) = if seat
+        .along
+        .dot(seat.normals[0].cross(seat.normals[1]))
+        .is_sign_positive()
+    {
+        (0, 1)
+    } else {
+        (1, 0)
+    };
+
+    // Along the edge: the union of both laws' pieces, each law one cubic
+    // over each stretch, in Bezier form.
+    let pieces = [laws[first].pieces(tol), laws[second].pieces(tol)];
+    let mut breaks: Vec<f64> = pieces
+        .iter()
+        .flat_map(|p| p.iter().flat_map(|(a, b, _)| [*a, *b]))
+        .collect();
+    breaks.sort_by(f64::total_cmp);
+    breaks.dedup_by(|a, b| (*a - *b).abs() <= tol.parametric());
+    let windowed = |which: usize, a: f64, b: f64| -> [f64; 4] {
+        let middle = 0.5 * (a + b);
+        let &(x0, x1, bezier) = pieces[which]
+            .iter()
+            .find(|(x0, x1, _)| *x0 <= middle && middle <= *x1)
+            .unwrap_or(&pieces[which][0]);
+        bezier_window(bezier, (x0, x1), (a, b))
+    };
+    // The distances' control values along the edge, end to end, and the
+    // crease's at the same places.
+    let mut along: Vec<(f64, f64, Point)> = Vec::new();
+    for (k, span) in breaks.windows(2).enumerate() {
+        let (a, b) = (span[0], span[1]);
+        let (da, db) = (windowed(0, a, b), windowed(1, a, b));
+        for i in usize::from(k > 0)..4 {
+            #[allow(clippy::cast_precision_loss, reason = "a Bezier index")]
+            let t = a + (b - a) * i as f64 / 3.0;
+            along.push((da[i], db[i], crease(t)));
+        }
+    }
+    let mut u_knots = vec![0.0; 4];
+    for &k in &breaks[1..breaks.len() - 1] {
+        u_knots.extend([k; 3]);
+    }
+    u_knots.extend([1.0; 4]);
+
+    // Across: the section's pieces, one row of the net per control value
+    // along the edge.
+    let row = |(da, db, apex): (f64, f64, Point)| {
+        conic_pieces([apex + f[first] * da, apex, apex + f[second] * db], w)
+    };
+    let (_, weight, v_knots) = row(along[0]);
+    let rows: Vec<Vec<Point>> = along.iter().map(|&c| row(c).0).collect();
+    let (nu, nv) = (rows.len(), rows[0].len());
+    let mut net = Vec::with_capacity(nu * nv);
+    for r in &rows {
+        for (j, q) in r.iter().enumerate() {
+            net.push(Weighted::new(
+                *q,
+                if j % 2 == 1 { weight } else { 1.0 },
+                tol,
+            )?);
+        }
+    }
+    let surface: SurfaceGeometry = BSplineSurface::rational(
+        KnotVector::new(u_knots.clone(), 3)?,
+        KnotVector::new(v_knots.clone(), 2)?,
+        ControlGrid::new(net, nu, nv)?,
+    )?
+    .into();
+    Ok(VaryingNet {
+        first,
+        second,
+        rows,
+        weight,
+        u_knots,
+        v_knots,
+        surface,
+    })
 }
 
 /// The cubic Bezier `b` over `(x0, x1)` restricted to `(a, b)` within it,
