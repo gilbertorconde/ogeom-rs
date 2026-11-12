@@ -1,6 +1,6 @@
 //! The acceptance corpus for rounds on planar faces (ADR 0001, M2, §12).
 //!
-//! Each case asks the public calls the engine will answer, and holds the
+//! Each case asks the public calls the engine answers, and holds the
 //! answer to an exact oracle where one exists, to bounds where the result
 //! has a general vertex patch, and on every case to:
 //!
@@ -11,10 +11,7 @@
 //! - no overhang: no blend face looks down past the original faces beside
 //!   it by more than the fill's wobble.
 //!
-//! The cases run only with `OGEOM_M2_CORPUS` set, until rounds on planar
-//! faces route through the engine: today's path fails them on the order
-//! of the request and refuses some, and the class switches only once they
-//! pass on the engine (ADR 0001, §11). Without it each returns at once.
+//! Each case is heavy and runs with the ignored tests.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::PI;
@@ -26,12 +23,6 @@ use ogeom_math::{Direction, Frame, Plane, Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
 const T: Tolerances = Tolerances::millimetres();
-
-/// Whether the corpus is asked for: until planar rounds route through the
-/// engine, only where `OGEOM_M2_CORPUS` is set.
-fn asked() -> bool {
-    std::env::var_os("OGEOM_M2_CORPUS").is_some()
-}
 
 fn fine() -> ogeom_mesh::Deflection {
     ogeom_mesh::Deflection {
@@ -438,9 +429,6 @@ fn concave_edges(profile: &[(f64, f64)], length: f64) -> Vec<(Point, Point)> {
 #[test]
 #[ignore = "heavy"]
 fn every_edge_of_a_box_is_the_inner_box_swept_by_the_ball() {
-    if !asked() {
-        return;
-    }
     let (a, b, c) = (20.0, 14.0, 9.0);
     for r in [0.5, 1.0, 2.0, 4.0] {
         let mut m = Model::new();
@@ -548,9 +536,6 @@ fn prismatic() -> Vec<Part> {
 #[test]
 #[ignore = "heavy"]
 fn the_sweep_edges_of_each_prismatic_part_take_their_rounded_profile_along() {
-    if !asked() {
-        return;
-    }
     for (name, profile, length, radii) in prismatic() {
         let (convex, concave) = corners(&profile);
         let reaches = concave_edges(&profile, length);
@@ -580,9 +565,6 @@ fn the_sweep_edges_of_each_prismatic_part_take_their_rounded_profile_along() {
 #[test]
 #[ignore = "heavy"]
 fn every_edge_of_each_prismatic_part_rounds_whatever_the_order() {
-    if !asked() {
-        return;
-    }
     for (name, profile, length, radii) in prismatic() {
         let (convex, concave) = corners(&profile);
         let reaches = concave_edges(&profile, length);
@@ -621,9 +603,6 @@ fn every_edge_of_each_prismatic_part_rounds_whatever_the_order() {
 #[test]
 #[ignore = "heavy"]
 fn rounds_and_bevels_in_one_request_take_the_bevels_first_whatever_the_order() {
-    if !asked() {
-        return;
-    }
     let (a, b, c) = (20.0, 14.0, 9.0);
     let (d, r) = (1.0, 2.0);
     let mut first: Option<(u64, Vec<[u64; 3]>)> = None;
@@ -671,9 +650,6 @@ fn rounds_and_bevels_in_one_request_take_the_bevels_first_whatever_the_order() {
 #[test]
 #[ignore = "heavy"]
 fn unequal_radii_at_a_box_s_corners_patch_whatever_the_order() {
-    if !asked() {
-        return;
-    }
     let (a, b, c) = (20.0, 14.0, 9.0);
     let mut m = Model::new();
     let s = ogeom_algo::make_box(&mut m, Frame::WORLD, (a, b, c), T)
@@ -726,9 +702,6 @@ fn unequal_radii_at_a_box_s_corners_patch_whatever_the_order() {
 #[test]
 #[ignore = "heavy"]
 fn every_edge_of_a_sixty_edge_comb_rounds_in_under_a_second() {
-    if !asked() {
-        return;
-    }
     let mut profile = vec![(0.0, 0.0), (18.0, 0.0), (18.0, 6.0)];
     for k in (0..4).rev() {
         #[allow(clippy::cast_precision_loss, reason = "four teeth")]

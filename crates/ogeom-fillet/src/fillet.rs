@@ -564,6 +564,20 @@ fn route(
 /// Round a chain of edges in one call, each blend applied in turn and every
 /// later edge resolved through the history the earlier blends wrote.
 ///
+/// A solid bounded by planes, each face one ring of straight edges, goes
+/// first through the blend engine (docs/adr/0001-blend-architecture.md),
+/// which builds the whole request in one pass, the same solid in any order.
+/// Every face is set back to where its rounds' contact lines meet. Every
+/// round is its exact cylinder between them, ended through its faces'
+/// setback corners (skew on the cylinder where they stand at different
+/// stations). A vertex closes as a sphere where one ball touches its three
+/// faces there, flush in its third face where one round ends square to it,
+/// and otherwise with one transfinite patch tangent to the three rounds'
+/// ends within the bands' fit target. Every face is proved within the
+/// material it rounds. A request the engine does not take (curved faces,
+/// a face set back to a line, a vertex of four edges, an edge's two ends
+/// set back past each other) is rounded as follows.
+///
 /// At a tangent junction the neighbouring wedges' end caps stand in one
 /// plane with one cross-section, and the boolean's same-domain resolution
 /// melts them: the blends join without a seam face between them. Two
@@ -655,6 +669,10 @@ pub fn fillet_edges(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    let asked: Vec<(Shape, f64)> = edges.iter().map(|e| (e.clone(), radius)).collect();
+    if let Some(built) = rounds_by_engine(model, solid, &asked, tol)? {
+        return Ok(built);
+    }
     let radii = vec![radius; edges.len()];
     ogeom_algo::on_own_nodes(model, solid, edges, |model, solid, parts| {
         cut_off_bands(
@@ -668,7 +686,10 @@ pub fn fillet_edges(
 
 /// [`fillet_edges`] with a radius per edge.
 ///
-/// With every radius the same, exactly [`fillet_edges`] at that radius.
+/// With every radius the same, exactly [`fillet_edges`] at that radius. A
+/// solid bounded by planes goes through the blend engine as there, a corner
+/// of three radii closed with its transfinite patch; the rest is rounded as
+/// follows.
 /// Each band is built at its own radius and checked against the others as
 /// [`fillet_edges`] checks them. Two edges of one radius meet as there.
 /// Two edges of different radii turning at a vertex are rounded in turn,
@@ -710,6 +731,9 @@ pub fn fillet_edges_with(
             );
         }
     }
+    if let Some(built) = rounds_by_engine(model, solid, edges, tol)? {
+        return Ok(built);
+    }
     ogeom_algo::on_own_nodes(model, solid, &shapes, |model, solid, parts| {
         cut_off_bands(
             model,
@@ -718,6 +742,35 @@ pub fn fillet_edges_with(
             tol,
         )
     })
+}
+
+/// The rounds of `edges` built by the blend engine in one pass, where the
+/// solid is bounded by planes and every vertex is one the engine closes;
+/// `None` leaves the request to the current path. An edge asked twice at
+/// one radius is asked once.
+fn rounds_by_engine(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let mut once: Vec<(Shape, f64)> = Vec::with_capacity(edges.len());
+    for (edge, radius) in edges {
+        if !once.iter().any(|(e, _)| e.is_same(edge)) {
+            once.push((edge.clone(), *radius));
+        }
+    }
+    // Nothing asked, or a radius that rounds nothing, is refused by the
+    // current path, in its words.
+    if once.is_empty()
+        || once
+            .iter()
+            .any(|(_, r)| !(r.is_finite() && *r > tol.confusion()))
+    {
+        return Ok(None);
+    }
+    let request = crate::engine::Request::from_rounds(&once, tol)?;
+    crate::engine::run(model, solid, &request, tol)
 }
 
 /// [`fillet_edges_with`] on a shape every node below which is its own, its

@@ -29,13 +29,6 @@ pub(crate) enum Section {
     /// two faces, each face named.
     Chamfer { on: [(Shape, f64); 2] },
     /// A round: the rolling ball of this radius.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "fillet_edges routes its rounds here once the M2 corpus passes on the engine"
-        )
-    )]
     Round { radius: f64 },
 }
 
@@ -85,13 +78,6 @@ impl Request {
     ///
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
     /// for an edge asked twice or a radius that rounds nothing.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "fillet_edges routes its rounds here once the M2 corpus passes on the engine"
-        )
-    )]
     pub fn from_rounds(rounds: &[(Shape, f64)], tol: Tolerances) -> OgeomResult<Self> {
         let mut blends: Vec<Blend> = Vec::with_capacity(rounds.len());
         for (edge, radius) in rounds {

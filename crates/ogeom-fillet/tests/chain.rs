@@ -3380,7 +3380,9 @@ fn rims_grouped_with_other_wedges_are_trimmed_before_the_rest_is_cut() {
 /// the way it was. Where a band's rail leaves a vertex along another edge closely enough
 /// that the general fuse splits the two where they part (a corner rounded
 /// at a hundredth, a band ending on an edge stating a millimetre's
-/// thousandth), the cut is left to the general fuse.
+/// thousandth), the cut is left to the general fuse. A solid of planes the
+/// blend engine takes (the cube, the corners, the bands across) is cut by
+/// neither: it is built in one pass, the same solid either way.
 #[test]
 fn seated_bands_are_cut_by_trimming_to_the_general_fuse_s_solid() {
     type Made = (ogeom_topo::Shape, Vec<ogeom_topo::Shape>, f64);
@@ -3474,10 +3476,10 @@ fn seated_bands_are_cut_by_trimming_to_the_general_fuse_s_solid() {
         (solid, edges, 0.5)
     };
     let cases: [(&str, Case, bool); 7] = [
-        ("cube", &cube, true),
-        ("corner at a tenth", &|m| corner(m, 0.1), true),
+        ("cube", &cube, false),
+        ("corner at a tenth", &|m| corner(m, 0.1), false),
         ("corner at a hundredth", &|m| corner(m, 0.01), false),
-        ("across", &|m| across(m, false), true),
+        ("across", &|m| across(m, false), false),
         ("across a loose edge", &|m| across(m, true), false),
         ("slab", &slab, true),
         ("holed", &holed, true),
@@ -4056,8 +4058,9 @@ fn concave_bands_running_into_a_filled_corner_are_trimmed_to_the_general_fuse_s_
 /// the section swept along the chain takes or adds. The cases are a block's
 /// top loop once its upright edges are rounded, a stadium prism's top loop,
 /// a stadium slot's top loop (the arcs on a concave wall), and for a union a
-/// rounded pocket's floor loop. Where a hole comes up into the sector a
-/// corner's wedge lies in, the cut is left to the general fuse.
+/// rounded pocket's floor loop, and the block's top loop with a hole coming
+/// up into the sector a corner's wedge lies in, its upright edges rounded
+/// each on a cylinder spanning its strip alone.
 #[test]
 fn rims_pieces_in_a_tangent_chain_are_trimmed_to_the_general_fuse_s_solid() {
     use core::f64::consts::{FRAC_PI_4, PI};
@@ -4201,7 +4204,7 @@ fn rims_pieces_in_a_tangent_chain_are_trimmed_to_the_general_fuse_s_solid() {
         (
             "a hole into a corner's sector",
             &|m| rounded_block(m, Some(Point::new(18.5, 1.5, -1.0))),
-            false,
+            true,
         ),
     ];
     for (name, case, trimmed) in cases {

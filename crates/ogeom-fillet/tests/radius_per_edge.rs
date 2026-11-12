@@ -106,9 +106,9 @@ fn two_radii_turning_at_a_vertex_take_the_union_of_their_bands() {
 }
 
 /// A box's three edges at one corner at three radii: no ball rolls round
-/// it, so each band stops where its section clears the others and one
-/// patch closes the corner, tangent to every band end and face, the same
-/// whatever the order asked.
+/// it, so each strip ends through its faces' setback corners and one patch
+/// closes the corner, tangent to every strip's end, the same whatever the
+/// order asked.
 #[test]
 fn three_radii_at_a_corner_close_with_one_patch_in_any_order() {
     let mut m = Model::new();
@@ -127,22 +127,11 @@ fn three_radii_at_a_corner_close_with_one_patch_in_any_order() {
         let rounded = fillet_edges_with(&mut m, &b, &request, T).unwrap();
         let found = ogeom_algo::check(&m, &rounded.shape, T).unwrap();
         assert!(found.is_valid(), "{:?}", found.problems);
-        // The patch: the face bounded by the three band ends and the three
-        // face trims, tangent across each.
-        let patch = explore_unique(&m, &rounded.shape, ShapeType::Face)
-            .unwrap()
-            .into_iter()
-            .find(|f| {
-                let spline = m
-                    .node(f)
-                    .and_then(|n| n.data().as_face())
-                    .and_then(|d| m.geometry().surface(d.surface))
-                    .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::BSpline(_)));
-                spline && explore_unique(&m, f, ShapeType::Edge).unwrap().len() == 6
-            })
-            .expect("the corner patch");
+        // The patch: the face bounded by the three strips' ends, which meet
+        // at the faces' setback corners, tangent across each.
+        let patch = corner_patch(&m, &b, &rounded, [0.0, 0.0, 10.0]);
         let contacts = ogeom_fillet::analyse_blend(&m, &rounded.shape, &patch, 17, T).unwrap();
-        assert_eq!(contacts.len(), 6, "{contacts:?}");
+        assert_eq!(contacts.len(), 3, "{contacts:?}");
         for c in &contacts {
             assert!(c.tangency_error < 1e-3, "a crease across the patch: {c:?}");
         }
@@ -170,12 +159,9 @@ fn three_radii_at_a_corner_close_with_one_patch_in_any_order() {
     );
 }
 
-/// The issue's corner at 1, 3 and 2. The patch that meets every band end
-/// and face tangent, fitted freely, stands 0.018 past the face at x = 0,
-/// outside the block; held inside the vertex's planes where it strays, it
-/// closes the corner tangent to every side and within the block, the same
-/// solid whatever the order asked, its volume between the corner rounded
-/// at 1 and at 3.
+/// The issue's corner at 1, 3 and 2: the patch closes it tangent to every
+/// strip's end and within the block, the same solid whatever the order
+/// asked, its volume between the corner rounded at 1 and at 3.
 #[test]
 fn the_issue_s_three_radii_close_within_the_block_in_any_order() {
     let mut m = Model::new();
@@ -193,20 +179,9 @@ fn the_issue_s_three_radii_close_within_the_block_in_any_order() {
             fillet_edges_with(&mut m, &b, &request, T).unwrap_or_else(|e| panic!("{order:?}: {e}"));
         let found = ogeom_algo::check(&m, &rounded.shape, T).unwrap();
         assert!(found.is_valid(), "{order:?}: {:?}", found.problems);
-        let patch = explore_unique(&m, &rounded.shape, ShapeType::Face)
-            .unwrap()
-            .into_iter()
-            .find(|f| {
-                let spline = m
-                    .node(f)
-                    .and_then(|n| n.data().as_face())
-                    .and_then(|d| m.geometry().surface(d.surface))
-                    .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::BSpline(_)));
-                spline && explore_unique(&m, f, ShapeType::Edge).unwrap().len() == 6
-            })
-            .expect("the corner patch");
+        let patch = corner_patch(&m, &b, &rounded, [0.0, 0.0, 10.0]);
         let contacts = ogeom_fillet::analyse_blend(&m, &rounded.shape, &patch, 17, T).unwrap();
-        assert_eq!(contacts.len(), 6, "{contacts:?}");
+        assert_eq!(contacts.len(), 3, "{contacts:?}");
         let worst = contacts
             .iter()
             .map(|c| c.tangency_error)
@@ -253,6 +228,25 @@ fn the_issue_s_three_radii_close_within_the_block_in_any_order() {
         "{three} < {} < {one}",
         volumes[0]
     );
+}
+
+/// The face `rounded`'s history makes of `b`'s vertex at `at`: the corner's
+/// patch.
+fn corner_patch(m: &Model, b: &Shape, rounded: &ogeom_algo::Built, at: [f64; 3]) -> Shape {
+    let vertex = explore_unique(m, b, ShapeType::Vertex)
+        .unwrap()
+        .into_iter()
+        .find(|v| {
+            let p = m
+                .node(v)
+                .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                .unwrap();
+            p.distance(ogeom_math::Point::new(at[0], at[1], at[2])) < 1e-9
+        })
+        .expect("the corner");
+    let made = rounded.history.generated(&vertex);
+    assert_eq!(made.len(), 1, "one patch at the corner");
+    made[0].clone()
 }
 
 /// A square pyramid, its apex at (0, 0, 10).

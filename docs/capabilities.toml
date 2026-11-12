@@ -1469,8 +1469,16 @@ at its own setback, cut square to its edge; on each face the trim runs \
 from one band's rail end to the next on a conic tangent to both rails, \
 and one patch fills the opening of arcs and conics, fitted G1 to every \
 band end and face within the bands' fit target. A setback equal to the \
-ball's own is the ball corner. fillet_edges_with closes a corner of three \
-bands of different radii the same way, each band stopped its own width past \
+ball's own is the ball corner. On a solid bounded by planes, \
+fillet_edges and fillet_edges_with close a corner of three rounds no one \
+ball touches (three radii, or convex and concave meeting, as at an \
+L-bracket's front edges at its re-entrant edge) through the blend engine, \
+the same solid in any order: each strip ends through its faces' setback \
+corners, skew on its cylinder where they stand apart, and one transfinite \
+patch closes the corner tangent to the three strips' ends within the bands' \
+fit target, proved inside the corner's material, concave rounds' fill \
+included. Off the engine's class, fillet_edges_with closes a corner of three \
+bands of different radii the same way as round_vertex_setback, each band stopped its own width past \
 the least setback at which its section clears the others, and short of \
 where any other band reaches its section plane. A patch fitted freely \
 that strays past a plane of the vertex is held inside it where it strayed \
@@ -1526,6 +1534,7 @@ tests = [
     "crates/ogeom-fillet/tests/mixed_vertex.rs",
     "crates/ogeom-fillet/tests/cell_guard.rs",
     "crates/ogeom-fillet/tests/blend_edges.rs::a_round_meeting_a_bevel_beside_a_sharp_edge_closes_whatever_the_order",
+    "crates/ogeom-fillet/tests/blend_corpus_rounds.rs",
 ]
 
 [[capability]]
