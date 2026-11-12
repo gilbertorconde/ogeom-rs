@@ -12,21 +12,24 @@ use ogeom_topo::{Model, Shape};
 /// meet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChamferCorner {
-    /// The bevels mitre into one point, as
-    /// [`chamfer_edges_with`](crate::chamfer_edges_with) leaves them.
+    /// The bevels mitre into one point, by wedges built on the solid as given
+    /// and applied together.
     Point,
     /// Each bevel stops at the plane through the points where two bevels'
     /// contact lines cross on the face they share, and the corner is the
-    /// polygon there: a triangle at a corner of three bevels.
+    /// polygon there: a triangle at a corner of three bevels. What
+    /// [`chamfer_edges_with`](crate::chamfer_edges_with) builds.
     Facet,
 }
 
 /// [`chamfer_edges_with`](crate::chamfer_edges_with), the vertices where
 /// three or more of its bevels meet closed as `corner` says.
 ///
-/// [`ChamferCorner::Point`] is exactly
-/// [`chamfer_edges_with`](crate::chamfer_edges_with). For
-/// [`ChamferCorner::Facet`] each such vertex is a convex corner of three
+/// [`ChamferCorner::Facet`] is exactly
+/// [`chamfer_edges_with`](crate::chamfer_edges_with): on a solid bounded by
+/// planes the blend engine closes each such vertex, convex, concave or
+/// mixed, with the polygon through its faces' setback corners. Elsewhere,
+/// and past what the engine's setbacks hold, each such vertex is a convex corner of three
 /// planes, each pair of its bevels sharing one face there: on that face the
 /// two bevels' contact lines cross at a point, and the three points span
 /// the facet's plane. The mitred bevels meet at the point their three planes
@@ -60,20 +63,18 @@ pub fn chamfer_edges_cornered(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     if corner == ChamferCorner::Point {
-        return crate::chamfer_edges_with(model, solid, specs, tol);
+        return crate::chamfer::chamfer_edges_mitred(model, solid, specs, tol);
     }
     if specs.is_empty() {
         ogeom_bail!(Construction, "a chain of no edges bevels nothing");
     }
     // A solid bounded by planes is chamfered by the blend engine in one
     // pass: every face set back, every vertex its facet.
-    if let Some(request) = crate::engine::Request::from_chamfers(model, solid, specs, tol)?
-        && let Some(built) = crate::engine::run(model, solid, &request, tol)?
-    {
+    if let Some(built) = crate::chamfer::engine_chamfer(model, solid, specs, tol)? {
         return Ok(built);
     }
     let cuts = facets(model, solid, specs, tol)?;
-    let mut built = crate::chamfer_edges_with(model, solid, specs, tol)?;
+    let mut built = crate::chamfer::chamfer_edges_mitred(model, solid, specs, tol)?;
     for cut in cuts {
         let faces = match cut {
             Cut::Tetrahedron(corners) => tetrahedron(model, corners, tol)?,

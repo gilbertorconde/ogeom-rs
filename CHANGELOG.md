@@ -11,7 +11,40 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
-### Added
+### Changed
+
+- **Chamfers of a solid bounded by planes go through the blend engine,
+  and a corner of three bevels takes a facet by default.** (#902; ADR 0001,
+  §13)
+  - `chamfer_edge`, `chamfer_edge_distances`, `chamfer_edge_angle`,
+    `chamfer_edges` and `chamfer_edges_with` build such a solid in one pass
+    by setbacks: every face set back from its bevelled edges, every bevel
+    the plane between its two setback lines, every vertex of three bevels
+    the facet through the points where their contact lines cross. The
+    result is the same for every order of the request.
+  - **The default corner is the facet**, as mainstream applications close
+    a corner of three bevels. It was the mitre, the three bevel planes
+    meeting at a point. The mitre stays available as
+    `chamfer_edges_cornered` with `ChamferCorner::Point`.
+    `ChamferCorner::Facet` is now exactly `chamfer_edges_with`.
+  - A bevel running into an earlier one, in a second call, mitres along
+    the line their planes share; it no longer leaves a small cap face.
+  - A request its faces cannot hold (a face its setbacks consume, such as
+    two bevels crossing on a thin wall) and any other solid are chamfered
+    by wedges, mitred, as before.
+- **Chamfer history.** A bevelled edge is deleted and generates its bevel.
+  Each face set back is modified into its new face. An edge or vertex left
+  as it was is modified into its new one, since the solid is rebuilt.
+
+### Fixed
+
+- **Bevels meeting at a face's reflex corner left a notch.** Two edges of
+  one face chamfered where they meet at the face's inside corner (an L's
+  end face, the top of an L-shaped block) each stopped at the vertex, and
+  the corner's column, `d³/3` for a chamfer of `d`, stood uncut: a wrong
+  solid that `check` passed. The bevels now run on past the vertex to each
+  other's plane and mitre across the corner, the face's outline set back
+  round it.
 
 - **The blend engine** (`docs/adr/0001-blend-architecture.md`, #902). One
   model for fillets and chamfers, built in fixed phases from the solid as

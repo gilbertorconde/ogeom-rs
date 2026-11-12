@@ -25,9 +25,17 @@ fn newell(points: &[Point], ring: &[usize]) -> Vector {
     n
 }
 
-/// Refuse a ring that crosses itself, a face turned inside out, or two
-/// rings crossing.
-pub(crate) fn rings_fit(points: &[Point], rings: &[Ring], tol: Tolerances) -> OgeomResult<()> {
+/// Whether the rings stand inside the setback domain: every vertex ring
+/// planar, no face turned inside out, no ring crossing itself, no two
+/// rings crossing. `false` where they do not (a face the setbacks consume,
+/// a corner closing with a patch): the request lies outside the engine's
+/// classes as they stand, and its caller keeps its own path.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) for a
+/// strip or face ring off its plane, which the construction never makes.
+pub(crate) fn rings_fit(points: &[Point], rings: &[Ring], tol: Tolerances) -> OgeomResult<bool> {
     for (ring, origin, _) in rings {
         let n = newell(points, ring);
         let n = n / n.magnitude();
@@ -37,14 +45,10 @@ pub(crate) fn rings_fit(points: &[Point], rings: &[Ring], tol: Tolerances) -> Og
             .map(|i| (points[*i] - a).dot(n).abs())
             .fold(0.0, f64::max);
         if off > tol.confusion() * 10.0 {
+            // A corner whose setback corners do not lie on one plane closes
+            // with a patch through them (ADR 0001, §13), not built yet.
             if origin.iter().all(|o| matches!(o, Origin::Vertex(_))) {
-                ogeom_bail!(
-                    Construction,
-                    "a chamfer corner of {} bevels whose contact lines do not cross \
-                         on one plane closes with a patch through them, which is not \
-                         built yet; see docs/CAPABILITIES.md, fillet.chamfers",
-                    ring.len()
-                );
+                return Ok(false);
             }
             ogeom_bail!(
                 Construction,
@@ -56,11 +60,7 @@ pub(crate) fn rings_fit(points: &[Point], rings: &[Ring], tol: Tolerances) -> Og
         if let Some(facing) = facing
             && newell(points, ring).dot(*facing) <= 0.0
         {
-            ogeom_bail!(
-                Construction,
-                "a chamfer turns a face inside out: the distance is past what \
-                     the face holds"
-            );
+            return Ok(false);
         }
     }
     let frames: Vec<(Vector, Vector, Vector, Point)> = rings
@@ -81,11 +81,7 @@ pub(crate) fn rings_fit(points: &[Point], rings: &[Ring], tol: Tolerances) -> Og
     for (ri, (ring, _, _)) in rings.iter().enumerate() {
         let pts: Vec<(f64, f64)> = ring.iter().map(|i| flat(ri, points[*i])).collect();
         if crosses_itself(&pts, tol.confusion()) {
-            ogeom_bail!(
-                Construction,
-                "a chamfer's setbacks cross over on a face: the distance is past \
-                     what the face holds"
-            );
+            return Ok(false);
         }
     }
     // A segment of one ring passing through another's inside.
@@ -104,16 +100,12 @@ pub(crate) fn rings_fit(points: &[Point], rings: &[Ring], tol: Tolerances) -> Og
                 }
                 let x = p + (q - p) * (sp / (sp - sq));
                 if strictly_inside(&pts, flat(ri, x), tol.confusion()) {
-                    ogeom_bail!(
-                        Construction,
-                        "two faces of the chamfered solid cross: the distance is past \
-                             what the solid holds"
-                    );
+                    return Ok(false);
                 }
             }
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 /// The built solid's own guards: the kernel's check, and no two faces folded

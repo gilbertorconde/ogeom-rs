@@ -711,9 +711,12 @@ fn l_block_with_an_edge_past_its_inside_corner(
 /// to the inside corner, in either order; the two rounds also meet in the
 /// plane bisecting the corner, each running on past its cap to it, which
 /// takes the cell past both caps that both hold, two times r^3 (5/6 -
-/// pi/4). The bevels stand capped at the vertex, flush with each other. A
-/// cap left where the curve ends would cut into the other blend past the
-/// corner.
+/// pi/4). The bevels mitre across the corner the same way: the top's
+/// outline set back round its reflex corner, each bevel running on past the
+/// vertex to the other's plane, which takes the column of the corner square
+/// both strips reach, `d³/3` (the integral of `s²` over the setback `s`
+/// from 0 to `d`). A cap left where the curve ends would cut into the
+/// other blend past the corner.
 #[test]
 fn blends_at_an_inside_corner_their_edge_runs_past_meet_at_the_vertex() {
     let size = 1.0;
@@ -743,7 +746,7 @@ fn blends_at_an_inside_corner_their_edge_runs_past_meet_at_the_vertex() {
             .shape;
             assert!(ogeom_algo::check(&model, &blended, T).unwrap().is_valid());
             let cell = if chamfer {
-                0.0
+                size * size * size / 3.0
             } else {
                 square_corner_cell(size)
             };

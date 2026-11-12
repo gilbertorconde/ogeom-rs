@@ -69,8 +69,11 @@ fn chamfer_edge_own(
     distance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    wedge_for(model, solid, edge, &Chamfer::Symmetric(distance), tol)?
-        .apply(model, solid, edge, tol)
+    let specs = [(edge.clone(), Chamfer::Symmetric(distance))];
+    if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
+        return Ok(built);
+    }
+    wedge_for(model, solid, edge, &specs[0].1, tol)?.apply(model, solid, edge, tol)
 }
 
 /// Bevel a straight edge, cutting `on_face` back along `face` and `on_other`
@@ -120,7 +123,11 @@ fn chamfer_edge_distances_own(
         on_face,
         on_other,
     };
-    wedge_for(model, solid, edge, &spec, tol)?.apply(model, solid, edge, tol)
+    let specs = [(edge.clone(), spec)];
+    if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
+        return Ok(built);
+    }
+    wedge_for(model, solid, edge, &specs[0].1, tol)?.apply(model, solid, edge, tol)
 }
 
 /// Bevel a straight edge, cutting `distance` back along `face` and leaving it
@@ -171,7 +178,11 @@ fn chamfer_edge_angle_own(
         distance,
         angle,
     };
-    wedge_for(model, solid, edge, &spec, tol)?.apply(model, solid, edge, tol)
+    let specs = [(edge.clone(), spec)];
+    if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
+        return Ok(built);
+    }
+    wedge_for(model, solid, edge, &specs[0].1, tol)?.apply(model, solid, edge, tol)
 }
 
 /// The shapes chamfer specs name: each edge, then the face its chamfer
@@ -276,15 +287,22 @@ pub fn chamfer_edges(
 /// Bevel several edges of a solid as one operation, each with its own
 /// chamfer.
 ///
-/// Every wedge is built on the solid as it stands before the call, and then
-/// every wedge is applied. That is what makes the bevels mitre: where two
-/// meet at a vertex, each wedge still reaches the corner, the two cut the
-/// region above either bevel plane, and the planes meet along their own
-/// line with neither a step nor a cap. One edge at a time
-/// ([`chamfer_edge`] in a loop) builds the second wedge on an edge the
-/// first bevel has already shortened, and each corner keeps a small
-/// tetrahedron and two extra faces. Where three bevels meet at a convex
-/// vertex the three planes meet at one point, the mitre of three planes.
+/// The whole request is read on the solid as it stands before the call, so
+/// the result is the same for every order of `specs`. Where two bevels meet
+/// at a vertex they mitre along the line their planes share, with neither a
+/// step nor a cap, at a face's reflex corner as at a convex one. Where three
+/// or more meet, the vertex is closed by the facet through the points where
+/// their contact lines cross on the faces round it
+/// ([`ChamferCorner::Facet`](crate::ChamferCorner::Facet)); the mitre of
+/// their planes is [`chamfer_edges_cornered`](crate::chamfer_edges_cornered)
+/// with [`ChamferCorner::Point`](crate::ChamferCorner::Point).
+///
+/// A solid bounded by planes is chamfered by the blend engine in one pass:
+/// every face set back from its bevelled edges, every bevel the plane
+/// between its two setback lines, every vertex of three bevels its facet. A
+/// request past what its faces hold (a face its setbacks consume), and any
+/// other solid, are chamfered by wedges built on the solid as given and
+/// applied together, mitred where bevels meet.
 ///
 /// What `solid` shares with other shapes is copied before it is
 /// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
@@ -305,7 +323,55 @@ pub fn chamfer_edges_with(
 }
 
 /// [`chamfer_edges_with`], its refusal naming the specs it concerns.
+///
+/// A solid bounded by planes goes through the blend engine
+/// ([`crate::engine`]): one pass by setbacks, each vertex of three bevels
+/// closed by a facet. Any other solid is chamfered by wedges, mitred.
 pub(crate) fn chamfer_edges_blamed(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> Result<Built, Blamed> {
+    if specs.is_empty() {
+        return Err(
+            ogeom_core::ogeom_err!(Construction, "a chain of no edges bevels nothing").into(),
+        );
+    }
+    if let Some(built) = engine_chamfer(model, solid, specs, tol)? {
+        return Ok(built);
+    }
+    chamfer_edges_mitred_blamed(model, solid, specs, tol)
+}
+
+/// The chamfer of `specs` by the blend engine, or `None` where the solid
+/// or a spec lies outside its classes.
+pub(crate) fn engine_chamfer(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let Some(request) = crate::engine::Request::from_chamfers(model, solid, specs, tol)? else {
+        return Ok(None);
+    };
+    crate::engine::run(model, solid, &request, tol)
+}
+
+/// The chamfer of `specs` by wedges built on the solid as given and
+/// applied together, mitred where bevels meet: three bevels at a convex
+/// vertex meet at the point their planes share.
+pub(crate) fn chamfer_edges_mitred(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    chamfer_edges_mitred_blamed(model, solid, specs, tol).map_err(|blamed| blamed.error)
+}
+
+/// [`chamfer_edges_mitred`], its refusal naming the specs it concerns.
+fn chamfer_edges_mitred_blamed(
     model: &mut Model,
     solid: &Shape,
     specs: &[(Shape, Chamfer)],

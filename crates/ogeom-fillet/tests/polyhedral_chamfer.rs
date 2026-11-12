@@ -471,7 +471,8 @@ fn on_a_box_the_setback_chamfer_agrees_with_the_wedge_chamfer_below_three_bevels
 }
 
 /// A distance past what the part holds (the bracket's plate is 6 thick, so
-/// its two bevels meet at 3) is refused by name, not built.
+/// its two bevels meet at 3) is refused by name, not built: it lies
+/// outside the engine's setback domain, and the facet path refuses it.
 #[test]
 fn a_chamfer_past_what_the_part_holds_is_refused_by_name() {
     let (_, profile, length) = corpus().pop().unwrap();
@@ -482,6 +483,52 @@ fn a_chamfer_past_what_the_part_holds_is_refused_by_name() {
     let Err(why) = refused else {
         panic!("built");
     };
-    let why = why.to_string();
-    assert!(why.contains("past what"), "{why}");
+    assert!(
+        matches!(why, ogeom_core::OgeomError::Construction(_)),
+        "{why}"
+    );
+}
+
+/// The L's end face, its two outline edges that meet at the face's reflex
+/// corner (y = 8, z = 8), chamfered at `d`: the bevels mitre across the
+/// corner, the end face's outline set back round it.
+///
+/// At `x` from that end each section loses the two strips the edges set
+/// back by `s = d - x`: along the edge at z = 8 (32 long) the strip from
+/// y = 8 - s, along the edge at y = 8 (22 long) the strip from z = 8 - s,
+/// both running into the corner square `s x s` they share, so their union
+/// is `54 s + s²` and the volume lost `27 d² + d³/3`. A wedge stopped at
+/// each edge's end loses only `27 d²` and leaves the corner's `d³/3`
+/// standing as a notch: a wrong solid, which the wedge chamfer built.
+#[test]
+fn bevels_meeting_at_a_face_s_reflex_corner_mitre_without_a_notch() {
+    let (_, profile, length) = corpus().remove(1);
+    let d = 1.5;
+    let mut m = Model::new();
+    let s = prism(&mut m, &profile, length);
+    let before = volume(&m, &s);
+    let (_, near, _) = sides_and_ends(&m, &s, length);
+    let at_reflex: Vec<(Shape, Chamfer)> = near
+        .into_iter()
+        .filter(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+            [a, b].iter().any(|v| {
+                let p = m.node(v).unwrap().data().as_vertex().unwrap().point;
+                (p.y - 8.0).abs() < 1e-9 && (p.z - 8.0).abs() < 1e-9
+            })
+        })
+        .map(|e| (e, Chamfer::Symmetric(d)))
+        .collect();
+    assert_eq!(at_reflex.len(), 2, "the reflex corner's two outline edges");
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &at_reflex, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert!(!folded(&m, &built.shape), "folded");
+    let got = volume(&m, &built.shape);
+    let want = before - 27.0 * d * d - d * d * d / 3.0;
+    assert!(
+        (got - want).abs() <= 1e-9 * want,
+        "volume {got} against {want} (a notch would leave {})",
+        want + d * d * d / 3.0
+    );
 }

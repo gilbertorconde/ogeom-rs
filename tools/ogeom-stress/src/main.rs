@@ -1162,10 +1162,11 @@ fn round_case(rng: &mut Rng) -> Verdict {
     };
     let want = if bevel {
         // Three bevels at a corner cut its pairs' overlaps twice over and
-        // the triple's three times: d^3 less d^3/4 to give back.
+        // the triple's three times: d^3 less d^3/4 to give back for their
+        // mitre, less the facet's tetrahedron d^3/12 the corner sheds, 2d^3/3.
         let corners = if all { 8.0 } else { 0.0 };
         let legs = if lean > 0 { r * other } else { r * r };
-        (corners * 0.75 * r).mul_add(r * r, dims.0 * dims.1 * dims.2 - legs / 2.0 * length)
+        (corners * 2.0 / 3.0 * r).mul_add(r * r, dims.0 * dims.1 * dims.2 - legs / 2.0 * length)
     } else if all {
         // The box shrunk by the radius, its faces' slabs, its edges'
         // quarter cylinders and its corners' ball.
