@@ -24,7 +24,9 @@
 //!
 //! - neither edge is degenerate, and the pair's ends are distinct vertices;
 //! - no other face of the shape walks either edge, nor this face again,
-//!   except as the pair itself (one edge walked out and back, a tail);
+//!   except as the pair itself (one edge walked out and back, a tail).
+//!   Uses are counted per placed occurrence: two placements of one face
+//!   share every node, but each walks its own edges;
 //! - neither edge is a seam on the face, and in the face's chart the tip is
 //!   one point, and a tail's walk back ends where its walk out began, with
 //!   no whole period between them along a direction the surface closes in:
@@ -37,7 +39,7 @@ use ogeom_core::{FastMap, OgeomResult, Tolerances};
 use ogeom_geom::{Curve, Curve2d as _, Surface as _, SurfaceGeometry};
 use ogeom_math::{Point2, Transform};
 use ogeom_topo::{
-    EdgeRepr, Model, Orientation, Shape, ShapeType, SurfaceId, TShapeId, explore_unique,
+    EdgeRepr, Model, Orientation, SameKey, Shape, ShapeType, SurfaceId, TShapeId, explore_unique,
 };
 
 use crate::build::edge_vertices;
@@ -69,7 +71,12 @@ pub struct Notch {
     pub parameter: f64,
 }
 
-/// How many times each edge node is walked by the faces of `shape`.
+/// How many times each edge node is walked by the faces of `shape`, every
+/// placed occurrence of it together.
+///
+/// Whether an edge is free or shared is a question about one occurrence:
+/// two placements of one face share every node and are two faces, each
+/// walking its own edges. [`placed_edge_uses`] answers it.
 ///
 /// # Errors
 ///
@@ -77,10 +84,25 @@ pub struct Notch {
 /// fails to resolve.
 pub fn edge_uses(model: &Model, shape: &Shape) -> OgeomResult<FastMap<TShapeId, usize>> {
     let mut uses: FastMap<TShapeId, usize> = FastMap::default();
+    for (edge, n) in placed_edge_uses(model, shape)? {
+        *uses.entry(edge.0.node()).or_default() += n;
+    }
+    Ok(uses)
+}
+
+/// How many times each edge of `shape`, as placed (node and placement,
+/// [`SameKey`]), is walked by the faces of `shape`.
+///
+/// # Errors
+///
+/// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if a handle
+/// fails to resolve.
+pub fn placed_edge_uses(model: &Model, shape: &Shape) -> OgeomResult<FastMap<SameKey, usize>> {
+    let mut uses: FastMap<SameKey, usize> = FastMap::default();
     for face in explore_unique(model, shape, ShapeType::Face)? {
         for wire in model.children_of(&face)? {
             for edge in model.children_of(&wire)? {
-                *uses.entry(edge.node()).or_default() += 1;
+                *uses.entry(SameKey(edge)).or_default() += 1;
             }
         }
     }
@@ -98,7 +120,7 @@ pub fn edge_uses(model: &Model, shape: &Shape) -> OgeomResult<FastMap<TShapeId, 
 /// fails to resolve; an evaluation error where a curve cannot be evaluated
 /// over its range.
 pub fn out_and_back(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Vec<OutAndBack>> {
-    let uses = edge_uses(model, shape)?;
+    let uses = placed_edge_uses(model, shape)?;
     let mut found = Vec::new();
     for face in explore_unique(model, shape, ShapeType::Face)? {
         let Some(surface_id) = model
@@ -151,7 +173,8 @@ pub fn out_and_back(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResul
 
 /// Whether `out`, then `back`, walked in that order by one wire of the
 /// face on `surface`, are a tail. `uses` counts how many times the faces of
-/// the shape walk each edge node. See the module documentation.
+/// the shape walk each edge as placed ([`placed_edge_uses`]). See the
+/// module documentation.
 ///
 /// # Errors
 ///
@@ -161,7 +184,7 @@ pub fn is_tail(
     (surface_id, surface): (SurfaceId, &SurfaceGeometry),
     out: &Shape,
     back: &Shape,
-    uses: &FastMap<TShapeId, usize>,
+    uses: &FastMap<SameKey, usize>,
     tol: Tolerances,
 ) -> OgeomResult<bool> {
     let Some((out_data, back_data)) = alone(model, out, back, uses) else {
@@ -204,7 +227,7 @@ pub fn notch_of(
     (surface_id, surface): (SurfaceId, &SurfaceGeometry),
     out: &Shape,
     back: &Shape,
-    uses: &FastMap<TShapeId, usize>,
+    uses: &FastMap<SameKey, usize>,
     tol: Tolerances,
 ) -> OgeomResult<Option<Notch>> {
     let Some((out_data, back_data)) = alone(model, out, back, uses) else {
@@ -281,14 +304,14 @@ fn alone<'m>(
     model: &'m Model,
     out: &Shape,
     back: &Shape,
-    uses: &FastMap<TShapeId, usize>,
+    uses: &FastMap<SameKey, usize>,
 ) -> Option<(&'m ogeom_topo::EdgeData, &'m ogeom_topo::EdgeData)> {
     let data = |edge: &Shape| model.node(edge).and_then(|n| n.data().as_edge());
     let (out_data, back_data) = (data(out)?, data(back)?);
     if out_data.degenerate || back_data.degenerate {
         return None;
     }
-    let used = |edge: &Shape| uses.get(&edge.node()).copied().unwrap_or(0);
+    let used = |edge: &Shape| uses.get(&SameKey(edge.clone())).copied().unwrap_or(0);
     let alone = if out.node() == back.node() {
         used(out) == 2 && out.orientation() != back.orientation()
     } else {

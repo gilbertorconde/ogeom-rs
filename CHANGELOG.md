@@ -95,6 +95,23 @@ bump may break the API and a patch bump may not.
     is 37 MB where it was 21 MB.
   - A mesh with a coordinate past 2^100, where a cost could overflow and
     compare as NaN, is still decimated by the walk.
+- **Edge uses are counted per placed occurrence.** (#880)
+  - `ogeom_algo::is_tail` and `ogeom_algo::notch_of` take the uses as
+    `FastMap<SameKey, usize>`, from the new
+    `ogeom_algo::placed_edge_uses`, in place of the node counts.
+  - `ogeom_algo::edge_uses` still answers per node, now as the sum over
+    every placed occurrence; whether an edge is free is asked of
+    `placed_edge_uses`.
+- **`ogeom_heal::Reshape` places what it rebuilds.** (#880)
+  - A request on a node (`replace`, `remove`, `split`) is read in the
+    frame of the shape it names, and every occurrence of the node takes
+    it carried by the placement between them. For a shape with no
+    repeated placements this is the same as before.
+  - New `replace_at` and `remove_at` change one occurrence alone (node
+    and placement, as reached from the shape the batch is applied to).
+  - A node rebuilt around changed children is made in its own frame and
+    placed where its occurrence stands; it used to take the root's frame
+    and lose the placement.
 
 ### Fixed
 
@@ -215,6 +232,28 @@ bump may break the API and a patch bump may not.
     vertices; an open four-walled tube and its copy give four, the
     upright edges each tube's walls share staying shared; the square and
     its copy state exactly the one pair of twins, which sewing then joins.
+
+- **Each placed copy of a face is checked and healed where it stands.**
+  (#880)
+  - Two placements of one face share every node. `out_and_back`, and
+    with it `check`, and `fix_shape`'s tail, notch and small-hole steps
+    counted an edge's uses by node, so each copy's edges counted twice
+    and nothing was found: on the 4 mm square with a tail and a copy
+    placed 10 above, `check` named no tail and `fix_shape` left the shape
+    invalid. Uses are now counted per placed occurrence, and each copy is
+    judged on its own: both tails are named and stripped, both notches
+    cut, a sliver hole of nothing goes from both.
+  - `fix_shape` moved what it rebuilt below a placement: a face placed
+    10 above, its tail stripped, came back at the origin, and a second
+    copy of a rebuilt node took the first copy's placement. Each rebuilt
+    node is now made in its own frame and placed where its occurrence
+    stands, and copies rebuilt alike share the new node.
+  - A copy is changed only where it was judged: a copy whose tail edge
+    another face walks there keeps its tail and its nodes while the copy
+    beside it is stripped.
+  - Shapes with no repeated placements heal as before: `fix_shape` on
+    every STEP solid in the corpus writes the same native file, byte for
+    byte, before and after.
 
 
 ## [0.18.1] - 2026-11-11

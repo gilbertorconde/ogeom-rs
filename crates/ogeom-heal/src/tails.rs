@@ -21,7 +21,7 @@ use ogeom_algo::{edge_vertices, linear_properties};
 use ogeom_core::{FastMap, FastSet, OgeomResult, Tolerances};
 use ogeom_mesh::Deflection;
 use ogeom_topo::{
-    EdgeRepr, Model, Orientation, Shape, ShapeType, TShapeId, VertexData, explore_unique,
+    EdgeRepr, Model, Orientation, SameKey, Shape, ShapeType, TShapeId, VertexData, explore_unique,
 };
 
 use crate::Reshape;
@@ -31,6 +31,10 @@ use crate::divide::{split_edge, vertex_point};
 /// Stage, for every wire of `shape` with a tail (see the module
 /// documentation), the wire without it, and for every hole made of tails
 /// alone, its removal. Returns how many pairs of edges are stripped.
+///
+/// Each placed occurrence of a wire is judged and stripped on its own: a
+/// copy whose tail bounds a neighbour there keeps it, and copies stripped
+/// alike share the stripped wire.
 pub(crate) fn stage_tails(
     model: &mut Model,
     shape: &Shape,
@@ -38,8 +42,8 @@ pub(crate) fn stage_tails(
     tol: Tolerances,
 ) -> OgeomResult<usize> {
     let faces = explore_unique(model, shape, ShapeType::Face)?;
-    let uses = ogeom_algo::edge_uses(model, shape)?;
-    let mut seen: FastSet<TShapeId> = FastSet::default();
+    let uses = ogeom_algo::placed_edge_uses(model, shape)?;
+    let mut seen: FastSet<SameKey> = FastSet::default();
     let mut staged: Vec<(Shape, Option<Vec<usize>>)> = Vec::new();
     let mut stripped = 0;
     for face in &faces {
@@ -55,7 +59,7 @@ pub(crate) fn stage_tails(
         };
         let stored = face.oriented(Orientation::Forward);
         for (k, wire) in model.ordered_children_of(&stored)?.into_iter().enumerate() {
-            if !seen.insert(wire.node()) {
+            if !seen.insert(SameKey(wire.clone())) {
                 continue;
             }
             let walked = model.ordered_children_of(&wire.oriented(Orientation::Forward))?;
@@ -102,15 +106,23 @@ pub(crate) fn stage_tails(
             ));
         }
     }
+    let mut made: FastMap<(TShapeId, Vec<usize>), Shape> = FastMap::default();
     for (wire, kept) in staged {
-        let node = Shape::of(wire.node());
         match kept {
-            None => reshape.remove(&node),
+            None => reshape.remove_at(&wire),
             Some(kept) => {
-                let local = model.ordered_children_of(&node)?;
-                let edges: Vec<Shape> = kept.into_iter().map(|i| local[i].clone()).collect();
-                let rebuilt = model.add_wire(&edges)?;
-                reshape.replace(&node, rebuilt);
+                let key = (wire.node(), kept);
+                let rebuilt = match made.get(&key) {
+                    Some(rebuilt) => rebuilt.clone(),
+                    None => {
+                        let local = model.ordered_children_of(&Shape::of(wire.node()))?;
+                        let edges: Vec<Shape> = key.1.iter().map(|&i| local[i].clone()).collect();
+                        let rebuilt = model.add_wire(&edges)?;
+                        made.insert(key, rebuilt.clone());
+                        rebuilt
+                    }
+                };
+                reshape.replace_at(&wire, placed_at(rebuilt, &wire));
             }
         }
     }
@@ -132,12 +144,15 @@ pub(crate) fn stage_notches(
         return Ok(0);
     }
     let faces = explore_unique(model, shape, ShapeType::Face)?;
-    let mut holders: FastMap<TShapeId, Vec<usize>> = FastMap::default();
+    let mut holders: FastMap<SameKey, Vec<usize>> = FastMap::default();
     for (k, face) in faces.iter().enumerate() {
         for vertex in explore_unique(model, face, ShapeType::Vertex)? {
-            holders.entry(vertex.node()).or_default().push(k);
+            holders.entry(SameKey(vertex)).or_default().push(k);
         }
     }
+    // A cut is made on the nodes, in their own frame, once for every
+    // placement it is staged at.
+    let mut made: FastMap<(TShapeId, TShapeId), Option<(Shape, Shape)>> = FastMap::default();
     let mut changed: FastSet<usize> = FastSet::default();
     let mut cut = 0;
     for pair in found {
@@ -169,35 +184,54 @@ pub(crate) fn stage_notches(
         else {
             continue;
         };
-        if !longer.location().is_identity() || !far.location().is_identity() {
+        // The edges and the vertex at the face's own placement, rigid, so
+        // the cut made in their own frame is the cut where they stand.
+        let at = pair.face.location();
+        if [longer.location(), shorter.location(), far.location()]
+            .iter()
+            .any(|l| *l != at)
+            || (!at.is_identity() && at.composed(model.datums())?.scale_factor().abs() != 1.0)
+        {
             continue;
         }
-        let fraction = (notch.parameter - range.0) / (range.1 - range.0);
-        let (pieces, made) = split_edge(model, &Shape::of(longer.node()), &[fraction], None, tol)?;
-        let ([first, second], [middle]) = (&pieces[..], &made[..]) else {
+        let key = (longer.node(), far.node());
+        let cut_made = match made.get(&key) {
+            Some(cut_made) => cut_made.clone(),
+            None => {
+                // The tip is where the edge out ends and the edge back begins.
+                let tip_high =
+                    (longer.orientation() == Orientation::Reversed) != (notch.longer == 0);
+                let fraction = (notch.parameter - range.0) / (range.1 - range.0);
+                let cut_made = notch_cut(
+                    model,
+                    &Shape::of(longer.node()),
+                    &Shape::of(far.node()),
+                    fraction,
+                    tip_high,
+                    tol,
+                )?;
+                made.insert(key, cut_made.clone());
+                cut_made
+            }
+        };
+        let Some((new_longer, widened)) = cut_made else {
             continue;
         };
-        // The tip is where the edge out ends and the edge back begins.
-        let tip_high = (longer.orientation() == Orientation::Reversed) != (notch.longer == 0);
-        let kept = if tip_high { first } else { second };
-        let stood = vertex_point(model, &far)?;
-        let ends = vertex_point(model, middle)?;
-        let stated = model.tolerance_of(&far)?.map_or(0.0, |t| t.get());
-        let reach = stated.max(stood.distance(ends)).max(tol.confusion());
-        let widened = model.add_vertex(VertexData::with_tolerance(stood, reach)?);
-        let new_longer = rebound(model, kept, middle, &widened)?;
-        if linear_properties(model, &new_longer, Deflection::default(), tol)?.mass <= reach {
-            continue;
-        }
         let stage = |into: &mut Reshape| {
-            into.replace(&Shape::of(longer.node()), new_longer.clone());
-            into.remove(&Shape::of(shorter.node()));
-            into.replace(&Shape::of(far.node()), widened.clone());
+            into.replace_at(longer, placed_at(new_longer.clone(), longer));
+            into.remove_at(shorter);
+            into.replace_at(&far, placed_at(widened.clone(), &far));
         };
         let mut local = Reshape::new();
         stage(&mut local);
         let mut hit: Vec<usize> = vec![k];
-        hit.extend(holders.get(&far.node()).into_iter().flatten().copied());
+        hit.extend(
+            holders
+                .get(&SameKey(far.clone()))
+                .into_iter()
+                .flatten()
+                .copied(),
+        );
         hit.sort_unstable();
         hit.dedup();
         if hit.iter().any(|h| changed.contains(h)) {
@@ -216,6 +250,45 @@ pub(crate) fn stage_notches(
         cut += 1;
     }
     Ok(cut)
+}
+
+/// The cut off a notch on `longer` at `fraction` of its range, the tip at
+/// its high end where `tip_high`, its piece kept ending at `far`, all in
+/// their own frame: the piece kept, rebounded on `far` widened to reach
+/// where it ends, and that vertex. `None` where the piece kept is no
+/// longer than that reach.
+fn notch_cut(
+    model: &mut Model,
+    longer: &Shape,
+    far: &Shape,
+    fraction: f64,
+    tip_high: bool,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Shape, Shape)>> {
+    let (pieces, made) = split_edge(model, longer, &[fraction], None, tol)?;
+    let ([first, second], [middle]) = (&pieces[..], &made[..]) else {
+        return Ok(None);
+    };
+    let kept = if tip_high { first } else { second };
+    let stood = vertex_point(model, far)?;
+    let ends = vertex_point(model, middle)?;
+    let stated = model.tolerance_of(far)?.map_or(0.0, |t| t.get());
+    let reach = stated.max(stood.distance(ends)).max(tol.confusion());
+    let widened = model.add_vertex(VertexData::with_tolerance(stood, reach)?);
+    let new_longer = rebound(model, kept, middle, &widened)?;
+    if linear_properties(model, &new_longer, Deflection::default(), tol)?.mass <= reach {
+        return Ok(None);
+    }
+    Ok(Some((new_longer, widened)))
+}
+
+/// `made`, a node in its own frame, placed where `occurrence` stands.
+fn placed_at(made: Shape, occurrence: &Shape) -> Shape {
+    if occurrence.location().is_identity() {
+        made
+    } else {
+        made.located(occurrence.location().clone())
+    }
 }
 
 #[cfg(test)]
@@ -294,6 +367,71 @@ mod tests {
             &[vec![a, spur.clone(), spur.reversed(), b, c, d]],
         );
         assert_eq!(stripped(&mut model, &face), (vec![4], 1));
+    }
+
+    /// The square with a tail out to (3, 1) and back on a second edge, and
+    /// a copy of it placed 10 above beside a triangle standing up from the
+    /// tail's edge out, which the triangle walks too. The copy below goes
+    /// without its tail; the copy above keeps it, still shared with the
+    /// triangle, on the nodes it had.
+    #[test]
+    fn a_copy_whose_tail_another_face_walks_keeps_it() {
+        use ogeom_math::{Transform, Vector};
+        let mut model = Model::new();
+        let (corners, tip) = square(&mut model);
+        let [a, b, c, d] = rim(&mut model, &corners).try_into().unwrap();
+        let out = line(&mut model, &corners[1], &tip);
+        let back = line(&mut model, &tip, &corners[1]);
+        let face = plane_face(&mut model, &[vec![a, out.clone(), back, b, c, d]]);
+        let apex = make_vertex(&mut model, Point::new(3.5, 0.5, 2.0)).shape;
+        let rise = line(&mut model, &tip, &apex);
+        let fall = line(&mut model, &apex, &corners[1]);
+        let upright = Frame::new(
+            Point::new(4.0, 0.0, 0.0),
+            Direction::new(Vector::new(1.0, 1.0, 0.0), T).unwrap(),
+            Direction::new(Vector::new(-1.0, 1.0, 0.0), T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let triangle = make_face_with_pcurves(
+            &mut model,
+            PlaneSurface::new(Plane::new(upright)).into(),
+            &[vec![out.clone(), rise, fall]],
+            T,
+        )
+        .unwrap()
+        .shape;
+        let beside = model
+            .add_compound(&[face.clone(), triangle.clone()])
+            .unwrap();
+        let above = model.placed(&beside, Transform::translation(Vector::new(0.0, 0.0, 10.0)));
+        let root = model.add_compound(&[face.clone(), above]).unwrap();
+
+        let mut reshape = Reshape::new();
+        assert_eq!(stage_tails(&mut model, &root, &mut reshape, T).unwrap(), 1);
+        let built = reshape.apply(&mut model, &root).unwrap().shape;
+        let faces = explore_unique(&model, &built, ShapeType::Face).unwrap();
+        assert_eq!(faces.len(), 3);
+        let walks = |model: &Model, face: &Shape| {
+            let wire = model.ordered_children_of(face).unwrap().remove(0);
+            model.ordered_children_of(&wire).unwrap()
+        };
+        let below = faces.iter().find(|f| f.location().is_identity()).unwrap();
+        assert_eq!(walks(&model, below).len(), 4);
+        assert_ne!(below.node(), face.node());
+        let copy = faces
+            .iter()
+            .find(|f| !f.location().is_identity() && f.node() == face.node())
+            .expect("the copy above keeps its nodes");
+        let up = faces.iter().find(|f| f.node() == triangle.node()).unwrap();
+        let kept = walks(&model, copy);
+        assert_eq!(kept.len(), 6);
+        assert!(
+            walks(&model, up)
+                .iter()
+                .any(|e| e.node() == out.node() && kept.iter().any(|k| k.is_same(e))),
+            "the tail's edge out is still the triangle's, above"
+        );
     }
 
     /// Out along one line and back along a second over the same points:
@@ -417,7 +555,7 @@ mod tests {
         // to nothing: asked of the pair itself.
         let wire = model.ordered_children_of(&face).unwrap()[0].clone();
         let walked = model.ordered_children_of(&wire).unwrap();
-        let uses = walked.iter().map(|e| (e.node(), 1)).collect();
+        let uses = walked.iter().map(|e| (SameKey(e.clone()), 1)).collect();
         let on = (surface, model.geometry().surface(surface).unwrap());
         assert!(!ogeom_algo::is_tail(&model, on, &walked[0], &walked[1], &uses, T).unwrap());
     }

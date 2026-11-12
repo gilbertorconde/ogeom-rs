@@ -484,7 +484,10 @@ every point is within the face's tolerance of its boundary, on a plane, cylinder
 torus, B-spline patch, or revolution or extrusion of a B-spline (proved cell by cell on the chart \
 drawn to a bound on the surface's first derivatives over the hole's box, closed form on the \
 elementary surfaces and from the control net on a spline; the hole's area within the tolerance \
-times its length is necessary, not sufficient; any other surface keeps its holes), mend a boundary crossing itself once in \
+times its length is necessary, not sufficient; any other surface keeps its holes), \
+judging and healing each placed copy of a face on its own where it stands (a copy whose \
+tail or hole another face holds at its placement keeps it, a scaled copy keeps its holes), \
+mend a boundary crossing itself once in \
 its chart (two consecutive edges crossing short of their vertex within the \
 trim cap are cut back to the crossing and the vertex moved there; any other \
 crossing of a one-wire face held by a container splits it into its two \
