@@ -231,13 +231,19 @@ fn convert(args: &[String]) -> Result<(), String> {
         }
     );
     report(&model, &out.shape, "converted", &options).map_err(|e| e.to_string())?;
-    if let Some(step) = &options.step {
-        let mut document = ogeom::doc::Document::over(model);
-        document.add_part("converted", out.shape);
-        let text = write_step(&document, TOL).map_err(|e| e.to_string())?;
-        std::fs::write(step, &text).map_err(|e| format!("could not write {step}: {e}"))?;
-        println!("  wrote {step} ({} lines)", text.lines().count());
-    }
+    export_step(model, out.shape, "converted", &options)
+}
+
+/// Write the shape as a STEP part named `name`, if `--step` asked for it.
+fn export_step(model: Model, shape: Shape, name: &str, options: &Options) -> Result<(), String> {
+    let Some(path) = &options.step else {
+        return Ok(());
+    };
+    let mut document = ogeom::doc::Document::over(model);
+    document.add_part(name, shape);
+    let text = write_step(&document, TOL).map_err(|e| e.to_string())?;
+    std::fs::write(path, &text).map_err(|e| format!("could not write {path}: {e}"))?;
+    println!("  wrote {path} ({} lines)", text.lines().count());
     Ok(())
 }
 
@@ -272,7 +278,8 @@ fn run(name: &str, args: &[String]) -> Result<(), String> {
     let (numbers, options) = split(args)?;
     let mut model = Model::new();
     let shape = build(&mut model, name, &numbers).map_err(|e| e.to_string())?;
-    report(&model, &shape, name, &options).map_err(|e| e.to_string())
+    report(&model, &shape, name, &options).map_err(|e| e.to_string())?;
+    export_step(model, shape, name, &options)
 }
 
 /// Build the named primitive from its dimensions.
