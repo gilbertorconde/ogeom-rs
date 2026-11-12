@@ -276,7 +276,7 @@ const WEIGHT_RANGE: (f64, f64) = (0.7, 1.25);
 /// [`WEIGHT_RANGE`]. Splitting the standard arc at its middle gives two
 /// standard arcs of weight `sqrt((1 + w) / 2)` each, the same curve; the
 /// pieces meet at double knots.
-fn conic_arc(p: [Point; 3], w: f64, tol: Tolerances) -> OgeomResult<Curve> {
+pub(crate) fn conic_arc(p: [Point; 3], w: f64, tol: Tolerances) -> OgeomResult<Curve> {
     let (control, weight, knots) = conic_pieces(p, w);
     let control = control
         .into_iter()

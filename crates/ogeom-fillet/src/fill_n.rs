@@ -255,8 +255,38 @@ pub(crate) fn make_filling_n_region(
     filling(model, boundary, constraints, tolerance, Some(region), tol)
 }
 
+/// The filling of `boundary` fitted once, on a net of `controls` across
+/// its larger extent, and built whatever it achieved: the patch, each
+/// side's report (its gap and its angle from its support), and how far it
+/// stands past `region`, the most past any of the region's pieces inside
+/// the hole (or negative infinity with none). Nothing is refined until a
+/// check passes; the caller reads the residual and decides.
+///
+/// # Errors
+///
+/// As [`make_filling_n`], except that a net missing its tolerance is
+/// built and reported rather than refused.
+pub(crate) fn make_filling_n_fixed(
+    model: &mut Model,
+    boundary: &[FillBoundary],
+    constraints: &[Shape],
+    controls: usize,
+    region: Option<Region<'_>>,
+    tol: Tolerances,
+) -> OgeomResult<(Filled, f64)> {
+    let tolerance = crate::marched::band_fit_target(tol);
+    filling_with(
+        model,
+        boundary,
+        constraints,
+        tolerance,
+        region,
+        Some(controls),
+        tol,
+    )
+}
+
 /// [`make_filling_n_region`], or [`make_filling_n`] with no region.
-#[allow(clippy::too_many_lines, reason = "one filling, read, fitted and built")]
 fn filling(
     model: &mut Model,
     boundary: &[FillBoundary],
@@ -265,6 +295,22 @@ fn filling(
     within: Option<Region<'_>>,
     tol: Tolerances,
 ) -> OgeomResult<Filled> {
+    Ok(filling_with(model, boundary, constraints, tolerance, within, None, tol)?.0)
+}
+
+/// [`filling`], its nets refined until one holds `tolerance`, or, with
+/// `fixed`, fitted once on that net and built whatever it achieved; with
+/// how far the patch stands past `within`.
+#[allow(clippy::too_many_lines, reason = "one filling, read, fitted and built")]
+fn filling_with(
+    model: &mut Model,
+    boundary: &[FillBoundary],
+    constraints: &[Shape],
+    tolerance: f64,
+    within: Option<Region<'_>>,
+    fixed: Option<usize>,
+    tol: Tolerances,
+) -> OgeomResult<(Filled, f64)> {
     if !(tolerance.is_finite() && tolerance > 0.0) {
         ogeom_bail!(
             Construction,
@@ -379,7 +425,12 @@ fn filling(
     // and its fit, which a hold pass from that net starts from.
     let mut sides_met: Option<usize> = None;
     let mut first_met: Option<FirstMet> = None;
-    for (round, base) in NETS.into_iter().chain(FURTHER).enumerate() {
+    let nets: Vec<usize> = match fixed {
+        Some(controls) => vec![controls],
+        None => NETS.into_iter().chain(FURTHER).collect(),
+    };
+    let mut region_past = f64::NEG_INFINITY;
+    for (round, base) in nets.into_iter().enumerate() {
         if round >= NETS.len() && fallback.is_some() {
             break;
         }
@@ -446,7 +497,9 @@ fn filling(
 
         if let Some(miss) = first_miss(&sides, &reports, constraint_gap, tolerance) {
             last_miss = format!("at {}x{} controls, {miss}", controls.0, controls.1);
-            continue;
+            if fixed.is_none() {
+                continue;
+            }
         }
         if sides_met.is_none() {
             sides_met = Some(round);
@@ -463,7 +516,8 @@ fn filling(
         }
         if let Some(region) = within {
             let (past, at) = past_planes(&surface, &chart_outline, domain, region, tol)?;
-            if past > tolerance {
+            region_past = past;
+            if past > tolerance && fixed.is_none() {
                 last_miss = format!(
                     "at {}x{} controls, the patch stands {past} past a plane it is \
                      held within, at {at:?}",
@@ -481,7 +535,9 @@ fn filling(
     // Where nets met every side but none within the planes, the patch is
     // held inside them where it strayed past, and fitted again, from the
     // first such net on: holding it does not bring a side nearer.
-    if let (None, false, Some(region), Some(from)) = (&fallback, free, within, sides_met) {
+    if let (None, false, Some(region), Some(from), None) =
+        (&fallback, free, within, sides_met, fixed)
+    {
         let held = HeldFit {
             sides: &sides,
             lengths: &lengths,
@@ -530,11 +586,14 @@ fn filling(
     for constraint in constraints {
         history.generate(constraint, face.clone());
     }
-    Ok(Filled {
-        built: Built::new(face, history),
-        sides: reports,
-        constraint_gap,
-    })
+    Ok((
+        Filled {
+            built: Built::new(face, history),
+            sides: reports,
+            constraint_gap,
+        },
+        region_past,
+    ))
 }
 
 /// The surface a side's support lies on and the side's pcurve there.

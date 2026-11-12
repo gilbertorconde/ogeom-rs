@@ -33,6 +33,11 @@ mod marched;
 mod pair_marched;
 mod pinched;
 mod rolled;
+#[allow(
+    dead_code,
+    reason = "the blend engine's sections and vertex blends, which its phases call"
+)]
+mod round;
 mod ruled;
 mod setback;
 mod sharp;
