@@ -135,6 +135,27 @@ bump may break the API and a patch bump may not.
     central directory before anything is inflated. `read_package` reads
     under `PackageLimits::default()` (see Changed).
 
+- **A B-spline side cutting a shallow chord into a cylinder's wall sections
+  there, as the same side written as a line does.** (#876)
+  - printCAD's text padded along a circle: a rounded glyph dipping 6e-4
+    below its baseline crosses the circle's disc in a sliver, and fuse, cut
+    and common refused it ("the kept pieces did not close into a shell")
+    wherever the chord's sagitta was under about 1e-2. The marcher's seeds
+    missed the thin branch, and the two surfaces read as apart.
+  - A cylinder against an extrusion of a B-spline profile swept along its
+    axis now meets it in closed form: the rulings through the profile's
+    crossings with the cylinder, the roots of `w²(X² + Y² − r²)` over the
+    profile, a polynomial B-spline of twice its degree, isolated on its
+    Bernstein coefficients. A crossing isolated that way is simple however
+    shallow, and is taken exactly. A profile touching the cylinder,
+    ending on it or lying along it is left to the marcher as before.
+  - A 2 × 3 block on a drum of radius 20, its bottom side a degree-1
+    B-spline from 2e-2 down to 1e-5 inside the wall, and a block with a
+    quadratic rounded bottom dipping 1e-3 to 1e-4: fuse, cut and common
+    valid and within 1e-6 of the circular segment's and the section
+    integral's volumes. printCAD's disc with letters fused with its "D":
+    one valid solid; fuse + common = drum + letter to 1e-10.
+
 - **A concave round on a curved edge running past its face's side is cut
   off flush at that side.** (#871)
   - Since 0.18.1 a foot round where a plate's side runs tangent into a boss
