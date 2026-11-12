@@ -76,6 +76,16 @@ bump may break the API and a patch bump may not.
     inside the plate and boss or in the foot's fill, its volume the closed
     form within 1e-10.
 
+- **A placement raised to the power `i32::MIN` inverts.** (#855)
+  - Its inverse negated the power, which `i32` cannot hold: a debug build
+    panicked, and a release build returned the placement itself as its
+    inverse.
+  - A chain's powers now stay in `-i32::MAX..=i32::MAX`. `Location::powered`
+    keeps `i32::MIN` as the two entries `-i32::MAX` and `-1`, and
+    composition no longer merges two entries into `i32::MIN`. The inverse
+    of a translation by 1 so raised places at +2^31 exactly, and composing
+    it with the placement gives the identity structurally.
+
 
 ## [0.18.1] - 2026-11-11
 

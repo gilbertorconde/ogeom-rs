@@ -113,7 +113,9 @@ impl DatumStore {
 /// empty chain is the identity.
 ///
 /// Powers are integers, so a datum applied twice costs one entry rather than
-/// two, and its inverse is the same entry with the sign flipped.
+/// two, and its inverse is the same entry with the sign flipped. A power lies
+/// in `-i32::MAX..=i32::MAX`, a range closed under negation, so every chain
+/// inverts exactly.
 /// Equality and hashing are structural: two locations agree when their chains
 /// match entry for entry. Deliberately *not* a comparison of the composed
 /// transforms; that would be a tolerance question, and the answer would depend
@@ -141,13 +143,20 @@ impl Location {
     /// A placement of one datum, applied `power` times.
     ///
     /// A power of zero gives the identity; a negative power gives the inverse.
+    /// `i32::MIN`, whose negation `i32` cannot hold, is kept as the two entries
+    /// `-i32::MAX` and `-1`.
     #[must_use]
     pub fn powered(datum: DatumId, power: i32) -> Self {
         if power == 0 {
             return Self::identity();
         }
         let mut chain = SmallVec::new();
-        chain.push((datum, power));
+        if power == i32::MIN {
+            chain.push((datum, -i32::MAX));
+            chain.push((datum, -1));
+        } else {
+            chain.push((datum, power));
+        }
         Self { chain }
     }
 
@@ -183,7 +192,8 @@ impl Location {
     /// parent's reads the way the tree does.
     ///
     /// Adjacent entries naming the same datum are merged by adding their
-    /// powers, and an entry whose power reaches zero is dropped. That keeps a
+    /// powers when the sum stays in the power range, and an entry whose power
+    /// reaches zero is dropped. That keeps a
     /// chain from growing without bound as a placement is composed and undone
     /// repeatedly, and it is what makes `a.then(a.inverted())` come out exactly
     /// equal to the identity rather than merely close to it.
@@ -200,7 +210,10 @@ impl Location {
         for &(datum, power) in &inner.chain {
             match chain.last_mut() {
                 Some((last, last_power))
-                    if *last == datum && last_power.checked_add(power).is_some() =>
+                    if *last == datum
+                        && last_power
+                            .checked_add(power)
+                            .is_some_and(|sum| sum != i32::MIN) =>
                 {
                     *last_power += power;
                     if *last_power == 0 {
@@ -581,6 +594,29 @@ mod tests {
         let (_, a, _) = store();
         let l = Location::powered(a, i32::MAX).then(&Location::powered(a, 1));
         assert_eq!(l.chain(), &[(a, i32::MAX), (a, 1)]);
+    }
+
+    /// The most negative power has no negation in `i32`; a chain never holds
+    /// it, so every placement inverts exactly, back and forth.
+    #[test]
+    fn the_most_negative_power_inverts_exactly() {
+        let (s, a, _) = store();
+        let built = Location::powered(a, i32::MIN);
+        let merged = Location::powered(a, i32::MIN + 1).then(&Location::powered(a, -1));
+        for l in [built, merged] {
+            assert!(
+                l.chain().iter().all(|&(_, p)| p != i32::MIN),
+                "{:?}",
+                l.chain()
+            );
+            let x = |l: &Location| l.composed(&s).unwrap().apply(Point::ORIGIN).x;
+            assert_eq!(x(&l), -2_147_483_648.0);
+            let inverse = l.inverted();
+            assert_eq!(x(&inverse), 2_147_483_648.0);
+            assert_eq!(inverse.inverted(), l);
+            assert!(l.then(&inverse).is_identity());
+            assert!(inverse.then(&l).is_identity());
+        }
     }
 
     #[test]
