@@ -76,10 +76,16 @@ impl Tolerances {
 
     /// Tolerances for a model whose unit is `mm_per_unit` millimetres.
     ///
+    /// Every linear tolerance derived from the scale, and its square, must be
+    /// a normal `f64`: comparisons are made both on distances and on squared
+    /// distances, and an infinite, zero or subnormal threshold would decide
+    /// them by overflow or underflow. That accepts scales from about `7.5e-161`
+    /// to about `6.7e144` millimetres per unit.
+    ///
     /// # Errors
     ///
     /// [`OgeomError::Construction`](crate::OgeomError::Construction) if the scale is
-    /// not finite and positive.
+    /// not finite and positive, or is outside that range.
     pub fn with_scale(mm_per_unit: f64) -> OgeomResult<Self> {
         if !mm_per_unit.is_finite() || mm_per_unit <= 0.0 {
             ogeom_bail!(
@@ -87,9 +93,23 @@ impl Tolerances {
                 "unit scale {mm_per_unit} must be finite and positive"
             );
         }
-        Ok(Self {
+        let scaled = Self {
             linear_scale: mm_per_unit,
-        })
+        };
+        let linear = [
+            scaled.confusion(),
+            scaled.intersection(),
+            scaled.approximation(),
+            scaled.degenerate(),
+        ];
+        if !linear.iter().all(|t| t.is_normal() && (t * t).is_normal()) {
+            ogeom_bail!(
+                Construction,
+                "unit scale {mm_per_unit} puts a linear tolerance or its square \
+                 outside the normal range of f64"
+            );
+        }
+        Ok(scaled)
     }
 
     /// Millimetres per model unit.
@@ -261,6 +281,37 @@ mod tests {
         assert!(Tolerances::with_scale(f64::NAN).is_err());
         assert!(Tolerances::with_scale(f64::INFINITY).is_err());
         assert!(Tolerances::with_scale(25.4).is_ok());
+    }
+
+    /// Micrometres to kilometres, every derived linear tolerance is the
+    /// constant over the scale.
+    #[test]
+    fn every_working_unit_derives_its_tolerances() {
+        for scale in [1e-3, 1.0, 25.4, 1e3, 1e6] {
+            let t = Tolerances::with_scale(scale).unwrap();
+            assert_eq!(t.confusion(), CONFUSION / scale);
+            assert_eq!(t.intersection(), INTERSECTION / scale);
+            assert_eq!(t.approximation(), APPROXIMATION / scale);
+            assert_eq!(t.degenerate(), DEGENERATE / scale);
+            assert!(t.same_length(1.0, 1.0 + 0.5 * CONFUSION / scale));
+            assert!(!t.same_length(1.0, 1.0 + 2.0 * CONFUSION / scale));
+        }
+    }
+
+    /// A scale whose tolerances overflow, underflow or square out of range
+    /// is refused by name; the extremes it accepts still compare distances.
+    #[test]
+    fn a_scale_whose_tolerances_leave_the_normal_range_is_refused() {
+        for scale in [f64::MIN_POSITIVE, 1e-200, 1e-161, 1e145, 1e200, f64::MAX] {
+            assert!(Tolerances::with_scale(scale).is_err(), "{scale}");
+        }
+        for scale in [1e-159, 1e143] {
+            let t = Tolerances::with_scale(scale).unwrap();
+            let c = t.confusion();
+            assert!(t.same_length(0.0, 0.5 * c) && !t.same_length(0.0, 2.0 * c));
+            let (near, far) = (0.5 * c, 2.0 * c);
+            assert!(near * near <= c * c && far * far > c * c);
+        }
     }
 
     #[test]
