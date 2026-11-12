@@ -340,7 +340,37 @@ fn directory(bytes: &[u8]) -> OgeomResult<Vec<Entry>> {
         });
         at += 46 + name_len + extra_len + comment_len;
     }
+    disjoint(&entries)?;
     Ok(entries)
+}
+
+/// Refuse a directory whose entries share bytes. Each entry's local record
+/// is a 30-byte header, its name and extra field, then its data, and no two
+/// records of an archive overlap; reading only the directory, each record
+/// is taken as its header and data, which the whole record holds. Entries
+/// sharing bytes would let one compressed stream be inflated once per
+/// record naming it, so a small file could expand without bound; with the
+/// records apart, no package expands past the most its own bytes deflate
+/// from.
+fn disjoint(entries: &[Entry]) -> OgeomResult<()> {
+    let mut spans: Vec<(usize, usize, &str)> = entries
+        .iter()
+        .map(|e| {
+            let end = e.header.saturating_add(30).saturating_add(e.compressed);
+            (e.header, end, e.name.as_str())
+        })
+        .collect();
+    spans.sort_unstable_by_key(|&(start, _, _)| start);
+    for pair in spans.windows(2) {
+        let ((_, end, first), (start, _, second)) = (pair[0], pair[1]);
+        if start < end {
+            ogeom_bail!(
+                Construction,
+                "the entries {first} and {second} overlap in the archive"
+            );
+        }
+    }
+    Ok(())
 }
 
 fn u64_at(bytes: &[u8], at: usize) -> OgeomResult<u64> {
@@ -433,8 +463,12 @@ fn contents(bytes: &[u8], entry: &Entry) -> OgeomResult<Vec<u8>> {
 /// checksum, from classic and ZIP64 archives alike; the central directory's
 /// sizes are the ones trusted, since a streamed entry's local header leaves
 /// them zero or saturated. Any other compression method, an encrypted
-/// entry, or an archive spanning several disks is refused by name rather
-/// than half-read.
+/// entry, entries that overlap one another, or an archive spanning several
+/// disks is refused by name rather than half-read.
+///
+/// Every entry is held in memory at once, up to about a thousand times the
+/// package's own size for a deflated one; [`read_package_within`] bounds
+/// both the count and the total for a package from an untrusted source.
 ///
 /// # Errors
 ///
@@ -442,9 +476,73 @@ fn contents(bytes: &[u8], entry: &Entry) -> OgeomResult<Vec<u8>> {
 /// bytes are not a ZIP archive, an entry is damaged, or it is one of the
 /// refusals above.
 pub fn read_package(bytes: &[u8]) -> OgeomResult<Vec<(String, Vec<u8>)>> {
-    directory(bytes)?
+    read_package_within(bytes, PackageLimits::NONE)
+}
+
+/// How much of a package [`read_package_within`] may read: how many
+/// entries, directories aside, and how many bytes they inflate to in all.
+///
+/// Both are checked against the central directory before any entry is
+/// inflated. The sizes it gives are the ones each entry is then held to
+/// exactly, so a package within its limits never holds more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackageLimits {
+    /// The most entries the package may have.
+    pub entries: usize,
+    /// The most bytes its entries may inflate to, together.
+    pub bytes: u64,
+}
+
+impl PackageLimits {
+    /// No limit past the archive's own: entries may not overlap, so a
+    /// package expands at most as far as its own bytes deflate from.
+    pub const NONE: Self = Self {
+        entries: usize::MAX,
+        bytes: u64::MAX,
+    };
+}
+
+impl Default for PackageLimits {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+/// [`read_package`], refusing a package past `limits` before reading any
+/// entry.
+///
+/// # Errors
+///
+/// As [`read_package`], and
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// package has more entries or inflates to more bytes than `limits` allow.
+pub fn read_package_within(
+    bytes: &[u8],
+    limits: PackageLimits,
+) -> OgeomResult<Vec<(String, Vec<u8>)>> {
+    let entries = directory(bytes)?;
+    let files: Vec<&Entry> = entries.iter().filter(|e| !e.name.ends_with('/')).collect();
+    if files.len() > limits.entries {
+        ogeom_bail!(
+            Construction,
+            "the package has {} entries, past the {} allowed",
+            files.len(),
+            limits.entries
+        );
+    }
+    let total = files
         .iter()
-        .filter(|e| !e.name.ends_with('/'))
+        .map(|e| u64::try_from(e.size).unwrap_or(u64::MAX))
+        .fold(0_u64, u64::saturating_add);
+    if total > limits.bytes {
+        ogeom_bail!(
+            Construction,
+            "the package inflates to {total} bytes, past the {} allowed",
+            limits.bytes
+        );
+    }
+    files
+        .into_iter()
         .map(|e| Ok((e.name.clone(), contents(bytes, e)?)))
         .collect()
 }
@@ -2010,6 +2108,78 @@ mod tests {
                 .iter()
                 .any(|w| w.contains("no texture part"))
         );
+    }
+
+    /// One stored entry of `data`, named by `copies` central directory
+    /// records that all point at its one local record.
+    fn overlapping(data: &[u8], copies: u16) -> Vec<u8> {
+        let one = archive(&[("p0000", data)]);
+        let end = one.len() - 22;
+        let at = usize::try_from(u32_at(&one, end + 16).unwrap()).unwrap();
+        let record = &one[at..end];
+        let mut out = one[..at].to_vec();
+        for k in 0..copies {
+            let mut copy = record.to_vec();
+            copy[46..51].copy_from_slice(format!("p{k:04}").as_bytes());
+            out.extend_from_slice(&copy);
+        }
+        let size = u32::try_from(out.len() - at).unwrap();
+        out.extend_from_slice(&one[end..end + 8]);
+        out.extend_from_slice(&copies.to_le_bytes());
+        out.extend_from_slice(&copies.to_le_bytes());
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&u32::try_from(at).unwrap().to_le_bytes());
+        out.extend_from_slice(&0_u16.to_le_bytes());
+        out
+    }
+
+    /// A thousand directory records over one 64 KiB entry would read as
+    /// 64 MiB from a file of 114 KiB. Entries share no bytes in a ZIP
+    /// archive, so a directory whose records overlap is refused before any
+    /// entry is read, by `read_package` and `read_3mf` alike.
+    #[test]
+    fn entries_overlapping_one_another_are_refused() {
+        let data = vec![b'x'; 1 << 16];
+        let bytes = overlapping(&data, 1000);
+        assert!(bytes.len() < 120_000, "{}", bytes.len());
+        let message = read_package(&bytes).unwrap_err().to_string();
+        assert!(message.contains("overlap"), "{message}");
+        assert!(read_3mf(&bytes, T).is_err());
+        // One record is an ordinary archive.
+        let parts = read_package(&overlapping(&data, 1)).unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].1, data);
+    }
+
+    /// The limits are read against the central directory's sizes, which
+    /// each entry's inflation is held to exactly: three entries of 10, 20
+    /// and 30 bytes pass a limit of three entries and 60 bytes, and fail
+    /// one entry or one byte less.
+    #[test]
+    fn a_package_read_is_held_to_its_limits() {
+        let bytes = archive(&[
+            ("a", &[1; 10][..]),
+            ("dir/", &[][..]),
+            ("dir/b", &[2; 20][..]),
+            ("c", &[3; 30][..]),
+        ]);
+        let exact = PackageLimits {
+            entries: 3,
+            bytes: 60,
+        };
+        assert_eq!(read_package_within(&bytes, exact).unwrap().len(), 3);
+        assert_eq!(read_package(&bytes).unwrap().len(), 3);
+        let fewer = PackageLimits {
+            entries: 2,
+            ..exact
+        };
+        let message = read_package_within(&bytes, fewer).unwrap_err().to_string();
+        assert!(message.contains("3 entries"), "{message}");
+        let smaller = PackageLimits { bytes: 59, ..exact };
+        let message = read_package_within(&bytes, smaller)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("60 bytes"), "{message}");
     }
 
     /// Cut short or damaged anywhere, a package is refused or read, never
