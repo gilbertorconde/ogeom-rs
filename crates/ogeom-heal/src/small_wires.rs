@@ -65,10 +65,12 @@
 //! neighbour shares bounds that neighbour too. The face must check clean
 //! without it.
 
-use ogeom_core::{OgeomResult, Tolerances};
+use ogeom_core::{FastMap, OgeomResult, Tolerances};
 use ogeom_geom::{BSplineSurface, Curve, Curve2d as _, Surface as _, SurfaceGeometry};
 use ogeom_math::{KnotVector, Point, Point2, Vector2, Weighted};
-use ogeom_topo::{EdgeRepr, Model, Orientation, Shape, ShapeType, explore_unique};
+use ogeom_topo::{
+    EdgeRepr, Location, Model, Orientation, SameKey, Shape, ShapeType, TShapeId, explore_unique,
+};
 
 use crate::Reshape;
 
@@ -87,61 +89,114 @@ const ROUNDS: usize = 8;
 /// Stage the removal of every hole of a face of `shape` that encloses no
 /// area its face's tolerance can resolve (see the module documentation).
 /// Returns how many holes go.
+///
+/// A hole is judged on the face in its own frame, once for every placed
+/// occurrence, and goes from each occurrence placed rigidly where no other
+/// face walks its edges: a copy whose hole another face fills there keeps
+/// it.
 pub(crate) fn stage_small_wires(
     model: &mut Model,
     shape: &Shape,
     reshape: &mut Reshape,
     tol: Tolerances,
 ) -> OgeomResult<usize> {
-    let uses = ogeom_algo::edge_uses(model, shape)?;
+    let uses = ogeom_algo::placed_edge_uses(model, shape)?;
+    // Per face node and wire, whether the hole encloses nothing; per face
+    // node and the holes going, whether the face checks clean without them.
+    let mut small: FastMap<(TShapeId, usize), bool> = FastMap::default();
+    let mut clean: FastMap<(TShapeId, Vec<usize>), bool> = FastMap::default();
     let mut removed = 0;
     for face in explore_unique(model, shape, ShapeType::Face)? {
         let Some(data) = model.node(&face).and_then(|n| n.data().as_face()).cloned() else {
             continue;
         };
-        if !face.location().is_identity() || !data.location.is_identity() {
+        if !data.location.is_identity() {
+            continue;
+        }
+        let at = face.location();
+        if !at.is_identity() && at.composed(model.datums())?.scale_factor().abs() != 1.0 {
             continue;
         }
         let Some(surface) = model.geometry().surface(data.surface) else {
             continue;
         };
         let reach = data.tolerance.get();
-        let stored = face.oriented(Orientation::Forward);
-        let wires = model.ordered_children_of(&stored)?;
+        let own = Shape::new(face.node(), Location::identity(), face.orientation());
+        let local_wires = model.ordered_children_of(&own.oriented(Orientation::Forward))?;
+        let wires = model.ordered_children_of(&face.oriented(Orientation::Forward))?;
         let mut gone = Vec::new();
-        for wire in wires.iter().skip(1) {
+        for (k, wire) in wires.iter().enumerate().skip(1) {
             let edges = model.ordered_children_of(&wire.oriented(Orientation::Forward))?;
-            if edges.iter().any(|e| uses.get(&e.node()) != Some(&1)) {
+            if edges
+                .iter()
+                .any(|e| uses.get(&SameKey(e.clone())) != Some(&1))
+            {
                 continue;
             }
-            let Some(hole) = charted(model, data.surface, surface, &edges, reach, tol)? else {
-                continue;
+            let goes = match small.get(&(face.node(), k)) {
+                Some(goes) => *goes,
+                None => {
+                    let local = model
+                        .ordered_children_of(&local_wires[k].oriented(Orientation::Forward))?;
+                    let goes = encloses_nothing(model, data.surface, surface, &local, reach, tol)?;
+                    small.insert((face.node(), k), goes);
+                    goes
+                }
             };
-            let length: f64 = hole.ring.windows(2).map(|w| w[0].distance(w[1])).sum();
-            if crate::divide::signed_area(&hole.ring).abs() > hole.reach * length {
-                continue;
-            }
-            if within_reach_of_boundary(&hole.ring, hole.reach - hole.sag, hole.within) {
-                gone.push(wire.clone());
+            if goes {
+                gone.push(k);
             }
         }
         if gone.is_empty() {
             continue;
         }
-        let mut local = Reshape::new();
-        for wire in &gone {
-            local.remove(&Shape::of(wire.node()));
-        }
-        let after = local.apply(model, &face)?.shape;
-        if !ogeom_algo::check(model, &after, tol)?.is_valid() {
+        let key = (face.node(), gone);
+        let fits = match clean.get(&key) {
+            Some(fits) => *fits,
+            None => {
+                let mut local = Reshape::new();
+                for &k in &key.1 {
+                    local.remove(&Shape::of(local_wires[k].node()));
+                }
+                let after = local.apply(model, &own)?.shape;
+                let fits = ogeom_algo::check(model, &after, tol)?.is_valid();
+                clean.insert(key.clone(), fits);
+                fits
+            }
+        };
+        if !fits {
             continue;
         }
-        for wire in &gone {
-            reshape.remove(&Shape::of(wire.node()));
+        for &k in &key.1 {
+            reshape.remove_at(&wires[k]);
         }
-        removed += gone.len();
+        removed += key.1.len();
     }
     Ok(removed)
+}
+
+/// Whether the hole `edges` walk on a face of `surface` encloses no area
+/// the face's tolerance `reach` resolves.
+fn encloses_nothing(
+    model: &Model,
+    surface_id: ogeom_topo::SurfaceId,
+    surface: &SurfaceGeometry,
+    edges: &[Shape],
+    reach: f64,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let Some(hole) = charted(model, surface_id, surface, edges, reach, tol)? else {
+        return Ok(false);
+    };
+    let length: f64 = hole.ring.windows(2).map(|w| w[0].distance(w[1])).sum();
+    if crate::divide::signed_area(&hole.ring).abs() > hole.reach * length {
+        return Ok(false);
+    }
+    Ok(within_reach_of_boundary(
+        &hole.ring,
+        hole.reach - hole.sag,
+        hole.within,
+    ))
 }
 
 /// How far a unit step in each chart parameter carries a point along a

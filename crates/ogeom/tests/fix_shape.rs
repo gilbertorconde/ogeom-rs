@@ -2352,3 +2352,170 @@ fn sound_primitives_are_left_alone() {
         assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
     }
 }
+
+/// The 4 mm square of `check_names_a_tail_and_fix_shape_strips_it`, its
+/// boundary running from (4, 0) to (3, 1) and back on two edges.
+fn tailed_square(model: &mut Model) -> Shape {
+    let p = |x: f64, y: f64| (Point::new(x, y, 0.0), 1e-7);
+    let at = |x: f64, y: f64| Point::new(x, y, 0.0);
+    plane_face(
+        model,
+        &[
+            p(0.0, 0.0),
+            p(4.0, 0.0),
+            p(3.0, 1.0),
+            p(4.0, 4.0),
+            p(0.0, 4.0),
+        ],
+        &[
+            (0, 1, at(0.0, 0.0), at(4.0, 0.0)),
+            (1, 2, at(4.0, 0.0), at(3.0, 1.0)),
+            (2, 1, at(3.0, 1.0), at(4.0, 0.0)),
+            (1, 3, at(4.0, 0.0), at(4.0, 4.0)),
+            (3, 4, at(4.0, 4.0), at(0.0, 4.0)),
+            (4, 0, at(0.0, 4.0), at(0.0, 0.0)),
+        ],
+    )
+}
+
+/// `face` and a copy of it placed 10 above, in one compound, and the copy.
+fn with_a_copy_above(model: &mut Model, face: &Shape) -> (Shape, Shape) {
+    use ogeom::math::{Transform, Vector};
+    let up = model.placed(face, Transform::translation(Vector::new(0.0, 0.0, 10.0)));
+    let both = make_compound(model, &[face.clone(), up.clone()])
+        .unwrap()
+        .shape;
+    (both, up)
+}
+
+/// The faces of `shape`, lowest first, each with the height of its centre,
+/// its area and how many edges each of its wires walks.
+fn faces_by_height(model: &Model, shape: &Shape) -> Vec<(Shape, f64, f64, Vec<usize>)> {
+    let mut faces: Vec<_> = explore_unique(model, shape, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .map(|face| {
+            let props = surface_properties(model, &face, Deflection::default(), T).unwrap();
+            let walks = model
+                .ordered_children_of(&face)
+                .unwrap()
+                .iter()
+                .map(|w| model.ordered_children_of(w).unwrap().len())
+                .collect();
+            (face, props.centre.z, props.mass, walks)
+        })
+        .collect();
+    faces.sort_by(|a, b| a.1.total_cmp(&b.1));
+    faces
+}
+
+/// The tailed square and a copy of it placed 10 above are two faces with a
+/// tail each: `check` names both, and `fix_shape` strips both, each copy
+/// where it stands, one stripped face placed twice. The copy alone is
+/// stripped where it stands too.
+#[test]
+fn each_placed_copy_of_a_tailed_face_is_named_and_stripped_where_it_stands() {
+    let mut model = Model::new();
+    let face = tailed_square(&mut model);
+    let (both, up) = with_a_copy_above(&mut model, &face);
+    assert_eq!(
+        ogeom::algo::out_and_back(&model, &both, T).unwrap().len(),
+        2
+    );
+    assert_eq!(out_and_back_found(&check(&model, &both, T).unwrap()), 2);
+    let fixed = ogeom::heal::fix_shape(&mut model, &both, T).unwrap();
+    assert_eq!(fixed.report.tails_stripped, 2);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    let faces = faces_by_height(&model, &fixed.shape);
+    assert_eq!(faces.len(), 2);
+    for ((_, z, area, walks), want) in faces.iter().zip([0.0, 10.0]) {
+        assert!(
+            (z - want).abs() < 1e-9 && (area - 16.0).abs() < 1e-9,
+            "{z} {area}"
+        );
+        assert_eq!(walks, &[4]);
+    }
+    assert_eq!(
+        faces[0].0.node(),
+        faces[1].0.node(),
+        "one face, placed twice"
+    );
+
+    let alone = make_compound(&mut model, &[up]).unwrap().shape;
+    let fixed = ogeom::heal::fix_shape(&mut model, &alone, T).unwrap();
+    assert_eq!(fixed.report.tails_stripped, 1);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    let faces = faces_by_height(&model, &fixed.shape);
+    assert!(
+        (faces[0].1 - 10.0).abs() < 1e-9,
+        "stands where it was: {}",
+        faces[0].1
+    );
+    assert_eq!(faces[0].3, [4]);
+}
+
+/// The notched square of `check_names_a_notch_and_fix_shape_cuts_it_off`
+/// and a copy of it placed 10 above: both notches cut, each copy where it
+/// stands, each the quadrilateral of 12 mm².
+#[test]
+fn each_placed_copy_of_a_notched_face_is_cut_where_it_stands() {
+    let mut model = Model::new();
+    let p = |x: f64, y: f64| (Point::new(x, y, 0.0), 1e-7);
+    let at = |x: f64, y: f64| Point::new(x, y, 0.0);
+    let face = plane_face(
+        &mut model,
+        &[
+            p(0.0, 0.0),
+            p(4.0, 0.0),
+            p(4.0, 4.0),
+            p(4.0, 2.0),
+            p(0.0, 4.0),
+        ],
+        &[
+            (0, 1, at(0.0, 0.0), at(4.0, 0.0)),
+            (1, 2, at(4.0, 0.0), at(4.0, 4.0)),
+            (2, 3, at(4.0, 4.0), at(4.0, 2.0)),
+            (3, 4, at(4.0, 2.0), at(0.0, 4.0)),
+            (4, 0, at(0.0, 4.0), at(0.0, 0.0)),
+        ],
+    );
+    let (both, _) = with_a_copy_above(&mut model, &face);
+    assert_eq!(out_and_back_found(&check(&model, &both, T).unwrap()), 2);
+    let fixed = ogeom::heal::fix_shape(&mut model, &both, T).unwrap();
+    assert_eq!(fixed.report.notches_cut, 2);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    let faces = faces_by_height(&model, &fixed.shape);
+    assert_eq!(faces.len(), 2);
+    for ((_, z, area, walks), want) in faces.iter().zip([0.0, 10.0]) {
+        assert!(
+            (z - want).abs() < 1e-9 && (area - 12.0).abs() < 1e-9,
+            "{z} {area}"
+        );
+        assert_eq!(walks, &[4]);
+    }
+}
+
+/// The 10 mm square of tolerance 1e-3 with the sliver hole of
+/// `a_hole_within_the_face_s_tolerance_of_its_boundary_goes`, and a copy
+/// of it placed 10 above: the hole goes from both, each copy where it
+/// stands, the whole square left.
+#[test]
+fn each_placed_copy_of_a_face_loses_its_hole_of_nothing_where_it_stands() {
+    let pt = |x: f64, y: f64| Point2::new(x, y);
+    let sliver = vec![pt(4.0, 5.0), pt(4.5, 5.0 + 1e-4), pt(5.0, 5.0)];
+    let mut model = Model::new();
+    let face = plane_face_with_holes(&mut model, 1e-3, &[sliver]);
+    let (both, _) = with_a_copy_above(&mut model, &face);
+    let fixed = ogeom::heal::fix_shape(&mut model, &both, T).unwrap();
+    assert_eq!(fixed.report.small_wires_removed, 2);
+    assert!(fixed.report.after.is_valid(), "{}", fixed.report.after);
+    let faces = faces_by_height(&model, &fixed.shape);
+    assert_eq!(faces.len(), 2);
+    for ((_, z, area, walks), want) in faces.iter().zip([0.0, 10.0]) {
+        assert!(
+            (z - want).abs() < 1e-9 && (area - 100.0).abs() < 1e-9,
+            "{z} {area}"
+        );
+        assert_eq!(walks, &[4]);
+    }
+}

@@ -100,7 +100,9 @@ pub use network::{
     Across, ChainedPatch, CurveDef, IrregularCorner, LoopSide, Network, NetworkOptions, PatchDef,
     PatchFit, PatchSide, fit_loop_quads, fit_network, fit_network_chained,
 };
-pub use out_and_back::{Notch, OutAndBack, edge_uses, is_tail, notch_of, out_and_back};
+pub use out_and_back::{
+    Notch, OutAndBack, edge_uses, is_tail, notch_of, out_and_back, placed_edge_uses,
+};
 pub use outline::{Outline, Piece2, Wire2d, fit_outline};
 pub use pcurve_gap::{
     edge_pcurve_gap, edges_apart, pcurve_gap, state_pcurve_gaps, state_pcurve_gaps_of,

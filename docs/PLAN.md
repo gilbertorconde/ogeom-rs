@@ -708,7 +708,8 @@ of the ring and draws it as a strip at its edges' points
 (`ogeom-mesh/src/tails.rs`), and the rest triangulates whole. The model
 keeps the tail: the face still bounds a stretch of no width between two
 edges its neighbours do not share with each other, and `fix_shape` strips
-such a pair only where no other face walks either edge. A tail whose way
+such a pair only where no other face walks either edge, at each placed
+copy of the face on its own. A tail whose way
 back leaves the way out across a segment wider than that tolerance is left
 crossing, as is a ring that crosses itself anywhere else.
 
