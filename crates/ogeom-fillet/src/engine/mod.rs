@@ -22,6 +22,7 @@
 
 mod assemble;
 mod classify;
+mod consumed;
 mod guards;
 mod request;
 mod rounds;
@@ -62,8 +63,9 @@ pub(crate) enum Origin {
 /// request lies outside the engine's classes (for now: a solid bounded by
 /// planes, each face one ring of straight edges, every edge between two
 /// faces, every vertex's faces closing round it once; and the request
-/// inside the setback domain: no face consumed by its setbacks, no two
-/// faces crossing, every chamfer corner's setback corners on one plane).
+/// inside the setback domain: no face consumed by its setbacks but a band
+/// between two parallel bevels ([`consumed`]), no two faces crossing, every
+/// chamfer corner's setback corners on one plane).
 ///
 /// # Errors
 ///
@@ -103,7 +105,7 @@ pub(crate) fn run(
         }
     }
     // P2.
-    let Some(corners) = setbacks::setback_corners(&planar, &setback, tol)? else {
+    let Some(mut corners) = setbacks::setback_corners(&planar, &setback, tol)? else {
         return Ok(None);
     };
     // Rounds are curved: their strips and vertex blends go into a sheet.
@@ -114,6 +116,9 @@ pub(crate) fn run(
     {
         return rounds::assemble(model, &planar, &seats, &by_edge, &corners, tol);
     }
+    let Some(consumed) = consumed::consumed(&planar, &seats, &setback, &mut corners, tol) else {
+        return Ok(None);
+    };
     let mut rings = Rings::new(tol);
     let mut sorted: Vec<((usize, Id), ogeom_math::Point)> =
         corners.iter().map(|(k, p)| (*k, *p)).collect();
@@ -123,7 +128,18 @@ pub(crate) fn run(
         .map(|(key, p)| (key, rings.point(p)))
         .collect();
     for (fi, face) in planar.faces.iter().enumerate() {
-        let ring = face.corners.iter().map(|v| at[&(fi, *v)]).collect();
+        if consumed.faces.contains(&fi) {
+            continue;
+        }
+        let n = face.corners.len();
+        let mut ring = Vec::with_capacity(n);
+        for k in 0..n {
+            let (v, w) = (face.corners[k], face.corners[(k + 1) % n]);
+            ring.push(at[&(fi, v)]);
+            if let Some(ridge) = consumed.ridges.get(&(fi, v, w)) {
+                ring.push(rings.point(*ridge));
+            }
+        }
         rings.push(ring, Origin::Face(fi), Some(face.normal));
     }
     // The strips, each by its law.
@@ -183,6 +199,11 @@ pub(crate) fn run(
     for e in gone {
         history.delete(&planar.shapes[&e]);
     }
+    let mut eaten: Vec<usize> = consumed.faces.iter().copied().collect();
+    eaten.sort_unstable();
+    for fi in eaten {
+        history.delete(&planar.faces[fi].shape);
+    }
     for (face, from) in faces.iter().zip(&assembled.origins) {
         for origin in from {
             match origin {
@@ -190,6 +211,14 @@ pub(crate) fn run(
                 Origin::Edge(e) => history.generate(&planar.shapes[e], face.clone()),
                 Origin::Vertex(v) => history.generate(&planar.shapes[v], face.clone()),
             }
+        }
+    }
+    // What a consumed band leaves nothing of: its sharp edges, and its
+    // vertices where no facet survives them.
+    for e in &consumed.gone {
+        let shape = &planar.shapes[e];
+        if history.generated(shape).is_empty() {
+            history.delete(shape);
         }
     }
     // An edge left as it was is the new edge between the faces its two faces
