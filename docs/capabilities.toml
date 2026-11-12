@@ -1572,7 +1572,15 @@ bands either side of a junction share. On a straight edge \
 between planes each distance may vary along the edge by a law (linear, or \
 through points), the band exact: the section's control points carried \
 along the laws' cubics, capped square where the edge ends at faces square \
-to it. Naming the other face \
+to it. Any other crease the march seats (a spline's crease along a \
+wall, a bore's rim on a drum, open or closed) takes a band fitted to the \
+march's target through the conic sections station by station: each leg \
+walked its distance along its face's section in the plane square to the \
+crease, as a marched bevel's is, and the conic tangent to each face's \
+section at its contact, through the shoulder where those tangents meet. \
+There, with equal distances, the elliptical section is the round of \
+constant setback, not the constant ball, the dihedral varying. Naming the \
+other face \
 with the distances swapped builds the same solid to the bit, and equal \
 distances with the elliptical section are the circular round by the same \
 call. A straight band's ends are the circular round's: square caps at a \
@@ -1581,7 +1589,9 @@ off by a face overhanging the corner. \
 In a blend_edges request it stands beside the request's other rounds and \
 bevels where it meets none of them at a vertex; an asymmetric round of \
 equal distances and the elliptical section meets them as the circular \
-round does. Refused by name: a curved, spline or marched crease; a \
+round does. Refused by name: a crease whose sections do not seat all \
+along it (a straight edge between a flat and a drum whose sections run \
+off the drum); a \
 varying distance on a rim, along a chain or at an end not square to its \
 edge; asymmetric rounds meeting at a vertex other than as one tangent \
 chain, or one meeting another \
@@ -1603,6 +1613,7 @@ tests = [
     "crates/ogeom-fillet/tests/asymmetric.rs::a_boss_s_foot_fills_with_its_conic_corner_round_the_axis",
     "crates/ogeom-fillet/tests/asymmetric.rs::distances_varying_linearly_take_the_integral_of_their_corners",
     "crates/ogeom-fillet/tests/asymmetric.rs::a_tangent_loop_of_asymmetric_rounds_closes_round_a_pad",
+    "crates/ogeom-fillet/tests/asymmetric.rs::an_open_spline_crease_takes_its_conic_corner_along_its_length",
 ]
 
 [[capability]]

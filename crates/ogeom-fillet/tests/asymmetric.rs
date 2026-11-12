@@ -506,7 +506,8 @@ fn what_is_not_built_is_refused_by_name() {
         "past that face's side",
     );
 
-    // The straight edge where a half drum's flat side meets its cylinder.
+    // The straight edge where a half drum's flat side meets its cylinder:
+    // its sections run off the drum's ends.
     let drum = ogeom_algo::make_cylinder(&mut m, Frame::WORLD, 5.0, 4.0, T)
         .unwrap()
         .shape;
@@ -528,7 +529,7 @@ fn what_is_not_built_is_refused_by_name() {
             RoundProfile::Elliptical,
             T,
         ),
-        "straight edge between two planes or a rim",
+        "sections do not seat all along the edge",
     );
 }
 
@@ -1892,4 +1893,302 @@ fn asymmetric_rounds_meeting_other_than_as_a_tangent_chain_are_refused() {
         message.contains("other than as one tangent chain"),
         "{message}"
     );
+}
+
+/// The S-shaped crease's profile in `y = 0`: from the origin along `x`,
+/// down by 1 and on along `x` to `x = 10`, its tangent along `x` at both
+/// ends.
+fn spline() -> ogeom_geom::Curve {
+    let at = |x: f64, z: f64| Point::new(x, 0.0, z);
+    ogeom_geom::BSplineCurve::new(
+        ogeom_math::KnotVector::clamped_uniform(3, 4).unwrap(),
+        vec![at(0.0, 0.0), at(3.0, 0.0), at(7.0, -1.0), at(10.0, -1.0)],
+        T,
+    )
+    .unwrap()
+    .into()
+}
+
+/// A slab 2 thick along `y`: its profile in `y = 0` under the spline,
+/// down to `z = -5`, between end walls square to the spline's ends; the
+/// slab, the crease along the spline at `y = 2`, the top face there and
+/// the spline's swept wall.
+fn slab(m: &mut Model) -> (Shape, Shape, Shape, Shape) {
+    use ogeom_geom::LineCurve;
+    let at = |x: f64, z: f64| Point::new(x, 0.0, z);
+    let corners: Vec<Shape> = [at(0.0, 0.0), at(10.0, -1.0), at(10.0, -5.0), at(0.0, -5.0)]
+        .into_iter()
+        .map(|p| ogeom_algo::make_vertex(m, p).shape)
+        .collect();
+    let line = |m: &mut Model, from: (&Shape, Point), to: (&Shape, Point)| {
+        let curve: ogeom_geom::Curve = LineCurve::new(ogeom_math::Axis::new(
+            from.1,
+            Direction::new(to.1 - from.1, T).unwrap(),
+        ))
+        .into();
+        ogeom_algo::make_edge_between(m, curve, (0.0, from.1.distance(to.1)), from.0, to.0, T)
+            .unwrap()
+            .shape
+    };
+    let edges = vec![
+        ogeom_algo::make_edge_between(m, spline(), (0.0, 1.0), &corners[0], &corners[1], T)
+            .unwrap()
+            .shape,
+        line(
+            m,
+            (&corners[1], at(10.0, -1.0)),
+            (&corners[2], at(10.0, -5.0)),
+        ),
+        line(
+            m,
+            (&corners[2], at(10.0, -5.0)),
+            (&corners[3], at(0.0, -5.0)),
+        ),
+        line(m, (&corners[3], at(0.0, -5.0)), (&corners[0], at(0.0, 0.0))),
+    ];
+    let wire = ogeom_algo::make_wire(m, &edges, T).unwrap().shape;
+    let plane = ogeom_geom::PlaneSurface::over(
+        Plane::through(Point::ORIGIN, Direction::Y),
+        (-100.0, 100.0),
+        (-100.0, 100.0),
+    )
+    .unwrap();
+    let face = ogeom_algo::make_face(m, plane.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    let solid = ogeom_algo::make_prism(m, &face, Vector::new(0.0, 2.0, 0.0), T)
+        .unwrap()
+        .shape;
+    let crease = explore_unique(m, &solid, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let b = ogeom_algo::shape_bounds(m, e, T).unwrap();
+            let (lo, hi) = (b.low().unwrap(), b.high().unwrap());
+            (lo.y - 2.0).abs() < 1e-6
+                && (hi.y - 2.0).abs() < 1e-6
+                && lo.x.abs() < 1e-6
+                && (hi.x - 10.0).abs() < 1e-6
+                && hi.z - lo.z > 0.5
+        })
+        .expect("the crease along the spline's top");
+    let beside: Vec<Shape> = explore_unique(m, &solid, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .filter(|f| {
+            explore_unique(m, f, ShapeType::Edge)
+                .unwrap()
+                .iter()
+                .any(|x| x.is_same(&crease))
+        })
+        .collect();
+    let is_plane = |f: &Shape| {
+        matches!(
+            m.node(f)
+                .and_then(|n| n.data().as_face())
+                .and_then(|d| m.geometry().surface(d.surface)),
+            Some(ogeom_geom::SurfaceGeometry::Plane(_))
+        )
+    };
+    let top = beside
+        .iter()
+        .find(|f| is_plane(f))
+        .expect("the top")
+        .clone();
+    let wall = beside
+        .iter()
+        .find(|f| !is_plane(f))
+        .expect("the wall")
+        .clone();
+    (solid, crease, top, wall)
+}
+
+/// The spline's length, and its tangent's turn between its ends, by
+/// Gauss-Legendre over 256 pieces.
+fn length_and_turn() -> (f64, f64) {
+    use ogeom_geom::Curve3d as _;
+    let curve = spline();
+    let nodes = [
+        (-0.861_136_311_594_052_6, 0.347_854_845_137_453_9),
+        (-0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+        (0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+        (0.861_136_311_594_052_6, 0.347_854_845_137_453_9),
+    ];
+    let mut length = 0.0;
+    for k in 0..256 {
+        let (a, b) = (f64::from(k) / 256.0, f64::from(k + 1) / 256.0);
+        for (x, w) in nodes {
+            let t = (b - a).mul_add(x, a + b) * 0.5;
+            length += w * (b - a) * 0.5 * curve.d1_at(t, T).unwrap().magnitude();
+        }
+    }
+    let heading = |t: f64| {
+        let d = curve.d1_at(t, T).unwrap();
+        d.z.atan2(d.x)
+    };
+    (length, heading(1.0) - heading(0.0))
+}
+
+/// The slab's spline crease, its top and swept wall square all along it:
+/// the band's section is the square conic corner at every station, and the
+/// crease turns through nothing between its ends, so the band takes the
+/// corner's area times the crease's length, whichever face is named.
+#[test]
+fn an_open_spline_crease_takes_its_conic_corner_along_its_length() {
+    let (length, turn) = length_and_turn();
+    assert!(turn.abs() < 1e-12, "{turn}");
+    let (d_top, d_wall) = (0.4, 0.7);
+    for profile in PROFILES {
+        let mut m = Model::new();
+        let (solid, crease, top, wall) = slab(&mut m);
+        let before = volume(&m, &solid);
+        let (area, _) = square_corner(d_top, d_wall, weight_of(profile));
+        let expected = before - area * length;
+        let mut volumes = Vec::new();
+        for (face, a, b) in [(&top, d_top, d_wall), (&wall, d_wall, d_top)] {
+            let built = ogeom_fillet::fillet_edge_distances(
+                &mut m, &solid, &crease, face, a, b, profile, T,
+            )
+            .unwrap();
+            let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
+            assert!(
+                diagnosis.is_valid(),
+                "{profile:?}: {:?}",
+                diagnosis.problems
+            );
+            assert!(built.history.is_deleted(&crease));
+            let v = volume(&m, &built.shape);
+            assert!(
+                (v - expected).abs() <= 1e-5 * expected,
+                "{profile:?}: {v} against {expected}"
+            );
+            volumes.push(v);
+        }
+        assert!(
+            (volumes[0] - volumes[1]).abs() <= 1e-9 * volumes[0],
+            "naming the other face first"
+        );
+    }
+}
+
+/// A drum of radius 10 and height 30 with a bore of radius 3 across it
+/// along y at height 15: the bore's rim on the drum is a closed crease
+/// only the march speaks.
+fn holed_drum(m: &mut Model) -> (Shape, Shape, Shape, Shape) {
+    let drum = ogeom_algo::make_cylinder(m, Frame::WORLD, 10.0, 30.0, T)
+        .unwrap()
+        .shape;
+    let f = Frame::new(Point::new(0.0, -20.0, 15.0), Direction::Y, Direction::X, T).unwrap();
+    let bore = ogeom_algo::make_cylinder(m, f, 3.0, 40.0, T).unwrap().shape;
+    let s = ogeom_bool::cut(m, &drum, &bore, T).unwrap().shape;
+    let q = Point::new(0.0, 9.5, 18.0);
+    let rim = explore_unique(m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .min_by(|a, b| {
+            let d = |e: &Shape| {
+                let (c, (lo, hi)) = ogeom_algo::placed_edge_curve(m, e, T).unwrap().unwrap();
+                (0..=64)
+                    .map(|i| {
+                        use ogeom_geom::Curve3d as _;
+                        c.point_at(lo + (hi - lo) * f64::from(i) / 64.0, T)
+                            .unwrap()
+                            .distance(q)
+                    })
+                    .fold(f64::INFINITY, f64::min)
+            };
+            d(a).total_cmp(&d(b))
+        })
+        .unwrap();
+    let beside: Vec<Shape> = explore_unique(m, &s, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .filter(|f| {
+            explore_unique(m, f, ShapeType::Edge)
+                .unwrap()
+                .iter()
+                .any(|x| x.is_same(&rim))
+        })
+        .collect();
+    let is_drum = |f: &Shape| {
+        matches!(
+            m.node(f).and_then(|n| n.data().as_face()).and_then(|d| m.geometry().surface(d.surface)),
+            Some(ogeom_geom::SurfaceGeometry::Cylinder(c)) if (c.cylinder().radius() - 10.0).abs() < 1e-9
+        )
+    };
+    let drum_face = beside
+        .iter()
+        .find(|f| is_drum(f))
+        .expect("the drum")
+        .clone();
+    let bore_face = beside
+        .iter()
+        .find(|f| !is_drum(f))
+        .expect("the bore")
+        .clone();
+    (s, rim, drum_face, bore_face)
+}
+
+/// The bore's rim on a drum, a closed crease the march speaks, rounded
+/// with a conic section: valid, the band's borders on the drum and the
+/// bore within the band's fit, tangent to both within it, the same solid
+/// whichever face is named, and the material it takes more than nothing
+/// and less than the bevel of the same legs takes.
+#[test]
+fn a_bore_s_rim_on_a_drum_takes_a_marched_conic_band() {
+    let (d_drum, d_bore) = (0.8, 0.4);
+    for profile in PROFILES {
+        let mut m = Model::new();
+        let (s, rim, drum, bore) = holed_drum(&mut m);
+        let before = volume(&m, &s);
+        let a = ogeom_fillet::fillet_edge_distances(
+            &mut m, &s, &rim, &drum, d_drum, d_bore, profile, T,
+        )
+        .unwrap();
+        let b = ogeom_fillet::fillet_edge_distances(
+            &mut m, &s, &rim, &bore, d_bore, d_drum, profile, T,
+        )
+        .unwrap();
+        let diagnosis = ogeom_algo::check(&m, &a.shape, T).unwrap();
+        assert!(
+            diagnosis.is_valid(),
+            "{profile:?}: {:?}",
+            diagnosis.problems
+        );
+        assert!(a.history.is_deleted(&rim));
+        let (va, vb) = (volume(&m, &a.shape), volume(&m, &b.shape));
+        assert_eq!(va.to_bits(), vb.to_bits(), "naming the other face first");
+        let spec = ogeom_fillet::Chamfer::Distances {
+            face: drum.clone(),
+            on_face: d_drum,
+            on_other: d_bore,
+        };
+        let bevel =
+            ogeom_fillet::chamfer_edges_with(&mut m, &s, &[(rim.clone(), spec)], T).unwrap();
+        let vc = volume(&m, &bevel.shape);
+        assert!(
+            vc < va && va < before,
+            "{profile:?}: bevel {vc}, round {va}, solid {before}"
+        );
+        let band = explore_unique(&m, &a.shape, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .find(|f| {
+                let d = m.node(f).unwrap().data().as_face().unwrap();
+                matches!(
+                    m.geometry().surface(d.surface),
+                    Some(ogeom_geom::SurfaceGeometry::BSpline(_))
+                )
+            })
+            .expect("the band");
+        let mut worst = 0.0_f64;
+        for c in ogeom_fillet::analyse_blend(&m, &a.shape, &band, 33, T).unwrap() {
+            assert!(c.gap <= 2e-4, "a rail stands {} off its face", c.gap);
+            worst = worst.max(c.tangency_error);
+        }
+        assert!(
+            worst <= 1e-3,
+            "{profile:?}: the band meets a face at {worst} rad"
+        );
+    }
 }

@@ -502,8 +502,8 @@ cone, with a different distance onto each face, elliptical or conic;
 `fillet_edge_distances_variable` lets each distance vary along a straight
 edge, and `blend_edges` closes a tangent chain of them (straight edges and
 rim arcs). Refused by name until built, in this order: distances varying on
-a rim, along a chain or past an oblique end, curved, spline and marched
-creases,
+a rim, along a chain or past an oblique end, creases whose sections the
+march does not seat (a straight edge between a flat and a drum),
 corners where an asymmetric round meets another band or a bevel, and the
 largest fitting pair in `largest_fillet_radius`.
 

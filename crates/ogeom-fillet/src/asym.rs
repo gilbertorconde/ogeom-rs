@@ -382,7 +382,10 @@ pub fn fillet_edge_distances(
     if let RoundProfile::Conic(_) = profile {
         profile.weight(0.0)?;
     }
-    if profile == RoundProfile::Elliptical && on_face == on_other {
+    if profile == RoundProfile::Elliptical
+        && on_face == on_other
+        && constant_dihedral(model, solid, edge, tol)?
+    {
         // The circular round, by the same call.
         let radius = equal_round(model, solid, edge, face, on_face, tol)?;
         return crate::fillet_edge(model, solid, edge, radius, tol);
@@ -430,6 +433,28 @@ fn fillet_edge_distances_own(
         };
         crate::support::credit_new_faces(model, solid, edge, &mut built)?;
         return Ok(built);
+    }
+    if !straight_between_planes(model, solid, edge, tol)? {
+        // Any other crease: the marched band through the conic sections,
+        // each leg walked along its face's section.
+        let weight = match profile {
+            RoundProfile::Elliptical => crate::marched::ConicWeight::Elliptical,
+            RoundProfile::Conic(_) => crate::marched::ConicWeight::Fixed(profile.weight(0.0)?),
+        };
+        let spec = crate::Chamfer::Distances {
+            face: face.clone(),
+            on_face,
+            on_other,
+        };
+        return crate::chamfer_marched::marched_bevel_with(
+            model,
+            solid,
+            edge,
+            &spec,
+            &[],
+            crate::marched::Chord::Conic(weight),
+            tol,
+        );
     }
     let Some(section) =
         straight_section(model, solid, edge, face, on_face, on_other, profile, tol)?
@@ -980,12 +1005,9 @@ fn rim_conic(
     };
     let seat = match crate::support::revolved_seat(model, solid, edge, &circle, tol) {
         Ok(seat) => seat,
-        Err(ogeom_core::OgeomError::Construction(_)) => ogeom_bail!(
-            Construction,
-            "an asymmetric round on a circle is built on a rim where a planar cap meets \
-             a coaxial cylinder or cone; this edge is not one; see docs/CAPABILITIES.md, \
-             fillet.asymmetric-rounds"
-        ),
+        // A circle that is no rim of a cap and its coaxial wall is a
+        // marched crease.
+        Err(ogeom_core::OgeomError::Construction(_)) => return Ok(None),
         Err(e) => return Err(e),
     };
     let closed = ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
@@ -1089,7 +1111,56 @@ fn faces_beside(
         let seat = crate::support::revolved_seat(model, solid, edge, &circle, tol)?;
         return Ok([seat.cap_face, seat.wall_face]);
     }
-    Ok(crate::support::planar_seat(model, solid, edge, tol)?.faces)
+    if straight_between_planes(model, solid, edge, tol)? {
+        return Ok(crate::support::planar_seat(model, solid, edge, tol)?.faces);
+    }
+    let mut found: Vec<Shape> = Vec::new();
+    for f in ogeom_topo::explore_unique(model, solid, ogeom_topo::ShapeType::Face)? {
+        let holds = ogeom_topo::explore(
+            model,
+            &f,
+            ogeom_topo::Filter::OfType(ogeom_topo::ShapeType::Edge),
+        )?
+        .iter()
+        .any(|e| crate::support::same_occurrence(model, e, edge, tol));
+        if holds {
+            found.push(f);
+        }
+    }
+    let [a, b] = <[Shape; 2]>::try_from(found).map_err(|_| {
+        ogeom_core::ogeom_err!(Construction, "an asymmetric round's edge has not two faces")
+    })?;
+    Ok([a, b])
+}
+
+/// Whether `edge` is straight between two planes.
+fn straight_between_planes(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let (curve, _) = crate::support::edge_curve(model, edge, tol)?;
+    Ok(matches!(curve, Curve::Line(_)) && crate::support::hosts_planar(model, solid, edge, tol)?)
+}
+
+/// Whether the faces beside `edge` meet at one angle all along it, so an
+/// elliptical round of equal distances is the circular round: a straight
+/// edge between planes, or a rim on a cap and its coaxial wall.
+fn constant_dihedral(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    if straight_between_planes(model, solid, edge, tol)? {
+        return Ok(true);
+    }
+    let (curve, _) = crate::support::edge_curve(model, edge, tol)?;
+    let Curve::Circle(circle) = curve else {
+        return Ok(false);
+    };
+    Ok(crate::support::revolved_seat(model, solid, edge, &circle, tol).is_ok())
 }
 
 /// Refuses by name where the rim's contacts stand off their faces, read

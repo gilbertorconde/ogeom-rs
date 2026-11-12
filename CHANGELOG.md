@@ -121,6 +121,24 @@ bump may break the API and a patch bump may not.
   - Refused by name: asymmetric rounds meeting at a vertex other than as
     one tangent chain naming one face with the same distances and section.
 
+- **Asymmetric rounds on curved, spline and marched creases.** (#877)
+  - On any crease the marching machinery seats, open or closed, each leg
+    is walked its distance along its face's section in the plane square to
+    the crease, as a marched bevel's legs are, and the band crosses the
+    conic tangent to each face's section at its contact, through the
+    shoulder where those tangents meet: fitted through the sections, the
+    samples across each gathered toward the contacts, to the march's
+    target.
+  - Measured on an S-shaped spline crease along a wall: within 1e-5 of the
+    square conic corner's area times the crease's length, both faces named
+    first alike. On a bore's rim across a drum, closed: valid, rails within
+    2e-4 of their faces and tangent within 6e-4 rad (the circular marched
+    round on that rim, 2.1e-3), and between the bevel of the same legs and
+    the solid in volume.
+  - Along such a crease the dihedral varies, and equal distances with the
+    elliptical section are the round of constant setback, not the
+    constant ball.
+
 ### Changed
 
 - **`threemf::read_package` holds a package to 4096 entries and 4 GiB
