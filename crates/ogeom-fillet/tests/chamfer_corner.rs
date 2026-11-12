@@ -205,7 +205,8 @@ fn a_facet_closes_a_pyramid_s_apex_of_four_bevels_in_a_square() {
 #[test]
 fn a_facet_through_four_points_off_one_plane_is_refused() {
     // The apex moved off the middle: the four crossings no longer share a
-    // plane, and no facet passes through them all.
+    // plane, and no facet passes through them all. Such a corner closes
+    // with a patch through them, which is not built yet: refused by name.
     let mut m = Model::new();
     let points = [
         Point::new(0.0, 0.0, 0.0),
@@ -238,5 +239,5 @@ fn a_facet_through_four_points_off_one_plane_is_refused() {
     let refused = chamfer_edges_cornered(&mut m, &p, &specs, ChamferCorner::Facet, T)
         .expect_err("the facet should be refused")
         .to_string();
-    assert!(refused.contains("off one plane"), "{refused}");
+    assert!(refused.contains("do not cross on one plane"), "{refused}");
 }

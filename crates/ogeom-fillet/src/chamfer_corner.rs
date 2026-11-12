@@ -62,6 +62,16 @@ pub fn chamfer_edges_cornered(
     if corner == ChamferCorner::Point {
         return crate::chamfer_edges_with(model, solid, specs, tol);
     }
+    if specs.is_empty() {
+        ogeom_bail!(Construction, "a chain of no edges bevels nothing");
+    }
+    // A solid bounded by planes is chamfered by the blend engine in one
+    // pass: every face set back, every vertex its facet.
+    if let Some(request) = crate::engine::Request::from_chamfers(model, solid, specs, tol)?
+        && let Some(built) = crate::engine::run(model, solid, &request, tol)?
+    {
+        return Ok(built);
+    }
     let cuts = facets(model, solid, specs, tol)?;
     let mut built = crate::chamfer_edges_with(model, solid, specs, tol)?;
     for cut in cuts {

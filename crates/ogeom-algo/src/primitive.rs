@@ -520,17 +520,140 @@ fn faceted_solid(
     rings: &[&[usize]],
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    let faces = faceted_faces(model, points, rings, &[], false, tol)?;
+    let shell = make_shell(model, &faces)?.shape;
+    let solid = outward_solid(model, &shell)?;
+    Ok(Built::from_nothing(solid))
+}
+
+/// A solid from planar rings over shared points, each ring already wound
+/// counter-clockwise seen from outside, and its faces in the rings' order.
+///
+/// Unlike [`make_polyhedron`] the solid need not be convex: the winding is
+/// the caller's, and is checked rather than judged. A ring given a plane in
+/// `planes` (by index; missing or `None` for none) is built on that plane
+/// where its normal faces the way the ring does, so a face rebuilt from one
+/// keeps its surface and its chart. Every edge lies on a line running on
+/// past its ends, so a later operation may carry it on. Every ring must be
+/// planar and name at least three distinct points, every edge (a pair of
+/// consecutive points on a ring) must be walked once each way by exactly
+/// two rings, and the rings must enclose a volume.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a
+/// point is not finite, a ring is short, names a point out of range or
+/// repeats one in turn, a ring is not planar, an edge is not walked once
+/// each way, or the rings enclose no volume.
+pub fn make_faceted_solid(
+    model: &mut Model,
+    points: &[Point],
+    rings: &[Vec<usize>],
+    planes: &[Option<Plane>],
+    tol: Tolerances,
+) -> OgeomResult<(Built, Vec<Shape>)> {
+    if rings.len() < 4
+        || points
+            .iter()
+            .any(|p| !p.to_vector().magnitude().is_finite())
+    {
+        ogeom_bail!(
+            Construction,
+            "a faceted solid has at least four faces over finite points"
+        );
+    }
+    let mut walked: ogeom_core::FastMap<(usize, usize), usize> = ogeom_core::FastMap::default();
+    let mut volume = 0.0;
+    let origin = points[rings[0][0]];
+    for ring in rings {
+        if ring.len() < 3 || ring.iter().any(|&i| i >= points.len()) {
+            ogeom_bail!(
+                Construction,
+                "a faceted solid's face names fewer than three points or one it does not have"
+            );
+        }
+        let n = ring_normal(points, ring);
+        let m = n.magnitude();
+        let perimeter: f64 = (0..ring.len())
+            .map(|i| points[ring[i]].distance(points[ring[(i + 1) % ring.len()]]))
+            .sum();
+        if !m.is_finite() || m <= tol.confusion() * perimeter {
+            ogeom_bail!(Construction, "a faceted solid's face has no area");
+        }
+        let n = n / m;
+        let a = points[ring[0]];
+        for step in 0..ring.len() {
+            let (from, to) = (ring[step], ring[(step + 1) % ring.len()]);
+            if from == to {
+                ogeom_bail!(Construction, "a faceted solid's face repeats a corner");
+            }
+            let off = (points[from] - a).dot(n).abs();
+            if off > tol.confusion() * 10.0 {
+                ogeom_bail!(
+                    Construction,
+                    "a faceted solid's face is not planar; a corner sits {off} off"
+                );
+            }
+            *walked.entry((from, to)).or_insert(0) += 1;
+        }
+        for step in 1..ring.len() - 1 {
+            let (b, c) = (points[ring[step]], points[ring[step + 1]]);
+            volume += (a - origin).dot((b - origin).cross(c - origin));
+        }
+    }
+    if let Some(((from, to), _)) = walked
+        .iter()
+        .find(|((from, to), count)| **count != 1 || walked.get(&(*to, *from)) != Some(&1))
+    {
+        ogeom_bail!(
+            Construction,
+            "a faceted solid's edge from point {from} to {to} is not walked once each way; \
+             the shell would not close or its faces disagree in winding"
+        );
+    }
+    if volume.is_nan() || volume / 6.0 <= tol.confusion() {
+        ogeom_bail!(Construction, "a faceted solid's faces enclose no volume");
+    }
+    let borrowed: Vec<&[usize]> = rings.iter().map(Vec::as_slice).collect();
+    model.begin_operation();
+    let faces = faceted_faces(model, points, &borrowed, planes, true, tol)?;
+    let shell = make_shell(model, &faces)?.shape;
+    let solid = outward_solid(model, &shell)?;
+    Ok((Built::from_nothing(solid), faces))
+}
+
+/// The faces of [`faceted_solid`], in the rings' order: each on its plane
+/// in `planes` where one is given and faces the ring's way, its edges on
+/// lines running on past their ends where `open_lines`, else on segments.
+fn faceted_faces(
+    model: &mut Model,
+    points: &[Point],
+    rings: &[&[usize]],
+    planes: &[Option<Plane>],
+    open_lines: bool,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Shape>> {
     let vertices: Vec<Shape> = points
         .iter()
         .map(|p| model.add_vertex(ogeom_topo::VertexData::new(*p)))
         .collect();
     let mut edge_of: ogeom_core::FastMap<(usize, usize), Shape> = ogeom_core::FastMap::default();
     let mut faces = Vec::with_capacity(rings.len());
-    for ring_corners in rings {
+    for (index, ring_corners) in rings.iter().enumerate() {
         let origin = points[ring_corners[0]];
         let normal = Direction::new(ring_normal(points, ring_corners), tol)?;
-        let x = Direction::new(points[ring_corners[1]] - origin, tol)?;
-        let plane = Plane::new(Frame::new(origin, normal, x, tol)?);
+        let given = planes
+            .get(index)
+            .copied()
+            .flatten()
+            .filter(|p| p.frame().z().vector().dot(normal.vector()) > 0.0);
+        let plane = match given {
+            Some(plane) => plane,
+            None => {
+                let x = Direction::new(points[ring_corners[1]] - origin, tol)?;
+                Plane::new(Frame::new(origin, normal, x, tol)?)
+            }
+        };
         let surface = model
             .geometry_mut()
             .add_surface(PlaneSurface::new(plane).into());
@@ -544,8 +667,15 @@ fn faceted_solid(
             let edge = match edge_of.get(&key) {
                 Some(edge) => edge.clone(),
                 None => {
-                    let curve: Curve =
-                        LineCurve::segment(points[key.0], points[key.1], tol)?.into();
+                    let curve: Curve = if open_lines {
+                        let axis = ogeom_math::Axis::new(
+                            points[key.0],
+                            Direction::new(points[key.1] - points[key.0], tol)?,
+                        );
+                        LineCurve::new(axis).into()
+                    } else {
+                        LineCurve::segment(points[key.0], points[key.1], tol)?.into()
+                    };
                     let length = points[key.0].distance(points[key.1]);
                     let edge = make_edge_between(
                         model,
@@ -576,9 +706,7 @@ fn faceted_solid(
         let wire = make_wire(model, &ring, tol)?.shape;
         faces.push(make_face_on(model, surface, std::slice::from_ref(&wire), tol)?.shape);
     }
-    let shell = make_shell(model, &faces)?.shape;
-    let solid = outward_solid(model, &shell)?;
-    Ok(Built::from_nothing(solid))
+    Ok(faces)
 }
 
 /// The solid bounded by a primitive's one shell.
