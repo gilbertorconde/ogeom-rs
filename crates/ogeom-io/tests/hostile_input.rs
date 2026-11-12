@@ -85,3 +85,29 @@ fn step_spline_counts_past_any_real_spline_are_refused() {
     let degree = knots.replace("('',1,(#1,#2)", "('',1.E30,(#1,#2)");
     assert!(ogeom_io::read_step(&step(&degree), T).is_err());
 }
+
+/// A box's file with one of its points defined a second time, elsewhere:
+/// Part 21 names each instance once, so the reader refuses the file by the
+/// name rather than building the box on whichever definition came last.
+#[test]
+fn a_step_instance_defined_twice_is_refused_by_name() {
+    let mut model = ogeom_topo::Model::new();
+    let block = ogeom_algo::make_box(&mut model, ogeom_math::Frame::WORLD, (4.0, 3.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let mut document = ogeom_doc::Document::over(model);
+    document.add_part("block", block);
+    let text = ogeom_io::write_step(&document, T).unwrap();
+    assert!(ogeom_io::read_step(&text, T).is_ok());
+
+    let point = text
+        .lines()
+        .find(|line| line.contains("CARTESIAN_POINT") && line.starts_with('#'))
+        .unwrap();
+    let name = point.split('=').next().unwrap().trim();
+    let again = format!("{name}=CARTESIAN_POINT('',(40.,30.,20.));");
+    let twice = text.replacen("ENDSEC;\nEND-ISO", &format!("{again}\nENDSEC;\nEND-ISO"), 1);
+    assert_ne!(twice, text);
+    let message = ogeom_io::read_step(&twice, T).unwrap_err().to_string();
+    assert!(message.contains(&format!("{name} ")), "{message}");
+}

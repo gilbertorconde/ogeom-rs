@@ -99,6 +99,17 @@ bump may break the API and a patch bump may not.
     parameter. The error names the byte. Every STEP file in the corpus,
     both real-world assemblies and printCAD's fixtures still parse.
 
+- **A STEP file that defines one instance number twice is refused by
+  name.** (#858)
+  - Part 21 gives each entity instance a name unique within the exchange
+    structure (ISO 10303-21:2016, 11.2). The parser let the later
+    definition overwrite the earlier one, in both `step::parse::parse` and
+    `read_step`. A box's file with one corner point defined a second time
+    read as a box with that corner moved and its tolerance widened to 44.7.
+  - Both now refuse the file: "the instance #N is defined twice". Every
+    STEP file in the corpus, both real-world assemblies and printCAD's
+    fixtures still read.
+
 - **A concave round on a curved edge running past its face's side is cut
   off flush at that side.** (#871)
   - Since 0.18.1 a foot round where a plate's side runs tangent into a boss
