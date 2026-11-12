@@ -109,22 +109,43 @@ pub fn blend_edges(
         }
     }
     if !asymmetric.is_empty() {
+        // The corners where an asymmetric round meets the request's other
+        // edges, read off the solid as it stands, their edges set apart.
+        let corners =
+            crate::asym::asymmetric_corners(model, solid, &rounds, &bevels, &asymmetric, tol)?;
+        let at_corner = |e: &Shape| corners.edges.iter().any(|c| c.is_same(e));
+        let (corner_rounds, rounds): (Vec<_>, Vec<_>) =
+            rounds.into_iter().partition(|(e, _)| at_corner(e));
+        let (corner_bevels, bevels): (Vec<_>, Vec<_>) =
+            bevels.into_iter().partition(|(e, _)| at_corner(e));
+        let (corner_asymmetric, asymmetric): (Vec<_>, Vec<_>) =
+            asymmetric.into_iter().partition(|a| at_corner(&a.edge));
         let others: Vec<Shape> = rounds
             .iter()
             .map(|(e, _)| e.clone())
             .chain(bevels.iter().map(|(e, _)| e.clone()))
+            .chain(corners.edges.iter().cloned())
             .collect();
-        return crate::asym::after_symmetric(
+        let symmetric_only = rounds.is_empty() && bevels.is_empty();
+        let built = crate::asym::after_symmetric(
             model,
             &others,
             asymmetric,
             |model| {
-                if others.is_empty() {
+                if symmetric_only {
                     Ok(Built::new(solid.clone(), ogeom_algo::History::new()))
                 } else {
                     blend_symmetric(model, solid, rounds, bevels, corner, tol)
                 }
             },
+            tol,
+        )?;
+        return crate::asym::close_asymmetric_corners(
+            model,
+            solid,
+            built,
+            &corners,
+            (&corner_rounds, &corner_bevels, &corner_asymmetric),
             tol,
         );
     }

@@ -1589,9 +1589,15 @@ off by a face overhanging the corner. \
 In a blend_edges request it stands beside the request's other rounds and \
 bevels where it meets none of them at a vertex; an asymmetric round of \
 equal distances and the elliptical section meets them as the circular \
-round does. Refused by name: a crease whose sections do not seat all \
+round does. At a convex corner of three planes whose three edges are all \
+in the request, asymmetric rounds close with each other, with rounds and \
+with bevels: each band stopped at the least setback where its section \
+clears the others, and the opening closed by one patch held inside the \
+corner's planes, tangent to each round's band, the same solid whichever \
+face each names and in whichever order the request lists them. Refused by name: a crease whose sections do not seat all \
 along it (a straight edge between a flat and a drum whose sections run \
-off the drum); a \
+off the drum); a corner that is not a convex corner of planes, or where \
+an edge is left sharp; a \
 varying distance on a rim, along a chain or at an end not square to its \
 edge; asymmetric rounds meeting at a vertex other than as one tangent \
 chain, or one meeting another \
@@ -1614,6 +1620,7 @@ tests = [
     "crates/ogeom-fillet/tests/asymmetric.rs::distances_varying_linearly_take_the_integral_of_their_corners",
     "crates/ogeom-fillet/tests/asymmetric.rs::a_tangent_loop_of_asymmetric_rounds_closes_round_a_pad",
     "crates/ogeom-fillet/tests/asymmetric.rs::an_open_spline_crease_takes_its_conic_corner_along_its_length",
+    "crates/ogeom-fillet/tests/asymmetric.rs::asymmetric_rounds_close_a_box_corner_with_rounds_and_bevels",
 ]
 
 [[capability]]

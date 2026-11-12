@@ -1203,3 +1203,339 @@ fn rim_fits(
     }
     Ok(())
 }
+
+/// The corners where an asymmetric round meets the request's other edges:
+/// each vertex, its frame, its bands' setbacks and how each band ends, and
+/// every edge of the request at any of them.
+pub(crate) struct AsymmetricCorners {
+    /// Each corner: its vertex, frame, setbacks and band ends.
+    pub corners: Vec<(
+        Shape,
+        crate::corner::CornerFrame,
+        Vec<f64>,
+        Vec<crate::setback::CornerEnd>,
+    )>,
+    /// The request's edges at the corners.
+    pub edges: Vec<Shape>,
+}
+
+/// The corners of `asymmetric`: each vertex where an asymmetric round meets
+/// another edge of the request other than as one tangent chain. Refused by
+/// name unless it is a convex corner of three planes whose three edges are
+/// all in the request, each straight, and no edge at a corner meets an
+/// edge of the request elsewhere other than at another such corner.
+pub(crate) fn asymmetric_corners(
+    model: &Model,
+    solid: &Shape,
+    rounds: &[(Shape, f64)],
+    bevels: &[(Shape, crate::Chamfer)],
+    asymmetric: &[Asymmetric],
+    tol: Tolerances,
+) -> OgeomResult<AsymmetricCorners> {
+    use crate::setback::CornerEnd;
+    let ends = |edge: &Shape| -> OgeomResult<Vec<Shape>> {
+        Ok(match ogeom_algo::edge_vertices(model, edge)? {
+            Some((a, b)) if a.is_same(&b) => vec![a],
+            Some((a, b)) => vec![a, b],
+            None => Vec::new(),
+        })
+    };
+    // Every request edge, by kind: 0 a round, 1 a bevel, 2 an asymmetric
+    // round, with its index.
+    let mut all: Vec<(Shape, usize, usize)> = Vec::new();
+    all.extend(
+        rounds
+            .iter()
+            .enumerate()
+            .map(|(i, (e, _))| (e.clone(), 0, i)),
+    );
+    all.extend(
+        bevels
+            .iter()
+            .enumerate()
+            .map(|(i, (e, _))| (e.clone(), 1, i)),
+    );
+    all.extend(
+        asymmetric
+            .iter()
+            .enumerate()
+            .map(|(i, a)| (a.edge.clone(), 2, i)),
+    );
+    let mut at: std::collections::BTreeMap<ogeom_topo::TShapeId, (Shape, Vec<usize>)> =
+        std::collections::BTreeMap::new();
+    for (k, (edge, _, _)) in all.iter().enumerate() {
+        for v in ends(edge)? {
+            at.entry(v.node())
+                .or_insert_with(|| (v.clone(), Vec::new()))
+                .1
+                .push(k);
+        }
+    }
+    let solid_edges = ogeom_topo::explore_unique(model, solid, ogeom_topo::ShapeType::Edge)?;
+    let mut corners = Vec::new();
+    let mut edges: Vec<Shape> = Vec::new();
+    for (vertex, here) in at.into_values() {
+        let asym_here: Vec<usize> = here.iter().copied().filter(|&k| all[k].1 == 2).collect();
+        if asym_here.is_empty() || here.len() < 2 {
+            continue;
+        }
+        // Two asymmetric rounds continuing each other: a chain's junction.
+        if here.len() == 2 && asym_here.len() == 2 {
+            let (a, b) = (&asymmetric[all[here[0]].2], &asymmetric[all[here[1]].2]);
+            if continues(model, a, b, &vertex, tol)? {
+                continue;
+            }
+        }
+        let mut meeting = 0;
+        for e in &solid_edges {
+            if ends(e)?.iter().any(|v| v.is_same(&vertex)) {
+                meeting += 1;
+            }
+        }
+        if meeting != 3 || here.len() != 3 {
+            ogeom_bail!(
+                Construction,
+                "an asymmetric round meets another blended edge at a vertex, and such a \
+                 corner is closed only where three edges meet and all three are blended; \
+                 see docs/CAPABILITIES.md, fillet.asymmetric-rounds"
+            );
+        }
+        let largest = here
+            .iter()
+            .map(|&k| match all[k].1 {
+                0 => rounds[all[k].2].1,
+                1 => 0.0,
+                _ => asymmetric[all[k].2]
+                    .on_face
+                    .max(asymmetric[all[k].2].on_other),
+            })
+            .fold(0.0, f64::max)
+            .max(tol.confusion() * 10.0);
+        let Ok(frame) = crate::corner::corner_frame(model, solid, &vertex, largest, tol) else {
+            ogeom_bail!(
+                Construction,
+                "an asymmetric round meets other blended edges at a vertex that is not a \
+                 convex corner of planes, and the corner is not closed there; see \
+                 docs/CAPABILITIES.md, fillet.asymmetric-rounds"
+            );
+        };
+        let n = frame.d.len();
+        let point = |v: &Shape| -> OgeomResult<Point> {
+            let Some(data) = model.node(v).and_then(|n| n.data().as_vertex()) else {
+                ogeom_bail!(Dangling, "a vertex is not in this model");
+            };
+            Ok(v.transform(model.datums())?.apply(data.point))
+        };
+        let mut widths = Vec::with_capacity(n);
+        let mut kinds = Vec::with_capacity(n);
+        for k in 0..n {
+            let (ma, mb) = (frame.m[frame.ring[k]], frame.m[frame.ring[(k + 1) % n]]);
+            let dk = frame.d[k].vector();
+            let mut found = None;
+            for &j in &here {
+                let edge = &all[j].0;
+                let Some((a, z)) = ogeom_algo::edge_vertices(model, edge)? else {
+                    continue;
+                };
+                let far = if a.is_same(&vertex) { z } else { a };
+                let p = point(&far)? - frame.corner;
+                let length = p.magnitude();
+                if length <= tol.confusion() || p.dot(dk) / length < 1.0 - tol.angular().sqrt() {
+                    continue;
+                }
+                // The width on each of the frame's two faces.
+                let on = |normals: [Vector; 2], d: [f64; 2]| -> OgeomResult<(f64, f64)> {
+                    let pick = |m: Vector| {
+                        (0..2).find(|&i| normals[i].cross(m).magnitude() <= tol.angular() * 10.0)
+                    };
+                    let (Some(ia), Some(ib)) = (pick(ma), pick(mb)) else {
+                        ogeom_bail!(Construction, "a band at a corner does not lie on its faces");
+                    };
+                    Ok((d[ia], d[ib]))
+                };
+                found = Some(match all[j].1 {
+                    0 => {
+                        let cos = -ma.dot(mb);
+                        let sin = (1.0 - cos * cos).max(0.0).sqrt();
+                        let w = rounds[all[j].2].1 * (1.0 + cos) / sin;
+                        ((w, w), CornerEnd::Round)
+                    }
+                    1 => {
+                        let crate::chamfer::Legs::Straight(seat, d) =
+                            crate::chamfer::legs(model, solid, edge, &bevels[all[j].2].1, tol)?
+                        else {
+                            ogeom_bail!(
+                                Construction,
+                                "a corner with an asymmetric round takes bevels on straight \
+                                 edges between planes"
+                            );
+                        };
+                        (on(seat.normals, d)?, CornerEnd::Bevel)
+                    }
+                    _ => {
+                        let a = &asymmetric[all[j].2];
+                        let Some(Section::Conic { d, .. }) = straight_section(
+                            model, solid, edge, &a.face, a.on_face, a.on_other, a.profile, tol,
+                        )?
+                        else {
+                            ogeom_bail!(Construction, "an asymmetric round asked as a round");
+                        };
+                        let seat = crate::support::planar_seat(model, solid, edge, tol)?;
+                        (on(seat.normals, d)?, CornerEnd::Round)
+                    }
+                });
+            }
+            let Some((w, kind)) = found else {
+                ogeom_bail!(
+                    Construction,
+                    "an edge at a corner of asymmetric rounds is not one of the request's, or \
+                     is curved"
+                );
+            };
+            widths.push(w);
+            kinds.push(kind);
+        }
+        let setback = crate::setback::least_setbacks_widths(&frame, &widths, tol)?;
+        for &k in &here {
+            if !edges.iter().any(|e| e.is_same(&all[k].0)) {
+                edges.push(all[k].0.clone());
+            }
+        }
+        corners.push((vertex, frame, setback, kinds));
+    }
+    // A corner's edge meets the rest of the request only at corners.
+    for e in &edges {
+        for v in ends(e)? {
+            let corner_here = corners.iter().any(|(c, ..)| c.is_same(&v));
+            let others_here = all.iter().any(|(o, _, _)| {
+                !o.is_same(e) && ends(o).is_ok_and(|w| w.iter().any(|x| x.is_same(&v)))
+            });
+            if others_here && !corner_here {
+                ogeom_bail!(
+                    Construction,
+                    "an edge at a corner of asymmetric rounds meets another blended edge at \
+                     its far end, and that meeting is not closed yet; see \
+                     docs/CAPABILITIES.md, fillet.asymmetric-rounds"
+                );
+            }
+        }
+    }
+    Ok(AsymmetricCorners { corners, edges })
+}
+
+/// The request's edges at the corners: its rounds, bevels and asymmetric
+/// rounds.
+pub(crate) type CornerEdges<'a> = (
+    &'a [(Shape, f64)],
+    &'a [(Shape, crate::Chamfer)],
+    &'a [Asymmetric],
+);
+
+/// The corners' edges built one at a time on `built` (bevels, then rounds,
+/// then asymmetric rounds, each in the order of its edge's node, traced
+/// through what came before), and each corner then closed as a round meets
+/// a bevel: every band cut back to its setback and the opening filled by
+/// one patch, tangent to each round's band.
+pub(crate) fn close_asymmetric_corners(
+    model: &mut Model,
+    solid: &Shape,
+    mut built: Built,
+    corners: &AsymmetricCorners,
+    (rounds, bevels, asymmetric): CornerEdges<'_>,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    if corners.corners.is_empty() {
+        return Ok(built);
+    }
+    let traced_edge = |built: &Built, edge: &Shape| -> OgeomResult<Shape> {
+        let [one] = built.history.trace(edge) else {
+            ogeom_bail!(
+                Construction,
+                "an edge at a corner of asymmetric rounds does not come through the request's \
+                 other blends as one edge"
+            );
+        };
+        Ok(one.clone())
+    };
+    let traced_face =
+        |model: &Model, built: &Built, edge: &Shape, face: &Shape| -> OgeomResult<Shape> {
+            let beside = faces_beside(model, &built.shape, edge, tol)?;
+            let images = built.history.trace(face);
+            beside
+                .iter()
+                .find(|f| images.iter().any(|g| g.is_same(f)))
+                .cloned()
+                .ok_or_else(|| {
+                    ogeom_core::ogeom_err!(
+                        Construction,
+                        "the face a blend at a corner names is not beside its edge"
+                    )
+                })
+        };
+    let mut bevels: Vec<&(Shape, crate::Chamfer)> = bevels.iter().collect();
+    bevels.sort_by_key(|(e, _)| e.node());
+    for (edge, spec) in bevels {
+        let now = traced_edge(&built, edge)?;
+        let spec = match spec {
+            crate::Chamfer::Symmetric(d) => crate::Chamfer::Symmetric(*d),
+            crate::Chamfer::Distances {
+                face,
+                on_face,
+                on_other,
+            } => crate::Chamfer::Distances {
+                face: traced_face(model, &built, &now, face)?,
+                on_face: *on_face,
+                on_other: *on_other,
+            },
+            crate::Chamfer::Angle {
+                face,
+                distance,
+                angle,
+            } => crate::Chamfer::Angle {
+                face: traced_face(model, &built, &now, face)?,
+                distance: *distance,
+                angle: *angle,
+            },
+        };
+        let next = crate::chamfer_edges_with(model, &built.shape, &[(now, spec)], tol)?;
+        built = Built::new(next.shape.clone(), built.history.then(&next.history));
+    }
+    let mut rounds: Vec<&(Shape, f64)> = rounds.iter().collect();
+    rounds.sort_by_key(|(e, _)| e.node());
+    for (edge, r) in rounds {
+        let now = traced_edge(&built, edge)?;
+        let next = crate::fillet_edge(model, &built.shape, &now, *r, tol)?;
+        built = Built::new(next.shape.clone(), built.history.then(&next.history));
+    }
+    let mut asymmetric: Vec<&Asymmetric> = asymmetric.iter().collect();
+    asymmetric.sort_by_key(|a| a.edge.node());
+    for a in asymmetric {
+        let now = traced_edge(&built, &a.edge)?;
+        let face = traced_face(model, &built, &now, &a.face)?;
+        let next = fillet_edge_distances(
+            model,
+            &built.shape,
+            &now,
+            &face,
+            a.on_face,
+            a.on_other,
+            a.profile,
+            tol,
+        )?;
+        built = Built::new(next.shape.clone(), built.history.then(&next.history));
+    }
+    for (vertex, frame, setback, kinds) in &corners.corners {
+        built = crate::setback::close_corner_ends(
+            model,
+            solid,
+            built,
+            vertex,
+            frame,
+            setback,
+            kinds,
+            ogeom_geom::Continuity::G1,
+            tol,
+        )?;
+    }
+    Ok(built)
+}

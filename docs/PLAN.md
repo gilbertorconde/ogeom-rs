@@ -495,17 +495,18 @@ corners close inside it, with or without the sharp edge. Owed: the same
 through `fillet_edges`' own corners; signed corners of more than three
 edges or with a curved face, refused by name.
 
-**Asymmetric rounds beyond a straight edge between planes (#877).**
-`fillet_edge_distances` and `Blend::RoundDistances` round a straight edge
-between two planes, and a whole rim where a cap meets a coaxial cylinder or
-cone, with a different distance onto each face, elliptical or conic;
-`fillet_edge_distances_variable` lets each distance vary along a straight
-edge, and `blend_edges` closes a tangent chain of them (straight edges and
-rim arcs). Refused by name until built, in this order: distances varying on
-a rim, along a chain or past an oblique end, creases whose sections the
-march does not seat (a straight edge between a flat and a drum),
-corners where an asymmetric round meets another band or a bevel, and the
-largest fitting pair in `largest_fillet_radius`.
+**Asymmetric rounds: what is left (#877).** `fillet_edge_distances` and
+`Blend::RoundDistances` round a straight edge between two planes, a rim
+where a cap meets a coaxial cylinder or cone (whole or an arc of it), and
+any crease the march seats, with a different distance onto each face,
+elliptical or conic; `fillet_edge_distances_variable` lets each distance
+vary along a straight edge; `blend_edges` closes a tangent chain of them and
+a convex corner of three planes where they meet each other, rounds and
+bevels. Refused by name until built: distances varying on a rim, a curved
+crease, along a chain or past an end not square to the edge; creases whose
+sections the march does not seat (a straight edge between a flat and a
+drum); concave and mixed corners, which close on `make_filling_n_region`,
+and a corner with an edge left sharp.
 
 ### Construction and exchange
 
