@@ -184,7 +184,9 @@ fn closes_as_one_patch(kinds: [usize; 3], trims_held: bool) {
         .filter(|&i| kinds[i] == 0)
         .map(|i| (se[i].clone(), Chamfer::Symmetric(2.0)))
         .collect();
-    let beveled = ogeom_fillet::chamfer_edges_with(&mut s, &sb, &bevels, T).unwrap();
+    let beveled =
+        ogeom_fillet::chamfer_edges_cornered(&mut s, &sb, &bevels, ChamferCorner::Point, T)
+            .unwrap();
     let rounds: Vec<(Shape, f64)> = (0..3)
         .filter(|&i| kinds[i] == 1)
         .map(|i| (beveled.history.trace(&se[i])[0].clone(), 2.0))

@@ -101,7 +101,7 @@ impl Rings {
     /// rings of no area dropped, a point lying on another ring's edge put
     /// into that edge, rings of one plane sharing an edge joined, and the
     /// whole refused where a face turned inside out or two faces cross.
-    pub fn assemble(mut self) -> OgeomResult<Assembled> {
+    pub fn assemble(mut self) -> OgeomResult<Option<Assembled>> {
         let tol = self.tol;
         let mut rings: Vec<Ring> = Vec::new();
         for (ring, origin, facing) in std::mem::take(&mut self.rings) {
@@ -126,7 +126,9 @@ impl Rings {
         self.split_on_edges(&mut rings);
         self.join_coplanar(&mut rings);
         self.drop_straight_corners(&mut rings);
-        super::guards::rings_fit(&self.points, &rings, tol)?;
+        if !super::guards::rings_fit(&self.points, &rings, tol)? {
+            return Ok(None);
+        }
         // Only the points the rings use, in first use.
         let mut renumber: FastMap<usize, usize> = FastMap::default();
         let mut points = Vec::new();
@@ -145,11 +147,11 @@ impl Rings {
             out_rings.push(ring);
             origins.push(origin);
         }
-        Ok(Assembled {
+        Ok(Some(Assembled {
             points,
             rings: out_rings,
             origins,
-        })
+        }))
     }
 
     /// Every point the rings use that lies inside another ring's edge, put

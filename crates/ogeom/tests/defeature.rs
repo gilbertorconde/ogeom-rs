@@ -421,8 +421,10 @@ fn two_chamfers_meeting_at_a_corner_remove_in_one_call() {
     let both = ogeom::fillet::chamfer_edge(&mut model, &first, &b, 2.0, T)
         .unwrap()
         .shape;
+    // The second bevel runs to the first's plane and the two mitre along
+    // the line they share: six walls and the two bevels.
     let faces = explore_unique(&model, &both, ShapeType::Face).unwrap();
-    assert_eq!(faces.len(), 9, "six walls, two chamfer planes, one cap");
+    assert_eq!(faces.len(), 8, "six walls, two chamfer planes");
     let feature: Vec<Shape> = faces
         .into_iter()
         .filter(|f| {
@@ -435,7 +437,7 @@ fn two_chamfers_meeting_at_a_corner_remove_in_one_call() {
             off_axis || explore_unique(&model, f, ShapeType::Edge).unwrap().len() == 3
         })
         .collect();
-    assert_eq!(feature.len(), 3);
+    assert_eq!(feature.len(), 2);
     let restored = ogeom::boolean::remove_faces(&mut model, &both, &feature, T)
         .unwrap()
         .shape;

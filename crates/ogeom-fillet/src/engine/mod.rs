@@ -58,14 +58,14 @@ pub(crate) enum Origin {
 /// The blend of `request` on `solid`, or `None` where the solid or the
 /// request lies outside the engine's classes (for now: a solid bounded by
 /// planes, each face one ring of straight edges, every edge between two
-/// faces, every vertex's faces closing round it once).
+/// faces, every vertex's faces closing round it once; and the request
+/// inside the setback domain: no face consumed by its setbacks, no two
+/// faces crossing, every chamfer corner's setback corners on one plane).
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
-/// the request does not fit the solid: a face's setback corners cross, a
-/// face would turn inside out, two faces cross, a vertex needs a method not
-/// built yet, or the built solid fails a guard.
+/// a vertex needs a method not built yet, or the built solid fails a guard.
 pub(crate) fn run(
     model: &mut Model,
     solid: &Shape,
@@ -153,7 +153,9 @@ pub(crate) fn run(
         }
     }
     // P4.
-    let assembled = rings.assemble()?;
+    let Some(assembled) = rings.assemble()? else {
+        return Ok(None);
+    };
     let planes: Vec<Option<ogeom_math::Plane>> = assembled
         .origins
         .iter()
@@ -176,6 +178,49 @@ pub(crate) fn run(
                 Origin::Face(fi) => history.modify(&planar.faces[*fi].shape, face.clone()),
                 Origin::Edge(e) => history.generate(&planar.shapes[e], face.clone()),
                 Origin::Vertex(v) => history.generate(&planar.shapes[v], face.clone()),
+            }
+        }
+    }
+    // An edge left as it was is the new edge between the faces its two faces
+    // became; a vertex left where it was is the new vertex there.
+    let into: FastMap<usize, Vec<Shape>> = {
+        let mut into: FastMap<usize, Vec<Shape>> = FastMap::default();
+        for (face, from) in faces.iter().zip(&assembled.origins) {
+            for origin in from {
+                if let Origin::Face(fi) = origin {
+                    into.entry(*fi).or_default().push(face.clone());
+                }
+            }
+        }
+        into
+    };
+    for key in &keys {
+        let seat = &seats[key];
+        if blended.contains(&seat.edge) {
+            continue;
+        }
+        let (Some(first), Some(second)) = (into.get(&seat.faces[0]), into.get(&seat.faces[1]))
+        else {
+            continue;
+        };
+        for e in ogeom_topo::explore_unique(model, &built.shape, ogeom_topo::ShapeType::Edge)? {
+            let around =
+                ogeom_topo::ancestors_of(model, &built.shape, &e, ogeom_topo::ShapeType::Face)?;
+            let on = |held: &[Shape]| around.iter().any(|f| held.iter().any(|g| g.is_same(f)));
+            if on(first) && on(second) {
+                history.modify(&planar.shapes[&seat.edge], e);
+            }
+        }
+    }
+    let mut kept: Vec<Id> = planar.points.keys().copied().collect();
+    kept.sort_unstable();
+    let new_vertices =
+        ogeom_topo::explore_unique(model, &built.shape, ogeom_topo::ShapeType::Vertex)?;
+    for v in kept {
+        let at = planar.points[&v];
+        for w in &new_vertices {
+            if crate::setback::point_of(model, w)?.distance(at) <= tol.confusion() {
+                history.modify(&planar.shapes[&v], w.clone());
             }
         }
     }

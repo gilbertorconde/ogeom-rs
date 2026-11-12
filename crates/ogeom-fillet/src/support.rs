@@ -3119,7 +3119,14 @@ mod tests {
         for (solid, edge, bevel, removed) in cases {
             let (made, wedges) = super::collecting_wedges(|| {
                 if bevel {
-                    crate::chamfer_edge(&mut model, solid, edge, 1.0, T)
+                    // The wedge path: a solid bounded by planes is otherwise
+                    // chamfered by the blend engine, with no wedge.
+                    crate::chamfer::chamfer_edges_mitred(
+                        &mut model,
+                        solid,
+                        &[((*edge).clone(), crate::Chamfer::Symmetric(1.0))],
+                        T,
+                    )
                 } else {
                     crate::fillet_edge(&mut model, solid, edge, 1.0, T)
                 }

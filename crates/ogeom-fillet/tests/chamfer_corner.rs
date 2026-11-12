@@ -47,15 +47,25 @@ fn corner(
     (b, specs)
 }
 
+/// The default corner is the facet (ADR 0001, §13): `chamfer_edges_with`
+/// builds what [`ChamferCorner::Facet`] builds, to the bit. The mitre is
+/// [`ChamferCorner::Point`], one face fewer: no facet, the three bevels
+/// meeting at the point their planes share.
 #[test]
-fn a_point_corner_is_the_mitre() {
+fn the_default_corner_is_the_facet_and_the_point_corner_the_mitre() {
     let mut m = Model::new();
     let (b, specs) = corner(&mut m, |_, _, _| Chamfer::Symmetric(2.0));
     let mut plain = m.clone();
     let a = chamfer_edges_with(&mut plain, &b, &specs, T).unwrap();
+    let mut faceted = m.clone();
+    let f = chamfer_edges_cornered(&mut faceted, &b, &specs, ChamferCorner::Facet, T).unwrap();
     let p = chamfer_edges_cornered(&mut m, &b, &specs, ChamferCorner::Point, T).unwrap();
-    assert_eq!(faces(&plain, &a.shape), faces(&m, &p.shape));
-    assert_eq!(vol(&plain, &a.shape).to_bits(), vol(&m, &p.shape).to_bits());
+    assert_eq!(faces(&plain, &a.shape), faces(&faceted, &f.shape));
+    assert_eq!(
+        vol(&plain, &a.shape).to_bits(),
+        vol(&faceted, &f.shape).to_bits()
+    );
+    assert_eq!(faces(&m, &p.shape) + 1, faces(&plain, &a.shape));
 }
 
 /// At the box's corner the bevels `x + y = 2`, `y + z = 2` and `x + z = 2`
@@ -67,7 +77,7 @@ fn a_facet_corner_takes_the_mitre_s_tetrahedron_off() {
     let mut m = Model::new();
     let (b, specs) = corner(&mut m, |_, _, _| Chamfer::Symmetric(2.0));
     let mut plain = m.clone();
-    let point = chamfer_edges_with(&mut plain, &b, &specs, T).unwrap();
+    let point = chamfer_edges_cornered(&mut plain, &b, &specs, ChamferCorner::Point, T).unwrap();
     let facet = chamfer_edges_cornered(&mut m, &b, &specs, ChamferCorner::Facet, T).unwrap();
     let diagnosis = ogeom_algo::check(&m, &facet.shape, T).unwrap();
     assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
@@ -106,7 +116,7 @@ fn a_facet_closes_unequal_bevels() {
     let mut m = Model::new();
     let (b, specs) = corner(&mut m, |n, _, _| Chamfer::Symmetric([1.0, 1.5, 2.0][n]));
     let mut plain = m.clone();
-    let point = chamfer_edges_with(&mut plain, &b, &specs, T).unwrap();
+    let point = chamfer_edges_cornered(&mut plain, &b, &specs, ChamferCorner::Point, T).unwrap();
     let facet = chamfer_edges_cornered(&mut m, &b, &specs, ChamferCorner::Facet, T).unwrap();
     let diagnosis = ogeom_algo::check(&m, &facet.shape, T).unwrap();
     assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
@@ -163,7 +173,7 @@ fn a_facet_closes_a_pyramid_s_apex_of_four_bevels_in_a_square() {
     let (p, specs) = pyramid(&mut m, d);
     assert_eq!(specs.len(), 4);
     let mut plain = m.clone();
-    let mitre = chamfer_edges_with(&mut plain, &p, &specs, T).unwrap();
+    let mitre = chamfer_edges_cornered(&mut plain, &p, &specs, ChamferCorner::Point, T).unwrap();
     let facet = chamfer_edges_cornered(&mut m, &p, &specs, ChamferCorner::Facet, T).unwrap();
     assert!(ogeom_algo::check(&m, &facet.shape, T).unwrap().is_usable());
     assert_eq!(faces(&m, &facet.shape), faces(&plain, &mitre.shape) + 1);
@@ -205,8 +215,7 @@ fn a_facet_closes_a_pyramid_s_apex_of_four_bevels_in_a_square() {
 #[test]
 fn a_facet_through_four_points_off_one_plane_is_refused() {
     // The apex moved off the middle: the four crossings no longer share a
-    // plane, and no facet passes through them all. Such a corner closes
-    // with a patch through them, which is not built yet: refused by name.
+    // plane, and no facet passes through them all: refused by name.
     let mut m = Model::new();
     let points = [
         Point::new(0.0, 0.0, 0.0),
@@ -239,5 +248,5 @@ fn a_facet_through_four_points_off_one_plane_is_refused() {
     let refused = chamfer_edges_cornered(&mut m, &p, &specs, ChamferCorner::Facet, T)
         .expect_err("the facet should be refused")
         .to_string();
-    assert!(refused.contains("do not cross on one plane"), "{refused}");
+    assert!(refused.contains("off one plane"), "{refused}");
 }

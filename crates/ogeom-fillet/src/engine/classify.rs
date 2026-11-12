@@ -217,6 +217,15 @@ pub(crate) fn read_planar(
         if newell.dot(normal) < 0.0 {
             corners.reverse();
         }
+        // The class is exact planes: a corner standing off its face's plane
+        // (held there only by its vertex's tolerance) is outside it.
+        let at = points[&corners[0]];
+        if corners
+            .iter()
+            .any(|c| (points[c] - at).dot(normal).abs() > tol.confusion())
+        {
+            return Ok(None);
+        }
         faces.push(Face {
             shape,
             normal,
