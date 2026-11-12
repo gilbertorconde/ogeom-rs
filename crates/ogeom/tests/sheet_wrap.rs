@@ -7,8 +7,8 @@
 use core::f64::consts::{PI, TAU};
 
 use ogeom::algo::{
-    SheetMethod, SheetPlacement, SurfaceSheet, check, make_cone, make_cylinder, make_sphere,
-    make_torus, surface_properties, volume_properties,
+    Containment, SheetMethod, SheetPlacement, SurfaceSheet, check, classify_on_face, make_cone,
+    make_cylinder, make_sphere, make_torus, surface_properties, volume_properties,
 };
 use ogeom::boolean::fuse;
 use ogeom::core::Tolerances;
@@ -74,8 +74,7 @@ fn rectangle_edges(model: &mut Model, sheet: &SurfaceSheet) -> Vec<Shape> {
 }
 
 /// The face of `shape` split along the carried rectangle: the pieces
-/// inside it (more than one where a seam of the face runs through it),
-/// their area, and the centroid of their vertices.
+/// inside it, their area, and the centroid of their vertices.
 struct Inside {
     shape: Shape,
     pieces: Vec<Shape>,
@@ -180,6 +179,119 @@ fn a_rectangle_laid_on_a_torus_keeps_its_area_its_middle_row_and_its_place() {
     // The outer equator is a geodesic of radius 25.
     let turn = turn_about_z(&sheet, Point2::new(-3.0, 0.0), Point2::new(3.0, 0.0));
     assert!((turn - 6.0 / 25.0).abs() <= 6.0 / 25.0 * 1e-6, "{turn}");
+}
+
+/// The face of `shape` split along the rectangle laid at `at`, its
+/// x side along `x`: the shape's diagnosis must be clean, the face must
+/// come back as two pieces, and the one holding `at` is returned with
+/// the pieces' total area.
+fn one_face_across_a_seam(
+    model: &mut Model,
+    shape: &Shape,
+    face: &Shape,
+    at: Point,
+    x: Direction,
+) -> (SurfaceSheet, f64, f64) {
+    let sheet = SurfaceSheet::new(
+        model,
+        face,
+        &SheetPlacement {
+            at,
+            x_direction: x,
+            method: SheetMethod::Geodesic,
+        },
+        5.0,
+        T,
+    )
+    .unwrap();
+    let edges = rectangle_edges(model, &sheet);
+    let built = split_face(model, shape, face, &edges, Projection::OnFace, T).unwrap();
+    assert!(check(model, &built.shape, T).unwrap().problems.is_empty());
+    let pieces = built.history.trace(face);
+    assert_eq!(pieces.len(), 2, "the rectangle and the rest");
+    let holding: Vec<&Shape> = pieces
+        .iter()
+        .filter(|p| classify_on_face(model, p, at, fine(), T).unwrap() == Containment::In)
+        .collect();
+    assert_eq!(holding.len(), 1, "one face holds the rectangle's middle");
+    let whole = pieces.iter().map(|p| area(model, p)).sum();
+    (sheet, area(model, holding[0]), whole)
+}
+
+/// The area the rectangle laid by `sheet` covers on a torus, by Green's
+/// theorem round its outline in the torus's chart, where the area element
+/// is r (R + r cos v): the absolute closed integral of r (R v + r sin v)
+/// du, the outline walked through the sheet's own map and unrolled across
+/// the seams.
+fn torus_area_inside(sheet: &SurfaceSheet, major: f64, minor: f64) -> f64 {
+    let mut outline: Vec<Point2> = Vec::new();
+    for k in 0..4 {
+        let (p, q) = (RECTANGLE[k], RECTANGLE[(k + 1) % 4]);
+        for i in 0..4000 {
+            let f = f64::from(i) / 4000.0;
+            let s = Point2::new((q.0 - p.0).mul_add(f, p.0), (q.1 - p.1).mul_add(f, p.1));
+            let mut uv = sheet.chart_point(s).unwrap();
+            if let Some(last) = outline.last() {
+                uv.x -= TAU * ((uv.x - last.x) / TAU).round();
+                uv.y -= TAU * ((uv.y - last.y) / TAU).round();
+            }
+            outline.push(uv);
+        }
+    }
+    let primitive = |v: f64| minor * major.mul_add(v, minor * v.sin());
+    let mut green = 0.0;
+    for k in 0..outline.len() {
+        let (p, q) = (outline[k], outline[(k + 1) % outline.len()]);
+        // Simpson along the chord from p to q.
+        let mid = 0.5 * (p.y + q.y);
+        green += (q.x - p.x) * (primitive(p.y) + 4.0 * primitive(mid) + primitive(q.y)) / 6.0;
+    }
+    green.abs()
+}
+
+#[test]
+fn a_rectangle_across_a_seam_comes_back_as_one_face() {
+    let (major, minor) = (20.0, 5.0);
+    let torus_area = 4.0 * PI * PI * major * minor;
+    // The torus's v seam is its outer equator, through the rectangle's
+    // middle; at (25, 0, 0) its u seam crosses it there too, so four
+    // pieces of the two seams meet inside the rectangle.
+    for (at, x) in [
+        (Point::new(0.0, -25.0, 0.0), Direction::X),
+        (Point::new(25.0, 0.0, 0.0), Direction::Z),
+    ] {
+        let mut model = Model::new();
+        let torus = make_torus(&mut model, Frame::WORLD, major, minor, T)
+            .unwrap()
+            .shape;
+        let face = faces(&model, &torus)[0].clone();
+        let (sheet, a, whole) = one_face_across_a_seam(&mut model, &torus, &face, at, x);
+        let green = torus_area_inside(&sheet, major, minor);
+        assert!(
+            (a - green).abs() <= green * 1e-4,
+            "{at:?}: {a} against {green}"
+        );
+        assert!(
+            (whole - torus_area).abs() <= torus_area * 1e-6,
+            "{at:?}: {whole}"
+        );
+    }
+
+    // A drum's seam is its generator through +x; the rectangle laid on its
+    // wall is the wall's development, exactly 24.
+    let mut model = Model::new();
+    let drum = make_cylinder(&mut model, Frame::WORLD, 10.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let wall = faces(&model, &drum)
+        .into_iter()
+        .find(|f| ogeom::algo::face_normal(&model, f, T).is_ok_and(|(_, n)| n.z.abs() < 0.5))
+        .unwrap();
+    let wall_area = area(&model, &wall);
+    let at = Point::new(10.0, 0.0, 5.0);
+    let (_, a, whole) = one_face_across_a_seam(&mut model, &drum, &wall, at, Direction::Z);
+    assert!((a - 24.0).abs() <= 24.0 * 1e-6, "{a}");
+    assert!((whole - wall_area).abs() <= wall_area * 1e-9, "{whole}");
 }
 
 #[test]

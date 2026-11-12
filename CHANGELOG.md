@@ -131,6 +131,30 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`split_face` keeps a region a seam of the face runs through as one
+  face, and a boolean reads its boundary.** (#869)
+  - The pieces either side of the seam came back as two faces divided by
+    a piece of the seam, so no face held a point on that piece.
+  - Pieces that a piece of the face's own seam parts are now joined into
+    one face that drops that piece, its boundary jumping a period where it
+    crosses the seam. Where two seams meet inside the region (a torus's
+    corner) the pieces of both go. Pieces stay split where the joined
+    boundary would walk any other edge twice, as a cut the length of a drum
+    would, and across the join of a surface that closes there without
+    repeating, where no boundary can read on past it.
+  - A boolean folds such a boundary onto one branch of the chart before it
+    arranges the face, and now does so where the ring also borders another
+    face across a seam it walks once: the seam is read on the side walked
+    and the rest of the ring folded onto it. Such a ring was drawn on both
+    seam columns and refused as a boundary that does not close.
+  - A 6 x 4 geodesic rectangle on a torus R 20, r 5 across its outer
+    equator, or at the corner where its two seams cross: one face holds
+    the middle, 23.862778 and 23.864767, Green's integral round the outline
+    in the chart within 1e-4, the two faces 4 pi^2 R r within 1e-6, `check`
+    clean. On a drum across its seam: one face of area 24, the exact
+    development. A leaning drum's wall strip round its seam is one face, and
+    a box fused onto it makes the volume the box fused onto the unsplit drum
+    makes, within 1e-9.
 - **A STEP parameter list with a missing or extra comma is refused at the
   byte where it breaks.** (#857)
   - Part 21 writes a list as `( [ parameter { , parameter } ] )`. The

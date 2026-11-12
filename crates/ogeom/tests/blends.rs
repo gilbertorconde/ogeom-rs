@@ -1711,6 +1711,44 @@ fn a_face_blend_rounds_two_runs_where_the_faces_let_the_ball_go_apart() {
     assert!(fills[2] > fills[1], "a steeper slant fills more: {fills:?}");
 }
 
+/// The leaning drum's wall split above the foot and again along y = 34,
+/// which leaves a strip round the wall's seam on its -y side: the strip is
+/// one face across the seam, bordered on that seam by the wall below the
+/// first split, and a box fused onto it there makes the solid the box
+/// fused onto the unsplit drum makes, to the volume.
+#[test]
+fn a_wall_strip_across_its_seam_is_one_face_that_fuses_as_the_whole_wall() {
+    let mut model = Model::new();
+    let sharp = drum_leaning_x(&mut model, (20.0, 38.0), 1.0);
+    let (parted, wall) = wall_parted(&mut model, &sharp);
+    let split = split_by_plane(
+        &mut model,
+        &parted,
+        &wall,
+        Point::new(0.0, 34.0, 0.0),
+        Vector::new(0.0, 1.0, 0.0),
+    );
+    let above = walls_where(&model, &split, |b| b.corners().iter().all(|p| p.z > 10.29));
+    assert_eq!(above.len(), 2, "the strip round the seam and the rest");
+    let tool = |model: &mut Model| {
+        let at = Frame::new(Point::new(18.0, 30.0, 11.0), Direction::Z, Direction::X, T).unwrap();
+        ogeom::algo::make_box(model, at, (4.0, 3.0, 2.0), T)
+            .unwrap()
+            .shape
+    };
+    let one = tool(&mut model);
+    let fused = ogeom::boolean::fuse(&mut model, &split, &one, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom::algo::check(&model, &fused, T).unwrap().is_usable());
+    let other = tool(&mut model);
+    let whole = ogeom::boolean::fuse(&mut model, &sharp, &other, T)
+        .unwrap()
+        .shape;
+    let (got, want) = (exact_volume(&model, &fused), exact_volume(&model, &whole));
+    assert!((got - want).abs() <= want * 1e-9, "{got} against {want}");
+}
+
 /// A drum leaning on a block whose top is split along y = 13 and y = 27,
 /// either side of the drum's foot, its wall split above the foot, and the
 /// strip of the top between the lines blended with the wall above. The

@@ -21,9 +21,11 @@
 //! and may end on them.
 //!
 //! The boundary edges a stretch ends on are cut there in every face that
-//! holds them, so the rest of the shape stays joined to the pieces.
+//! holds them, so the rest of the shape stays joined to the pieces. Pieces
+//! a piece of the face's own seam parts are joined again into one face,
+//! whose boundary jumps a period where it crosses the seam.
 
-use ogeom_core::FastSet;
+use ogeom_core::{FastMap, FastSet};
 
 use ogeom_algo::{Built, edge_vertices, project_on_surface, project_on_surface_from};
 use ogeom_core::{OgeomResult, Tolerance, Tolerances, ogeom_bail, ogeom_err};
@@ -33,8 +35,8 @@ use ogeom_geom::{
 };
 use ogeom_math::{Direction, Point, Point2, Transform2, Vector2};
 use ogeom_topo::{
-    EdgeData, EdgeRepr, Location, Model, Shape, ShapeType, SurfaceId, TShapeId, VertexData,
-    explore_unique,
+    EdgeData, EdgeRepr, Location, Model, NodeData, Shape, ShapeType, SurfaceId, TShapeId,
+    VertexData, explore_unique,
 };
 
 use crate::Reshape;
@@ -65,7 +67,9 @@ pub enum Projection {
 /// before it, or close on itself inside the face; a curve that runs past
 /// the face is cut where it leaves it. The pieces share the new edges, and
 /// the boundary edges a cut ends on are cut there in every face that holds
-/// them. A face given on its own comes back as a shell of its pieces.
+/// them. A region a seam of the face runs through is one piece, its
+/// boundary crossing the seam. A face given on its own comes back as a
+/// shell of its pieces.
 ///
 /// The history records `face` modified into its pieces and each edge in
 /// `edges` generating the edges cut along it.
@@ -225,6 +229,7 @@ pub fn split_face(
         }
         pending = held;
     }
+    let current = join_across_seams(model, current, &targets, data.surface, tol)?;
     // A cut lands on the face's surface through a fitted pcurve where no
     // closed form projects it (a circle dropped onto a drum along the
     // normals), and the fit stands off its edge between its samples: every
@@ -1519,6 +1524,220 @@ fn segments_cross(a: (Point2, Point2), b: (Point2, Point2)) -> Option<(f64, f64)
     let slack = 1e-9;
     ((-slack..=1.0 + slack).contains(&x) && (-slack..=1.0 + slack).contains(&y))
         .then_some((x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)))
+}
+
+// --- seams -------------------------------------------------------------------
+
+/// The pieces of the face that a piece of its own seam parts, joined into
+/// one face each: a seam's two sides bound one face, and a region the seam
+/// runs through is one face whose boundary jumps a whole period where it
+/// crosses the seam, as a boundary read through the chart may.
+///
+/// Pieces are joined along a tree of the seam pieces between them, each
+/// dropped from the joined ring; a seam piece the ring then walks both ways
+/// in a row (one running into a corner where two seams meet, inside the
+/// region) is dropped too. Pieces are left as they are where a seam piece
+/// between them lies on a hole, is bounded by a face outside them, or stays
+/// in the joined ring, or where the ring would walk any edge twice other
+/// than down a seam's two sides (a cut running the length of a drum, whose
+/// two sides would bound one face).
+fn join_across_seams(
+    model: &mut Model,
+    current: Built,
+    pieces: &[Shape],
+    surface: SurfaceId,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    // A seam whose two sides stand a period apart along a direction the
+    // surface repeats in: a ring crossing it reads on, a period over. On a
+    // chart that only closes, a ring crossing its join has nowhere to go.
+    let repeats = model
+        .geometry()
+        .surface(surface)
+        .map_or([false; 2], |s| [s.is_periodic_u(), s.is_periodic_v()]);
+    let seam = |model: &Model, edge: &Shape| -> OgeomResult<bool> {
+        let data = edge_data(model, edge)?;
+        let Some(EdgeRepr::Seam {
+            forward,
+            reversed,
+            range,
+            ..
+        }) = data.pcurve_for(surface, edge.location())
+        else {
+            return Ok(false);
+        };
+        let (Some(a), Some(b)) = (
+            model.geometry().pcurve(*forward),
+            model.geometry().pcurve(*reversed),
+        ) else {
+            return Ok(false);
+        };
+        let middle = f64::midpoint(range.0, range.1);
+        let apart = b.point_at(middle, tol)? - a.point_at(middle, tol)?;
+        Ok(if apart.x.abs() >= apart.y.abs() {
+            repeats[0]
+        } else {
+            repeats[1]
+        })
+    };
+    // Each piece's rings as its node walks them, the outer one first.
+    let mut rings: Vec<Vec<Vec<Shape>>> = Vec::with_capacity(pieces.len());
+    for piece in pieces {
+        let mut own = Vec::new();
+        for wire in model.children_of(&forward(piece))? {
+            own.push(model.ordered_children_of(&wire)?);
+        }
+        rings.push(own);
+    }
+    let mut bounding: FastMap<TShapeId, usize> = FastMap::default();
+    for face in explore_unique(model, &current.shape, ShapeType::Face)? {
+        for edge in explore_unique(model, &face, ShapeType::Edge)? {
+            *bounding.entry(edge.node()).or_default() += 1;
+        }
+    }
+    let mut uses: FastMap<TShapeId, Vec<(usize, usize, &Shape)>> = FastMap::default();
+    let mut order: Vec<TShapeId> = Vec::new();
+    for (i, own) in rings.iter().enumerate() {
+        for (r, ring) in own.iter().enumerate() {
+            for edge in ring {
+                let at = uses.entry(edge.node()).or_default();
+                if at.is_empty() {
+                    order.push(edge.node());
+                }
+                at.push((i, r, edge));
+            }
+        }
+    }
+    // The seam pieces two pieces of one sense each walk once, opposite ways,
+    // on their outer rings, and no other face bounds.
+    let mut parting: FastMap<TShapeId, (usize, usize)> = FastMap::default();
+    for node in &order {
+        let [(i, 0, a), (j, 0, b)] = uses[node].as_slice() else {
+            continue;
+        };
+        if i != j
+            && pieces[*i].orientation() == pieces[*j].orientation()
+            && a.orientation() != b.orientation()
+            && bounding.get(node) == Some(&2)
+            && seam(model, a)?
+        {
+            parting.insert(*node, (*i, *j));
+        }
+    }
+    if parting.is_empty() {
+        return Ok(current);
+    }
+
+    let mut group: Vec<usize> = (0..pieces.len()).collect();
+    fn root(group: &mut [usize], mut i: usize) -> usize {
+        while group[i] != i {
+            group[i] = group[group[i]];
+            i = group[i];
+        }
+        i
+    }
+    for node in &order {
+        if let Some(&(i, j)) = parting.get(node) {
+            let (ri, rj) = (root(&mut group, i), root(&mut group, j));
+            group[ri] = rj;
+        }
+    }
+    let mut reshape = crate::Reshape::new();
+    for keeper in 0..pieces.len() {
+        let members: Vec<usize> = (0..pieces.len())
+            .filter(|&k| root(&mut group, k) == root(&mut group, keeper))
+            .collect();
+        if members.len() < 2 || members[0] != keeper {
+            continue;
+        }
+        // Splice each member's outer ring into the ring at the seam piece
+        // it shares with a member already joined.
+        let mut ring = rings[keeper][0].clone();
+        let mut joined: FastSet<usize> = FastSet::default();
+        joined.insert(keeper);
+        let mut k = 0;
+        while k < ring.len() {
+            let other = parting
+                .get(&ring[k].node())
+                .and_then(|&(i, j)| [i, j].into_iter().find(|m| !joined.contains(m)));
+            let Some(other) = other else {
+                k += 1;
+                continue;
+            };
+            let theirs = &rings[other][0];
+            let Some(at) = theirs.iter().position(|e| e.node() == ring[k].node()) else {
+                break;
+            };
+            let spliced: Vec<Shape> = (1..theirs.len())
+                .map(|s| theirs[(at + s) % theirs.len()].clone())
+                .collect();
+            ring.splice(k..=k, spliced);
+            joined.insert(other);
+        }
+        // A seam piece walked out and straight back runs into a corner of
+        // seams inside the region, and goes with it.
+        let mut kept: Vec<Shape> = Vec::with_capacity(ring.len());
+        for edge in ring {
+            match kept.last() {
+                Some(last)
+                    if last.node() == edge.node()
+                        && last.orientation() != edge.orientation()
+                        && parting.contains_key(&edge.node()) =>
+                {
+                    kept.pop();
+                }
+                _ => kept.push(edge),
+            }
+        }
+        while kept.len() > 1 {
+            let (first, last) = (&kept[0], &kept[kept.len() - 1]);
+            if first.node() == last.node()
+                && first.orientation() != last.orientation()
+                && parting.contains_key(&first.node())
+            {
+                kept.pop();
+                kept.remove(0);
+            } else {
+                break;
+            }
+        }
+        let mut walked: FastMap<TShapeId, usize> = FastMap::default();
+        for edge in &kept {
+            *walked.entry(edge.node()).or_default() += 1;
+        }
+        let mut sound = joined.len() == members.len() && !kept.is_empty();
+        for edge in &kept {
+            if !sound {
+                break;
+            }
+            let times = walked[&edge.node()];
+            sound = !parting.contains_key(&edge.node())
+                && (times == 1 || (times == 2 && seam(model, edge)?));
+        }
+        if !sound {
+            continue;
+        }
+        let mut wires = vec![model.add_wire(&kept)?];
+        for &m in &members {
+            wires.extend(model.children_of(&forward(&pieces[m]))?.into_iter().skip(1));
+        }
+        let Some(NodeData::Face(data)) = model.node(&pieces[keeper]).map(|n| n.data().clone())
+        else {
+            ogeom_bail!(Dangling, "a piece of the face is not in this model");
+        };
+        let mut data = *data;
+        data.triangulation = None;
+        let face = model.add_face(data, &wires)?;
+        reshape.replace(&forward(&pieces[keeper]), face);
+        for &m in &members[1..] {
+            reshape.remove(&forward(&pieces[m]));
+        }
+    }
+    if reshape.is_empty() {
+        return Ok(current);
+    }
+    let step = reshape.apply(model, &current.shape)?;
+    Ok(Built::new(step.shape, current.history.then(&step.history)))
 }
 
 // --- one cut -----------------------------------------------------------------
