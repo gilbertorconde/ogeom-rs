@@ -101,6 +101,20 @@ bump may break the API and a patch bump may not.
     from a native file at its scale, and measures its closed-form volume
     within 6e-16 in each.
 
+- **Two placements of one open face are two openings to the healer.**
+  (#854)
+  - `free_bounds` and the free-gap step of `fix_shape` counted an edge's
+    uses by its node. Two placed occurrences of one open face share every
+    node, so each edge counted twice and none was free: a square lid and
+    a copy of it placed 20 above had no free bounds, and a square with a
+    copy placed 0.01 past its side had no twins across the gap.
+  - Edges and vertices are now one per placed occurrence (node and
+    placement), as the checker already walks them. The lid and its copy
+    give two closed rims of four edges, each through its own occurrence's
+    vertices; an open four-walled tube and its copy give four, the
+    upright edges each tube's walls share staying shared; the square and
+    its copy state exactly the one pair of twins, which sewing then joins.
+
 
 ## [0.18.1] - 2026-11-11
 

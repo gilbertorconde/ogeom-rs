@@ -40,7 +40,7 @@ use ogeom_algo::{edge_vertices, edges_apart, linear_properties};
 use ogeom_core::{FastMap, OgeomResult, Tolerance, Tolerances};
 use ogeom_math::Point;
 use ogeom_mesh::Deflection;
-use ogeom_topo::{Model, Shape, ShapeType, TShapeId, explore_unique};
+use ogeom_topo::{Model, SameKey, Shape, ShapeType, TShapeId, explore_unique};
 
 /// One free edge, with its face and its ends as that face walks it.
 struct Free {
@@ -137,12 +137,21 @@ fn trial(
 /// than `cap`, as the module documentation says, with what each widens to.
 fn twins(model: &Model, shape: &Shape, cap: f64, tol: Tolerances) -> OgeomResult<Vec<Twins>> {
     let faces = explore_unique(model, shape, ShapeType::Face)?;
-    let uses = ogeom_algo::edge_uses(model, shape)?;
+    // Uses per placed occurrence: two placements of one face share nodes
+    // but not edges.
+    let mut uses: FastMap<SameKey, usize> = FastMap::default();
+    for face in &faces {
+        for wire in model.children_of(face)? {
+            for edge in model.children_of(&wire)? {
+                *uses.entry(SameKey(edge)).or_default() += 1;
+            }
+        }
+    }
     let mut free: Vec<Free> = Vec::new();
     for (k, face) in faces.iter().enumerate() {
         for wire in model.children_of(face)? {
             for edge in model.ordered_children_of(&wire)? {
-                if uses.get(&edge.node()) != Some(&1) {
+                if uses.get(&SameKey(edge.clone())) != Some(&1) {
                     continue;
                 }
                 let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
@@ -154,7 +163,7 @@ fn twins(model: &Model, shape: &Shape, cap: f64, tol: Tolerances) -> OgeomResult
                 let Some((start, end)) = edge_vertices(model, &edge)? else {
                     continue;
                 };
-                if start.node() == end.node() {
+                if start.is_same(&end) {
                     continue;
                 }
                 let ends = [
@@ -200,7 +209,7 @@ fn twins(model: &Model, shape: &Shape, cap: f64, tol: Tolerances) -> OgeomResult
         }
     }
     let mut shortest: FastMap<usize, f64> = FastMap::default();
-    let mut vertices: Option<Vec<(TShapeId, Point)>> = None;
+    let mut vertices: Option<Vec<(Shape, Point)>> = None;
     let mut found = Vec::new();
     for i in 0..free.len() {
         let [j] = near[i][..] else { continue };
@@ -236,20 +245,15 @@ fn twins(model: &Model, shape: &Shape, cap: f64, tol: Tolerances) -> OgeomResult
             None => vertices.insert(
                 explore_unique(model, shape, ShapeType::Vertex)?
                     .iter()
-                    .map(|v| Ok((v.node(), placed(model, v)?)))
+                    .map(|v| Ok((v.clone(), placed(model, v)?)))
                     .collect::<OgeomResult<Vec<_>>>()?,
             ),
         };
-        let ours: Vec<TShapeId> = a
-            .ends
-            .iter()
-            .chain(&b.ends)
-            .map(|(v, _)| v.node())
-            .collect();
+        let ours = |v: &Shape| a.ends.iter().chain(&b.ends).any(|(end, _)| end.is_same(v));
         let crowded = a.ends.iter().chain(&b.ends).any(|(_, at)| {
             vertices
                 .iter()
-                .any(|(id, p)| !ours.contains(id) && p.distance(*at) <= widest)
+                .any(|(v, p)| !ours(v) && p.distance(*at) <= widest)
         });
         if crowded {
             continue;
@@ -313,6 +317,32 @@ mod tests {
             }
         }
         out
+    }
+
+    /// One 10 mm square and a placement of it 0.01 mm past its right edge:
+    /// the two occurrences share every node, yet the first's right edge and
+    /// the second's left edge are each free and are twins across the gap.
+    /// Exactly that one pair is stated, and sewing then joins it.
+    #[test]
+    fn twins_across_two_placements_of_one_face_are_stated() {
+        use ogeom_math::{Transform, Vector};
+        let mut model = Model::new();
+        let p = |x: f64, y: f64| Point::new(x, y, 0.0);
+        let quad = [p(0.0, 0.0), p(10.0, 0.0), p(10.0, 10.0), p(0.0, 10.0)];
+        let ring = make_polygon(&mut model, &quad, true, T).unwrap().shape;
+        let plane = SurfaceGeometry::Plane(PlaneSurface::new(Plane::new(Frame::WORLD)));
+        let square = make_face(&mut model, plane, &[ring], T).unwrap().shape;
+        let beside = model.placed(
+            &square,
+            Transform::translation(Vector::new(10.01, 0.0, 0.0)),
+        );
+        let pair = ogeom_algo::make_compound(&mut model, &[square, beside])
+            .unwrap()
+            .shape;
+        let stated = state_free_gaps(&mut model, &pair, 1.0, T).unwrap();
+        assert_eq!(stated, 1);
+        let faces = explore_unique(&model, &pair, ShapeType::Face).unwrap();
+        assert_eq!(ogeom_algo::sew(&mut model, &faces, T).unwrap().joined, 1);
     }
 
     /// Two 10 mm squares side by side, 5 mm apart, in one shell: the
