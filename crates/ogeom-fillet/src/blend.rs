@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use crate::setback::CornerEnd;
-use crate::{Chamfer, ChamferCorner};
+use crate::{Chamfer, ChamferCorner, RoundProfile};
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Continuity;
@@ -16,6 +16,19 @@ pub enum Blend {
     Round(f64),
     /// A bevel, as [`chamfer_edges_with`](crate::chamfer_edges_with).
     Chamfer(Chamfer),
+    /// A round meeting `face` `on_face` from the edge and the edge's other
+    /// face `on_other` from it, its section `profile`, as
+    /// [`fillet_edge_distances`](crate::fillet_edge_distances).
+    RoundDistances {
+        /// The face the first distance runs along.
+        face: Shape,
+        /// The distance along `face`.
+        on_face: f64,
+        /// The distance along the edge's other face.
+        on_other: f64,
+        /// The section between the two contacts.
+        profile: RoundProfile,
+    },
 }
 
 /// Round and bevel the edges of `solid` as `edges` says, in one request.
@@ -64,6 +77,7 @@ pub fn blend_edges(
 ) -> OgeomResult<Built> {
     let mut rounds: Vec<(Shape, f64)> = Vec::new();
     let mut bevels: Vec<(Shape, Chamfer)> = Vec::new();
+    let mut asymmetric: Vec<crate::asym::Asymmetric> = Vec::new();
     for (k, (edge, blend)) in edges.iter().enumerate() {
         if edges[..k].iter().any(|(e, _)| e.is_same(edge)) {
             ogeom_bail!(Construction, "an edge is asked to be blended twice");
@@ -71,8 +85,61 @@ pub fn blend_edges(
         match blend {
             Blend::Round(r) => rounds.push((edge.clone(), *r)),
             Blend::Chamfer(c) => bevels.push((edge.clone(), c.clone())),
+            Blend::RoundDistances {
+                face,
+                on_face,
+                on_other,
+                profile,
+            } => {
+                // Equal distances, elliptical: the circular round, which
+                // meets the request's other rounds and bevels as one.
+                if *profile == RoundProfile::Elliptical && on_face == on_other {
+                    let r = crate::asym::equal_round(model, solid, edge, face, *on_face, tol)?;
+                    rounds.push((edge.clone(), r));
+                } else {
+                    asymmetric.push(crate::asym::Asymmetric {
+                        edge: edge.clone(),
+                        face: face.clone(),
+                        on_face: *on_face,
+                        on_other: *on_other,
+                        profile: *profile,
+                    });
+                }
+            }
         }
     }
+    if !asymmetric.is_empty() {
+        let others: Vec<Shape> = rounds
+            .iter()
+            .map(|(e, _)| e.clone())
+            .chain(bevels.iter().map(|(e, _)| e.clone()))
+            .collect();
+        return crate::asym::after_symmetric(
+            model,
+            &others,
+            asymmetric,
+            |model| {
+                if others.is_empty() {
+                    Ok(Built::new(solid.clone(), ogeom_algo::History::new()))
+                } else {
+                    blend_symmetric(model, solid, rounds, bevels, corner, tol)
+                }
+            },
+            tol,
+        );
+    }
+    blend_symmetric(model, solid, rounds, bevels, corner, tol)
+}
+
+/// [`blend_edges`] of the rounds and bevels of one radius each.
+fn blend_symmetric(
+    model: &mut Model,
+    solid: &Shape,
+    mut rounds: Vec<(Shape, f64)>,
+    mut bevels: Vec<(Shape, Chamfer)>,
+    corner: ChamferCorner,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     if rounds.is_empty() {
         return crate::chamfer_edges_cornered(model, solid, &bevels, corner, tol);
     }

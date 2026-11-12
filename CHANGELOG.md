@@ -43,6 +43,35 @@ bump may break the API and a patch bump may not.
     - a cusp rounded on one side of the tangent point only (the arm and
       hub in #868).
 
+- **Asymmetric rounds on a straight edge between two planes.** (#877)
+  - `fillet_edge_distances` rounds an edge with a band meeting one face
+    `on_face` from the edge and the other `on_other` from it, its section
+    `RoundProfile::Elliptical` (the circular round's arc stretched to each
+    distance) or `RoundProfile::Conic(rho)`, from near a bevel at rho near
+    0 to near the sharp edge at rho near 1. `blend_edges` takes it as
+    `Blend::RoundDistances`.
+  - The band is the rational quadratic arc tangent to both faces at their
+    contacts, swept along the edge: exact, tangent to both faces. Convex
+    edges cut and concave edges fill; the band's ends are the circular
+    round's (square caps, run-out across a face that cuts the corner away,
+    trimmed under a face overhanging the corner).
+  - Naming the other face with the distances swapped builds the same solid
+    to the bit. Equal distances with the elliptical section are the
+    circular round of `fillet_edge`, by the same call.
+  - Measured against the exact section area times the length, on a box
+    edge, a 150-degree edge and an L-bracket's concave edge, elliptical and
+    rho from 0.1 to 0.9: within 1e-8 of the exact volume, and against the
+    section's centroid where the band runs out onto a ramp or stops under
+    a roof.
+  - Refused by name for now: rims, curved creases, chains, varying
+    distances, corners where it meets another blended edge, and
+    `largest_fillet_radius` for the pair.
+
+### Changed
+
+- `Blend` has a new variant, `RoundDistances`; an exhaustive match on
+  `Blend` needs an arm for it. (#877)
+
 ### Fixed
 
 - **A STEP parameter list with a missing or extra comma is refused at the
