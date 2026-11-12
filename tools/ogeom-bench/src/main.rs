@@ -181,6 +181,7 @@ fn benchmarks() -> Vec<Bench> {
         ("import_ctc02", Box::new(import_ctc02)),
         ("step_write", Box::new(step_write)),
         ("iges_read", Box::new(iges_read)),
+        ("simplify_100k", Box::new(simplify_100k)),
         ("weld_1m", Box::new(weld_1m)),
         ("stl_read_1m", Box::new(stl_read_1m)),
         ("bvh_build_1m", Box::new(bvh_build_1m)),
@@ -1122,6 +1123,37 @@ fn torus_soup() -> Triangulation {
         }
     }
     mesh
+}
+
+/// Halving a closed torus mesh of about a hundred thousand triangles, 316
+/// by 158 quads on shared vertices, its tube waved so collapses do not all
+/// cost the same.
+fn simplify_100k() -> Option<Stats> {
+    let (around, across) = (316_u32, 158_u32);
+    let mut mesh = Triangulation::new();
+    for i in 0..around {
+        for j in 0..across {
+            let u = std::f64::consts::TAU * f64::from(i) / f64::from(around);
+            let v = std::f64::consts::TAU * f64::from(j) / f64::from(across);
+            let tube = 0.5f64.mul_add((3.0 * u).sin() * (2.0 * v).cos(), 5.0);
+            let r = tube.mul_add(v.cos(), 20.0);
+            mesh.positions
+                .push(Point::new(r * u.cos(), r * u.sin(), tube * v.sin()));
+        }
+    }
+    let at = |i: u32, j: u32| (i % around) * across + (j % across);
+    for i in 0..around {
+        for j in 0..across {
+            let (a, b, c, d) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+            mesh.triangles.push([a, b, c]);
+            mesh.triangles.push([a, c, d]);
+        }
+    }
+    let half = ogeom::mesh::Target::Triangles(mesh.triangles.len() / 2);
+    Some(time(|| {
+        let done = ogeom::mesh::simplify(&mesh, half, T).unwrap();
+        std::hint::black_box(done.collapsed);
+    }))
 }
 
 /// Welding a million-triangle soup into a closed mesh.
