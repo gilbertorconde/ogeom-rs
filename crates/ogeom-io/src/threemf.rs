@@ -466,17 +466,17 @@ fn contents(bytes: &[u8], entry: &Entry) -> OgeomResult<Vec<u8>> {
 /// entry, entries that overlap one another, or an archive spanning several
 /// disks is refused by name rather than half-read.
 ///
-/// Every entry is held in memory at once, up to about a thousand times the
-/// package's own size for a deflated one; [`read_package_within`] bounds
-/// both the count and the total for a package from an untrusted source.
+/// Every entry is held in memory at once, so the package is held to
+/// [`PackageLimits::default`]: [`read_package_within`] reads one under
+/// other limits, or [`PackageLimits::NONE`].
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
-/// bytes are not a ZIP archive, an entry is damaged, or it is one of the
-/// refusals above.
+/// bytes are not a ZIP archive, an entry is damaged, it is one of the
+/// refusals above, or it is past the default limits.
 pub fn read_package(bytes: &[u8]) -> OgeomResult<Vec<(String, Vec<u8>)>> {
-    read_package_within(bytes, PackageLimits::NONE)
+    read_package_within(bytes, PackageLimits::default())
 }
 
 /// How much of a package [`read_package_within`] may read: how many
@@ -495,16 +495,27 @@ pub struct PackageLimits {
 
 impl PackageLimits {
     /// No limit past the archive's own: entries may not overlap, so a
-    /// package expands at most as far as its own bytes deflate from.
+    /// package expands at most as far as its own bytes deflate from, about
+    /// a thousand times its size.
     pub const NONE: Self = Self {
         entries: usize::MAX,
         bytes: u64::MAX,
     };
+
+    /// 4096 entries and 4 GiB in all, what [`read_package`] holds a package
+    /// to. The packages in the corpus have at most 4 entries and inflate to
+    /// at most 315 457 bytes; these limits are a thousand times the one and
+    /// over thirteen thousand times the other.
+    pub const DEFAULT: Self = Self {
+        entries: 4096,
+        bytes: 4 << 30,
+    };
 }
 
 impl Default for PackageLimits {
+    /// [`PackageLimits::DEFAULT`].
     fn default() -> Self {
-        Self::NONE
+        Self::DEFAULT
     }
 }
 
@@ -2180,6 +2191,177 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(message.contains("60 bytes"), "{message}");
+    }
+
+    /// Bits packed least significant first, as DEFLATE reads them.
+    #[derive(Default)]
+    struct BitWriter {
+        out: Vec<u8>,
+        held: u64,
+        count: u32,
+    }
+
+    impl BitWriter {
+        fn put(&mut self, value: u64, bits: u32) {
+            self.held |= value << self.count;
+            self.count += bits;
+            while self.count >= 8 {
+                self.out.push((self.held & 0xFF) as u8);
+                self.held >>= 8;
+                self.count -= 8;
+            }
+        }
+
+        /// A Huffman code, written most significant bit first.
+        fn code(&mut self, code: u64, bits: u32) {
+            self.put(code.reverse_bits() >> (64 - bits), bits);
+        }
+
+        fn finish(mut self) -> Vec<u8> {
+            if self.count > 0 {
+                self.out.push((self.held & 0xFF) as u8);
+            }
+            self.out
+        }
+    }
+
+    /// A DEFLATE stream of `1 + 258 * repeats` zero bytes in one dynamic
+    /// block whose codes are a bit or two long: a zero literal, then a
+    /// 258-byte copy at distance 1 in two bits, the most DEFLATE expands.
+    fn zeros_bomb(repeats: usize) -> Vec<u8> {
+        let mut w = BitWriter::default();
+        w.put(1, 1); // last block
+        w.put(2, 2); // dynamic codes
+        w.put(29, 5); // 286 literal/length codes
+        w.put(0, 5); // 1 distance code
+        w.put(14, 4); // 18 code-length code lengths
+        // In CODE_LENGTH_ORDER, 18 comes third, 2 sixteenth and 1
+        // eighteenth: 18 takes code `0`, 1 takes `10` and 2 takes `11`.
+        for slot in 0..18 {
+            let length = match slot {
+                2 => 1,
+                15 | 17 => 2,
+                _ => 0,
+            };
+            w.put(length, 3);
+        }
+        let zeros = |w: &mut BitWriter, mut run: u64| {
+            while run > 0 {
+                let take = run.min(138);
+                w.code(0, 1);
+                w.put(take - 11, 7);
+                run -= take;
+            }
+        };
+        // Literal 0 and end-of-block in two bits, length 285 in one; one
+        // distance code, distance 1, in one.
+        w.code(0b11, 2); // literal 0: length 2
+        zeros(&mut w, 255);
+        w.code(0b11, 2); // end of block: length 2
+        zeros(&mut w, 28);
+        w.code(0b10, 2); // length 285: length 1
+        w.code(0b10, 2); // distance 0: length 1
+        // Canonical codes: 285 is `0`, literal 0 is `10`, end of block `11`.
+        w.code(0b10, 2);
+        for _ in 0..repeats {
+            w.code(0, 1);
+            w.code(0, 1);
+        }
+        w.code(0b11, 2);
+        w.finish()
+    }
+
+    /// A ZIP archive of deflated entries: name, stream and inflated size.
+    /// Each checksum is written as zero: a reader refusing the archive by
+    /// its sizes never inflates far enough to check one.
+    fn deflated_archive(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::new();
+        let mut directory: Vec<u8> = Vec::new();
+        let field = |v: &mut Vec<u8>, bytes: &[u8]| v.extend_from_slice(bytes);
+        for (name, stream, size) in entries {
+            let offset = u32::try_from(out.len()).unwrap();
+            let compressed = u32::try_from(stream.len()).unwrap();
+            let name_len = u16::try_from(name.len()).unwrap();
+            field(&mut out, &0x0403_4b50_u32.to_le_bytes());
+            field(&mut out, &[20, 0, 0, 0, 8, 0, 0, 0, 0, 0]);
+            field(&mut out, &0_u32.to_le_bytes());
+            field(&mut out, &compressed.to_le_bytes());
+            field(&mut out, &size.to_le_bytes());
+            field(&mut out, &name_len.to_le_bytes());
+            field(&mut out, &0_u16.to_le_bytes());
+            field(&mut out, name.as_bytes());
+            field(&mut out, stream);
+            field(&mut directory, &0x0201_4b50_u32.to_le_bytes());
+            field(&mut directory, &[20, 0, 20, 0, 0, 0, 8, 0, 0, 0, 0, 0]);
+            field(&mut directory, &0_u32.to_le_bytes());
+            field(&mut directory, &compressed.to_le_bytes());
+            field(&mut directory, &size.to_le_bytes());
+            field(&mut directory, &name_len.to_le_bytes());
+            field(&mut directory, &[0; 12]);
+            field(&mut directory, &offset.to_le_bytes());
+            field(&mut directory, name.as_bytes());
+        }
+        let count = u16::try_from(entries.len()).unwrap();
+        let at = u32::try_from(out.len()).unwrap();
+        let size = u32::try_from(directory.len()).unwrap();
+        out.extend_from_slice(&directory);
+        field(&mut out, &0x0605_4b50_u32.to_le_bytes());
+        field(&mut out, &[0, 0, 0, 0]);
+        field(&mut out, &count.to_le_bytes());
+        field(&mut out, &count.to_le_bytes());
+        field(&mut out, &size.to_le_bytes());
+        field(&mut out, &at.to_le_bytes());
+        field(&mut out, &0_u16.to_le_bytes());
+        out
+    }
+
+    /// Three entries of 1.5 GiB of zeros each, deflated to about 1.5 MiB
+    /// apiece, apart in the archive: 4.5 GiB from under 5 MiB. Without a
+    /// limit it would be inflated entry by entry and held; the default
+    /// refuses it from the directory alone.
+    #[test]
+    fn the_default_limits_refuse_a_deflate_bomb() {
+        // The stream is real: a small one inflates to the zeros it says.
+        let small = zeros_bomb(1000);
+        let zeros = crate::inflate::inflate(&small, 1 + 258 * 1000).unwrap();
+        assert!(zeros.iter().all(|&b| b == 0));
+
+        let repeats = (3 << 29) / 258;
+        let size = u32::try_from(1 + 258 * repeats).unwrap();
+        let stream = zeros_bomb(repeats);
+        assert!(size as usize > 1000 * stream.len(), "{}", stream.len());
+        let bytes = deflated_archive(&[
+            ("a", &stream, size),
+            ("b", &stream, size),
+            ("c", &stream, size),
+        ]);
+        assert!(bytes.len() < 5 << 20, "{}", bytes.len());
+        let message = read_package(&bytes).unwrap_err().to_string();
+        assert!(message.contains("past the 4294967296 allowed"), "{message}");
+
+        // Past the entry count alone, empty entries are refused too.
+        let names: Vec<String> = (0..4097).map(|k| format!("e{k:04}")).collect();
+        let many: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &b""[..])).collect();
+        let message = read_package(&archive(&many)).unwrap_err().to_string();
+        assert!(message.contains("4097 entries"), "{message}");
+        assert_eq!(read_package(&archive(&many[..4096])).unwrap().len(), 4096);
+    }
+
+    /// Every 3MF package in the corpus reads within the default limits.
+    #[test]
+    fn the_corpus_reads_within_the_default_limits() {
+        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus");
+        let mut read = 0;
+        for entry in std::fs::read_dir(corpus).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "3mf") {
+                let bytes = std::fs::read(&path).unwrap();
+                assert!(read_package(&bytes).is_ok(), "{}", path.display());
+                assert!(read_3mf(&bytes, T).is_ok(), "{}", path.display());
+                read += 1;
+            }
+        }
+        assert!(read >= 4, "{read}");
     }
 
     /// Cut short or damaged anywhere, a package is refused or read, never
