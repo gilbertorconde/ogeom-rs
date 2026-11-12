@@ -63,6 +63,15 @@ fn a_fused_pair_of_halves_unifies_back_to_a_box() {
         edges <= 12,
         "a box has twelve edges; the merge got to {edges}"
     );
+    // Each joined edge runs between the vertices its neighbours end at: a
+    // fresh vertex at a corner would leave the walls meeting there apart.
+    let vertices = explore_unique(&model, &merged, ShapeType::Vertex)
+        .unwrap()
+        .len();
+    assert_eq!(
+        vertices, 8,
+        "a box has eight corners; the merge left {vertices}"
+    );
     let volume = ogeom::algo::volume_properties(&model, &merged, Deflection::default(), T)
         .unwrap()
         .mass;

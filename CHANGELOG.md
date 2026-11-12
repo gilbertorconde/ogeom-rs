@@ -38,6 +38,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **`merge_edges` left each joined edge apart from its neighbours.** The
+  joined edge was built with new end vertices at the points the pair's
+  outer vertices stood at, so the edges either side no longer met it: a
+  box unified from two halves came back with sixteen vertices, not eight.
+  The joined edge now runs between the pair's own outer vertices.
+
 - **Bevels meeting at a face's reflex corner left a notch.** Two edges of
   one face chamfered where they meet at the face's inside corner (an L's
   end face, the top of an L-shaped block) each stopped at the vertex, and
