@@ -69,6 +69,15 @@ bump may break the API and a patch bump may not.
 
 ### Changed
 
+- **`threemf::read_package` holds a package to 4096 entries and 4 GiB
+  inflated, `PackageLimits::default()`.** A hostile package past either
+  limit, which used to be read, is now refused from its central directory
+  before any entry is inflated: three deflated entries of 1.5 GiB of zeros,
+  under 5 MiB together. The corpus's packages have at most 4 entries and
+  inflate to at most 315 457 bytes. `read_package_within` still reads under
+  other limits, or none with `PackageLimits::NONE`. `read_3mf` is
+  unchanged.
+
 - `Blend` has a new variant, `RoundDistances`; an exhaustive match on
   `Blend` needs an arm for it. (#877)
 - **`mesh::simplify` to a triangle count or an error budget takes the
@@ -123,8 +132,8 @@ bump may break the API and a patch bump may not.
     corpus's 3MF packages (deflated, ZIP64, components, painted) still read.
   - New `threemf::read_package_within` with `PackageLimits`: a most entry
     count and a most total of expanded bytes, both checked against the
-    central directory before anything is inflated. `read_package` keeps no
-    limit past the archive's own.
+    central directory before anything is inflated. `read_package` reads
+    under `PackageLimits::default()` (see Changed).
 
 - **A concave round on a curved edge running past its face's side is cut
   off flush at that side.** (#871)
