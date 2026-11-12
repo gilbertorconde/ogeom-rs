@@ -209,6 +209,7 @@ pub fn intersect_surfaces_within(
             .or_else(|| ball_through_drum(a, b, tol))
             .or_else(|| axial_plane_revolution(a, b, tol))
             .or_else(|| crate::extrusion::plane_extrusion(a, b, tol))
+            .or_else(|| crate::extrusion::drum_extrusion(a, b, tol))
             .or_else(|| plane_along_spline_lines(a, b, tol))
         {
             Some(sections) if sections.is_empty() => Ok(SurfaceIntersection::Apart),

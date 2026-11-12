@@ -30,6 +30,10 @@
 //! the extrusion meets within the sine the marcher takes as tangent, or a
 //! section that does not land on both surfaces within the confusion
 //! distance when checked.
+//!
+//! A cylinder whose axis runs along the sweep meets an extrusion of a
+//! B-spline profile in the rulings through the profile's crossings with
+//! it, found the same way ([`drum_extrusion`]).
 
 use ogeom_core::Tolerances;
 use ogeom_geom::{
@@ -124,6 +128,161 @@ fn spline_pair(
         along,
     };
     Some((carry, spline, sweep))
+}
+
+/// Where a cylinder meets an extrusion of a B-spline profile swept along
+/// its axis, exactly: the rulings through the profile's crossings with the
+/// cylinder, each over the sweep and cut to the cylinder's window. `None`
+/// where the pair is not one, the sweep leans off the axis by more than
+/// the confusion distance over its reach, or a crossing is not resolved
+/// cleanly; an empty answer is a profile missing the cylinder.
+///
+/// A point `P` of the profile lies on the cylinder where `X² + Y² = r²`,
+/// `X` and `Y` its coordinates across the axis in the cylinder's frame.
+/// With the profile's weights `w`, `w²(X² + Y² − r²)` is a polynomial
+/// B-spline of twice the degree whose sign is the condition's, its
+/// Bernstein coefficients over each Bézier piece the products of the
+/// piece's `wX`, `wY` and `w` (see [`level_crossings`] for how its roots
+/// are isolated). A root isolated that way is simple, so the profile
+/// crosses the cylinder there however shallow the angle, as a line
+/// crossing it does in [`surface_surface`](crate::surface_surface)'s
+/// closed form.
+pub(crate) fn drum_extrusion(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    tol: Tolerances,
+) -> Option<Vec<SectionCurve>> {
+    let (drum_surface, extrusion, drum_first) = match (a, b) {
+        (SurfaceGeometry::Cylinder(_), SurfaceGeometry::Extrusion(e)) => (a, &**e, true),
+        (SurfaceGeometry::Extrusion(e), SurfaceGeometry::Cylinder(_)) => (b, &**e, false),
+        _ => return None,
+    };
+    let SurfaceGeometry::Cylinder(c) = drum_surface else {
+        return None;
+    };
+    let drum = c.cylinder();
+    let frame = drum.frame();
+    let (o, r) = (frame.origin(), drum.radius());
+    let (x, y) = (frame.x().vector(), frame.y().vector());
+    let d = extrusion.direction();
+    let (window, sweep) = extrusion.domain();
+    let reach = sweep.0.abs().max(sweep.1.abs());
+    if d.vector().cross(frame.z().vector()).magnitude() * reach > tol.confusion() {
+        return None;
+    }
+    let spline = SplineProfile::of(extrusion.curve(), window, tol)?;
+    // An end of the profile on the cylinder is the extrusion's border
+    // lying in it, its sign there rounding's: left to the marcher.
+    let ends = (spline.control.first()?, spline.control.last()?);
+    if [ends.0, ends.1]
+        .iter()
+        .any(|w| drum.distance_to(w.point()) <= tol.confusion())
+    {
+        return None;
+    }
+    let across: Vec<Weighted<Point2>> = spline
+        .control
+        .iter()
+        .map(|w| {
+            let q = w.point() - o;
+            Weighted {
+                scaled: Point2::new(w.weight * q.dot(x), w.weight * q.dot(y)),
+                weight: w.weight,
+            }
+        })
+        .collect();
+    // Each coefficient is a blend of products of the control points'
+    // coordinates across the axis, each rounded to their size and to the
+    // origin's.
+    let noise = spline
+        .control
+        .iter()
+        .map(|w| {
+            let size = w.point().to_vector().magnitude() + o.to_vector().magnitude() + r;
+            w.weight * w.weight * size * size
+        })
+        .fold(0.0, f64::max)
+        * f64::EPSILON
+        * 64.0;
+    let pieces = bspline::to_bezier_segments(&spline.knots, &across, tol).ok()?;
+    let mut roots = Vec::new();
+    for ((lo, hi), piece) in pieces {
+        let sx: Vec<f64> = piece.iter().map(|w| w.scaled.x).collect();
+        let sy: Vec<f64> = piece.iter().map(|w| w.scaled.y).collect();
+        let sw: Vec<f64> = piece.iter().map(|w| w.weight).collect();
+        let (xx, yy, ww) = (
+            bernstein_product(&sx, &sx),
+            bernstein_product(&sy, &sy),
+            bernstein_product(&sw, &sw),
+        );
+        let values: Vec<f64> = (0..xx.len())
+            .map(|k| (-r * r).mul_add(ww[k], xx[k] + yy[k]))
+            .collect();
+        bezier_roots(&values, (lo, hi), noise, tol, &mut roots)?;
+    }
+    roots.sort_by(f64::total_cmp);
+    roots.dedup_by(|p, q| (*p - *q).abs() <= tol.parametric());
+    let mut out = Vec::with_capacity(roots.len());
+    for u in roots {
+        let at = bspline::evaluate_rational(&spline.knots, &spline.control, u, tol).ok()?;
+        let axis = Axis {
+            location: at,
+            direction: d,
+        };
+        let line: Curve = LineCurve::over(axis, sweep.0, sweep.1).ok()?.into();
+        let on_drum = exact_pcurve_over(&line, sweep, drum_surface, tol)?;
+        let Some((lo, hi)) = inside_box(&on_drum, drum_surface) else {
+            continue;
+        };
+        let (lo, hi) = (lo.max(sweep.0), hi.min(sweep.1));
+        if hi - lo <= tol.parametric() {
+            continue;
+        }
+        let line: Curve = LineCurve::over(axis, lo, hi).ok()?.into();
+        let on_drum = exact_pcurve_over(&line, (lo, hi), drum_surface, tol)?;
+        let on_extrusion: PlanarCurve =
+            ogeom_geom::Line2d::over(Axis2::new(Point2::new(u, 0.0), Direction2::Y), lo, hi)
+                .ok()?
+                .into();
+        lands_on_both(&line, &on_drum, &on_extrusion, drum_surface, extrusion, tol)?;
+        let (on_a, on_b) = if drum_first {
+            (on_drum, on_extrusion)
+        } else {
+            (on_extrusion, on_drum)
+        };
+        out.push(SectionCurve {
+            curve: line,
+            on_a: Some(on_a),
+            on_b: Some(on_b),
+            tolerance: 0.0,
+            exact: true,
+            closed: false,
+            tangential: false,
+        });
+    }
+    Some(out)
+}
+
+/// The Bernstein coefficients of the product of two polynomials given by
+/// theirs over the same interval: `cₖ = Σ C(m, i) C(n, k − i) aᵢ bₖ₋ᵢ /
+/// C(m + n, k)`, of degree `m + n`.
+fn bernstein_product(a: &[f64], b: &[f64]) -> Vec<f64> {
+    let (m, n) = (a.len() - 1, b.len() - 1);
+    let choose = |top: usize, k: usize| -> f64 {
+        (0..k).fold(1.0, |acc, j| {
+            #[allow(clippy::cast_precision_loss, reason = "small degrees")]
+            let (t, j) = ((top - j) as f64, (j + 1) as f64);
+            acc * t / j
+        })
+    };
+    (0..=m + n)
+        .map(|k| {
+            let terms: f64 = (k.saturating_sub(n)..=k.min(m))
+                .map(|i| choose(m, i) * choose(n, k - i) * a[i] * b[k - i])
+                .sum();
+            terms / choose(m + n, k)
+        })
+        .collect()
 }
 
 /// [`plane_extrusion`], with a B-spline profile straddling an end of the
@@ -1704,5 +1863,83 @@ mod tests {
                 prop_assert!(covered, "u {u} at height {v} is on no section");
             }
         }
+    }
+
+    /// A cylinder of radius 20 about `z`, 1 tall, and the extrusion along
+    /// `z` of the degree-1 B-spline from `(-1, y)` to `(1, y)`.
+    fn drum_and_side(y: f64) -> (SurfaceGeometry, SurfaceGeometry) {
+        let drum: SurfaceGeometry = ogeom_geom::CylinderSurface::new(
+            ogeom_math::Cylinder::new(Frame::WORLD, 20.0, T).unwrap(),
+            (0.0, 1.0),
+        )
+        .unwrap()
+        .into();
+        let side = BSplineCurve::new(
+            KnotVector::clamped_uniform(1, 2).unwrap(),
+            vec![Point::new(-1.0, y, 0.0), Point::new(1.0, y, 0.0)],
+            T,
+        )
+        .unwrap();
+        let swept: SurfaceGeometry =
+            ExtrusionSurface::over(side.into(), direction(0.0, 0.0, 1.0), (0.0, 1.0))
+                .unwrap()
+                .into();
+        (drum, swept)
+    }
+
+    /// A straight B-spline side `d` inside the drum's wall crosses it on
+    /// the rulings at `x = ±sqrt(2rd − d²)`, however shallow the chord,
+    /// each exact, on both surfaces at its traces and over the drum's
+    /// height; asked the other way round, the same rulings.
+    #[test]
+    fn a_spline_side_crosses_a_drum_on_rulings_at_its_crossings() {
+        for d in [1e-2, 1e-3, 1e-5] {
+            let (drum, swept) = drum_and_side(20.0 - d);
+            let want = d.mul_add(-d, 40.0 * d).sqrt();
+            for (a, b) in [(&drum, &swept), (&swept, &drum)] {
+                let found = super::drum_extrusion(a, b, T).unwrap();
+                assert_eq!(found.len(), 2, "dip {d}");
+                for (section, sign) in found.iter().zip([-1.0, 1.0]) {
+                    let Curve::Line(line) = &section.curve else {
+                        panic!("dip {d}: a ruling is a line");
+                    };
+                    let at = line.axis().location;
+                    assert!(
+                        (at.x - sign * want).abs() <= 1e-10,
+                        "dip {d}: x {} against {}",
+                        at.x,
+                        sign * want
+                    );
+                    assert!(section.exact && section.tolerance == 0.0);
+                    let (lo, hi) = section.curve.domain();
+                    assert!(
+                        lo.abs() <= 1e-12 && (hi - 1.0).abs() <= 1e-12,
+                        "dip {d}: {lo}..{hi}"
+                    );
+                    let (Some(on_a), Some(on_b)) = (&section.on_a, &section.on_b) else {
+                        panic!("dip {d}: a section without its traces");
+                    };
+                    for t in [lo, f64::midpoint(lo, hi), hi] {
+                        let p = section.curve.point_at(t, T).unwrap();
+                        let (ua, ub) = (on_a.point_at(t, T).unwrap(), on_b.point_at(t, T).unwrap());
+                        assert!(a.point_at(ua.x, ua.y, T).unwrap().distance(p) <= 1e-11);
+                        assert!(b.point_at(ub.x, ub.y, T).unwrap().distance(p) <= 1e-11);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A side touching the drum, or ending on it, is no crossing to take in
+    /// closed form: both are left to the marcher and the contact handling,
+    /// and the side clear of it misses.
+    #[test]
+    fn a_spline_side_touching_a_drum_is_left_to_the_marcher() {
+        for y in [20.0, 399.0_f64.sqrt()] {
+            let (drum, swept) = drum_and_side(y);
+            assert!(super::drum_extrusion(&drum, &swept, T).is_none(), "y {y}");
+        }
+        let (drum, swept) = drum_and_side(20.5);
+        assert!(super::drum_extrusion(&drum, &swept, T).unwrap().is_empty());
     }
 }
