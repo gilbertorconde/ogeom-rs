@@ -377,25 +377,39 @@ fn printcad_volume(r: f64) -> f64 {
 /// A solid's volume bits and sorted vertex bits, to compare orders by.
 type SolidKey = (u64, Vec<[u64; 3]>);
 
-/// printCAD's chain rounded at `r`, its edges asked in reverse if `flip`,
-/// or why not. Where it builds, every check is asserted: valid; two
-/// patches, tangent to every neighbour within 2e-4 rad; every point inside
-/// the plate and boss or in the foot's fill over the top (none past
-/// x = 20); no face turned down over the plate's side; and the volume
-/// within the patches' own distance from the S (each mesh triangle's area
-/// times its corners' mean distance, summed) of `printcad_volume`. Gives
-/// the solid's volume bits and vertices, to compare orders by.
-fn printcad_round(r: f64, flip: bool) -> Result<SolidKey, ogeom_core::OgeomError> {
-    let mut m = Model::new();
-    let s = printcad_boss(&mut m);
-    let mut chain = printcad_chain(&m, &s);
-    if flip {
-        chain.reverse();
-    }
-    let rounded = ogeom_fillet::fillet_edges(&mut m, &s, &chain, r, T)?.shape;
-    let found = ogeom_algo::check(&m, &rounded, T).unwrap();
-    assert!(found.is_valid(), "r {r}, flip {flip}: {:?}", found.problems);
-    let patches: Vec<Shape> = explore_unique(&m, &rounded, ShapeType::Face)
+/// What a cusp round is checked against.
+struct CuspCase<'a> {
+    /// How many patches close it: two where both sides of the tangent
+    /// point are rounded, one where one is.
+    patches: usize,
+    /// Carries a point into printCAD's frame, where the side is x = 20,
+    /// the wall's axis (14, 0) and the top z = 5, for `printcad_deviation`.
+    frame: &'a dyn Fn(Point) -> Point,
+    /// Whether a point lies inside the solid asked on or the foot's fill.
+    inside: &'a dyn Fn(Point) -> bool,
+    /// Whether a point stands over the side near the tangent point, where
+    /// no face may look down.
+    over_side: &'a dyn Fn(Point) -> bool,
+    /// The volume of the round `printcad_deviation` measures from.
+    want: f64,
+}
+
+/// Asserts every check of a cusp round at `r` on `rounded`: valid; its
+/// patches tangent to every neighbour within 2e-4 rad; every point of
+/// every face inside the solid or the foot's fill; no face looking down
+/// over the side; and the volume within the patches' own distance from the
+/// S (each mesh triangle's area times its corners' mean distance, summed)
+/// of the case's own. Gives the solid's volume bits and vertices.
+fn assert_cusp_round(
+    m: &Model,
+    rounded: &Shape,
+    r: f64,
+    case: &CuspCase<'_>,
+    label: &str,
+) -> SolidKey {
+    let found = ogeom_algo::check(m, rounded, T).unwrap();
+    assert!(found.is_valid(), "{label}: {:?}", found.problems);
+    let patches: Vec<Shape> = explore_unique(m, rounded, ShapeType::Face)
         .unwrap()
         .into_iter()
         .filter(|f| {
@@ -408,10 +422,77 @@ fn printcad_round(r: f64, flip: bool) -> Result<SolidKey, ogeom_core::OgeomError
         .collect();
     let mut tangent = 0.0_f64;
     for patch in &patches {
-        for c in ogeom_fillet::analyse_blend(&m, &rounded, patch, 17, T).unwrap() {
+        for c in ogeom_fillet::analyse_blend(m, rounded, patch, 17, T).unwrap() {
             tangent = tangent.max(c.tangency_error);
         }
     }
+    let (mut farthest, mut departure, mut down) = (0.0_f64, 0.0_f64, 1.0_f64);
+    for face in explore_unique(m, rounded, ShapeType::Face).unwrap() {
+        let mesh = ogeom_mesh::triangulate_face(
+            m,
+            &face,
+            ogeom_mesh::Deflection {
+                chord: 1e-3,
+                ..ogeom_mesh::Deflection::default()
+            },
+            T,
+        )
+        .unwrap();
+        for p in &mesh.positions {
+            assert!(
+                (case.inside)(*p),
+                "{label}: outside the solid and the fill: {p:?}"
+            );
+        }
+        for (p, n) in mesh.positions.iter().zip(&mesh.normals) {
+            if (case.over_side)(*p) {
+                down = down.min(n.z);
+            }
+        }
+        if !patches.iter().any(|q| q.node() == face.node()) {
+            continue;
+        }
+        let off: Vec<f64> = mesh
+            .positions
+            .iter()
+            .map(|p| printcad_deviation((case.frame)(*p), r))
+            .collect();
+        farthest = off.iter().copied().fold(farthest, f64::max);
+        for t in &mesh.triangles {
+            let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+            let mean = t.iter().map(|&i| off[i as usize]).sum::<f64>() / 3.0;
+            departure += 0.5 * (b - a).cross(c - a).magnitude() * mean;
+        }
+    }
+    let got = volume(m, rounded);
+    eprintln!(
+        "{label}: {} patches tangent within {tangent:e}, lowest normal z {down:e}, at most \
+         {farthest:e} from the S, {departure:e} by area; volume {got} against {} ({:e})",
+        patches.len(),
+        case.want,
+        got - case.want
+    );
+    assert_eq!(patches.len(), case.patches, "{label}: patches");
+    assert!(tangent < 2e-4, "{label}: tangent within {tangent}");
+    assert!(down > -2e-4, "{label}: a face looks down, {down}");
+    assert!(
+        (got - case.want).abs() <= departure + 1e-4,
+        "{label}: {got} against {}, past the patches' {departure} from the S",
+        case.want
+    );
+    (got.to_bits(), points(m, rounded))
+}
+
+/// printCAD's chain rounded at `r`, its edges asked in reverse if `flip`,
+/// every check of `assert_cusp_round` asserted where it builds, or why not.
+fn printcad_round(r: f64, flip: bool) -> Result<SolidKey, ogeom_core::OgeomError> {
+    let mut m = Model::new();
+    let s = printcad_boss(&mut m);
+    let mut chain = printcad_chain(&m, &s);
+    if flip {
+        chain.reverse();
+    }
+    let rounded = ogeom_fillet::fillet_edges(&mut m, &s, &chain, r, T)?.shape;
     let inside = |p: Point| -> bool {
         let e = 1e-6;
         let plate = p.x.abs() <= 20.0 + e && p.y.abs() <= 20.0 + e && p.z >= -e && p.z <= 5.0 + e;
@@ -425,74 +506,27 @@ fn printcad_round(r: f64, flip: bool) -> Result<SolidKey, ogeom_core::OgeomError
             && (rho - 6.0 - r).hypot(p.z - 5.0 - r) >= r - 1e-4;
         plate || boss || fill
     };
-    let (mut farthest, mut departure, mut down) = (0.0_f64, 0.0_f64, 1.0_f64);
-    for face in explore_unique(&m, &rounded, ShapeType::Face).unwrap() {
-        let mesh = ogeom_mesh::triangulate_face(
-            &m,
-            &face,
-            ogeom_mesh::Deflection {
-                chord: 1e-3,
-                ..ogeom_mesh::Deflection::default()
-            },
-            T,
-        )
-        .unwrap();
-        for p in &mesh.positions {
-            assert!(
-                inside(*p),
-                "r {r}, flip {flip}: outside the solid and the fill: {p:?}"
-            );
-        }
-        // Over the plate's side, between the bands' ends, no face looks
-        // down: nothing overhangs the convex turn.
-        for (p, n) in mesh.positions.iter().zip(&mesh.normals) {
-            if p.x > 20.0 - 2.0 * r && p.z > 5.0 - r && p.y.abs() < 6.0 {
-                down = down.min(n.z);
-            }
-        }
-        if !patches.iter().any(|q| q.node() == face.node()) {
-            continue;
-        }
-        let off: Vec<f64> = mesh
-            .positions
-            .iter()
-            .map(|p| printcad_deviation(*p, r))
-            .collect();
-        farthest = off.iter().copied().fold(farthest, f64::max);
-        for t in &mesh.triangles {
-            let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
-            let mean = t.iter().map(|&i| off[i as usize]).sum::<f64>() / 3.0;
-            departure += 0.5 * (b - a).cross(c - a).magnitude() * mean;
-        }
-    }
-    let got = volume(&m, &rounded);
-    let want = printcad_volume(r);
-    eprintln!(
-        "r {r}, flip {flip}: {} patches tangent within {tangent:e}, lowest normal z {down:e}, \
-         at most {farthest:e} from the S, {departure:e} by area; volume {got} against {want} ({:e})",
-        patches.len(),
-        got - want
-    );
-    assert_eq!(patches.len(), 2, "r {r}, flip {flip}: a patch either side");
-    assert!(
-        tangent < 2e-4,
-        "r {r}, flip {flip}: tangent within {tangent}"
-    );
-    assert!(
-        down > -2e-4,
-        "r {r}, flip {flip}: a face looks down, {down}"
-    );
-    assert!(
-        (got - want).abs() <= departure + 1e-4,
-        "r {r}, flip {flip}: {got} against {want}, past the patches' {departure} from the S"
-    );
-    Ok((got.to_bits(), points(&m, &rounded)))
+    let over_side = |p: Point| p.x > 20.0 - 2.0 * r && p.z > 5.0 - r && p.y.abs() < 6.0;
+    let case = CuspCase {
+        patches: 2,
+        frame: &|p| p,
+        inside: &inside,
+        over_side: &over_side,
+        want: printcad_volume(r),
+    };
+    Ok(assert_cusp_round(
+        &m,
+        &rounded,
+        r,
+        &case,
+        &format!("printCAD r {r}, flip {flip}"),
+    ))
 }
 
 /// printCAD's chain at its own radius 1 rounded: the edge's round turns
 /// into the foot's through an S either side of (20, 0, 5), passing every
-/// check of `printcad_round`, one solid to the bit in either order. Before
-/// 0.18.0 the foot's band ran on past the plate's side (material at
+/// check of `assert_cusp_round`, one solid to the bit in either order.
+/// Before 0.18.0 the foot's band ran on past the plate's side (material at
 /// (20.95, 0, 5.001), outside the solid); 0.18.0 and 0.18.1 refuse it.
 #[test]
 fn a_foot_and_an_edge_through_the_cusp_where_a_boss_runs_tangent_into_a_plate_turn_through_an_s() {
@@ -502,8 +536,8 @@ fn a_foot_and_an_edge_through_the_cusp_where_a_boss_runs_tangent_into_a_plate_tu
 }
 
 /// printCAD's chain at other radii: each order either builds a solid that
-/// passes every check of `printcad_round`, or is refused by name; the two
-/// orders agree. A quarter of the boss's radius and up is refused for
+/// passes every check of `assert_cusp_round`, or is refused by name; the
+/// two orders agree. A quarter of the boss's radius and up is refused for
 /// leaving the S no room.
 #[test]
 fn printcad_s_chain_at_other_radii_closes_soundly_or_is_refused_by_name() {
@@ -531,37 +565,121 @@ fn printcad_s_chain_at_other_radii_closes_soundly_or_is_refused_by_name() {
     }
 }
 
+/// The volume of the round the arm and hub ask at `r`, by sections across
+/// x: the arm and the hub less their overlap (the half disc under the
+/// arm's top), less the side edge's quarter round past the S's reach, plus
+/// the foot's torus band over its quarter turn from (6, 0) to (0, 6), save
+/// where it stands nearer the hub's side of the S's reach (`x <
+/// printcad_s_reach`). Within that reach the S adds nothing, as in
+/// `printcad_volume`.
+fn hub_volume(r: f64) -> f64 {
+    use std::f64::consts::PI;
+    let reach = printcad_s_reach(r);
+    let n = 2_000_000_u32;
+    let mut band = 0.0;
+    for k in 0..n {
+        let rho = 6.0 + r * (f64::from(k) + 0.5) / f64::from(n);
+        let height = r - (r * r - (6.0 + r - rho).powi(2)).sqrt();
+        band += height * rho * (reach / rho).acos();
+    }
+    band *= r / f64::from(n);
+    40.0 * 12.0 * 5.0 + 270.0 * PI - (1.0 - PI / 4.0) * r * r * (40.0 - reach) + band
+}
+
+/// The issue's arm and hub rounded at `r`, its edges asked in reverse if
+/// `flip`, every check of `assert_cusp_round` asserted where it builds.
+fn hub_round(r: f64, flip: bool) -> Result<SolidKey, ogeom_core::OgeomError> {
+    let mut m = Model::new();
+    let arm = ogeom_algo::make_box(&mut m, at(0.0, -6.0, 0.0), (40.0, 12.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let hub = ogeom_algo::make_cylinder(&mut m, at(0.0, 0.0, 0.0), 6.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &arm, &hub, T).unwrap().shape;
+    let mut edges = vec![
+        edge_near(&m, &s, Point::new(20.0, 6.0, 5.0)),
+        edge_near(&m, &s, Point::new(4.242_640_687, 4.242_640_687, 5.0)),
+    ];
+    if flip {
+        edges.reverse();
+    }
+    let rounded = ogeom_fillet::fillet_edges(&mut m, &s, &edges, r, T)?.shape;
+    let inside = |p: Point| -> bool {
+        let e = 1e-6;
+        let arm =
+            p.x >= -e && p.x <= 40.0 + e && p.y.abs() <= 6.0 + e && p.z >= -e && p.z <= 5.0 + e;
+        let rho = p.x.hypot(p.y);
+        let hub = rho <= 6.0 + e && p.z >= -e && p.z <= 10.0 + e;
+        let fill = p.x >= -e
+            && p.y >= -e
+            && p.y <= 6.0 + e
+            && p.z >= 5.0 - e
+            && p.z <= 5.0 + r + e
+            && rho >= 6.0 - e
+            && rho <= 6.0 + r + e
+            && (rho - 6.0 - r).hypot(p.z - 5.0 - r) >= r - 1e-4;
+        arm || hub || fill
+    };
+    let over_side = |p: Point| p.y > 6.0 - 2.0 * r && p.z > 5.0 - r && p.x < 6.0;
+    let case = CuspCase {
+        patches: 1,
+        frame: &|p: Point| Point::new(14.0 + p.y, p.x, p.z),
+        inside: &inside,
+        over_side: &over_side,
+        want: hub_volume(r),
+    };
+    Ok(assert_cusp_round(
+        &m,
+        &rounded,
+        r,
+        &case,
+        &format!("hub r {r}, flip {flip}"),
+    ))
+}
+
 /// The issue's arm and hub: an arm x 0..40, y -6..6, z 0..5 fused with a
 /// hub of radius 6 about z, 10 high, the arm's sides tangent to the hub's
 /// wall. Its top side edge (convex) and the arc where its top meets the hub
 /// (concave) leave (0, 6, 5) the same way, the arm's top between them a
-/// cusp, so the two bands would share it. Its S, on one side of the
-/// tangent point only, is not built yet: refused by name in either order.
+/// cusp: at radius 1 the side edge's round turns into the foot's through
+/// an S on that one side of the tangent point, passing every check of
+/// `assert_cusp_round`, one solid to the bit in either order. 0.17.1 to
+/// 0.18.1 refuse it.
 #[test]
-fn the_arm_s_side_edge_and_its_arc_into_the_hub_are_refused_in_either_order() {
+fn the_arm_s_side_edge_and_its_arc_into_the_hub_turn_through_an_s_in_either_order() {
+    let first = hub_round(1.0, false).unwrap_or_else(|e| panic!("in order: {e}"));
+    let second = hub_round(1.0, true).unwrap_or_else(|e| panic!("reversed: {e}"));
+    assert!(first == second, "the two orders give two solids");
+}
+
+/// printCAD's plate with one side of the tangent point asked only: the
+/// foot's arc and the plate's top edge on the side y > 0, the edges past
+/// the tangent point left sharp. A one-sided S beside sharp edges is not
+/// closed yet: refused by name in either order, not built.
+#[test]
+fn printcad_s_chain_asked_on_one_side_of_the_tangent_point_is_refused_by_name() {
     for flip in [false, true] {
         let mut m = Model::new();
-        let arm = ogeom_algo::make_box(&mut m, at(0.0, -6.0, 0.0), (40.0, 12.0, 5.0), T)
-            .unwrap()
-            .shape;
-        let hub = ogeom_algo::make_cylinder(&mut m, at(0.0, 0.0, 0.0), 6.0, 10.0, T)
-            .unwrap()
-            .shape;
-        let s = ogeom_bool::fuse(&mut m, &arm, &hub, T).unwrap().shape;
-        let mut edges = vec![
-            edge_near(&m, &s, Point::new(20.0, 6.0, 5.0)),
-            edge_near(&m, &s, Point::new(4.242_640_687, 4.242_640_687, 5.0)),
-        ];
+        let s = printcad_boss(&mut m);
+        let mut chain: Vec<Shape> = printcad_chain(&m, &s)
+            .into_iter()
+            .filter(|e| {
+                let (c, (a, b)) = ogeom_algo::placed_edge_curve(&m, e, T).unwrap().unwrap();
+                c.point_at(0.5 * (a + b), T).unwrap().y > 0.0
+            })
+            .collect();
+        assert_eq!(chain.len(), 2, "an arc of the foot and half the edge");
         if flip {
-            edges.reverse();
+            chain.reverse();
         }
-        let Err(why) = ogeom_fillet::fillet_edges(&mut m, &s, &edges, 1.0, T) else {
-            panic!("flip {flip}: built");
-        };
-        let why = why.to_string();
-        assert!(
-            why.contains("a cusp on one side of the tangent point only is still owed"),
-            "flip {flip}: {why}"
-        );
+        match ogeom_fillet::fillet_edges(&mut m, &s, &chain, 1.0, T) {
+            Err(e @ ogeom_core::OgeomError::Construction(_)) => {
+                let why = e.to_string();
+                assert!(why.contains("did not close"), "flip {flip}: {why}");
+            }
+            Err(e) => panic!("flip {flip}: refused otherwise: {e}"),
+            Ok(_) => panic!("flip {flip}: built"),
+        }
     }
 }

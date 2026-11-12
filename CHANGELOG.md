@@ -14,7 +14,8 @@ bump may break the API and a patch bump may not.
 ### Added
 
 - **A plate's top edge rounded into a boss's foot through the cusp where
-  the boss runs tangent into the plate's side turns through an S.** (#868)
+  the boss runs tangent into the plate's side turns through an S.** (#868,
+  #878)
   - printCAD's chain: the foot and the plate's top edge along that side,
     one tangent chain through the tangent point. 0.17.1 built a wrong solid
     there (the foot's band past the side, nothing under it); 0.18.0 and
@@ -27,21 +28,26 @@ bump may break the API and a patch bump may not.
     wall it leaves the tangent point straight up the wall, then bends onto
     the S's contact with the wall. A smooth patch tangent to both the side
     and the wall at that point can only turn its normal like both along
-    its two trims if one of them leaves vertically.
-  - On a 40 × 40 × 5 plate with a boss of radius 6 tangent to its side,
-    at radius 1, in either order the same solid to the bit:
+    its two trims if one of them leaves vertically. Points of the S through
+    the middle of its reach guide the patch onto it.
+  - A cusp rounded on one side of the tangent point only (#868's arm and
+    hub: the arm's top side edge and its arc into the hub) closes with one
+    patch, the cell ending on the plane through the tangent point and the
+    wall's axis.
+  - At radius 1, on a 40 × 40 × 5 plate with a boss of radius 6 tangent
+    to its side, and on #868's arm and hub, each in either order the same
+    solid to the bit:
     - valid, the patches tangent within 1.73e-4 rad;
-    - every point inside the plate and boss or the foot's fill, no face
-      looking down over the side;
-    - at most 0.094 from the S, section by section;
-    - volume 0.218 over the S's section integral, within the patches'
-      measured departure from it (0.239).
+    - every point inside the solid or the foot's fill, no face looking
+      down over the side;
+    - at most 0.091 from the S, section by section;
+    - volume within the patches' measured departure from the S's section
+      integral: 0.020 over it against 0.143 on the plate, 0.0099 against
+      0.071 on the arm and hub.
   - Refused by name:
-    - other radii (0.25 to 1.5 tried): the patch misses its tangency or
-      its trims miss their vertices;
-    - bands of a quarter of the wall's radius and up;
-    - a cusp rounded on one side of the tangent point only (the arm and
-      hub in #868).
+    - other radii (0.25 to 1.5 tried): the patch misses its tangency
+      (2.1e-4 rad at 0.5, 3.0e-4 at 1.25) on the finest net;
+    - bands of a quarter of the wall's radius and up.
 
 - **Asymmetric rounds on a straight edge between two planes.** (#877)
   - `fillet_edge_distances` rounds an edge with a band meeting one face
