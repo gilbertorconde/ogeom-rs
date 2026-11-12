@@ -216,6 +216,51 @@ impl PlanarSection {
         if positive { [0, 1] } else { [1, 0] }
     }
 
+    /// The strip's end through its contacts on the seat's faces `faces[0]`
+    /// and `faces[1]` at stations `at[0]` and `at[1]` along the crease: the
+    /// strip's surface cut by the plane through both that holds square to
+    /// the crease the chord of the sections there. That is the arc at the
+    /// first station carried along the crease onto the plane, an affine map
+    /// that keeps a rational quadratic arc's control points' weights, so the
+    /// end is exact; and over `(0, 1)`. For a circular section only.
+    ///
+    /// # Errors
+    ///
+    /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+    /// where the contacts coincide or the section is not circular.
+    pub(crate) fn skew_end(
+        &self,
+        faces: [usize; 2],
+        at: [f64; 2],
+        tol: Tolerances,
+    ) -> OgeomResult<(Curve, (f64, f64))> {
+        if !matches!(self.kind, Kind::Ball(..)) {
+            ogeom_bail!(Construction, "a skew end of a section that is not circular");
+        }
+        let along = self.seat.along;
+        let (p0, p1) = (self.contact(faces[0], at[0]), self.contact(faces[1], at[1]));
+        // The arc at the first station: from `p0` to `q`, its middle control
+        // point on the crease, weighted by the cosine of half its turn.
+        let q = self.contact(faces[1], at[0]);
+        let apex = self.crease(at[0]);
+        let (u0, u1) = ((apex - p0).normalized(tol)?, (q - apex).normalized(tol)?);
+        let weight = ((1.0 + u0.dot(u1)) / 2.0).max(0.0).sqrt();
+        // The plane through `p0` and `p1` holding the chord's square in it.
+        let square = along.cross(q - p0);
+        let normal = (p1 - p0).cross(square);
+        let onto = |x: Point| x + along * (normal.dot(p0 - x) / normal.dot(along));
+        let knots = ogeom_math::KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)?;
+        let control = vec![
+            ogeom_math::Weighted::new(p0, 1.0, tol)?,
+            ogeom_math::Weighted::new(onto(apex), weight, tol)?,
+            ogeom_math::Weighted::new(p1, 1.0, tol)?,
+        ];
+        Ok((
+            Curve::BSpline(ogeom_geom::BSplineCurve::rational(knots, control)?),
+            (0.0, 1.0),
+        ))
+    }
+
     /// The section in the plane square to the crease `s` along it, from
     /// its contact on the first face of [`PlanarSection::order`] to its
     /// contact on the second, and its range.
