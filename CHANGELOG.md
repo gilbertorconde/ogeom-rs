@@ -13,6 +13,35 @@ bump may break the API and a patch bump may not.
 
 ### Added
 
+- **The blend engine** (`docs/adr/0001-blend-architecture.md`, #902). One
+  model for fillets and chamfers, built in fixed phases from the solid as
+  given and the whole request:
+  - classify the solid and the request;
+  - each blend's section;
+  - each face's setback corners, where the contact lines meet;
+  - one method per vertex;
+  - one assembly;
+  - guards independent of the construction.
+
+  Nothing depends on the order the edges are asked in. Solids bounded by
+  planes go through it first:
+  - **`chamfer_edges_cornered` with `ChamferCorner::Facet`** on such a
+    solid builds in one pass by setbacks, at mixed and concave vertices as
+    well as convex ones. Every face shrinks to its setback corners, every
+    bevelled edge becomes a quad, every vertex of three bevels a facet, and
+    a concave bevel ends flush with the faces it runs into. A face's reflex
+    corner mitres instead of leaving a notch.
+  - **Exact on the corpus** (box, L, T, U, stepped block, a stepped
+    bracket): volumes to the closed forms of their sections within 1e-9,
+    the same solid to the bit in any order of the request.
+  - **Refused by name:** a distance past what a face or the solid holds
+    (a face would turn inside out, or two faces cross), and a corner of
+    four or more bevels whose contact lines do not cross on one plane,
+    which closes with a patch not built yet.
+- **`ogeom_algo::make_faceted_solid`**: a solid from planar rings over
+  shared points, the rings wound by the caller, convex or not. A ring may
+  keep a given plane. Its edges lie on lines that run on past their ends.
+
 - **A plate's top edge rounded into a boss's foot through the cusp where
   the boss runs tangent into the plate's side turns through an S.** (#868,
   #878)
