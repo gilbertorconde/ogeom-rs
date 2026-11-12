@@ -69,6 +69,23 @@ pub fn unify_same_domain_around(
     unify(model, shape, Some(around), tol)
 }
 
+/// Whether faces `a` and `b` lie on one carrier facing one way: the pair
+/// [`unify_same_domain`] merges where they share an edge. An edge between
+/// two such faces is a seam, no edge of the shape's form: the surface runs
+/// on across it unbroken, and the material stays on the one side.
+///
+/// # Errors
+///
+/// As the model's own readers, where a face does not resolve in `model`.
+pub fn same_domain(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<bool> {
+    Ok(
+        match (carrier_of(model, a, tol)?, carrier_of(model, b, tol)?) {
+            (Some(a), Some(b)) => same_carrier(&a, &b, tol),
+            _ => false,
+        },
+    )
+}
+
 /// The merged faces describe the edges they keep on their surfaces, so
 /// what `shape` shares with other shapes is copied first and `around`
 /// carried to the copies.
