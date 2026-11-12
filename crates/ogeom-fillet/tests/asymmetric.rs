@@ -2398,3 +2398,75 @@ fn an_asymmetric_round_at_a_corner_that_is_not_convex_is_refused() {
         "{message}"
     );
 }
+
+/// The largest pair: on a box edge the top's contact runs off the top's
+/// far side at a scale of the top's depth over its distance, the front's
+/// at the front's height over its; on a drum's rim the wall's contact
+/// runs off the wall's foot, or the cap's reaches the axis. The answer
+/// builds, and a scale a hundredth past it is refused.
+#[test]
+fn the_largest_pair_is_where_the_first_contact_leaves_its_face() {
+    let profile = RoundProfile::Conic(0.45);
+    let mut m = Model::new();
+    let (s, edge, top, _) = block(&mut m);
+    let (on_top, on_front) = (4.0, 1.0);
+    let largest =
+        ogeom_fillet::largest_fillet_distances(&m, &s, &edge, &top, on_top, on_front, 100.0, T)
+            .unwrap()
+            .expect("a pair fits");
+    assert!(
+        (largest - 20.0 / on_top).abs() <= 1e-6,
+        "the box edge's largest scale {largest}"
+    );
+    let built = ogeom_fillet::fillet_edge_distances(
+        &mut m,
+        &s,
+        &edge,
+        &top,
+        largest * on_top,
+        largest * on_front,
+        profile,
+        T,
+    );
+    assert!(built.is_ok(), "{:?}", built.err());
+    let past = ogeom_fillet::fillet_edge_distances(
+        &mut m,
+        &s,
+        &edge,
+        &top,
+        largest * on_top * 1.01,
+        largest * on_front * 1.01,
+        profile,
+        T,
+    );
+    assert!(past.is_err(), "a scale past the largest is not refused");
+
+    let mut m = Model::new();
+    let drum = ogeom_algo::make_cylinder(&mut m, Frame::WORLD, 5.0, 4.0, T)
+        .unwrap()
+        .shape;
+    let rim = ring_edge(&m, &drum, (0.0, 0.0, 4.0), 5.0);
+    let cap = face_at(&m, &drum, Point::new(0.0, 0.0, 4.0));
+    for ((on_cap, on_wall), want) in [((1.0, 2.0), 2.0), ((2.0, 0.5), 2.5)] {
+        let largest = ogeom_fillet::largest_fillet_distances(
+            &m, &drum, &rim, &cap, on_cap, on_wall, 100.0, T,
+        )
+        .unwrap()
+        .expect("a pair fits");
+        assert!(
+            (largest - want).abs() <= 1e-6,
+            "the rim's largest scale {largest}, not {want}"
+        );
+        let built = ogeom_fillet::fillet_edge_distances(
+            &mut m,
+            &drum,
+            &rim,
+            &cap,
+            largest * on_cap,
+            largest * on_wall,
+            profile,
+            T,
+        );
+        assert!(built.is_ok(), "{:?}", built.err());
+    }
+}
