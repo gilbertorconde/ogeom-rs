@@ -597,10 +597,7 @@ fn blend_edges_takes_an_asymmetric_round_beside_others_and_refuses_one_at_their_
     )
     .expect_err("refused")
     .to_string();
-    assert!(
-        message.contains("corner where they meet is not closed"),
-        "{message}"
-    );
+    assert!(message.contains("all three are blended"), "{message}");
 }
 
 #[test]
@@ -1848,7 +1845,8 @@ fn asymmetric_rounds_meeting_other_than_as_a_tangent_chain_are_refused() {
     .expect_err("refused")
     .to_string();
     assert!(
-        message.contains("other than as one tangent chain"),
+        message.contains("all three are blended")
+            || message.contains("other than as one tangent chain"),
         "{message}"
     );
 
@@ -1890,7 +1888,8 @@ fn asymmetric_rounds_meeting_other_than_as_a_tangent_chain_are_refused() {
         .expect_err("refused")
         .to_string();
     assert!(
-        message.contains("other than as one tangent chain"),
+        message.contains("all three are blended")
+            || message.contains("other than as one tangent chain"),
         "{message}"
     );
 }
@@ -2191,4 +2190,211 @@ fn a_bore_s_rim_on_a_drum_takes_a_marched_conic_band() {
             "{profile:?}: the band meets a face at {worst} rad"
         );
     }
+}
+
+/// The box's corner at the origin's top: the top front edge along x, the
+/// top left edge along y and the upright edge along z, with the faces the
+/// requests name.
+fn box_corner(m: &mut Model) -> (Shape, [Shape; 3], [Shape; 3]) {
+    let (s, _, top, front) = block(m);
+    let x = edge_where(m, &s, |p| p.y.abs() < 1e-9 && (p.z - 10.0).abs() < 1e-9);
+    let y = edge_where(m, &s, |p| p.x.abs() < 1e-9 && (p.z - 10.0).abs() < 1e-9);
+    let z = edge_where(m, &s, |p| p.x.abs() < 1e-9 && p.y.abs() < 1e-9);
+    let left = face_at(m, &s, Point::new(0.0, 10.0, 5.0));
+    (s, [x, y, z], [top, front, left])
+}
+
+/// The worst angle between a patch and the band faces it meets.
+fn patch_tangency(m: &Model, s: &Shape) -> f64 {
+    let mut worst = 0.0_f64;
+    for f in explore_unique(m, s, ShapeType::Face).unwrap() {
+        let fd = m.node(&f).unwrap().data().as_face().unwrap();
+        if !matches!(
+            m.geometry().surface(fd.surface),
+            Some(ogeom_geom::SurfaceGeometry::BSpline(_))
+        ) {
+            continue;
+        }
+        for c in ogeom_fillet::analyse_blend(m, s, &f, 17, T).unwrap() {
+            let nd = m.node(&c.neighbour).unwrap().data().as_face().unwrap();
+            if matches!(
+                m.geometry().surface(nd.surface),
+                Some(
+                    ogeom_geom::SurfaceGeometry::Extrusion(_)
+                        | ogeom_geom::SurfaceGeometry::Cylinder(_)
+                )
+            ) {
+                worst = worst.max(c.tangency_error);
+            }
+        }
+    }
+    worst
+}
+
+/// A box's convex corner where asymmetric rounds meet each other, a round
+/// and a bevel: each band stopped at its setback and the opening closed by
+/// one patch held inside the corner's planes, tangent to each round's
+/// band. The same solid whichever face each asymmetric round names and in
+/// whichever order the request lists its edges; and the corner takes no
+/// more than its bands would along their whole edges, and more than the
+/// widest band alone over its edge short of the corner.
+#[test]
+fn asymmetric_rounds_close_a_box_corner_with_rounds_and_bevels() {
+    let asym = |face: &Shape, a: f64, b: f64| Blend::RoundDistances {
+        face: face.clone(),
+        on_face: a,
+        on_other: b,
+        profile: RoundProfile::Conic(0.45),
+    };
+    let w = conic(0.45);
+    // Each request: the blends of x, y and z, given twice, naming the
+    // other face the second time; and each band's section area.
+    type Ask = fn(&[Shape; 3], bool, &dyn Fn(&Shape, f64, f64) -> Blend) -> [Blend; 3];
+    let cases: [(&str, Ask, [f64; 3]); 3] = [
+        (
+            "three asymmetric rounds",
+            |f, swap, asym| {
+                if swap {
+                    [
+                        asym(&f[1], 1.0, 2.0),
+                        asym(&f[2], 1.0, 1.5),
+                        asym(&f[2], 0.8, 1.2),
+                    ]
+                } else {
+                    [
+                        asym(&f[0], 2.0, 1.0),
+                        asym(&f[0], 1.5, 1.0),
+                        asym(&f[1], 1.2, 0.8),
+                    ]
+                }
+            },
+            [
+                corner_area(2.0, 1.0, FRAC_PI_2, conic(0.45)),
+                corner_area(1.5, 1.0, FRAC_PI_2, conic(0.45)),
+                corner_area(1.2, 0.8, FRAC_PI_2, conic(0.45)),
+            ],
+        ),
+        (
+            "two asymmetric rounds and a round",
+            |f, swap, asym| {
+                if swap {
+                    [
+                        asym(&f[1], 1.0, 2.0),
+                        asym(&f[0], 1.5, 1.0),
+                        Blend::Round(1.0),
+                    ]
+                } else {
+                    [
+                        asym(&f[0], 2.0, 1.0),
+                        asym(&f[2], 1.0, 1.5),
+                        Blend::Round(1.0),
+                    ]
+                }
+            },
+            [
+                corner_area(2.0, 1.0, FRAC_PI_2, conic(0.45)),
+                corner_area(1.5, 1.0, FRAC_PI_2, conic(0.45)),
+                1.0 - core::f64::consts::FRAC_PI_4,
+            ],
+        ),
+        (
+            "an asymmetric round, a round and a bevel",
+            |f, swap, asym| {
+                let x = if swap {
+                    asym(&f[1], 1.0, 2.0)
+                } else {
+                    asym(&f[0], 2.0, 1.0)
+                };
+                [
+                    x,
+                    Blend::Round(1.2),
+                    Blend::Chamfer(ogeom_fillet::Chamfer::Symmetric(1.0)),
+                ]
+            },
+            [
+                corner_area(2.0, 1.0, FRAC_PI_2, conic(0.45)),
+                (1.0 - core::f64::consts::FRAC_PI_4) * 1.44,
+                0.5,
+            ],
+        ),
+    ];
+    let _ = w;
+    for (name, ask, areas) in cases {
+        let mut volumes = Vec::new();
+        for (swap, reversed) in [(false, false), (true, false), (false, true)] {
+            let mut m = Model::new();
+            let (s, edges, faces) = box_corner(&mut m);
+            let blends = ask(&faces, swap, &asym);
+            let mut request: Vec<(Shape, Blend)> = edges.iter().cloned().zip(blends).collect();
+            if reversed {
+                request.reverse();
+            }
+            let built =
+                ogeom_fillet::blend_edges(&mut m, &s, &request, ChamferCorner::Point, T).unwrap();
+            let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{name}: {:?}", diagnosis.problems);
+            let tangency = patch_tangency(&m, &built.shape);
+            assert!(
+                tangency <= 2e-4,
+                "{name}: the patch meets a band at {tangency} rad"
+            );
+            let v = volume(&m, &built.shape);
+            let lengths = [20.0, 20.0, 10.0];
+            // The patch also takes the corner of the cell the bands leave,
+            // no more than the cube of the widest band's reach.
+            let whole: f64 = areas.iter().zip(lengths).map(|(a, l)| a * l).sum::<f64>() + 8.0;
+            let widest = areas
+                .iter()
+                .zip(lengths)
+                .map(|(a, l)| a * (l - 4.0))
+                .fold(0.0, f64::max);
+            assert!(
+                v > 4000.0 - whole && v < 4000.0 - widest,
+                "{name}: volume {v} out of ({}, {})",
+                4000.0 - whole,
+                4000.0 - widest
+            );
+            volumes.push(v.to_bits());
+        }
+        assert!(
+            volumes.iter().all(|v| *v == volumes[0]),
+            "{name}: naming the other face or reordering changes the solid"
+        );
+    }
+}
+
+/// Where an asymmetric round meets other rounds at a corner that is not a
+/// convex corner of planes (the L-bracket's re-entrant edge where it meets
+/// the convex edges of its plate and its upright), the corner is refused
+/// by name.
+#[test]
+fn an_asymmetric_round_at_a_corner_that_is_not_convex_is_refused() {
+    let mut m = Model::new();
+    let (s, edge, floor, _) = l_bracket(&mut m);
+    let plate = edge_where(&m, &s, |p| {
+        p.y.abs() < 1e-9 && (p.z - 8.0).abs() < 1e-9 && p.x >= 8.0 - 1e-9
+    });
+    let upright = edge_where(&m, &s, |p| {
+        p.y.abs() < 1e-9 && (p.x - 8.0).abs() < 1e-9 && p.z >= 8.0 - 1e-9
+    });
+    let request = vec![
+        (
+            edge,
+            Blend::RoundDistances {
+                face: floor,
+                on_face: 1.5,
+                on_other: 1.0,
+                profile: RoundProfile::Elliptical,
+            },
+        ),
+        (plate, Blend::Round(1.0)),
+        (upright, Blend::Round(1.0)),
+    ];
+    let message = ogeom_fillet::blend_edges(&mut m, &s, &request, ChamferCorner::Point, T)
+        .expect_err("refused")
+        .to_string();
+    assert!(
+        message.contains("not a convex corner of planes"),
+        "{message}"
+    );
 }

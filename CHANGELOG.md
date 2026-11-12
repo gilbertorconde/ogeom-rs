@@ -139,6 +139,20 @@ bump may break the API and a patch bump may not.
     elliptical section are the round of constant setback, not the
     constant ball.
 
+- **Asymmetric rounds at a box's corner.** (#877)
+  - Where asymmetric rounds meet each other, rounds and bevels at a convex
+    corner of three planes, all three edges asked, `blend_edges` closes the
+    corner as it closes a round meeting a bevel: each band stopped at the
+    least setback where its section clears the others, and the opening
+    closed by one patch held inside the corner's planes, tangent to each
+    round's band.
+  - Measured on a box corner of three asymmetric rounds, of two and a
+    round, and of one, a round and a bevel: valid, the patch tangent to
+    each band within 2e-4 rad, the same solid whichever face each round
+    names and in whichever order the request lists them.
+  - Refused by name: a concave or mixed corner, and a corner where an edge
+    is left sharp.
+
 ### Changed
 
 - **`threemf::read_package` holds a package to 4096 entries and 4 GiB
