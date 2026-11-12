@@ -1391,7 +1391,10 @@ fn rings_without(
 /// or an apex's chart line is the strand the arrangement draws there, and
 /// is never moved, so the edges either side of it are carried onto its
 /// branch, met in the chart, since every point of the line is the same
-/// point of the surface. Elsewhere an edge is moved where its start stands
+/// point of the surface. Failing that it starts on a seam the ring walks
+/// once, a border with another face across the seam: read on the side the
+/// ring walks it, it is never moved either, and the ring folded onto it
+/// keeps that side alone. Elsewhere an edge is moved where its start stands
 /// whole periods from the end walked to, unless the joint stands across a
 /// degenerate row, and moved stands within both edges' radii of it on the
 /// surface, measured through the middle of the chart segment between them.
@@ -1404,7 +1407,9 @@ fn rings_without(
 /// moves.
 ///
 /// A ring is folded only where, folded, it closes where it began: one
-/// winding round the surface keeps its jump. A ring holding a seam or an edge it walks twice is left as stated. A hole whose chart extent lies
+/// winding round the surface keeps its jump. A ring walking a seam both
+/// ways, or another edge twice, is left as stated, as is one walking a
+/// seam once on a side it cannot tell. A hole whose chart extent lies
 /// wholly beside its outer ring's is moved by the whole periods that put
 /// it inside. On a chart that closes without repeating, a pcurve moves
 /// only onto a stretch the chart covers.
@@ -1417,13 +1422,15 @@ fn fold_rings(
     slits: &ogeom_core::FastSet<EdgeKey>,
     tol: Tolerances,
 ) -> OgeomResult<()> {
-    /// One edge as a ring walks it: a boundary edge, which may move, or a
-    /// degenerate one, which anchors the ring; and whether the walk runs
-    /// against its pcurve.
+    /// One edge as a ring walks it: a boundary edge, which may move; a
+    /// degenerate one, which anchors the ring; or a seam the ring walks
+    /// once, on the side it walks (an index into the ring's seam sides),
+    /// which anchors it too; and whether the walk runs against its pcurve.
     #[derive(Clone, Copy)]
     enum Step {
         Edge(usize, bool),
         Pole(usize, bool),
+        Seam(usize, bool),
     }
     let ((ua, ub), (va, vb)) = surface.domain();
     let periods = [
@@ -1487,11 +1494,24 @@ fn fold_rings(
     for ring in &wires {
         let mut walk = Vec::with_capacity(ring.len());
         let mut kept = false;
+        // Each seam the ring walks once, a border with another face rather
+        // than the face's own closure: the edge and the side walked.
+        let mut sides: Vec<(usize, PlanarCurve, (f64, f64))> = Vec::new();
         for edge in ring {
             let back = edge.orientation() == ogeom_topo::Orientation::Reversed;
             let key = EdgeKey::of(edge);
             if let Some(&(i, uses)) = index.get(&key) {
                 let e = &edges[i];
+                if uses == 1 && e.seam.is_some() {
+                    match walked_seam_side(e, back, tol)? {
+                        Some((pcurve, range)) => {
+                            walk.push(Step::Seam(sides.len(), back));
+                            sides.push((i, pcurve, range));
+                        }
+                        None => kept = true,
+                    }
+                    continue;
+                }
                 kept |= uses > 1 || e.seam.is_some() || e.other_side.is_some();
                 walk.push(Step::Edge(i, back));
             } else if let Some(j) = pole_keys.iter().position(|k| *k == key) {
@@ -1502,7 +1522,7 @@ fn fold_rings(
             .iter()
             .filter_map(|s| match s {
                 Step::Edge(i, _) => Some(*i),
-                Step::Pole(..) => None,
+                Step::Pole(..) | Step::Seam(..) => None,
             })
             .collect();
         if kept || moving.is_empty() {
@@ -1519,12 +1539,16 @@ fn fold_rings(
             let (pc, range, back) = match step {
                 Step::Edge(i, back) => (&edges[i].pcurve, edges[i].prange, back),
                 Step::Pole(j, back) => (&poles[j].pcurve, poles[j].prange, back),
+                Step::Seam(k, back) => (&sides[k].1, sides[k].2, back),
             };
             let (a, b) = (pc.point_at(range.0, tol)?, pc.point_at(range.1, tol)?);
             Ok(if back { (b, a) } else { (a, b) })
         };
         let radius = |step: Step| match step {
             Step::Edge(i, _) => edges[i].tolerance.max(edges[i].ends_tolerance),
+            Step::Seam(k, _) => edges[sides[k].0]
+                .tolerance
+                .max(edges[sides[k].0].ends_tolerance),
             Step::Pole(..) => 0.0,
         };
         let is_pole = |step: Step| matches!(step, Step::Pole(..));
@@ -1562,7 +1586,10 @@ fn fold_rings(
                     .is_ok_and(|(du, dv)| (du * gap.x + dv * gap.y).magnitude() <= tol.confusion())
             })
         };
+        let anchor = |step: &Step| matches!(step, Step::Pole(..) | Step::Seam(..));
         let start = if let Some(k) = walk.iter().position(|s| is_pole(*s)) {
+            k
+        } else if let Some(k) = walk.iter().position(anchor) {
             k
         } else {
             let mut start = 0;
@@ -1585,8 +1612,9 @@ fn fold_rings(
             let (from, to) = ends_of(step)?;
             let within = 2.0 * (radius(step) + radius(prev)) + tol.confusion();
             let Step::Edge(i, _) = step else {
-                // A degenerate edge stays where it is stated: the ring must
-                // reach it there.
+                // A degenerate edge stays where it is stated, and a seam
+                // walked once on the side walked: the ring must reach it
+                // there.
                 broken |= !meets(last, from, step, prev, within);
                 last = to;
                 continue;
@@ -1622,8 +1650,15 @@ fn fold_rings(
             for (i, pcurve) in moves {
                 edges[i].pcurve = pcurve;
             }
+            // Read on the side walked, the seam bounds the folded ring on
+            // that column alone.
+            for (i, pcurve, range) in sides {
+                edges[i].pcurve = pcurve;
+                edges[i].prange = range;
+                edges[i].other_side = None;
+            }
         }
-        walked.push((!walk.iter().any(|s| is_pole(*s))).then_some(moving));
+        walked.push((!walk.iter().any(anchor)).then_some(moving));
     }
     // A hole on another branch from its outer ring is brought onto it.
     let extent = |edges: &[BoundaryEdge], ring: &[usize]| -> OgeomResult<(Point2, Point2)> {
