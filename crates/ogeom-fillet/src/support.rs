@@ -2681,6 +2681,24 @@ fn cut_off_at(origin: Point, normal: Vector, points: [Point; 2], radius: f64) ->
     })
 }
 
+/// Settle the cut-offs kept so far inside the convex cell bounded by
+/// `walls` (each an inward normal and a point on it, read to `slack`): a
+/// corner rebuilt there has taken what ran past the side, so its points
+/// there ask no cut, and a cut-off left with none is dropped.
+pub(crate) fn settle_cut_offs_within(walls: &[(Vector, Point)], slack: f64) {
+    CUT_OFFS.with(|held| {
+        let mut held = held.borrow_mut();
+        let Some(list) = held.as_mut() else {
+            return;
+        };
+        let inside = |p: &Point| walls.iter().all(|(n, at)| n.dot(*p - *at) >= -slack);
+        for cut in list.iter_mut() {
+            cut.points.retain(|p| !inside(p));
+        }
+        list.retain(|cut| !cut.points.is_empty());
+    });
+}
+
 /// The planar face of `solid` beside `face` that a step from `p`, on the
 /// edge, to `at`, past `face`'s side, first crosses: its plane by a point
 /// and its outward normal, `p` behind it and `at` in front.

@@ -222,6 +222,46 @@ impl CuspCorner {
     }
 }
 
+/// The S's section through a top `w = 2 r (1 - cos theta)` wide, as a
+/// distance in from the side and a rise from its foot, at `u` along it
+/// (0 at its foot on the side, 1 at its contact with the wall). Its tangent
+/// turns from upright by `theta (1 - cos 2 pi u) / 2`, a raised cosine of
+/// arc length: the curvature is continuous, nought at both ends and at the
+/// inflection, so a section across it asks no kink of a patch meeting it.
+/// It is point-symmetric about its middle, `w` wide and `2 r sin theta`
+/// high, as the two arcs of radius `r` turning `theta` are, its length
+/// `2 r sin theta / (cos(theta/2) J0(theta/2))`. Read by Gauss-Legendre
+/// quadrature, eight points on each of eight panels.
+fn smooth_s(theta: f64, r: f64, u: f64) -> (f64, f64) {
+    const NODES: [(f64, f64); 4] = [
+        (0.183_434_642_495_649_8, 0.362_683_783_378_362),
+        (0.525_532_409_916_329, 0.313_706_645_877_887_3),
+        (0.796_666_477_413_626_7, 0.222_381_034_453_374_5),
+        (0.960_289_856_497_536_3, 0.101_228_536_290_376_3),
+    ];
+    let turn = |t: f64| theta * (1.0 - (std::f64::consts::TAU * t).cos()) / 2.0;
+    let integral = |to: f64| -> (f64, f64) {
+        let panels = 8;
+        let step = to / f64::from(panels);
+        let (mut across, mut up) = (0.0, 0.0);
+        for k in 0..panels {
+            let mid = step * (f64::from(k) + 0.5);
+            for (x, weight) in NODES {
+                for t in [mid - 0.5 * step * x, mid + 0.5 * step * x] {
+                    across += weight * turn(t).sin();
+                    up += weight * turn(t).cos();
+                }
+            }
+        }
+        (across * 0.5 * step, up * 0.5 * step)
+    };
+    let height = 2.0 * r * theta.sin();
+    let (_, whole) = integral(1.0);
+    let length = height / whole;
+    let (across, up) = integral(u);
+    (across * length, up * length)
+}
+
 /// Close the cusp corner `c` of `banded`, the request's bands built on
 /// `solid`. The convex band is stopped on a plane square to its edge, the
 /// concave band on a plane through the wall's axis, each past where their
@@ -419,16 +459,35 @@ pub(crate) fn close_cusp(
     };
 
     struct Side {
-        dir: Vector,
         convex: (Shape, Shape),
         concave: (Shape, Shape),
         trim: Shape,
         top: Shape,
-        low: Shape,
-        high: Shape,
+        /// The trim on the side, in three pieces out from the tangent
+        /// point: to the strip, along it, past it to the convex rail.
+        low: [Shape; 3],
+        /// The trim on the wall, in three pieces likewise.
+        high: [Shape; 3],
         low_at: (Shape, Point),
         high_at: (Shape, Point),
+        /// The S's strip and its two section edges, nearer and farther.
+        strip: Shape,
+        near: Shape,
+        far: Shape,
     }
+    // The S's own strip runs between these shares of its reach: patches
+    // close it to the tangent point and on to the bands.
+    let full = 2.0 * (r * (big - r)).sqrt();
+    let (s1, s2) = (
+        full * std::env::var("CUSPS1")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.35),
+        full * std::env::var("CUSPS2")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.85),
+    );
     let mut sides: Vec<Side> = Vec::new();
     for &sign in signs {
         let side = along * sign;
@@ -480,11 +539,16 @@ pub(crate) fn close_cusp(
             (c.up, c.corner),
             tol,
         )?;
-        // The trims on the side and the wall: the S's tangent lines there,
-        // from the tangent point out to the bands' rail ends.
-        let curve_of = |reach: f64| -> OgeomResult<Curve> {
+        // The S at `at` along this side, `u` from its foot on the side
+        // (0) through its convex turn, its inflection (1/2) and its
+        // concave turn to its contact with the wall (1).
+        let s_point = |at: f64, u: f64| -> Point {
+            let (inward, rise) = smooth_s(c.turn(at), r, u);
+            c.corner + side * at - c.up * (r * c.turn(at).sin()) - c.out * inward + c.up * rise
+        };
+        let fit_curve = |f: &dyn Fn(f64) -> Point| -> OgeomResult<Curve> {
             let fitted = ogeom_geom::fit::fit_curve_sampled(
-                |t| Ok(c.foot(side, reach * t)),
+                |t| Ok(f(t)),
                 &ts,
                 false,
                 3,
@@ -493,42 +557,110 @@ pub(crate) fn close_cusp(
             )?;
             Ok(Curve::BSpline(fitted.curve))
         };
-        let low_curve = curve_of(stop)?;
+        let edge = |model: &mut Model, curve: Curve, a: &Shape, b: &Shape| -> OgeomResult<Shape> {
+            let (t0, t1) = curve.domain();
+            Ok(ogeom_algo::make_edge_between(model, curve, (t0, t1), a, b, tol)?.shape)
+        };
+        // The pieces' ends on the side (the S's foot) and on the wall (its
+        // contact) at the strip's two sections.
+        let (f1, f2) = (s_point(s1, 0.0), s_point(s2, 0.0));
+        let (w1, w2) = (s_point(s1, 1.0), s_point(s2, 1.0));
+        let [vf1, vf2, vw1, vw2] =
+            [f1, f2, w1, w2].map(|p| ogeom_algo::make_vertex(model, p).shape);
+        // On the side the trim is the S's own foot all the way out.
+        let low = [
+            edge(model, fit_curve(&|t| c.foot(side, s1 * t))?, &tip, &vf1)?,
+            edge(
+                model,
+                fit_curve(&|t| c.foot(side, s1 + (s2 - s1) * t))?,
+                &vf1,
+                &vf2,
+            )?,
+            edge(
+                model,
+                fit_curve(&|t| c.foot(side, s2 + (stop - s2) * t))?,
+                &vf2,
+                &v_sc,
+            )?,
+        ];
         // On the wall the trim leaves the tangent point up the wall's own
         // line, where its normal does not turn, and bends onto the S's
-        // contact with the wall, reaching the concave band's rail along it.
-        // The bend stands at most about 0.03 r above the S's contact, a
-        // quarter of the way out: nearer the S, the patch at r 1 misses its
-        // tangency on the trim (1.0 r and 0.1 r both miss).
-        let bump = 0.3;
-        // Where the wall's end stands short of the S's full turn, the S's
-        // sections are stretched along the wall to reach it there.
-        let full = 2.0 * (r * (big - r)).sqrt();
-        let reach = (full / (big * angle.sin())).max(1.0);
-        let high_curve = {
-            let fitted = ogeom_geom::fit::fit_curve_sampled(
-                |u| {
-                    let phi = angle * u * u;
-                    let rise = r * c.turn(big * phi.sin() * reach).sin()
-                        + bump * r * u * (1.0 - u).powi(3);
-                    Ok(axis + radial(sign * phi) * big + c.up * rise)
-                },
-                &ts,
-                false,
-                3,
-                tol.confusion() * 0.5,
-                tol,
-            )?;
-            Curve::BSpline(fitted.curve)
+        // contact with the wall by the strip, standing at most about
+        // 0.03 r above it. Past the strip it is the S's contact, its
+        // sections stretched along the wall where the wedge ends short of
+        // the S's full turn, reaching the concave band's rail along it.
+        let bump: f64 = std::env::var("CUSPA").ok().and_then(|v| v.parse().ok()).unwrap_or(0.3);
+        let wall_at = |phi: f64, rise: f64| axis + radial(sign * phi) * big + c.up * rise;
+        let (phi1, phi2) = ((s1 / big).asin(), (s2 / big).asin());
+        let stretch = ((full - s2) / (big * angle.sin() - s2) - 1.0).max(0.0);
+        let high = [
+            edge(
+                model,
+                fit_curve(&|u| {
+                    let phi = phi1 * u * u;
+                    let rise = r * c.turn(big * phi.sin()).sin() + bump * r * u * (1.0 - u).powi(3);
+                    wall_at(phi, rise)
+                })?,
+                &tip,
+                &vw1,
+            )?,
+            edge(
+                model,
+                fit_curve(&|t| s_point(s1 + (s2 - s1) * t, 1.0))?,
+                &vw1,
+                &vw2,
+            )?,
+            edge(
+                model,
+                fit_curve(&|t| {
+                    let phi = phi2 + (angle - phi2) * t;
+                    let at = s2 + (big * phi.sin() - s2) * stretch.mul_add(t * t, 1.0);
+                    wall_at(phi, r * c.turn(at).sin())
+                })?,
+                &vw2,
+                &v_ww,
+            )?,
+        ];
+        // The strip: the S's sections from the nearer to the farther, a
+        // surface tangent to the side along its foot and to the wall along
+        // its contact, as every section is.
+        let fitted = ogeom_geom::fit::fit_surface_sampled(
+            |u, v| Ok(s_point(s1 + (s2 - s1) * v, u)),
+            &ogeom_geom::fit::Sampling::even(((0.0, 1.0), (0.0, 1.0)), 16),
+            3,
+            tol.confusion() * 0.5,
+            tol,
+        )?;
+        let near = edge(model, fit_curve(&|u| s_point(s1, u))?, &vf1, &vw1)?;
+        let far = edge(model, fit_curve(&|u| s_point(s2, u))?, &vf2, &vw2)?;
+        // The strip's loop runs counter-clockwise about its surface's own
+        // normal, and the face is turned to face out of the solid, as the
+        // side does along its foot.
+        let normal = {
+            use ogeom_geom::Surface as _;
+            fitted.curve.normal_at(0.0, 0.5, tol)?.vector()
         };
-        let (a0, a1) = low_curve.domain();
-        let (b0, b1) = high_curve.domain();
-        let low =
-            ogeom_algo::make_edge_between(model, low_curve, (a0, a1), &tip, &v_sc, tol)?.shape;
-        let high =
-            ogeom_algo::make_edge_between(model, high_curve, (b0, b1), &tip, &v_ww, tol)?.shape;
+        let ring = vec![low[1].clone(), far.clone(), high[1].reversed(), near.reversed()];
+        let ring = if side.cross(c.up).dot(normal) > 0.0 {
+            ring
+        } else {
+            ring.iter().rev().map(Shape::reversed).collect()
+        };
+        let strip_wire = ogeom_algo::make_wire(model, &ring, tol)?.shape;
+        let strip = ogeom_algo::make_face(
+            model,
+            SurfaceGeometry::BSpline(fitted.curve),
+            &[strip_wire],
+            tol,
+        )?
+        .shape;
+        ogeom_algo::trimmed_or_fitted_where_bare(model, &strip, tol)?;
+        let strip = if normal.dot(c.out) > 0.0 {
+            strip
+        } else {
+            strip.reversed()
+        };
         sides.push(Side {
-            dir: side,
             convex,
             concave,
             trim,
@@ -537,6 +669,9 @@ pub(crate) fn close_cusp(
             high,
             low_at: (v_sc, p_sc),
             high_at: (v_ww, p_ww),
+            strip,
+            near,
+            far,
         });
     }
 
@@ -550,8 +685,8 @@ pub(crate) fn close_cusp(
         })
         .collect();
     let side_ring = if both {
-        vec![
-            sides[0].low.clone(),
+        let mut ring: Vec<Shape> = sides[0].low.to_vec();
+        ring.extend([
             segment(
                 model,
                 (&sides[0].low_at.0, sides[0].low_at.1),
@@ -563,13 +698,14 @@ pub(crate) fn close_cusp(
                 (&floor[1].0, floor[1].1),
                 (&sides[1].low_at.0, sides[1].low_at.1),
             )?,
-            sides[1].low.reversed(),
-        ]
+        ]);
+        ring.extend(sides[1].low.iter().rev().map(Shape::reversed));
+        ring
     } else {
         // Down the line the side and the wall share, from the tangent point.
         let under = ogeom_algo::make_vertex(model, bottom).shape;
-        vec![
-            sides[0].low.clone(),
+        let mut ring: Vec<Shape> = sides[0].low.to_vec();
+        ring.extend([
             segment(
                 model,
                 (&sides[0].low_at.0, sides[0].low_at.1),
@@ -577,7 +713,8 @@ pub(crate) fn close_cusp(
             )?,
             segment(model, (&floor[0].0, floor[0].1), (&under, bottom))?,
             segment(model, (&under, bottom), (&tip, c.corner))?,
-        ]
+        ]);
+        ring
     };
     let side_surface: SurfaceGeometry = ogeom_geom::PlaneSurface::over(
         Plane::through(c.corner, Direction::new(c.out, tol)?),
@@ -628,14 +765,13 @@ pub(crate) fn close_cusp(
         crown_edge.reversed()
     };
     let mut wall_ring = if both {
-        vec![
-            sides[1].high.clone(),
-            segment(
-                model,
-                (&sides[1].high_at.0, sides[1].high_at.1),
-                (&tops[1].0, tops[1].1),
-            )?,
-        ]
+        let mut ring: Vec<Shape> = sides[1].high.to_vec();
+        ring.push(segment(
+            model,
+            (&sides[1].high_at.0, sides[1].high_at.1),
+            (&tops[1].0, tops[1].1),
+        )?);
+        ring
     } else {
         // Up the wall's line through the tangent point.
         vec![segment(model, (&tip, c.corner), (&tops[1].0, tops[1].1))?]
@@ -647,8 +783,8 @@ pub(crate) fn close_cusp(
             (&tops[0].0, tops[0].1),
             (&sides[0].high_at.0, sides[0].high_at.1),
         )?,
-        sides[0].high.reversed(),
     ]);
+    wall_ring.extend(sides[0].high.iter().rev().map(Shape::reversed));
     let wall_surface = {
         let mut found = None;
         for face in &kept {
@@ -709,7 +845,8 @@ pub(crate) fn close_cusp(
         }
         worst
     };
-    let mut patches: Vec<Shape> = Vec::with_capacity(2);
+    let mut patches: Vec<Shape> = Vec::with_capacity(4);
+    let mut strips: Vec<Shape> = Vec::with_capacity(2);
     let mut tops_kept: Vec<Shape> = Vec::with_capacity(2);
     for s in &sides {
         let g1 = |edge: &Shape, support: &Shape| FillBoundary {
@@ -717,36 +854,31 @@ pub(crate) fn close_cusp(
             support: Some(support.clone()),
             continuity: Continuity::G1,
         };
-        let boundary = vec![
+        // To the tangent point: the side's and the wall's trims there and
+        // the strip's nearer section.
+        let to_tip = vec![
+            g1(&s.low[0], &side_face),
+            g1(&s.near, &s.strip),
+            g1(&s.high[0], &wall_face),
+        ];
+        let filled = make_filling_n_region(model, &to_tip, &[], fit, &region, tol)?;
+        if std::env::var_os("DOWNWHERE").is_some() {
+            eprintln!("TOTIP kind {:?} faces {}", model.kind_of(&filled.built.shape)?, explore_unique(model, &filled.built.shape, ShapeType::Face)?.len());
+        }
+        patches.push(filled.built.shape);
+        // On to the bands: their ends, the top's trim, the trims past the
+        // strip and its farther section.
+        let to_bands = vec![
             g1(&s.convex.0, &s.convex.1),
             g1(&s.trim, &s.top),
             g1(&s.concave.0, &s.concave.1),
-            g1(&s.high, &wall_face),
-            g1(&s.low, &side_face),
+            g1(&s.high[2], &wall_face),
+            g1(&s.far, &s.strip),
+            g1(&s.low[2], &side_face),
         ];
-        // The S itself through the middle of its reach, a section every
-        // 0.15 of it from 0.3 to 0.9: each arc's middle and the point the
-        // two arcs meet at, for the patch to pass near.
-        let mut guides: Vec<Shape> = Vec::new();
-        let full = 2.0 * (r * (big - r)).sqrt();
-        for f in [0.3, 0.45, 0.6, 0.75, 0.9] {
-            let at = full * f;
-            let w = c.width(at);
-            let half = 0.5 * c.turn(at);
-            let rise = r * c.turn(at).sin();
-            let base = c.corner + s.dir * at;
-            let convex = base - c.out * r - c.up * rise;
-            let concave = base - c.out * (w - r) + c.up * rise;
-            for p in [
-                convex + c.out * (r * half.cos()) + c.up * (r * half.sin()),
-                base - c.out * (0.5 * w),
-                concave - c.out * (r * half.cos()) - c.up * (r * half.sin()),
-            ] {
-                guides.push(ogeom_algo::make_vertex(model, p).shape);
-            }
-        }
-        let filled = make_filling_n_region(model, &boundary, &guides, fit, &region, tol)?;
+        let filled = make_filling_n_region(model, &to_bands, &[], fit, &region, tol)?;
         patches.push(filled.built.shape);
+        strips.push(s.strip.clone());
         tops_kept.push(s.top.clone());
     }
     let mut faces = kept;
@@ -754,7 +886,10 @@ pub(crate) fn close_cusp(
     faces.push(side_face);
     faces.push(wall_face);
     faces.extend(patches.iter().cloned());
-    let sewn = ogeom_algo::sew_within(model, &faces, fit, tol)?;
+    faces.extend(strips.iter().cloned());
+    let faces_given = faces.clone();
+    let sew_at: f64 = std::env::var("CUSPSEW").ok().and_then(|v| v.parse().ok()).unwrap_or(fit);
+    let sewn = ogeom_algo::sew_within(model, &faces, sew_at, tol)?;
     if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
         ogeom_bail!(
             Construction,
@@ -763,8 +898,28 @@ pub(crate) fn close_cusp(
         );
     }
     let rounded = model.add_solid(std::slice::from_ref(&sewn.shells[0]))?;
+    // What the bands ran past the side with inside the cell is rebuilt.
+    crate::support::settle_cut_offs_within(&walls, slack);
+    if std::env::var_os("DOWNWHERE").is_some() {
+        let count = |sh: &Shape| -> OgeomResult<usize> {
+            let mut n = 0;
+            for f in explore_unique(model, sh, ShapeType::Face)? {
+                if matches!(placed(model, &f, tol)?, Some(SurfaceGeometry::BSpline(_))) {
+                    n += 1;
+                }
+            }
+            Ok(n)
+        };
+        let mut given = 0;
+        for f in &faces_given {
+            if matches!(placed(model, f, tol)?, Some(SurfaceGeometry::BSpline(_))) {
+                given += 1;
+            }
+        }
+        eprintln!("SEWCOUNT given {given} sewn {}", count(&rounded)?);
+    }
     let mut history: History = history;
-    for patch in patches {
+    for patch in patches.into_iter().chain(strips) {
         history.generate(&c.vertex, patch);
     }
     Ok(Built::new(rounded, history.then(&sewn.history)))
