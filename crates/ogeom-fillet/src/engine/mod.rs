@@ -24,6 +24,7 @@ mod assemble;
 mod classify;
 mod guards;
 mod request;
+mod rounds;
 mod sections;
 mod setbacks;
 mod vertices;
@@ -103,6 +104,14 @@ pub(crate) fn run(
     let Some(corners) = setbacks::setback_corners(&planar, &setback, tol)? else {
         return Ok(None);
     };
+    // Rounds are curved: their strips and vertex blends go into a sheet.
+    if request
+        .blends
+        .iter()
+        .any(|b| matches!(b.section, Section::Round { .. }))
+    {
+        return rounds::assemble(model, &planar, &seats, &by_edge, &corners, tol);
+    }
     let mut rings = Rings::new(tol);
     let mut sorted: Vec<((usize, Id), ogeom_math::Point)> =
         corners.iter().map(|(k, p)| (*k, *p)).collect();

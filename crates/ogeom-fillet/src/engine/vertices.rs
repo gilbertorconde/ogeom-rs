@@ -42,3 +42,21 @@ pub(crate) fn method(_class: VertexClass, sections: &[&Section]) -> OgeomResult<
         "this vertex's blends are not closed by the blend engine yet"
     )
 }
+
+/// How a vertex where rounds meet is closed, chosen by its geometry (ADR
+/// 0001, §13, question 2).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum RoundVertex {
+    /// No blended edge: the vertex stays.
+    Sharp,
+    /// One round ending on the third face of a three-edge vertex, that face
+    /// square to the round's edge: the strip's end arc lies in it, and the
+    /// face takes the arc for its corner, losing the corner of a convex
+    /// round and gaining the fill of a concave one.
+    Flush,
+    /// Three rounds of one radius at a vertex of three planes, all convex
+    /// or all concave, where one ball touches the three faces at their
+    /// setback corners: the spherical triangle between the strips' end
+    /// arcs.
+    Sphere,
+}

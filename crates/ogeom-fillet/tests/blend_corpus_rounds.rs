@@ -67,7 +67,7 @@ fn vertex_bits(m: &Model, s: &Shape) -> Vec<[u64; 3]> {
 }
 
 /// A prism: the profile, given as (y, z), in the plane x = 0, swept `length`
-/// along +x.
+/// along +x, stated in place (its end no copy of its start moved along).
 fn prism(m: &mut Model, profile: &[(f64, f64)], length: f64) -> Shape {
     let points: Vec<Point> = profile
         .iter()
@@ -83,9 +83,10 @@ fn prism(m: &mut Model, profile: &[(f64, f64)], length: f64) -> Shape {
     let face = ogeom_algo::make_face(m, plane.into(), &[wire], T)
         .unwrap()
         .shape;
-    ogeom_algo::make_prism(m, &face, Vector::new(length, 0.0, 0.0), T)
+    let swept = ogeom_algo::make_prism(m, &face, Vector::new(length, 0.0, 0.0), T)
         .unwrap()
-        .shape
+        .shape;
+    ogeom_algo::baked_shape(m, &swept, T).unwrap().shape
 }
 
 /// The edges of `s`, and those along the sweep (both ends `length` apart

@@ -229,6 +229,57 @@ impl SphereCorner {
     }
 }
 
+/// The ball of `radius` touching the three planes, each an outward unit
+/// normal and a point on it, inside a convex vertex's material or in a
+/// concave vertex's open corner: its centre and its foot on each plane, in
+/// the order the planes were given; `None` where the planes meet in no
+/// single point.
+pub(crate) fn corner_ball(
+    planes: [(Vector, Point); 3],
+    radius: f64,
+    convex: bool,
+    tol: Tolerances,
+) -> Option<(Point, [Point; 3])> {
+    let n = planes.map(|(n, _)| n);
+    let off = if convex { -radius } else { radius };
+    let rhs = planes.map(|(n, p)| n.dot(p.to_vector()) + off);
+    let det = n[0].dot(n[1].cross(n[2]));
+    if det.abs() <= tol.angular() {
+        return None;
+    }
+    let c =
+        (n[1].cross(n[2]) * rhs[0] + n[2].cross(n[0]) * rhs[1] + n[0].cross(n[1]) * rhs[2]) / det;
+    let centre = Point::from_vector(c);
+    Some((centre, [0, 1, 2].map(|i| centre - n[i] * off)))
+}
+
+/// The ball about `centre` of `radius`, charted for the spherical triangle
+/// between `feet`: its longitude half a turn from the triangle's middle and
+/// its equator through it, so the triangle, less than a hemisphere, stands
+/// clear of both poles and of the chart's seam, whatever the corner.
+pub(crate) fn triangle_sphere(
+    centre: Point,
+    radius: f64,
+    feet: [Point; 3],
+    tol: Tolerances,
+) -> OgeomResult<SurfaceGeometry> {
+    let middle = feet
+        .iter()
+        .fold(Vector::ZERO, |sum, f| sum + (*f - centre) / radius);
+    let away = Direction::new(-middle, tol)?;
+    let a = away.vector();
+    let helper = if a.x.abs() <= a.y.abs() && a.x.abs() <= a.z.abs() {
+        Vector::new(1.0, 0.0, 0.0)
+    } else if a.y.abs() <= a.z.abs() {
+        Vector::new(0.0, 1.0, 0.0)
+    } else {
+        Vector::new(0.0, 0.0, 1.0)
+    };
+    let up = Direction::new(a.cross(helper), tol)?;
+    let frame = Frame::new(centre, up, away, tol)?;
+    Ok(SphereSurface::new(Sphere::new(frame, radius, tol)?).into())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "test code")]
 mod tests {

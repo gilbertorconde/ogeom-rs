@@ -320,13 +320,6 @@ fn without_spikes(mut ring: Vec<usize>) -> Vec<usize> {
 /// One edge of a curved sheet: its two ends (indices into the sheet's
 /// points) and its curve with the range between them, or `None` for the
 /// straight segment.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the curved classes build their strips and vertex blends through it"
-    )
-)]
 #[derive(Debug, Clone)]
 pub(crate) struct SheetEdge {
     pub ends: (usize, usize),
@@ -336,13 +329,6 @@ pub(crate) struct SheetEdge {
 /// One face of a curved sheet: its surface (`None` for the plane its ring
 /// spans), its ring of edges each with the way it is walked, wound
 /// counter-clockwise seen from outside the solid.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the curved classes build their strips and vertex blends through it"
-    )
-)]
 #[derive(Debug, Clone)]
 pub(crate) struct SheetFace {
     pub surface: Option<SurfaceGeometry>,
@@ -359,13 +345,6 @@ pub(crate) struct SheetFace {
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
 /// an edge's curve does not meet its ends, a face's ring does not close, or
 /// a face cannot be trimmed on its surface.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the curved classes build their strips and vertex blends through it"
-    )
-)]
 pub(crate) fn build_faces(
     model: &mut Model,
     points: &[Point],
