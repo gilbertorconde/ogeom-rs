@@ -153,6 +153,18 @@ bump may break the API and a patch bump may not.
   - Refused by name: a concave or mixed corner, and a corner where an edge
     is left sharp.
 
+- **`largest_fillet_distances`: the largest asymmetric round that fits.**
+  (#877)
+  - For an asymmetric round's two distances, the largest common scale up
+    to a bound at which `fillet_edge_distances` is not refused for a
+    contact past its face's side: read from the seat, each contact walking
+    its own distance per unit of scale into its face, as
+    `largest_chamfer_distance` reads a bevel; on a rim the cap's contact
+    stops short of the axis. The answer passes the round's own check.
+  - On a box edge it is the face's depth over its distance; on a drum's
+    rim the wall's foot or the axis, whichever comes first. The answer
+    builds, and a scale a hundredth past it is refused.
+
 ### Changed
 
 - **`threemf::read_package` holds a package to 4096 entries and 4 GiB

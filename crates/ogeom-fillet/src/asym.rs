@@ -1539,3 +1539,107 @@ pub(crate) fn close_asymmetric_corners(
     }
     Ok(built)
 }
+
+/// The largest common scale up to `up_to` of an asymmetric round's two
+/// distances at which [`fillet_edge_distances`] on `edge` is not refused
+/// for a contact set back past its face's side: the round meeting `face`
+/// `s * on_face` from the edge and the other face `s * on_other` from it.
+/// None where no scale leaving both distances longer than the confusion
+/// distance fits.
+///
+/// Read from the seat, without building a band, as
+/// [`largest_chamfer_distance`](crate::largest_chamfer_distance) reads a
+/// bevel's legs: each contact walks square to the edge, its own distance
+/// per unit of scale into its face, and the answer is where the first walk
+/// leaves its face, a confusion distance short. On a rim the cap's contact
+/// stops short of the axis. The answer passes the round's own check.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+/// `up_to` or a distance is not a usable length, and as
+/// [`fillet_edge_distances`] where the seat is refused at any scale;
+/// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) where the
+/// scale read from the seat does not pass the round's own check.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "fillet_edge_distances' own, and the bound"
+)]
+pub fn largest_fillet_distances(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    face: &Shape,
+    on_face: f64,
+    on_other: f64,
+    up_to: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let conf = tol.confusion();
+    if !up_to.is_finite() || up_to <= conf {
+        ogeom_bail!(
+            Construction,
+            "a largest scale up to {up_to} asks for nothing"
+        );
+    }
+    for d in [on_face, on_other] {
+        if !d.is_finite() || d <= conf {
+            ogeom_bail!(
+                Construction,
+                "a round set back {d} from its edge rounds nothing"
+            );
+        }
+    }
+    let profile = RoundProfile::Elliptical;
+    let rim = rim_conic(model, solid, edge, face, on_face, on_other, profile, tol)?;
+    if rim.is_none() {
+        straight_seat(model, solid, edge, face, tol)?;
+    }
+    let mut largest = crate::fits::legs_largest(
+        model,
+        solid,
+        edge,
+        up_to,
+        |f| if f.is_same(face) { on_face } else { on_other },
+        tol,
+    )?;
+    if let Some(rim) = &rim {
+        // The cap's contact walking in toward the axis reaches it at the
+        // rim's radius.
+        let seat = &rim.seat;
+        if seat.sigma * seat.tau > 0.0 {
+            let on_cap = if seat.cap_face.is_same(face) {
+                on_face
+            } else {
+                on_other
+            };
+            largest = largest.min((seat.radius - conf) / on_cap);
+        }
+    }
+    if largest * on_face.min(on_other) <= conf {
+        return Ok(None);
+    }
+    let (a, b) = (largest * on_face, largest * on_other);
+    let checked = crate::support::keeping_face_meshes(|| -> OgeomResult<()> {
+        match rim_conic(model, solid, edge, face, a, b, profile, tol)? {
+            Some(rim) => rim_fits(model, solid, edge, &rim, tol),
+            None => {
+                let (seat, named) = straight_seat(model, solid, edge, face, tol)?;
+                let mut d = [0.0; 2];
+                d[named] = a;
+                d[1 - named] = b;
+                let f = legs(&seat, tol)?;
+                let w = profile.weight(f[0].dot(f[1]).clamp(-1.0, 1.0))?;
+                contacts_fit(model, solid, edge, Section::Conic { d, w }, tol)
+            }
+        }
+    });
+    if let Err(refusal) = checked {
+        ogeom_bail!(
+            NotDone,
+            "the largest scale read from the seat, {largest}, does not pass the round's \
+             check: {refusal}"
+        );
+    }
+    Ok(Some(largest))
+}

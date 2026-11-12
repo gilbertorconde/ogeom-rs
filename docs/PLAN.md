@@ -506,7 +506,8 @@ bevels. Refused by name until built: distances varying on a rim, a curved
 crease, along a chain or past an end not square to the edge; creases whose
 sections the march does not seat (a straight edge between a flat and a
 drum); concave and mixed corners, which close on `make_filling_n_region`,
-and a corner with an edge left sharp.
+and a corner with an edge left sharp; and `largest_fillet_distances` on a
+curved crease.
 
 ### Construction and exchange
 

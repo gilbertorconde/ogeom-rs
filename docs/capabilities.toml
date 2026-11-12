@@ -1602,11 +1602,13 @@ varying distance on a rim, along a chain or at an end not square to its \
 edge; asymmetric rounds meeting at a vertex other than as one tangent \
 chain, or one meeting another \
 blended edge at a vertex; a contact set back past its face's side or a \
-rim's contact reaching its axis; and its largest fitting pair is not \
-answered."""
+rim's contact reaching its axis; and largest_fillet_distances answers \
+the largest common scale of a pair that fits, on a straight edge between \
+planes or a rim."""
 symbols = [
     "ogeom_fillet::fillet_edge_distances",
     "ogeom_fillet::fillet_edge_distances_variable",
+    "ogeom_fillet::largest_fillet_distances",
     "ogeom_fillet::RoundProfile",
     "ogeom_fillet::Blend",
     "ogeom_algo::make_profile_revolution_band",
@@ -1621,6 +1623,7 @@ tests = [
     "crates/ogeom-fillet/tests/asymmetric.rs::a_tangent_loop_of_asymmetric_rounds_closes_round_a_pad",
     "crates/ogeom-fillet/tests/asymmetric.rs::an_open_spline_crease_takes_its_conic_corner_along_its_length",
     "crates/ogeom-fillet/tests/asymmetric.rs::asymmetric_rounds_close_a_box_corner_with_rounds_and_bevels",
+    "crates/ogeom-fillet/tests/asymmetric.rs::the_largest_pair_is_where_the_first_contact_leaves_its_face",
 ]
 
 [[capability]]
