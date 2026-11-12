@@ -11,7 +11,7 @@
 //! that face's corner. A vertex no method closes yet leaves the request to
 //! the current path.
 
-use ogeom_algo::{Built, History};
+use ogeom_algo::{Built, HalfSpaces, History};
 use ogeom_core::{FastMap, OgeomResult, Tolerances};
 use ogeom_geom::SurfaceGeometry;
 use ogeom_math::Point;
@@ -426,6 +426,36 @@ pub(crate) fn assemble(
     let shell = ogeom_algo::make_shell(model, &built)?.shape;
     let solid = ogeom_algo::make_solid(model, &[shell])?.shape;
     super::guards::solid_fits(model, &solid, tol)?;
+    // P5 on the curved faces: each strip proved within its edge's material,
+    // each sphere within its vertex's, to the bands' fit target.
+    let fit = crate::marched::band_fit_target(tol);
+    for (face, from) in built.iter().zip(&origins) {
+        let Err(element) = from else {
+            continue;
+        };
+        let region = match edge_seat.get(element) {
+            Some(seat) => edge_material(planar, seat, &sections),
+            None => {
+                let round = faces_round(&planar.faces, *element).unwrap_or_default();
+                corner_material(
+                    planar,
+                    &sections,
+                    &seats_at(&keys, seats, *element),
+                    &round,
+                    *element,
+                )
+            }
+        };
+        if let Err(out) = ogeom_algo::certify_face_within(model, face, &region, fit, tol)? {
+            ogeom_core::ogeom_bail!(
+                Construction,
+                "a round's face stands {:.1e} past the material it blends, at {:?}{}",
+                out.past,
+                out.at,
+                if out.found { "" } else { " (not cleared)" }
+            );
+        }
+    }
 
     let mut history = History::new();
     for edge in &strip_list {
@@ -438,6 +468,113 @@ pub(crate) fn assemble(
         }
     }
     Ok(Some(Built::new(solid, history)))
+}
+
+/// The seats of the edges meeting at `v`, in `keys`' order.
+fn seats_at<'a>(keys: &[(Id, Id)], seats: &'a FastMap<(Id, Id), Seat>, v: Id) -> Vec<&'a Seat> {
+    keys.iter()
+        .filter(|(a, b)| *a == v || *b == v)
+        .map(|k| &seats[k])
+        .collect()
+}
+
+/// Face `fi`'s plane as a half-space, at `origin`, moved out by `rise`.
+fn face_below(planar: &Planar, fi: usize, origin: Point, rise: f64) -> HalfSpaces {
+    let normal = planar.faces[fi].normal;
+    HalfSpaces::Below {
+        normal,
+        at: origin + normal * rise,
+    }
+}
+
+/// A concave round's fill: the wedge between its two faces as far out as
+/// its contact on each stands past the other's plane.
+fn fill(planar: &Planar, seat: &Seat, section: &PlanarSection) -> HalfSpaces {
+    let origin = planar.points[&seat.ends.0];
+    let rise = |k: usize| {
+        let other = section.contact(1 - k, 0.0) - section.crease(0.0);
+        planar.faces[seat.faces[k]].normal.dot(other)
+    };
+    HalfSpaces::Every(vec![
+        face_below(planar, seat.faces[0], origin, rise(0)),
+        face_below(planar, seat.faces[1], origin, rise(1)),
+    ])
+}
+
+/// The material along `seat`'s edge once rounded: inside both faces at a
+/// convex edge; inside either, or the round's fill, at a concave one.
+fn edge_material(
+    planar: &Planar,
+    seat: &Seat,
+    sections: &FastMap<Id, (PlanarSection, f64)>,
+) -> HalfSpaces {
+    let origin = planar.points[&seat.ends.0];
+    let sides = vec![
+        face_below(planar, seat.faces[0], origin, 0.0),
+        face_below(planar, seat.faces[1], origin, 0.0),
+    ];
+    match sections.get(&seat.edge) {
+        Some((section, _)) if !seat.convex => {
+            let mut any = sides;
+            any.push(fill(planar, seat, section));
+            HalfSpaces::Any(any)
+        }
+        _ if seat.convex => HalfSpaces::Every(sides),
+        _ => HalfSpaces::Any(sides),
+    }
+}
+
+/// The material round a vertex of three faces once rounded, by its edges'
+/// convexity: every face's side at a convex corner; with one concave edge,
+/// the opposite face's side and either of the edge's (or its fill); with
+/// two, the opposite face's side, or both of the convex edge's, or either
+/// fill; with three, any face's side or fill.
+fn corner_material(
+    planar: &Planar,
+    sections: &FastMap<Id, (PlanarSection, f64)>,
+    here: &[&Seat],
+    round: &[usize],
+    v: Id,
+) -> HalfSpaces {
+    let origin = planar.points[&v];
+    let side = |fi: usize| face_below(planar, fi, origin, 0.0);
+    let concave: Vec<&&Seat> = here.iter().filter(|s| !s.convex).collect();
+    let fills: Vec<HalfSpaces> = concave
+        .iter()
+        .filter_map(|s| {
+            sections
+                .get(&s.edge)
+                .map(|(section, _)| fill(planar, s, section))
+        })
+        .collect();
+    // The face round `v` the edge `seat` does not bound.
+    let opposite = |seat: &Seat| round.iter().copied().find(|f| !seat.faces.contains(f));
+    match (concave.len(), here.iter().find(|s| s.convex)) {
+        (0, _) => HalfSpaces::Every(round.iter().map(|f| side(*f)).collect()),
+        (1, _) => {
+            let seat = concave[0];
+            let mut any = vec![side(seat.faces[0]), side(seat.faces[1])];
+            any.extend(fills);
+            let far = opposite(seat).map_or(HalfSpaces::Any(Vec::new()), side);
+            HalfSpaces::Every(vec![far, HalfSpaces::Any(any)])
+        }
+        (2, Some(convex)) => {
+            let mut any = vec![HalfSpaces::Every(vec![
+                side(convex.faces[0]),
+                side(convex.faces[1]),
+            ])];
+            if let Some(far) = opposite(convex) {
+                any.push(side(far));
+            }
+            any.extend(fills);
+            HalfSpaces::Any(any)
+        }
+        _ => {
+            let mut any: Vec<HalfSpaces> = round.iter().map(|f| side(*f)).collect();
+            any.extend(fills);
+            HalfSpaces::Any(any)
+        }
+    }
 }
 
 /// The points a face's boundary passes at one of its corners, in turn, and
