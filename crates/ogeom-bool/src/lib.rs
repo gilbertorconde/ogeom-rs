@@ -5502,6 +5502,8 @@ fn fill(
         tangents: Vec<TangentRec>,
         same_pairs: Vec<(usize, usize)>,
         rim_crossed: bool,
+        #[cfg(feature = "test-hooks")]
+        marched: usize,
     }
     let at_rims = AT_RIMS.get();
     let as_stated = AS_STATED.get();
@@ -6177,6 +6179,10 @@ fn fill(
                                     windowed_to(&fa.surface, &shared),
                                     windowed_to(&fb.surface, &shared),
                                 );
+                                #[cfg(feature = "test-hooks")]
+                                {
+                                    out.marched += 1;
+                                }
                                 let (marched, pole_reach) = march_pair(&wa, &wb, &options, tol)?;
                                 for fitted in marched {
                                     // The same two refusals the intersector's
@@ -6268,6 +6274,8 @@ fn fill(
         if pair.rim_crossed {
             RIM_CROSSED.set(true);
         }
+        #[cfg(feature = "test-hooks")]
+        work::add(|w| w.marched_pairs += pair.marched);
     }
     for section in &mut sections {
         if let Some(rebased) = seamed_at_a_stop(
@@ -10911,10 +10919,17 @@ fn fitted_image(
         checks.push(t);
     }
     // A cone is read past its window's ends, as its points were inverted.
+    // So is a cylinder where its window refuses the point: a circle a
+    // rounding off square to the axis climbs a hair past the wall's end
+    // round half its turn, and the fit through points held at that end
+    // follows it there.
     let lift = |u: f64, v: f64| match surface {
         SurfaceGeometry::Cone(cone) => {
             Ok(ogeom_math::elementary::cone_at(&cone.cone(), u, v).point)
         }
+        SurfaceGeometry::Cylinder(drum) => surface
+            .point_at(u, v, tol)
+            .or_else(|_| Ok(ogeom_math::elementary::cylinder_at(&drum.cylinder(), u, v).point)),
         _ => surface.point_at(u, v, tol),
     };
     for t in checks {
