@@ -1,6 +1,6 @@
 # ADR 0001: One blend model for fillets and chamfers
 
-- **Status:** proposed, for agreement before implementation (#902).
+- **Status:** proposed (#902). The behavioural questions are settled by survey (§13).
 - **Scope:** `ogeom-fillet`: edge rounds, chamfers, asymmetric and variable
   sections, vertex blends. Face–face blends (`blend_faces`) and sheet rounds
   follow later and are out of this record's first steps.
@@ -123,11 +123,15 @@ follows.
    `S(F2, v)` and `S(F2, w)` on the other, for an edge `vw` between faces
    `F1` and `F2`. Their ends are where the section sweep meets the vertex
    blend.
-4. **Vertex blends** fill the polygon of setback corners around `v`:
-   - a planar facet for chamfers at a 3-valent vertex;
-   - a sphere where an equal-radius convex or concave trihedral corner
-     allows one;
-   - otherwise one n-sided G1 patch (§4.4).
+4. **Vertex blends** fill the polygon of setback corners around `v`, by the
+   rules settled in §13:
+   - **Chamfers:** a planar facet wherever the setback corners are
+     coplanar, always so where three bevels meet. Otherwise one patch
+     through them, not a triangulation.
+   - **Rounds:** a sphere where an equal-radius convex or concave trihedral
+     corner allows one. Otherwise one n-sided G1 patch (§4.4).
+   - **No setback** beyond the bands' own ends unless the request asks for
+     one, with its distances.
 5. **Admissibility.** A request fits when:
    - every face's setback curves leave it a simple region, so no setback
      curves cross and no shrunk face inverts;
@@ -138,6 +142,10 @@ follows.
    `largest_chamfer_distance` become their exact boundary, not a separate
    search. Outside the domain the request is refused by name, naming the
    face or vertex that collapses.
+6. **Chamfers and rounds in one request** compose as two features: the
+   chamfers first, as one set, then the rounds, as one set, on that result
+   (§13, question 3). Each kind is order-free within itself, and the order
+   of the kinds is fixed, so the request's order never matters.
 
 Rounds have a global reference semantics: rounding every convex edge is the
 morphological opening by a ball of radius `r`, and filleting every concave
@@ -206,8 +214,8 @@ consistent by construction, because each corner is a setback corner shared
 by exactly the two curves that meet there.
 
 1. **Exact cases, chosen by geometry, not by catalogue:**
-   - **Planar facet:** a chamfer at a 3-valent vertex. The setback corners
-     are three points, so the facet is a plane.
+   - **Planar facet:** chamfers whose setback corners are coplanar, always
+     so where three bevels meet.
    - **Sphere:** equal-radius rounds at a trihedral vertex where one ball
      touches all three faces. That is today's ball-and-block corner, kept as
      a special value of the general method.
@@ -224,12 +232,14 @@ by exactly the two curves that meet there.
      and a region known in advance.
 
    Setbacks are the knob Várady and Rockwood give for patch quality: larger
-   setbacks give rounder patches and fewer bad corner angles [5, 6].
-3. **Chamfers at n > 3 vertices:**
-   - The setback corners need not be coplanar.
-   - The facet is planar where they are.
-   - Otherwise it is triangulated from the polygon's centroid, or refused by
-     name. That choice is an open decision (§13).
+   setbacks give rounder patches and fewer bad corner angles [5, 6]. They
+   are applied only where the request asks for them, with its distances
+   (§13, question 2).
+3. **Chamfers at vertices of more than three bevels:**
+   - The facet is planar where the setback corners are coplanar.
+   - Otherwise the corner is one patch through them, as the general case
+     with straight sections, never a triangulation (§13, question 1).
+   - Until M4 delivers that patch, such a corner is refused by name.
 
 ### 4.5 P4: one assembly
 
@@ -473,24 +483,141 @@ On every case:
 - the §7 speed targets;
 - the real-world check unchanged or better.
 
-## 13. Open decisions
+## 13. Settled by survey
 
-1. **Chamfer facets at vertices of more than three edges,** where the
-   setback corners are not coplanar: one triangulated facet from the
-   centroid, several facets, or a refusal by name.
-2. **Default vertex blend for rounds:** the sphere wherever one ball fits,
-   with the general patch elsewhere, or the setback patch everywhere for
-   uniform shape. Also the default setback, if any: Várady–Rockwood
-   setbacks trade corner size for patch quality.
-3. **A chamfer and a round meeting at one vertex:** a planar facet, the
-   general patch, or extending the round's strip into the chamfer plane.
-4. **Non-local blends:** refuse by name until M5, or prioritise the
-   one-boolean fallback.
-5. **`*_partial` semantics** (greedy in request order today) under a
-   set-valued request: drop them, or redefine them as the largest admissible
-   subset by stable key.
-6. **Special-case work on the current path until M2:** frozen (#900 parked,
-   #877 continuing), or allowed for regressions only.
+Each behavioural question is settled by what mainstream applications and
+kernels do. The evidence comes from three kinds of source:
+
+- the public user documentation of SOLIDWORKS, Autodesk Fusion, Onshape,
+  PTC Creo, CATIA V5, Siemens NX, FreeCAD and Blender [P1–P16];
+- the Apache-2.0 SMLib sources in usd-brep and their solidcore port [14];
+- the papers.
+
+No kernel's implementation source other than SMLib's was read. Where a
+document was not found, the table says so rather than guessing.
+
+### Question 1: a chamfer corner where several bevels meet
+
+| Source | What it does |
+|---|---|
+| Fusion [P1, P2] | **Default:** the "chamfer" corner type, "a small patch … created at the corner". **Options:** miter ("the chamfer surfaces extend and intersect one another"), and blend. |
+| Creo [P3] | Picks a transition by context. **Corner Plane:** three pieces only. **Patch:** three or four. **Intersect:** a sharp boundary. |
+| SMLib [14] | Linear sections at a fully chamfered corner (`MakeAnalyticCornerSurface`, `sm_CreatePlanarSurface`). **Three points:** an exact plane. **Four:** a bilinear patch through them, so not flat where they aren't coplanar. **Five or more:** a Coons or n-sided patch. It never builds several flat triangles. **Separately:** its chamfer API forces mitred corners (`SetBevel`) and refuses more than three edges. |
+| Blender [P4, P5] | **Default:** "grid fill", where the profile continues through the intersection. **Option:** "cutoff", a flat cap at the end of each bevelled edge. |
+| SOLIDWORKS [P6] | Vertex chamfer is a separate feature. What edge chamfers make at a vertex: not found. |
+| Onshape [P7]; NX; CATIA; FreeCAD | Not found. |
+| #902's reference render | A triangular facet at every vertex. |
+
+**Practice agrees:**
+
+- Where three bevels meet, every source closes the corner with a flat face
+  (Fusion's default corner, Creo's Corner Plane, SMLib's plane, the
+  reference render) rather than mitring the bevels to a point. The mitre is
+  an option everywhere, never the default.
+- Where four or more meet, or the corner points are not coplanar, the
+  corner is a patch through them (Fusion, Creo Patch, SMLib). No source
+  triangulates.
+
+**Rule:**
+
+- The default chamfer corner is the **facet** through the setback corners
+  wherever they are coplanar, always so at three bevels.
+- Otherwise it is **one patch** through them, built in M4. Until then such a
+  corner is refused by name.
+- The mitre stays available as an option (`ChamferCorner::Point`).
+- **API change:** today `chamfer_edges` mitres; under this rule it takes the
+  facet. M1 records the change in the changelog as a change of default.
+
+### Question 2: the default round corner and its setback
+
+| Source | What it does |
+|---|---|
+| SOLIDWORKS [P8, P9] | Setback parameters are an optional section with distances the user types. No default distance. FilletXpert: where all three edges are convex or concave, or have the same radius, "only one fillet corner type exists". |
+| Fusion [P10, P11] | Corner type: rolling ball or setback. Asymmetric fillets support only setback. The dialog's default: not found. |
+| Creo [P12, P13] | Default, context-sensitive transitions. **Corner Sphere** for three pieces, at the largest round's radius by default, with adjustable setbacks. **Patch** for three or four. |
+| NX [P14] | Corner setback and stop-short options. No default documented in what could be read. |
+| CATIA [P15] | Blend corners are an opt-in reshape. Created by vertex they take "default setback distance", its value not stated. |
+| Onshape [P7] | No setback option. A tech tip fixes three-edge corners by hand with a fill surface. |
+| SMLib [14] | **Equal radii:** the end arcs lie on one sphere, so a sphere. **Unequal radii:** a rolling-ball blend or a surface of revolution where it fits, otherwise a Coons patch. **Setback:** off by default (`m_dSetBackDist = 0`), opt-in, and not exposed by its public API. |
+| Várady–Rockwood [5, 6] | Setbacks as a quality option for vertex patches, with distances chosen per corner. |
+
+**Practice agrees:**
+
+- The default corner needs no setback: a rolling-ball corner, which is the
+  sphere where one ball fits, and a blend patch otherwise.
+- A setback is opt-in, with distances the user gives. No source documents a
+  default distance.
+
+**Rule:**
+
+- The default round corner is the **sphere** wherever one ball touches all
+  three faces (equal radii at a convex or concave trihedral vertex), as
+  SMLib and Creo's Corner Sphere build it.
+- Elsewhere it is **one G1 patch** bounded by the bands' natural ends, with
+  no setback.
+- **Setbacks** are applied only when asked, with the request's distances,
+  as SOLIDWORKS, NX, CATIA and Fusion offer them.
+- Creo's sphere at the largest radius for unequal rounds is a minority
+  default and is not adopted; SMLib and Fusion patch there.
+
+### Question 3: a chamfer and a round meeting at one vertex
+
+| Source | What it does |
+|---|---|
+| Fusion [P10] | Rule fillet: fillets only. No mixed feature. |
+| Creo [P3, P13] | Transitions cover pieces of the same kind only. |
+| Onshape [P16] | Sheet-metal corner break cannot combine both in one feature. A second feature can round a chamfered edge. |
+| SMLib [14] | Its per-edge API lets section types mix. Such a corner falls through to a Coons patch, with no test covering it. |
+| SOLIDWORKS; NX; CATIA; FreeCAD | No mixed feature documented. |
+
+**Practice agrees:** mixing takes two features applied in turn. No mainstream
+application closes a mixed corner in one feature.
+
+**Rule:**
+
+- A request holding both kinds is two features: **the chamfers first, as one
+  set, then the rounds, as one set, on that result**.
+- That is the order in which `blend_edges` applies them today ("bevels
+  first, then rounds"), and the order users are advised to take [P23].
+- The result is the same for every order of the request. A user wanting the
+  other order makes two calls.
+
+### Question 4: edges that don't fit
+
+| Source | What it does |
+|---|---|
+| SOLIDWORKS [P17] | The whole feature fails. "What's Wrong" names why. FeatureXpert can split the feature on request. |
+| Onshape [P7, P18] | An error and a visualisation. The feature is marked in the list. |
+| FreeCAD [P19, P20] | The operation fails ("reduce its radius"). |
+| Creo [P21, P22] | Ordinary round: not found. **Auto Round** builds the rest and lists the unrounded edges, which "does not indicate that the model has an error". |
+| NX [P14] | Opt-in "limit blend to avoid failure areas". |
+| SMLib [14] | The executive is all-or-nothing, with per-corner and per-edge diagnostics (`SmFilletErrorInfo`). Two convenience APIs silently skip edges that can't be blended. |
+
+**Practice agrees:**
+
+- The default is all-or-nothing, with the failing edges named (SOLIDWORKS,
+  Onshape, FreeCAD, SMLib's executive).
+- Building the rest and reporting the skipped edges is an explicit,
+  separate mode (Creo Auto Round, NX's opt-in limit).
+
+**Rule:**
+
+- Every blend call is **all-or-nothing**, its refusal naming the edges and
+  the predicate that failed (as `*_checked` does).
+- `*_partial` is the **opt-in mode**: build every requested edge that the
+  §3.5 predicates admit, and return the skipped edges with their reasons.
+- **Which edges are skipped** depends on the request as a set, not its
+  order:
+  1. take the failing predicate whose edges come first by stable key;
+  2. drop those edges;
+  3. evaluate again, until the rest fit.
+
+### Decided by the maintainer
+
+- **Non-local blends** (a strip reaching a face that is not its neighbour)
+  are refused by name until M5.
+- **Special-case work on the current path** is limited to regressions until
+  M2. #877 continues on it.
 
 ## References
 
@@ -539,5 +666,57 @@ On every case:
 16. C. M. Hoffmann, J. Hopcroft. "The potential method for blending
     surfaces and corners." In *Geometric Modeling: Algorithms and New
     Trends*, SIAM, 1987.
+
+### Practice sources (public user documentation)
+
+- [P1] Autodesk Fusion, Chamfer reference:
+  https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-REF-CHAMFER.htm
+- [P2] Autodesk Fusion API, ChamferCornerTypes:
+  https://help.autodesk.com/cloudhelp/ENU/Fusion-360-API/files/fusion_ChamferCornerTypes.htm
+- [P3] PTC Creo 9, About Chamfer Transitions:
+  https://support.ptc.com/help/creo/creo_pma/r9.0/usascii/part_modeling/part_modeling/About_Chamfer_Transitions.html
+- [P4] Blender manual, Bevel modifier:
+  https://docs.blender.org/manual/en/latest/modeling/modifiers/generate/bevel.html
+- [P5] Blender manual, Bevel edges:
+  https://docs.blender.org/manual/en/latest/modeling/meshes/editing/edge/bevel.html
+- [P6] SOLIDWORKS 2024, Chamfer PropertyManager:
+  https://help.solidworks.com/2024/english/SolidWorks/sldworks/r_chamfer_pm.htm
+- [P7] Onshape, Fillet: https://cad.onshape.com/help/Content/fillet.htm;
+  Chamfer: https://cad.onshape.com/help/Content/chamfer.htm; tech tip on
+  blending fillets with Fill Surface:
+  https://www.onshape.com/en/resource-center/tech-tips/how-to-blend-fillets-using-the-fill-surface-feature
+- [P8] SOLIDWORKS 2024, Constant Size Fillets (setback parameters):
+  https://help.solidworks.com/2024/english/SolidWorks/sldworks/r_constant_size_fillets.htm
+- [P9] SOLIDWORKS 2024, FilletXpert overview:
+  https://help.solidworks.com/2024/english/SolidWorks/sldworks/c_FilletXpert_Overview.htm
+- [P10] Autodesk Fusion, Fillet reference:
+  https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-REF-FILLET.htm
+- [P11] Autodesk Fusion API, FilletFeatureInput.isRollingBallCorner:
+  https://help.autodesk.com/cloudhelp/ENU/Fusion-360-API/files/fusion_FilletFeatureInput_isRollingBallCorner.htm
+- [P12] PTC Creo 9, About Round Transitions:
+  https://support.ptc.com/help/creo/creo_pma/r9.0/usascii/part_modeling/part_modeling/About_Round_Transitions.html
+- [P13] PTC Creo 9, Round Transition Types:
+  https://support.ptc.com/help/creo/creo_pma/r9.0/usascii/part_modeling/part_modeling/Round_Transition_Types.html
+- [P14] Siemens NX, Edge Blend: help copy at
+  http://www2.me.rochester.edu/courses/ME204/nx_help/en_US/tdocExt/content/a/create_features_feat_edgeblend_dia.xml
+  (read through search snippets; the site is offline), and
+  https://learnnx.com/lesson/siemens-nx-edge-blend-stop-short-corner-setback/
+- [P15] CATIA V5, Corner reshape (help copy):
+  https://catiahelp.azurewebsites.net/English/Fm1UserMap/pdg-c-CornerReshape.htm
+- [P16] Onshape, Corner break (sheet metal):
+  https://cad.onshape.com/help/Content/sheetmetalcornerbreak.htm
+- [P17] SOLIDWORKS 2024, What's Wrong / FeatureXpert:
+  https://help.solidworks.com/2024/english/SolidWorks/sldworks/HIDD_NEW_WHATS_WRONG_AUTOFIX.htm
+- [P18] Onshape, Error indicators:
+  https://cad.onshape.com/help/Content/errorindicators.htm
+- [P19] FreeCAD wiki, PartDesign Fillet: https://wiki.freecad.org/PartDesign_Fillet
+- [P20] FreeCAD wiki, Part Fillet: https://wiki.freecad.org/Part_Fillet
+- [P21] PTC Creo 9, About the Auto Round Feature:
+  https://support.ptc.com/help/creo/creo_pma/r9.0/usascii/part_modeling/part_modeling/About_the_Auto_Round_Feature.html
+- [P22] PTC Creo 9, Using Troubleshooter to View Unrounded Edges:
+  https://support.ptc.com/help/creo/creo_pma/r9.0/usascii/part_modeling/part_modeling/Using_Troubleshooter_to_View_Unrounded_Edges.html
+- [P23] Onshape forum, chamfer before fillet (user advice, not
+  documentation):
+  https://forum.onshape.com/discussion/21699/how-can-i-put-a-fillet-tail-on-my-chamfer-edge-like-this
 
 No implementation source of any other kernel was read for this record.
