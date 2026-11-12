@@ -1954,13 +1954,117 @@ pub fn make_revolution_band(
     ring_hi: &Shape,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
+    revolution_band(model, surface, ring_lo, ring_hi, None, tol)
+}
+
+/// [`make_revolution_band`] on a curve revolved a whole turn about an
+/// axis ([`RevolutionSurface`](ogeom_geom::RevolutionSurface)), its rings
+/// the parallels through the profile's two ends.
+///
+/// The seam is the profile turned to the column of the first ring's
+/// vertex, on the profile's own parameter, and each ring's row is the
+/// profile's end it is the parallel of. The rings must be the parallels
+/// through the profile's ends, each a circle about the axis.
+///
+/// # Errors
+///
+/// As [`make_revolution_band`], and
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
+/// surface is not a whole turn of a revolution, or a ring is not the
+/// parallel through an end of its profile.
+pub fn make_profile_revolution_band(
+    model: &mut Model,
+    surface: &ogeom_geom::SurfaceGeometry,
+    ring_lo: &Shape,
+    ring_hi: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    use ogeom_geom::Surface as _;
+    let SurfaceGeometry::Revolution(revolved) = surface else {
+        ogeom_bail!(
+            Construction,
+            "a profile's band asked of a surface no profile sweeps"
+        );
+    };
+    let ((ua, ub), _) = surface.domain();
+    if !surface.is_periodic_u() || ((ub - ua) - core::f64::consts::TAU).abs() > tol.angular() {
+        ogeom_bail!(
+            Construction,
+            "a profile's band asked of less than a whole turn"
+        );
+    }
+    revolution_band(model, surface, ring_lo, ring_hi, Some(revolved), tol)
+}
+
+/// Where a point on a whole turn of a revolved profile stands in its
+/// chart: its angle about the axis from the profile's own half-plane, and
+/// the profile's parameter at the end of it the point turns from. `None`
+/// for a point on the parallel of neither end.
+fn profile_chart_of(
+    revolved: &ogeom_geom::RevolutionSurface,
+    p: Point,
+    tol: Tolerances,
+) -> Option<ogeom_math::Point2> {
+    use ogeom_geom::Curve3d as _;
+    let axis = revolved.axis();
+    let curve = revolved.curve();
+    let (lo, hi) = curve.domain();
+    // A point's height along the axis and its radius off it.
+    let place = |q: Point| {
+        let off = q - axis.location;
+        let height = off.dot(axis.direction.vector());
+        let radial = off - axis.direction.vector() * height;
+        (height, radial)
+    };
+    let (height, radial) = place(p);
+    let mut found = None;
+    for end in [lo, hi] {
+        let q = curve.point_at(end, tol).ok()?;
+        let (h, r) = place(q);
+        if (h - height).abs() <= tol.confusion()
+            && (r.magnitude() - radial.magnitude()).abs() <= tol.confusion()
+        {
+            let z = axis.direction.vector();
+            let x = r / r.magnitude();
+            let y = z.cross(x);
+            let angle = radial.dot(y).atan2(radial.dot(x));
+            found = Some(ogeom_math::Point2::new(
+                angle.rem_euclid(core::f64::consts::TAU),
+                end,
+            ));
+            break;
+        }
+    }
+    found
+}
+
+/// [`make_revolution_band`], or [`make_profile_revolution_band`] where
+/// `profile` is the surface's own revolution.
+fn revolution_band(
+    model: &mut Model,
+    surface: &ogeom_geom::SurfaceGeometry,
+    ring_lo: &Shape,
+    ring_hi: &Shape,
+    profile: Option<&ogeom_geom::RevolutionSurface>,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
     use ogeom_geom::Surface as _;
 
     let ((ua_dom, ub_dom), _) = surface.domain();
     let span = ub_dom - ua_dom;
-    let axis_z = surface_iso_axis(surface).ok_or_else(|| {
-        ogeom_core::ogeom_err!(Construction, "the surface has no revolution axis")
-    })?;
+    let axis_z = surface_iso_axis(surface)
+        .or_else(|| profile.map(|r| r.axis().direction.vector()))
+        .ok_or_else(|| {
+            ogeom_core::ogeom_err!(Construction, "the surface has no revolution axis")
+        })?;
+    // The chart's closed-form inversion: the analytic kinds', or the
+    // profile's at its ends.
+    let chart_of = |p: Point| -> Option<ogeom_math::Point2> {
+        match profile {
+            Some(revolved) => profile_chart_of(revolved, p, tol),
+            None => analytic_chart_of(surface, p),
+        }
+    };
 
     // Each ring's curve, range, winding, vertex, and chart row.
     struct Ring {
@@ -2010,7 +2114,7 @@ pub fn make_revolution_band(
             // Its row comes from the collapsed point, which sits on the
             // axis, where iterative projection has no nearest angle, so only
             // the closed-form inversion can place it.
-            let Some(uv) = analytic_chart_of(surface, at) else {
+            let Some(uv) = chart_of(at) else {
                 ogeom_bail!(
                     Construction,
                     "a degenerate ring's row cannot be found on this surface"
@@ -2052,7 +2156,11 @@ pub fn make_revolution_band(
         // line it never follows. Refused here, so a reader falls through to
         // the face's own bounds, which triangulate as the nested loops they
         // are.
-        if !circle_is_parallel_of(c.circle(), surface, axis_z, tol) {
+        let off_axis = profile.is_some_and(|r| {
+            let off = c.circle().centre() - r.axis().location;
+            (off - axis_z * off.dot(axis_z)).magnitude() > tol.confusion() * 10.0
+        });
+        if off_axis || !circle_is_parallel_of(c.circle(), surface, axis_z, tol) {
             ogeom_bail!(
                 Construction,
                 "a band ring is a circle on the surface but not a parallel \
@@ -2063,7 +2171,7 @@ pub fn make_revolution_band(
         // the curve is reversed.
         let turned = if c.is_reversed() { -1.0 } else { 1.0 };
         let winding = turned * spin(&c.circle().frame()).dot(axis_z).signum();
-        let row = match analytic_chart_of(surface, at) {
+        let row = match chart_of(at) {
             Some(uv) => uv.y,
             None => {
                 crate::measure::project_on_surface(surface, at, 32, tol)?
@@ -2120,7 +2228,7 @@ pub fn make_revolution_band(
         };
         data.point
     };
-    let ua = match analytic_chart_of(surface, anchor) {
+    let ua = match chart_of(anchor) {
         Some(uv) => uv.x,
         None => {
             crate::measure::project_on_surface(surface, anchor, 32, tol)?
@@ -2140,7 +2248,15 @@ pub fn make_revolution_band(
     // The seam runs along the surface's own iso-curve at the anchor angle,
     // parameterized by `v`, built along increasing `v`.
     let (va, vb) = (rings[0].row, rings[1].row);
-    let Some(seam_curve) = seam_iso_u_curve(surface, ua, tol) else {
+    let turned = match profile {
+        Some(revolved) => {
+            use ogeom_geom::Transformable as _;
+            let turn = ogeom_math::Transform::rotation(revolved.axis(), ua);
+            Some(revolved.curve().clone().transformed(&turn, tol)?)
+        }
+        None => seam_iso_u_curve(surface, ua, tol),
+    };
+    let Some(seam_curve) = turned else {
         ogeom_bail!(
             Construction,
             "the surface's iso-curve has no closed form; no seam can be built"

@@ -1551,27 +1551,35 @@ rounds to a band meeting one face at one distance and the other at \
 another, its section the ellipse tangent to both there (the circular \
 round's arc stretched to each distance) or a conic of shape rho: the \
 rational quadratic arc swept along the edge, exact, tangent to both faces \
-along its contact lines. Naming the other face with the distances swapped \
-builds the same solid to the bit, and equal distances with the elliptical \
-section are the circular round by the same call. Its ends are the \
-circular round's: square caps at a wall, run out across a face that cuts \
-the corner away past an end, cut off by a face overhanging the corner. \
+along its contact lines. A whole rim where a planar cap meets a coaxial \
+cylinder or cone (a drum's top, a bore's mouth, a boss's foot, a \
+frustum's top) rounds to that section revolved about the axis, exact, \
+tangent to cap and wall along their contact rings. Naming the other face \
+with the distances swapped builds the same solid to the bit, and equal \
+distances with the elliptical section are the circular round by the same \
+call. A straight band's ends are the circular round's: square caps at a \
+wall, run out across a face that cuts the corner away past an end, cut \
+off by a face overhanging the corner. \
 In a blend_edges request it stands beside the request's other rounds and \
 bevels where it meets none of them at a vertex; an asymmetric round of \
 equal distances and the elliptical section meets them as the circular \
-round does. Refused by name: an asymmetric round on a circular rim, a \
-curved, spline or marched crease, a chain or a varying distance; one \
-meeting another blended edge at a vertex; a contact set back past its \
-face's side; and its largest fitting pair is not answered."""
+round does. Refused by name: an open arc of a rim, a curved, spline or \
+marched crease, a chain or a varying distance; one meeting another \
+blended edge at a vertex; a contact set back past its face's side or a \
+rim's contact reaching its axis; and its largest fitting pair is not \
+answered."""
 symbols = [
     "ogeom_fillet::fillet_edge_distances",
     "ogeom_fillet::RoundProfile",
     "ogeom_fillet::Blend",
+    "ogeom_algo::make_profile_revolution_band",
 ]
 tests = [
     "crates/ogeom-fillet/tests/asymmetric.rs",
     "crates/ogeom-fillet/tests/asymmetric.rs::an_elliptical_round_meets_each_face_at_its_own_distance_whichever_is_named",
     "crates/ogeom-fillet/tests/asymmetric.rs::a_concave_edge_fills_with_its_conic_segment_and_nothing_past_the_faces",
+    "crates/ogeom-fillet/tests/asymmetric.rs::a_drum_s_rim_takes_its_conic_corner_round_the_axis",
+    "crates/ogeom-fillet/tests/asymmetric.rs::a_boss_s_foot_fills_with_its_conic_corner_round_the_axis",
 ]
 
 [[capability]]

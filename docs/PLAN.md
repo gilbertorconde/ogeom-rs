@@ -497,12 +497,12 @@ edges or with a curved face, refused by name.
 
 **Asymmetric rounds beyond a straight edge between planes (#877).**
 `fillet_edge_distances` and `Blend::RoundDistances` round a straight edge
-between two planes with a different distance onto each face, elliptical
-or conic. Refused by name until built, in this order: circular rims (a
-cylinder or cone wall meeting a cap), tangent chains and distances varying
-along the edge, curved, spline and marched creases, corners where an
-asymmetric round meets another band or a bevel, and the largest fitting
-pair in `largest_fillet_radius`.
+between two planes, and a whole rim where a cap meets a coaxial cylinder or
+cone, with a different distance onto each face, elliptical or conic.
+Refused by name until built, in this order: tangent chains and distances
+varying along the edge, open rim arcs, curved, spline and marched creases,
+corners where an asymmetric round meets another band or a bevel, and the
+largest fitting pair in `largest_fillet_radius`.
 
 ### Construction and exchange
 
