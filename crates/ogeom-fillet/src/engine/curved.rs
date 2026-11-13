@@ -189,24 +189,50 @@ pub(crate) fn build(
     faces: &[SheetRings],
     tol: Tolerances,
 ) -> OgeomResult<Sheet> {
+    build_with_widths(model, points, edges, faces, &[], tol)
+}
+
+/// [`build`], each edge given a width in `widths` (by the edges' order,
+/// missing or nought for none) widened to it with its vertices before any
+/// face fits its trim: a contact fitted to stand within that of a face it
+/// cannot lie on exactly.
+///
+/// # Errors
+///
+/// As [`build`], and where a width is not a finite distance.
+pub(crate) fn build_with_widths(
+    model: &mut Model,
+    points: &[Point],
+    edges: &[SheetCurve],
+    faces: &[SheetRings],
+    widths: &[f64],
+    tol: Tolerances,
+) -> OgeomResult<Sheet> {
     let vertices: Vec<Shape> = points
         .iter()
         .map(|p| ogeom_algo::make_vertex(model, *p).shape)
         .collect();
     let mut made = Vec::with_capacity(edges.len());
-    for e in edges {
+    for (k, e) in edges.iter().enumerate() {
         let (a, b) = e.ends;
-        made.push(
-            ogeom_algo::make_edge_between(
-                model,
-                e.curve.clone(),
-                e.range,
-                &vertices[a],
-                &vertices[b],
-                tol,
-            )?
-            .shape,
-        );
+        let edge = ogeom_algo::make_edge_between(
+            model,
+            e.curve.clone(),
+            e.range,
+            &vertices[a],
+            &vertices[b],
+            tol,
+        )?
+        .shape;
+        if let Some(&width) = widths.get(k)
+            && width > 0.0
+        {
+            let wide = ogeom_core::Tolerance::new(width)?;
+            for shape in [&edge, &vertices[a], &vertices[b]] {
+                model.widen(shape, wide)?;
+            }
+        }
+        made.push(edge);
     }
     let mut out = Vec::with_capacity(faces.len());
     for face in faces {
