@@ -61,7 +61,8 @@ pub(crate) enum Origin {
 
 /// The blend of `request` on `solid`, or `None` where the solid or the
 /// request lies outside the engine's classes (for now: a solid bounded by
-/// planes, each face one ring of straight edges, every edge between two
+/// planes, each face one ring of straight edges and a ring per hole (rounds:
+/// no holes), every edge between two
 /// faces, every vertex's faces closing round it once; and the request
 /// inside the setback domain: no face consumed by its setbacks but a band
 /// between two parallel bevels ([`consumed`]), no two faces crossing, every
@@ -114,6 +115,9 @@ pub(crate) fn run(
         .iter()
         .any(|b| matches!(b.section, Section::Round { .. }))
     {
+        if planar.faces.iter().any(|f| !f.holes.is_empty()) {
+            return Ok(None);
+        }
         return rounds::assemble(model, &planar, &seats, &by_edge, &corners, tol);
     }
     let Some(consumed) = consumed::consumed(&planar, &seats, &setback, &mut corners, tol) else {
@@ -131,16 +135,21 @@ pub(crate) fn run(
         if consumed.faces.contains(&fi) {
             continue;
         }
-        let n = face.corners.len();
-        let mut ring = Vec::with_capacity(n);
-        for k in 0..n {
-            let (v, w) = (face.corners[k], face.corners[(k + 1) % n]);
-            ring.push(at[&(fi, v)]);
-            if let Some(ridge) = consumed.ridges.get(&(fi, v, w)) {
-                ring.push(rings.point(*ridge));
+        let mut shrunk: Vec<Vec<usize>> = Vec::with_capacity(1 + face.holes.len());
+        for corners in face.loops() {
+            let n = corners.len();
+            let mut ring = Vec::with_capacity(n);
+            for k in 0..n {
+                let (v, w) = (corners[k], corners[(k + 1) % n]);
+                ring.push(at[&(fi, v)]);
+                if let Some(ridge) = consumed.ridges.get(&(fi, v, w)) {
+                    ring.push(rings.point(*ridge));
+                }
             }
+            shrunk.push(ring);
         }
-        rings.push(ring, Origin::Face(fi), Some(face.normal));
+        let outer = shrunk.remove(0);
+        rings.push_holed(outer, shrunk, Origin::Face(fi), Some(face.normal));
     }
     // The strips, each by its law.
     for key in &keys {
@@ -191,8 +200,21 @@ pub(crate) fn run(
             _ => None,
         })
         .collect();
-    let (built, faces) =
-        ogeom_algo::make_faceted_solid(model, &assembled.points, &assembled.rings, &planes, tol)?;
+    let (built, faces) = if assembled.holes.iter().all(Vec::is_empty) {
+        ogeom_algo::make_faceted_solid(model, &assembled.points, &assembled.rings, &planes, tol)?
+    } else {
+        let holed: Vec<Vec<Vec<usize>>> = assembled
+            .rings
+            .iter()
+            .zip(&assembled.holes)
+            .map(|(ring, inner)| {
+                std::iter::once(ring.clone())
+                    .chain(inner.iter().cloned())
+                    .collect()
+            })
+            .collect();
+        ogeom_algo::make_faceted_solid_with_holes(model, &assembled.points, &holed, &planes, tol)?
+    };
     let mut history = History::new();
     let mut gone: Vec<Id> = blended.iter().copied().collect();
     gone.sort_unstable();

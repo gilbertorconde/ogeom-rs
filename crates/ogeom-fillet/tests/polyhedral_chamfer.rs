@@ -932,3 +932,128 @@ fn a_thin_wall_chamfered_on_both_edges_meets_in_a_ridge() {
         }
     }
 }
+
+/// A plate 60 by 40 by 6 with a 20 by 10 hole through it, cut by a
+/// boolean: its top and bottom faces each hold the hole as an inner ring.
+fn holed_plate(m: &mut Model) -> Shape {
+    let plate = block(m, (0.0, 0.0, 0.0), (60.0, 40.0, 6.0));
+    let hole = block(m, (20.0, 15.0, -1.0), (20.0, 10.0, 8.0));
+    ogeom_bool::cut(m, &plate, &hole, T).unwrap().shape
+}
+
+/// [`chamfered_prism_volume`] for a profile with holes: the outer ring
+/// counter-clockwise and each hole clockwise, so their areas and corners
+/// sum as one region's (a hole's corners are the region's concave ones).
+fn chamfered_holed_prism_volume(loops: &[Vec<(f64, f64)>], length: f64, d: f64) -> f64 {
+    let (mut a, mut p, mut cx, mut cc) = (0.0, 0.0, 0.0, 0.0);
+    for ring in loops {
+        let (ra, rp, rx, rc) = profile_measures(ring);
+        (a, p, cx, cc) = (a + ra, p + rp, cx + rx, cc + rc);
+    }
+    let middle = a - cx * d * d / 2.0 + cc * d * d / 2.0;
+    let end = a * d - p * d * d / 2.0 + (cx - cc) * d * d * d / 3.0 - (cx - cc) * d * d * d / 6.0;
+    middle * (length - 2.0 * d) + 2.0 * end
+}
+
+/// The holed plate with every edge chamfered, the hole's too: valid,
+/// nothing folded, the volume of the holed profile's sections in closed
+/// form, a face for every face, edge and vertex of the plate, and the same
+/// corners to the bit under three orders. The top and bottom faces come
+/// out holed, the hole's rim set back outward.
+#[test]
+fn a_plate_with_a_hole_chamfers_every_edge_exactly_in_any_order() {
+    // The profile across z: the plate's outline and the hole's, the hole
+    // walked the other way.
+    let loops = vec![
+        vec![(0.0, 0.0), (60.0, 0.0), (60.0, 40.0), (0.0, 40.0)],
+        vec![(20.0, 15.0), (20.0, 25.0), (40.0, 25.0), (40.0, 15.0)],
+    ];
+    for d in [0.5, 1.0, 2.0] {
+        let want = chamfered_holed_prism_volume(&loops, 6.0, d);
+        let mut first: Option<Vec<[u64; 3]>> = None;
+        for seed in 0..3_u64 {
+            let mut m = Model::new();
+            let s = holed_plate(&mut m);
+            let (f, e, v) = (
+                explore_unique(&m, &s, ShapeType::Face).unwrap().len(),
+                explore_unique(&m, &s, ShapeType::Edge).unwrap().len(),
+                explore_unique(&m, &s, ShapeType::Vertex).unwrap().len(),
+            );
+            assert_eq!(
+                (f, e, v),
+                (10, 24, 16),
+                "the cut left no holed faces to test"
+            );
+            let specs = all_edges(&m, &s, d);
+            let specs: Vec<(Shape, Chamfer)> = shuffled(specs.len(), seed)
+                .iter()
+                .map(|i| specs[*i].clone())
+                .collect();
+            let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T)
+                .unwrap_or_else(|err| panic!("d {d}: {err}"));
+            let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+            assert!(found.is_valid(), "d {d}: {:?}", found.problems);
+            assert!(!folded(&m, &built.shape), "folded");
+            let got = volume(&m, &built.shape);
+            assert!(
+                (got - want).abs() <= 1e-9 * want,
+                "d {d}: volume {got} against {want}"
+            );
+            let faces = explore_unique(&m, &built.shape, ShapeType::Face).unwrap();
+            assert_eq!(faces.len(), f + e + v, "d {d}: faces");
+            let holed = faces
+                .iter()
+                .filter(|face| m.children_of(face).unwrap().len() == 2)
+                .count();
+            assert_eq!(holed, 2, "d {d}: the top and bottom keep their hole");
+            let k = key(&m, &built.shape).1;
+            match &first {
+                None => first = Some(k),
+                Some(held) => assert!(*held == k, "d {d}: order {seed} differs"),
+            }
+        }
+    }
+}
+
+/// The hole's top rim alone, bevelled `d`: the four bevels mitre at the
+/// top face's reflex corners round the hole, so at depth `z` the hole is
+/// widened by `d - z` all round, and the plate loses
+/// `d²(a + b) + 4d³/3` for a hole `a` by `b`.
+#[test]
+fn a_hole_s_rim_alone_bevels_to_its_closed_form() {
+    let d = 1.5;
+    let mut m = Model::new();
+    let s = holed_plate(&mut m);
+    let rim: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+            [a, b].iter().all(|v| {
+                let p = m.node(v).unwrap().data().as_vertex().unwrap().point;
+                (p.z - 6.0).abs() < 1e-9
+                    && (20.0..=40.0).contains(&p.x)
+                    && (15.0..=25.0).contains(&p.y)
+            })
+        })
+        .map(|e| (e, Chamfer::Symmetric(d)))
+        .collect();
+    assert_eq!(rim.len(), 4);
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &rim, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert!(!folded(&m, &built.shape), "folded");
+    let lost = 60.0 * 40.0 * 6.0 - 20.0 * 10.0 * 6.0 - volume(&m, &built.shape);
+    let want = d * d * (20.0 + 10.0) + 4.0 * d * d * d / 3.0;
+    assert!(
+        (lost - want).abs() <= 1e-9 * want,
+        "lost {lost} against {want}"
+    );
+    for (e, _) in &rim {
+        assert_eq!(
+            built.history.generated(e).len(),
+            1,
+            "a rim edge without its bevel"
+        );
+    }
+}

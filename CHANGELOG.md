@@ -35,6 +35,10 @@ bump may break the API and a patch bump may not.
     notched up one bevel and down the other. The rest of the request keeps
     its facets; before, the band sent the whole request down the wedge
     path, its corners mitred.
+  - **Faces with holes.** A plate with a hole through it, a pocket's rim:
+    each face's hole is set back from its bevelled edges like its outline,
+    and the face comes out holed. Such a solid went down the wedge path
+    whole.
   - A request its faces cannot hold in any other way (a face its setbacks
     consume other than such a band) and any other solid are chamfered by
     wedges, mitred, as before.
@@ -56,6 +60,8 @@ bump may break the API and a patch bump may not.
     instead of faceted.
   - Coplanar faces facing opposite ways, with the material changing side
     across the edge between them, still meet at a real edge.
+- **`ogeom_algo::make_faceted_solid_with_holes`**: `make_faceted_solid`
+  with faces holding holes, each face its outer ring and a ring per hole.
 - **`ogeom_heal::same_domain`**: whether two faces lie on one carrier
   facing one way, the pair `unify_same_domain` merges across a shared
   edge.
@@ -77,7 +83,9 @@ bump may break the API and a patch bump may not.
   the corner's column, `d³/3` for a chamfer of `d`, stood uncut: a wrong
   solid that `check` passed. The bevels now run on past the vertex to each
   other's plane and mitre across the corner, the face's outline set back
-  round it.
+  round it. A hole's corners in a face are such corners too: a hole's rim
+  chamfered lost `4d³/3` too little until the engine read faces with
+  holes.
 
 - **The blend engine** (`docs/adr/0001-blend-architecture.md`, #902). One
   model for fillets and chamfers, built in fixed phases from the solid as

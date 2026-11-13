@@ -92,7 +92,7 @@ pub(crate) fn consumed(
     let mut moves: Vec<((usize, Id), Point)> = Vec::new();
     let mut touched: FastSet<usize> = FastSet::default();
     for (fi, face) in planar.faces.iter().enumerate() {
-        let [_, _, _, _] = face.corners.as_slice() else {
+        let ([_, _, _, _], []) = (face.corners.as_slice(), face.holes.as_slice()) else {
             continue;
         };
         let c = &face.corners;
@@ -140,9 +140,7 @@ pub(crate) fn consumed(
             // keeps: its bevel, or the face across it.
             let kept = |g: usize, v: Id, end: Id| -> Option<Flat> {
                 let gface = &planar.faces[g];
-                let n = gface.corners.len();
-                let j = gface.corners.iter().position(|x| *x == v)?;
-                let (prev, next) = (gface.corners[(j + n - 1) % n], gface.corners[(j + 1) % n]);
+                let (prev, next) = gface.beside(v)?;
                 let other = if prev == end { next } else { prev };
                 let e = edge(v, other)?;
                 match setback.get(&(id(&gface.shape), e)) {

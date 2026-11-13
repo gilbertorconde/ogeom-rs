@@ -150,18 +150,22 @@ impl Seamless {
         // Each unified edge by its vertex pair, with the faces walking it.
         let mut walking: FastMap<(Id, Id), Vec<usize>> = FastMap::default();
         for (gi, face) in unified.faces.iter().enumerate() {
-            let n = face.corners.len();
-            for k in 0..n {
-                let (a, b) = (face.corners[k], face.corners[(k + 1) % n]);
-                walking.entry((a.min(b), a.max(b))).or_default().push(gi);
+            for ring in face.loops() {
+                let n = ring.len();
+                for k in 0..n {
+                    let (a, b) = (ring[k], ring[(k + 1) % n]);
+                    walking.entry((a.min(b), a.max(b))).or_default().push(gi);
+                }
             }
         }
         let pair_of: FastMap<Id, (Id, Id)> = unified.edges.iter().map(|(k, e)| (*e, *k)).collect();
         let mut faces = Vec::with_capacity(input.faces.len());
         for face in &input.faces {
-            let n = face.corners.len();
-            let image = (0..n).find_map(|k| {
-                let (a, b) = (face.corners[k], face.corners[(k + 1) % n]);
+            let sides: Vec<(Id, Id)> = face
+                .loops()
+                .flat_map(|ring| (0..ring.len()).map(|k| (ring[k], ring[(k + 1) % ring.len()])))
+                .collect();
+            let image = sides.iter().find_map(|&(a, b)| {
                 let e = input.edges.get(&(a.min(b), a.max(b)))?;
                 let f = (*edges.get(e)?)?;
                 walking
