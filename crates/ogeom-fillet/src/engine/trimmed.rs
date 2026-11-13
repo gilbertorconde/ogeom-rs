@@ -69,13 +69,6 @@ pub(crate) enum Section {
     /// A round's: the arc between the two corners about the spine's point
     /// at their station, the shorter way round. `spine` is a bounded curve
     /// along the strip.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "the round sections on curved seats build it from M3 on"
-        )
-    )]
     Arc { spine: Curve },
 }
 
@@ -729,7 +722,7 @@ fn radius_law(
 }
 
 /// The faces of `curved` walking `edge`, each once.
-fn faces_of(curved: &Curved, edge: Id) -> Vec<usize> {
+pub(crate) fn faces_of(curved: &Curved, edge: Id) -> Vec<usize> {
     (0..curved.faces.len())
         .filter(|fi| {
             curved.faces[*fi]
@@ -744,7 +737,7 @@ fn faces_of(curved: &Curved, edge: Id) -> Vec<usize> {
 /// A face's outward unit normal at `p`: in closed form on a plane, a
 /// cylinder, a sphere or a torus, else the surface's own normal at the
 /// foot of `p`; `None` where it has none there.
-fn outward(curved: &Curved, face: usize, p: Point) -> Option<Vector> {
+pub(crate) fn outward(curved: &Curved, face: usize, p: Point) -> Option<Vector> {
     let f = &curved.faces[face];
     let sign = if f.reversed { -1.0 } else { 1.0 };
     match &f.surface {
@@ -792,7 +785,7 @@ fn outward(curved: &Curved, face: usize, p: Point) -> Option<Vector> {
 /// A point of face `face` away from edge `edge`: a vertex of its outline
 /// not on the edge, or where it has none, the middle of another of its
 /// edges. `None` where it has neither.
-fn away(curved: &Curved, face: usize, edge: Id) -> Option<Point> {
+pub(crate) fn away(curved: &Curved, face: usize, edge: Id) -> Option<Point> {
     let ends = curved.edges[&edge].ends;
     let walks = || curved.faces[face].loops.iter().flatten();
     walks()
@@ -3109,12 +3102,12 @@ fn assemble_widened(
                 )?);
             }
         }
-        let p0 = pr;
-        // The bevel faces out: away from both faces at the edge.
-        let mid =
-            curved.points[&e.ends.0] + (curved.points[&e.ends.1] - curved.points[&e.ends.0]) * 0.5;
+        // The bevel faces out: away from both faces at the edge, read at
+        // its middle (an arc's chord's middle stands off it, at a half
+        // circle's centre).
+        let mid = e.curve.point_at(0.5 * (e.range.0 + e.range.1), tol)?;
         let out = outward_at(curved, b.faces[0], mid) + outward_at(curved, b.faces[1], mid);
-        let natural = natural_normal(&b.surface, points.points[p0], tol)?;
+        let natural = natural_normal(&b.surface, mid, tol)?;
         let reversed = natural.dot(out) < 0.0;
         // The ring above runs as the bevel faces out; the sheet wants it
         // the surface's way.
@@ -3556,8 +3549,8 @@ fn chained(ends: &[(Point, Point, usize)], tol: Tolerances) -> Option<Vec<Point>
 }
 
 /// Which way a sheet edge, walked as stored, turns about a revolved strip's
-/// axis: the sign of its tangent's turn at its start, `None` off a cone or
-/// a cylinder.
+/// axis: the sign of its tangent's turn at its start, `None` off a cone, a
+/// cylinder or a torus.
 fn turning(
     surface: &SurfaceGeometry,
     edge: &SheetCurve,
@@ -3571,6 +3564,10 @@ fn turning(
         SurfaceGeometry::Cylinder(c) => {
             let axis = c.cylinder().axis();
             (axis.location, axis.direction.vector())
+        }
+        SurfaceGeometry::Torus(t) => {
+            let f = t.torus().frame();
+            (f.origin(), f.z().vector())
         }
         _ => return Ok(None),
     };
@@ -3954,8 +3951,9 @@ fn outward_at(curved: &Curved, face: usize, p: Point) -> Vector {
     outward(curved, face, p).unwrap_or(Vector::ZERO)
 }
 
-/// A bevel surface's own normal at `p`: a plane's, a cone's or a
-/// cylinder's off its axis there, or a B-spline's at the foot of `p`.
+/// A strip surface's own normal at `p`: a plane's, a cone's or a
+/// cylinder's off its axis there, a torus's off its tube's core, or a
+/// B-spline's at the foot of `p`.
 fn natural_normal(surface: &SurfaceGeometry, p: Point, tol: Tolerances) -> OgeomResult<Vector> {
     Ok(match surface {
         SurfaceGeometry::Plane(plane) => plane.plane().normal().vector(),
@@ -3978,6 +3976,14 @@ fn natural_normal(surface: &SurfaceGeometry, p: Point, tol: Tolerances) -> Ogeom
             let (u, v) = foot.parameters;
             let (du, dv) = ogeom_geom::Surface::d1_at(surface, u, v, tol)?;
             du.cross(dv)
+        }
+        SurfaceGeometry::Torus(t) => {
+            let torus = t.torus();
+            let frame = torus.frame();
+            let (o, a) = (frame.origin(), frame.z().vector());
+            let radial = (p - o) - a * (p - o).dot(a);
+            let core = o + radial / radial.magnitude() * torus.major_radius();
+            p - core
         }
         _ => Vector::ZERO,
     })

@@ -34,6 +34,7 @@ mod curved;
 mod guards;
 mod request;
 mod rims;
+mod round_strips;
 mod rounds;
 mod seams;
 mod sections;
@@ -43,6 +44,7 @@ mod vertices;
 
 pub(crate) use request::{Request, Section};
 pub(crate) use rims::assemble as round_rims;
+pub(crate) use round_strips::round as round_curved;
 pub(crate) use seams::{Dissolved, dissolve, dissolve_curved, is_seam};
 pub(crate) use trimmed::{
     chamfer as chamfer_curved, chamfer_mitred as chamfer_curved_mitred, chamfer_patched,
