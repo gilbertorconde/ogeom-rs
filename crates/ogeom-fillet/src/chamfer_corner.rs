@@ -76,6 +76,11 @@ pub fn chamfer_edges_cornered(
     }
     let specs = &specs[..];
     if corner == ChamferCorner::Point {
+        // On a solid bounded by planes the blend engine mitres in one
+        // pass; elsewhere the wedges do.
+        if let Some(built) = crate::chamfer::engine_chamfer_mitred(model, solid, specs, tol)? {
+            return Ok(built);
+        }
         return crate::chamfer::chamfer_edges_mitred(model, solid, specs, tol);
     }
     // A solid bounded by planes is chamfered by the blend engine in one

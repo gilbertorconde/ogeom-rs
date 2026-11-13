@@ -205,6 +205,58 @@ pub(crate) fn run(
         }
         (hi - lo).magnitude()
     };
+    // The mitred vertices, each of three chamfers or more, and the point
+    // their planes share; a request asking for the mitre where they share
+    // no one point is handed back.
+    let mut mitres: FastMap<Id, ogeom_math::Point> = FastMap::default();
+    if request.mitre {
+        let mut vertices: Vec<Id> = planar.points.keys().copied().collect();
+        vertices.sort_unstable();
+        for v in vertices {
+            let at: Vec<&classify::Seat> = keys
+                .iter()
+                .filter(|(a, b)| *a == v || *b == v)
+                .map(|key| &seats[key])
+                .filter(|seat| blended.contains(&seat.edge))
+                .collect();
+            if at.len() < 3 {
+                continue;
+            }
+            // Convex corners only: elsewhere the wedges' mitre stays.
+            if cluster.is_some() || at.iter().any(|seat| !seat.convex) {
+                return Ok(None);
+            }
+            let planes: Vec<(ogeom_math::Vector, f64)> = at
+                .iter()
+                .map(|seat| {
+                    let (a, b) = seat.ends;
+                    let (p, q, r) = (
+                        corners[&(seat.faces[0], a)],
+                        corners[&(seat.faces[0], b)],
+                        corners[&(seat.faces[1], a)],
+                    );
+                    let n = (q - p).cross(r - p);
+                    let n = n / n.magnitude();
+                    (n, n.dot(p.to_vector()))
+                })
+                .collect();
+            let ((a, da), (b, db), (c, dc)) = (planes[0], planes[1], planes[2]);
+            let det = a.dot(b.cross(c));
+            if det.abs() <= 1e-12 {
+                return Ok(None);
+            }
+            let x = (b.cross(c) * da + c.cross(a) * db + a.cross(b) * dc) / det;
+            // Past three bevels, a mitre only where every plane passes
+            // through that point (a pyramid's apex bevelled alike).
+            if planes[3..]
+                .iter()
+                .any(|(n, d)| (n.dot(x) - d).abs() > tol.confusion())
+            {
+                return Ok(None);
+            }
+            mitres.insert(v, ogeom_math::Point::from_vector(x));
+        }
+    }
     let mut run_on: FastMap<usize, Option<Id>> = FastMap::default();
     // The strips, each by its law.
     for key in &keys {
@@ -234,7 +286,19 @@ pub(crate) fn run(
             second: [end(seat.faces[1], a, -1.0), end(seat.faces[1], b, 1.0)],
         };
         match sections::law(section).strip(seat, corners)? {
-            Strip::Planar(ring) => {
+            Strip::Planar(mut ring) => {
+                // At a mitred vertex the bevel runs on to the point its
+                // plane shares with the other two there: after its first
+                // face's corner at the start, after its second's at the
+                // end.
+                if let Some(m) = mitres.get(&b) {
+                    let i = rings.point(*m);
+                    ring.push(i);
+                }
+                if let Some(m) = mitres.get(&a) {
+                    let i = rings.point(*m);
+                    ring.insert(2, i);
+                }
                 let facing = seat.normals[0] + seat.normals[1];
                 rings.push(ring, Origin::Edge(seat.edge), Some(facing));
             }
@@ -252,7 +316,7 @@ pub(crate) fn run(
             .filter(|(a, b)| *a == v || *b == v)
             .filter_map(|key| by_edge.get(&seats[key].edge).copied())
             .collect();
-        if cluster.as_ref().is_some_and(|c| c.unfaceted.contains(&v)) {
+        if cluster.as_ref().is_some_and(|c| c.unfaceted.contains(&v)) || mitres.contains_key(&v) {
             continue;
         }
         match vertices::method(classes[&v], &met)? {
