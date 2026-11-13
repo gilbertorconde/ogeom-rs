@@ -313,10 +313,15 @@ pub fn chamfer_edges(
 ///
 /// A solid bounded by planes is chamfered by the blend engine in one pass:
 /// every face set back from its bevelled edges, every bevel the plane
-/// between its two setback lines, every vertex of three bevels its facet. A
-/// request past what its faces hold (a face its setbacks consume), and any
-/// other solid, are chamfered by wedges built on the solid as given and
-/// applied together, mitred where bevels meet.
+/// between its two setback lines, every vertex of three bevels its facet.
+/// Where a face's setback lines cross (a thin wall bevelled on both edges,
+/// a plate bevelled all round past half its thickness), the face keeps what
+/// lies inside every bevel, or goes, and its bevels meet along the ridges
+/// their planes share: round such a face, and at a convex corner of two
+/// bevels, what is left is the solid cut by the planes there. A request
+/// past that (a consumed face with a reflex corner or a concave edge beside
+/// it), and any other solid, are chamfered by wedges built on the solid as
+/// given and applied together, mitred where bevels meet.
 ///
 /// A seam is no edge of the part's form: an edge between two faces of one
 /// shell lying on one surface facing one way

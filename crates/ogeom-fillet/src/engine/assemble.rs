@@ -102,6 +102,63 @@ impl Rings {
         self.holes.push(holes);
     }
 
+    /// Every ring holding a point of `allowed` clipped by each of `cuts`
+    /// but its own, keeping the side each cut's normal points away from:
+    /// a ring's part beyond a cut is taken off, the cut's line across it
+    /// put in. `false` where a clip would take a corner outside `allowed`,
+    /// or one `may_take` refuses to the cut given the ring and the vertex
+    /// the corner stands at (points the clips make join `allowed` with no
+    /// vertex as they are made). A ring holding a hole is outside the clip.
+    pub fn clip_local(
+        &mut self,
+        cuts: &[super::consumed::Cut],
+        allowed: &mut FastMap<usize, Option<super::Id>>,
+        may_take: impl Fn(&Origin, Option<super::Id>, &Origin) -> bool,
+    ) -> bool {
+        let eps = self.tol.confusion();
+        let local: Vec<usize> = (0..self.rings.len())
+            .filter(|ri| self.rings[*ri].0.iter().any(|p| allowed.contains_key(p)))
+            .collect();
+        for ri in local {
+            if !self.holes[ri].is_empty() {
+                return false;
+            }
+            for (origin, n, off) in cuts {
+                if self.rings[ri].1.iter().any(|o| same_origin(o, origin)) {
+                    continue;
+                }
+                let ring = std::mem::take(&mut self.rings[ri].0);
+                let side = |me: &Self, i: usize| n.dot(me.points[i].to_vector()) - off;
+                let mut out: Vec<usize> = Vec::with_capacity(ring.len() + 2);
+                for k in 0..ring.len() {
+                    let (here, next) = (ring[k], ring[(k + 1) % ring.len()]);
+                    let (sh, sn) = (side(self, here), side(self, next));
+                    if sh <= eps {
+                        out.push(here);
+                    } else {
+                        let ring_origin = self.rings[ri].1[0];
+                        match allowed.get(&here) {
+                            Some(at) if may_take(&ring_origin, *at, origin) => {}
+                            _ => return false,
+                        }
+                    }
+                    if (sh > eps && sn < -eps) || (sh < -eps && sn > eps) {
+                        let (ph, pn) = (self.points[here], self.points[next]);
+                        let x = self.point(ph + (pn - ph) * (sh / (sh - sn)));
+                        allowed.entry(x).or_insert(None);
+                        out.push(x);
+                    }
+                }
+                out.dedup();
+                while out.len() > 1 && out.first() == out.last() {
+                    out.pop();
+                }
+                self.rings[ri].0 = out;
+            }
+        }
+        true
+    }
+
     /// A loop with corners repeated in turn dropped, or `None` where it
     /// keeps no area.
     fn cleaned(&self, ring: Vec<usize>) -> Option<Vec<usize>> {
@@ -378,6 +435,15 @@ fn splice(a: &[usize], b: &[usize]) -> Option<Vec<usize>> {
         }
     }
     None
+}
+
+/// Whether two origins name the same element.
+fn same_origin(a: &Origin, b: &Origin) -> bool {
+    match (a, b) {
+        (Origin::Face(x), Origin::Face(y)) => x == y,
+        (Origin::Edge(x), Origin::Edge(y)) | (Origin::Vertex(x), Origin::Vertex(y)) => x == y,
+        _ => false,
+    }
 }
 
 /// A ring with every there-and-back (`p, q, p`) taken out.

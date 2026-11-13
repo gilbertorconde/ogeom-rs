@@ -39,9 +39,14 @@ bump may break the API and a patch bump may not.
     each face's hole is set back from its bevelled edges like its outline,
     and the face comes out holed. Such a solid went down the wedge path
     whole.
-  - A request its faces cannot hold in any other way (a face its setbacks
-    consume other than such a band) and any other solid are chamfered by
-    wedges, mitred, as before.
+  - **Any face its setbacks consume**, whole or in part, round which
+    every bevel and corner is convex: a plate bevelled all round past half
+    its thickness, a face whose bevels cross on it at an angle. Round such
+    a face the result is the solid cut by the planes of its faces, bevels
+    and corner facets: each bevel runs on past the corner and is trimmed by
+    the planes there.
+  - A consumed face with a reflex corner or a concave edge beside it, and
+    any other solid, are chamfered by wedges, mitred, as before.
 - **A chamfer naming a seam names nothing.** A seam is an edge between two
   faces of one shell on one surface, facing one way, as a boolean leaves
   where it joined two flats. It is no edge of the part's form: mainstream
@@ -70,6 +75,19 @@ bump may break the API and a patch bump may not.
   as it was is modified into its new one, since the solid is rebuilt.
 
 ### Fixed
+
+- **Two unequal bevels at a convex corner got a cap.** Where two bevelled
+  edges of different setbacks met beside a sharp edge, the engine closed
+  the corner with a triangle through the three setback corners. The docs
+  promise a mitre, and the wedge path built one. The bevels now mitre
+  along the line their planes share, the larger running on over the
+  corner. A box's two bottom edges at 1.9 and 0.5 lost 0.163 too little
+  (#926).
+- **Bevels crossing on a face at an angle left too much.** Two converging
+  bevels whose setback lines cross on a face went down the wedge path. On
+  a tapered plate, bevelled 4 on both slanted front edges, it left 26 too
+  much. The face now keeps the part below the crossing, and the bevels
+  meet in a ridge above it.
 
 - **`merge_edges` left each joined edge apart from its neighbours.** The
   joined edge was built with new end vertices at the points the pair's

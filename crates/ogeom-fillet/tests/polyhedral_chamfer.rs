@@ -1057,3 +1057,277 @@ fn a_hole_s_rim_alone_bevels_to_its_closed_form() {
         );
     }
 }
+
+/// The plane of a bevel along a convex edge through `at` with direction
+/// `u`, between faces of outward normals `na` and `nb`, set back `da` on
+/// the first face and `db` on the second, measured in each face square to
+/// the edge: an outward normal and its offset. Independent of the engine:
+/// each contact line is the edge moved into its face, away from the other.
+fn bevel_plane(
+    at: ogeom_math::Vector,
+    u: ogeom_math::Vector,
+    (na, da): (ogeom_math::Vector, f64),
+    (nb, db): (ogeom_math::Vector, f64),
+) -> (ogeom_math::Vector, f64) {
+    let inward = |n: ogeom_math::Vector, other: ogeom_math::Vector| {
+        let m = n.cross(u);
+        let m = m / m.magnitude();
+        if m.dot(other) > 0.0 { -m } else { m }
+    };
+    let (ca, cb) = (at + inward(na, nb) * da, at + inward(nb, na) * db);
+    let mut n = u.cross(cb - ca);
+    n = n / n.magnitude();
+    if n.dot(na + nb) < 0.0 {
+        n = -n;
+    }
+    (n, n.dot(ca))
+}
+
+/// A box's six planes, outward, for a box from the origin of `size`.
+fn box_planes((x, y, z): (f64, f64, f64)) -> Vec<(ogeom_math::Vector, f64)> {
+    use ogeom_math::Vector;
+    vec![
+        (-Vector::X, 0.0),
+        (Vector::X, x),
+        (-Vector::Y, 0.0),
+        (Vector::Y, y),
+        (-Vector::Z, 0.0),
+        (Vector::Z, z),
+    ]
+}
+
+/// Two bottom edges of a box meeting at a corner beside its sharp upright,
+/// bevelled unequally: the bevels mitre along the line their planes share,
+/// the larger running on over the corner to the side face, with no facet
+/// between them, as `chamfer_edges_with` states. The result is the box cut
+/// by both bevels' planes: its volume and its face count, for symmetric
+/// and per-face spellings, either distance the larger.
+#[test]
+fn two_unequal_bevels_at_a_convex_corner_mitre_without_a_cap() {
+    use ogeom_math::Vector;
+    let size = (20.0, 20.0, 2.0);
+    for (front, side) in [(1.9, 0.5), (0.5, 1.9), (1.2, 0.3), (1.0, 1.0)] {
+        let mut planes = box_planes(size);
+        planes.push(bevel_plane(
+            Vector::ZERO,
+            Vector::X,
+            (-Vector::Y, front),
+            (-Vector::Z, front),
+        ));
+        planes.push(bevel_plane(
+            Vector::ZERO,
+            Vector::Y,
+            (-Vector::X, side),
+            (-Vector::Z, side),
+        ));
+        let (want, want_faces) = convex_polytope(&planes);
+        let mut m = Model::new();
+        let s = block(&mut m, (0.0, 0.0, 0.0), size);
+        let point = |m: &Model, v: &Shape| m.node(v).unwrap().data().as_vertex().unwrap().point;
+        let specs: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter_map(|e| {
+                let (a, b) = ogeom_algo::edge_vertices(&m, &e).unwrap().unwrap();
+                let (p, q) = (point(&m, &a), point(&m, &b));
+                let bottom = p.z.max(q.z) < 1e-9;
+                if bottom && p.y.max(q.y) < 1e-9 {
+                    Some((e, Chamfer::Symmetric(front)))
+                } else if bottom && p.x.max(q.x) < 1e-9 {
+                    Some((e, Chamfer::Symmetric(side)))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(specs.len(), 2);
+        let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{front}, {side}: {:?}", found.problems);
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "{front}, {side}: volume {got} against {want}"
+        );
+        let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+            .unwrap()
+            .len();
+        assert_eq!(faces, want_faces, "{front}, {side}: faces");
+    }
+}
+
+/// A plate 20 by 20 by 2 with every edge bevelled past half its thickness:
+/// each side face's setback lines cross, so all four go, their top and
+/// bottom bevels meeting in ridges that end on the upright bevels, and
+/// each corner of three bevels keeps the part of its facet inside them.
+/// The plate is convex and every bevel convex, so the result is the plate
+/// cut by the planes of its faces, its bevels and its corner facets (each
+/// facet through the setback corners `d` in from both edges on each face),
+/// its volume and face count, the same corners to the bit in any order.
+#[test]
+fn a_plate_bevelled_all_round_past_half_its_thickness_keeps_the_polytope() {
+    use ogeom_math::Vector;
+    let size = (20.0, 20.0, 2.0);
+    for d in [1.2, 1.9] {
+        let mut planes = box_planes(size);
+        let (x, y, z) = (Vector::X, Vector::Y, Vector::Z);
+        let (sx, sy, sz) = (size.0 * x, size.1 * y, size.2 * z);
+        // The twelve edges: a point, a direction and the two faces.
+        let edges = [
+            (Vector::ZERO, x, -y, -z),
+            (sy, x, y, -z),
+            (sz, x, -y, z),
+            (sy + sz, x, y, z),
+            (Vector::ZERO, y, -x, -z),
+            (sx, y, x, -z),
+            (sz, y, -x, z),
+            (sx + sz, y, x, z),
+            (Vector::ZERO, z, -x, -y),
+            (sx, z, x, -y),
+            (sy, z, -x, y),
+            (sx + sy, z, x, y),
+        ];
+        for (at, u, na, nb) in edges {
+            planes.push(bevel_plane(at, u, (na, d), (nb, d)));
+        }
+        for (cx, cy, cz) in [
+            (0.0, 0.0, 0.0),
+            (1.0, 0.0, 0.0),
+            (0.0, 1.0, 0.0),
+            (1.0, 1.0, 0.0),
+        ]
+        .into_iter()
+        .flat_map(|(a, b, _)| [(a, b, 0.0), (a, b, 1.0)])
+        {
+            let corner = Vector::new(cx * size.0, cy * size.1, cz * size.2);
+            let inward = Vector::new(1.0 - 2.0 * cx, 1.0 - 2.0 * cy, 1.0 - 2.0 * cz) * d;
+            let (ix, iy, iz) = (inward.x * x, inward.y * y, inward.z * z);
+            let (p, q, r) = (corner + iy + iz, corner + ix + iz, corner + ix + iy);
+            let mut n = (q - p).cross(r - p);
+            n = n / n.magnitude();
+            if n.dot(-inward) < 0.0 {
+                n = -n;
+            }
+            planes.push((n, n.dot(p)));
+        }
+        let (want, want_faces) = convex_polytope(&planes);
+        let mut first: Option<Vec<[u64; 3]>> = None;
+        for seed in 0..3_u64 {
+            let mut m = Model::new();
+            let s = block(&mut m, (0.0, 0.0, 0.0), size);
+            let specs = all_edges(&m, &s, d);
+            let specs: Vec<(Shape, Chamfer)> = shuffled(specs.len(), seed)
+                .iter()
+                .map(|i| specs[*i].clone())
+                .collect();
+            let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T)
+                .unwrap_or_else(|err| panic!("d {d}: {err}"));
+            let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+            assert!(found.is_valid(), "d {d}: {:?}", found.problems);
+            assert!(!folded(&m, &built.shape), "folded");
+            let got = volume(&m, &built.shape);
+            assert!(
+                (got - want).abs() <= 1e-9 * want,
+                "d {d}: volume {got} against {want}"
+            );
+            let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+                .unwrap()
+                .len();
+            assert_eq!(faces, want_faces, "d {d}: faces");
+            let k = key(&m, &built.shape).1;
+            match &first {
+                None => first = Some(k),
+                Some(held) => assert!(*held == k, "d {d}: order {seed} differs"),
+            }
+        }
+    }
+}
+
+/// A plate tapered towards its top, its front a trapezoid between two
+/// slanted edges. Both slanted front edges bevelled 4: their setback lines
+/// cross on the front face below its top, so the front keeps the triangle
+/// below the crossing and the bevels meet in a ridge above it up to the
+/// top. The tapered plate is convex, so the result is it cut by the two
+/// bevels' planes: its volume and face count.
+#[test]
+fn bevels_crossing_on_a_face_at_an_angle_leave_it_the_part_below() {
+    use ogeom_math::Vector;
+    let mut points: Vec<Point> = [
+        (0.0, 0.0, 0.0),
+        (20.0, 0.0, 0.0),
+        (20.0, 10.0, 0.0),
+        (0.0, 10.0, 0.0),
+        (5.0, 0.0, 4.0),
+        (15.0, 0.0, 4.0),
+        (15.0, 10.0, 4.0),
+        (5.0, 10.0, 4.0),
+    ]
+    .iter()
+    .map(|&(x, y, z)| Point::new(x, y, z))
+    .collect();
+    let rings: Vec<Vec<usize>> = vec![
+        vec![3, 2, 1, 0],
+        vec![4, 5, 6, 7],
+        vec![0, 1, 5, 4],
+        vec![2, 3, 7, 6],
+        vec![3, 0, 4, 7],
+        vec![1, 2, 6, 5],
+    ];
+    let plane_of = |ring: &[usize], points: &[Point]| {
+        let (a, b, c) = (points[ring[0]], points[ring[1]], points[ring[2]]);
+        let n = (b - a).cross(c - b);
+        let n = n / n.magnitude();
+        (n, n.dot(a.to_vector()))
+    };
+    let mut planes: Vec<(Vector, f64)> = rings.iter().map(|r| plane_of(r, &points)).collect();
+    let d = 4.0;
+    let (front, left, right) = (planes[2].0, planes[4].0, planes[5].0);
+    let along = |a: usize, b: usize, points: &[Point]| {
+        let u = points[b] - points[a];
+        u / u.magnitude()
+    };
+    planes.push(bevel_plane(
+        points[0].to_vector(),
+        along(0, 4, &points),
+        (front, d),
+        (left, d),
+    ));
+    planes.push(bevel_plane(
+        points[1].to_vector(),
+        along(1, 5, &points),
+        (front, d),
+        (right, d),
+    ));
+    let (want, want_faces) = convex_polytope(&planes);
+    let mut m = Model::new();
+    let s = ogeom_algo::make_faceted_solid(&mut m, &points, &rings, &[], T)
+        .unwrap()
+        .0
+        .shape;
+    points.clear();
+    let specs: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+            let pa = m.node(&a).unwrap().data().as_vertex().unwrap().point;
+            let pb = m.node(&b).unwrap().data().as_vertex().unwrap().point;
+            pa.y.max(pb.y) < 1e-9 && (pa.z - pb.z).abs() > 1.0
+        })
+        .map(|e| (e, Chamfer::Symmetric(d)))
+        .collect();
+    assert_eq!(specs.len(), 2);
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert!(!folded(&m, &built.shape), "folded");
+    let got = volume(&m, &built.shape);
+    assert!(
+        (got - want).abs() <= 1e-9 * want,
+        "volume {got} against {want}"
+    );
+    let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+        .unwrap()
+        .len();
+    assert_eq!(faces, want_faces, "faces");
+}
