@@ -1030,7 +1030,14 @@ face's side (a boss's foot where the plate's side runs tangent into the \
 boss, the plate's top narrowing to a cusp there) is cut off at that side's \
 plane, its fill ending flush with the side; where the solid stands beyond \
 that plane, or no planar side bounds the face there, it is refused by \
-name rather than laid over nothing. Where the request also rounds the \
+name rather than laid over nothing. An open circular foot rim on a cylinder \
+can instead carry the ball onto one straight edge of its cap, with both \
+ends still on the cap. A convex straight shelf edge beside a concave \
+circular cylinder rim can carry the ball onto that rim, returning to the \
+cap at both ends. Both transfers check actual contact trim, intervening \
+faces and other bands, and fit the rolling envelope within twenty \
+confusions. Other support changes retain their named refusals. \
+Where the request also rounds the \
 plate's top edge along that side, one tangent chain through the tangent \
 point, the edge's convex round turns into the foot's concave one through \
 an S on each side of that point: two patches G1 to the bands, the top, \
@@ -1366,6 +1373,11 @@ tests = [
     "crates/ogeom-fillet/tests/marched_blend.rs::a_cylinder_square_on_a_plane_rounds_the_same_on_patches",
     "crates/ogeom-fillet/tests/marched_blend.rs::a_straight_seat_between_two_patches_runs_off_their_ends",
     "crates/ogeom-fillet/tests/tangent_chain.rs",
+    "crates/ogeom-fillet/tests/carried_rim.rs",
+    "crates/ogeom-fillet/tests/contact_regressions.rs",
+    "crates/ogeom-fillet/tests/rim_bounds.rs",
+    "crates/ogeom-fillet/tests/cap_history.rs",
+    "crates/ogeom-fillet/tests/corner_history.rs",
 ]
 
 [[capability]]
