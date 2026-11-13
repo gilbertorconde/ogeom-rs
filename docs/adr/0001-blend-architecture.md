@@ -227,9 +227,22 @@ by exactly the two curves that meet there.
      n-sided patch [10, 11] for n ≤ 6.
    - It is evaluated, or fitted once at a fixed resolution with the residual
      reported. It is not refined until a check passes.
-   - `fill_n.rs` (`make_filling_n_region`) stays the fitter where a B-spline
-     result is required. It is fed consistent, twist-compatible corner data
-     and a region known in advance.
+   - Its hole is the strips' natural ends: each strip ends on its surface
+     through its two faces' setback corners (skew where those stand at
+     different stations), so the hole's corners are the setback corners.
+   - The patch is Kato's blend of the sides' ribbons over the triangle.
+     Each ribbon leaves its side along a cross tangent in the strip's
+     tangent plane, its ends fixed by the corners and its slopes there
+     making the two ribbons' twists agree in the face both strips touch,
+     and bends as the strip does, so that near its side it keeps to the
+     strip's own continuation. It takes each side's tangent plane exactly,
+     however the strips' curvatures at a corner disagree (see the amendment
+     below).
+   - The face carries it as a clamped bicubic B-spline taking the exact
+     patch at a fixed net of points and its cross-boundary derivatives
+     along the sides, closest at the corners. Its gap and tangency to every
+     strip, and its region, are measured on that B-spline, never assumed
+     from the exact patch.
 
    Setbacks are the knob Várady and Rockwood give for patch quality: larger
    setbacks give rounder patches and fewer bad corner angles [5, 6]. They
@@ -275,6 +288,13 @@ These are kept, and kept independent of the construction:
 
 A guard that fails is an engine bug and refuses the request. It is never the
 way the engine searches for a working construction.
+
+The region guard proves faces, not samples:
+`ogeom_algo::certify_face_within` bounds every face over rectangles of its
+parameters by the convex hull of its exact B-spline form there, splitting
+what it cannot clear, against the region as half-spaces under maxima and
+minima. Its one input from the mesher is the trim, read from the face's
+chart rings drawn within a chord.
 
 ## 5. Polyhedral fast path: exact chamfers (prototype result)
 
@@ -441,14 +461,16 @@ else stays on the current path.
   - The old chamfer path stays for curved faces.
 - **M2: request model and P0–P2 for planar faces with rounds.** Exact
   cylinder strips. Sphere and planar exact vertices. The general vertex
-  patch through `make_filling_n_region` with fixed resolution.
+  patch of M4, brought forward (see the amendment below).
   - Corpus: box, L, T, U, stepped block, the #902 bracket fillet-all-edges,
     mixed rounds and chamfers.
 - **M3: curved faces.** P1 on `march.rs` and `pair_marched.rs`. P2
   intersections in face parameter space. The plate with a boss, tangent and
   not (the #868 and #878 families).
 - **M4: the general vertex patch** (ribbon-based transfinite or Gregory),
-  replacing iterative fill refinement for vertex holes.
+  replacing iterative fill refinement for vertex holes. Its three-sided
+  case for rounds lands before the M2 switch; more sides and other
+  sections follow here.
 - **M5: roll-over and non-local blends.** Roll-over re-seats the contact on
   the new face. Non-local blends go through the one-boolean fallback.
 - **M6: retire old paths,** file by file, once no routed class reaches them.
@@ -461,6 +483,38 @@ since the new one is exact or fitted differently. It is promised for
 closed-form strips (cylinders, tori), which both paths build exactly. A case
 the old path refused may now build. A case the old path built and the new
 one refuses is a migration blocker.
+
+### Amendment: the general patch before the M2 switch (#902)
+
+M2 first plugged the fixed-resolution `make_filling_n_region` patch into
+unequal-radius and mixed convex and concave corners. On the corpus it missed
+the bands' fit target (2e-4) at every such corner, with either hole: skew
+strip ends, or square ends with conic trims on the faces. The patch stood up
+to 0.29 outside the box, or met its strips up to 9.5e-3 rad off tangent;
+refining its net did not mend it.
+
+The cause is twist incompatibility. At a hole corner two strips of
+different radius or sign meet, both tangent to the same face. A G1 patch's
+shape operator there must be symmetric, which asks
+`k_A (t_A . c_A)(c_A . t_B) = k_B (t_B . c_B)(c_B . t_A)` of the two
+cylinders' curvatures `k` and circumferential directions `c` along the hole's
+sides `t`. Different radii or signs break it, and the normal part of the
+mismatch cannot be mended by any choice of cross tangents. A least-squares
+polynomial fill cannot take both supports' tangent planes there; a
+Gregory-type patch exists to.
+
+So the three-sided case of M4's patch moves ahead of the switch, with the
+natural hole at every corner (§4.4). Mixed and unequal corners stay on the
+old path until it meets 2e-4 at a fixed resolution, and the switch waits for
+the whole corpus, as before. At corners of radii 1, 1.5 and 2 and of 1, 3
+and 2 (#713's) and at an L-prism's mixed corner, the B-spline at a net of 33
+meets its strips within 6.7e-5, 7.7e-5 and 5.5e-5 rad and 4.3e-6, 6.4e-6
+and 2.2e-6 in position, and is proved inside its region. Straight ribbons
+stood the 1, 3 and 2 corner 3.0e-4 past a face: off a strip tangent to a
+face, a straight line crosses it, so each ribbon bends as its strip does. A Gregory patch converts exactly to rational Bézier form,
+but with base points at its corners (weight zero there), which a
+tensor-product B-spline kernel cannot evaluate. The interpolated form is
+taken instead, its error measured on it.
 
 ## 12. Acceptance corpus
 

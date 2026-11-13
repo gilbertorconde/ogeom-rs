@@ -4,3 +4,4 @@
 pub(crate) mod patch;
 pub(crate) mod section;
 pub(crate) mod sphere;
+pub(crate) mod transfinite;
