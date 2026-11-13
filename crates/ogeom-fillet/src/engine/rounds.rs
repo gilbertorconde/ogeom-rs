@@ -14,7 +14,7 @@
 use ogeom_algo::{Built, HalfSpaces, History};
 use ogeom_core::{FastMap, OgeomResult, Tolerances};
 use ogeom_geom::SurfaceGeometry;
-use ogeom_math::Point;
+use ogeom_math::{Point, Vector};
 use ogeom_topo::{Model, Orientation, Shape, ShapeType, explore_unique};
 
 use super::Id;
@@ -115,6 +115,8 @@ pub(crate) fn assemble(
     let mut method: FastMap<Id, RoundVertex> = FastMap::default();
     // For a flush vertex, its third face and the round ending there.
     let mut flush: FastMap<Id, (usize, Id)> = FastMap::default();
+    // For a mitre vertex, its two rounds and the mitre plane's normal.
+    let mut mitres: FastMap<Id, ([Id; 2], Vector)> = FastMap::default();
     for &v in &vertices {
         let Some(round) = faces_round(&planar.faces, v) else {
             return Ok(None);
@@ -145,6 +147,15 @@ pub(crate) fn assemble(
                 }
                 flush.insert(v, (third, seat.edge));
                 RoundVertex::Flush
+            }
+            (3, 2) => {
+                let Some((pair, normal)) =
+                    mitre(planar, &sections, &here, &round, corners, v, reach, tol)?
+                else {
+                    return Ok(None);
+                };
+                mitres.insert(v, (pair, normal));
+                RoundVertex::Mitre
             }
             (3, 3) => {
                 let radius = sections[&blended[0].edge].1;
@@ -231,13 +242,29 @@ pub(crate) fn assemble(
         for v in [seat.ends.0, seat.ends.1] {
             let order = section.order();
             let [from_face, _] = order;
-            let (curve, range) = if stands_level(*edge, v) {
+            let (p0, p1) = (at[&(seat.faces[0], v)], at[&(seat.faces[1], v)]);
+            // At a mitre the second round ends on the first's end: the two
+            // equal cylinders meet in the mitre plane, on one ellipse.
+            if let Some(([first, _], _)) = mitres.get(&v)
+                && *first != *edge
+            {
+                let (shared, _) = arcs[&(*first, v)];
+                let ends = edges[shared].ends;
+                if !(ends == (p0, p1) || ends == (p1, p0)) {
+                    return Ok(None);
+                }
+                arcs.insert((*edge, v), (shared, ends.0 == p0));
+                continue;
+            }
+            let (curve, range) = if let Some((_, normal)) = mitres.get(&v) {
+                let s = level[&(*edge, v)];
+                section.plane_end(order, [s[order[0]], s[order[1]]], *normal, tol)?
+            } else if stands_level(*edge, v) {
                 section.arc_at(station[&(*edge, v)], tol)?
             } else {
                 let s = level[&(*edge, v)];
                 section.skew_end(order, [s[order[0]], s[order[1]]], tol)?
             };
-            let (p0, p1) = (at[&(seat.faces[0], v)], at[&(seat.faces[1], v)]);
             // The arc runs from the first face of its order's contact.
             let ends = if from_face == 0 { (p0, p1) } else { (p1, p0) };
             edges.push(SheetEdge {
@@ -336,11 +363,41 @@ pub(crate) fn assemble(
         let (arc_b, _) = arcs[&(*edge, b)];
         ring.push((arc_b, edges[arc_b].ends.0 == at[&(seat.faces[1], b)]));
         // Over the strip's own stations, from the least of its four corners'
-        // to the greatest, no farther: a surface reaching past its face's
-        // trim is one more thing a later operation reads.
-        let (lo, hi) = (
+        // and its ends' to the greatest, no farther: a surface reaching past
+        // its face's trim is one more thing a later operation reads. An end
+        // cut by a plane leaning across the crease reaches past its corners'
+        // stations between them.
+        let (corners_lo, corners_hi) = (
             level[&(*edge, a)][0].min(level[&(*edge, a)][1]),
             level[&(*edge, b)][0].max(level[&(*edge, b)][1]),
+        );
+        let (mut lo, mut hi) = (corners_lo, corners_hi);
+        for end in [arc_a, arc_b] {
+            if let Some((curve, (t0, t1))) = &edges[end].curve {
+                for k in 0..=END_SAMPLES {
+                    let t = t0 + (t1 - t0) * f64::from(k) / f64::from(END_SAMPLES);
+                    let p = ogeom_geom::Curve3d::point_at(curve, t, tol)?;
+                    let station = (p - section.crease(0.0)).dot(seat.along);
+                    lo = lo.min(station);
+                    hi = hi.max(station);
+                }
+            }
+        }
+        // Between samples an end's station strays less than the sag of a
+        // thirty-second of its arc, a thousandth of the radius: where an end
+        // reaches past its corners, the span is widened by that much too.
+        let margin = 1e-3 * sections[edge].1;
+        let (lo, hi) = (
+            if lo < corners_lo - reach {
+                lo - margin
+            } else {
+                corners_lo
+            },
+            if hi > corners_hi + reach {
+                hi + margin
+            } else {
+                corners_hi
+            },
         );
         let surface = section.surface((lo, hi), tol)?;
         strip_face.insert(*edge, faces.len());
@@ -741,6 +798,87 @@ fn corner_material(
 /// the arc between them where a strip ends flush in the face.
 type Corner = (Vec<usize>, Option<(usize, bool)>);
 
+/// A vertex of three edges where two rounds of one radius and one sense
+/// meet beside an edge left sharp, both rounds' setback corners on the
+/// sharp edge one point and their axes meeting: the two rounds in their
+/// edges' order, and the normal of the mitre plane they meet in (through
+/// the shared face's setback corner, the sharp edge's and where the axes
+/// meet, which holds the two cylinders' crossing). `None` for any other.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one vertex's reading of the solid"
+)]
+fn mitre(
+    planar: &Planar,
+    sections: &FastMap<Id, (PlanarSection, f64)>,
+    here: &[&Seat],
+    round: &[usize],
+    corners: &FastMap<(usize, Id), Point>,
+    v: Id,
+    reach: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<([Id; 2], Vector)>> {
+    let mut rounds: Vec<&&Seat> = here
+        .iter()
+        .filter(|s| sections.contains_key(&s.edge))
+        .collect();
+    rounds.sort_by_key(|s| s.edge);
+    let (Some(sharp), [a, b]) = (
+        here.iter().find(|s| !sections.contains_key(&s.edge)),
+        rounds.as_slice(),
+    ) else {
+        return Ok(None);
+    };
+    let (ra, rb) = (sections[&a.edge].1, sections[&b.edge].1);
+    if ra != rb || a.convex != b.convex {
+        return Ok(None);
+    }
+    let Some(shared) = a.faces.iter().copied().find(|f| b.faces.contains(f)) else {
+        return Ok(None);
+    };
+    let other = |s: &Seat| s.faces.iter().copied().find(|f| *f != shared);
+    let (Some(fa), Some(fb)) = (other(a), other(b)) else {
+        return Ok(None);
+    };
+    if !(sharp.faces.contains(&fa) && sharp.faces.contains(&fb)) || round.len() != 3 {
+        return Ok(None);
+    }
+    let on_sharp = corners[&(fa, v)];
+    if on_sharp.distance(corners[&(fb, v)]) > reach {
+        return Ok(None);
+    }
+    // Each round's axis: its ball's centre along its crease.
+    let axis = |seat: &Seat| -> (Point, Vector) {
+        let (section, r) = &sections[&seat.edge];
+        let n = planar.faces[seat.faces[0]].normal;
+        let side = if seat.convex { -*r } else { *r };
+        (section.contact(0, 0.0) + n * side, seat.along)
+    };
+    let ((pa, da), (pb, db)) = (axis(a), axis(b));
+    // Where the two axes come closest, and how close.
+    let w = pa - pb;
+    let (aa, ab, bb, aw, bw) = (da.dot(da), da.dot(db), db.dot(db), da.dot(w), db.dot(w));
+    let det = aa * bb - ab * ab;
+    if det.abs() <= tol.angular() {
+        return Ok(None);
+    }
+    let (t, u) = ((ab * bw - bb * aw) / det, (aa * bw - ab * aw) / det);
+    let (qa, qb) = (pa + da * t, pb + db * u);
+    if qa.distance(qb) > reach {
+        return Ok(None);
+    }
+    let meet = Point::from_vector((qa.to_vector() + qb.to_vector()) * 0.5);
+    let on_shared = corners[&(shared, v)];
+    let normal = (on_sharp - on_shared).cross(meet - on_shared);
+    if normal.magnitude() <= tol.confusion() {
+        return Ok(None);
+    }
+    Ok(Some(([a.edge, b.edge], normal)))
+}
+
+/// The points read along a strip's end for the stations it reaches.
+const END_SAMPLES: u32 = 32;
+
 /// The length of a seat's edge.
 fn section_length(planar: &Planar, seat: &Seat) -> f64 {
     planar.points[&seat.ends.0].distance(planar.points[&seat.ends.1])
@@ -1124,6 +1262,55 @@ mod tests {
             assert_eq!(images.len(), 1);
             assert!(point(&images[0]).distance(point(&v)) < 1e-12);
         }
+    }
+
+    /// A 10 by 8 by 6 box, the two top edges at the corner `(0, 0, 6)`
+    /// rounded at 1.5 and the upright edge there left sharp: the two
+    /// strips run on to the mitre plane `x = y` and meet along its ellipse,
+    /// the crease carried on from the sharp edge. The box less each strip's
+    /// spandrel along its whole edge, less what the two would both take at
+    /// the corner, `r^3 (5/3 - pi/2)` (the integral of the two spandrels'
+    /// common square over the corner's height).
+    #[test]
+    fn two_rounds_beside_a_sharp_edge_meet_in_their_mitre() {
+        let r = 1.5;
+        let mut m = Model::new();
+        let s = ogeom_algo::make_box(&mut m, Frame::WORLD, (10.0, 8.0, 6.0), T)
+            .unwrap()
+            .shape;
+        let point = |m: &Model, v: &Shape| {
+            m.node(v)
+                .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                .unwrap()
+        };
+        let top_at_origin = |m: &Model, e: &Shape| {
+            let (a, b) = ogeom_algo::edge_vertices(m, e).unwrap().unwrap();
+            let (p, q) = (point(m, &a), point(m, &b));
+            (p.z - 6.0).abs() < 1e-9
+                && (q.z - 6.0).abs() < 1e-9
+                && (p.x.abs() + p.y.abs() < 1e-9 || q.x.abs() + q.y.abs() < 1e-9)
+        };
+        let pair: Vec<(Shape, f64)> = explore_unique(&m, &s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| top_at_origin(&m, e))
+            .map(|e| (e, r))
+            .collect();
+        assert_eq!(pair.len(), 2);
+        let mut built = Vec::new();
+        for order in [pair.clone(), pair.iter().rev().cloned().collect()] {
+            let request = Request::from_rounds(&order, T).unwrap();
+            let b = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+            let found = ogeom_algo::check(&m, &b, T).unwrap();
+            assert!(found.is_valid(), "{:?}", found.problems);
+            built.push(b);
+        }
+        assert_eq!(bits(&m, &built[0]), bits(&m, &built[1]));
+        let pi = core::f64::consts::PI;
+        let spandrel = (1.0 - pi / 4.0) * r * r;
+        let want = 480.0 - spandrel * (10.0 + 8.0) + r * r * r * (5.0 / 3.0 - pi / 2.0);
+        let v = volume(&m, &built[0]);
+        assert!((v - want).abs() < 1e-6, "{v} against {want}");
     }
 
     /// A box with every edge rounded: the exact rounded box,

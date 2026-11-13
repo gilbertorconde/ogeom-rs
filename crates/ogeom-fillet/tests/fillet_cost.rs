@@ -173,13 +173,13 @@ fn the_outer_edges_of_a_holed_plate_meet_at_mitres() {
 }
 
 /// The outer edges of a plate's top face fillet with the same boolean
-/// work whether the plate is plain or drilled with 256 holes: the run-out
+/// work whether the plate is drilled with one hole or 256: the run-out
 /// probes at the corners read the faces near the corners, and each pass's
 /// boolean, a trim of the faces its wedges sit on or the general fuse,
 /// leaves every face clear of each of its wedges as it stands, the holes
 /// among them. So the trims made, the faces gathered, the face pairs asked
 /// for sections and the pieces classified are the same counts for both
-/// plates.
+/// plates. The plain plate, bounded by planes, takes no boolean at all.
 #[test]
 fn the_holes_a_plate_s_outer_fillets_do_not_touch_add_no_boolean_work() {
     let (area, centroid) = corner(1.0);
@@ -200,10 +200,14 @@ fn the_holes_a_plate_s_outer_fillets_do_not_touch_add_no_boolean_work() {
         assert_eq!(faces, 10 + (n * n) as usize);
         work
     };
+    // The plain plate is bounded by planes: the blend engine rounds it in
+    // one pass, with no boolean.
     let plain = work(0);
+    assert_eq!(plain.seated_cuts + plain.faces_gathered, 0);
+    let one = work(1);
     let holed = work(16);
-    assert!(plain.seated_cuts > 0 || plain.faces_gathered > 0);
-    assert_eq!(holed, plain, "256 holes against the plain plate");
+    assert!(one.seated_cuts > 0 || one.faces_gathered > 0);
+    assert_eq!(holed, one, "256 holes against one");
 }
 
 /// The processor time of the outer edges' fillet on the plate with 256
