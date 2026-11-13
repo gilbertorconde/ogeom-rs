@@ -50,7 +50,7 @@ mod vertices;
 
 pub(crate) use request::{Request, Section};
 pub(crate) use seams::{Dissolved, dissolve, dissolve_curved, is_seam};
-pub(crate) use trimmed::chamfer as chamfer_curved;
+pub(crate) use trimmed::{chamfer as chamfer_curved, chamfer_patched};
 
 /// Whether `solid` is one the polyhedral classes read: one solid bounded by
 /// planes, each face its rings of straight edges.
