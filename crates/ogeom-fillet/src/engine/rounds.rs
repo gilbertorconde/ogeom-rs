@@ -18,8 +18,8 @@ use ogeom_math::Point;
 use ogeom_topo::{Model, Orientation, Shape, ShapeType, explore_unique};
 
 use super::Id;
-use super::assemble::{SheetEdge, SheetFace, build_faces};
 use super::classify::{Planar, Seat, faces_round};
+use super::curved::{SheetEdge, SheetFace, build_faces};
 use super::request::Section;
 use super::vertices::RoundVertex;
 use crate::round::section::{PlanarSection, RoundSpec};
