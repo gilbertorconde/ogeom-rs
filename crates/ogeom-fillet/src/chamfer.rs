@@ -452,8 +452,10 @@ pub(crate) fn engine_chamfer(
 }
 
 /// [`engine_chamfer`] closing each vertex of three chamfers by their mitre,
-/// on a solid bounded by planes only: `None` elsewhere, and where a
-/// vertex's mitre is not one point, the model then left as it was found.
+/// on a solid bounded by planes only: the bevels run on to the point their
+/// planes share, or, at a convex vertex of four or more sharing none, until
+/// the others cut them. `None` elsewhere, the model then left as it was
+/// found.
 ///
 /// # Errors
 ///

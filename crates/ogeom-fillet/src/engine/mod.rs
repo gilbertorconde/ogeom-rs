@@ -153,11 +153,68 @@ pub(crate) fn run(
         }
         return rounds::assemble(model, &planar, &seats, &by_edge, &corners, tol);
     }
-    let cluster = match consumed::consumed(&planar, &seats, &blended, &corners, &classes, tol) {
+    // The mitred vertices, each of three chamfers or more, and the point
+    // their planes share; where four or more share no one point, the
+    // vertex is cut back by every plane round it instead (`scattered`),
+    // each bevel running on until the others cut it.
+    let mut mitres: FastMap<Id, ogeom_math::Point> = FastMap::default();
+    let mut scattered: FastSet<Id> = FastSet::default();
+    if request.mitre {
+        let mut vertices: Vec<Id> = planar.points.keys().copied().collect();
+        vertices.sort_unstable();
+        for v in vertices {
+            let at: Vec<&classify::Seat> = keys
+                .iter()
+                .filter(|(a, b)| *a == v || *b == v)
+                .map(|key| &seats[key])
+                .filter(|seat| blended.contains(&seat.edge))
+                .collect();
+            if at.len() < 3 {
+                continue;
+            }
+            let planes: Vec<(ogeom_math::Vector, f64)> = at
+                .iter()
+                .map(|seat| {
+                    let (a, b) = seat.ends;
+                    let (p, q, r) = (
+                        corners[&(seat.faces[0], a)],
+                        corners[&(seat.faces[0], b)],
+                        corners[&(seat.faces[1], a)],
+                    );
+                    let n = (q - p).cross(r - p);
+                    let n = n / n.magnitude();
+                    (n, n.dot(p.to_vector()))
+                })
+                .collect();
+            let ((a, da), (b, db), (c, dc)) = (planes[0], planes[1], planes[2]);
+            let det = a.dot(b.cross(c));
+            if det.abs() <= 1e-12 {
+                return Ok(None);
+            }
+            let x = (b.cross(c) * da + c.cross(a) * db + a.cross(b) * dc) / det;
+            // Past three bevels, the point only where every plane passes
+            // through it (a pyramid's apex bevelled alike).
+            if planes[3..]
+                .iter()
+                .any(|(n, d)| (n.dot(x) - d).abs() > tol.confusion())
+            {
+                scattered.insert(v);
+            } else {
+                mitres.insert(v, ogeom_math::Point::from_vector(x));
+            }
+        }
+    }
+    let cluster = match consumed::consumed(
+        &planar, &seats, &blended, &corners, &classes, &scattered, tol,
+    ) {
         consumed::Consumed::Nothing => None,
         consumed::Consumed::Cluster(cluster) => Some(cluster),
         consumed::Consumed::Outside => return Ok(None),
     };
+    // A mitre to one point inside a cut-back cluster is not built.
+    if cluster.is_some() && !mitres.is_empty() {
+        return Ok(None);
+    }
     let eaten = |fi: usize| cluster.as_ref().is_some_and(|c| c.faces.contains(&fi));
     let mut rings = Rings::new(tol);
     let mut sorted: Vec<((usize, Id), ogeom_math::Point)> =
@@ -205,57 +262,6 @@ pub(crate) fn run(
         }
         (hi - lo).magnitude()
     };
-    // The mitred vertices, each of three chamfers or more, and the point
-    // their planes share; a request asking for the mitre where they share
-    // no one point is handed back.
-    let mut mitres: FastMap<Id, ogeom_math::Point> = FastMap::default();
-    if request.mitre {
-        let mut vertices: Vec<Id> = planar.points.keys().copied().collect();
-        vertices.sort_unstable();
-        for v in vertices {
-            let at: Vec<&classify::Seat> = keys
-                .iter()
-                .filter(|(a, b)| *a == v || *b == v)
-                .map(|key| &seats[key])
-                .filter(|seat| blended.contains(&seat.edge))
-                .collect();
-            if at.len() < 3 {
-                continue;
-            }
-            if cluster.is_some() {
-                return Ok(None);
-            }
-            let planes: Vec<(ogeom_math::Vector, f64)> = at
-                .iter()
-                .map(|seat| {
-                    let (a, b) = seat.ends;
-                    let (p, q, r) = (
-                        corners[&(seat.faces[0], a)],
-                        corners[&(seat.faces[0], b)],
-                        corners[&(seat.faces[1], a)],
-                    );
-                    let n = (q - p).cross(r - p);
-                    let n = n / n.magnitude();
-                    (n, n.dot(p.to_vector()))
-                })
-                .collect();
-            let ((a, da), (b, db), (c, dc)) = (planes[0], planes[1], planes[2]);
-            let det = a.dot(b.cross(c));
-            if det.abs() <= 1e-12 {
-                return Ok(None);
-            }
-            let x = (b.cross(c) * da + c.cross(a) * db + a.cross(b) * dc) / det;
-            // Past three bevels, a mitre only where every plane passes
-            // through that point (a pyramid's apex bevelled alike).
-            if planes[3..]
-                .iter()
-                .any(|(n, d)| (n.dot(x) - d).abs() > tol.confusion())
-            {
-                return Ok(None);
-            }
-            mitres.insert(v, ogeom_math::Point::from_vector(x));
-        }
-    }
     let mut run_on: FastMap<usize, Option<Id>> = FastMap::default();
     // The strips, each by its law.
     for key in &keys {

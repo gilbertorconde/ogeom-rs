@@ -3,7 +3,8 @@
 //! thin wall bevelled on both its edges, a plate bevelled all round past
 //! half its thickness, a face whose bevels cross on it at an angle), and a
 //! convex corner where two bevels of unequal setbacks meet beside a sharp
-//! edge, which mitres.
+//! edge, which mitres, as does a convex corner of four bevels or more
+//! asked to mitre whose planes share no point.
 //!
 //! A face is consumed where its setback corners no longer make a ring
 //! turning its way. Round such faces, and at a convex corner, every bevel
@@ -235,6 +236,7 @@ pub(crate) fn consumed(
     blended: &FastSet<Id>,
     corners: &FastMap<(usize, Id), Point>,
     classes: &FastMap<Id, VertexClass>,
+    scattered: &FastSet<Id>,
     tol: Tolerances,
 ) -> Consumed {
     let mut faces: FastSet<usize> = FastSet::default();
@@ -322,6 +324,13 @@ pub(crate) fn consumed(
             vertices.insert(*v);
         }
     }
+    // A mitre of four bevels or more sharing no point: cut back, convex.
+    for v in scattered {
+        if !convex_at(*v) {
+            return Consumed::Outside;
+        }
+        vertices.insert(*v);
+    }
     if vertices.is_empty() {
         return Consumed::Nothing;
     }
@@ -355,7 +364,7 @@ pub(crate) fn consumed(
     let unfaceted: FastSet<Id> = vertices
         .iter()
         .copied()
-        .filter(|v| classes.get(v).is_some_and(|c| c.blended < 3))
+        .filter(|v| scattered.contains(v) || classes.get(v).is_some_and(|c| c.blended < 3))
         .collect();
     let mut groups: Vec<Group> = grouped_edges
         .iter()
