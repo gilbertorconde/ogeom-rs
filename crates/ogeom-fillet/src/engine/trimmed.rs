@@ -184,6 +184,7 @@ fn chamfer_with(
     let Some(bands) = consumed_bands(&curved, &mut bevels, tol)? else {
         return Ok(None);
     };
+    widths.extend(bands.widths.iter().map(|(k, w)| (*k, *w)));
     let mut contacts: FastMap<(usize, Id), Curve> = FastMap::default();
     for b in &bevels {
         for k in 0..2 {
@@ -315,6 +316,9 @@ struct Bands {
     /// Each consumed wall's corner at each of its vertices: where the
     /// ridge stands at the vertex's station.
     corners: FastMap<(usize, Id), Point>,
+    /// The width a fitted ridge's edges are built to, by the consumed face
+    /// and each strip's edge.
+    widths: FastMap<(usize, Id), f64>,
 }
 
 /// The walls whose two rims' bevels cross on them (a disc too thin for
@@ -452,9 +456,10 @@ fn consumed_bands(
         }
         bands.faces.insert(fi);
     }
-    // A face two plane bevels' contacts cross on, any surface (a web too
-    // narrow for its two uprights' chamfers): the two planes meet in a
-    // ridge line, each face's vertex standing on it at its foot.
+    // A face two bevels' contacts cross on, any surface, the two edges
+    // across it from each other (a web too narrow for its two uprights'
+    // chamfers): the bevels meet in a ridge, each face's vertex standing on
+    // it at its foot.
     for (fi, face) in curved.faces.iter().enumerate() {
         if bands.faces.contains(&fi) {
             continue;
@@ -465,64 +470,98 @@ fn consumed_bands(
             .filter(|(_, st)| st.faces.contains(&fi))
             .map(|(si, _)| si)
             .collect();
-        let [sa, sb] = on[..] else {
+        // The strips in two groups, each one bevel's surface (the pieces of
+        // one rim the boolean left share their cone).
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        for si in on {
+            match groups
+                .iter_mut()
+                .find(|g| strips[g[0]].surface == strips[si].surface)
+            {
+                Some(g) => g.push(si),
+                None => groups.push(vec![si]),
+            }
+        }
+        let [group_a, group_b] = &groups[..] else {
             continue;
         };
+        let (sa, sb) = (group_a[0], group_b[0]);
         // Two edges across the face from each other, not meeting at one
         // of its corners.
-        let ends = |si: usize| {
-            let c = &curved.edges[&strips[si].edge];
-            [c.ends.0, c.ends.1]
+        let ends = |g: &[usize]| -> Vec<Id> {
+            g.iter()
+                .flat_map(|si| {
+                    let c = &curved.edges[&strips[*si].edge];
+                    [c.ends.0, c.ends.1]
+                })
+                .collect()
         };
-        if ends(sa).iter().any(|v| ends(sb).contains(v)) {
+        let (ends_a, ends_b) = (ends(group_a), ends(group_b));
+        if ends_a.iter().any(|v| ends_b.contains(v)) {
             continue;
         }
-        // Each bevel's plane, facing out of the material.
-        let plane_of = |st: &Strip| -> Option<(Vector, Point)> {
-            let SurfaceGeometry::Plane(plane) = &st.surface else {
-                return None;
-            };
+        // How far a point stands past a bevel, out of the material its two
+        // faces bound: along its surface's normal at the foot of the point.
+        let past = |st: &Strip, p: Point| -> OgeomResult<f64> {
             let e = &curved.edges[&st.edge];
-            let mid = e.curve.point_at(0.5 * (e.range.0 + e.range.1), tol).ok()?;
+            let mid = e.curve.point_at(0.5 * (e.range.0 + e.range.1), tol)?;
             let out = outward_at(curved, st.faces[0], mid) + outward_at(curved, st.faces[1], mid);
-            let plane = plane.plane();
-            let n = plane.normal().vector();
-            Some((
-                if n.dot(out) < 0.0 { -n } else { n },
-                plane.frame().origin(),
-            ))
+            let foot = ogeom_geom::project::project_on_surface(&st.surface, p, 16, tol)?;
+            let n = ogeom_geom::Surface::normal_at(
+                &st.surface,
+                foot.parameters.0,
+                foot.parameters.1,
+                tol,
+            )?
+            .vector();
+            let n = if n.dot(out) < 0.0 { -n } else { n };
+            Ok((p - foot.point).dot(n))
         };
-        let (Some((na, pa)), Some((nb, pb))) = (plane_of(&strips[sa]), plane_of(&strips[sb]))
-        else {
-            continue;
-        };
-        // Crossed: each contact's middle stands past the other's plane.
+        // Crossed: each contact's middle (beside its edge's own, a rim's
+        // piece reading its whole circle) stands past the other's bevel.
         let middle = |st: &Strip| -> OgeomResult<Point> {
             let k = usize::from(st.faces[1] == fi);
             let c = &st.contacts[k];
             let (lo, hi) = c.domain();
-            if lo.is_finite() && hi.is_finite() {
-                Ok(c.point_at(0.5 * (lo + hi), tol)?)
-            } else {
-                let e = &curved.edges[&st.edge];
-                let mid = e.curve.point_at(0.5 * (e.range.0 + e.range.1), tol)?;
-                Ok(c.point_at(param_on(c, (lo.max(-1e6), hi.min(1e6)), mid, tol)?, tol)?)
-            }
+            let e = &curved.edges[&st.edge];
+            let mid = e.curve.point_at(0.5 * (e.range.0 + e.range.1), tol)?;
+            c.point_at(param_on(c, (lo.max(-1e6), hi.min(1e6)), mid, tol)?, tol)
         };
         let (ma, mb) = (middle(&strips[sa])?, middle(&strips[sb])?);
-        if (ma - pb).dot(nb) <= tol.confusion() || (mb - pa).dot(na) <= tol.confusion() {
+        if past(&strips[sb], ma)? <= tol.confusion() || past(&strips[sa], mb)? <= tol.confusion() {
             continue;
         }
-        let along = na.cross(nb);
-        if along.magnitude() <= tol.angular() {
-            return Ok(None);
+        // And near: each middle within two of the other bevel's widths of
+        // one of its edges, not past its surface where that runs on far
+        // from them.
+        let near = |st: &Strip, p: Point| -> OgeomResult<bool> {
+            let e = &curved.edges[&st.edge];
+            let t = param_on(&e.curve, e.range, p, tol)?;
+            let reach = st
+                .contacts
+                .iter()
+                .map(|c| -> OgeomResult<f64> {
+                    let (lo, hi) = c.domain();
+                    let (lo, hi) = (lo.max(-1e6), hi.min(1e6));
+                    let q = e.curve.point_at(t, tol)?;
+                    Ok(c.point_at(param_on(c, (lo, hi), q, tol)?, tol)?.distance(q))
+                })
+                .collect::<OgeomResult<Vec<f64>>>()?
+                .into_iter()
+                .fold(0.0, f64::max);
+            Ok(e.curve.point_at(t, tol)?.distance(p) <= 2.0 * reach)
+        };
+        let near_any = |group: &[usize], p: Point| -> OgeomResult<bool> {
+            for si in group {
+                if near(&strips[*si], p)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        };
+        if !near_any(group_b, ma)? || !near_any(group_a, mb)? {
+            continue;
         }
-        let along = along / along.magnitude();
-        // A point on both planes: from `pa`, along the first plane square
-        // to the line, to the second.
-        let across = along.cross(na);
-        let step = (pb - pa).dot(nb) / across.dot(nb);
-        let through = pa + across * step;
         let vertices: Vec<Id> = face
             .loops
             .iter()
@@ -532,25 +571,117 @@ fn consumed_bands(
                 [c.ends.0, c.ends.1]
             })
             .collect();
-        let at = |v: &Id| (curved.points[v] - through).dot(along);
-        let (lo, hi) = vertices
-            .iter()
-            .map(at)
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), t| {
-                (l.min(t), h.max(t))
-            });
-        if hi - lo <= tol.confusion() {
-            return Ok(None);
-        }
-        let ridge: Curve =
-            LineCurve::segment(through + along * lo, through + along * hi, tol)?.into();
-        for si in [sa, sb] {
-            let st = &mut strips[si];
+        // The ridge: two planes meet in a line, over the face's vertices'
+        // feet on it; any other two bevels in their section, marched, the
+        // curve passing nearest both contacts, its edges widened to its
+        // tolerance.
+        let (ridge, width): (Curve, f64) = match (&strips[sa].surface, &strips[sb].surface) {
+            (SurfaceGeometry::Plane(a), SurfaceGeometry::Plane(b)) => {
+                let (na, pa) = (a.plane().normal().vector(), a.plane().frame().origin());
+                let (nb, pb) = (b.plane().normal().vector(), b.plane().frame().origin());
+                let along = na.cross(nb);
+                if along.magnitude() <= tol.angular() {
+                    return Ok(None);
+                }
+                let along = along / along.magnitude();
+                // A point on both planes: from `pa`, along the first plane
+                // square to the line, to the second.
+                let across = along.cross(na);
+                let step = (pb - pa).dot(nb) / across.dot(nb);
+                let through = pa + across * step;
+                let at = |v: &Id| (curved.points[v] - through).dot(along);
+                let (lo, hi) = vertices
+                    .iter()
+                    .map(at)
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), t| {
+                        (l.min(t), h.max(t))
+                    });
+                if hi - lo <= tol.confusion() {
+                    return Ok(None);
+                }
+                (
+                    LineCurve::segment(through + along * lo, through + along * hi, tol)?.into(),
+                    0.0,
+                )
+            }
+            (a, b) => {
+                use ogeom_intersect::section::{SurfaceIntersection, intersect_surfaces};
+                let Ok(SurfaceIntersection::Along(curves)) =
+                    intersect_surfaces(a, b, section_options(), tol)
+                else {
+                    return Ok(None);
+                };
+                let between = ma.midpoint(mb);
+                let mut best: Option<(f64, ogeom_intersect::section::SectionCurve)> = None;
+                for section in curves {
+                    let dom = section.curve.domain();
+                    let t = param_on(&section.curve, dom, between, tol)?;
+                    let d = section.curve.point_at(t, tol)?.distance(between);
+                    if best.as_ref().is_none_or(|b| d < b.0) {
+                        best = Some((d, section));
+                    }
+                }
+                let Some((_, section)) = best else {
+                    return Ok(None);
+                };
+                // A closed section fitted clamped is made periodic, so its
+                // pieces may run round its join.
+                if section.closed && !section.curve.is_periodic() {
+                    let (curve, off) = periodic_through(&section.curve, RIDGE_SAMPLES, tol)?;
+                    (curve.into(), section.tolerance + off + tol.confusion())
+                } else {
+                    (section.curve, section.tolerance + tol.confusion())
+                }
+            }
+        };
+        for si in group_a.iter().chain(group_b) {
+            let st = &mut strips[*si];
             let k = usize::from(st.faces[1] == fi);
             st.contacts[k] = ridge.clone();
+            if width > tol.confusion() {
+                bands.widths.insert((fi, st.edge), width);
+            }
         }
+        let dom = ridge.domain();
         for v in &vertices {
-            bands.corners.insert((fi, *v), through + along * at(v));
+            let at = curved.points[v];
+            let mut t = param_on(&ridge, dom, at, tol)?;
+            // On a cone or cylinder bevel the strip's end at the vertex is
+            // its generator there: the corner is where the ridge crosses the
+            // plane through its axis and the vertex.
+            let axis = group_a
+                .iter()
+                .chain(group_b)
+                .filter(|si| {
+                    let c = &curved.edges[&strips[**si].edge];
+                    c.ends.0 == *v || c.ends.1 == *v
+                })
+                .find_map(|si| match &strips[*si].surface {
+                    SurfaceGeometry::Cone(c) => {
+                        let f = c.cone().frame();
+                        Some((f.origin(), f.z().vector()))
+                    }
+                    SurfaceGeometry::Cylinder(c) => {
+                        let a = c.cylinder().axis();
+                        Some((a.location, a.direction.vector()))
+                    }
+                    _ => None,
+                });
+            if let Some((o, a)) = axis {
+                let n = a.cross(at - o);
+                if n.magnitude() > tol.confusion() {
+                    let n = n / n.magnitude();
+                    for _ in 0..50 {
+                        let g = (ridge.point_at(t, tol)? - at).dot(n);
+                        let dg = ridge.d1_at(t, tol)?.dot(n);
+                        if g.abs() <= 1e-3 * tol.confusion() || dg.abs() <= f64::EPSILON {
+                            break;
+                        }
+                        t -= g / dg;
+                    }
+                }
+            }
+            bands.corners.insert((fi, *v), ridge.point_at(t, tol)?);
         }
         bands.faces.insert(fi);
     }
@@ -2820,6 +2951,9 @@ fn assemble_widened(
                             range: (ta, tb),
                         });
                         made.insert(key, edges.len() - 1);
+                        if let Some(w) = widths.get(&(other, b.edge)) {
+                            marched_widths.borrow_mut().insert(edges.len() - 1, *w);
+                        }
                         edges.len() - 1
                     };
                     pieces.push((k, edges[k].ends.0 == ia));
@@ -2922,6 +3056,35 @@ fn assemble_widened(
     let mut edge_widths = vec![0.0; edges.len()];
     for (k, w) in marched_widths.borrow().iter() {
         edge_widths[*k] = *w;
+    }
+    // A bevel's end meeting a fitted ridge stands on it within the ridge's
+    // width: so is its edge built.
+    let mut at_ridge: FastMap<usize, f64> = FastMap::default();
+    for b in bevels {
+        let e = &curved.edges[&b.edge];
+        for fi in b.faces {
+            if let Some(w) = widths.get(&(fi, b.edge))
+                && consumed.contains(&fi)
+            {
+                for v in [e.ends.0, e.ends.1] {
+                    if let Some(c) = corners.get(&(fi, v)) {
+                        let i = points.index(c.point);
+                        let held = at_ridge.entry(i).or_insert(0.0);
+                        *held = held.max(*w);
+                    }
+                }
+            }
+        }
+    }
+    for (key, k) in &made {
+        if let Key::Section(i, j) = key {
+            let w = at_ridge
+                .get(i)
+                .copied()
+                .unwrap_or(0.0)
+                .max(at_ridge.get(j).copied().unwrap_or(0.0));
+            edge_widths[*k] = edge_widths[*k].max(w);
+        }
     }
     // An edge left sharp keeps the tolerance it was read at, and its
     // vertices': an inexact one (a boolean's fitted section) passes its ends
@@ -3329,6 +3492,71 @@ fn segment_on(
     Ok(true)
 }
 
+/// How many points a closed ridge is sampled at to make it periodic.
+const RIDGE_SAMPLES: usize = 256;
+
+/// A closed curve as a periodic cubic B-spline through `n` points evenly
+/// spaced in its parameter, and how far it strays from the curve between
+/// them. The uniform periodic cubic's point at its `j`-th knot is a sixth of
+/// its controls `j`, `j + 2` and four of `j + 1`: solved by Jacobi's steps,
+/// which the four on the diagonal against the two off it make converge.
+fn periodic_through(
+    curve: &Curve,
+    n: usize,
+    tol: Tolerances,
+) -> OgeomResult<(ogeom_geom::BSplineCurve, f64)> {
+    let (lo, hi) = curve.domain();
+    #[expect(clippy::cast_precision_loss, reason = "a few hundred samples")]
+    let at = |j: usize| lo + (hi - lo) * (j as f64) / (n as f64);
+    let samples: Vec<Point> = (0..n)
+        .map(|j| curve.point_at(at(j), tol))
+        .collect::<OgeomResult<_>>()?;
+    // Control `j + 1` sits under sample `j`.
+    let mut control: Vec<Vector> = (0..n)
+        .map(|j| samples[(j + n - 1) % n].to_vector())
+        .collect();
+    for _ in 0..200 {
+        let mut worst: f64 = 0.0;
+        let next: Vec<Vector> = (0..n)
+            .map(|i| {
+                let j = (i + n - 1) % n;
+                let v = (samples[j].to_vector() * 6.0 - control[j] - control[(i + 1) % n]) / 4.0;
+                worst = worst.max((v - control[i]).magnitude());
+                v
+            })
+            .collect();
+        control = next;
+        if worst <= 1e-3 * tol.confusion() {
+            break;
+        }
+    }
+    let ring: Vec<Point> = control.into_iter().map(Point::from_vector).collect();
+    let periodic = ogeom_geom::BSplineCurve::periodic(&ring, 3, tol)?;
+    let (p0, _) = ogeom_geom::Curve3d::domain(&periodic);
+    let mut off: f64 = 0.0;
+    for j in 0..n {
+        #[expect(clippy::cast_precision_loss, reason = "a few hundred samples")]
+        let u = p0 + j as f64 + 0.5;
+        let p = ogeom_geom::Curve3d::point_at(&periodic, u, tol)?;
+        let near = param_on(curve, (at(j), at(j + 1)), p, tol)?;
+        off = off.max(curve.point_at(near, tol)?.distance(p));
+    }
+    Ok((periodic, off))
+}
+
+/// How a section with no closed form is marched: traced to ten confusion
+/// distances and fitted to one. The edge is built to what that leaves, and
+/// the faces either side must meet it.
+fn section_options() -> ogeom_intersect::section::IntersectOptions {
+    ogeom_intersect::section::IntersectOptions {
+        tolerance: 1e-7,
+        marching: ogeom_intersect::march::Marching {
+            chord: 1e-6,
+            ..Default::default()
+        },
+    }
+}
+
 /// Whether two curved strips ending on `p` and `q` mirror each other
 /// through `plane`: the curve `plane` cuts from `surface` between the two
 /// lies on `other` too, to the confusion distance at every sample.
@@ -3369,17 +3597,9 @@ fn marched_between(
     q: Point,
     tol: Tolerances,
 ) -> OgeomResult<Option<(Met, f64)>> {
-    use ogeom_intersect::section::{IntersectOptions, SurfaceIntersection, intersect_surfaces};
-    // Traced to ten confusion distances and fitted to one: the edge is
-    // built to what that leaves, and the faces either side must meet it.
-    let options = IntersectOptions {
-        tolerance: 1e-7,
-        marching: ogeom_intersect::march::Marching {
-            chord: 1e-6,
-            ..Default::default()
-        },
-    };
-    let Ok(SurfaceIntersection::Along(curves)) = intersect_surfaces(surface, cut, options, tol)
+    use ogeom_intersect::section::{SurfaceIntersection, intersect_surfaces};
+    let Ok(SurfaceIntersection::Along(curves)) =
+        intersect_surfaces(surface, cut, section_options(), tol)
     else {
         return Ok(None);
     };
