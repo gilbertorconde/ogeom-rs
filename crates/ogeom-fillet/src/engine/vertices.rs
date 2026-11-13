@@ -55,17 +55,18 @@ pub(crate) enum RoundVertex {
     /// in it, and the face takes the end for its corner, losing the corner
     /// of a convex round and gaining the fill of a concave one.
     Flush,
-    /// Rounds of one radius at every edge of a vertex of three or four
-    /// planes, all convex or all concave, where one ball touches every face
+    /// Rounds of one radius at every edge of a vertex of three planes or
+    /// more, all convex or all concave, where one ball touches every face
     /// at its setback corner: the spherical polygon between the strips' end
     /// arcs.
     Sphere,
-    /// Rounds at every edge of a vertex of three planes, or of four of one
+    /// Rounds at every edge of a vertex of three planes, or of more of one
     /// sense, where no one ball touches the faces at their setback corners
-    /// (radii differing, convex and concave meeting, or four planes no ball
+    /// (radii differing, convex and concave meeting, or planes no ball
     /// touches together): the strips end through their faces' setback
     /// corners, skew where those stand at different stations, and one
-    /// transfinite patch closes the hole tangent to all of them.
+    /// transfinite patch closes the hole tangent to all of them, on one
+    /// face for three or four sides and on a face per side for more.
     Patch,
     /// Two rounds of one radius and one sense beside an edge left sharp,
     /// their axes meeting: the strips run on to the mitre plane, where the
