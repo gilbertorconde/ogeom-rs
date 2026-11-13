@@ -41,7 +41,7 @@ use ogeom_geom::{CircleCurve, Curve, Curve3d as _, LineCurve, PlaneSurface, Surf
 use ogeom_math::{Circle, Direction, Frame, Plane, Point, Vector};
 use ogeom_topo::{Model, Shape};
 
-use super::curved::{Curved, CurvedEdge, SheetCurve, SheetRings, build, read};
+use super::curved::{Curved, CurvedEdge, SheetCurve, SheetRings, read};
 use super::setbacks::{Corner, curved_corners};
 use super::{Id, id};
 use crate::chamfer::{Chamfer, Legs, legs, rim_bevel_surface, wall_depth};
@@ -141,10 +141,25 @@ fn chamfer_with(
         return Ok(None);
     }
     let mut bevels: Vec<Strip> = Vec::with_capacity(asked.len());
+    // Each fitted contact's distance off its face, which its edges are
+    // widened to.
+    let mut widths: FastMap<(usize, Id), f64> = FastMap::default();
     for (edge, shape, spec) in &asked {
-        let Some(bevel) = bevel_of(model, solid, &curved, *edge, shape, spec, tol)? else {
+        if let Some(bevel) = bevel_of(model, solid, &curved, *edge, shape, spec, tol)? {
+            bevels.push(bevel);
+            continue;
+        }
+        let [f0, f1] = faces_of(&curved, *edge)[..] else {
             return Ok(None);
         };
+        let Some((bevel, off)) =
+            general_crease(model, solid, &curved, *edge, shape, [f0, f1], spec, tol)?
+        else {
+            return Ok(None);
+        };
+        for (face, width) in bevel.faces.iter().zip(off) {
+            widths.insert((*face, bevel.edge), width);
+        }
         bevels.push(bevel);
     }
     // A wall the bevels of its two rims consume: its strips meet along
@@ -182,13 +197,14 @@ fn chamfer_with(
     }
     // P4 and P5. Whatever fails here, its assembly or the solid's check,
     // is outside the cases built, and the caller keeps its own path.
-    let built = match assemble_consuming(
+    let built = match assemble_widened(
         model,
         &curved,
         &bevels,
         &blended,
         &corners,
         &bands.faces,
+        &widths,
         tol,
     ) {
         Ok(Some(built)) => built,
@@ -540,7 +556,7 @@ fn distances(curved: &Curved, faces: [usize; 2], spec: &Chamfer) -> Option<[f64;
 /// The contacts and bevel of `spec` on `edge`, `None` past the seats built
 /// here.
 fn bevel_of(
-    model: &Model,
+    model: &mut Model,
     solid: &Shape,
     curved: &Curved,
     edge: Id,
@@ -1301,34 +1317,173 @@ fn extruded_crease(
     {
         on_side = on_side.segment(on_top.domain(), tol)?;
     }
-    crate::bridge::compatible(&mut on_top, &mut on_side, tol)?;
-    let knots = on_top.knots().clone();
-    let rows = on_top.control_points().len();
-    // The rulings run on past both contacts by half their length, as a
-    // swept bevel's band does, so a later blend reading the bevel's
-    // surface past its edges finds it there; the contacts stay exact, the
-    // surface linear across.
-    let mut grid = Vec::with_capacity(2 * rows);
-    for (a, b) in on_top.control_points().iter().zip(on_side.control_points()) {
-        let (a, b) = (a.point(), b.point());
-        grid.push(a + (a - b) * BEVEL_RUN_ON);
-        grid.push(b + (b - a) * BEVEL_RUN_ON);
-    }
-    let bevel = ogeom_geom::BSplineSurface::new(
-        knots,
-        ogeom_math::KnotVector::clamped_uniform(1, 2)?,
-        &ogeom_math::ControlGrid::new(grid, rows, 2)?,
-        tol,
-    )?;
+    let bevel = ruled_bevel(&mut on_top, &mut on_side, tol)?;
     let mut contacts = [Curve::from(on_top.clone()), Curve::from(on_top)];
     contacts[wall] = Curve::from(on_side);
     Ok(Some(Strip {
         edge,
         faces,
         contacts,
-        surface: bevel.into(),
+        surface: bevel,
         section: Section::Line,
     }))
+}
+
+/// The ruled bevel between two contacts over one parameter range, each
+/// ruling joining the two at one parameter: the two given shared knots and
+/// degree, the rulings run on past both contacts by half their length, as
+/// a swept bevel's band does, so a later blend reading the bevel's surface
+/// past its edges finds it there. The contacts stay exact, the surface
+/// linear across.
+///
+/// # Errors
+///
+/// As making the two compatible and building the surface.
+fn ruled_bevel(
+    a: &mut ogeom_geom::BSplineCurve,
+    b: &mut ogeom_geom::BSplineCurve,
+    tol: Tolerances,
+) -> OgeomResult<SurfaceGeometry> {
+    crate::bridge::compatible(a, b, tol)?;
+    let knots = a.knots().clone();
+    let rows = a.control_points().len();
+    let mut grid = Vec::with_capacity(2 * rows);
+    for (p, q) in a.control_points().iter().zip(b.control_points()) {
+        let (p, q) = (p.point(), q.point());
+        grid.push(p + (p - q) * BEVEL_RUN_ON);
+        grid.push(q + (q - p) * BEVEL_RUN_ON);
+    }
+    Ok(ogeom_geom::BSplineSurface::new(
+        knots,
+        ogeom_math::KnotVector::clamped_uniform(1, 2)?,
+        &ogeom_math::ControlGrid::new(grid, rows, 2)?,
+        tol,
+    )?
+    .into())
+}
+
+/// Whether every point of `face`'s mesh stands on `host`'s material side,
+/// within `fit` past its surface at the foot of the point: a measure, not
+/// a proof, for a host no certify region reads.
+///
+/// # Errors
+///
+/// As meshing the face and projecting onto the host.
+fn measured_within(
+    model: &Model,
+    face: &Shape,
+    host: &super::curved::CurvedFace,
+    fit: f64,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let mesh = ogeom_mesh::triangulate_face(
+        model,
+        face,
+        ogeom_mesh::Deflection {
+            chord: fit / 4.0,
+            ..ogeom_mesh::Deflection::default()
+        },
+        tol,
+    )?;
+    let sign = if host.reversed { -1.0 } else { 1.0 };
+    for p in &mesh.positions {
+        let foot = ogeom_geom::project::project_on_surface(&host.surface, *p, 16, tol)?;
+        let (u, v) = foot.parameters;
+        let (du, dv) = ogeom_geom::Surface::d1_at(&host.surface, u, v, tol)?;
+        let n = du.cross(dv);
+        let m = n.magnitude();
+        if m <= 0.0 {
+            return Ok(false);
+        }
+        if (*p - foot.point).dot(n / m) * sign > fit {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// How many stations a crease's contacts are read at on a marched seat.
+const GENERAL_STATIONS: u32 = 64;
+
+/// A crease of an open marched seat between any two faces the curved read
+/// holds (a plane and a spline, two curved faces crossing): each contact
+/// fitted through the marched bevel's stations at the crease's own
+/// parameters, the farthest it stands off its face measured, at the
+/// stations and between them, and the ruled bevel between the two. Along
+/// with the strip, each contact's distance off its face, which its edges
+/// are widened to. `None` where the seat is closed, a station does not
+/// seat, or a contact stands off its face past the bands' fit target.
+#[allow(clippy::too_many_arguments, reason = "the seat's whole reading")]
+fn general_crease(
+    model: &mut Model,
+    solid: &Shape,
+    curved: &Curved,
+    edge: Id,
+    shape: &Shape,
+    faces: [usize; 2],
+    spec: &Chamfer,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Strip, [f64; 2])>> {
+    // Two planes meet in a straight edge, whose bevel is `bevel_of`'s; and
+    // legs the wedge path's own reading refuses (an angle whose line never
+    // meets the other face) are not marched.
+    if faces
+        .iter()
+        .all(|f| matches!(curved.faces[*f].surface, SurfaceGeometry::Plane(_)))
+        || legs(model, solid, shape, spec, tol).is_err()
+    {
+        return Ok(None);
+    }
+    let Some(found) =
+        crate::chamfer_marched::crease_contacts(model, solid, shape, spec, GENERAL_STATIONS, tol)?
+    else {
+        return Ok(None);
+    };
+    // The seat's faces in the read's order.
+    let mut order = [0usize; 2];
+    for (k, fi) in faces.iter().enumerate() {
+        let Some(j) = found
+            .faces
+            .iter()
+            .position(|f| f.is_same(&curved.faces[*fi].shape))
+        else {
+            return Ok(None);
+        };
+        order[k] = j;
+    }
+    let fit = crate::marched::band_fit_target(tol);
+    let mut curves = Vec::with_capacity(2);
+    let mut widths = [0.0; 2];
+    for k in 0..2 {
+        let points = &found.points[order[k]];
+        let fitted = ogeom_geom::fit::fit_points_at(&found.along, points, 3, tol.confusion(), tol)?;
+        let curve = fitted.curve;
+        let surface = &curved.faces[faces[k]].surface;
+        let mut off: f64 = fitted.error;
+        for i in 0..found.along.len() - 1 {
+            let t = f64::midpoint(found.along[i], found.along[i + 1]);
+            let p = curve.point_at(t, tol)?;
+            let foot = ogeom_geom::project::project_on_surface(surface, p, 16, tol)?;
+            off = off.max(foot.distance);
+        }
+        if off > fit {
+            return Ok(None);
+        }
+        widths[k] = off + tol.confusion();
+        curves.push(curve);
+    }
+    let (mut a, mut b) = (curves[0].clone(), curves[1].clone());
+    let bevel = ruled_bevel(&mut a, &mut b, tol)?;
+    Ok(Some((
+        Strip {
+            edge,
+            faces,
+            contacts: [Curve::from(a), Curve::from(b)],
+            surface: bevel,
+            section: Section::Line,
+        },
+        widths,
+    )))
 }
 
 /// The cone (a cylinder where the radii agree) about `frame`'s axis
@@ -1479,6 +1634,36 @@ pub(crate) fn assemble_consuming(
     blended: &FastSet<Id>,
     corners: &FastMap<(usize, Id), Corner>,
     consumed: &FastSet<usize>,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    assemble_widened(
+        model,
+        curved,
+        bevels,
+        blended,
+        corners,
+        consumed,
+        &FastMap::default(),
+        tol,
+    )
+}
+
+/// [`assemble_consuming`], each contact keyed by face and edge in `widths`
+/// a fitted curve standing within that of its face, its edges widened to
+/// it.
+///
+/// # Errors
+///
+/// As [`assemble_consuming`].
+#[allow(clippy::too_many_arguments, reason = "the assembly's whole input")]
+fn assemble_widened(
+    model: &mut Model,
+    curved: &Curved,
+    bevels: &[Strip],
+    blended: &FastSet<Id>,
+    corners: &FastMap<(usize, Id), Corner>,
+    consumed: &FastSet<usize>,
+    widths: &FastMap<(usize, Id), f64>,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     let mut points = Points {
@@ -2142,7 +2327,22 @@ pub(crate) fn assemble_consuming(
         .filter(|(i, _)| !consumed.contains(i))
         .map(|(_, r)| r.clone())
         .collect();
-    let mut sheet = build(model, &points.points, &edges, &built_rings, tol)?;
+    let mut edge_widths = vec![0.0; edges.len()];
+    for (key, k) in &made {
+        if let Key::Contact(fi, e) = key
+            && let Some(w) = widths.get(&(*fi, *e))
+        {
+            edge_widths[*k] = *w;
+        }
+    }
+    let mut sheet = super::curved::build_with_widths(
+        model,
+        &points.points,
+        &edges,
+        &built_rings,
+        &edge_widths,
+        tol,
+    )?;
     // Each corner of five bevels or more off one plane: the patch through
     // its corners on the bevels' end segments, held to the bands' fit
     // target where it is interpolated.
@@ -2233,15 +2433,28 @@ pub(crate) fn assemble_consuming(
                 SurfaceGeometry::Extrusion(_)
             ) && matches!(b.surface, SurfaceGeometry::BSpline(_))
         };
-        let pieces: Vec<ogeom_algo::HalfSpaces> =
-            match (material(curved, b.faces[0]), material(curved, b.faces[1])) {
-                (Some(first), Some(second)) => vec![first, second],
-                (Some(first), None) if by_section(1) => vec![first],
-                (None, Some(second)) if by_section(0) => vec![second],
-                _ => return Ok(None),
-            };
-        let region = ogeom_algo::HalfSpaces::Every(pieces);
         let face = &sheet.faces[curved.faces.len() + bi];
+        // A face with no region the certify reads: an extruded wall holds
+        // the bevel by construction; any other is measured, the bevel's
+        // mesh standing on the face's material side at the foot of each
+        // point, within the fit target.
+        let mut pieces = Vec::with_capacity(2);
+        for k in 0..2 {
+            match material(curved, b.faces[k]) {
+                Some(region) => pieces.push(region),
+                None if by_section(k) => {}
+                None if matches!(b.surface, SurfaceGeometry::BSpline(_)) => {
+                    if !measured_within(model, face, &curved.faces[b.faces[k]], fit, tol)? {
+                        return Ok(None);
+                    }
+                }
+                None => return Ok(None),
+            }
+        }
+        if pieces.is_empty() {
+            continue;
+        }
+        let region = ogeom_algo::HalfSpaces::Every(pieces);
         if ogeom_algo::certify_face_within(model, face, &region, fit, tol)?.is_err() {
             return Ok(None);
         }
