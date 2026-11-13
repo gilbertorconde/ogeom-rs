@@ -5549,6 +5549,17 @@ fn fill(
             let mut out = PairFound::default();
             let scale = fa.chord_scale.min(fb.chord_scale);
             let chord = (scale * 1e-7).max(tol.confusion() * 0.5);
+            // A spline extrusion may carry a long profile while only a tiny
+            // part meets this face. Its box is not an accuracy budget for
+            // the section: that section can end on an exact planar cap,
+            // whose vertex must not drift with the profile's overall size.
+            let chord = if matches!(fa.surface, SurfaceGeometry::Extrusion(_))
+                || matches!(fb.surface, SurfaceGeometry::Extrusion(_))
+            {
+                chord.min(tol.confusion())
+            } else {
+                chord
+            };
             let options = IntersectOptions {
                 // The fit budget scales with the chord: a section against a
                 // fitted surface cannot honestly land closer than the
@@ -7469,7 +7480,7 @@ fn fill(
                             if !e.bound.expanded(width).contains(at) {
                                 continue;
                             }
-                            let d = distance_to_edge_curve(drawn, drange, at, tol)?;
+                            let d = hug_distance(drawn, drange, at, tol)?;
                             if d <= width {
                                 if *DEBUG_WIRE {
                                     eprintln!(
@@ -7501,7 +7512,7 @@ fn fill(
                             }
                             let held = held_to(width.max(c.tolerance * 2.0), c.tolerance * 2.0);
                             if c.bound.expanded(held).contains(at)
-                                && distance_to_edge_curve(&c.curve, c.crange, at, tol)? <= held
+                                && hug_distance(&c.curve, c.crange, at, tol)? <= held
                             {
                                 near = true;
                                 contact_votes[ci] += 1;
@@ -10965,6 +10976,33 @@ fn distance_to_edge_curve(
     tol: Tolerances,
 ) -> OgeomResult<f64> {
     Ok(nearest_on_edge_curve(curve, crange, p, tol)?.0)
+}
+
+/// Absolute distance for the hug's strict radius test. Other sampling
+/// queries compare the growth of their sampled distances, or use their
+/// feet to seed paving; they retain their own sampling parameterization.
+fn hug_distance(curve: &Curve, crange: (f64, f64), p: Point, tol: Tolerances) -> OgeomResult<f64> {
+    let (_, seed) = nearest_on_edge_curve(curve, crange, p, tol)?;
+    // A chord's foot is only a seed: its distance can be above or below
+    // the distance to the curve, even for a point lying exactly on it.
+    // Refine on the curve itself before asking the micron-wide hug filters.
+    let fine = (crange.1 - crange.0) / (48.0 * 8.0);
+    let distance_at = |t| curve.point_at(t, tol).map(|at| at.square_distance(p));
+    let refined = ogeom_math::solve::minimize(
+        |t| distance_at(t).unwrap_or(f64::INFINITY),
+        (seed - fine).max(crange.0),
+        (seed + fine).min(crange.1),
+        ogeom_math::solve::Criteria {
+            residual: 0.0,
+            step: tol.parametric(),
+            max_iterations: 100,
+        },
+    )?;
+    let mut best = distance_at(seed)?;
+    for t in [crange.0, crange.1, refined.value] {
+        best = best.min(distance_at(t)?);
+    }
+    Ok(best.sqrt())
 }
 
 /// [`distance_to_edge_curve`], with the parameter of the nearest point.
@@ -17158,6 +17196,45 @@ mod tests {
 
     const T: Tolerances = Tolerances::millimetres();
     const PI: f64 = core::f64::consts::PI;
+
+    #[test]
+    fn a_hug_measures_the_curve_rather_than_its_sampling_chords() {
+        let circle = ogeom_math::Circle::new(Frame::WORLD, 100.0, T).unwrap();
+        let curve = Curve::Circle(ogeom_geom::CircleCurve::new(circle));
+        for range in [(0.0, 2.0 * PI), (-2.0 * PI, 2.0 * PI), (2.0 * PI, 4.0 * PI)] {
+            for angle in [
+                0.0_f64,
+                PI,
+                1.5 * PI,
+                2.0 * PI,
+                2.5 * PI,
+                4.0 * PI,
+                -PI,
+                1.123456,
+                -1e-8,
+                1e-8,
+                2.0 * PI - 1e-8,
+                2.0 * PI + 1e-8,
+            ] {
+                for offset in [-0.123, 0.0, 0.123] {
+                    let p = Point::new(
+                        (100.0 + offset) * angle.cos(),
+                        (100.0 + offset) * angle.sin(),
+                        0.0,
+                    );
+                    let distance = hug_distance(&curve, range, p, T).unwrap();
+                    assert!(
+                        (distance - offset.abs()).abs() < 1e-8,
+                        "{range:?} {angle} {offset}: {distance}"
+                    );
+                }
+            }
+        }
+        let p = curve.point_at(0.8, T).unwrap();
+        let expected = p.distance(curve.point_at(0.7, T).unwrap());
+        let distance = hug_distance(&curve, (0.4, 0.7), p, T).unwrap();
+        assert!((distance - expected).abs() < 1e-10);
+    }
 
     /// One cylinder, one cone and one torus, each spelled on frames turned
     /// about the axis, slid along it (the cylinder's and the cone's), with
