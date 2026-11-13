@@ -317,6 +317,8 @@ pub(crate) struct SheetEdge {
 pub(crate) struct SheetFace {
     pub surface: Option<SurfaceGeometry>,
     pub ring: Vec<(usize, bool)>,
+    /// A ring per hole, wound the other way round.
+    pub holes: Vec<Vec<(usize, bool)>>,
 }
 
 /// The faces of a sheet built over shared vertices and edges, in the
@@ -382,7 +384,9 @@ pub(crate) fn build_faces(
             };
             Ok(SheetRings {
                 surface,
-                rings: vec![face.ring.clone()],
+                rings: std::iter::once(face.ring.clone())
+                    .chain(face.holes.iter().cloned())
+                    .collect(),
                 reversed: false,
             })
         })
@@ -614,14 +618,17 @@ mod tests {
             SheetFace {
                 surface: Some(disc(0.0)),
                 ring: vec![(0, true)],
+                holes: Vec::new(),
             },
             SheetFace {
                 surface: Some(disc(3.0)),
                 ring: vec![(1, true)],
+                holes: Vec::new(),
             },
             SheetFace {
                 surface: Some(wall),
                 ring: vec![(0, true), (2, true), (1, false), (2, false)],
+                holes: Vec::new(),
             },
         ];
         let mut m = Model::new();
@@ -781,6 +788,7 @@ mod tests {
         let plane = |ring: Vec<(usize, bool)>| SheetFace {
             surface: None,
             ring,
+            holes: Vec::new(),
         };
         let axis = Frame::new(
             p(0.0, 2.0, 8.0),
@@ -814,6 +822,7 @@ mod tests {
             SheetFace {
                 surface: Some(SurfaceGeometry::Cylinder(cylinder)),
                 ring: vec![(8, true), (14, true), (9, false), (13, false)],
+                holes: Vec::new(),
             },
         ];
         let mut m = Model::new();
