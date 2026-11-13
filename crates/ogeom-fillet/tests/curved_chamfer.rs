@@ -385,3 +385,74 @@ fn a_d_block_chamfered_on_every_edge_closes_each_corner_with_its_facet() {
         "volume {got} against the booleans' {want}"
     );
 }
+
+/// A disc of radius 5 and 2 thick, both rims chamfered 1.5: the bevels'
+/// contacts cross on the wall, which goes; the two cones meet along their
+/// ridge, the circle of radius 4.5 at mid height. The wall is deleted from
+/// the history, each rim generates its one cone, and four faces are left:
+/// the two caps and the two cones, the same solid to the bit in either
+/// order. By Pappus the disc loses each rim's triangle of legs 1.5 round
+/// its centroid, less their shared triangle `(4.5, 1), (5, 0.5), (5, 1.5)`
+/// counted once.
+#[test]
+fn a_thin_disc_s_rim_bevels_consume_its_wall_and_meet_in_a_ridge() {
+    use core::f64::consts::{PI, TAU};
+    let mut m = Model::new();
+    let disc = ogeom_algo::make_cylinder(&mut m, up_at(0.0, 0.0, 0.0), 5.0, 2.0, T)
+        .unwrap()
+        .shape;
+    let rims: Vec<Shape> = explore_unique(&m, &disc, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            matches!(
+                ogeom_algo::placed_edge_curve(&m, e, T).unwrap().unwrap().0,
+                ogeom_geom::Curve::Circle(_)
+            )
+        })
+        .collect();
+    assert_eq!(rims.len(), 2);
+    let wall = explore_unique(&m, &disc, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| surface_kind(&m, f) == ogeom_geom::SurfaceKind::Cylinder)
+        .unwrap();
+    let built = ogeom_fillet::chamfer_edges(&mut m, &disc, &rims, 1.5, T).unwrap();
+    let back: Vec<Shape> = rims.iter().rev().cloned().collect();
+    let again = ogeom_fillet::chamfer_edges(&mut m, &disc, &back, 1.5, T).unwrap();
+    assert!(ogeom_algo::check(&m, &built.shape, T).unwrap().is_valid());
+    assert!(built.history.is_deleted(&wall), "the wall left");
+    for e in &rims {
+        let made = built.history.generated(e);
+        assert_eq!(made.len(), 1, "a rim without its one bevel");
+        assert_eq!(surface_kind(&m, &made[0]), ogeom_geom::SurfaceKind::Cone);
+    }
+    assert_eq!(
+        explore_unique(&m, &built.shape, ShapeType::Face)
+            .unwrap()
+            .len(),
+        4
+    );
+    let corners = |s: &Shape| {
+        let mut out: Vec<[u64; 3]> = explore_unique(&m, s, ShapeType::Vertex)
+            .unwrap()
+            .iter()
+            .map(|v| {
+                let p = point_of(&m, v);
+                [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]
+            })
+            .collect();
+        out.sort_unstable();
+        out
+    };
+    assert!(
+        corners(&built.shape) == corners(&again.shape),
+        "the order changes the solid"
+    );
+    let lost = PI * 25.0 * 2.0 - volume(&m, &built.shape);
+    let want = TAU * (2.0 * 1.125 * 4.5 - 0.25 * 29.0 / 6.0);
+    assert!(
+        (lost - want).abs() < 1e-6 * want,
+        "lost {lost} against {want}"
+    );
+}
