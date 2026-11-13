@@ -98,14 +98,14 @@ fn nearest_on_crease(p: Point) -> Point {
 /// The holed drum's bore rim chamfered by `spec` (handed the drum's face
 /// and the bore's), checked: back come its bevel's two contacts, each as
 /// 32 points along each of the bevel faces' edges on that face, on the
-/// drum and on the bore; and a bevel's surface. The boolean leaves the rim
-/// in two pieces of one loop: with `whole`, both are chamfered, running on
-/// into each other; else the one nearest a point on it, its bevel ending
-/// where the rim runs on sharp.
+/// drum and on the bore; and the bevels' surfaces. The boolean leaves the
+/// rim in two pieces of one curve: with `whole`, both are asked, a bevel on
+/// each, meeting where the curve's fitted seam turns at its join; else the
+/// one nearest a point on it.
 fn bore_contacts(
     spec: impl Fn(&Shape, &Shape) -> Chamfer,
     whole: bool,
-) -> (Vec<Point>, Vec<Point>, ogeom_geom::SurfaceGeometry) {
+) -> (Vec<Point>, Vec<Point>, Vec<ogeom_geom::SurfaceGeometry>) {
     let mut m = Model::new();
     let s = holed_drum(&mut m);
     let rim = edge_near(&m, &s, [0.0, 9.5, 18.0]);
@@ -172,7 +172,6 @@ fn bore_contacts(
     if whole {
         assert_eq!(bevels.len(), rims.len(), "a bevel on each piece");
     }
-    let bevel = bevels[0].clone();
     let (mut on_drum, mut on_bore) = (Vec::new(), Vec::new());
     for e in bevels
         .iter()
@@ -198,7 +197,8 @@ fn bore_contacts(
         !on_drum.is_empty() && !on_bore.is_empty(),
         "a contact on each face"
     );
-    (on_drum, on_bore, surface(&m, &bevel))
+    let surfaces = bevels.iter().map(|b| surface(&m, b)).collect();
+    (on_drum, on_bore, surfaces)
 }
 
 /// The band's fit target: how far a rail may stand off its face.
@@ -238,55 +238,70 @@ fn a_bore_rim_on_a_drum_chamfers_symmetric() {
 
 #[test]
 fn a_bore_rim_on_a_drum_chamfers_by_two_distances() {
-    let (on_drum, on_bore, _) = bore_contacts(
-        |drum, _| Chamfer::Distances {
-            face: drum.clone(),
-            on_face: 0.8,
-            on_other: 0.4,
-        },
-        false,
-    );
-    for p in on_drum {
-        leg_fits(p.distance(nearest_on_crease(p)), 0.8, kappa(10.0, 0.8));
-    }
-    for p in on_bore {
-        leg_fits(p.distance(nearest_on_crease(p)), 0.4, kappa(3.0, 0.4));
+    // One piece asked, and the whole rim.
+    for whole in [false, true] {
+        let (on_drum, on_bore, _) = bore_contacts(
+            |drum, _| Chamfer::Distances {
+                face: drum.clone(),
+                on_face: 0.8,
+                on_other: 0.4,
+            },
+            whole,
+        );
+        for p in on_drum {
+            leg_fits(p.distance(nearest_on_crease(p)), 0.8, kappa(10.0, 0.8));
+        }
+        for p in on_bore {
+            leg_fits(p.distance(nearest_on_crease(p)), 0.4, kappa(3.0, 0.4));
+        }
     }
 }
 
 #[test]
 fn a_bore_rim_on_a_drum_chamfers_by_distance_and_angle() {
     let angle = 40.0_f64.to_radians();
-    let (on_drum, _, bevel) = bore_contacts(
-        |drum, _| Chamfer::Angle {
-            face: drum.clone(),
-            distance: 0.6,
-            angle,
-        },
-        false,
-    );
-    for on_drum in on_drum {
-        leg_fits(
-            on_drum.distance(nearest_on_crease(on_drum)),
-            0.6,
-            kappa(10.0, 0.6),
+    // One piece asked, and the whole rim.
+    for whole in [false, true] {
+        let (on_drum, _, bevels) = bore_contacts(
+            |drum, _| Chamfer::Angle {
+                face: drum.clone(),
+                distance: 0.6,
+                angle,
+            },
+            whole,
         );
-        // The bevel's line through the drum's contact in the plane square
-        // to the crease there leaves the drum's section at the angle: its
-        // sine against the drum's normal within that plane.
-        let (_, along) = crease_near(on_drum);
-        let foot = ogeom_geom::project::project_on_surface(&bevel, on_drum, 16, T).unwrap();
-        assert!(foot.distance <= FIT, "the contact off the bevel");
-        let n = bevel
-            .normal_at(foot.parameters.0, foot.parameters.1, T)
-            .unwrap()
-            .vector();
-        let ruling = n.cross(along);
-        let normal = Vector::new(on_drum.x, on_drum.y, 0.0) / 10.0;
-        let normal = normal - along * normal.dot(along);
-        let normal = normal / normal.magnitude();
-        let off = (ruling.dot(normal) / ruling.magnitude()).abs().asin();
-        assert!((off - angle).abs() <= 1e-3, "{} degrees", off.to_degrees());
+        for on_drum in on_drum {
+            leg_fits(
+                on_drum.distance(nearest_on_crease(on_drum)),
+                0.6,
+                kappa(10.0, 0.6),
+            );
+            // The bevel's line through the drum's contact in the plane square
+            // to the crease there leaves the drum's section at the angle: its
+            // sine against the drum's normal within that plane.
+            let (_, along) = crease_near(on_drum);
+            let (bevel, foot) = bevels
+                .iter()
+                .map(|b| {
+                    (
+                        b,
+                        ogeom_geom::project::project_on_surface(b, on_drum, 16, T).unwrap(),
+                    )
+                })
+                .min_by(|x, y| x.1.distance.total_cmp(&y.1.distance))
+                .unwrap();
+            assert!(foot.distance <= FIT, "the contact off the bevel");
+            let n = bevel
+                .normal_at(foot.parameters.0, foot.parameters.1, T)
+                .unwrap()
+                .vector();
+            let ruling = n.cross(along);
+            let normal = Vector::new(on_drum.x, on_drum.y, 0.0) / 10.0;
+            let normal = normal - along * normal.dot(along);
+            let normal = normal / normal.magnitude();
+            let off = (ruling.dot(normal) / ruling.magnitude()).abs().asin();
+            assert!((off - angle).abs() <= 1e-3, "{} degrees", off.to_degrees());
+        }
     }
 }
 

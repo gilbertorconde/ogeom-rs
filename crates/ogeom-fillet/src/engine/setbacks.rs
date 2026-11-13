@@ -267,27 +267,30 @@ pub(crate) fn curved_corners(
                         <= tol.angular() * t_in.magnitude() * t_out.magnitude()
                         && t_in.dot(t_out) > 0.0;
                 // Two fitted contacts running on into each other, each
-                // through stations of its own, share their ends, which may
-                // stand off the plane square to the edge there, or where a
-                // crease's fitted seam meets itself at a corner: the corner
-                // is that end.
+                // through stations of its own, nearly touch at the vertex
+                // (their stations there agree, or a crease's fitted seam
+                // meets itself at a slight corner, where run on past their
+                // ends they may part rather than cross): the corner is
+                // midway between their points nearest the vertex, each
+                // contact's edge widened past half the gap.
                 if blend_in
                     && blend_out
                     && matches!(c_in, ogeom_geom::Curve::BSpline(_))
                     && matches!(c_out, ogeom_geom::Curve::BSpline(_))
                 {
-                    let end_near = |c: &ogeom_geom::Curve| -> OgeomResult<(f64, Point)> {
-                        let (lo, hi) = c.domain();
-                        let (a, b) = (c.point_at(lo, tol)?, c.point_at(hi, tol)?);
-                        Ok(if a.distance(at) <= b.distance(at) {
-                            (lo, a)
-                        } else {
-                            (hi, b)
-                        })
+                    let nearest = |c: &ogeom_geom::Curve| -> OgeomResult<(f64, Point)> {
+                        let s = super::trimmed::param_on(c, c.domain(), at, tol)?;
+                        Ok((s, c.point_at(s, tol)?))
                     };
-                    let ((s, p), (u, q)) = (end_near(&c_in)?, end_near(&c_out)?);
-                    if p.distance(q) <= tol.confusion() {
-                        if !put(&mut out, (fi, v), p, [(e_in, s), (e_out, u)], tol) {
+                    let ((s, p), (u, q)) = (nearest(&c_in)?, nearest(&c_out)?);
+                    if p.distance(q) <= crate::marched::band_fit_target(tol) {
+                        if !put(
+                            &mut out,
+                            (fi, v),
+                            p.midpoint(q),
+                            [(e_in, s), (e_out, u)],
+                            tol,
+                        ) {
                             return Ok(None);
                         }
                         continue;
