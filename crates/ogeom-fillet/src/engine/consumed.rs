@@ -1,182 +1,354 @@
-//! Faces a request consumes: a band between two parallel bevels set back
-//! past each other, as a thin wall chamfered on both its edges.
+//! Corners the setback rings cannot close alone, cut back by the planes
+//! the blend puts there: faces a request consumes, whole or in part (a
+//! thin wall bevelled on both its edges, a plate bevelled all round past
+//! half its thickness, a face whose bevels cross on it at an angle), and a
+//! convex corner where two bevels of unequal setbacks meet beside a sharp
+//! edge, which mitres.
 //!
-//! The band's setback lines cross, so it keeps nothing: it goes, and its
-//! two bevels run on until they meet each other along the ridge their
-//! planes share. Each face across one of the band's sharp ends loses the
-//! band's edge: its outline there runs up one bevel's trace to the ridge
-//! and down the other's. The band's four vertices must each join three
-//! edges, so each corner is where three known planes meet:
+//! A face is consumed where its setback corners no longer make a ring
+//! turning its way. Round such faces, and at a convex corner, every bevel
+//! is convex, so what the blend leaves there is the part on the inner side
+//! of every plane round it: each face's, each bevel's, each corner facet's
+//! where three bevels or more meet. Each bevel there runs on past the
+//! corner, and each ring touching it (the faces round it, the bevels, the
+//! facets, a consumed face's own outline) is clipped by every one of those
+//! planes but its own. A consumed face keeps what of its outline survives,
+//! or goes; two bevels meet along the ridge their planes share; a face
+//! across a consumed one is notched by the bevels; two bevels at a corner
+//! of two meet along the line their planes share, with no facet between.
 //!
-//! - a band corner is the ridge's end, where the two bevels meet the face
-//!   across the band's end;
-//! - that face's corner beside it is where it meets the bevel and the
-//!   plane its other edge there keeps (that edge's bevel where it has one,
-//!   else the face across it).
-//!
-//! Any other consumed face stays outside the class: its rings fail P5's
-//! guards and the engine declines.
+//! The clip is local by construction: a ring may lose only the setback
+//! corners at those vertices, a consumed face's own corners, a bevel's
+//! run-on, or points the clip itself made. A clip that would take any
+//! other corner reaches past them, and the engine declines. A consumed face
+//! with holes or reflex corners, or a concave edge at any of those
+//! vertices, is outside the class too.
 
-use ogeom_core::{FastMap, FastSet, Tolerances};
+use ogeom_core::{FastSet, Tolerances};
 use ogeom_math::{Point, Vector};
 
-use super::classify::{Planar, Seat};
-use super::{Id, id};
+use super::classify::{Face, Planar, Seat, VertexClass};
+use super::{Id, Origin};
+use ogeom_core::FastMap;
 
-/// The bands a request consumes, and what each changes.
-#[derive(Default)]
-pub(crate) struct Consumed {
+/// A plane the blend puts beside consumed faces, by what makes it: its
+/// outward unit normal and its offset along it.
+pub(crate) type Cut = (Origin, Vector, f64);
+
+/// The corners cut back by planes, and the planes.
+pub(crate) struct Cluster {
     /// Each consumed face, by index.
     pub faces: FastSet<usize>,
-    /// Each ridge end, put into the face across a band's sharp end between
-    /// that face's corners at the end's two vertices, in its turn: keyed by
-    /// the face and the two vertices.
-    pub ridges: FastMap<(usize, Id, Id), Point>,
-    /// The band's sharp edges and its vertices: nothing of them is left.
-    pub gone: Vec<Id>,
+    /// Every vertex cut back: the consumed faces' and the mitred corners'.
+    pub vertices: FastSet<Id>,
+    /// The vertices whose facet ring the clip replaces: those of fewer than
+    /// three bevels.
+    pub unfaceted: FastSet<Id>,
+    /// Each face, bevel and facet plane round those vertices.
+    pub cuts: Vec<Cut>,
+    /// Each blended edge's two ends.
+    ends: FastMap<Id, (Id, Id)>,
+    /// Each face's vertices, outer ring and holes.
+    face_vertices: Vec<FastSet<Id>>,
+    /// Per consumed face, its edges, its vertices and the faces beside it:
+    /// the bevels, facets and faces that meet each other across it.
+    across: Vec<(FastSet<Id>, FastSet<Id>, FastSet<usize>)>,
 }
 
-/// A plane as its unit normal and its offset along it.
-type Flat = (Vector, f64);
-
-/// Where three planes meet, `None` where two of them run parallel.
-fn meet(a: Flat, b: Flat, c: Flat) -> Option<Point> {
-    let det = a.0.dot(b.0.cross(c.0));
-    if det.abs() <= 1e-12 {
-        return None;
+impl Cluster {
+    /// Whether a ring from `ring` may lose its corner at vertex `at` to the
+    /// cut from `cut`: a cut takes only what stands at its own element (a
+    /// bevel at its edge's ends, a facet at its vertex, a face at its
+    /// vertices), except that round one consumed face its bevels, its
+    /// facets and the faces beside it cut each other anywhere, meeting
+    /// across it (each bevel there fits its faces on its own, so none runs
+    /// past them). A consumed face's outline, and a point with no vertex,
+    /// may go to any cut.
+    pub fn may_take(&self, ring: &Origin, at: Option<Id>, cut: &Origin) -> bool {
+        let Some(v) = at else {
+            return true;
+        };
+        if let Origin::Face(fi) = ring
+            && self.faces.contains(fi)
+        {
+            return true;
+        }
+        let touches = match cut {
+            Origin::Edge(e) => self.ends.get(e).is_some_and(|(a, b)| *a == v || *b == v),
+            Origin::Vertex(w) => *w == v,
+            Origin::Face(f) => self.face_vertices[*f].contains(&v),
+        };
+        if touches {
+            return true;
+        }
+        let member =
+            |o: &Origin, (edges, vertices, beside): &(FastSet<Id>, FastSet<Id>, FastSet<usize>)| {
+                match o {
+                    Origin::Edge(e) => edges.contains(e),
+                    Origin::Vertex(w) => vertices.contains(w),
+                    Origin::Face(f) => beside.contains(f),
+                }
+            };
+        self.across
+            .iter()
+            .any(|f| member(ring, f) && member(cut, f))
     }
-    let v = (b.0.cross(c.0) * a.1 + c.0.cross(a.0) * b.1 + a.0.cross(b.0) * c.1) / det;
-    Some(Point::ORIGIN + v)
 }
 
-/// The plane through three points, `None` where they are on one line.
-fn through(p: Point, q: Point, r: Point) -> Option<Flat> {
-    let n = (q - p).cross(r - p);
-    let length = n.magnitude();
-    if length <= 1e-12 {
-        return None;
+/// What the setbacks make of the corners.
+pub(crate) enum Consumed {
+    /// Every corner closes by its rings alone.
+    Nothing,
+    /// Corners to cut back, inside the class.
+    Cluster(Box<Cluster>),
+    /// Corners past the class: the engine declines.
+    Outside,
+}
+
+/// A ring's normal by Newell's sum, twice its area long.
+fn newell(points: &[Point]) -> Vector {
+    let mut n = Vector::ZERO;
+    for k in 0..points.len() {
+        let (p, q) = (
+            points[k].to_vector(),
+            points[(k + 1) % points.len()].to_vector(),
+        );
+        n += p.cross(q);
     }
-    let n = n / length;
-    Some((n, n.dot(p.to_vector())))
+    n
 }
 
-/// The consumed bands of a request, the setback corners moved where they
-/// change: a band's corners to its ridge ends, and the corners of each face
-/// across its sharp ends beside them to where that face meets its bevels.
-/// `None` where a band borders another or a face across one is set back
-/// itself on that edge: past the class.
+/// Whether the face's outline turns its way at every corner.
+fn convex(planar: &Planar, face: &Face) -> bool {
+    let n = face.corners.len();
+    (0..n).all(|k| {
+        let (a, b, c) = (
+            planar.points[&face.corners[(k + n - 1) % n]],
+            planar.points[&face.corners[k]],
+            planar.points[&face.corners[(k + 1) % n]],
+        );
+        (b - a).cross(c - b).dot(face.normal) > 0.0
+    })
+}
+
+/// Whether the ring `points` turns about `normal` without crossing itself.
+fn fair(points: &[Point], normal: Vector, tol: Tolerances) -> bool {
+    if newell(points).dot(normal) <= tol.confusion() * tol.confusion() {
+        return false;
+    }
+    let x = (points[1] - points[0]).cross(normal);
+    let x = x / x.magnitude();
+    let y = normal.cross(x) / normal.magnitude();
+    let flat: Vec<(f64, f64)> = points
+        .iter()
+        .map(|p| ((*p - points[0]).dot(x), (*p - points[0]).dot(y)))
+        .collect();
+    !super::guards::crosses_itself(&flat, tol.confusion())
+}
+
+/// The corners of a request whose setback corners are `corners` that the
+/// clip cuts back, and the planes it cuts by.
 pub(crate) fn consumed(
     planar: &Planar,
     seats: &FastMap<(Id, Id), Seat>,
-    setback: &FastMap<(Id, Id), f64>,
-    corners: &mut FastMap<(usize, Id), Point>,
+    blended: &FastSet<Id>,
+    corners: &FastMap<(usize, Id), Point>,
+    classes: &FastMap<Id, VertexClass>,
     tol: Tolerances,
-) -> Option<Consumed> {
-    let edge = |a: Id, b: Id| planar.edges.get(&(a.min(b), a.max(b))).copied();
-    let seat = |a: Id, b: Id| seats.get(&(a.min(b), a.max(b)));
-    let across = |fi: usize, a: Id, b: Id| {
-        let s = seat(a, b)?;
-        Some(if s.faces[0] == fi {
-            s.faces[1]
-        } else {
-            s.faces[0]
-        })
-    };
-    let degree = |v: Id| seats.keys().filter(|(a, b)| *a == v || *b == v).count();
-    let plane_of = |fi: usize| {
-        let face = &planar.faces[fi];
-        let n = face.normal;
-        (n, n.dot(planar.points[&face.corners[0]].to_vector()))
-    };
-    let mut out = Consumed::default();
-    let mut moves: Vec<((usize, Id), Point)> = Vec::new();
-    let mut touched: FastSet<usize> = FastSet::default();
+) -> Consumed {
+    let mut faces: FastSet<usize> = FastSet::default();
     for (fi, face) in planar.faces.iter().enumerate() {
-        let ([_, _, _, _], []) = (face.corners.as_slice(), face.holes.as_slice()) else {
-            continue;
-        };
-        let c = &face.corners;
-        let back = |e: Id| setback.get(&(id(&face.shape), e)).copied();
-        for k in 0..2 {
-            let (v1, v2, v3, v4) = (c[k], c[k + 1], c[k + 2], c[(k + 3) % 4]);
-            let (Some(a), Some(b), Some(cc), Some(d)) =
-                (edge(v1, v2), edge(v2, v3), edge(v3, v4), edge(v4, v1))
-            else {
-                return None;
-            };
-            let (Some(da), None, Some(dc), None) = (back(a), back(b), back(cc), back(d)) else {
-                continue;
-            };
-            let p = |v: Id| planar.points[&v];
-            let ua = (p(v2) - p(v1)) / (p(v2) - p(v1)).magnitude();
-            let uc = (p(v4) - p(v3)) / (p(v4) - p(v3)).magnitude();
-            if ua.cross(uc).magnitude() > tol.angular() || ua.dot(uc) > 0.0 {
-                continue;
-            }
-            let width = (p(v3) - p(v1)).dot(face.normal.cross(ua));
-            if da + dc < width - tol.confusion() {
-                continue;
-            }
-            // A band: past the class where a vertex joins more than three
-            // edges.
-            if [v1, v2, v3, v4].iter().any(|v| degree(*v) != 3) {
-                return None;
-            }
-            let (Some(fa), Some(fc), Some(gb), Some(gd)) = (
-                across(fi, v1, v2),
-                across(fi, v3, v4),
-                across(fi, v2, v3),
-                across(fi, v4, v1),
-            ) else {
-                return None;
-            };
-            let at = |f: usize, v: Id| corners.get(&(f, v)).copied();
-            let (qa, qc) = (
-                through(at(fi, v1)?, at(fi, v2)?, at(fa, v1)?)?,
-                through(at(fi, v3)?, at(fi, v4)?, at(fc, v3)?)?,
-            );
-            let (rb, rd) = (meet(qa, qc, plane_of(gb))?, meet(qa, qc, plane_of(gd))?);
-            // The plane the other edge at `v` of the face across an end
-            // keeps: its bevel, or the face across it.
-            let kept = |g: usize, v: Id, end: Id| -> Option<Flat> {
-                let gface = &planar.faces[g];
-                let (prev, next) = gface.beside(v)?;
-                let other = if prev == end { next } else { prev };
-                let e = edge(v, other)?;
-                match setback.get(&(id(&gface.shape), e)) {
-                    Some(_) => {
-                        let far = across(g, v, other)?;
-                        through(at(g, v)?, at(g, other)?, at(far, v)?)
-                    }
-                    None => Some(plane_of(across(g, v, other)?)),
-                }
-            };
-            moves.extend([
-                ((fi, v1), rd),
-                ((fi, v2), rb),
-                ((fi, v3), rb),
-                ((fi, v4), rd),
-                ((gb, v2), meet(plane_of(gb), qa, kept(gb, v2, v3)?)?),
-                ((gb, v3), meet(plane_of(gb), qc, kept(gb, v3, v2)?)?),
-                ((gd, v1), meet(plane_of(gd), qa, kept(gd, v1, v4)?)?),
-                ((gd, v4), meet(plane_of(gd), qc, kept(gd, v4, v1)?)?),
-            ]);
-            // Each face across an end walks the end the other way round.
-            out.ridges.insert((gb, v3, v2), rb);
-            out.ridges.insert((gd, v1, v4), rd);
-            out.faces.insert(fi);
-            out.gone.extend([b, d, v1, v2, v3, v4]);
-            touched.extend([fa, fc, gb, gd]);
-            break;
+        let ring: Vec<Point> = face.corners.iter().map(|v| corners[&(fi, *v)]).collect();
+        if !fair(&ring, face.normal, tol) {
+            faces.insert(fi);
         }
     }
-    if out.faces.iter().any(|f| touched.contains(f)) {
-        return None;
+    let convex_at = |v: Id| {
+        seats
+            .iter()
+            .filter(|((a, b), _)| *a == v || *b == v)
+            .all(|(_, seat)| seat.convex)
+    };
+    let mut vertices: FastSet<Id> = FastSet::default();
+    for fi in &faces {
+        let face = &planar.faces[*fi];
+        if !face.holes.is_empty() || !convex(planar, face) {
+            return Consumed::Outside;
+        }
+        vertices.extend(face.corners.iter().copied());
     }
-    for (key, point) in moves {
-        corners.insert(key, point);
+    if vertices.iter().any(|v| !convex_at(*v)) {
+        return Consumed::Outside;
     }
-    out.gone.sort_unstable();
-    out.gone.dedup();
-    Some(out)
+    // A convex corner of two bevels whose facet ring spans an area: the two
+    // setbacks differ, and the bevels mitre instead.
+    let mut all: Vec<Id> = planar.points.keys().copied().collect();
+    all.sort_unstable();
+    for v in &all {
+        if vertices.contains(v) || classes.get(v).is_none_or(|c| c.blended != 2) || !convex_at(*v) {
+            continue;
+        }
+        let Some(order) = super::classify::faces_round(&planar.faces, *v) else {
+            continue;
+        };
+        let ring: Vec<Point> = order.iter().map(|fi| corners[&(*fi, *v)]).collect();
+        if newell(&ring).magnitude() > tol.confusion() * tol.confusion() {
+            vertices.insert(*v);
+        }
+    }
+    if vertices.is_empty() {
+        return Consumed::Nothing;
+    }
+    // Each bevel at a consumed face must fit its two faces on its own: a
+    // contact line past the face's far side leaves the face it is seated
+    // on, which is refused, not cut back.
+    for seat in seats.values() {
+        let at_cluster = |v: Id| faces.iter().any(|f| planar.faces[*f].corners.contains(&v));
+        if !blended.contains(&seat.edge) || !(at_cluster(seat.ends.0) || at_cluster(seat.ends.1)) {
+            continue;
+        }
+        for (k, fi) in seat.faces.iter().enumerate() {
+            let face = &planar.faces[*fi];
+            let inward = face
+                .normal
+                .cross(if k == 0 { seat.along } else { -seat.along });
+            let from = planar.points[&seat.ends.0];
+            let width = face
+                .corners
+                .iter()
+                .map(|c| (planar.points[c] - from).dot(inward))
+                .fold(0.0, f64::max);
+            let Some(d) = corners_setback(planar, corners, seat, k) else {
+                return Consumed::Outside;
+            };
+            if d > width + tol.confusion() {
+                return Consumed::Outside;
+            }
+        }
+    }
+    let unfaceted: FastSet<Id> = vertices
+        .iter()
+        .copied()
+        .filter(|v| classes.get(v).is_some_and(|c| c.blended < 3))
+        .collect();
+    let mut cuts: Vec<Cut> = Vec::new();
+    let mut keys: Vec<&(Id, Id)> = seats.keys().collect();
+    keys.sort_unstable();
+    for key in keys {
+        let seat = &seats[key];
+        if !blended.contains(&seat.edge)
+            || !(vertices.contains(&key.0) || vertices.contains(&key.1))
+        {
+            continue;
+        }
+        let (a, b) = seat.ends;
+        let (p, q, r) = (
+            corners[&(seat.faces[0], a)],
+            corners[&(seat.faces[0], b)],
+            corners[&(seat.faces[1], a)],
+        );
+        let n = (q - p).cross(r - p);
+        let out = seat.normals[0] + seat.normals[1];
+        let n = if n.dot(out) < 0.0 { -n } else { n };
+        let n = n / n.magnitude();
+        cuts.push((Origin::Edge(seat.edge), n, n.dot(p.to_vector())));
+    }
+    let mut round: Vec<Id> = vertices.iter().copied().collect();
+    round.sort_unstable();
+    let mut faced: FastSet<usize> = FastSet::default();
+    for v in round {
+        let Some(order) = super::classify::faces_round(&planar.faces, v) else {
+            return Consumed::Outside;
+        };
+        for fi in &order {
+            if faced.insert(*fi) {
+                let face = &planar.faces[*fi];
+                let at = planar.points[&face.corners[0]];
+                cuts.push((
+                    Origin::Face(*fi),
+                    face.normal,
+                    face.normal.dot(at.to_vector()),
+                ));
+            }
+        }
+        if unfaceted.contains(&v) {
+            continue;
+        }
+        let ring: Vec<Point> = order.iter().map(|fi| corners[&(*fi, v)]).collect();
+        let n = newell(&ring);
+        let m = n.magnitude();
+        if m <= tol.confusion() * tol.confusion() {
+            continue;
+        }
+        let n = n / m;
+        let at = ring[0];
+        let out = order
+            .iter()
+            .fold(Vector::ZERO, |s, fi| s + planar.faces[*fi].normal);
+        let n = if n.dot(out) < 0.0 { -n } else { n };
+        cuts.push((Origin::Vertex(v), n, n.dot(at.to_vector())));
+    }
+    let ends: FastMap<Id, (Id, Id)> = seats.values().map(|s| (s.edge, s.ends)).collect();
+    let face_vertices: Vec<FastSet<Id>> = planar
+        .faces
+        .iter()
+        .map(|f| f.loops().flatten().copied().collect())
+        .collect();
+    let mut eaten: Vec<usize> = faces.iter().copied().collect();
+    eaten.sort_unstable();
+    let across = eaten
+        .iter()
+        .map(|fi| {
+            let face = &planar.faces[*fi];
+            let n = face.corners.len();
+            let pairs: Vec<(Id, Id)> = (0..n)
+                .map(|k| {
+                    let (a, b) = (face.corners[k], face.corners[(k + 1) % n]);
+                    (a.min(b), a.max(b))
+                })
+                .collect();
+            let edges = pairs
+                .iter()
+                .filter_map(|p| planar.edges.get(p).copied())
+                .collect();
+            let beside = pairs
+                .iter()
+                .filter_map(|p| seats.get(p))
+                .map(|s| {
+                    if s.faces[0] == *fi {
+                        s.faces[1]
+                    } else {
+                        s.faces[0]
+                    }
+                })
+                .collect();
+            (edges, face.corners.iter().copied().collect(), beside)
+        })
+        .collect();
+    Consumed::Cluster(Box::new(Cluster {
+        faces,
+        vertices,
+        unfaceted,
+        cuts,
+        ends,
+        face_vertices,
+        across,
+    }))
+}
+
+/// The setback of `seat`'s bevel on its `k`th face, read back from its
+/// setback corners: the distance of the corner at its first end from the
+/// edge's line, in that face. `None` where the corner is not there.
+fn corners_setback(
+    planar: &Planar,
+    corners: &FastMap<(usize, Id), Point>,
+    seat: &Seat,
+    k: usize,
+) -> Option<f64> {
+    let face = &planar.faces[seat.faces[k]];
+    let inward = face
+        .normal
+        .cross(if k == 0 { seat.along } else { -seat.along });
+    let from = planar.points[&seat.ends.0];
+    Some((*corners.get(&(seat.faces[k], seat.ends.0))? - from).dot(inward))
 }
