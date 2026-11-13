@@ -45,6 +45,8 @@ use super::curved::{Curved, CurvedEdge, SheetCurve, SheetRings, build, read};
 use super::setbacks::{Corner, curved_corners};
 use super::{Id, id};
 use crate::chamfer::{Chamfer, Legs, legs, rim_bevel_surface, wall_depth};
+use crate::chamfer_sphere::{SphereSeat, sphere_bevel_rings};
+use crate::support::RevolvedSeat;
 
 /// One blended edge on a curved solid, as a section law hands it to the
 /// assembly: its two faces, each one's contact, the strip's surface, and
@@ -342,8 +344,8 @@ fn faces_of(curved: &Curved, edge: Id) -> Vec<usize> {
         .collect()
 }
 
-/// A face's outward unit normal at `p`, on a plane or a cylinder; `None` on
-/// any other surface.
+/// A face's outward unit normal at `p`, on a plane, a cylinder or a sphere;
+/// `None` on any other surface.
 fn outward(curved: &Curved, face: usize, p: Point) -> Option<Vector> {
     let f = &curved.faces[face];
     let sign = if f.reversed { -1.0 } else { 1.0 };
@@ -353,6 +355,11 @@ fn outward(curved: &Curved, face: usize, p: Point) -> Option<Vector> {
             let axis = c.cylinder().axis();
             let (o, a) = (axis.location, axis.direction.vector());
             let r = (p - o) - a * (p - o).dot(a);
+            let m = r.magnitude();
+            (m > 0.0).then(|| r / m * sign)
+        }
+        SurfaceGeometry::Sphere(sphere) => {
+            let r = p - sphere.sphere().centre();
             let m = r.magnitude();
             (m > 0.0).then(|| r / m * sign)
         }
@@ -449,7 +456,15 @@ fn bevel_of(
             }
             straight(curved, edge, e, faces, d, tol)
         }
-        Curve::Circle(_) => rim(model, solid, curved, edge, shape, faces, spec, tol),
+        Curve::Circle(_) => match legs(model, solid, shape, spec, tol) {
+            Ok(Legs::Rim(seat, on_wall, on_cap)) => {
+                rim(curved, edge, faces, &seat, on_wall, on_cap, tol)
+            }
+            Ok(Legs::Sphere(seat, on_wall, on_cap)) => {
+                sphere_rim(curved, edge, faces, &seat, on_wall, on_cap, tol)
+            }
+            _ => Ok(None),
+        },
         _ => Ok(None),
     }
 }
@@ -673,20 +688,15 @@ fn straight(
 /// A rim between a planar cap and a coaxial cylinder or cone, as the wedge
 /// path reads it ([`legs`]): the ring along the cap and the ring down the
 /// wall, and the cone through both.
-#[allow(clippy::too_many_arguments, reason = "the seat's whole reading")]
 fn rim(
-    model: &Model,
-    solid: &Shape,
     curved: &Curved,
     edge: Id,
-    shape: &Shape,
     faces: [usize; 2],
-    spec: &Chamfer,
+    seat: &RevolvedSeat,
+    on_wall: f64,
+    on_cap: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<Strip>> {
-    let Ok(Legs::Rim(seat, on_wall, on_cap)) = legs(model, solid, shape, spec, tol) else {
-        return Ok(None);
-    };
     if seat.additive() {
         return Ok(None);
     }
@@ -700,7 +710,7 @@ fn rim(
         return Ok(None);
     };
     let cap_rho = seat.sigma.mul_add(-(seat.tau * on_cap), seat.radius);
-    let depth = wall_depth(&seat, on_wall);
+    let depth = wall_depth(seat, on_wall);
     let wall_rho = seat.radius_at(-seat.tau * depth);
     if cap_rho <= tol.confusion() || wall_rho <= tol.confusion() {
         return Ok(None);
@@ -711,12 +721,57 @@ fn rim(
     let mut contacts = [ring(seat.centre, cap_rho)?, ring(seat.centre, cap_rho)?];
     contacts[cap] = ring(seat.centre, cap_rho)?;
     contacts[wall] = ring(seat.centre + seat.up * (-seat.tau * depth), wall_rho)?;
-    let surface = rim_bevel_surface(&seat, depth, cap_rho, wall_rho, tol)?;
+    let surface = rim_bevel_surface(seat, depth, cap_rho, wall_rho, tol)?;
     Ok(Some(Strip {
         edge,
         faces,
         contacts,
         surface,
+        section: Section::Line,
+    }))
+}
+
+/// A rim between a planar cap and a sphere centred on its axis, as the
+/// wedge path reads it ([`legs`]): the ring along the cap, the ring down
+/// the sphere's great circle, and the cone through both. `None` where the
+/// legs leave no such bevel.
+fn sphere_rim(
+    curved: &Curved,
+    edge: Id,
+    faces: [usize; 2],
+    seat: &SphereSeat,
+    on_wall: f64,
+    on_cap: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Strip>> {
+    let on = |face: &Shape| {
+        faces
+            .iter()
+            .position(|f| curved.faces[*f].shape.is_same(face))
+    };
+    let (Some(cap), Some(wall)) = (on(&seat.cap_face), on(&seat.wall_face)) else {
+        return Ok(None);
+    };
+    if cap == wall || on_wall >= seat.to_pole() {
+        return Ok(None);
+    }
+    let Ok(bevel) = sphere_bevel_rings(seat, on_wall, on_cap, tol) else {
+        return Ok(None);
+    };
+    let ring = |centre: Point, radius: f64| -> OgeomResult<Curve> {
+        let frame = Frame::new(centre, Direction::new(seat.up, tol)?, seat.x_ref, tol)?;
+        Ok(CircleCurve::new(Circle::new(frame, radius, tol)?).into())
+    };
+    let mut contacts = [
+        ring(seat.centre, bevel.cap_rho)?,
+        ring(seat.centre, bevel.cap_rho)?,
+    ];
+    contacts[wall] = ring(seat.centre + seat.up * bevel.wall_h, bevel.wall_rho)?;
+    Ok(Some(Strip {
+        edge,
+        faces,
+        contacts,
+        surface: bevel.surface,
         section: Section::Line,
     }))
 }
@@ -1017,15 +1072,21 @@ pub(crate) fn assemble_consuming(
     }
     // The plane a strip's end at `v`, from `p` to `q`, lies on: the
     // vertex's facet, or a plane face there holding both, where the strip
-    // ends flush on it.
+    // ends flush on it, or the plane through both and along an edge left
+    // sharp there, where two strips meet across it mirrored. Where the
+    // strips are not mirrored, the meeting found on that plane is off the
+    // other strip and its face is not built.
     let cut_at = |strip: &Strip, v: Id, p: Point, q: Point| -> Option<SurfaceGeometry> {
         if let Some(plane) = facet_planes.get(&v) {
             return Some(plane.clone());
         }
-        curved
-            .edges
-            .iter()
-            .filter(|(_, c)| c.ends.0 == v || c.ends.1 == v)
+        let at_v = || {
+            curved
+                .edges
+                .iter()
+                .filter(move |(_, c)| c.ends.0 == v || c.ends.1 == v)
+        };
+        let flush_plane = at_v()
             .flat_map(|(e, _)| faces_of(curved, *e))
             .filter(|fi| !strip.faces.contains(fi))
             .find_map(|fi| match &curved.faces[fi].surface {
@@ -1036,6 +1097,21 @@ pub(crate) fn assemble_consuming(
                     .then(|| curved.faces[fi].surface.clone())
                 }
                 _ => None,
+            });
+        if flush_plane.is_some() {
+            return flush_plane;
+        }
+        let at = curved.points[&v];
+        at_v()
+            .filter(|(e, _)| !blended.contains(*e))
+            .find_map(|(_, c)| {
+                let t = if c.ends.0 == v { c.range.0 } else { c.range.1 };
+                let along = c.curve.d1_at(t, tol).ok()?;
+                let normal = Direction::new(along.cross(q - p), tol).ok()?;
+                let plane =
+                    Plane::new(Frame::new(p, normal, Direction::new(q - p, tol).ok()?, tol).ok()?);
+                (plane.signed_distance_to(at).abs() <= tol.confusion())
+                    .then(|| PlaneSurface::new(plane).into())
             })
     };
     let section = |points: &mut Points,
@@ -1643,6 +1719,14 @@ fn material(curved: &Curved, face: usize) -> Option<ogeom_algo::HalfSpaces> {
                 axis: frame.z().vector(),
                 radius: cone.reference_radius(),
                 slope: cone.half_angle().tan(),
+                inside,
+            })
+        }
+        SurfaceGeometry::Sphere(sphere) => {
+            let sphere = sphere.sphere();
+            Some(ogeom_algo::HalfSpaces::Ball {
+                centre: sphere.centre(),
+                radius: sphere.radius(),
                 inside,
             })
         }
