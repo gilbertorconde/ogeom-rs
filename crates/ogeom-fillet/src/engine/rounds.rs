@@ -13,7 +13,7 @@
 
 use ogeom_algo::{Built, HalfSpaces, History};
 use ogeom_core::{FastMap, OgeomResult, Tolerances};
-use ogeom_geom::SurfaceGeometry;
+use ogeom_geom::{Curve, SurfaceGeometry};
 use ogeom_math::{Point, Vector};
 use ogeom_topo::{Model, Orientation, Shape, ShapeType, explore_unique};
 
@@ -117,6 +117,8 @@ pub(crate) fn assemble(
     let mut flush: FastMap<Id, (usize, Id)> = FastMap::default();
     // For a mitre vertex, its two rounds and the mitre plane's normal.
     let mut mitres: FastMap<Id, ([Id; 2], Vector)> = FastMap::default();
+    // For two rounds beside an edge left sharp that meet otherwise.
+    let mut creases: FastMap<Id, Crease> = FastMap::default();
     for &v in &vertices {
         let Some(round) = faces_round(&planar.faces, v) else {
             return Ok(None);
@@ -180,12 +182,19 @@ pub(crate) fn assemble(
                 RoundVertex::Flush
             }
             (3, 2) => {
-                let Some((pair, normal)) =
-                    mitre(planar, &sections, &here, &round, corners, v, reach, tol)?
-                else {
-                    return Ok(None);
-                };
-                mitres.insert(v, (pair, normal));
+                match mitre(planar, &sections, &here, &round, corners, v, reach, tol)? {
+                    Some((pair, normal)) => {
+                        mitres.insert(v, (pair, normal));
+                    }
+                    None => {
+                        let Some(crease) =
+                            crease_at(&sections, &here, &round, corners, v, planar, reach)
+                        else {
+                            return Ok(None);
+                        };
+                        creases.insert(v, crease);
+                    }
+                }
                 RoundVertex::Mitre
             }
             // Rounds at every edge: one ball touching every face at its
@@ -265,6 +274,9 @@ pub(crate) fn assemble(
     // Each strip's arc at each end: the edge's index, from the first face's
     // corner to the second's.
     let mut arcs: FastMap<(Id, Id), (usize, bool)> = FastMap::default();
+    // For each crease vertex: the smaller round's corner on the far face,
+    // the larger's corner on the sharp edge, and the larger's end there.
+    let mut crease_corners: FastMap<Id, (usize, usize, usize)> = FastMap::default();
     let mut strip_list: Vec<Id> = sections.keys().copied().collect();
     strip_list.sort_unstable();
     for edge in &strip_list {
@@ -274,6 +286,9 @@ pub(crate) fn assemble(
             let order = section.order();
             let [from_face, _] = order;
             let (p0, p1) = (at[&(seat.faces[0], v)], at[&(seat.faces[1], v)]);
+            if creases.contains_key(&v) {
+                continue;
+            }
             // At a mitre the second round ends on the first's end: the two
             // equal cylinders meet in the mitre plane, on one ellipse.
             if let Some(([first, _], _)) = mitres.get(&v)
@@ -314,6 +329,45 @@ pub(crate) fn assemble(
         }
     }
 
+    // Where two rounds meet in a crease beside an edge left sharp: each
+    // strip's end at the vertex as a path of edges from its first face's
+    // corner to its second's, and the smaller's corner on the far face.
+    let mut end_paths: FastMap<(Id, Id), Vec<usize>> = FastMap::default();
+    let mut strip_corner: FastMap<(Id, usize, Id), usize> = FastMap::default();
+    let mut crease_list: Vec<(&Id, &Crease)> = creases.iter().collect();
+    crease_list.sort_unstable_by_key(|(v, _)| **v);
+    for (&v, crease) in crease_list {
+        let Some(built) = crease_edges(planar, &sections, &edge_seat, crease, v, &level, tol)?
+        else {
+            return Ok(None);
+        };
+        points.push(built.q);
+        let q = points.len() - 1;
+        let [small, large] = crease.pair;
+        let c_f = at[&(crease.shared, v)];
+        let p_b = at[&(crease.near, v)];
+        edges.push(SheetEdge {
+            ends: (c_f, q),
+            curve: Some(built.crease),
+        });
+        let crease_edge = edges.len() - 1;
+        let (t_q, t_b) = built.arc_ends;
+        let (ends, range) = if t_b < t_q {
+            ((p_b, q), (t_b, t_q))
+        } else {
+            ((q, p_b), (t_q, t_b))
+        };
+        edges.push(SheetEdge {
+            ends,
+            curve: Some((built.arc, range)),
+        });
+        let arc_edge = edges.len() - 1;
+        end_paths.insert((small, v), vec![crease_edge]);
+        end_paths.insert((large, v), vec![crease_edge, arc_edge]);
+        strip_corner.insert((small, crease.far, v), q);
+        crease_corners.insert(v, (q, p_b, arc_edge));
+    }
+
     // The faces: each with whether its surface's own normal faces out of
     // the solid along its ring (wound counter-clockwise from outside).
     let mut faces: Vec<(SheetFace, bool)> = Vec::new();
@@ -352,7 +406,22 @@ pub(crate) fn assemble(
                     };
                     at_corner.push((vec![entry, exit], Some((arc, runs))));
                 }
-                _ => at_corner.push((vec![at[&(fi, v)]], None)),
+                _ => match (creases.get(&v), crease_corners.get(&v)) {
+                    (Some(crease), Some(&(q, p_b, arc))) if crease.far == fi => {
+                        // In along the smaller round's contact to its corner,
+                        // round the larger's end in this face to the sharp
+                        // edge; or the other way.
+                        let arriving = seats.get(&(prev.min(v), prev.max(v))).map(|s| s.edge);
+                        let (entry, exit) = if arriving == Some(crease.pair[0]) {
+                            (q, p_b)
+                        } else {
+                            (p_b, q)
+                        };
+                        at_corner
+                            .push((vec![entry, exit], Some((arc, edges[arc].ends.0 == entry))));
+                    }
+                    _ => at_corner.push((vec![at[&(fi, v)]], None)),
+                },
             }
         }
         for (k, (pts, arc)) in at_corner.iter().enumerate() {
@@ -386,21 +455,29 @@ pub(crate) fn assemble(
         let (section, _) = &sections[edge];
         let seat = edge_seat[edge];
         let (a, b) = seat.ends;
-        let mut ring = Vec::with_capacity(4);
-        ring.push(segment(
-            &mut edges,
-            at[&(seat.faces[0], b)],
-            at[&(seat.faces[0], a)],
-        ));
-        let (arc_a, _) = arcs[&(*edge, a)];
-        ring.push((arc_a, edges[arc_a].ends.0 == at[&(seat.faces[0], a)]));
-        ring.push(segment(
-            &mut edges,
-            at[&(seat.faces[1], a)],
-            at[&(seat.faces[1], b)],
-        ));
-        let (arc_b, _) = arcs[&(*edge, b)];
-        ring.push((arc_b, edges[arc_b].ends.0 == at[&(seat.faces[1], b)]));
+        let corner = |k: usize, w: Id| {
+            strip_corner
+                .get(&(*edge, seat.faces[k], w))
+                .copied()
+                .unwrap_or(at[&(seat.faces[k], w)])
+        };
+        let path = |w: Id| -> Vec<usize> {
+            end_paths
+                .get(&(*edge, w))
+                .cloned()
+                .unwrap_or_else(|| vec![arcs[&(*edge, w)].0])
+        };
+        let mut ring = Vec::with_capacity(5);
+        ring.push(segment(&mut edges, corner(0, b), corner(0, a)));
+        let Some(end_a) = walk_path(&edges, &path(a), corner(0, a), corner(1, a)) else {
+            return Ok(None);
+        };
+        ring.extend(end_a);
+        ring.push(segment(&mut edges, corner(1, a), corner(1, b)));
+        let Some(end_b) = walk_path(&edges, &path(b), corner(1, b), corner(0, b)) else {
+            return Ok(None);
+        };
+        ring.extend(end_b);
         // Over the strip's own stations, from the least of its four corners'
         // and its ends' to the greatest, no farther: a surface reaching past
         // its face's trim is one more thing a later operation reads. An end
@@ -411,7 +488,7 @@ pub(crate) fn assemble(
             level[&(*edge, b)][0].max(level[&(*edge, b)][1]),
         );
         let (mut lo, mut hi) = (corners_lo, corners_hi);
-        for end in [arc_a, arc_b] {
+        for end in path(a).into_iter().chain(path(b)) {
             if let Some((curve, (t0, t1))) = &edges[end].curve {
                 for k in 0..=END_SAMPLES {
                     let t = t0 + (t1 - t0) * f64::from(k) / f64::from(END_SAMPLES);
@@ -840,6 +917,250 @@ fn corner_material(
 /// The points a face's boundary passes at one of its corners, in turn, and
 /// the arc between them where a strip ends flush in the face.
 type Corner = (Vec<usize>, Option<(usize, bool)>);
+
+/// Two convex rounds meeting beside an edge left sharp other than in a
+/// mitre (radii differing, or axes not meeting): the round whose corner on
+/// the sharp edge stands nearer the vertex first, the face the two share,
+/// the larger's other face (`near`, where its corner is) and the smaller's
+/// (`far`, where the larger runs on to end flush).
+#[derive(Debug, Clone, Copy)]
+struct Crease {
+    pair: [Id; 2],
+    shared: usize,
+    near: usize,
+    far: usize,
+}
+
+/// The crease vertex's reading, or `None` where it is not one this engine
+/// builds.
+fn crease_at(
+    sections: &FastMap<Id, (PlanarSection, f64)>,
+    here: &[&Seat],
+    round: &[usize],
+    corners: &FastMap<(usize, Id), Point>,
+    v: Id,
+    planar: &Planar,
+    reach: f64,
+) -> Option<Crease> {
+    let rounds: Vec<&&Seat> = here
+        .iter()
+        .filter(|s| sections.contains_key(&s.edge))
+        .collect();
+    let sharp = here.iter().find(|s| !sections.contains_key(&s.edge))?;
+    let [a, b] = rounds.as_slice() else {
+        return None;
+    };
+    if !(a.convex && b.convex) || round.len() != 3 {
+        return None;
+    }
+    let shared = a.faces.iter().copied().find(|f| b.faces.contains(f))?;
+    let other = |s: &Seat| s.faces.iter().copied().find(|f| *f != shared);
+    let (fa, fb) = (other(a)?, other(b)?);
+    if !(sharp.faces.contains(&fa) && sharp.faces.contains(&fb)) {
+        return None;
+    }
+    let at_v = planar.points[&v];
+    let (da, db) = (
+        corners[&(fa, v)].distance(at_v),
+        corners[&(fb, v)].distance(at_v),
+    );
+    if (da - db).abs() <= reach {
+        return None;
+    }
+    Some(if da < db {
+        Crease {
+            pair: [a.edge, b.edge],
+            shared,
+            near: fb,
+            far: fa,
+        }
+    } else {
+        Crease {
+            pair: [b.edge, a.edge],
+            shared,
+            near: fa,
+            far: fb,
+        }
+    })
+}
+
+/// A crease vertex's curves: where the smaller strip's contact on the far
+/// face meets the larger strip (`q`), the crease where the two strips cross
+/// from the shared face's corner to `q` (fitted through points solved on
+/// both cylinders exactly, with its range), and the larger strip's end in
+/// the far face's plane with the parameters of `q` and of its corner on
+/// the sharp edge.
+struct CreaseEdges {
+    q: Point,
+    crease: (Curve, (f64, f64)),
+    arc: Curve,
+    arc_ends: (f64, f64),
+}
+
+/// How many points the crease is solved at and fitted through.
+const CREASE_POINTS: u32 = 64;
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one vertex's reading of the solid"
+)]
+fn crease_edges(
+    planar: &Planar,
+    sections: &FastMap<Id, (PlanarSection, f64)>,
+    edge_seat: &FastMap<Id, &Seat>,
+    crease: &Crease,
+    v: Id,
+    level: &FastMap<(Id, Id), [f64; 2]>,
+    tol: Tolerances,
+) -> OgeomResult<Option<CreaseEdges>> {
+    let [small, large] = crease.pair;
+    let (seat_s, seat_l) = (edge_seat[&small], edge_seat[&large]);
+    let ((sec_s, r_s), (sec_l, r_l)) = (&sections[&small], &sections[&large]);
+    // Each strip's axis: a point on it and its unit direction.
+    let axis = |section: &PlanarSection, seat: &Seat, r: f64| -> (Point, Vector) {
+        let n = planar.faces[seat.faces[0]].normal;
+        (section.contact(0, 0.0) - n * r, seat.along)
+    };
+    let ((a_s, d_s), (a_l, d_l)) = (axis(sec_s, seat_s, *r_s), axis(sec_l, seat_l, *r_l));
+    // The stations `t` along `p + d t` where it stands `r_l` off the larger
+    // axis: a quadratic.
+    let on_large = |p: Point, d: Vector| -> Vec<f64> {
+        let w = p - a_l;
+        let w = w - d_l * w.dot(d_l);
+        let e = d - d_l * d.dot(d_l);
+        let (qa, qb, qc) = (e.dot(e), 2.0 * w.dot(e), w.dot(w) - r_l * r_l);
+        if qa <= f64::EPSILON {
+            return Vec::new();
+        }
+        let disc = qb * qb - 4.0 * qa * qc;
+        if disc < -1e-12 * qb.abs().max(1.0) {
+            return Vec::new();
+        }
+        let root = disc.max(0.0).sqrt();
+        vec![(-qb - root) / (2.0 * qa), (-qb + root) / (2.0 * qa)]
+    };
+    let at_v = planar.points[&v];
+    // `q`: the smaller's contact on the far face, nearest the vertex.
+    let k_far = usize::from(seat_s.faces[1] == crease.far);
+    let c0 = sec_s.contact(k_far, 0.0);
+    let Some(q) = on_large(c0, d_s)
+        .into_iter()
+        .map(|t| c0 + d_s * t)
+        .min_by(|x, y| x.distance(at_v).total_cmp(&y.distance(at_v)))
+    else {
+        return Ok(None);
+    };
+    let k_shared = usize::from(seat_s.faces[1] == crease.shared);
+    let c_f = {
+        let s = level[&(small, v)][k_shared];
+        sec_s.contact(k_shared, s)
+    };
+    // The smaller's section angle from the shared face's corner to `q`.
+    let radial = |p: Point| {
+        let w = p - a_s;
+        w - d_s * w.dot(d_s)
+    };
+    let e1 = radial(c_f).normalized(tol)?;
+    let rq = radial(q);
+    let e2 = (rq - e1 * rq.dot(e1)).normalized(tol)?;
+    let sweep = rq.dot(e2).atan2(rq.dot(e1));
+    // Solved from `q` back to the corner, each root the one nearest the
+    // last: the two strips touch at the corner, where both roots meet.
+    let mut solved: Vec<Point> = Vec::with_capacity(CREASE_POINTS as usize + 1);
+    let mut last = (q - a_s).dot(d_s);
+    for k in (0..=CREASE_POINTS).rev() {
+        let u =
+            0.5 * (1.0 - (core::f64::consts::PI * f64::from(k) / f64::from(CREASE_POINTS)).cos());
+        let theta = sweep * u;
+        let base = a_s + (e1 * theta.cos() + e2 * theta.sin()) * *r_s;
+        let Some(t) = on_large(base, d_s)
+            .into_iter()
+            .min_by(|x, y| (x - last).abs().total_cmp(&(y - last).abs()))
+        else {
+            return Ok(None);
+        };
+        last = t;
+        solved.push(base + d_s * t);
+    }
+    solved.reverse();
+    if solved[0].distance(c_f) > 1e3 * tol.confusion() {
+        return Ok(None);
+    }
+    solved[0] = c_f;
+    if let Some(end) = solved.last_mut() {
+        *end = q;
+    }
+    let fitted = ogeom_algo::interpolate(&solved, 3, ogeom_algo::Spacing::default(), tol)?;
+    let (t0, t1) = ogeom_geom::Curve3d::domain(&fitted);
+    // Held to both cylinders between the points it was fitted through.
+    let off = |p: Point, a: Point, d: Vector, r: f64| {
+        let w = p - a;
+        ((w - d * w.dot(d)).magnitude() - r).abs()
+    };
+    for k in 0..(4 * CREASE_POINTS) {
+        let t = t0 + (t1 - t0) * (f64::from(k) + 0.5) / f64::from(4 * CREASE_POINTS);
+        let p = ogeom_geom::Curve3d::point_at(&fitted, t, tol)?;
+        if off(p, a_s, d_s, *r_s).max(off(p, a_l, d_l, *r_l)) > tol.confusion() {
+            return Ok(None);
+        }
+    }
+    // The larger's end in the far face's plane, from its corner on the sharp
+    // edge (its contact on the near face) to its contact on the shared face.
+    let normal = planar.faces[crease.far].normal;
+    let k_near = usize::from(seat_l.faces[1] == crease.near);
+    let k_shared_l = 1 - k_near;
+    let mut stations = [0.0; 2];
+    stations[k_near] = level[&(large, v)][k_near];
+    let corner_b = sec_l.contact(k_near, stations[k_near]);
+    let c_shared = sec_l.contact(k_shared_l, 0.0);
+    let along_l = seat_l.along;
+    if normal.dot(along_l).abs() <= tol.angular() {
+        return Ok(None);
+    }
+    stations[k_shared_l] = normal.dot(corner_b - c_shared) / normal.dot(along_l);
+    let order = sec_l.order();
+    let (arc, _) = sec_l.plane_end(order, [stations[order[0]], stations[order[1]]], normal, tol)?;
+    let t_b = if order[0] == k_near { 0.0 } else { 1.0 };
+    let t_q = ogeom_algo::project_on_curve(&arc, q, 64, tol)?.parameter;
+    if ogeom_geom::Curve3d::point_at(&arc, t_q, tol)?.distance(q) > 1e3 * tol.confusion()
+        || !within_face(planar, crease.far, q, 1e3 * tol.confusion())
+    {
+        return Ok(None);
+    }
+    Ok(Some(CreaseEdges {
+        q,
+        crease: (Curve::BSpline(fitted), (t0, t1)),
+        arc,
+        arc_ends: (t_q, t_b),
+    }))
+}
+
+/// `path`'s edges walked from `from` to `to`, in its order or against it.
+fn walk_path(
+    edges: &[SheetEdge],
+    path: &[usize],
+    from: usize,
+    to: usize,
+) -> Option<Vec<(usize, bool)>> {
+    let walk = |order: &mut dyn Iterator<Item = &usize>| -> Option<Vec<(usize, bool)>> {
+        let mut at = from;
+        let mut out = Vec::new();
+        for &e in order {
+            let (a, b) = edges[e].ends;
+            if a == at {
+                out.push((e, true));
+                at = b;
+            } else if b == at {
+                out.push((e, false));
+                at = a;
+            } else {
+                return None;
+            }
+        }
+        (at == to).then_some(out)
+    };
+    walk(&mut path.iter()).or_else(|| walk(&mut path.iter().rev()))
+}
 
 /// A vertex of three edges where two rounds of one radius and one sense
 /// meet beside an edge left sharp, both rounds' setback corners on the
@@ -1618,6 +1939,108 @@ mod tests {
             .unwrap()
             .centre;
         assert!(centre.x.abs() < 1e-6, "{centre:?}");
+    }
+
+    /// The edge of `s` whose ends' midpoint is `mid`.
+    fn edge_at(m: &Model, s: &Shape, mid: ogeom_math::Point) -> Shape {
+        explore_unique(m, s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                let (a, b) = ogeom_algo::edge_vertices(m, e).unwrap().unwrap();
+                let p = |v: &Shape| m.node(v).unwrap().data().as_vertex().unwrap().point;
+                p(&a).lerp(p(&b), 0.5).distance(mid) < 1e-9
+            })
+            .unwrap()
+    }
+
+    /// The overlap of two rounds' corner regions at a box corner, the round
+    /// along `x` of radius `r1` and the one along `y` of `r2`, with
+    /// `r1 <= r2`: over the first's section angle `phi`, the first's region
+    /// stands `r1 (1 - sin phi)` deep in `y` at height `z = r1 (1 - cos phi)`
+    /// and the second's `r2 - sqrt(z (2 r2 - z))` deep in `x` there, so the
+    /// overlap is the integral of their product over `dz`. Smooth in `phi`,
+    /// so 64-point Gauss–Legendre takes it to rounding.
+    fn corner_overlap(r1: f64, r2: f64) -> f64 {
+        // Nodes and weights by Newton's method on the Legendre polynomial.
+        let n = 64;
+        let mut sum = 0.0;
+        let half = core::f64::consts::FRAC_PI_4;
+        for i in 0..n {
+            let mut x =
+                (core::f64::consts::PI * (f64::from(i) + 0.75) / (f64::from(n) + 0.5)).cos();
+            let mut dp = 0.0;
+            for _ in 0..100 {
+                let (mut p0, mut p1) = (1.0, x);
+                for k in 2..=n {
+                    let p2 = ((2.0 * f64::from(k) - 1.0) * x * p1 - (f64::from(k) - 1.0) * p0)
+                        / f64::from(k);
+                    p0 = p1;
+                    p1 = p2;
+                }
+                dp = f64::from(n) * (x * p1 - p0) / (x * x - 1.0);
+                let step = p1 / dp;
+                x -= step;
+                if step.abs() < 1e-16 {
+                    break;
+                }
+            }
+            let w = 2.0 / ((1.0 - x * x) * dp * dp);
+            let phi = half * (x + 1.0);
+            let z = r1 * (1.0 - phi.cos());
+            let y1 = r1 * (1.0 - phi.sin());
+            let x2 = r2 - (z * (2.0 * r2 - z)).sqrt();
+            sum += w * half * y1 * x2 * r1 * phi.sin();
+        }
+        sum
+    }
+
+    /// The overlap at equal radii is the mitre's, `r^3 (5/3 - pi/2)`: the
+    /// quadrature checked against the closed form it generalises.
+    #[test]
+    fn the_corner_overlap_at_equal_radii_is_the_mitre_s() {
+        let r: f64 = 1.5;
+        let want = r.powi(3) * (5.0 / 3.0 - core::f64::consts::FRAC_PI_2);
+        assert!(
+            (corner_overlap(r, r) - want).abs() < 1e-13,
+            "{}",
+            corner_overlap(r, r)
+        );
+    }
+
+    /// A 10 by 8 by 6 box, the corner at the origin's edge along `x` rounded
+    /// at 1 and its edge along `y` at 2, the edge along `z` left sharp: the
+    /// larger round runs on to the face `y = 0` and ends flush there on its
+    /// section, and the smaller ends on the larger along the curve the two
+    /// cylinders cross in. The solid is the box less each round's corner
+    /// region along its edge, plus their overlap at the corner (the union
+    /// of the two regions removed), in either order.
+    #[test]
+    fn two_rounds_of_different_radii_beside_a_sharp_edge_meet_in_their_crease() {
+        let (r1, r2) = (1.0, 2.0);
+        let corner = 1.0 - core::f64::consts::FRAC_PI_4;
+        let want = 480.0 - corner * (r1 * r1 * 10.0 + r2 * r2 * 8.0) + corner_overlap(r1, r2);
+        let mut volumes = Vec::new();
+        for flip in [false, true] {
+            let mut m = Model::new();
+            let s = ogeom_algo::make_box(&mut m, Frame::WORLD, (10.0, 8.0, 6.0), T)
+                .unwrap()
+                .shape;
+            let along_x = edge_at(&m, &s, ogeom_math::Point::new(5.0, 0.0, 0.0));
+            let along_y = edge_at(&m, &s, ogeom_math::Point::new(0.0, 4.0, 0.0));
+            let mut asked = vec![(along_x, r1), (along_y, r2)];
+            if flip {
+                asked.reverse();
+            }
+            let request = Request::from_rounds(&asked, T).unwrap();
+            let built = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+            let found = ogeom_algo::check(&m, &built, T).unwrap();
+            assert!(found.is_valid(), "{:?}", found.problems);
+            volumes.push(volume(&m, &built));
+        }
+        for v in &volumes {
+            assert!((v - want).abs() < 1e-6, "{v} against {want}");
+        }
     }
 
     /// A 4 by 3 rectangle at `x = 0` swept along `(10, 3, 0)`: its caps

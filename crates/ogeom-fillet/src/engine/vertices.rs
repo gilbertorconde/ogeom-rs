@@ -68,9 +68,13 @@ pub(crate) enum RoundVertex {
     /// transfinite patch closes the hole tangent to all of them, on one
     /// face for three or four sides and on a face per side for more.
     Patch,
-    /// Two rounds of one radius and one sense beside an edge left sharp,
-    /// their axes meeting: the strips run on to the mitre plane, where the
-    /// two cylinders cross on one ellipse, and meet along it, the sharp
-    /// edge's crease carried on between them. No vertex face.
+    /// Two rounds of one sense beside an edge left sharp. Of one radius with
+    /// their axes meeting, the strips run on to the mitre plane, where the
+    /// two cylinders cross on one ellipse, and meet along it. Otherwise, both
+    /// convex, the larger (its corner on the sharp edge the farther) runs on
+    /// to the smaller's other face and ends flush in it, and the smaller ends
+    /// on the larger along the curve the two cylinders cross in. Either way
+    /// the sharp edge's crease carries on between them, and there is no
+    /// vertex face.
     Mitre,
 }
