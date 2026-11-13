@@ -3402,10 +3402,11 @@ fn rims_grouped_with_other_wedges_are_trimmed_before_the_rest_is_cut() {
 /// that the general fuse splits the two where they part (a corner rounded
 /// at a hundredth, a band ending on an edge stating a millimetre's
 /// thousandth), the cut is left to the general fuse. A solid the blend
-/// engine takes (the cube, the corners, the bands across, all of planes,
-/// and the holed block, whose bands run along planes beside a bore and go
-/// through its trimmed assembly) is cut by neither: it is built in one
-/// pass, the same solid either way.
+/// engine takes (the cube, the corners, the bands across, a slab rounded at
+/// half its thickness, its sides consumed, all of planes, and the holed
+/// block, whose bands run along planes beside a bore and go through its
+/// trimmed assembly) is cut by neither: it is built in one pass, the same
+/// solid either way.
 #[test]
 fn seated_bands_are_cut_by_trimming_to_the_general_fuse_s_solid() {
     type Made = (ogeom_topo::Shape, Vec<ogeom_topo::Shape>, f64);
@@ -3504,7 +3505,7 @@ fn seated_bands_are_cut_by_trimming_to_the_general_fuse_s_solid() {
         ("corner at a hundredth", &|m| corner(m, 0.01), false),
         ("across", &|m| across(m, false), false),
         ("across a loose edge", &|m| across(m, true), false),
-        ("slab", &slab, true),
+        ("slab", &slab, false),
         ("holed", &holed, false),
     ];
     for (name, case, trimmed) in cases {
