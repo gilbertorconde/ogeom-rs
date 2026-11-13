@@ -25,11 +25,13 @@ mod classify;
 mod guards;
 mod request;
 mod rounds;
+mod seams;
 mod sections;
 mod setbacks;
 mod vertices;
 
 pub(crate) use request::{Request, Section};
+pub(crate) use seams::{Dissolved, dissolve, is_seam};
 
 use ogeom_algo::{Built, History};
 use ogeom_core::{FastMap, FastSet, OgeomResult, Tolerances};

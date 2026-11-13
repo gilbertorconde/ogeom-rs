@@ -42,4 +42,6 @@ pub use seam::seam_periodic_faces;
 pub use small::{SmallFaces, fix_small_faces, remove_small_solids};
 pub use solid::solids_from_shells;
 pub use split::{Projection, split_face};
-pub use upgrade::{merge_edges, reduce_tolerances, unify_same_domain, unify_same_domain_around};
+pub use upgrade::{
+    merge_edges, reduce_tolerances, same_domain, unify_same_domain, unify_same_domain_around,
+};

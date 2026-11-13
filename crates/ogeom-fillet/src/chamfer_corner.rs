@@ -62,11 +62,16 @@ pub fn chamfer_edges_cornered(
     corner: ChamferCorner,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    if corner == ChamferCorner::Point {
-        return crate::chamfer::chamfer_edges_mitred(model, solid, specs, tol);
-    }
     if specs.is_empty() {
         ogeom_bail!(Construction, "a chain of no edges bevels nothing");
+    }
+    let (specs, _) = crate::chamfer::without_seams(model, solid, specs, tol)?;
+    if specs.is_empty() {
+        return Ok(crate::chamfer::unchanged(solid));
+    }
+    let specs = &specs[..];
+    if corner == ChamferCorner::Point {
+        return crate::chamfer::chamfer_edges_mitred(model, solid, specs, tol);
     }
     // A solid bounded by planes is chamfered by the blend engine in one
     // pass: every face set back, every vertex its facet.

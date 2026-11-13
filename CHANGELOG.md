@@ -32,11 +32,38 @@ bump may break the API and a patch bump may not.
   - A request its faces cannot hold (a face its setbacks consume, such as
     two bevels crossing on a thin wall) and any other solid are chamfered
     by wedges, mitred, as before.
+- **A chamfer naming a seam names nothing.** A seam is an edge between two
+  faces of one shell on one surface, facing one way, as a boolean leaves
+  where it joined two flats. It is no edge of the part's form: mainstream
+  CAD merges those faces after the boolean, so the edge cannot be picked.
+  - The chamfer functions pass over a spec naming a seam. A request naming
+    nothing but seams returns the solid as it is; it was refused, "the
+    edge's faces are tangent".
+  - A solid bounded by planes that holds seams is chamfered by the blend
+    engine with them dissolved, by the same merge as
+    `ogeom_heal::unify_same_domain` and `merge_edges`. The faces on one
+    plane come out one face, and an edge the seams split along its length
+    is one bevel.
+  - A stepped bracket fused from three boxes, every edge chamfered, is now
+    the bracket built as one prism chamfered alike: the same corners to
+    the bit, in any order. It was chamfered by wedges, its corners mitred
+    instead of faceted.
+  - Coplanar faces facing opposite ways, with the material changing side
+    across the edge between them, still meet at a real edge.
+- **`ogeom_heal::same_domain`**: whether two faces lie on one carrier
+  facing one way, the pair `unify_same_domain` merges across a shared
+  edge.
 - **Chamfer history.** A bevelled edge is deleted and generates its bevel.
   Each face set back is modified into its new face. An edge or vertex left
   as it was is modified into its new one, since the solid is rebuilt.
 
 ### Fixed
+
+- **`merge_edges` left each joined edge apart from its neighbours.** The
+  joined edge was built with new end vertices at the points the pair's
+  outer vertices stood at, so the edges either side no longer met it: a
+  box unified from two halves came back with sixteen vertices, not eight.
+  The joined edge now runs between the pair's own outer vertices.
 
 - **Bevels meeting at a face's reflex corner left a notch.** Two edges of
   one face chamfered where they meet at the face's inside corner (an L's

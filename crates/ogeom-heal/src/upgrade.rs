@@ -69,6 +69,23 @@ pub fn unify_same_domain_around(
     unify(model, shape, Some(around), tol)
 }
 
+/// Whether faces `a` and `b` lie on one carrier facing one way: the pair
+/// [`unify_same_domain`] merges where they share an edge. An edge between
+/// two such faces is a seam, no edge of the shape's form: the surface runs
+/// on across it unbroken, and the material stays on the one side.
+///
+/// # Errors
+///
+/// As the model's own readers, where a face does not resolve in `model`.
+pub fn same_domain(model: &Model, a: &Shape, b: &Shape, tol: Tolerances) -> OgeomResult<bool> {
+    Ok(
+        match (carrier_of(model, a, tol)?, carrier_of(model, b, tol)?) {
+            (Some(a), Some(b)) => same_carrier(&a, &b, tol),
+            _ => false,
+        },
+    )
+}
+
 /// The merged faces describe the edges they keep on their surfaces, so
 /// what `shape` shares with other shapes is copied first and `around`
 /// carried to the copies.
@@ -904,7 +921,20 @@ fn merge_pass(
                 i += 1;
                 continue;
             };
-            let joined = ogeom_algo::make_edge(model, join.curve, join.range, tol)?.shape;
+            // The joined edge runs between the pair's outer vertices, so the
+            // edges either side still meet it; a pair whose curve does not
+            // reach them is left split.
+            let Some((from, to)) = join.ends.clone() else {
+                i += 1;
+                continue;
+            };
+            let Ok(joined) =
+                ogeom_algo::make_edge_between(model, join.curve, join.range, &from, &to, tol)
+            else {
+                i += 1;
+                continue;
+            };
+            let joined = joined.shape;
             for pcurve in join.pcurves {
                 ogeom_algo::attach_pcurve(
                     model,
@@ -953,6 +983,9 @@ struct Join {
     range: (f64, f64),
     /// The joined pcurve for every surface the pair was parameterized on.
     pcurves: Vec<PcurveJoin>,
+    /// The vertex the first edge starts at and the one the second ends at,
+    /// unplaced: the joined edge's own ends.
+    ends: Option<(Shape, Shape)>,
 }
 
 /// A joined pcurve, in the slot it goes back into.
@@ -1127,10 +1160,20 @@ fn joinable(
             return Ok(None);
         }
     }
+    let bounds = |e: &Shape| {
+        model.children_of(&Shape::new(
+            e.node(),
+            Location::identity(),
+            Orientation::Forward,
+        ))
+    };
+    let (starts, stops) = (bounds(first)?, bounds(second)?);
+    let ends = starts.first().cloned().zip(stops.last().cloned());
     Ok(Some(Join {
         curve,
         range,
         pcurves,
+        ends,
     }))
 }
 

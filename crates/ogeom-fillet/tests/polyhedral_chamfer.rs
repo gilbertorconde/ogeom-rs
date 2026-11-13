@@ -532,3 +532,218 @@ fn bevels_meeting_at_a_face_s_reflex_corner_mitre_without_a_notch() {
         want + d * d * d / 3.0
     );
 }
+
+/// A box at `(x, y, z)` of `size`.
+fn block(m: &mut Model, (x, y, z): (f64, f64, f64), size: (f64, f64, f64)) -> Shape {
+    let at = ogeom_math::Frame::new(
+        Point::new(x, y, z),
+        ogeom_math::Direction::Z,
+        ogeom_math::Direction::X,
+        T,
+    )
+    .unwrap();
+    ogeom_algo::make_box(m, at, size, T).unwrap().shape
+}
+
+/// The stepped bracket as an application models it: a plate, a step and a
+/// block fused, which leaves the end faces and the back face split along
+/// seams where the boxes met, and the back's two upright edges each split
+/// in three.
+fn fused_bracket(m: &mut Model) -> Shape {
+    let plate = block(m, (0.0, 0.0, 0.0), (80.0, 60.0, 6.0));
+    let step = block(m, (0.0, 30.0, 6.0), (80.0, 30.0, 10.0));
+    let top = block(m, (0.0, 45.0, 16.0), (80.0, 15.0, 14.0));
+    let s = ogeom_bool::fuse(m, &plate, &step, T).unwrap().shape;
+    ogeom_bool::fuse(m, &s, &top, T).unwrap().shape
+}
+
+/// The fused stepped bracket with every edge chamfered, the seams the
+/// fuse left among the request, is the bracket built as one prism chamfered
+/// alike: the same corners to the bit, under three orders of the request,
+/// and the closed form's volume. A seam names nothing: it leaves no bevel
+/// and no facet, and its faces come out one face, as the part's form has
+/// them. Every edge of the form is bevelled, the split upright edges as
+/// one bevel each, and every corner of the form closed by a triangle.
+#[test]
+fn the_fused_stepped_bracket_chamfers_as_the_prism_with_its_seams_naming_nothing() {
+    let (_, profile, length) = corpus().pop().unwrap();
+    for d in [1.0, 2.0] {
+        let mut m = Model::new();
+        let p = prism(&mut m, &profile, length);
+        let prism_edges = explore_unique(&m, &p, ShapeType::Edge).unwrap();
+        let from_prism = ogeom_fillet::chamfer_edges(&mut m, &p, &prism_edges, d, T).unwrap();
+        let (want_faces, want) = (
+            explore_unique(&m, &from_prism.shape, ShapeType::Face)
+                .unwrap()
+                .len(),
+            key(&m, &from_prism.shape).1,
+        );
+        let closed = chamfered_prism_volume(&profile, length, d);
+        for seed in 0..3_u64 {
+            let mut m = Model::new();
+            let s = fused_bracket(&mut m);
+            let edges = explore_unique(&m, &s, ShapeType::Edge).unwrap();
+            let vertices = explore_unique(&m, &s, ShapeType::Vertex).unwrap();
+            let faces = explore_unique(&m, &s, ShapeType::Face).unwrap();
+            assert_eq!(
+                (faces.len(), edges.len(), vertices.len()),
+                (16, 34, 20),
+                "the fuse left no seams to test"
+            );
+            let specs = all_edges(&m, &s, d);
+            let specs: Vec<(Shape, Chamfer)> = shuffled(specs.len(), seed)
+                .iter()
+                .map(|i| specs[*i].clone())
+                .collect();
+            let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T)
+                .unwrap_or_else(|err| panic!("d {d}, order {seed}: {err}"));
+            let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+            assert!(found.is_valid(), "d {d}: {:?}", found.problems);
+            assert!(!folded(&m, &built.shape), "folded");
+            let got = volume(&m, &built.shape);
+            assert!(
+                (got - closed).abs() <= 1e-9 * closed,
+                "d {d}: volume {got} against {closed}"
+            );
+            assert_eq!(
+                explore_unique(&m, &built.shape, ShapeType::Face)
+                    .unwrap()
+                    .len(),
+                want_faces,
+                "d {d}: faces"
+            );
+            assert!(
+                key(&m, &built.shape).1 == want,
+                "d {d}, order {seed}: corners differ from the prism's"
+            );
+            // A seam is an edge whose two faces lie on one plane facing one
+            // way: read here from the faces' normals, not the kernel's test.
+            let seam = |e: &Shape| {
+                let around = ogeom_topo::ancestors_of(&m, &s, e, ShapeType::Face).unwrap();
+                let (_, a) = ogeom_algo::face_normal(&m, &around[0], T).unwrap();
+                let (_, b) = ogeom_algo::face_normal(&m, &around[1], T).unwrap();
+                a.dot(b) > 1.0 - 1e-12
+            };
+            let (seams, form): (Vec<&Shape>, Vec<&Shape>) = edges.iter().partition(|e| seam(e));
+            assert_eq!(seams.len(), 6, "seams");
+            let mut bevels: Vec<Shape> = Vec::new();
+            for e in &form {
+                let made = built.history.generated(e);
+                assert_eq!(made.len(), 1, "an edge of the form without its bevel");
+                if !bevels.iter().any(|b| b.is_same(&made[0])) {
+                    bevels.push(made[0].clone());
+                }
+            }
+            assert_eq!(bevels.len(), 24, "one bevel per edge of the form");
+            for e in &seams {
+                assert!(built.history.generated(e).is_empty(), "a seam bevelled");
+                assert!(built.history.is_deleted(e), "a seam left standing");
+            }
+            let mut triangles = 0;
+            for v in &vertices {
+                match built.history.generated(v) {
+                    [] => assert!(built.history.is_deleted(v), "a seam's vertex left"),
+                    [facet] => {
+                        let corners = explore_unique(&m, facet, ShapeType::Vertex).unwrap();
+                        assert_eq!(corners.len(), 3, "a facet that is not a triangle");
+                        triangles += 1;
+                    }
+                    more => panic!("a vertex with {} facets", more.len()),
+                }
+            }
+            assert_eq!(triangles, 16, "a facet at every corner of the form");
+            let mut kept: Vec<Shape> = Vec::new();
+            for f in &faces {
+                let into = built.history.modified(f);
+                assert_eq!(into.len(), 1, "a face not carried to one face");
+                if !kept.iter().any(|k| k.is_same(&into[0])) {
+                    kept.push(into[0].clone());
+                }
+            }
+            assert_eq!(kept.len(), 10, "the split faces come out one face each");
+        }
+    }
+}
+
+/// A request naming nothing but seams leaves the solid as it is: alone,
+/// in a set, and in each corner's spelling.
+#[test]
+fn a_chamfer_naming_only_seams_leaves_the_solid_as_it_is() {
+    let mut m = Model::new();
+    let s = fused_bracket(&mut m);
+    let seams: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let around = ogeom_topo::ancestors_of(&m, &s, e, ShapeType::Face).unwrap();
+            let (_, a) = ogeom_algo::face_normal(&m, &around[0], T).unwrap();
+            let (_, b) = ogeom_algo::face_normal(&m, &around[1], T).unwrap();
+            a.dot(b) > 1.0 - 1e-12
+        })
+        .collect();
+    assert_eq!(seams.len(), 6);
+    // The solid as it stood: its corners and its volume to the bit, its
+    // faces as many (a solid shared with the fuse's inputs comes back a
+    // copy).
+    let as_given = (
+        key(&m, &s),
+        explore_unique(&m, &s, ShapeType::Face).unwrap().len(),
+    );
+    let same = |m: &Model, built: &Shape| {
+        (
+            key(m, built),
+            explore_unique(m, built, ShapeType::Face).unwrap().len(),
+        ) == as_given
+    };
+    let alone = ogeom_fillet::chamfer_edge(&mut m, &s, &seams[0], 1.0, T).unwrap();
+    assert!(same(&m, &alone.shape), "a seam alone changed the solid");
+    let specs: Vec<(Shape, Chamfer)> = seams
+        .iter()
+        .map(|e| (e.clone(), Chamfer::Symmetric(1.0)))
+        .collect();
+    for corner in [ChamferCorner::Facet, ChamferCorner::Point] {
+        let built = ogeom_fillet::chamfer_edges_cornered(&mut m, &s, &specs, corner, T).unwrap();
+        assert!(
+            same(&m, &built.shape),
+            "{corner:?}: seams changed the solid"
+        );
+    }
+}
+
+/// Two plates fused where they touch along one line, the upper one's
+/// underside on the lower one's top plane: across that line the plane
+/// holds material below on one side and above on the other. The faces are
+/// coplanar but the edge is real, so a chamfer naming it is judged as one
+/// (refused: four faces meet there), never passed over as a seam.
+#[test]
+fn coplanar_faces_with_the_material_on_opposite_sides_meet_at_a_real_edge() {
+    let mut m = Model::new();
+    let lower = block(&mut m, (0.0, 0.0, 0.0), (80.0, 30.0, 6.0));
+    let upper = block(&mut m, (0.0, 30.0, 6.0), (80.0, 30.0, 6.0));
+    let s = ogeom_bool::fuse(&mut m, &lower, &upper, T).unwrap().shape;
+    let touching = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+            [a, b].iter().all(|v| {
+                let p = m.node(v).unwrap().data().as_vertex().unwrap().point;
+                (p.y - 30.0).abs() < 1e-9 && (p.z - 6.0).abs() < 1e-9
+            })
+        })
+        .unwrap();
+    let around = ogeom_topo::ancestors_of(&m, &s, &touching, ShapeType::Face).unwrap();
+    let flat: Vec<&Shape> = around
+        .iter()
+        .filter(|f| {
+            let (_, n) = ogeom_algo::face_normal(&m, f, T).unwrap();
+            n.z.abs() > 1.0 - 1e-12
+        })
+        .collect();
+    let [top, underside] = flat.as_slice() else {
+        panic!("{} faces on the plane at the line", flat.len());
+    };
+    assert!(!ogeom_heal::same_domain(&m, top, underside, T).unwrap());
+    let err = ogeom_fillet::chamfer_edge(&mut m, &s, &touching, 1.0, T).unwrap_err();
+    assert!(err.to_string().contains("exactly two faces"), "{err}");
+}
