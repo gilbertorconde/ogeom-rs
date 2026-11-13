@@ -428,6 +428,9 @@ pub(crate) fn engine_chamfer(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
+    if model.kind_of(solid)? == ogeom_topo::ShapeType::Compound {
+        return engine_chamfer_compound(model, solid, specs, tol);
+    }
     // A solid with placed shapes in it (a prism's far end is its profile
     // moved, the same nodes standing twice) is read with its placements
     // baked in, the request traced onto the baked shapes and the history
@@ -488,6 +491,58 @@ pub(crate) fn engine_chamfer_mitred(
         built.shape,
         baked.history.then(&built.history),
     )))
+}
+
+/// [`engine_chamfer`] on a compound of solids: each solid with the specs
+/// whose edges it holds, the rest kept as they are, the results gathered
+/// into a compound again. `None` where the compound holds anything but
+/// solids, an edge lies in no solid or in two, or any solid with specs is
+/// handed back.
+fn engine_chamfer_compound(
+    model: &mut Model,
+    compound: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    use ogeom_topo::ShapeType;
+    let parts = model.children_of(compound)?;
+    if parts.is_empty()
+        || parts
+            .iter()
+            .any(|p| !matches!(model.kind_of(p), Ok(ShapeType::Solid)))
+    {
+        return Ok(None);
+    }
+    let mut asked: Vec<Vec<(Shape, Chamfer)>> = vec![Vec::new(); parts.len()];
+    let edges: Vec<Vec<Shape>> = parts
+        .iter()
+        .map(|p| ogeom_topo::explore_unique(model, p, ShapeType::Edge))
+        .collect::<OgeomResult<_>>()?;
+    for (edge, spec) in specs {
+        let holders: Vec<usize> = (0..parts.len())
+            .filter(|k| edges[*k].iter().any(|e| e.is_same(edge)))
+            .collect();
+        let [k] = holders[..] else {
+            return Ok(None);
+        };
+        asked[k].push((edge.clone(), spec.clone()));
+    }
+    let mut out = Vec::with_capacity(parts.len());
+    let mut history = ogeom_algo::History::new();
+    for (part, own) in parts.iter().zip(&asked) {
+        if own.is_empty() {
+            out.push(part.clone());
+            continue;
+        }
+        let Some(built) = engine_chamfer(model, part, own, tol)? else {
+            return Ok(None);
+        };
+        history = history.then(&built.history);
+        out.push(built.shape);
+    }
+    let gathered = ogeom_algo::make_compound(model, &out)?.shape;
+    history.modify(compound, gathered.clone());
+    Ok(Some(Built::new(gathered, history)))
 }
 
 /// `specs` traced through `history`: each edge, and each face a spec names,
