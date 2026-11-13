@@ -428,6 +428,72 @@ pub(crate) fn engine_chamfer(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
+    // A solid with placed shapes in it (a prism's far end is its profile
+    // moved, the same nodes standing twice) is read with its placements
+    // baked in, the request traced onto the baked shapes and the history
+    // carried back.
+    let baked = ogeom_algo::baked_where_placed(model, solid, tol)?;
+    if baked.shape.is_same(solid) {
+        return engine_chamfer_unplaced(model, solid, specs, tol);
+    }
+    let Some(traced) = traced_specs(&baked.history, specs) else {
+        return Ok(None);
+    };
+    let Some(built) = engine_chamfer_unplaced(model, &baked.shape, &traced, tol)? else {
+        return Ok(None);
+    };
+    Ok(Some(Built::new(
+        built.shape,
+        baked.history.then(&built.history),
+    )))
+}
+
+/// `specs` traced through `history`: each edge, and each face a spec names,
+/// to the one shape it went to; `None` where any went to none or several.
+fn traced_specs(
+    history: &ogeom_algo::History,
+    specs: &[(Shape, Chamfer)],
+) -> Option<Vec<(Shape, Chamfer)>> {
+    let one = |s: &Shape| match history.trace(s) {
+        [only] => Some(only.clone()),
+        _ => None,
+    };
+    specs
+        .iter()
+        .map(|(edge, spec)| {
+            let spec = match spec {
+                Chamfer::Symmetric(d) => Chamfer::Symmetric(*d),
+                Chamfer::Distances {
+                    face,
+                    on_face,
+                    on_other,
+                } => Chamfer::Distances {
+                    face: one(face)?,
+                    on_face: *on_face,
+                    on_other: *on_other,
+                },
+                Chamfer::Angle {
+                    face,
+                    distance,
+                    angle,
+                } => Chamfer::Angle {
+                    face: one(face)?,
+                    distance: *distance,
+                    angle: *angle,
+                },
+            };
+            Some((one(edge)?, spec))
+        })
+        .collect()
+}
+
+/// [`engine_chamfer`] on a solid with nothing placed in it.
+fn engine_chamfer_unplaced(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
     use crate::engine::Dissolved;
     match crate::engine::dissolve(model, solid, tol)? {
         Dissolved::Plain => {
