@@ -491,6 +491,9 @@ fn engine_chamfer_mitred_attempt(
         };
         (baked.shape.clone(), traced)
     };
+    if let Some(what) = crate::engine::degenerate_planar(model, &solid)? {
+        return Err(degenerate_refused(&what));
+    }
     if !matches!(
         crate::engine::dissolve(model, &solid, tol)?,
         crate::engine::Dissolved::Plain
@@ -512,6 +515,9 @@ fn engine_chamfer_mitred_attempt(
         return Ok(None);
     }
     let built = if let Some(seamless) = crate::engine::dissolve_curved(model, &solid, tol)? {
+        if seamless.asked_apart(&specs) {
+            return Err(apart_refused());
+        }
         let Some(specs) = seamless.specs(&specs) else {
             return Ok(None);
         };
@@ -535,9 +541,13 @@ fn engine_chamfer_mitred_attempt(
 
 /// [`engine_chamfer`] on a compound of solids: each solid with the specs
 /// whose edges it holds, the rest kept as they are, the results gathered
-/// into a compound again. `None` where the compound holds anything but
-/// solids, an edge lies in no solid or in two, or any solid with specs is
-/// handed back.
+/// into a compound again. `None` where an edge lies in no solid or in two,
+/// or any solid with specs is handed back.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
+/// the compound holds anything but solids, or nothing.
 fn engine_chamfer_compound(
     model: &mut Model,
     compound: &Shape,
@@ -546,12 +556,18 @@ fn engine_chamfer_compound(
 ) -> OgeomResult<Option<Built>> {
     use ogeom_topo::ShapeType;
     let parts = model.children_of(compound)?;
+    // A chamfer cuts solids: a compound holding anything else (a shell, a
+    // face, a nested compound) or nothing is refused by name (ADR 0001,
+    // amendment "what M6 refuses by name").
     if parts.is_empty()
         || parts
             .iter()
             .any(|p| !matches!(model.kind_of(p), Ok(ShapeType::Solid)))
     {
-        return Ok(None);
+        ogeom_core::ogeom_bail!(
+            Construction,
+            "a chamfer cuts solids; this compound holds something other than solids"
+        );
     }
     let mut asked: Vec<Vec<(Shape, Chamfer)>> = vec![Vec::new(); parts.len()];
     let edges: Vec<Vec<Shape>> = parts
@@ -773,6 +789,10 @@ fn engine_chamfer_attempt(
     {
         return engine_chamfer_voided(model, solid, specs, tol);
     }
+    // Degenerate planar topology is refused by name, not chamfered past.
+    if let Some(what) = crate::engine::degenerate_planar(model, solid)? {
+        return Err(degenerate_refused(&what));
+    }
     match crate::engine::dissolve(model, solid, tol)? {
         Dissolved::Plain => {
             if let Some(request) = crate::engine::Request::from_chamfers(model, solid, specs, tol)?
@@ -788,6 +808,9 @@ fn engine_chamfer_attempt(
                 return crate::engine::chamfer_patched(model, solid, specs, tol);
             }
             if let Some(seamless) = crate::engine::dissolve_curved(model, solid, tol)? {
+                if seamless.asked_apart(specs) {
+                    return Err(apart_refused());
+                }
                 let Some(specs) = seamless.specs(specs) else {
                     return Ok(None);
                 };
@@ -805,6 +828,9 @@ fn engine_chamfer_attempt(
         }
         Dissolved::Outside => Ok(None),
         Dissolved::Into(seamless) => {
+            if seamless.asked_apart(specs) {
+                return Err(apart_refused());
+            }
             let Some(specs) = seamless.specs(specs) else {
                 return Ok(None);
             };
@@ -1960,6 +1986,28 @@ fn same_spelling(a: &Chamfer, b: &Chamfer, tol: Tolerances) -> bool {
         ) => fa.is_same(fb) && near(*da, *db) && (aa - ab).abs() <= tol.angular(),
         _ => false,
     }
+}
+
+/// The refusal of two pieces of one edge (split by seams) asked with
+/// different chamfers: an edge of the form takes one chamfer (ADR 0001,
+/// amendment "what M6 refuses by name").
+fn apart_refused() -> ogeom_core::OgeomError {
+    ogeom_core::ogeom_err!(
+        Construction,
+        "two pieces of one edge are asked with different chamfers; an edge takes one \
+         chamfer, so ask the edge once or give its pieces one chamfer"
+    )
+}
+
+/// The refusal of a solid whose planar topology is degenerate (`what`):
+/// a chamfer needs every edge between two faces (ADR 0001, the M6
+/// refusals).
+fn degenerate_refused(what: &str) -> ogeom_core::OgeomError {
+    ogeom_core::ogeom_err!(
+        Construction,
+        "the solid's topology is degenerate ({what}); a chamfer needs every edge between \
+         exactly two faces"
+    )
 }
 
 #[cfg(test)]

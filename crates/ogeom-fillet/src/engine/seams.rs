@@ -342,6 +342,54 @@ impl Seamless {
         }))
     }
 
+    /// Whether two pieces of one edge the seams split are asked with
+    /// different chamfers: an edge of the form takes one chamfer, as a
+    /// tangent chain takes one value in the mainstream applications (ADR
+    /// 0001, amendment "what M6 refuses by name"), so such a request is refused
+    /// by name rather than built.
+    pub fn asked_apart(&self, specs: &[(Shape, Chamfer)]) -> bool {
+        let face = |named: &Shape| {
+            self.faces
+                .iter()
+                .find(|(f, _)| f.is_same(named))
+                .map(|(_, g)| g.clone())
+        };
+        let mut seen: Vec<(Shape, Chamfer)> = Vec::new();
+        for (edge, spec) in specs {
+            let Some(Some(f)) = self.edges.get(&id(edge)) else {
+                continue;
+            };
+            let edge = self.unified[f].clone();
+            let spec = match spec {
+                Chamfer::Symmetric(d) => Chamfer::Symmetric(*d),
+                Chamfer::Distances {
+                    face: named,
+                    on_face,
+                    on_other,
+                } => Chamfer::Distances {
+                    face: face(named).unwrap_or_else(|| named.clone()),
+                    on_face: *on_face,
+                    on_other: *on_other,
+                },
+                Chamfer::Angle {
+                    face: named,
+                    distance,
+                    angle,
+                } => Chamfer::Angle {
+                    face: face(named).unwrap_or_else(|| named.clone()),
+                    distance: *distance,
+                    angle: *angle,
+                },
+            };
+            match seen.iter().find(|(e, _)| e.is_same(&edge)) {
+                Some((_, asked)) if !alike(asked, &spec) => return true,
+                Some(_) => {}
+                None => seen.push((edge, spec)),
+            }
+        }
+        false
+    }
+
     /// `specs`, named on the solid as given, named on [`Seamless::solid`]:
     /// the pieces of one edge the seams split, asked alike, ask once.
     /// `None` where a spec names a seam or no element of the solid, or two
