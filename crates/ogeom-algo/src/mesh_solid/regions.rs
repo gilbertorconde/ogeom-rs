@@ -95,8 +95,8 @@ impl FlatPatches {
             while i < patch.len() {
                 let t = patch[i];
                 i += 1;
-                for h in 3 * t..3 * t + 3 {
-                    let Some(g) = adjacency.twin[h] else {
+                for &slot in &adjacency.twin[3 * t..3 * t + 3] {
+                    let Some(g) = slot else {
                         continue;
                     };
                     let u = g / 3;
@@ -238,8 +238,8 @@ fn steady_miss(
     for _ in 0..3 {
         let end = ring.len();
         for r in start..end {
-            for k in 3 * ring[r]..3 * ring[r] + 3 {
-                if let Some(o) = adjacency.twin[k]
+            for &slot in &adjacency.twin[3 * ring[r]..3 * ring[r] + 3] {
+                if let Some(o) = slot
                     && near(o / 3)
                     && !ring.contains(&(o / 3))
                 {
@@ -252,8 +252,8 @@ fn steady_miss(
     let mut below: Vec<(f64, f64)> = Vec::new();
     let mut above: Vec<(f64, f64)> = Vec::new();
     for &s in &ring {
-        for k in 3 * s..3 * s + 3 {
-            let Some(o) = adjacency.twin[k] else {
+        for (k, &slot) in adjacency.twin.iter().enumerate().skip(3 * s).take(3) {
+            let Some(o) = slot else {
                 continue;
             };
             if (o < k && ring.contains(&(o / 3))) || !near(o / 3) {
@@ -289,8 +289,14 @@ fn steady_miss(
     let mut ends: [Option<(f64, f64)>; 2] = [None, None];
     for (end, at, out) in [(0, i, -along), (1, j, along)] {
         for &s in fans.around(at) {
-            for k in 3 * s as usize..3 * s as usize + 3 {
-                let Some(o) = adjacency.twin[k] else {
+            for (k, &slot) in adjacency
+                .twin
+                .iter()
+                .enumerate()
+                .skip(3 * s as usize)
+                .take(3)
+            {
+                let Some(o) = slot else {
                     continue;
                 };
                 let (c, d) = from_to(triangles, k);
@@ -448,8 +454,8 @@ fn keep_largest_piece(region: &mut Vec<usize>, adjacency: &Adjacency) {
         let mut size = 0;
         while let Some(t) = stack.pop() {
             size += 1;
-            for h in 3 * t..3 * t + 3 {
-                if let Some(twin) = adjacency.twin[h] {
+            for &slot in &adjacency.twin[3 * t..3 * t + 3] {
+                if let Some(twin) = slot {
                     let other = twin / 3;
                     if members.contains(&other) && !piece.contains_key(&other) {
                         piece.insert(other, id);
@@ -487,8 +493,8 @@ pub(super) fn merge_same_surface(
             let Some(Carrier::Curved(a)) = groups.carriers.get(g) else {
                 continue;
             };
-            for h in 3 * t..3 * t + 3 {
-                let Some(twin) = adjacency.twin[h] else {
+            for &slot in &adjacency.twin[3 * t..3 * t + 3] {
+                let Some(twin) = slot else {
                     continue;
                 };
                 let o = groups.of[twin / 3];
@@ -597,8 +603,8 @@ pub(super) fn split_disconnected(
             patch[start] = patches;
             let mut stack = vec![start];
             while let Some(t) = stack.pop() {
-                for h in 3 * t..3 * t + 3 {
-                    if let Some(twin) = adjacency.twin[h] {
+                for &slot in &adjacency.twin[3 * t..3 * t + 3] {
+                    if let Some(twin) = slot {
                         let other = twin / 3;
                         if groups.of[other] == g && patch[other] == usize::MAX {
                             patch[other] = patches;
@@ -1061,8 +1067,8 @@ pub(super) fn recognized_regions(
                 while i < region.len() {
                     let t = region[i];
                     i += 1;
-                    for h in 3 * t..3 * t + 3 {
-                        let Some(g) = adjacency.twin[h] else {
+                    for (h, &slot) in adjacency.twin.iter().enumerate().skip(3 * t).take(3) {
+                        let Some(g) = slot else {
                             continue;
                         };
                         let other = g / 3;
@@ -1190,8 +1196,8 @@ pub(super) fn recognized_regions(
                 while i < cluster.len() && surrounded {
                     let t = cluster[i];
                     i += 1;
-                    for h in 3 * t..3 * t + 3 {
-                        let Some(g) = adjacency.twin[h] else {
+                    for &slot in &adjacency.twin[3 * t..3 * t + 3] {
+                        let Some(g) = slot else {
                             surrounded = false;
                             break;
                         };
@@ -1564,8 +1570,8 @@ pub(super) fn swept_regions(
         // whole fits.
         let mut bands: Vec<usize> = Vec::new();
         for &t in &region {
-            for h in 3 * t..3 * t + 3 {
-                let (Some(c), Some(g)) = (turn(h), adjacency.twin[h]) else {
+            for (h, &slot) in adjacency.twin.iter().enumerate().skip(3 * t).take(3) {
+                let (Some(c), Some(g)) = (turn(h), slot) else {
                     continue;
                 };
                 let other = groups.of[g / 3];
@@ -1651,8 +1657,8 @@ fn along_long_sides(
         while i < part.len() {
             let t = part[i];
             i += 1;
-            for h in 3 * t..3 * t + 3 {
-                let Some(g) = adjacency.twin[h] else {
+            for (h, &slot) in adjacency.twin.iter().enumerate().skip(3 * t).take(3) {
+                let Some(g) = slot else {
                     continue;
                 };
                 let other = g / 3;
@@ -1754,8 +1760,8 @@ fn smooth_regions(
         while i < region.len() {
             let t = region[i];
             i += 1;
-            for h in 3 * t..3 * t + 3 {
-                let (Some(c), Some(g)) = (turn(h), adjacency.twin[h]) else {
+            for (h, &slot) in adjacency.twin.iter().enumerate().skip(3 * t).take(3) {
+                let (Some(c), Some(g)) = (turn(h), slot) else {
                     continue;
                 };
                 if c < cos_crease {
@@ -2217,8 +2223,8 @@ pub(super) fn region_patch(
     // vertex: a corner where they differ.
     let mut sides: FastMap<u32, [Vec<usize>; 2]> = FastMap::default();
     for &t in region {
-        for h in 3 * t..3 * t + 3 {
-            let other = match adjacency.twin[h] {
+        for (h, &slot) in adjacency.twin.iter().enumerate().skip(3 * t).take(3) {
+            let other = match slot {
                 Some(g) if inside.contains(&(g / 3)) => continue,
                 Some(g) => across.of[g / 3],
                 None => usize::MAX,

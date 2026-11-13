@@ -315,8 +315,8 @@ impl Trim {
                     trim.cells[i * CELLS + j].push(k);
                 }
             }
-            for j in j0..=j1 {
-                trim.bands[j].push(k);
+            for band in &mut trim.bands[j0..=j1] {
+                band.push(k);
             }
         }
         Some(trim)

@@ -561,8 +561,8 @@ impl<'a> Operand<'a> {
     /// name the mesh `name` and number its triangles from `base`.
     fn check_wound(&self, name: &str, also: Option<&Operand<'_>>, base: usize) -> OgeomResult<()> {
         let mut parent: Vec<u32> = (0..id(self.tris.len())).collect();
-        for t in 0..self.tris.len() {
-            for &u in &self.across[t] {
+        for (t, near) in self.across.iter().enumerate().take(self.tris.len()) {
+            for &u in near {
                 union(&mut parent, id(t), u);
             }
         }
