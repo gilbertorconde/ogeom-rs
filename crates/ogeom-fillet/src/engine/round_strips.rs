@@ -17,7 +17,7 @@ use ogeom_math::{Circle, Cylinder, Direction, Frame, Point, Torus, Vector};
 use ogeom_topo::{Model, Shape};
 
 use super::curved::{Curved, CurvedEdge, read};
-use super::setbacks::{corner_for, curved_corners};
+use super::setbacks::{corner_for, curved_corners, roll_overs, rolls_over};
 use super::trimmed::{Section, Strip, assemble, faces_of, outward};
 use super::{Id, id};
 
@@ -62,6 +62,20 @@ pub(crate) fn round(
         }
         strips.push(strip);
     }
+    let mut contacts: FastMap<(usize, Id), Curve> = FastMap::default();
+    for s in &strips {
+        for k in 0..2 {
+            contacts.insert((s.faces[k], s.edge), s.contacts[k].clone());
+        }
+    }
+    // P2.
+    let Some(corners) = curved_corners(&curved, &contacts, tol)? else {
+        return Ok(None);
+    };
+    // A contact leaving its face rolls over onto what bounds it there.
+    if rolls_over(&roll_overs(&curved, &contacts, &corners, tol)?) {
+        return Ok(None);
+    }
     // A rim's round reaching a face it does not blend (a cavity's wall
     // under a thin cap) is not built here: every face but the strip's two
     // proved outside the box the round can take up.
@@ -76,16 +90,6 @@ pub(crate) fn round(
             }
         }
     }
-    let mut contacts: FastMap<(usize, Id), Curve> = FastMap::default();
-    for s in &strips {
-        for k in 0..2 {
-            contacts.insert((s.faces[k], s.edge), s.contacts[k].clone());
-        }
-    }
-    // P2.
-    let Some(corners) = curved_corners(&curved, &contacts, tol)? else {
-        return Ok(None);
-    };
     // A straight strip's cylinder over its own stations, from the least of
     // its corners' to the greatest: a surface reaching past its face's trim
     // is one more thing a later operation reads. An end whose two corners
@@ -657,7 +661,18 @@ fn rim(
                         })
                         .collect::<OgeomResult<_>>()?
                 };
-            if samples.into_iter().any(between) {
+            // One crossing the ring too is where the contact leaves its
+            // face, the roll-over P2 labels; one standing wholly inside it
+            // is under the round, which is not built here.
+            let beyond = |p: &(f64, f64)| {
+                let (a, b, x) = if plane {
+                    (r0, foot.0, p.0)
+                } else {
+                    (0.0, foot.1, p.1)
+                };
+                (x - b) * (b - a) > tol.confusion() * (b - a).abs()
+            };
+            if samples.iter().copied().any(between) && !samples.iter().any(beyond) {
                 return Ok(None);
             }
         }
