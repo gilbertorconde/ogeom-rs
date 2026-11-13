@@ -1,4 +1,5 @@
-//! Proving that a face lies within a region bounded by planes.
+//! Proving that a face lies within a region bounded by planes and walls of
+//! revolution.
 //!
 //! A [`HalfSpaces`] is a tree of half-spaces under maxima and minima: a convex
 //! corner is the maximum of its faces' heights, a concave edge the minimum
@@ -11,7 +12,8 @@
 //! ([`SurfaceGeometry::to_bspline`] of a [`TrimmedSurface`]), and a B-spline
 //! whose weights are all positive lies in the convex hull of its control
 //! points. A plane's height is affine, so its greatest over the hull is its
-//! greatest at a control point. The maximum of several pieces is bounded by
+//! greatest at a control point; a wall of revolution's is bounded as its
+//! variant states. The maximum of several pieces is bounded by
 //! the maximum of their bounds, and the minimum by the minimum of theirs. A
 //! rectangle whose bound is within the fit is cleared; one wholly outside
 //! the face's trim is passed over; the rest is split in four and tried
@@ -31,7 +33,8 @@ use ogeom_geom::{BSplineSurface, Surface as _, SurfaceGeometry, TrimmedSurface};
 use ogeom_math::{Point, Point2, Vector};
 use ogeom_topo::{Model, Shape};
 
-/// A region of space bounded by planes, as a tree of half-spaces.
+/// A region of space bounded by planes and walls of revolution, as a tree of
+/// half-spaces.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HalfSpaces {
     /// The points on the side of the plane through `at` that `normal`
@@ -42,6 +45,35 @@ pub enum HalfSpaces {
         normal: Vector,
         /// A point on the plane.
         at: Point,
+    },
+    /// The points on one side of a wall of revolution about the axis
+    /// through `at` along the unit `axis`: a cylinder (`slope` nought) or a
+    /// cone whose radius is `radius + slope * h` at height `h` along `axis`
+    /// from `at`. A point's height is its distance past the wall along the
+    /// wall's normal in the point's meridian, `(rho - w(h)) / sqrt(1 +
+    /// slope^2)` for `inside` (past means farther off the axis), its
+    /// negation for outside (past means nearer the axis, as into a bore).
+    ///
+    /// Bounded over a hull, an inside wall is exact: `rho` is convex in the
+    /// point and `w(h)` affine, so the greatest of their difference over the
+    /// hull is its greatest at a hull point. An outside wall is sound, not
+    /// tight: for any unit `g` square to the axis, `rho` is at least `g`
+    /// dotted with the point's radial offset, so the height is at most an
+    /// affine function, whose greatest is at a hull point. With `g` toward
+    /// the hull's centroid, the bound exceeds the height by `rho (1 - cos
+    /// a) / sqrt(1 + slope^2)` at a point whose radial direction is `a` off
+    /// `g`, which closes on nought as the square of the hull's size.
+    Revolved {
+        /// A point on the axis, where the wall's radius is `radius`.
+        at: Point,
+        /// The axis's unit direction.
+        axis: Vector,
+        /// The wall's radius at `at`.
+        radius: f64,
+        /// How fast the radius grows along `axis`.
+        slope: f64,
+        /// Whether the region is the wall's inside, as against its outside.
+        inside: bool,
     },
     /// The points inside every piece: a height the greatest of the
     /// pieces'.
@@ -57,6 +89,31 @@ impl HalfSpaces {
     pub fn height(&self, p: Point) -> (f64, Vector) {
         match self {
             Self::Below { normal, at } => (normal.dot(p - *at), *normal),
+            Self::Revolved {
+                at,
+                axis,
+                radius,
+                slope,
+                inside,
+            } => {
+                let d = p - *at;
+                let h = d.dot(*axis);
+                let radial = d - *axis * h;
+                let rho = radial.magnitude();
+                let out = if rho > 0.0 {
+                    radial * (1.0 / rho)
+                } else {
+                    across(*axis)
+                };
+                let s = slope.hypot(1.0);
+                let past = (rho - (radius + slope * h)) / s;
+                let normal = (out - *axis * *slope) * (1.0 / s);
+                if *inside {
+                    (past, normal)
+                } else {
+                    (-past, -normal)
+                }
+            }
             Self::Every(pieces) => pieces.iter().map(|r| r.height(p)).fold(
                 (f64::NEG_INFINITY, Vector::ZERO),
                 |a, b| {
@@ -78,8 +135,9 @@ impl HalfSpaces {
     }
 
     /// A bound on the height over the convex hull of `hull`: exact for a
-    /// plane and for the greatest of pieces, at least the least of pieces'
-    /// heights for the least.
+    /// plane, an inside wall and the greatest of pieces; at least the
+    /// height for an outside wall (see [`Self::Revolved`]), and at least the
+    /// least of pieces' heights for the least.
     #[must_use]
     pub fn bound_over(&self, hull: &[Point]) -> f64 {
         match self {
@@ -87,6 +145,37 @@ impl HalfSpaces {
                 .iter()
                 .map(|p| normal.dot(*p - *at))
                 .fold(f64::NEG_INFINITY, f64::max),
+            Self::Revolved {
+                at,
+                axis,
+                radius,
+                slope,
+                inside,
+            } => {
+                let s = slope.hypot(1.0);
+                if *inside {
+                    hull.iter()
+                        .map(|p| self.height(*p).0)
+                        .fold(f64::NEG_INFINITY, f64::max)
+                } else {
+                    let radial = |p: Point| {
+                        let d = p - *at;
+                        (d.dot(*axis), d - *axis * d.dot(*axis))
+                    };
+                    let mid = hull.iter().fold(Vector::ZERO, |sum, p| sum + radial(*p).1);
+                    let g = if mid.magnitude() > 0.0 {
+                        mid * (1.0 / mid.magnitude())
+                    } else {
+                        across(*axis)
+                    };
+                    hull.iter()
+                        .map(|p| {
+                            let (h, r) = radial(*p);
+                            (radius + slope * h - g.dot(r)) / s
+                        })
+                        .fold(f64::NEG_INFINITY, f64::max)
+                }
+            }
             Self::Every(pieces) => pieces
                 .iter()
                 .map(|r| r.bound_over(hull))
@@ -382,6 +471,17 @@ impl Trim {
     }
 }
 
+/// A unit vector square to the unit `axis`.
+fn across(axis: Vector) -> Vector {
+    let other = if axis.x.abs() < 0.9 {
+        Vector::X
+    } else {
+        Vector::Y
+    };
+    let c = axis.cross(other);
+    c * (1.0 / c.magnitude())
+}
+
 /// The distance from `p` to the segment `(a, b)`.
 fn distance_to(p: Point2, (a, b): (Point2, Point2)) -> f64 {
     let (ux, uy) = (b.x - a.x, b.y - a.y);
@@ -560,6 +660,164 @@ mod tests {
         assert!(
             out.found && out.past > FIT && out.past <= 0.5 + 1e-12,
             "{out:?}"
+        );
+    }
+
+    /// A wall of revolution about the z axis through the origin.
+    fn wall(radius: f64, slope: f64, inside: bool) -> HalfSpaces {
+        HalfSpaces::Revolved {
+            at: Point::ORIGIN,
+            axis: Vector::Z,
+            radius,
+            slope,
+            inside,
+        }
+    }
+
+    /// The torus of major radius 3 and tube 1 about the z axis, and its face.
+    fn torus() -> (Model, Shape) {
+        let mut m = Model::new();
+        let solid = crate::make_torus(&mut m, Frame::WORLD, 3.0, 1.0, T)
+            .unwrap()
+            .shape;
+        let faces = faces_of(&m, &solid, ogeom_geom::SurfaceKind::Torus);
+        assert_eq!(faces.len(), 1);
+        let face = faces[0].clone();
+        (m, face)
+    }
+
+    /// The torus's outer equator touches the cylinder of radius 4 and its
+    /// inner one the cylinder of radius 2: it lies inside the one and
+    /// outside the other, both proved, the outside wall through its sound
+    /// bound. Drawn in by 0.05 each, a point past is found, standing past by
+    /// no more than 0.05, and its height is its distance off the axis read
+    /// from its coordinates.
+    #[test]
+    fn a_torus_between_the_cylinders_its_equators_touch_is_proved_and_past_either_drawn_in_is_found()
+     {
+        let (m, face) = torus();
+        for (radius, inside) in [(4.0, true), (2.0, false)] {
+            assert_eq!(
+                certify_face_within(&m, &face, &wall(radius, 0.0, inside), FIT, T).unwrap(),
+                Ok(()),
+                "{radius}"
+            );
+        }
+        for (radius, inside) in [(3.95, true), (2.05, false)] {
+            let out = certify_face_within(&m, &face, &wall(radius, 0.0, inside), FIT, T)
+                .unwrap()
+                .unwrap_err();
+            let rho = out.at.x.hypot(out.at.y);
+            let past = if inside { rho - radius } else { radius - rho };
+            assert!(
+                out.found && out.past > FIT && out.past <= 0.05 + 1e-12,
+                "{out:?}"
+            );
+            assert!((out.past - past).abs() < 1e-12, "{out:?} {past}");
+        }
+    }
+
+    /// A frustum's side, radius 3 at the base narrowing to 1 at height 4,
+    /// lies on its own cone, so inside it and outside it both: proved. With
+    /// the wall moved 0.05 along its normal toward the side, inward for the
+    /// inside and outward for the outside, a point of the side is found
+    /// past it by no more than 0.05.
+    #[test]
+    fn a_frustum_s_side_is_proved_on_its_cone_and_past_one_moved_along_its_normal_is_found() {
+        let mut m = Model::new();
+        let solid = crate::make_cone(&mut m, Frame::WORLD, 3.0, 1.0, 4.0, T)
+            .unwrap()
+            .shape;
+        let side = faces_of(&m, &solid, ogeom_geom::SurfaceKind::Cone);
+        assert_eq!(side.len(), 1);
+        let slope = -0.5;
+        let along = 0.05 * f64::hypot(1.0, slope);
+        for inside in [true, false] {
+            assert_eq!(
+                certify_face_within(&m, &side[0], &wall(3.0, slope, inside), FIT, T).unwrap(),
+                Ok(()),
+                "{inside}"
+            );
+            let moved = if inside { 3.0 - along } else { 3.0 + along };
+            let out = certify_face_within(&m, &side[0], &wall(moved, slope, inside), FIT, T)
+                .unwrap()
+                .unwrap_err();
+            assert!(
+                out.found && out.past > FIT && out.past <= 0.05 + 1e-12,
+                "{out:?}"
+            );
+            let rho = out.at.x.hypot(out.at.y);
+            assert!((rho - (3.0 + slope * out.at.z)).abs() < 1e-9, "{out:?}");
+        }
+    }
+
+    /// Walls compose with planes. The torus lies within its annulus box,
+    /// the greatest of two walls and two planes: proved. Every point of it
+    /// farther than 3.5 off the axis stands below `z = 0.87` (it is at most
+    /// `sin 60° = 0.866` high there), so it lies within the least of that
+    /// wall and plane: proved. With the plane lowered to `z = 0.5`, the
+    /// points between are found; the most any stands past both is
+    /// `sqrt(2)/2 - 1/2`, half a turn up the tube's outer quarter.
+    #[test]
+    fn walls_compose_with_planes_under_the_greatest_and_the_least() {
+        let (m, face) = torus();
+        let up = |z: f64| below(Vector::Z, Point::new(0.0, 0.0, z));
+        let annulus = HalfSpaces::Every(vec![
+            wall(4.0, 0.0, true),
+            wall(2.0, 0.0, false),
+            up(1.0),
+            below(-Vector::Z, Point::new(0.0, 0.0, -1.0)),
+        ]);
+        assert_eq!(
+            certify_face_within(&m, &face, &annulus, FIT, T).unwrap(),
+            Ok(())
+        );
+        let either = HalfSpaces::Any(vec![wall(3.5, 0.0, true), up(0.87)]);
+        assert_eq!(
+            certify_face_within(&m, &face, &either, FIT, T).unwrap(),
+            Ok(())
+        );
+        let gap = HalfSpaces::Any(vec![wall(3.5, 0.0, true), up(0.5)]);
+        let out = certify_face_within(&m, &face, &gap, FIT, T)
+            .unwrap()
+            .unwrap_err();
+        let most = std::f64::consts::FRAC_1_SQRT_2 - 0.5;
+        assert!(
+            out.found && out.past > FIT && out.past <= most + 1e-12,
+            "{out:?}"
+        );
+    }
+
+    /// The outside wall's soundness hole: the flat face `x = 2`, `|y| <= 1`,
+    /// `0 <= z <= 1`, a bilinear patch whose four control points stand
+    /// `sqrt(5)` off the axis, past the cylinder of radius 2.1 on the
+    /// outside, while its middle line comes within 2 of it. A bound read
+    /// at the control points alone would clear it; the point found stands
+    /// past by a tenth, to the bit, on that line.
+    #[test]
+    fn a_flat_face_dipping_into_an_outside_wall_between_its_corners_is_found() {
+        let mut m = Model::new();
+        let mut points = Vec::new();
+        for y in [-1.0, 1.0] {
+            for z in [0.0, 1.0] {
+                points.push(Point::new(2.0, y, z));
+            }
+        }
+        let knots = || KnotVector::new(vec![0.0, 0.0, 1.0, 1.0], 1).unwrap();
+        let grid = ControlGrid::new(points, 2, 2).unwrap();
+        let surface = BSplineSurface::new(knots(), knots(), &grid, T).unwrap();
+        let face = crate::make_natural_face(&mut m, surface.into())
+            .unwrap()
+            .shape;
+        let out = certify_face_within(&m, &face, &wall(2.1, 0.0, false), FIT, T)
+            .unwrap()
+            .unwrap_err();
+        assert!(out.found, "{out:?}");
+        assert_eq!(out.at.y, 0.0, "{out:?}");
+        assert!((out.past - 0.1).abs() < 1e-15, "{out:?}");
+        assert_eq!(
+            certify_face_within(&m, &face, &wall(2.0, 0.0, false), FIT, T).unwrap(),
+            Ok(())
         );
     }
 }
