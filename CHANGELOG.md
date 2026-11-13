@@ -29,9 +29,42 @@ bump may break the API and a patch bump may not.
     `ChamferCorner::Facet` is now exactly `chamfer_edges_with`.
   - A bevel running into an earlier one, in a second call, mitres along
     the line their planes share; it no longer leaves a small cap face.
-  - A request its faces cannot hold (a face its setbacks consume, such as
-    two bevels crossing on a thin wall) and any other solid are chamfered
-    by wedges, mitred, as before.
+  - **A thin wall bevelled on both edges.** A band between two parallel
+    bevels, set back past each other, goes. Its bevels meet along the
+    ridge their planes share, and each face across the band's ends is
+    notched up one bevel and down the other. The rest of the request keeps
+    its facets; before, the band sent the whole request down the wedge
+    path, its corners mitred.
+  - **Faces with holes.** A plate with a hole through it, a pocket's rim:
+    each face's hole is set back from its bevelled edges like its outline,
+    and the face comes out holed. Such a solid went down the wedge path
+    whole.
+  - A request its faces cannot hold in any other way (a face its setbacks
+    consume other than such a band) and any other solid are chamfered by
+    wedges, mitred, as before.
+- **A chamfer naming a seam names nothing.** A seam is an edge between two
+  faces of one shell on one surface, facing one way, as a boolean leaves
+  where it joined two flats. It is no edge of the part's form: mainstream
+  CAD merges those faces after the boolean, so the edge cannot be picked.
+  - The chamfer functions pass over a spec naming a seam. A request naming
+    nothing but seams returns the solid as it is; it was refused, "the
+    edge's faces are tangent".
+  - A solid bounded by planes that holds seams is chamfered by the blend
+    engine with them dissolved, by the same merge as
+    `ogeom_heal::unify_same_domain` and `merge_edges`. The faces on one
+    plane come out one face, and an edge the seams split along its length
+    is one bevel.
+  - A stepped bracket fused from three boxes, every edge chamfered, is now
+    the bracket built as one prism chamfered alike: the same corners to
+    the bit, in any order. It was chamfered by wedges, its corners mitred
+    instead of faceted.
+  - Coplanar faces facing opposite ways, with the material changing side
+    across the edge between them, still meet at a real edge.
+- **`ogeom_algo::make_faceted_solid_with_holes`**: `make_faceted_solid`
+  with faces holding holes, each face its outer ring and a ring per hole.
+- **`ogeom_heal::same_domain`**: whether two faces lie on one carrier
+  facing one way, the pair `unify_same_domain` merges across a shared
+  edge.
 - **Chamfer history.** A bevelled edge is deleted and generates its bevel.
   Each face set back is modified into its new face. An edge or vertex left
   as it was is modified into its new one, since the solid is rebuilt.
@@ -44,13 +77,21 @@ bump may break the API and a patch bump may not.
   testing containment. A torus seamed on a negative or later turn measures
   its tube's radial offsets independently of the seam.
 
+- **`merge_edges` left each joined edge apart from its neighbours.** The
+  joined edge was built with new end vertices at the points the pair's
+  outer vertices stood at, so the edges either side no longer met it: a
+  box unified from two halves came back with sixteen vertices, not eight.
+  The joined edge now runs between the pair's own outer vertices.
+
 - **Bevels meeting at a face's reflex corner left a notch.** Two edges of
   one face chamfered where they meet at the face's inside corner (an L's
   end face, the top of an L-shaped block) each stopped at the vertex, and
   the corner's column, `d³/3` for a chamfer of `d`, stood uncut: a wrong
   solid that `check` passed. The bevels now run on past the vertex to each
   other's plane and mitre across the corner, the face's outline set back
-  round it.
+  round it. A hole's corners in a face are such corners too: a hole's rim
+  chamfered lost `4d³/3` too little until the engine read faces with
+  holes.
 
 - **The blend engine** (`docs/adr/0001-blend-architecture.md`, #902). One
   model for fillets and chamfers, built in fixed phases from the solid as

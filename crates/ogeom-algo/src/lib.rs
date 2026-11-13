@@ -112,9 +112,9 @@ pub use pcurve_gap::{
 pub use place::{copied, transformed};
 pub use pole::pole_crossings;
 pub use primitive::{
-    make_box, make_cone, make_cylinder, make_faceted_solid, make_half_space, make_hexahedron,
-    make_parallelepiped, make_polyhedron, make_sphere, make_torus, make_wedge,
-    torus_face_seamed_at,
+    make_box, make_cone, make_cylinder, make_faceted_solid, make_faceted_solid_with_holes,
+    make_half_space, make_hexahedron, make_parallelepiped, make_polyhedron, make_sphere,
+    make_torus, make_wedge, torus_face_seamed_at,
 };
 pub use project_plane::{ProjectedCurve, project_edge_onto_plane};
 pub use proximity::{ClosestPair, PointDistance, ShapeDistance, distance_between_shapes};

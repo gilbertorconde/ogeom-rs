@@ -36,12 +36,30 @@ fn newell(points: &[Point], ring: &[usize]) -> Vector {
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) for a
 /// strip or face ring off its plane, which the construction never makes.
 pub(crate) fn rings_fit(points: &[Point], rings: &[Ring], tol: Tolerances) -> OgeomResult<bool> {
-    for (ring, origin, _) in rings {
+    rings_fit_holed(points, rings, &vec![Vec::new(); rings.len()], tol)
+}
+
+/// [`rings_fit`] for rings with holes, `holes` each ring's: every hole on
+/// its ring's plane and wound the other way round, no hole crossing its
+/// ring or another hole, and a ring's inside the part within its outer
+/// loop and outside its holes.
+///
+/// # Errors
+///
+/// As [`rings_fit`].
+pub(crate) fn rings_fit_holed(
+    points: &[Point],
+    rings: &[Ring],
+    holes: &[Vec<Vec<usize>>],
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    for ((ring, origin, _), inner) in rings.iter().zip(holes) {
         let n = newell(points, ring);
         let n = n / n.magnitude();
         let a = points[ring[0]];
         let off = ring
             .iter()
+            .chain(inner.iter().flatten())
             .map(|i| (points[*i] - a).dot(n).abs())
             .fold(0.0, f64::max);
         if off > tol.confusion() * 10.0 {
@@ -56,10 +74,14 @@ pub(crate) fn rings_fit(points: &[Point], rings: &[Ring], tol: Tolerances) -> Og
             );
         }
     }
-    for (ring, _, facing) in rings {
+    for ((ring, _, facing), inner) in rings.iter().zip(holes) {
         if let Some(facing) = facing
             && newell(points, ring).dot(*facing) <= 0.0
         {
+            return Ok(false);
+        }
+        let n = newell(points, ring);
+        if inner.iter().any(|h| newell(points, h).dot(n) >= 0.0) {
             return Ok(false);
         }
     }
@@ -79,28 +101,48 @@ pub(crate) fn rings_fit(points: &[Point], rings: &[Ring], tol: Tolerances) -> Og
         ((p - a).dot(x), (p - a).dot(y))
     };
     for (ri, (ring, _, _)) in rings.iter().enumerate() {
-        let pts: Vec<(f64, f64)> = ring.iter().map(|i| flat(ri, points[*i])).collect();
-        if crosses_itself(&pts, tol.confusion()) {
+        let loops: Vec<Vec<(f64, f64)>> = std::iter::once(ring)
+            .chain(&holes[ri])
+            .map(|l| l.iter().map(|i| flat(ri, points[*i])).collect())
+            .collect();
+        if loops.iter().any(|l| crosses_itself(l, tol.confusion())) {
             return Ok(false);
         }
+        for (x, l) in loops.iter().enumerate() {
+            for m in &loops[x + 1..] {
+                if loops_meet(l, m, tol.confusion()) {
+                    return Ok(false);
+                }
+            }
+        }
     }
-    // A segment of one ring passing through another's inside.
+    // A segment of one ring passing through another's inside: within its
+    // outer loop and outside its holes.
     for (ri, (ring, _, _)) in rings.iter().enumerate() {
         let (n, _, _, a) = frames[ri];
         let pts: Vec<(f64, f64)> = ring.iter().map(|i| flat(ri, points[*i])).collect();
+        let gaps: Vec<Vec<(f64, f64)>> = holes[ri]
+            .iter()
+            .map(|h| h.iter().map(|i| flat(ri, points[*i])).collect())
+            .collect();
         for (rj, (other, _, _)) in rings.iter().enumerate() {
             if ri == rj {
                 continue;
             }
-            for k in 0..other.len() {
-                let (p, q) = (points[other[k]], points[other[(k + 1) % other.len()]]);
-                let (sp, sq) = ((p - a).dot(n), (q - a).dot(n));
-                if sp * sq >= 0.0 || sp.abs() <= tol.confusion() || sq.abs() <= tol.confusion() {
-                    continue;
-                }
-                let x = p + (q - p) * (sp / (sp - sq));
-                if strictly_inside(&pts, flat(ri, x), tol.confusion()) {
-                    return Ok(false);
+            for l in std::iter::once(other).chain(&holes[rj]) {
+                for k in 0..l.len() {
+                    let (p, q) = (points[l[k]], points[l[(k + 1) % l.len()]]);
+                    let (sp, sq) = ((p - a).dot(n), (q - a).dot(n));
+                    if sp * sq >= 0.0 || sp.abs() <= tol.confusion() || sq.abs() <= tol.confusion()
+                    {
+                        continue;
+                    }
+                    let x = flat(ri, p + (q - p) * (sp / (sp - sq)));
+                    if strictly_inside(&pts, x, tol.confusion())
+                        && !gaps.iter().any(|g| strictly_inside(g, x, -tol.confusion()))
+                    {
+                        return Ok(false);
+                    }
                 }
             }
         }
@@ -155,6 +197,14 @@ fn crosses_itself(pts: &[(f64, f64)], eps: f64) -> bool {
         }
     }
     false
+}
+
+/// Whether any edge of the polygon `a` meets any edge of the polygon `b`.
+fn loops_meet(a: &[(f64, f64)], b: &[(f64, f64)], eps: f64) -> bool {
+    (0..a.len()).any(|i| {
+        (0..b.len())
+            .any(|j| segments_meet(a[i], a[(i + 1) % a.len()], b[j], b[(j + 1) % b.len()], eps))
+    })
 }
 
 fn segments_meet(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64), eps: f64) -> bool {

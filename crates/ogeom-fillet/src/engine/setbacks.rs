@@ -11,9 +11,9 @@ use ogeom_math::{Point, Vector};
 use super::classify::Planar;
 use super::{Id, id};
 
-/// Every face corner's setback corner, keyed by face index and vertex, or
-/// `None` where two edges of a face run on in one line at a vertex and are
-/// set back by different distances there.
+/// Every face corner's setback corner (holes' corners too), keyed by face
+/// index and vertex, or `None` where two edges of a face run on in one line
+/// at a vertex and are set back by different distances there.
 pub(crate) fn setback_corners(
     planar: &Planar,
     setback: &FastMap<(Id, Id), f64>,
@@ -21,36 +21,34 @@ pub(crate) fn setback_corners(
 ) -> OgeomResult<Option<FastMap<(usize, Id), Point>>> {
     let mut out = FastMap::default();
     for (fi, face) in planar.faces.iter().enumerate() {
-        let n = face.corners.len();
-        for k in 0..n {
-            let (prev, v, next) = (
-                face.corners[(k + n - 1) % n],
-                face.corners[k],
-                face.corners[(k + 1) % n],
-            );
-            // An edge's direction along the ring, the unit step into the
-            // face square to it, and the face's setback from it.
-            let leg = |a: Id, b: Id| -> OgeomResult<(Vector, Vector, f64)> {
-                let along = planar.points[&b] - planar.points[&a];
-                let length = along.magnitude();
-                if length <= tol.confusion() {
-                    ogeom_bail!(Construction, "a face has an edge of no length");
-                }
-                let along = along / length;
-                let edge = planar.edges[&(a.min(b), a.max(b))];
-                let d = setback
-                    .get(&(id(&face.shape), edge))
-                    .copied()
-                    .unwrap_or(0.0);
-                Ok((along, face.normal.cross(along), d))
-            };
-            let (u1, m1, d1) = leg(prev, v)?;
-            let (u2, m2, d2) = leg(v, next)?;
-            let at = planar.points[&v];
-            let Some(offset) = corner_offset((u1, m1, d1), (u2, m2, d2), tol) else {
-                return Ok(None);
-            };
-            out.insert((fi, v), at + offset);
+        for ring in face.loops() {
+            let n = ring.len();
+            for k in 0..n {
+                let (prev, v, next) = (ring[(k + n - 1) % n], ring[k], ring[(k + 1) % n]);
+                // An edge's direction along the ring, the unit step into the
+                // face square to it, and the face's setback from it.
+                let leg = |a: Id, b: Id| -> OgeomResult<(Vector, Vector, f64)> {
+                    let along = planar.points[&b] - planar.points[&a];
+                    let length = along.magnitude();
+                    if length <= tol.confusion() {
+                        ogeom_bail!(Construction, "a face has an edge of no length");
+                    }
+                    let along = along / length;
+                    let edge = planar.edges[&(a.min(b), a.max(b))];
+                    let d = setback
+                        .get(&(id(&face.shape), edge))
+                        .copied()
+                        .unwrap_or(0.0);
+                    Ok((along, face.normal.cross(along), d))
+                };
+                let (u1, m1, d1) = leg(prev, v)?;
+                let (u2, m2, d2) = leg(v, next)?;
+                let at = planar.points[&v];
+                let Some(offset) = corner_offset((u1, m1, d1), (u2, m2, d2), tol) else {
+                    return Ok(None);
+                };
+                out.insert((fi, v), at + offset);
+            }
         }
     }
     Ok(Some(out))

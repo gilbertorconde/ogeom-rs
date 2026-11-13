@@ -38,6 +38,11 @@ use ogeom_topo::{Model, Shape};
 /// history reads as a cut: the two faces are modified into their trimmed
 /// pieces, the edge's neighbourhood gains the bevel face.
 ///
+/// A seam (an edge between two faces of one shell on one surface facing
+/// one way, as a boolean leaves where it joined two flats) is no edge of
+/// the part's form, and naming one names nothing: the solid comes back as
+/// it is. See [`chamfer_edges_with`].
+///
 /// What `solid` shares with other shapes is copied before it is
 /// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
 ///
@@ -69,6 +74,9 @@ fn chamfer_edge_own(
     distance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    if crate::engine::is_seam(model, solid, edge, tol)? {
+        return Ok(unchanged(solid));
+    }
     let specs = [(edge.clone(), Chamfer::Symmetric(distance))];
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
@@ -123,6 +131,9 @@ fn chamfer_edge_distances_own(
         on_face,
         on_other,
     };
+    if crate::engine::is_seam(model, solid, edge, tol)? {
+        return Ok(unchanged(solid));
+    }
     let specs = [(edge.clone(), spec)];
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
@@ -178,6 +189,9 @@ fn chamfer_edge_angle_own(
         distance,
         angle,
     };
+    if crate::engine::is_seam(model, solid, edge, tol)? {
+        return Ok(unchanged(solid));
+    }
     let specs = [(edge.clone(), spec)];
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
@@ -304,6 +318,22 @@ pub fn chamfer_edges(
 /// other solid, are chamfered by wedges built on the solid as given and
 /// applied together, mitred where bevels meet.
 ///
+/// A seam is no edge of the part's form: an edge between two faces of one
+/// shell lying on one surface facing one way
+/// ([`ogeom_heal::same_domain`]), as a boolean leaves where it joined two
+/// flats, the surface running on across it and the material on one side.
+/// Mainstream CAD merges such faces after the boolean, so the edge cannot
+/// be picked; here a spec naming one names nothing and is passed over, and
+/// a request naming nothing but seams returns the solid as it is. A solid
+/// holding seams is read by the blend engine with them dissolved, as
+/// [`ogeom_heal::unify_same_domain`] and [`ogeom_heal::merge_edges`] merge
+/// them: the faces on one plane come out one face, the pieces of an edge
+/// split along its length one bevel, and the history tells of the solid
+/// as given (each face modified into the face holding it, each seam and
+/// each vertex the seams left inside an edge deleted). Coplanar faces
+/// facing opposite ways, the material changing side across the edge
+/// between them, meet at a real edge.
+///
 /// What `solid` shares with other shapes is copied before it is
 /// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
 ///
@@ -338,24 +368,89 @@ pub(crate) fn chamfer_edges_blamed(
             ogeom_core::ogeom_err!(Construction, "a chain of no edges bevels nothing").into(),
         );
     }
-    if let Some(built) = engine_chamfer(model, solid, specs, tol)? {
+    let (specs, index) = without_seams(model, solid, specs, tol)?;
+    if specs.is_empty() {
+        return Ok(unchanged(solid));
+    }
+    if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
     }
-    chamfer_edges_mitred_blamed(model, solid, specs, tol)
+    chamfer_edges_mitred_blamed(model, solid, &specs, tol).map_err(|mut blamed| {
+        for i in &mut blamed.edges {
+            *i = index[*i];
+        }
+        blamed
+    })
+}
+
+/// Chamfer specs, each edge with its chamfer.
+pub(crate) type Specs = Vec<(Shape, Chamfer)>;
+
+/// `specs` without those naming a seam of `solid` (an edge between two
+/// faces on one surface facing one way, no edge of the part's form), with
+/// the index in `specs` of each kept.
+pub(crate) fn without_seams(
+    model: &Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<(Specs, Vec<usize>)> {
+    let mut kept = Vec::with_capacity(specs.len());
+    let mut index = Vec::with_capacity(specs.len());
+    for (i, spec) in specs.iter().enumerate() {
+        if !crate::engine::is_seam(model, solid, &spec.0, tol)? {
+            kept.push(spec.clone());
+            index.push(i);
+        }
+    }
+    Ok((kept, index))
+}
+
+/// `solid` as given: what a request naming nothing but seams makes.
+pub(crate) fn unchanged(solid: &Shape) -> Built {
+    let mut built = Built::from_nothing(solid.clone());
+    built.history.modify(solid, solid.clone());
+    built
 }
 
 /// The chamfer of `specs` by the blend engine, or `None` where the solid
-/// or a spec lies outside its classes.
+/// or a spec lies outside its classes. A solid holding seams is chamfered
+/// with them dissolved, as [`ogeom_heal::unify_same_domain`] merges them;
+/// no spec may name a seam.
 pub(crate) fn engine_chamfer(
     model: &mut Model,
     solid: &Shape,
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
-    let Some(request) = crate::engine::Request::from_chamfers(model, solid, specs, tol)? else {
-        return Ok(None);
-    };
-    crate::engine::run(model, solid, &request, tol)
+    use crate::engine::Dissolved;
+    match crate::engine::dissolve(model, solid, tol)? {
+        Dissolved::Plain => {
+            let Some(request) = crate::engine::Request::from_chamfers(model, solid, specs, tol)?
+            else {
+                return Ok(None);
+            };
+            crate::engine::run(model, solid, &request, tol)
+        }
+        Dissolved::Outside => Ok(None),
+        Dissolved::Into(seamless) => {
+            let Some(specs) = seamless.specs(specs) else {
+                return Ok(None);
+            };
+            let Some(request) =
+                crate::engine::Request::from_chamfers(model, &seamless.solid, &specs, tol)?
+            else {
+                return Ok(None);
+            };
+            let Some(built) = crate::engine::run(model, &seamless.solid, &request, tol)? else {
+                return Ok(None);
+            };
+            Ok(Some(Built::new(
+                built.shape,
+                seamless.carry(&built.history),
+            )))
+        }
+    }
 }
 
 /// The chamfer of `specs` by wedges built on the solid as given and
