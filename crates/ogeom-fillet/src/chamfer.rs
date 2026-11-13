@@ -453,12 +453,27 @@ pub(crate) fn engine_chamfer(
 
 /// [`engine_chamfer`] closing each vertex of three chamfers by their mitre,
 /// on a solid bounded by planes only: `None` elsewhere, and where a
-/// vertex's mitre is not one point.
+/// vertex's mitre is not one point, the model then left as it was found.
 ///
 /// # Errors
 ///
 /// As [`engine_chamfer`].
 pub(crate) fn engine_chamfer_mitred(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let before = model.clone();
+    let built = engine_chamfer_mitred_attempt(model, solid, specs, tol);
+    if !matches!(built, Ok(Some(_))) {
+        *model = before;
+    }
+    built
+}
+
+/// [`engine_chamfer_mitred`]'s attempt, on the live model.
+fn engine_chamfer_mitred_attempt(
     model: &mut Model,
     solid: &Shape,
     specs: &[(Shape, Chamfer)],
@@ -654,8 +669,26 @@ fn traced_specs(
         .collect()
 }
 
-/// [`engine_chamfer`] on a solid with nothing placed in it.
+/// [`engine_chamfer`] on a solid with nothing placed in it. Dissolving
+/// seams rewrites nodes the solid shares, so where the engine hands the
+/// request back the model is left as it was found, for the caller's own
+/// path to read.
 fn engine_chamfer_unplaced(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let before = model.clone();
+    let built = engine_chamfer_attempt(model, solid, specs, tol);
+    if !matches!(built, Ok(Some(_))) {
+        *model = before;
+    }
+    built
+}
+
+/// [`engine_chamfer_unplaced`]'s attempt, on the live model.
+fn engine_chamfer_attempt(
     model: &mut Model,
     solid: &Shape,
     specs: &[(Shape, Chamfer)],
@@ -1852,5 +1885,42 @@ fn same_spelling(a: &Chamfer, b: &Chamfer, tol: Tolerances) -> bool {
             },
         ) => fa.is_same(fb) && near(*da, *db) && (aa - ab).abs() <= tol.angular(),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    use super::*;
+    use ogeom_math::{Direction, Frame, Point};
+    use ogeom_topo::ShapeType;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    fn block(m: &mut Model, (x, y, z): (f64, f64, f64), size: (f64, f64, f64)) -> Shape {
+        let at = Frame::new(Point::new(x, y, z), Direction::Z, Direction::X, T).unwrap();
+        ogeom_algo::make_box(m, at, size, T).unwrap().shape
+    }
+
+    /// A plate, a step and a block fused: faces split by seams, which the
+    /// engine dissolves before it reads the solid. A chamfer wider than the
+    /// part, which the engine does not build, leaves the model as it was:
+    /// the dissolved solid's nodes are gone again, for the wedge path to
+    /// read the solid as given.
+    #[test]
+    fn a_request_the_engine_does_not_build_leaves_the_model_as_it_was() {
+        let mut m = Model::new();
+        let plate = block(&mut m, (0.0, 0.0, 0.0), (80.0, 60.0, 6.0));
+        let step = block(&mut m, (0.0, 30.0, 6.0), (80.0, 30.0, 10.0));
+        let s = ogeom_bool::fuse(&mut m, &plate, &step, T).unwrap().shape;
+        let edge = ogeom_topo::explore_unique(&m, &s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        let nodes = m.node_count();
+        let built = engine_chamfer(&mut m, &s, &[(edge, Chamfer::Symmetric(100.0))], T);
+        assert!(!matches!(built, Ok(Some(_))), "a chamfer of 100 built");
+        assert_eq!(m.node_count(), nodes, "nodes left behind");
     }
 }
