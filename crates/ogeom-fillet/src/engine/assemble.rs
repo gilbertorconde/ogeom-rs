@@ -26,14 +26,17 @@ pub(crate) struct Rings {
     grid: FastMap<(i64, i64, i64), Vec<usize>>,
     cell: f64,
     rings: Vec<Ring>,
+    /// Each ring's holes, wound the other way round.
+    holes: Vec<Vec<Vec<usize>>>,
     tol: Tolerances,
 }
 
 /// The rings ready for a solid: the points they use, each ring wound out of
-/// the solid, and each ring's origins.
+/// the solid, its holes wound the other way, and each ring's origins.
 pub(crate) struct Assembled {
     pub points: Vec<Point>,
     pub rings: Vec<Vec<usize>>,
+    pub holes: Vec<Vec<Vec<usize>>>,
     pub origins: Vec<Vec<Origin>>,
 }
 
@@ -44,6 +47,7 @@ impl Rings {
             grid: FastMap::default(),
             cell: tol.confusion() * 16.0,
             rings: Vec::new(),
+            holes: Vec::new(),
             tol,
         }
     }
@@ -84,7 +88,39 @@ impl Rings {
     /// known: a shrunk face as the face did, a bevel's quad along the sum of
     /// its two faces' normals.
     pub fn push(&mut self, ring: Vec<usize>, origin: Origin, facing: Option<Vector>) {
+        self.push_holed(ring, Vec::new(), origin, facing);
+    }
+
+    /// [`Rings::push`] for a ring with holes, each wound the other way.
+    pub fn push_holed(
+        &mut self,
+        ring: Vec<usize>,
+        holes: Vec<Vec<usize>>,
+        origin: Origin,
+        facing: Option<Vector>,
+    ) {
         self.rings.push((ring, vec![origin], facing));
+        self.holes.push(holes);
+    }
+
+    /// A loop with corners repeated in turn dropped, or `None` where it
+    /// keeps no area.
+    fn cleaned(&self, ring: Vec<usize>) -> Option<Vec<usize>> {
+        let tol = self.tol;
+        let mut clean: Vec<usize> = Vec::with_capacity(ring.len());
+        for i in ring {
+            if clean.last() != Some(&i) {
+                clean.push(i);
+            }
+        }
+        while clean.len() > 1 && clean.first() == clean.last() {
+            clean.pop();
+        }
+        if clean.len() < 3 {
+            return None;
+        }
+        let n = self.newell(&clean);
+        (n.magnitude() > tol.confusion() * tol.confusion()).then_some(clean)
     }
 
     /// A ring's normal by Newell's sum, twice its area long.
@@ -104,100 +140,108 @@ impl Rings {
     pub fn assemble(mut self) -> OgeomResult<Option<Assembled>> {
         let tol = self.tol;
         let mut rings: Vec<Ring> = Vec::new();
-        for (ring, origin, facing) in std::mem::take(&mut self.rings) {
-            let mut clean: Vec<usize> = Vec::with_capacity(ring.len());
-            for i in ring {
-                if clean.last() != Some(&i) {
-                    clean.push(i);
-                }
-            }
-            while clean.len() > 1 && clean.first() == clean.last() {
-                clean.pop();
-            }
-            if clean.len() < 3 {
+        let mut holes: Vec<Vec<Vec<usize>>> = Vec::new();
+        let taken = std::mem::take(&mut self.rings);
+        let taken_holes = std::mem::take(&mut self.holes);
+        for ((ring, origin, facing), inner) in taken.into_iter().zip(taken_holes) {
+            let Some(clean) = self.cleaned(ring) else {
                 continue;
-            }
-            let n = self.newell(&clean);
-            if n.magnitude() <= tol.confusion() * tol.confusion() {
-                continue;
-            }
+            };
             rings.push((clean, origin, facing));
+            holes.push(inner.into_iter().filter_map(|h| self.cleaned(h)).collect());
         }
-        self.split_on_edges(&mut rings);
-        self.join_coplanar(&mut rings);
-        self.drop_straight_corners(&mut rings);
-        if !super::guards::rings_fit(&self.points, &rings, tol)? {
+        self.split_on_edges(&mut rings, &mut holes);
+        self.join_coplanar(&mut rings, &mut holes);
+        self.drop_straight_corners(&mut rings, &mut holes);
+        if !super::guards::rings_fit_holed(&self.points, &rings, &holes, tol)? {
             return Ok(None);
         }
         // Only the points the rings use, in first use.
         let mut renumber: FastMap<usize, usize> = FastMap::default();
         let mut points = Vec::new();
-        let mut out_rings = Vec::with_capacity(rings.len());
-        let mut origins = Vec::with_capacity(rings.len());
-        for (ring, origin, _) in rings {
-            let ring: Vec<usize> = ring
-                .iter()
+        let mut renumbered = |ring: &[usize]| -> Vec<usize> {
+            ring.iter()
                 .map(|i| {
                     *renumber.entry(*i).or_insert_with(|| {
                         points.push(self.points[*i]);
                         points.len() - 1
                     })
                 })
-                .collect();
-            out_rings.push(ring);
+                .collect()
+        };
+        let mut out_rings = Vec::with_capacity(rings.len());
+        let mut out_holes = Vec::with_capacity(rings.len());
+        let mut origins = Vec::with_capacity(rings.len());
+        for ((ring, origin, _), inner) in rings.into_iter().zip(holes) {
+            out_rings.push(renumbered(&ring));
+            out_holes.push(inner.iter().map(|h| renumbered(h)).collect());
             origins.push(origin);
         }
         Ok(Some(Assembled {
             points,
             rings: out_rings,
+            holes: out_holes,
             origins,
         }))
     }
 
     /// Every point the rings use that lies inside another ring's edge, put
     /// into that edge in order along it.
-    fn split_on_edges(&self, rings: &mut [Ring]) {
-        let tol = self.tol;
+    fn split_on_edges(&self, rings: &mut [Ring], holes: &mut [Vec<Vec<usize>>]) {
         let used: Vec<usize> = {
             let mut set: Vec<usize> = rings
                 .iter()
                 .flat_map(|(r, _, _)| r.iter().copied())
+                .chain(holes.iter().flatten().flatten().copied())
                 .collect();
             set.sort_unstable();
             set.dedup();
             set
         };
         for (ring, _, _) in rings.iter_mut() {
-            let mut out = Vec::with_capacity(ring.len());
-            for k in 0..ring.len() {
-                let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
-                out.push(a);
-                let (pa, pb) = (self.points[a], self.points[b]);
-                let ab = pb - pa;
-                let length = ab.magnitude();
-                let mut inside: Vec<(f64, usize)> = used
-                    .iter()
-                    .copied()
-                    .filter(|c| *c != a && *c != b)
-                    .filter_map(|c| {
-                        let t = (self.points[c] - pa).dot(ab) / (length * length);
-                        let off = (self.points[c] - (pa + ab * t)).magnitude();
-                        (t > 0.0 && t < 1.0 && off <= tol.confusion()).then_some((t, c))
-                    })
-                    .collect();
-                inside.sort_by(|x, y| x.0.total_cmp(&y.0));
-                out.extend(inside.into_iter().map(|(_, c)| c));
-            }
-            *ring = out;
+            *ring = self.split_loop(ring, &used);
         }
+        for hole in holes.iter_mut().flatten() {
+            *hole = self.split_loop(hole, &used);
+        }
+    }
+
+    /// One loop with every point of `used` lying inside one of its edges
+    /// put into that edge, in order along it.
+    fn split_loop(&self, ring: &[usize], used: &[usize]) -> Vec<usize> {
+        let tol = self.tol;
+        let mut out = Vec::with_capacity(ring.len());
+        for k in 0..ring.len() {
+            let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+            out.push(a);
+            let (pa, pb) = (self.points[a], self.points[b]);
+            let ab = pb - pa;
+            let length = ab.magnitude();
+            let mut inside: Vec<(f64, usize)> = used
+                .iter()
+                .copied()
+                .filter(|c| *c != a && *c != b)
+                .filter_map(|c| {
+                    let t = (self.points[c] - pa).dot(ab) / (length * length);
+                    let off = (self.points[c] - (pa + ab * t)).magnitude();
+                    (t > 0.0 && t < 1.0 && off <= tol.confusion()).then_some((t, c))
+                })
+                .collect();
+            inside.sort_by(|x, y| x.0.total_cmp(&y.0));
+            out.extend(inside.into_iter().map(|(_, c)| c));
+        }
+        out
     }
 
     /// Rings of one plane that share an edge, joined into one across it,
     /// until no two do. Facing the same way they are one face; facing
     /// opposite ways the smaller is a piece the larger loses (a vertex's
     /// corner a bevel cuts off an end face), and joining takes it out. A
-    /// ring joined away to nothing is dropped.
-    fn join_coplanar(&self, rings: &mut Vec<Ring>) {
+    /// ring joined away to nothing is dropped. A ring meeting a hole of
+    /// another is joined into that hole the same way, the face's material
+    /// lying to the left of each of its loops alike: the hole gains or
+    /// loses the piece, and a hole joined away to nothing is dropped.
+    fn join_coplanar(&self, rings: &mut Vec<Ring>, holes: &mut Vec<Vec<Vec<usize>>>) {
         let tol = self.tol;
         loop {
             let mut joined = false;
@@ -213,28 +257,56 @@ impl Rings {
                     {
                         continue;
                     }
+                    let mut origin = rings[i].1.clone();
+                    origin.extend(rings[j].1.iter().copied());
+                    if origin.iter().any(|o| matches!(o, Origin::Face(_))) {
+                        origin.retain(|o| matches!(o, Origin::Face(_)));
+                    }
+                    let facing = rings[i].2.or(rings[j].2);
+                    let facing = match (&rings[i].1[0], &rings[j].1[0]) {
+                        (Origin::Face(_), _) => rings[i].2,
+                        (_, Origin::Face(_)) => rings[j].2,
+                        _ => facing,
+                    };
                     if let Some(ring) = splice(&rings[i].0, &rings[j].0) {
                         // A face takes in what joins it, which then makes no
                         // face of its own; two faces joined are both the one.
-                        let mut origin = rings[i].1.clone();
-                        origin.extend(rings[j].1.iter().copied());
-                        if origin.iter().any(|o| matches!(o, Origin::Face(_))) {
-                            origin.retain(|o| matches!(o, Origin::Face(_)));
-                        }
-                        let facing = rings[i].2.or(rings[j].2);
-                        let facing = match (&rings[i].1[0], &rings[j].1[0]) {
-                            (Origin::Face(_), _) => rings[i].2,
-                            (_, Origin::Face(_)) => rings[j].2,
-                            _ => facing,
-                        };
                         let gone = ring.len() < 3
                             || self.newell(&ring).magnitude() <= tol.confusion() * tol.confusion();
                         rings.remove(j);
+                        let inner = holes.remove(j);
                         if gone {
                             rings.remove(i);
+                            holes.remove(i);
                         } else {
                             rings[i] = (ring, origin, facing);
+                            holes[i].extend(inner);
                         }
+                        joined = true;
+                        break 'search;
+                    }
+                    // A ring of no holes joined into a hole of the other.
+                    for (holed, plain) in [(i, j), (j, i)] {
+                        if !holes[plain].is_empty() {
+                            continue;
+                        }
+                        let found = holes[holed]
+                            .iter()
+                            .enumerate()
+                            .find_map(|(k, h)| Some((k, splice(h, &rings[plain].0)?)));
+                        let Some((k, hole)) = found else {
+                            continue;
+                        };
+                        match self.cleaned(hole) {
+                            Some(hole) => holes[holed][k] = hole,
+                            None => {
+                                holes[holed].remove(k);
+                            }
+                        }
+                        rings[holed].1 = origin;
+                        rings[holed].2 = facing;
+                        rings.remove(plain);
+                        holes.remove(plain);
                         joined = true;
                         break 'search;
                     }
@@ -248,7 +320,7 @@ impl Rings {
 
     /// A corner where a ring runs straight on and no other ring turns,
     /// taken out of every ring holding it.
-    fn drop_straight_corners(&self, rings: &mut [Ring]) {
+    fn drop_straight_corners(&self, rings: &mut [Ring], holes: &mut [Vec<Vec<usize>>]) {
         let tol = self.tol;
         let straight = |ring: &[usize], k: usize| -> bool {
             let n = ring.len();
@@ -261,20 +333,28 @@ impl Rings {
             u.cross(w).magnitude() <= tol.angular() * u.magnitude() * w.magnitude()
                 && u.dot(w) > 0.0
         };
+        let loops: Vec<&[usize]> = rings
+            .iter()
+            .map(|(r, _, _)| r.as_slice())
+            .chain(holes.iter().flatten().map(Vec::as_slice))
+            .collect();
         let mut holders: FastMap<usize, Vec<(usize, usize)>> = FastMap::default();
-        for (ri, (ring, _, _)) in rings.iter().enumerate() {
+        for (ri, ring) in loops.iter().enumerate() {
             for (k, p) in ring.iter().enumerate() {
                 holders.entry(*p).or_default().push((ri, k));
             }
         }
         let mut drop: FastSet<usize> = FastSet::default();
         for (p, held) in &holders {
-            if held.iter().all(|(ri, k)| straight(&rings[*ri].0, *k)) {
+            if held.iter().all(|(ri, k)| straight(loops[*ri], *k)) {
                 drop.insert(*p);
             }
         }
         for (ring, _, _) in rings.iter_mut() {
             ring.retain(|p| !drop.contains(p));
+        }
+        for hole in holes.iter_mut().flatten() {
+            hole.retain(|p| !drop.contains(p));
         }
     }
 }

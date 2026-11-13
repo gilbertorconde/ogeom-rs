@@ -12,14 +12,31 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 use super::{Id, id};
 use crate::setback::point_of;
 
-/// One face of the solid: its outward plane and its corners in turn about
-/// its outward normal.
+/// One face of the solid: its outward plane, its corners in turn about its
+/// outward normal, and each hole's corners in turn the other way.
 pub(crate) struct Face {
     pub shape: Shape,
     pub normal: Vector,
     pub corners: Vec<Id>,
+    pub holes: Vec<Vec<Id>>,
     /// The face's own plane, where the face stands unplaced on it.
     pub plane: Option<Plane>,
+}
+
+impl Face {
+    /// The face's rings: the outer one, then each hole's.
+    pub fn loops(&self) -> impl Iterator<Item = &[Id]> {
+        std::iter::once(self.corners.as_slice()).chain(self.holes.iter().map(Vec::as_slice))
+    }
+
+    /// The corners before and after `v` on the ring holding it.
+    pub fn beside(&self, v: Id) -> Option<(Id, Id)> {
+        self.loops().find_map(|ring| {
+            let k = ring.iter().position(|c| *c == v)?;
+            let n = ring.len();
+            Some((ring[(k + n - 1) % n], ring[(k + 1) % n]))
+        })
+    }
 }
 
 /// The solid read as planes bounded by straight edges: the domain of the
@@ -73,12 +90,14 @@ impl Planar {
     pub fn seats(&self) -> Option<FastMap<(Id, Id), Seat>> {
         let mut uses: EdgeUses = FastMap::default();
         for (fi, face) in self.faces.iter().enumerate() {
-            let n = face.corners.len();
-            for k in 0..n {
-                let (a, b) = (face.corners[k], face.corners[(k + 1) % n]);
-                uses.entry((a.min(b), a.max(b)))
-                    .or_default()
-                    .push((fi, a, b));
+            for ring in face.loops() {
+                let n = ring.len();
+                for k in 0..n {
+                    let (a, b) = (ring[k], ring[(k + 1) % n]);
+                    uses.entry((a.min(b), a.max(b)))
+                        .or_default()
+                        .push((fi, a, b));
+                }
             }
         }
         let mut out = FastMap::default();
@@ -189,37 +208,52 @@ pub(crate) fn read_planar(
         let Some(SurfaceGeometry::Plane(surface)) = model.geometry().surface(data.surface) else {
             return Ok(None);
         };
-        if model.children_of(&shape)?.len() != 1 {
-            return Ok(None);
-        }
         let unplaced = shape.location().is_identity() && data.location.is_identity();
         let plane = unplaced.then(|| surface.plane());
         let (_, normal) = ogeom_algo::face_normal(model, &shape, tol)?;
-        // The ring's edges, joined into one cycle by their shared vertices.
-        let mut pairs: Vec<(Id, Id)> = Vec::new();
-        for e in explore_unique(model, &shape, ShapeType::Edge)? {
-            let Some((a, b)) = ogeom_algo::edge_vertices(model, &e)? else {
+        // Each wire's edges, joined into one cycle by their shared vertices;
+        // the outer ring the one enclosing the most, turned about the
+        // outward normal, the holes the other way.
+        let mut loops: Vec<(f64, Vec<Id>)> = Vec::new();
+        for wire in model.children_of(&shape)? {
+            let mut pairs: Vec<(Id, Id)> = Vec::new();
+            for e in explore_unique(model, &wire, ShapeType::Edge)? {
+                let Some((a, b)) = ogeom_algo::edge_vertices(model, &e)? else {
+                    return Ok(None);
+                };
+                pairs.push((id(&a), id(&b)));
+            }
+            let Some(corners) = cycle(&pairs) else {
                 return Ok(None);
             };
-            pairs.push((id(&a), id(&b)));
+            let mut newell = Vector::ZERO;
+            for k in 0..corners.len() {
+                let p = points[&corners[k]].to_vector();
+                let q = points[&corners[(k + 1) % corners.len()]].to_vector();
+                newell += p.cross(q);
+            }
+            loops.push((newell.dot(normal), corners));
         }
-        let Some(mut corners) = cycle(&pairs) else {
+        loops.sort_by(|a, b| b.0.abs().total_cmp(&a.0.abs()));
+        let Some((turn, mut corners)) = loops.first().cloned() else {
             return Ok(None);
         };
-        let mut newell = Vector::ZERO;
-        for k in 0..corners.len() {
-            let p = points[&corners[k]].to_vector();
-            let q = points[&corners[(k + 1) % corners.len()]].to_vector();
-            newell += p.cross(q);
-        }
-        if newell.dot(normal) < 0.0 {
+        if turn < 0.0 {
             corners.reverse();
+        }
+        let mut holes = Vec::with_capacity(loops.len() - 1);
+        for (turn, mut hole) in loops.into_iter().skip(1) {
+            if turn > 0.0 {
+                hole.reverse();
+            }
+            holes.push(hole);
         }
         // The class is exact planes: a corner standing off its face's plane
         // (held there only by its vertex's tolerance) is outside it.
         let at = points[&corners[0]];
         if corners
             .iter()
+            .chain(holes.iter().flatten())
             .any(|c| (points[c] - at).dot(normal).abs() > tol.confusion())
         {
             return Ok(None);
@@ -228,6 +262,7 @@ pub(crate) fn read_planar(
             shape,
             normal,
             corners,
+            holes,
             plane,
         });
     }
@@ -271,21 +306,17 @@ fn cycle(pairs: &[(Id, Id)]) -> Option<Vec<Id>> {
 /// edge arriving at `v`, or `None` where they do not close round it once.
 pub(crate) fn faces_round(faces: &[Face], v: Id) -> Option<Vec<usize>> {
     let holding: Vec<usize> = (0..faces.len())
-        .filter(|fi| faces[*fi].corners.contains(&v))
+        .filter(|fi| faces[*fi].beside(v).is_some())
         .collect();
     let first = *holding.first()?;
     let mut order = vec![first];
     loop {
-        let face = &faces[*order.last()?];
-        let k = face.corners.iter().position(|c| *c == v)?;
-        let prev = face.corners[(k + face.corners.len() - 1) % face.corners.len()];
+        let (prev, _) = faces[*order.last()?].beside(v)?;
         // The face walking the edge from `v` to `prev`.
-        let next = holding.iter().copied().find(|g| {
-            let c = &faces[*g].corners;
-            c.iter()
-                .position(|x| *x == v)
-                .is_some_and(|j| c[(j + 1) % c.len()] == prev)
-        })?;
+        let next = holding
+            .iter()
+            .copied()
+            .find(|g| faces[*g].beside(v).is_some_and(|(_, after)| after == prev))?;
         if next == first {
             break;
         }
