@@ -26,6 +26,7 @@ pub mod point_index;
 pub mod section;
 pub mod shadow;
 pub mod simplify;
+mod sphere_trim;
 mod tails;
 pub mod thicken;
 pub mod triangulate;

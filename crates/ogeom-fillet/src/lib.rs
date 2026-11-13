@@ -33,6 +33,7 @@ mod marched;
 mod pair_marched;
 mod pinched;
 mod rolled;
+mod rolled_rim;
 #[allow(
     dead_code,
     reason = "the blend engine's sections and vertex blends, which its phases call"
@@ -43,6 +44,7 @@ mod setback;
 mod sharp;
 pub mod sheet;
 mod sheet_curved;
+mod shelf;
 mod stepped;
 mod support;
 mod turned_pole;

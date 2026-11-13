@@ -2271,9 +2271,11 @@ pub(crate) struct StripPiece {
     pub far: Option<(Point, Vector)>,
 }
 
-/// What a band's rail lies on exactly.
+/// How a band's contact rail is held to its support.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Rail {
+    /// A curved host's contact curve, retained at the band's fit accuracy.
+    Fitted,
     /// A plane through a point, with its unit normal.
     Plane(Point, Vector),
     /// A line through a point, with its unit direction.
@@ -2287,6 +2289,7 @@ impl Rail {
     /// The foot of `p` on the rail's plane, line or point.
     fn foot(self, p: Point) -> Point {
         match self {
+            Self::Fitted => p,
             Self::Plane(origin, normal) => p - normal * (p - origin).dot(normal),
             Self::Line(origin, along) => origin + along * (p - origin).dot(along),
             Self::Point(at) => at,
@@ -3037,9 +3040,59 @@ pub(crate) fn build_chain_band(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    build_chain_band_at(
+        model,
+        solid,
+        edge,
+        runs,
+        exact,
+        guide,
+        hosts,
+        radius,
+        band_fit_target(tol),
+        tol,
+    )
+}
+
+/// A chain fitted and checked at an explicitly tighter accuracy than the
+/// ordinary marched band's target. The edge tolerances use that same target.
+#[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
+#[allow(clippy::too_many_lines, reason = "one wedge, assembled end to end")]
+pub(crate) fn build_chain_band_at(
+    model: &mut Model,
+    solid: &Shape,
+    edge: Option<&Shape>,
+    runs: &[crate::march::MarchedBlend],
+    exact: &[ExactBand<'_>],
+    guide: &Curve,
+    hosts: [(&SurfaceGeometry, f64); 2],
+    radius: f64,
+    fit_target: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    build_chain_band_signed(
+        model, solid, edge, runs, exact, guide, hosts, radius, fit_target, false, tol,
+    )
+}
+
+/// The same closed chain wedge, removed for a convex round or added for
+/// a concave one. Both use the same rail and envelope checks.
+#[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
+pub(crate) fn build_chain_band_signed(
+    model: &mut Model,
+    solid: &Shape,
+    edge: Option<&Shape>,
+    runs: &[crate::march::MarchedBlend],
+    exact: &[ExactBand<'_>],
+    guide: &Curve,
+    hosts: [(&SurfaceGeometry, f64); 2],
+    radius: f64,
+    fit_target: f64,
+    convex: bool,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     use ogeom_geom::Surface as _;
     let [(first, sign_first), (second, sign_second)] = hosts;
-    let fit_target = band_fit_target(tol);
     let count = runs.len();
     if count == 0 || exact.len() != count {
         ogeom_bail!(Construction, "a chain of bands has no runs to build");
@@ -3077,7 +3130,7 @@ pub(crate) fn build_chain_band(
     let mut bands: Vec<Band> = Vec::with_capacity(count);
     for (run, exact) in runs.iter().zip(exact) {
         let n = run.len();
-        let fitted = fit_open_band(run, radius, [false, false], tol)?;
+        let fitted = fit_open_band_to(run, Some(radius), [false, false], fit_target, tol)?;
         let (u_knots, v_knots) = (fitted.u_knots().clone(), fitted.v_knots().clone());
         let (k, l, mut net) = {
             let grid = fitted.grid();
@@ -3113,6 +3166,10 @@ pub(crate) fn build_chain_band(
             for a in 0..=32 {
                 let u = u0 + (u1 - u0) * f64::from(a) / 32.0;
                 worst = worst.max((exact.off)(surface.point_at(u, v, tol)?));
+            }
+            for (u, host) in [(u0, first), (u1, second)] {
+                let p = surface.point_at(u, v, tol)?;
+                worst = worst.max(ogeom_algo::project_on_surface(host, p, 32, tol)?.distance);
             }
         }
         if worst > fit_target {
@@ -3463,9 +3520,10 @@ pub(crate) fn build_chain_band(
         guide.d1_at(t1, tol)?,
     )?;
 
-    // Fused on: each leg faces against its host.
+    // A removed wedge's legs face with their hosts; an added one's
+    // against them. Its band and caps face out in either case.
     let orient = |face: Shape, host_sign: f64| -> Shape {
-        if -host_sign > 0.0 {
+        if (if convex { host_sign } else { -host_sign }) > 0.0 {
             face
         } else {
             face.reversed()
@@ -3476,7 +3534,7 @@ pub(crate) fn build_chain_band(
     faces.extend(band_faces);
     faces.push(cap0);
     faces.push(cap1);
-    apply_wedge(model, solid, edge, &faces, true, tol)
+    apply_wedge(model, solid, edge, &faces, !convex, tol)
 }
 
 /// Two tenths of a micron at unit scale: what the march's own stations
@@ -3520,10 +3578,23 @@ fn fit_open_band_by(
     pinched: [bool; 2],
     tol: Tolerances,
 ) -> OgeomResult<ogeom_geom::BSplineSurface> {
-    const ACROSS_OPEN: usize = 17;
+    fit_open_band_to(blend, radius, pinched, band_fit_target(tol), tol)
+}
+
+fn fit_open_band_to(
+    blend: &crate::march::MarchedBlend,
+    radius: Option<f64>,
+    pinched: [bool; 2],
+    fit_target: f64,
+    tol: Tolerances,
+) -> OgeomResult<ogeom_geom::BSplineSurface> {
+    let across_open = if fit_target < band_fit_target(tol) {
+        33
+    } else {
+        17
+    };
     let n = blend.len();
-    let fit_target = band_fit_target(tol);
-    let mut rows: Vec<Vec<Point>> = (0..ACROSS_OPEN).map(|_| Vec::with_capacity(n)).collect();
+    let mut rows: Vec<Vec<Point>> = (0..across_open).map(|_| Vec::with_capacity(n)).collect();
     for at in 0..n {
         if (at == 0 && pinched[0]) || (at == n - 1 && pinched[1]) {
             for row in &mut rows {
@@ -3548,13 +3619,13 @@ fn fit_open_band_by(
         let sweep = a.dot(b).clamp(-1.0, 1.0).acos();
         for (k, row) in rows.iter_mut().enumerate() {
             #[allow(clippy::cast_precision_loss)]
-            let theta = sweep * (k as f64) / ((ACROSS_OPEN - 1) as f64);
+            let theta = sweep * (k as f64) / ((across_open - 1) as f64);
             let dir = a * theta.cos() + axis.cross(a) * theta.sin();
             row.push(centre + dir * radius);
         }
     }
     let stations: Vec<Vec<Point>> = (0..n)
-        .map(|i| (0..ACROSS_OPEN).map(|k| rows[k][i]).collect())
+        .map(|i| (0..across_open).map(|k| rows[k][i]).collect())
         .collect();
     // Fitted at half the target: the two passes each hold their half, but
     // the assembled surface's honest error is measured across both, and an

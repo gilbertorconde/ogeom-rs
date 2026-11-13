@@ -124,6 +124,76 @@ pub(crate) fn ruled_seat(
     }))
 }
 
+/// Exact ball contacts for the same ruled seat used by the builder. The
+/// tangent-plane setback is not a width on a cylindrical wall: solve the
+/// two offset supports, then measure the actual contact's reach instead.
+pub(crate) fn contacts(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<crate::support::Contact>>> {
+    use ogeom_geom::Surface as _;
+    let Some(seat) = ruled_seat(model, solid, edge, tol)? else {
+        return Ok(None);
+    };
+    let convex = crate::marched::crease_convexity(
+        model,
+        &seat.faces[0],
+        [
+            (&seat.hosts[0].0, seat.hosts[0].1),
+            (&seat.hosts[1].0, seat.hosts[1].1),
+        ],
+        &seat.guide,
+        seat.range,
+        radius,
+        tol,
+    )?;
+    let sign = if convex { -1.0 } else { 1.0 };
+    let sides = Sides {
+        first: if sign * seat.hosts[0].1 > 0.0 { 1 } else { -1 },
+        second: if sign * seat.hosts[1].1 > 0.0 { 1 } else { -1 },
+    };
+    let mut contacts = Vec::new();
+    for fraction in [0.25, 0.5, 0.75] {
+        let t = seat.range.0 + (seat.range.1 - seat.range.0) * fraction;
+        let p = seat.guide.point_at(t, tol)?;
+        let a = ogeom_algo::project_on_surface(&seat.hosts[0].0, p, 32, tol)?.parameters;
+        let b = ogeom_algo::project_on_surface(&seat.hosts[1].0, p, 32, tol)?.parameters;
+        let x = seat_section(
+            &seat.hosts[0].0,
+            &seat.hosts[1].0,
+            radius,
+            &seat.guide,
+            sides,
+            t,
+            [a.0, a.1, b.0, b.1],
+            tol,
+        )?;
+        for (i, (u, v)) in [(x[0], x[1]), (x[2], x[3])].into_iter().enumerate() {
+            let at = seat.hosts[i].0.point_at(u, v, tol)?;
+            if !crate::support::chart_holds(
+                model,
+                &seat.faces[i],
+                ogeom_math::Point2::new(u, v),
+                tol,
+            )? {
+                ogeom_bail!(
+                    Construction,
+                    "a ruled blend of radius {radius} touches outside its face at {at:?}"
+                );
+            }
+            contacts.push(crate::support::Contact {
+                face: seat.faces[i].clone(),
+                at,
+                setback: crate::support::distance_to_edge(&seat.guide, seat.range, at, tol)?,
+            });
+        }
+    }
+    Ok(Some(contacts))
+}
+
 /// Blend a straight `edge` on its ruled `seat`.
 pub(crate) fn ruled_fillet(
     model: &mut Model,

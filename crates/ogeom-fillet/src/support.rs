@@ -2021,6 +2021,9 @@ pub(crate) fn ball_fits(
     carry: bool,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Contact>> {
+    if let Some(contacts) = crate::ruled::contacts(model, solid, edge, radius, tol)? {
+        return Ok(contacts);
+    }
     ball_fits_by(
         model,
         solid,
