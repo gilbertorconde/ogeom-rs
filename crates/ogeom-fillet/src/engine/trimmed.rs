@@ -432,8 +432,8 @@ fn faces_of(curved: &Curved, edge: Id) -> Vec<usize> {
         .collect()
 }
 
-/// A face's outward unit normal at `p`, on a plane, a cylinder or a sphere;
-/// `None` on any other surface.
+/// A face's outward unit normal at `p`, on a plane, a cylinder, a sphere or
+/// a torus; `None` on any other surface.
 fn outward(curved: &Curved, face: usize, p: Point) -> Option<Vector> {
     let f = &curved.faces[face];
     let sign = if f.reversed { -1.0 } else { 1.0 };
@@ -450,6 +450,20 @@ fn outward(curved: &Curved, face: usize, p: Point) -> Option<Vector> {
             let r = p - sphere.sphere().centre();
             let m = r.magnitude();
             (m > 0.0).then(|| r / m * sign)
+        }
+        SurfaceGeometry::Torus(torus) => {
+            let torus = torus.torus();
+            let frame = torus.frame();
+            let (o, a) = (frame.origin(), frame.z().vector());
+            let q = p - o;
+            let radial = q - a * q.dot(a);
+            let m = radial.magnitude();
+            if m <= 0.0 {
+                return None;
+            }
+            let r = p - (o + radial / m * torus.major_radius());
+            let n = r.magnitude();
+            (n > 0.0).then(|| r / n * sign)
         }
         _ => None,
     }
@@ -544,14 +558,14 @@ fn bevel_of(
             }
             straight(curved, edge, e, faces, d, tol)
         }
-        Curve::Circle(_) => match legs(model, solid, shape, spec, tol) {
+        Curve::Circle(circle) => match legs(model, solid, shape, spec, tol) {
             Ok(Legs::Rim(seat, on_wall, on_cap)) => {
                 rim(curved, edge, faces, &seat, on_wall, on_cap, tol)
             }
             Ok(Legs::Sphere(seat, on_wall, on_cap)) => {
                 sphere_rim(curved, edge, faces, &seat, on_wall, on_cap, tol)
             }
-            _ => Ok(None),
+            _ => torus_rim(curved, edge, circle, faces, spec, tol),
         },
         _ => Ok(None),
     }
@@ -862,6 +876,253 @@ fn sphere_rim(
         surface: bevel.surface,
         section: Section::Line,
     }))
+}
+
+/// A rim between a planar cap square to a torus's axis and the torus, the
+/// material inside its tube: in the meridian half-plane through a point of
+/// the rim, `(rho, z)` from the torus's centre along its axis, the leg on
+/// the cap runs straight along it and the leg on the wall round the tube's
+/// circle, and the bevel is the cone through the two contact rings. `None`
+/// where the faces are not such a plane and torus, the rim is not
+/// coaxial, the edge is not convex, or the legs leave no bevel inside the
+/// tube.
+fn torus_rim(
+    curved: &Curved,
+    edge: Id,
+    rim: &CircleCurve,
+    faces: [usize; 2],
+    spec: &Chamfer,
+    tol: Tolerances,
+) -> OgeomResult<Option<Strip>> {
+    let (eps, ang) = (tol.confusion(), tol.angular());
+    let surface = |k: usize| &curved.faces[faces[k]].surface;
+    let (cap, wall) = match (surface(0), surface(1)) {
+        (SurfaceGeometry::Plane(_), SurfaceGeometry::Torus(_)) => (0, 1),
+        (SurfaceGeometry::Torus(_), SurfaceGeometry::Plane(_)) => (1, 0),
+        _ => return Ok(None),
+    };
+    let (SurfaceGeometry::Plane(plane), SurfaceGeometry::Torus(torus)) =
+        (surface(cap), surface(wall))
+    else {
+        return Ok(None);
+    };
+    if curved.faces[faces[wall]].reversed {
+        return Ok(None);
+    }
+    let torus = torus.torus();
+    let frame = torus.frame();
+    let (o, a) = (frame.origin(), frame.z().vector());
+    let (big, small) = (torus.major_radius(), torus.minor_radius());
+    let circle = rim.circle();
+    let centre = circle.centre();
+    let off = centre - o;
+    let up = plane.plane().normal().vector()
+        * if curved.faces[faces[cap]].reversed {
+            -1.0
+        } else {
+            1.0
+        };
+    if up.cross(a).magnitude() > ang
+        || circle.frame().z().vector().cross(a).magnitude() > ang
+        || (off - a * off.dot(a)).magnitude() > eps
+    {
+        return Ok(None);
+    }
+    let rim_rho = circle.radius();
+    let rim_z = off.dot(a);
+    if ((rim_rho - big).hypot(rim_z) - small).abs() > eps {
+        return Ok(None);
+    }
+    // The meridian: the cap's outward normal, the wall's at the rim, and
+    // which way along the cap from the rim the cap lies (toward the axis
+    // where it has no other edge).
+    let cap_up = up.dot(a).signum();
+    let wall_out = ((rim_rho - big) / small, rim_z / small);
+    let edge_ids: Vec<Id> = curved.faces[faces[cap]]
+        .loops
+        .iter()
+        .flatten()
+        .map(|(e, _)| *e)
+        .filter(|e| *e != edge)
+        .collect();
+    let mut side = 0.0_f64;
+    for e in &edge_ids {
+        let c = &curved.edges[e];
+        let p = c.curve.point_at(f64::midpoint(c.range.0, c.range.1), tol)?;
+        let q = p - o;
+        let gap = (q - a * q.dot(a)).magnitude() - rim_rho;
+        if gap.abs() <= eps {
+            // The rim's other arcs.
+            continue;
+        }
+        let s = gap.signum();
+        if side == 0.0 {
+            side = s;
+        } else if side != s {
+            return Ok(None);
+        }
+    }
+    if side == 0.0 {
+        side = -1.0;
+    }
+    // Convex: the cap leaves the rim behind the wall's outward side.
+    if side * wall_out.0 >= -ang {
+        return Ok(None);
+    }
+    // Round the tube from the rim, away from the cap's outward side.
+    let alpha = rim_z.atan2(rim_rho - big);
+    let turn: f64 = if alpha.cos() * cap_up < 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let on_tube = |t: f64| {
+        let b = turn.mul_add(t / small, alpha);
+        (small.mul_add(b.cos(), big), small * b.sin())
+    };
+    let named = |face: &Shape| {
+        if curved.faces[faces[cap]].shape.is_same(face) {
+            Some(true)
+        } else if curved.faces[faces[wall]].shape.is_same(face) {
+            Some(false)
+        } else {
+            None
+        }
+    };
+    // The legs: along the cap, and round the tube.
+    let (on_cap, on_wall) = match spec {
+        Chamfer::Symmetric(d) => (*d, *d),
+        Chamfer::Distances {
+            face,
+            on_face,
+            on_other,
+        } => match named(face) {
+            Some(true) => (*on_face, *on_other),
+            Some(false) => (*on_other, *on_face),
+            None => return Ok(None),
+        },
+        Chamfer::Angle {
+            face,
+            distance,
+            angle,
+        } => {
+            let (d, phi) = (*distance, *angle);
+            match named(face) {
+                Some(true) => {
+                    // From the cap's contact back toward the rim and into
+                    // the material, to where it meets the tube.
+                    let c = (side.mul_add(d, rim_rho), rim_z);
+                    let dir = (-side * phi.cos(), -cap_up * phi.sin());
+                    let rel = (c.0 - big, c.1);
+                    let b = rel.0.mul_add(dir.0, rel.1 * dir.1);
+                    let k = rel.0.mul_add(rel.0, rel.1 * rel.1) - small * small;
+                    let disc = b.mul_add(b, -k);
+                    if k >= 0.0 || disc < 0.0 {
+                        return Ok(None);
+                    }
+                    let t = -b + disc.sqrt();
+                    let w = (t.mul_add(dir.0, c.0), t.mul_add(dir.1, c.1));
+                    let beta = w.1.atan2(w.0 - big);
+                    let mut swept = turn * (beta - alpha);
+                    if swept < 0.0 {
+                        swept += core::f64::consts::TAU;
+                    }
+                    (d, swept * small)
+                }
+                Some(false) => {
+                    // From the wall's contact back along the tube toward
+                    // the rim and into the material, to the cap's line.
+                    let w = on_tube(d);
+                    let b = turn.mul_add(d / small, alpha);
+                    let back = (turn * b.sin(), -turn * b.cos());
+                    let into = (-b.cos(), -b.sin());
+                    let dir = (
+                        back.0.mul_add(phi.cos(), into.0 * phi.sin()),
+                        back.1.mul_add(phi.cos(), into.1 * phi.sin()),
+                    );
+                    if dir.1.abs() <= ang {
+                        return Ok(None);
+                    }
+                    let t = (rim_z - w.1) / dir.1;
+                    if t <= eps {
+                        return Ok(None);
+                    }
+                    let c_rho = t.mul_add(dir.0, w.0);
+                    ((c_rho - rim_rho) * side, d)
+                }
+                None => return Ok(None),
+            }
+        }
+    };
+    if !(on_cap.is_finite() && on_cap > eps && on_wall.is_finite() && on_wall > eps)
+        || on_wall >= core::f64::consts::PI * small
+    {
+        return Ok(None);
+    }
+    let c = (side.mul_add(on_cap, rim_rho), rim_z);
+    let w = on_tube(on_wall);
+    if c.0 <= eps || w.0 <= eps || (w.1 - c.1).abs() <= eps {
+        return Ok(None);
+    }
+    // The chord from the wall's contact to the cap's meets the tube's
+    // circle again `-2 (W - T).(C - W) / |C - W|^2` along it, which must
+    // not fall between the two.
+    let chord = (c.0 - w.0, c.1 - w.1);
+    let spoke = (w.0 - big, w.1);
+    let length2 = chord.0.mul_add(chord.0, chord.1 * chord.1);
+    let again = -2.0 * spoke.0.mul_add(chord.0, spoke.1 * chord.1) / length2;
+    if again * length2.sqrt() > eps && again < 1.0 {
+        return Ok(None);
+    }
+    let x = circle.frame().x().vector();
+    let x = Direction::new(x - a * x.dot(a), tol)?;
+    let axis_dir = Direction::new(a, tol)?;
+    let ring = |z: f64, radius: f64| -> OgeomResult<Curve> {
+        let frame = Frame::new(o + a * z, axis_dir, x, tol)?;
+        Ok(CircleCurve::new(Circle::new(frame, radius, tol)?).into())
+    };
+    let mut contacts = [ring(c.1, c.0)?, ring(c.1, c.0)?];
+    contacts[wall] = ring(w.1, w.0)?;
+    let surface = coaxial_cone(
+        Frame::new(o + a * c.1, axis_dir, x, tol)?,
+        c.0,
+        (w.0, w.1 - c.1),
+        tol,
+    )?;
+    Ok(Some(Strip {
+        edge,
+        faces,
+        contacts,
+        surface,
+        section: Section::Line,
+    }))
+}
+
+/// The cone (a cylinder where the radii agree) about `frame`'s axis
+/// through the ring of `radius` in its plane and the ring `(rho, dz)`
+/// `dz` along its axis, its chart kept clear of its apex.
+fn coaxial_cone(
+    frame: Frame,
+    radius: f64,
+    (rho, dz): (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<SurfaceGeometry> {
+    let slope = (rho - radius) / dz;
+    let rows = (dz.min(0.0), dz.max(0.0));
+    let depth = dz.abs();
+    if slope.atan().abs() <= tol.angular() {
+        let pad = 0.1 * depth;
+        return Ok(ogeom_geom::CylinderSurface::new(
+            ogeom_math::Cylinder::new(frame, radius, tol)?,
+            (rows.0 - pad, rows.1 + pad),
+        )?
+        .into());
+    }
+    let apex = -radius / slope;
+    let clear = (apex - rows.0).abs().min((apex - rows.1).abs());
+    let pad = (0.1 * depth).min(0.5 * clear);
+    let cone = ogeom_math::Cone::new(frame, radius, slope.atan(), tol)?;
+    Ok(ogeom_geom::ConeSurface::new(cone, (rows.0 - pad, rows.1 + pad))?.into())
 }
 
 /// The sheet's points, each held once within the confusion distance.
@@ -1815,9 +2076,9 @@ fn met_between(
 }
 
 /// The material face `face` bounds, as a region the certify reads: the
-/// side of its plane under its outward normal, or the side of its cylinder
-/// or cone the material lies on (inside a wall, outside a bore); `None` on
-/// any other surface.
+/// side of its plane under its outward normal, the side of its cylinder,
+/// cone or sphere the material lies on (inside a wall, outside a bore), or
+/// the inside of its torus's tube; `None` on any other surface or side.
 fn material(curved: &Curved, face: usize) -> Option<ogeom_algo::HalfSpaces> {
     let f = &curved.faces[face];
     let inside = !f.reversed;
@@ -1858,6 +2119,16 @@ fn material(curved: &Curved, face: usize) -> Option<ogeom_algo::HalfSpaces> {
                 centre: sphere.centre(),
                 radius: sphere.radius(),
                 inside,
+            })
+        }
+        SurfaceGeometry::Torus(torus) if inside => {
+            let torus = torus.torus();
+            let frame = torus.frame();
+            Some(ogeom_algo::HalfSpaces::Tube {
+                centre: frame.origin(),
+                axis: frame.z().vector(),
+                major: torus.major_radius(),
+                minor: torus.minor_radius(),
             })
         }
         _ => None,
