@@ -747,3 +747,188 @@ fn coplanar_faces_with_the_material_on_opposite_sides_meet_at_a_real_edge() {
     let err = ogeom_fillet::chamfer_edge(&mut m, &s, &touching, 1.0, T).unwrap_err();
     assert!(err.to_string().contains("exactly two faces"), "{err}");
 }
+
+/// The volume of the convex polytope `{x : n·x <= c}` over `planes`, each
+/// an outward normal and its offset, with the count of its faces: every
+/// point where three planes meet inside all the others is a corner; each
+/// face's corners, in turn about its centroid, give its area; the volume
+/// is the sum over faces of a third of area times offset. Shares nothing
+/// with the engine.
+fn convex_polytope(planes: &[(ogeom_math::Vector, f64)]) -> (f64, usize) {
+    use ogeom_math::Vector;
+    let mut corners: Vec<Vector> = Vec::new();
+    for i in 0..planes.len() {
+        for j in i + 1..planes.len() {
+            for k in j + 1..planes.len() {
+                let (a, b, c) = (planes[i], planes[j], planes[k]);
+                let det = a.0.dot(b.0.cross(c.0));
+                if det.abs() < 1e-12 {
+                    continue;
+                }
+                let x = (b.0.cross(c.0) * a.1 + c.0.cross(a.0) * b.1 + a.0.cross(b.0) * c.1) / det;
+                if planes.iter().all(|(n, o)| n.dot(x) <= o + 1e-9)
+                    && !corners.iter().any(|y| (*y - x).magnitude() < 1e-9)
+                {
+                    corners.push(x);
+                }
+            }
+        }
+    }
+    let (mut volume, mut faces) = (0.0, 0);
+    for (n, o) in planes {
+        let on: Vec<Vector> = corners
+            .iter()
+            .copied()
+            .filter(|x| (n.dot(*x) - o).abs() < 1e-9)
+            .collect();
+        if on.len() < 3 {
+            continue;
+        }
+        let (sum, count) = on
+            .iter()
+            .fold((Vector::ZERO, 0.0), |(s, c), x| (s + *x, c + 1.0));
+        let centre = sum / count;
+        let u = (on[0] - centre) / (on[0] - centre).magnitude();
+        let w = n.cross(u);
+        let mut turn: Vec<(f64, Vector)> = on
+            .iter()
+            .map(|x| ((*x - centre).dot(w).atan2((*x - centre).dot(u)), *x))
+            .collect();
+        turn.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut area = 0.0;
+        for k in 0..turn.len() {
+            let (p, q) = (turn[k].1 - centre, turn[(k + 1) % turn.len()].1 - centre);
+            area += p.cross(q).dot(*n) / 2.0;
+        }
+        if area > 1e-9 {
+            faces += 1;
+            volume += area * o / 3.0;
+        }
+    }
+    (volume, faces)
+}
+
+/// A plate 20 by 20 by 2, its front edges top and bottom chamfered 1.9
+/// and every edge of its back, its sides' top and bottom and its back
+/// uprights 0.5; the front uprights stay sharp. The front face's setback
+/// lines cross: it goes, and its two bevels meet along a ridge at half
+/// height, the side faces notched up one bevel and down the other. Each
+/// back corner of three bevels is a facet, as a convex plate cut by every
+/// one of its planes is: the result is the polytope of the plate's, the
+/// bevels' and the facets' planes, its volume and its face count, under
+/// three orders of the request. The front face and its sharp uprights are
+/// gone from the history. Before, the band sent the whole request down the
+/// wedge path, its back corners mitred.
+#[test]
+fn a_thin_wall_chamfered_on_both_edges_meets_in_a_ridge() {
+    use ogeom_math::Vector;
+    let (front, rest) = (1.9, 0.5);
+    let mut planes: Vec<(Vector, f64)> = vec![
+        (Vector::new(-1.0, 0.0, 0.0), 0.0),
+        (Vector::new(1.0, 0.0, 0.0), 20.0),
+        (Vector::new(0.0, -1.0, 0.0), 0.0),
+        (Vector::new(0.0, 1.0, 0.0), 20.0),
+        (Vector::new(0.0, 0.0, -1.0), 0.0),
+        (Vector::new(0.0, 0.0, 1.0), 2.0),
+    ];
+    // A bevel of `d` on both faces along the edge where the outward
+    // normals `a` and `b` meet, `at` a point of the edge: through the line
+    // `d` in along the face of normal `a`, away from the other face.
+    let bevel = |a: Vector, b: Vector, at: Vector, d: f64| {
+        let n = (a + b) / (a + b).magnitude();
+        (n, n.dot(at - b * d))
+    };
+    let (x, y, z) = (Vector::X, Vector::Y, Vector::Z);
+    planes.push(bevel(-y, -z, Vector::ZERO, front));
+    planes.push(bevel(-y, z, 2.0 * z, front));
+    for (a, b, at) in [
+        (y, -z, 20.0 * y),
+        (y, z, 20.0 * y + 2.0 * z),
+        (-x, -z, Vector::ZERO),
+        (-x, z, 2.0 * z),
+        (x, -z, 20.0 * x),
+        (x, z, 20.0 * x + 2.0 * z),
+        (-x, y, 20.0 * y),
+        (x, y, 20.0 * x + 20.0 * y),
+    ] {
+        planes.push(bevel(a, b, at, rest));
+    }
+    // Each back corner's facet, through its three setback corners: on each
+    // face, `rest` in from both bevelled edges.
+    for (corner, sx, sz) in [
+        (20.0 * y, -1.0, -1.0),
+        (20.0 * y + 2.0 * z, -1.0, 1.0),
+        (20.0 * x + 20.0 * y, 1.0, -1.0),
+        (20.0 * x + 20.0 * y + 2.0 * z, 1.0, 1.0),
+    ] {
+        let (ix, iy, iz) = (-sx * rest * x, -rest * y, -sz * rest * z);
+        let (p, q, r) = (corner + iy + iz, corner + ix + iz, corner + ix + iy);
+        let mut n = (q - p).cross(r - p);
+        n = n / n.magnitude();
+        if n.dot(Vector::new(sx, 1.0, sz)) < 0.0 {
+            n = -n;
+        }
+        planes.push((n, n.dot(p)));
+    }
+    let (want, want_faces) = convex_polytope(&planes);
+    let mut first: Option<Vec<[u64; 3]>> = None;
+    for seed in 0..3_u64 {
+        let mut m = Model::new();
+        let s = block(&mut m, (0.0, 0.0, 0.0), (20.0, 20.0, 2.0));
+        let front_face = explore_unique(&m, &s, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .find(|f| {
+                let (_, n) = ogeom_algo::face_normal(&m, f, T).unwrap();
+                n.y < -0.5
+            })
+            .unwrap();
+        let mut sharp: Vec<Shape> = Vec::new();
+        let specs: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter_map(|e| {
+                let (a, b) = ogeom_algo::edge_vertices(&m, &e).unwrap().unwrap();
+                let point = |v: &Shape| m.node(v).unwrap().data().as_vertex().unwrap().point;
+                let (p, q) = (point(&a), point(&b));
+                let on_front = p.y.max(q.y) < 1e-9;
+                let upright = (p.z - q.z).abs() > 1.0;
+                match (on_front, upright) {
+                    (true, true) => {
+                        sharp.push(e);
+                        None
+                    }
+                    (true, false) => Some((e, Chamfer::Symmetric(front))),
+                    _ => Some((e, Chamfer::Symmetric(rest))),
+                }
+            })
+            .collect();
+        assert_eq!(specs.len(), 10);
+        let specs: Vec<(Shape, Chamfer)> = shuffled(specs.len(), seed)
+            .iter()
+            .map(|i| specs[*i].clone())
+            .collect();
+        let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert!(!folded(&m, &built.shape), "folded");
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "volume {got} against {want}"
+        );
+        let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+            .unwrap()
+            .len();
+        assert_eq!(faces, want_faces, "faces");
+        assert!(built.history.is_deleted(&front_face), "the front face left");
+        for e in &sharp {
+            assert!(built.history.is_deleted(e), "a front upright left");
+        }
+        let k = key(&m, &built.shape).1;
+        match &first {
+            None => first = Some(k),
+            Some(held) => assert!(*held == k, "order {seed} differs"),
+        }
+    }
+}

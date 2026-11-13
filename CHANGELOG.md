@@ -29,9 +29,15 @@ bump may break the API and a patch bump may not.
     `ChamferCorner::Facet` is now exactly `chamfer_edges_with`.
   - A bevel running into an earlier one, in a second call, mitres along
     the line their planes share; it no longer leaves a small cap face.
-  - A request its faces cannot hold (a face its setbacks consume, such as
-    two bevels crossing on a thin wall) and any other solid are chamfered
-    by wedges, mitred, as before.
+  - **A thin wall bevelled on both edges.** A band between two parallel
+    bevels, set back past each other, goes. Its bevels meet along the
+    ridge their planes share, and each face across the band's ends is
+    notched up one bevel and down the other. The rest of the request keeps
+    its facets; before, the band sent the whole request down the wedge
+    path, its corners mitred.
+  - A request its faces cannot hold in any other way (a face its setbacks
+    consume other than such a band) and any other solid are chamfered by
+    wedges, mitred, as before.
 - **A chamfer naming a seam names nothing.** A seam is an edge between two
   faces of one shell on one surface, facing one way, as a boolean leaves
   where it joined two flats. It is no edge of the part's form: mainstream
