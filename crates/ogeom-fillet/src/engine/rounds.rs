@@ -1159,4 +1159,102 @@ mod tests {
             [6, 12, 8]
         );
     }
+
+    /// The volume of the convex polytope of `points` and `rings` (wound
+    /// outward) with every edge and corner rounded at `r`, where its faces
+    /// moved in by `r` still meet as it does, each vertex's at one point:
+    /// that inner parallel body swept by the ball, by Steiner,
+    /// `V' + S' r + M' r^2 + 4/3 pi r^3`, `M'` the sum over its edges of
+    /// their lengths times the angles between their faces' outward normals,
+    /// over two.
+    fn steiner(points: &[ogeom_math::Point], rings: &[Vec<usize>], r: f64) -> f64 {
+        use ogeom_math::{Point, Vector};
+        let normal = |ring: &Vec<usize>, at: &[Point]| {
+            let mut n = Vector::ZERO;
+            for k in 1..ring.len() - 1 {
+                let (a, b, c) = (at[ring[0]], at[ring[k]], at[ring[k + 1]]);
+                n += (b - a).cross(c - a);
+            }
+            n / n.magnitude()
+        };
+        let normals: Vec<Vector> = rings.iter().map(|ring| normal(ring, points)).collect();
+        // Each vertex moved to where three of its faces' planes, moved in
+        // by `r`, meet.
+        let inner: Vec<Point> = (0..points.len())
+            .map(|i| {
+                let faces: Vec<usize> = (0..rings.len())
+                    .filter(|f| rings[*f].contains(&i))
+                    .collect();
+                let n = [normals[faces[0]], normals[faces[1]], normals[faces[2]]];
+                let d = n.map(|n| n.dot(points[i].to_vector()) - r);
+                let det = n[0].dot(n[1].cross(n[2]));
+                Point::from_vector(
+                    (n[1].cross(n[2]) * d[0] + n[2].cross(n[0]) * d[1] + n[0].cross(n[1]) * d[2])
+                        / det,
+                )
+            })
+            .collect();
+        let o = inner[0];
+        let (mut volume, mut area, mut mean) = (0.0, 0.0, 0.0);
+        for (i, ring) in rings.iter().enumerate() {
+            let mut n = Vector::ZERO;
+            for k in 1..ring.len() - 1 {
+                let (a, b, c) = (inner[ring[0]], inner[ring[k]], inner[ring[k + 1]]);
+                n += (b - a).cross(c - a) * 0.5;
+                volume += (a - o).dot((b - o).cross(c - o)) / 6.0;
+            }
+            area += n.magnitude();
+            for k in 0..ring.len() {
+                let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+                // The other face holds the edge walked the other way.
+                let j = rings
+                    .iter()
+                    .position(|q| (0..q.len()).any(|m| q[m] == b && q[(m + 1) % q.len()] == a))
+                    .unwrap();
+                if i < j {
+                    let angle = normals[i].dot(normals[j]).clamp(-1.0, 1.0).acos();
+                    mean += inner[a].distance(inner[b]) * angle / 2.0;
+                }
+            }
+        }
+        volume + area * r + mean * r * r + 4.0 / 3.0 * core::f64::consts::PI * r.powi(3)
+    }
+
+    /// A frustum of a hexagonal pyramid, a regular hexagon of circumradius
+    /// 3 at `z = 0` narrowing to one of 1.5 at `z = 2`: every vertex joins
+    /// three edges, the base's at an obtuse corner whose ball's foot on the
+    /// base stands nearly a quarter turn from the middle of its triangle.
+    /// Every edge rounded at 1/2, every vertex closes on a sphere and the
+    /// volume is Steiner's; a sphere charted with a pole beside that foot
+    /// leaves the solid unsound.
+    #[test]
+    fn a_hexagonal_frustum_s_obtuse_corners_round_on_their_spheres() {
+        use ogeom_math::Point;
+        let ring = |radius: f64, z: f64| {
+            (0..6).map(move |k| {
+                let t = f64::from(k) * core::f64::consts::PI / 3.0;
+                Point::new(radius * t.cos(), radius * t.sin(), z)
+            })
+        };
+        let points: Vec<Point> = ring(3.0, 0.0).chain(ring(1.5, 2.0)).collect();
+        let mut rings = vec![vec![5, 4, 3, 2, 1, 0], vec![6, 7, 8, 9, 10, 11]];
+        rings.extend((0..6).map(|k| vec![k, (k + 1) % 6, 6 + (k + 1) % 6, 6 + k]));
+        let mut m = Model::new();
+        let s = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+            .unwrap()
+            .shape;
+        let r = 0.5;
+        let edges = explore_unique(&m, &s, ShapeType::Edge).unwrap();
+        assert_eq!(edges.len(), 18);
+        let request =
+            Request::from_rounds(&edges.iter().map(|e| (e.clone(), r)).collect::<Vec<_>>(), T)
+                .unwrap();
+        let built = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+        let found = ogeom_algo::check(&m, &built, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert_eq!(count_of(&m, &built, ogeom_geom::SurfaceKind::Sphere), 12);
+        let want = steiner(&points, &rings, r);
+        let got = volume(&m, &built);
+        assert!((got - want).abs() < 1e-6, "{got} against {want}");
+    }
 }

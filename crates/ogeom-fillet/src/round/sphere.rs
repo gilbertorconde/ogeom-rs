@@ -254,29 +254,66 @@ pub(crate) fn corner_ball(
 }
 
 /// The ball about `centre` of `radius`, charted for the spherical triangle
-/// between `feet`: its longitude half a turn from the triangle's middle and
+/// between `feet` (in turn round it, each joined to the next by a great
+/// circle's arc): its longitude half a turn from the triangle's middle and
 /// its equator through it, so the triangle, less than a hemisphere, stands
-/// clear of both poles and of the chart's seam, whatever the corner.
+/// clear of the chart's seam. Of the axes square to the middle, its poles
+/// take the one farthest from the triangle's sides: a foot can stand nearly
+/// a quarter turn from the middle at an obtuse corner, and an axis chosen
+/// without looking can put a pole beside it.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+/// where the feet have no middle, or every axis leaves a pole within a
+/// hundredth of a radian of a side.
 pub(crate) fn triangle_sphere(
     centre: Point,
     radius: f64,
     feet: [Point; 3],
     tol: Tolerances,
 ) -> OgeomResult<SurfaceGeometry> {
-    let middle = feet
-        .iter()
-        .fold(Vector::ZERO, |sum, f| sum + (*f - centre) / radius);
+    let dirs: Vec<Vector> = feet.iter().map(|f| (*f - centre) / radius).collect();
+    let middle = dirs.iter().fold(Vector::ZERO, |sum, d| sum + *d);
     let away = Direction::new(-middle, tol)?;
     let a = away.vector();
-    let helper = if a.x.abs() <= a.y.abs() && a.x.abs() <= a.z.abs() {
-        Vector::new(1.0, 0.0, 0.0)
-    } else if a.y.abs() <= a.z.abs() {
-        Vector::new(0.0, 1.0, 0.0)
-    } else {
-        Vector::new(0.0, 0.0, 1.0)
+    // The sides, sampled along their arcs.
+    let mut sides = Vec::new();
+    for (k, d) in dirs.iter().enumerate() {
+        let e = dirs[(k + 1) % dirs.len()];
+        for j in 0..16 {
+            let t = f64::from(j) / 16.0;
+            let p = *d * (1.0 - t) + e * t;
+            sides.push(p / p.magnitude());
+        }
+    }
+    let x = Direction::new(a.cross(Vector::new(1.0, 0.0, 0.0)), tol)
+        .or_else(|_| Direction::new(a.cross(Vector::new(0.0, 1.0, 0.0)), tol))?
+        .vector();
+    let y = a.cross(x);
+    let mut best: Option<(f64, Vector)> = None;
+    for k in 0..180 {
+        let t = f64::from(k) * core::f64::consts::PI / 180.0;
+        let axis = x * t.cos() + y * t.sin();
+        // The sine of the nearest side's angle to either pole.
+        let near = sides
+            .iter()
+            .map(|p| p.cross(axis).magnitude())
+            .fold(f64::INFINITY, f64::min);
+        if best.is_none_or(|(b, _)| near > b) {
+            best = Some((near, axis));
+        }
+    }
+    let Some((clear, axis)) = best else {
+        ogeom_bail!(Construction, "a corner sphere has no feet to chart");
     };
-    let up = Direction::new(a.cross(helper), tol)?;
-    let frame = Frame::new(centre, up, away, tol)?;
+    if clear < 1e-2 {
+        ogeom_bail!(
+            Construction,
+            "a corner sphere's triangle leaves no axis clear of its sides"
+        );
+    }
+    let frame = Frame::new(centre, Direction::new(axis, tol)?, away, tol)?;
     Ok(SphereSurface::new(Sphere::new(frame, radius, tol)?).into())
 }
 
