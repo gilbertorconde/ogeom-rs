@@ -2110,15 +2110,27 @@ fn assemble_widened(
             for fi in kept.iter().copied() {
                 if let Some(c) = corners.get(&(fi, v))
                     && c.point.distance(at) > tol.confusion()
-                    && c.on(*e).is_some()
+                    && let Some(t) = c.on(*e)
+                    && edge.curve.point_at(t, tol)?.distance(c.point) <= tol.confusion()
                     && !moved.iter().any(|m| m.distance(c.point) <= tol.confusion())
                 {
                     moved.push(c.point);
                 }
             }
+            // A face whose corner stays at the vertex runs on to it.
+            let stays = kept.len() == 2
+                && kept.iter().any(|fi| {
+                    corners
+                        .get(&(*fi, v))
+                        .is_some_and(|c| c.point.distance(at) <= tol.confusion())
+                });
             match moved.as_slice() {
                 [] => {
                     sharp_end.insert((*e, v), at);
+                }
+                [p] if stays && edge.ends.0 != edge.ends.1 => {
+                    sharp_end.insert((*e, v), *p);
+                    tails.entry(v).or_default().push((*e, *p, at));
                 }
                 [p] => {
                     sharp_end.insert((*e, v), *p);
@@ -2170,7 +2182,68 @@ fn assemble_widened(
         at_v.sort_unstable();
         at_v.dedup();
         match at_v.len() {
-            0 | 1 => {}
+            0 => {}
+            1 => {
+                // One bevel running on into an edge left sharp along it: its
+                // end is capped by the plane square to the edge there,
+                // through the bevel's end, the tails of the sharp edges whose
+                // faces end apart on it, and the vertex.
+                let at = curved.points[v];
+                let blended_edge = &curved.edges[&at_v[0]];
+                let tangent = |c: &CurvedEdge| -> OgeomResult<Vector> {
+                    let t = if c.ends.0 == *v { c.range.0 } else { c.range.1 };
+                    c.curve.d1_at(t, tol)
+                };
+                let ta = tangent(blended_edge)?;
+                let mut runs_on = false;
+                for (e, c) in &curved.edges {
+                    if *e != at_v[0] && (c.ends.0 == *v || c.ends.1 == *v) {
+                        let tb = tangent(c)?;
+                        runs_on |= ta.cross(tb).magnitude()
+                            <= super::setbacks::TANGENT * ta.magnitude() * tb.magnitude();
+                    }
+                }
+                if !runs_on {
+                    continue;
+                }
+                let Some(ends) = sections.get(v) else {
+                    continue;
+                };
+                let [(p, q, _)] = ends[..] else {
+                    continue;
+                };
+                // From the bevel's end on along the tails to the vertex,
+                // the cap's last side back to the bevel's end.
+                let close = |a: Point, b: Point| a.distance(b) <= tol.confusion();
+                let mut cycle = vec![p, q];
+                let mut last = q;
+                while !close(last, at) {
+                    let next = tails
+                        .get(v)
+                        .into_iter()
+                        .flatten()
+                        .find_map(|(_, far, near)| {
+                            if close(*far, last) {
+                                Some(*near)
+                            } else if close(*near, last) && !cycle.iter().any(|c| close(*c, *far)) {
+                                Some(*far)
+                            } else {
+                                None
+                            }
+                        });
+                    match next {
+                        Some(n) if !cycle.iter().any(|c| close(*c, n)) => {
+                            cycle.push(n);
+                            last = n;
+                        }
+                        _ => break,
+                    }
+                }
+                if !close(last, at) {
+                    cycle.push(at);
+                }
+                facets.push((*v, cycle));
+            }
             2 => {
                 // Two bevels running on into each other share their end.
                 if let Some(ends) = sections.get(v) {
@@ -2551,6 +2624,37 @@ fn assemble_widened(
         ring.push(section(points, edges, made, strip, Some(second), *x, z)?);
         Ok(true)
     };
+    // A face's side of the cap at a vertex, from `a` to `b`: the face cut
+    // by the cap's plane, shared by the face and the cap.
+    let cap_side = |points: &mut Points,
+                    edges: &mut Vec<SheetCurve>,
+                    made: &mut FastMap<Key, usize>,
+                    surface: &SurfaceGeometry,
+                    plane: &SurfaceGeometry,
+                    a: Point,
+                    b: Point|
+     -> OgeomResult<(usize, bool)> {
+        let (i, j) = (points.index(a), points.index(b));
+        let key = Key::Section(i.min(j), i.max(j));
+        if let Some(k) = made.get(&key) {
+            return Ok((*k, edges[*k].ends.0 == i));
+        }
+        let met = match surface {
+            SurfaceGeometry::Plane(_) => None,
+            _ => met_between(surface, plane, a, b, tol)?,
+        };
+        let (curve, range, ends): (Curve, (f64, f64), (usize, usize)) = match met {
+            Some((curve, range, a_low)) => (curve, range, if a_low { (i, j) } else { (j, i) }),
+            None => {
+                let line = LineCurve::segment(a, b, tol)?;
+                let range = line.domain();
+                (line.into(), range, (i, j))
+            }
+        };
+        edges.push(SheetCurve { ends, curve, range });
+        made.insert(key, edges.len() - 1);
+        Ok((edges.len() - 1, ends.0 == i))
+    };
     // Where a face's ring stopped short of its next piece, from `p` to
     // `q`, at the vertices `at`: one bevel's end flush on the face, or two
     // meeting where a face between them was consumed.
@@ -2589,7 +2693,25 @@ fn assemble_widened(
                 (other != bi).then_some((middle, *bi, *other))
             });
             let Some((middle, first, second)) = found else {
-                return Ok(None);
+                // A capped vertex: the face's side of the cap, from its
+                // corner to the vertex.
+                let capped = at.iter().find_map(|v| {
+                    let plane = facet_planes.get(v)?;
+                    let point = curved.points[v];
+                    (close(point, p) || close(point, q)).then_some(plane)
+                });
+                let Some(plane) = capped else {
+                    return Ok(None);
+                };
+                return Ok(Some(vec![cap_side(
+                    points,
+                    edges,
+                    made,
+                    &face.surface,
+                    plane,
+                    p,
+                    q,
+                )?]));
             };
             hops.push((p, middle, first));
             hops.push((middle, q, second));
@@ -3023,11 +3145,36 @@ fn assemble_widened(
                     .map(|(_, _, bi)| &bevels[*bi])
             });
             let Some(strip) = strip else {
-                let Some(piece) = tail_between(&mut points, &mut edges, &mut made, *v, p, q)?
-                else {
+                if let Some(piece) = tail_between(&mut points, &mut edges, &mut made, *v, p, q)? {
+                    ring.push(piece);
+                    continue;
+                }
+                // A cap's side on a face: from the face's corner at the
+                // vertex to the vertex itself.
+                let at = curved.points[v];
+                let corner = if p.distance(at) <= tol.confusion() {
+                    q
+                } else {
+                    p
+                };
+                let face = (0..curved.faces.len()).find(|fi| {
+                    corners
+                        .get(&(*fi, *v))
+                        .is_some_and(|c| c.point.distance(corner) <= points.merge)
+                });
+                let (Some(fi), Some(plane)) = (face, facet_planes.get(v)) else {
                     return Ok(None);
                 };
-                ring.push(piece);
+                let surface = curved.faces[fi].surface.clone();
+                ring.push(cap_side(
+                    &mut points,
+                    &mut edges,
+                    &mut made,
+                    &surface,
+                    plane,
+                    p,
+                    q,
+                )?);
                 continue;
             };
             ring.push(section(
