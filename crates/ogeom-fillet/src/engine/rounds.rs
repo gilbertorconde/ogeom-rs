@@ -112,6 +112,21 @@ pub(crate) fn assemble(
         }
     }
 
+    // Every strip's contact on each face within that face between its
+    // corners (ADR 0001, §3.5): one running off a face narrower than its
+    // setback rolls onto the face beyond (M5) and is not built here.
+    for (edge, _) in &sections {
+        let seat = edge_seat[edge];
+        for fi in seat.faces {
+            let (a, b) = (corners[&(fi, seat.ends.0)], corners[&(fi, seat.ends.1)]);
+            for t in [0.25, 0.5, 0.75] {
+                if !within_face(planar, fi, a + (b - a) * t, reach) {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+
     // Each vertex's method.
     let mut vertices: Vec<Id> = planar.points.keys().copied().collect();
     vertices.sort_unstable();
@@ -2185,31 +2200,41 @@ fn section_length(planar: &Planar, seat: &Seat) -> f64 {
 }
 
 /// Whether `p`, a point of face `fi`'s plane, lies within the face's
-/// polygon or within `reach` of its boundary.
+/// polygon, outside its holes, or within `reach` of its boundary.
 fn within_face(planar: &Planar, fi: usize, p: Point, reach: f64) -> bool {
     let face = &planar.faces[fi];
-    let ring: Vec<Point> = face.corners.iter().map(|c| planar.points[c]).collect();
     let n = face.normal;
-    let x = ring
-        .iter()
-        .map(|q| *q - ring[0])
-        .find(|d| d.magnitude() > reach)
-        .map_or(Vector::ZERO, |d| d / d.magnitude());
-    let y = n.cross(x);
-    let flat = |q: Point| ((q - p).dot(x), (q - p).dot(y));
-    let mut winding = 0.0;
-    for k in 0..ring.len() {
-        let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
-        // On the boundary, within reach.
-        let side = b - a;
-        let t = ((p - a).dot(side) / side.dot(side)).clamp(0.0, 1.0);
-        if (a + side * t).distance(p) <= reach {
-            return true;
+    // Within reach of a loop, or how many times the loop winds round `p`.
+    let wound = |walk: &[Id]| -> Option<bool> {
+        let ring: Vec<Point> = walk.iter().map(|c| planar.points[c]).collect();
+        let x = ring
+            .iter()
+            .map(|q| *q - ring[0])
+            .find(|d| d.magnitude() > reach)
+            .map_or(Vector::ZERO, |d| d / d.magnitude());
+        let y = n.cross(x);
+        let flat = |q: Point| ((q - p).dot(x), (q - p).dot(y));
+        let mut winding = 0.0;
+        for k in 0..ring.len() {
+            let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+            let side = b - a;
+            let t = ((p - a).dot(side) / side.dot(side)).clamp(0.0, 1.0);
+            if (a + side * t).distance(p) <= reach {
+                return None;
+            }
+            let ((ax, ay), (bx, by)) = (flat(a), flat(b));
+            winding += (ax * by - ay * bx).atan2(ax * bx + ay * by);
         }
-        let ((ax, ay), (bx, by)) = (flat(a), flat(b));
-        winding += (ax * by - ay * bx).atan2(ax * bx + ay * by);
+        Some(winding.abs() > core::f64::consts::PI)
+    };
+    match wound(&face.corners) {
+        None => true,
+        Some(false) => false,
+        Some(true) => face
+            .holes
+            .iter()
+            .all(|hole| wound(hole).is_none_or(|inside| !inside)),
     }
-    winding.abs() > core::f64::consts::PI
 }
 
 #[cfg(test)]
