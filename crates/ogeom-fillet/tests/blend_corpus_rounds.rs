@@ -19,6 +19,7 @@
 
 use core::f64::consts::PI;
 
+use ogeom_algo::HalfSpaces;
 use ogeom_core::Tolerances;
 use ogeom_fillet::{Blend, Chamfer, ChamferCorner};
 use ogeom_math::{Direction, Frame, Plane, Point, Vector};
@@ -158,10 +159,15 @@ fn orders(n: usize) -> Vec<Vec<usize>> {
     out
 }
 
-/// The guards every case is held to: validity, the region guard (each
-/// vertex of the result inside the original solid, or within `reach` of
-/// one of its concave edges, given as segments) and no overhang (each
-/// vertex of the result within the original's box).
+/// The guards every case is held to: validity; the region guard on
+/// vertices (each vertex of the result inside the original solid, or within
+/// `reach` of one of its concave edges, given as segments); no overhang
+/// (each vertex of the result within the original's box); and the same of
+/// every face, proved by [`ogeom_algo::certify_face_within`] rather than
+/// read at its vertices: every face within [`FIT`] of the original's box,
+/// and every curved face within [`FIT`] of the original's material round
+/// the edge or vertex it blends (see [`Local`]), rounds of up to `reach`
+/// filling concave edges.
 fn guards(m: &Model, original: &Shape, result: &Shape, concave: &[(Point, Point)], reach: f64) {
     let diagnosis = ogeom_algo::check(m, result, T).unwrap();
     assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
@@ -187,6 +193,199 @@ fn guards(m: &Model, original: &Shape, result: &Shape, concave: &[(Point, Point)
             near,
             "a vertex at {p:?} stands outside the original, away from its concave edges"
         );
+    }
+    let local = Local::of(m, original, reach);
+    for face in explore_unique(m, result, ShapeType::Face).unwrap() {
+        let certify = |region: &HalfSpaces, what: &str| {
+            let found = ogeom_algo::certify_face_within(m, &face, region, FIT, T).unwrap();
+            assert!(found.is_ok(), "a face stands outside {what}: {found:?}");
+        };
+        certify(&local.bounds, "the original's box");
+        if let Some((what, region)) = local.round(m, &face) {
+            certify(region, what);
+        }
+    }
+}
+
+/// How far a face may stand past the region it is held to: the bands' fit
+/// target.
+const FIT: f64 = 2e-4;
+
+/// The original solid's material, read off it: its box, round each vertex
+/// and along each edge, as half-spaces of its faces' planes. Along a
+/// concave edge, a round of up to the request's reach adds the wedge
+/// between the two faces as far out as its contact on each stands past the
+/// other's plane.
+struct Local {
+    bounds: HalfSpaces,
+    vertices: Vec<(Point, HalfSpaces)>,
+    edges: Vec<(Point, Point, HalfSpaces)>,
+}
+
+impl Local {
+    fn of(m: &Model, original: &Shape, reach: f64) -> Self {
+        let corners = ogeom_algo::shape_bounds(m, original, T).unwrap().corners();
+        let (mut lo, mut hi) = (corners[0], corners[0]);
+        for c in &corners {
+            lo = Point::new(lo.x.min(c.x), lo.y.min(c.y), lo.z.min(c.z));
+            hi = Point::new(hi.x.max(c.x), hi.y.max(c.y), hi.z.max(c.z));
+        }
+        let axes = [
+            Vector::new(1.0, 0.0, 0.0),
+            Vector::new(0.0, 1.0, 0.0),
+            Vector::new(0.0, 0.0, 1.0),
+        ];
+        let mut sides = Vec::new();
+        for n in axes {
+            sides.push(HalfSpaces::Below { normal: n, at: hi });
+            sides.push(HalfSpaces::Below { normal: -n, at: lo });
+        }
+        let probe = ogeom_algo::SolidBoundary::of(m, original, 1e-6, T).unwrap();
+        // Each face's plane, by face node.
+        let plane = |f: &Shape| -> (Vector, Point) {
+            let (at, normal) = ogeom_algo::face_normal(m, f, T).unwrap();
+            (normal, at)
+        };
+        let below = |(normal, at): (Vector, Point)| HalfSpaces::Below { normal, at };
+        let faces_of =
+            |s: &Shape| ogeom_topo::ancestors_of(m, original, s, ShapeType::Face).unwrap();
+        // An edge's two faces' planes, whether it is concave, and the fill
+        // a concave round of `reach` adds between them.
+        let edge = |e: &Shape| -> ([(Vector, Point); 2], bool, HalfSpaces) {
+            let faces = faces_of(e);
+            assert_eq!(faces.len(), 2, "an edge between two faces");
+            let (a, b) = (plane(&faces[0]), plane(&faces[1]));
+            let (p, q) = ogeom_algo::edge_vertices(m, e).unwrap().unwrap();
+            let mid = point_of(m, &p).midpoint(point_of(m, &q));
+            // Off the edge across the first face's plane, along the second:
+            // outside a convex edge's material, inside a concave one's.
+            let off = mid + (b.0 - a.0) * (reach * 1e-3);
+            let concave = probe.holds(m, off, T).unwrap() == ogeom_algo::Containment::In;
+            // The air's angle between the faces, the ball's setback in it,
+            // and how far its contact on one face stands past the other.
+            let air = PI - a.0.dot(b.0).clamp(-1.0, 1.0).acos();
+            let rise = reach / (air * 0.5).tan() * air.sin();
+            let shifted = |(n, at): (Vector, Point)| below((n, at + n * rise));
+            (
+                [a, b],
+                concave,
+                HalfSpaces::Every(vec![shifted(a), shifted(b)]),
+            )
+        };
+        let mut edges = Vec::new();
+        for e in explore_unique(m, original, ShapeType::Edge).unwrap() {
+            let ([a, b], concave, fill) = edge(&e);
+            let region = if concave {
+                HalfSpaces::Any(vec![below(a), below(b), fill])
+            } else {
+                HalfSpaces::Every(vec![below(a), below(b)])
+            };
+            let (p, q) = ogeom_algo::edge_vertices(m, &e).unwrap().unwrap();
+            edges.push((point_of(m, &p), point_of(m, &q), region));
+        }
+        let mut vertices = Vec::new();
+        for v in explore_unique(m, original, ShapeType::Vertex).unwrap() {
+            let faces = faces_of(&v);
+            assert_eq!(faces.len(), 3, "the corpus's vertices are three faces'");
+            let at: Vec<ogeom_topo::Shape> =
+                ogeom_topo::ancestors_of(m, original, &v, ShapeType::Edge).unwrap();
+            // Each edge at the vertex: the face it does not bound, whether
+            // concave, and its fill.
+            let mut met = Vec::new();
+            for e in &at {
+                let (_, concave, fill) = edge(e);
+                let bounding = faces_of(e);
+                let opposite = faces
+                    .iter()
+                    .position(|f| !bounding.iter().any(|g| g.is_same(f)))
+                    .unwrap();
+                met.push((opposite, concave, fill));
+            }
+            let planes: Vec<HalfSpaces> = faces.iter().map(|f| below(plane(f))).collect();
+            let fills: Vec<HalfSpaces> = met
+                .iter()
+                .filter(|(_, c, _)| *c)
+                .map(|(_, _, f)| f.clone())
+                .collect();
+            let region = match fills.len() {
+                0 => HalfSpaces::Every(planes),
+                1 => {
+                    let (opposite, ..) = met.iter().find(|(_, c, _)| *c).unwrap();
+                    let mut sides: Vec<HalfSpaces> = (0..3)
+                        .filter(|k| k != opposite)
+                        .map(|k| planes[k].clone())
+                        .collect();
+                    sides.extend(fills);
+                    HalfSpaces::Every(vec![planes[*opposite].clone(), HalfSpaces::Any(sides)])
+                }
+                2 => {
+                    let (opposite, ..) = met.iter().find(|(_, c, _)| !*c).unwrap();
+                    let wedge: Vec<HalfSpaces> = (0..3)
+                        .filter(|k| k != opposite)
+                        .map(|k| planes[k].clone())
+                        .collect();
+                    let mut any = vec![planes[*opposite].clone(), HalfSpaces::Every(wedge)];
+                    any.extend(fills);
+                    HalfSpaces::Any(any)
+                }
+                _ => {
+                    let mut any = planes;
+                    any.extend(fills);
+                    HalfSpaces::Any(any)
+                }
+            };
+            vertices.push((point_of(m, &v), region));
+        }
+        Self {
+            bounds: HalfSpaces::Every(sides),
+            vertices,
+            edges,
+        }
+    }
+
+    /// The region a face of the result blends: a cylinder the edge along
+    /// its axis nearest it, any other curved face the vertex nearest its
+    /// own vertices' middle; `None` for a plane, held to the box alone.
+    fn round(&self, m: &Model, face: &Shape) -> Option<(&'static str, &HalfSpaces)> {
+        let data = m.node(face).unwrap().data().as_face().unwrap();
+        let surface = m.geometry().surface(data.surface).unwrap();
+        match surface {
+            ogeom_geom::SurfaceGeometry::Plane(_) => None,
+            ogeom_geom::SurfaceGeometry::Cylinder(c) => {
+                let frame = c.cylinder().frame();
+                let (o, z) = (frame.origin(), frame.z().vector());
+                let (_, _, region) = self
+                    .edges
+                    .iter()
+                    .filter(|(p, q, _)| {
+                        (*q - *p).normalized(T).unwrap().cross(z).magnitude() < 1e-9
+                    })
+                    .min_by(|x, y| {
+                        let off = |p: Point| ((p - o) - z * (p - o).dot(z)).magnitude();
+                        off(x.0).total_cmp(&off(y.0))
+                    })
+                    .expect("a cylinder along an edge");
+                Some(("its edge's material", region))
+            }
+            _ => {
+                let corners: Vec<Point> = explore_unique(m, face, ShapeType::Vertex)
+                    .unwrap()
+                    .iter()
+                    .map(|v| point_of(m, v))
+                    .collect();
+                let middle = corners.iter().fold((Vector::ZERO, 0.0), |(a, n), p| {
+                    (a + p.to_vector(), n + 1.0)
+                });
+                let middle = middle.0 / middle.1;
+                let middle = Point::from_vector(middle);
+                let (_, region) = self
+                    .vertices
+                    .iter()
+                    .min_by(|x, y| x.0.distance(middle).total_cmp(&y.0.distance(middle)))
+                    .unwrap();
+                Some(("its vertex's material", region))
+            }
+        }
     }
 }
 

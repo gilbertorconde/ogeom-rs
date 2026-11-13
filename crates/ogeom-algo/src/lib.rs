@@ -9,6 +9,7 @@
 
 mod bins;
 pub mod build;
+pub mod certify;
 mod chart_cross;
 pub mod check;
 pub mod classify;
@@ -64,6 +65,7 @@ pub use build::{
     make_shell, make_solid, make_vertex, make_wire, placed_edge_curve, rings_are_parallels,
     split_ring_on_column, surface_iso_u_curve, trimmed_or_fitted_where_bare,
 };
+pub use certify::{HalfSpaces, Uncertified, certify_face_within};
 pub use chart_cross::{ChartCrossing, chart_crossings};
 pub use check::{
     Diagnosis, Problem, Severity, chart_breaks, check, check_kept, check_self_intersection,
