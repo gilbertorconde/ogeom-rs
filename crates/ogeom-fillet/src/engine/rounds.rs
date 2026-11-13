@@ -189,7 +189,7 @@ pub(crate) fn assemble(
                 RoundVertex::Mitre
             }
             // Rounds at every edge: one ball touching every face at its
-            // setback corner, or the patch, at three edges or four of one
+            // setback corner, or the patch, at three edges or more of one
             // sense.
             (n, k) if n >= 3 && k == n => {
                 let radius = sections[&blended[0].edge].1;
@@ -211,9 +211,7 @@ pub(crate) fn assemble(
                     {
                         RoundVertex::Sphere
                     }
-                    _ if n == 3 || (n == 4 && blended.iter().all(|s| s.convex == convex)) => {
-                        RoundVertex::Patch
-                    }
+                    _ if n == 3 || blended.iter().all(|s| s.convex == convex) => RoundVertex::Patch,
                     _ => return Ok(None),
                 }
             }
@@ -558,8 +556,10 @@ pub(crate) fn assemble(
                 patch.angle
             );
         }
-        built.push(patch.face);
-        origins.push(Err(v));
+        for face in patch.faces {
+            built.push(face);
+            origins.push(Err(v));
+        }
     }
     let shell = ogeom_algo::make_shell(model, &built)?.shape;
     let solid = ogeom_algo::make_solid(model, &[shell])?.shape;
@@ -1572,6 +1572,51 @@ mod tests {
         )
         .unwrap();
         assert!(run(&mut m, &s, &request, T).unwrap().is_none());
+    }
+
+    /// The pyramid over the pentagon `(-3, -2)`, `(3, -2)`, `(3.5, 1.5)`,
+    /// `(0, 3.5)`, `(-3.5, 1.5)`, height 4: no one ball touches its five
+    /// sides at the apex. Its five slant edges rounded at 1/2, the apex
+    /// closes on one five-sided patch, a face on each side's sector, held
+    /// to the bands' fit target on its strips and between its faces and
+    /// proved inside the five planes by the engine. The solid is valid and
+    /// keeps the pyramid's mirror `x = 0`: its centroid stands on it.
+    #[test]
+    fn a_pentagonal_pyramid_s_apex_closes_on_one_five_sided_patch() {
+        use ogeom_math::Point;
+        let points = [
+            Point::new(-3.0, -2.0, 0.0),
+            Point::new(3.0, -2.0, 0.0),
+            Point::new(3.5, 1.5, 0.0),
+            Point::new(0.0, 3.5, 0.0),
+            Point::new(-3.5, 1.5, 0.0),
+            Point::new(0.0, 0.0, 4.0),
+        ];
+        let mut rings = vec![vec![4, 3, 2, 1, 0]];
+        rings.extend((0..5).map(|k| vec![k, (k + 1) % 5, 5]));
+        let mut m = Model::new();
+        let s = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+            .unwrap()
+            .shape;
+        let slant = edges_through(&m, &s, points[5]);
+        assert_eq!(slant.len(), 5);
+        let request = Request::from_rounds(
+            &slant.iter().map(|e| (e.clone(), 0.5)).collect::<Vec<_>>(),
+            T,
+        )
+        .unwrap();
+        let built = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+        let found = ogeom_algo::check(&m, &built, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert_eq!(count_of(&m, &built, ogeom_geom::SurfaceKind::BSpline), 5);
+        let fine = ogeom_mesh::Deflection {
+            chord: 1e-5,
+            ..ogeom_mesh::Deflection::default()
+        };
+        let centre = ogeom_algo::volume_properties(&m, &built, fine, T)
+            .unwrap()
+            .centre;
+        assert!(centre.x.abs() < 1e-6, "{centre:?}");
     }
 
     /// A 4 by 3 rectangle at `x = 0` swept along `(10, 3, 0)`: its caps
