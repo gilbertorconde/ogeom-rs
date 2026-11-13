@@ -455,12 +455,15 @@ pub(crate) fn marched_bevel_with(
     )
 }
 
-/// A chamfer's contacts on an open marched seat at stations over the
-/// edge's own stretch, as the marched bevel reads them: each station's
-/// crease parameter and its contact on each of the seat's two faces.
+/// A chamfer's contacts on a marched seat at stations over the edge's own
+/// stretch, as the marched bevel reads them: each station's crease
+/// parameter and its contact on each of the seat's two faces.
 pub(crate) struct CreaseContacts {
     /// The two faces either side of the edge.
     pub faces: [Shape; 2],
+    /// Whether the edge closes on itself: the last station is the first
+    /// again.
+    pub closed: bool,
     /// The stations' crease parameters, increasing.
     pub along: Vec<f64>,
     /// Each station's contact on the first face and on the second.
@@ -469,8 +472,7 @@ pub(crate) struct CreaseContacts {
 
 /// [`CreaseContacts`] of `spec` on `edge` of `solid` at `count + 1`
 /// stations evenly over the edge's stretch of its crease, the legs walked
-/// as [`marched_bevel`] walks them. `None` where the seat closes on itself
-/// or a station does not seat.
+/// as [`marched_bevel`] walks them. `None` where a station does not seat.
 ///
 /// # Errors
 ///
@@ -499,12 +501,9 @@ pub(crate) fn crease_contacts(
         guide,
         edge_range,
         closed,
-        loops,
         ..
     } = marched_seat(model, solid, edge, reach, tol)?;
-    if closed || loops {
-        return Ok(None);
-    }
+
     let side = |face: &Shape| -> Option<usize> {
         if faces[0].is_same(face) {
             Some(0)
@@ -568,7 +567,8 @@ pub(crate) fn crease_contacts(
     let mut near = None;
     for k in 0..=count {
         let w = (hi - lo).mul_add(f64::from(k) / f64::from(count), lo);
-        let Some(x) = station_at(&hosts, &guide, law, convex, w, near, tol) else {
+        let found = station_at(&hosts, &guide, law, convex, w, near, tol);
+        let Some(x) = found else {
             return Ok(None);
         };
         near = Some([x[0], x[1], x[2], x[3]]);
@@ -578,6 +578,7 @@ pub(crate) fn crease_contacts(
     }
     Ok(Some(CreaseContacts {
         faces,
+        closed,
         along,
         points,
     }))
