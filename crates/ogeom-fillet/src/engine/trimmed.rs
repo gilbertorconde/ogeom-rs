@@ -1587,6 +1587,21 @@ fn measured_within(
 /// How many stations a crease's contacts are read at on a marched seat.
 const GENERAL_STATIONS: u32 = 64;
 
+/// How far a general crease's open contact runs on past each end, as a
+/// share of the chamfer's reach.
+const GENERAL_RUN_ON: f64 = 0.05;
+
+/// How far a chamfer reaches off its edge: its longest leg as given.
+fn spec_reach(spec: &Chamfer) -> f64 {
+    match spec {
+        Chamfer::Symmetric(d) => *d,
+        Chamfer::Distances {
+            on_face, on_other, ..
+        } => on_face.max(*on_other),
+        Chamfer::Angle { distance, .. } => *distance,
+    }
+}
+
 /// A crease of an open marched seat between any two faces the curved read
 /// holds (a plane and a spline, two curved faces crossing): each contact
 /// fitted through the marched bevel's stations at the crease's own
@@ -1616,44 +1631,116 @@ fn general_crease(
     {
         return Ok(None);
     }
-    let Some(found) =
-        crate::chamfer_marched::crease_contacts(model, solid, shape, spec, GENERAL_STATIONS, tol)?
-    else {
-        return Ok(None);
-    };
-    // The seat's faces in the read's order.
-    let mut order = [0usize; 2];
-    for (k, fi) in faces.iter().enumerate() {
-        let Some(j) = found
-            .faces
-            .iter()
-            .position(|f| f.is_same(&curved.faces[*fi].shape))
+    // Each contact fitted through stations, four times as many again where
+    // a fit strays past the bands' fit target between them.
+    let fit = crate::marched::band_fit_target(tol);
+    let mut fitted_contacts = None;
+    for count in [
+        GENERAL_STATIONS,
+        4 * GENERAL_STATIONS,
+        16 * GENERAL_STATIONS,
+    ] {
+        let Some(found) =
+            crate::chamfer_marched::crease_contacts(model, solid, shape, spec, count, tol)?
         else {
             return Ok(None);
         };
-        order[k] = j;
-    }
-    let fit = crate::marched::band_fit_target(tol);
-    let mut curves = Vec::with_capacity(2);
-    let mut widths = [0.0; 2];
-    for k in 0..2 {
-        let points = &found.points[order[k]];
-        let fitted = ogeom_geom::fit::fit_points_at(&found.along, points, 3, tol.confusion(), tol)?;
-        let curve = fitted.curve;
-        let surface = &curved.faces[faces[k]].surface;
-        let mut off: f64 = fitted.error;
-        for i in 0..found.along.len() - 1 {
-            let t = f64::midpoint(found.along[i], found.along[i + 1]);
-            let p = curve.point_at(t, tol)?;
-            let foot = ogeom_geom::project::project_on_surface(surface, p, 16, tol)?;
-            off = off.max(foot.distance);
+        // The seat's faces in the read's order.
+        let mut order = [0usize; 2];
+        for (k, fi) in faces.iter().enumerate() {
+            let Some(j) = found
+                .faces
+                .iter()
+                .position(|f| f.is_same(&curved.faces[*fi].shape))
+            else {
+                return Ok(None);
+            };
+            order[k] = j;
         }
-        if off > fit {
-            return Ok(None);
+        let mut curves = Vec::with_capacity(2);
+        let mut widths = [0.0; 2];
+        for k in 0..2 {
+            let points = &found.points[order[k]];
+            let fitted = if found.closed {
+                ogeom_geom::fit::fit_points_at_closed(
+                    &found.along,
+                    points,
+                    3,
+                    tol.confusion(),
+                    tol,
+                )?
+            } else {
+                ogeom_geom::fit::fit_points_at(&found.along, points, 3, tol.confusion(), tol)?
+            };
+            let curve = fitted.curve;
+            let surface = &curved.faces[faces[k]].surface;
+            let mut off: f64 = fitted.error;
+            for i in 0..found.along.len() - 1 {
+                let t = f64::midpoint(found.along[i], found.along[i + 1]);
+                let p = curve.point_at(t, tol)?;
+                let foot = ogeom_geom::project::project_on_surface(surface, p, 16, tol)?;
+                off = off.max(foot.distance);
+            }
+            if off > fit {
+                break;
+            }
+            widths[k] = off + tol.confusion();
+            curves.push(curve);
         }
-        widths[k] = off + tol.confusion();
-        curves.push(curve);
+        if curves.len() == 2 && !found.closed {
+            // An open pair runs on a little past each end, so each crosses
+            // the next contact where the crease turns at a vertex (two
+            // pieces of a fitted seam meeting at a corner): made compatible,
+            // each continued over one parameter span, about a share of the
+            // reach on the faster; how far the run-on stands off its face
+            // counts in its width.
+            let (mut a, mut b) = (curves[0].clone(), curves[1].clone());
+            crate::bridge::compatible(&mut a, &mut b, tol)?;
+            for at_end in [false, true] {
+                let (lo, hi) = a.domain();
+                let t = if at_end { hi } else { lo };
+                let (va, vb) = (a.d1_at(t, tol)?.magnitude(), b.d1_at(t, tol)?.magnitude());
+                let span = GENERAL_RUN_ON * spec_reach(spec) / va.max(vb);
+                a = a.extended(at_end, span * va, 2, tol)?;
+                b = b.extended(at_end, span * vb, 2, tol)?;
+            }
+            // Each run-on's span is solved to its length, so the two agree
+            // only to the solve: the second takes the first's knots, which
+            // moves it by as little.
+            let (ka, kb) = (a.knots().knots(), b.knots().knots());
+            if ka.len() != kb.len()
+                || ka.iter().zip(kb).any(|(x, y)| (x - y).abs() > 1e-6)
+                || a.control_points().len() != b.control_points().len()
+            {
+                return Ok(None);
+            }
+            b = ogeom_geom::BSplineCurve::new(
+                a.knots().clone(),
+                b.control_points().iter().map(|w| w.point()).collect(),
+                tol,
+            )?;
+            for (k, c) in [&a, &b].into_iter().enumerate() {
+                let surface = &curved.faces[faces[k]].surface;
+                let (lo, hi) = c.domain();
+                for t in [lo, hi] {
+                    let p = c.point_at(t, tol)?;
+                    let foot = ogeom_geom::project::project_on_surface(surface, p, 16, tol)?;
+                    widths[k] = widths[k].max(foot.distance + tol.confusion());
+                }
+            }
+            if widths.iter().any(|w| *w > fit) {
+                return Ok(None);
+            }
+            curves = vec![a, b];
+        }
+        if curves.len() == 2 {
+            fitted_contacts = Some((curves, widths));
+            break;
+        }
     }
+    let Some((curves, widths)) = fitted_contacts else {
+        return Ok(None);
+    };
     let (mut a, mut b) = (curves[0].clone(), curves[1].clone());
     let bevel = ruled_bevel(&mut a, &mut b, tol)?;
     Ok(Some((
@@ -2835,6 +2922,28 @@ fn assemble_widened(
     let mut edge_widths = vec![0.0; edges.len()];
     for (k, w) in marched_widths.borrow().iter() {
         edge_widths[*k] = *w;
+    }
+    // An edge left sharp keeps the tolerance it was read at, and its
+    // vertices': an inexact one (a boolean's fitted section) passes its ends
+    // no closer than that.
+    let held = |shape: &Shape| -> OgeomResult<f64> {
+        Ok(model
+            .tolerance_of(shape)?
+            .map_or(0.0, ogeom_core::Tolerance::get))
+    };
+    for (key, k) in &made {
+        if let Key::Sharp(e) | Key::Tail(e, _) = key {
+            let c = &curved.edges[e];
+            let mut w = held(&c.shape)?;
+            for v in [c.ends.0, c.ends.1] {
+                if let Some(shape) = curved.shapes.get(&v) {
+                    w = w.max(held(shape)?);
+                }
+            }
+            if w > tol.confusion() {
+                edge_widths[*k] = edge_widths[*k].max(w);
+            }
+        }
     }
     for (key, k) in &made {
         if let Key::Contact(fi, e) = key
