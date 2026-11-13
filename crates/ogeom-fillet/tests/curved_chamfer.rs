@@ -651,3 +651,96 @@ fn a_corner_of_four_bevels_one_a_cone_closes_on_one_patch_off_a_plane() {
         "volume {got} outside ({least}, {most})"
     );
 }
+
+/// Two upright drums of radii 3 and 2, their axes 3.5 apart, 10 tall,
+/// fused or, with `fused` false, their common lens; each drum cut by the
+/// cone of its own cap rim's bevel at `d` first where `bevelled`.
+fn twin_drums(m: &mut Model, fused: bool, bevelled: Option<f64>) -> Shape {
+    let drum = |m: &mut Model, x: f64, r: f64| {
+        let s = ogeom_algo::make_cylinder(m, up_at(x, 0.0, 0.0), r, 10.0, T)
+            .unwrap()
+            .shape;
+        match bevelled {
+            None => s,
+            Some(d) => {
+                // At 45 degrees: radius r - d at the cap, r at 10 - d.
+                let low = r - d + 11.0;
+                let cone = ogeom_algo::make_cone(m, up_at(x, 0.0, -1.0), low, r - d, 11.0, T)
+                    .unwrap()
+                    .shape;
+                ogeom_bool::common(m, &s, &cone, T).unwrap().shape
+            }
+        }
+    };
+    let (a, b) = (drum(m, 0.0, 3.0), drum(m, 3.5, 2.0));
+    let joined = if fused {
+        ogeom_bool::fuse(m, &a, &b, T).unwrap().shape
+    } else {
+        ogeom_bool::common(m, &a, &b, T).unwrap().shape
+    };
+    ogeom_heal::unify_same_domain(m, &joined, T)
+        .unwrap()
+        .0
+        .shape
+}
+
+/// The twin drums' cap rims chamfered 0.5, in both orders: valid, the same
+/// solid either way, each arc's one bevel generated, and the volume of the
+/// drums each cut by its own bevel's cone first, by booleans, which share
+/// nothing with the engine.
+fn twin_rims_chamfer_as_each_drum_alone(fused: bool) {
+    let d = 0.5_f64;
+    let mut m = Model::new();
+    let block = twin_drums(&mut m, fused, None);
+    let top: Vec<Shape> = explore_unique(&m, &block, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let b = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            b.low().unwrap().z > 10.0 - 1e-6
+        })
+        .collect();
+    assert!(top.len() >= 2, "the cap's two arcs");
+    let built = ogeom_fillet::chamfer_edges(&mut m, &block, &top, d, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let back: Vec<Shape> = top.iter().rev().cloned().collect();
+    let again = ogeom_fillet::chamfer_edges(&mut m, &block, &back, d, T).unwrap();
+    assert!(
+        (volume(&m, &built.shape) - volume(&m, &again.shape)).abs() < 1e-9,
+        "the order changes the solid"
+    );
+    for e in &top {
+        assert_eq!(
+            built.history.generated(e).len(),
+            1,
+            "an edge without its bevel"
+        );
+    }
+    let mut o = Model::new();
+    let s = twin_drums(&mut o, fused, Some(d));
+    let (got, want) = (volume(&m, &built.shape), volume(&o, &s));
+    assert!(
+        (got - want).abs() < 1e-6,
+        "volume {got} against the booleans' {want}"
+    );
+}
+
+/// Two fused drums of different radii, the cap's two arcs chamfered: the
+/// two cone bevels meet across the concave upright where the walls cross,
+/// and no plane mirrors one into the other, so they meet on the curve the
+/// two cones share, marched. At a concave edge the material is the union
+/// of what each side leaves: each drum cut by its own cone, fused.
+#[test]
+fn two_unequal_rim_bevels_meet_across_a_concave_upright_on_their_cones_curve() {
+    twin_rims_chamfer_as_each_drum_alone(true);
+}
+
+/// The two drums' common lens, its cap's two arcs chamfered: the cone
+/// bevels meet across the convex uprights on their shared curve. At a
+/// convex edge the material is what both sides leave: each drum cut by its
+/// own cone, in common.
+#[test]
+fn two_unequal_rim_bevels_meet_across_a_convex_upright_on_their_cones_curve() {
+    twin_rims_chamfer_as_each_drum_alone(false);
+}

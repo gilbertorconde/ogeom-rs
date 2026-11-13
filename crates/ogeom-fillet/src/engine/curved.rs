@@ -215,6 +215,16 @@ pub(crate) fn build_with_widths(
     let mut made = Vec::with_capacity(edges.len());
     for (k, e) in edges.iter().enumerate() {
         let (a, b) = e.ends;
+        // The ends are widened first, so a fitted curve's ends reach them.
+        let wide = match widths.get(k) {
+            Some(&width) if width > 0.0 => Some(ogeom_core::Tolerance::new(width)?),
+            _ => None,
+        };
+        if let Some(wide) = wide {
+            for shape in [&vertices[a], &vertices[b]] {
+                model.widen(shape, wide)?;
+            }
+        }
         let edge = ogeom_algo::make_edge_between(
             model,
             e.curve.clone(),
@@ -224,13 +234,8 @@ pub(crate) fn build_with_widths(
             tol,
         )?
         .shape;
-        if let Some(&width) = widths.get(k)
-            && width > 0.0
-        {
-            let wide = ogeom_core::Tolerance::new(width)?;
-            for shape in [&edge, &vertices[a], &vertices[b]] {
-                model.widen(shape, wide)?;
-            }
+        if let Some(wide) = wide {
+            model.widen(&edge, wide)?;
         }
         made.push(edge);
     }
