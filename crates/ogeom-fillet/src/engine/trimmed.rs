@@ -318,8 +318,9 @@ struct Bands {
 }
 
 /// The walls whose two rims' bevels cross on them (a disc too thin for
-/// both rims' chamfers): a cylinder or a cone whose bevelled edges lie on
-/// two coaxial circles, the contact of the higher at or below the lower's.
+/// both rims' chamfers): a cylinder, a cone, a sphere's zone or a torus's
+/// band whose bevelled edges lie on two coaxial circles, the contact of the
+/// higher at or below the lower's.
 /// Each such wall's strips take as their contact on it the circle their
 /// surfaces meet along between the rims, the ridge. `None` where a wall's
 /// contacts cross and no such ridge is found.
@@ -339,9 +340,36 @@ fn consumed_bands(
                 let f = c.cone().frame();
                 (f.origin(), f.z().vector())
             }
+            SurfaceGeometry::Torus(t) => {
+                let axis = t.torus().axis();
+                (axis.location, axis.direction.vector())
+            }
+            // A sphere's axis is its rims': through its centre, square to
+            // the first rim on it.
+            SurfaceGeometry::Sphere(sphere) => {
+                let rim = strips.iter().find_map(|st| {
+                    if !st.faces.contains(&fi) {
+                        return None;
+                    }
+                    match &curved.edges[&st.edge].curve {
+                        Curve::Circle(c) => Some(c.circle().frame().z().vector()),
+                        _ => None,
+                    }
+                });
+                let Some(a) = rim else {
+                    continue;
+                };
+                (sphere.sphere().centre(), a)
+            }
             _ => continue,
         };
         let height = |p: Point| (p - o).dot(a);
+        // A circle about the wall's axis: centred on it, square to it.
+        let coaxial = |c: &Circle| {
+            let off = c.centre() - o;
+            (off - a * off.dot(a)).magnitude() <= tol.confusion()
+                && c.frame().z().vector().cross(a).magnitude() <= tol.angular()
+        };
         // The strips on this wall, grouped by their rim's height: the
         // rim's height and the contact's.
         let mut groups: Vec<(f64, f64, Vec<usize>)> = Vec::new();
@@ -354,6 +382,9 @@ fn consumed_bands(
             else {
                 continue;
             };
+            if !coaxial(&rim.circle()) || !coaxial(&contact.circle()) {
+                continue;
+            }
             let (h_rim, h_contact) = (
                 height(rim.circle().centre()),
                 height(contact.circle().centre()),
@@ -1633,8 +1664,9 @@ enum Key {
     /// A bevel's end, a segment between two of the sheet's points.
     Section(usize, usize),
     /// A contact on a consumed face, between two of the sheet's points,
-    /// shared by the strips meeting along it.
-    Shared(usize, usize, usize),
+    /// shared by the strips meeting along it; the last its middle's index
+    /// among the middles, which tells apart the two ways round a loop.
+    Shared(usize, usize, usize, usize),
 }
 
 /// P3, P4 and P5 for strips on a solid with curved faces, whatever section
@@ -2367,6 +2399,11 @@ fn assemble_widened(
     // that face walks it (faces beside each other walk a shared edge
     // opposite ways, each as it faces out), its end, its contact on its
     // second face the other way round, and its other end.
+    // The middles of the contacts made on consumed faces.
+    let middles_made = core::cell::RefCell::new(Points {
+        points: Vec::new(),
+        tol,
+    });
     for b in bevels {
         let e = &curved.edges[&b.edge];
         // A contact's piece: the face's own, or, on a consumed face, made
@@ -2391,12 +2428,28 @@ fn assemble_widened(
                 param_on(contact, contact.domain(), z.point, tol)?,
             );
             let (i, j) = (points.index(a.point), points.index(z.point));
-            let key = Key::Shared(fi, i.min(j), i.max(j));
+            // The way round the contact that stands beside the edge: its
+            // middle nearer the edge's own.
+            let beside = {
+                let middle = e.curve.point_at(0.5 * (e.range.0 + e.range.1), tol)?;
+                let off = |(lo, hi): (f64, f64)| -> OgeomResult<f64> {
+                    Ok(contact.point_at(0.5 * (lo + hi), tol)?.distance(middle))
+                };
+                let (up, down) = (
+                    piece(contact, ta, tz, true, tol),
+                    piece(contact, ta, tz, false, tol),
+                );
+                if off(down.0)? < off(up.0)? { down } else { up }
+            };
+            let (range, against) = beside;
+            let m = middles_made
+                .borrow_mut()
+                .index(contact.point_at(0.5 * (range.0 + range.1), tol)?);
+            let key = Key::Shared(fi, i.min(j), i.max(j), m);
             if let Some(found) = made.get(&key).copied() {
                 made.insert(Key::Contact(fi, b.edge), found);
                 return Ok(Some(found));
             }
-            let (range, against) = piece(contact, ta, tz, true, tol);
             let ends = if against { (j, i) } else { (i, j) };
             edges.push(SheetCurve {
                 ends,
@@ -2478,7 +2531,66 @@ fn assemble_widened(
                 )?);
             }
         }
-        ring.push((ko, so));
+        if consumed.contains(&other) {
+            // On a consumed face the strips meet along the ridge, each
+            // other strip's corner on it splitting it: walk its pieces.
+            let curve = edges[ko].curve.clone();
+            let (lo, hi) = edges[ko].range;
+            let mut cuts: Vec<(f64, usize)> = Vec::new();
+            for ((fi, _), c) in corners.iter() {
+                if *fi != other {
+                    continue;
+                }
+                let t = param_on(&curve, (lo, hi), c.point, tol)?;
+                let i = points.index(c.point);
+                if t > lo + tol.parametric()
+                    && t < hi - tol.parametric()
+                    && curve.point_at(t, tol)?.distance(c.point) <= tol.confusion()
+                    && i != edges[ko].ends.0
+                    && i != edges[ko].ends.1
+                    && !cuts.iter().any(|(_, j)| *j == i)
+                {
+                    cuts.push((t, i));
+                }
+            }
+            if cuts.is_empty() {
+                ring.push((ko, so));
+            } else {
+                cuts.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let mut stops = vec![(lo, edges[ko].ends.0)];
+                stops.extend(cuts);
+                stops.push((hi, edges[ko].ends.1));
+                let mut pieces: Vec<(usize, bool)> = Vec::with_capacity(stops.len() - 1);
+                for w in stops.windows(2) {
+                    let ((ta, ia), (tb, ib)) = (w[0], w[1]);
+                    let m = middles_made
+                        .borrow_mut()
+                        .index(curve.point_at(0.5 * (ta + tb), tol)?);
+                    let key = Key::Shared(other, ia.min(ib), ia.max(ib), m);
+                    let k = if let Some(k) = made.get(&key) {
+                        *k
+                    } else {
+                        edges.push(SheetCurve {
+                            ends: (ia, ib),
+                            curve: curve.clone(),
+                            range: (ta, tb),
+                        });
+                        made.insert(key, edges.len() - 1);
+                        edges.len() - 1
+                    };
+                    pieces.push((k, edges[k].ends.0 == ia));
+                }
+                if !so {
+                    pieces.reverse();
+                    for piece in &mut pieces {
+                        piece.1 = !piece.1;
+                    }
+                }
+                ring.extend(pieces);
+            }
+        } else {
+            ring.push((ko, so));
+        }
         if qo != pr {
             let (a, z) = (points.points[qo], points.points[pr]);
             if !mitred_end(&mut points, &mut edges, &mut made, &mut ring, b, a, z)? {
