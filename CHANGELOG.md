@@ -75,7 +75,9 @@ bump may break the API and a patch bump may not.
   distances keep the face's whole periodic chart window when preparing its
   surface, and fold projected parameters into the rings' window before
   testing containment. A torus seamed on a negative or later turn measures
-  its tube's radial offsets independently of the seam.
+  its tube's radial offsets independently of the seam. Inscribed-ball
+  thickness meets these walls too, including a spherical head and
+  the cones bounding a socket and a bevelled tip.
 
 - **`merge_edges` left each joined edge apart from its neighbours.** The
   joined edge was built with new end vertices at the points the pair's
