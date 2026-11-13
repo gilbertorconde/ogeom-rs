@@ -75,6 +75,26 @@ pub enum HalfSpaces {
         /// Whether the region is the wall's inside, as against its outside.
         inside: bool,
     },
+    /// The points on one side of the sphere about `centre` of `radius`: a
+    /// point's height is its distance past the sphere along the radius
+    /// through it, `|p - centre| - radius` for `inside` (past means farther
+    /// out), its negation for outside (past means nearer the centre).
+    ///
+    /// Bounded over a hull, an inside ball is exact: the distance to the
+    /// centre is convex, so its greatest over the hull is at a hull point.
+    /// An outside ball is sound, not tight: for any unit `g`, the distance
+    /// is at least `g` dotted with the point's offset from the centre, so
+    /// the height is at most an affine function, whose greatest is at a hull
+    /// point; with `g` toward the hull's centroid the bound closes on the
+    /// height as the square of the hull's size.
+    Ball {
+        /// The sphere's centre.
+        centre: Point,
+        /// The sphere's radius.
+        radius: f64,
+        /// Whether the region is the ball, as against what lies outside it.
+        inside: bool,
+    },
     /// The points inside every piece: a height the greatest of the
     /// pieces'.
     Every(Vec<HalfSpaces>),
@@ -112,6 +132,24 @@ impl HalfSpaces {
                     (past, normal)
                 } else {
                     (-past, -normal)
+                }
+            }
+            Self::Ball {
+                centre,
+                radius,
+                inside,
+            } => {
+                let d = p - *centre;
+                let rho = d.magnitude();
+                let out = if rho > 0.0 {
+                    d * (1.0 / rho)
+                } else {
+                    Vector::Z
+                };
+                if *inside {
+                    (rho - radius, out)
+                } else {
+                    (radius - rho, -out)
                 }
             }
             Self::Every(pieces) => pieces.iter().map(|r| r.height(p)).fold(
@@ -173,6 +211,29 @@ impl HalfSpaces {
                             let (h, r) = radial(*p);
                             (radius + slope * h - g.dot(r)) / s
                         })
+                        .fold(f64::NEG_INFINITY, f64::max)
+                }
+            }
+            Self::Ball {
+                centre,
+                radius,
+                inside,
+            } => {
+                if *inside {
+                    hull.iter()
+                        .map(|p| self.height(*p).0)
+                        .fold(f64::NEG_INFINITY, f64::max)
+                } else {
+                    let mid = hull
+                        .iter()
+                        .fold(Vector::ZERO, |sum, p| sum + (*p - *centre));
+                    let g = if mid.magnitude() > 0.0 {
+                        mid * (1.0 / mid.magnitude())
+                    } else {
+                        Vector::Z
+                    };
+                    hull.iter()
+                        .map(|p| radius - g.dot(*p - *centre))
                         .fold(f64::NEG_INFINITY, f64::max)
                 }
             }
@@ -819,5 +880,52 @@ mod tests {
             certify_face_within(&m, &face, &wall(2.0, 0.0, false), FIT, T).unwrap(),
             Ok(())
         );
+    }
+
+    /// A sphere of radius 2 about the origin, as a face.
+    fn sphere_face() -> (Model, Shape) {
+        let mut m = Model::new();
+        let solid = crate::make_sphere(&mut m, Frame::WORLD, 2.0, T)
+            .unwrap()
+            .shape;
+        let faces = faces_of(&m, &solid, ogeom_geom::SurfaceKind::Sphere);
+        assert_eq!(faces.len(), 1);
+        let face = faces[0].clone();
+        (m, face)
+    }
+
+    /// A sphere of radius 2 lies inside the ball of radius 2 about its
+    /// centre and outside the ball of radius 2 too, both proved, the
+    /// outside one through its sound bound; inside the ball of radius 1.95
+    /// and outside the one of radius 2.05 it does not, a point found past
+    /// each by no more than 0.05, its height read from its distance off
+    /// the centre.
+    #[test]
+    fn a_sphere_lies_on_its_ball_and_past_one_drawn_in_or_out_is_found() {
+        let (m, face) = sphere_face();
+        let ball = |radius: f64, inside: bool| HalfSpaces::Ball {
+            centre: Point::ORIGIN,
+            radius,
+            inside,
+        };
+        for inside in [true, false] {
+            assert_eq!(
+                certify_face_within(&m, &face, &ball(2.0, inside), FIT, T).unwrap(),
+                Ok(()),
+                "{inside}"
+            );
+        }
+        for (radius, inside) in [(1.95, true), (2.05, false)] {
+            let out = certify_face_within(&m, &face, &ball(radius, inside), FIT, T)
+                .unwrap()
+                .unwrap_err();
+            let rho = (out.at - Point::ORIGIN).magnitude();
+            let past = if inside { rho - radius } else { radius - rho };
+            assert!(
+                out.found && out.past > FIT && out.past <= 0.05 + 1e-12,
+                "{out:?}"
+            );
+            assert!((out.past - past).abs() < 1e-12, "{out:?} {past}");
+        }
     }
 }

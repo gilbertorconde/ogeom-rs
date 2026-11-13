@@ -297,32 +297,6 @@ fn a_pocket_rim_chamfers_to_the_revolved_section() {
     close(vol(&m, &built.shape), expected);
 }
 
-/// A rim's section in its meridian half-plane, `(rho, h)` from the rim's
-/// centre with `h` along the cap's outward normal, the sphere's centre at
-/// height `centre` on the axis: the rim, the cap's contact `on_cap` in,
-/// and the sphere's `on_sphere` down its arc away from the cap; then the
-/// area the cut takes off (the triangle and the circular segment between
-/// the chord to the sphere's contact and the sphere's arc) and its
-/// centroid's distance from the axis.
-fn section_about(on_cap: f64, on_sphere: f64, centre: f64) -> (f64, f64) {
-    let r = (25.0 - centre * centre).sqrt();
-    let rim_lat = (-centre).atan2(r);
-    let lat = rim_lat - on_sphere / 5.0;
-    let (a, b, c) = (
-        (r, 0.0),
-        (r - on_cap, 0.0),
-        (5.0 * lat.cos(), 5.0f64.mul_add(lat.sin(), centre)),
-    );
-    let tri = 0.5 * ((b.0 - a.0) * (c.1 - a.1) - (c.0 - a.0) * (b.1 - a.1)).abs();
-    let tri_rho = (a.0 + b.0 + c.0) / 3.0;
-    let turn = on_sphere / 5.0;
-    let seg = 12.5 * (turn - turn.sin());
-    let seg_rho = 4.0 * 5.0 * (0.5 * turn).sin().powi(3) / (3.0 * (turn - turn.sin()))
-        * (rim_lat - 0.5 * turn).cos();
-    let area = tri + seg;
-    (area, (tri * tri_rho + seg * seg_rho) / area)
-}
-
 /// Where the line from the cap's contact `d` in, leaving the cap at `angle`
 /// away from it toward the rim, meets the sphere about `(0, centre)`: the
 /// arc length from the rim to it.
@@ -359,22 +333,56 @@ fn hole_chamfered(spec: &dyn Fn(&Shape, &Shape) -> Chamfer) -> (f64, f64) {
     (before, vol(&m, &built.shape))
 }
 
-/// The eight arcs' worth of the section on a wall of the hole: each wall
-/// stands 2 off the sphere's centre with the centre beyond it, so past
-/// the rim the sphere closes toward the axis, and each arc turns through
-/// 2 asin(2/√21) about its own axis. Every contact stands nearer the axis
-/// than the rim, so the wedges on two walls meeting at a corner of the
-/// hole stand apart.
-fn eight_arcs(on_cap: f64, on_sphere: f64) -> f64 {
-    let sweep = 2.0 * (2.0 / 21.0_f64.sqrt()).asin();
-    let (area, rho) = section_about(on_cap, on_sphere, 2.0);
-    8.0 * area * sweep * rho
+/// What chamfering every rim arc of the square hole takes off, by the
+/// boolean: each wall's bevel is the cone about the wall's normal through
+/// its two contact rings (`on_cap` in along the wall, `on_sphere` down the
+/// sphere's arc), and the bevels of two walls meeting at a corner of the
+/// hole meet on the plane bisecting it, so each wall's share is the hole
+/// beyond its wall, between the two bisecting planes, outside its cone. The
+/// solid is the same about every bisecting plane, so the four walls take
+/// off the same. The pieces past each wall's contacts end on the corner's
+/// bisecting planes: the mitre a planar pocket's corner takes, without
+/// which a notch of solid stands uncut where the arcs end.
+fn mitred_arcs(on_cap: f64, on_sphere: f64) -> f64 {
+    let mut m = Model::new();
+    let s = square_hole(&mut m);
+    // The wall at x = 2, its axis the x axis: the cap contact and the
+    // sphere's, `(x, rho)`.
+    let r = 21.0_f64.sqrt();
+    let lat = (-2.0_f64).atan2(r) - on_sphere / 5.0;
+    let cap = (2.0, r - on_cap);
+    let wall = (2.0 - 5.0f64.mul_add(lat.sin(), 2.0), 5.0 * lat.cos());
+    let slope = (wall.1 - cap.1) / (wall.0 - cap.0);
+    let rho = |x: f64| slope.mul_add(x - cap.0, cap.1);
+    let along_x = Frame::new(Point::new(1.5, 0.0, 0.0), Direction::X, Direction::Y, T).unwrap();
+    let core = ogeom_algo::make_cone(&mut m, along_x, rho(1.5), rho(6.5), 5.0, T)
+        .unwrap()
+        .shape;
+    // The hole's quarter beyond the wall: 2 <= x <= 6, |y| <= x, |z| <= 6.
+    let points: Vec<Point> = [(2.0, -2.0), (2.0, 2.0), (6.0, 6.0), (6.0, -6.0)]
+        .iter()
+        .flat_map(|(x, y)| [Point::new(*x, *y, -6.0), Point::new(*x, *y, 6.0)])
+        .collect();
+    let rings = [
+        vec![0, 2, 4, 6],
+        vec![1, 7, 5, 3],
+        vec![0, 1, 3, 2],
+        vec![2, 3, 5, 4],
+        vec![4, 5, 7, 6],
+        vec![6, 7, 1, 0],
+    ];
+    let quarter = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+        .unwrap()
+        .shape;
+    let cutter = ogeom_bool::cut(&mut m, &quarter, &core, T).unwrap().shape;
+    let piece = ogeom_bool::common(&mut m, &s, &cutter, T).unwrap().shape;
+    4.0 * vol(&m, &piece)
 }
 
 #[test]
 fn a_square_hole_through_a_sphere_chamfers_its_rim_arcs_symmetric() {
     let (before, v) = hole_chamfered(&|_, _| Chamfer::Symmetric(0.5));
-    close(v, before - eight_arcs(0.5, 0.5));
+    close(v, before - mitred_arcs(0.5, 0.5));
 }
 
 #[test]
@@ -384,7 +392,7 @@ fn a_square_hole_through_a_sphere_chamfers_its_rim_arcs_by_two_distances() {
         on_face: 0.8,
         on_other: 0.4,
     });
-    close(v, before - eight_arcs(0.8, 0.4));
+    close(v, before - mitred_arcs(0.8, 0.4));
 }
 
 #[test]
@@ -397,6 +405,6 @@ fn a_square_hole_through_a_sphere_chamfers_its_rim_arcs_by_distance_and_angle() 
     });
     close(
         v,
-        before - eight_arcs(d, cap_angle_contact_about(d, angle, 2.0)),
+        before - mitred_arcs(d, cap_angle_contact_about(d, angle, 2.0)),
     );
 }
