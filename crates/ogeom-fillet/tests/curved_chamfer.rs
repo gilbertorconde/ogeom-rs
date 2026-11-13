@@ -520,3 +520,134 @@ fn a_d_block_s_cap_chamfered_meets_its_bevels_across_the_sharp_uprights() {
         "volume {got} against the booleans' {want}"
     );
 }
+
+/// The plane of a bevel along a convex straight edge through `at` along
+/// the unit `u`, between faces of outward normals `na` and `nb`, set back
+/// `da` and `db` square to the edge in each: an outward normal and its
+/// offset.
+fn bevel_plane(
+    at: Point,
+    u: Vector,
+    (na, da): (Vector, f64),
+    (nb, db): (Vector, f64),
+) -> (Vector, f64) {
+    let inward = |n: Vector, other: Vector| {
+        let m = n.cross(u);
+        let m = m / m.magnitude();
+        if m.dot(other) > 0.0 { -m } else { m }
+    };
+    let (ca, cb) = (at + inward(na, nb) * da, at + inward(nb, na) * db);
+    let mut n = u.cross(cb - ca);
+    n = n / n.magnitude();
+    if n.dot(na + nb) < 0.0 {
+        n = -n;
+    }
+    (n, n.dot(ca.to_vector()))
+}
+
+/// The disc of radius 3 and 10 high cut to `x <= 1`, `y >= 0`, and by the
+/// plane through the cap's corner `v = (1, √8, 10)` tilted to take off the
+/// cap's edge on `x = 1` more the farther from `v`: four faces meet at `v`,
+/// the cap, the wall, the flat `x = 1` and the tilted plane, along the cap's
+/// rim, the wall's ruling and two lines. Returns the solid, `v` and the
+/// tilted plane's outward normal.
+fn tilted_corner(m: &mut Model) -> (Shape, Point, Vector) {
+    let disc = ogeom_algo::make_cylinder(m, up_at(0.0, 0.0, 0.0), 3.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let s = cut_past(m, &disc, Point::new(1.0, 0.0, 0.0), Vector::X);
+    let s = cut_past(m, &s, Point::ORIGIN, -Vector::Y);
+    let v = Point::new(1.0, 8.0_f64.sqrt(), 10.0);
+    let (a, b) = (
+        Point::new(1.0, v.y - 4.0, 9.0),
+        Point::new(0.0, v.y - 4.0, 10.0),
+    );
+    let mut n = (a - v).cross(b - v);
+    if n.dot(Vector::new(1.0, 0.0, 1.0)) < 0.0 {
+        n = -n;
+    }
+    let n = n / n.magnitude();
+    (cut_past(m, &s, v, n), v, n)
+}
+
+/// [`tilted_corner`]'s four edges at `v` chamfered 0.3: the rim's bevel is
+/// a cone, the other three planes, and their four corners at `v` lie off
+/// one plane, so the corner closes on the patch through them, the cone's
+/// side the curve it meets the plane through its two corners and the
+/// hole's middle. Valid, `v` generating the patch's four sector faces, all
+/// B-splines; every far end flush on the cut `y = 0` or the floor. The
+/// patch takes off no less than the bevels' mitre, by booleans the solid
+/// inside the rim's cone and under the three bevel planes, and no more
+/// than that mitre's peak past a plane `3 d` in from `v`.
+#[test]
+fn a_corner_of_four_bevels_one_a_cone_closes_on_one_patch_off_a_plane() {
+    let d = 0.3;
+    let mut m = Model::new();
+    let (s, v, tilt) = tilted_corner(&mut m);
+    let at_v = |m: &Model, e: &Shape| {
+        let (p, q) = ogeom_algo::edge_vertices(m, e).unwrap().unwrap();
+        point_of(m, &p).distance(v) < 1e-6 || point_of(m, &q).distance(v) < 1e-6
+    };
+    let edges: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| at_v(&m, e))
+        .collect();
+    assert_eq!(edges.len(), 4, "four edges at the corner");
+    let corner = explore_unique(&m, &s, ShapeType::Vertex)
+        .unwrap()
+        .into_iter()
+        .filter(|x| point_of(&m, x).distance(v) < 1e-6)
+        .collect::<Vec<_>>();
+    let built = ogeom_fillet::chamfer_edges(&mut m, &s, &edges, d, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let patch: Vec<Shape> = corner
+        .iter()
+        .flat_map(|x| built.history.generated(x).to_vec())
+        .collect();
+    assert_eq!(patch.len(), 4, "the patch's four sectors");
+    for f in &patch {
+        assert_eq!(surface_kind(&m, f), ogeom_geom::SurfaceKind::BSpline);
+    }
+    let got = volume(&m, &built.shape);
+
+    // The mitre, by booleans.
+    let mut o = Model::new();
+    let (mut mitre, _, _) = tilted_corner(&mut o);
+    let r = |z: f64| (3.0 - d) + (10.0 - z);
+    let cone = ogeom_algo::make_cone(&mut o, up_at(0.0, 0.0, -1.0), r(-1.0), r(10.5), 11.5, T)
+        .unwrap()
+        .shape;
+    mitre = ogeom_bool::common(&mut o, &mitre, &cone, T).unwrap().shape;
+    let up = Vector::Z;
+    let flat = Vector::X;
+    let unit = |w: Vector| w / w.magnitude();
+    // The ruling's bevel: upright, through the flat's contact `d` along it
+    // and the wall's `d` round it.
+    let phi = v.y.atan2(v.x) + d / 3.0;
+    let (on_flat, on_wall) = (
+        Point::new(1.0, v.y - d, 0.0),
+        Point::new(3.0 * phi.cos(), 3.0 * phi.sin(), 0.0),
+    );
+    let mut n = (on_wall - on_flat).cross(up);
+    if n.dot(Vector::new(1.0, 1.0, 0.0)) < 0.0 {
+        n = -n;
+    }
+    mitre = cut_past(&mut o, &mitre, on_flat, n);
+    for (u, na, nb) in [
+        (unit(Vector::new(-1.0, -4.0, 0.0)), up, tilt),
+        (unit(Vector::new(0.0, -4.0, -1.0)), flat, tilt),
+    ] {
+        let (n, off) = bevel_plane(v, u, (na, d), (nb, d));
+        mitre = cut_past(&mut o, &mitre, Point::ORIGIN + n * off, n);
+    }
+    let most = volume(&o, &mitre);
+    let out = unit(up + flat + tilt + Vector::new(v.x, v.y, 0.0) / 3.0);
+    let peak = cut_past(&mut o, &mitre, v - out * (3.0 * d), -out);
+    let least = most - volume(&o, &peak);
+    assert!(
+        least < got && got < most,
+        "volume {got} outside ({least}, {most})"
+    );
+}
