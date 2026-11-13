@@ -2095,3 +2095,55 @@ fn a_box_mitred_on_every_edge_keeps_each_corner_s_tetrahedron() {
         }
     }
 }
+
+/// A compound of two solids apart, a box and an L prism, every edge
+/// chamfered: each solid chamfered as it would be alone, the result a
+/// compound of the two, valid, a face for every face, edge and vertex of
+/// each, the two closed forms summed, every edge generating its bevel.
+#[test]
+fn a_compound_of_two_solids_chamfers_each_as_alone() {
+    let parts = corpus();
+    let (_, box_profile, box_length) = parts.iter().find(|p| p.0 == "box").unwrap().clone();
+    let (_, l_profile, l_length) = parts.iter().find(|p| p.0 == "L").unwrap().clone();
+    let d = 1.0;
+    let want = chamfered_prism_volume(&box_profile, box_length, d)
+        + chamfered_prism_volume(&l_profile, l_length, d);
+    let mut m = Model::new();
+    let a = prism(&mut m, &box_profile, box_length);
+    // The L moved clear of the box, 100 up.
+    let l: Vec<(f64, f64)> = l_profile.iter().map(|&(y, z)| (y, z + 100.0)).collect();
+    let b = prism(&mut m, &l, l_length);
+    let counts = |m: &Model, s: &Shape| {
+        explore_unique(m, s, ShapeType::Face).unwrap().len()
+            + explore_unique(m, s, ShapeType::Edge).unwrap().len()
+            + explore_unique(m, s, ShapeType::Vertex).unwrap().len()
+    };
+    let expected_faces = counts(&m, &a) + counts(&m, &b);
+    let compound = ogeom_algo::make_compound(&mut m, &[a, b]).unwrap().shape;
+    let specs = all_edges(&m, &compound, d);
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &compound, &specs, T).unwrap();
+    assert_eq!(
+        m.kind_of(&built.shape).unwrap(),
+        ShapeType::Compound,
+        "a compound back"
+    );
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert!(!folded(&m, &built.shape), "folded");
+    let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+        .unwrap()
+        .len();
+    assert_eq!(faces, expected_faces, "faces");
+    let got = volume(&m, &built.shape);
+    assert!(
+        (got - want).abs() <= 1e-9 * want,
+        "volume {got} against {want}"
+    );
+    for (edge, _) in &specs {
+        assert_eq!(
+            built.history.generated(edge).len(),
+            1,
+            "an edge without its bevel"
+        );
+    }
+}
