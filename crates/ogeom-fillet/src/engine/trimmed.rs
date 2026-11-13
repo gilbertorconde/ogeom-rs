@@ -80,18 +80,29 @@ pub(crate) enum Section {
 }
 
 /// The chamfer of `specs` on `solid` with curved faces, or `None` where a
-/// seat, a vertex or the result lies outside the classes built here.
+/// seat, a vertex or the result lies outside the classes built here, or
+/// anything in building it fails.
 ///
 /// # Errors
 ///
-/// As building the sheet and checking the solid.
+/// [`OgeomError::Cancelled`](ogeom_core::OgeomError::Cancelled) only.
 pub(crate) fn chamfer(
     model: &mut Model,
     solid: &Shape,
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
-    chamfer_with(model, solid, specs, false, tol)
+    declining(chamfer_with(model, solid, specs, false, tol))
+}
+
+/// What the curved path builds, any failure in it but a cancellation
+/// handed back for the caller's own path.
+fn declining(found: OgeomResult<Option<Built>>) -> OgeomResult<Option<Built>> {
+    match found {
+        Err(e @ ogeom_core::OgeomError::Cancelled) => Err(e),
+        Err(_) => Ok(None),
+        ok => ok,
+    }
 }
 
 /// [`chamfer`] on a solid bounded by planes, which the planar engine
@@ -107,7 +118,7 @@ pub(crate) fn chamfer_patched(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
-    chamfer_with(model, solid, specs, true, tol)
+    declining(chamfer_with(model, solid, specs, true, tol))
 }
 
 fn chamfer_with(
@@ -117,6 +128,61 @@ fn chamfer_with(
     patched_only: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
+    // A solid with placed shapes in it (a prism's far end is its profile
+    // moved) is read with its placements baked in, the request traced onto
+    // the baked shapes and the history carried back.
+    let baked = ogeom_algo::baked_where_placed(model, solid, tol)?;
+    if !baked.shape.is_same(solid) {
+        let one = |s: &Shape| match baked.history.trace(s) {
+            [only] => Some(only.clone()),
+            _ => None,
+        };
+        let mut traced = Vec::with_capacity(specs.len());
+        for (edge, spec) in specs {
+            let spec = match spec {
+                Chamfer::Symmetric(d) => Chamfer::Symmetric(*d),
+                Chamfer::Distances {
+                    face,
+                    on_face,
+                    on_other,
+                } => {
+                    let Some(face) = one(face) else {
+                        return Ok(None);
+                    };
+                    Chamfer::Distances {
+                        face,
+                        on_face: *on_face,
+                        on_other: *on_other,
+                    }
+                }
+                Chamfer::Angle {
+                    face,
+                    distance,
+                    angle,
+                } => {
+                    let Some(face) = one(face) else {
+                        return Ok(None);
+                    };
+                    Chamfer::Angle {
+                        face,
+                        distance: *distance,
+                        angle: *angle,
+                    }
+                }
+            };
+            let Some(edge) = one(edge) else {
+                return Ok(None);
+            };
+            traced.push((edge, spec));
+        }
+        let Some(built) = chamfer_with(model, &baked.shape, &traced, patched_only, tol)? else {
+            return Ok(None);
+        };
+        return Ok(Some(Built::new(
+            built.shape,
+            baked.history.then(&built.history),
+        )));
+    }
     let Some(curved) = read(model, solid, tol)? else {
         return Ok(None);
     };
@@ -567,7 +633,7 @@ fn bevel_of(
             }
             _ => torus_rim(curved, edge, circle, faces, spec, tol),
         },
-        _ => Ok(None),
+        _ => extruded_crease(curved, edge, e, faces, spec, tol),
     }
 }
 
@@ -1094,6 +1160,197 @@ fn torus_rim(
         faces,
         contacts,
         surface,
+        section: Section::Line,
+    }))
+}
+
+/// How many stations the cap's contact along an extruded crease is fitted
+/// through.
+const CREASE_STATIONS: u32 = 128;
+
+/// How far an extruded crease's ruled bevel runs on past each contact, as
+/// a share of its rulings' length.
+const BEVEL_RUN_ON: f64 = 0.5;
+
+/// A crease between a plane and the wall extruded from it square to it (a
+/// prism's end cap and the side its profile's curve sweeps), the crease
+/// any curve of the profile: in the section square to the crease the
+/// corner is square, the leg on the wall runs straight down it and the leg
+/// on the cap straight in along it. The wall's contact is the crease moved
+/// down the wall, exactly on it; the cap's is the crease's offset in the
+/// cap's plane, fitted through stations at the crease's own parameters, so
+/// it lies in the plane; the bevel is the ruled surface between the two on
+/// their shared knots, each ruling in its station's section, on the wall's
+/// material side. `None` where the faces are not such a plane and wall, the
+/// edge is not convex, or the offset's fit misses the bands' fit target.
+fn extruded_crease(
+    curved: &Curved,
+    edge: Id,
+    e: &CurvedEdge,
+    faces: [usize; 2],
+    spec: &Chamfer,
+    tol: Tolerances,
+) -> OgeomResult<Option<Strip>> {
+    let (eps, ang) = (tol.confusion(), tol.angular());
+    let surface = |k: usize| &curved.faces[faces[k]].surface;
+    let (cap, wall) = match (surface(0), surface(1)) {
+        (SurfaceGeometry::Plane(_), SurfaceGeometry::Extrusion(_)) => (0, 1),
+        (SurfaceGeometry::Extrusion(_), SurfaceGeometry::Plane(_)) => (1, 0),
+        _ => return Ok(None),
+    };
+    let (SurfaceGeometry::Plane(plane), SurfaceGeometry::Extrusion(extrusion)) =
+        (surface(cap), surface(wall))
+    else {
+        return Ok(None);
+    };
+    let plane = plane.plane();
+    let up = plane.normal().vector()
+        * if curved.faces[faces[cap]].reversed {
+            -1.0
+        } else {
+            1.0
+        };
+    if extrusion.direction().vector().cross(up).magnitude() > ang {
+        return Ok(None);
+    }
+    let Curve::BSpline(crease) = &e.curve else {
+        return Ok(None);
+    };
+    if crease.is_rational() {
+        return Ok(None);
+    }
+    let (t0, t1) = e.range;
+    let at = |k: u32| (t1 - t0).mul_add(f64::from(k) / f64::from(CREASE_STATIONS), t0);
+    // The crease in the cap's plane, and which way into the cap and down
+    // the wall: toward the faces' other points.
+    let mid = e.curve.point_at(at(CREASE_STATIONS / 2), tol)?;
+    for k in 0..=CREASE_STATIONS {
+        if plane
+            .signed_distance_to(e.curve.point_at(at(k), tol)?)
+            .abs()
+            > eps
+        {
+            return Ok(None);
+        }
+    }
+    let (Some(in_cap), Some(in_wall)) = (
+        away(curved, faces[cap], edge),
+        away(curved, faces[wall], edge),
+    ) else {
+        return Ok(None);
+    };
+    // Convex: the wall runs down from the cap, under its outward side.
+    if (in_wall - mid).dot(up) >= -eps {
+        return Ok(None);
+    }
+    let across = |t: f64| -> OgeomResult<Vector> {
+        let tangent = e.curve.d1_at(t, tol)?;
+        let m = up.cross(tangent);
+        Ok(m / m.magnitude())
+    };
+    let sign = if (in_cap - mid).dot(across(at(CREASE_STATIONS / 2))?) > 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let named = |face: &Shape| {
+        if curved.faces[faces[cap]].shape.is_same(face) {
+            Some(true)
+        } else if curved.faces[faces[wall]].shape.is_same(face) {
+            Some(false)
+        } else {
+            None
+        }
+    };
+    let (on_cap, on_wall) = match spec {
+        Chamfer::Symmetric(d) => (*d, *d),
+        Chamfer::Distances {
+            face,
+            on_face,
+            on_other,
+        } => match named(face) {
+            Some(true) => (*on_face, *on_other),
+            Some(false) => (*on_other, *on_face),
+            None => return Ok(None),
+        },
+        // The corner is square: the other leg is the named one's along the
+        // angle's tangent.
+        Chamfer::Angle {
+            face,
+            distance,
+            angle,
+        } => match named(face) {
+            Some(true) => (*distance, distance * angle.tan()),
+            Some(false) => (distance * angle.tan(), *distance),
+            None => return Ok(None),
+        },
+    };
+    if !(on_cap.is_finite() && on_cap > eps && on_wall.is_finite() && on_wall > eps) {
+        return Ok(None);
+    }
+    // The wall's contact: the crease moved down the wall.
+    let mut on_side = ogeom_geom::BSplineCurve::new(
+        crease.knots().clone(),
+        crease
+            .control_points()
+            .iter()
+            .map(|w| w.point() + up * -on_wall)
+            .collect(),
+        tol,
+    )?;
+    // The cap's: the offset through stations at the crease's parameters.
+    let mut parameters = Vec::with_capacity(CREASE_STATIONS as usize + 1);
+    let mut points = Vec::with_capacity(CREASE_STATIONS as usize + 1);
+    for k in 0..=CREASE_STATIONS {
+        let t = at(k);
+        parameters.push(t);
+        points.push(e.curve.point_at(t, tol)? + across(t)? * (sign * on_cap));
+    }
+    let fit = crate::marched::band_fit_target(tol);
+    let fitted = ogeom_geom::fit::fit_points_at(&parameters, &points, 3, eps, tol)?;
+    if !fitted.met && fitted.error > fit {
+        return Ok(None);
+    }
+    let mut on_top = fitted.curve;
+    // The fitted offset between its stations, measured at their middles.
+    for k in 0..CREASE_STATIONS {
+        let t = f64::midpoint(at(k), at(k + 1));
+        let want = e.curve.point_at(t, tol)? + across(t)? * (sign * on_cap);
+        if on_top.point_at(t, tol)?.distance(want) > fit {
+            return Ok(None);
+        }
+    }
+    if (on_top.domain().0 - on_side.domain().0).abs() > tol.parametric()
+        || (on_top.domain().1 - on_side.domain().1).abs() > tol.parametric()
+    {
+        on_side = on_side.segment(on_top.domain(), tol)?;
+    }
+    crate::bridge::compatible(&mut on_top, &mut on_side, tol)?;
+    let knots = on_top.knots().clone();
+    let rows = on_top.control_points().len();
+    // The rulings run on past both contacts by half their length, as a
+    // swept bevel's band does, so a later blend reading the bevel's
+    // surface past its edges finds it there; the contacts stay exact, the
+    // surface linear across.
+    let mut grid = Vec::with_capacity(2 * rows);
+    for (a, b) in on_top.control_points().iter().zip(on_side.control_points()) {
+        let (a, b) = (a.point(), b.point());
+        grid.push(a + (a - b) * BEVEL_RUN_ON);
+        grid.push(b + (b - a) * BEVEL_RUN_ON);
+    }
+    let bevel = ogeom_geom::BSplineSurface::new(
+        knots,
+        ogeom_math::KnotVector::clamped_uniform(1, 2)?,
+        &ogeom_math::ControlGrid::new(grid, rows, 2)?,
+        tol,
+    )?;
+    let mut contacts = [Curve::from(on_top.clone()), Curve::from(on_top)];
+    contacts[wall] = Curve::from(on_side);
+    Ok(Some(Strip {
+        edge,
+        faces,
+        contacts,
+        surface: bevel.into(),
         section: Section::Line,
     }))
 }
@@ -1891,12 +2148,23 @@ pub(crate) fn assemble_consuming(
     // bore's).
     let fit = crate::marched::band_fit_target(tol);
     for (bi, b) in bevels.iter().enumerate() {
-        let (Some(first), Some(second)) =
-            (material(curved, b.faces[0]), material(curved, b.faces[1]))
-        else {
-            return Ok(None);
+        // An extruded wall has no region the certify reads: its bevel's
+        // rulings stand in their sections on its material side by
+        // construction ([`extruded_crease`]), and only the cap is proved.
+        let by_section = |k: usize| {
+            matches!(
+                curved.faces[b.faces[k]].surface,
+                SurfaceGeometry::Extrusion(_)
+            ) && matches!(b.surface, SurfaceGeometry::BSpline(_))
         };
-        let region = ogeom_algo::HalfSpaces::Every(vec![first, second]);
+        let pieces: Vec<ogeom_algo::HalfSpaces> =
+            match (material(curved, b.faces[0]), material(curved, b.faces[1])) {
+                (Some(first), Some(second)) => vec![first, second],
+                (Some(first), None) if by_section(1) => vec![first],
+                (None, Some(second)) if by_section(0) => vec![second],
+                _ => return Ok(None),
+            };
+        let region = ogeom_algo::HalfSpaces::Every(pieces);
         let face = &sheet.faces[curved.faces.len() + bi];
         if ogeom_algo::certify_face_within(model, face, &region, fit, tol)?.is_err() {
             return Ok(None);
@@ -2186,10 +2454,9 @@ fn outward_at(curved: &Curved, face: usize, p: Point) -> Vector {
     outward(curved, face, p).unwrap_or(Vector::ZERO)
 }
 
-/// A bevel surface's own normal at `p`: a plane's, or a cone's or a
-/// cylinder's off its axis there.
+/// A bevel surface's own normal at `p`: a plane's, a cone's or a
+/// cylinder's off its axis there, or a B-spline's at the foot of `p`.
 fn natural_normal(surface: &SurfaceGeometry, p: Point, tol: Tolerances) -> OgeomResult<Vector> {
-    let _ = tol;
     Ok(match surface {
         SurfaceGeometry::Plane(plane) => plane.plane().normal().vector(),
         SurfaceGeometry::Cylinder(c) => {
@@ -2205,6 +2472,12 @@ fn natural_normal(surface: &SurfaceGeometry, p: Point, tol: Tolerances) -> Ogeom
             let r = radial / radial.magnitude();
             // Off the axis, leaning back against the cone's opening.
             r - a * cone.half_angle().tan()
+        }
+        SurfaceGeometry::BSpline(_) => {
+            let foot = ogeom_geom::project::project_on_surface(surface, p, 16, tol)?;
+            let (u, v) = foot.parameters;
+            let (du, dv) = ogeom_geom::Surface::d1_at(surface, u, v, tol)?;
+            du.cross(dv)
         }
         _ => Vector::ZERO,
     })

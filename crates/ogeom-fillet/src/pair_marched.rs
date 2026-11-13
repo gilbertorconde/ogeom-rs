@@ -106,6 +106,26 @@ pub(crate) fn hosts_of(
             SurfaceGeometry::BSpline(patch) => SurfaceGeometry::BSpline(
                 crate::marched::continued_patch(patch, radius * crate::marched::HOST_REACH, tol),
             ),
+            // An extruded wall over an open profile: the profile continued
+            // past both ends, its sweep widened, the face's own parameters
+            // kept. A closed profile has no end to run past.
+            SurfaceGeometry::Extrusion(swept) => match swept.curve() {
+                ogeom_geom::Curve::BSpline(profile)
+                    if !profile.is_periodic() && !swept.curve().is_closed(tol) =>
+                {
+                    let grown = profile
+                        .extended(false, reach, 2, tol)?
+                        .extended(true, reach, 2, tol)?;
+                    let (_, (v0, v1)) = swept.domain();
+                    ogeom_geom::ExtrusionSurface::over(
+                        grown.into(),
+                        swept.direction(),
+                        (v0 - reach, v1 + reach),
+                    )?
+                    .into()
+                }
+                _ => SurfaceGeometry::Extrusion(swept),
+            },
             SurfaceGeometry::Trimmed(_) | SurfaceGeometry::Offset(_) => ogeom_bail!(
                 Construction,
                 "a round between faces that share no edge rolls on surfaces with their own \
