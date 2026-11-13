@@ -667,7 +667,6 @@ name = "ogeom-topo"
 version = "0.18.1"
 dependencies = [
  "approx",
- "indexmap",
  "ogeom-core",
  "ogeom-geom",
  "ogeom-math",
