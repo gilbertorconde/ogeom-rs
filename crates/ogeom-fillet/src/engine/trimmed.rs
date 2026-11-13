@@ -30,8 +30,10 @@
 //!   their end.
 //!
 //! Any other vertex, seat or section declines, and the caller keeps its own
-//! path; so does a result failing its check, or not holding less than the
-//! solid (every bevel here cuts a convex edge).
+//! path; so does a result failing its check, a bevel not proved within the
+//! material its two faces bound (P5's certify, a plane's half-space and a
+//! cylinder's or cone's wall), or a result not holding less than the solid
+//! (every bevel here cuts a convex edge).
 
 use ogeom_algo::{Built, History};
 use ogeom_core::{FastMap, FastSet, OgeomResult, Tolerances};
@@ -732,6 +734,22 @@ fn assemble(
     // one pcurve, and a later walk of the face in its chart would not
     // close. Nothing else holds these nodes, so nothing is copied.
     ogeom_algo::join_seam_columns(model, &solid, tol)?;
+    // P5: each bevel proved within the material its two faces bound there,
+    // to the bands' fit target: under a plane, inside a wall (outside a
+    // bore's).
+    let fit = crate::marched::band_fit_target(tol);
+    for (bi, b) in bevels.iter().enumerate() {
+        let (Some(first), Some(second)) =
+            (material(curved, b.faces[0]), material(curved, b.faces[1]))
+        else {
+            return Ok(None);
+        };
+        let region = ogeom_algo::HalfSpaces::Every(vec![first, second]);
+        let face = &sheet.faces[curved.faces.len() + bi];
+        if ogeom_algo::certify_face_within(model, face, &region, fit, tol)?.is_err() {
+            return Ok(None);
+        }
+    }
     // History: faces modified, bevelled edges deleted into their bevels,
     // sharp edges modified into their pieces, vertices kept where nothing
     // moved off them.
@@ -768,6 +786,48 @@ fn assemble(
         }
     }
     Ok(Some(Built::new(solid, history)))
+}
+
+/// The material face `face` bounds, as a region the certify reads: the
+/// side of its plane under its outward normal, or the side of its cylinder
+/// or cone the material lies on (inside a wall, outside a bore); `None` on
+/// any other surface.
+fn material(curved: &Curved, face: usize) -> Option<ogeom_algo::HalfSpaces> {
+    let f = &curved.faces[face];
+    let inside = !f.reversed;
+    match &f.surface {
+        SurfaceGeometry::Plane(plane) => {
+            let plane = plane.plane();
+            let normal = plane.normal().vector() * if f.reversed { -1.0 } else { 1.0 };
+            Some(ogeom_algo::HalfSpaces::Below {
+                normal,
+                at: plane.frame().origin(),
+            })
+        }
+        SurfaceGeometry::Cylinder(c) => {
+            let cyl = c.cylinder();
+            let axis = cyl.axis();
+            Some(ogeom_algo::HalfSpaces::Revolved {
+                at: axis.location,
+                axis: axis.direction.vector(),
+                radius: cyl.radius(),
+                slope: 0.0,
+                inside,
+            })
+        }
+        SurfaceGeometry::Cone(c) => {
+            let cone = c.cone();
+            let frame = cone.frame();
+            Some(ogeom_algo::HalfSpaces::Revolved {
+                at: frame.origin(),
+                axis: frame.z().vector(),
+                radius: cone.reference_radius(),
+                slope: cone.half_angle().tan(),
+                inside,
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Whether a bevel's end from `p` to `q` lies on `face`: a plane holding
@@ -864,4 +924,99 @@ pub(crate) fn param_on(
         }
     }
     Ok(t)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    use super::*;
+    use ogeom_math::{Direction, Frame};
+    use ogeom_topo::{ShapeType, explore_unique};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    fn up_at(x: f64, y: f64, z: f64) -> Frame {
+        Frame::new(Point::new(x, y, z), Direction::Z, Direction::X, T).unwrap()
+    }
+
+    /// A face of a small box at `(x, y, z)`, 0.2 on a side: its top.
+    fn probe(m: &mut Model, x: f64, y: f64, z: f64) -> Shape {
+        let b = ogeom_algo::make_box(m, up_at(x, y, z), (0.2, 0.2, 0.2), T)
+            .unwrap()
+            .shape;
+        explore_unique(m, &b, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .find(|f| {
+                let (p, n) = ogeom_algo::face_normal(m, f, T).unwrap();
+                n.z > 0.5 && (p.z - (z + 0.2)).abs() < 1e-9
+            })
+            .unwrap()
+    }
+
+    fn within(m: &Model, face: &Shape, region: &ogeom_algo::HalfSpaces) -> bool {
+        ogeom_algo::certify_face_within(m, face, region, 1e-6, T)
+            .unwrap()
+            .is_ok()
+    }
+
+    /// The material a face bounds, as the certify reads it: on the D-block
+    /// (a drum of radius 3 halved along its axis) under the flat (`x >= 0`)
+    /// and inside the wall; on a tube bored to 2, outside the bore. A face
+    /// inside is proved within, one past the flat, outside the wall or in
+    /// the bore is found past.
+    #[test]
+    fn a_face_s_material_is_its_side_of_its_plane_or_wall() {
+        let mut m = Model::new();
+        let full = ogeom_algo::make_cylinder(&mut m, up_at(0.0, 0.0, 0.0), 3.0, 10.0, T)
+            .unwrap()
+            .shape;
+        let half = ogeom_algo::make_box(&mut m, up_at(-4.0, -4.0, -1.0), (4.0, 8.0, 12.0), T)
+            .unwrap()
+            .shape;
+        let d = ogeom_bool::cut(&mut m, &full, &half, T).unwrap().shape;
+        let curved = read(&m, &d, T).unwrap().unwrap();
+        let of = |kind: fn(&SurfaceGeometry) -> bool| {
+            let fi = (0..curved.faces.len())
+                .find(|fi| {
+                    kind(&curved.faces[*fi].surface) && {
+                        // The flat at x = 0, not a cap.
+                        match &curved.faces[*fi].surface {
+                            SurfaceGeometry::Plane(p) => p.plane().normal().vector().x.abs() > 0.5,
+                            _ => true,
+                        }
+                    }
+                })
+                .unwrap();
+            material(&curved, fi).unwrap()
+        };
+        let flat = of(|s| matches!(s, SurfaceGeometry::Plane(_)));
+        let wall = of(|s| matches!(s, SurfaceGeometry::Cylinder(_)));
+        let inside = probe(&mut m, 1.0, 0.0, 5.0);
+        let past_flat = probe(&mut m, -1.0, 0.0, 5.0);
+        let past_wall = probe(&mut m, 3.5, 0.0, 5.0);
+        assert!(within(&m, &inside, &flat) && within(&m, &inside, &wall));
+        assert!(!within(&m, &past_flat, &flat));
+        assert!(!within(&m, &past_wall, &wall));
+
+        let outer = ogeom_algo::make_cylinder(&mut m, up_at(0.0, 0.0, 0.0), 3.0, 4.0, T)
+            .unwrap()
+            .shape;
+        let inner = ogeom_algo::make_cylinder(&mut m, up_at(0.0, 0.0, -1.0), 2.0, 6.0, T)
+            .unwrap()
+            .shape;
+        let tube = ogeom_bool::cut(&mut m, &outer, &inner, T).unwrap().shape;
+        let curved = read(&m, &tube, T).unwrap().unwrap();
+        let bore = (0..curved.faces.len())
+            .find(|fi| match &curved.faces[*fi].surface {
+                SurfaceGeometry::Cylinder(c) => (c.cylinder().radius() - 2.0).abs() < 1e-9,
+                _ => false,
+            })
+            .unwrap();
+        let bore = material(&curved, bore).unwrap();
+        let in_wall = probe(&mut m, 2.3, 0.0, 2.0);
+        let in_bore = probe(&mut m, 0.5, 0.0, 2.0);
+        assert!(within(&m, &in_wall, &bore));
+        assert!(!within(&m, &in_bore, &bore));
+    }
 }
