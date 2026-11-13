@@ -2163,6 +2163,9 @@ fn assemble_widened(
     let mut facets: Vec<(Id, Vec<Point>)> = Vec::new();
     // Each mitred vertex's point, where every bevel there passes.
     let mut mitred: FastMap<Id, Point> = FastMap::default();
+    // Each vertex where rounds meet on one ball: its corners in turn, the
+    // ball's centre and radius.
+    let mut balls: Vec<(Id, Vec<Point>, Point, f64)> = Vec::new();
     let mut keyed: Vec<&Id> = curved.points.keys().collect();
     keyed.sort_unstable();
     for v in keyed {
@@ -2264,11 +2267,14 @@ fn assemble_widened(
                 let Some(ends) = sections.get(v) else {
                     return Ok(None);
                 };
-                if degree < at_v.len()
-                    || ends
-                        .iter()
-                        .any(|(_, _, bi)| !matches!(bevels[*bi].section, Section::Line))
-                {
+                let lines = ends
+                    .iter()
+                    .all(|(_, _, bi)| matches!(bevels[*bi].section, Section::Line));
+                let arcs = ends
+                    .iter()
+                    .all(|(_, _, bi)| matches!(bevels[*bi].section, Section::Arc { .. }));
+                // Rounds only where every edge there is rounded: no tails.
+                if degree < at_v.len() || !(lines || arcs) || (arcs && degree != at_v.len()) {
                     return Ok(None);
                 }
                 // Round the corner, the bevels' ends and the tails of the
@@ -2284,7 +2290,7 @@ fn assemble_widened(
                 let Some(cycle) = chained(&round, tol) else {
                     return Ok(None);
                 };
-                if mitre {
+                if lines && mitre {
                     let surfaces: Vec<&SurfaceGeometry> =
                         ends.iter().map(|(_, _, bi)| &bevels[*bi].surface).collect();
                     #[expect(clippy::cast_precision_loss, reason = "a few corners")]
@@ -2296,7 +2302,35 @@ fn assemble_widened(
                     mitred.insert(*v, x);
                     continue;
                 }
-                facets.push((*v, cycle));
+                if lines {
+                    facets.push((*v, cycle));
+                    continue;
+                }
+                // Rounds every one: the sphere where their end arcs are
+                // arcs of one ball, each about its spine's point there.
+                let mut centre: Option<Point> = None;
+                for (p, _, bi) in ends {
+                    let Section::Arc { spine } = &bevels[*bi].section else {
+                        return Ok(None);
+                    };
+                    let c = spine.point_at(param_on(spine, spine.domain(), *p, tol)?, tol)?;
+                    match centre {
+                        Some(o) if o.distance(c) > tol.confusion() => return Ok(None),
+                        Some(_) => {}
+                        None => centre = Some(c),
+                    }
+                }
+                let Some(centre) = centre else {
+                    return Ok(None);
+                };
+                let radius = cycle[0].distance(centre);
+                if cycle
+                    .iter()
+                    .any(|p| (p.distance(centre) - radius).abs() > tol.confusion())
+                {
+                    return Ok(None);
+                }
+                balls.push((*v, cycle, centre, radius));
             }
         }
     }
@@ -3189,6 +3223,84 @@ fn assemble_widened(
             reversed: false,
         });
     }
+    // Each ball: its ring the rounds' end arcs in turn, wound about its
+    // surface's own normal (off the centre), the face turned over where the
+    // corner is concave. Convex corners only: there the sphere stands inside
+    // the material all the faces round the vertex bound.
+    let mut ball_regions: Vec<ogeom_algo::HalfSpaces> = Vec::with_capacity(balls.len());
+    for (v, cycle, centre, radius) in &balls {
+        let mut out = Vector::ZERO;
+        let mut regions = Vec::new();
+        let mut round: Vec<usize> = Vec::new();
+        for (e, c) in &curved.edges {
+            if c.ends.0 == *v || c.ends.1 == *v {
+                for fi in faces_of(curved, *e) {
+                    out += outward_at(curved, fi, curved.points[v]);
+                    if !round.contains(&fi) {
+                        round.push(fi);
+                    }
+                }
+            }
+        }
+        if (*centre - curved.points[v]).dot(out) >= 0.0 {
+            return Ok(None);
+        }
+        round.sort_unstable();
+        for fi in round {
+            let Some(m) = material(curved, fi) else {
+                return Ok(None);
+            };
+            regions.push(m);
+        }
+        ball_regions.push(ogeom_algo::HalfSpaces::Every(regions));
+        let mut cycle = cycle.clone();
+        let mut newell = Vector::ZERO;
+        let mut mean = Vector::ZERO;
+        for k in 0..cycle.len() {
+            let (p, q) = (
+                cycle[k].to_vector(),
+                cycle[(k + 1) % cycle.len()].to_vector(),
+            );
+            newell += p.cross(q);
+            mean += p;
+        }
+        #[expect(clippy::cast_precision_loss, reason = "a vertex's few rounds")]
+        let mean = Point::from_vector(mean / cycle.len() as f64);
+        if newell.dot(mean - *centre) < 0.0 {
+            cycle.reverse();
+        }
+        let surface = crate::round::sphere::corner_sphere(*centre, *radius, &cycle, tol)?;
+        let mut ring = Vec::with_capacity(cycle.len());
+        for k in 0..cycle.len() {
+            let (p, q) = (cycle[k], cycle[(k + 1) % cycle.len()]);
+            let strip = sections.get(v).and_then(|ends| {
+                ends.iter()
+                    .find(|(x, y, _)| {
+                        (x.distance(p) <= tol.confusion() && y.distance(q) <= tol.confusion())
+                            || (y.distance(p) <= tol.confusion()
+                                && x.distance(q) <= tol.confusion())
+                    })
+                    .map(|(_, _, bi)| &bevels[*bi])
+            });
+            let Some(strip) = strip else {
+                return Ok(None);
+            };
+            ring.push(section(
+                &mut points,
+                &mut edges,
+                &mut made,
+                strip,
+                None,
+                p,
+                q,
+            )?);
+        }
+        rings_of.push(SheetRings {
+            surface,
+            rings: vec![ring],
+            reversed: false,
+        });
+    }
     // A consumed face is not built: the sheet is every other.
     let built_rings: Vec<SheetRings> = rings_of
         .iter()
@@ -3425,8 +3537,32 @@ fn assemble_widened(
         if pieces.is_empty() {
             continue;
         }
-        let region = ogeom_algo::HalfSpaces::Every(pieces);
+        // A round whose ball stands outside both faces' material (a concave
+        // edge's) fills the corner: it stands outside each of them.
+        let concave = pieces.len() == 2
+            && match &b.section {
+                Section::Arc { spine } => {
+                    let (lo, hi) = spine.domain();
+                    let at = spine.point_at(0.5 * (lo + hi), tol)?;
+                    pieces[0].height(at).0 > 0.0 && pieces[1].height(at).0 > 0.0
+                }
+                Section::Line => false,
+            };
+        let region = if concave {
+            ogeom_algo::HalfSpaces::Every(pieces.iter().map(outside).collect())
+        } else {
+            ogeom_algo::HalfSpaces::Every(pieces)
+        };
         if ogeom_algo::certify_face_within(model, face, &region, fit, tol)?.is_err() {
+            return Ok(None);
+        }
+    }
+    // Each ball proved within the material of the faces round its vertex.
+    let first_ball = curved.faces.len() + bevels.len() + facet_rings.len();
+    for (k, region) in ball_regions.iter().enumerate() {
+        if ogeom_algo::certify_face_within(model, &sheet.faces[first_ball + k], region, fit, tol)?
+            .is_err()
+        {
             return Ok(None);
         }
     }
@@ -3494,6 +3630,9 @@ fn assemble_widened(
         for face in faces {
             history.generate(&curved.shapes[v], face.clone());
         }
+    }
+    for (k, (v, _, _, _)) in balls.iter().enumerate() {
+        history.generate(&curved.shapes[v], sheet.faces[first_ball + k].clone());
     }
     for (e, _) in &curved.edges {
         if let Some(k) = made.get(&Key::Sharp(*e)) {
@@ -3837,6 +3976,55 @@ fn marched_between(
         return Ok(Some(((curve, (lo, hi), p_low), section.tolerance + off)));
     }
     Ok(None)
+}
+
+/// The points outside `region`: each plane and wall turned to its other
+/// side, the greatest and the least of pieces exchanged.
+fn outside(region: &ogeom_algo::HalfSpaces) -> ogeom_algo::HalfSpaces {
+    use ogeom_algo::HalfSpaces;
+    match region {
+        HalfSpaces::Below { normal, at } => HalfSpaces::Below {
+            normal: -*normal,
+            at: *at,
+        },
+        HalfSpaces::Revolved {
+            at,
+            axis,
+            radius,
+            slope,
+            inside,
+        } => HalfSpaces::Revolved {
+            at: *at,
+            axis: *axis,
+            radius: *radius,
+            slope: *slope,
+            inside: !*inside,
+        },
+        HalfSpaces::Ball {
+            centre,
+            radius,
+            inside,
+        } => HalfSpaces::Ball {
+            centre: *centre,
+            radius: *radius,
+            inside: !*inside,
+        },
+        HalfSpaces::Tube {
+            centre,
+            axis,
+            major,
+            minor,
+            inside,
+        } => HalfSpaces::Tube {
+            centre: *centre,
+            axis: *axis,
+            major: *major,
+            minor: *minor,
+            inside: !*inside,
+        },
+        HalfSpaces::Every(pieces) => HalfSpaces::Any(pieces.iter().map(outside).collect()),
+        HalfSpaces::Any(pieces) => HalfSpaces::Every(pieces.iter().map(outside).collect()),
+    }
 }
 
 /// The material face `face` bounds, as a region the certify reads: the

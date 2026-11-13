@@ -792,7 +792,10 @@ fn rounds_by_engine(
     // nothing, as for chamfers.
     let mut kept = Vec::with_capacity(once.len());
     for (edge, radius) in &once {
-        if !crate::engine::is_seam(model, solid, edge, tol)? {
+        // A face's own seam (an edge one face walks both ways) too.
+        let own =
+            ogeom_topo::ancestors_of(model, solid, edge, ogeom_topo::ShapeType::Face)?.len() == 1;
+        if !own && !crate::engine::is_seam(model, solid, edge, tol)? {
             kept.push((edge.clone(), *radius));
         }
     }
