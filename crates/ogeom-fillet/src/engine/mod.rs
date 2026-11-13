@@ -137,7 +137,8 @@ pub(crate) fn run(
         }
     }
     // P2.
-    let Some(corners) = setbacks::setback_corners(&planar, &setback, tol)? else {
+    let mut steps = FastMap::default();
+    let Some(corners) = setbacks::setback_corners(&planar, &setback, &mut steps, tol)? else {
         return Ok(None);
     };
     // Rounds are curved: their strips and vertex blends go into a sheet.
@@ -149,7 +150,11 @@ pub(crate) fn run(
         if planar.faces.iter().any(|f| !f.holes.is_empty()) {
             return Ok(None);
         }
-        return rounds::assemble(model, &planar, &seats, &by_edge, &corners, tol);
+        return rounds::assemble(model, &planar, &seats, &by_edge, &corners, &steps, tol);
+    }
+    // Chamfers set back differently along one line are the current path's.
+    if !steps.is_empty() {
+        return Ok(None);
     }
     // The mitred vertices, each of three chamfers or more, and the point
     // their planes share; where four or more share no one point, the

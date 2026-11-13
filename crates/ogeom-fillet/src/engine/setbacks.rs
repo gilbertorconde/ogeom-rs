@@ -12,11 +12,14 @@ use super::classify::Planar;
 use super::{Id, id};
 
 /// Every face corner's setback corner (holes' corners too), keyed by face
-/// index and vertex, or `None` where two edges of a face run on in one line
-/// at a vertex and are set back by different distances there.
+/// index and vertex. Where two edges of a face run on in one line at a
+/// vertex and are set back by different distances there, the corner is
+/// the arriving edge's setback line's point there and `steps` takes both
+/// lines' points, the arriving edge's first.
 pub(crate) fn setback_corners(
     planar: &Planar,
     setback: &FastMap<(Id, Id), f64>,
+    steps: &mut FastMap<(usize, Id), [Point; 2]>,
     tol: Tolerances,
 ) -> OgeomResult<Option<FastMap<(usize, Id), Point>>> {
     let mut out = FastMap::default();
@@ -45,7 +48,9 @@ pub(crate) fn setback_corners(
                 let (u2, m2, d2) = leg(v, next)?;
                 let at = planar.points[&v];
                 let Some(offset) = corner_offset((u1, m1, d1), (u2, m2, d2), tol) else {
-                    return Ok(None);
+                    steps.insert((fi, v), [at + m1 * d1, at + m2 * d2]);
+                    out.insert((fi, v), at + m1 * d1);
+                    continue;
                 };
                 out.insert((fi, v), at + offset);
             }
@@ -606,7 +611,9 @@ mod curved_tests {
                 );
             }
         }
-        let want = setback_corners(&planar, &setback, T).unwrap().unwrap();
+        let want = setback_corners(&planar, &setback, &mut FastMap::default(), T)
+            .unwrap()
+            .unwrap();
         let got = curved_corners(&curved, &contacts, T).unwrap().unwrap();
         assert_eq!(got.len(), want.len());
         for ((pfi, v), p) in &want {
