@@ -128,61 +128,6 @@ fn chamfer_with(
     patched_only: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
-    // A solid with placed shapes in it (a prism's far end is its profile
-    // moved) is read with its placements baked in, the request traced onto
-    // the baked shapes and the history carried back.
-    let baked = ogeom_algo::baked_where_placed(model, solid, tol)?;
-    if !baked.shape.is_same(solid) {
-        let one = |s: &Shape| match baked.history.trace(s) {
-            [only] => Some(only.clone()),
-            _ => None,
-        };
-        let mut traced = Vec::with_capacity(specs.len());
-        for (edge, spec) in specs {
-            let spec = match spec {
-                Chamfer::Symmetric(d) => Chamfer::Symmetric(*d),
-                Chamfer::Distances {
-                    face,
-                    on_face,
-                    on_other,
-                } => {
-                    let Some(face) = one(face) else {
-                        return Ok(None);
-                    };
-                    Chamfer::Distances {
-                        face,
-                        on_face: *on_face,
-                        on_other: *on_other,
-                    }
-                }
-                Chamfer::Angle {
-                    face,
-                    distance,
-                    angle,
-                } => {
-                    let Some(face) = one(face) else {
-                        return Ok(None);
-                    };
-                    Chamfer::Angle {
-                        face,
-                        distance: *distance,
-                        angle: *angle,
-                    }
-                }
-            };
-            let Some(edge) = one(edge) else {
-                return Ok(None);
-            };
-            traced.push((edge, spec));
-        }
-        let Some(built) = chamfer_with(model, &baked.shape, &traced, patched_only, tol)? else {
-            return Ok(None);
-        };
-        return Ok(Some(Built::new(
-            built.shape,
-            baked.history.then(&built.history),
-        )));
-    }
     let Some(curved) = read(model, solid, tol)? else {
         return Ok(None);
     };

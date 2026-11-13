@@ -1967,3 +1967,87 @@ fn a_pentagonal_pyramid_s_apex_chamfered_closes_on_one_patch_of_five_sectors() {
         "volume {got} against {want}"
     );
 }
+
+/// The prism of [`prism`]'s profile built as a sweep: the profile's face
+/// in x = 0 swept by `make_prism`, unbaked, so its sides are the profile's
+/// lines swept along x (flat faces on extrusion surfaces) and its far cap
+/// is the near one placed.
+fn swept_prism(m: &mut Model, profile: &[(f64, f64)], length: f64) -> Shape {
+    let corners: Vec<Shape> = profile
+        .iter()
+        .map(|&(y, z)| ogeom_algo::make_vertex(m, Point::new(0.0, y, z)).shape)
+        .collect();
+    let n = corners.len();
+    let edges: Vec<Shape> = (0..n)
+        .map(|k| {
+            let (p, q) = (profile[k], profile[(k + 1) % n]);
+            let (a, b) = (Point::new(0.0, p.0, p.1), Point::new(0.0, q.0, q.1));
+            let line = ogeom_geom::LineCurve::segment(a, b, T).unwrap();
+            let range = ogeom_geom::Curve3d::domain(&line);
+            ogeom_algo::make_edge_between(
+                m,
+                line.into(),
+                range,
+                &corners[k],
+                &corners[(k + 1) % n],
+                T,
+            )
+            .unwrap()
+            .shape
+        })
+        .collect();
+    let wire = ogeom_algo::make_wire(m, &edges, T).unwrap().shape;
+    let plane = ogeom_geom::PlaneSurface::over(
+        ogeom_math::Plane::through(Point::ORIGIN, ogeom_math::Direction::X),
+        (-1000.0, 1000.0),
+        (-1000.0, 1000.0),
+    )
+    .unwrap();
+    let face = ogeom_algo::make_face(m, plane.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    ogeom_algo::make_prism(m, &face, ogeom_math::Vector::new(length, 0.0, 0.0), T)
+        .unwrap()
+        .shape
+}
+
+/// The corpus's parts built as unbaked sweeps, every edge chamfered:
+/// valid, a face for every face, edge and vertex, the sections' closed
+/// form, every edge of the sweep as named (the far cap's through its
+/// placement) generating its bevel.
+#[test]
+fn a_swept_prism_with_its_far_cap_placed_chamfers_every_edge_exactly() {
+    for (name, profile, length) in corpus() {
+        let d = 1.0;
+        let want = chamfered_prism_volume(&profile, length, d);
+        let mut m = Model::new();
+        let s = swept_prism(&mut m, &profile, length);
+        let (f, e, v) = (
+            explore_unique(&m, &s, ShapeType::Face).unwrap().len(),
+            explore_unique(&m, &s, ShapeType::Edge).unwrap().len(),
+            explore_unique(&m, &s, ShapeType::Vertex).unwrap().len(),
+        );
+        let specs = all_edges(&m, &s, d);
+        let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T)
+            .unwrap_or_else(|err| panic!("{name}: {err}"));
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{name}: {:?}", found.problems);
+        assert!(!folded(&m, &built.shape), "{name}: folded");
+        let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+            .unwrap()
+            .len();
+        assert_eq!(faces, f + e + v, "{name}: faces");
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "{name}: volume {got} against {want}"
+        );
+        for (edge, _) in &specs {
+            assert_eq!(
+                built.history.generated(edge).len(),
+                1,
+                "{name}: an edge without its bevel"
+            );
+        }
+    }
+}
