@@ -91,6 +91,32 @@ pub(crate) fn chamfer(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
+    chamfer_with(model, solid, specs, false, tol)
+}
+
+/// [`chamfer`] on a solid bounded by planes, which the planar engine
+/// handed back: `None` unless a vertex of three bevels or more has its
+/// faces' corners off one plane, where the facet is a patch.
+///
+/// # Errors
+///
+/// As [`chamfer`].
+pub(crate) fn chamfer_patched(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    chamfer_with(model, solid, specs, true, tol)
+}
+
+fn chamfer_with(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    patched_only: bool,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
     let Some(curved) = read(model, solid, tol)? else {
         return Ok(None);
     };
@@ -140,6 +166,9 @@ pub(crate) fn chamfer(
         corners.insert((*fi, *v), Corner { point: *point, on });
     }
     let blended: FastSet<Id> = bevels.iter().map(|b| b.edge).collect();
+    if patched_only && !off_plane_corner(&curved, &blended, &corners, tol) {
+        return Ok(None);
+    }
     // P4 and P5. Whatever fails here, its assembly or the solid's check,
     // is outside the cases built, and the caller keeps its own path.
     let built = match assemble_consuming(
@@ -172,6 +201,65 @@ pub(crate) fn chamfer(
         return Ok(None);
     }
     Ok(Some(built))
+}
+
+/// The bilinear patch through the four corners `c`, wound about the side
+/// it faces: its sides the segments between them in turn, its own normal
+/// facing that side.
+fn bilinear(c: &[Point], tol: Tolerances) -> OgeomResult<SurfaceGeometry> {
+    let knots = ogeom_math::KnotVector::clamped_uniform(1, 2)?;
+    let grid = ogeom_math::ControlGrid::new(vec![c[0], c[3], c[1], c[2]], 2, 2)?;
+    Ok(ogeom_geom::BSplineSurface::new(knots.clone(), knots, &grid, tol)?.into())
+}
+
+/// Whether a vertex of three bevels or more has its faces' corners off
+/// one plane.
+fn off_plane_corner(
+    curved: &Curved,
+    blended: &FastSet<Id>,
+    corners: &FastMap<(usize, Id), Corner>,
+    tol: Tolerances,
+) -> bool {
+    curved.points.keys().any(|v| {
+        let at_v = curved
+            .edges
+            .iter()
+            .filter(|(e, c)| blended.contains(*e) && (c.ends.0 == *v || c.ends.1 == *v))
+            .count();
+        if at_v < 3 {
+            return false;
+        }
+        let ring: Vec<Point> = (0..curved.faces.len())
+            .filter_map(|fi| corners.get(&(fi, *v)).map(|c| c.point))
+            .collect();
+        if ring.len() < 4 {
+            return false;
+        }
+        // The plane through the corner and the two farthest from it and
+        // from each other; any corner off it.
+        let a = ring[0];
+        let Some(b) = ring
+            .iter()
+            .copied()
+            .max_by(|x, y| x.distance(a).total_cmp(&y.distance(a)))
+        else {
+            return false;
+        };
+        let Some(c) = ring.iter().copied().max_by(|x, y| {
+            (*x - a)
+                .cross(b - a)
+                .magnitude()
+                .total_cmp(&(*y - a).cross(b - a).magnitude())
+        }) else {
+            return false;
+        };
+        let n = (b - a).cross(c - a);
+        let m = n.magnitude();
+        m > tol.confusion() * tol.confusion()
+            && ring
+                .iter()
+                .any(|p| (*p - a).dot(n / m).abs() > tol.confusion())
+    })
 }
 
 /// The walls a request's bevels consume, their ridges and corners.
@@ -1025,6 +1113,7 @@ pub(crate) fn assemble_consuming(
     // in turn about that side.
     let mut facet_planes: FastMap<Id, SurfaceGeometry> = FastMap::default();
     let mut facet_rings: Vec<(Id, Vec<Point>)> = Vec::with_capacity(facets.len());
+    let mut patches: FastMap<Id, SurfaceGeometry> = FastMap::default();
     for (v, cycle) in &facets {
         let mut out = Vector::ZERO;
         for (e, c) in &curved.edges {
@@ -1059,7 +1148,19 @@ pub(crate) fn assemble_consuming(
             .iter()
             .any(|p| (*p - cycle[0]).dot(normal).abs() > tol.confusion())
         {
-            return Ok(None);
+            // Off one plane, four corners: the bilinear patch through them,
+            // its sides the four segments between them, where each bevel
+            // there is a plane and its end that segment.
+            if cycle.len() != 4
+                || sections[v]
+                    .iter()
+                    .any(|(_, _, bi)| !matches!(bevels[*bi].surface, SurfaceGeometry::Plane(_)))
+            {
+                return Ok(None);
+            }
+            patches.insert(*v, bilinear(&cycle, tol)?);
+            facet_rings.push((*v, cycle));
+            continue;
         }
         let frame = Frame::new(
             cycle[0],
@@ -1485,8 +1586,11 @@ pub(crate) fn assemble_consuming(
                 q,
             )?);
         }
+        let Some(surface) = facet_planes.get(v).or_else(|| patches.get(v)) else {
+            return Ok(None);
+        };
         rings_of.push(SheetRings {
-            surface: facet_planes[v].clone(),
+            surface: surface.clone(),
             rings: vec![ring],
             reversed: false,
         });
@@ -1537,6 +1641,32 @@ pub(crate) fn assemble_consuming(
             return Ok(None);
         }
     }
+    // Each patch within the material every face at its vertex bounds.
+    for (fi, (v, _)) in facet_rings.iter().enumerate() {
+        if !patches.contains_key(v) {
+            continue;
+        }
+        let face = &sheet.faces[curved.faces.len() + bevels.len() + fi];
+        let mut round: Vec<usize> = curved
+            .edges
+            .iter()
+            .filter(|(_, c)| c.ends.0 == *v || c.ends.1 == *v)
+            .flat_map(|(e, _)| faces_of(curved, *e))
+            .collect();
+        round.sort_unstable();
+        round.dedup();
+        let Some(pieces) = round
+            .iter()
+            .map(|fi| material(curved, *fi))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Ok(None);
+        };
+        let region = ogeom_algo::HalfSpaces::Every(pieces);
+        if ogeom_algo::certify_face_within(model, face, &region, fit, tol)?.is_err() {
+            return Ok(None);
+        }
+    }
     // History: faces modified, bevelled edges deleted into their bevels,
     // sharp edges modified into their pieces, vertices kept where nothing
     // moved off them.
@@ -1553,7 +1683,7 @@ pub(crate) fn assemble_consuming(
         history.delete(edge);
         history.generate(edge, sheet.faces[curved.faces.len() + bi].clone());
     }
-    for (fi, (v, _)) in facets.iter().enumerate() {
+    for (fi, (v, _)) in facet_rings.iter().enumerate() {
         history.generate(
             &curved.shapes[v],
             sheet.faces[curved.faces.len() + bevels.len() + fi].clone(),
