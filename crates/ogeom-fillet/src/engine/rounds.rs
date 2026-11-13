@@ -119,6 +119,8 @@ pub(crate) fn assemble(
     let mut mitres: FastMap<Id, ([Id; 2], Vector)> = FastMap::default();
     // For two rounds beside an edge left sharp that meet otherwise.
     let mut creases: FastMap<Id, Crease> = FastMap::default();
+    // For a vertex the ball rounds rolling along a ridge.
+    let mut ridges: FastMap<Id, Ridge> = FastMap::default();
     for &v in &vertices {
         let Some(round) = faces_round(&planar.faces, v) else {
             return Ok(None);
@@ -211,6 +213,26 @@ pub(crate) fn assemble(
                 } else {
                     None
                 };
+                let ridge = if n == 4
+                    && blended
+                        .iter()
+                        .all(|s| s.convex && sections[&s.edge].1 == radius)
+                {
+                    ridge_at(planar, &round, v, radius, corners, reach, tol)
+                } else {
+                    None
+                };
+                let fits = ball.as_ref().is_some_and(|(_, feet)| {
+                    round
+                        .iter()
+                        .zip(feet)
+                        .all(|(f, foot)| foot.distance(corners[&(*f, v)]) <= reach)
+                });
+                if !fits && let Some(ridge) = ridge {
+                    ridges.insert(v, ridge);
+                    method.insert(v, RoundVertex::Ridge);
+                    continue;
+                }
                 match ball {
                     Some((_, feet))
                         if round
@@ -243,17 +265,50 @@ pub(crate) fn assemble(
         sorted.sort_unstable_by_key(|(k, _)| *k);
         sorted.into_iter().map(|(k, p)| (k, point(p))).collect()
     };
+    // Each ridge's balls' feet, by vertex, face and ball.
+    let mut ridge_points: FastMap<(Id, usize, usize), usize> = FastMap::default();
+    let mut ridge_list: Vec<(&Id, &Ridge)> = ridges.iter().collect();
+    ridge_list.sort_unstable_by_key(|(v, _)| **v);
+    for &(&v, ridge) in &ridge_list {
+        for k in 0..2 {
+            for f in [ridge.faces[0], ridge.faces[1 + 2 * k], ridge.faces[2]] {
+                if let Some(foot) = ridge.foot(k, f) {
+                    ridge_points.insert((v, f, k), point(foot));
+                }
+            }
+        }
+    }
+    // Where face `fi`'s ring passes vertex `v`, coming from `prev`: its
+    // setback corner, or at a ridge's faces either side the two balls'
+    // feet, the one of the ball the arriving edge's strip ends on first.
+    let passes = |fi: usize, prev: Id, v: Id| -> Option<Vec<usize>> {
+        let Some(ridge) = ridges.get(&v) else {
+            return Some(vec![at[&(fi, v)]]);
+        };
+        if fi != ridge.faces[0] && fi != ridge.faces[2] {
+            return Some(vec![at[&(fi, v)]]);
+        }
+        let seat = seats.get(&(prev.min(v), prev.max(v)))?;
+        let first = ridge.ball_of(seat)?;
+        Some(vec![
+            ridge_points[&(v, fi, first)],
+            ridge_points[&(v, fi, 1 - first)],
+        ])
+    };
     // The faces' setback polygons: none crossing itself or another, none
     // turned over.
-    let rings: Vec<super::assemble::Ring> = planar
-        .faces
-        .iter()
-        .enumerate()
-        .map(|(fi, face)| {
-            let ring = face.corners.iter().map(|v| at[&(fi, *v)]).collect();
-            (ring, vec![super::Origin::Face(fi)], Some(face.normal))
-        })
-        .collect();
+    let mut rings: Vec<super::assemble::Ring> = Vec::with_capacity(planar.faces.len());
+    for (fi, face) in planar.faces.iter().enumerate() {
+        let n = face.corners.len();
+        let mut ring = Vec::with_capacity(n);
+        for k in 0..n {
+            let Some(pts) = passes(fi, face.corners[(k + n - 1) % n], face.corners[k]) else {
+                return Ok(None);
+            };
+            ring.extend(pts);
+        }
+        rings.push((ring, vec![super::Origin::Face(fi)], Some(face.normal)));
+    }
     super::guards::rings_fit(&points, &rings, tol)?;
 
     // The sheet's edges: straight segments by their ends, and each strip's
@@ -287,6 +342,27 @@ pub(crate) fn assemble(
             let [from_face, _] = order;
             let (p0, p1) = (at[&(seat.faces[0], v)], at[&(seat.faces[1], v)]);
             if creases.contains_key(&v) {
+                continue;
+            }
+            // At a ridge the strip ends on its cap's ball, its section's arc
+            // through the ball's feet.
+            if let Some(ridge) = ridges.get(&v) {
+                let Some(k) = ridge.ball_of(seat) else {
+                    return Ok(None);
+                };
+                let (Some(&q0), Some(&q1)) = (
+                    ridge_points.get(&(v, seat.faces[0], k)),
+                    ridge_points.get(&(v, seat.faces[1], k)),
+                ) else {
+                    return Ok(None);
+                };
+                let s = (ridge.balls[k].0 - section.crease(0.0)).dot(seat.along);
+                let (curve, range) = section.arc_at(s, tol)?;
+                edges.push(SheetEdge {
+                    ends: if from_face == 0 { (q0, q1) } else { (q1, q0) },
+                    curve: Some((curve, range)),
+                });
+                arcs.insert((*edge, v), (edges.len() - 1, from_face == 0));
                 continue;
             }
             // At a mitre the second round ends on the first's end: the two
@@ -368,6 +444,23 @@ pub(crate) fn assemble(
         crease_corners.insert(v, (q, p_b, arc_edge));
     }
 
+    // At a ridge each strip's corners are its cap's ball's feet.
+    for &(&v, ridge) in &ridge_list {
+        for seat in seats_at(&keys, seats, v) {
+            if !sections.contains_key(&seat.edge) {
+                continue;
+            }
+            let Some(k) = ridge.ball_of(seat) else {
+                return Ok(None);
+            };
+            for f in seat.faces {
+                let Some(&q) = ridge_points.get(&(v, f, k)) else {
+                    return Ok(None);
+                };
+                strip_corner.insert((seat.edge, f, v), q);
+            }
+        }
+    }
     // The faces: each with whether its surface's own normal faces out of
     // the solid along its ring (wound counter-clockwise from outside).
     let mut faces: Vec<(SheetFace, bool)> = Vec::new();
@@ -384,6 +477,19 @@ pub(crate) fn assemble(
                 face.corners[k],
                 face.corners[(k + 1) % n],
             );
+            if ridges
+                .get(&v)
+                .is_some_and(|r| fi == r.faces[0] || fi == r.faces[2])
+            {
+                // Along the ridge's line on this face, from the arriving
+                // strip's ball's foot to the other's.
+                let Some(pts) = passes(fi, prev, v) else {
+                    return Ok(None);
+                };
+                let line = segment(&mut edges, pts[0], pts[1]);
+                at_corner.push((pts, Some(line)));
+                continue;
+            }
             match flush.get(&v) {
                 Some(&(third, edge)) if third == fi => {
                     // In from the face across the arriving edge, out to the
@@ -483,9 +589,19 @@ pub(crate) fn assemble(
         // its face's trim is one more thing a later operation reads. An end
         // cut by a plane leaning across the crease reaches past its corners'
         // stations between them.
+        // A ridge's strip stands level at its cap's ball.
+        let level_at = |w: Id| -> [f64; 2] {
+            ridges
+                .get(&w)
+                .and_then(|r| r.ball_of(seat))
+                .map_or(level[&(*edge, w)], |k| {
+                    let s = (ridges[&w].balls[k].0 - section.crease(0.0)).dot(seat.along);
+                    [s, s]
+                })
+        };
         let (corners_lo, corners_hi) = (
-            level[&(*edge, a)][0].min(level[&(*edge, a)][1]),
-            level[&(*edge, b)][0].max(level[&(*edge, b)][1]),
+            level_at(a)[0].min(level_at(a)[1]),
+            level_at(b)[0].max(level_at(b)[1]),
         );
         let (mut lo, mut hi) = (corners_lo, corners_hi);
         for end in path(a).into_iter().chain(path(b)) {
@@ -557,6 +673,133 @@ pub(crate) fn assemble(
         origins.push(Err(v));
     }
 
+    // Each ridge: a sphere at each ball, through its strips' ends and the
+    // ridge's arc there, and the cylinder the ball sweeps between them,
+    // bounded by its two arcs and its lines on the faces either side.
+    for &(&v, ridge) in &ridge_list {
+        let radius = ridge
+            .balls
+            .iter()
+            .map(|(c, feet)| c.distance(feet[0]))
+            .fold(0.0, f64::max);
+        let (axis_from, axis_to) = (ridge.balls[0].0, ridge.balls[1].0);
+        let along = (axis_to - axis_from).normalized(tol)?;
+        let [a, _, c, _] = ridge.faces;
+        // The ridge's arc at each ball, from its foot on `A` to its foot
+        // on `C`, the shorter way round.
+        let mut ends = [0usize; 2];
+        for k in 0..2 {
+            let (centre, _) = ridge.balls[k];
+            let (from, to) = (ridge_points[&(v, a, k)], ridge_points[&(v, c, k)]);
+            let (x, w) = (points[from] - centre, points[to] - centre);
+            let normal = x.cross(w);
+            let frame = ogeom_math::Frame::new(
+                centre,
+                ogeom_math::Direction::new(normal, tol)?,
+                ogeom_math::Direction::new(x, tol)?,
+                tol,
+            )?;
+            let y = normal.cross(x);
+            let angle = w.dot(y).atan2(w.dot(x) * normal.magnitude());
+            let circle = ogeom_geom::CircleCurve::new(ogeom_math::Circle::new(frame, radius, tol)?);
+            edges.push(SheetEdge {
+                ends: (from, to),
+                curve: Some((circle.into(), (0.0, angle))),
+            });
+            ends[k] = edges.len() - 1;
+        }
+        let ends_of = |(e, walk): (usize, bool)| {
+            let (p, q) = edges[e].ends;
+            if walk { (p, q) } else { (q, p) }
+        };
+        for k in 0..2 {
+            let here: Vec<&Seat> = seats_at(&keys, seats, v)
+                .into_iter()
+                .filter(|s| ridge.ball_of(s) == Some(k))
+                .collect();
+            // The strips' ends walked against them, as a hole's are, then
+            // the ridge's arc back to the start.
+            let mut ring: Vec<(usize, bool)> = Vec::with_capacity(3);
+            for s in &here {
+                let (arc, _) = arcs[&(s.edge, v)];
+                let face = if v == s.ends.0 {
+                    s.faces[0]
+                } else {
+                    s.faces[1]
+                };
+                ring.push((arc, edges[arc].ends.0 != ridge_points[&(v, face, k)]));
+            }
+            let [first, second] = ring[..] else {
+                return Ok(None);
+            };
+            let ring = if ends_of(first).1 == ends_of(second).0 {
+                vec![first, second]
+            } else if ends_of(second).1 == ends_of(first).0 {
+                vec![second, first]
+            } else {
+                return Ok(None);
+            };
+            let (start, tip) = (ends_of(ring[0]).0, ends_of(ring[1]).1);
+            let arc = ends[k];
+            let walk = if edges[arc].ends == (tip, start) {
+                true
+            } else if edges[arc].ends == (start, tip) {
+                false
+            } else {
+                return Ok(None);
+            };
+            let mut ring = ring;
+            ring.push((arc, walk));
+            let (centre, _) = ridge.balls[k];
+            let feet: Vec<Point> = ring.iter().map(|m| points[ends_of(*m).0]).collect();
+            let surface = crate::round::sphere::corner_sphere(centre, radius, &feet, tol)?;
+            faces.push((
+                SheetFace {
+                    surface: Some(surface),
+                    ring,
+                },
+                true,
+            ));
+            origins.push(Err(v));
+        }
+        // The cylinder: each arc walked against its sphere, the lines on
+        // `C` and `A` between.
+        let walked: Vec<(usize, bool)> = faces[faces.len() - 2..]
+            .iter()
+            .map(|(f, _)| {
+                f.ring
+                    .iter()
+                    .find(|(e, _)| ends.contains(e))
+                    .map(|(e, w)| (*e, !*w))
+            })
+            .collect::<Option<Vec<_>>>()
+            .unwrap_or_default();
+        let [arc0, arc1] = walked[..] else {
+            return Ok(None);
+        };
+        let (e0, e1) = (ends_of(arc0), ends_of(arc1));
+        let line0 = segment(&mut edges, e0.1, e1.0);
+        let line1 = segment(&mut edges, e1.1, e0.0);
+        let frame = ogeom_math::Frame::new(
+            axis_from,
+            ogeom_math::Direction::new(along, tol)?,
+            ogeom_math::Direction::new(points[ridge_points[&(v, a, 0)]] - axis_from, tol)?,
+            tol,
+        )?;
+        let surface: SurfaceGeometry = ogeom_geom::CylinderSurface::new(
+            ogeom_math::Cylinder::new(frame, radius, tol)?,
+            (0.0, axis_from.distance(axis_to)),
+        )?
+        .into();
+        faces.push((
+            SheetFace {
+                surface: Some(surface),
+                ring: vec![arc0, line0, arc1, line1],
+            },
+            true,
+        ));
+        origins.push(Err(v));
+    }
     // Built once, each face whose surface faces into the solid built on
     // its ring walked back and turned over.
     let sheet: Vec<SheetFace> = faces
@@ -618,14 +861,6 @@ pub(crate) fn assemble(
         }
         let patch = crate::round::transfinite::corner_patch(model, &sides, tol)?;
         if !(patch.gap <= fit && patch.angle <= fit) {
-            // Four sides or more: the current path keeps the vertex. Where
-            // the hole runs nearly straight on at a corner (an elongated
-            // pyramid's apex) the patch's tangent plane there is ill-posed,
-            // and the current path rounds such an apex as the rolling ball
-            // does, on two spheres and a cylinder.
-            if sides.len() >= 4 {
-                return Ok(None);
-            }
             ogeom_core::ogeom_bail!(
                 Construction,
                 "a round vertex's patch misses the bands' fit target: {:.1e} off its strips' \
@@ -1247,6 +1482,98 @@ fn mitre(
 const END_SAMPLES: u32 = 32;
 
 /// The length of a seat's edge.
+/// A convex vertex of four planes rounded at one radius on every edge
+/// where no one ball touches all four faces but one touches three at each
+/// end of a ridge: the faces either side of the ridge and the two caps, in
+/// the vertex's round order `A, B, C, D`, and each cap's ball, its centre
+/// and its feet on `A`, the cap and `C`.
+struct Ridge {
+    faces: [usize; 4],
+    balls: [(Point, [Point; 3]); 2],
+}
+
+impl Ridge {
+    /// Which ball an edge's strip ends on: the one of the cap it bounds.
+    fn ball_of(&self, seat: &Seat) -> Option<usize> {
+        if seat.faces.contains(&self.faces[1]) {
+            Some(0)
+        } else if seat.faces.contains(&self.faces[3]) {
+            Some(1)
+        } else {
+            None
+        }
+    }
+
+    /// Ball `k`'s foot on face `f`, where it touches `f`.
+    fn foot(&self, k: usize, f: usize) -> Option<Point> {
+        let (_, feet) = self.balls[k];
+        if f == self.faces[0] {
+            Some(feet[0])
+        } else if f == self.faces[1 + 2 * k] {
+            Some(feet[1])
+        } else if f == self.faces[2] {
+            Some(feet[2])
+        } else {
+            None
+        }
+    }
+}
+
+/// The [`Ridge`] at `v`, whose faces `round` are four, rounded convex at
+/// `radius`: of the two ways to pair the faces opposite, the one where the
+/// ball touching a pair and the cap between them stands clear of the other
+/// cap at each end, apart from the other ball, its feet on the caps their
+/// setback corners and on the pair within their faces. `None` where
+/// neither pairing does.
+fn ridge_at(
+    planar: &Planar,
+    round: &[usize],
+    v: Id,
+    radius: f64,
+    corners: &FastMap<(usize, Id), Point>,
+    reach: f64,
+    tol: Tolerances,
+) -> Option<Ridge> {
+    let [r0, r1, r2, r3] = round[..] else {
+        return None;
+    };
+    let plane = |f: usize| (planar.faces[f].normal, planar.points[&v]);
+    let inside = |centre: Point, f: usize| {
+        (centre - planar.points[&v]).dot(planar.faces[f].normal) <= -radius + reach
+    };
+    for faces in [[r0, r1, r2, r3], [r1, r2, r3, r0]] {
+        let [a, b, c, d] = faces;
+        let ball = |cap: usize| {
+            crate::round::sphere::corner_ball([plane(a), plane(cap), plane(c)], radius, true, tol)
+        };
+        let (Some((at_b, on_b)), Some((at_d, on_d))) = (ball(b), ball(d)) else {
+            continue;
+        };
+        if at_b.distance(at_d) <= reach || !inside(at_b, d) || !inside(at_d, b) {
+            continue;
+        }
+        let (Some(corner_b), Some(corner_d)) = (corners.get(&(b, v)), corners.get(&(d, v))) else {
+            continue;
+        };
+        if on_b[1].distance(*corner_b) > reach || on_d[1].distance(*corner_d) > reach {
+            continue;
+        }
+        let within = [on_b[0], on_d[0]]
+            .iter()
+            .all(|p| within_face(planar, a, *p, reach))
+            && [on_b[2], on_d[2]]
+                .iter()
+                .all(|p| within_face(planar, c, *p, reach));
+        if within {
+            return Some(Ridge {
+                faces,
+                balls: [(at_b, on_b), (at_d, on_d)],
+            });
+        }
+    }
+    None
+}
+
 /// The ball of `radius` touching the planes of the faces `round` vertex
 /// `v` (inside a convex vertex's material, in a concave one's open corner),
 /// found from the first three: its centre and its foot on each face's
@@ -1844,59 +2171,104 @@ mod tests {
         assert!((got - want).abs() < 1e-6, "{got} against {want}");
     }
 
-    /// The pyramid over an 8 by 6 rectangle, height 4: its long sides lean
-    /// at `atan(4/3)`, its short ones at 45 degrees, so no one ball touches
-    /// the four at the apex. Its four slant edges rounded at 1/2, the apex
-    /// closes on one four-sided patch, held to the bands' fit target on its
-    /// strips and proved inside the four planes by the engine; the base
-    /// corners end their strips on the ellipses the base cuts. The solid is
-    /// valid and keeps the pyramid's two mirrors: its centroid stands on the
-    /// axis.
-    #[test]
-    fn a_rectangular_pyramid_s_apex_closes_on_one_four_sided_patch() {
+    /// The rectangular pyramid's apex `edges` rounded at `r`, through the
+    /// engine: valid, its two spheres and the cylinder between them the
+    /// ball rolling along the ridge (every point of each the contact of a
+    /// ball of radius `r` inside the four slant planes, touching two of them
+    /// or more), no patch, and the pyramid's two mirrors kept (its centroid
+    /// on the axis).
+    fn rolls_along_its_ridge(a: f64, b: f64, h: f64, r: f64) {
+        use ogeom_math::{Point, Vector};
         let mut m = Model::new();
-        let s = pyramid(&mut m, 4.0, 3.0, 4.0);
-        let apex = ogeom_math::Point::new(0.0, 0.0, 4.0);
+        let s = pyramid(&mut m, a, b, h);
+        let apex = Point::new(0.0, 0.0, h);
         let slant = edges_through(&m, &s, apex);
         assert_eq!(slant.len(), 4);
-        let request = Request::from_rounds(
-            &slant.iter().map(|e| (e.clone(), 0.5)).collect::<Vec<_>>(),
-            T,
-        )
-        .unwrap();
+        let request =
+            Request::from_rounds(&slant.iter().map(|e| (e.clone(), r)).collect::<Vec<_>>(), T)
+                .unwrap();
         let built = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
         let found = ogeom_algo::check(&m, &built, T).unwrap();
         assert!(found.is_valid(), "{:?}", found.problems);
-        assert_eq!(count_of(&m, &built, ogeom_geom::SurfaceKind::BSpline), 1);
-        assert_eq!(count_of(&m, &built, ogeom_geom::SurfaceKind::Sphere), 0);
+        assert_eq!(count_of(&m, &built, ogeom_geom::SurfaceKind::BSpline), 0);
+        assert_eq!(count_of(&m, &built, ogeom_geom::SurfaceKind::Sphere), 2);
+        assert_eq!(count_of(&m, &built, ogeom_geom::SurfaceKind::Cylinder), 5);
+        // The slant planes, each an outward unit normal through the apex.
+        let base = [
+            Point::new(-a, -b, 0.0),
+            Point::new(a, -b, 0.0),
+            Point::new(a, b, 0.0),
+            Point::new(-a, b, 0.0),
+        ];
+        let planes: Vec<Vector> = (0..4)
+            .map(|k| {
+                let n = (base[(k + 1) % 4] - base[k]).cross(apex - base[k]);
+                n / n.magnitude()
+            })
+            .collect();
         let fine = ogeom_mesh::Deflection {
-            chord: 1e-5,
+            chord: 1e-3,
             ..ogeom_mesh::Deflection::default()
         };
-        let centre = ogeom_algo::volume_properties(&m, &built, fine, T)
-            .unwrap()
-            .centre;
+        let mut checked = 0;
+        for face in explore_unique(&m, &built, ShapeType::Face).unwrap() {
+            let d = m.node(&face).unwrap().data().as_face().unwrap();
+            let surface = m.geometry().surface(d.surface).unwrap();
+            let apex_side = matches!(surface, ogeom_geom::SurfaceGeometry::Sphere(_))
+                || matches!(surface, ogeom_geom::SurfaceGeometry::Cylinder(c)
+                    if c.cylinder().axis().direction.vector().z.abs() < 1e-9);
+            if !apex_side {
+                continue;
+            }
+            let mesh = ogeom_mesh::triangulate_face(&m, &face, fine, T).unwrap();
+            for (p, n) in mesh.positions.iter().zip(&mesh.normals) {
+                // To the mesh's own normals' accuracy.
+                let centre = *p - *n * r;
+                let gaps: Vec<f64> = planes.iter().map(|q| -(centre - apex).dot(*q)).collect();
+                assert!(
+                    gaps.iter().all(|g| *g >= r - 1e-5),
+                    "a ball past a side: {gaps:?}"
+                );
+                let touching = gaps.iter().filter(|g| (**g - r).abs() <= 1e-5).count();
+                assert!(touching >= 2, "a ball touching {touching} sides at {p:?}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 0);
+        let centre = ogeom_algo::volume_properties(
+            &m,
+            &built,
+            ogeom_mesh::Deflection {
+                chord: 1e-5,
+                ..ogeom_mesh::Deflection::default()
+            },
+            T,
+        )
+        .unwrap()
+        .centre;
         assert!(centre.x.abs() < 1e-6 && centre.y.abs() < 1e-6, "{centre:?}");
     }
 
-    /// The pyramid over a 20 by 10 rectangle, height 15, its slant edges
-    /// rounded at 1.5: the hole at the apex runs nearly straight on at its
-    /// corners on the short sides (about 149 degrees), the four-sided patch
-    /// misses the bands' fit target there, and the engine hands the request
-    /// back rather than refusing it: the current path rounds that apex on
-    /// two spheres and a cylinder (`edge_chains.rs`).
+    /// The pyramid over an 8 by 6 rectangle, height 4: its long sides lean
+    /// at `atan(4/3)`, its short ones at 45 degrees, so no one ball touches
+    /// the four at the apex; one touches the long sides and a short one at
+    /// each end of the ridge along `x`. Its four slant edges rounded at 1/2,
+    /// the apex rounds as the ball rolls along that ridge: a sphere at each
+    /// end and the cylinder between ([`rolls_along_its_ridge`]).
     #[test]
-    fn an_elongated_pyramid_s_apex_the_patch_misses_is_handed_back() {
-        let mut m = Model::new();
-        let s = pyramid(&mut m, 10.0, 5.0, 15.0);
-        let slant = edges_through(&m, &s, ogeom_math::Point::new(0.0, 0.0, 15.0));
-        assert_eq!(slant.len(), 4);
-        let request = Request::from_rounds(
-            &slant.iter().map(|e| (e.clone(), 1.5)).collect::<Vec<_>>(),
-            T,
-        )
-        .unwrap();
-        assert!(run(&mut m, &s, &request, T).unwrap().is_none());
+    fn a_rectangular_pyramid_s_apex_rounds_as_the_ball_rolls_along_its_ridge() {
+        rolls_along_its_ridge(4.0, 3.0, 4.0, 0.5);
+    }
+
+    /// The pyramid over a 20 by 10 rectangle, height 15, its slant edges
+    /// rounded at 1.5: the hole the strips leave at the apex has corners
+    /// turning back on themselves, which no patch over a square takes
+    /// soundly; the ball rolling along the ridge rounds it exactly
+    /// ([`rolls_along_its_ridge`]), as `edge_chains.rs` asks of the public
+    /// call.
+    #[test]
+    fn an_elongated_pyramid_s_apex_rounds_as_the_ball_rolls_along_its_ridge() {
+        rolls_along_its_ridge(10.0, 5.0, 15.0, 1.5);
     }
 
     /// The pyramid over the pentagon `(-3, -2)`, `(3, -2)`, `(3.5, 1.5)`,
