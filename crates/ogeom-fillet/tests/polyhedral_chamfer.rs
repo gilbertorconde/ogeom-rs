@@ -2147,3 +2147,76 @@ fn a_compound_of_two_solids_chamfers_each_as_alone() {
         );
     }
 }
+
+/// A box 30 by 40 by 20 holding a void 10 by 6 by 8 well inside it, cut by
+/// the boolean (a solid of two shells), every edge of its outer shell
+/// chamfered: the outer shell as the box alone, the void kept as it was.
+/// Valid, two shells, a face for every face, edge and vertex of the box
+/// and the void's six, the box's closed form less the void, every edge
+/// generating its bevel.
+#[test]
+fn a_box_with_a_void_chamfers_its_outside_and_keeps_the_void() {
+    let profile = vec![(0.0, 0.0), (40.0, 0.0), (40.0, 20.0), (0.0, 20.0)];
+    let d = 1.0;
+    let want = chamfered_prism_volume(&profile, 30.0, d) - 10.0 * 6.0 * 8.0;
+    let mut m = Model::new();
+    let outside = prism(&mut m, &profile, 30.0);
+    let edges = explore_unique(&m, &outside, ShapeType::Edge).unwrap();
+    let (f, e, v) = (
+        explore_unique(&m, &outside, ShapeType::Face).unwrap().len(),
+        edges.len(),
+        explore_unique(&m, &outside, ShapeType::Vertex)
+            .unwrap()
+            .len(),
+    );
+    let void = block(&mut m, (10.0, 15.0, 7.0), (10.0, 6.0, 8.0));
+    let s = ogeom_bool::cut(&mut m, &outside, &void, T).unwrap().shape;
+    assert_eq!(m.children_of(&s).unwrap().len(), 2, "a solid of two shells");
+    let outer_edges: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|edge| {
+            let b = ogeom_algo::shape_bounds(&m, edge, T).unwrap();
+            let (lo, hi) = (b.low().unwrap(), b.high().unwrap());
+            // On the box's outside: some coordinate at its bounds.
+            [lo.x, hi.x]
+                .iter()
+                .any(|x| x.abs() < 1e-6 || (x - 30.0).abs() < 1e-6)
+                || [lo.y, hi.y]
+                    .iter()
+                    .any(|y| y.abs() < 1e-6 || (y - 40.0).abs() < 1e-6)
+                || [lo.z, hi.z]
+                    .iter()
+                    .any(|z| z.abs() < 1e-6 || (z - 20.0).abs() < 1e-6)
+        })
+        .collect();
+    assert_eq!(outer_edges.len(), e, "the box's own edges");
+    let specs: Vec<(Shape, Chamfer)> = outer_edges
+        .into_iter()
+        .map(|edge| (edge, Chamfer::Symmetric(d)))
+        .collect();
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert_eq!(
+        m.children_of(&built.shape).unwrap().len(),
+        2,
+        "the void kept"
+    );
+    let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+        .unwrap()
+        .len();
+    assert_eq!(faces, f + e + v + 6, "faces");
+    let got = volume(&m, &built.shape);
+    assert!(
+        (got - want).abs() <= 1e-9 * want,
+        "volume {got} against {want}"
+    );
+    for (edge, _) in &specs {
+        assert_eq!(
+            built.history.generated(edge).len(),
+            1,
+            "an edge without its bevel"
+        );
+    }
+}
