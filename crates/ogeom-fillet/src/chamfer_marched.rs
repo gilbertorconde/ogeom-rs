@@ -472,7 +472,12 @@ pub(crate) struct CreaseContacts {
 
 /// [`CreaseContacts`] of `spec` on `edge` of `solid` at `count + 1`
 /// stations evenly over the edge's stretch of its crease, the legs walked
-/// as [`marched_bevel`] walks them. `None` where a station does not seat.
+/// as [`marched_bevel`] walks them; with `whole`, once round the whole loop
+/// of a crease that comes back to its start, from its point nearest
+/// `whole`, read as closed (the pieces of one loop the boolean left, taken
+/// as one edge), the stations' parameters run on past the crease's own join
+/// rather than wrapped. `None` where a station does not seat, or `whole` is
+/// asked of a crease that does not loop.
 ///
 /// # Errors
 ///
@@ -483,6 +488,7 @@ pub(crate) fn crease_contacts(
     edge: &Shape,
     spec: &Chamfer,
     count: u32,
+    whole: Option<Point>,
     tol: Tolerances,
 ) -> OgeomResult<Option<CreaseContacts>> {
     let reach = match spec {
@@ -499,10 +505,32 @@ pub(crate) fn crease_contacts(
         faces,
         hosts: [(first, sign_first), (second, sign_second)],
         guide,
+        guide_range,
         edge_range,
         closed,
+        loops,
         ..
     } = marched_seat(model, solid, edge, reach, tol)?;
+    let period = guide_range.1 - guide_range.0;
+    // The piece's own stretch, where the crease's convexity is read.
+    let own_range = edge_range;
+    let (edge_range, closed) = match whole {
+        Some(start) => {
+            if !loops {
+                return Ok(None);
+            }
+            let w0 = ogeom_algo::project_on_curve(&guide, start, 256, tol)?.parameter;
+            ((w0, w0 + period), true)
+        }
+        None => (edge_range, closed),
+    };
+    let wrapped = |w: f64| {
+        if whole.is_some() {
+            guide_range.0 + (w - guide_range.0).rem_euclid(period)
+        } else {
+            w
+        }
+    };
 
     let side = |face: &Shape| -> Option<usize> {
         if faces[0].is_same(face) {
@@ -547,7 +575,7 @@ pub(crate) fn crease_contacts(
         &faces[0],
         [(&first, sign_first), (&second, sign_second)],
         &guide,
-        edge_range,
+        own_range,
         reach,
         tol,
     )?;
@@ -567,7 +595,7 @@ pub(crate) fn crease_contacts(
     let mut near = None;
     for k in 0..=count {
         let w = (hi - lo).mul_add(f64::from(k) / f64::from(count), lo);
-        let found = station_at(&hosts, &guide, law, convex, w, near, tol);
+        let found = station_at(&hosts, &guide, law, convex, wrapped(w), near, tol);
         let Some(x) = found else {
             return Ok(None);
         };
