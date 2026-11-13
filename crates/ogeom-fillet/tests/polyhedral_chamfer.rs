@@ -2678,3 +2678,115 @@ fn a_pyramid_s_apex_of_three_bevels_and_a_sharp_edge_closes_on_one_patch() {
 fn a_drilled_pyramid_s_apex_of_three_bevels_and_a_sharp_edge_closes_on_one_patch() {
     three_bevels_and_a_sharp_edge_at_the_apex(true);
 }
+
+/// A box 10 by 6 by 4 with one top corner raised 5e-7 off its three faces'
+/// planes, held there by its tolerance (and its edges' and faces'), 1e-6:
+/// inexact planar input, its four top edges chamfered 0.5. The planar
+/// engine reads exact planes only; the curved path builds each edge to how
+/// far it stands off its faces. Valid, the box's six faces and four bevels
+/// (each top corner two bevels mitred across its sharp upright), each edge
+/// generating its bevel; the volume the exact box's polytope cut by each
+/// bevel's plane holds, to the raised corner's share.
+#[test]
+fn an_inexact_box_s_top_edges_chamfer_through_the_engine() {
+    use ogeom_math::Vector;
+    let (off, d) = (5e-7_f64, 0.5_f64);
+    let mut m = Model::new();
+    let points = [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(10.0, 0.0, 0.0),
+        Point::new(10.0, 6.0, 0.0),
+        Point::new(0.0, 6.0, 0.0),
+        Point::new(0.0, 0.0, 4.0),
+        Point::new(10.0, 0.0, 4.0),
+        Point::new(10.0, 6.0, 4.0 + off),
+        Point::new(0.0, 6.0, 4.0),
+    ];
+    let rings = vec![
+        vec![0, 3, 2, 1],
+        vec![4, 5, 6, 7],
+        vec![0, 1, 5, 4],
+        vec![1, 2, 6, 5],
+        vec![2, 3, 7, 6],
+        vec![3, 0, 4, 7],
+    ];
+    let s = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+        .unwrap()
+        .shape;
+    let raised = explore_unique(&m, &s, ShapeType::Vertex)
+        .unwrap()
+        .into_iter()
+        .find(|v| m.node(v).unwrap().data().as_vertex().unwrap().point.z > 4.0 + 1e-7)
+        .unwrap();
+    let wide = ogeom_core::Tolerance::new(1e-6).unwrap();
+    m.widen(&raised, wide).unwrap();
+    for kind in [ShapeType::Edge, ShapeType::Face] {
+        for x in explore_unique(&m, &s, kind).unwrap() {
+            if explore_unique(&m, &x, ShapeType::Vertex)
+                .unwrap()
+                .iter()
+                .any(|v| v.is_same(&raised))
+            {
+                m.widen(&x, wide).unwrap();
+            }
+        }
+    }
+    let found = ogeom_algo::check(&m, &s, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let top: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let b = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            b.low().unwrap().z > 3.9
+        })
+        .collect();
+    assert_eq!(top.len(), 4);
+    let built = ogeom_fillet::chamfer_edges(&mut m, &s, &top, d, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert_eq!(
+        explore_unique(&m, &built.shape, ShapeType::Face)
+            .unwrap()
+            .len(),
+        10,
+        "the box's faces and four bevels"
+    );
+    for e in &top {
+        assert_eq!(
+            built.history.generated(e).len(),
+            1,
+            "an edge without its bevel"
+        );
+    }
+    let up = Vector::new(0.0, 0.0, 1.0);
+    let mut planes = box_planes((10.0, 6.0, 4.0));
+    for (at, u, side) in [
+        (
+            Vector::new(0.0, 0.0, 4.0),
+            Vector::X,
+            Vector::new(0.0, -1.0, 0.0),
+        ),
+        (Vector::new(10.0, 0.0, 4.0), Vector::Y, Vector::X),
+        (
+            Vector::new(10.0, 6.0, 4.0),
+            Vector::new(-1.0, 0.0, 0.0),
+            Vector::Y,
+        ),
+        (
+            Vector::new(0.0, 6.0, 4.0),
+            Vector::new(0.0, -1.0, 0.0),
+            Vector::new(-1.0, 0.0, 0.0),
+        ),
+    ] {
+        planes.push(bevel_plane(at, u, (up, d), (side, d)));
+    }
+    let (want, faces) = convex_polytope(&planes);
+    assert_eq!(faces, 10);
+    // The raised corner lifts the top by at most its rise over its area.
+    let got = volume(&m, &built.shape);
+    assert!(
+        (got - want).abs() <= 10.0 * 6.0 * off,
+        "volume {got} against {want}"
+    );
+}
