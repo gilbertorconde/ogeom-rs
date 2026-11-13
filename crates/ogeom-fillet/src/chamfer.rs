@@ -451,11 +451,12 @@ pub(crate) fn engine_chamfer(
     )))
 }
 
-/// [`engine_chamfer`] closing each vertex of three chamfers by their mitre,
-/// on a solid bounded by planes only: the bevels run on to the point their
+/// [`engine_chamfer`] closing each vertex of three chamfers by their mitre:
+/// on a solid bounded by planes the bevels run on to the point their
 /// planes share, or, at a convex vertex of four or more sharing none, until
-/// the others cut them. `None` elsewhere, the model then left as it was
-/// found.
+/// the others cut them; on curved faces to the point their surfaces share,
+/// meeting each other along their sections from there. `None` elsewhere,
+/// the model then left as it was found.
 ///
 /// # Errors
 ///
@@ -496,13 +497,35 @@ fn engine_chamfer_mitred_attempt(
     ) {
         return Ok(None);
     }
-    let Some(mut request) = crate::engine::Request::from_chamfers(model, &solid, &specs, tol)?
-    else {
+    if let Some(mut request) = crate::engine::Request::from_chamfers(model, &solid, &specs, tol)? {
+        request.mitre = true;
+        if let Some(built) = crate::engine::run(model, &solid, &request, tol)? {
+            return Ok(Some(Built::new(
+                built.shape,
+                baked.history.then(&built.history),
+            )));
+        }
+    }
+    // A solid with curved faces: mitred on the curved path, its seams
+    // dissolved where it holds any.
+    if crate::engine::bounded_by_planes(model, &solid, tol)? {
         return Ok(None);
-    };
-    request.mitre = true;
-    let Some(built) = crate::engine::run(model, &solid, &request, tol)? else {
-        return Ok(None);
+    }
+    let built = if let Some(seamless) = crate::engine::dissolve_curved(model, &solid, tol)? {
+        let Some(specs) = seamless.specs(&specs) else {
+            return Ok(None);
+        };
+        let Some(built) =
+            crate::engine::chamfer_curved_mitred(model, &seamless.solid, &specs, tol)?
+        else {
+            return Ok(None);
+        };
+        Built::new(built.shape, seamless.carry(&built.history))
+    } else {
+        let Some(built) = crate::engine::chamfer_curved_mitred(model, &solid, &specs, tol)? else {
+            return Ok(None);
+        };
+        built
     };
     Ok(Some(Built::new(
         built.shape,
