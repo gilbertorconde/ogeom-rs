@@ -745,7 +745,8 @@ pub fn fillet_edges_with(
 }
 
 /// The rounds of `edges` built by the blend engine in one pass, where the
-/// solid is bounded by planes and every vertex is one the engine closes;
+/// solid is bounded by planes and every vertex is one the engine closes, or
+/// where every edge asked is a rim between a planar cap and a coaxial wall;
 /// `None` leaves the request to the current path. An edge asked twice at
 /// one radius is asked once.
 fn rounds_by_engine(
@@ -770,7 +771,15 @@ fn rounds_by_engine(
         return Ok(None);
     }
     let request = crate::engine::Request::from_rounds(&once, tol)?;
-    crate::engine::run(model, solid, &request, tol)
+    if let Some(built) = crate::engine::run(model, solid, &request, tol)? {
+        return Ok(Some(built));
+    }
+    // A solid with curved faces: rims between a planar cap and a coaxial
+    // cylinder or cone, each the torus its ball sweeps.
+    if crate::engine::bounded_by_planes(model, solid, tol)? {
+        return Ok(None);
+    }
+    crate::engine::round_rims(model, solid, &once, tol)
 }
 
 /// [`fillet_edges_with`] on a shape every node below which is its own, its

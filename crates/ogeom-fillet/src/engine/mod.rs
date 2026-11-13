@@ -33,13 +33,6 @@ mod consumed;
 mod curved;
 mod guards;
 mod request;
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "rounds of curved solids go through it from the M3 switch on"
-    )
-)]
 mod rims;
 mod rounds;
 mod seams;
@@ -49,6 +42,7 @@ mod trimmed;
 mod vertices;
 
 pub(crate) use request::{Request, Section};
+pub(crate) use rims::assemble as round_rims;
 pub(crate) use seams::{Dissolved, dissolve, dissolve_curved, is_seam};
 pub(crate) use trimmed::{
     chamfer as chamfer_curved, chamfer_mitred as chamfer_curved_mitred, chamfer_patched,
