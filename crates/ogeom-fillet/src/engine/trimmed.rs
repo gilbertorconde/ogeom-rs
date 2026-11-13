@@ -899,13 +899,13 @@ fn sphere_rim(
 }
 
 /// A rim between a planar cap square to a torus's axis and the torus, the
-/// material inside its tube: in the meridian half-plane through a point of
-/// the rim, `(rho, z)` from the torus's centre along its axis, the leg on
-/// the cap runs straight along it and the leg on the wall round the tube's
-/// circle, and the bevel is the cone through the two contact rings. `None`
-/// where the faces are not such a plane and torus, the rim is not
-/// coaxial, the edge is not convex, or the legs leave no bevel inside the
-/// tube.
+/// material inside its tube or outside it (a groove): in the meridian
+/// half-plane through a point of the rim, `(rho, z)` from the torus's
+/// centre along its axis, the leg on the cap runs straight along it and the
+/// leg on the wall round the tube's circle, and the bevel is the cone
+/// through the two contact rings. `None` where the faces are not such a
+/// plane and torus, the rim is not coaxial, the edge is not convex, or the
+/// legs leave no bevel in the material.
 fn torus_rim(
     curved: &Curved,
     edge: Id,
@@ -926,9 +926,12 @@ fn torus_rim(
     else {
         return Ok(None);
     };
-    if curved.faces[faces[wall]].reversed {
-        return Ok(None);
-    }
+    // The material inside the tube, or outside it (a groove).
+    let within: f64 = if curved.faces[faces[wall]].reversed {
+        -1.0
+    } else {
+        1.0
+    };
     let torus = torus.torus();
     let frame = torus.frame();
     let (o, a) = (frame.origin(), frame.z().vector());
@@ -957,7 +960,7 @@ fn torus_rim(
     // which way along the cap from the rim the cap lies (toward the axis
     // where it has no other edge).
     let cap_up = up.dot(a).signum();
-    let wall_out = ((rim_rho - big) / small, rim_z / small);
+    let wall_out = (within * (rim_rho - big) / small, within * rim_z / small);
     let edge_ids: Vec<Id> = curved.faces[faces[cap]]
         .loops
         .iter()
@@ -1037,10 +1040,16 @@ fn torus_rim(
                     let b = rel.0.mul_add(dir.0, rel.1 * dir.1);
                     let k = rel.0.mul_add(rel.0, rel.1 * rel.1) - small * small;
                     let disc = b.mul_add(b, -k);
-                    if k >= 0.0 || disc < 0.0 {
+                    // Inside the tube the contact stands in it and the line
+                    // leaves through the far root; outside, it first meets
+                    // the tube at the near one.
+                    if within * k >= 0.0 || disc < 0.0 {
                         return Ok(None);
                     }
-                    let t = -b + disc.sqrt();
+                    let t = -b + within * disc.sqrt();
+                    if t <= eps {
+                        return Ok(None);
+                    }
                     let w = (t.mul_add(dir.0, c.0), t.mul_add(dir.1, c.1));
                     let beta = w.1.atan2(w.0 - big);
                     let mut swept = turn * (beta - alpha);
@@ -1055,7 +1064,7 @@ fn torus_rim(
                     let w = on_tube(d);
                     let b = turn.mul_add(d / small, alpha);
                     let back = (turn * b.sin(), -turn * b.cos());
-                    let into = (-b.cos(), -b.sin());
+                    let into = (-within * b.cos(), -within * b.sin());
                     let dir = (
                         back.0.mul_add(phi.cos(), into.0 * phi.sin()),
                         back.1.mul_add(phi.cos(), into.1 * phi.sin()),
@@ -2460,7 +2469,7 @@ fn material(curved: &Curved, face: usize) -> Option<ogeom_algo::HalfSpaces> {
                 inside,
             })
         }
-        SurfaceGeometry::Torus(torus) if inside => {
+        SurfaceGeometry::Torus(torus) => {
             let torus = torus.torus();
             let frame = torus.frame();
             Some(ogeom_algo::HalfSpaces::Tube {
@@ -2468,6 +2477,7 @@ fn material(curved: &Curved, face: usize) -> Option<ogeom_algo::HalfSpaces> {
                 axis: frame.z().vector(),
                 major: torus.major_radius(),
                 minor: torus.minor_radius(),
+                inside,
             })
         }
         _ => None,
