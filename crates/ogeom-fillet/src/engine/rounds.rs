@@ -188,31 +188,33 @@ pub(crate) fn assemble(
                 mitres.insert(v, (pair, normal));
                 RoundVertex::Mitre
             }
-            (3, 3) => {
+            // Rounds at every edge: one ball touching every face at its
+            // setback corner, or the patch, at three edges or four of one
+            // sense.
+            (n, k) if n >= 3 && k == n => {
                 let radius = sections[&blended[0].edge].1;
                 let convex = blended[0].convex;
                 let alike = blended.iter().all(|s| {
                     s.convex == convex && sections[&s.edge].1 == radius && stands_level(s.edge, v)
                 });
-                let planes = [round[0], round[1], round[2]]
-                    .map(|f| (planar.faces[f].normal, planar.points[&v]));
                 let ball = if alike {
-                    crate::round::sphere::corner_ball(planes, radius, convex, tol)
+                    one_ball(planar, &round, v, radius, convex, tol)
                 } else {
                     None
                 };
-                // One ball touching the three faces at their setback
-                // corners, or the patch.
                 match ball {
                     Some((_, feet))
                         if round
                             .iter()
-                            .enumerate()
-                            .all(|(k, f)| feet[k].distance(corners[&(*f, v)]) <= reach) =>
+                            .zip(&feet)
+                            .all(|(f, foot)| foot.distance(corners[&(*f, v)]) <= reach) =>
                     {
                         RoundVertex::Sphere
                     }
-                    _ => RoundVertex::Patch,
+                    _ if n == 3 || (n == 4 && blended.iter().all(|s| s.convex == convex)) => {
+                        RoundVertex::Patch
+                    }
+                    _ => return Ok(None),
                 }
             }
             _ => return Ok(None),
@@ -466,14 +468,10 @@ pub(crate) fn assemble(
         let seat = here[0];
         let radius = sections[&seat.edge].1;
         let round = faces_round(&planar.faces, v).unwrap_or_default();
-        let planes =
-            [round[0], round[1], round[2]].map(|f| (planar.faces[f].normal, planar.points[&v]));
-        let Some((centre, feet)) =
-            crate::round::sphere::corner_ball(planes, radius, seat.convex, tol)
-        else {
+        let Some((centre, feet)) = one_ball(planar, &round, v, radius, seat.convex, tol) else {
             return Ok(None);
         };
-        let surface = crate::round::sphere::triangle_sphere(centre, radius, feet, tol)?;
+        let surface = crate::round::sphere::corner_sphere(centre, radius, &feet, tol)?;
         faces.push((
             SheetFace {
                 surface: Some(surface),
@@ -521,7 +519,7 @@ pub(crate) fn assemble(
             .iter()
             .map(|s| (arcs[&(s.edge, v)].0, s.edge))
             .collect();
-        let mut sides = Vec::with_capacity(3);
+        let mut sides = Vec::with_capacity(ring.len());
         for (e, walk) in &ring {
             let strip = strip_face[&owner[e]];
             let (a, b) = edges[*e].ends;
@@ -542,11 +540,16 @@ pub(crate) fn assemble(
                 support,
             });
         }
-        let Ok(sides) = <[crate::round::transfinite::HoleSide; 3]>::try_from(sides) else {
-            return Ok(None);
-        };
         let patch = crate::round::transfinite::corner_patch(model, &sides, tol)?;
         if !(patch.gap <= fit && patch.angle <= fit) {
+            // Four sides or more: the current path keeps the vertex. Where
+            // the hole runs nearly straight on at a corner (an elongated
+            // pyramid's apex) the patch's tangent plane there is ill-posed,
+            // and the current path rounds such an apex as the rolling ball
+            // does, on two spheres and a cylinder.
+            if sides.len() >= 4 {
+                return Ok(None);
+            }
             ogeom_core::ogeom_bail!(
                 Construction,
                 "a round vertex's patch misses the bands' fit target: {:.1e} off its strips' \
@@ -919,6 +922,34 @@ fn mitre(
 const END_SAMPLES: u32 = 32;
 
 /// The length of a seat's edge.
+/// The ball of `radius` touching the planes of the faces `round` vertex
+/// `v` (inside a convex vertex's material, in a concave one's open corner),
+/// found from the first three: its centre and its foot on each face's
+/// plane, in turn. `None` where the first three planes meet in no single
+/// point; a foot off its plane where the ball misses that face.
+fn one_ball(
+    planar: &Planar,
+    round: &[usize],
+    v: Id,
+    radius: f64,
+    convex: bool,
+    tol: Tolerances,
+) -> Option<(Point, Vec<Point>)> {
+    let plane = |f: usize| (planar.faces[f].normal, planar.points[&v]);
+    let three = [
+        plane(*round.first()?),
+        plane(*round.get(1)?),
+        plane(*round.get(2)?),
+    ];
+    let (centre, _) = crate::round::sphere::corner_ball(three, radius, convex, tol)?;
+    let off = if convex { -radius } else { radius };
+    let feet = round
+        .iter()
+        .map(|f| centre - planar.faces[*f].normal * off)
+        .collect();
+    Some((centre, feet))
+}
+
 fn section_length(planar: &Planar, seat: &Seat) -> f64 {
     planar.points[&seat.ends.0].distance(planar.points[&seat.ends.1])
 }
@@ -1378,6 +1409,169 @@ mod tests {
         let want = 480.0 - spandrel * (10.0 + 8.0) + r * r * r * (5.0 / 3.0 - pi / 2.0);
         let v = volume(&m, &built[0]);
         assert!((v - want).abs() < 1e-6, "{v} against {want}");
+    }
+
+    /// The pyramid over the rectangle `|x| <= a`, `|y| <= b` at `z = 0`
+    /// with its apex at `(0, 0, h)`.
+    fn pyramid(m: &mut Model, a: f64, b: f64, h: f64) -> Shape {
+        use ogeom_math::Point;
+        let points = [
+            Point::new(-a, -b, 0.0),
+            Point::new(a, -b, 0.0),
+            Point::new(a, b, 0.0),
+            Point::new(-a, b, 0.0),
+            Point::new(0.0, 0.0, h),
+        ];
+        let rings = vec![
+            vec![0, 3, 2, 1],
+            vec![0, 1, 4],
+            vec![1, 2, 4],
+            vec![2, 3, 4],
+            vec![3, 0, 4],
+        ];
+        ogeom_algo::make_polyhedron(m, &points, &rings, T)
+            .unwrap()
+            .shape
+    }
+
+    /// The edges of `s` through the point `p`.
+    fn edges_through(m: &Model, s: &Shape, p: ogeom_math::Point) -> Vec<Shape> {
+        explore_unique(m, s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                let (a, b) = ogeom_algo::edge_vertices(m, e).unwrap().unwrap();
+                [a, b].iter().any(|v| {
+                    let q = m.node(v).unwrap().data().as_vertex().unwrap().point;
+                    q.distance(p) < 1e-9
+                })
+            })
+            .collect()
+    }
+
+    /// The square pyramid of side 6 and height 4 has an insphere of radius
+    /// 3/2, its four sides at the apex tangent to one ball as at every
+    /// corner. Every edge rounded at 1/2, each vertex closes on a sphere,
+    /// the apex's a spherical quadrilateral, and the solid is the inner
+    /// parallel body at 1/2 (the pyramid scaled by 2/3 about the insphere's
+    /// centre) swept by the ball, whose volume is Steiner's
+    /// `V' + S' r + M' r^2 + 4/3 pi r^3`, `M'` the sum over the edges of
+    /// their lengths times their outer angles over two: the base edges'
+    /// `pi - atan(4/3)`, the slant edges' (of length `sqrt 34`)
+    /// `acos(9/25)`, between their sides' normals `(0, -4, 3)/5` and
+    /// `(4, 0, 3)/5`.
+    #[test]
+    fn a_square_pyramid_s_apex_rounds_on_the_ball_its_four_sides_touch() {
+        use core::f64::consts::PI;
+        let mut m = Model::new();
+        let s = pyramid(&mut m, 3.0, 3.0, 4.0);
+        let r = 0.5;
+        let edges = explore_unique(&m, &s, ShapeType::Edge).unwrap();
+        assert_eq!(edges.len(), 8);
+        let request =
+            Request::from_rounds(&edges.iter().map(|e| (e.clone(), r)).collect::<Vec<_>>(), T)
+                .unwrap();
+        let built = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+        let found = ogeom_algo::check(&m, &built, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert_eq!(count_of(&m, &built, ogeom_geom::SurfaceKind::Sphere), 5);
+        let k = (1.5 - r) / 1.5;
+        let (v, area) = (48.0, 96.0);
+        let mean = 4.0 * 6.0 * (PI - 4.0f64.atan2(3.0)) / 2.0
+            + 4.0 * 34.0f64.sqrt() * (9.0f64 / 25.0).acos() / 2.0;
+        let want = k.powi(3) * v + k * k * area * r + k * mean * r * r + 4.0 / 3.0 * PI * r.powi(3);
+        let got = volume(&m, &built);
+        assert!((got - want).abs() < 1e-6, "{got} against {want}");
+    }
+
+    /// The right pyramid over a regular hexagon of circumradius 3, height
+    /// 4: its six sides at the apex touch one ball.
+    /// Every edge rounded at 1/2, every vertex closes on a sphere, the
+    /// apex's a spherical hexagon, and the volume is Steiner's.
+    #[test]
+    fn a_hexagonal_pyramid_s_apex_of_six_edges_rounds_on_one_sphere() {
+        use ogeom_math::Point;
+        let mut points: Vec<Point> = (0..6)
+            .map(|k| {
+                let t = f64::from(k) * core::f64::consts::PI / 3.0;
+                Point::new(3.0 * t.cos(), 3.0 * t.sin(), 0.0)
+            })
+            .collect();
+        points.push(Point::new(0.0, 0.0, 4.0));
+        let mut rings = vec![vec![5, 4, 3, 2, 1, 0]];
+        rings.extend((0..6).map(|k| vec![k, (k + 1) % 6, 6]));
+        let mut m = Model::new();
+        let s = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+            .unwrap()
+            .shape;
+        let r = 0.5;
+        let edges = explore_unique(&m, &s, ShapeType::Edge).unwrap();
+        assert_eq!(edges.len(), 12);
+        let request =
+            Request::from_rounds(&edges.iter().map(|e| (e.clone(), r)).collect::<Vec<_>>(), T)
+                .unwrap();
+        let built = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+        let found = ogeom_algo::check(&m, &built, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert_eq!(count_of(&m, &built, ogeom_geom::SurfaceKind::Sphere), 7);
+        let want = steiner(&points, &rings, r);
+        let got = volume(&m, &built);
+        assert!((got - want).abs() < 1e-6, "{got} against {want}");
+    }
+
+    /// The pyramid over an 8 by 6 rectangle, height 4: its long sides lean
+    /// at `atan(4/3)`, its short ones at 45 degrees, so no one ball touches
+    /// the four at the apex. Its four slant edges rounded at 1/2, the apex
+    /// closes on one four-sided patch, held to the bands' fit target on its
+    /// strips and proved inside the four planes by the engine; the base
+    /// corners end their strips on the ellipses the base cuts. The solid is
+    /// valid and keeps the pyramid's two mirrors: its centroid stands on the
+    /// axis.
+    #[test]
+    fn a_rectangular_pyramid_s_apex_closes_on_one_four_sided_patch() {
+        let mut m = Model::new();
+        let s = pyramid(&mut m, 4.0, 3.0, 4.0);
+        let apex = ogeom_math::Point::new(0.0, 0.0, 4.0);
+        let slant = edges_through(&m, &s, apex);
+        assert_eq!(slant.len(), 4);
+        let request = Request::from_rounds(
+            &slant.iter().map(|e| (e.clone(), 0.5)).collect::<Vec<_>>(),
+            T,
+        )
+        .unwrap();
+        let built = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+        let found = ogeom_algo::check(&m, &built, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert_eq!(count_of(&m, &built, ogeom_geom::SurfaceKind::BSpline), 1);
+        assert_eq!(count_of(&m, &built, ogeom_geom::SurfaceKind::Sphere), 0);
+        let fine = ogeom_mesh::Deflection {
+            chord: 1e-5,
+            ..ogeom_mesh::Deflection::default()
+        };
+        let centre = ogeom_algo::volume_properties(&m, &built, fine, T)
+            .unwrap()
+            .centre;
+        assert!(centre.x.abs() < 1e-6 && centre.y.abs() < 1e-6, "{centre:?}");
+    }
+
+    /// The pyramid over a 20 by 10 rectangle, height 15, its slant edges
+    /// rounded at 1.5: the hole at the apex runs nearly straight on at its
+    /// corners on the short sides (about 149 degrees), the four-sided patch
+    /// misses the bands' fit target there, and the engine hands the request
+    /// back rather than refusing it: the current path rounds that apex on
+    /// two spheres and a cylinder (`edge_chains.rs`).
+    #[test]
+    fn an_elongated_pyramid_s_apex_the_patch_misses_is_handed_back() {
+        let mut m = Model::new();
+        let s = pyramid(&mut m, 10.0, 5.0, 15.0);
+        let slant = edges_through(&m, &s, ogeom_math::Point::new(0.0, 0.0, 15.0));
+        assert_eq!(slant.len(), 4);
+        let request = Request::from_rounds(
+            &slant.iter().map(|e| (e.clone(), 1.5)).collect::<Vec<_>>(),
+            T,
+        )
+        .unwrap();
+        assert!(run(&mut m, &s, &request, T).unwrap().is_none());
     }
 
     /// A 4 by 3 rectangle at `x = 0` swept along `(10, 3, 0)`: its caps
