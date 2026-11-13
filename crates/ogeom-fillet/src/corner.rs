@@ -102,13 +102,35 @@ pub(crate) fn round_vertex_with(
     forced: Option<usize>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    match corner_at(model, solid, vertex, radius, tol)? {
+    let mut built = match corner_at(model, solid, vertex, radius, tol)? {
         Corner::Curved(corner) => {
             crate::corner_curved::curved_corner(model, solid, vertex, corner, radius, tol)
         }
         Corner::Setback(corner, m) => setback_corner(model, solid, vertex, corner, &m, radius, tol),
         Corner::OneBall(one) => one_ball_corner(model, solid, vertex, &one, radius, forced, tol),
+    }?;
+    // A vertex's solid image supports the corner tool's callers, but it does
+    // not identify the patch for a client naming faces. Record the new faces
+    // separately, before later bands split or consume them. This uses boolean
+    // ancestry, not the patch's surface kind or distance from the vertex.
+    for face in corner_faces(model, solid, &built)? {
+        built.history.generate(vertex, face);
     }
+    Ok(built)
+}
+
+/// Faces introduced by a corner, excluding every image of an input face.
+fn corner_faces(model: &Model, solid: &Shape, built: &Built) -> OgeomResult<Vec<Shape>> {
+    let inherited: Vec<Shape> = ogeom_topo::explore_unique(model, solid, ShapeType::Face)?
+        .iter()
+        .flat_map(|face| built.history.trace(face).to_vec())
+        .collect();
+    Ok(
+        ogeom_topo::explore_unique(model, &built.shape, ShapeType::Face)?
+            .into_iter()
+            .filter(|face| !inherited.iter().any(|image| image.is_same(face)))
+            .collect(),
+    )
 }
 
 /// The kind of corner a vertex of a solid is to a ball of some radius.
@@ -709,6 +731,7 @@ fn vertices_together(
         }
     }
     let mut tools = Vec::with_capacity(corners.len());
+    let mut tool_faces = Vec::with_capacity(corners.len());
     let mut history = ogeom_algo::History::new();
     for one in &corners {
         let n = one.m.len();
@@ -722,13 +745,36 @@ fn vertices_together(
         let Some(tool) = tool.transpose()? else {
             return Ok(None);
         };
+        tool_faces.push(ogeom_topo::explore_unique(
+            model,
+            &tool.shape,
+            ShapeType::Face,
+        )?);
         history = history.then(&tool.history);
         tools.push(tool.shape);
     }
     let compound = model.add_compound(&tools)?;
     let rounded = ogeom_bool::cut(model, solid, &compound, tol)?;
     let mut history = history.then(&rounded.history);
-    for vertex in vertices {
+    let patches = corner_faces(
+        model,
+        solid,
+        &Built {
+            shape: rounded.shape.clone(),
+            history: history.clone(),
+        },
+    )?;
+    for (vertex, faces) in vertices.iter().zip(tool_faces) {
+        // Every tool owns its own corner, even when several are cut in one
+        // boolean. A whole result solid cannot distinguish those patches.
+        for patch in &patches {
+            if faces
+                .iter()
+                .any(|face| history.trace(face).iter().any(|f| f.is_same(patch)))
+            {
+                history.generate(vertex, patch.clone());
+            }
+        }
         history.modify(vertex, rounded.shape.clone());
     }
     Ok(Some(Built {
@@ -1726,6 +1772,68 @@ mod tests {
                 .unwrap()
                 .len()
         })
+    }
+
+    /// The public face ancestry must identify each patch, rather than returning
+    /// the whole rounded solid for every vertex. The sphere's analytic centre
+    /// independently distinguishes the eight corners.
+    #[test]
+    fn generated_corner_faces_belong_to_their_own_vertices() {
+        let mut model = Model::new();
+        let solid =
+            ogeom_algo::make_box(&mut model, ogeom_math::Frame::WORLD, (10.0, 10.0, 10.0), T)
+                .unwrap()
+                .shape;
+        let vertices = ogeom_topo::explore_unique(&model, &solid, ShapeType::Vertex).unwrap();
+        let together = round_vertices_together(&mut model, &solid, &vertices, 1.0, T)
+            .unwrap()
+            .unwrap();
+        for vertex in &vertices {
+            let single = round_vertex_with(&mut model, &solid, vertex, 1.0, None, T).unwrap();
+            let point = model
+                .node(vertex)
+                .unwrap()
+                .data()
+                .as_vertex()
+                .unwrap()
+                .point;
+            let inward = |x: f64| if x < 5.0 { 1.0 } else { 9.0 };
+            let centre = Point::new(inward(point.x), inward(point.y), inward(point.z));
+            for built in [&single, &together] {
+                // Before the bands are cut there are three planar caps beside
+                // the sphere. All four faces are new, and have this vertex as
+                // their source; the bands later consume the caps.
+                assert_eq!(built.history.generated(vertex).len(), 4);
+                let mut spheres = 0;
+                for patch in built.history.generated(vertex) {
+                    assert_eq!(model.kind_of(patch).unwrap(), ShapeType::Face);
+                    let surface = model.node(patch).unwrap().data().as_face().unwrap().surface;
+                    match model.geometry().surface(surface) {
+                        Some(ogeom_geom::SurfaceGeometry::Sphere(sphere)) => {
+                            spheres += 1;
+                            assert!(sphere.sphere().centre().distance(centre) < T.confusion());
+                            assert!((sphere.sphere().radius() - 1.0).abs() < T.confusion());
+                        }
+                        Some(ogeom_geom::SurfaceGeometry::Plane(_)) => {}
+                        _ => panic!("a box corner has only its sphere and caps"),
+                    }
+                }
+                assert_eq!(spheres, 1);
+            }
+        }
+        // Generation must survive composition with all twelve bands.
+        let edges = ogeom_topo::explore_unique(&model, &solid, ShapeType::Edge).unwrap();
+        let fillet = crate::fillet_edges(&mut model, &solid, &edges, 1.0, T).unwrap();
+        let faces = ogeom_topo::explore_unique(&model, &fillet.shape, ShapeType::Face).unwrap();
+        for vertex in &vertices {
+            let patches: Vec<_> = fillet
+                .history
+                .generated(vertex)
+                .iter()
+                .filter(|image| faces.iter().any(|f| f.is_same(image)))
+                .collect();
+            assert_eq!(patches.len(), 1, "composed history lost a corner patch");
+        }
     }
 
     /// Corners whose tools and balls stand clear of each other are cut in
