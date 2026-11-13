@@ -118,8 +118,8 @@ pub(super) fn tangent_rounds(
         for _ in 0..3 {
             let mut beside: Vec<usize> = Vec::new();
             for &t in &reached {
-                for h in 3 * t..3 * t + 3 {
-                    let Some(g) = adjacency.twin[h] else {
+                for &slot in &adjacency.twin[3 * t..3 * t + 3] {
+                    let Some(g) = slot else {
                         continue;
                     };
                     let other = g / 3;
@@ -506,8 +506,8 @@ fn round_between(
     let ruling = |flank: usize| -> Option<(Point, Vector)> {
         let mut ends: Vec<Point> = Vec::new();
         for &t in tris {
-            for h in 3 * t..3 * t + 3 {
-                if adjacency.twin[h].is_some_and(|g| planes.of[g / 3] == flank) {
+            for (h, &slot) in adjacency.twin.iter().enumerate().skip(3 * t).take(3) {
+                if slot.is_some_and(|g| planes.of[g / 3] == flank) {
                     let (p, q) = from_to(triangles, h);
                     ends.extend([points[p as usize], points[q as usize]]);
                 }
@@ -626,8 +626,8 @@ pub(super) fn tangent_blends(
         };
         let mut beside: Vec<usize> = Vec::new();
         for &t in region {
-            for h in 3 * t..3 * t + 3 {
-                let Some(g) = adjacency.twin[h] else {
+            for &slot in &adjacency.twin[3 * t..3 * t + 3] {
+                let Some(g) = slot else {
                     continue;
                 };
                 let other = g / 3;

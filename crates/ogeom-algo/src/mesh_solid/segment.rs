@@ -86,8 +86,8 @@ pub(super) fn coplanar_groups(
             rim.clear();
             let grown = members.len();
             while let Some(t) = stack.pop() {
-                for h in 3 * t..3 * t + 3 {
-                    let Some(twin) = adjacency.twin[h] else {
+                for &slot in &adjacency.twin[3 * t..3 * t + 3] {
+                    let Some(twin) = slot else {
                         continue;
                     };
                     let other = twin / 3;

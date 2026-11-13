@@ -1653,8 +1653,8 @@ fn enclosed_wide(
         return false;
     }
     let mut across = Vec::with_capacity(3);
-    for h in 3 * t..3 * t + 3 {
-        let Some(twin) = adjacency.twin[h] else {
+    for &slot in &adjacency.twin[3 * t..3 * t + 3] {
+        let Some(twin) = slot else {
             return false;
         };
         let o = groups.of[twin / 3];

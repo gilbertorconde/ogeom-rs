@@ -8019,8 +8019,8 @@ fn fill(
             let width = (tol.confusion() * 1e3).max(section.tolerance * 3.0);
             let mid = at(f64::midpoint(lo, hi))?;
             let mut hugged: Vec<&BoundaryEdge> = Vec::new();
-            for side in 0..2 {
-                if !piece.hugs[side] {
+            for (side, &hugs) in piece.hugs.iter().enumerate().take(2) {
+                if !hugs {
                     continue;
                 }
                 let face = if side == 0 {

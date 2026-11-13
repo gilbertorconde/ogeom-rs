@@ -348,8 +348,8 @@ pub(super) fn orient(
         let mut open = false;
         while let Some(t) = stack.pop() {
             let mine = flip[t].unwrap_or(false);
-            for h in 3 * t..3 * t + 3 {
-                let Some(g) = adjacency.twin[h] else {
+            for (h, &slot) in adjacency.twin.iter().enumerate().skip(3 * t).take(3) {
+                let Some(g) = slot else {
                     open = true;
                     continue;
                 };

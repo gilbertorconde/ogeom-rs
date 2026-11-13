@@ -2581,8 +2581,8 @@ impl TrimIndex {
                     index.cells[i * TRIM_CELLS + j].push(k);
                 }
             }
-            for j in j0..=j1 {
-                index.bands[j].push(k);
+            for band in &mut index.bands[j0..=j1] {
+                band.push(k);
             }
         }
         index

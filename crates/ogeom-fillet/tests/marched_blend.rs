@@ -297,8 +297,7 @@ fn a_cylinder_square_on_a_plane_rounds_the_same_on_patches() {
     let blend = march_blend(&ground, &wall, radius, &guide, options(), T).unwrap();
     assert_eq!(blend.stopped, BlendStop::Closed, "a rim closes on itself");
     assert_seated(&blend, &ground, &wall, radius);
-    for i in 0..blend.len() {
-        let centre = blend.spine[i];
+    for &centre in blend.spine.iter().take(blend.len()) {
         assert!(
             (centre.x.hypot(centre.y) - (bore + radius)).abs() < 1e-8,
             "the spine is a circle of radius {}: {}",

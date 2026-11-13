@@ -3184,8 +3184,8 @@ impl Fit<'_> {
         for node in torn {
             spoiled.push(classes.find(node).0);
         }
-        for chain in 0..chains {
-            if holding.conflicted[chain] {
+        for (chain, &conflicted) in holding.conflicted.iter().enumerate().take(chains) {
+            if conflicted {
                 spoiled.push(classes.find(chain).0);
             }
         }
