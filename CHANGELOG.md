@@ -38,6 +38,12 @@ bump may break the API and a patch bump may not.
 
 ### Fixed
 
+- **Distances to faces with shifted periodic trims.** Point and shape
+  distances keep the face's whole periodic chart window when preparing its
+  surface, and fold projected parameters into the rings' window before
+  testing containment. A torus seamed on a negative or later turn measures
+  its tube's radial offsets independently of the seam.
+
 - **Bevels meeting at a face's reflex corner left a notch.** Two edges of
   one face chamfered where they meet at the face's inside corner (an L's
   end face, the top of an L-shaped block) each stopped at the vertex, and
