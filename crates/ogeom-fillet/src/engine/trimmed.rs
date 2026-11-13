@@ -108,21 +108,47 @@ pub(crate) fn chamfer(
         };
         bevels.push(bevel);
     }
+    // A wall the bevels of its two rims consume: its strips meet along
+    // their ridge instead.
+    let Some(bands) = consumed_bands(&curved, &mut bevels, tol)? else {
+        return Ok(None);
+    };
     let mut contacts: FastMap<(usize, Id), Curve> = FastMap::default();
     for b in &bevels {
         for k in 0..2 {
-            contacts.insert((b.faces[k], b.edge), b.contacts[k].clone());
+            if !bands.faces.contains(&b.faces[k]) {
+                contacts.insert((b.faces[k], b.edge), b.contacts[k].clone());
+            }
         }
     }
-    // P2.
-    let Some(corners) = curved_corners(&curved, &contacts, tol)? else {
+    // P2, a consumed wall's corners where the ridge stands at each vertex.
+    let Some(mut corners) = curved_corners(&curved, &contacts, tol)? else {
         return Ok(None);
     };
+    for ((fi, v), point) in &bands.corners {
+        let on: Vec<(Id, f64)> = bevels
+            .iter()
+            .filter(|b| b.faces.contains(fi))
+            .filter_map(|b| {
+                let k = b.faces.iter().position(|f| f == fi)?;
+                let c = &b.contacts[k];
+                Some((b.edge, param_on(c, c.domain(), *point, tol).ok()?))
+            })
+            .collect();
+        corners.insert((*fi, *v), Corner { point: *point, on });
+    }
     let blended: FastSet<Id> = bevels.iter().map(|b| b.edge).collect();
-    // P4 and P5. A face the bevels consume (two rims' bevels crossing on a
-    // thin wall) is outside the cases built here: its assembly, or the
-    // solid's check, fails, and the caller keeps its own path.
-    let built = match assemble(model, &curved, &bevels, &blended, &corners, tol) {
+    // P4 and P5. Whatever fails here, its assembly or the solid's check,
+    // is outside the cases built, and the caller keeps its own path.
+    let built = match assemble_consuming(
+        model,
+        &curved,
+        &bevels,
+        &blended,
+        &corners,
+        &bands.faces,
+        tol,
+    ) {
         Ok(Some(built)) => built,
         Ok(None) => return Ok(None),
         Err(e @ ogeom_core::OgeomError::Cancelled) => return Err(e),
@@ -144,6 +170,163 @@ pub(crate) fn chamfer(
         return Ok(None);
     }
     Ok(Some(built))
+}
+
+/// The walls a request's bevels consume, their ridges and corners.
+#[derive(Default)]
+struct Bands {
+    /// Each consumed wall, by index.
+    faces: FastSet<usize>,
+    /// Each consumed wall's corner at each of its vertices: where the
+    /// ridge stands at the vertex's station.
+    corners: FastMap<(usize, Id), Point>,
+}
+
+/// The walls whose two rims' bevels cross on them (a disc too thin for
+/// both rims' chamfers): a cylinder or a cone whose bevelled edges lie on
+/// two coaxial circles, the contact of the higher at or below the lower's.
+/// Each such wall's strips take as their contact on it the circle their
+/// surfaces meet along between the rims, the ridge. `None` where a wall's
+/// contacts cross and no such ridge is found.
+fn consumed_bands(
+    curved: &Curved,
+    strips: &mut [Strip],
+    tol: Tolerances,
+) -> OgeomResult<Option<Bands>> {
+    let mut bands = Bands::default();
+    for (fi, face) in curved.faces.iter().enumerate() {
+        let (o, a) = match &face.surface {
+            SurfaceGeometry::Cylinder(c) => {
+                let axis = c.cylinder().axis();
+                (axis.location, axis.direction.vector())
+            }
+            SurfaceGeometry::Cone(c) => {
+                let f = c.cone().frame();
+                (f.origin(), f.z().vector())
+            }
+            _ => continue,
+        };
+        let height = |p: Point| (p - o).dot(a);
+        // The strips on this wall, grouped by their rim's height: the
+        // rim's height and the contact's.
+        let mut groups: Vec<(f64, f64, Vec<usize>)> = Vec::new();
+        for (si, st) in strips.iter().enumerate() {
+            let Some(k) = st.faces.iter().position(|f| *f == fi) else {
+                continue;
+            };
+            let (Curve::Circle(rim), Curve::Circle(contact)) =
+                (&curved.edges[&st.edge].curve, &st.contacts[k])
+            else {
+                continue;
+            };
+            let (h_rim, h_contact) = (
+                height(rim.circle().centre()),
+                height(contact.circle().centre()),
+            );
+            match groups
+                .iter_mut()
+                .find(|g| (g.0 - h_rim).abs() <= tol.confusion())
+            {
+                Some(g) => g.2.push(si),
+                None => groups.push((h_rim, h_contact, vec![si])),
+            }
+        }
+        let [high, low] = match groups.as_slice() {
+            [x, y] if x.0 > y.0 => [x.clone(), y.clone()],
+            [x, y] => [y.clone(), x.clone()],
+            _ => continue,
+        };
+        if high.1 > low.1 + tol.confusion() {
+            continue;
+        }
+        // The ridge: where the high rim's bevel meets the low rim's,
+        // between the two rims. Both turn about the wall's axis, each
+        // radius running linearly with the height, so they meet in the
+        // circle where the two radii agree.
+        let (Some(ra), Some(rb)) = (
+            radius_law(&strips[high.2[0]].surface, o, a, tol),
+            radius_law(&strips[low.2[0]].surface, o, a, tol),
+        ) else {
+            return Ok(None);
+        };
+        if (ra.1 - rb.1).abs() <= tol.angular() {
+            return Ok(None);
+        }
+        let h = (rb.0 - ra.0) / (ra.1 - rb.1);
+        let r = ra.1.mul_add(h, ra.0);
+        if !(h > low.0 + tol.confusion() && h < high.0 - tol.confusion() && r > tol.confusion()) {
+            return Ok(None);
+        }
+        let x = if a.x.abs() < 0.9 {
+            Vector::X
+        } else {
+            Vector::Y
+        };
+        let x = x - a * x.dot(a);
+        let frame = Frame::new(
+            o + a * h,
+            Direction::new(a, tol)?,
+            Direction::new(x, tol)?,
+            tol,
+        )?;
+        let ridge: Curve = CircleCurve::new(Circle::new(frame, r, tol)?).into();
+        for si in high.2.iter().chain(&low.2) {
+            let st = &mut strips[*si];
+            if let Some(k) = st.faces.iter().position(|f| *f == fi) {
+                st.contacts[k] = ridge.clone();
+            }
+        }
+        for (e, _) in face.loops.iter().flatten() {
+            let c = &curved.edges[e];
+            for v in [c.ends.0, c.ends.1] {
+                let at = curved.points[&v];
+                let t = param_on(&ridge, ridge.domain(), at, tol)?;
+                bands.corners.insert((fi, v), ridge.point_at(t, tol)?);
+            }
+        }
+        bands.faces.insert(fi);
+    }
+    Ok(Some(bands))
+}
+
+/// A cone's or cylinder's radius as a line in the height along the axis
+/// through `o` along the unit `a`: its radius at height nought and how it
+/// grows. `None` off a cone or a cylinder, or about another axis.
+fn radius_law(
+    surface: &SurfaceGeometry,
+    o: Point,
+    a: Vector,
+    tol: Tolerances,
+) -> Option<(f64, f64)> {
+    let (origin, axis, r0, slope) = match surface {
+        SurfaceGeometry::Cylinder(c) => {
+            let cyl = c.cylinder();
+            let axis = cyl.axis();
+            (axis.location, axis.direction.vector(), cyl.radius(), 0.0)
+        }
+        SurfaceGeometry::Cone(c) => {
+            let cone = c.cone();
+            let f = cone.frame();
+            (
+                f.origin(),
+                f.z().vector(),
+                cone.reference_radius(),
+                cone.half_angle().tan(),
+            )
+        }
+        _ => return None,
+    };
+    let off = origin - o;
+    if axis.cross(a).magnitude() > tol.angular()
+        || (off - a * off.dot(a)).magnitude() > tol.confusion()
+    {
+        return None;
+    }
+    let sign = axis.dot(a).signum();
+    let at = off.dot(a);
+    // r(h) = r0 + slope * sign * (h - at).
+    let grows = slope * sign;
+    Some((grows.mul_add(-at, r0), grows))
 }
 
 /// The faces of `curved` walking `edge`, each once.
@@ -604,6 +787,9 @@ enum Key {
     Sharp(Id),
     /// A bevel's end, a segment between two of the sheet's points.
     Section(usize, usize),
+    /// A contact on a consumed face, between two of the sheet's points,
+    /// shared by the strips meeting along it.
+    Shared(usize, usize, usize),
 }
 
 /// P3, P4 and P5 for strips on a solid with curved faces, whatever section
@@ -615,12 +801,47 @@ enum Key {
 /// # Errors
 ///
 /// As building the sheet.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the round sections on curved seats assemble through it from M3 on"
+    )
+)]
 pub(crate) fn assemble(
     model: &mut Model,
     curved: &Curved,
     bevels: &[Strip],
     blended: &FastSet<Id>,
     corners: &FastMap<(usize, Id), Corner>,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    assemble_consuming(
+        model,
+        curved,
+        bevels,
+        blended,
+        corners,
+        &FastSet::default(),
+        tol,
+    )
+}
+
+/// [`assemble`] where the strips consume the faces of `consumed` whole:
+/// each such face is not rebuilt, its strips meet each other along their
+/// contacts on it (given as one curve, the ridge), its corners are where
+/// that ridge stands at each vertex's station, and its sharp edges go.
+///
+/// # Errors
+///
+/// As [`assemble`].
+pub(crate) fn assemble_consuming(
+    model: &mut Model,
+    curved: &Curved,
+    bevels: &[Strip],
+    blended: &FastSet<Id>,
+    corners: &FastMap<(usize, Id), Corner>,
+    consumed: &FastSet<usize>,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     let mut points = Points {
@@ -641,13 +862,17 @@ pub(crate) fn assemble(
     // moved there on it, or the vertex itself.
     let mut sharp_end: FastMap<(Id, Id), Point> = FastMap::default();
     for (e, edge) in &curved.edges {
-        if blended.contains(e) {
+        let kept: Vec<usize> = faces_of(curved, *e)
+            .into_iter()
+            .filter(|fi| !consumed.contains(fi))
+            .collect();
+        if blended.contains(e) || kept.is_empty() {
             continue;
         }
         for v in [edge.ends.0, edge.ends.1] {
             let at = curved.points[&v];
             let mut moved: Vec<Point> = Vec::new();
-            for fi in faces_of(curved, *e) {
+            for fi in kept.iter().copied() {
                 if let Some(c) = corners.get(&(fi, v))
                     && c.point.distance(at) > tol.confusion()
                     && c.on(*e).is_some()
@@ -869,6 +1094,15 @@ pub(crate) fn assemble(
     // piece between the corners at its ends, walked the surface's way.
     let mut rings_of: Vec<SheetRings> = Vec::with_capacity(curved.faces.len() + bevels.len());
     for (fi, face) in curved.faces.iter().enumerate() {
+        if consumed.contains(&fi) {
+            // Not rebuilt; a placeholder keeps the faces' indices.
+            rings_of.push(SheetRings {
+                surface: face.surface.clone(),
+                rings: Vec::new(),
+                reversed: face.reversed,
+            });
+            continue;
+        }
         let mut rings = Vec::with_capacity(face.loops.len());
         for walk in &face.loops {
             let mut ring: Vec<(usize, bool)> = Vec::new();
@@ -1006,21 +1240,66 @@ pub(crate) fn assemble(
     // second face the other way round, and its other end.
     for b in bevels {
         let e = &curved.edges[&b.edge];
-        let k0 = made[&Key::Contact(b.faces[0], b.edge)];
-        let k1 = made[&Key::Contact(b.faces[1], b.edge)];
-        let Some(walked) = face_walks(&rings_of[b.faces[0]], k0) else {
+        // A contact's piece: the face's own, or, on a consumed face, made
+        // here between the corners at the edge's ends, shared by every
+        // strip meeting along it there.
+        let piece_of = |k: usize,
+                        points: &mut Points,
+                        edges: &mut Vec<SheetCurve>,
+                        made: &mut FastMap<Key, usize>|
+         -> OgeomResult<Option<usize>> {
+            let fi = b.faces[k];
+            if let Some(found) = made.get(&Key::Contact(fi, b.edge)) {
+                return Ok(Some(*found));
+            }
+            let (Some(a), Some(z)) = (corners.get(&(fi, e.ends.0)), corners.get(&(fi, e.ends.1)))
+            else {
+                return Ok(None);
+            };
+            let contact = &b.contacts[k];
+            let (ta, tz) = (
+                param_on(contact, contact.domain(), a.point, tol)?,
+                param_on(contact, contact.domain(), z.point, tol)?,
+            );
+            let (i, j) = (points.index(a.point), points.index(z.point));
+            let key = Key::Shared(fi, i.min(j), i.max(j));
+            if let Some(found) = made.get(&key).copied() {
+                made.insert(Key::Contact(fi, b.edge), found);
+                return Ok(Some(found));
+            }
+            let (range, against) = piece(contact, ta, tz, true, tol);
+            let ends = if against { (j, i) } else { (i, j) };
+            edges.push(SheetCurve {
+                ends,
+                curve: contact.clone(),
+                range,
+            });
+            made.insert(key, edges.len() - 1);
+            made.insert(Key::Contact(fi, b.edge), edges.len() - 1);
+            Ok(Some(edges.len() - 1))
+        };
+        let (Some(k0), Some(k1)) = (
+            piece_of(0, &mut points, &mut edges, &mut made)?,
+            piece_of(1, &mut points, &mut edges, &mut made)?,
+        ) else {
             return Ok(None);
         };
-        // As the first face walks it facing out, then against that.
-        let out_first = walked != rings_of[b.faces[0]].reversed;
-        let s0 = !out_first;
-        let s1 = !s0;
-        let ends = |k: usize, forward: bool| {
+        // Walk the contact on a face rebuilt against the way that face walks
+        // it, as it faces out; then on to the other contact.
+        let r = usize::from(consumed.contains(&b.faces[0]));
+        if consumed.contains(&b.faces[r]) {
+            return Ok(None);
+        }
+        let (kr, ko) = if r == 0 { (k0, k1) } else { (k1, k0) };
+        let Some(walked) = face_walks(&rings_of[b.faces[r]], kr) else {
+            return Ok(None);
+        };
+        let sr = !(walked != rings_of[b.faces[r]].reversed);
+        let ends = |edges: &Vec<SheetCurve>, k: usize, forward: bool| {
             let (a, z) = edges[k].ends;
             if forward { (a, z) } else { (z, a) }
         };
-        let (p0, q0) = ends(k0, s0);
-        let (p1, q1) = ends(k1, s1);
+        let (pr, qr) = ends(&edges, kr, sr);
         // The vertex an end of the strip stands at: the one whose corners
         // it joins.
         let vertex_of = |x: Point| -> Id {
@@ -1033,9 +1312,30 @@ pub(crate) fn assemble(
             };
             if near(e.ends.0) { e.ends.0 } else { e.ends.1 }
         };
-        let mut ring: Vec<(usize, bool)> = vec![(k0, s0)];
-        if q0 != p1 {
-            let (a, z) = (points.points[q0], points.points[p1]);
+        let other = b.faces[1 - r];
+        // The other contact: from its corner where the first ended; a
+        // closed one the other way round the strip's axis.
+        let start_o = corners
+            .get(&(other, vertex_of(points.points[qr])))
+            .map(|c| points.index(c.point));
+        let Some(start_o) = start_o else {
+            return Ok(None);
+        };
+        let so = if edges[ko].ends.0 != edges[ko].ends.1 {
+            edges[ko].ends.0 == start_o
+        } else {
+            let (Some(turn_r), Some(turn_o)) = (
+                turning(&b.surface, &edges[kr], tol)?,
+                turning(&b.surface, &edges[ko], tol)?,
+            ) else {
+                return Ok(None);
+            };
+            (turn_r * if sr { 1.0 } else { -1.0 }) * turn_o < 0.0
+        };
+        let (po, qo) = ends(&edges, ko, so);
+        let mut ring: Vec<(usize, bool)> = vec![(kr, sr)];
+        if qr != po {
+            let (a, z) = (points.points[qr], points.points[po]);
             let cut = cut_at(b, vertex_of(a), a, z);
             ring.push(section(
                 &mut points,
@@ -1047,9 +1347,9 @@ pub(crate) fn assemble(
                 z,
             )?);
         }
-        ring.push((k1, s1));
-        if q1 != p0 {
-            let (a, z) = (points.points[q1], points.points[p0]);
+        ring.push((ko, so));
+        if qo != pr {
+            let (a, z) = (points.points[qo], points.points[pr]);
             let cut = cut_at(b, vertex_of(a), a, z);
             ring.push(section(
                 &mut points,
@@ -1061,6 +1361,7 @@ pub(crate) fn assemble(
                 z,
             )?);
         }
+        let p0 = pr;
         // The bevel faces out: away from both faces at the edge.
         let mid =
             curved.points[&e.ends.0] + (curved.points[&e.ends.1] - curved.points[&e.ends.0]) * 0.5;
@@ -1114,8 +1415,30 @@ pub(crate) fn assemble(
             reversed: false,
         });
     }
-    let sheet = build(model, &points.points, &edges, &rings_of, tol)?;
+    // A consumed face is not built: the sheet is every other.
+    let built_rings: Vec<SheetRings> = rings_of
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !consumed.contains(i))
+        .map(|(_, r)| r.clone())
+        .collect();
+    let mut sheet = build(model, &points.points, &edges, &built_rings, tol)?;
     let shell = ogeom_algo::make_shell(model, &sheet.faces)?.shape;
+    // The sheet's faces again by the rings' indices, a consumed face's slot
+    // holding the face's own shape, never used.
+    let mut by_index: Vec<Shape> = Vec::with_capacity(rings_of.len());
+    let mut next = sheet.faces.iter();
+    for i in 0..rings_of.len() {
+        match curved.faces.get(i) {
+            Some(face) if consumed.contains(&i) => by_index.push(face.shape.clone()),
+            _ => by_index.push(
+                next.next()
+                    .cloned()
+                    .unwrap_or_else(|| curved.faces[0].shape.clone()),
+            ),
+        }
+    }
+    sheet.faces = by_index;
     let solid = ogeom_algo::make_solid(model, &[shell])?.shape;
     // An edge a face walks twice, once each way (a wall's or a cone
     // bevel's seam), needs both columns of the seam: the builder fits it
@@ -1143,7 +1466,11 @@ pub(crate) fn assemble(
     // moved off them.
     let mut history = History::new();
     for (fi, face) in curved.faces.iter().enumerate() {
-        history.modify(&face.shape, sheet.faces[fi].clone());
+        if consumed.contains(&fi) {
+            history.delete(&face.shape);
+        } else {
+            history.modify(&face.shape, sheet.faces[fi].clone());
+        }
     }
     for (bi, b) in bevels.iter().enumerate() {
         let edge = &curved.shapes[&b.edge];
@@ -1207,6 +1534,30 @@ fn chained(ends: &[(Point, Point, usize)], tol: Tolerances) -> Option<Vec<Point>
         cycle.push(far);
     }
     None
+}
+
+/// Which way a sheet edge, walked as stored, turns about a revolved strip's
+/// axis: the sign of its tangent's turn at its start, `None` off a cone or
+/// a cylinder.
+fn turning(
+    surface: &SurfaceGeometry,
+    edge: &SheetCurve,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let (o, a) = match surface {
+        SurfaceGeometry::Cone(c) => {
+            let f = c.cone().frame();
+            (f.origin(), f.z().vector())
+        }
+        SurfaceGeometry::Cylinder(c) => {
+            let axis = c.cylinder().axis();
+            (axis.location, axis.direction.vector())
+        }
+        _ => return Ok(None),
+    };
+    let t = edge.range.0;
+    let (p, d) = (edge.curve.point_at(t, tol)?, edge.curve.d1_at(t, tol)?);
+    Ok(Some((p - o).cross(d).dot(a).signum()))
 }
 
 /// A piece of a curve: the curve, its range, and whether the first point
