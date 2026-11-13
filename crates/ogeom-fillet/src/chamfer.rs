@@ -431,11 +431,31 @@ pub(crate) fn engine_chamfer(
     use crate::engine::Dissolved;
     match crate::engine::dissolve(model, solid, tol)? {
         Dissolved::Plain => {
-            let Some(request) = crate::engine::Request::from_chamfers(model, solid, specs, tol)?
-            else {
+            if let Some(request) = crate::engine::Request::from_chamfers(model, solid, specs, tol)?
+                && let Some(built) = crate::engine::run(model, solid, &request, tol)?
+            {
+                return Ok(Some(built));
+            }
+            // A solid with curved faces: its seats on cylinders and cones,
+            // read with its seams dissolved where it holds any.
+            if crate::engine::bounded_by_planes(model, solid, tol)? {
                 return Ok(None);
-            };
-            crate::engine::run(model, solid, &request, tol)
+            }
+            if let Some(seamless) = crate::engine::dissolve_curved(model, solid, tol)? {
+                let Some(specs) = seamless.specs(specs) else {
+                    return Ok(None);
+                };
+                let Some(built) =
+                    crate::engine::chamfer_curved(model, &seamless.solid, &specs, tol)?
+                else {
+                    return Ok(None);
+                };
+                return Ok(Some(Built::new(
+                    built.shape,
+                    seamless.carry(&built.history),
+                )));
+            }
+            crate::engine::chamfer_curved(model, solid, specs, tol)
         }
         Dissolved::Outside => Ok(None),
         Dissolved::Into(seamless) => {
@@ -615,7 +635,7 @@ fn rim_seat(
 /// How far along the axis a leg of `on_wall` down the wall's ruling
 /// reaches: the leg itself on a cylinder, its run along the slant on a
 /// cone.
-fn wall_depth(seat: &RevolvedSeat, on_wall: f64) -> f64 {
+pub(crate) fn wall_depth(seat: &RevolvedSeat, on_wall: f64) -> f64 {
     if seat.slope == 0.0 {
         on_wall
     } else {
@@ -1104,6 +1124,49 @@ fn revolved_side(
     }
 }
 
+/// The bevel's cone (a cylinder where the two radii agree) through a rim
+/// chamfer's two tangency rings: radius `cap_rho` at the cap's level and
+/// the wall's `wall_rho` a `depth` down the axis, charted over both rows
+/// with a margin clear of the apex.
+pub(crate) fn rim_bevel_surface(
+    seat: &RevolvedSeat,
+    depth: f64,
+    cap_rho: f64,
+    wall_rho: f64,
+    tol: Tolerances,
+) -> OgeomResult<SurfaceGeometry> {
+    let slope = (cap_rho - wall_rho) / (seat.tau * depth);
+    // The domain covers the band's two rows (the cap ring at zero and
+    // the wall ring a depth away) with a margin that stays clear of the
+    // apex, where the surface degenerates.
+    let rows = (
+        0.0_f64.min(-seat.tau * depth),
+        0.0_f64.max(-seat.tau * depth),
+    );
+    let frame = seat.frame_at(seat.centre, tol)?;
+    let surface: SurfaceGeometry = if slope.atan().abs() <= tol.angular() {
+        let pad = 0.1 * depth;
+        ogeom_geom::CylinderSurface::new(
+            ogeom_math::Cylinder::new(frame, cap_rho, tol)?,
+            (rows.0 - pad, rows.1 + pad),
+        )?
+        .into()
+    } else {
+        // Beside a cone's wall the bevel's apex can come near its
+        // rows; the margin then stops halfway to it.
+        let pad = if seat.slope == 0.0 {
+            0.1 * depth
+        } else {
+            let apex = -cap_rho / slope;
+            let clear = (apex - rows.0).abs().min((apex - rows.1).abs());
+            (0.1 * depth).min(0.5 * clear)
+        };
+        let cone = Cone::new(frame, cap_rho, slope.atan(), tol)?;
+        ConeSurface::new(cone, (rows.0 - pad, rows.1 + pad))?.into()
+    };
+    Ok(surface)
+}
+
 /// The revolved wedge with the quarter-tube exchanged for a slant: legs
 /// `on_wall` down the wall along its ruling and `on_cap` radially along the
 /// cap, and the cone between the two tangency rings as the bevel.
@@ -1154,35 +1217,7 @@ fn revolved_bevel(
     // wedge sits on the axis side of the slant exactly when `sigma` and
     // `tau` agree.
     let bevel_band = {
-        let slope = (cap_rho - wall_rho) / (seat.tau * depth);
-        // The domain covers the band's two rows (the cap ring at zero and
-        // the wall ring a depth away) with a margin that stays clear of the
-        // apex, where the surface degenerates.
-        let rows = (
-            0.0_f64.min(-seat.tau * depth),
-            0.0_f64.max(-seat.tau * depth),
-        );
-        let frame = seat.frame_at(seat.centre, tol)?;
-        let surface: SurfaceGeometry = if slope.atan().abs() <= tol.angular() {
-            let pad = 0.1 * depth;
-            ogeom_geom::CylinderSurface::new(
-                ogeom_math::Cylinder::new(frame, cap_rho, tol)?,
-                (rows.0 - pad, rows.1 + pad),
-            )?
-            .into()
-        } else {
-            // Beside a cone's wall the bevel's apex can come near its
-            // rows; the margin then stops halfway to it.
-            let pad = if seat.slope == 0.0 {
-                0.1 * depth
-            } else {
-                let apex = -cap_rho / slope;
-                let clear = (apex - rows.0).abs().min((apex - rows.1).abs());
-                (0.1 * depth).min(0.5 * clear)
-            };
-            let cone = Cone::new(frame, cap_rho, slope.atan(), tol)?;
-            ConeSurface::new(cone, (rows.0 - pad, rows.1 + pad))?.into()
-        };
+        let surface = rim_bevel_surface(seat, depth, cap_rho, wall_rho, tol)?;
         let band = make_revolution_band(model, &surface, &flanks.wall_ring, &flanks.cap_ring, tol)?;
         if seat.sigma * seat.tau > 0.0 {
             band.reversed()
