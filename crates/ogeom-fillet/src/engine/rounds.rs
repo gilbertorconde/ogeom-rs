@@ -242,7 +242,15 @@ pub(crate) fn assemble(
                     {
                         RoundVertex::Sphere
                     }
-                    _ if n == 3 || blended.iter().all(|s| s.convex == convex) => RoundVertex::Patch,
+                    // Mixed convexity at four edges or more closes on the
+                    // patch too (ADR 0001, §13, question 7), proved against
+                    // the solid's own material there.
+                    _ if n == 3
+                        || blended.iter().all(|s| s.convex == convex)
+                        || local_cone(planar, &here, &round, v).is_some() =>
+                    {
+                        RoundVertex::Patch
+                    }
                     _ => return Ok(None),
                 }
             }
@@ -1121,6 +1129,16 @@ fn corner_material(
         .collect();
     // The face round `v` the edge `seat` does not bound.
     let opposite = |seat: &Seat| round.iter().copied().find(|f| !seat.faces.contains(f));
+    if round.len() > 3 && !concave.is_empty() {
+        // Four faces or more of mixed convexity: the solid's own material
+        // there, or a fill.
+        let mut any = vec![local_cone(planar, here, round, v).map_or_else(
+            || HalfSpaces::Every(round.iter().map(|f| side(*f)).collect()),
+            |cone| cone.half_spaces(&side),
+        )];
+        any.extend(fills);
+        return HalfSpaces::Any(any);
+    }
     match (concave.len(), here.iter().find(|s| s.convex)) {
         (0, _) => HalfSpaces::Every(round.iter().map(|f| side(*f)).collect()),
         (1, _) => {
@@ -1147,6 +1165,139 @@ fn corner_material(
             HalfSpaces::Any(any)
         }
     }
+}
+
+/// The solid's material near a vertex as a formula of its faces' sides.
+#[derive(Debug, Clone)]
+enum Cone {
+    Face(usize),
+    Every(Vec<Cone>),
+    Any(Vec<Cone>),
+}
+
+impl Cone {
+    fn holds(&self, planar: &Planar, v: Id, p: Point) -> bool {
+        match self {
+            Self::Face(f) => (p - planar.points[&v]).dot(planar.faces[*f].normal) <= 0.0,
+            Self::Every(all) => all.iter().all(|c| c.holds(planar, v, p)),
+            Self::Any(any) => any.iter().any(|c| c.holds(planar, v, p)),
+        }
+    }
+
+    fn half_spaces(&self, side: &dyn Fn(usize) -> HalfSpaces) -> HalfSpaces {
+        match self {
+            Self::Face(f) => side(*f),
+            Self::Every(all) => {
+                HalfSpaces::Every(all.iter().map(|c| c.half_spaces(side)).collect())
+            }
+            Self::Any(any) => HalfSpaces::Any(any.iter().map(|c| c.half_spaces(side)).collect()),
+        }
+    }
+}
+
+/// The directions the local solid at a vertex is read along: a Fibonacci
+/// spiral's points over the sphere.
+const CONE_SAMPLES: u32 = 256;
+
+/// The solid's material at `v`, whose faces `round` (in turn round it) meet
+/// along the edges `here`, as a formula of their sides (ADR 0001, §13,
+/// question 7): around the cycle, faces joined by concave edges unite and
+/// the runs intersect, or faces joined by convex edges intersect and the
+/// runs unite, whichever agrees with the solid along every direction read
+/// (each classified by a ray's crossings with the faces' sectors at `v`).
+/// `None` where neither does, or the faces' edges cannot be read.
+fn local_cone(planar: &Planar, here: &[&Seat], round: &[usize], v: Id) -> Option<Cone> {
+    let n = round.len();
+    let origin = planar.points[&v];
+    // The edge between each face and the next, its convexity and its
+    // direction from `v`.
+    let mut joins = Vec::with_capacity(n);
+    for k in 0..n {
+        let (a, b) = (round[k], round[(k + 1) % n]);
+        let seat = here
+            .iter()
+            .find(|s| s.faces.contains(&a) && s.faces.contains(&b))?;
+        let far = if seat.ends.0 == v {
+            seat.ends.1
+        } else {
+            seat.ends.0
+        };
+        let d = planar.points[&far] - origin;
+        joins.push((seat.convex, d / d.magnitude()));
+    }
+    // Face `k`'s sector: between the edges it shares with the last face and
+    // the next.
+    let inside = |p: Point| -> bool {
+        let rays = [
+            Vector::new(0.371, 0.557, 0.743),
+            Vector::new(-0.612, 0.288, 0.737),
+            Vector::new(0.205, -0.859, 0.469),
+        ];
+        let mut votes = 0;
+        for w in rays {
+            let mut crossings = 0;
+            for k in 0..n {
+                let normal = planar.faces[round[k]].normal;
+                let den = normal.dot(w);
+                if den.abs() < 1e-12 {
+                    continue;
+                }
+                let t = normal.dot(origin - p) / den;
+                if t <= 0.0 {
+                    continue;
+                }
+                let x = p + w * t - origin;
+                let (e0, e1) = (joins[(k + n - 1) % n].1, joins[k].1);
+                // `x = a e0 + b e1` in the face's plane.
+                let (g00, g01, g11) = (e0.dot(e0), e0.dot(e1), e1.dot(e1));
+                let (r0, r1) = (x.dot(e0), x.dot(e1));
+                let det = g00 * g11 - g01 * g01;
+                if det.abs() < 1e-12 {
+                    continue;
+                }
+                let a = (r0 * g11 - r1 * g01) / det;
+                let b = (r1 * g00 - r0 * g01) / det;
+                if a >= 0.0 && b >= 0.0 {
+                    crossings += 1;
+                }
+            }
+            votes += crossings % 2;
+        }
+        votes >= 2
+    };
+    // The runs of faces joined by edges of convexity `joined`, in turn round
+    // the cycle from just after an edge of the other.
+    let runs = |joined: bool| -> Vec<Vec<usize>> {
+        let Some(cut) = joins.iter().position(|(c, _)| *c != joined) else {
+            return vec![round.to_vec()];
+        };
+        let mut out: Vec<Vec<usize>> = Vec::new();
+        let mut run = Vec::new();
+        for step in 1..=n {
+            let k = (cut + step) % n;
+            run.push(round[k]);
+            if joins[k].0 != joined {
+                out.push(core::mem::take(&mut run));
+            }
+        }
+        out
+    };
+    let faces = |run: &[usize]| run.iter().map(|f| Cone::Face(*f)).collect::<Vec<_>>();
+    let candidates = [
+        Cone::Every(runs(false).iter().map(|r| Cone::Any(faces(r))).collect()),
+        Cone::Any(runs(true).iter().map(|r| Cone::Every(faces(r))).collect()),
+    ];
+    let scale = joins.iter().map(|(_, d)| d.magnitude()).fold(0.0, f64::max) * 1e-3;
+    let golden = core::f64::consts::PI * (3.0 - 5.0f64.sqrt());
+    candidates.into_iter().find(|cone| {
+        (0..CONE_SAMPLES).all(|i| {
+            let z = 1.0 - 2.0 * (f64::from(i) + 0.5) / f64::from(CONE_SAMPLES);
+            let rho = (1.0 - z * z).sqrt();
+            let t = golden * f64::from(i);
+            let p = origin + Vector::new(rho * t.cos(), rho * t.sin(), z) * scale;
+            cone.holds(planar, v, p) == inside(p)
+        })
+    })
 }
 
 /// The points a face's boundary passes at one of its corners, in turn, and
@@ -2269,6 +2420,74 @@ mod tests {
     #[test]
     fn an_elongated_pyramid_s_apex_rounds_as_the_ball_rolls_along_its_ridge() {
         rolls_along_its_ridge(10.0, 5.0, 15.0, 1.5);
+    }
+
+    /// A roof whose ridge rises along `x` through a saddle where a valley
+    /// falls along `y`: four triangles round the vertex at the origin, its
+    /// edges to `(+-2, 0, 1)` convex and to `(0, +-2, -1)` concave, walled
+    /// down to `z = -3`. Every edge rounded at 0.25: the saddle, a vertex of
+    /// four edges of mixed convexity, closes on one patch (ADR 0001, §13,
+    /// question 7), held to the bands' fit target and proved within the
+    /// solid's own material there (the ridge's sides meet across the
+    /// convex edges, the runs between unite across the concave ones) by the
+    /// engine. No closed form: valid, the same solid in either order, and
+    /// its two mirrors kept (the centroid on the axis).
+    #[test]
+    fn a_saddle_vertex_of_four_edges_of_mixed_convexity_closes_on_one_patch() {
+        use ogeom_math::Point;
+        let points = [
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(2.0, 0.0, 1.0),
+            Point::new(0.0, 2.0, -1.0),
+            Point::new(-2.0, 0.0, 1.0),
+            Point::new(0.0, -2.0, -1.0),
+            Point::new(2.0, 0.0, -3.0),
+            Point::new(0.0, 2.0, -3.0),
+            Point::new(-2.0, 0.0, -3.0),
+            Point::new(0.0, -2.0, -3.0),
+        ];
+        let rings = vec![
+            vec![0, 1, 2],
+            vec![0, 2, 3],
+            vec![0, 3, 4],
+            vec![0, 4, 1],
+            vec![1, 5, 6, 2],
+            vec![2, 6, 7, 3],
+            vec![3, 7, 8, 4],
+            vec![4, 8, 5, 1],
+            vec![5, 8, 7, 6],
+        ];
+        let mut m = Model::new();
+        let s = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+            .unwrap()
+            .shape;
+        let edges = explore_unique(&m, &s, ShapeType::Edge).unwrap();
+        let mut built = Vec::new();
+        for order in [edges.clone(), edges.iter().rev().cloned().collect()] {
+            let request = Request::from_rounds(
+                &order.iter().map(|e| (e.clone(), 0.25)).collect::<Vec<_>>(),
+                T,
+            )
+            .unwrap();
+            let b = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+            let found = ogeom_algo::check(&m, &b, T).unwrap();
+            assert!(found.is_valid(), "{:?}", found.problems);
+            built.push(b);
+        }
+        assert_eq!(bits(&m, &built[0]), bits(&m, &built[1]));
+        assert!(count_of(&m, &built[0], ogeom_geom::SurfaceKind::BSpline) >= 1);
+        let centre = ogeom_algo::volume_properties(
+            &m,
+            &built[0],
+            ogeom_mesh::Deflection {
+                chord: 1e-5,
+                ..ogeom_mesh::Deflection::default()
+            },
+            T,
+        )
+        .unwrap()
+        .centre;
+        assert!(centre.x.abs() < 1e-6 && centre.y.abs() < 1e-6, "{centre:?}");
     }
 
     /// The pyramid over the pentagon `(-3, -2)`, `(3, -2)`, `(3.5, 1.5)`,
