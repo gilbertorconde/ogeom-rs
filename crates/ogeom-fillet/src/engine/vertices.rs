@@ -59,4 +59,10 @@ pub(crate) enum RoundVertex {
     /// setback corners: the spherical triangle between the strips' end
     /// arcs.
     Sphere,
+    /// Three rounds where no one ball touches the faces at their setback
+    /// corners (radii differing, or convex and concave meeting): the
+    /// strips end through their faces' setback corners, skew where those
+    /// stand at different stations, and one transfinite patch closes the
+    /// hole tangent to all three.
+    Patch,
 }

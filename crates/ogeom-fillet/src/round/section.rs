@@ -300,7 +300,9 @@ impl PlanarSection {
         let along = Direction::new(self.seat.along, tol)?;
         match &self.kind {
             Kind::Ball(ball, r) => {
-                let radial = Direction::new(ball.n1 * ball.sign, tol)?;
+                // The seam half a turn from the strip's middle, so that the
+                // strip's chart lies inside the cylinder's own, clear of it.
+                let radial = Direction::new((ball.n1 + ball.n2) * -ball.sign, tol)?;
                 let frame = Frame::new(self.crease(s0) + ball.offset, along, radial, tol)?;
                 Ok(CylinderSurface::new(Cylinder::new(frame, *r, tol)?, (0.0, s1 - s0))?.into())
             }
