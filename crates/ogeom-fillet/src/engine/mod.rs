@@ -33,6 +33,14 @@ mod consumed;
 mod curved;
 mod guards;
 mod request;
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "rounds of curved solids go through it from the M3 switch on"
+    )
+)]
+mod rims;
 mod rounds;
 mod seams;
 mod sections;
