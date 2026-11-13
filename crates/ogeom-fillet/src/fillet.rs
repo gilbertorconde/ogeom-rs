@@ -1040,6 +1040,20 @@ pub(crate) fn request_fits(
         // A band checked against no other is held to what one edge alone
         // is.
         for (i, edge) in edges.iter().enumerate() {
+            if let Some(run) =
+                crate::shelf::run(model, solid, edge, radii[i], tol).map_err(blame(i))?
+            {
+                contacts.push(run.contacts(tol).map_err(blame(i))?);
+                rolled[i] = true;
+                continue;
+            }
+            if let Some(run) =
+                crate::rolled_rim::rim_run(model, solid, edge, radii[i], tol).map_err(blame(i))?
+            {
+                contacts.push(run.contacts());
+                rolled[i] = true;
+                continue;
+            }
             match crate::support::ball_fits(model, solid, edge, radii[i], !alone(i), tol) {
                 Ok(found) => contacts.push(found),
                 Err(refusal @ OgeomError::Construction(_)) if edges.len() > 1 && alone(i) => {
@@ -1069,6 +1083,13 @@ pub(crate) fn request_fits(
         }
         let reaches: Vec<Option<f64>> = contacts.iter().map(|found| reach(found)).collect();
         for (i, edge) in edges.iter().enumerate() {
+            // A carried run already supplied its contacts on every support,
+            // including the face across the narrow strip. Asking the ordinary
+            // two-face ball again would discard that transfer. The same
+            // bands_clear check below still compares all its contacts.
+            if rolled[i] {
+                continue;
+            }
             let Some(own) = reaches[i].filter(|_| alone(i)) else {
                 continue;
             };
@@ -2136,11 +2157,44 @@ pub(crate) fn apply_set_aside(
             }
             (applied, _) => applied?,
         };
+        // A concave ruled wedge adds planar end patches beside the cap it
+        // extends. Dissolve only these same-domain seams before assigning
+        // provenance: the cap remains the cap, and its outer boundary is
+        // the new circular rim, not several ambiguous cap/patch edges.
+        let mut planar_images = Vec::new();
+        for &i in &group {
+            for face in explore_unique(model, &set_aside[i].1.solid, ShapeType::Face)? {
+                for image in step.history.trace(&face) {
+                    let planar = model
+                        .node(image)
+                        .and_then(|n| n.data().as_face())
+                        .and_then(|d| model.geometry().surface(d.surface))
+                        .is_some_and(|s| matches!(s, SurfaceGeometry::Plane(_)));
+                    if planar {
+                        planar_images.push(image.clone());
+                    }
+                }
+            }
+        }
+        let (unified, _) =
+            ogeom_heal::unify_same_domain_around(model, &step.shape, &planar_images, tol)?;
+        let step = Built {
+            shape: unified.shape,
+            history: step.history.then(&unified.history),
+        };
         // The chain's history already says each edge is gone; the blends
         // it generated are recorded on the composed history, where an edge
         // consumed before this step still answers for them.
         let mut history = built.history.then(&step.history);
         let result = ogeom_topo::explore_unique(model, &step.shape, ShapeType::Face)?;
+        // A wedge's legs and caps can melt into the solid's existing cap.
+        // That cap is an image of its original face, not a new blend: giving
+        // it the blend's name too makes their common circular rim disappear
+        // from a consumer's disjoint-face edge names (a following Face fillet).
+        let inherited: Vec<_> = explore_unique(model, &built.shape, ShapeType::Face)?
+            .iter()
+            .flat_map(|face| step.history.trace(face).to_vec())
+            .collect();
         for &i in &group {
             let (edge, wedge) = &set_aside[i];
             for face in ogeom_topo::explore_unique(model, &wedge.solid, ShapeType::Face)? {
@@ -2150,7 +2204,9 @@ pub(crate) fn apply_set_aside(
                     .find(|(f, _)| f.is_same(&face))
                     .map_or(edge, |(_, e)| e);
                 for image in step.history.trace(&face) {
-                    if result.iter().any(|f| f.is_same(image)) {
+                    if result.iter().any(|f| f.is_same(image))
+                        && !inherited.iter().any(|f| f.is_same(image))
+                    {
                         history.generate(owner, image.clone());
                     }
                 }

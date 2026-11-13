@@ -38,6 +38,7 @@ use spade::{
 };
 
 use crate::discretize::{Deflection, discretize};
+use crate::sphere_trim::SphereTrim;
 
 /// Triangulate one face.
 ///
@@ -560,7 +561,9 @@ fn triangulate_reporting_from(
     }
     let phase = Instant::now();
     let rows = rim_holds(model, face, deflection, tol)?;
-    let mut planar = triangulate_region(&uv, surface, deflection, rows, tol)?;
+    let admission = SphereTrim::of(model, face, surface, &uv, tol)?;
+    let mut planar =
+        region_mesh_admitted(&uv, surface, deflection, rows, Upto::Whole, &admission, tol)?;
     // A ring that crosses itself where it runs out and back along its own
     // way bounds nothing over that stretch: the tail comes off and is drawn
     // as a strip at its edges' points, where the rest triangulates whole.
@@ -575,7 +578,15 @@ fn triangulate_reporting_from(
             tol,
         )?
     {
-        let again = triangulate_region(&peeled.rings, surface, deflection, rows, tol)?;
+        let again = region_mesh_admitted(
+            &peeled.rings,
+            surface,
+            deflection,
+            rows,
+            Upto::Whole,
+            &admission,
+            tol,
+        )?;
         if !again.crossed
             && let Some(joined) = with_strips(again, &peeled.strips)
         {
@@ -3938,6 +3949,7 @@ struct PlanarMesh {
 /// Triangulate a region in parameter space, given its boundary rings.
 ///
 /// The first ring is the outer boundary; the rest are holes.
+#[cfg(test)]
 fn triangulate_region(
     rings: &[Vec<Point2>],
     surface: &SurfaceGeometry,
@@ -3967,6 +3979,30 @@ fn region_mesh(
     upto: Upto,
     tol: Tolerances,
 ) -> OgeomResult<PlanarMesh> {
+    region_mesh_admitted(
+        rings,
+        surface,
+        deflection,
+        rows_kept,
+        upto,
+        &SphereTrim::Other,
+        tol,
+    )
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one region's chart, boundary and node admission"
+)]
+fn region_mesh_admitted(
+    rings: &[Vec<Point2>],
+    surface: &SurfaceGeometry,
+    deflection: Deflection,
+    rows_kept: Rows,
+    upto: Upto,
+    admission: &SphereTrim,
+    tol: Tolerances,
+) -> OgeomResult<PlanarMesh> {
     // A chart mangled enough (trims fitted through millimetres of boundary
     // error) can drive the triangulation library past its own asserts, and
     // a panic in a dependency is a crash in every consumer. The rings are
@@ -3994,7 +4030,7 @@ fn region_mesh(
         }
     }
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        triangulate_region_inner(rings, surface, deflection, rows_kept, upto, tol)
+        triangulate_region_inner(rings, surface, deflection, rows_kept, upto, admission, tol)
     })) {
         Ok(result) => result,
         Err(_) => ogeom_bail!(
@@ -4082,12 +4118,17 @@ fn chart_extent(rings: &[Vec<Point2>]) -> (Point2, Point2) {
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one region's chart, boundary and node admission"
+)]
 fn triangulate_region_inner(
     rings: &[Vec<Point2>],
     surface: &SurfaceGeometry,
     deflection: Deflection,
     rows_kept: Rows,
     upto: Upto,
+    admission: &SphereTrim,
     tol: Tolerances,
 ) -> OgeomResult<PlanarMesh> {
     let mut cdt: ConstrainedDelaunayTriangulation<SpadePoint<f64>> =
@@ -4202,7 +4243,9 @@ fn triangulate_region_inner(
     // deflection rather than by a fixed grid.
     let boundary_ms = sub.elapsed().as_secs_f64() * 1e3;
     let sub = Instant::now();
-    add_interior_points(&mut cdt, rings, surface, deflection, scale, rows_kept, tol)?;
+    add_interior_points(
+        &mut cdt, rings, surface, deflection, scale, rows_kept, admission, tol,
+    )?;
     let interior_ms = sub.elapsed().as_secs_f64() * 1e3;
     let interior_points = cdt.num_vertices();
     let sub = Instant::now();
@@ -4342,6 +4385,10 @@ fn triangulate_region_inner(
             }
             let mut inserted = 0usize;
             for point in worst {
+                let (u, v) = scale.from(point.x, point.y);
+                if !admission.holds(surface, Point2::new(u, v), tol)? {
+                    continue;
+                }
                 // A centre that lands on a vertex already there is not a new
                 // point. A sliver whose apex sits on its own base (three
                 // grid points on a diagonal, the middle one a rounding off
@@ -4468,6 +4515,10 @@ fn triangulate_region_inner(
 /// it sags by almost nothing and the direction stops subdividing after one or
 /// two steps, while the meridian direction, whose curvature does not change,
 /// keeps refining. The mesh degenerates into a fan, which is the right shape.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one region's chart, boundary and node admission"
+)]
 fn add_interior_points(
     cdt: &mut ConstrainedDelaunayTriangulation<SpadePoint<f64>>,
     rings: &[Vec<Point2>],
@@ -4475,6 +4526,7 @@ fn add_interior_points(
     deflection: Deflection,
     scale: ChartScale,
     rows_kept: Rows,
+    admission: &SphereTrim,
     tol: Tolerances,
 ) -> OgeomResult<()> {
     // A plane is flat everywhere; sampling it would add points that buy nothing.
@@ -4698,7 +4750,9 @@ fn add_interior_points(
             }
             // Interior points only: the boundary is already constrained, and a
             // point landing just off a constraint would split it.
-            if !region.holds(Point2::new(u, v)) {
+            if !region.holds(Point2::new(u, v))
+                || !admission.holds(surface, Point2::new(u, v), tol)?
+            {
                 continue;
             }
             // Inside, and not *on* the boundary: a grid point can fall
@@ -4806,7 +4860,9 @@ fn add_interior_points(
     if sags {
         for (u0, u1, v0, v1) in cells {
             let (um, vm) = (f64::midpoint(u0, u1), f64::midpoint(v0, v1));
-            if !region.holds(Point2::new(um, vm)) {
+            if !region.holds(Point2::new(um, vm))
+                || !admission.holds(surface, Point2::new(um, vm), tol)?
+            {
                 continue;
             }
             // A cell whose side collapses to a point (a pole, an apex) is a
@@ -4904,6 +4960,9 @@ fn add_interior_points(
                         continue;
                     }
                     let v = at + inward;
+                    if !admission.holds(surface, Point2::new(u, v), tol)? {
+                        break;
+                    }
                     if (v - f64::midpoint(pair[0], pair[1])).abs()
                         >= (pair[1] - pair[0]).abs() * 0.5
                     {

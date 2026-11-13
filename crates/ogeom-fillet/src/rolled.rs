@@ -442,6 +442,8 @@ pub(crate) fn enters(ring: &[Point], normal: Vector, [p, q]: [Point; 2], margin:
 /// beside it: along the whole crease, or carried across changes of what
 /// the ball holds.
 pub(crate) enum Run {
+    Shelf(crate::shelf::Run),
+    Rim(crate::rolled_rim::Run),
     Rolled(Rolled),
     Carried(crate::carried::Carried),
     Stepped(crate::stepped::Stepped),
@@ -467,6 +469,12 @@ pub(crate) fn rolled_run(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<Run>> {
+    if let Some(run) = crate::shelf::run(model, solid, edge, radius, tol)? {
+        return Ok(Some(Run::Shelf(run)));
+    }
+    if let Some(run) = crate::rolled_rim::rim_run(model, solid, edge, radius, tol)? {
+        return Ok(Some(Run::Rim(run)));
+    }
     let Some(seat) = seat_of(model, solid, edge, tol)? else {
         return Ok(None);
     };
@@ -1361,6 +1369,8 @@ pub(crate) fn rolled_fillet(
 ) -> OgeomResult<Option<Built>> {
     match rolled_run(model, solid, edge, radius, tol)? {
         None => Ok(None),
+        Some(Run::Shelf(run)) => crate::shelf::build(model, solid, edge, &run, tol).map(Some),
+        Some(Run::Rim(run)) => crate::rolled_rim::build(model, solid, edge, &run, tol).map(Some),
         Some(Run::Rolled(run)) => rolled_band(model, solid, edge, &run, radius, tol).map(Some),
         Some(Run::Carried(run)) => {
             crate::carried::carried_band(model, solid, edge, &run, radius, tol).map(Some)
