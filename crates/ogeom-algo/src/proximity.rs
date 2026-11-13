@@ -36,7 +36,7 @@ use ogeom_math::{Point, Point2, Transform, Vector};
 use ogeom_mesh::{Deflection, face_boundary, inside_boundary};
 use ogeom_topo::{EdgeRepr, Model, NodeData, Shape, ShapeType, explore_unique};
 
-use crate::classify::parametric_band;
+use crate::classify::{fold_toward_rings, parametric_band};
 use crate::measure::{project_on_curve, project_on_surface};
 use ogeom_intersect::ExtremaOptions;
 
@@ -790,8 +790,8 @@ pub(crate) fn trim_side(
     let local = face.to_local.apply(world_point);
     let projection = project_on_surface(&face.local, local, 32, tol)?;
     let (u, v) = projection.parameters;
-    let at = Point2::new(u, v);
-    let band = parametric_band(&face.local, (u, v), tol.confusion() + chord, tol);
+    let at = fold_toward_rings(&face.local, rings, Point2::new(u, v));
+    let band = parametric_band(&face.local, (at.x, at.y), tol.confusion() + chord, tol);
     if band.meets_rings(rings, at) {
         return Ok(Trim::Band);
     }
@@ -921,10 +921,18 @@ fn ring_span(
     }
     let margin_u = (u.1 - u.0).mul_add(0.05, tol.parametric());
     let margin_v = (v.1 - v.0).mul_add(0.05, tol.parametric());
-    let lo_u = (u.0 - margin_u).max(ua);
-    let hi_u = (u.1 + margin_u).min(ub);
-    let lo_v = (v.0 - margin_v).max(va);
-    let hi_v = (v.1 + margin_v).min(vb);
+    // A periodic domain names one turn, not a limit on the face's chart.
+    // Its rings may straddle that turn or stand whole periods away.
+    let window = |range: (f64, f64), margin: f64, domain: (f64, f64), periodic| {
+        let (lo, hi) = (range.0 - margin, range.1 + margin);
+        if periodic {
+            (lo, hi)
+        } else {
+            (lo.max(domain.0), hi.min(domain.1))
+        }
+    };
+    let (lo_u, hi_u) = window(u, margin_u, (ua, ub), surface.is_periodic_u());
+    let (lo_v, hi_v) = window(v, margin_v, (va, vb), surface.is_periodic_v());
     (lo_u < hi_u && lo_v < hi_v).then_some(((lo_u, hi_u), (lo_v, hi_v)))
 }
 
@@ -939,6 +947,74 @@ mod tests {
 
     fn frame_at(origin: Point) -> Frame {
         Frame::new(origin, Direction::Z, Direction::X, T).unwrap()
+    }
+
+    #[test]
+    fn a_torus_distance_is_independent_of_its_seam_window() {
+        use core::f64::consts::{FRAC_PI_2, PI, TAU};
+        use ogeom_topo::VertexData;
+
+        // Each chart describes the same torus. Its exact nearest point lies
+        // on the tube's radial line, and the distance is the radial offset.
+        // Model confusion bounds the projection's numerical error.
+        let (major, minor) = (5.0, 2.0);
+        let u = 0.7_f64;
+        for seam in [-2.0 * TAU, -PI, 0.0, PI, TAU + FRAC_PI_2] {
+            let mut model = Model::new();
+            let face = crate::torus_face_seamed_at(&mut model, Frame::WORLD, major, minor, seam, T)
+                .unwrap();
+            let distance = PointDistance::of(&model, &face, T).unwrap();
+            // Neighbours of the seam stand beyond the trim's spatial chord
+            // band (1e-3); inside that band the boundary edge owns the foot.
+            for v in [
+                -FRAC_PI_2,
+                0.0,
+                FRAC_PI_2,
+                PI,
+                3.0 * FRAC_PI_2,
+                TAU - 0.01,
+                TAU,
+                TAU + 0.01,
+                2.0 * TAU + FRAC_PI_2,
+            ] {
+                for offset in [-0.125_f64, 0.0, 0.125] {
+                    let point = |radius: f64| {
+                        let reach = major + radius * v.cos();
+                        Point::new(reach * u.cos(), reach * u.sin(), radius * v.sin())
+                    };
+                    let query = point(minor + offset);
+                    let exact = point(minor);
+                    let (found, foot) = distance.nearest(query, T).unwrap();
+                    assert!(
+                        (found - offset.abs()).abs() <= T.confusion(),
+                        "seam={seam}, v={v}, offset={offset}: {found}"
+                    );
+                    assert!(
+                        foot.distance(exact) <= T.confusion(),
+                        "foot: seam={seam}, v={v}, offset={offset}: {foot:?} vs {exact:?}, error={}",
+                        foot.distance(exact)
+                    );
+                    let vertex = model.add_vertex(VertexData::new(query));
+                    let found = distance_between_shapes(
+                        &model,
+                        &vertex,
+                        &face,
+                        ExtremaOptions::default(),
+                        T,
+                    )
+                    .unwrap();
+                    assert!(
+                        (found.distance - offset.abs()).abs() <= T.confusion(),
+                        "shape distance: seam={seam}, v={v}, offset={offset}: {}",
+                        found.distance
+                    );
+                    assert!(found.pairs.iter().any(|pair| {
+                        pair.point_a.distance(query) <= T.confusion()
+                            && pair.point_b.distance(exact) <= T.confusion()
+                    }));
+                }
+            }
+        }
     }
 
     #[test]

@@ -3,8 +3,8 @@
 //! rims read as single-precision points read the wall, rotated boxes read
 //! their thickness at an edge and at a corner, and a cylinder reads its
 //! diameter and its height on its seam; a ball past the thickest wall
-//! asked for reads none; points inside a corpus part's faces read what
-//! they read before.
+//! asked for reads none. Corpus face points retain their ray readings and
+//! numerical ball checks, with analytic tangency oracles for curved walls.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 #![allow(
     clippy::cast_possible_truncation,
@@ -217,10 +217,21 @@ fn a_ball_past_the_thickest_wall_reads_none() {
     }
 }
 
-/// A point, its outward normal, and the bits of what it read by rays and
-/// by a ball before points on edges took on the faces at their nearest
-/// point.
-type Reading = ([f64; 3], [f64; 3], Option<u64>, Option<u64>);
+/// A point, its outward normal, its ray snapshot, and its ball oracle.
+type Reading = ([f64; 3], [f64; 3], Option<u64>, Ball);
+
+/// Unaffected readings retain their numerical compatibility check. Analytic
+/// contacts are checked against the corpus surface's equation in space.
+#[derive(Clone, Copy)]
+enum Ball {
+    Pinned(u64),
+    HeadSphere,
+    ShankCylinder,
+    TipCone,
+    SocketCone,
+}
+
+use Ball::{HeadSphere, Pinned, ShankCylinder, SocketCone, TipCone};
 
 /// Points inside the faces of the first body of `m5x16_bhcs.step`, up to
 /// three to a face, at triangle centres of each face's mesh carried to the
@@ -231,25 +242,25 @@ const INSIDE: &[Reading] = &[
         [7.935, -0.6468212050930554, -2.414875220097711],
         [-0.0, -0.25872848203722215, -0.9659500880390844],
         Some(0x4013cdbd2ee25fc7),
-        Some(0x4014000000000000),
+        Pinned(0x4014000000000000),
     ),
     (
         [0.0, 1.5242721801906214, 0.9398264344738518],
         [-1.0, 0.0, 0.0],
         Some(0x4032c00000000000),
-        Some(0x3ff9d288821ad499),
+        Pinned(0x3ff9d288821ad499),
     ),
     (
         [0.0, -1.0314592863576935, -1.8896514063109506],
         [-1.0, 0.0, 0.0],
         Some(0x4006728c6248f03d),
-        Some(0x3ffacc4412df2666),
+        Pinned(0x3ffacc4412df2666),
     ),
     (
         [0.0, -1.5067147794403448, 1.4996193029132014],
         [-1.0, 0.0, 0.0],
         Some(0x4006557a06300053),
-        Some(0x3ffc1d8a7e32427d),
+        Pinned(0x3ffc1d8a7e32427d),
     ),
     (
         [1.5622991014825192, 0.009453062392351072, -4.249384785126207],
@@ -259,7 +270,7 @@ const INSIDE: &[Reading] = &[
             -0.7994856622408563,
         ],
         Some(0x3ffc20effb2f4409),
-        Some(0x3ff7be6f8530dfe8),
+        Pinned(0x3ff7be6f8530dfe8),
     ),
     (
         [1.9730482210835105, -0.38688404524936243, -4.512402627597604],
@@ -269,31 +280,31 @@ const INSIDE: &[Reading] = &[
             -0.848970235797346,
         ],
         Some(0x3ff4a5f4ea7176d4),
-        Some(0x3ff0520184e048a3),
+        Pinned(0x3ff0520184e048a3),
     ),
     (
         [2.4333333333333336, -2.1009210851280185, 4.260120960027369],
         [0.0, -0.4422991758164249, 0.8968675705320778],
         Some(0x400ced7bf97f50cd),
-        Some(0x3fe0e0ec4138c409),
+        Pinned(0x3fe0e0ec4138c409),
     ),
     (
         [2.75, 2.859166289229755, 1.5282562211284068],
         [1.0, -0.0, -0.0],
         Some(0x3fff515d99e4506c),
-        Some(0x4001a7c58ed89bfa),
+        HeadSphere,
     ),
     (
         [2.75, -2.932774605691824, -2.713297421126595],
         [1.0, -0.0, -0.0],
         Some(0x3ff4704a5c1cafb4),
-        Some(0x3ff2121df22bec6e),
+        Pinned(0x3ff2121df22bec6e),
     ),
     (
         [2.75, 2.932774605691824, 2.7132974211265943],
         [1.0, -0.0, -0.0],
         Some(0x3ff41c4f930f9d88),
-        Some(0x3ff801782569e396),
+        HeadSphere,
     ),
     (
         [18.458513836438264, -0.6164760368860648, -2.2640571131780023],
@@ -303,247 +314,247 @@ const INSIDE: &[Reading] = &[
             -0.6822670265789095,
         ],
         Some(0x40183b35515812e6),
-        Some(0x3ff0c5aa3a444be6),
+        ShankCylinder,
     ),
     (
         [18.75, 1.8874141641974749, 0.6427037607885143],
         [1.0, -0.0, -0.0],
         Some(0x4030148398fc1334),
-        Some(0x3ff054e30dd05663),
+        TipCone,
     ),
     (
         [18.75, 0.5695566844272428, 0.38056560961842756],
         [1.0, -0.0, -0.0],
         Some(0x40303e2a330ba325),
-        Some(0x401f64194ff6cbab),
+        Pinned(0x401f64194ff6cbab),
     ),
     (
         [18.75, -1.8742520812736876, -0.7763406313695627],
         [1.0, -0.0, -0.0],
         Some(0x4030293c10326e4e),
-        Some(0x3fc044f4493faedc),
+        Pinned(0x3fc044f4493faedc),
     ),
     (
         [1.04, -1.0103629710818467, 1.250000000000001],
         [0.0, 0.8660254037844385, -0.5000000000000003],
         Some(0x3ffe5e50e571f5e8),
-        Some(0x3ffbdbb53a0c193f),
+        Pinned(0x3ffbdbb53a0c193f),
     ),
     (
         [1.04, -1.5877132402714735, 0.25000000000000006],
         [0.0, 0.8660254037844385, -0.5000000000000003],
         Some(0x3ffe12a7260931c2),
-        Some(0x3ffbdbb53a0c1940),
+        Pinned(0x3ffbdbb53a0c1940),
     ),
     (
         [0.52, -1.2990381056766602, 0.7500000000000004],
         [0.0, 0.8660254037844385, -0.5000000000000003],
         Some(0x3ff5ae30543ac5c8),
-        Some(0x3ffb6364d88e8da8),
+        Pinned(0x3ffb6364d88e8da8),
     ),
     (
         [1.04, -1.5877132402714715, -0.24999999999999867],
         [-0.0, 0.8660254037844385, 0.5000000000000003],
         Some(0x3ffe5e50e571f5ee),
-        Some(0x3ffbdbb53a0c1949),
+        Pinned(0x3ffbdbb53a0c1949),
     ),
     (
         [1.04, -1.0103629710818447, -1.2499999999999996],
         [-0.0, 0.8660254037844385, 0.5000000000000003],
         Some(0x3ffe12a7260931cc),
-        Some(0x3ffbdbb53a0c1949),
+        Pinned(0x3ffbdbb53a0c1949),
     ),
     (
         [0.52, -1.2990381056766582, -0.7499999999999992],
         [-0.0, 0.8660254037844385, 0.5000000000000003],
         Some(0x3ff5ae30543ac5ce),
-        Some(0x3ffb6364d88e8db2),
+        Pinned(0x3ffb6364d88e8db2),
     ),
     (
         [1.04, -0.5773502691896253, -1.5],
         [0.0, 0.0, 1.0],
         Some(0x3ffe5e50e571f5f0),
-        Some(0x3ffbdbb53a0c1948),
+        Pinned(0x3ffbdbb53a0c1948),
     ),
     (
         [1.04, 0.5773502691896261, -1.5],
         [0.0, 0.0, 1.0],
         Some(0x3ffe12a7260931c8),
-        Some(0x40001b15ba94252f),
+        HeadSphere,
     ),
     (
         [0.52, 3.3306690738754696e-16, -1.5],
         [0.0, 0.0, 1.0],
         Some(0x3ff5ae30543ac5cc),
-        Some(0x3ffb6364d88e8db0),
+        Pinned(0x3ffb6364d88e8db0),
     ),
     (
         [1.04, 1.0103629710818474, -1.2500000000000013],
         [0.0, -0.8660254037844388, 0.4999999999999999],
         Some(0x3ffe5e50e571f5e4),
-        Some(0x40020ea11016087e),
+        HeadSphere,
     ),
     (
         [1.04, 1.5877132402714735, -0.2500000000000002],
         [0.0, -0.8660254037844388, 0.4999999999999999],
         Some(0x3ffe12a7260931c0),
-        Some(0x40020ea11016087e),
+        HeadSphere,
     ),
     (
         [0.52, 1.2990381056766607, -0.7500000000000007],
         [0.0, -0.8660254037844388, 0.4999999999999999],
         Some(0x3ff5ae30543ac5c2),
-        Some(0x3ffb6364d88e8da1),
+        Pinned(0x3ffb6364d88e8da1),
     ),
     (
         [1.04, 1.5877132402714718, 0.24999999999999867],
         [0.0, -0.8660254037844388, -0.4999999999999999],
         Some(0x3ffe5e50e571f5ea),
-        Some(0x40020ea110160882),
+        HeadSphere,
     ),
     (
         [1.04, 1.0103629710818456, 1.2499999999999996],
         [0.0, -0.8660254037844388, -0.4999999999999999],
         Some(0x3ffe12a7260931c6),
-        Some(0x40020ea110160884),
+        HeadSphere,
     ),
     (
         [0.52, 1.2990381056766587, 0.7499999999999991],
         [0.0, -0.8660254037844388, -0.4999999999999999],
         Some(0x3ff5ae30543ac5cb),
-        Some(0x3ffb6364d88e8dac),
+        Pinned(0x3ffb6364d88e8dac),
     ),
     (
         [1.04, 0.5773502691896261, 1.5],
         [0.0, 0.0, -1.0],
         Some(0x3ffe5e50e571f5ec),
-        Some(0x40001b15ba94252f),
+        HeadSphere,
     ),
     (
         [1.04, -0.5773502691896254, 1.5],
         [0.0, 0.0, -1.0],
         Some(0x3ffe12a7260931cc),
-        Some(0x3ffbdbb53a0c1948),
+        Pinned(0x3ffbdbb53a0c1948),
     ),
     (
         [0.52, 3.3306690738754696e-16, 1.5],
         [0.0, 0.0, -1.0],
         Some(0x3ff5ae30543ac5cc),
-        Some(0x3ffb6364d88e8db0),
+        Pinned(0x3ffb6364d88e8db0),
     ),
     (
         [1.56, 0.6680846571460737, -1.4159756150367533],
         [-1.0, -0.0, -0.0],
         Some(0x40310bb0885e503e),
-        Some(0x3ffec705e9cc01b0),
+        SocketCone,
     ),
     (
         [1.56, 0.8922285251880873, -1.286566092485493],
         [-1.0, -0.0, -0.0],
         Some(0x403130a3d70a3d71),
-        Some(0x3ffec705e9cc01ae),
+        SocketCone,
     ),
     (
         [1.56, 1.075241227080307, -1.1035533905932735],
         [-1.0, -0.0, -0.0],
         Some(0x4031191bccd747ce),
-        Some(0x3fff6950099686d8),
+        SocketCone,
     ),
     (
         [1.56, 1.5603131823341612, -0.12940952255126018],
         [-1.0, -0.0, -0.0],
         Some(0x403130a3d70a3d71),
-        Some(0x3ffec705e9cc01a9),
+        SocketCone,
     ),
     (
         [1.56, 1.5603131823341612, 0.12940952255126026],
         [-1.0, -0.0, -0.0],
         Some(0x403130a3d70a3d71),
-        Some(0x3ffec705e9cc01ab),
+        SocketCone,
     ),
     (
         [1.56, 1.4933258842263808, 0.37940952255126026],
         [-1.0, -0.0, -0.0],
         Some(0x403130a3d70a3d71),
-        Some(0x3fff6950099686c9),
+        SocketCone,
     ),
     (
         [1.56, 0.8922285251880873, 1.286566092485493],
         [-1.0, -0.0, -0.0],
         Some(0x403130a3d70a3d71),
-        Some(0x3ffec705e9cc01b0),
+        SocketCone,
     ),
     (
         [1.56, 0.6680846571460737, 1.4159756150367533],
         [-1.0, -0.0, -0.0],
         Some(0x403130a3d70a3d71),
-        Some(0x3ffec705e9cc01ae),
+        SocketCone,
     ),
     (
         [1.56, 0.4180846571460737, 1.482962913144534],
         [-1.0, -0.0, -0.0],
         Some(0x4031108aad20f0c1),
-        Some(0x3fff6950099686d1),
+        SocketCone,
     ),
     (
         [1.56, -0.6680846571460732, 1.4159756150367533],
         [-1.0, -0.0, -0.0],
         Some(0x403130a3d70a3d71),
-        Some(0x3fdf5ef6c18e8b0f),
+        Pinned(0x3fdf5ef6c18e8b0f),
     ),
     (
         [1.56, -0.892228525188087, 1.2865660924854925],
         [-1.0, -0.0, -0.0],
         Some(0x403130a3d70a3d71),
-        Some(0x3fdf5ef6c18e8aee),
+        Pinned(0x3fdf5ef6c18e8aee),
     ),
     (
         [1.56, -1.075241227080307, 1.1035533905932733],
         [-1.0, -0.0, -0.0],
         Some(0x4030fa14dd47d471),
-        Some(0x3fd379e6c414cd2e),
+        Pinned(0x3fd379e6c414cd2e),
     ),
     (
         [1.56, -1.560313182334161, -0.1294095225512604],
         [-1.0, -0.0, -0.0],
         Some(0x403130a3d70a3d71),
-        Some(0x3fdf5ef6c18e8bb0),
+        Pinned(0x3fdf5ef6c18e8bb0),
     ),
     (
         [1.56, -1.4933258842263808, -0.3794095225512603],
         [-1.0, -0.0, -0.0],
         Some(0x403129894d2fea85),
-        Some(0x3fd379e6c414cdcc),
+        Pinned(0x3fd379e6c414cdcc),
     ),
     (
         [1.56, -1.560313182334161, 0.12940952255126006],
         [-1.0, -0.0, -0.0],
         Some(0x403130a3d70a3d71),
-        Some(0x3fdf5ef6c18e8ba3),
+        Pinned(0x3fdf5ef6c18e8ba3),
     ),
     (
         [1.56, -0.6680846571460732, -1.4159756150367535],
         [-1.0, -0.0, -0.0],
         Some(0x403130a3d70a3d71),
-        Some(0x3fdf5ef6c18e8b14),
+        Pinned(0x3fdf5ef6c18e8b14),
     ),
     (
         [1.56, -0.418084657146073, -1.482962913144534],
         [-1.0, -0.0, -0.0],
         Some(0x403130a3d70a3d71),
-        Some(0x3fd379e6c414cd00),
+        Pinned(0x3fd379e6c414cd00),
     ),
     (
         [1.56, -0.8922285251880866, -1.286566092485493],
         [-1.0, -0.0, -0.0],
         Some(0x403130a3d70a3d71),
-        Some(0x3fdf5ef6c18e8b09),
+        Pinned(0x3fdf5ef6c18e8b09),
     ),
     (
         [1.8579964905283077, -0.2447198561902864, -0.9529337494572974],
         [-0.8660254037844398, 0.12436785483223059, 0.4842856973775163],
         Some(0x4002839ddd293062),
-        Some(0x40002c75411f792c),
+        Pinned(0x40002c75411f792c),
     ),
     (
         [2.0383802741745285, -0.5519513173267857, 0.38230352185267896],
@@ -553,16 +564,15 @@ const INSIDE: &[Reading] = &[
             -0.28469729708538033,
         ],
         Some(0x4006767fbdbe193a),
-        Some(0x40041faec3025c8c),
+        Pinned(0x40041faec3025c8c),
     ),
 ];
 
-/// Points inside a corpus part's faces read the same, bit for bit, as
-/// before: only a point in the band of a face's trim takes on the faces at
-/// its nearest point, and a ball passes over only what its own faces hold
-/// on its radius.
+/// Rays and balls keep their numerical compatibility where pinned. A ball
+/// bounded by an analytic wall touches that wall within model confusion,
+/// at a point inside the face's trim and beyond the facing limit.
 #[test]
-fn points_inside_a_corpus_part_s_faces_read_as_before() {
+fn corpus_face_points_read_their_walls() {
     let path = format!(
         "{}/../../tests/corpus/m5x16_bhcs.step",
         env!("CARGO_MANIFEST_DIR")
@@ -591,11 +601,117 @@ fn points_inside_a_corpus_part_s_faces_read_as_before() {
         &options(Method::Sphere, limit, 50.0),
     )
     .unwrap();
-    for (((p, ray), ball), &(_, _, was_ray, was_ball)) in
-        points.iter().zip(rays).zip(balls).zip(INSIDE)
+    let faces = ogeom::topo::explore_unique(model, screw, ogeom::topo::ShapeType::Face).unwrap();
+    let cones: Vec<_> = faces
+        .iter()
+        .filter_map(|face| {
+            let data = model.node(face).unwrap().data().as_face().unwrap();
+            match model.geometry().surface(data.surface).unwrap() {
+                ogeom::geom::SurfaceGeometry::Cone(surface) => Some(surface.cone()),
+                _ => None,
+            }
+        })
+        .collect();
+    for ((((p, n), ray), ball), &(_, _, was_ray, oracle)) in
+        points.iter().zip(&normals).zip(rays).zip(balls).zip(INSIDE)
     {
         assert_reads_as(ray, was_ray, "rays", p);
-        assert_reads_as(ball, was_ball, "ball", p);
+        match oracle {
+            Pinned(bits) => assert_reads_as(ball, Some(bits), "ball", p),
+            _ => {
+                let u = -*n / n.magnitude();
+                let (radius, contact, normal) = oracle.contact(*p, u, &cones);
+                let read_radius = ball.expect("the analytic wall bounds the ball") / 2.0;
+                // The shrinking ball stops within confusion of its wall,
+                // a spatial residual rather than a diameter error. At a
+                // shallow contact the diameter error can be much larger.
+                assert!(radius > 0.0 && read_radius > 0.0);
+                let centre = *p + u * read_radius;
+                assert!(
+                    (read_radius - centre.distance(contact)).abs() <= T.confusion(),
+                    "ball at {p:?}: diameter={}, analytic={}, contact={contact:?}",
+                    2.0 * read_radius,
+                    2.0 * radius,
+                );
+                assert!(normal.dot(u).abs() > limit.sin());
+                let deflection = ogeom::mesh::Deflection {
+                    chord: T.approximation(),
+                    ..ogeom::mesh::Deflection::default()
+                };
+                assert!(
+                    faces.iter().any(|face| {
+                        ogeom::algo::classify_on_face(model, face, contact, deflection, T).unwrap()
+                            == ogeom::algo::Containment::In
+                    }),
+                    "analytic contact at {p:?}: {contact:?}",
+                );
+            }
+        }
+    }
+}
+
+impl Ball {
+    /// Exact tangency to the corpus's sphere, cylinder or cone. The surface
+    /// constants are the file's geometry, independent of distance queries.
+    fn contact(self, p: Point, u: Vector, cones: &[ogeom::math::Cone]) -> (f64, Point, Vector) {
+        match self {
+            HeadSphere => {
+                let origin = Point::new(4.75501582278481, -4.33680868994202e-16, 0.0);
+                let wall = 5.3151482081814;
+                let d = p - origin;
+                // |p + r u - origin| = wall - r, with |u| = 1.
+                let radius = (wall * wall - d.dot(d)) / (2.0 * (wall + d.dot(u)));
+                let centre = p + u * radius;
+                let radial = centre - origin;
+                let normal = radial / radial.magnitude();
+                (radius, origin + normal * wall, normal)
+            }
+            ShankCylinder => {
+                let wall = 2.5;
+                let rho = p.y.hypot(p.z);
+                let inward = -(p.y * u.y + p.z * u.z) / rho;
+                // The inward ray stays in one meridian with radial speed
+                // `inward`: wall - (rho - r inward) = r.
+                let radius = (wall - rho) / (1.0 - inward);
+                let centre = p + u * radius;
+                let reach = centre.y.hypot(centre.z);
+                let normal = Vector::new(0.0, centre.y / reach, centre.z / reach);
+                (
+                    radius,
+                    Point::new(centre.x, normal.y * wall, normal.z * wall),
+                    normal,
+                )
+            }
+            TipCone | SocketCone => {
+                let (origin_x, wall) = match self {
+                    TipCone => (18.75, 2.055),
+                    SocketCone => (-574.924243785843, 1000.0),
+                    _ => unreachable!(),
+                };
+                // A STEP angle is a decimal input, not exactly a fraction
+                // of pi. Read that input without rounding the cone to one.
+                let angle = cones
+                    .iter()
+                    .find(|cone| cone.reference_radius() == wall)
+                    .expect("the fixture contains the cone of this reference radius")
+                    .half_angle();
+                let rho = p.y.hypot(p.z);
+                let (sin, cos) = angle.sin_cos();
+                // The cone's axis is -X. Its signed distance in a meridian
+                // is (rho - wall) cos(angle) + (x - origin_x) sin(angle).
+                // Here u is axial, so the distance along p + r u is linear.
+                let distance = (rho - wall) * cos + (p.x - origin_x) * sin;
+                let normal = Vector::new(sin, cos * p.y / rho, cos * p.z / rho);
+                let radius = distance / (distance.signum() - normal.dot(u));
+                let centre = p + u * radius;
+                (
+                    radius,
+                    centre - normal * (distance.signum() * radius),
+                    normal,
+                )
+            }
+            Pinned(_) => unreachable!("a numerical snapshot has no analytic contact"),
+        }
     }
 }
 
