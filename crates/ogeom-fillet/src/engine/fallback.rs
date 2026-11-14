@@ -342,18 +342,34 @@ fn finished(
     tools: &[Tool],
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
+    let mut ids: Vec<Id> = blended.iter().copied().collect();
+    ids.sort_unstable();
+    let edges: Vec<Shape> = ids.iter().map(|e| planar.shapes[e].clone()).collect();
+    applied(model, solid, &edges, tools, tol)
+}
+
+/// `tools` applied ([`apply`]), each of `edges` deleted from the history.
+/// `None` where a boolean refuses, or an edge's blend is left nothing of.
+///
+/// # Errors
+///
+/// As [`apply`].
+pub(crate) fn applied(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    tools: &[Tool],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
     let Some(built) = apply(model, solid, tools, tol)? else {
         return Ok(None);
     };
-    if blended
-        .iter()
-        .any(|e| built.history.generated(&planar.shapes[e]).is_empty())
-    {
+    if edges.iter().any(|e| built.history.generated(e).is_empty()) {
         return Ok(None);
     }
     let mut history = built.history;
-    for e in blended {
-        history.delete(&planar.shapes[e]);
+    for e in edges {
+        history.delete(e);
     }
     Ok(Some(Built::new(built.shape, history)))
 }
