@@ -184,7 +184,7 @@ pub(crate) fn solid_fits(model: &Model, solid: &Shape, tol: Tolerances) -> Ogeom
 
 /// Whether the polygon `pts` crosses itself: two edges not next to each
 /// other meeting, or touching within `eps`.
-fn crosses_itself(pts: &[(f64, f64)], eps: f64) -> bool {
+pub(crate) fn crosses_itself(pts: &[(f64, f64)], eps: f64) -> bool {
     let n = pts.len();
     for i in 0..n {
         for j in (i + 1)..n {
