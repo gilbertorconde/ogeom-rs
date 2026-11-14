@@ -220,37 +220,129 @@ pub(crate) fn non_local(
             .filter_map(|v| faces_round(&planar.faces, *v))
             .flatten()
             .collect();
-        for (fi, face) in planar.faces.iter().enumerate() {
-            if near.contains(&fi) {
-                continue;
-            }
-            // The face's outline clipped to the piece, touching counted.
-            let mut ring: Vec<Point> = face.corners.iter().map(|v| planar.points[v]).collect();
-            for (n, off) in &planes {
-                let side = |p: &Point| n.dot(p.to_vector()) - off;
-                let mut out = Vec::with_capacity(ring.len() + 1);
-                for k in 0..ring.len() {
-                    let (p, q) = (ring[k], ring[(k + 1) % ring.len()]);
-                    let (sp, sq) = (side(&p), side(&q));
-                    if sp <= eps {
-                        out.push(p);
-                    }
-                    if (sp <= eps) != (sq <= eps) {
-                        let t = (sp - eps) / (sp - sq);
-                        out.push(p + (q - p) * t);
-                    }
-                }
-                ring = out;
-                if ring.is_empty() {
-                    break;
-                }
-            }
-            if !ring.is_empty() {
-                return Some((piece.from.clone(), fi));
-            }
+        if let Some(fi) = reaches(planar, &planes, &near, eps) {
+            return Some((piece.from.clone(), fi));
         }
     }
     None
+}
+
+/// The first face not in `near` whose outline reaches into or touches the
+/// convex piece `planes` bound.
+fn reaches(planar: &Planar, planes: &[(Vector, f64)], near: &[usize], eps: f64) -> Option<usize> {
+    for (fi, face) in planar.faces.iter().enumerate() {
+        if near.contains(&fi) {
+            continue;
+        }
+        // The face's outline clipped to the piece, touching counted.
+        let mut ring: Vec<Point> = face.corners.iter().map(|v| planar.points[v]).collect();
+        for (n, off) in planes {
+            let side = |p: &Point| n.dot(p.to_vector()) - off;
+            let mut out = Vec::with_capacity(ring.len() + 1);
+            for k in 0..ring.len() {
+                let (p, q) = (ring[k], ring[(k + 1) % ring.len()]);
+                let (sp, sq) = (side(&p), side(&q));
+                if sp <= eps {
+                    out.push(p);
+                }
+                if (sp <= eps) != (sq <= eps) {
+                    let t = (sp - eps) / (sp - sq);
+                    out.push(p + (q - p) * t);
+                }
+            }
+            ring = out;
+            if ring.is_empty() {
+                break;
+            }
+        }
+        if !ring.is_empty() {
+            return Some(fi);
+        }
+    }
+    None
+}
+
+/// A mitred request (`ChamferCorner::Point`) reaching a face it does not end
+/// at, built by the one boolean: each bevel runs its edge's whole length,
+/// its piece the prism of the edge and its contact lines square at the
+/// edge's ends, whose union at a convex vertex is the mitre to the point
+/// the bevels share. `None` where no piece reaches such a face (the rings'
+/// request), or a piece will not build or apply.
+///
+/// # Errors
+///
+/// As the booleans, other than their refusals.
+pub(crate) fn mitred_non_local(
+    model: &mut Model,
+    solid: &Shape,
+    planar: &Planar,
+    seats: &FastMap<(Id, Id), Seat>,
+    blended: &ogeom_core::FastSet<Id>,
+    setback: &FastMap<(Id, Id), f64>,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let eps = tol.confusion();
+    let mut keys: Vec<&(Id, Id)> = seats.keys().collect();
+    keys.sort_unstable();
+    let mut reached = false;
+    let mut tools = Vec::new();
+    for key in keys {
+        let seat = &seats[key];
+        if !blended.contains(&seat.edge) {
+            continue;
+        }
+        let (a, b) = seat.ends;
+        let (pa, pb) = (planar.points[&a], planar.points[&b]);
+        let mut contacts = Vec::with_capacity(4);
+        for (k, fi) in seat.faces.iter().enumerate() {
+            let face = &planar.faces[*fi];
+            let inward = face
+                .normal
+                .cross(if k == 0 { seat.along } else { -seat.along });
+            let Some(d) = setback.get(&(super::id(&face.shape), seat.edge)) else {
+                return Ok(None);
+            };
+            contacts.extend([pa + inward * *d, pb + inward * *d]);
+        }
+        let mut points = contacts.clone();
+        points.extend([pa, pb]);
+        let Some((at, rings, planes)) = hull(&points, eps) else {
+            return Ok(None);
+        };
+        let near: Vec<usize> = [a, b]
+            .iter()
+            .filter_map(|v| faces_round(&planar.faces, *v))
+            .flatten()
+            .collect();
+        reached |= reaches(planar, &planes, &near, eps).is_some();
+        let Ok((made, faces)) =
+            ogeom_algo::make_faceted_solid(model, &at, &rings, &vec![None; rings.len()], tol)
+        else {
+            return Ok(None);
+        };
+        let named = planes
+            .iter()
+            .enumerate()
+            .filter(|(_, (n, off))| {
+                contacts
+                    .iter()
+                    .all(|p| (n.dot(p.to_vector()) - off).abs() <= eps)
+            })
+            .map(|(fi, _)| (faces[fi].clone(), planar.shapes[&seat.edge].clone()))
+            .collect();
+        tools.push(Tool {
+            solid: made.shape,
+            sense: if seat.convex { Sense::Cut } else { Sense::Fuse },
+            faces: named,
+        });
+    }
+    if !reached {
+        return Ok(None);
+    }
+    let mut edges: Vec<Id> = blended.iter().copied().collect();
+    edges.sort_unstable();
+    let edges: Vec<Shape> = edges.iter().map(|e| planar.shapes[e].clone()).collect();
+    applied(model, solid, &edges, &tools, tol)
 }
 
 /// Whether every blend holds to what the rings hold it to: each contact
