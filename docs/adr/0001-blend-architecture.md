@@ -680,6 +680,21 @@ it for planar chamfers first.
   both faces' tangent planes there); its caps' sides on a wall square to
   the cap are the arcs about the wall's axis. A strip along one closed
   edge (no ends to cap) declines for now.
+- **The general route (M5c).** Where no strip's tool closes a non-local
+  request of rounds, its far feature comes off a copy of the solid
+  (`ogeom_bool::remove_faces`): the faces the rounds reach without ending at
+  them, grown across their outer rings, never into a face the rounds end at
+  or a face the feature stands in through a hole of that face. The engine
+  rounds the copy as the local request it is there; the copy less its
+  rounding is cut from the solid as given and the rounding less the copy
+  fused, each strip's faces named for its edge. The rounds keep their own
+  surfaces and the feature they reach is changed, as with the strips' own
+  tools. This takes a corner not convex all round, strips meeting at an
+  angle on a curved solid, a strip along one closed edge, and one along a
+  cone. A corner of mixed convexity (concave and convex rounds at one
+  vertex) is not taken yet: the boolean of the copy less its rounding
+  fails at the signed corner's patch (`ogeom-bool`), and the request goes
+  on as before.
 - **What takes it.** The non-local test (P2/P5) routes there, and so does a
   local request the assembly cannot place: chamfers set back differently
   in one line where a third face meets the step (the step's face is then
