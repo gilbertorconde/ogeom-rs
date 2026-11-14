@@ -918,8 +918,8 @@ fn corner_material(
 /// the arc between them where a strip ends flush in the face.
 type Corner = (Vec<usize>, Option<(usize, bool)>);
 
-/// Two convex rounds meeting beside an edge left sharp other than in a
-/// mitre (radii differing, or axes not meeting): the round whose corner on
+/// Two rounds of one sense meeting beside an edge left sharp other than in
+/// a mitre (radii differing, or axes not meeting): the round whose corner on
 /// the sharp edge stands nearer the vertex first, the face the two share,
 /// the larger's other face (`near`, where its corner is) and the smaller's
 /// (`far`, where the larger runs on to end flush).
@@ -950,7 +950,7 @@ fn crease_at(
     let [a, b] = rounds.as_slice() else {
         return None;
     };
-    if !(a.convex && b.convex) || round.len() != 3 {
+    if a.convex != b.convex || round.len() != 3 {
         return None;
     }
     let shared = a.faces.iter().copied().find(|f| b.faces.contains(f))?;
@@ -1017,9 +1017,12 @@ fn crease_edges(
     let (seat_s, seat_l) = (edge_seat[&small], edge_seat[&large]);
     let ((sec_s, r_s), (sec_l, r_l)) = (&sections[&small], &sections[&large]);
     // Each strip's axis: a point on it and its unit direction.
+    // The ball stands inside the material at a convex edge and in the open
+    // corner at a concave one.
     let axis = |section: &PlanarSection, seat: &Seat, r: f64| -> (Point, Vector) {
         let n = planar.faces[seat.faces[0]].normal;
-        (section.contact(0, 0.0) - n * r, seat.along)
+        let side = if seat.convex { -r } else { r };
+        (section.contact(0, 0.0) + n * side, seat.along)
     };
     let ((a_s, d_s), (a_l, d_l)) = (axis(sec_s, seat_s, *r_s), axis(sec_l, seat_l, *r_l));
     // The stations `t` along `p + d t` where it stands `r_l` off the larger
@@ -2039,6 +2042,69 @@ mod tests {
             volumes.push(volume(&m, &built));
         }
         for v in &volumes {
+            assert!((v - want).abs() < 1e-6, "{v} against {want}");
+        }
+    }
+
+    /// A 10 by 8 by 6 block with the corner `x < 4`, `y < 3`, `z > 3` cut
+    /// away: at the notch's inner floor corner the floor's edges along the
+    /// walls `y = 3` (along `x`, 4 long) and `x = 4` (along `y`, 3 long)
+    /// are concave, rounded at 1/2 and 1, and the walls' own edge is left
+    /// sharp. The larger fill runs on to the wall `y = 3` and ends flush in
+    /// it, the smaller ends on the larger along their cylinders' crease, and
+    /// each fill's other end is flush in the block's side. The solid is the
+    /// notched block plus each fill's corner region along its edge, less
+    /// their overlap at the corner (the union of the two fills), in either
+    /// order.
+    #[test]
+    fn two_concave_rounds_of_different_radii_beside_a_sharp_edge_meet_in_their_crease() {
+        use ogeom_math::Point;
+        let p = Point::new;
+        let points = [
+            p(0.0, 0.0, 0.0),
+            p(10.0, 0.0, 0.0),
+            p(10.0, 8.0, 0.0),
+            p(0.0, 8.0, 0.0),
+            p(10.0, 0.0, 6.0),
+            p(10.0, 8.0, 6.0),
+            p(0.0, 8.0, 6.0),
+            p(0.0, 3.0, 6.0),
+            p(4.0, 3.0, 6.0),
+            p(4.0, 0.0, 6.0),
+            p(0.0, 0.0, 3.0),
+            p(4.0, 0.0, 3.0),
+            p(4.0, 3.0, 3.0),
+            p(0.0, 3.0, 3.0),
+        ];
+        let rings = vec![
+            vec![0, 3, 2, 1],
+            vec![9, 4, 5, 6, 7, 8],
+            vec![10, 11, 12, 13],
+            vec![0, 1, 4, 9, 11, 10],
+            vec![3, 6, 5, 2],
+            vec![0, 10, 13, 7, 6, 3],
+            vec![1, 2, 5, 4],
+            vec![11, 9, 8, 12],
+            vec![13, 12, 8, 7],
+        ];
+        let (ra, rb) = (0.5, 1.0);
+        let corner = 1.0 - core::f64::consts::FRAC_PI_4;
+        let want = 444.0 + corner * (ra * ra * 4.0 + rb * rb * 3.0) - corner_overlap(ra, rb);
+        for flip in [false, true] {
+            let mut m = Model::new();
+            let (s, _) = ogeom_algo::make_faceted_solid(&mut m, &points, &rings, &[], T).unwrap();
+            let s = s.shape;
+            let along_x = edge_at(&m, &s, p(2.0, 3.0, 3.0));
+            let along_y = edge_at(&m, &s, p(4.0, 1.5, 3.0));
+            let mut asked = vec![(along_x, ra), (along_y, rb)];
+            if flip {
+                asked.reverse();
+            }
+            let request = Request::from_rounds(&asked, T).unwrap();
+            let built = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+            let found = ogeom_algo::check(&m, &built, T).unwrap();
+            assert!(found.is_valid(), "{:?}", found.problems);
+            let v = volume(&m, &built);
             assert!((v - want).abs() < 1e-6, "{v} against {want}");
         }
     }
