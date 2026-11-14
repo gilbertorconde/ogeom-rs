@@ -253,32 +253,17 @@ pub(crate) fn non_local(
     None
 }
 
-/// The request applied by booleans: each bevel's piece and each faceted
-/// vertex's, fused where concave, then cut where convex, the history traced
-/// through the booleans ([`apply`]), each piece's bevel or facet face
-/// named for its edge or vertex.
-/// `None` where a bevel runs past its face, a setback corner stands off
-/// its face, a bevel is left nothing of, or a piece will not build or
-/// apply: each refused by name on the current path.
-///
-/// # Errors
-///
-/// As the booleans, other than their refusals, which decline.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the phases' products, as P4 takes them"
-)]
-pub(crate) fn one_boolean(
-    model: &mut Model,
-    solid: &Shape,
+/// Whether every blend holds to what the rings hold it to: each contact
+/// line within its face's far side, each setback corner on its own face. A
+/// blend past either is past what the part holds, refused by name on the
+/// current path, not built.
+fn held(
     planar: &Planar,
     seats: &FastMap<(Id, Id), Seat>,
     blended: &ogeom_core::FastSet<Id>,
     corners: &FastMap<(usize, Id), Point>,
-    steps: &FastMap<(usize, Id), [Point; 2]>,
-    tol: Tolerances,
-) -> OgeomResult<Option<Built>> {
-    let eps = tol.confusion();
+    eps: f64,
+) -> bool {
     // Each bevel must fit its two faces on its own: a contact line past a
     // face's far side leaves the face it is seated on, which is refused by
     // name, not built.
@@ -295,10 +280,10 @@ pub(crate) fn one_boolean(
                 .map(|c| (planar.points[c] - from).dot(inward))
                 .fold(0.0, f64::max);
             let Some(corner) = corners.get(&(*fi, seat.ends.0)) else {
-                return Ok(None);
+                return false;
             };
             if (*corner - from).dot(inward) > width + eps {
-                return Ok(None);
+                return false;
             }
         }
     }
@@ -336,8 +321,71 @@ pub(crate) fn one_boolean(
                 .iter()
                 .any(|h| super::guards::strictly_inside(&ring(h), at, eps))
         {
-            return Ok(None);
+            return false;
         }
+    }
+    true
+}
+
+/// `tools` applied ([`apply`]), each blended edge deleted from the history.
+/// `None` where a boolean refuses, or where a blend the others leave
+/// nothing of is past what the part holds (refused by name, not built).
+///
+/// # Errors
+///
+/// As [`apply`].
+fn finished(
+    model: &mut Model,
+    solid: &Shape,
+    planar: &Planar,
+    blended: &ogeom_core::FastSet<Id>,
+    tools: &[Tool],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let Some(built) = apply(model, solid, tools, tol)? else {
+        return Ok(None);
+    };
+    if blended
+        .iter()
+        .any(|e| built.history.generated(&planar.shapes[e]).is_empty())
+    {
+        return Ok(None);
+    }
+    let mut history = built.history;
+    for e in blended {
+        history.delete(&planar.shapes[e]);
+    }
+    Ok(Some(Built::new(built.shape, history)))
+}
+
+/// The request applied by booleans: each bevel's piece and each faceted
+/// vertex's, fused where concave, then cut where convex, the history traced
+/// through the booleans ([`apply`]), each piece's bevel or facet face
+/// named for its edge or vertex.
+/// `None` where a bevel runs past its face, a setback corner stands off
+/// its face, a bevel is left nothing of, or a piece will not build or
+/// apply: each refused by name on the current path.
+///
+/// # Errors
+///
+/// As the booleans, other than their refusals, which decline.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the phases' products, as P4 takes them"
+)]
+pub(crate) fn one_boolean(
+    model: &mut Model,
+    solid: &Shape,
+    planar: &Planar,
+    seats: &FastMap<(Id, Id), Seat>,
+    blended: &ogeom_core::FastSet<Id>,
+    corners: &FastMap<(usize, Id), Point>,
+    steps: &FastMap<(usize, Id), [Point; 2]>,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let eps = tol.confusion();
+    if !held(planar, seats, blended, corners, eps) {
+        return Ok(None);
     }
     let Some(pieces) = pieces(planar, seats, blended, corners, steps) else {
         return Ok(None);
@@ -375,22 +423,7 @@ pub(crate) fn one_boolean(
             faces: carried,
         });
     }
-    let Some(built) = apply(model, solid, &tools, tol)? else {
-        return Ok(None);
-    };
-    // A bevel the others leave nothing of is past what the part holds:
-    // refused by name, not built.
-    if blended
-        .iter()
-        .any(|e| built.history.generated(&planar.shapes[e]).is_empty())
-    {
-        return Ok(None);
-    }
-    let mut history = built.history;
-    for e in blended {
-        history.delete(&planar.shapes[e]);
-    }
-    Ok(Some(Built::new(built.shape, history)))
+    finished(model, solid, planar, blended, &tools, tol)
 }
 
 /// Whether a tool is fused into the solid (a concave blend's fill) or cut
@@ -459,4 +492,436 @@ pub(crate) fn apply(
         }
     }
     Ok(Some(Built::new(built.shape, history)))
+}
+
+/// Planar rounds applied by booleans (ADR 0001, M5c): each round's tool is
+/// the region between its edge and its strip, closed by its two flaps (its
+/// faces' planes between the edge and its contact lines) and its end caps
+/// (the end faces' planes): cut where the edge is convex, fused where it is
+/// concave. The strip is the engine's own, the round of the same edge on
+/// the wedge its faces and end faces bound alone (the hull of the edge and
+/// its setback corners, pushed twice as far out), which no other face
+/// reaches: at a concave edge that wedge is the room in front of it, whose
+/// edge is convex, and its round's spandrel is the concave round's fill.
+/// `None` where a round fails what the rings hold it to, a vertex ends two
+/// rounds or more or has other than three faces, or a tool will not build.
+///
+/// # Errors
+///
+/// As the booleans, other than their refusals, which decline.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the phases' products, as P4 takes them"
+)]
+pub(crate) fn rounds_one_boolean(
+    model: &mut Model,
+    solid: &Shape,
+    planar: &Planar,
+    seats: &FastMap<(Id, Id), Seat>,
+    by_edge: &FastMap<Id, &super::Section>,
+    blended: &ogeom_core::FastSet<Id>,
+    corners: &FastMap<(usize, Id), Point>,
+    steps: &FastMap<(usize, Id), [Point; 2]>,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let eps = tol.confusion();
+    if !steps.is_empty() || !held(planar, seats, blended, corners, eps) {
+        return Ok(None);
+    }
+    let mut keys: Vec<&(Id, Id)> = seats.keys().collect();
+    keys.sort_unstable();
+    let mut tools = Vec::new();
+    for key in keys {
+        let seat = &seats[key];
+        let Some(super::Section::Round { radius }) = by_edge.get(&seat.edge) else {
+            continue;
+        };
+        let (a, b) = seat.ends;
+        for v in [a, b] {
+            let ending = seats
+                .values()
+                .filter(|s| blended.contains(&s.edge) && (s.ends.0 == v || s.ends.1 == v))
+                .count();
+            if ending != 1 || faces_round(&planar.faces, v).is_none_or(|f| f.len() != 3) {
+                return Ok(None);
+            }
+        }
+        // Each contact on its own face, end to end: a contact running where
+        // its face does not reach (a wall cut away under a boss) leaves the
+        // ball no seat there, which is not a strip crossing a face but a
+        // ball leaving its seat, refused by name, not built.
+        for fi in &seat.faces {
+            let (p, q) = (corners[&(*fi, a)], corners[&(*fi, b)]);
+            if !contact_on_face(planar, *fi, p, q, eps) {
+                return Ok(None);
+            }
+        }
+        let Some(tool) = round_tool(model, planar, seat, *radius, corners, tol)? else {
+            return Ok(None);
+        };
+        tools.push(tool);
+    }
+    finished(model, solid, planar, blended, &tools, tol)
+}
+
+/// Whether the segment `p` to `q` lies on face `fi`: its middle within the
+/// face, and the segment crossing none of the face's sides (touching one is
+/// on it).
+fn contact_on_face(planar: &Planar, fi: usize, p: Point, q: Point, eps: f64) -> bool {
+    let face = &planar.faces[fi];
+    if !super::rounds::within_face(planar, fi, p + (q - p) * 0.5, eps) {
+        return false;
+    }
+    let n = face.normal;
+    let x = q - p;
+    let length = x.magnitude();
+    if length <= eps {
+        return true;
+    }
+    let x = x / length;
+    let y = n.cross(x);
+    let flat = |c: Point| ((c - p).dot(x), (c - p).dot(y));
+    for walk in face.loops() {
+        for k in 0..walk.len() {
+            let (a, b) = (
+                flat(planar.points[&walk[k]]),
+                flat(planar.points[&walk[(k + 1) % walk.len()]]),
+            );
+            // The side crosses the contact's line strictly between its ends,
+            // from one side of it to the other.
+            if (a.1 > eps && b.1 < -eps) || (a.1 < -eps && b.1 > eps) {
+                let at = a.0 + (b.0 - a.0) * (a.1 / (a.1 - b.1));
+                if at > eps && at < length - eps {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// One round's tool ([`rounds_one_boolean`]), its strip named for its edge;
+/// `None` where it will not build.
+fn round_tool(
+    model: &mut Model,
+    planar: &Planar,
+    seat: &Seat,
+    radius: f64,
+    corners: &FastMap<(usize, Id), Point>,
+    tol: Tolerances,
+) -> OgeomResult<Option<Tool>> {
+    use ogeom_geom::{LineCurve, PlaneSurface};
+    use ogeom_math::{Direction, Plane};
+    let eps = tol.confusion();
+    let (a, b) = seat.ends;
+    let (pa, pb) = (planar.points[&a], planar.points[&b]);
+    let [Some(c0a), Some(c0b), Some(c1a), Some(c1b)] = [
+        corners.get(&(seat.faces[0], a)),
+        corners.get(&(seat.faces[0], b)),
+        corners.get(&(seat.faces[1], a)),
+        corners.get(&(seat.faces[1], b)),
+    ] else {
+        return Ok(None);
+    };
+    // The wedge its faces and end faces bound alone, its edge `a` to `b`.
+    let wide = [
+        pa,
+        pb,
+        pa + (*c0a - pa) * 2.0,
+        pb + (*c0b - pb) * 2.0,
+        pa + (*c1a - pa) * 2.0,
+        pb + (*c1b - pb) * 2.0,
+    ];
+    let Some((at, rings, _)) = hull(&wide, eps) else {
+        return Ok(None);
+    };
+    let Ok((wedge, _)) =
+        ogeom_algo::make_faceted_solid(model, &at, &rings, &vec![None; rings.len()], tol)
+    else {
+        return Ok(None);
+    };
+    let wedge = wedge.shape;
+    let point = |model: &Model, v: &Shape| -> OgeomResult<Point> {
+        Ok(model
+            .node(v)
+            .ok_or_else(|| ogeom_core::ogeom_err!(Construction, "a vertex not in the model"))?
+            .data()
+            .as_vertex()
+            .map_or(Point::ORIGIN, |d| d.point))
+    };
+    let mut edge = None;
+    for e in explore_unique(model, &wedge, ShapeType::Edge)? {
+        if let Some((p, q)) = ogeom_algo::edge_vertices(model, &e)? {
+            let (p, q) = (point(model, &p)?, point(model, &q)?);
+            if (p.distance(pa) <= eps && q.distance(pb) <= eps)
+                || (p.distance(pb) <= eps && q.distance(pa) <= eps)
+            {
+                edge = Some(e);
+            }
+        }
+    }
+    let Some(edge) = edge else {
+        return Ok(None);
+    };
+    let request = super::Request {
+        blends: vec![super::request::Blend {
+            edge: edge.clone(),
+            section: super::Section::Round { radius },
+        }],
+        mitre: false,
+        splits: Vec::new(),
+    };
+    let Ok(Some(rounded)) = super::run(model, &wedge, &request, tol) else {
+        return Ok(None);
+    };
+    let [strip] = rounded.history.generated(&edge) else {
+        return Ok(None);
+    };
+    let strip = strip.clone();
+    // The strip's sides: its contact on each face's plane, and its end on
+    // each end face's plane, with the contacts' ends there.
+    let on = |p: Point, at: Point, n: Vector| (p - at).dot(n).abs() <= 10.0 * eps;
+    let unit = |n: Vector| n / n.magnitude().max(f64::MIN_POSITIVE);
+    let caps = [
+        (pa, unit((*c0a - pa).cross(*c1a - pa))),
+        (pb, unit((*c0b - pb).cross(*c1b - pb))),
+    ];
+    let mut contacts: [Option<Shape>; 2] = [None, None];
+    let mut ends: [Option<Shape>; 2] = [None, None];
+    let mut corner_at: [[Option<Shape>; 2]; 2] = [[None, None], [None, None]];
+    let sides = explore_unique(model, &strip, ShapeType::Edge)?;
+    if sides.len() != 4 {
+        return Ok(None);
+    }
+    for e in sides {
+        let Some((p, q)) = ogeom_algo::edge_vertices(model, &e)? else {
+            return Ok(None);
+        };
+        let (pp, pq) = (point(model, &p)?, point(model, &q)?);
+        if let Some(k) =
+            (0..2).find(|k| on(pp, pa, seat.normals[*k]) && on(pq, pa, seat.normals[*k]))
+        {
+            contacts[k] = Some(e);
+        } else if let Some(j) =
+            (0..2).find(|j| on(pp, caps[*j].0, caps[*j].1) && on(pq, caps[*j].0, caps[*j].1))
+        {
+            for (v, pv) in [(p, pp), (q, pq)] {
+                if let Some(k) = (0..2).find(|k| on(pv, pa, seat.normals[*k])) {
+                    corner_at[j][k] = Some(v);
+                }
+            }
+            ends[j] = Some(e);
+        } else {
+            return Ok(None);
+        }
+    }
+    let ([Some(l0), Some(l1)], [Some(ea), Some(eb)]) = (contacts, ends) else {
+        return Ok(None);
+    };
+    let [[Some(v0a), Some(v1a)], [Some(v0b), Some(v1b)]] = corner_at else {
+        return Ok(None);
+    };
+    // The flaps and caps, over the strip's own sides.
+    let segment = |model: &mut Model, from: &Shape, to: &Shape| -> OgeomResult<Shape> {
+        let (p, q) = (point(model, from)?, point(model, to)?);
+        let line = LineCurve::segment(p, q, tol)?;
+        let range = ogeom_geom::Curve3d::domain(&line);
+        Ok(ogeom_algo::make_edge_between(model, line.into(), range, from, to, tol)?.shape)
+    };
+    let va = ogeom_algo::make_vertex(model, pa).shape;
+    let vb = ogeom_algo::make_vertex(model, pb).shape;
+    let ab = segment(model, &va, &vb)?;
+    let a0 = segment(model, &va, &v0a)?;
+    let a1 = segment(model, &va, &v1a)?;
+    let b0 = segment(model, &vb, &v0b)?;
+    let b1 = segment(model, &vb, &v1b)?;
+    let middle = wide.iter().fold(Vector::ZERO, |s, p| s + p.to_vector()) * (1.0 / 6.0);
+    let face = |model: &mut Model, at: Point, n: Vector, sides: &[Shape]| -> OgeomResult<Shape> {
+        let n = if n.dot(middle - at.to_vector()) > 0.0 {
+            -n
+        } else {
+            n
+        };
+        // Walked counter-clockwise about the face's outward normal.
+        let mut ring = ogeom_algo::order_edges(model, sides, tol)?;
+        let mut corners = Vec::with_capacity(ring.len());
+        for k in 0..ring.len() {
+            let (Some((p, q)), Some((r, t))) = (
+                ogeom_algo::edge_vertices(model, &ring[k])?,
+                ogeom_algo::edge_vertices(model, &ring[(k + 1) % ring.len()])?,
+            ) else {
+                ogeom_core::ogeom_bail!(Construction, "a round's tool side has no ends");
+            };
+            let shared = [&p, &q]
+                .into_iter()
+                .find(|v| v.is_same(&r) || v.is_same(&t));
+            corners.push(point(model, shared.unwrap_or(&q))?);
+        }
+        let mut turn = Vector::ZERO;
+        for k in 0..corners.len() {
+            turn += (corners[k] - corners[0]).cross(corners[(k + 1) % corners.len()] - corners[0]);
+        }
+        if turn.dot(n) < 0.0 {
+            ring = ring.iter().rev().map(Shape::reversed).collect();
+        }
+        let plane = PlaneSurface::new(Plane::through(at, Direction::new(n, tol)?));
+        Ok(ogeom_algo::make_face_with_pcurves(model, plane.into(), &[ring], tol)?.shape)
+    };
+    let carried = strip.reversed();
+    let mut faces = vec![carried.clone()];
+    faces.push(face(
+        model,
+        pa,
+        seat.normals[0],
+        &[ab.clone(), b0.clone(), l0, a0.clone()],
+    )?);
+    faces.push(face(
+        model,
+        pa,
+        seat.normals[1],
+        &[ab, b1.clone(), l1, a1.clone()],
+    )?);
+    faces.push(face(model, pa, caps[0].1, &[a0, ea, a1])?);
+    faces.push(face(model, pb, caps[1].1, &[b0, eb, b1])?);
+    let shell = ogeom_algo::make_shell(model, &faces)?.shape;
+    if !ogeom_algo::is_shell_closed(model, &shell)? {
+        return Ok(None);
+    }
+    let made = ogeom_algo::make_solid(model, &[shell])?.shape;
+    Ok(Some(Tool {
+        solid: made,
+        sense: if seat.convex { Sense::Cut } else { Sense::Fuse },
+        faces: vec![(carried, planar.shapes[&seat.edge].clone())],
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+    use super::super::{Request, run};
+    use core::f64::consts::FRAC_PI_4;
+    use ogeom_core::Tolerances;
+    use ogeom_math::{Direction, Frame, Point};
+    use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    fn block(m: &mut Model, at: (f64, f64, f64), size: (f64, f64, f64)) -> Shape {
+        let frame =
+            Frame::new(Point::new(at.0, at.1, at.2), Direction::Z, Direction::X, T).unwrap();
+        ogeom_algo::make_box(m, frame, size, T).unwrap().shape
+    }
+
+    fn volume(m: &Model, s: &Shape) -> f64 {
+        ogeom_algo::volume_properties(m, s, ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    }
+
+    /// The edge of `s` along `x` at `y`, `z`, its whole length `length`.
+    fn edge_along(m: &Model, s: &Shape, y: f64, z: f64, length: f64) -> Shape {
+        explore_unique(m, s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                let bb = ogeom_algo::shape_bounds(m, e, T).unwrap();
+                let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
+                (l.y - y).abs() < 1e-6
+                    && (h.y - y).abs() < 1e-6
+                    && (l.z - z).abs() < 1e-6
+                    && (h.z - z).abs() < 1e-6
+                    && (h.x - l.x - length).abs() < 1e-5
+            })
+            .unwrap()
+    }
+
+    /// The area under `sqrt(r^2 - u^2)` from nought to `u`.
+    fn under(r: f64, u: f64) -> f64 {
+        0.5 * (u * (r * r - u * u).sqrt() + r * r * (u / r).asin())
+    }
+
+    /// The round built by the engine, through the one boolean: valid, the
+    /// edge generating one strip, the volume `want`.
+    fn rounds_to(m: &mut Model, s: &Shape, edge: &Shape, r: f64, want: f64) {
+        let request = Request::from_rounds(&[(edge.clone(), r)], T).unwrap();
+        let built = run(m, s, &request, T)
+            .unwrap()
+            .expect("built by the engine");
+        let found = ogeom_algo::check(m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert_eq!(built.history.generated(edge).len(), 1, "the strip");
+        let got = volume(m, &built.shape);
+        assert!((got - want).abs() < 1e-6, "{got} against {want}");
+    }
+
+    /// A plate 4 thick, its plan the rectangle 20 by 10 or the trapezoid
+    /// narrowing to 14 at its back (its sides leaning in 3 over 10, so the
+    /// round's ends lie on them askew), with a square pocket 1 by 1/2
+    /// through it, 1 in from its front; its top front edge rounded at 2.
+    /// The round runs through the pocket, whose walls it crosses, faces not
+    /// round its ends. Built by the engine through the one boolean: the
+    /// plate less the pocket and the round's spandrel, less what the two
+    /// share. The spandrel's section `A = (1 - pi/4) r^2` runs `20 - 2 l y`
+    /// long at `y` behind the front (`l` the sides' lean), so it takes
+    /// `20 A - 2 l (20/3 - 2 pi)`; across the pocket its height is
+    /// `2 - sqrt(4 - u^2)` at `u = 2 - y`.
+    #[test]
+    fn a_round_crossing_a_pocket_goes_through_the_one_boolean() {
+        for lean in [0.0, 0.3] {
+            let mut m = Model::new();
+            let corners = [
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(20.0, 0.0, 0.0),
+                Point::new(20.0 - 10.0 * lean, 10.0, 0.0),
+                Point::new(10.0 * lean, 10.0, 0.0),
+            ];
+            let wire = ogeom_algo::make_polygon(&mut m, &corners, true, T)
+                .unwrap()
+                .shape;
+            let plane = ogeom_geom::PlaneSurface::new(ogeom_math::Plane::new(Frame::WORLD));
+            let base = ogeom_algo::make_face(&mut m, plane.into(), &[wire], T)
+                .unwrap()
+                .shape;
+            let plate =
+                ogeom_algo::make_prism(&mut m, &base, ogeom_math::Vector::new(0.0, 0.0, 4.0), T)
+                    .unwrap()
+                    .shape;
+            let pocket = block(&mut m, (8.0, 1.0, -1.0), (1.0, 0.5, 6.0));
+            let s = ogeom_bool::cut(&mut m, &plate, &pocket, T).unwrap().shape;
+            let edge = edge_along(&m, &s, 0.0, 4.0, 20.0);
+            let r = 2.0;
+            let spandrel = (1.0 - FRAC_PI_4) * r * r * 20.0
+                - 2.0 * lean * (20.0 / 3.0 - 2.0 * core::f64::consts::PI);
+            let shared = 1.0 - (under(r, 1.0) - under(r, 0.5));
+            let plate = (20.0 + 20.0 - 20.0 * lean) * 5.0 * 4.0;
+            let want = plate - 2.0 - spandrel + shared;
+            rounds_to(&mut m, &s, &edge, r, want);
+        }
+    }
+
+    /// An L of a floor 20 by 10 by 2 and a wall 2 thick along its back, 10
+    /// tall, with a pillar 4 by 1 by 3 standing on the floor 1/2 in front of
+    /// the wall; the concave edge at the wall's foot rounded at 2. The
+    /// round's fill reaches into the pillar, a face not round its ends.
+    /// Built by the engine through the one boolean: the L and the pillar
+    /// with the fill `(1 - pi/4) r^2` along the edge, less what the fill
+    /// and the pillar share (the fill's height `2 - sqrt(4 - u^2)` at `u =
+    /// y - 6` in front of the ball's centre, across the pillar).
+    #[test]
+    fn a_concave_round_reaching_a_pillar_goes_through_the_one_boolean() {
+        let mut m = Model::new();
+        let floor = block(&mut m, (0.0, 0.0, 0.0), (20.0, 10.0, 2.0));
+        let wall = block(&mut m, (0.0, 8.0, 0.0), (20.0, 2.0, 10.0));
+        let pillar = block(&mut m, (8.0, 6.5, 2.0), (4.0, 1.0, 3.0));
+        let l = ogeom_bool::fuse(&mut m, &floor, &wall, T).unwrap().shape;
+        let s = ogeom_bool::fuse(&mut m, &l, &pillar, T).unwrap().shape;
+        let (s, _) = ogeom_heal::unify_same_domain(&mut m, &s, T).unwrap();
+        let s = s.shape;
+        let edge = edge_along(&m, &s, 8.0, 2.0, 20.0);
+        let r = 2.0;
+        let fill = (1.0 - FRAC_PI_4) * r * r;
+        let shared = 4.0 * (2.0 - (under(r, 1.5) - under(r, 0.5)));
+        let want = 400.0 + 20.0 * 2.0 * 8.0 + 12.0 + fill * 20.0 - shared;
+        rounds_to(&mut m, &s, &edge, r, want);
+    }
 }
