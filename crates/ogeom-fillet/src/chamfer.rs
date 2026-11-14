@@ -448,6 +448,48 @@ pub(crate) fn engine_chamfer(
     )))
 }
 
+/// [`engine_chamfer`] closing each vertex of three chamfers by their mitre,
+/// on a solid bounded by planes only: `None` elsewhere, and where a
+/// vertex's mitre is not one point.
+///
+/// # Errors
+///
+/// As [`engine_chamfer`].
+pub(crate) fn engine_chamfer_mitred(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let baked = ogeom_algo::baked_where_placed(model, solid, tol)?;
+    let (solid, specs) = if baked.shape.is_same(solid) {
+        (solid.clone(), specs.to_vec())
+    } else {
+        let Some(traced) = traced_specs(&baked.history, specs) else {
+            return Ok(None);
+        };
+        (baked.shape.clone(), traced)
+    };
+    if !matches!(
+        crate::engine::dissolve(model, &solid, tol)?,
+        crate::engine::Dissolved::Plain
+    ) {
+        return Ok(None);
+    }
+    let Some(mut request) = crate::engine::Request::from_chamfers(model, &solid, &specs, tol)?
+    else {
+        return Ok(None);
+    };
+    request.mitre = true;
+    let Some(built) = crate::engine::run(model, &solid, &request, tol)? else {
+        return Ok(None);
+    };
+    Ok(Some(Built::new(
+        built.shape,
+        baked.history.then(&built.history),
+    )))
+}
+
 /// `specs` traced through `history`: each edge, and each face a spec names,
 /// to the one shape it went to; `None` where any went to none or several.
 fn traced_specs(
