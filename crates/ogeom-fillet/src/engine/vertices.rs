@@ -70,8 +70,8 @@ pub(crate) enum RoundVertex {
     Patch,
     /// Two rounds of one sense beside an edge left sharp. Of one radius with
     /// their axes meeting, the strips run on to the mitre plane, where the
-    /// two cylinders cross on one ellipse, and meet along it. Otherwise, both
-    /// convex, the larger (its corner on the sharp edge the farther) runs on
+    /// two cylinders cross on one ellipse, and meet along it. Otherwise the
+    /// larger (its corner on the sharp edge the farther) runs on
     /// to the smaller's other face and ends flush in it, and the smaller ends
     /// on the larger along the curve the two cylinders cross in. Either way
     /// the sharp edge's crease carries on between them, and there is no
