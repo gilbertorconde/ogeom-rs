@@ -700,7 +700,7 @@ M6 refuses by name"); their public documentation:
 | SOLIDWORKS [P32] | Its "cliff chamfer" ("the chamfer face replaces one of the support faces") is a FeatureWorks recognition diagnostic for imported bodies, not a modelling refusal. |
 | Solid Edge, NX, Onshape, Fusion, Creo | Not found. |
 
-So a chamfer rolls over as a notch: its plane carries on past the face's
+So a chamfer rolls over as a notch: its bevel carries on past the face's
 far side and trims the faces it meets there, the face it ran past gone
 where the plane passes all of it. On planes the rings build it: a bevel
 rolling over (its setback past its face's width) is marked so in P0, and
@@ -708,7 +708,12 @@ its plane may cut any ring of its cluster (`Cluster::rolling`), the faces
 beyond included; a request rolling over is not labelled non-local (the
 notch trims what it reaches, by definition). On a convex plate every edge
 chamfered past the plate's thickness is the polytope of the plate's, the
-bevels' and the facets' planes. A bevel the others leave nothing of
+bevels' and the facets' planes. A rim between a planar cap and a coaxial
+cylinder or cone the curved path's rings do not place (rolling over its
+wall, reaching a face it does not end at, or pieces of one rim asked
+apart, each stepping at the joint on the plane through the axis) goes to
+the one boolean: its tool is the bevel's meridian triangle turned about
+the axis over the rim's span. A bevel the others leave nothing of
 stays refused by name where the one-boolean fallback builds (amendment
 "M5a"), as before.
 
