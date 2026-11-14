@@ -2909,16 +2909,17 @@ fn rim_removed(tube: f64, r: f64, outward: bool) -> f64 {
     core::f64::consts::TAU * at * area
 }
 
-/// Rims rounded where a plane meets a cylinder about one axis are cut from
-/// the solid by trimming the two faces each wedge sits on rather than by
-/// the general fuse, and come out as the general fuse makes them: the same
-/// solid, valid, with the same history, and the volume the section turned
-/// about the axis takes. The cases are a cylinder's rims, both on one wall,
-/// a bore's through a block, a tube's four (its outer and inner rims each
-/// on the one annulus), a wall with a cross hole well below its rim, and a
-/// cup's rim clear of its cavity. Where the rounding reaches the cylinder's
-/// far end, a hole in the wall comes up into the band the wedge takes, or a
-/// cavity into the ring it sweeps, the cut is left to the general fuse.
+/// Rims rounded where a plane meets a cylinder about one axis are built by
+/// the blend engine, each the torus its ball sweeps, with no boolean, and
+/// come out as the general path makes them: the same solid, valid, with the
+/// same history, and the volume the section turned about the axis takes.
+/// The cases are a cylinder's rims, both on one wall, a bore's through a
+/// block, a tube's four (its outer and inner rims each on the one annulus),
+/// a wall with a cross hole well below its rim, and a cup's rim clear of
+/// its cavity. Where the rounding reaches the cylinder's far end, a hole in
+/// the wall comes up into the band the round takes, or a cavity into the
+/// box it can take up, the engine hands the request back and the general
+/// fuse cuts it. No case is cut by trimming any more.
 #[test]
 fn rims_are_cut_by_trimming_to_the_general_fuse_s_solid() {
     use core::f64::consts::PI;
@@ -3022,7 +3023,7 @@ fn rims_are_cut_by_trimming_to_the_general_fuse_s_solid() {
             false,
         ),
     ];
-    for (name, case, trimmed) in cases {
+    for (name, case, by_engine) in cases {
         let mut model = ogeom_topo::Model::new();
         let (solid, edges, radius, closed_form) = case(&mut model);
         let mut general = model.clone();
@@ -3032,7 +3033,12 @@ fn rims_are_cut_by_trimming_to_the_general_fuse_s_solid() {
         let (seated, work) = ogeom_bool::work::counted(|| {
             ogeom_fillet::fillet_edges(&mut model, &solid, &edges, radius, T).unwrap()
         });
-        assert_eq!(work.seated_cuts > 0, trimmed, "{name}: cut by trimming");
+        assert_eq!(
+            work.face_pairs == 0,
+            by_engine,
+            "{name}: built with no boolean"
+        );
+        assert_eq!(work.seated_cuts, 0, "{name}: no cut by trimming");
         let (want, got) = (
             account(&general, &solid, &edges, &fused),
             account(&model, &solid, &edges, &seated),
@@ -3060,15 +3066,16 @@ fn rims_are_cut_by_trimming_to_the_general_fuse_s_solid() {
 }
 
 /// Concave rims, where a plane meets a cylinder about one axis with the
-/// corner between them empty, are filled by trimming the two faces each
-/// wedge sits on rather than by the general fuse, and come out as the
-/// general fuse makes them: the same solid, valid, with the same history,
-/// and the volume the section turned about the axis adds. The cases are a
-/// boss's base on a plate, a blind hole's floor, a stepped shaft's shoulder,
-/// two bosses' bases in one union, and a bored boss's base. Where the ring
-/// the wedge sweeps reaches a side of the plate, a shelf hangs over it, or
-/// the rounding reaches the boss's top, the fill is left to the general
-/// fuse.
+/// corner between them empty, are built by the blend engine, each the torus
+/// its ball sweeps, with no boolean, and come out as the general path makes
+/// them: the same solid, valid, with the same history, and the volume the
+/// section turned about the axis adds. The cases are a boss's base on a
+/// plate, a blind hole's floor, a stepped shaft's shoulder, two bosses'
+/// bases in one union, a bored boss's base and a shelf over the ring's top.
+/// Where the ring reaches a side of the plate, a shelf hangs into the box
+/// the round can take up, or the rounding reaches the boss's top, the
+/// engine hands the request back and the general fuse fills it. No case is
+/// filled by trimming any more.
 #[test]
 fn concave_rims_are_filled_by_trimming_to_the_general_fuse_s_solid() {
     use core::f64::consts::PI;
@@ -3168,7 +3175,7 @@ fn concave_rims_are_filled_by_trimming_to_the_general_fuse_s_solid() {
             false,
         ),
     ];
-    for (name, case, trimmed) in cases {
+    for (name, case, by_engine) in cases {
         let mut model = ogeom_topo::Model::new();
         let (solid, edges, closed_form) = case(&mut model);
         let mut general = model.clone();
@@ -3178,7 +3185,12 @@ fn concave_rims_are_filled_by_trimming_to_the_general_fuse_s_solid() {
         let (seated, work) = ogeom_bool::work::counted(|| {
             ogeom_fillet::fillet_edges(&mut model, &solid, &edges, 1.0, T).unwrap()
         });
-        assert_eq!(work.seated_fills > 0, trimmed, "{name}: filled by trimming");
+        assert_eq!(
+            work.face_pairs == 0,
+            by_engine,
+            "{name}: built with no boolean"
+        );
+        assert_eq!(work.seated_fills, 0, "{name}: no fill by trimming");
         let (want, got) = (
             account(&general, &solid, &edges, &fused),
             account(&model, &solid, &edges, &seated),
