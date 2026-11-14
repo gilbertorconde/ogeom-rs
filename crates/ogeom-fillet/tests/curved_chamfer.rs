@@ -503,20 +503,104 @@ fn a_d_block_s_cap_chamfered_meets_its_bevels_across_the_sharp_uprights() {
         }
     }
     let mut o = Model::new();
-    let mut s = d_block(&mut o);
-    let cone = ogeom_algo::make_cone(&mut o, up_at(0.0, 0.0, -1.0), 13.5, 2.5, 11.0, T)
-        .unwrap()
-        .shape;
-    s = ogeom_bool::common(&mut o, &s, &cone, T).unwrap().shape;
-    s = cut_past(
-        &mut o,
-        &s,
-        Point::new(d, 0.0, 10.0),
-        Vector::new(-1.0, 0.0, 1.0),
-    );
+    let s = d_block_cap_bevelled(&mut o, d);
     let (got, want) = (volume(&m, &built.shape), volume(&o, &s));
     assert!(
         (got - want).abs() < 1e-6,
+        "volume {got} against the booleans' {want}"
+    );
+}
+
+/// The D-shaped block with its cap's arc and straight edge bevelled at
+/// `d` by booleans: in common with the arc's 45-degree cone, and cut past
+/// the straight edge's bevel plane.
+fn d_block_cap_bevelled(o: &mut Model, d: f64) -> Shape {
+    let s = d_block(o);
+    let cone = ogeom_algo::make_cone(o, up_at(0.0, 0.0, -1.0), 14.0 - d, 3.0 - d, 11.0, T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::common(o, &s, &cone, T).unwrap().shape;
+    cut_past(o, &s, Point::new(d, 0.0, 10.0), Vector::new(-1.0, 0.0, 1.0))
+}
+
+/// The D-shaped block with its arc wall an extrusion of the half circle as
+/// an exact rational B-spline, not a cylinder: the cap's arc is a crease
+/// with no closed-form bevel, and the straight edge's bevel plane meets its
+/// bevel across the sharp uprights.
+fn spline_d_block(m: &mut Model) -> Shape {
+    use ogeom_geom::{CircleCurve, Curve};
+    use ogeom_math::{Axis, Circle, Plane};
+    let half = core::f64::consts::FRAC_PI_2;
+    let circle: Curve = CircleCurve::new(Circle::new(up_at(0.0, 0.0, 0.0), 3.0, T).unwrap()).into();
+    let arc: Curve = circle.to_bspline_over((-half, half), T).unwrap().into();
+    let (low, high) = (Point::new(0.0, -3.0, 0.0), Point::new(0.0, 3.0, 0.0));
+    let (a, b) = (
+        ogeom_algo::make_vertex(m, low).shape,
+        ogeom_algo::make_vertex(m, high).shape,
+    );
+    let range = ogeom_geom::Curve3d::domain(&arc);
+    let curved = ogeom_algo::make_edge_between(m, arc, range, &a, &b, T)
+        .unwrap()
+        .shape;
+    let line: Curve =
+        ogeom_geom::LineCurve::new(Axis::new(high, Direction::new(low - high, T).unwrap())).into();
+    let straight = ogeom_algo::make_edge_between(m, line, (0.0, 6.0), &b, &a, T)
+        .unwrap()
+        .shape;
+    let wire = ogeom_algo::make_wire(m, &[curved, straight], T)
+        .unwrap()
+        .shape;
+    let plane = ogeom_geom::PlaneSurface::over(
+        Plane::through(Point::ORIGIN, Direction::Z),
+        (-100.0, 100.0),
+        (-100.0, 100.0),
+    )
+    .unwrap();
+    let face = ogeom_algo::make_face(m, plane.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    ogeom_algo::make_prism(m, &face, Vector::new(0.0, 0.0, 10.0), T)
+        .unwrap()
+        .shape
+}
+
+/// The spline D-block's cap chamfered 0.5 on its arc and straight edge:
+/// the ruled bevel along the spline crease and the straight edge's plane
+/// meet across the sharp uprights, on the curve the plane cuts from the
+/// ruled bevel, marched. The wall is a circle's extrusion exactly, so the
+/// solid is the cylinder's D-block bevelled by booleans, to within the
+/// bevel's fit.
+#[test]
+fn a_spline_crease_s_bevel_meets_a_plane_bevel_across_the_sharp_uprights() {
+    let d = 0.5_f64;
+    let mut m = Model::new();
+    let block = spline_d_block(&mut m);
+    let found = ogeom_algo::check(&m, &block, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let top: Vec<Shape> = explore_unique(&m, &block, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let b = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            b.low().unwrap().z > 10.0 - 1e-6
+        })
+        .collect();
+    assert_eq!(top.len(), 2, "the cap's arc and straight edge");
+    let built = ogeom_fillet::chamfer_edges(&mut m, &block, &top, d, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    for e in &top {
+        assert_eq!(
+            built.history.generated(e).len(),
+            1,
+            "an edge without its bevel"
+        );
+    }
+    let mut o = Model::new();
+    let s = d_block_cap_bevelled(&mut o, d);
+    let (got, want) = (volume(&m, &built.shape), volume(&o, &s));
+    assert!(
+        (got - want).abs() < 1e-7,
         "volume {got} against the booleans' {want}"
     );
 }
