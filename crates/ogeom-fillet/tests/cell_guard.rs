@@ -173,29 +173,80 @@ fn origin_corner_with_void(m: &mut Model) -> (Shape, [Shape; 3]) {
     (s, e)
 }
 
-#[test]
-fn a_corner_of_rounds_and_bevels_with_a_void_in_its_cell_is_refused_by_name() {
+/// `request`'s bevels and rounds on the voided block's corner through
+/// `blend_edges`: built, valid, the void kept as a shell of its own, and
+/// the same solid as the bevels' own call and the rounds' own call on what
+/// it leaves (ADR 0001, section 13, question 3: two features, so no corner
+/// cell reaches the void, which stands clear of every band).
+fn the_bevels_then_the_rounds_keep_the_void(what: &str, kinds: &[(usize, bool)]) {
+    let blend_of = |round: bool| {
+        if round {
+            Blend::Round(2.0)
+        } else {
+            Blend::Chamfer(Chamfer::Symmetric(2.0))
+        }
+    };
     let mut m = Model::new();
-    let (s, [x, y, z]) = origin_corner_with_void(&mut m);
-    let request = vec![
-        (x, Blend::Chamfer(Chamfer::Symmetric(2.0))),
-        (y, Blend::Round(2.0)),
-        (z, Blend::Round(2.0)),
-    ];
-    let got = ogeom_fillet::blend_edges(&mut m, &s, &request, ChamferCorner::Point, T);
-    refused("blend_edges", got, &m);
+    let (s, e) = origin_corner_with_void(&mut m);
+    let request: Vec<(Shape, Blend)> = kinds
+        .iter()
+        .map(|(k, round)| (e[*k].clone(), blend_of(*round)))
+        .collect();
+    let got = ogeom_fillet::blend_edges(&mut m, &s, &request, ChamferCorner::Point, T)
+        .unwrap_or_else(|why| panic!("{what}: {why}"));
+    assert!(
+        ogeom_algo::check(&m, &got.shape, T).unwrap().is_valid(),
+        "{what}"
+    );
+    assert_eq!(
+        explore_unique(&m, &got.shape, ShapeType::Shell)
+            .unwrap()
+            .len(),
+        2,
+        "{what}: the void kept"
+    );
+    let mut n = Model::new();
+    let (s2, e2) = origin_corner_with_void(&mut n);
+    let bevels: Vec<(Shape, Chamfer)> = kinds
+        .iter()
+        .filter(|(_, round)| !*round)
+        .map(|(k, _)| (e2[*k].clone(), Chamfer::Symmetric(2.0)))
+        .collect();
+    let beveled =
+        ogeom_fillet::chamfer_edges_cornered(&mut n, &s2, &bevels, ChamferCorner::Point, T)
+            .unwrap();
+    let rounds: Vec<(Shape, f64)> = kinds
+        .iter()
+        .filter(|(_, round)| *round)
+        .map(|(k, _)| (beveled.history.trace(&e2[*k])[0].clone(), 2.0))
+        .collect();
+    let separate = ogeom_fillet::fillet_edges_with(&mut n, &beveled.shape, &rounds, T).unwrap();
+    let volume = |m: &Model, s: &Shape| {
+        ogeom_algo::volume_properties(m, s, ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    assert_eq!(
+        volume(&m, &got.shape).to_bits(),
+        volume(&n, &separate.shape).to_bits(),
+        "{what}: the two features in turn"
+    );
 }
 
 #[test]
-fn a_round_and_a_bevel_beside_a_sharp_edge_with_a_void_in_the_cell_are_refused_by_name() {
-    let mut m = Model::new();
-    let (s, [x, y, _]) = origin_corner_with_void(&mut m);
-    let request = vec![
-        (x, Blend::Chamfer(Chamfer::Symmetric(2.0))),
-        (y, Blend::Round(2.0)),
-    ];
-    let got = ogeom_fillet::blend_edges(&mut m, &s, &request, ChamferCorner::Point, T);
-    refused("blend_edges beside a sharp edge", got, &m);
+fn a_corner_of_rounds_and_bevels_with_a_void_near_it_is_the_bevels_then_the_rounds() {
+    the_bevels_then_the_rounds_keep_the_void(
+        "a bevel and two rounds",
+        &[(0, false), (1, true), (2, true)],
+    );
+}
+
+#[test]
+fn a_round_and_a_bevel_beside_a_sharp_edge_with_a_void_near_them_are_the_bevel_then_the_round() {
+    the_bevels_then_the_rounds_keep_the_void(
+        "a round and a bevel beside a sharp edge",
+        &[(0, false), (1, true)],
+    );
 }
 
 #[test]
