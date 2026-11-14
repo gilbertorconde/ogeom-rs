@@ -3824,3 +3824,142 @@ fn a_mitred_bevel_reaching_under_a_block_goes_through_the_one_boolean() {
     );
     assert_eq!(built.history.generated(&front[0].0).len(), 1, "the bevel");
 }
+
+/// The top front edge of `s` (on y = 0 at height `z`, spanning x from `x0`
+/// to `x1`) and the top face beside it.
+fn front_top(m: &Model, s: &Shape, z: f64, (x0, x1): (f64, f64)) -> (Shape, Shape) {
+    let edge = explore_unique(m, s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let bb = ogeom_algo::shape_bounds(m, e, T).unwrap();
+            let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
+            (l.z - z).abs() < 1e-6
+                && (h.z - z).abs() < 1e-6
+                && h.y.abs() < 1e-6
+                && (l.x - x0).abs() < 1e-6
+                && (h.x - x1).abs() < 1e-6
+        })
+        .unwrap();
+    let top = explore_unique(m, s, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let (at, n) = ogeom_algo::face_normal(m, f, T).unwrap();
+            n.z > 0.5
+                && (at.z - z).abs() < 1e-6
+                && explore_unique(m, f, ShapeType::Edge)
+                    .unwrap()
+                    .iter()
+                    .any(|x| x.is_same(&edge))
+        })
+        .unwrap();
+    (edge, top)
+}
+
+/// Guard, a wall rising at an edge's end: a plate 8 × 10 × 2 with a wall
+/// 2 × 10 × 6 rising at its x = 8 end, the plate's top front edge chamfered
+/// 1 along the top and 3 down the 2 mm front, so the bevel rolls over onto
+/// the floor (ADR 0001, amendment "M5b"). The chamfer takes the material
+/// between the edge and its bevel, its tool bounded by the bevel, the top's
+/// and front's planes and the planes square to the edge at its ends, the
+/// wall's face x = 8 among them: the wall is not cut. The plate loses its
+/// section, the trapezoid 1 wide at the top and 1/3 at the floor, along 8.
+#[test]
+fn a_rolling_bevel_ending_at_a_rising_wall_leaves_the_wall() {
+    let mut m = Model::new();
+    let plate = block(&mut m, (0.0, 0.0, 0.0), (8.0, 10.0, 2.0));
+    let wall = block(&mut m, (8.0, 0.0, 0.0), (2.0, 10.0, 6.0));
+    let s = ogeom_bool::fuse(&mut m, &plate, &wall, T).unwrap().shape;
+    let (edge, top) = front_top(&m, &s, 2.0, (0.0, 8.0));
+    let spec = Chamfer::Distances {
+        face: top,
+        on_face: 1.0,
+        on_other: 3.0,
+    };
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &[(edge.clone(), spec)], T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let want = 160.0 + 120.0 - 8.0 * 4.0 / 3.0;
+    let got = volume(&m, &built.shape);
+    assert!(
+        (got - want).abs() <= 1e-9 * want,
+        "volume {got} against {want}"
+    );
+    assert_eq!(built.history.generated(&edge).len(), 1, "the bevel");
+}
+
+/// Guard, a far wall along the floor: a slab 10 × 18 × 1 (y from -8), a
+/// block 10 × 10 × 2 on it at y in [0, 10], and a wall 10 × 2 × 3 standing
+/// on the slab at y in [-8, -6]. The block's top front edge chamfered 1
+/// along its top and 4 down its 2 mm front rolls over its foot (ADR 0001,
+/// amendment "M5b"): its tool, bounded by the bevel, the top's plane z = 3
+/// and the front's y = 0, takes the block's and the slab's material in
+/// front of the bevel behind y = 0, the section's y < (z + 1) / 4 for z in
+/// [0, 3], 1.875 along 10, and never reaches the far wall.
+#[test]
+fn a_rolling_bevel_leaves_a_far_wall_along_the_floor() {
+    let mut m = Model::new();
+    let slab = block(&mut m, (0.0, -8.0, 0.0), (10.0, 18.0, 1.0));
+    let step = block(&mut m, (0.0, 0.0, 1.0), (10.0, 10.0, 2.0));
+    let far = block(&mut m, (0.0, -8.0, 1.0), (10.0, 2.0, 3.0));
+    let s = ogeom_bool::fuse(&mut m, &slab, &step, T).unwrap().shape;
+    let s = ogeom_bool::fuse(&mut m, &s, &far, T).unwrap().shape;
+    let (edge, top) = front_top(&m, &s, 3.0, (0.0, 10.0));
+    let spec = Chamfer::Distances {
+        face: top,
+        on_face: 1.0,
+        on_other: 4.0,
+    };
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &[(edge.clone(), spec)], T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let want = 180.0 + 200.0 + 60.0 - 18.75;
+    let got = volume(&m, &built.shape);
+    assert!(
+        (got - want).abs() <= 1e-9 * want,
+        "volume {got} against {want}"
+    );
+    assert_eq!(built.history.generated(&edge).len(), 1, "the bevel");
+}
+
+/// An L-shaped plate 1 thick (the union of 10 × 4 and 4 × 10), the two top
+/// edges at its reflex corner chamfered 1.5, past the 1 mm walls: each
+/// tool takes, at height z, its edge's strip z + 0.5 wide (the bevel
+/// y + z = 3.5, and x + z = 3.5), and at the reflex corner the two tools
+/// run on past the vertex until they meet, taking the corner square
+/// between the strips (ADR 0001, amendment "M5b"; as the rings mitre a
+/// reflex corner without a notch). The plate less 6 of each strip and the
+/// square: 64 - 12 - ∫(z + 0.5)² dz.
+#[test]
+fn rolling_bevels_meeting_at_a_reflex_corner_take_the_corner_square() {
+    let mut m = Model::new();
+    let a = block(&mut m, (0.0, 0.0, 0.0), (10.0, 4.0, 1.0));
+    let b = block(&mut m, (0.0, 0.0, 0.0), (4.0, 10.0, 1.0));
+    let s = ogeom_bool::fuse(&mut m, &a, &b, T).unwrap().shape;
+    let asked: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
+            let along_x = (l.y - 4.0).abs() < 1e-6 && (h.y - 4.0).abs() < 1e-6 && l.x > 3.9;
+            let along_y = (l.x - 4.0).abs() < 1e-6 && (h.x - 4.0).abs() < 1e-6 && l.y > 3.9;
+            l.z > 0.5 && (along_x || along_y)
+        })
+        .collect();
+    assert_eq!(asked.len(), 2, "the reflex corner's two top edges");
+    let built = ogeom_fillet::chamfer_edges(&mut m, &s, &asked, 1.5, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert!(!folded(&m, &built.shape), "folded");
+    let want = 64.0 - 12.0 - (1.5_f64.powi(3) - 0.5_f64.powi(3)) / 3.0;
+    let got = volume(&m, &built.shape);
+    assert!(
+        (got - want).abs() <= 1e-9 * want,
+        "volume {got} against {want}"
+    );
+    for e in &asked {
+        assert!(!built.history.generated(e).is_empty(), "its bevel");
+    }
+}

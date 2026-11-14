@@ -29,6 +29,44 @@ struct Piece {
     additive: bool,
 }
 
+/// The convex polytope `n · p <= off` over every `(n, off)` of `planes`,
+/// as a solid, or `None` where it is unbounded, flat or will not build:
+/// its corners where three planes meet within the rest, then their hull.
+pub(crate) fn polytope(
+    model: &mut Model,
+    planes: &[(Vector, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Shape>> {
+    let eps = tol.confusion();
+    let mut corners: Vec<Point> = Vec::new();
+    for i in 0..planes.len() {
+        for j in i + 1..planes.len() {
+            for k in j + 1..planes.len() {
+                let (a, b, c) = (planes[i], planes[j], planes[k]);
+                let det = a.0.dot(b.0.cross(c.0));
+                if det.abs() <= 1e-12 {
+                    continue;
+                }
+                let p = (b.0.cross(c.0) * a.1 + c.0.cross(a.0) * b.1 + a.0.cross(b.0) * c.1) / det;
+                let p = Point::new(p.x, p.y, p.z);
+                if planes
+                    .iter()
+                    .all(|(n, off)| n.dot(p.to_vector()) <= off + eps * n.magnitude().max(1.0))
+                {
+                    corners.push(p);
+                }
+            }
+        }
+    }
+    let Some((at, rings, _)) = hull(&corners, eps) else {
+        return Ok(None);
+    };
+    match ogeom_algo::make_faceted_solid(model, &at, &rings, &vec![None; rings.len()], tol) {
+        Ok((made, _)) => Ok(Some(made.shape)),
+        Err(_) => Ok(None),
+    }
+}
+
 /// The convex hull of `points`, every face a ring of the hull's corners
 /// wound counter-clockwise seen from outside, with its outward normal and
 /// offset; `None` where the points span no volume.
