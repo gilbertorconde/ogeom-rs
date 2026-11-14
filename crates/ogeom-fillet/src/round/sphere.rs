@@ -253,12 +253,12 @@ pub(crate) fn corner_ball(
     Some((centre, [0, 1, 2].map(|i| centre - n[i] * off)))
 }
 
-/// The ball about `centre` of `radius`, charted for the spherical triangle
+/// The ball about `centre` of `radius`, charted for the spherical polygon
 /// between `feet` (in turn round it, each joined to the next by a great
-/// circle's arc): its longitude half a turn from the triangle's middle and
-/// its equator through it, so the triangle, less than a hemisphere, stands
+/// circle's arc): its longitude half a turn from the polygon's middle and
+/// its equator through it, so the polygon, less than a hemisphere, stands
 /// clear of the chart's seam. Of the axes square to the middle, its poles
-/// take the one farthest from the triangle's sides: a foot can stand nearly
+/// take the one farthest from the polygon's sides: a foot can stand nearly
 /// a quarter turn from the middle at an obtuse corner, and an axis chosen
 /// without looking can put a pole beside it.
 ///
@@ -267,10 +267,10 @@ pub(crate) fn corner_ball(
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
 /// where the feet have no middle, or every axis leaves a pole within a
 /// hundredth of a radian of a side.
-pub(crate) fn triangle_sphere(
+pub(crate) fn corner_sphere(
     centre: Point,
     radius: f64,
-    feet: [Point; 3],
+    feet: &[Point],
     tol: Tolerances,
 ) -> OgeomResult<SurfaceGeometry> {
     let dirs: Vec<Vector> = feet.iter().map(|f| (*f - centre) / radius).collect();
@@ -310,7 +310,7 @@ pub(crate) fn triangle_sphere(
     if clear < 1e-2 {
         ogeom_bail!(
             Construction,
-            "a corner sphere's triangle leaves no axis clear of its sides"
+            "a corner sphere's polygon leaves no axis clear of its sides"
         );
     }
     let frame = Frame::new(centre, Direction::new(axis, tol)?, away, tol)?;

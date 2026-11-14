@@ -1,5 +1,5 @@
-//! P3's general vertex blend for rounds: a three-sided transfinite patch
-//! through the strips' ends (ADR 0001, §4.4, as amended).
+//! P3's general vertex blend for rounds: a three- or four-sided
+//! transfinite patch through the strips' ends (ADR 0001, §4.4, as amended).
 //!
 //! Each side of the hole is a strip's end curve, and the strip's surface
 //! its support. Its ribbon leaves the curve along a cross tangent in the
@@ -24,12 +24,20 @@
 //! so `S = R_i + O(d_i^2)`: the patch takes each side's curve and its cross
 //! tangent, so it is tangent to the support all along the side, however
 //! the supports' twists at a corner disagree. This is what a least-squares
-//! fill through such corners cannot do.
+//! fill through such corners cannot do. Four sides blend over the unit
+//! square with `d = (v, 1 - u, 1 - v, u)` and `s = (u, v, 1 - u, 1 - v)`,
+//! their distances cubed in the weights: at a corner the two ribbons of the
+//! sides not meeting there stand off it, and squared their weights let
+//! that enter the patch at second order, where the two ribbons meeting
+//! there keep to their strips and so to the faces those touch (at a
+//! pyramid's apex the exact patch stood past a face beside a corner);
+//! cubed, it enters at third.
 //!
 //! The patch is not a tensor product, so the face carries it interpolated:
 //! a clamped bicubic B-spline taking it at [`NET`] by [`NET`] points of the
 //! unit square, and its derivatives across the square's sides at each,
-//! the square mapped onto the triangle with its third corner as a pole. What the interpolated surface
+//! three sides' square mapped onto the triangle with its third corner as a
+//! pole, four sides' square taken as it is. What the interpolated surface
 //! achieves is measured on it, never assumed from the exact patch: its gap
 //! to each side's curve, its angle to each side's support, and how far it
 //! stands from the exact patch inside.
@@ -42,7 +50,7 @@ use ogeom_topo::{EdgeData, Location, Model, Shape};
 /// The interpolation points along each direction of the unit square.
 pub(crate) const NET: usize = 33;
 
-/// One side of a three-sided hole: an edge's curve walked from one corner
+/// One side of a three- or four-sided hole: an edge's curve walked from one corner
 /// to the next, and the surface the patch meets tangent along it.
 #[derive(Debug, Clone)]
 pub(crate) struct HoleSide {
@@ -197,8 +205,8 @@ fn support_normal(support: &SurfaceGeometry, p: Point, tol: Tolerances) -> Ogeom
     }
 }
 
-/// The exact three-sided patch over a hole: Kato's blend of its sides'
-/// ribbons.
+/// The exact three- or four-sided patch over a hole: Kato's blend of its
+/// sides' ribbons.
 #[derive(Debug, Clone)]
 pub(crate) struct Transfinite {
     ribbons: Vec<Ribbon>,
@@ -211,8 +219,16 @@ impl Transfinite {
     /// # Errors
     ///
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
-    /// where the sides do not close or a support's normal cannot be read.
-    pub(crate) fn new(sides: &[HoleSide; 3], tol: Tolerances) -> OgeomResult<Self> {
+    /// where there are other than three or four sides, the sides do not
+    /// close, or a support's normal cannot be read.
+    pub(crate) fn new(sides: &[HoleSide], tol: Tolerances) -> OgeomResult<Self> {
+        let n = sides.len();
+        if !(3..=4).contains(&n) {
+            ogeom_bail!(
+                Construction,
+                "a vertex patch takes three or four sides, not {n}"
+            );
+        }
         let mut ribbons: Vec<Ribbon> = sides
             .iter()
             .map(|side| Ribbon {
@@ -223,8 +239,8 @@ impl Transfinite {
             })
             .collect();
         let reach = tol.confusion() * 100.0;
-        for i in 0..3 {
-            let next = (i + 1) % 3;
+        for i in 0..n {
+            let next = (i + 1) % n;
             if ribbons[i]
                 .point(1.0, tol)?
                 .distance(ribbons[next].point(0.0, tol)?)
@@ -236,16 +252,14 @@ impl Transfinite {
         // The hole's middle, for each side's way into it: read at the
         // side's middle, not at a corner, where the hole may turn straight
         // on and its cross tangent run along the side.
-        let corners = [
-            ribbons[0].point(0.0, tol)?,
-            ribbons[1].point(0.0, tol)?,
-            ribbons[2].point(0.0, tol)?,
-        ];
-        let middle = Point::from_vector(
-            (corners[0].to_vector() + corners[1].to_vector() + corners[2].to_vector()) / 3.0,
-        );
-        for i in 0..3 {
-            let (prev, next) = ((i + 2) % 3, (i + 1) % 3);
+        let mut middle = Vector::ZERO;
+        for r in &ribbons {
+            middle += r.point(0.0, tol)?.to_vector();
+        }
+        #[expect(clippy::cast_precision_loss, reason = "three or four sides")]
+        let middle = Point::from_vector(middle / n as f64);
+        for i in 0..n {
+            let (prev, next) = ((i + n - 1) % n, (i + 1) % n);
             let start = -ribbons[prev].tangent(1.0, tol)?;
             let end = ribbons[next].tangent(0.0, tol)?;
             let (_, inward) = ribbons[i].frame(0.5, 1.0, tol)?;
@@ -271,8 +285,8 @@ impl Transfinite {
         // the frames' turning; the slopes take half each of what the
         // turning leaves. What remains is the two strips' curvatures across
         // the face, which no slope mends.
-        for i in 0..3 {
-            let next = (i + 1) % 3;
+        for i in 0..n {
+            let next = (i + 1) % n;
             let (t_end, across_end) = ribbons[i].frame(1.0, ribbons[i].sign, tol)?;
             let (t_start, across_start) = ribbons[next].frame(0.0, ribbons[next].sign, tol)?;
             let turning = |r: &Ribbon, k: usize, rate: (Vector, Vector)| {
@@ -290,7 +304,8 @@ impl Transfinite {
         Ok(Self { ribbons })
     }
 
-    /// The patch at barycentrics `l` (summing to one, each in `[0, 1]`).
+    /// A three-sided patch at barycentrics `l` (summing to one, each in
+    /// `[0, 1]`).
     ///
     /// # Errors
     ///
@@ -327,6 +342,44 @@ impl Transfinite {
         }
         Ok(Point::from_vector(sum))
     }
+
+    /// A four-sided patch at `(u, v)` of the unit square, its sides in turn
+    /// along `v = 0`, `u = 1`, `v = 1` and `u = 0`.
+    ///
+    /// # Errors
+    ///
+    /// As evaluating the sides' curves.
+    pub(crate) fn point_square(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<Point> {
+        let d = [v, 1.0 - u, 1.0 - v, u];
+        let s = [u, v, 1.0 - u, 1.0 - v];
+        let weight = |k: usize| -> f64 {
+            (0..4)
+                .filter(|j| *j != k)
+                .map(|j| d[j].abs().powi(3))
+                .product::<f64>()
+        };
+        let w = [weight(0), weight(1), weight(2), weight(3)];
+        let total: f64 = w.iter().sum();
+        if total <= f64::MIN_POSITIVE {
+            // A corner: the side starting there.
+            let corner = match (u > 0.5, v > 0.5) {
+                (false, false) => 0,
+                (true, false) => 1,
+                (true, true) => 2,
+                (false, true) => 3,
+            };
+            return self.ribbons[corner].point(0.0, tol);
+        }
+        let mut sum = Vector::ZERO;
+        for i in 0..4 {
+            if w[i] == 0.0 {
+                continue;
+            }
+            let r = self.ribbons[i].at(s[i], d[i], tol)?;
+            sum += r.to_vector() * (w[i] / total);
+        }
+        Ok(Point::from_vector(sum))
+    }
 }
 
 /// The barycentrics of `(u, v)` of the unit square, its top row the third
@@ -338,7 +391,8 @@ fn barycentrics(u: f64, v: f64) -> [f64; 3] {
 /// A vertex patch's face and what its interpolated surface achieved.
 #[derive(Debug, Clone)]
 pub(crate) struct CornerPatch {
-    /// The face, bounded by the three sides' edges and a pole.
+    /// The face, bounded by the sides' edges, and a pole where there are
+    /// three.
     pub face: Shape,
     /// The widest gap between the surface and a side's curve.
     pub gap: f64,
@@ -349,16 +403,17 @@ pub(crate) struct CornerPatch {
     pub off: f64,
 }
 
-/// The vertex patch over the hole `sides` (walked corner to corner, wound
-/// counter-clockwise seen from outside the solid), its face built on the
-/// sides' edges with the third corner as a pole, and what it achieved.
+/// The vertex patch over the hole `sides` (three or four, walked corner to
+/// corner, wound counter-clockwise seen from outside the solid), its face
+/// built on the sides' edges, with the third corner as a pole where there
+/// are three, and what it achieved.
 ///
 /// # Errors
 ///
 /// As [`Transfinite::new`], and as building the face.
 pub(crate) fn corner_patch(
     model: &mut Model,
-    sides: &[HoleSide; 3],
+    sides: &[HoleSide],
     tol: Tolerances,
 ) -> OgeomResult<CornerPatch> {
     let exact = Transfinite::new(sides, tol)?;
@@ -372,7 +427,7 @@ pub(crate) fn corner_patch(
             #[expect(clippy::cast_precision_loss, reason = "a net of thirty-three")]
             let (u, v) = ((i as f64 + 0.5) * step, (j as f64 + 0.5) * step);
             let p = surface.point_at(u, v, tol)?;
-            off = off.max(p.distance(exact.point(barycentrics(u, v), tol)?));
+            off = off.max(p.distance(Across { exact: &exact, tol }.point(u, v)?));
         }
     }
     let face = face_on(model, sides, surface, gap, tol)?;
@@ -412,9 +467,12 @@ fn net_parameters() -> Vec<f64> {
         .collect()
 }
 
-/// The exact patch's derivatives across the unit square's sides, from its
-/// ribbons: `S = R_i + O(d_i^2)` near side `i`, so the first derivatives
-/// there are the ribbon's. With `l = ((1 - u)(1 - v), u (1 - v), v)`: along
+/// The exact patch over the unit square, and its derivatives across the
+/// square's sides, from its ribbons: `S = R_i + O(d_i^2)` near side `i`, so
+/// the first derivatives there are the ribbon's. Four sides: along `v = 0`,
+/// `dS/dv = T_0(u)`; along `u = 1`, `dS/du = -T_1(v)`; along `v = 1`,
+/// `dS/dv = -T_2(1 - u)`; along `u = 0`, `dS/du = T_3(1 - v)`. Three sides,
+/// with `l = ((1 - u)(1 - v), u (1 - v), v)`: along
 /// `v = 0`, `dS/dv = T_0(u)`; along `u = 1`,
 /// `dS/du = -v (1 - v) C_1'(v) - (1 - v) T_1(v)`; along `u = 0`,
 /// `dS/du = -v (1 - v) C_2'(1 - v) + (1 - v) T_2(1 - v)`; and at the pole
@@ -426,29 +484,50 @@ struct Across<'a> {
 }
 
 impl Across<'_> {
+    fn square(&self) -> bool {
+        self.exact.ribbons.len() == 4
+    }
+
+    fn point(&self, u: f64, v: f64) -> OgeomResult<Point> {
+        if self.square() {
+            self.exact.point_square(u, v, self.tol)
+        } else {
+            self.exact.point(barycentrics(u, v), self.tol)
+        }
+    }
+
     fn dv_bottom(&self, u: f64) -> OgeomResult<Vector> {
         self.exact.ribbons[0].cross(u, self.tol)
     }
 
     fn dv_top(&self, u: f64) -> OgeomResult<Vector> {
         let r = &self.exact.ribbons;
+        if self.square() {
+            return Ok(-r[2].cross(1.0 - u, self.tol)?);
+        }
         Ok(r[1].tangent(1.0, self.tol)? * u - r[2].tangent(0.0, self.tol)? * (1.0 - u))
     }
 
     fn du_right(&self, v: f64) -> OgeomResult<Vector> {
         let r = &self.exact.ribbons[1];
+        if self.square() {
+            return Ok(-r.cross(v, self.tol)?);
+        }
         Ok(r.tangent(v, self.tol)? * (-v * (1.0 - v)) - r.cross(v, self.tol)? * (1.0 - v))
     }
 
     fn du_left(&self, v: f64) -> OgeomResult<Vector> {
+        if self.square() {
+            return self.exact.ribbons[3].cross(1.0 - v, self.tol);
+        }
         let r = &self.exact.ribbons[2];
         Ok(r.tangent(1.0 - v, self.tol)? * (-v * (1.0 - v))
             + r.cross(1.0 - v, self.tol)? * (1.0 - v))
     }
 
     /// The twist at a corner of the square: where the two sides' data
-    /// agree (the pole's corners) their common value, and at the hole's
-    /// own corners, where they need not, the mean of the two.
+    /// agree (a pole's corners) their common value, and at the hole's own
+    /// corners, where they need not, the mean of the two.
     fn twist(&self, u: f64, v: f64) -> OgeomResult<Vector> {
         let h = 1e-6;
         let along_u = |f: &dyn Fn(f64) -> OgeomResult<Vector>, at: f64| -> OgeomResult<Vector> {
@@ -518,7 +597,7 @@ fn interpolated(exact: &Transfinite, tol: Tolerances) -> OgeomResult<BSplineSurf
     for &v in &params {
         let points = params
             .iter()
-            .map(|&u| exact.point(barycentrics(u, v), tol))
+            .map(|&u| across.point(u, v))
             .collect::<OgeomResult<Vec<_>>>()?;
         rows_u.push(line(points, across.du_left(v)?, across.du_right(v)?));
     }
@@ -631,12 +710,13 @@ fn measured(
         for k in 0..=count {
             #[expect(clippy::cast_precision_loss, reason = "a few hundred samples")]
             let s = k as f64 / count as f64;
-            let (u, v) = match i {
-                0 => (s, 0.0),
-                1 => (1.0, s),
+            let (u, v) = match (exact.ribbons.len(), i) {
+                (_, 0) => (s, 0.0),
+                (_, 1) => (1.0, s),
+                (4, 2) => (1.0 - s, 1.0),
                 _ => (0.0, 1.0 - s),
             };
-            if v >= 1.0 {
+            if exact.ribbons.len() == 3 && v >= 1.0 {
                 continue;
             }
             let p = surface.point_at(u, v, tol)?;
@@ -662,26 +742,33 @@ fn measured(
     Ok((gap, angle))
 }
 
-/// The face on `surface` bounded by the sides' edges and a pole at the
-/// third corner, each edge's pcurve the straight side of the unit square
-/// it maps onto, the edges widened to the gap measured.
+/// The face on `surface` bounded by the sides' edges, and a pole at the
+/// third corner where there are three sides, each edge's pcurve the
+/// straight side of the unit square it maps onto, the edges widened to the
+/// gap measured.
 fn face_on(
     model: &mut Model,
-    sides: &[HoleSide; 3],
+    sides: &[HoleSide],
     surface: BSplineSurface,
     gap: f64,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
     let id = model.geometry_mut().add_surface(surface.into());
     // Each side's ends in the unit square, in the walk's order.
-    let corners = [
-        (Point2::new(0.0, 0.0), Point2::new(1.0, 0.0)),
-        (Point2::new(1.0, 0.0), Point2::new(1.0, 1.0)),
-        (Point2::new(0.0, 1.0), Point2::new(0.0, 0.0)),
-    ];
+    let (o, x, y, xy) = (
+        Point2::new(0.0, 0.0),
+        Point2::new(1.0, 0.0),
+        Point2::new(0.0, 1.0),
+        Point2::new(1.0, 1.0),
+    );
+    let corners: &[(Point2, Point2)] = if sides.len() == 4 {
+        &[(o, x), (x, xy), (xy, y), (y, o)]
+    } else {
+        &[(o, x), (x, xy), (y, o)]
+    };
     let widened = Tolerance::new(gap + tol.confusion())?;
     let mut walked = Vec::with_capacity(4);
-    for (side, (from, to)) in sides.iter().zip(corners) {
+    for (side, &(from, to)) in sides.iter().zip(corners) {
         let (a, b) = side.range;
         let (start, end) = if side.forward { (from, to) } else { (to, from) };
         let line = BSpline2d::new(KnotVector::new(vec![a, a, b, b], 1)?, vec![start, end], tol)?;
@@ -703,6 +790,10 @@ fn face_on(
         } else {
             side.edge.reversed()
         });
+    }
+    if sides.len() == 4 {
+        let wire = ogeom_algo::make_wire(model, &walked, tol)?.shape;
+        return Ok(ogeom_algo::make_face_on(model, id, std::slice::from_ref(&wire), tol)?.shape);
     }
     // The pole: the walk's third corner, where the second side ends.
     let Some((_, pole)) = ogeom_algo::edge_vertices(model, &walked[1])? else {
@@ -949,6 +1040,63 @@ mod tests {
                 assert!(p.z.abs() < 1e-12, "{l:?}: {p:?}");
             }
         }
+    }
+
+    /// Four straight sides of a quadrilateral on `z = 0`, each supported by
+    /// that plane: the four-sided patch lies in it, exactly, and takes each
+    /// side.
+    #[test]
+    fn a_flat_four_sided_hole_is_patched_flat() {
+        let mut m = Model::new();
+        let corners = [
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(5.0, 0.0, 0.0),
+            Point::new(4.0, 3.0, 0.0),
+            Point::new(1.0, 4.0, 0.0),
+        ];
+        let plane: SurfaceGeometry =
+            ogeom_geom::PlaneSurface::new(ogeom_math::Plane::new(ogeom_math::Frame::WORLD)).into();
+        let vertices: Vec<Shape> = corners
+            .iter()
+            .map(|p| ogeom_algo::make_vertex(&mut m, *p).shape)
+            .collect();
+        let sides: Vec<HoleSide> = (0..4)
+            .map(|i| {
+                let (a, b) = (corners[i], corners[(i + 1) % 4]);
+                let line = ogeom_geom::LineCurve::segment(a, b, T).unwrap();
+                let range = (0.0, a.distance(b));
+                let edge = ogeom_algo::make_edge_between(
+                    &mut m,
+                    Curve::Line(line),
+                    range,
+                    &vertices[i],
+                    &vertices[(i + 1) % 4],
+                    T,
+                )
+                .unwrap()
+                .shape;
+                HoleSide {
+                    edge,
+                    curve: Curve::Line(line),
+                    range,
+                    forward: true,
+                    support: plane.clone(),
+                }
+            })
+            .collect();
+        let patch = Transfinite::new(&sides, T).unwrap();
+        for i in 0..=10 {
+            for j in 0..=10 {
+                let (u, v) = (f64::from(i) / 10.0, f64::from(j) / 10.0);
+                let p = patch.point_square(u, v, T).unwrap();
+                assert!(p.z.abs() < 1e-12, "{u} {v}: {p:?}");
+            }
+            let s = f64::from(i) / 10.0;
+            let on = patch.point_square(s, 0.0, T).unwrap();
+            assert!(on.distance(corners[0].lerp(corners[1], s)) < 1e-12);
+        }
+        let built = corner_patch(&mut m, &sides, T).unwrap();
+        assert!(built.gap <= FIT && built.angle <= FIT, "{built:?}");
     }
 
     /// At a convex box corner of three different radii, the corner patch's
