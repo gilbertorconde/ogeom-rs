@@ -215,10 +215,13 @@ fn support_normal(support: &SurfaceGeometry, p: Point, tol: Tolerances) -> Ogeom
 }
 
 /// The exact patch over a hole of three sides or more: Kato's blend of its
-/// sides' ribbons.
+/// sides' ribbons, or, over five sides or more, the corners blended by the
+/// polygon's Wachspress coordinates ([`corner_patch_through_corners`]).
 #[derive(Debug, Clone)]
 pub(crate) struct Transfinite {
     ribbons: Vec<Ribbon>,
+    /// The hole's corners, where the patch is their Wachspress blend.
+    through: Option<Vec<Point>>,
 }
 
 impl Transfinite {
@@ -310,7 +313,10 @@ impl Transfinite {
             ribbons[i].slopes[1] = (half.dot(t_end), half.dot(across_end));
             ribbons[next].slopes[0] = (half.dot(t_start), half.dot(across_start));
         }
-        Ok(Self { ribbons })
+        Ok(Self {
+            ribbons,
+            through: None,
+        })
     }
 
     /// A three-sided patch at barycentrics `l` (summing to one, each in
@@ -435,6 +441,13 @@ impl Transfinite {
         for x in &mut l {
             *x /= sum;
         }
+        if let Some(corners) = &self.through {
+            let blend = corners
+                .iter()
+                .zip(&l)
+                .fold(Vector::ZERO, |acc, (c, w)| acc + c.to_vector() * *w);
+            return Ok(Point::from_vector(blend));
+        }
         let d: Vec<f64> = (0..n)
             .map(|i| (1.0 - l[i] - l[(i + 1) % n]).max(0.0))
             .collect();
@@ -530,6 +543,43 @@ pub(crate) fn corner_patch(
         angle,
         off,
     })
+}
+
+/// The patch through a hole of five straight sides or more, its corners
+/// off one plane, wound counter-clockwise seen from outside the solid: the
+/// corners blended by the regular polygon's Wachspress coordinates, a face
+/// on each side's sector as [`corner_patch`] builds them. On each side of
+/// the polygon the coordinates are those of its two corners alone and
+/// linear between them, so the patch takes each straight side exactly; it
+/// meets its sides' supports at whatever angle they stand (a chamfer's
+/// bevels share no tangent plane at a corner), and lies on one plane where
+/// the corners do. On a square the coordinates are bilinear, which is
+/// the four-sided chamfer corner.
+///
+/// # Errors
+///
+/// As [`corner_patch`], and
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+/// where there are fewer than five sides.
+pub(crate) fn corner_patch_through_corners(
+    model: &mut Model,
+    sides: &[HoleSide],
+    tol: Tolerances,
+) -> OgeomResult<CornerPatch> {
+    if sides.len() < 5 {
+        ogeom_bail!(
+            Construction,
+            "a patch through its corners takes five sides or more, not {}",
+            sides.len()
+        );
+    }
+    let mut exact = Transfinite::new(sides, tol)?;
+    let mut corners = Vec::with_capacity(sides.len());
+    for ribbon in &exact.ribbons {
+        corners.push(ribbon.point(0.0, tol)?);
+    }
+    exact.through = Some(corners);
+    sector_patch(model, sides, &exact, tol)
 }
 
 /// The parameters of the interpolation points along each direction:
