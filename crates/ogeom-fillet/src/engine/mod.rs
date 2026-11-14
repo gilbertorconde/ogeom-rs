@@ -64,6 +64,54 @@ pub(crate) fn bounded_by_planes(
     Ok(classify::read_planar(model, solid, tol)?.is_some())
 }
 
+/// What makes a solid bounded by planes degenerate, where it is: an edge
+/// bounded by other than two faces (two blocks touching along an edge), an
+/// edge closing on itself, or two edges between one pair of vertices. The
+/// engine refuses these by name (ADR 0001, amendment "what M6 refuses by name"); `None` for a
+/// solid with a curved face, or with none of them.
+///
+/// # Errors
+///
+/// As reading the solid.
+pub(crate) fn degenerate_planar(model: &Model, solid: &Shape) -> OgeomResult<Option<String>> {
+    use ogeom_topo::{Filter, ShapeType, explore, explore_unique};
+    let faces = explore_unique(model, solid, ShapeType::Face)?;
+    for f in &faces {
+        let planar = model
+            .node(f)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| model.geometry().surface(d.surface))
+            .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::Plane(_)));
+        if !planar {
+            return Ok(None);
+        }
+    }
+    let mut uses: FastMap<Id, usize> = FastMap::default();
+    for f in &faces {
+        for e in explore(model, f, Filter::OfType(ShapeType::Edge))? {
+            *uses.entry(id(&e)).or_default() += 1;
+        }
+    }
+    let mut pairs: FastSet<(Id, Id)> = FastSet::default();
+    for e in explore_unique(model, solid, ShapeType::Edge)? {
+        let n = uses.get(&id(&e)).copied().unwrap_or(0);
+        if n != 2 {
+            return Ok(Some(format!("an edge is bounded by {n} faces, not two")));
+        }
+        let Some((a, b)) = ogeom_algo::edge_vertices(model, &e)? else {
+            continue;
+        };
+        if a.is_same(&b) {
+            return Ok(Some("an edge closes on itself".into()));
+        }
+        let (x, y) = (id(&a), id(&b));
+        if !pairs.insert((x.min(y), x.max(y))) {
+            return Ok(Some("two edges join one pair of vertices".into()));
+        }
+    }
+    Ok(None)
+}
+
 use ogeom_algo::{Built, History};
 use ogeom_core::{FastMap, FastSet, OgeomResult, Tolerances};
 use ogeom_topo::{Model, Shape};
