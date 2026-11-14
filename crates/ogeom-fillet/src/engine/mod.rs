@@ -80,8 +80,9 @@ pub(crate) enum Origin {
 /// planes, each face one ring of straight edges and a ring per hole (rounds:
 /// no holes), every edge between two
 /// faces, every vertex's faces closing round it once; and the request
-/// inside the setback domain: no face consumed by its setbacks but a band
-/// between two parallel bevels ([`consumed`]), no two faces crossing, every
+/// inside the setback domain: a face its setbacks consume convex and every
+/// bevel and vertex round it convex ([`consumed`]), no two faces crossing,
+/// every
 /// chamfer corner's setback corners on one plane).
 ///
 /// # Errors
@@ -122,7 +123,7 @@ pub(crate) fn run(
         }
     }
     // P2.
-    let Some(mut corners) = setbacks::setback_corners(&planar, &setback, tol)? else {
+    let Some(corners) = setbacks::setback_corners(&planar, &setback, tol)? else {
         return Ok(None);
     };
     // Rounds are curved: their strips and vertex blends go into a sheet.
@@ -136,9 +137,12 @@ pub(crate) fn run(
         }
         return rounds::assemble(model, &planar, &seats, &by_edge, &corners, tol);
     }
-    let Some(consumed) = consumed::consumed(&planar, &seats, &setback, &mut corners, tol) else {
-        return Ok(None);
+    let cluster = match consumed::consumed(&planar, &seats, &blended, &corners, &classes, tol) {
+        consumed::Consumed::Nothing => None,
+        consumed::Consumed::Cluster(cluster) => Some(cluster),
+        consumed::Consumed::Outside => return Ok(None),
     };
+    let eaten = |fi: usize| cluster.as_ref().is_some_and(|c| c.faces.contains(&fi));
     let mut rings = Rings::new(tol);
     let mut sorted: Vec<((usize, Id), ogeom_math::Point)> =
         corners.iter().map(|(k, p)| (*k, *p)).collect();
@@ -147,26 +151,45 @@ pub(crate) fn run(
         .into_iter()
         .map(|(key, p)| (key, rings.point(p)))
         .collect();
+    // A consumed face starts from its own outline, which the clip below
+    // cuts back to what survives of it.
+    let mut outlines: FastMap<usize, Option<Id>> = FastMap::default();
     for (fi, face) in planar.faces.iter().enumerate() {
-        if consumed.faces.contains(&fi) {
+        if eaten(fi) {
+            let ring: Vec<usize> = face
+                .corners
+                .iter()
+                .map(|v| {
+                    let i = rings.point(planar.points[v]);
+                    outlines.insert(i, Some(*v));
+                    i
+                })
+                .collect();
+            rings.push(ring, Origin::Face(fi), Some(face.normal));
             continue;
         }
-        let mut shrunk: Vec<Vec<usize>> = Vec::with_capacity(1 + face.holes.len());
-        for corners in face.loops() {
-            let n = corners.len();
-            let mut ring = Vec::with_capacity(n);
-            for k in 0..n {
-                let (v, w) = (corners[k], corners[(k + 1) % n]);
-                ring.push(at[&(fi, v)]);
-                if let Some(ridge) = consumed.ridges.get(&(fi, v, w)) {
-                    ring.push(rings.point(*ridge));
-                }
-            }
-            shrunk.push(ring);
-        }
+        let mut shrunk: Vec<Vec<usize>> = face
+            .loops()
+            .map(|corners| corners.iter().map(|v| at[&(fi, *v)]).collect())
+            .collect();
         let outer = shrunk.remove(0);
         rings.push_holed(outer, shrunk, Origin::Face(fi), Some(face.normal));
     }
+    // How far a bevel runs on past a corner the clip cuts back: across the
+    // whole solid, so no plane round the corner trims it short.
+    let reach = {
+        let (mut lo, mut hi) = (
+            ogeom_math::Vector::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
+            ogeom_math::Vector::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
+        );
+        for p in planar.points.values() {
+            let v = p.to_vector();
+            lo = ogeom_math::Vector::new(lo.x.min(v.x), lo.y.min(v.y), lo.z.min(v.z));
+            hi = ogeom_math::Vector::new(hi.x.max(v.x), hi.y.max(v.y), hi.z.max(v.z));
+        }
+        (hi - lo).magnitude()
+    };
+    let mut run_on: FastMap<usize, Option<Id>> = FastMap::default();
     // The strips, each by its law.
     for key in &keys {
         let seat = &seats[key];
@@ -174,9 +197,22 @@ pub(crate) fn run(
             continue;
         };
         let (a, b) = seat.ends;
+        // At a corner the clip cuts back, the bevel runs on past it, far
+        // enough for the planes there to trim it to what it keeps; the
+        // run-on lies past the solid, so any of them may take it.
+        let mut end = |face: usize, v: Id, sign: f64| -> usize {
+            if cluster.as_ref().is_some_and(|c| c.vertices.contains(&v)) {
+                let p = corners[&(face, v)] + seat.along * (sign * reach);
+                let i = rings.point(p);
+                run_on.insert(i, None);
+                i
+            } else {
+                at[&(face, v)]
+            }
+        };
         let corners = StripCorners {
-            first: [at[&(seat.faces[0], a)], at[&(seat.faces[0], b)]],
-            second: [at[&(seat.faces[1], a)], at[&(seat.faces[1], b)]],
+            first: [end(seat.faces[0], a, -1.0), end(seat.faces[0], b, 1.0)],
+            second: [end(seat.faces[1], a, -1.0), end(seat.faces[1], b, 1.0)],
         };
         match sections::law(section).strip(seat, corners)? {
             Strip::Planar(ring) => {
@@ -197,11 +233,29 @@ pub(crate) fn run(
             .filter(|(a, b)| *a == v || *b == v)
             .filter_map(|key| by_edge.get(&seats[key].edge).copied())
             .collect();
+        if cluster.as_ref().is_some_and(|c| c.unfaceted.contains(&v)) {
+            continue;
+        }
         match vertices::method(classes[&v], &met)? {
             vertices::VertexMethod::Facet => {
                 let ring = order.iter().map(|fi| at[&(*fi, v)]).collect();
                 rings.push(ring, Origin::Vertex(v), None);
             }
+        }
+    }
+    // Round consumed faces every ring is cut back by the planes there.
+    if let Some(cluster) = &cluster {
+        let mut allowed: FastMap<usize, Option<Id>> = outlines;
+        allowed.extend(run_on.iter().map(|(i, v)| (*i, *v)));
+        for ((_, v), i) in &at {
+            if cluster.vertices.contains(v) {
+                allowed.insert(*i, Some(*v));
+            }
+        }
+        if !rings.clip_local(&cluster.cuts, &mut allowed, |ring, at, cut| {
+            cluster.may_take(ring, at, cut)
+        }) {
+            return Ok(None);
         }
     }
     // P4.
@@ -237,11 +291,6 @@ pub(crate) fn run(
     for e in gone {
         history.delete(&planar.shapes[&e]);
     }
-    let mut eaten: Vec<usize> = consumed.faces.iter().copied().collect();
-    eaten.sort_unstable();
-    for fi in eaten {
-        history.delete(&planar.faces[fi].shape);
-    }
     for (face, from) in faces.iter().zip(&assembled.origins) {
         for origin in from {
             match origin {
@@ -249,14 +298,6 @@ pub(crate) fn run(
                 Origin::Edge(e) => history.generate(&planar.shapes[e], face.clone()),
                 Origin::Vertex(v) => history.generate(&planar.shapes[v], face.clone()),
             }
-        }
-    }
-    // What a consumed band leaves nothing of: its sharp edges, and its
-    // vertices where no facet survives them.
-    for e in &consumed.gone {
-        let shape = &planar.shapes[e];
-        if history.generated(shape).is_empty() {
-            history.delete(shape);
         }
     }
     // An edge left as it was is the new edge between the faces its two faces
@@ -299,6 +340,32 @@ pub(crate) fn run(
         for w in &new_vertices {
             if crate::setback::point_of(model, w)?.distance(at) <= tol.confusion() {
                 history.modify(&planar.shapes[&v], w.clone());
+            }
+        }
+    }
+    // What a consumed face leaves nothing of (the face, its sharp edges and
+    // its vertices), and a mitred corner's vertex, where nothing of the
+    // result came of them.
+    if let Some(cluster) = &cluster {
+        let mut gone: Vec<&Shape> = Vec::new();
+        let mut eaten: Vec<usize> = cluster.faces.iter().copied().collect();
+        eaten.sort_unstable();
+        for fi in eaten {
+            let face = &planar.faces[fi];
+            gone.push(&face.shape);
+            let n = face.corners.len();
+            for k in 0..n {
+                let (a, b) = (face.corners[k], face.corners[(k + 1) % n]);
+                gone.push(&planar.shapes[&planar.edges[&(a.min(b), a.max(b))]]);
+                gone.push(&planar.shapes[&a]);
+            }
+        }
+        let mut mitred: Vec<Id> = cluster.vertices.iter().copied().collect();
+        mitred.sort_unstable();
+        gone.extend(mitred.iter().map(|v| &planar.shapes[v]));
+        for shape in gone {
+            if !history.is_affected(shape) {
+                history.delete(shape);
             }
         }
     }
