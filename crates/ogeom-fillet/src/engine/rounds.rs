@@ -96,19 +96,37 @@ pub(crate) fn assemble(
         (s[0] - s[1]).abs() <= reach
     };
 
-    // A face set back to a line or a point, or past one of its sides, is
-    // not a class this builds.
+    // A face set back past one of its sides is not a class this builds. One
+    // its setbacks take to a line or a point (a slab rounded at half its
+    // thickness: the two strips' contacts meet on it) is consumed: the sheet
+    // leaves it out, the strips meeting along their shared contact. One
+    // with a side taken to a point but some of itself left stays.
+    let mut consumed = vec![false; planar.faces.len()];
     for (fi, face) in planar.faces.iter().enumerate() {
+        let mut collapsed = false;
         for walk in face.loops() {
             let n = walk.len();
             for k in 0..n {
                 let (v, w) = (walk[k], walk[(k + 1) % n]);
                 let side = planar.points[&w] - planar.points[&v];
                 let kept = corners[&(fi, w)] - corners[&(fi, v)];
-                if kept.dot(side) <= reach * side.magnitude() {
+                if kept.magnitude() <= reach {
+                    collapsed = true;
+                } else if kept.dot(side) <= reach * side.magnitude() {
                     return Ok(None);
                 }
             }
+        }
+        if collapsed {
+            if !face.holes.is_empty() {
+                return Ok(None);
+            }
+            let ring: Vec<Point> = face.corners.iter().map(|v| corners[&(fi, *v)]).collect();
+            let mut area = Vector::ZERO;
+            for k in 1..ring.len().saturating_sub(1) {
+                area += (ring[k] - ring[0]).cross(ring[k + 1] - ring[0]);
+            }
+            consumed[fi] = area.magnitude() <= reach * reach;
         }
     }
 
@@ -172,6 +190,9 @@ pub(crate) fn assemble(
                 return Ok(None);
             }
             step_faces.insert(v, stepped[0]);
+            if round.iter().any(|f| consumed[*f]) {
+                return Ok(None);
+            }
             method.insert(v, RoundVertex::Patch);
             continue;
         }
@@ -237,6 +258,9 @@ pub(crate) fn assemble(
                             signed_at(&sections, &here, &round, corners, v, planar, reach)
                         {
                             signed.insert(v, corner);
+                            if round.iter().any(|f| consumed[*f]) {
+                                return Ok(None);
+                            }
                             method.insert(v, RoundVertex::Signed);
                             continue;
                         } else {
@@ -277,6 +301,9 @@ pub(crate) fn assemble(
                 });
                 if !fits && let Some(ridge) = ridge {
                     ridges.insert(v, ridge);
+                    if round.iter().any(|f| consumed[*f]) {
+                        return Ok(None);
+                    }
                     method.insert(v, RoundVertex::Ridge);
                     continue;
                 }
@@ -303,6 +330,16 @@ pub(crate) fn assemble(
             }
             _ => return Ok(None),
         };
+        // Beside a consumed face only a strip's flush end and a corner's
+        // sphere are built: the other corners read that face's corner.
+        if round.iter().any(|f| consumed[*f])
+            && !matches!(
+                chosen,
+                RoundVertex::Sharp | RoundVertex::Flush | RoundVertex::Sphere
+            )
+        {
+            return Ok(None);
+        }
         method.insert(v, chosen);
     }
 
@@ -385,6 +422,9 @@ pub(crate) fn assemble(
     let mut rings: Vec<super::assemble::Ring> = Vec::with_capacity(planar.faces.len());
     let mut ring_holes: Vec<Vec<Vec<usize>>> = Vec::with_capacity(planar.faces.len());
     for (fi, face) in planar.faces.iter().enumerate() {
+        if consumed[fi] {
+            continue;
+        }
         let mut walked = Vec::new();
         for walk in face.loops() {
             let n = walk.len();
@@ -426,6 +466,18 @@ pub(crate) fn assemble(
     let mut crease_corners: FastMap<Id, (usize, usize, usize)> = FastMap::default();
     let mut strip_list: Vec<Id> = sections.keys().copied().collect();
     strip_list.sort_unstable();
+    // The strips over no length of their edge (an upright edge of a plate
+    // rounded at half its thickness, both its faces consumed): each end the
+    // other's, the vertex blends either side meeting on it.
+    let collapsed: Vec<Id> = strip_list
+        .iter()
+        .copied()
+        .filter(|edge| {
+            let seat = edge_seat[edge];
+            let (a, b) = seat.ends;
+            seat.faces.iter().all(|f| at[&(*f, a)] == at[&(*f, b)])
+        })
+        .collect();
     for edge in &strip_list {
         let (section, _) = &sections[edge];
         let seat = edge_seat[edge];
@@ -433,6 +485,13 @@ pub(crate) fn assemble(
             let order = section.order();
             let [from_face, _] = order;
             let (p0, p1) = (at[&(seat.faces[0], v)], at[&(seat.faces[1], v)]);
+            if v == seat.ends.1
+                && collapsed.contains(edge)
+                && let Some(&shared) = arcs.get(&(*edge, seat.ends.0))
+            {
+                arcs.insert((*edge, v), shared);
+                continue;
+            }
             if creases.contains_key(&v) {
                 continue;
             }
@@ -584,7 +643,12 @@ pub(crate) fn assemble(
     // What each face of the sheet is built from, in turn: an original
     // face, an edge's strip or a vertex's sphere.
     let mut origins: Vec<Result<usize, Id>> = Vec::new();
+    // Each original face's place in the sheet, `None` for one consumed.
+    let mut face_at: Vec<Option<usize>> = vec![None; planar.faces.len()];
     for (fi, face) in planar.faces.iter().enumerate() {
+        if consumed[fi] {
+            continue;
+        }
         // The outer loop's ring, then each hole's.
         let mut walked: Vec<Vec<(usize, bool)>> = Vec::new();
         for walk in face.loops() {
@@ -696,6 +760,7 @@ pub(crate) fn assemble(
             }
             None => (None, true),
         };
+        face_at[fi] = Some(faces.len());
         faces.push((
             SheetFace {
                 surface,
@@ -711,6 +776,9 @@ pub(crate) fn assemble(
     // The strips: along the first face's contact backward, the arc at the
     // edge's start, along the second face's contact, the arc at its end.
     for edge in &strip_list {
+        if collapsed.contains(edge) {
+            continue;
+        }
         let (section, _) = &sections[edge];
         let seat = edge_seat[edge];
         let (a, b) = seat.ends;
@@ -1009,7 +1077,10 @@ pub(crate) fn assemble(
                 return Ok(None);
             };
             let line = segments[&(a.min(b), a.max(b))];
-            owner.insert(line, face);
+            let Some(at_face) = face_at[face] else {
+                return Ok(None);
+            };
+            owner.insert(line, at_face);
             let Some(ring) = hole_through(&here, &arcs, &edges, &strip_corner, &at, v, line) else {
                 return Ok(None);
             };
@@ -1086,19 +1157,26 @@ pub(crate) fn assemble(
             (e, edges[e].ends.0 == from, face, across)
         };
         let (arc_a, arc_b) = (strip_face[&corner.rounds[0]], strip_face[&corner.rounds[1]]);
+        let (Some(carrier), Some(face_a), Some(face_b)) = (
+            face_at[corner.carrier],
+            face_at[corner.faces[0]],
+            face_at[corner.faces[1]],
+        ) else {
+            return Ok(None);
+        };
         let mut ring = vec![
             side_of(arcs[&(corner.rounds[0], v)].0, c_shared, arc_a, arc_a),
             side_of(
                 segments[&(c_a.min(middle), c_a.max(middle))],
                 c_a,
-                corner.carrier,
-                corner.faces[0],
+                carrier,
+                face_a,
             ),
             side_of(
                 segments[&(middle.min(c_b), middle.max(c_b))],
                 middle,
-                corner.carrier,
-                corner.faces[1],
+                carrier,
+                face_b,
             ),
             side_of(arcs[&(corner.rounds[1], v)].0, c_b, arc_b, arc_b),
         ];
@@ -1198,6 +1276,11 @@ pub(crate) fn assemble(
     for edge in &strip_list {
         history.delete(&planar.shapes[edge]);
     }
+    for (fi, gone) in consumed.iter().enumerate() {
+        if *gone {
+            history.delete(&planar.faces[fi].shape);
+        }
+    }
     for (face, from) in built.iter().zip(&origins) {
         match from {
             Ok(fi) => history.modify(&planar.faces[*fi].shape, face.clone()),
@@ -1245,7 +1328,10 @@ pub(crate) fn assemble(
         let Some(round) = faces_round(&planar.faces, v) else {
             continue;
         };
-        if let Some(kept) = explore_unique(model, &built[round[0]], ShapeType::Vertex)?
+        let Some(first) = round.iter().find_map(|f| face_at[*f]) else {
+            continue;
+        };
+        if let Some(kept) = explore_unique(model, &built[first], ShapeType::Vertex)?
             .into_iter()
             .find(|w| at_point(w).is_some_and(|x| x.distance(point) <= reach))
         {
@@ -2352,23 +2438,23 @@ mod tests {
         assert!((v - want).abs() < 1e-6, "{v} against {want}");
     }
 
-    /// A box rounded at half its least side has its two smallest faces set
-    /// back to lines: not a class the sheet builds, so the request is left
-    /// to the current path; a hair less builds the exact rounded box.
+    /// A 10 by 8 by 6 box rounded at half its least side has the four faces
+    /// 6 tall set back to lines, consumed, its upright strips over no length;
+    /// a hair less keeps them. Each is the exact rounded box, its inner box
+    /// `(10 - 2r, 8 - 2r, 6 - 2r)` swept by the ball.
     #[test]
-    fn a_face_set_back_to_a_line_is_left_to_the_current_path() {
-        let (_, built) = rounded(<[Shape]>::to_vec, 3.0);
-        assert!(built.is_none());
-        let r = 2.9;
-        let (m, built) = rounded(<[Shape]>::to_vec, r);
-        let (a, b, c) = (10.0 - 2.0 * r, 8.0 - 2.0 * r, 6.0 - 2.0 * r);
-        let pi = core::f64::consts::PI;
-        let want = a * b * c
-            + 2.0 * r * (a * b + b * c + c * a)
-            + pi * r * r * (a + b + c)
-            + 4.0 / 3.0 * pi * r * r * r;
-        let v = volume(&m, &built.unwrap());
-        assert!((v - want).abs() < 1e-6, "{v} against {want}");
+    fn a_box_rounded_at_half_its_least_side_consumes_the_faces_across_it() {
+        for r in [3.0, 2.9] {
+            let (m, built) = rounded(<[Shape]>::to_vec, r);
+            let (a, b, c) = (10.0 - 2.0 * r, 8.0 - 2.0 * r, 6.0 - 2.0 * r);
+            let pi = core::f64::consts::PI;
+            let want = a * b * c
+                + 2.0 * r * (a * b + b * c + c * a)
+                + pi * r * r * (a + b + c)
+                + 4.0 / 3.0 * pi * r * r * r;
+            let v = volume(&m, &built.unwrap());
+            assert!((v - want).abs() < 1e-6, "r {r}: {v} against {want}");
+        }
     }
 
     /// The request's order is not the solid's: every edge of the box asked
@@ -3252,6 +3338,83 @@ mod tests {
         let want = 20.0 * 12.0 * 6.0 - spandrel * (2.0 * 20.0 + 2.0 * 12.0)
             + 4.0 * r * r * r * (5.0 / 3.0 - PI / 2.0)
             - 6.0 * 4.0 * 6.0;
+        let got = volume(&m, &built[0]);
+        assert!((got - want).abs() < 1e-6, "{got} against {want}");
+    }
+
+    /// A slab 10 long, 4 deep and 2 thick, its top and bottom front edges
+    /// rounded at 1, half its thickness: the two strips' contacts on the
+    /// front meet on its middle line, the front is consumed, and the strips
+    /// meet along that line in one half cylinder. The box less the two
+    /// spandrels along the 10, the same solid in either order.
+    #[test]
+    fn a_slab_rounded_at_half_its_thickness_loses_its_front_to_one_half_cylinder() {
+        use core::f64::consts::PI;
+        use ogeom_math::Point;
+        let mut m = Model::new();
+        let s = ogeom_algo::make_box(&mut m, Frame::WORLD, (10.0, 4.0, 2.0), T)
+            .unwrap()
+            .shape;
+        let front: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+                let (p, q): (Point, Point) = (
+                    m.node(&a).unwrap().data().as_vertex().unwrap().point,
+                    m.node(&b).unwrap().data().as_vertex().unwrap().point,
+                );
+                p.y.abs() < 1e-9 && q.y.abs() < 1e-9 && (p.z - q.z).abs() < 1e-9
+            })
+            .collect();
+        assert_eq!(front.len(), 2);
+        let mut built = Vec::new();
+        for order in [front.clone(), front.iter().rev().cloned().collect()] {
+            let request = Request::from_rounds(
+                &order.iter().map(|e| (e.clone(), 1.0)).collect::<Vec<_>>(),
+                T,
+            )
+            .unwrap();
+            let b = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+            let found = ogeom_algo::check(&m, &b, T).unwrap();
+            assert!(found.is_valid(), "{:?}", found.problems);
+            built.push(b);
+        }
+        assert_eq!(bits(&m, &built[0]), bits(&m, &built[1]));
+        let want = 10.0 * 4.0 * 2.0 - 2.0 * (1.0 - PI / 4.0) * 10.0;
+        let got = volume(&m, &built[0]);
+        assert!((got - want).abs() < 1e-6, "{got} against {want}");
+    }
+
+    /// The slab of the last test with every edge rounded at 1: its four
+    /// sides consumed to lines and its four upright edges' strips to nothing,
+    /// each corner's sphere meeting the one below on the upright strip's end
+    /// at the middle. The solid is the 8 by 2 rectangle swept by the ball:
+    /// the rounded box `abc + 2r(ab + bc + ca) + pi r^2 (a + b + c) +
+    /// 4/3 pi r^3` at `(a, b, c) = (8, 2, 0)`.
+    #[test]
+    fn a_slab_rounded_on_every_edge_at_half_its_thickness_is_its_middle_swept_by_the_ball() {
+        use core::f64::consts::PI;
+        let mut m = Model::new();
+        let s = ogeom_algo::make_box(&mut m, Frame::WORLD, (10.0, 4.0, 2.0), T)
+            .unwrap()
+            .shape;
+        let edges = explore_unique(&m, &s, ShapeType::Edge).unwrap();
+        let mut built = Vec::new();
+        for order in [edges.clone(), edges.iter().rev().cloned().collect()] {
+            let request = Request::from_rounds(
+                &order.iter().map(|e| (e.clone(), 1.0)).collect::<Vec<_>>(),
+                T,
+            )
+            .unwrap();
+            let b = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+            let found = ogeom_algo::check(&m, &b, T).unwrap();
+            assert!(found.is_valid(), "{:?}", found.problems);
+            built.push(b);
+        }
+        assert_eq!(bits(&m, &built[0]), bits(&m, &built[1]));
+        let (a, b, r) = (8.0, 2.0, 1.0);
+        let want = 2.0 * r * a * b + PI * r * r * (a + b) + 4.0 / 3.0 * PI * r.powi(3);
         let got = volume(&m, &built[0]);
         assert!((got - want).abs() < 1e-6, "{got} against {want}");
     }
