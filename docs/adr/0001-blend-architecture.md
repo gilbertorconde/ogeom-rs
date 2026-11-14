@@ -813,6 +813,27 @@ differences applied by booleans).
 - [P33] Creo Parametric 10.0 Help, About Extended Surface Rounds:
   https://support.ptc.com/help/creo/creo_pma/r10.0/usascii/part_modeling/part_modeling/About_Extended_Surface_Rounds.html
 
+### Amendment: round section laws, conic and elliptical (#902)
+
+The round side's section laws beyond the rolling ball: a round meeting
+each face its own distance, its section an ellipse or a conic of a given
+`rho` (`fillet_edge_distances`, `Blend::RoundDistances`).
+
+- **The law.** `Section::Conic` names each face with its distance, as a
+  chamfer does; P1's setbacks are those distances. The strip is the
+  section swept along the edge (the planar section's own conic spec, the
+  current path's exact section), built by the rounds' sheet.
+- **Its vertices.** Alone at a vertex of three planes it ends flush in the
+  third face, as a ball's round does. With rounds at every edge of a vertex
+  it closes on the transfinite patch: its section is no ball's, so no
+  sphere, ridge or mitre is read from it. Beside an edge left sharp, or
+  reaching a face it does not end at, it is not built yet and goes on as
+  before.
+- **Routing.** `fillet_edge_distances` and `blend_edges` (rounds of both
+  kinds, no bevels) take the engine first.
+- The patch reads the normal and curvature of any parametric strip surface
+  from its chart, an extruded conic among them.
+
 ## 12. Acceptance corpus
 
 From #902:

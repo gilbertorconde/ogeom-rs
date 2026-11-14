@@ -88,6 +88,16 @@ pub fn blend_edges(
             }
         }
     }
+    // Rounds alone, of one radius and of their own distances: the blend
+    // engine first, as one request.
+    if !asymmetric.is_empty()
+        && bevels.is_empty()
+        && let Some(request) =
+            crate::engine::Request::from_mixed_rounds(model, solid, &rounds, &asymmetric, tol)?
+        && let Some(built) = crate::engine::run(model, solid, &request, tol)?
+    {
+        return Ok(built);
+    }
     if !asymmetric.is_empty() {
         // The corners where an asymmetric round meets the request's other
         // edges, read off the solid as it stands, their edges set apart.
