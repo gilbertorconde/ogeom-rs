@@ -3418,3 +3418,51 @@ fn an_l_slab_s_reflex_corner_beside_a_sharp_edge_ends_its_bevel_on_that_wall() {
         }
     }
 }
+
+/// A plate 20 × 10 × 4 with a block 4 × 3 × 2 standing on its top, 1 back
+/// from the front: the front top edge chamfered 2 reaches under the
+/// block's foot, a face it does not touch at its ends. The non-local test
+/// sends it to the one-boolean fallback (ADR 0001, amendment "M5a"): the
+/// bevel runs on under the block, which stands over it, its foot's front
+/// strip now a face of its own looking down. Valid, nothing folded, the
+/// plate less the bevel's prism (the block untouched above the top), the
+/// edge generating its bevel.
+#[test]
+fn a_bevel_reaching_under_a_block_on_the_top_goes_through_the_one_boolean() {
+    let mut m = Model::new();
+    let plate = block(&mut m, (0.0, 0.0, 0.0), (20.0, 10.0, 4.0));
+    let boss = block(&mut m, (8.0, 1.0, 4.0), (4.0, 3.0, 2.0));
+    let s = ogeom_bool::fuse(&mut m, &plate, &boss, T).unwrap().shape;
+    let front: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
+            (l.z - 4.0).abs() < 1e-6 && (h.z - 4.0).abs() < 1e-6 && h.y < 1e-6
+        })
+        .map(|e| (e, Chamfer::Symmetric(2.0)))
+        .collect();
+    assert_eq!(front.len(), 1, "the plate's top front edge");
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &front, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert!(!folded(&m, &built.shape), "folded");
+    let want = 20.0 * 10.0 * 4.0 + 4.0 * 3.0 * 2.0 - 2.0 * 20.0;
+    let got = volume(&m, &built.shape);
+    assert!(
+        (got - want).abs() <= 1e-9 * want,
+        "volume {got} against {want}"
+    );
+    assert_eq!(built.history.generated(&front[0].0).len(), 1, "the bevel");
+    // The block's foot over the bevel: a face on z = 4 looking down.
+    let under = explore_unique(&m, &built.shape, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .filter(|f| {
+            let (at, n) = ogeom_algo::face_normal(&m, f, T).unwrap();
+            n.z < -0.5 && (at.z - 4.0).abs() < 1e-6
+        })
+        .count();
+    assert_eq!(under, 1, "the block's foot over the bevel");
+}
