@@ -127,6 +127,13 @@ pub(crate) fn round(
                 tol,
             )? {
                 Ok(run) => run,
+                // A ball that would pass a vertex of the edge it rests on, or
+                // leave that edge at its end, takes a vertex for a seat, which
+                // is refused by name (ADR 0001, section 13, question 8).
+                Err(
+                    why @ (super::seats::NotSeated::PastAVertex
+                    | super::seats::NotSeated::OffTheEdge),
+                ) => ogeom_core::ogeom_bail!(Construction, "{}", why.name()),
                 // A seat change not built yet goes to the current path.
                 Err(_) => return Ok(None),
             };
