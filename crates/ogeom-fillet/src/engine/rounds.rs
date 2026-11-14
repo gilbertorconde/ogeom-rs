@@ -134,15 +134,46 @@ pub(crate) fn assemble(
         let chosen = match (here.len(), blended.len()) {
             (_, 0) => RoundVertex::Sharp,
             (3, 1) => {
+                // The strip ends in the third face, cut by its plane: square
+                // to the edge, its section's arc; leaning, the ellipse.
                 let seat = blended[0];
                 let Some(third) = round.iter().copied().find(|f| !seat.faces.contains(f)) else {
                     return Ok(None);
                 };
-                let square =
-                    planar.faces[third].normal.cross(seat.along).magnitude() <= tol.angular();
-                let s = station[&(seat.edge, v)];
-                let at_end = s.abs() <= reach || (s - section_length(planar, seat)).abs() <= reach;
-                if !(square && at_end && stands_level(seat.edge, v)) {
+                let normal = planar.faces[third].normal;
+                let square = normal.cross(seat.along).magnitude() <= tol.angular();
+                let ends = if square {
+                    let s = station[&(seat.edge, v)];
+                    let at_end =
+                        s.abs() <= reach || (s - section_length(planar, seat)).abs() <= reach;
+                    at_end && stands_level(seat.edge, v)
+                } else {
+                    // Leaning, the strip's contacts end at different
+                    // stations, each corner in the third face's plane and
+                    // within its own face, and the end within the third
+                    // face; a face nearly holding the edge's direction cuts
+                    // no end. A strip whose contact runs off a face narrower
+                    // than its setback is left to the current path.
+                    let on = |k: usize| {
+                        let corner = corners[&(seat.faces[k], v)];
+                        (corner - planar.points[&v]).dot(normal).abs() <= reach
+                            && within_face(planar, seat.faces[k], corner, reach)
+                    };
+                    let cuts = normal.dot(seat.along).abs() > tol.angular() && on(0) && on(1);
+                    cuts && {
+                        let (section, _) = &sections[&seat.edge];
+                        let order = section.order();
+                        let s = level[&(seat.edge, v)];
+                        let (end, (a, b)) =
+                            section.plane_end(order, [s[order[0]], s[order[1]]], normal, tol)?;
+                        (0..=16).all(|k| {
+                            let t = a + (b - a) * f64::from(k) / 16.0;
+                            ogeom_geom::Curve3d::point_at(&end, t, tol)
+                                .is_ok_and(|p| within_face(planar, third, p, reach))
+                        })
+                    }
+                };
+                if !ends {
                     return Ok(None);
                 }
                 flush.insert(v, (third, seat.edge));
@@ -256,9 +287,17 @@ pub(crate) fn assemble(
                 arcs.insert((*edge, v), (shared, ends.0 == p0));
                 continue;
             }
+            // A flush end in a face leaning across the edge.
+            let leaning = flush.get(&v).and_then(|(third, at_edge)| {
+                let n = planar.faces[*third].normal;
+                (*at_edge == *edge && n.cross(seat.along).magnitude() > tol.angular()).then_some(n)
+            });
             let (curve, range) = if let Some((_, normal)) = mitres.get(&v) {
                 let s = level[&(*edge, v)];
                 section.plane_end(order, [s[order[0]], s[order[1]]], *normal, tol)?
+            } else if let Some(normal) = leaning {
+                let s = level[&(*edge, v)];
+                section.plane_end(order, [s[order[0]], s[order[1]]], normal, tol)?
             } else if stands_level(*edge, v) {
                 section.arc_at(station[&(*edge, v)], tol)?
             } else {
@@ -884,6 +923,34 @@ fn section_length(planar: &Planar, seat: &Seat) -> f64 {
     planar.points[&seat.ends.0].distance(planar.points[&seat.ends.1])
 }
 
+/// Whether `p`, a point of face `fi`'s plane, lies within the face's
+/// polygon or within `reach` of its boundary.
+fn within_face(planar: &Planar, fi: usize, p: Point, reach: f64) -> bool {
+    let face = &planar.faces[fi];
+    let ring: Vec<Point> = face.corners.iter().map(|c| planar.points[c]).collect();
+    let n = face.normal;
+    let x = ring
+        .iter()
+        .map(|q| *q - ring[0])
+        .find(|d| d.magnitude() > reach)
+        .map_or(Vector::ZERO, |d| d / d.magnitude());
+    let y = n.cross(x);
+    let flat = |q: Point| ((q - p).dot(x), (q - p).dot(y));
+    let mut winding = 0.0;
+    for k in 0..ring.len() {
+        let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+        // On the boundary, within reach.
+        let side = b - a;
+        let t = ((p - a).dot(side) / side.dot(side)).clamp(0.0, 1.0);
+        if (a + side * t).distance(p) <= reach {
+            return true;
+        }
+        let ((ax, ay), (bx, by)) = (flat(a), flat(b));
+        winding += (ax * by - ay * bx).atan2(ax * bx + ay * by);
+    }
+    winding.abs() > core::f64::consts::PI
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "test code")]
@@ -1310,6 +1377,65 @@ mod tests {
         let spandrel = (1.0 - pi / 4.0) * r * r;
         let want = 480.0 - spandrel * (10.0 + 8.0) + r * r * r * (5.0 / 3.0 - pi / 2.0);
         let v = volume(&m, &built[0]);
+        assert!((v - want).abs() < 1e-6, "{v} against {want}");
+    }
+
+    /// A 4 by 3 rectangle at `x = 0` swept along `(10, 3, 0)`: its caps
+    /// meet the sweep edges leaning, and each sweep edge's two side faces
+    /// stand square to each other (both hold the sweep and the rectangle's
+    /// sides are square). One sweep edge rounded at 1: its strip ends in
+    /// each cap on the ellipse the cap's plane cuts, and the prism less the
+    /// round's square corner along the edge's length between the caps,
+    /// `sqrt 109`, is the volume (Cavalieri).
+    #[test]
+    fn a_round_ends_on_the_ellipse_a_leaning_cap_cuts() {
+        use ogeom_math::{Direction, Plane, Point, Vector};
+        let mut m = Model::new();
+        let points = [
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(0.0, 4.0, 0.0),
+            Point::new(0.0, 4.0, 3.0),
+            Point::new(0.0, 0.0, 3.0),
+        ];
+        let wire = ogeom_algo::make_polygon(&mut m, &points, true, T)
+            .unwrap()
+            .shape;
+        let plane = ogeom_geom::PlaneSurface::over(
+            Plane::through(Point::ORIGIN, Direction::X),
+            (-100.0, 100.0),
+            (-100.0, 100.0),
+        )
+        .unwrap();
+        let face = ogeom_algo::make_face(&mut m, plane.into(), &[wire], T)
+            .unwrap()
+            .shape;
+        let swept = ogeom_algo::make_prism(&mut m, &face, Vector::new(10.0, 3.0, 0.0), T)
+            .unwrap()
+            .shape;
+        let s = ogeom_algo::baked_shape(&mut m, &swept, T).unwrap().shape;
+        let point = |m: &Model, v: &Shape| {
+            m.node(v)
+                .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                .unwrap()
+        };
+        let edge = explore_unique(&m, &s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+                let (p, q) = (point(&m, &a), point(&m, &b));
+                let start = if p.x < q.x { p } else { q };
+                start.distance(Point::ORIGIN) < 1e-9 && (p.x - q.x).abs() > 1.0
+            })
+            .unwrap();
+        let r = 1.0;
+        let request = Request::from_rounds(&[(edge, r)], T).unwrap();
+        let built = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+        let found = ogeom_algo::check(&m, &built, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        let pi = core::f64::consts::PI;
+        let want = 120.0 - (1.0 - pi / 4.0) * r * r * 109.0f64.sqrt();
+        let v = volume(&m, &built);
         assert!((v - want).abs() < 1e-6, "{v} against {want}");
     }
 
