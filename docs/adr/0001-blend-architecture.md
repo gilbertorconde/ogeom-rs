@@ -690,7 +690,10 @@ it for planar chamfers first.
   face it does not end at (each bevel's hull, the reach proved by
   `certify_face_within`); a bevel of a solid with voids reaching a void
   (the outer shell chamfered alone less each void's body, a boolean a
-  void, exact since what the bevel takes there is already empty). This is a boolean on a local request, which §4.5
+  void, exact since what the bevel takes there is already empty); a
+  mitred request (`ChamferCorner::Point`) reaching a face it does not end
+  at, each bevel its edge's whole prism, whose union at a convex vertex is
+  the mitre to the bevels' shared point. This is a boolean on a local request, which §4.5
   rules out for the one assembly; it is kept to the cases the rings cannot
   place, each listed here as it is routed, so that M6 deletes the current
   path with every planar chamfer built through the engine.
