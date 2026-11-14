@@ -71,8 +71,13 @@ fn a_plate_s_edge_rounds_at_most_its_thickness() {
     builds_at_and_refused_past(&m, &plate, &[edge], r);
 }
 
+/// The plate's edge stays seated at most at its 2 mm thickness, and is
+/// built there; past it (2.1) the bevel rolls over the side's foot onto
+/// the floor as a notch (ADR 0001, amendment "M5b"): the plate less the
+/// region past the bevel's plane, its section 2 x 0.1 + 2 x 2 / 2 along
+/// the 20.
 #[test]
-fn a_plate_s_edge_chamfers_at_most_its_thickness() {
+fn a_plate_s_edge_chamfers_seated_at_most_its_thickness_and_notches_past() {
     let mut m = Model::new();
     let plate = plate(&mut m);
     let edge = edge_near(&m, &plate, [10.0, 0.0, 2.0]);
@@ -85,7 +90,18 @@ fn a_plate_s_edge_chamfers_at_most_its_thickness() {
     let built = chamfer_edges_with(&mut at, &plate, &side(d), T).unwrap();
     assert!(ogeom_algo::check(&at, &built.shape, T).unwrap().is_valid());
     let mut past = m.clone();
-    assert!(chamfer_edges_with(&mut past, &plate, &side(1.05 * d), T).is_err());
+    let notched = chamfer_edges_with(&mut past, &plate, &side(2.1), T).unwrap();
+    assert!(
+        ogeom_algo::check(&past, &notched.shape, T)
+            .unwrap()
+            .is_valid()
+    );
+    let got =
+        ogeom_algo::volume_properties(&past, &notched.shape, ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass;
+    let want = 20.0 * 20.0 * 2.0 - 20.0 * (2.0 * 0.1 + 2.0 * 2.0 / 2.0);
+    assert!((got - want).abs() <= 1e-9 * want, "{got} against {want}");
 }
 
 #[test]
