@@ -376,6 +376,14 @@ fn straight(
     // at a concave one.
     let convex = n0.dot(into1) < 0.0;
     let side = if convex { -1.0 } else { 1.0 };
+    // A cone along its ruling: no closed form (the ball's centre runs on a
+    // conic), the strip fitted through its exact sections.
+    if faces
+        .iter()
+        .any(|fi| matches!(curved.faces[*fi].surface, SurfaceGeometry::Cone(_)))
+    {
+        return fitted_straight(curved, edge, e, faces, [n0, n1], side, radius, tol);
+    }
     // Each face as the ball's centre sees it: a plane's offset, or a
     // cylinder's axis and the radius its centre stands at.
     enum Offset {
@@ -920,4 +928,192 @@ fn run_clear(
         }
     }
     Ok(true)
+}
+
+/// How close the fit holds a fitted straight strip to its exact sections.
+const STRAIGHT_FIT: f64 = 2e-7;
+
+/// A straight edge's strip where no closed form gives it (a cone along its
+/// ruling beside a plane: the ball's centre runs on the conic their offsets
+/// cut): the ball's centre at stations along the edge, each in the plane
+/// square to it, found by Newton a radius off both faces (in from both at a
+/// convex edge, `side` negative, out at a concave one) from the centre the
+/// faces' tangent planes at the edge give; its feet on each face; the balls'
+/// arcs between the feet fitted along the stations, the spine through the
+/// centres and each contact through its feet, each within [`STRAIGHT_FIT`]
+/// of them, the stations doubled until it holds. The stations run on two
+/// radii past each end, for the assembly to find the corners. `None` where
+/// a centre does not converge or the fit misses at the finest stations.
+///
+/// # Errors
+///
+/// As evaluating, projecting and fitting.
+#[allow(clippy::too_many_arguments, reason = "the strip's whole reading")]
+fn fitted_straight(
+    curved: &Curved,
+    edge: Id,
+    e: &CurvedEdge,
+    faces: [usize; 2],
+    normals: [Vector; 2],
+    side: f64,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Strip, Option<ogeom_algo::HalfSpaces>)>> {
+    const FIRST: usize = 33;
+    const MOST: usize = 513;
+    const ACROSS: usize = 17;
+    let (a, b) = (curved.points[&e.ends.0], curved.points[&e.ends.1]);
+    let length = a.distance(b);
+    let u = (b - a) / length;
+    let surfaces = [
+        &curved.faces[faces[0]].surface,
+        &curved.faces[faces[1]].surface,
+    ];
+    let reach = 2.0 * radius;
+    let (w0, w1) = {
+        let w0 = ogeom_math::Direction::new(u, tol)?
+            .any_perpendicular()
+            .vector();
+        (w0, u.cross(w0))
+    };
+    // The centre in the plane through `o` square to the edge, from `start`.
+    let solve = |o: Point, start: Point| -> OgeomResult<Option<Point>> {
+        let at = |x: f64, y: f64| o + w0 * x + w1 * y;
+        let residual = |p: Point| -> OgeomResult<[f64; 2]> {
+            let (Some(f0), Some(f1)) = (foot_on(surfaces[0], p), foot_on(surfaces[1], p)) else {
+                ogeom_core::ogeom_bail!(Construction, "a strip's face with no foot read");
+            };
+            Ok([p.distance(f0) - radius, p.distance(f1) - radius])
+        };
+        let (mut x, mut y) = ((start - o).dot(w0), (start - o).dot(w1));
+        let h = radius * 1e-7;
+        for _ in 0..50 {
+            let r = residual(at(x, y))?;
+            if r[0].abs().max(r[1].abs()) <= tol.confusion() * 1e-3 {
+                return Ok(Some(at(x, y)));
+            }
+            let (rx, ry) = (residual(at(x + h, y))?, residual(at(x, y + h))?);
+            let j = [
+                [(rx[0] - r[0]) / h, (ry[0] - r[0]) / h],
+                [(rx[1] - r[1]) / h, (ry[1] - r[1]) / h],
+            ];
+            let det = j[0][0] * j[1][1] - j[0][1] * j[1][0];
+            if det.abs() <= f64::EPSILON {
+                return Ok(None);
+            }
+            let dx = (r[0] * j[1][1] - r[1] * j[0][1]) / det;
+            let dy = (j[0][0] * r[1] - j[1][0] * r[0]) / det;
+            x -= dx;
+            y -= dy;
+            if dx.abs().max(dy.abs()) <= radius * 1e-14 {
+                return Ok(Some(at(x, y)));
+            }
+        }
+        Ok(None)
+    };
+    // The faces' tangent planes along the edge give the first guess.
+    let g = normals[0].dot(normals[1]);
+    if (1.0 + g).abs() <= tol.angular() {
+        return Ok(None);
+    }
+    let lean = (normals[0] + normals[1]) * (side * radius / (1.0 + g));
+    let mut n = FIRST;
+    loop {
+        let mut centres = Vec::with_capacity(n);
+        let mut feet = [Vec::with_capacity(n), Vec::with_capacity(n)];
+        let mut guess: Option<Point> = None;
+        for i in 0..n {
+            #[expect(clippy::cast_precision_loss, reason = "a few stations")]
+            let s = -reach + (length + 2.0 * reach) * (i as f64) / ((n - 1) as f64);
+            let o = a + u * s;
+            let start = guess.unwrap_or(o + lean);
+            let Some(c) = solve(o, start)? else {
+                return Ok(None);
+            };
+            for k in 0..2 {
+                let Some(foot) = foot_on(surfaces[k], c) else {
+                    return Ok(None);
+                };
+                feet[k].push(foot);
+            }
+            centres.push(c);
+            guess = Some(c);
+        }
+        let rows: Vec<Vec<Point>> = (0..n)
+            .map(|i| -> OgeomResult<Vec<Point>> {
+                let (c, p, q) = (centres[i], feet[0][i], feet[1][i]);
+                let (p1, q1) = ((p - c) / radius, (q - c) / radius);
+                let axis = p1.cross(q1).normalized(tol)?;
+                let sweep = p1.dot(q1).clamp(-1.0, 1.0).acos();
+                Ok((0..ACROSS)
+                    .map(|k| {
+                        #[expect(clippy::cast_precision_loss, reason = "a few points")]
+                        let t = sweep * (k as f64) / ((ACROSS - 1) as f64);
+                        c + (p1 * t.cos() + axis.cross(p1) * t.sin()) * radius
+                    })
+                    .collect())
+            })
+            .collect::<OgeomResult<_>>()?;
+        let surface = ogeom_geom::fit::fit_surface_grid_chordal(&rows, 3, STRAIGHT_FIT, tol)?;
+        let spine = ogeom_geom::fit::fit_points(&centres, 3, STRAIGHT_FIT, tol)?;
+        let c0 = ogeom_geom::fit::fit_points(&feet[0], 3, STRAIGHT_FIT, tol)?;
+        let c1 = ogeom_geom::fit::fit_points(&feet[1], 3, STRAIGHT_FIT, tol)?;
+        if surface.met && spine.met && c0.met && c1.met {
+            return Ok(Some((
+                Strip {
+                    edge,
+                    faces,
+                    contacts: [Curve::BSpline(c0.curve), Curve::BSpline(c1.curve)],
+                    surface: SurfaceGeometry::BSpline(surface.curve),
+                    section: Section::Arc {
+                        spine: Curve::BSpline(spine.curve),
+                    },
+                },
+                None,
+            )));
+        }
+        if n >= MOST {
+            return Ok(None);
+        }
+        n = 2 * n - 1;
+    }
+}
+
+/// The foot of `p` on the whole of `surface` (not its window): a plane's,
+/// a cylinder's or a cone's (the nearest point on its line in `p`'s
+/// meridian); `None` on any other surface or on the axis.
+fn foot_on(surface: &SurfaceGeometry, p: Point) -> Option<Point> {
+    match surface {
+        SurfaceGeometry::Plane(plane) => {
+            let plane = plane.plane();
+            let n = plane.normal().vector();
+            Some(p - n * n.dot(p - plane.frame().origin()))
+        }
+        SurfaceGeometry::Cylinder(c) => {
+            let cyl = c.cylinder();
+            let frame = cyl.frame();
+            let (o, z) = (frame.origin(), frame.z().vector());
+            let w = p - o;
+            let radial = w - z * w.dot(z);
+            let rho = radial.magnitude();
+            (rho > 0.0).then(|| o + z * w.dot(z) + radial / rho * cyl.radius())
+        }
+        SurfaceGeometry::Cone(c) => {
+            let cone = c.cone();
+            let frame = cone.frame();
+            let (o, z) = (frame.origin(), frame.z().vector());
+            let w = p - o;
+            let h = w.dot(z);
+            let radial = w - z * h;
+            let rho = radial.magnitude();
+            if rho <= 0.0 {
+                return None;
+            }
+            // In the meridian the cone is the line `rho = r0 + h tan a`.
+            let (r0, t) = (cone.reference_radius(), cone.half_angle().tan());
+            let s = ((rho - r0) * t + h) / t.mul_add(t, 1.0);
+            Some(o + z * s + radial / rho * t.mul_add(s, r0))
+        }
+        _ => None,
+    }
 }
