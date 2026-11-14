@@ -3466,3 +3466,170 @@ fn a_bevel_reaching_under_a_block_on_the_top_goes_through_the_one_boolean() {
         .count();
     assert_eq!(under, 1, "the block's foot over the bevel");
 }
+
+/// Each bevelled side of a loop of a face on z = 4 (its corners in turn,
+/// the material on the left), as the convex region its bevel takes: past
+/// its bevel (`d` on the face and down its wall), behind its wall, and at
+/// each end on its own side of the plane where its bevel and a bevelled
+/// neighbour's take alike deep (the side taking deeper where the material
+/// is convex there, less deep where it is reflex), or of the wall plane of
+/// a neighbour left sharp. Independent of the engine: what the mainstream
+/// chamfer takes, side by side.
+fn loop_takes(
+    ring: &[(f64, f64)],
+    bevelled: &[bool],
+    d: f64,
+) -> Vec<Vec<(ogeom_math::Vector, f64)>> {
+    use ogeom_math::Vector;
+    let n = ring.len();
+    let up = Vector::new(0.0, 0.0, 4.0);
+    // Each side's bevel plane, its wall plane and its middle.
+    type Side = ((Vector, f64), (Vector, f64), Vector);
+    let sides: Vec<Side> = (0..n)
+        .map(|k| {
+            let (a, b) = (ring[k], ring[(k + 1) % n]);
+            let u = Vector::new(b.0 - a.0, b.1 - a.1, 0.0);
+            let u = u / u.magnitude();
+            let out = Vector::new(u.y, -u.x, 0.0);
+            let at = Vector::new(a.0, a.1, 0.0);
+            let bevel = bevel_plane(at + up, u, (Vector::Z, d), (out, d));
+            let middle = Vector::new((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0, 3.9);
+            (bevel, (out, out.dot(at)), middle)
+        })
+        .collect();
+    let convex = |k: usize| {
+        let (p, c, q) = (ring[(k + n - 1) % n], ring[k], ring[(k + 1) % n]);
+        (c.0 - p.0) * (q.1 - p.1) - (c.1 - p.1) * (q.0 - p.0) > 0.0
+    };
+    let mut takes = Vec::new();
+    for k in 0..n {
+        if !bevelled[k] {
+            continue;
+        }
+        let ((ne, oe), wall, middle) = sides[k];
+        let mut planes = vec![(-ne, -oe), wall];
+        for (f, v) in [((k + n - 1) % n, k), ((k + 1) % n, (k + 1) % n)] {
+            let plane = if bevelled[f] {
+                let (nf, of) = sides[f].0;
+                let (m, o) = if convex(v) {
+                    (nf - ne, of - oe)
+                } else {
+                    (ne - nf, oe - of)
+                };
+                (m / m.magnitude(), o / m.magnitude())
+            } else {
+                let (m, o) = sides[f].1;
+                if m.dot(middle) > o { (-m, -o) } else { (m, o) }
+            };
+            planes.push(plane);
+        }
+        takes.push(planes);
+    }
+    takes
+}
+
+/// The frame of the mitred-ridge test (24 × 16 × 4, an 18 × 10 hole, webs
+/// 3), every top edge chamfered 2 but the hole's back one, left sharp: the
+/// hole is not bevelled all round, which the rings cannot place, and the
+/// one-boolean fallback builds it (ADR 0001, amendment "M5a"). The bevel
+/// beside the sharp side ends on its wall. Valid, nothing folded, the same
+/// corners to the bit in three orders, and the frame less the union of
+/// what the seven bevels take, by inclusion and exclusion over convex
+/// polytopes (`loop_takes`; with every edge bevelled it gives the ridged
+/// webs' 561).
+#[test]
+fn a_frame_whose_hole_is_not_bevelled_all_round_goes_through_the_one_boolean() {
+    use ogeom_math::Vector;
+    let (w, t, d) = (3.0, 4.0, 2.0);
+    let outline = [(0.0, 0.0), (24.0, 0.0), (24.0, 16.0), (0.0, 16.0)];
+    let hole = [(w, w), (w, 13.0), (21.0, 13.0), (21.0, w)];
+    let mut takes = loop_takes(&outline, &[true; 4], d);
+    takes.extend(loop_takes(&hole, &[true, false, true, true], d));
+    let frame = box_planes((24.0, 16.0, t));
+    let room = [
+        (-Vector::X, -w),
+        (Vector::X, 21.0),
+        (-Vector::Y, -w),
+        (Vector::Y, 13.0),
+    ];
+    let within = |extra: &[(Vector, f64)]| {
+        let with = |more: &[(Vector, f64)]| {
+            // Each plane once: a wall's is the frame's own.
+            let mut all: Vec<(Vector, f64)> = Vec::new();
+            for (n, o) in frame.iter().chain(more).chain(extra) {
+                if !all
+                    .iter()
+                    .any(|(m, p)| (*m - *n).magnitude() < 1e-12 && (p - o).abs() < 1e-12)
+                {
+                    all.push((*n, *o));
+                }
+            }
+            convex_polytope(&all).0
+        };
+        with(&[]) - with(&room)
+    };
+    let union = |takes: &[Vec<(Vector, f64)>]| {
+        let mut taken = 0.0;
+        for mask in 1..(1_u32 << takes.len()) {
+            let planes: Vec<(Vector, f64)> = (0..takes.len())
+                .filter(|k| mask & (1 << k) != 0)
+                .flat_map(|k| takes[k].iter().copied())
+                .collect();
+            let sign = if mask.count_ones() % 2 == 1 {
+                1.0
+            } else {
+                -1.0
+            };
+            taken += sign * within(&planes);
+        }
+        taken
+    };
+    // The oracle with every edge bevelled is the ridged webs'.
+    let mut every = loop_takes(&outline, &[true; 4], d);
+    every.extend(loop_takes(&hole, &[true; 4], d));
+    let (area, moment) = ridged_web(w, t, d);
+    let ridged = 2.0 * (area * 24.0 - 2.0 * moment) + 2.0 * (area * 16.0 - 2.0 * moment);
+    assert!(
+        (within(&[]) - union(&every) - ridged).abs() < 1e-9,
+        "the oracle"
+    );
+    let want = within(&[]) - union(&takes);
+    let mut first: Option<Vec<[u64; 3]>> = None;
+    for seed in 0..3_u64 {
+        let mut m = Model::new();
+        let outer = block(&mut m, (0.0, 0.0, 0.0), (24.0, 16.0, t));
+        let cut = block(&mut m, (w, w, -1.0), (18.0, 10.0, t + 2.0));
+        let s = ogeom_bool::cut(&mut m, &outer, &cut, T).unwrap().shape;
+        let specs: Vec<(Shape, Chamfer)> = top_edges(&m, &s, t, d)
+            .into_iter()
+            .filter(|(e, _)| {
+                let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+                let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
+                // Not the hole's back side, on y = 13 from x = 3 to 21.
+                !((l.y - 13.0).abs() < 1e-6 && (h.y - 13.0).abs() < 1e-6 && l.x > 1.0)
+            })
+            .collect();
+        assert_eq!(specs.len(), 7);
+        let specs: Vec<(Shape, Chamfer)> = shuffled(specs.len(), seed)
+            .iter()
+            .map(|i| specs[*i].clone())
+            .collect();
+        let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert!(!folded(&m, &built.shape), "folded");
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "volume {got} against {want}"
+        );
+        for (e, _) in &specs {
+            assert_eq!(built.history.generated(e).len(), 1, "an edge's bevel");
+        }
+        let k = key(&m, &built.shape).1;
+        match &first {
+            None => first = Some(k),
+            Some(held) => assert!(*held == k, "order {seed} differs"),
+        }
+    }
+}

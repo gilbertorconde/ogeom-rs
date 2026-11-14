@@ -322,6 +322,12 @@ pub(crate) fn run(
         consumed::Consumed::Nothing => None,
         consumed::Consumed::Cluster(cluster) => Some(cluster),
         consumed::Consumed::Outside => return Ok(None),
+        consumed::Consumed::Boolean if !request.mitre => {
+            return fallback::one_boolean(
+                model, solid, &planar, &seats, &blended, &corners, &steps, tol,
+            );
+        }
+        consumed::Consumed::Boolean => return Ok(None),
     };
     // A mitre to one point inside a cut-back cluster is not built.
     if cluster.is_some() && !mitres.is_empty() {
