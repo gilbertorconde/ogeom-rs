@@ -587,7 +587,9 @@ size that varies along an edge is what a variable chamfer is for. So:
   edge is asked once, or its pieces alike.
 - **Degenerate planar topology** (an edge bounded by other than two faces,
   as where two blocks touch along an edge; an edge closing on itself; two
-  edges between one pair of vertices) is refused by name. The mainstream
+  edges between one pair of vertices; a vertex whose faces close round it
+  more than once, as where two blocks share only a corner in one shell)
+  is refused by name. The mainstream
   applications do not model such a body, and a chamfer needs every edge
   between exactly two faces.
 - **A compound holding anything but solids** (a shell, a face, a nested

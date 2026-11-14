@@ -476,7 +476,11 @@ pub(crate) fn consumed(
             let Some(&(m, o)) = bevels.get(&beside) else {
                 return Consumed::Outside;
             };
-            let (d, e) = if convex { (n - m, off - o) } else { (m - n, o - off) };
+            let (d, e) = if convex {
+                (n - m, off - o)
+            } else {
+                (m - n, o - off)
+            };
             let len = d.magnitude();
             if len <= tol.confusion() {
                 return Consumed::Outside;

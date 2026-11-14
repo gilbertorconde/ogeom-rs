@@ -66,9 +66,11 @@ pub(crate) fn bounded_by_planes(
 
 /// What makes a solid bounded by planes degenerate, where it is: an edge
 /// bounded by other than two faces (two blocks touching along an edge), an
-/// edge closing on itself, or two edges between one pair of vertices. The
-/// engine refuses these by name (ADR 0001, amendment "what M6 refuses by name"); `None` for a
-/// solid with a curved face, or with none of them.
+/// edge closing on itself, two edges between one pair of vertices, or a
+/// vertex whose faces close round it more than once (two blocks sharing
+/// only a corner in one shell). The engine refuses these by name (ADR
+/// 0001, amendment "what M6 refuses by name"); `None` for a solid with a
+/// curved face, or with none of them.
 ///
 /// # Errors
 ///
@@ -86,15 +88,16 @@ pub(crate) fn degenerate_planar(model: &Model, solid: &Shape) -> OgeomResult<Opt
             return Ok(None);
         }
     }
-    let mut uses: FastMap<Id, usize> = FastMap::default();
-    for f in &faces {
+    let mut uses: FastMap<Id, Vec<usize>> = FastMap::default();
+    for (fi, f) in faces.iter().enumerate() {
         for e in explore(model, f, Filter::OfType(ShapeType::Edge))? {
-            *uses.entry(id(&e)).or_default() += 1;
+            uses.entry(id(&e)).or_default().push(fi);
         }
     }
     let mut pairs: FastSet<(Id, Id)> = FastSet::default();
+    let mut at: FastMap<Id, Vec<Id>> = FastMap::default();
     for e in explore_unique(model, solid, ShapeType::Edge)? {
-        let n = uses.get(&id(&e)).copied().unwrap_or(0);
+        let n = uses.get(&id(&e)).map_or(0, Vec::len);
         if n != 2 {
             return Ok(Some(format!("an edge is bounded by {n} faces, not two")));
         }
@@ -107,6 +110,39 @@ pub(crate) fn degenerate_planar(model: &Model, solid: &Shape) -> OgeomResult<Opt
         let (x, y) = (id(&a), id(&b));
         if !pairs.insert((x.min(y), x.max(y))) {
             return Ok(Some("two edges join one pair of vertices".into()));
+        }
+        at.entry(x).or_default().push(id(&e));
+        at.entry(y).or_default().push(id(&e));
+    }
+    // Round each vertex its faces close once: joined face to face across
+    // its edges, they make one fan, not two cones touching at a point.
+    let mut vertices: Vec<(&Id, &Vec<Id>)> = at.iter().collect();
+    vertices.sort_unstable_by_key(|(v, _)| **v);
+    for (_, edges) in vertices {
+        let mut root: FastMap<usize, usize> = FastMap::default();
+        fn find(root: &mut FastMap<usize, usize>, f: usize) -> usize {
+            let up = *root.entry(f).or_insert(f);
+            if up == f {
+                return f;
+            }
+            let top = find(root, up);
+            root.insert(f, top);
+            top
+        }
+        for e in edges {
+            if let [a, b] = uses[e].as_slice() {
+                let (ra, rb) = (find(&mut root, *a), find(&mut root, *b));
+                root.insert(ra, rb);
+            }
+        }
+        let faces: Vec<usize> = root.keys().copied().collect();
+        let mut tops: Vec<usize> = faces.into_iter().map(|f| find(&mut root, f)).collect();
+        tops.sort_unstable();
+        tops.dedup();
+        if tops.len() > 1 {
+            return Ok(Some(
+                "a vertex's faces close round it more than once".into(),
+            ));
         }
     }
     Ok(None)
