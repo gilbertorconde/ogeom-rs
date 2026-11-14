@@ -659,7 +659,11 @@ impl Hermite {
 
 /// Give two B-splines on `[0, 1]` the same degree and knots without moving
 /// either. Knots closer than the parametric tolerance are one knot.
-fn compatible(a: &mut BSplineCurve, b: &mut BSplineCurve, tol: Tolerances) -> OgeomResult<()> {
+pub(crate) fn compatible(
+    a: &mut BSplineCurve,
+    b: &mut BSplineCurve,
+    tol: Tolerances,
+) -> OgeomResult<()> {
     while a.degree() < b.degree() {
         *a = a.elevated(tol)?;
     }
