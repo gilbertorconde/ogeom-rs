@@ -641,6 +641,21 @@ it for planar chamfers first.
   or fused, and its named faces) from any section law: the round side
   closes a round's strip, its two flaps and its end caps into its tool
   (M5c), and the ordering and history are this one.
+- **Rounds (M5c).** A planar request of rounds alone that the non-local
+  test labels goes there too. Each round's tool is the region between its
+  edge and its strip: the strip is the engine's own round of the same edge
+  on the wedge its two faces and its end faces bound alone (the hull of the
+  edge and its setback corners, pushed twice as far out, which no other
+  face reaches), closed by its two flaps (its faces' planes between the
+  edge and its contact lines) and its two caps (its end faces' planes). At
+  a concave edge that wedge is the room in front of the edge, whose edge is
+  convex, and its round's spandrel is the concave round's fill, fused.
+  Every contact must lie on its own face end to end: one running where its
+  face does not reach (a wall cut away under a boss) leaves the ball no
+  seat there, which is not a strip crossing a face, and stays refused by
+  name. A round ending at a vertex of other than three faces, or where
+  another round ends too, is not taken yet: the sheet builds it, as
+  before.
 - **What takes it.** The non-local test (P2/P5) routes there, and so does a
   local request the assembly cannot place: chamfers set back differently
   in one line where a third face meets the step (the step's face is then

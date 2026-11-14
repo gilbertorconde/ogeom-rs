@@ -233,6 +233,20 @@ pub(crate) fn run(
     let Some(corners) = setbacks::setback_corners(&planar, &setback, &mut steps, tol)? else {
         return Ok(None);
     };
+    // A round reaching or touching a face not round its ends: the non-local
+    // test, then the one-boolean fallback (ADR 0001, M5c); where that
+    // declines, the sheet as before.
+    if request
+        .blends
+        .iter()
+        .all(|b| matches!(b.section, Section::Round { .. }))
+        && fallback::non_local(&planar, &seats, &blended, &corners, &steps, tol).is_some()
+        && let Some(built) = fallback::rounds_one_boolean(
+            model, solid, &planar, &seats, &by_edge, &blended, &corners, &steps, tol,
+        )?
+    {
+        return Ok(Some(built));
+    }
     // Rounds are curved: their strips and vertex blends go into a sheet.
     if request
         .blends

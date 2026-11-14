@@ -2508,7 +2508,7 @@ fn section_length(planar: &Planar, seat: &Seat) -> f64 {
 
 /// Whether `p`, a point of face `fi`'s plane, lies within the face's
 /// polygon, outside its holes, or within `reach` of its boundary.
-fn within_face(planar: &Planar, fi: usize, p: Point, reach: f64) -> bool {
+pub(super) fn within_face(planar: &Planar, fi: usize, p: Point, reach: f64) -> bool {
     let face = &planar.faces[fi];
     let n = face.normal;
     // Within reach of a loop, or how many times the loop winds round `p`.
