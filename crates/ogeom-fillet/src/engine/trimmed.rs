@@ -1916,16 +1916,15 @@ fn coaxial_cone(
 /// The sheet's points, each held once within the confusion distance.
 struct Points {
     points: Vec<Point>,
-    tol: Tolerances,
+    /// How close two points are one: the confusion distance, or a fitted
+    /// contact's width, which one corner reached by two routes (on an exact
+    /// edge and at the contact's own end) may stand apart by.
+    merge: f64,
 }
 
 impl Points {
     fn index(&mut self, p: Point) -> usize {
-        if let Some(i) = self
-            .points
-            .iter()
-            .position(|q| q.distance(p) <= self.tol.confusion())
-        {
+        if let Some(i) = self.points.iter().position(|q| q.distance(p) <= self.merge) {
             return i;
         }
         self.points.push(p);
@@ -2076,7 +2075,10 @@ fn assemble_widened(
 ) -> OgeomResult<Option<Built>> {
     let mut points = Points {
         points: Vec::new(),
-        tol,
+        merge: widths
+            .values()
+            .fold(tol.confusion(), |m, w| m.max(*w))
+            .min(MERGE_CAP),
     };
     let mut edges: Vec<SheetCurve> = Vec::new();
     let mut made: FastMap<Key, usize> = FastMap::default();
@@ -2764,7 +2766,7 @@ fn assemble_widened(
     // The middles of the contacts made on consumed faces.
     let middles_made = core::cell::RefCell::new(Points {
         points: Vec::new(),
-        tol,
+        merge: tol.confusion(),
     });
     for b in bevels {
         let e = &curved.edges[&b.edge];
@@ -2853,12 +2855,13 @@ fn assemble_widened(
         let (pr, qr) = ends(&edges, kr, sr);
         // The vertex an end of the strip stands at: the one whose corners
         // it joins.
+        let merge = points.merge;
         let vertex_of = |x: Point| -> Id {
             let near = |v: Id| {
                 [b.faces[0], b.faces[1]].iter().any(|f| {
                     corners
                         .get(&(*f, v))
-                        .is_some_and(|c| c.point.distance(x) <= tol.confusion())
+                        .is_some_and(|c| c.point.distance(x) <= merge)
                 })
             };
             if near(e.ends.0) { e.ends.0 } else { e.ends.1 }
@@ -3057,15 +3060,13 @@ fn assemble_widened(
     for (k, w) in marched_widths.borrow().iter() {
         edge_widths[*k] = *w;
     }
-    // A bevel's end meeting a fitted ridge stands on it within the ridge's
-    // width: so is its edge built.
+    // A bevel's end meeting a fitted contact or ridge stands on it within
+    // its width: so is its edge built.
     let mut at_ridge: FastMap<usize, f64> = FastMap::default();
     for b in bevels {
         let e = &curved.edges[&b.edge];
         for fi in b.faces {
-            if let Some(w) = widths.get(&(fi, b.edge))
-                && consumed.contains(&fi)
-            {
+            if let Some(w) = widths.get(&(fi, b.edge)) {
                 for v in [e.ends.0, e.ends.1] {
                     if let Some(c) = corners.get(&(fi, v)) {
                         let i = points.index(c.point);
@@ -3113,6 +3114,56 @@ fn assemble_widened(
             && let Some(w) = widths.get(&(*fi, *e))
         {
             edge_widths[*k] = *w;
+        }
+    }
+    // A fitted edge reaches its corners within how far its curve's ends
+    // stand from them (two contacts meeting midway where they nearly
+    // touch), as far as the bands' fit target.
+    let fit = crate::marched::band_fit_target(tol);
+    for (k, e) in edges.iter().enumerate() {
+        if edge_widths[k] <= 0.0 {
+            continue;
+        }
+        let (a, b) = (
+            e.curve.point_at(e.range.0, tol)?,
+            e.curve.point_at(e.range.1, tol)?,
+        );
+        let off = a
+            .distance(points.points[e.ends.0])
+            .max(b.distance(points.points[e.ends.1]));
+        if off <= fit {
+            edge_widths[k] = edge_widths[k].max(off + tol.confusion());
+        }
+    }
+    // Every edge is built to how far it stands off the faces it bounds,
+    // measured, as far as the bands' fit target: a fitted contact's,
+    // a marched section's or a bevel's end between two fitted contacts'
+    // corners where they nearly touch. Sampled, so a quarter more is
+    // allowed for what the samples miss between them.
+    {
+        const SAMPLES: u32 = 16;
+        let mut used: Vec<Vec<&SurfaceGeometry>> = vec![Vec::new(); edges.len()];
+        for r in &built_rings {
+            for ring in &r.rings {
+                for (k, _) in ring {
+                    used[*k].push(&r.surface);
+                }
+            }
+        }
+        for (k, e) in edges.iter().enumerate() {
+            let mut off: f64 = 0.0;
+            for i in 0..=SAMPLES {
+                let t =
+                    (e.range.1 - e.range.0).mul_add(f64::from(i) / f64::from(SAMPLES), e.range.0);
+                let p = e.curve.point_at(t, tol)?;
+                for surface in &used[k] {
+                    let foot = ogeom_geom::project::project_on_surface(surface, p, 16, tol)?;
+                    off = off.max(foot.distance);
+                }
+            }
+            if off > tol.confusion() && off <= fit {
+                edge_widths[k] = edge_widths[k].max(1.25 * off + tol.confusion());
+            }
         }
     }
     let mut sheet = super::curved::build_with_widths(
@@ -3491,6 +3542,10 @@ fn segment_on(
     }
     Ok(true)
 }
+
+/// The most a sheet's points merge over: a fitted contact wider than this
+/// keeps its corners apart.
+const MERGE_CAP: f64 = 1e-5;
 
 /// How many points a closed ridge is sampled at to make it periodic.
 const RIDGE_SAMPLES: usize = 256;
