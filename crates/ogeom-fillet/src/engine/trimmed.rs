@@ -3331,6 +3331,20 @@ fn assemble_widened(
                         made.insert(key, edges.len() - 1);
                         return Ok((edges.len() - 1, true));
                     }
+                    // A fitted strip (no closed form) ending on a face's
+                    // plane: the strip cut by it, marched, its edge built to
+                    // how far the march stands off.
+                    if matches!(strip.surface, SurfaceGeometry::BSpline(_))
+                        && let Some(cut @ SurfaceGeometry::Plane(_)) = cut
+                        && let Some(((curve, range, a_low), width)) =
+                            marched_between(&strip.surface, cut, a, b, tol)?
+                    {
+                        marched_widths.borrow_mut().insert(edges.len(), width);
+                        let ends = if a_low { (i, j) } else { (j, i) };
+                        edges.push(SheetCurve { ends, curve, range });
+                        made.insert(key, edges.len() - 1);
+                        return Ok((edges.len() - 1, ends.0 == i));
+                    }
                     let Curve::Line(_) = spine else {
                         ogeom_core::ogeom_bail!(
                             Construction,
@@ -4790,12 +4804,18 @@ fn assemble_widened(
             }
         }
     }
-    // Every edge of a rolled run's fitted piece is held to the width its
-    // chart's curve is fitted to there.
+    // Every edge of a round's fitted piece (a rolled run's, or a strip with
+    // no closed form) is held to the width its chart's curve is fitted to
+    // there.
+    let fitted_rounds = !rolled.is_empty()
+        || bevels.iter().any(|b| {
+            matches!(b.section, Section::Arc { .. })
+                && matches!(b.surface, SurfaceGeometry::BSpline(_))
+        });
     for rings in built_rings
         .iter()
         .filter(|r| matches!(r.surface, SurfaceGeometry::BSpline(_)))
-        .filter(|_| !rolled.is_empty())
+        .filter(|_| fitted_rounds)
     {
         for (k, _) in rings.rings.iter().flatten() {
             let off = rolled.iter().fold(0.0_f64, |m, r| m.max(r.run.off));
@@ -6099,6 +6119,11 @@ fn flush(
         && on(q)
         && match kind {
             Section::Line => true,
+            // A fitted strip (no closed form) ends on the plane wherever
+            // its corners stand on it: the strip cut by it.
+            Section::Arc {
+                spine: Curve::BSpline(_),
+            } => true,
             Section::Arc { spine } => {
                 on(spine.point_at(param_on(spine, spine.domain(), p, tol)?, tol)?)
             }
