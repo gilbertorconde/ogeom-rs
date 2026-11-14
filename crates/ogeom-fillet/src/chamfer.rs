@@ -929,7 +929,8 @@ fn engine_chamfer_attempt(
 }
 
 /// Curved chamfers the rings decline, through the one boolean: creases
-/// closed by their strips' tools, else rims turned about their axes.
+/// closed by their strips' tools, else rims turned about their axes, else
+/// bevels meeting on a convex solid.
 fn creases_or_revolved(
     model: &mut Model,
     solid: &Shape,
@@ -939,7 +940,10 @@ fn creases_or_revolved(
     if let Some(built) = crate::engine::creases_one_boolean(model, solid, specs, tol)? {
         return Ok(Some(built));
     }
-    crate::engine::rims_revolved(model, solid, specs, false, tol)
+    if let Some(built) = crate::engine::rims_revolved(model, solid, specs, false, tol)? {
+        return Ok(Some(built));
+    }
+    crate::engine::convex_one_boolean(model, solid, specs, tol)
 }
 
 /// The chamfer of `specs` where pieces of one edge the seams split are

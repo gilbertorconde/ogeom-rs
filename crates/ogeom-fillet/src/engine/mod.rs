@@ -55,7 +55,7 @@ pub(crate) use round_strips::{
 pub(crate) use seams::{Dissolved, Seamless, dissolve, dissolve_curved, is_seam};
 pub(crate) use trimmed::{
     chamfer as chamfer_curved, chamfer_mitred as chamfer_curved_mitred, chamfer_patched,
-    creases_one_boolean, rims_revolved,
+    convex_one_boolean, creases_one_boolean, rims_revolved,
 };
 
 /// Whether `solid` is one the polyhedral classes read: one solid bounded by
