@@ -49,15 +49,29 @@ use ogeom_core::FastMap;
 pub(crate) type Cut = (Origin, Vector, f64);
 
 /// Bevels round a consumed face's hole or at one of its reflex corners,
-/// whose material is the union of the sides they leave.
+/// whose material is the union of the sides they leave; or one bevel of a
+/// hole that is not convex, with the band it takes.
 pub(crate) struct Group {
     /// The group's bevels' edges.
     pub edges: FastSet<Id>,
     /// The faces beside the group's edges other than the consumed one.
     pub walls: FastSet<usize>,
     /// Each of the group's bevel planes: its outward unit normal and its
-    /// offset along it.
+    /// offset along it. For a band, the bevel's plane, then its wall's and
+    /// the two planes that split it from the bevels beside it, each
+    /// turned so the band stands past them all.
     pub planes: Vec<(Vector, f64)>,
+}
+
+/// One bevel's band round a hole that is not convex: what its bevel takes
+/// between its wall and the planes splitting it from the bevels at its two
+/// ends, so the bands of the hole's bevels fill what they take together,
+/// none overlapping another. Each end gives the bevel there and whether
+/// the material is convex at that corner (the hole turning the other way).
+struct Band {
+    edge: Id,
+    wall: usize,
+    ends: [(Id, bool); 2],
 }
 
 impl Group {
@@ -252,6 +266,7 @@ pub(crate) fn consumed(
     let mut eaten: Vec<usize> = faces.iter().copied().collect();
     eaten.sort_unstable();
     let mut grouped_edges: Vec<(Vec<Id>, Vec<Id>)> = Vec::new();
+    let mut bands: Vec<(usize, Band)> = Vec::new();
     let mut vertices: FastSet<Id> = FastSet::default();
     for fi in &eaten {
         let face = &planar.faces[*fi];
@@ -272,9 +287,6 @@ pub(crate) fn consumed(
         }
         for hole in &face.holes {
             let m = hole.len();
-            if (0..m).any(|k| turns(planar, face, hole, k)) {
-                return Consumed::Outside;
-            }
             let mut edges = Vec::with_capacity(m);
             for k in 0..m {
                 let Some(e) = edge_of(hole[k], hole[(k + 1) % m]) else {
@@ -282,7 +294,35 @@ pub(crate) fn consumed(
                 };
                 edges.push(e);
             }
-            grouped_edges.push((edges, hole.clone()));
+            // A convex hole is one group: its bevels take the funnel past
+            // them all. One that is not goes as its bevels' bands, split
+            // at each corner by the plane through the two bevels' meeting
+            // line (the hole's straight skeleton, swept up the bevels).
+            if (0..m).all(|k| !turns(planar, face, hole, k)) {
+                grouped_edges.push((edges, hole.clone()));
+                continue;
+            }
+            for k in 0..m {
+                let Some(wall) = seats
+                    .values()
+                    .find(|s| s.edge == edges[k])
+                    .and_then(|s| s.faces.into_iter().find(|f| *f != *fi))
+                else {
+                    return Consumed::Outside;
+                };
+                bands.push((
+                    grouped_edges.len(),
+                    Band {
+                        edge: edges[k],
+                        wall,
+                        ends: [
+                            (edges[(k + m - 1) % m], turns(planar, face, hole, k)),
+                            (edges[(k + 1) % m], turns(planar, face, hole, (k + 1) % m)),
+                        ],
+                    },
+                ));
+                grouped_edges.push((vec![edges[k]], vec![hole[k], hole[(k + 1) % m]]));
+            }
         }
         vertices.extend(face.loops().flatten().copied());
     }
@@ -388,6 +428,7 @@ pub(crate) fn consumed(
         .flat_map(|g| g.walls.iter().copied())
         .collect();
     let mut cuts: Vec<Cut> = Vec::new();
+    let mut bevels: FastMap<Id, (Vector, f64)> = FastMap::default();
     let mut keys: Vec<&(Id, Id)> = seats.keys().collect();
     keys.sort_unstable();
     for key in keys {
@@ -408,6 +449,7 @@ pub(crate) fn consumed(
         let n = if n.dot(out) < 0.0 { -n } else { n };
         let n = n / n.magnitude();
         let off = n.dot(p.to_vector());
+        bevels.insert(seat.edge, (n, off));
         let mut in_group = false;
         for g in &mut groups {
             if g.edges.contains(&seat.edge) {
@@ -418,6 +460,30 @@ pub(crate) fn consumed(
         if !in_group {
             cuts.push((Origin::Edge(seat.edge), n, off));
         }
+    }
+    // Each band past its bevel, behind its wall, and on its own side of
+    // the plane splitting it from each bevel beside it: where the material
+    // is convex the band holds what its bevel takes deeper than the other
+    // does, else what it takes less deep.
+    for (gi, band) in &bands {
+        let Some(&(n, off)) = bevels.get(&band.edge) else {
+            return Consumed::Outside;
+        };
+        let wall = &planar.faces[band.wall];
+        let at = planar.points[&wall.corners[0]];
+        let mut planes = vec![(n, off), (-wall.normal, -wall.normal.dot(at.to_vector()))];
+        for (beside, convex) in band.ends {
+            let Some(&(m, o)) = bevels.get(&beside) else {
+                return Consumed::Outside;
+            };
+            let (d, e) = if convex { (n - m, off - o) } else { (m - n, o - off) };
+            let len = d.magnitude();
+            if len <= tol.confusion() {
+                return Consumed::Outside;
+            }
+            planes.push((d / len, e / len));
+        }
+        groups[*gi].planes = planes;
     }
     let mut round: Vec<Id> = vertices.iter().copied().collect();
     round.sort_unstable();
