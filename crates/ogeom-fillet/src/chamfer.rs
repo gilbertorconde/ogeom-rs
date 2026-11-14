@@ -807,6 +807,11 @@ fn engine_chamfer_attempt(
             if crate::engine::bounded_by_planes(model, solid, tol)? {
                 return crate::engine::chamfer_patched(model, solid, specs, tol);
             }
+            // Straight bevels between planes reaching a face they do not end
+            // at: the one boolean (ADR 0001, amendment "M5a").
+            if let Some(built) = crate::engine::straight_non_local(model, solid, specs, tol)? {
+                return Ok(Some(built));
+            }
             if let Some(seamless) = crate::engine::dissolve_curved(model, solid, tol)? {
                 if seamless.asked_apart(specs) {
                     return Err(apart_refused());
