@@ -2388,3 +2388,105 @@ fn a_void_s_own_edges_chamfer_as_the_void_block_would_alone() {
         }
     }
 }
+
+/// The pyramid over the square 20 by 20 with its apex moved off the middle
+/// to (5, 8, 12), its four slant edges bevelled 2 and mitred: no point lies
+/// on all four bevels' planes, so each bevel runs on until the others cut
+/// it, as the pyramid cut by each of their planes is. The result is the
+/// polytope of the base's, the sides' and the bevels' planes, its volume
+/// and its face count, in both orders; the apex generates nothing.
+#[test]
+fn a_leaning_pyramid_s_apex_mitres_where_its_four_bevels_share_no_point() {
+    use ogeom_math::Vector;
+    let d = 2.0;
+    let base = [
+        Vector::new(0.0, 0.0, 0.0),
+        Vector::new(20.0, 0.0, 0.0),
+        Vector::new(20.0, 20.0, 0.0),
+        Vector::new(0.0, 20.0, 0.0),
+    ];
+    let apex = Vector::new(5.0, 8.0, 12.0);
+    let centre = (base.iter().fold(apex, |s, p| s + *p)) / 5.0;
+    let side = |k: usize| {
+        let (p, q) = (base[k], base[(k + 1) % 4]);
+        let mut n = (q - p).cross(apex - p);
+        n = n / n.magnitude();
+        if n.dot(p - centre) < 0.0 {
+            n = -n;
+        }
+        (n, n.dot(p))
+    };
+    let bevel = |k: usize| {
+        let u = base[k] - apex;
+        bevel_plane(
+            apex,
+            u / u.magnitude(),
+            (side((k + 3) % 4).0, d),
+            (side(k).0, d),
+        )
+    };
+    let mut planes: Vec<(Vector, f64)> = vec![(Vector::new(0.0, 0.0, -1.0), 0.0)];
+    planes.extend((0..4).map(side));
+    planes.extend((0..4).map(bevel));
+    let x = meet(bevel(0), bevel(1), bevel(2));
+    let (n, o) = bevel(3);
+    assert!(
+        (n.dot(x) - o).abs() > 1e-3,
+        "the four bevels share no point"
+    );
+    let (want, faces) = convex_polytope(&planes);
+
+    let mut m = Model::new();
+    let points: Vec<Point> = base
+        .iter()
+        .chain([&apex])
+        .map(|v| Point::new(v.x, v.y, v.z))
+        .collect();
+    let rings = vec![
+        vec![0, 3, 2, 1],
+        vec![0, 1, 4],
+        vec![1, 2, 4],
+        vec![2, 3, 4],
+        vec![3, 0, 4],
+    ];
+    let s = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+        .unwrap()
+        .shape;
+    let top = explore_unique(&m, &s, ShapeType::Vertex)
+        .unwrap()
+        .into_iter()
+        .find(|v| (m.node(v).unwrap().data().as_vertex().unwrap().point.z - 12.0).abs() < 1e-9)
+        .unwrap();
+    let specs: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (p, q) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+            p.is_same(&top) || q.is_same(&top)
+        })
+        .map(|e| (e, Chamfer::Symmetric(d)))
+        .collect();
+    assert_eq!(specs.len(), 4);
+    let back: Vec<(Shape, Chamfer)> = specs.iter().rev().cloned().collect();
+    for asked in [&specs, &back] {
+        let built =
+            ogeom_fillet::chamfer_edges_cornered(&mut m, &s, asked, ChamferCorner::Point, T)
+                .unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert!(!folded(&m, &built.shape), "folded");
+        assert_eq!(
+            explore_unique(&m, &built.shape, ShapeType::Face)
+                .unwrap()
+                .len(),
+            faces,
+            "faces"
+        );
+        assert!(built.history.generated(&top).is_empty(), "a facet");
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "volume {got} against {want}"
+        );
+    }
+}
