@@ -1691,7 +1691,16 @@ fn corner_on_edge(
             continue;
         };
         let t = parameter_near(&geometry, p, tol)?;
-        if geometry.point_at(t, tol)?.distance(p) > tol.confusion() * 1e3 {
+        // A segment's own curve is its whole line, as `extend_to_corner`
+        // reads it: a corner past the segment's end stands on it.
+        let on = match &geometry {
+            Curve::Line(line) => {
+                let axis = line.axis();
+                axis.location + axis.direction.vector() * t
+            }
+            other => other.point_at(t, tol)?,
+        };
+        if on.distance(p) > tol.confusion() * 1e3 {
             continue;
         }
         let gap = head.distance(p).min(tail.distance(p));
