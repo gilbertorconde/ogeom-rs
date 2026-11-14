@@ -549,8 +549,12 @@ not meet the bevels tangent.
   measured and held to the bands' fit target.
 - **P5:** the patch is proved within the material every face at its vertex
   bounds.
-- **Not covered yet:** a corner with a curved bevel, whose ends are not
-  straight segments.
+- **A curved bevel there:** its end is where its surface meets the plane
+  through its two corners and the hole's middle (a cone's conic), and the
+  patch takes curved sides by adding each side's departure from its chord,
+  weighted by its two corners' coordinates. On side `i` the sides beside it
+  stand at an end of theirs, where a curve meets its chord, so every side is
+  taken exactly; on a square this is the bilinearly blended Coons patch.
 
 ## 12. Acceptance corpus
 

@@ -481,19 +481,28 @@ fn outward(curved: &Curved, face: usize, p: Point) -> Option<Vector> {
 }
 
 /// A point of face `face` away from edge `edge`: a vertex of its outline
-/// not on the edge. `None` where it has none.
+/// not on the edge, or where it has none, the middle of another of its
+/// edges. `None` where it has neither.
 fn away(curved: &Curved, face: usize, edge: Id) -> Option<Point> {
     let ends = curved.edges[&edge].ends;
-    curved.faces[face]
-        .loops
-        .iter()
-        .flatten()
+    let walks = || curved.faces[face].loops.iter().flatten();
+    walks()
         .flat_map(|(e, _)| {
             let c = &curved.edges[e];
             [c.ends.0, c.ends.1]
         })
         .find(|v| *v != ends.0 && *v != ends.1)
         .map(|v| curved.points[&v])
+        .or_else(|| {
+            // A face of two edges between the same two vertices: the
+            // middle of its other edge.
+            walks().filter(|(e, _)| *e != edge).find_map(|(e, _)| {
+                let c = &curved.edges[e];
+                c.curve
+                    .point_at(f64::midpoint(c.range.0, c.range.1), Tolerances::default())
+                    .ok()
+            })
+        })
 }
 
 /// The two distances of `spec` on `edge`'s faces in `faces`' order, `None`
@@ -1578,6 +1587,7 @@ pub(crate) fn assemble_consuming(
     let mut facet_rings: Vec<(Id, Vec<Point>)> = Vec::with_capacity(facets.len());
     let mut patches: FastMap<Id, SurfaceGeometry> = FastMap::default();
     let mut polygons: Vec<(Id, Vec<Point>)> = Vec::new();
+    let mut middles: FastMap<Id, Point> = FastMap::default();
     for (v, cycle) in &facets {
         let mut out = Vector::ZERO;
         for (e, c) in &curved.edges {
@@ -1615,13 +1625,23 @@ pub(crate) fn assemble_consuming(
             // Off one plane: the patch through the corners, its sides the
             // segments between them, where each bevel there is a plane and
             // its end that segment; at four corners the bilinear patch.
-            if sections[v]
+            let curved_here = sections[v]
                 .iter()
-                .any(|(_, _, bi)| !matches!(bevels[*bi].surface, SurfaceGeometry::Plane(_)))
-            {
-                return Ok(None);
-            }
-            if cycle.len() == 4 {
+                .any(|(_, _, bi)| !matches!(bevels[*bi].surface, SurfaceGeometry::Plane(_)));
+            if curved_here {
+                // A curved bevel there: its end is where its surface meets
+                // the plane through its two corners and the hole's middle,
+                // and the patch takes that curve for its side.
+                #[expect(clippy::cast_precision_loss, reason = "a handful of corners")]
+                let middle = Point::from_vector(
+                    cycle
+                        .iter()
+                        .fold(Vector::ZERO, |sum, p| sum + p.to_vector())
+                        / cycle.len() as f64,
+                );
+                middles.insert(*v, middle);
+                polygons.push((*v, cycle));
+            } else if cycle.len() == 4 {
                 patches.insert(*v, bilinear(&cycle, tol)?);
                 facet_rings.push((*v, cycle));
             } else {
@@ -1650,6 +1670,12 @@ pub(crate) fn assemble_consuming(
     let cut_at = |strip: &Strip, v: Id, p: Point, q: Point| -> Option<SurfaceGeometry> {
         if let Some(plane) = facet_planes.get(&v) {
             return Some(plane.clone());
+        }
+        if let Some(middle) = middles.get(&v) {
+            let normal = Direction::new((q - p).cross(*middle - p), tol).ok()?;
+            let plane =
+                Plane::new(Frame::new(p, normal, Direction::new(q - p, tol).ok()?, tol).ok()?);
+            return Some(PlaneSurface::new(plane).into());
         }
         let at_v = || {
             curved
