@@ -262,6 +262,14 @@ pub(crate) fn run(
     // non-local test, then the one-boolean fallback (ADR 0001, M5a).
     // A bevel rolling over its face's far side notches the faces beyond:
     // that is the rings' (amendment "M5b"), not a non-local blend.
+    // A mitred request reaching a face it does not end at: its bevels' whole
+    // prisms, by the one boolean (amendment "M5a").
+    if request.mitre
+        && let Some(built) =
+            fallback::mitred_non_local(model, solid, &planar, &seats, &blended, &setback, tol)?
+    {
+        return Ok(Some(built));
+    }
     if !request.mitre
         && !consumed::rolls_over(&planar, &seats, &blended, &corners, tol)
         && fallback::non_local(&planar, &seats, &blended, &corners, &steps, tol).is_some()
