@@ -47,6 +47,8 @@ pub(crate) fn assemble(
     // Each round's section, keyed by its edge.
     let mut sections: FastMap<Id, (PlanarSection, f64)> = FastMap::default();
     let mut conic: ogeom_core::FastSet<Id> = ogeom_core::FastSet::default();
+    // Rounds of a varying radius, which close flush alone.
+    let mut varying: ogeom_core::FastSet<Id> = ogeom_core::FastSet::default();
     for key in &keys {
         let seat = &seats[key];
         let Some(section) = by_edge.get(&seat.edge) else {
@@ -66,6 +68,33 @@ pub(crate) fn assemble(
                         profile: *profile,
                     },
                     d[0].max(d[1]),
+                )
+            }
+            // The ball's radius along the edge, read on each face as its
+            // distance (the radius over the half-angle's tangent), the
+            // section the circle the equal distances' ellipse is.
+            Section::Varying { law, start } => {
+                let theta = if seat.convex {
+                    seat.opening
+                } else {
+                    core::f64::consts::TAU - seat.opening
+                };
+                if !(theta > 0.0 && theta < core::f64::consts::PI) {
+                    return Ok(None);
+                }
+                let k = 1.0 / (0.5 * theta).tan();
+                let reversed = super::id(start) != seat.ends.0;
+                let scaled = law.scaled(k, reversed);
+                let along = crate::law::Profile::new(&scaled, false, tol)?;
+                conic.insert(seat.edge);
+                varying.insert(seat.edge);
+                let largest = along.largest();
+                (
+                    RoundSpec::Varying {
+                        laws: [along.clone(), along],
+                        profile: crate::asym::RoundProfile::Elliptical,
+                    },
+                    largest,
                 )
             }
             Section::Chamfer { .. } => return Ok(None),
@@ -425,6 +454,12 @@ pub(crate) fn assemble(
                 RoundVertex::Flush | RoundVertex::Sharp | RoundVertex::Patch
             )
         {
+            return Ok(None);
+        }
+        let ends_varying = seats
+            .values()
+            .any(|s| varying.contains(&s.edge) && (s.ends.0 == v || s.ends.1 == v));
+        if ends_varying && !matches!(chosen, RoundVertex::Flush | RoundVertex::Sharp) {
             return Ok(None);
         }
         method.insert(v, chosen);
@@ -998,6 +1033,21 @@ pub(crate) fn assemble(
             },
         );
         let surface = section.surface((lo, hi), tol)?;
+        // A strip's chart faces out of a convex round's material and into a
+        // concave one's fill, but a varying band's net, whose chart is read
+        // where it stands: out where its normal at the strip's middle looks
+        // toward the crease at a convex round, away at a concave one.
+        let out = if varying.contains(edge) {
+            let middle = 0.5 * (lo + hi);
+            let (arc, (t0, t1)) = section.arc_at(middle, tol)?;
+            let p = ogeom_geom::Curve3d::point_at(&arc, 0.5 * (t0 + t1), tol)?;
+            let foot = ogeom_geom::project::project_on_surface(&surface, p, 16, tol)?;
+            let (u, v) = foot.parameters;
+            let (du, dv) = ogeom_geom::Surface::d1_at(&surface, u, v, tol)?;
+            (du.cross(dv).dot(section.crease(middle) - p) > 0.0) == seat.convex
+        } else {
+            seat.convex
+        };
         strip_face.insert(*edge, faces.len());
         faces.push((
             SheetFace {
@@ -1005,7 +1055,7 @@ pub(crate) fn assemble(
                 ring,
                 holes: Vec::new(),
             },
-            seat.convex,
+            out,
         ));
         origins.push(Err(*edge));
     }

@@ -28,6 +28,69 @@ pub enum RadiusLaw {
     Points(Vec<(f64, f64)>),
 }
 
+impl RadiusLaw {
+    /// The law's points, a linear law's two ends among them.
+    fn points(&self) -> Vec<(f64, f64)> {
+        match self {
+            Self::Linear { start, end } => vec![(0.0, *start), (1.0, *end)],
+            Self::Points(points) => points.clone(),
+        }
+    }
+
+    /// The radius stated at the fraction `s` of an open chain: the nearest
+    /// point's past the first or last, else the straight line between the
+    /// two either side (a linear law's own; a law of points only reads its
+    /// ends here).
+    pub(crate) fn at_fraction(&self, s: f64) -> f64 {
+        let points = self.points();
+        let (Some(first), Some(last)) = (points.first(), points.last()) else {
+            return f64::NAN;
+        };
+        if s <= first.0 {
+            return first.1;
+        }
+        if s >= last.0 {
+            return last.1;
+        }
+        points
+            .windows(2)
+            .find(|w| w[0].0 <= s && s <= w[1].0)
+            .map_or(f64::NAN, |w| {
+                w[0].1 + (w[1].1 - w[0].1) * (s - w[0].0) / (w[1].0 - w[0].0)
+            })
+    }
+
+    /// Whether the law is linear along the chain: a linear law, or points
+    /// all on one line (the strip's contacts then straight).
+    pub(crate) fn is_linear(&self) -> bool {
+        let points = self.points();
+        let [first, .., last] = points[..] else {
+            return true;
+        };
+        let span = last.0 - first.0;
+        if span <= 0.0 {
+            return points.iter().all(|p| (p.1 - first.1).abs() <= 1e-12);
+        }
+        points.iter().all(|p| {
+            let on = first.1 + (last.1 - first.1) * (p.0 - first.0) / span;
+            (p.1 - on).abs() <= 1e-12 * on.abs().max(1.0)
+        }) && first.0 <= 0.0
+            && last.0 >= 1.0
+    }
+
+    /// The law scaled by `k` and, `reversed`, read from the chain's other
+    /// end.
+    pub(crate) fn scaled(&self, k: f64, reversed: bool) -> Self {
+        let mut points: Vec<(f64, f64)> = self
+            .points()
+            .into_iter()
+            .map(|(s, r)| (if reversed { 1.0 - s } else { s }, r * k))
+            .collect();
+        points.sort_by(|a, b| a.0.total_cmp(&b.0));
+        Self::Points(points)
+    }
+}
+
 /// A validated law, as cubic Hermite pieces over the fractions.
 #[derive(Debug, Clone)]
 pub(crate) struct Profile {

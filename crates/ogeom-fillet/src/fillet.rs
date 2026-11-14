@@ -2962,6 +2962,13 @@ pub fn fillet_edges_variable(
             "a variable radius over no edges rounds nothing"
         );
     }
+    // One straight edge between planes: the blend engine first.
+    if let [edge] = chain
+        && let Some(request) = crate::engine::Request::from_varying(model, edge, law)?
+        && let Some(built) = crate::engine::run(model, solid, &request, tol)?
+    {
+        return Ok(built);
+    }
     ogeom_algo::on_own_nodes(model, solid, chain, |model, solid, parts| {
         fillet_chain_law_own(model, solid, parts, law, tol)
     })
