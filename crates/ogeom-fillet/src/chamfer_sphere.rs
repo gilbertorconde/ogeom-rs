@@ -314,6 +314,58 @@ pub(crate) fn sphere_bevel(
     span: Option<(f64, f64)>,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Shape>> {
+    let geometry = section_of(seat, on_wall, on_cap, tol)?;
+    match span {
+        None => whole_turn(model, seat, &geometry, tol),
+        Some((start, sweep)) => sector(model, seat, &geometry, start, sweep, tol),
+    }
+}
+
+/// A sphere rim's bevel as the blend engine builds it: the cap's contact
+/// ring, the wall's, and the cone through both, framed about the seat's
+/// axis from its `x_ref` at the cap's level. The rings are `(radius,
+/// height along up from the rim's centre)`; the cap's height is nought.
+pub(crate) struct SphereBevel {
+    /// The cap contact's distance off the axis.
+    pub cap_rho: f64,
+    /// The wall contact's distance off the axis.
+    pub wall_rho: f64,
+    /// The wall contact's height along `up` from the rim's plane.
+    pub wall_h: f64,
+    /// The bevel's cone (or cylinder).
+    pub surface: SurfaceGeometry,
+}
+
+/// The bevel on a sphere's rim for legs `on_wall` down the great circle and
+/// `on_cap` along the cap, as [`sphere_bevel`] reads it.
+///
+/// # Errors
+///
+/// As [`sphere_bevel`]'s section: a leg that cuts nothing, swallows the
+/// axis or runs past the pole, or a chord through the sphere.
+pub(crate) fn sphere_bevel_rings(
+    seat: &SphereSeat,
+    on_wall: f64,
+    on_cap: f64,
+    tol: Tolerances,
+) -> OgeomResult<SphereBevel> {
+    let section = section_of(seat, on_wall, on_cap, tol)?;
+    let frame = Frame::new(seat.centre, Direction::new(seat.up, tol)?, seat.x_ref, tol)?;
+    Ok(SphereBevel {
+        cap_rho: section.cap_rho,
+        wall_rho: section.wall_rho,
+        wall_h: section.wall_h,
+        surface: bevel_surface(frame, &section, tol)?,
+    })
+}
+
+/// The wedge's section in the meridian for legs `on_wall` and `on_cap`.
+fn section_of(
+    seat: &SphereSeat,
+    on_wall: f64,
+    on_cap: f64,
+    tol: Tolerances,
+) -> OgeomResult<Section> {
     let conf = tol.confusion();
     for distance in [on_wall, on_cap] {
         if !distance.is_finite() || distance <= conf {
@@ -369,18 +421,14 @@ pub(crate) fn sphere_bevel(
         };
         normal.0 < 0.0
     };
-    let geometry = Section {
+    Ok(Section {
         cap_rho,
         wall_rho,
         wall_h,
         rim_latitude: seat.rim_latitude(),
         wall_latitude: latitude,
         bevel_turned,
-    };
-    match span {
-        None => whole_turn(model, seat, &geometry, tol),
-        Some((start, sweep)) => sector(model, seat, &geometry, start, sweep, tol),
-    }
+    })
 }
 
 /// The section of the wedge in the meridian.
