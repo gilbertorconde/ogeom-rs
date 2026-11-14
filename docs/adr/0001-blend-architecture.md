@@ -609,6 +609,41 @@ replaced #1003's refusal):
   compound, or nothing) is refused by name: a chamfer cuts solids. A
   compound of solids is chamfered solid by solid (#960).
 
+### Amendment: M5a, the one-boolean fallback (#902, M5a)
+
+§4.5 keeps one boolean for what the one assembly cannot place. M5a builds
+it for planar chamfers first.
+
+- **The blend solid, as convex pieces.** Each bevel takes the material
+  past its plane between its edge and its two contact lines, as far as its
+  setback corners: the convex hull of the edge's ends and the four corners
+  (a step's corner on its own line where a face steps). Each vertex of two
+  bevels or more takes the corner between the vertex and its facet: the
+  hull of the vertex and its faces' corners there. These are the regions
+  the assembly's rings bound, so where both build a request they agree.
+- **Applied by booleans.** Concave pieces are fused into the solid, then
+  convex ones cut from it, one boolean per piece, as the current path
+  applies its wedges: pieces that share faces (two bevels' ends at a
+  vertex) are not fused into one tool first, since the boolean refuses
+  same-domain contact between its arguments but melts a tool's planes
+  into the solid's own. A vertex mixing convex and concave bevels declines.
+- **History** is traced through the booleans: each tool names the faces
+  that carry a blend's face (a bevel's, a facet's) with the edge or vertex
+  they come from, and what the booleans make of those faces is generated
+  by it.
+- **Shared with rounds.** `fallback::apply` takes closed tools (a solid, cut
+  or fused, and its named faces) from any section law: the round side
+  closes a round's strip, its two flaps and its end caps into its tool
+  (M5c), and the ordering and history are this one.
+- **What takes it.** The non-local test (P2/P5) routes there, and so does a
+  local request the assembly cannot place: chamfers set back differently
+  in one line where a third face meets the step (the step's face is then
+  that face, less and plus the two bevels' end sections, which the
+  booleans resolve). This is a boolean on a local request, which §4.5
+  rules out for the one assembly; it is kept to the cases the rings cannot
+  place, each listed here as it is routed, so that M6 deletes the current
+  path with every planar chamfer built through the engine.
+
 ## 12. Acceptance corpus
 
 From #902:

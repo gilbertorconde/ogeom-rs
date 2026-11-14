@@ -3164,7 +3164,11 @@ fn a_consumed_face_round_a_hole_that_is_not_convex_loses_its_sides_bands() {
 /// ends at a corner the other shares; each ends on the step's plane, the
 /// step's face gaining what lies between their traces. Valid, nothing
 /// folded, ten faces, and the exact volume: each part less what its own
-/// bevel takes, in two orders.
+/// bevel takes, in two orders. Set back differently on the top (the
+/// wedge's bevel 3/4, or its edge left sharp), the top steps across the
+/// wedge's side, which the assembly's rings cannot place: the engine's
+/// one-boolean fallback builds it (ADR 0001, amendment "M5a"), each part
+/// less its own bevel, each edge generating its bevel.
 #[test]
 fn two_bevels_running_on_in_one_line_leaving_their_fronts_apart_end_on_the_step() {
     use ogeom_math::{Point, Vector};
@@ -3249,6 +3253,59 @@ fn two_bevels_running_on_in_one_line_leaving_their_fronts_apart_end_on_the_step(
             .unwrap()
             .len();
         assert_eq!(faces, 10, "faces");
+    }
+    // Set back differently on the top (the box's 1/2, the wedge's 3/4, or
+    // its edge left sharp): the top steps where they meet, across the
+    // wedge's side. Each part less what its own bevel takes.
+    let on_box: Vec<bool> = front
+        .iter()
+        .map(|(e, _)| {
+            ogeom_algo::shape_bounds(&m, e, T)
+                .unwrap()
+                .high()
+                .unwrap()
+                .x
+                < 5.0 + 1e-6
+        })
+        .collect();
+    for wedge_d in [Some(0.75), None] {
+        let mut asked: Vec<(Shape, Chamfer)> = Vec::new();
+        for ((e, _), boxed) in front.iter().zip(&on_box) {
+            if *boxed {
+                asked.push((e.clone(), Chamfer::Symmetric(d)));
+            } else if let Some(w) = wedge_d {
+                asked.push((e.clone(), Chamfer::Symmetric(w)));
+            }
+        }
+        let mut want =
+            vol(&[&box_part]) + vol(&[&wedge_planes]) - vol(&[&box_part, &[past(first)]]);
+        if let Some(w) = wedge_d {
+            let second = bevel_plane(
+                Vector::new(5.0, 0.0, 4.0),
+                Vector::X,
+                (Vector::Z, w),
+                (leaning, w),
+            );
+            want -= vol(&[&wedge_planes, &[past(second)]]);
+        }
+        let back: Vec<(Shape, Chamfer)> = asked.iter().rev().cloned().collect();
+        for asked in [&asked, &back] {
+            let (built, work) = ogeom_bool::work::counted(|| {
+                ogeom_fillet::chamfer_edges_with(&mut m, &s, asked, T).unwrap()
+            });
+            let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+            assert!(found.is_valid(), "{:?}", found.problems);
+            assert!(!folded(&m, &built.shape), "folded");
+            let got = volume(&m, &built.shape);
+            assert!(
+                (got - want).abs() <= 1e-9 * want,
+                "volume {got} against {want} ({wedge_d:?})"
+            );
+            assert!(work.face_pairs > 0, "built by the booleans");
+            for (e, _) in asked.iter() {
+                assert_eq!(built.history.generated(e).len(), 1, "an edge's bevel");
+            }
+        }
     }
 }
 
