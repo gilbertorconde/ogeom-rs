@@ -560,11 +560,14 @@ fn engine_chamfer_compound(
     Ok(Some(Built::new(gathered, history)))
 }
 
-/// [`engine_chamfer`] on a solid with voids, every chamfered edge on its
-/// outer shell: the outer shell chamfered as a solid alone, then the voids
-/// put back as they were. `None` where an edge lies on a void, the outer
-/// shell is not plain, or a void touches what the chamfer built or lies
-/// outside it (a void in what a bevel takes off).
+/// [`engine_chamfer`] on a solid with voids: the outer shell chamfered as a
+/// solid alone where it holds edges of the request, and each void holding
+/// some chamfered as the solid it bounds turned inside out (a void's
+/// edges are concave in the solid, and filling a wedge of the cavity is
+/// taking it off that solid), then the shells put together again. `None`
+/// where an edge lies on no shell or two, a shell's chamfer is handed back,
+/// or a void touches the outer shell or another void or lies outside the
+/// outer shell (in what a bevel takes off).
 fn engine_chamfer_voided(
     model: &mut Model,
     solid: &Shape,
@@ -581,51 +584,97 @@ fn engine_chamfer_voided(
     let outer = (0..shells.len())
         .max_by(|a, b| sized[*a].total_cmp(&sized[*b]))
         .unwrap_or(0);
-    let on_outer = ogeom_topo::explore_unique(model, &shells[outer], ShapeType::Edge)?;
-    if specs
+    let edges: Vec<Vec<Shape>> = shells
         .iter()
-        .any(|(edge, _)| !on_outer.iter().any(|e| e.is_same(edge)))
-    {
-        return Ok(None);
+        .map(|shell| ogeom_topo::explore_unique(model, shell, ShapeType::Edge))
+        .collect::<OgeomResult<_>>()?;
+    let mut asked: Vec<Vec<(Shape, Chamfer)>> = vec![Vec::new(); shells.len()];
+    for (edge, spec) in specs {
+        let holders: Vec<usize> = (0..shells.len())
+            .filter(|k| edges[*k].iter().any(|e| e.is_same(edge)))
+            .collect();
+        let [k] = holders[..] else {
+            return Ok(None);
+        };
+        asked[k].push((edge.clone(), spec.clone()));
     }
-    let alone = ogeom_algo::make_solid(model, &[shells[outer].clone()])?.shape;
-    let Some(built) = engine_chamfer(model, &alone, specs, tol)? else {
-        return Ok(None);
-    };
-    let mut kept = model.children_of(&built.shape)?;
-    if kept.len() != 1 {
-        return Ok(None);
-    }
-    for (k, void) in shells.iter().enumerate() {
-        if k == outer {
+    let mut history = ogeom_algo::History::new();
+    // Each shell as it comes out: the outer one first.
+    let mut order: Vec<usize> = vec![outer];
+    order.extend((0..shells.len()).filter(|k| *k != outer));
+    let mut kept: Vec<Shape> = Vec::with_capacity(shells.len());
+    for k in order {
+        if asked[k].is_empty() {
+            kept.push(shells[k].clone());
             continue;
         }
-        let apart = ogeom_algo::distance_between_shapes(
-            model,
-            &kept[0],
-            void,
-            ogeom_intersect::ExtremaOptions::default(),
-            tol,
-        )?;
-        if apart.distance <= tol.confusion() {
-            return Ok(None);
+        // The shell as a solid of its own, the outer one as it stands and
+        // a void turned inside out: whichever way bounds a valid solid.
+        let mut alone = None;
+        for shell in [shells[k].clone(), shells[k].reversed()] {
+            let candidate = ogeom_algo::make_solid(model, &[shell])?.shape;
+            if ogeom_algo::check(model, &candidate, tol)?.is_valid()
+                && ogeom_algo::volume_properties(
+                    model,
+                    &candidate,
+                    ogeom_mesh::Deflection::default(),
+                    tol,
+                )?
+                .mass
+                    > 0.0
+            {
+                alone = Some(candidate);
+                break;
+            }
         }
-        let Some(corner) = ogeom_topo::explore_unique(model, void, ShapeType::Vertex)?
+        let Some(alone) = alone else {
+            return Ok(None);
+        };
+        let Some(built) = engine_chamfer(model, &alone, &asked[k], tol)? else {
+            return Ok(None);
+        };
+        let [shell] = &model.children_of(&built.shape)?[..] else {
+            return Ok(None);
+        };
+        let shell = shell.clone();
+        // Back the way the solid held it.
+        let turned = model
+            .children_of(&alone)?
+            .first()
+            .is_some_and(|s| s.orientation() != shells[k].orientation());
+        kept.push(if turned { shell.reversed() } else { shell });
+        history = history.then(&built.history);
+    }
+    // Every void apart from the outer shell and from every other, and
+    // inside the outer shell.
+    let outside = ogeom_algo::make_solid(model, &[kept[0].clone()])?.shape;
+    for i in 1..kept.len() {
+        for j in 0..i {
+            let apart = ogeom_algo::distance_between_shapes(
+                model,
+                &kept[i],
+                &kept[j],
+                ogeom_intersect::ExtremaOptions::default(),
+                tol,
+            )?;
+            if apart.distance <= tol.confusion() {
+                return Ok(None);
+            }
+        }
+        let Some(corner) = ogeom_topo::explore_unique(model, &kept[i], ShapeType::Vertex)?
             .first()
             .cloned()
         else {
             return Ok(None);
         };
         let at = crate::setback::point_of(model, &corner)?;
-        if ogeom_algo::classify_in_solid_exact(model, &built.shape, at, tol)?
+        if ogeom_algo::classify_in_solid_exact(model, &outside, at, tol)?
             != ogeom_algo::Containment::In
         {
             return Ok(None);
         }
-        kept.push(void.clone());
     }
     let whole = ogeom_algo::make_solid(model, &kept)?.shape;
-    let mut history = built.history.clone();
     history.modify(solid, whole.clone());
     Ok(Some(Built::new(whole, history)))
 }
