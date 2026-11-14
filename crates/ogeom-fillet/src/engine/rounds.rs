@@ -162,6 +162,9 @@ pub(crate) fn assemble(
     // For a vertex where a face's two edges run on in one line set back
     // differently, that face.
     let mut step_faces: FastMap<Id, usize> = FastMap::default();
+    // For a vertex of four edges or more with one left sharp whose two
+    // faces' corners stand apart on it.
+    let mut sharp_sides: FastMap<Id, SharpSide> = FastMap::default();
     for &v in &vertices {
         let Some(round) = faces_round(&planar.faces, v) else {
             return Ok(None);
@@ -328,6 +331,15 @@ pub(crate) fn assemble(
                     _ => return Ok(None),
                 }
             }
+            // Every edge rounded but one, left sharp: the patch closes the
+            // hole, along the sharp edge between its faces' corners where
+            // they stand apart on it.
+            (n, k) if n >= 4 && k + 1 == n => {
+                if let Some(side) = sharp_side_at(planar, &here, &sections, corners, v, reach) {
+                    sharp_sides.insert(v, side);
+                }
+                RoundVertex::Patch
+            }
             _ => return Ok(None),
         };
         // Beside a consumed face only a strip's flush end and a corner's
@@ -393,6 +405,19 @@ pub(crate) fn assemble(
     // setback corner, or at a ridge's faces either side the two balls'
     // feet, the one of the ball the arriving edge's strip ends on first.
     let passes = |fi: usize, prev: Id, v: Id| -> Option<Vec<usize>> {
+        if let Some(side) = sharp_sides.get(&v)
+            && side.near == fi
+        {
+            // Along the sharp edge from this face's corner to the other's,
+            // or in from the other's where the walk comes down the edge.
+            let (near, far) = (at[&(fi, v)], at[&(side.far, v)]);
+            let arriving = seats.get(&(prev.min(v), prev.max(v)))?;
+            return Some(if arriving.edge == side.sharp {
+                vec![far, near]
+            } else {
+                vec![near, far]
+            });
+        }
         if step_faces.get(&v) == Some(&fi) {
             // From the arriving strip's corner to the leaving one's.
             let arriving = seats.get(&(prev.min(v), prev.max(v)))?;
@@ -670,12 +695,17 @@ pub(crate) fn assemble(
             let mut at_corner: Vec<Corner> = Vec::with_capacity(n);
             for k in 0..n {
                 let (prev, v, next) = (walk[(k + n - 1) % n], walk[k], walk[(k + 1) % n]);
-                if step_faces.get(&v) == Some(&fi) {
+                if step_faces.get(&v) == Some(&fi)
+                    || sharp_sides.get(&v).is_some_and(|side| side.near == fi)
+                {
                     let Some(pts) = passes(fi, prev, v) else {
                         return Ok(None);
                     };
-                    let line = segment(&mut edges, pts[0], pts[1]);
-                    at_corner.push((pts, vec![line]));
+                    let lines = pts
+                        .windows(2)
+                        .map(|w| segment(&mut edges, w[0], w[1]))
+                        .collect();
+                    at_corner.push((pts, lines));
                     continue;
                 }
                 if let Some(corner) = signed.get(&v)
@@ -1074,14 +1104,43 @@ pub(crate) fn assemble(
         if method[&v] != RoundVertex::Patch {
             continue;
         }
-        let here = seats_at(&keys, seats, v);
+        // The rounded edges here: an edge left sharp ends no strip.
+        let here: Vec<&Seat> = seats_at(&keys, seats, v)
+            .into_iter()
+            .filter(|s| sections.contains_key(&s.edge))
+            .collect();
         // Each side's built face to borrow its edge from and surface across
         // it: a strip's end its strip's, a step's line its face's.
         let mut owner: FastMap<usize, usize> = here
             .iter()
             .map(|s| (arcs[&(s.edge, v)].0, strip_face[&s.edge]))
             .collect();
-        let ring = if let Some(&face) = step_faces.get(&v) {
+        // A side along a sharp edge, with the face whose plane it is
+        // tangent to.
+        let mut along_sharp: FastMap<usize, usize> = FastMap::default();
+        let ring = if let Some(side) = sharp_sides.get(&v) {
+            let (near, far) = (at[&(side.near, v)], at[&(side.far, v)]);
+            let line = segments[&(near.min(far), near.max(far))];
+            let Some(near_face) = face_at[side.near] else {
+                return Ok(None);
+            };
+            owner.insert(line, near_face);
+            // Along the sharp edge between the corners the patch stands
+            // where the far face was (its band took it), tangent to that
+            // face's plane, so inside the material; at the near corner,
+            // where the near face's strip ends tangent to that face, the
+            // patch opens a point side turning from the one plane to the
+            // other (the crease ending there).
+            let Some(far_face) = face_at[side.far] else {
+                return Ok(None);
+            };
+            along_sharp.insert(line, far_face);
+            let Some(ring) = hole_through(&here, &arcs, &edges, &strip_corner, &at, v, &[line])
+            else {
+                return Ok(None);
+            };
+            ring
+        } else if let Some(&face) = step_faces.get(&v) {
             let lines: Vec<usize> = here
                 .iter()
                 .filter_map(|s| step_points.get(&(v, s.edge)).map(|p| p.0))
@@ -1094,7 +1153,8 @@ pub(crate) fn assemble(
                 return Ok(None);
             };
             owner.insert(line, at_face);
-            let Some(ring) = hole_through(&here, &arcs, &edges, &strip_corner, &at, v, line) else {
+            let Some(ring) = hole_through(&here, &arcs, &edges, &strip_corner, &at, v, &[line])
+            else {
                 return Ok(None);
             };
             ring
@@ -1120,8 +1180,11 @@ pub(crate) fn assemble(
                     Some((Curve::Line(line), range))
                 }
             };
-            let (Some((curve, range)), Some(support)) = (curve, faces[strip].0.surface.clone())
-            else {
+            let support = match along_sharp.get(e) {
+                Some(&far) => faces[far].0.surface.clone(),
+                None => faces[strip].0.surface.clone(),
+            };
+            let (Some((curve, range)), Some(support)) = (curve, support) else {
                 return Ok(None);
             };
             sides.push(crate::round::transfinite::HoleSide {
@@ -1398,8 +1461,8 @@ fn hole_at(
 
 /// [`hole_at`] where a face's two strips here end apart on it (a step):
 /// each strip's end walked against it, as there, its corner on that face
-/// its own (`strip_corner`), and the face's `line` between them, walked
-/// whichever way closes the ring.
+/// its own (`strip_corner`), and the face's `lines` between them, each
+/// walked whichever way closes the ring.
 fn hole_through(
     here: &[&Seat],
     arcs: &FastMap<(Id, Id), (usize, bool)>,
@@ -1407,7 +1470,7 @@ fn hole_through(
     strip_corner: &FastMap<(Id, usize, Id), usize>,
     at: &FastMap<(usize, Id), usize>,
     v: Id,
-    line: usize,
+    lines: &[usize],
 ) -> Option<Vec<(usize, bool)>> {
     let mut pending: Vec<(usize, bool)> = here
         .iter()
@@ -1433,29 +1496,24 @@ fn hole_through(
     let start = ends(first).0;
     let mut tip = ends(first).1;
     let mut ring = vec![first];
-    let mut line_left = true;
-    while !pending.is_empty() || (line_left && tip != start) {
+    let mut left: Vec<usize> = lines.to_vec();
+    while !pending.is_empty() || (!left.is_empty() && tip != start) {
         if let Some(k) = pending.iter().position(|m| ends(*m).0 == tip) {
             let next = pending.remove(k);
             tip = ends(next).1;
             ring.push(next);
-        } else if line_left {
-            let (a, b) = edges[line].ends;
-            let walk = if a == tip {
-                true
-            } else if b == tip {
-                false
-            } else {
-                return None;
-            };
-            line_left = false;
+        } else {
+            let k = left.iter().position(|l| {
+                let (a, b) = edges[*l].ends;
+                a == tip || b == tip
+            })?;
+            let line = left.remove(k);
+            let walk = edges[line].ends.0 == tip;
             tip = ends((line, walk)).1;
             ring.push((line, walk));
-        } else {
-            return None;
         }
     }
-    (tip == start && !line_left).then_some(ring)
+    (tip == start && left.is_empty()).then_some(ring)
 }
 
 /// The edge of `face` running between `from` and `to`, as a node (its own
@@ -1856,6 +1914,66 @@ fn index_of(points: &mut Vec<Point>, p: Point, reach: f64) -> usize {
     }
     points.push(p);
     points.len() - 1
+}
+
+/// A vertex of four edges or more, every one rounded but `sharp`: the
+/// sharp edge's face whose corner stands nearer the vertex on it, and the
+/// other. Between the two corners the near face still stands beside the
+/// edge and the far face's band took the other side: the patch runs along
+/// the edge there tangent to the far face's plane, inside the material, the
+/// crease carrying on along it, and opens a point side at the near corner,
+/// where its tangent plane turns to the near face's (the crease ending).
+struct SharpSide {
+    sharp: Id,
+    near: usize,
+    far: usize,
+}
+
+/// The [`SharpSide`] at `v`, or `None` where the sharp edge's two faces'
+/// corners stand together on it (the strips' ends meet there, and the
+/// patch closes through them alone), or off it.
+fn sharp_side_at(
+    planar: &Planar,
+    here: &[&Seat],
+    sections: &FastMap<Id, (PlanarSection, f64)>,
+    corners: &FastMap<(usize, Id), Point>,
+    v: Id,
+    reach: f64,
+) -> Option<SharpSide> {
+    let sharp = here.iter().find(|s| !sections.contains_key(&s.edge))?;
+    let at_v = planar.points[&v];
+    let far_end = if sharp.ends.0 == v {
+        sharp.ends.1
+    } else {
+        sharp.ends.0
+    };
+    let along = planar.points[&far_end] - at_v;
+    let length = along.magnitude();
+    let along = along / length;
+    let mut stations = [0.0; 2];
+    for (k, f) in sharp.faces.iter().enumerate() {
+        let off = *corners.get(&(*f, v))? - at_v;
+        if off.cross(along).magnitude() > reach {
+            return None;
+        }
+        stations[k] = off.dot(along);
+        if stations[k] < -reach || stations[k] > length - reach {
+            return None;
+        }
+    }
+    if (stations[0] - stations[1]).abs() <= reach {
+        return None;
+    }
+    let (near, far) = if stations[0] < stations[1] {
+        (sharp.faces[0], sharp.faces[1])
+    } else {
+        (sharp.faces[1], sharp.faces[0])
+    };
+    Some(SharpSide {
+        sharp: sharp.edge,
+        near,
+        far,
+    })
 }
 
 /// The crease vertex's reading, or `None` where it is not one this engine
@@ -3456,6 +3574,72 @@ mod tests {
         let want = 2.0 * r * a * b + PI * r * r * (a + b) + 4.0 / 3.0 * PI * r.powi(3);
         let got = volume(&m, &built[0]);
         assert!((got - want).abs() < 1e-6, "{got} against {want}");
+    }
+
+    /// The 8 by 6 by 4 pyramid and the 6 by 6 by 4 one, three of their four
+    /// slant edges rounded at 1/2 and the fourth left sharp: the sharp edge's
+    /// faces' corners stand apart on it (the square one's not, its strips'
+    /// ends meeting there), and one patch closes the apex: along the sharp
+    /// edge between the corners tangent to the far face's plane, the crease
+    /// ending at the near corner, where the patch opens a point side. No
+    /// closed form: valid, the same solid in either order, every point
+    /// within the pyramid (convex rounds only take material off).
+    #[test]
+    fn a_pyramid_s_apex_with_one_slant_edge_left_sharp_closes_on_one_patch() {
+        use ogeom_math::Point;
+        for (a, b) in [(4.0, 3.0), (3.0, 3.0)] {
+            let mut m = Model::new();
+            let s = pyramid(&mut m, a, b, 4.0);
+            let apex = Point::new(0.0, 0.0, 4.0);
+            let mut slant = edges_through(&m, &s, apex);
+            assert_eq!(slant.len(), 4);
+            slant.sort_by_key(|e| e.node());
+            slant.pop();
+            let mut built = Vec::new();
+            for order in [slant.clone(), slant.iter().rev().cloned().collect()] {
+                let request = Request::from_rounds(
+                    &order.iter().map(|e| (e.clone(), 0.5)).collect::<Vec<_>>(),
+                    T,
+                )
+                .unwrap();
+                let got = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+                let found = ogeom_algo::check(&m, &got, T).unwrap();
+                assert!(found.is_valid(), "{a} by {b}: {:?}", found.problems);
+                built.push(got);
+            }
+            assert_eq!(bits(&m, &built[0]), bits(&m, &built[1]), "{a} by {b}");
+            let base = [
+                Point::new(-a, -b, 0.0),
+                Point::new(a, -b, 0.0),
+                Point::new(a, b, 0.0),
+                Point::new(-a, b, 0.0),
+            ];
+            let planes: Vec<ogeom_math::Vector> = (0..4)
+                .map(|k| {
+                    let n = (base[(k + 1) % 4] - base[k]).cross(apex - base[k]);
+                    n / n.magnitude()
+                })
+                .collect();
+            for f in explore_unique(&m, &built[0], ShapeType::Face).unwrap() {
+                let mesh = ogeom_mesh::triangulate_face(
+                    &m,
+                    &f,
+                    ogeom_mesh::Deflection {
+                        chord: 1e-3,
+                        ..ogeom_mesh::Deflection::default()
+                    },
+                    T,
+                )
+                .unwrap();
+                for p in mesh.positions {
+                    let past = planes
+                        .iter()
+                        .map(|q| (p - apex).dot(*q))
+                        .fold(-p.z, f64::max);
+                    assert!(past <= 2e-4, "{a} by {b}: {past} outside at {p:?}");
+                }
+            }
+        }
     }
 
     /// The pyramid over the pentagon `(-3, -2)`, `(3, -2)`, `(3.5, 1.5)`,
