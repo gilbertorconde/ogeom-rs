@@ -536,6 +536,7 @@ pub(crate) fn assemble(
                 range,
                 forward: *walk,
                 support,
+                pieces: Vec::new(),
             });
         }
         let patch = crate::round::transfinite::corner_patch(model, &sides, tol)?;
