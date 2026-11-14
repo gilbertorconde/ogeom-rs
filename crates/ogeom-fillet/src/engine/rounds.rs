@@ -189,8 +189,36 @@ pub(crate) fn assemble(
             .filter(|f| steps.contains_key(&(*f, v)))
             .collect();
         if !stepped.is_empty() {
-            if stepped.len() != 1 || blended.len() != here.len() || here.len() < 4 {
+            if stepped.len() != 1 || blended.len() + 1 < here.len() || here.len() < 4 {
                 return Ok(None);
+            }
+            // One edge here left sharp: the patch runs along it between its
+            // faces' corners (as at a vertex of rounds with one left sharp).
+            // On the stepped face itself, that face's corner on it is the
+            // vertex (the edge is set back by nothing).
+            if blended.len() + 1 == here.len() {
+                let Some(sharp) = here.iter().find(|s| !sections.contains_key(&s.edge)) else {
+                    return Ok(None);
+                };
+                let side = if sharp.faces.contains(&stepped[0]) {
+                    let other = if sharp.faces[0] == stepped[0] {
+                        sharp.faces[1]
+                    } else {
+                        sharp.faces[0]
+                    };
+                    let at_v = planar.points[&v];
+                    let off = corners[&(other, v)] - at_v;
+                    (off.magnitude() > reach).then_some(SharpSide {
+                        sharp: sharp.edge,
+                        near: stepped[0],
+                        far: other,
+                    })
+                } else {
+                    sharp_side_at(planar, &here, &sections, corners, v, reach)
+                };
+                if let Some(side) = side {
+                    sharp_sides.insert(v, side);
+                }
             }
             step_faces.insert(v, stepped[0]);
             if round.iter().any(|f| consumed[*f]) {
@@ -394,7 +422,9 @@ pub(crate) fn assemble(
                 continue;
             };
             let Some((section, _)) = sections.get(&seat.edge) else {
-                return Ok(None);
+                // An edge left sharp there runs on to the vertex.
+                step_points.insert((v, seat.edge), (point(planar.points[&v]), 0.0));
+                continue;
             };
             let other = corners[&(seat.faces[1 - k], v)];
             let s = (other - section.crease(0.0)).dot(seat.along);
@@ -405,6 +435,28 @@ pub(crate) fn assemble(
     // setback corner, or at a ridge's faces either side the two balls'
     // feet, the one of the ball the arriving edge's strip ends on first.
     let passes = |fi: usize, prev: Id, v: Id| -> Option<Vec<usize>> {
+        if let Some(side) = sharp_sides.get(&v)
+            && side.near == fi
+            && step_faces.get(&v) == Some(&fi)
+        {
+            // A stepped face beside its sharp partner: from the rounded
+            // edge's step point to the vertex, then along the sharp edge to
+            // the other face's corner; or back.
+            let arriving = seats.get(&(prev.min(v), prev.max(v)))?;
+            let rounded = seats_at(&keys, seats, v)
+                .into_iter()
+                .find(|s| s.edge != side.sharp && s.faces.contains(&fi))?;
+            let (step, vertex, far) = (
+                step_points.get(&(v, rounded.edge))?.0,
+                step_points.get(&(v, side.sharp))?.0,
+                at[&(side.far, v)],
+            );
+            return Some(if arriving.edge == side.sharp {
+                vec![far, vertex, step]
+            } else {
+                vec![step, vertex, far]
+            });
+        }
         if let Some(side) = sharp_sides.get(&v)
             && side.near == fi
         {
@@ -1118,10 +1170,24 @@ pub(crate) fn assemble(
         // A side along a sharp edge, with the face whose plane it is
         // tangent to.
         let mut along_sharp: FastMap<usize, usize> = FastMap::default();
-        let ring = if let Some(side) = sharp_sides.get(&v) {
-            let (near, far) = (at[&(side.near, v)], at[&(side.far, v)]);
+        // The hole's sides that are no strip's end: a step's line on its
+        // face, and a piece along an edge left sharp between its faces'
+        // corners.
+        let mut lines: Vec<usize> = Vec::with_capacity(2);
+        if let Some(side) = sharp_sides.get(&v) {
+            // On a stepped face beside its sharp partner the near corner is
+            // the vertex, where the edge runs on unset.
+            let near = if step_faces.get(&v) == Some(&side.near) {
+                let Some(&(q, _)) = step_points.get(&(v, side.sharp)) else {
+                    return Ok(None);
+                };
+                q
+            } else {
+                at[&(side.near, v)]
+            };
+            let far = at[&(side.far, v)];
             let line = segments[&(near.min(far), near.max(far))];
-            let Some(near_face) = face_at[side.near] else {
+            let (Some(near_face), Some(far_face)) = (face_at[side.near], face_at[side.far]) else {
                 return Ok(None);
             };
             owner.insert(line, near_face);
@@ -1131,21 +1197,16 @@ pub(crate) fn assemble(
             // where the near face's strip ends tangent to that face, the
             // patch opens a point side turning from the one plane to the
             // other (the crease ending there).
-            let Some(far_face) = face_at[side.far] else {
-                return Ok(None);
-            };
             along_sharp.insert(line, far_face);
-            let Some(ring) = hole_through(&here, &arcs, &edges, &strip_corner, &at, v, &[line])
-            else {
-                return Ok(None);
-            };
-            ring
-        } else if let Some(&face) = step_faces.get(&v) {
-            let lines: Vec<usize> = here
-                .iter()
+            lines.push(line);
+        }
+        if let Some(&face) = step_faces.get(&v) {
+            let ends: Vec<usize> = seats_at(&keys, seats, v)
+                .into_iter()
+                .filter(|s| s.faces.contains(&face))
                 .filter_map(|s| step_points.get(&(v, s.edge)).map(|p| p.0))
                 .collect();
-            let [a, b] = lines[..] else {
+            let [a, b] = ends[..] else {
                 return Ok(None);
             };
             let line = segments[&(a.min(b), a.max(b))];
@@ -1153,13 +1214,16 @@ pub(crate) fn assemble(
                 return Ok(None);
             };
             owner.insert(line, at_face);
-            let Some(ring) = hole_through(&here, &arcs, &edges, &strip_corner, &at, v, &[line])
-            else {
+            lines.push(line);
+        }
+        let ring = if lines.is_empty() {
+            let Some(ring) = hole_at(&here, &arcs, &edges, &at, v) else {
                 return Ok(None);
             };
             ring
         } else {
-            let Some(ring) = hole_at(&here, &arcs, &edges, &at, v) else {
+            let Some(ring) = hole_through(&here, &arcs, &edges, &strip_corner, &at, v, &lines)
+            else {
                 return Ok(None);
             };
             ring
@@ -3386,6 +3450,136 @@ mod tests {
             .unwrap();
             for p in mesh.positions {
                 assert!(inside(p), "outside the solid at {p:?}");
+            }
+        }
+    }
+
+    /// The stepped corner of `rounds_running_on_in_one_line_..._one_patch`
+    /// (a box with a wedge fused along the front of its right half, at
+    /// `(5, 0, 4)` the top's front edge running on in one line set back
+    /// differently), with each of its four edges there left sharp in turn
+    /// and the other three rounded at 1/2. The hole is the strips' ends,
+    /// the step's line on the top and the sharp edge's piece between its
+    /// faces' corners, the crease ending at a point side; where the sharp
+    /// edge is the top's own, its corner on the top is the vertex. No
+    /// closed form: valid, the same solid in either order, and every point
+    /// within the box, the wedge or (where the concave edge down between
+    /// them is rounded) its fill.
+    #[test]
+    fn a_stepped_corner_with_one_edge_left_sharp_closes_on_one_patch() {
+        use ogeom_math::Point;
+        let mut m = Model::new();
+        let at = Frame::new(
+            Point::ORIGIN,
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let block = ogeom_algo::make_box(&mut m, at, (10.0, 6.0, 4.0), T)
+            .unwrap()
+            .shape;
+        let points = [
+            Point::new(5.0, 0.0, 4.0),
+            Point::new(5.0, 0.0, 0.0),
+            Point::new(5.0, -2.0, 0.0),
+            Point::new(10.0, 0.0, 4.0),
+            Point::new(10.0, 0.0, 0.0),
+            Point::new(10.0, -2.0, 0.0),
+        ];
+        let rings = vec![
+            vec![1, 2, 0],
+            vec![5, 4, 3],
+            vec![2, 1, 4, 5],
+            vec![1, 0, 3, 4],
+            vec![0, 2, 5, 3],
+        ];
+        let wedge = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+            .unwrap()
+            .shape;
+        let fused = ogeom_bool::fuse(&mut m, &block, &wedge, T).unwrap().shape;
+        let s = ogeom_heal::unify_same_domain(&mut m, &fused, T)
+            .unwrap()
+            .0
+            .shape;
+        let here = edges_through(&m, &s, Point::new(5.0, 0.0, 4.0));
+        assert_eq!(here.len(), 4);
+        for skip in 0..here.len() {
+            let (a, b) = ogeom_algo::edge_vertices(&m, &here[skip]).unwrap().unwrap();
+            let point = |v: &Shape| m.node(v).unwrap().data().as_vertex().unwrap().point;
+            // The concave edge down between the box's front and the wedge's
+            // end: its fill is material only where it is rounded.
+            let concave_sharp = [point(&a), point(&b)]
+                .iter()
+                .all(|p| (p.x - 5.0).abs() < 1e-9 && p.y.abs() < 1e-9);
+            let asked: Vec<Shape> = here
+                .iter()
+                .enumerate()
+                .filter(|(k, _)| *k != skip)
+                .map(|(_, e)| e.clone())
+                .collect();
+            let mut built = Vec::new();
+            for order in [asked.clone(), asked.iter().rev().cloned().collect()] {
+                let request = Request::from_rounds(
+                    &order.iter().map(|e| (e.clone(), 0.5)).collect::<Vec<_>>(),
+                    T,
+                )
+                .unwrap();
+                let b = run(&mut m, &s, &request, T)
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("edge {skip} left sharp: handed back"))
+                    .shape;
+                let found = ogeom_algo::check(&m, &b, T).unwrap();
+                assert!(
+                    found.is_valid(),
+                    "edge {skip} left sharp: {:?}",
+                    found.problems
+                );
+                built.push(b);
+            }
+            assert_eq!(
+                bits(&m, &built[0]),
+                bits(&m, &built[1]),
+                "edge {skip} left sharp"
+            );
+            let inside = |p: Point| {
+                let e = 2e-4;
+                let in_block = p.x >= -e
+                    && p.x <= 10.0 + e
+                    && p.y >= -e
+                    && p.y <= 6.0 + e
+                    && p.z >= -e
+                    && p.z <= 4.0 + e;
+                let in_wedge = p.x >= 5.0 - e
+                    && p.x <= 10.0 + e
+                    && p.y <= e
+                    && p.z >= -e
+                    && (2.0 * p.y - p.z) >= -4.0 - e * 3.0;
+                let fill = !concave_sharp
+                    && p.x <= 5.0 + e
+                    && p.y <= e
+                    && p.x >= 4.5 - e
+                    && p.y >= -0.5 - e
+                    && (p.x - 4.5).hypot(p.y + 0.5) >= 0.5 - e;
+                in_block || in_wedge || fill
+            };
+            for f in explore_unique(&m, &built[0], ShapeType::Face).unwrap() {
+                let mesh = ogeom_mesh::triangulate_face(
+                    &m,
+                    &f,
+                    ogeom_mesh::Deflection {
+                        chord: 1e-3,
+                        ..ogeom_mesh::Deflection::default()
+                    },
+                    T,
+                )
+                .unwrap();
+                for p in mesh.positions {
+                    assert!(
+                        inside(p),
+                        "edge {skip} left sharp: outside the solid at {p:?}"
+                    );
+                }
             }
         }
     }
