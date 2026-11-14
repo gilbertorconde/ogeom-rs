@@ -31,6 +31,7 @@ mod consumed;
     )
 )]
 mod curved;
+mod fallback;
 mod guards;
 mod request;
 mod rims;
@@ -249,7 +250,9 @@ pub(crate) fn run(
     joints.dedup();
     for v in &joints {
         if classify::faces_round(&planar.faces, *v).is_none_or(|round| round.len() != 2) {
-            return Ok(None);
+            return fallback::one_boolean(
+                model, solid, &planar, &seats, &blended, &corners, &steps, tol,
+            );
         }
     }
     // The mitred vertices, each of three chamfers or more, and the point
