@@ -15,6 +15,7 @@ use ogeom_math::Point;
 use ogeom_topo::{Model, Shape, ShapeType, ancestors_of};
 
 use super::classify::{Planar, read_planar};
+use super::request::Split;
 use super::{Id, id};
 use crate::chamfer::Chamfer;
 
@@ -343,10 +344,10 @@ impl Seamless {
     }
 
     /// Whether two pieces of one edge the seams split are asked with
-    /// different chamfers: an edge of the form takes one chamfer, as a
-    /// tangent chain takes one value in the mainstream applications (ADR
-    /// 0001, amendment "what M6 refuses by name"), so such a request is refused
-    /// by name rather than built.
+    /// different chamfers: on planes each piece then bevels as asked and
+    /// the bevels step between them ([`Seamless::apart`]); on a curved
+    /// edge the request is refused by name until the curved engine builds
+    /// the step (ADR 0001, amendment "what M6 refuses by name").
     pub fn asked_apart(&self, specs: &[(Shape, Chamfer)]) -> bool {
         let face = |named: &Shape| {
             self.faces
@@ -388,6 +389,83 @@ impl Seamless {
             }
         }
         false
+    }
+
+    /// `specs` with pieces of one edge asked apart, named on
+    /// [`Seamless::solid`]: the specs whose edge is asked alike, named on
+    /// it once; each piece asked apart with its own spec named on its
+    /// edge there; and each such edge read as its pieces, split at the
+    /// vertices between them, where each piece is an edge of its own (an
+    /// unasked piece stays sharp). `None` where a spec names a seam or no
+    /// element of the solid.
+    ///
+    /// # Errors
+    ///
+    /// As reading the pieces' vertices.
+    #[allow(clippy::type_complexity, reason = "three lists the caller takes apart")]
+    pub fn apart(
+        &self,
+        model: &Model,
+        specs: &[(Shape, Chamfer)],
+    ) -> OgeomResult<
+        Option<(
+            Vec<(Shape, Chamfer)>,
+            Vec<(Shape, Shape, Chamfer)>,
+            Vec<Split>,
+        )>,
+    > {
+        // Each spec named on the dissolved solid, by the unified edge.
+        let mut by_edge: Vec<(Id, Vec<(Shape, Shape, Chamfer)>)> = Vec::new();
+        for (piece, spec) in specs {
+            let Some(mut named) = self.specs(&[(piece.clone(), spec.clone())]) else {
+                return Ok(None);
+            };
+            let Some((edge, spec)) = named.pop() else {
+                return Ok(None);
+            };
+            let key = id(&edge);
+            match by_edge.iter_mut().find(|(k, _)| *k == key) {
+                Some((_, held)) => held.push((piece.clone(), edge, spec)),
+                None => by_edge.push((key, vec![(piece.clone(), edge, spec)])),
+            }
+        }
+        let (mut whole, mut pieces, mut splits) = (Vec::new(), Vec::new(), Vec::new());
+        for (key, asked) in by_edge {
+            if asked.iter().all(|(_, _, spec)| alike(spec, &asked[0].2)) {
+                whole.push((asked[0].1.clone(), asked[0].2.clone()));
+                continue;
+            }
+            let mut all: Vec<(Id, Shape)> = self
+                .edges
+                .iter()
+                .filter(|(_, f)| **f == Some(key))
+                .map(|(e, _)| (*e, self.input[e].clone()))
+                .collect();
+            all.sort_unstable_by_key(|(e, _)| *e);
+            // The vertices two pieces share.
+            let mut ends: FastMap<Id, (Shape, usize)> = FastMap::default();
+            for (_, e) in &all {
+                let Some((u, v)) = ogeom_algo::edge_vertices(model, e)? else {
+                    return Ok(None);
+                };
+                for w in [u, v] {
+                    ends.entry(id(&w)).or_insert((w, 0)).1 += 1;
+                }
+            }
+            let mut joints: Vec<(Id, Shape)> = ends
+                .into_iter()
+                .filter(|(_, (_, n))| *n == 2)
+                .map(|(k, (w, _))| (k, w))
+                .collect();
+            joints.sort_unstable_by_key(|(k, _)| *k);
+            splits.push(Split {
+                edge: asked[0].1.clone(),
+                pieces: all.into_iter().map(|(_, e)| e).collect(),
+                joints: joints.into_iter().map(|(_, w)| w).collect(),
+            });
+            pieces.extend(asked);
+        }
+        Ok(Some((whole, pieces, splits)))
     }
 
     /// `specs`, named on the solid as given, named on [`Seamless::solid`]:

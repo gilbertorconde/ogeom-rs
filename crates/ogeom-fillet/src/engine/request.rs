@@ -14,6 +14,20 @@ pub(crate) struct Request {
     /// their planes share, rather than by the facet through their faces'
     /// setback corners ([`ChamferCorner`](crate::ChamferCorner)).
     pub mitre: bool,
+    /// Edges read as pieces: where a boolean split one edge of the form and
+    /// its pieces are asked apart, each piece is an edge of its own, the
+    /// edge read from the solid split at the vertices between them.
+    pub splits: Vec<Split>,
+}
+
+/// One edge of the solid read as the pieces another reading of the part
+/// holds: each piece's own edge and the vertices between them (shapes not
+/// in the solid, named only to key the pieces and their history).
+#[derive(Debug, Clone)]
+pub(crate) struct Split {
+    pub edge: Shape,
+    pub pieces: Vec<Shape>,
+    pub joints: Vec<Shape>,
 }
 
 /// One edge and the section swept along it.
@@ -76,6 +90,7 @@ impl Request {
         Ok(Some(Self {
             blends,
             mitre: false,
+            splits: Vec::new(),
         }))
     }
 
@@ -102,6 +117,7 @@ impl Request {
         Ok(Self {
             blends,
             mitre: false,
+            splits: Vec::new(),
         })
     }
 }

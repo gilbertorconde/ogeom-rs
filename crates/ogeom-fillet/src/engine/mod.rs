@@ -46,7 +46,7 @@ mod vertices;
 pub(crate) use request::{Request, Section};
 pub(crate) use rims::assemble as round_rims;
 pub(crate) use round_strips::round as round_curved;
-pub(crate) use seams::{Dissolved, dissolve, dissolve_curved, is_seam};
+pub(crate) use seams::{Dissolved, Seamless, dissolve, dissolve_curved, is_seam};
 pub(crate) use trimmed::{
     chamfer as chamfer_curved, chamfer_mitred as chamfer_curved_mitred, chamfer_patched,
 };
@@ -195,9 +195,15 @@ pub(crate) fn run(
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     // P0.
-    let Some(planar) = classify::read_planar(model, solid, tol)? else {
+    let Some(mut planar) = classify::read_planar(model, solid, tol)? else {
         return Ok(None);
     };
+    for split in &request.splits {
+        if !planar.split(model, split)? {
+            return Ok(None);
+        }
+    }
+    let planar = planar;
     let Some(seats) = planar.seats() else {
         return Ok(None);
     };
@@ -234,9 +240,17 @@ pub(crate) fn run(
     {
         return rounds::assemble(model, &planar, &seats, &by_edge, &corners, &steps, tol);
     }
-    // Chamfers set back differently along one line are the current path's.
-    if !steps.is_empty() {
-        return Ok(None);
+    // Chamfers set back differently along one line step there: only where
+    // the line's two faces alone meet, at a joint between two pieces of one
+    // edge. Elsewhere (a third face at the vertex) they are the current
+    // path's.
+    let mut joints: Vec<Id> = steps.keys().map(|(_, v)| *v).collect();
+    joints.sort_unstable();
+    joints.dedup();
+    for v in &joints {
+        if classify::faces_round(&planar.faces, *v).is_none_or(|round| round.len() != 2) {
+            return Ok(None);
+        }
     }
     // The mitred vertices, each of three chamfers or more, and the point
     // their planes share; where four or more share no one point, the
@@ -328,7 +342,15 @@ pub(crate) fn run(
         }
         let mut shrunk: Vec<Vec<usize>> = face
             .loops()
-            .map(|corners| corners.iter().map(|v| at[&(fi, *v)]).collect())
+            .map(|corners| {
+                corners
+                    .iter()
+                    .flat_map(|v| match steps.get(&(fi, *v)) {
+                        Some([p, q]) => vec![rings.point(*p), rings.point(*q)],
+                        None => vec![at[&(fi, *v)]],
+                    })
+                    .collect()
+            })
             .collect();
         let outer = shrunk.remove(0);
         rings.push_holed(outer, shrunk, Origin::Face(fi), Some(face.normal));
@@ -358,7 +380,13 @@ pub(crate) fn run(
         // At a corner the clip cuts back, the bevel runs on past it, far
         // enough for the planes there to trim it to what it keeps; the
         // run-on lies past the solid, so any of them may take it.
+        // At a step, the corner on this edge's own line: the face's first
+        // where it arrives along the edge, its second where it leaves.
         let mut end = |face: usize, v: Id, sign: f64| -> usize {
+            if let Some([p, q]) = steps.get(&(face, v)) {
+                let arriving = (face == seat.faces[0]) == (v == b);
+                return rings.point(if arriving { *p } else { *q });
+            }
             if cluster
                 .as_ref()
                 .is_some_and(|c| c.vertices.contains(&v) && !c.grouped.contains(&v))
@@ -393,6 +421,76 @@ pub(crate) fn run(
                 rings.push(ring, Origin::Edge(seat.edge), Some(facing));
             }
         }
+    }
+    // Each joint's step: what the deeper bevel takes there past the
+    // shallower, in the plane through the joint square to the line. Each
+    // bevel's end section is the triangle of the joint and its corners on
+    // the two faces, so the step is the larger less the smaller, facing the
+    // deeper side.
+    for v in &joints {
+        let Some(round) = classify::faces_round(&planar.faces, *v) else {
+            return Ok(None);
+        };
+        let (fa, fb) = (round[0], round[1]);
+        let pair = |fi: usize| {
+            steps
+                .get(&(fi, *v))
+                .copied()
+                .unwrap_or([corners[&(fi, *v)]; 2])
+        };
+        let (pa, pb) = (pair(fa), pair(fb));
+        let at = planar.points[v];
+        // `fa` arrives along the line from one side and leaves to the
+        // other; `fb` walks it the other way round.
+        let (back, on) = ((pa[0] - at).magnitude(), (pa[1] - at).magnitude());
+        let (on_b, back_b) = ((pb[0] - at).magnitude(), (pb[1] - at).magnitude());
+        let eps = tol.confusion();
+        let ahead = on >= back - eps && on_b >= back_b - eps;
+        let behind = on <= back + eps && on_b <= back_b + eps;
+        if ahead && behind {
+            continue;
+        }
+        let Some((_, next)) = planar.faces[fa].beside(*v) else {
+            return Ok(None);
+        };
+        let toward = planar.points[&next] - at;
+        // Each piece of the step wound to face its way.
+        let mut put = |mut ring: Vec<ogeom_math::Point>, facing: ogeom_math::Vector| {
+            let turn = (1..ring.len() - 1).fold(ogeom_math::Vector::ZERO, |n, k| {
+                n + (ring[k] - ring[0]).cross(ring[k + 1] - ring[0])
+            });
+            if turn.dot(facing) < 0.0 {
+                ring.reverse();
+            }
+            let ring: Vec<usize> = ring.iter().map(|p| rings.point(*p)).collect();
+            rings.push(ring, Origin::Vertex(*v), Some(facing));
+        };
+        if ahead || behind {
+            put(
+                vec![pa[0], pa[1], pb[0], pb[1]],
+                if ahead { toward } else { -toward },
+            );
+            continue;
+        }
+        // The two end sections cross: one bevel the deeper on `fa`, the
+        // other on `fb`. Their far sides cross at one point, and the step
+        // is a triangle on each face's side of it, facing the side whose
+        // bevel is deeper there.
+        let (u, w) = (pa[1] - pb[0], pa[0] - pb[1]);
+        let n = u.cross(w);
+        if n.magnitude() <= eps * eps {
+            return Ok(None);
+        }
+        let t = (pa[0] - pb[0]).cross(w).dot(n) / n.dot(n);
+        let cross = pb[0] + u * t;
+        put(
+            vec![pa[0], pa[1], cross],
+            if on > back { toward } else { -toward },
+        );
+        put(
+            vec![pb[0], pb[1], cross],
+            if on_b > back_b { toward } else { -toward },
+        );
     }
     // P3.
     let mut vertices: Vec<Id> = planar.points.keys().copied().collect();

@@ -86,6 +86,94 @@ pub(crate) struct VertexClass {
 type EdgeUses = FastMap<(Id, Id), Vec<(usize, Id, Id)>>;
 
 impl Planar {
+    /// The solid's straight edge `split.edge` read as its pieces: each
+    /// piece an edge of its own, each joint between two a vertex of only
+    /// those two, put into every face ring walking the edge, in turn along
+    /// it. `false` where the edge is not one of the solid's, the joints do
+    /// not lie inside it, or the pieces do not fit between them.
+    pub fn split(&mut self, model: &Model, split: &super::request::Split) -> OgeomResult<bool> {
+        let edge = id(&split.edge);
+        let Some((&(a, b), _)) = self.edges.iter().find(|(_, e)| **e == edge) else {
+            return Ok(false);
+        };
+        if split.pieces.len() != split.joints.len() + 1 {
+            return Ok(false);
+        }
+        let (pa, pb) = (self.points[&a], self.points[&b]);
+        let along = pb - pa;
+        let length = along.magnitude();
+        let at = |p: Point| (p - pa).dot(along) / (length * length);
+        // The joints in turn from `a`, each strictly inside the edge.
+        let mut joints: Vec<(f64, Id, Point, Shape)> = Vec::with_capacity(split.joints.len());
+        for j in &split.joints {
+            let p = point_of(model, j)?;
+            let t = at(p);
+            let off = (p - (pa + along * t)).magnitude();
+            if !(t > 0.0 && t < 1.0) || off > 1e-9 * length.max(1.0) {
+                return Ok(false);
+            }
+            joints.push((t, id(j), p, j.clone()));
+        }
+        joints.sort_by(|x, y| x.0.total_cmp(&y.0));
+        // Each piece by its middle, in turn from `a`.
+        let mut pieces: Vec<(f64, Shape)> = Vec::with_capacity(split.pieces.len());
+        for e in &split.pieces {
+            let Some((u, v)) = ogeom_algo::edge_vertices(model, e)? else {
+                return Ok(false);
+            };
+            let middle = point_of(model, &u)? + (point_of(model, &v)? - point_of(model, &u)?) * 0.5;
+            pieces.push((at(middle), e.clone()));
+        }
+        pieces.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let chain: Vec<Id> = std::iter::once(a)
+            .chain(joints.iter().map(|j| j.1))
+            .chain(std::iter::once(b))
+            .collect();
+        for (k, (t, _)) in pieces.iter().enumerate() {
+            let (lo, hi) = (
+                if k == 0 { 0.0 } else { joints[k - 1].0 },
+                if k + 1 == pieces.len() {
+                    1.0
+                } else {
+                    joints[k].0
+                },
+            );
+            if !(*t > lo && *t < hi) {
+                return Ok(false);
+            }
+        }
+        self.edges.remove(&(a, b));
+        for (k, (_, e)) in pieces.iter().enumerate() {
+            let (u, v) = (chain[k], chain[k + 1]);
+            self.edges.insert((u.min(v), u.max(v)), id(e));
+            self.shapes.insert(id(e), e.clone());
+        }
+        for (_, j, p, shape) in &joints {
+            self.points.insert(*j, *p);
+            self.shapes.insert(*j, shape.clone());
+        }
+        let inner: Vec<Id> = joints.iter().map(|j| j.1).collect();
+        for face in &mut self.faces {
+            for ring in std::iter::once(&mut face.corners).chain(face.holes.iter_mut()) {
+                let n = ring.len();
+                let Some(k) = (0..n).find(|k| {
+                    let (x, y) = (ring[*k], ring[(k + 1) % n]);
+                    (x == a && y == b) || (x == b && y == a)
+                }) else {
+                    continue;
+                };
+                let mut put = inner.clone();
+                if ring[k] == b {
+                    put.reverse();
+                }
+                for (m, j) in put.into_iter().enumerate() {
+                    ring.insert(k + 1 + m, j);
+                }
+            }
+        }
+        Ok(true)
+    }
+
     /// Every edge's seat, keyed by its two vertices, the lower first.
     pub fn seats(&self) -> Option<FastMap<(Id, Id), Seat>> {
         let mut uses: EdgeUses = FastMap::default();

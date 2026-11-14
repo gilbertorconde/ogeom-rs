@@ -829,7 +829,7 @@ fn engine_chamfer_attempt(
         Dissolved::Outside => Ok(None),
         Dissolved::Into(seamless) => {
             if seamless.asked_apart(specs) {
-                return Err(apart_refused());
+                return engine_chamfer_apart(model, &seamless, specs, tol);
             }
             let Some(specs) = seamless.specs(specs) else {
                 return Ok(None);
@@ -848,6 +848,67 @@ fn engine_chamfer_attempt(
             )))
         }
     }
+}
+
+/// The chamfer of `specs` where pieces of one edge the seams split are
+/// asked with different chamfers: each such edge is read as its pieces,
+/// each piece chamfered as asked, and the bevels step at the vertex
+/// between two pieces, each ending square to the edge there (as two
+/// chamfer features on the pieces would build; ADR 0001, amendment "what
+/// M6 refuses by name").
+fn engine_chamfer_apart(
+    model: &mut Model,
+    seamless: &crate::engine::Seamless,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let Some((whole, pieces, splits)) = seamless.apart(model, specs)? else {
+        return Ok(None);
+    };
+    let Some(mut request) =
+        crate::engine::Request::from_chamfers(model, &seamless.solid, &whole, tol)?
+    else {
+        return Ok(None);
+    };
+    for (piece, edge, spec) in &pieces {
+        let Some(mut one) = crate::engine::Request::from_chamfers(
+            model,
+            &seamless.solid,
+            &[(edge.clone(), spec.clone())],
+            tol,
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(mut blend) = one.blends.pop() else {
+            return Ok(None);
+        };
+        blend.edge = piece.clone();
+        request.blends.push(blend);
+    }
+    let named: Vec<Shape> = splits
+        .iter()
+        .flat_map(|s| s.pieces.iter().chain(&s.joints).cloned())
+        .collect();
+    request.splits = splits;
+    let Some(built) = crate::engine::run(model, &seamless.solid, &request, tol)? else {
+        return Ok(None);
+    };
+    // The pieces and joints are the input's own: their history passes
+    // through as the engine made it.
+    let mut history = seamless.carry(&built.history);
+    for shape in &named {
+        if built.history.is_deleted(shape) {
+            history.delete(shape);
+        }
+        for made in built.history.generated(shape) {
+            history.generate(shape, made.clone());
+        }
+        for made in built.history.modified(shape) {
+            history.modify(shape, made.clone());
+        }
+    }
+    Ok(Some(Built::new(built.shape, history)))
 }
 
 /// The chamfer of `specs` by wedges built on the solid as given and
@@ -1988,14 +2049,16 @@ fn same_spelling(a: &Chamfer, b: &Chamfer, tol: Tolerances) -> bool {
     }
 }
 
-/// The refusal of two pieces of one edge (split by seams) asked with
-/// different chamfers: an edge of the form takes one chamfer (ADR 0001,
-/// amendment "what M6 refuses by name").
+/// The refusal of two pieces of one curved edge (split by seams) asked
+/// with different chamfers: on planes the bevels step between them, and
+/// the curved engine does not build that step yet (ADR 0001, amendment
+/// "what M6 refuses by name").
 fn apart_refused() -> ogeom_core::OgeomError {
     ogeom_core::ogeom_err!(
         Construction,
-        "two pieces of one edge are asked with different chamfers; an edge takes one \
-         chamfer, so ask the edge once or give its pieces one chamfer"
+        "two pieces of one curved edge are asked with different chamfers; the step \
+         between them is built on planes only, so ask the edge once or give its \
+         pieces one chamfer"
     )
 }
 
