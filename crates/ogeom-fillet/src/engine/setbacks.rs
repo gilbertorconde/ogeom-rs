@@ -1189,7 +1189,7 @@ mod curved_tests {
         assert!(junctions >= 4, "the top's junctions: {junctions}");
     }
 
-    /// A shelf (#974's): a box beside a taller cylinder, the box's top front
+    /// A shelf: a box beside a taller cylinder, the box's top front
     /// edge rounded at 3. On the top, the contact a radius in from the front
     /// crosses the cylinder's rim, where the top narrows under the round:
     /// two roll-overs, both over the rim, at y = ±2.8 (`9.6² + y² = 10²`).

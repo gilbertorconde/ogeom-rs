@@ -252,10 +252,10 @@ fn a_plate_rounds_partially_leaving_one_edge_of_each_pair_sharp() {
 
 #[test]
 fn a_plate_chamfers_partially_refusing_nothing_where_it_notches() {
-    // A chamfer of 2.5 runs past the 2 mm sides. That used to refuse every
-    // horizontal edge; each now rolls over as a notch (ADR 0001, amendment
-    // "M5b"), so the partial build refuses nothing and is the whole
-    // request: the polytope of the plate's, bevels' and facets' planes.
+    // A chamfer of 2.5 runs past the 2 mm sides. Each horizontal edge
+    // rolls over as a notch (ADR 0001, amendment "M5b"), so the partial
+    // build refuses nothing and is the whole request: the polytope of the
+    // plate's, bevels' and facets' planes.
     let mut m = Model::new();
     let plate = bx(&mut m, [0.0; 3], [20.0, 20.0, 2.0]);
     let all = explore_unique(&m, &plate, ShapeType::Edge).unwrap();

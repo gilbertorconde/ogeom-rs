@@ -9,8 +9,8 @@
 //!
 //! The cases run only with `OGEOM_M5_CORPUS` set, as M3's corpus does until
 //! its classes route through the engine (ADR 0001, §11); without it each
-//! returns at once. The round side's cases are #973's and #974's; the
-//! chamfer side adds its own.
+//! returns at once. The round side's cases are a shelf beside a taller
+//! cylinder and a stadium boss's foot; the chamfer side adds its own.
 #![allow(clippy::unwrap_used, reason = "test constructions")]
 
 use ogeom_core::Tolerances;
@@ -111,7 +111,7 @@ fn rounded_by_engine(model: &mut Model, solid: &Shape, edges: &[Shape], radius: 
     built.shape
 }
 
-/// #974's shelf: a cylinder of radius 10, 26 tall, fused with a block 12.6
+/// A shelf: a cylinder of radius 10, 26 tall, fused with a block 12.6
 /// by 10 by 21 beside it, the block's top front edge rounded at 3. The top
 /// is narrower than the round where the cylinder's rim cuts it (|y| < 2.8):
 /// there the ball rests on the rim, its centre (9.6, y, 21 - h), h the
@@ -158,7 +158,7 @@ fn a_shelf_s_top_edge_rolls_on_the_cylinder_s_rim() {
     }
 }
 
-/// #973's boss foot: a stadium boss (two half circles of radius 0.6 at
+/// A boss foot: a stadium boss (two half circles of radius 0.6 at
 /// y = ±5 joined by straight sides at x = ±0.6) fused on a plate 20 by 12,
 /// its foot rounded at 1. Round each half circle the ball's centre stands
 /// 1.6 off its axis; past the plate's edge (|y| = 6) it rests on that edge,
