@@ -3748,3 +3748,42 @@ fn a_bevel_past_its_face_rolls_over_as_a_notch() {
     assert!(built.history.is_deleted(&front), "the front gone");
     assert_eq!(built.history.generated(&edge).len(), 1, "the bevel");
 }
+
+/// A box 20 × 20 × 6 with a void 10 × 1 × 1 inside it near its top front
+/// edge, at x in [5, 15], y in [1, 2], z in [4, 5]: the edge chamfered 3
+/// reaches into the void, a face it does not end at (non-local, ADR 0001,
+/// amendment "M5a"). What the bevel takes there is already empty, so the
+/// solid is the box chamfered alone less the void, by one boolean: the box
+/// less the void and the bevel's prism (20 x 4.5), plus the part of the
+/// void the bevel's prism holds (past z = y + 3: 10 x 1/2). Valid, nothing
+/// folded, the edge generating its bevel.
+#[test]
+fn a_bevel_reaching_into_a_void_goes_through_the_one_boolean() {
+    let mut m = Model::new();
+    let outside = block(&mut m, (0.0, 0.0, 0.0), (20.0, 20.0, 6.0));
+    let void = block(&mut m, (5.0, 1.0, 4.0), (10.0, 1.0, 1.0));
+    let s = ogeom_bool::cut(&mut m, &outside, &void, T).unwrap().shape;
+    assert_eq!(m.children_of(&s).unwrap().len(), 2, "a solid of two shells");
+    let edge = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
+            l.z > 6.0 - 1e-6 && h.y < 1e-6 && h.x - l.x > 19.0
+        })
+        .unwrap();
+    let built =
+        ogeom_fillet::chamfer_edges_with(&mut m, &s, &[(edge.clone(), Chamfer::Symmetric(3.0))], T)
+            .unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert!(!folded(&m, &built.shape), "folded");
+    let want = 2400.0 - 10.0 - 20.0 * 4.5 + 10.0 * 0.5;
+    let got = volume(&m, &built.shape);
+    assert!(
+        (got - want).abs() <= 1e-9 * want,
+        "volume {got} against {want}"
+    );
+    assert_eq!(built.history.generated(&edge).len(), 1, "the bevel");
+}
