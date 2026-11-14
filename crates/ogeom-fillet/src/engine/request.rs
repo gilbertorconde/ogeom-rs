@@ -18,6 +18,10 @@ pub(crate) struct Request {
     /// its pieces are asked apart, each piece is an edge of its own, the
     /// edge read from the solid split at the vertices between them.
     pub splits: Vec<Split>,
+    /// Vertices closed as setback corners (ADR 0001, §13 question 2), each
+    /// with the distance along each of its edges at which that edge's strip
+    /// stops: only where asked, never by default.
+    pub corners: Vec<(Shape, crate::Setbacks)>,
 }
 
 /// One edge of the solid read as the pieces another reading of the part
@@ -91,6 +95,7 @@ impl Request {
             blends,
             mitre: false,
             splits: Vec::new(),
+            corners: Vec::new(),
         }))
     }
 
@@ -118,6 +123,7 @@ impl Request {
             blends,
             mitre: false,
             splits: Vec::new(),
+            corners: Vec::new(),
         })
     }
 }
