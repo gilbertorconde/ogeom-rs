@@ -37,6 +37,7 @@ mod rims;
 mod round_strips;
 mod rounds;
 mod seams;
+mod seats;
 mod sections;
 mod setbacks;
 mod trimmed;

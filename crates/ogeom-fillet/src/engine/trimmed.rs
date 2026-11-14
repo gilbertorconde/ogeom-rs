@@ -297,6 +297,7 @@ fn chamfer_with(
         &bands.faces,
         &widths,
         mitre,
+        &[],
         tol,
     ) {
         Ok(Some(built)) => built,
@@ -2140,6 +2141,315 @@ impl Points {
     }
 }
 
+/// The width an edge of a rolled run's fitted piece is built to: its chart's
+/// curve is fitted within it.
+const ROLLED_EDGE_WIDTH: f64 = 2e-5;
+
+/// A ring of sheet edges, each with whether it is walked forward.
+type Ring = Vec<(usize, bool)>;
+
+/// A part of a piece a rolled round cuts: from and to (each a parameter
+/// and its point), and what the round does to it, if anything.
+type Part<'a> = ((f64, Point), (f64, Point), Option<&'a Fate>);
+
+/// What a rolled round does to a piece of a contact or an edge on a face.
+#[derive(Debug, Clone)]
+enum Fate {
+    /// Kept, cut where the piece ends (an edge the ball rests on, on the
+    /// faces it does not leave).
+    Keep,
+    /// Gone: under the round.
+    Drop,
+    /// Taken by the curve given, run from the span's low end to its high
+    /// end over the curve's domain (the contact along a run).
+    Replace(Curve),
+}
+
+/// A span of a curve's parameters a rolled round cuts out, `lo` below `hi`
+/// (past the domain's end for a periodic curve), with the points there.
+#[derive(Debug, Clone)]
+struct Span {
+    lo: (f64, Point),
+    hi: (f64, Point),
+    fate: Fate,
+}
+
+/// The material the edges a rolled run rests on bound, as a region the
+/// certify reads: the face its contact left and each other face of the
+/// first edge, all of them at a convex edge (where the face left turns
+/// down past the other's plane), any at a concave one; `None` off planes
+/// and walls of revolution.
+///
+/// # Errors
+///
+/// As evaluating the edge's curve.
+fn resting_region(
+    curved: &Curved,
+    r: &RolledRun,
+    tol: Tolerances,
+) -> OgeomResult<Option<ogeom_algo::HalfSpaces>> {
+    let Some(&e) = r.run.over.first() else {
+        return Ok(None);
+    };
+    let left = r.enter.face;
+    let edge = &curved.edges[&e];
+    let q = r.enter.point;
+    let tangent = edge
+        .curve
+        .d1_at(param_on(&edge.curve, edge.range, q, tol)?, tol)?;
+    let Some(n_left) = outward(curved, left, q) else {
+        return Ok(None);
+    };
+    let Some(m_left) = material(curved, left) else {
+        return Ok(None);
+    };
+    let mut convex = true;
+    let mut pieces = vec![m_left];
+    for g in faces_of(curved, e) {
+        if g == left {
+            continue;
+        }
+        let (Some(n_g), Some(m_g)) = (outward(curved, g, q), material(curved, g)) else {
+            return Ok(None);
+        };
+        // Into the other face from the edge: on the left of the edge as
+        // that face walks it, about its outward normal.
+        let Some(&(_, w)) = curved.faces[g]
+            .loops
+            .iter()
+            .flatten()
+            .find(|(x, _)| *x == e)
+        else {
+            return Ok(None);
+        };
+        let walk = if w == curved.faces[g].reversed {
+            -tangent
+        } else {
+            tangent
+        };
+        let into = n_g.cross(walk);
+        if n_left.dot(into) > 0.0 {
+            convex = false;
+        }
+        pieces.push(m_g);
+    }
+    Ok(Some(if convex {
+        ogeom_algo::HalfSpaces::Every(pieces)
+    } else {
+        ogeom_algo::HalfSpaces::Any(pieces)
+    }))
+}
+
+/// The ring from `first` (a sheet edge and whether walked forward) on
+/// through each of `rest` once, each walked from where the last ended;
+/// `None` where they do not close one ring.
+fn chained_ring(
+    edges: &[SheetCurve],
+    first: (usize, bool),
+    rest: &[usize],
+) -> Option<Vec<(usize, bool)>> {
+    let end = |(k, f): (usize, bool)| if f { edges[k].ends.1 } else { edges[k].ends.0 };
+    let start = if first.1 {
+        edges[first.0].ends.0
+    } else {
+        edges[first.0].ends.1
+    };
+    let mut ring = vec![first];
+    let mut left: Vec<usize> = rest.to_vec();
+    let mut at = end(first);
+    while !left.is_empty() {
+        let n = left
+            .iter()
+            .position(|k| edges[*k].ends.0 == at || edges[*k].ends.1 == at)?;
+        let k = left.remove(n);
+        let forward = edges[k].ends.0 == at;
+        ring.push((k, forward));
+        at = end((k, forward));
+    }
+    (at == start).then_some(ring)
+}
+
+/// The pieces of `rings` (each a sheet edge and whether walked forward)
+/// rejoined end to end into closed rings; `None` where a point starts two
+/// pieces or none.
+fn rejoined(edges: &[SheetCurve], rings: &[Vec<(usize, bool)>]) -> Option<Vec<Vec<(usize, bool)>>> {
+    let ends = |(k, f): (usize, bool)| {
+        let (a, z) = edges[k].ends;
+        if f { (a, z) } else { (z, a) }
+    };
+    let pieces: Vec<(usize, bool)> = rings.iter().flatten().copied().collect();
+    let mut from: FastMap<usize, usize> = FastMap::default();
+    for (n, p) in pieces.iter().enumerate() {
+        if from.insert(ends(*p).0, n).is_some() {
+            return None;
+        }
+    }
+    let mut used = vec![false; pieces.len()];
+    let mut out = Vec::new();
+    for n in 0..pieces.len() {
+        if used[n] {
+            continue;
+        }
+        let start = ends(pieces[n]).0;
+        let mut ring = Vec::new();
+        let mut at = n;
+        loop {
+            if used[at] {
+                return None;
+            }
+            used[at] = true;
+            ring.push(pieces[at]);
+            let next = ends(pieces[at]).1;
+            if next == start {
+                break;
+            }
+            at = *from.get(&next)?;
+        }
+        out.push(ring);
+    }
+    Some(out)
+}
+
+/// `rings` on a plane parted into faces: each ring running counter-clockwise
+/// about the plane's own normal with the rings inside it running the other
+/// way, the largest first. On any other surface the rings as one face,
+/// where none splits off (as many outer rings as one face can hold), else
+/// `None`.
+///
+/// # Errors
+///
+/// As evaluating the edges' curves.
+fn grouped(
+    surface: &SurfaceGeometry,
+    edges: &[SheetCurve],
+    rings: Vec<Ring>,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<Vec<Ring>>>> {
+    let SurfaceGeometry::Plane(plane) = surface else {
+        return Ok(None);
+    };
+    let frame = plane.plane().frame();
+    let (o, x, y) = (frame.origin(), frame.x().vector(), frame.y().vector());
+    // Each ring's outline in the plane, eight points an edge.
+    let mut outlines: Vec<Vec<(f64, f64)>> = Vec::with_capacity(rings.len());
+    for ring in &rings {
+        let mut outline = Vec::new();
+        for (k, f) in ring {
+            let e = &edges[*k];
+            for j in 0..8 {
+                let s = f64::from(j) / 8.0;
+                let s = if *f { s } else { 1.0 - s };
+                let t = e.range.0 + (e.range.1 - e.range.0) * s;
+                let p = e.curve.point_at(t, tol)?;
+                outline.push(((p - o).dot(x), (p - o).dot(y)));
+            }
+        }
+        outlines.push(outline);
+    }
+    let area = |o: &[(f64, f64)]| {
+        let mut a = 0.0;
+        for k in 0..o.len() {
+            let (p, q) = (o[k], o[(k + 1) % o.len()]);
+            a += p.0 * q.1 - q.0 * p.1;
+        }
+        0.5 * a
+    };
+    let inside = |p: (f64, f64), o: &[(f64, f64)]| {
+        let mut odd = false;
+        for k in 0..o.len() {
+            let (a, b) = (o[k], o[(k + 1) % o.len()]);
+            if (a.1 > p.1) != (b.1 > p.1) && p.0 < a.0 + (p.1 - a.1) * (b.0 - a.0) / (b.1 - a.1) {
+                odd = !odd;
+            }
+        }
+        odd
+    };
+    let areas: Vec<f64> = outlines.iter().map(|o| area(o)).collect();
+    let mut outer: Vec<usize> = (0..rings.len()).filter(|k| areas[*k] > 0.0).collect();
+    outer.sort_by(|a, b| areas[*b].total_cmp(&areas[*a]));
+    if outer.is_empty() {
+        return Ok(None);
+    }
+    let mut groups: Vec<Vec<usize>> = outer.iter().map(|k| vec![*k]).collect();
+    for k in (0..rings.len()).filter(|k| areas[*k] <= 0.0) {
+        // The smallest outer ring holding it.
+        let holder = outer
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, g)| inside(outlines[k][0], &outlines[**g]))
+            .map(|(n, _)| n);
+        let Some(n) = holder else {
+            return Ok(None);
+        };
+        groups[n].push(k);
+    }
+    let mut rings: Vec<Option<Ring>> = rings.into_iter().map(Some).collect();
+    Ok(Some(
+        groups
+            .into_iter()
+            .map(|g| g.into_iter().filter_map(|k| rings[k].take()).collect())
+            .collect(),
+    ))
+}
+
+/// The period of `curve`, where it closes.
+fn period_of(curve: &Curve, tol: Tolerances) -> Option<f64> {
+    (curve.is_periodic() || curve.is_closed(tol)).then(|| {
+        let (lo, hi) = curve.domain();
+        hi - lo
+    })
+}
+
+/// `t` moved by whole periods to stand at or past `from`, below `from` plus
+/// the period.
+fn wrapped(t: f64, from: f64, period: Option<f64>) -> f64 {
+    let Some(p) = period else {
+        return t;
+    };
+    let mut t = t;
+    while t < from {
+        t += p;
+    }
+    while t >= from + p {
+        t -= p;
+    }
+    t
+}
+
+/// The span from `a` to `b` on `curve` (each a parameter and its point),
+/// on a periodic curve the way round `pick` takes (given its parameters'
+/// low and high ends).
+fn span_between(
+    curve: &Curve,
+    a: (f64, Point),
+    b: (f64, Point),
+    pick: impl Fn(f64, f64) -> OgeomResult<bool>,
+    fate: Fate,
+    tol: Tolerances,
+) -> OgeomResult<Span> {
+    let period = period_of(curve, tol);
+    let (lo, hi) = if a.0 <= b.0 { (a, b) } else { (b, a) };
+    let Some(p) = period else {
+        return Ok(Span { lo, hi, fate });
+    };
+    let hi_up = (wrapped(hi.0, lo.0, Some(p)), hi.1);
+    if pick(lo.0, hi_up.0)? {
+        Ok(Span {
+            lo,
+            hi: hi_up,
+            fate,
+        })
+    } else {
+        let lo_up = (wrapped(lo.0, hi.0, Some(p)), lo.1);
+        Ok(Span {
+            lo: hi,
+            hi: lo_up,
+            fate,
+        })
+    }
+}
+
 /// A piece of `curve` from parameter `from` to `to`, running the way the
 /// curve's parameter does when `rising`: its stored range (always
 /// increasing) and whether the walk runs against it. A closed curve's piece
@@ -2216,6 +2526,11 @@ enum Key {
     Tail(Id, Id),
     /// A bevel's end, a segment between two of the sheet's points.
     Section(usize, usize),
+    /// A piece of a contact or an edge a rolled round cuts: on face `.0`
+    /// the contact of edge `.1` (or, `.0` [`usize::MAX`], edge `.1` itself,
+    /// shared by its faces), between the sheet's points `.2` and `.3`, the
+    /// lesser first.
+    Piece(usize, Id, usize, usize),
     /// A contact on a consumed face, between two of the sheet's points,
     /// shared by the strips meeting along it; the last its middle's index
     /// among the middles, which tells apart the two ways round a loop.
@@ -2283,6 +2598,52 @@ pub(crate) fn assemble_consuming(
         consumed,
         &FastMap::default(),
         false,
+        &[],
+        tol,
+    )
+}
+
+/// One run of a rolled round's ball on an edge of the face its contact
+/// left, as the assembly takes it: the strip's index, the side whose
+/// contact leaves (`bevels[strip].faces[side]`), the crossings where it
+/// leaves and comes back, and the run [`super::seats::edge_run`] read.
+#[derive(Debug, Clone)]
+pub(crate) struct RolledRun {
+    pub strip: usize,
+    pub side: usize,
+    pub enter: super::setbacks::RollOver,
+    pub leave: super::setbacks::RollOver,
+    pub run: super::seats::EdgeRun,
+}
+
+/// [`assemble`] with rolled rounds: each run in `rolled` splits its strip
+/// into the pieces either side, each between its faces, and the piece
+/// between, the ball resting on the edge (ADR 0001, section 13, question
+/// 8). The face the contact leaves loses the edge's piece under the round,
+/// and splits where that cuts it apart.
+///
+/// # Errors
+///
+/// As [`assemble`].
+pub(crate) fn assemble_rolled(
+    model: &mut Model,
+    curved: &Curved,
+    bevels: &[Strip],
+    blended: &FastSet<Id>,
+    corners: &FastMap<(usize, Id), Corner>,
+    rolled: &[RolledRun],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    assemble_widened(
+        model,
+        curved,
+        bevels,
+        blended,
+        corners,
+        &FastSet::default(),
+        &FastMap::default(),
+        false,
+        rolled,
         tol,
     )
 }
@@ -2305,6 +2666,7 @@ fn assemble_widened(
     consumed: &FastSet<usize>,
     widths: &FastMap<(usize, Id), f64>,
     mitre: bool,
+    rolled: &[RolledRun],
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     let mut points = Points {
@@ -2324,6 +2686,102 @@ fn assemble_widened(
                 .map(|k| &b.contacts[k])
         })
     };
+    // What each rolled run cuts, by face and the edge whose contact (or
+    // which edge itself) the walk takes: the contact on the face it leaves
+    // gone between the crossings, the other face's taken by the run's
+    // contact between its feet there, and each edge the ball rests on gone
+    // from the face it leaves under the round and cut at the crossings on
+    // its others.
+    let mut spans: FastMap<(usize, Id), Vec<Span>> = FastMap::default();
+    for r in rolled {
+        let b = &bevels[r.strip];
+        let (left, other) = (b.faces[r.side], b.faces[1 - r.side]);
+        let off_left = ogeom_algo::PointDistance::of(model, &curved.faces[left].shape, tol)?;
+        let c = &b.contacts[r.side];
+        let gone = span_between(
+            c,
+            (r.enter.at, r.enter.point),
+            (r.leave.at, r.leave.point),
+            |lo, hi| {
+                let p = c.point_at(0.5 * (lo + hi), tol)?;
+                Ok(off_left.nearest(p, tol)?.0 > tol.confusion())
+            },
+            Fate::Drop,
+            tol,
+        )?;
+        spans.entry((left, b.edge)).or_default().push(gone);
+        let c = &b.contacts[1 - r.side];
+        let (Some(&q0), Some(&q1)) = (r.run.feet.first(), r.run.feet.last()) else {
+            return Ok(None);
+        };
+        // The way round holding the run's middle foot, on a closed contact.
+        let middle = r.run.feet[r.run.feet.len() / 2];
+        let (t0, t1) = (
+            param_on(c, c.domain(), q0, tol)?,
+            param_on(c, c.domain(), q1, tol)?,
+        );
+        let tm = param_on(c, c.domain(), middle, tol)?;
+        let period = period_of(c, tol);
+        let taken = span_between(
+            c,
+            (t0, q0),
+            (t1, q1),
+            |lo, hi| Ok(wrapped(tm, lo, period) <= hi),
+            Fate::Replace(r.run.contact.clone()),
+            tol,
+        )?;
+        spans.entry((other, b.edge)).or_default().push(taken);
+        let n = r.run.over.len();
+        let (Some(first), Some(last)) = (r.run.on_over.first(), r.run.on_over.last()) else {
+            return Ok(None);
+        };
+        for (k, e) in r.run.over.iter().enumerate() {
+            let edge = &curved.edges[e];
+            // The end of this edge it shares with the chain's edge `j`.
+            let toward = |j: usize| -> Option<f64> {
+                let next = &curved.edges[&r.run.over[j]];
+                if edge.ends.1 == next.ends.0 || edge.ends.1 == next.ends.1 {
+                    Some(edge.range.1)
+                } else if edge.ends.0 == next.ends.0 || edge.ends.0 == next.ends.1 {
+                    Some(edge.range.0)
+                } else {
+                    None
+                }
+            };
+            let at =
+                |t: f64| -> OgeomResult<(f64, Point)> { Ok((t, edge.curve.point_at(t, tol)?)) };
+            let (a, z) = if n == 1 {
+                ((first.1, r.enter.point), (last.1, r.leave.point))
+            } else if k == 0 {
+                let Some(t) = toward(1) else {
+                    return Ok(None);
+                };
+                ((first.1, r.enter.point), at(t)?)
+            } else if k == n - 1 {
+                let Some(t) = toward(n - 2) else {
+                    return Ok(None);
+                };
+                (at(t)?, (last.1, r.leave.point))
+            } else {
+                (at(edge.range.0)?, at(edge.range.1)?)
+            };
+            let held = r.run.on_over[r.run.on_over.len() / 2];
+            let middle = (held.0 == k).then_some(held.1);
+            for fi in faces_of(curved, *e) {
+                let fate = if fi == left { Fate::Drop } else { Fate::Keep };
+                let period = period_of(&edge.curve, tol);
+                let span = span_between(
+                    &edge.curve,
+                    a,
+                    z,
+                    |lo, hi| Ok(middle.is_none_or(|m| wrapped(m, lo, period) <= hi)),
+                    fate,
+                    tol,
+                )?;
+                spans.entry((fi, *e)).or_default().push(span);
+            }
+        }
+    }
     // Each sharp edge's end at each of its vertices: the corner a blend
     // moved there on it, or the vertex itself. Where its two faces' corners
     // stand apart on it, the end is the one further from the vertex, and
@@ -3211,6 +3669,10 @@ fn assemble_widened(
                 .map(|(x, _, k)| (*k, x.distance(p) <= tol.confusion()))
         })
     };
+    // The faces a rolled round cut a piece from, their rings rejoined, and
+    // the faces it split off them, each with the face it split from.
+    let mut relink: FastSet<usize> = FastSet::default();
+    let mut split_faces: Vec<(usize, SheetRings)> = Vec::new();
     // P4: each face rebuilt, its loops in the stored order, each edge's
     // piece between the corners at its ends, walked the surface's way.
     let mut rings_of: Vec<SheetRings> = Vec::with_capacity(curved.faces.len() + bevels.len());
@@ -3312,6 +3774,94 @@ fn assemble_widened(
                 };
                 let rising = runs(&curve, start.1, along_edge, tol)?;
                 let (range, against) = piece(&curve, start.1, end.1, rising, tol);
+                // A piece a rolled round cuts: its parts in the walk's order,
+                // each kept, dropped (the ring rejoined below) or taken by
+                // the run's contact.
+                if let Some(cuts) = spans.get(&(fi, *e)) {
+                    let period = period_of(&curve, tol);
+                    let (lo_point, hi_point) = if against {
+                        (end.0, start.0)
+                    } else {
+                        (start.0, end.0)
+                    };
+                    let mut stops: Vec<(f64, Point)> =
+                        vec![(range.0, lo_point), (range.1, hi_point)];
+                    for c in cuts {
+                        for (t, p) in [c.lo, c.hi] {
+                            let t = wrapped(t, range.0, period);
+                            if t > range.0 + tol.parametric() && t < range.1 - tol.parametric() {
+                                stops.push((t, p));
+                            }
+                        }
+                    }
+                    stops.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    stops.dedup_by(|a, b| (a.0 - b.0).abs() <= tol.parametric());
+                    let mut parts: Vec<Part<'_>> = Vec::with_capacity(stops.len() - 1);
+                    for w in stops.windows(2) {
+                        let mid = 0.5 * (w[0].0 + w[1].0);
+                        let fate = cuts
+                            .iter()
+                            .find(|c| {
+                                let t = wrapped(mid, c.lo.0, period);
+                                t >= c.lo.0 && t < c.hi.0
+                            })
+                            .map(|c| &c.fate);
+                        parts.push((w[0], w[1], fate));
+                    }
+                    if against {
+                        parts.reverse();
+                    }
+                    let owner = if blended.contains(e) { fi } else { usize::MAX };
+                    for (a, z, fate) in parts {
+                        let (ia, iz) = (points.index(a.1), points.index(z.1));
+                        let key = Key::Piece(owner, *e, ia.min(iz), ia.max(iz));
+                        let (k, forward) = match fate {
+                            Some(Fate::Drop) => {
+                                relink.insert(fi);
+                                continue;
+                            }
+                            Some(Fate::Replace(c)) => {
+                                let k = if let Some(k) = made.get(&key) {
+                                    *k
+                                } else {
+                                    let (lo, hi) = c.domain();
+                                    let starts_at_a = c.point_at(lo, tol)?.distance(a.1)
+                                        <= c.point_at(lo, tol)?.distance(z.1);
+                                    edges.push(SheetCurve {
+                                        ends: if starts_at_a { (ia, iz) } else { (iz, ia) },
+                                        curve: c.clone(),
+                                        range: (lo, hi),
+                                    });
+                                    made.insert(key, edges.len() - 1);
+                                    edges.len() - 1
+                                };
+                                // Walked from `a` to `z`, or back.
+                                let from = if against { iz } else { ia };
+                                (k, edges[k].ends.0 == from)
+                            }
+                            Some(Fate::Keep) | None => {
+                                let k = if let Some(k) = made.get(&key) {
+                                    *k
+                                } else {
+                                    edges.push(SheetCurve {
+                                        ends: (ia, iz),
+                                        curve: curve.clone(),
+                                        range: (a.0, z.0),
+                                    });
+                                    made.insert(key, edges.len() - 1);
+                                    edges.len() - 1
+                                };
+                                (k, !against)
+                            }
+                        };
+                        ring.push((k, forward));
+                    }
+                    if first.is_none() {
+                        first = Some(start.0);
+                    }
+                    last = Some(end.0);
+                    continue;
+                }
                 let (i, j) = (points.index(start.0), points.index(end.0));
                 let k = if let Some(k) = made.get(&key) {
                     *k
@@ -3367,6 +3917,31 @@ fn assemble_widened(
             }
             rings.push(ring);
         }
+        // A face a rolled round cut a piece from: its pieces rejoined end to
+        // end into rings, and each ring walking the surface's way round with
+        // the rings inside it a face of its own.
+        let rings = if relink.contains(&fi) {
+            let Some(rejoined) = rejoined(&edges, &rings) else {
+                return Ok(None);
+            };
+            let Some(mut groups) = grouped(&face.surface, &edges, rejoined, tol)? else {
+                return Ok(None);
+            };
+            let first = groups.remove(0);
+            for group in groups {
+                split_faces.push((
+                    fi,
+                    SheetRings {
+                        surface: face.surface.clone(),
+                        rings: group,
+                        reversed: face.reversed,
+                    },
+                ));
+            }
+            first
+        } else {
+            rings
+        };
         rings_of.push(SheetRings {
             surface: face.surface.clone(),
             rings,
@@ -3382,8 +3957,151 @@ fn assemble_widened(
         points: Vec::new(),
         merge: tol.confusion(),
     });
+    // The faces each rolled strip's pieces after its first take, appended
+    // after every other face, with the strip's index.
+    let mut rolled_faces: Vec<(usize, SheetRings)> = Vec::new();
     for b in bevels {
         let e = &curved.edges[&b.edge];
+        // A rolled strip: its pieces either side of its run, each between
+        // its faces, and the run's piece, the ball on the edge.
+        if let Some(r) = rolled.iter().find(|r| bevels[r.strip].edge == b.edge) {
+            if rolled.iter().filter(|q| q.strip == r.strip).count() != 1 {
+                return Ok(None);
+            }
+            let (left, other) = (b.faces[r.side], b.faces[1 - r.side]);
+            let (Some(&q0), Some(&q1)) = (r.run.feet.first(), r.run.feet.last()) else {
+                return Ok(None);
+            };
+            let walked = |fi: usize, k: usize| -> Option<bool> {
+                face_walks(&rings_of[fi], k).or_else(|| {
+                    split_faces
+                        .iter()
+                        .filter(|(f, _)| *f == fi)
+                        .find_map(|(_, rings)| face_walks(rings, k))
+                })
+            };
+            let piece_key = |owner: usize, edge: Id, a: Point, z: Point, points: &mut Points| {
+                let (i, j) = (points.index(a), points.index(z));
+                Key::Piece(owner, edge, i.min(j), i.max(j))
+            };
+            let mut rings: Vec<Vec<(usize, bool)>> = Vec::with_capacity(3);
+            // The pieces between the faces, at each end of the edge.
+            for (end, v) in [e.ends.0, e.ends.1].into_iter().enumerate() {
+                let (Some(cl), Some(co)) = (
+                    corner_for(corners, curved, left, v, b.edge, end == 0, tol)?,
+                    corner_for(corners, curved, other, v, b.edge, end == 0, tol)?,
+                ) else {
+                    return Ok(None);
+                };
+                // The crossing on this end's side: the one nearer its corner
+                // along the contact.
+                let c = &b.contacts[r.side];
+                let tc = param_on(c, c.domain(), cl.point, tol)?;
+                let period = period_of(c, tol);
+                let gap = |t: f64| {
+                    let d = t - tc;
+                    period.map_or(d.abs(), |p| {
+                        let d = d.rem_euclid(p);
+                        d.min(p - d)
+                    })
+                };
+                let (p, q) = if gap(r.enter.at) <= gap(r.leave.at) {
+                    (r.enter.point, q0)
+                } else {
+                    (r.leave.point, q1)
+                };
+                let (a, z) = (cl.point, co.point);
+                let key_l = piece_key(left, b.edge, a, p, &mut points);
+                let key_o = piece_key(other, b.edge, z, q, &mut points);
+                let (Some(&kl), Some(&ko)) = (made.get(&key_l), made.get(&key_o)) else {
+                    return Ok(None);
+                };
+                let switch = section(&mut points, &mut edges, &mut made, b, None, p, q)?;
+                let cut = cut_at(b, v, a, z);
+                let capped = section(&mut points, &mut edges, &mut made, b, cut.as_ref(), z, a)?;
+                let Some(wl) = walked(left, kl) else {
+                    return Ok(None);
+                };
+                let Some(ring) = chained_ring(&edges, (kl, !wl), &[ko, switch.0, capped.0]) else {
+                    return Ok(None);
+                };
+                rings.push(ring);
+            }
+            // The run's piece: the other face's contact along it, walked
+            // against that face's way, the switches and the edges between
+            // the crossings.
+            let key_o = piece_key(other, b.edge, q0, q1, &mut points);
+            let Some(&ko) = made.get(&key_o) else {
+                return Ok(None);
+            };
+            let mut stops = vec![r.enter.point];
+            for w in r.run.over.windows(2) {
+                let (a, z) = (&curved.edges[&w[0]], &curved.edges[&w[1]]);
+                let v = if a.ends.0 == z.ends.0 || a.ends.0 == z.ends.1 {
+                    a.ends.0
+                } else {
+                    a.ends.1
+                };
+                stops.push(curved.points[&v]);
+            }
+            stops.push(r.leave.point);
+            let mut others: Vec<usize> = Vec::with_capacity(stops.len() + 1);
+            for (k, w) in stops.windows(2).enumerate() {
+                let key = piece_key(usize::MAX, r.run.over[k], w[0], w[1], &mut points);
+                let Some(&kk) = made.get(&key) else {
+                    return Ok(None);
+                };
+                others.push(kk);
+            }
+            for (p, q) in [(r.enter.point, q0), (r.leave.point, q1)] {
+                others.push(section(&mut points, &mut edges, &mut made, b, None, p, q)?.0);
+            }
+            let Some(wo) = walked(other, ko) else {
+                return Ok(None);
+            };
+            let Some(run_ring) = chained_ring(&edges, (ko, !wo), &others) else {
+                return Ok(None);
+            };
+            // Each faces out, away from both faces there; a ring runs the
+            // surface's way.
+            let oriented = |surface: &SurfaceGeometry,
+                            ring: Vec<(usize, bool)>,
+                            at: Point|
+             -> OgeomResult<SheetRings> {
+                // Read where the piece stands: round an arc the faces'
+                // normals turn.
+                let out = outward_at(curved, left, at) + outward_at(curved, other, at);
+                let reversed = natural_normal(surface, at, tol)?.dot(out) < 0.0;
+                let ring = if reversed {
+                    ring.iter().rev().map(|(k, f)| (*k, !f)).collect()
+                } else {
+                    ring
+                };
+                Ok(SheetRings {
+                    surface: surface.clone(),
+                    rings: vec![ring],
+                    reversed,
+                })
+            };
+            let mut made_rings = Vec::with_capacity(3);
+            for ring in rings {
+                let at = points.points[edges[ring[0].0].ends.0];
+                made_rings.push(oriented(&b.surface, ring, at)?);
+            }
+            let middle = r.run.centres.len() / 2;
+            let run_at = r.run.feet[middle].midpoint(r.run.on_edge[middle]);
+            let run_at =
+                ogeom_geom::project::project_on_surface(&r.run.surface, run_at, 16, tol)?.point;
+            made_rings.push(oriented(&r.run.surface, run_ring, run_at)?);
+            let mut made_rings = made_rings.into_iter();
+            let Some(first) = made_rings.next() else {
+                return Ok(None);
+            };
+            rings_of.push(first);
+            let strip = rolled.iter().position(|q| q.strip == r.strip).unwrap_or(0);
+            rolled_faces.extend(made_rings.map(|m| (rolled[strip].strip, m)));
+            continue;
+        }
         // A contact's piece: the face's own, or, on a consumed face, made
         // here between the corners at the edge's ends, shared by every
         // strip meeting along it there.
@@ -3458,7 +4176,13 @@ fn assemble_widened(
             return Ok(None);
         }
         let (kr, ko) = if r == 0 { (k0, k1) } else { (k1, k0) };
-        let Some(walked) = face_walks(&rings_of[b.faces[r]], kr) else {
+        let walked = face_walks(&rings_of[b.faces[r]], kr).or_else(|| {
+            split_faces
+                .iter()
+                .filter(|(f, _)| *f == b.faces[r])
+                .find_map(|(_, rings)| face_walks(rings, kr))
+        });
+        let Some(walked) = walked else {
             return Ok(None);
         };
         let sr = !(walked != rings_of[b.faces[r]].reversed);
@@ -3908,6 +4632,12 @@ fn assemble_widened(
         }
         patch_rings.push((*v, ring, ogeom_algo::HalfSpaces::Every(regions)));
     }
+    // The faces a rolled round split off, then its strips' further pieces,
+    // after every other face.
+    let first_split = rings_of.len();
+    rings_of.extend(split_faces.iter().map(|(_, r)| r.clone()));
+    let first_rolled = rings_of.len();
+    rings_of.extend(rolled_faces.iter().map(|(_, r)| r.clone()));
     // A consumed face is not built, nor a strip joined into another: the
     // sheet is every other.
     let away = |i: usize| {
@@ -4030,6 +4760,18 @@ fn assemble_widened(
             if off > tol.confusion() && off <= fit {
                 edge_widths[k] = edge_widths[k].max(1.25 * off + tol.confusion());
             }
+        }
+    }
+    // Every edge of a rolled run's fitted piece is held to the width its
+    // chart's curve is fitted to there.
+    for rings in built_rings
+        .iter()
+        .filter(|r| matches!(r.surface, SurfaceGeometry::BSpline(_)))
+        .filter(|_| !rolled.is_empty())
+    {
+        for (k, _) in rings.rings.iter().flatten() {
+            let off = rolled.iter().fold(0.0_f64, |m, r| m.max(r.run.off));
+            edge_widths[*k] = edge_widths[*k].max(ROLLED_EDGE_WIDTH).max(2.0 * off);
         }
     }
     // A fitted edge running to an end of its curve is moved to end on its
@@ -4296,6 +5038,38 @@ fn assemble_widened(
         if ogeom_algo::certify_face_within(model, face, &region, fit, tol)?.is_err() {
             return Ok(None);
         }
+        // A rolled strip's further pieces: those between its faces in the
+        // same region; the run's piece within the other face's material and
+        // the material the edge it rests on bounds (each face's, both at a
+        // convex edge, either at a concave one), outside both where the
+        // round fills.
+        for (n, (strip, rings)) in rolled_faces.iter().enumerate() {
+            if bevels[*strip].edge != b.edge {
+                continue;
+            }
+            let piece = &sheet.faces[first_rolled + n];
+            let within = if !matches!(rings.surface, SurfaceGeometry::BSpline(_)) {
+                region.clone()
+            } else {
+                let Some(r) = rolled.iter().find(|r| r.strip == *strip) else {
+                    return Ok(None);
+                };
+                let Some(edge_region) = resting_region(curved, r, tol)? else {
+                    return Ok(None);
+                };
+                let Some(o) = material(curved, b.faces[1 - r.side]) else {
+                    return Ok(None);
+                };
+                if concave {
+                    ogeom_algo::HalfSpaces::Every(vec![outside(&o), outside(&edge_region)])
+                } else {
+                    ogeom_algo::HalfSpaces::Every(vec![o, edge_region])
+                }
+            };
+            if ogeom_algo::certify_face_within(model, piece, &within, fit, tol)?.is_err() {
+                return Ok(None);
+            }
+        }
     }
     // Each ball proved within the material of the faces round its vertex.
     let first_ball = curved.faces.len() + bevels.len() + facet_rings.len();
@@ -4388,6 +5162,31 @@ fn assemble_widened(
         if let Some(k) = made.get(&Key::Sharp(*e)) {
             history.modify(&curved.shapes[e], sheet.edges[*k].clone());
         }
+    }
+    // A rolled round's faces split off theirs, its strips' further pieces
+    // made from their edges, and each edge it cut modified into its pieces.
+    for (n, (fi, _)) in split_faces.iter().enumerate() {
+        history.modify(
+            &curved.faces[*fi].shape,
+            sheet.faces[first_split + n].clone(),
+        );
+    }
+    for (n, (strip, _)) in rolled_faces.iter().enumerate() {
+        history.generate(
+            &curved.shapes[&bevels[*strip].edge],
+            sheet.faces[first_rolled + n].clone(),
+        );
+    }
+    let mut cut: Vec<(Id, usize)> = made
+        .iter()
+        .filter_map(|(key, k)| match key {
+            Key::Piece(usize::MAX, e, _, _) => Some((*e, *k)),
+            _ => None,
+        })
+        .collect();
+    cut.sort_unstable();
+    for (e, k) in cut {
+        history.modify(&curved.shapes[&e], sheet.edges[k].clone());
     }
     for (v, p) in &curved.points {
         let kept = curved.faces.iter().enumerate().all(|(fi, _)| {
