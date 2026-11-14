@@ -64,6 +64,9 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 /// What `solid` shares with other shapes is copied before it is
 /// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
 ///
+/// The blend engine takes the edge first, as a request of one, as it takes
+/// many in [`fillet_edges`]; what it hands back is built as above.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`] if the edge is
@@ -75,6 +78,26 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 /// edges either side at once, or leaves a face or comes within its radius
 /// of another along the crease.
 pub fn fillet_edge(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    // One edge is a request of one: the engine first, as for many.
+    if let Some(built) = rounds_by_engine(model, solid, &[(edge.clone(), radius)], tol)? {
+        return Ok(built);
+    }
+    fillet_edge_wedge(model, solid, edge, radius, tol)
+}
+
+/// [`fillet_edge`] on the current path alone: the band and its wedge, as
+/// built before the blend engine took the edge.
+///
+/// # Errors
+///
+/// As [`fillet_edge`].
+pub(crate) fn fillet_edge_wedge(
     model: &mut Model,
     solid: &Shape,
     edge: &Shape,

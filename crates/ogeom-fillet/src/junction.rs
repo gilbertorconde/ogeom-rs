@@ -2328,7 +2328,7 @@ mod tests {
             })
             .unwrap();
         let (built, wedges) = crate::support::collecting_wedges(|| {
-            crate::fillet::fillet_edge(&mut model, &block, &edge, 0.5, tol)
+            crate::fillet::fillet_edge_wedge(&mut model, &block, &edge, 0.5, tol)
         });
         built.unwrap();
         let [wedge] = wedges.as_slice() else {

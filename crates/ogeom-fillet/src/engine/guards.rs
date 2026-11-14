@@ -28,26 +28,18 @@ fn newell(points: &[Point], ring: &[usize]) -> Vector {
 
 /// Whether the rings stand inside the setback domain: every vertex ring
 /// planar, no face turned inside out, no ring crossing itself, no two
-/// rings crossing. `false` where they do not (a face the setbacks consume,
-/// a corner closing with a patch): the request lies outside the engine's
-/// classes as they stand, and its caller keeps its own path.
+/// rings crossing; for rings with holes, `holes` each ring's, every hole on
+/// its ring's plane and wound the other way round, no hole crossing its
+/// ring or another hole, and a ring's inside the part within its outer
+/// loop and outside its holes. `false` where they do not (a face the
+/// setbacks consume, a corner closing with a patch): the request lies
+/// outside the engine's classes as they stand, and its caller keeps its own
+/// path.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) for a
 /// strip or face ring off its plane, which the construction never makes.
-pub(crate) fn rings_fit(points: &[Point], rings: &[Ring], tol: Tolerances) -> OgeomResult<bool> {
-    rings_fit_holed(points, rings, &vec![Vec::new(); rings.len()], tol)
-}
-
-/// [`rings_fit`] for rings with holes, `holes` each ring's: every hole on
-/// its ring's plane and wound the other way round, no hole crossing its
-/// ring or another hole, and a ring's inside the part within its outer
-/// loop and outside its holes.
-///
-/// # Errors
-///
-/// As [`rings_fit`].
 pub(crate) fn rings_fit_holed(
     points: &[Point],
     rings: &[Ring],

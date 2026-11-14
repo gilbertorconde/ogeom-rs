@@ -3131,7 +3131,7 @@ mod tests {
                         T,
                     )
                 } else {
-                    crate::fillet_edge(&mut model, solid, edge, 1.0, T)
+                    crate::fillet::fillet_edge_wedge(&mut model, solid, edge, 1.0, T)
                 }
             });
             made.unwrap();
@@ -3173,8 +3173,9 @@ mod tests {
         let ridge = edge_at(&model, &block, Point::new(5.0, 0.0, 4.0));
         let crease = edge_at(&model, &ell, Point::new(5.0, 3.0, 4.0));
         for (solid, edge) in [(&block, &ridge), (&ell, &crease)] {
-            let (made, wedges) =
-                super::collecting_wedges(|| crate::fillet_edge(&mut model, solid, edge, 1.0, T));
+            let (made, wedges) = super::collecting_wedges(|| {
+                crate::fillet::fillet_edge_wedge(&mut model, solid, edge, 1.0, T)
+            });
             made.unwrap();
             let [wedge] = &wedges[..] else {
                 panic!("one wedge, not {}", wedges.len());
@@ -3227,8 +3228,9 @@ mod tests {
             .unwrap()
             .shape;
         let ridge = edge_at(&model, &block, Point::new(5.0, 0.0, 4.0));
-        let (made, wedges) =
-            super::collecting_wedges(|| crate::fillet_edge(&mut model, &block, &ridge, 1.0, T));
+        let (made, wedges) = super::collecting_wedges(|| {
+            crate::fillet::fillet_edge_wedge(&mut model, &block, &ridge, 1.0, T)
+        });
         made.unwrap();
         let [wedge] = &wedges[..] else {
             panic!("one wedge, not {}", wedges.len());
@@ -3369,8 +3371,9 @@ mod tests {
         ];
         for (name, solid, near, expected) in cases {
             let rim = edge_at(&model, solid, near);
-            let (made, wedges) =
-                super::collecting_wedges(|| crate::fillet_edge(&mut model, solid, &rim, 1.0, T));
+            let (made, wedges) = super::collecting_wedges(|| {
+                crate::fillet::fillet_edge_wedge(&mut model, solid, &rim, 1.0, T)
+            });
             made.unwrap();
             let [wedge] = &wedges[..] else {
                 panic!("{name}: one wedge, not {}", wedges.len());
@@ -3469,8 +3472,9 @@ mod tests {
         // The rim on the ball's top, on the bore's side away from the axis.
         let top = (100.0_f64 - 3.5 * 3.5).sqrt();
         let rim = edge_at(&model, &drilled, Point::new(3.5 * c, 3.5 * s, top));
-        let (made, wedges) =
-            super::collecting_wedges(|| crate::fillet_edge(&mut model, &drilled, &rim, 1.0, T));
+        let (made, wedges) = super::collecting_wedges(|| {
+            crate::fillet::fillet_edge_wedge(&mut model, &drilled, &rim, 1.0, T)
+        });
         made.unwrap();
         let [wedge] = &wedges[..] else {
             panic!("turn {turn}: one wedge, not {}", wedges.len());
@@ -3512,7 +3516,7 @@ mod tests {
             (meshed - area).abs() < area * 2.0 * chord / 10.0,
             "turn {turn}: leg mesh {meshed} against {area}"
         );
-        let blended = crate::fillet_edge(&mut model, &drilled, &rim, 1.0, T)
+        let blended = crate::fillet::fillet_edge_wedge(&mut model, &drilled, &rim, 1.0, T)
             .unwrap()
             .shape;
         assert!(
@@ -3566,8 +3570,9 @@ mod tests {
             .collect();
         assert_eq!(meeting.len(), 3);
         for edge in &meeting {
-            let (made, wedges) =
-                super::collecting_wedges(|| crate::fillet_edge(&mut model, &bored, edge, 1.0, T));
+            let (made, wedges) = super::collecting_wedges(|| {
+                crate::fillet::fillet_edge_wedge(&mut model, &bored, edge, 1.0, T)
+            });
             made.unwrap();
             let [wedge] = &wedges[..] else {
                 panic!("one wedge, not {}", wedges.len());
@@ -3652,8 +3657,9 @@ mod tests {
             ("pinched band", &crossed, &pinch, 1.0),
         ];
         for (name, solid, edge, radius) in cases {
-            let (made, wedges) =
-                super::collecting_wedges(|| crate::fillet_edge(&mut model, solid, edge, radius, T));
+            let (made, wedges) = super::collecting_wedges(|| {
+                crate::fillet::fillet_edge_wedge(&mut model, solid, edge, radius, T)
+            });
             made.unwrap();
             let [wedge] = &wedges[..] else {
                 panic!("{name}: one wedge, not {}", wedges.len());
@@ -3684,7 +3690,7 @@ mod tests {
             // What the blend adds is the wedge; what it removes is the part
             // of the wedge inside the solid, the band running on past the
             // walls where it runs out.
-            let blended = crate::fillet_edge(&mut model, solid, edge, radius, T)
+            let blended = crate::fillet::fillet_edge_wedge(&mut model, solid, edge, radius, T)
                 .unwrap()
                 .shape;
             let found = ogeom_algo::check(&model, &blended, T).unwrap();

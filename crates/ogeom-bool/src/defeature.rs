@@ -801,8 +801,18 @@ fn wrap_round(
                 for _ in 0..8 {
                     let on_curve = ogeom_algo::project_on_curve(curve, point, 64, tol)?;
                     let t = parameter_near(&geometry, on_curve.point, tol)?;
-                    let Ok(on_edge) = geometry.point_at(t, tol) else {
-                        break;
+                    // A segment's own curve is its whole line, as
+                    // `corner_on_edge` reads it: a seam cut short of the
+                    // recovered circle reaches it along its line.
+                    let on_edge = match &geometry {
+                        Curve::Line(line) => {
+                            let axis = line.axis();
+                            axis.location + axis.direction.vector() * t
+                        }
+                        other => match other.point_at(t, tol) {
+                            Ok(p) => p,
+                            Err(_) => break,
+                        },
                     };
                     if on_edge.distance(on_curve.point) <= tol.confusion() * 10.0 {
                         stops.push(lo + (on_curve.parameter - lo).rem_euclid(period));
