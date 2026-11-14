@@ -536,9 +536,13 @@ fn straight(
         (0.0, length + 2.0 * reach),
     )?
     .into();
-    let clear = (!convex).then(|| {
+    // Outside the box the round can take up: between its ends, within the
+    // spine's cylinder through the edge; at a convex edge also on the
+    // edge's side of the spine and inside both faces' tangent planes there
+    // (the spandrel lies in that wedge).
+    let clear = {
         let at = centre + (a - mid);
-        ogeom_algo::HalfSpaces::Any(vec![
+        let mut outside = vec![
             ogeom_algo::HalfSpaces::Below { normal: u, at: a },
             ogeom_algo::HalfSpaces::Below { normal: -u, at: b },
             ogeom_algo::HalfSpaces::Revolved {
@@ -548,8 +552,23 @@ fn straight(
                 slope: 0.0,
                 inside: false,
             },
-        ])
-    });
+        ];
+        if convex {
+            let w = mid - centre;
+            let w = w / w.magnitude();
+            outside.push(ogeom_algo::HalfSpaces::Below {
+                normal: w,
+                at: centre,
+            });
+            for n in [n0, n1] {
+                outside.push(ogeom_algo::HalfSpaces::Below {
+                    normal: -(n / n.magnitude()),
+                    at: mid,
+                });
+            }
+        }
+        Some(ogeom_algo::HalfSpaces::Any(outside))
+    };
     Ok(Some((
         Strip {
             edge,
@@ -1149,7 +1168,17 @@ fn contacts_on_faces(
         let face = &curved.faces[*fi];
         let trim = ogeom_algo::classify::FaceTrim::of(model, &face.shape, fine, tol)?;
         let contact = &strip.contacts[k];
-        let (lo, hi) = contact.domain();
+        let (mut lo, mut hi) = contact.domain();
+        // A straight contact runs on past the edge's ends: only its piece
+        // between them is the strip's.
+        if let Curve::Line(_) = contact {
+            let e = &curved.edges[&strip.edge];
+            let o = contact.point_at(0.0, tol)?;
+            let d = contact.point_at(1.0, tol)? - o;
+            let at = |v: Id| (curved.points[&v] - o).dot(d) / d.dot(d);
+            let (ta, tb) = (at(e.ends.0), at(e.ends.1));
+            (lo, hi) = (ta.min(tb), ta.max(tb));
+        }
         for i in 0..64 {
             let p = contact.point_at(lo + (hi - lo) * (f64::from(i) + 0.5) / 64.0, tol)?;
             let foot = ogeom_algo::project_on_surface(&face.surface, p, 16, tol)?;
@@ -1247,23 +1276,33 @@ pub(crate) fn non_local_tools(
         if !contacts_on_faces(model, &curved, s, tol)? {
             return Ok(None);
         }
-        // An end where another strip runs on is a joint, capped square to
-        // the edge there; any other is the strip's own.
+        // An end where another strip runs on tangent is a joint (a rim's
+        // arcs), capped square to the edge there; one where another meets
+        // it at an angle needs the corner's blend, which no tool here
+        // closes; any other end is the strip's own.
         let e = &curved.edges[&s.edge];
+        let tangent = |c: &CurvedEdge, v: Id| -> OgeomResult<Vector> {
+            let (lo, hi) = c.range;
+            let h = (hi - lo) * 1e-6;
+            let (t, inward) = if c.ends.0 == v { (lo, h) } else { (hi, -h) };
+            let d = c.curve.point_at(t + inward, tol)? - c.curve.point_at(t, tol)?;
+            Ok(d / d.magnitude())
+        };
         let mut ends = [super::trimmed::EndCap::Own; 2];
-        for (k, (v, t)) in [(e.ends.0, e.range.0), (e.ends.1, e.range.1)]
-            .into_iter()
-            .enumerate()
-        {
-            let joint = strips.iter().any(|o| {
-                o.edge != s.edge && {
-                    let c = &curved.edges[&o.edge];
-                    c.ends.0 == v || c.ends.1 == v
+        for (k, v) in [e.ends.0, e.ends.1].into_iter().enumerate() {
+            let along = tangent(e, v)?;
+            let mut meets = false;
+            for o in &strips {
+                let c = &curved.edges[&o.edge];
+                if o.edge == s.edge || (c.ends.0 != v && c.ends.1 != v) {
+                    continue;
                 }
-            });
-            if joint {
-                let h = (e.range.1 - e.range.0) * 1e-6;
-                let along = e.curve.point_at(t + h, tol)? - e.curve.point_at(t - h, tol)?;
+                if tangent(c, v)?.cross(along).magnitude() > LEAVING {
+                    return Ok(None);
+                }
+                meets = true;
+            }
+            if meets {
                 ends[k] = super::trimmed::EndCap::Plane {
                     at: curved.points[&v],
                     normal: along,
