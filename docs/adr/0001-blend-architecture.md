@@ -721,7 +721,13 @@ cylinder or cone the curved path's rings do not place (rolling over its
 wall, reaching a face it does not end at, or pieces of one rim asked
 apart, each stepping at the joint on the plane through the axis) goes to
 the one boolean: its tool is the bevel's meridian triangle turned about
-the axis over the rim's span. A bevel the others leave nothing of
+the axis over the rim's span. Any other curved bevel the rings do not
+place (a crease rolling over or reaching a face, or pieces of one crease
+asked apart) goes to the one boolean too where it stands alone: its strip
+closed into its tool (`close_tool`, shared with rounds, a chamfer's caps
+cut along the segment between its contacts), capped on its own end faces
+or, at a joint between pieces of one curve, on the plane square to it. A
+bevel the others leave nothing of
 stays refused by name where the one-boolean fallback builds (amendment
 "M5a"), as before.
 
