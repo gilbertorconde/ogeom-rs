@@ -536,6 +536,19 @@ impl Seamless {
         Some(out)
     }
 
+    /// The edges of the solid as given that `edge` of the dissolved solid
+    /// runs along, in key order.
+    pub fn inputs_of(&self, edge: &Shape) -> Vec<Shape> {
+        let mut ids: Vec<Id> = self
+            .edges
+            .iter()
+            .filter(|(_, via)| via.is_some_and(|v| self.unified[&v].is_same(edge)))
+            .map(|(k, _)| *k)
+            .collect();
+        ids.sort_unstable();
+        ids.iter().map(|k| self.input[k].clone()).collect()
+    }
+
     /// The history of a blend of [`Seamless::solid`], `made`, told of the
     /// solid as given: each face as the face holding it fared, each edge as
     /// the edge running along it fared, a seam deleted, each vertex as the

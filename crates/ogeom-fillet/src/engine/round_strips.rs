@@ -68,10 +68,13 @@ pub(crate) fn round(
     // P1.
     let mut strips: Vec<Strip> = Vec::with_capacity(asked.len());
     let mut boxes: Vec<(usize, ogeom_algo::HalfSpaces)> = Vec::new();
+    // Whether a round reaches a face it does not end at (ADR 0001, §4.5).
+    let mut non_local = false;
     for (edge, _, radius) in &asked {
-        let Some((strip, clear)) = strip_of(&curved, *edge, *radius, tol)? else {
+        let Some((strip, clear, under)) = strip_of(&curved, *edge, *radius, tol)? else {
             return Ok(None);
         };
+        non_local |= under;
         if let Some(clear) = clear {
             boxes.push((strips.len(), clear));
         }
@@ -154,7 +157,7 @@ pub(crate) fn round(
     }
     // A rim's round reaching a face it does not blend (a cavity's wall
     // under a thin cap) is not built here: every face but the strip's two
-    // proved outside the box the round can take up.
+    // and those at its ends proved outside the box the round can take up.
     let fit = crate::marched::band_fit_target(tol);
     for (k, clear) in &boxes {
         // The faces met at the strip's ends close its corners there, and
@@ -181,9 +184,14 @@ pub(crate) fn round(
                 continue;
             }
             if ogeom_algo::certify_face_within(model, &face.shape, clear, fit, tol)?.is_err() {
-                return Ok(None);
+                non_local = true;
             }
         }
+    }
+    // A round reaching a face it does not end at is the one boolean's
+    // (`non_local_tools`).
+    if non_local {
+        return Ok(None);
     }
     // A straight strip's cylinder over its own stations, from the least of
     // its corners' to the greatest: a surface reaching past its face's trim
@@ -313,7 +321,7 @@ fn strip_of(
     edge: Id,
     radius: f64,
     tol: Tolerances,
-) -> OgeomResult<Option<(Strip, Option<ogeom_algo::HalfSpaces>)>> {
+) -> OgeomResult<Option<(Strip, Option<ogeom_algo::HalfSpaces>, bool)>> {
     let Some(e) = curved.edges.get(&edge) else {
         return Ok(None);
     };
@@ -324,9 +332,11 @@ fn strip_of(
         return Ok(None);
     }
     match &e.curve {
-        Curve::Line(_) => Ok(straight(curved, edge, e, [f0, f1], radius, tol)?),
+        Curve::Line(_) => {
+            Ok(straight(curved, edge, e, [f0, f1], radius, tol)?.map(|(s, c)| (s, c, false)))
+        }
         Curve::Circle(circle) => {
-            Ok(rim(curved, edge, circle, [f0, f1], radius, tol)?.map(|(s, c)| (s, Some(c))))
+            Ok(rim(curved, edge, circle, [f0, f1], radius, tol)?.map(|(s, c, u)| (s, Some(c), u)))
         }
         _ => Ok(None),
     }
@@ -630,8 +640,11 @@ fn rim(
     faces: [usize; 2],
     radius: f64,
     tol: Tolerances,
-) -> OgeomResult<Option<(Strip, ogeom_algo::HalfSpaces)>> {
+) -> OgeomResult<Option<(Strip, ogeom_algo::HalfSpaces, bool)>> {
     let c = circle.circle();
+    // Whether an edge of another face stands under the round, wholly
+    // within its contact ring: the round reaches a face it does not end at.
+    let mut under = false;
     let frame = c.frame();
     let (centre, up) = (frame.origin(), frame.z().vector());
     let r0 = c.radius();
@@ -814,7 +827,7 @@ fn rim(
                 (x - b) * (b - a) > tol.confusion() * (b - a).abs()
             };
             if samples.iter().copied().any(between) && !samples.iter().any(beyond) {
-                return Ok(None);
+                under = true;
             }
         }
     }
@@ -863,6 +876,7 @@ fn rim(
             section: Section::Arc { spine: ring(ball)? },
         },
         clear,
+        under,
     )))
 }
 
@@ -1116,4 +1130,150 @@ fn foot_on(surface: &SurfaceGeometry, p: Point) -> Option<Point> {
         }
         _ => None,
     }
+}
+
+/// Whether each of `strip`'s contacts lies on its own face, by stations
+/// along it held by the face's trim: a contact running where its face does
+/// not reach leaves the ball no seat there.
+fn contacts_on_faces(
+    model: &Model,
+    curved: &Curved,
+    strip: &Strip,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let fine = ogeom_mesh::Deflection {
+        chord: tol.confusion() * 10.0,
+        ..Default::default()
+    };
+    for (k, fi) in strip.faces.iter().enumerate() {
+        let face = &curved.faces[*fi];
+        let trim = ogeom_algo::classify::FaceTrim::of(model, &face.shape, fine, tol)?;
+        let contact = &strip.contacts[k];
+        let (lo, hi) = contact.domain();
+        for i in 0..64 {
+            let p = contact.point_at(lo + (hi - lo) * (f64::from(i) + 0.5) / 64.0, tol)?;
+            let foot = ogeom_algo::project_on_surface(&face.surface, p, 16, tol)?;
+            if !trim
+                .holds(model, foot.parameters, tol.confusion() * 10.0, tol)?
+                .is_inside_or_on()
+            {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// The closed tools of `rounds` on `solid` where a rim's round reaches a
+/// face it does not end at (ADR 0001, §4.5, M5c): a face standing under
+/// the round within its contact ring, or one not proved outside the box it
+/// can take up. Each strip closed into its tool ([`close_tool`]), named for
+/// its edge, for the caller to apply by booleans on the solid as given.
+/// `None` where the request is local, any edge's seat is not one built
+/// here, a contact rolls over or leaves its face, or a tool will not close.
+///
+/// [`close_tool`]: super::trimmed::close_tool
+///
+/// # Errors
+///
+/// As reading the solid, certifying its faces and building the tools.
+pub(crate) fn non_local_tools(
+    model: &mut Model,
+    solid: &Shape,
+    rounds: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<super::fallback::Tool>>> {
+    let Some(curved) = read(model, solid, tol)? else {
+        return Ok(None);
+    };
+    let mut asked: Vec<(Id, f64)> = rounds
+        .iter()
+        .map(|(e, r)| (id(e), *r))
+        .filter(|(e, _)| faces_of(&curved, *e).len() != 1)
+        .collect();
+    asked.sort_unstable_by_key(|a| a.0);
+    if asked.is_empty() || asked.windows(2).any(|w| w[0].0 == w[1].0) {
+        return Ok(None);
+    }
+    let mut strips = Vec::with_capacity(asked.len());
+    let mut non_local = false;
+    let mut boxes = Vec::new();
+    for (edge, radius) in &asked {
+        let Some((strip, clear, under)) = strip_of(&curved, *edge, *radius, tol)? else {
+            return Ok(None);
+        };
+        non_local |= under;
+        boxes.push(clear);
+        strips.push(strip);
+    }
+    let mut contacts: FastMap<(usize, Id), Curve> = FastMap::default();
+    for s in &strips {
+        for k in 0..2 {
+            contacts.insert((s.faces[k], s.edge), s.contacts[k].clone());
+        }
+    }
+    let Some(corners) = curved_corners(&curved, &contacts, tol)? else {
+        return Ok(None);
+    };
+    if rolls_over(&roll_overs(&curved, &contacts, &corners, tol)?) {
+        return Ok(None);
+    }
+    let fit = crate::marched::band_fit_target(tol);
+    for (strip, clear) in strips.iter().zip(&boxes) {
+        let Some(clear) = clear else {
+            continue;
+        };
+        let e = &curved.edges[&strip.edge];
+        for (fi, face) in curved.faces.iter().enumerate() {
+            let at_end = face.loops.iter().flatten().any(|(x, _)| {
+                let c = &curved.edges[x];
+                [c.ends.0, c.ends.1]
+                    .iter()
+                    .any(|v| *v == e.ends.0 || *v == e.ends.1)
+            });
+            if strip.faces.contains(&fi) || at_end {
+                continue;
+            }
+            if ogeom_algo::certify_face_within(model, &face.shape, clear, fit, tol)?.is_err() {
+                non_local = true;
+            }
+        }
+    }
+    if !non_local {
+        return Ok(None);
+    }
+    let mut tools = Vec::with_capacity(strips.len());
+    for s in &strips {
+        if !contacts_on_faces(model, &curved, s, tol)? {
+            return Ok(None);
+        }
+        // An end where another strip runs on is a joint, capped square to
+        // the edge there; any other is the strip's own.
+        let e = &curved.edges[&s.edge];
+        let mut ends = [super::trimmed::EndCap::Own; 2];
+        for (k, (v, t)) in [(e.ends.0, e.range.0), (e.ends.1, e.range.1)]
+            .into_iter()
+            .enumerate()
+        {
+            let joint = strips.iter().any(|o| {
+                o.edge != s.edge && {
+                    let c = &curved.edges[&o.edge];
+                    c.ends.0 == v || c.ends.1 == v
+                }
+            });
+            if joint {
+                let h = (e.range.1 - e.range.0) * 1e-6;
+                let along = e.curve.point_at(t + h, tol)? - e.curve.point_at(t - h, tol)?;
+                ends[k] = super::trimmed::EndCap::Plane {
+                    at: curved.points[&v],
+                    normal: along,
+                };
+            }
+        }
+        let Some(tool) = super::trimmed::close_tool(model, &curved, s, ends, tol)? else {
+            return Ok(None);
+        };
+        tools.push(tool);
+    }
+    Ok(Some(tools))
 }

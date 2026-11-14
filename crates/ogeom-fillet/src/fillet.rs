@@ -1061,16 +1061,63 @@ fn rounds_by_engine_unplaced(
             let Some(rounds) = seamless.rounds(&once) else {
                 return Ok(None);
             };
-            let Some(built) = on_curved(&mut scratch, &seamless.solid, &rounds)? else {
+            if let Some(built) = on_curved(&mut scratch, &seamless.solid, &rounds)? {
+                *model = scratch;
+                return Ok(Some(Built::new(
+                    built.shape,
+                    seamless.carry(&built.history),
+                )));
+            }
+            // A round reaching a face it does not end at: its tools, read
+            // on the dissolved solid and named for the edges asked, applied
+            // by booleans on the solid as given.
+            let Some(tools) =
+                crate::engine::round_non_local_tools(&mut scratch, &seamless.solid, &rounds, tol)?
+            else {
+                return Ok(None);
+            };
+            let tools: Vec<crate::engine::Tool> = tools
+                .into_iter()
+                .map(|t| crate::engine::Tool {
+                    faces: t
+                        .faces
+                        .iter()
+                        .flat_map(|(face, from)| {
+                            seamless
+                                .inputs_of(from)
+                                .into_iter()
+                                .map(|e| (face.clone(), e))
+                        })
+                        .collect(),
+                    ..t
+                })
+                .collect();
+            let edges: Vec<Shape> = once.iter().map(|(e, _)| e.clone()).collect();
+            let Some(built) = crate::engine::apply_tools(&mut scratch, solid, &edges, &tools, tol)?
+            else {
                 return Ok(None);
             };
             *model = scratch;
-            Ok(Some(Built::new(
-                built.shape,
-                seamless.carry(&built.history),
-            )))
+            Ok(Some(built))
         }
-        None => on_curved(model, solid, &once),
+        None => {
+            if let Some(built) = on_curved(model, solid, &once)? {
+                return Ok(Some(built));
+            }
+            let mut scratch = model.clone();
+            let Some(tools) =
+                crate::engine::round_non_local_tools(&mut scratch, solid, &once, tol)?
+            else {
+                return Ok(None);
+            };
+            let edges: Vec<Shape> = once.iter().map(|(e, _)| e.clone()).collect();
+            let Some(built) = crate::engine::apply_tools(&mut scratch, solid, &edges, &tools, tol)?
+            else {
+                return Ok(None);
+            };
+            *model = scratch;
+            Ok(Some(built))
+        }
     }
 }
 
