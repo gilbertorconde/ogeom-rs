@@ -244,12 +244,18 @@ pub(crate) fn run(
     // tool where it closes, else the general one (the far feature taken off
     // a copy, the rounds built there); where both decline, the sheet as
     // before.
-    if request
-        .blends
-        .iter()
-        .all(|b| matches!(b.section, Section::Round { .. }))
-        && fallback::non_local(&planar, &seats, &blended, &corners, &steps, tol).is_some()
+    let non_local = request.blends.iter().all(|b| b.section.is_round())
+        && fallback::non_local(&planar, &seats, &blended, &corners, &steps, tol).is_some();
+    // A conic round reaching a face it does not end at is not built yet.
+    if non_local
+        && request
+            .blends
+            .iter()
+            .any(|b| matches!(b.section, Section::Conic { .. }))
     {
+        return Ok(None);
+    }
+    if non_local {
         if let Some(built) = fallback::rounds_one_boolean(
             model, solid, &planar, &seats, &by_edge, &blended, &corners, &steps, tol,
         )? {
@@ -278,7 +284,7 @@ pub(crate) fn run(
                 .iter()
                 .filter_map(|b| match b.section {
                     Section::Round { radius } => Some((b.edge.clone(), radius)),
-                    Section::Chamfer { .. } => None,
+                    Section::Chamfer { .. } | Section::Conic { .. } => None,
                 })
                 .collect();
             let edges: Vec<Shape> = rounds.iter().map(|(e, _)| e.clone()).collect();
@@ -297,11 +303,7 @@ pub(crate) fn run(
         }
     }
     // Rounds are curved: their strips and vertex blends go into a sheet.
-    if request
-        .blends
-        .iter()
-        .any(|b| matches!(b.section, Section::Round { .. }))
-    {
+    if request.blends.iter().any(|b| b.section.is_round()) {
         // Setback corners asked: P2 stops each strip at its setback and
         // trims each face round the vertex on its conic, refusing by name
         // what it cannot; the patch over the opening is P3's (the round
