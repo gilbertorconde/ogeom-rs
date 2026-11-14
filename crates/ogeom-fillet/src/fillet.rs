@@ -773,7 +773,7 @@ pub fn fillet_edges_with(
 /// or a straight edge along planes and cylinders or such a rim beside them;
 /// `None` leaves the request to the current path. An edge asked twice at
 /// one radius is asked once.
-fn rounds_by_engine(
+pub(crate) fn rounds_by_engine(
     model: &mut Model,
     solid: &Shape,
     edges: &[(Shape, f64)],
@@ -1074,7 +1074,32 @@ fn rounds_by_engine_unplaced(
             let Some(tools) =
                 crate::engine::round_non_local_tools(&mut scratch, &seamless.solid, &rounds, tol)?
             else {
-                return Ok(None);
+                // The general route: the far feature taken off a copy of
+                // the solid as given, the rounds built there.
+                let Some((far, near)) =
+                    crate::engine::round_far_faces(&mut scratch, &seamless.solid, &rounds, tol)?
+                else {
+                    return Ok(None);
+                };
+                let inputs = |faces: &[Shape]| -> Vec<Shape> {
+                    faces
+                        .iter()
+                        .flat_map(|f| seamless.face_inputs_of(f))
+                        .collect()
+                };
+                let Some(built) = rounds_defeatured(
+                    &mut scratch,
+                    solid,
+                    &once,
+                    &inputs(&far),
+                    &inputs(&near),
+                    tol,
+                )?
+                else {
+                    return Ok(None);
+                };
+                *model = scratch;
+                return Ok(Some(built));
             };
             let tools: Vec<crate::engine::Tool> = tools
                 .into_iter()
@@ -1108,7 +1133,17 @@ fn rounds_by_engine_unplaced(
             let Some(tools) =
                 crate::engine::round_non_local_tools(&mut scratch, solid, &once, tol)?
             else {
-                return Ok(None);
+                let Some((far, near)) =
+                    crate::engine::round_far_faces(&mut scratch, solid, &once, tol)?
+                else {
+                    return Ok(None);
+                };
+                let Some(built) = rounds_defeatured(&mut scratch, solid, &once, &far, &near, tol)?
+                else {
+                    return Ok(None);
+                };
+                *model = scratch;
+                return Ok(Some(built));
             };
             let edges: Vec<Shape> = once.iter().map(|(e, _)| e.clone()).collect();
             let Some(built) = crate::engine::apply_tools(&mut scratch, solid, &edges, &tools, tol)?
@@ -1119,6 +1154,28 @@ fn rounds_by_engine_unplaced(
             Ok(Some(built))
         }
     }
+}
+
+/// `once` on `solid` where the rounds reach the faces `far` and end at the
+/// faces `near`, by the general non-local route (ADR 0001, M5c): the far
+/// feature taken off a copy, the rounds built there by the engine, the
+/// differences applied by booleans on `solid`. `None` where any step
+/// declines.
+fn rounds_defeatured(
+    model: &mut Model,
+    solid: &Shape,
+    once: &[(Shape, f64)],
+    far: &[Shape],
+    near: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let Some(tools) =
+        crate::engine::defeatured_tools(model, solid, once, far, near, rounds_by_engine, tol)?
+    else {
+        return Ok(None);
+    };
+    let edges: Vec<Shape> = once.iter().map(|(e, _)| e.clone()).collect();
+    crate::engine::apply_tools(model, solid, &edges, &tools, tol)
 }
 
 /// [`fillet_edges_with`] on a shape every node below which is its own, its

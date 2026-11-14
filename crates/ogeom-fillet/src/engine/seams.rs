@@ -536,6 +536,16 @@ impl Seamless {
         Some(out)
     }
 
+    /// The faces of the solid as given that `face` of the dissolved solid
+    /// holds.
+    pub fn face_inputs_of(&self, face: &Shape) -> Vec<Shape> {
+        self.faces
+            .iter()
+            .filter(|(_, unified)| unified.is_same(face))
+            .map(|(input, _)| input.clone())
+            .collect()
+    }
+
     /// The edges of the solid as given that `edge` of the dissolved solid
     /// runs along, in key order.
     pub fn inputs_of(&self, edge: &Shape) -> Vec<Shape> {

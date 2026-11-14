@@ -31,6 +31,7 @@ mod consumed;
     )
 )]
 mod curved;
+mod defeatured;
 mod fallback;
 mod guards;
 mod request;
@@ -44,10 +45,13 @@ mod setbacks;
 mod trimmed;
 mod vertices;
 
+pub(crate) use defeatured::tools as defeatured_tools;
 pub(crate) use fallback::{Sense, Tool, applied as apply_tools, straight_non_local};
 pub(crate) use request::{Request, Section};
 pub(crate) use rims::assemble as round_rims;
-pub(crate) use round_strips::{non_local_tools as round_non_local_tools, round as round_curved};
+pub(crate) use round_strips::{
+    far_faces as round_far_faces, non_local_tools as round_non_local_tools, round as round_curved,
+};
 pub(crate) use seams::{Dissolved, Seamless, dissolve, dissolve_curved, is_seam};
 pub(crate) use trimmed::{
     chamfer as chamfer_curved, chamfer_mitred as chamfer_curved_mitred, chamfer_patched,
@@ -236,18 +240,61 @@ pub(crate) fn run(
         return Ok(None);
     };
     // A round reaching or touching a face not round its ends: the non-local
-    // test, then the one-boolean fallback (ADR 0001, M5c); where that
-    // declines, the sheet as before.
+    // test, then the one-boolean fallback (ADR 0001, M5c): each round's own
+    // tool where it closes, else the general one (the far feature taken off
+    // a copy, the rounds built there); where both decline, the sheet as
+    // before.
     if request
         .blends
         .iter()
         .all(|b| matches!(b.section, Section::Round { .. }))
         && fallback::non_local(&planar, &seats, &blended, &corners, &steps, tol).is_some()
-        && let Some(built) = fallback::rounds_one_boolean(
-            model, solid, &planar, &seats, &by_edge, &blended, &corners, &steps, tol,
-        )?
     {
-        return Ok(Some(built));
+        if let Some(built) = fallback::rounds_one_boolean(
+            model, solid, &planar, &seats, &by_edge, &blended, &corners, &steps, tol,
+        )? {
+            return Ok(Some(built));
+        }
+        if request.splits.is_empty() {
+            let far: Vec<Shape> =
+                fallback::non_local_faces(&planar, &seats, &blended, &corners, &steps, tol)
+                    .iter()
+                    .map(|f| planar.faces[*f].shape.clone())
+                    .collect();
+            let mut near: Vec<usize> = Vec::new();
+            for seat in seats.values().filter(|s| blended.contains(&s.edge)) {
+                for v in [seat.ends.0, seat.ends.1] {
+                    near.extend(classify::faces_round(&planar.faces, v).unwrap_or_default());
+                }
+            }
+            near.sort_unstable();
+            near.dedup();
+            let near: Vec<Shape> = near
+                .iter()
+                .map(|f| planar.faces[*f].shape.clone())
+                .collect();
+            let rounds: Vec<(Shape, f64)> = request
+                .blends
+                .iter()
+                .filter_map(|b| match b.section {
+                    Section::Round { radius } => Some((b.edge.clone(), radius)),
+                    Section::Chamfer { .. } => None,
+                })
+                .collect();
+            let edges: Vec<Shape> = rounds.iter().map(|(e, _)| e.clone()).collect();
+            if let Some(tools) = defeatured::tools(
+                model,
+                solid,
+                &rounds,
+                &far,
+                &near,
+                crate::fillet::rounds_by_engine,
+                tol,
+            )? && let Some(built) = fallback::applied(model, solid, &edges, &tools, tol)?
+            {
+                return Ok(Some(built));
+            }
+        }
     }
     // Rounds are curved: their strips and vertex blends go into a sheet.
     if request
