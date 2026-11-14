@@ -396,6 +396,22 @@ pub(crate) fn run(
         ) {
             return Ok(None);
         }
+        let mut eaten: Vec<usize> = cluster.faces.iter().copied().collect();
+        eaten.sort_unstable();
+        for fi in &eaten {
+            let face = &planar.faces[*fi];
+            if face.holes.is_empty() {
+                continue;
+            }
+            let holes: Vec<Vec<ogeom_math::Point>> = face
+                .holes
+                .iter()
+                .map(|h| h.iter().map(|v| planar.points[v]).collect())
+                .collect();
+            if !rings.drop_in(*fi, face.normal, &holes) {
+                return Ok(None);
+            }
+        }
     }
     // P4.
     let Some(assembled) = rings.assemble()? else {

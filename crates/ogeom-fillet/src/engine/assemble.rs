@@ -275,6 +275,80 @@ impl Rings {
                 })
                 .collect()
         };
+        // The funnel's section in the ring's plane, counter-clockwise about
+        // the ring's normal as the ring is: a square far round the ring
+        // cut by each plane in turn.
+        let section: Vec<(f64, f64)> = {
+            let (lo, hi) = outline.iter().fold(
+                ((f64::INFINITY, f64::INFINITY), (f64::NEG_INFINITY, f64::NEG_INFINITY)),
+                |(lo, hi), q| ((lo.0.min(q.0), lo.1.min(q.1)), (hi.0.max(q.0), hi.1.max(q.1))),
+            );
+            let far = 10.0 * (hi.0 - lo.0).max(hi.1 - lo.1) + 1.0;
+            let mut poly = vec![
+                (lo.0 - far, lo.1 - far),
+                (hi.0 + far, lo.1 - far),
+                (hi.0 + far, hi.1 + far),
+                (lo.0 - far, hi.1 + far),
+            ];
+            for (nv, off) in planes {
+                let (a, b, c) = (
+                    nv.dot(ux),
+                    nv.dot(uy),
+                    nv.dot(pts[0].to_vector()) - off,
+                );
+                let f = |q: (f64, f64)| a.mul_add(q.0, b.mul_add(q.1, c));
+                let mut cut = Vec::with_capacity(poly.len() + 1);
+                for k in 0..poly.len() {
+                    let (here, next) = (poly[k], poly[(k + 1) % poly.len()]);
+                    let (fh, fn_) = (f(here), f(next));
+                    if fh >= 0.0 {
+                        cut.push(here);
+                    }
+                    if (fh >= 0.0) != (fn_ >= 0.0) {
+                        let t = fh / (fh - fn_);
+                        cut.push((here.0 + (next.0 - here.0) * t, here.1 + (next.1 - here.1) * t));
+                    }
+                }
+                poly = cut;
+            }
+            poly
+        };
+        // The section's corners passed going clockwise round it from `p` to
+        // `q`, both on its boundary.
+        let round = |p: Point, q: Point| -> Option<Vec<Point>> {
+            let m = section.len();
+            if m < 3 {
+                return None;
+            }
+            let side_of = |x: Point| {
+                let x = flat(x);
+                (0..m)
+                    .map(|k| {
+                        let (a, b) = (section[k], section[(k + 1) % m]);
+                        let ab = (b.0 - a.0, b.1 - a.1);
+                        let t = (((x.0 - a.0) * ab.0 + (x.1 - a.1) * ab.1)
+                            / ab.0.mul_add(ab.0, ab.1 * ab.1))
+                        .clamp(0.0, 1.0);
+                        ((a.0 + ab.0 * t - x.0).hypot(a.1 + ab.1 * t - x.1), k, t)
+                    })
+                    .min_by(|a, b| a.0.total_cmp(&b.0))
+            };
+            let (dp, mut k, tp) = side_of(p)?;
+            let (dq, kq, tq) = side_of(q)?;
+            if dp > eps || dq > eps || (k == kq && tq > tp) {
+                return None;
+            }
+            let mut way = Vec::new();
+            while k != kq {
+                let (a, b) = section[k];
+                way.push(pts[0] + ux * a + uy * b);
+                k = (k + m - 1) % m;
+                if way.len() > m {
+                    return None;
+                }
+            }
+            Some(way)
+        };
         let Some(start) = (0..n).find(|k| !inside[*k]) else {
             // The whole ring lies in the funnel.
             for i in &ring {
@@ -288,6 +362,7 @@ impl Rings {
         };
         let mut out: Vec<usize> = Vec::with_capacity(n + 4);
         let mut entered: Option<Vec<usize>> = None;
+        let mut p_in = pts[0];
         let mut crossed = false;
         for step in 0..n {
             let k = (start + step) % n;
@@ -310,6 +385,7 @@ impl Rings {
                 allowed.entry(x).or_insert(None);
                 out.push(x);
                 entered = Some(on(p));
+                p_in = p;
             }
             if t1 < 1.0 - 1e-12 || !inside[(k + 1) % n] {
                 let Some(from) = entered.take() else {
@@ -317,18 +393,21 @@ impl Rings {
                 };
                 let q = a + (b - a) * t1;
                 let to = on(q);
-                // Along a plane both ends are on; else round the corner of
-                // two, one at each end, inside the ring.
+                // Along a plane both ends are on; else round the funnel's
+                // section the way that keeps the ring's rest on its left,
+                // every corner passed inside the ring.
                 if !from.iter().any(|j| to.contains(j)) {
-                    let Some(x) = from.iter().find_map(|i| {
-                        to.iter()
-                            .find_map(|j| corner(*i, *j).filter(|x| within(*x)))
-                    }) else {
+                    let Some(way) = round(p_in, q) else {
                         return false;
                     };
-                    let x = self.point(x);
-                    allowed.entry(x).or_insert(None);
-                    out.push(x);
+                    for x in way {
+                        if !within(x) {
+                            return false;
+                        }
+                        let x = self.point(x);
+                        allowed.entry(x).or_insert(None);
+                        out.push(x);
+                    }
                 }
                 let x = self.point(q);
                 allowed.entry(x).or_insert(None);
@@ -360,6 +439,83 @@ impl Rings {
         true
     }
 
+    /// Each ring of consumed face `face` split where it passes a corner
+    /// twice, each loop kept but those keeping no area and those lying in
+    /// one of `holes` (each a loop of the face's corners). The clip cuts a
+    /// face whose holes it dropped back along its holes' walls, so what it
+    /// leaves of the face can hold the room of a hole too, met at corners.
+    /// `false` where a loop turns the other way.
+    pub fn drop_in(&mut self, face: usize, normal: Vector, holes: &[Vec<Point>]) -> bool {
+        let eps = self.tol.confusion();
+        let ux = if normal.x.abs() < 0.9 { Vector::X } else { Vector::Y };
+        let ux = ux - normal * ux.dot(normal);
+        let ux = ux / ux.magnitude();
+        let uy = normal.cross(ux);
+        let flat = |p: Point| (p.to_vector().dot(ux), p.to_vector().dot(uy));
+        let gaps: Vec<Vec<(f64, f64)>> = holes
+            .iter()
+            .map(|h| h.iter().map(|p| flat(*p)).collect())
+            .collect();
+        let mine: Vec<usize> = (0..self.rings.len())
+            .filter(|ri| matches!(self.rings[*ri].1.as_slice(), [Origin::Face(f)] if *f == face))
+            .collect();
+        for ri in mine {
+            let ring = std::mem::take(&mut self.rings[ri].0);
+            let mut stack: Vec<usize> = Vec::with_capacity(ring.len());
+            let mut loops: Vec<Vec<usize>> = Vec::new();
+            for i in ring {
+                if let Some(j) = stack.iter().position(|x| *x == i) {
+                    loops.push(stack.split_off(j));
+                }
+                stack.push(i);
+            }
+            loops.push(stack);
+            let mut kept: Vec<Vec<usize>> = Vec::new();
+            for l in loops {
+                if l.len() < 3 {
+                    continue;
+                }
+                let area = self.newell(&l).dot(normal);
+                if area.abs() <= eps * eps {
+                    continue;
+                }
+                if area < 0.0 {
+                    return false;
+                }
+                // A point just inside the loop off its longest side.
+                let m = l.len();
+                let Some(k) = (0..m).max_by(|x, y| {
+                    let d = |k: usize| (self.points[l[(k + 1) % m]] - self.points[l[k]]).magnitude();
+                    d(*x).total_cmp(&d(*y))
+                }) else {
+                    continue;
+                };
+                let (a, b) = (self.points[l[k]], self.points[l[(k + 1) % m]]);
+                let inward = normal.cross(b - a);
+                let at = a + (b - a) * 0.5 + inward * 1e-3;
+                let outline: Vec<(f64, f64)> = l.iter().map(|i| flat(self.points[*i])).collect();
+                if !super::guards::strictly_inside(&outline, flat(at), eps) {
+                    return false;
+                }
+                if gaps
+                    .iter()
+                    .any(|g| super::guards::strictly_inside(g, flat(at), eps))
+                {
+                    continue;
+                }
+                kept.push(l);
+            }
+            let mut kept = kept.into_iter();
+            self.rings[ri].0 = kept.next().unwrap_or_default();
+            for l in kept {
+                let (origin, facing) = (self.rings[ri].1.clone(), self.rings[ri].2);
+                self.rings.push((l, origin, facing));
+                self.holes.push(Vec::new());
+            }
+        }
+        true
+    }
+
     /// A loop with corners repeated in turn dropped, or `None` where it
     /// keeps no area.
     fn cleaned(&self, ring: Vec<usize>) -> Option<Vec<usize>> {
@@ -373,6 +529,7 @@ impl Rings {
         while clean.len() > 1 && clean.first() == clean.last() {
             clean.pop();
         }
+        despike(&mut clean);
         if clean.len() < 3 {
             return None;
         }
@@ -408,6 +565,25 @@ impl Rings {
             holes.push(inner.into_iter().filter_map(|h| self.cleaned(h)).collect());
         }
         self.split_on_edges(&mut rings, &mut holes);
+        // A clip's way round a cut can double back along a ring's own
+        // edge from a corner on the cut's boundary; split onto that edge,
+        // the way back is a spike.
+        for (ring, _, _) in &mut rings {
+            despike(ring);
+        }
+        for hole in holes.iter_mut().flatten() {
+            despike(hole);
+        }
+        let mut k = 0;
+        while k < rings.len() {
+            if rings[k].0.len() < 3 {
+                rings.remove(k);
+                holes.remove(k);
+            } else {
+                holes[k].retain(|h| h.len() >= 3);
+                k += 1;
+            }
+        }
         self.join_coplanar(&mut rings, &mut holes);
         self.drop_straight_corners(&mut rings, &mut holes);
         if !super::guards::rings_fit_holed(&self.points, &rings, &holes, tol)? {
@@ -612,6 +788,23 @@ impl Rings {
         }
         for hole in holes.iter_mut().flatten() {
             hole.retain(|p| !drop.contains(p));
+        }
+    }
+}
+
+/// A loop with every spike out to a corner and back the same way taken
+/// out, which a clip leaves where a cut's boundary only touches the loop.
+fn despike(ring: &mut Vec<usize>) {
+    let mut k = 0;
+    while ring.len() >= 3 && k < ring.len() {
+        let m = ring.len();
+        if ring[(k + m - 1) % m] == ring[(k + 1) % m] {
+            let (a, b) = (k, (k + 1) % m);
+            ring.remove(a.max(b));
+            ring.remove(a.min(b));
+            k = k.saturating_sub(2);
+        } else {
+            k += 1;
         }
     }
 }
