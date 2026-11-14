@@ -2490,3 +2490,191 @@ fn a_leaning_pyramid_s_apex_mitres_where_its_four_bevels_share_no_point() {
         );
     }
 }
+
+/// A square pyramid (base 20 by 20, apex 12 over its middle), three of its
+/// slant edges bevelled 2, 1.5 and 1 and the fourth left sharp, with, where
+/// `drilled`, a pocket of radius 1 and depth 1 in its base, so that it has
+/// a curved face. The sharp edge's two faces end at different points on it,
+/// one where each of its neighbours' bevels sets it back, and the four
+/// corners round the apex leave one plane: the apex closes on the bilinear
+/// patch through them, its side along the sharp edge the piece of that
+/// edge between the two. Valid, nothing folded, a face for each face,
+/// bevel and the patch (one a B-spline), the apex generating the patch;
+/// the volume as [`chamfered_apex`] reads it, less the pocket's `π`.
+fn three_bevels_and_a_sharp_edge_at_the_apex(drilled: bool) {
+    use ogeom_math::Vector;
+    let base = [
+        Vector::new(0.0, 0.0, 0.0),
+        Vector::new(20.0, 0.0, 0.0),
+        Vector::new(20.0, 20.0, 0.0),
+        Vector::new(0.0, 20.0, 0.0),
+    ];
+    let apex = Vector::new(10.0, 10.0, 12.0);
+    let d = [2.0, 1.5, 1.0];
+    let centre = (base.iter().fold(apex, |s, p| s + *p)) / 5.0;
+    let side = |k: usize| {
+        let (p, q) = (base[k % 4], base[(k + 1) % 4]);
+        let mut n = (q - p).cross(apex - p);
+        n = n / n.magnitude();
+        if n.dot(p - centre) < 0.0 {
+            n = -n;
+        }
+        (n, n.dot(p))
+    };
+    // Slant edge `k`, from the apex to base corner `k`, between sides
+    // `k - 1` and `k`.
+    let bevel = |k: usize| {
+        let u = base[k] - apex;
+        bevel_plane(
+            apex,
+            u / u.magnitude(),
+            (side((k + 3) % 4).0, d[k]),
+            (side(k).0, d[k]),
+        )
+    };
+    let corners = [
+        meet(side(0), bevel(0), bevel(1)),
+        meet(side(1), bevel(1), bevel(2)),
+        meet(side(2), bevel(2), side(3)),
+        meet(side(3), side(2), bevel(0)),
+    ];
+    assert!(
+        (corners[2] - corners[3]).magnitude() > 1e-3,
+        "the sharp edge's corners stand apart"
+    );
+    let normal = (corners[1] - corners[0]).cross(corners[2] - corners[0]);
+    assert!(
+        (corners[3] - corners[0])
+            .dot(normal / normal.magnitude())
+            .abs()
+            > 1e-3,
+        "the corners lie off one plane"
+    );
+    // By the divergence theorem, a third of each face's area times its
+    // plane's offset, each face's polygon from the planes meeting at its
+    // corners: the base's offset is nought; each side a triangle (its base
+    // segment between its bevels' or the sharp edge's feet, up to its
+    // corner); each bevel the quadrilateral between its feet on the base
+    // and its corners. The bilinear patch through the corners counts as
+    // the mean of its two triangulations, which it is for a bilinear patch.
+    let base_plane = (Vector::new(0.0, 0.0, -1.0), 0.0);
+    let foot = |k: usize, j: usize| meet(side(j), bevel(k), base_plane);
+    let flux = |ring: &[Vector], (_, o): (Vector, f64)| {
+        let mut area = Vector::ZERO;
+        for k in 0..ring.len() {
+            area += ring[k].cross(ring[(k + 1) % ring.len()]);
+        }
+        area.magnitude() / 2.0 * o / 3.0
+    };
+    let mut total = 0.0;
+    total += flux(&[foot(0, 0), foot(1, 0), corners[0]], side(0));
+    total += flux(&[foot(1, 1), foot(2, 1), corners[1]], side(1));
+    total += flux(&[foot(2, 2), base[3], corners[2]], side(2));
+    total += flux(&[base[3], foot(0, 3), corners[3]], side(3));
+    total += flux(&[foot(0, 3), foot(0, 0), corners[0], corners[3]], bevel(0));
+    total += flux(&[foot(1, 0), foot(1, 1), corners[1], corners[0]], bevel(1));
+    total += flux(&[foot(2, 1), foot(2, 2), corners[2], corners[1]], bevel(2));
+    // The patch's corners in turn, one way round for both triangulations,
+    // the sign from which way that turns about the outside.
+    let cone = |p: Vector, q: Vector, r: Vector| p.dot(q.cross(r)) / 6.0;
+    let c = |k: usize| corners[k % 4];
+    let mut newell = Vector::ZERO;
+    for k in 0..4 {
+        newell += c(k).cross(c(k + 1));
+    }
+    let middle = (c(0) + c(1) + c(2) + c(3)) / 4.0;
+    let sign = if newell.dot(middle - centre) < 0.0 {
+        -1.0
+    } else {
+        1.0
+    };
+    total += sign
+        * 0.5
+        * (cone(c(0), c(1), c(2))
+            + cone(c(0), c(2), c(3))
+            + cone(c(1), c(2), c(3))
+            + cone(c(1), c(3), c(0)));
+    let pocket = if drilled { core::f64::consts::PI } else { 0.0 };
+    let want = total - pocket;
+
+    let mut m = Model::new();
+    let points: Vec<Point> = base
+        .iter()
+        .chain([&apex])
+        .map(|v| Point::new(v.x, v.y, v.z))
+        .collect();
+    let rings = vec![
+        vec![0, 3, 2, 1],
+        vec![0, 1, 4],
+        vec![1, 2, 4],
+        vec![2, 3, 4],
+        vec![3, 0, 4],
+    ];
+    let mut s = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+        .unwrap()
+        .shape;
+    if drilled {
+        let frame = ogeom_math::Frame::new(
+            Point::new(5.0, 10.0, -1.0),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let tool = ogeom_algo::make_cylinder(&mut m, frame, 1.0, 2.0, T)
+            .unwrap()
+            .shape;
+        s = ogeom_bool::cut(&mut m, &s, &tool, T).unwrap().shape;
+    }
+    let top = explore_unique(&m, &s, ShapeType::Vertex)
+        .unwrap()
+        .into_iter()
+        .find(|v| (m.node(v).unwrap().data().as_vertex().unwrap().point.z - 12.0).abs() < 1e-9)
+        .unwrap();
+    let specs: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| {
+            let (p, q) = ogeom_algo::edge_vertices(&m, &e).unwrap()?;
+            let far = if p.is_same(&top) {
+                q
+            } else if q.is_same(&top) {
+                p
+            } else {
+                return None;
+            };
+            let at = m.node(&far).unwrap().data().as_vertex().unwrap().point;
+            let k = base
+                .iter()
+                .position(|b| (Point::new(b.x, b.y, b.z) - at).magnitude() < 1e-9)?;
+            (k < 3).then(|| (e, Chamfer::Symmetric(d[k])))
+        })
+        .collect();
+    assert_eq!(specs.len(), 3);
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert!(!folded(&m, &built.shape), "folded");
+    let faces = explore_unique(&m, &built.shape, ShapeType::Face).unwrap();
+    let pocket_faces = if drilled { 2 } else { 0 };
+    assert_eq!(faces.len(), 9 + pocket_faces, "faces");
+    assert_eq!(built.history.generated(&top).len(), 1, "the apex's patch");
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-6,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let got = ogeom_algo::volume_properties(&m, &built.shape, fine, T)
+        .unwrap()
+        .mass;
+    assert!((got - want).abs() <= 2e-5, "volume {got} against {want}");
+}
+
+#[test]
+fn a_pyramid_s_apex_of_three_bevels_and_a_sharp_edge_closes_on_one_patch() {
+    three_bevels_and_a_sharp_edge_at_the_apex(false);
+}
+
+#[test]
+fn a_drilled_pyramid_s_apex_of_three_bevels_and_a_sharp_edge_closes_on_one_patch() {
+    three_bevels_and_a_sharp_edge_at_the_apex(true);
+}

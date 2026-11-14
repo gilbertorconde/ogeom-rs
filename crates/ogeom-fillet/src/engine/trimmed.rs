@@ -1626,6 +1626,10 @@ enum Key {
     Contact(usize, Id),
     /// An edge left sharp, between the corners at its ends.
     Sharp(Id),
+    /// The piece of an edge left sharp at a vertex between its two faces'
+    /// corners, where they stand apart on it: the face that runs on
+    /// further shares it with the corner closing the vertex.
+    Tail(Id, Id),
     /// A bevel's end, a segment between two of the sheet's points.
     Section(usize, usize),
     /// A contact on a consumed face, between two of the sheet's points,
@@ -1733,8 +1737,11 @@ fn assemble_widened(
         })
     };
     // Each sharp edge's end at each of its vertices: the corner a blend
-    // moved there on it, or the vertex itself.
+    // moved there on it, or the vertex itself. Where its two faces' corners
+    // stand apart on it, the end is the one further from the vertex, and
+    // the piece on to the other is the vertex's tail on it.
     let mut sharp_end: FastMap<(Id, Id), Point> = FastMap::default();
+    let mut tails: FastMap<Id, Vec<(Id, Point, Point)>> = FastMap::default();
     for (e, edge) in &curved.edges {
         let kept: Vec<usize> = faces_of(curved, *e)
             .into_iter()
@@ -1761,6 +1768,15 @@ fn assemble_widened(
                 }
                 [p] => {
                     sharp_end.insert((*e, v), *p);
+                }
+                [p, q] if edge.ends.0 != edge.ends.1 => {
+                    let (far, near) = if p.distance(at) >= q.distance(at) {
+                        (*p, *q)
+                    } else {
+                        (*q, *p)
+                    };
+                    sharp_end.insert((*e, v), far);
+                    tails.entry(v).or_default().push((*e, far, near));
                 }
                 _ => return Ok(None),
             }
@@ -1828,14 +1844,24 @@ fn assemble_widened(
                 let Some(ends) = sections.get(v) else {
                     return Ok(None);
                 };
-                if degree != at_v.len()
+                if degree < at_v.len()
                     || ends
                         .iter()
                         .any(|(_, _, bi)| !matches!(bevels[*bi].section, Section::Line))
                 {
                     return Ok(None);
                 }
-                let Some(cycle) = chained(ends, tol) else {
+                // Round the corner, the bevels' ends and the tails of the
+                // sharp edges there.
+                let mut round = ends.clone();
+                round.extend(
+                    tails
+                        .get(v)
+                        .into_iter()
+                        .flatten()
+                        .map(|(_, far, near)| (*far, *near, usize::MAX)),
+                );
+                let Some(cycle) = chained(&round, tol) else {
                     return Ok(None);
                 };
                 if mitre {
@@ -2086,6 +2112,49 @@ fn assemble_widened(
         made.insert(key, edges.len() - 1);
         Ok((edges.len() - 1, ends.0 == i))
     };
+    // The tail of a sharp edge at `v` from `p` to `q`, where it has one
+    // between those two: its edge and whether it runs from `p`.
+    let tail_between = |points: &mut Points,
+                        edges: &mut Vec<SheetCurve>,
+                        made: &mut FastMap<Key, usize>,
+                        v: Id,
+                        p: Point,
+                        q: Point|
+     -> OgeomResult<Option<(usize, bool)>> {
+        let close = |x: Point, y: Point| x.distance(y) <= tol.confusion();
+        let found = tails.get(&v).and_then(|ts| {
+            ts.iter()
+                .find(|(_, far, near)| {
+                    (close(*far, p) && close(*near, q)) || (close(*far, q) && close(*near, p))
+                })
+                .copied()
+        });
+        let Some((e, far, near)) = found else {
+            return Ok(None);
+        };
+        let i = points.index(p);
+        if let Some(k) = made.get(&Key::Tail(e, v)) {
+            return Ok(Some((*k, edges[*k].ends.0 == i)));
+        }
+        let edge = &curved.edges[&e];
+        let (tf, tn) = (
+            param_on(&edge.curve, edge.range, far, tol)?,
+            param_on(&edge.curve, edge.range, near, tol)?,
+        );
+        let (f, n) = (points.index(far), points.index(near));
+        let (range, ends) = if tf <= tn {
+            ((tf, tn), (f, n))
+        } else {
+            ((tn, tf), (n, f))
+        };
+        edges.push(SheetCurve {
+            ends,
+            curve: edge.curve.clone(),
+            range,
+        });
+        made.insert(Key::Tail(e, v), edges.len() - 1);
+        Ok(Some((edges.len() - 1, ends.0 == i)))
+    };
     // A strip's end at a mitred vertex, from `a` to `z`: on to the
     // vertex's point along its section with the bevel sharing `a`, then on
     // to `z` along its section with the one sharing `z`. `false` where the
@@ -2182,6 +2251,14 @@ fn assemble_widened(
                 // bevel's end at the vertex runs between them.
                 if let Some(p) = last
                     && p.distance(start.0) > tol.confusion()
+                    && let Some(piece) =
+                        tail_between(&mut points, &mut edges, &mut made, vs, p, start.0)?
+                {
+                    ring.push(piece);
+                    last = Some(start.0);
+                }
+                if let Some(p) = last
+                    && p.distance(start.0) > tol.confusion()
                 {
                     let Some(ends) = sections.get(&vs) else {
                         return Ok(None);
@@ -2235,6 +2312,20 @@ fn assemble_widened(
                 last = Some(end.0);
             }
             // The loop closes: a bevel's end where it stopped short.
+            if let (Some(p), Some(q)) = (last, first)
+                && p.distance(q) > tol.confusion()
+                && let Some(piece) = tail_between(
+                    &mut points,
+                    &mut edges,
+                    &mut made,
+                    loop_start_vertex(curved, face, walk),
+                    p,
+                    q,
+                )?
+            {
+                ring.push(piece);
+                last = Some(q);
+            }
             if let (Some(p), Some(q)) = (last, first)
                 && p.distance(q) > tol.confusion()
             {
@@ -2439,7 +2530,12 @@ fn assemble_widened(
                     .map(|(_, _, bi)| &bevels[*bi])
             });
             let Some(strip) = strip else {
-                return Ok(None);
+                let Some(piece) = tail_between(&mut points, &mut edges, &mut made, *v, p, q)?
+                else {
+                    return Ok(None);
+                };
+                ring.push(piece);
+                continue;
             };
             ring.push(section(
                 &mut points,
