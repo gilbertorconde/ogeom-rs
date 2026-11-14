@@ -4325,7 +4325,7 @@ mod tests {
     /// the larger's flush end in the upright face shrinks to that point, and
     /// the two meet along their cylinders' crease from the top's corner to
     /// it. The solid is valid either way round, and its volume lies on the
-    /// line through the volumes the crease of #947 gives a hundredth either
+    /// line through the volumes the crease gives at `r_a` a hundredth either
     /// side, within the line's own curvature.
     #[test]
     fn two_rounds_whose_corners_stand_together_on_a_sharp_edge_meet_in_their_crease() {

@@ -2,7 +2,7 @@
 //! with voids (each shell rounded as a solid of its own, a round reaching a
 //! void refused by name), a compound of solids (each rounded alone), a
 //! solid with placed shapes (rounded baked, its history carried back); and
-//! #974's two negatives refused by the engine itself, by name.
+//! the shelf's two negatives refused by the engine itself, by name.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::FRAC_PI_4;
@@ -43,7 +43,7 @@ fn volume(model: &Model, shape: &Shape) -> f64 {
         .mass
 }
 
-/// #974's shelf (a cylinder of radius 10, 26 tall, fused with a block 12.6
+/// The shelf (a cylinder of radius 10, 26 tall, fused with a block 12.6
 /// by 10 by 21 beside it), its block's top front edge at `x = 12.6`, `z =
 /// 21`.
 fn shelf(model: &mut Model) -> Shape {
@@ -62,7 +62,7 @@ fn shelf_edge(model: &Model, solid: &Shape) -> Vec<Shape> {
     })
 }
 
-/// #974's shelf with a small spherical cavity just under its rounded edge,
+/// The shelf with a small spherical cavity just under its rounded edge,
 /// where the round's ball sweeps: the round reaches into the void, refused
 /// by the engine by name (not handed to another path).
 #[test]
@@ -85,7 +85,7 @@ fn a_round_reaching_into_a_void_is_refused_by_name() {
     );
 }
 
-/// #974's other negative: the cylinder above the shelf cut away past `y =
+/// The shelf's other negative: the cylinder above the shelf cut away past `y =
 /// 1`, so its rim ends there while the shelf runs on. The ball resting on
 /// the rim would roll past the rim's end, a vertex seat the engine refuses
 /// by name.

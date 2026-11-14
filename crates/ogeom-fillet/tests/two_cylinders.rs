@@ -1,4 +1,4 @@
-//! Concave rounds between two walls along their rulings (#972): three
+//! Concave rounds between two walls along their rulings: three
 //! cylinders fused side by side, the two concave seams on one side rounded,
 //! each strip the exact cylinder whose axis stands a radius off both walls.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
@@ -86,7 +86,7 @@ fn section_area(wall: f64, pitch: f64, radius: f64) -> f64 {
     3.0 * core::f64::consts::PI * wall * wall - 2.0 * lens + 2.0 * fill
 }
 
-/// #972's two cases: walls 3.58 apart 5.5 rounded at 8, and 4.85 apart 8.5
+/// Two cases: walls 3.58 apart 5.5 rounded at 8, and 4.85 apart 8.5
 /// at 4. Built by the engine with no boolean, valid, the same solid either
 /// way round, its volume the section's area times the height within 1e-6,
 /// and each round the cylinder about the ball's exact centre line.

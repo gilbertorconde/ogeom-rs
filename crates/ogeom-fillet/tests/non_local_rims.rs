@@ -190,3 +190,57 @@ fn a_drum_s_top_rim_rounds_past_a_pocket_beside_it() {
     let want = 250.0 * PI - 0.75 - ring + shared;
     rounds_to(&mut m, &s, &edges, want);
 }
+
+/// A drum built with no boolean: a prism of a disc of radius 5 with a hole
+/// 0.5 by 0.5 through it beside its rim (`x` 4.3 to 4.8), 10 tall, baked.
+/// Its top rim is one closed edge, which no strip's tool caps; rounded at 1,
+/// its spandrel reaches the hole's walls. Through the general route (the
+/// hole taken off a copy, the drum rounded, the spandrel cut): valid, the
+/// rim generating its strip, the drum less the hole and the spandrel's ring
+/// (Pappus), less what the two share (by quadrature of the exact profile).
+#[test]
+fn a_closed_rim_rounds_past_a_hole_through_the_general_route() {
+    use ogeom_geom::{CircleCurve, PlaneSurface};
+    use ogeom_math::{Circle, Plane, Vector};
+    let mut m = Model::new();
+    let circle = CircleCurve::new(Circle::new(Frame::WORLD, 5.0, T).unwrap());
+    let range = ogeom_geom::Curve3d::domain(&circle);
+    let round = ogeom_algo::make_edge(&mut m, circle.into(), range, T)
+        .unwrap()
+        .shape;
+    let outer = ogeom_algo::make_wire(&mut m, &[round], T).unwrap().shape;
+    let hole =
+        [(4.3, -0.25), (4.3, 0.25), (4.8, 0.25), (4.8, -0.25)].map(|(x, y)| Point::new(x, y, 0.0));
+    let inner = ogeom_algo::make_polygon(&mut m, &hole, true, T)
+        .unwrap()
+        .shape;
+    let face = ogeom_algo::make_face(
+        &mut m,
+        PlaneSurface::new(Plane::new(Frame::WORLD)).into(),
+        &[outer, inner],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let prism = ogeom_algo::make_prism(&mut m, &face, Vector::new(0.0, 0.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let s = ogeom_algo::baked_shape(&mut m, &prism, T).unwrap().shape;
+    let edges = rim(&m, &s, 10.0, 5.0);
+    assert_eq!(edges.len(), 1, "one closed edge");
+    let (a, b) = ogeom_algo::edge_vertices(&m, &edges[0]).unwrap().unwrap();
+    assert!(a.is_same(&b), "closed on itself");
+    let section = 1.0 - FRAC_PI_4;
+    let centroid = (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI);
+    let ring = 2.0 * PI * (5.0 - centroid) * section;
+    let shared = over(
+        |x, y| {
+            let rho = x.hypot(y);
+            1.0 - (1.0 - (rho - 4.0).powi(2)).sqrt()
+        },
+        (4.3, 4.8),
+        (-0.25, 0.25),
+    );
+    let want = (25.0 * PI - 0.25) * 10.0 - ring + shared;
+    rounds_to(&mut m, &s, &edges, want);
+}

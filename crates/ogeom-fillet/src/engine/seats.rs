@@ -433,8 +433,9 @@ mod tests {
 
     const T: Tolerances = Tolerances::millimetres();
 
-    /// #974's shelf rounded at 3 on the box's top front edge: between the
-    /// crossings at y = ±2.8 the ball rests on the cylinder's rim, its
+    /// A shelf (a box beside a taller cylinder) rounded at 3 on the box's
+    /// top front edge: between the crossings at y = ±2.8 the ball rests on
+    /// the cylinder's rim, its
     /// centre (9.6, y, 21 - sqrt(9 - (10 - rho)²)), rho = |(9.6, y)|, its
     /// arc from (12.6, y, z) to the rim's point (96 / rho, 10 y / rho, 21).
     /// The run's surface holds every such arc within 1e-6 and the contact

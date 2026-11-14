@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Count the round requests the blend engine still hands to the current
-# fillet path (ADR 0001, #902): M6 deletes that path only once none do.
+# fillet path (ADR 0001): that path can be deleted only once none do.
 #
 # Runs every test of ogeom-fillet with the `old-path-log` feature, which
 # logs each request leaving the engine with the asking test's name, then
 # prints the number of requests, of distinct tests, and the tests by file.
-# A test may ask the current path on purpose, as an oracle; the #902
-# tracker keeps that subset flagged, to be ported before M6.
+# A test may ask the current path on purpose, as an oracle; such tests are
+# ported to the engine before the path is deleted.
 #
 # Usage: tools/old-path-rounds.sh [extra cargo test arguments]
 set -euo pipefail
