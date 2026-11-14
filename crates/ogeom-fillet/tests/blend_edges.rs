@@ -45,10 +45,6 @@ fn corner(m: &mut Model) -> (Shape, [Shape; 3]) {
     (b, e)
 }
 
-/// The band fit target the corner's patch is fitted to, in length and in
-/// angle where it is held tangent.
-const FIT: f64 = 2e-4;
-
 /// The request on the box corner, `kinds[i]` for the edge along axis `i`:
 /// a bevel `Symmetric(2)`, a round of 2, or none; in `order`.
 fn request(e: &[Shape; 3], kinds: [usize; 3], order: [usize; 3]) -> Vec<(Shape, Blend)> {
@@ -66,11 +62,6 @@ fn request(e: &[Shape; 3], kinds: [usize; 3], order: [usize; 3]) -> Vec<(Shape, 
         .collect()
 }
 
-fn surface(m: &Model, f: &Shape) -> ogeom_geom::SurfaceGeometry {
-    let d = m.node(f).unwrap().data().as_face().unwrap();
-    m.geometry().surface(d.surface).unwrap().clone()
-}
-
 /// Every vertex's point, sorted, as bits.
 fn points(m: &Model, s: &Shape) -> Vec<[u64; 3]> {
     let mut out: Vec<[u64; 3]> = explore_unique(m, s, ShapeType::Vertex)
@@ -85,11 +76,30 @@ fn points(m: &Model, s: &Shape) -> Vec<[u64; 3]> {
     out
 }
 
-/// The corner `kinds` asks, checked in every order and against the same
-/// request built separately; whether a trim between two rounds is held.
-fn closes_as_one_patch(kinds: [usize; 3], trims_held: bool) {
-    use ogeom_geom::{Surface as _, SurfaceGeometry};
-    let mut first: Option<(u64, Vec<[u64; 3]>)> = None;
+/// The corner `kinds` asks, in every order: valid, and the same solid to
+/// the bit as the bevels' own call and then the rounds' own call on what it
+/// leaves (ADR 0001, section 13, question 3: two features, the bevels
+/// first).
+fn is_the_bevels_then_the_rounds(kinds: [usize; 3]) {
+    let mut s = Model::new();
+    let (sb, se) = corner(&mut s);
+    let bevels: Vec<(Shape, Chamfer)> = (0..3)
+        .filter(|&i| kinds[i] == 0)
+        .map(|i| (se[i].clone(), Chamfer::Symmetric(2.0)))
+        .collect();
+    let beveled =
+        ogeom_fillet::chamfer_edges_cornered(&mut s, &sb, &bevels, ChamferCorner::Point, T)
+            .unwrap();
+    let rounds: Vec<(Shape, f64)> = (0..3)
+        .filter(|&i| kinds[i] == 1)
+        .map(|i| (beveled.history.trace(&se[i])[0].clone(), 2.0))
+        .collect();
+    let separate = ogeom_fillet::fillet_edges_with(&mut s, &beveled.shape, &rounds, T)
+        .unwrap_or_else(|e| panic!("{kinds:?}: the rounds on the bevels: {e}"));
+    let want = (
+        vol(&s, &separate.shape).to_bits(),
+        points(&s, &separate.shape),
+    );
     for order in [
         [0usize, 1, 2],
         [2, 1, 0],
@@ -107,139 +117,34 @@ fn closes_as_one_patch(kinds: [usize; 3], trims_held: bool) {
             ChamferCorner::Point,
             T,
         )
-        .unwrap();
-        let key = (vol(&m, &r.shape).to_bits(), points(&m, &r.shape));
-        match &first {
-            None => first = Some(key),
-            Some(held) => assert_eq!(held, &key, "order {order:?}"),
-        }
-    }
-    let mut m = Model::new();
-    let (b, e) = corner(&mut m);
-    let r = blend_edges(
-        &mut m,
-        &b,
-        &request(&e, kinds, [0, 1, 2]),
-        ChamferCorner::Point,
-        T,
-    )
-    .unwrap();
-    assert!(ogeom_algo::check(&m, &r.shape, T).unwrap().is_usable());
-    let all = explore_unique(&m, &r.shape, ShapeType::Face).unwrap();
-    let patches: Vec<&Shape> = all
-        .iter()
-        .filter(|f| matches!(surface(&m, f), SurfaceGeometry::BSpline(_)))
-        .collect();
-    assert_eq!(patches.len(), 1);
-    let patch = patches[0];
-    let mut held_trims = 0;
-    for edge in explore_unique(&m, patch, ShapeType::Edge).unwrap() {
-        let other = all
-            .iter()
-            .find(|f| {
-                !f.is_same(patch)
-                    && explore_unique(&m, f, ShapeType::Edge)
-                        .unwrap()
-                        .iter()
-                        .any(|g| g.is_same(&edge))
-            })
-            .unwrap();
-        let (sp, so) = (surface(&m, patch), surface(&m, other));
-        let (c, (lo, hi)) = ogeom_algo::placed_edge_curve(&m, &edge, T)
-            .unwrap()
-            .unwrap();
-        let (mut angle, mut gap) = (0.0_f64, 0.0_f64);
-        for i in 0..=20 {
-            let p = c
-                .point_at((hi - lo).mul_add(f64::from(i) / 20.0, lo), T)
-                .unwrap();
-            let fp = ogeom_geom::project_on_surface(&sp, p, 16, T).unwrap();
-            let fo = ogeom_geom::project_on_surface(&so, p, 16, T).unwrap();
-            gap = gap.max(fp.distance).max(fo.distance);
-            let np = sp
-                .normal_at(fp.parameters.0, fp.parameters.1, T)
-                .unwrap()
-                .vector();
-            let no = so
-                .normal_at(fo.parameters.0, fo.parameters.1, T)
-                .unwrap()
-                .vector();
-            angle = angle.max(np.cross(no).magnitude().atan2(np.dot(no).abs()));
-        }
-        assert!(gap <= FIT, "the patch stands {gap} off a face it meets");
-        match so {
-            // A round's band: tangent.
-            SurfaceGeometry::Cylinder(_) => assert!(angle <= FIT, "{angle} off a round"),
-            SurfaceGeometry::Plane(_) if angle <= FIT => held_trims += 1,
-            _ => {}
-        }
-    }
-    assert_eq!(held_trims > 0, trims_held);
-
-    // Away from the corner: the same request built separately, the bevels
-    // and then the rounds, has every face on the very same surface.
-    let mut s = Model::new();
-    let (sb, se) = corner(&mut s);
-    let bevels: Vec<(Shape, Chamfer)> = (0..3)
-        .filter(|&i| kinds[i] == 0)
-        .map(|i| (se[i].clone(), Chamfer::Symmetric(2.0)))
-        .collect();
-    let beveled =
-        ogeom_fillet::chamfer_edges_cornered(&mut s, &sb, &bevels, ChamferCorner::Point, T)
-            .unwrap();
-    let rounds: Vec<(Shape, f64)> = (0..3)
-        .filter(|&i| kinds[i] == 1)
-        .map(|i| (beveled.history.trace(&se[i])[0].clone(), 2.0))
-        .collect();
-    let separate = ogeom_fillet::fillet_edges_with(&mut s, &beveled.shape, &rounds, T).unwrap();
-    let mut far = 0;
-    for f in explore_unique(&s, &separate.shape, ShapeType::Face).unwrap() {
-        let reaches_out = explore_unique(&s, &f, ShapeType::Vertex)
-            .unwrap()
-            .iter()
-            .any(|v| {
-                s.node(v)
-                    .unwrap()
-                    .data()
-                    .as_vertex()
-                    .unwrap()
-                    .point
-                    .distance(Point::ORIGIN)
-                    > 8.0
-            });
-        if !reaches_out {
-            continue;
-        }
-        far += 1;
+        .unwrap_or_else(|why| panic!("{kinds:?} {order:?}: {why}"));
+        let found = ogeom_algo::check(&m, &r.shape, T).unwrap();
         assert!(
-            all.iter().any(|g| surface(&m, g) == surface(&s, &f)),
-            "a face away from the corner moved"
+            found.is_valid(),
+            "{kinds:?} {order:?}: {:?}",
+            found.problems
         );
+        let key = (vol(&m, &r.shape).to_bits(), points(&m, &r.shape));
+        assert_eq!(key, want, "{kinds:?}: order {order:?}");
     }
-    assert!(far >= 8, "{far}");
 }
 
+/// A bevel `Symmetric(2)` and two rounds of 2 meeting at a box's corner.
 #[test]
-fn a_bevel_and_two_rounds_meeting_close_as_one_patch_whatever_the_order() {
-    closes_as_one_patch([0, 1, 1], true);
+fn a_bevel_and_two_rounds_meeting_are_the_bevel_then_the_rounds_whatever_the_order() {
+    is_the_bevels_then_the_rounds([0, 1, 1]);
 }
 
+/// Two bevels and a round meeting at a box's corner.
 #[test]
-fn two_bevels_and_a_round_meeting_close_as_one_patch_whatever_the_order() {
-    closes_as_one_patch([0, 0, 1], false);
+fn two_bevels_and_a_round_meeting_are_the_bevels_then_the_round_whatever_the_order() {
+    is_the_bevels_then_the_rounds([0, 0, 1]);
 }
 
-/// A round of 2 meeting a bevel `Symmetric(2)` at the box's corner, the
-/// third edge left sharp, each edge taking each part in turn and the
-/// request asked both ways round. The opening crosses the sharp edge at a
-/// point, where a patch held across both of its faces turns its normal
-/// from one face's to the other's, and one patch closes the rest: the two
-/// orders build the same solid to the bit, valid, its patches tangent to
-/// the round's band and, at the sharp edge, to both its faces, and meeting
-/// every face they border in position.
+/// A round meeting a bevel at a box's corner, the third edge left sharp,
+/// each edge taking each part in turn.
 #[test]
-fn a_round_meeting_a_bevel_beside_a_sharp_edge_closes_whatever_the_order() {
-    use ogeom_geom::SurfaceGeometry;
+fn a_round_meeting_a_bevel_beside_a_sharp_edge_is_the_bevel_then_the_round() {
     for kinds in [
         [0, 1, 2],
         [0, 2, 1],
@@ -248,77 +153,7 @@ fn a_round_meeting_a_bevel_beside_a_sharp_edge_closes_whatever_the_order() {
         [2, 0, 1],
         [2, 1, 0],
     ] {
-        let mut first: Option<(u64, Vec<[u64; 3]>)> = None;
-        for order in [[0usize, 1, 2], [2, 1, 0]] {
-            let mut m = Model::new();
-            let (b, e) = corner(&mut m);
-            let r = blend_edges(
-                &mut m,
-                &b,
-                &request(&e, kinds, order),
-                ChamferCorner::Point,
-                T,
-            )
-            .unwrap_or_else(|why| panic!("{kinds:?} {order:?}: {why}"));
-            let diagnosis = ogeom_algo::check(&m, &r.shape, T).unwrap();
-            assert!(diagnosis.is_valid(), "{kinds:?}: {:?}", diagnosis.problems);
-            let key = (vol(&m, &r.shape).to_bits(), points(&m, &r.shape));
-            match &first {
-                None => first = Some(key),
-                Some(held) => assert_eq!(held, &key, "{kinds:?}: order {order:?}"),
-            }
-            if order != [0, 1, 2] {
-                continue;
-            }
-            let all = explore_unique(&m, &r.shape, ShapeType::Face).unwrap();
-            let patches: Vec<&Shape> = all
-                .iter()
-                .filter(|f| matches!(surface(&m, f), SurfaceGeometry::BSpline(_)))
-                .collect();
-            assert_eq!(
-                patches.len(),
-                2,
-                "{kinds:?}: the patch at the sharp edge and the rest"
-            );
-            let sharp = (0..3).find(|&i| kinds[i] == 2).unwrap();
-            // The faces of the sharp edge: the planes through the corner
-            // square to the other two axes.
-            let on_sharp_face = |n: ogeom_math::Vector| {
-                (0..3).any(|i| i != sharp && ([n.x, n.y, n.z][i].abs() - 1.0).abs() < 1e-9)
-            };
-            let mut worst_round = 0.0_f64;
-            let mut at_q_faces = 0;
-            for patch in &patches {
-                for c in ogeom_fillet::analyse_blend(&m, &r.shape, patch, 17, T).unwrap() {
-                    assert!(
-                        c.gap <= FIT,
-                        "{kinds:?}: a patch stands {} off a face",
-                        c.gap
-                    );
-                    match surface(&m, &c.neighbour) {
-                        SurfaceGeometry::Cylinder(_) => {
-                            worst_round = worst_round.max(c.tangency_error);
-                        }
-                        SurfaceGeometry::Plane(_) => {
-                            let (_, n) = ogeom_algo::face_normal(&m, &c.neighbour, T).unwrap();
-                            if on_sharp_face(n) && c.tangency_error <= FIT {
-                                at_q_faces += 1;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            eprintln!("{kinds:?}: the patches meet the round within {worst_round} rad");
-            assert!(
-                worst_round <= FIT,
-                "{kinds:?}: the patches meet the round {worst_round} rad off tangent"
-            );
-            assert!(
-                at_q_faces >= 2,
-                "{kinds:?}: the patches are tangent to {at_q_faces} trims on the sharp edge's faces"
-            );
-        }
+        is_the_bevels_then_the_rounds(kinds);
     }
 }
 
