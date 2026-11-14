@@ -6571,6 +6571,447 @@ pub(crate) fn creases_one_boolean(
     super::fallback::applied(model, solid, &edges, &tools, tol)
 }
 
+/// Rim chamfers between two surfaces of revolution about the rim's own
+/// axis (a plane square to it, a coaxial cylinder, cone, sphere or torus)
+/// that no other route builds, by the one boolean (ADR 0001, amendment
+/// "M5b"): a rim rolling over or reaching a face, or pieces of one rim
+/// asked apart. Each tool is the bevel's section, in the half-plane
+/// through the axis at the arc's start (the rim, each face's trace to its
+/// contact, the bevel's line between the contacts), turned about the axis
+/// over the arc's sweep, its ends on the planes through the axis (the
+/// step at a joint); arcs of one circle asked alike that close it turn
+/// once, whole, and unless pieces are asked apart an arc asked alone whose
+/// circle's pieces between the same two carriers close the turn stands for
+/// the whole rim. Cut where the rim is convex, fused where concave; the
+/// bevel's face is named for every edge of its turn. `None` where an
+/// asked edge is not such a rim, its strip's contacts are not circles
+/// about its axis, a tool will not build, a boolean refuses or a bevel is
+/// left nothing of.
+///
+/// # Errors
+///
+/// As reading the solid and its strips, other than their refusals.
+pub(crate) fn rims_revolved(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    apart: bool,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let (eps, ang) = (tol.confusion(), tol.angular());
+    if specs.is_empty() {
+        return Ok(None);
+    }
+    let Some(curved) = read(model, solid, tol)? else {
+        return Ok(None);
+    };
+    // Each rim: its axis, its start and sweep about it, and its section's
+    // points (the rim, the contact on each face) at the start.
+    struct Rim {
+        origin: Point,
+        axis: Vector,
+        radius: f64,
+        start: Point,
+        sweep: f64,
+        faces: [usize; 2],
+        contacts: [(Point, f64); 2],
+    }
+    let mut rims: Vec<Rim> = Vec::with_capacity(specs.len());
+    for (edge, spec) in specs {
+        let e = id(edge);
+        let Some(c) = curved.edges.get(&e) else {
+            return Ok(None);
+        };
+        let Curve::Circle(circle) = &c.curve else {
+            return Ok(None);
+        };
+        let Some(strip) = bevel_of(model, solid, &curved, e, edge, spec, tol)? else {
+            return Ok(None);
+        };
+        let circle = circle.circle();
+        let (origin, axis) = (circle.centre(), circle.frame().z().vector());
+        let off_axis = |p: Point| {
+            let q = p - origin;
+            (q - axis * q.dot(axis)).magnitude()
+        };
+        // Each contact a circle about the rim's axis: its centre's height
+        // along the axis and its radius.
+        let mut contacts = [(Point::ORIGIN, 0.0); 2];
+        for (k, contact) in strip.contacts.iter().enumerate() {
+            let Curve::Circle(ring) = contact else {
+                return Ok(None);
+            };
+            let ring = ring.circle();
+            if ring.frame().z().vector().cross(axis).magnitude() > ang
+                || off_axis(ring.centre()) > eps
+            {
+                return Ok(None);
+            }
+            contacts[k] = (ring.centre(), ring.radius());
+        }
+        let closed = c.ends.0 == c.ends.1
+            || !apart
+                && !asked_apart(&curved, specs, e, tol)
+                && pieces_close(model, &curved, e, tol)?;
+        let (t0, t1) = c.range;
+        rims.push(Rim {
+            origin,
+            axis,
+            radius: circle.radius(),
+            start: c.curve.point_at(t0, tol)?,
+            sweep: if closed {
+                core::f64::consts::TAU
+            } else {
+                t1 - t0
+            },
+            faces: strip.faces,
+            contacts,
+        });
+    }
+    // Arcs of one circle asked alike turn once, whole, where they close it.
+    let same = |i: &Rim, j: &Rim| {
+        i.origin.distance(j.origin) <= eps
+            && (i.radius - j.radius).abs() <= eps
+            && i.axis.dot(j.axis) >= 1.0 - ang
+            && (0..2).all(|k| {
+                i.contacts[k].0.distance(j.contacts[k].0) <= eps
+                    && (i.contacts[k].1 - j.contacts[k].1).abs() <= eps
+            })
+    };
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for i in 0..rims.len() {
+        match groups.iter_mut().find(|g| same(&rims[g[0]], &rims[i])) {
+            Some(g) => g.push(i),
+            None => groups.push(vec![i]),
+        }
+    }
+    let mut runs: Vec<(Vec<usize>, f64)> = Vec::new();
+    for group in groups {
+        let turned: f64 = group.iter().map(|k| rims[*k].sweep).sum();
+        let whole = |k: &usize| (rims[*k].sweep - core::f64::consts::TAU).abs() <= ang;
+        if group.iter().any(whole)
+            || group.len() > 1 && (turned - core::f64::consts::TAU).abs() <= ang
+        {
+            runs.push((group, core::f64::consts::TAU));
+        } else {
+            runs.extend(group.into_iter().map(|k| (vec![k], rims[k].sweep)));
+        }
+    }
+    let mut tools = Vec::with_capacity(runs.len());
+    for (run, sweep) in runs {
+        let rim = &rims[run[0]];
+        let Some(tool) = revolved_tool(model, &curved, rim_section(rim), sweep, tol)? else {
+            return Ok(None);
+        };
+        let mut faces = Vec::new();
+        for k in &run {
+            faces.push((tool.1.clone(), specs[*k].0.clone()));
+        }
+        tools.push(super::fallback::Tool {
+            solid: tool.0,
+            sense: tool.2,
+            faces,
+        });
+    }
+    let edges: Vec<Shape> = specs.iter().map(|(e, _)| e.clone()).collect();
+    return super::fallback::applied(model, solid, &edges, &tools, tol);
+
+    /// A rim's section at its start: the axis, the rim's point, its faces
+    /// and the contact on each in the same half-plane.
+    fn rim_section(rim: &Rim) -> RimSection {
+        let q = rim.start - rim.origin;
+        let radial = q - rim.axis * q.dot(rim.axis);
+        let u = radial / radial.magnitude();
+        let at = |(centre, radius): (Point, f64)| centre + u * radius;
+        RimSection {
+            origin: rim.origin,
+            axis: rim.axis,
+            radial: u,
+            rim: rim.start,
+            faces: rim.faces,
+            contacts: [at(rim.contacts[0]), at(rim.contacts[1])],
+        }
+    }
+}
+
+/// Whether another asked edge is a piece of `edge`'s circle (pieces of
+/// one rim asked together; alike, they close the turn as one tool, and
+/// with different chamfers they are asked apart).
+fn asked_apart(curved: &Curved, specs: &[(Shape, Chamfer)], edge: Id, tol: Tolerances) -> bool {
+    let Curve::Circle(own) = &curved.edges[&edge].curve else {
+        return false;
+    };
+    let own = own.circle();
+    specs.iter().any(|(x, spec)| {
+        let x = id(x);
+        x != edge
+            && curved.edges.get(&x).is_some_and(|piece| {
+                matches!(&piece.curve, Curve::Circle(c)
+                    if c.circle().centre().distance(own.centre()) <= tol.confusion()
+                        && (c.circle().radius() - own.radius()).abs() <= tol.confusion())
+            })
+            && specs
+                .iter()
+                .find(|(y, _)| id(y) == edge)
+                .is_some_and(|(_, mine)| !crate::chamfer::same_spelling(mine, spec, tol))
+    })
+}
+
+/// Whether the pieces of `edge`'s circle in `curved`, each between faces
+/// on the carriers either side of `edge`, turn once round it together.
+fn pieces_close(model: &Model, curved: &Curved, edge: Id, tol: Tolerances) -> OgeomResult<bool> {
+    let (eps, ang) = (tol.confusion(), tol.angular());
+    let Curve::Circle(own) = &curved.edges[&edge].curve else {
+        return Ok(false);
+    };
+    let own = own.circle();
+    let [a0, a1] = faces_of(curved, edge)[..] else {
+        return Ok(false);
+    };
+    let one = |a: usize, b: usize| -> OgeomResult<bool> {
+        ogeom_heal::same_domain(model, &curved.faces[a].shape, &curved.faces[b].shape, tol)
+    };
+    let mut turned = 0.0;
+    for (x, piece) in &curved.edges {
+        let Curve::Circle(c) = &piece.curve else {
+            continue;
+        };
+        let c = c.circle();
+        if c.centre().distance(own.centre()) > eps
+            || (c.radius() - own.radius()).abs() > eps
+            || c.frame()
+                .z()
+                .vector()
+                .cross(own.frame().z().vector())
+                .magnitude()
+                > ang
+        {
+            continue;
+        }
+        let [b0, b1] = faces_of(curved, *x)[..] else {
+            continue;
+        };
+        if (one(a0, b0)? && one(a1, b1)?) || (one(a0, b1)? && one(a1, b0)?) {
+            turned += (piece.range.1 - piece.range.0).abs();
+        }
+    }
+    Ok((turned - core::f64::consts::TAU).abs() <= ang)
+}
+
+/// A rim's section in the half-plane through its axis ([`rims_revolved`]).
+struct RimSection {
+    origin: Point,
+    axis: Vector,
+    radial: Vector,
+    rim: Point,
+    faces: [usize; 2],
+    contacts: [Point; 2],
+}
+
+/// The curve a surface of revolution about `section`'s axis traces in its
+/// half-plane from `from` to `to`, and its range: a line on a plane square
+/// to the axis or a coaxial cylinder or cone, an arc about the centre on a
+/// coaxial sphere or the tube's centre there on a coaxial torus. `None`
+/// for another surface or one not about the axis.
+fn meridian_trace(
+    surface: &SurfaceGeometry,
+    section: &RimSection,
+    (from, to): (Point, Point),
+    tol: Tolerances,
+) -> OgeomResult<Option<(Curve, (f64, f64))>> {
+    let (eps, ang) = (tol.confusion(), tol.angular());
+    let (o, a) = (section.origin, section.axis);
+    let off_axis = |p: Point| {
+        let q = p - o;
+        (q - a * q.dot(a)).magnitude()
+    };
+    let parallel = |d: Vector| d.cross(a).magnitude() <= ang;
+    let about = match surface {
+        SurfaceGeometry::Plane(p) if parallel(p.plane().normal().vector()) => None,
+        SurfaceGeometry::Cylinder(c)
+            if parallel(c.cylinder().axis().direction.vector())
+                && off_axis(c.cylinder().axis().location) <= eps =>
+        {
+            None
+        }
+        SurfaceGeometry::Cone(c)
+            if parallel(c.cone().axis().direction.vector())
+                && off_axis(c.cone().axis().location) <= eps =>
+        {
+            None
+        }
+        SurfaceGeometry::Sphere(s) if off_axis(s.sphere().centre()) <= eps => {
+            Some((s.sphere().centre(), s.sphere().radius()))
+        }
+        SurfaceGeometry::Torus(t)
+            if parallel(t.torus().frame().z().vector())
+                && off_axis(t.torus().frame().origin()) <= eps =>
+        {
+            let torus = t.torus();
+            Some((
+                torus.frame().origin() + section.radial * torus.major_radius(),
+                torus.minor_radius(),
+            ))
+        }
+        _ => return Ok(None),
+    };
+    let Some((centre, radius)) = about else {
+        let Ok(line) = LineCurve::segment(from, to, tol) else {
+            return Ok(None);
+        };
+        return Ok(Some((Curve::Line(line), (0.0, from.distance(to)))));
+    };
+    if (from.distance(centre) - radius).abs() > eps || (to.distance(centre) - radius).abs() > eps {
+        return Ok(None);
+    }
+    // The shorter way round, in the half-plane.
+    let normal = section.radial.cross(a);
+    let x = Direction::new(from - centre, tol)?;
+    let mut z = Direction::new(normal, tol)?;
+    let mut frame = Frame::new(centre, z, x, tol)?;
+    let reach = |frame: &Frame| {
+        let w = to - centre;
+        w.dot(frame.y().vector())
+            .atan2(w.dot(frame.x().vector()))
+            .rem_euclid(core::f64::consts::TAU)
+    };
+    let mut turn = reach(&frame);
+    if turn > core::f64::consts::PI {
+        z = Direction::new(-normal, tol)?;
+        frame = Frame::new(centre, z, x, tol)?;
+        turn = reach(&frame);
+    }
+    if turn <= ang {
+        return Ok(None);
+    }
+    Ok(Some((
+        Curve::Circle(CircleCurve::new(Circle::new(frame, radius, tol)?)),
+        (0.0, turn),
+    )))
+}
+
+/// The tool [`rims_revolved`] turns from `section` through `sweep`: the
+/// solid, its face on the bevel, and whether it is cut or fused. `None`
+/// where a face's trace is not a line or an arc about the axis, or the
+/// turn will not build.
+fn revolved_tool(
+    model: &mut Model,
+    curved: &Curved,
+    section: RimSection,
+    sweep: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Shape, Shape, super::fallback::Sense)>> {
+    let [c0, c1] = section.contacts;
+    let mut curves: Vec<(Curve, (f64, f64))> = Vec::with_capacity(3);
+    // Round the section: the rim to the first contact, and the second
+    // contact back to the rim.
+    for (k, ends) in [(0, (section.rim, c0)), (1, (c1, section.rim))] {
+        let surface = &curved.faces[section.faces[k]].surface;
+        let Some(trace) = meridian_trace(surface, &section, ends, tol)? else {
+            return Ok(None);
+        };
+        curves.push(trace);
+    }
+    let Ok(bevel) = LineCurve::segment(c0, c1, tol) else {
+        return Ok(None);
+    };
+    // The rim convex where the far contact stands inside the first face.
+    let Some(out0) = outward(curved, section.faces[0], section.rim) else {
+        return Ok(None);
+    };
+    let convex = (c1 - section.rim).dot(out0) < 0.0;
+    let built = (|| -> OgeomResult<(Shape, Shape)> {
+        let [r, a, b] = [section.rim, c0, c1].map(|p| ogeom_algo::make_vertex(model, p).shape);
+        let to_c0 =
+            ogeom_algo::make_edge_between(model, curves[0].0.clone(), curves[0].1, &r, &a, tol)?
+                .shape;
+        let across = ogeom_algo::make_edge_between(
+            model,
+            Curve::Line(bevel),
+            (0.0, c0.distance(c1)),
+            &a,
+            &b,
+            tol,
+        )?
+        .shape;
+        let to_c1 =
+            ogeom_algo::make_edge_between(model, curves[1].0.clone(), curves[1].1, &b, &r, tol)?
+                .shape;
+        let wire = ogeom_algo::make_wire(model, &[to_c0, across.clone(), to_c1], tol)?.shape;
+        let normal = Direction::new(section.radial.cross(section.axis), tol)?;
+        let plane = Frame::new(
+            section.rim,
+            normal,
+            Direction::new(section.radial, tol)?,
+            tol,
+        )?;
+        let face = ogeom_algo::make_face(
+            model,
+            PlaneSurface::new(Plane::new(plane)).into(),
+            &[wire],
+            tol,
+        )?
+        .shape;
+        let turned = ogeom_algo::make_revolution(
+            model,
+            &face,
+            ogeom_math::Axis {
+                location: section.origin,
+                direction: Direction::new(section.axis, tol)?,
+            },
+            sweep,
+            tol,
+        )?;
+        // The face's own edge on the bevel's line, by its middle.
+        let middle = c0 + (c1 - c0) * 0.5;
+        let mut across = across;
+        for e in ogeom_topo::explore_unique(model, &face, ogeom_topo::ShapeType::Edge)? {
+            if let Some((curve, (t0, t1))) = ogeom_algo::placed_edge_curve(model, &e, tol)?
+                && curve.point_at(f64::midpoint(t0, t1), tol)?.distance(middle) <= tol.confusion()
+            {
+                across = e;
+            }
+        }
+        let swept: Vec<Shape> = turned
+            .history
+            .generated(&across)
+            .iter()
+            .filter(|x| model.kind_of(x).ok() == Some(ogeom_topo::ShapeType::Face))
+            .cloned()
+            .collect();
+        let [ref named] = swept[..] else {
+            ogeom_core::ogeom_bail!(Construction, "the bevel's turn is not one face");
+        };
+        let named = named.clone();
+        let solid = if ogeom_algo::volume_properties(
+            model,
+            &turned.shape,
+            ogeom_mesh::Deflection::default(),
+            tol,
+        )?
+        .mass
+            < 0.0
+        {
+            turned.shape.reversed()
+        } else {
+            turned.shape
+        };
+        Ok((solid, named))
+    })();
+    let Ok((solid, named)) = built else {
+        return Ok(None);
+    };
+    Ok(Some((
+        solid,
+        named,
+        if convex {
+            super::fallback::Sense::Cut
+        } else {
+            super::fallback::Sense::Fuse
+        },
+    )))
+}
+
 /// How a strip's end is closed in its tool ([`close_tool`]).
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum EndCap {

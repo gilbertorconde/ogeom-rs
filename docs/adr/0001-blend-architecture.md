@@ -595,9 +595,13 @@ replaced #1003's refusal):
   it is a triangle on each face's side of the crossing, each facing the
   side whose bevel is deeper. A piece asked alone still stands for the
   whole edge (one value per tangent chain, the default above); once pieces
-  are asked apart, an unasked piece stays sharp. Planar edges first; pieces
-  of a curved edge asked apart are still refused by name until the curved
-  engine builds the step.
+  are asked apart, an unasked piece stays sharp. On planes the rings build
+  the step; pieces of a curved edge asked apart go to the one boolean
+  (amendment "M5b"), each piece's tool ending on the plane square to the
+  edge at the joint: rims on any coaxial surface of revolution (a cylinder,
+  cone, sphere or torus) step on the plane through the axis, creases and
+  straight edges on curved solids on their strips' closed tools. Only a
+  pair no tool closes is refused by name.
 - **Degenerate planar topology** (an edge bounded by other than two faces,
   as where two blocks touch along an edge; an edge closing on itself; two
   edges between one pair of vertices; a vertex whose faces close round it
@@ -735,11 +739,18 @@ beyond included; a request rolling over is not labelled non-local (the
 notch trims what it reaches, by definition). On a convex plate every edge
 chamfered past the plate's thickness is the polytope of the plate's, the
 bevels' and the facets' planes. A rim between a planar cap and a coaxial
-cylinder or cone the curved path's rings do not place (rolling over its
-wall, reaching a face it does not end at, or pieces of one rim asked
-apart, each stepping at the joint on the plane through the axis) goes to
-the one boolean: its tool is the bevel's meridian triangle turned about
-the axis over the rim's span. Any other curved bevel the rings do not
+cylinder, cone or sphere the curved path's rings do not place (rolling
+over its wall, reaching a face it does not end at, or pieces of one rim
+asked apart, each stepping at the joint on the plane through the axis)
+goes to the one boolean: its tool is the bevel's meridian section turned
+about the axis over the rim's own arc, or once round the whole turn where
+the arcs of one circle asked alike close it (so the bevel is one face and
+no two tools meet on a plane through the axis). A rim between any two
+surfaces of revolution about its axis that no other route builds (a
+torus's rim, its arcs asked apart) takes the same tool, its section the
+faces' traces in the half-plane (a line on a plane, cylinder or cone, an
+arc on a sphere or torus) and the bevel's line, turned by
+`make_revolution`. Any other curved bevel the rings do not
 place (a crease rolling over or reaching a face, or pieces of one crease
 asked apart) goes to the one boolean too where it stands alone: its strip
 closed into its tool (`close_tool`, shared with rounds, a chamfer's caps

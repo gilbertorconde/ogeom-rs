@@ -867,10 +867,15 @@ fn engine_chamfer_attempt(
                 // each piece's rim tool ending on the plane through the
                 // joint (amendment "what M6 refuses by name").
                 if seamless.asked_apart(specs) {
-                    if let Some(built) = rims_one_boolean(model, solid, specs, tol)? {
+                    if let Some(built) = rims_one_boolean(model, solid, specs, true, tol)? {
                         return Ok(Some(built));
                     }
-                    return match crate::engine::creases_one_boolean(model, solid, specs, tol)? {
+                    if let Some(built) =
+                        crate::engine::creases_one_boolean(model, solid, specs, tol)?
+                    {
+                        return Ok(Some(built));
+                    }
+                    return match crate::engine::rims_revolved(model, solid, specs, true, tol)? {
                         Some(built) => Ok(Some(built)),
                         None => Err(apart_refused()),
                     };
@@ -886,18 +891,18 @@ fn engine_chamfer_attempt(
                         seamless.carry(&built.history),
                     )));
                 }
-                if let Some(built) = rims_one_boolean(model, solid, specs, tol)? {
+                if let Some(built) = rims_one_boolean(model, solid, specs, false, tol)? {
                     return Ok(Some(built));
                 }
-                return crate::engine::creases_one_boolean(model, solid, specs, tol);
+                return creases_or_revolved(model, solid, specs, tol);
             }
             if let Some(built) = crate::engine::chamfer_curved(model, solid, specs, tol)? {
                 return Ok(Some(built));
             }
-            if let Some(built) = rims_one_boolean(model, solid, specs, tol)? {
+            if let Some(built) = rims_one_boolean(model, solid, specs, false, tol)? {
                 return Ok(Some(built));
             }
-            crate::engine::creases_one_boolean(model, solid, specs, tol)
+            creases_or_revolved(model, solid, specs, tol)
         }
         Dissolved::Outside => Ok(None),
         Dissolved::Into(seamless) => {
@@ -921,6 +926,20 @@ fn engine_chamfer_attempt(
             )))
         }
     }
+}
+
+/// Curved chamfers the rings decline, through the one boolean: creases
+/// closed by their strips' tools, else rims turned about their axes.
+fn creases_or_revolved(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    if let Some(built) = crate::engine::creases_one_boolean(model, solid, specs, tol)? {
+        return Ok(Some(built));
+    }
+    crate::engine::rims_revolved(model, solid, specs, false, tol)
 }
 
 /// The chamfer of `specs` where pieces of one edge the seams split are
@@ -1003,18 +1022,25 @@ fn rims_one_boolean(
     model: &mut Model,
     solid: &Shape,
     specs: &[(Shape, Chamfer)],
+    apart: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     if specs.is_empty() {
         return Ok(None);
     }
-    let mut seats: Vec<RevolvedSeat> = Vec::with_capacity(specs.len());
+    let mut seats: Vec<Legs> = Vec::with_capacity(specs.len());
     for (edge, spec) in specs {
-        let Ok(Legs::Rim(seat, _, _)) = legs(model, solid, edge, spec, tol) else {
-            return Ok(None);
-        };
-        seats.push(seat);
+        match legs(model, solid, edge, spec, tol) {
+            Ok(found @ (Legs::Rim(..) | Legs::Sphere(..))) => seats.push(found),
+            _ => return Ok(None),
+        }
     }
+    // Each rim's circle: its centre, radius and cap's normal.
+    let circle = |legs: &Legs| match legs {
+        Legs::Rim(seat, _, _) => (seat.centre, seat.radius, seat.up),
+        Legs::Sphere(seat, _, _) => (seat.centre, seat.radius, seat.up),
+        Legs::Straight(..) | Legs::Marched => unreachable!("only rims are kept"),
+    };
     // No two asked edges meet, but pieces of one circle.
     for (i, (a, _)) in specs.iter().enumerate() {
         for (j, (b, _)) in specs.iter().enumerate().skip(i + 1) {
@@ -1025,17 +1051,122 @@ fn rims_one_boolean(
             };
             let (ea, eb) = (ends(a)?, ends(b)?);
             let meet = ea.iter().any(|u| eb.iter().any(|v| u.is_same(v)));
-            let one_circle = seats[i].centre.distance(seats[j].centre) <= tol.confusion()
-                && (seats[i].radius - seats[j].radius).abs() <= tol.confusion()
-                && seats[i].up.dot(seats[j].up) >= 1.0 - tol.angular();
+            let ((ci, ri, ui), (cj, rj, uj)) = (circle(&seats[i]), circle(&seats[j]));
+            let one_circle = ci.distance(cj) <= tol.confusion()
+                && (ri - rj).abs() <= tol.confusion()
+                && ui.dot(uj) >= 1.0 - tol.angular();
             if meet && !one_circle {
                 return Ok(None);
             }
         }
     }
-    let mut tools: Vec<crate::engine::Tool> = Vec::with_capacity(specs.len());
-    for ((edge, spec), seat) in specs.iter().zip(&seats) {
-        let wedge = wedge_for(model, solid, edge, spec, tol)?;
+    // Each rim's legs.
+    let leg_pair = |legs: &Legs| match legs {
+        Legs::Rim(_, w, c) | Legs::Sphere(_, w, c) => (*w, *c),
+        Legs::Straight(..) | Legs::Marched => unreachable!("only rims are kept"),
+    };
+    // Arcs of one circle asked alike that close it take one tool round the
+    // whole turn, so the bevel is one face and no tools meet on a plane
+    // through the axis; arcs asked apart each take their own sweep.
+    let same = |i: usize, j: usize| {
+        let ((ci, ri, ui), (cj, rj, uj)) = (circle(&seats[i]), circle(&seats[j]));
+        let ((wi, ki), (wj, kj)) = (leg_pair(&seats[i]), leg_pair(&seats[j]));
+        matches!(
+            (&seats[i], &seats[j]),
+            (Legs::Rim(..), Legs::Rim(..)) | (Legs::Sphere(..), Legs::Sphere(..))
+        ) && ci.distance(cj) <= tol.confusion()
+            && (ri - rj).abs() <= tol.confusion()
+            && ui.dot(uj) >= 1.0 - tol.angular()
+            && (wi - wj).abs() <= tol.confusion()
+            && (ki - kj).abs() <= tol.confusion()
+    };
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for i in 0..specs.len() {
+        match groups.iter_mut().find(|g| same(g[0], i)) {
+            Some(g) => g.push(i),
+            None => groups.push(vec![i]),
+        }
+    }
+    // Pieces of one circle asked with different legs are asked apart.
+    let apart = apart
+        || groups.iter().enumerate().any(|(a, g)| {
+            groups.iter().skip(a + 1).any(|h| {
+                let ((ci, ri, ui), (cj, rj, uj)) = (circle(&seats[g[0]]), circle(&seats[h[0]]));
+                ci.distance(cj) <= tol.confusion()
+                    && (ri - rj).abs() <= tol.confusion()
+                    && ui.dot(uj) >= 1.0 - tol.angular()
+            })
+        });
+    // Each arc's own sweep: `None`, the whole turn, for an edge closing on
+    // itself, or for an arc asked alone whose faces run on round the turn
+    // (a piece asked alone stands for the whole edge, unless pieces are
+    // asked apart).
+    let mut spans: Vec<Option<(f64, f64)>> = Vec::with_capacity(specs.len());
+    for ((edge, _), seat) in specs.iter().zip(&seats) {
+        let (centre, _, up) = circle(seat);
+        let x_ref = match seat {
+            Legs::Rim(seat, ..) => seat.x_ref,
+            Legs::Sphere(seat, ..) => seat.x_ref,
+            Legs::Straight(..) | Legs::Marched => unreachable!("only rims are kept"),
+        };
+        let whole = closes_on_itself(model, edge)?
+            || !apart && {
+                let (curve, range) = edge_curve(model, edge, tol)?;
+                let Curve::Circle(arc) = &curve else {
+                    return Ok(None);
+                };
+                match seat {
+                    Legs::Rim(seat, ..) => {
+                        crate::support::runs_whole_turn(model, seat, arc, range, tol)?
+                    }
+                    Legs::Sphere(seat, ..) => {
+                        crate::chamfer_sphere::rim_closes(model, solid, seat, &arc.circle(), tol)?
+                    }
+                    Legs::Straight(..) | Legs::Marched => false,
+                }
+            };
+        spans.push(if whole {
+            None
+        } else {
+            let frame = Frame::new(centre, Direction::new(up, tol)?, x_ref, tol)?;
+            Some(arc_window(model, edge, &frame, tol)?)
+        });
+    }
+    // Each tool's arcs, and its sweep (`None` the whole turn).
+    type Run = (Vec<usize>, Option<(f64, f64)>);
+    let mut runs: Vec<Run> = Vec::new();
+    for group in groups {
+        let turned: f64 = group
+            .iter()
+            .map(|k| spans[*k].map_or(core::f64::consts::TAU, |(_, sweep)| sweep))
+            .sum();
+        if group.iter().any(|k| spans[*k].is_none())
+            || group.len() > 1 && (turned - core::f64::consts::TAU).abs() <= tol.angular()
+        {
+            runs.push((group, None));
+        } else {
+            runs.extend(group.into_iter().map(|k| (vec![k], spans[k])));
+        }
+    }
+    let mut tools: Vec<crate::engine::Tool> = Vec::with_capacity(runs.len());
+    for (run, span) in runs {
+        let seat = &seats[run[0]];
+        let edge = &specs[run[0]].0;
+        let wedge = match seat {
+            Legs::Rim(seat, on_wall, on_cap) => revolved_bevel_over(
+                model,
+                solid,
+                edge,
+                seat,
+                (*on_wall, *on_cap),
+                Some(span),
+                tol,
+            )?,
+            Legs::Sphere(seat, on_wall, on_cap) => {
+                sphere_tool(model, seat, (*on_wall, *on_cap), span, tol)?
+            }
+            Legs::Straight(..) | Legs::Marched => unreachable!("only rims are kept"),
+        };
         let shape = match &wedge.solid {
             Some(s) => s.clone(),
             None => match crate::support::wedge_solid(model, &wedge.faces, true, tol) {
@@ -1045,18 +1176,28 @@ fn rims_one_boolean(
         };
         // The tool's face on the bevel: neither on the cap's plane, nor on
         // the wall, nor a plane through the axis.
+        let (centre, _, up) = circle(seat);
         let mut named = Vec::new();
         for face in ogeom_topo::explore_unique(model, &shape, ogeom_topo::ShapeType::Face)? {
             let (at, n) = ogeom_algo::face_normal(model, &face, tol)?;
-            let off_axis = at - seat.centre;
-            let h = off_axis.dot(seat.up);
-            let rho = (off_axis - seat.up * h).magnitude();
-            let on_cap = h.abs() <= tol.confusion() && n.dot(seat.up).abs() >= 1.0 - tol.angular();
-            let on_wall = (rho - seat.radius_at(h)).abs() <= tol.confusion();
-            let meridian = n.dot(seat.up).abs() <= tol.angular()
-                && n.dot(off_axis - seat.up * h).abs() <= tol.confusion() * rho.max(1.0);
+            let off_axis = at - centre;
+            let h = off_axis.dot(up);
+            let rho = (off_axis - up * h).magnitude();
+            let on_cap = h.abs() <= tol.confusion() && n.dot(up).abs() >= 1.0 - tol.angular();
+            let on_wall = match seat {
+                Legs::Rim(seat, _, _) => (rho - seat.radius_at(h)).abs() <= tol.confusion(),
+                Legs::Sphere(seat, _, _) => {
+                    (at.distance(centre + up * seat.height) - seat.sphere_radius).abs()
+                        <= tol.confusion()
+                }
+                Legs::Straight(..) | Legs::Marched => false,
+            };
+            let meridian = n.dot(up).abs() <= tol.angular()
+                && n.dot(off_axis - up * h).abs() <= tol.confusion() * rho.max(1.0);
             if !(on_cap || on_wall || meridian) {
-                named.push((face, edge.clone()));
+                for k in &run {
+                    named.push((face.clone(), specs[*k].0.clone()));
+                }
             }
         }
         tools.push(crate::engine::Tool {
@@ -1309,6 +1450,25 @@ fn wedge_for(
             })
         }
     }
+}
+
+/// A sphere rim's tool for the one boolean: its bevel's section turned
+/// about the axis over `span` (the whole turn for `None`), its legs free
+/// to run past their faces (ADR 0001, amendment "M5b").
+fn sphere_tool(
+    model: &mut Model,
+    seat: &SphereSeat,
+    (on_wall, on_cap): (f64, f64),
+    span: Option<(f64, f64)>,
+    tol: Tolerances,
+) -> OgeomResult<Wedge> {
+    Ok(Wedge {
+        faces: sphere_bevel(model, seat, on_wall, on_cap, span, tol)?,
+        solid: None,
+        additive: seat.tau < 0.0,
+        whole_ring: None,
+        marched: None,
+    })
 }
 
 /// How far a sphere seat's bevel runs along `face`: its leg on the wall or
@@ -1775,6 +1935,21 @@ fn revolved_bevel(
     on_cap: f64,
     tol: Tolerances,
 ) -> OgeomResult<Wedge> {
+    revolved_bevel_over(model, solid, edge, seat, (on_wall, on_cap), None, tol)
+}
+
+/// [`revolved_bevel`], turned over `span` where it is given (`Some(None)`
+/// the whole turn, `Some(Some((start, sweep)))` that arc, however far the
+/// wall runs on round the turn): the one boolean's tools.
+fn revolved_bevel_over(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    seat: &RevolvedSeat,
+    (on_wall, on_cap): (f64, f64),
+    span: Option<Option<(f64, f64)>>,
+    tol: Tolerances,
+) -> OgeomResult<Wedge> {
     for distance in [on_wall, on_cap] {
         if !distance.is_finite() || distance <= tol.confusion() {
             ogeom_bail!(Construction, "a chamfer of {distance} cuts nothing");
@@ -1799,7 +1974,11 @@ fn revolved_bevel(
             "a chamfer of {on_wall} down the wall runs past the apex of its cone"
         );
     }
-    if let Some((start, sweep)) = arc_span(model, edge, seat, tol)? {
+    let span = match span {
+        Some(given) => given,
+        None => arc_span(model, edge, seat, tol)?,
+    };
+    if let Some((start, sweep)) = span {
         let legs = (depth, cap_rho, on_wall.max(on_cap));
         return sector_bevel(model, solid, edge, seat, legs, (start, sweep), tol);
     }
@@ -1851,6 +2030,11 @@ fn arc_span(
     }
     let frame = seat.frame_at(seat.centre, tol)?;
     Ok(Some(arc_window(model, edge, &frame, tol)?))
+}
+
+/// Whether `edge` starts and ends at one vertex.
+fn closes_on_itself(model: &Model, edge: &Shape) -> OgeomResult<bool> {
+    Ok(ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b)))
 }
 
 /// Where an arc of a rim starts and how far it turns, as angles about
@@ -2180,7 +2364,7 @@ fn marched_step(
 
 /// Whether two spellings bevel alike: the same kind, the same measures, the
 /// same face named.
-fn same_spelling(a: &Chamfer, b: &Chamfer, tol: Tolerances) -> bool {
+pub(crate) fn same_spelling(a: &Chamfer, b: &Chamfer, tol: Tolerances) -> bool {
     let near = |x: f64, y: f64| (x - y).abs() <= tol.confusion();
     match (a, b) {
         (Chamfer::Symmetric(x), Chamfer::Symmetric(y)) => near(*x, *y),
@@ -2213,14 +2397,14 @@ fn same_spelling(a: &Chamfer, b: &Chamfer, tol: Tolerances) -> bool {
 }
 
 /// The refusal of two pieces of one curved edge (split by seams) asked
-/// with different chamfers: on planes the bevels step between them, and
-/// the curved engine does not build that step yet (ADR 0001, amendment
-/// "what M6 refuses by name").
+/// with different chamfers where no tool closes the step between them:
+/// rims, creases and straight edges step through the one boolean (ADR
+/// 0001, amendments "what M6 refuses by name" and "M5b").
 fn apart_refused() -> ogeom_core::OgeomError {
     ogeom_core::ogeom_err!(
         Construction,
-        "two pieces of one curved edge are asked with different chamfers; the step \
-         between them is built on planes only, so ask the edge once or give its \
+        "two pieces of one curved edge are asked with different chamfers, and no \
+         tool closes the step between them there; ask the edge once or give its \
          pieces one chamfer"
     )
 }

@@ -1360,3 +1360,85 @@ fn pieces_of_a_crease_asked_apart_step_between_them() {
         assert_eq!(built.history.generated(p).len(), 1, "a piece's bevel");
     }
 }
+
+/// Two D-shaped blocks 5 long fused end to end at z = 5: the straight edge
+/// at y = 3 is two pieces either side of the seam. Asked apart, 0.5 along
+/// the flat at 45 degrees on the first and 0.8 on the second, each piece's
+/// bevel ends on the plane z = 5 square to the edge, the two stepping
+/// there (ADR 0001, amendment "M5b"). In the section the bevel leaves
+/// `(0, 3 - d)` towards the edge, meeting the wall of radius 3 where
+/// `2w^2 + 2(3 - d)w + (3 - d)^2 - 9 = 0`: it takes the triangle from the
+/// corner to the two contacts, `d w / 2`, and the wall's segment beyond
+/// the chord. The half disc along 10 less each piece's section along 5.
+#[test]
+fn pieces_of_a_d_block_s_straight_edge_asked_apart_step_at_the_seam() {
+    let mut m = Model::new();
+    let half_block = |m: &mut Model, z: f64| {
+        let full = ogeom_algo::make_cylinder(m, up_at(0.0, 0.0, z), 3.0, 5.0, T)
+            .unwrap()
+            .shape;
+        let half = ogeom_algo::make_box(m, up_at(-4.0, -4.0, z - 1.0), (4.0, 8.0, 7.0), T)
+            .unwrap()
+            .shape;
+        ogeom_bool::cut(m, &full, &half, T).unwrap().shape
+    };
+    let (a, b) = (half_block(&mut m, 0.0), half_block(&mut m, 5.0));
+    let d = ogeom_bool::fuse(&mut m, &a, &b, T).unwrap().shape;
+    let flat = explore_unique(&m, &d, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .filter(|f| ogeom_algo::face_normal(&m, f, T).unwrap().1.x < -0.5)
+        .collect::<Vec<_>>();
+    let pieces: Vec<(Shape, f64)> = explore_unique(&m, &d, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(&m, &e).unwrap().unwrap();
+            let (p, q) = (point_of(&m, &a), point_of(&m, &b));
+            (p.x.abs() < 1e-9 && q.x.abs() < 1e-9 && p.y > 2.9 && (p.z - q.z).abs() > 1.0)
+                .then(|| (e, p.z.min(q.z)))
+        })
+        .collect();
+    assert_eq!(pieces.len(), 2, "the edge in two pieces at the seam");
+    let on_flat = |e: &Shape| {
+        flat.iter()
+            .find(|f| {
+                explore_unique(&m, f, ShapeType::Edge)
+                    .unwrap()
+                    .iter()
+                    .any(|x| x.is_same(e))
+            })
+            .unwrap()
+            .clone()
+    };
+    let size = |low: f64| if low < 2.5 { 0.5 } else { 0.8 };
+    let specs: Vec<(Shape, ogeom_fillet::Chamfer)> = pieces
+        .iter()
+        .map(|(e, low)| {
+            (
+                e.clone(),
+                ogeom_fillet::Chamfer::Angle {
+                    face: on_flat(e),
+                    distance: size(*low),
+                    angle: std::f64::consts::FRAC_PI_4,
+                },
+            )
+        })
+        .collect();
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &d, &specs, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let section = |d: f64| {
+        let c = 3.0 - d;
+        let w = (-2.0 * c + (4.0 * c * c - 8.0 * (c * c - 9.0)).sqrt()) / 4.0;
+        let turn = w.atan2(c + w);
+        0.5 * d * w + 4.5 * (turn - turn.sin())
+    };
+    let pi = std::f64::consts::PI;
+    let want = 4.5 * pi * 10.0 - 5.0 * section(0.5) - 5.0 * section(0.8);
+    let got = volume(&m, &built.shape);
+    assert!((got - want).abs() <= 1e-6 * want, "{got} against {want}");
+    for (e, _) in &pieces {
+        assert_eq!(built.history.generated(e).len(), 1, "its bevel");
+    }
+}
