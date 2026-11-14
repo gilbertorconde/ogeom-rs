@@ -443,8 +443,9 @@ fn faces_of(curved: &Curved, edge: Id) -> Vec<usize> {
         .collect()
 }
 
-/// A face's outward unit normal at `p`, on a plane, a cylinder, a sphere or
-/// a torus; `None` on any other surface.
+/// A face's outward unit normal at `p`: in closed form on a plane, a
+/// cylinder, a sphere or a torus, else the surface's own normal at the
+/// foot of `p`; `None` where it has none there.
 fn outward(curved: &Curved, face: usize, p: Point) -> Option<Vector> {
     let f = &curved.faces[face];
     let sign = if f.reversed { -1.0 } else { 1.0 };
@@ -476,7 +477,17 @@ fn outward(curved: &Curved, face: usize, p: Point) -> Option<Vector> {
             let n = r.magnitude();
             (n > 0.0).then(|| r / n * sign)
         }
-        _ => None,
+        // Any other surface: its own normal at the foot of `p`.
+        surface => {
+            let foot =
+                ogeom_geom::project::project_on_surface(surface, p, 16, Tolerances::default())
+                    .ok()?;
+            let (u, v) = foot.parameters;
+            let (du, dv) = ogeom_geom::Surface::d1_at(surface, u, v, Tolerances::default()).ok()?;
+            let n = du.cross(dv);
+            let m = n.magnitude();
+            (m > 0.0).then(|| n / m * sign)
+        }
     }
 }
 
@@ -1196,9 +1207,9 @@ fn extruded_crease(
             return Ok(None);
         }
     }
-    let (Some(in_cap), Some(in_wall)) = (
-        away(curved, faces[cap], edge),
+    let (Some(in_wall), Some(wall_out)) = (
         away(curved, faces[wall], edge),
+        outward(curved, faces[wall], mid),
     ) else {
         return Ok(None);
     };
@@ -1211,7 +1222,9 @@ fn extruded_crease(
         let m = up.cross(tangent);
         Ok(m / m.magnitude())
     };
-    let sign = if (in_cap - mid).dot(across(at(CREASE_STATIONS / 2))?) > 0.0 {
+    // Into the cap from a convex crease: away from the wall's outward
+    // side.
+    let sign = if wall_out.dot(across(at(CREASE_STATIONS / 2))?) < 0.0 {
         1.0
     } else {
         -1.0
