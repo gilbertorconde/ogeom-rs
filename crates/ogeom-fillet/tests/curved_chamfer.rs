@@ -1150,3 +1150,48 @@ fn a_stadium_s_top_loop_builds_the_same_solid_at_every_reading() {
     );
     assert!(rounded.windows(2).all(|w| w[0] == w[1]), "a round differs");
 }
+
+/// A plate 20 × 10 × 4 with a cylindrical boss of radius 1.5 and height 3
+/// on its top, its axis at (10, 2): the front top edge chamfered 2 reaches
+/// under the boss's foot, a face it does not end at. The straight bevel
+/// between planes is a convex piece, and the one boolean builds it (ADR
+/// 0001, amendment "M5a"): the plate less the bevel's prism, plus the
+/// boss's cylinder, the edge generating its bevel.
+#[test]
+fn a_straight_bevel_under_a_cylindrical_boss_goes_through_the_one_boolean() {
+    let mut m = Model::new();
+    let plate = ogeom_algo::make_box(&mut m, up_at(0.0, 0.0, 0.0), (20.0, 10.0, 4.0), T)
+        .unwrap()
+        .shape;
+    let boss = ogeom_algo::make_cylinder(&mut m, up_at(10.0, 2.0, 4.0), 1.5, 3.0, T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &plate, &boss, T).unwrap().shape;
+    let edge = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
+            (l.z - 4.0).abs() < 1e-6 && (h.z - 4.0).abs() < 1e-6 && h.y < 1e-6
+        })
+        .unwrap();
+    let (built, work) = ogeom_bool::work::counted(|| {
+        ogeom_fillet::chamfer_edges_with(
+            &mut m,
+            &s,
+            &[(edge.clone(), ogeom_fillet::Chamfer::Symmetric(2.0))],
+            T,
+        )
+        .unwrap()
+    });
+    assert!(work.face_pairs > 0, "built by the booleans");
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let want = 20.0 * 10.0 * 4.0 + std::f64::consts::PI * 1.5 * 1.5 * 3.0 - 2.0 * 20.0;
+    let got = ogeom_algo::volume_properties(&m, &built.shape, ogeom_mesh::Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!((got - want).abs() <= 1e-6 * want, "{got} against {want}");
+    assert_eq!(built.history.generated(&edge).len(), 1, "the bevel");
+}

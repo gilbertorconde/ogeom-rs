@@ -679,7 +679,10 @@ it for planar chamfers first.
   in one line where a third face meets the step (the step's face is then
   that face, less and plus the two bevels' end sections, which the
   booleans resolve); a consumed face's hole not bevelled all round; a
-  bevelled concave edge at a consumed face's hole or reflex corner. This is a boolean on a local request, which §4.5
+  bevelled concave edge at a consumed face's hole or reflex corner; a
+  straight bevel between planes on a solid with curved faces reaching a
+  face it does not end at (each bevel's hull, the reach proved by
+  `certify_face_within`). This is a boolean on a local request, which §4.5
   rules out for the one assembly; it is kept to the cases the rings cannot
   place, each listed here as it is routed, so that M6 deletes the current
   path with every planar chamfer built through the engine.

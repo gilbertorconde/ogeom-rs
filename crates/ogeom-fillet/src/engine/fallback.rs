@@ -1024,6 +1024,161 @@ fn group_tool(
     }))
 }
 
+/// Straight bevels between planes on a solid with curved faces, built by
+/// the one boolean where one reaches a face it does not end at (ADR 0001,
+/// amendment "M5a"): each bevel's piece is the convex hull of its edge and
+/// its contact lines' ends on the planar faces at its two ends, and a face
+/// not touching those ends that cannot be proved outside that hull makes
+/// the request non-local. `None` (the curved path's) where an asked edge is
+/// not straight between planes, two asked edges meet, an end's face is not
+/// a plane, or no face is reached.
+///
+/// # Errors
+///
+/// As reading the solid and the booleans, other than their refusals.
+pub(crate) fn straight_non_local(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, crate::Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    use ogeom_algo::HalfSpaces;
+    let eps = tol.confusion();
+    // Each bevel: its edge, its hull's points, its contact lines' ends, its
+    // end vertices, and whether it fills.
+    type Straight = (Shape, Vec<Point>, Vec<Point>, Vec<Shape>, bool);
+    let mut pieces: Vec<Straight> = Vec::new();
+    let mut ends_seen: Vec<Shape> = Vec::new();
+    for (edge, spec) in specs {
+        let Ok(crate::chamfer::Legs::Straight(seat, d)) =
+            crate::chamfer::legs(model, solid, edge, spec, tol)
+        else {
+            return Ok(None);
+        };
+        let Some((va, vb)) = ogeom_algo::edge_vertices(model, edge)? else {
+            return Ok(None);
+        };
+        if ends_seen.iter().any(|v| v.is_same(&va) || v.is_same(&vb)) {
+            return Ok(None);
+        }
+        ends_seen.extend([va.clone(), vb.clone()]);
+        let legs = [seat.leg(0, tol)?, seat.leg(1, tol)?];
+        let mut carried = Vec::with_capacity(4);
+        let mut points = Vec::with_capacity(6);
+        for (v, at) in [(&va, seat.start), (&vb, seat.end)] {
+            // The face at this end that is neither of the seat's: a plane
+            // the contact lines end on.
+            let around = ogeom_topo::ancestors_of(model, solid, v, ShapeType::Face)?;
+            let end: Vec<&Shape> = around
+                .iter()
+                .filter(|f| !seat.faces.iter().any(|g| g.is_same(f)))
+                .collect();
+            let [end] = end[..] else {
+                return Ok(None);
+            };
+            let Some((n, off)) = face_plane(model, end, tol)? else {
+                return Ok(None);
+            };
+            for k in 0..2 {
+                let from = at + legs[k] * d[k];
+                let along = n.dot(seat.along);
+                if along.abs() <= tol.angular() {
+                    return Ok(None);
+                }
+                carried.push(from + seat.along * ((off - n.dot(from.to_vector())) / along));
+            }
+            points.push(at);
+        }
+        points.extend(carried.iter().copied());
+        pieces.push((edge.clone(), points, carried, vec![va, vb], !seat.convex));
+    }
+    // A face not touching a piece's ends that is not proved outside it.
+    let faces = explore_unique(model, solid, ShapeType::Face)?;
+    let mut reached = false;
+    let mut tools = Vec::with_capacity(pieces.len());
+    for (edge, points, carried, ends, additive) in &pieces {
+        let Some((at, rings, planes)) = hull(points, eps) else {
+            return Ok(None);
+        };
+        let near: Vec<Shape> = ends
+            .iter()
+            .map(|v| ogeom_topo::ancestors_of(model, solid, v, ShapeType::Face))
+            .collect::<OgeomResult<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect();
+        let outside = HalfSpaces::Any(
+            planes
+                .iter()
+                .map(|(n, off)| HalfSpaces::Below {
+                    normal: -*n,
+                    at: Point::ORIGIN + *n * *off,
+                })
+                .collect(),
+        );
+        for face in &faces {
+            if near.iter().any(|f| f.is_same(face)) {
+                continue;
+            }
+            if ogeom_algo::certify_face_within(model, face, &outside, eps, tol)?.is_err() {
+                reached = true;
+            }
+        }
+        let Ok((made, made_faces)) =
+            ogeom_algo::make_faceted_solid(model, &at, &rings, &vec![None; rings.len()], tol)
+        else {
+            return Ok(None);
+        };
+        let named = planes
+            .iter()
+            .enumerate()
+            .filter(|(_, (n, off))| {
+                carried
+                    .iter()
+                    .all(|p| (n.dot(p.to_vector()) - off).abs() <= eps)
+            })
+            .map(|(fi, _)| (made_faces[fi].clone(), edge.clone()))
+            .collect();
+        tools.push(Tool {
+            solid: made.shape,
+            sense: if *additive { Sense::Fuse } else { Sense::Cut },
+            faces: named,
+        });
+    }
+    if !reached {
+        return Ok(None);
+    }
+    let Some(built) = apply(model, solid, &tools, tol)? else {
+        return Ok(None);
+    };
+    if specs
+        .iter()
+        .any(|(e, _)| built.history.generated(e).is_empty())
+    {
+        return Ok(None);
+    }
+    let mut history = built.history;
+    for (e, _) in specs {
+        history.delete(e);
+    }
+    Ok(Some(Built::new(built.shape, history)))
+}
+
+/// A planar face's outward unit normal and offset; `None` on another
+/// surface.
+fn face_plane(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<(Vector, f64)>> {
+    let planar = model
+        .node(face)
+        .and_then(|n| n.data().as_face())
+        .and_then(|d| model.geometry().surface(d.surface))
+        .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::Plane(_)));
+    if !planar {
+        return Ok(None);
+    }
+    let (at, n) = ogeom_algo::face_normal(model, face, tol)?;
+    Ok(Some((n, n.dot(at.to_vector()))))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
