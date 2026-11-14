@@ -2861,6 +2861,97 @@ fn a_solid_with_an_edge_four_faces_bound_is_refused_by_name() {
     assert!(refused.to_string().contains("degenerate"), "{refused}");
 }
 
+/// Two unit cubes sharing one corner, built as one solid of one shell:
+/// round the shared vertex its faces close twice, two cones meeting at a
+/// point. Its topology is degenerate, and a chamfer of a far edge is
+/// refused by name. (The boolean keeps two cubes touching so as two
+/// solids, which chamfer one by one.)
+#[test]
+fn a_solid_whose_faces_close_twice_round_a_vertex_is_refused_by_name() {
+    use ogeom_math::Point;
+    let mut m = Model::new();
+    let mut points: Vec<Point> = Vec::new();
+    let mut rings: Vec<Vec<usize>> = Vec::new();
+    for at in [0.0, 1.0] {
+        let base = points.len();
+        let corner = |x: usize, y: usize, z: usize| base + x * 4 + y * 2 + z;
+        for x in 0..2 {
+            for y in 0..2 {
+                for z in 0..2 {
+                    points.push(Point::new(at + x as f64, at + y as f64, at + z as f64));
+                }
+            }
+        }
+        rings.extend([
+            vec![
+                corner(0, 0, 0),
+                corner(0, 0, 1),
+                corner(0, 1, 1),
+                corner(0, 1, 0),
+            ],
+            vec![
+                corner(1, 0, 0),
+                corner(1, 1, 0),
+                corner(1, 1, 1),
+                corner(1, 0, 1),
+            ],
+            vec![
+                corner(0, 0, 0),
+                corner(1, 0, 0),
+                corner(1, 0, 1),
+                corner(0, 0, 1),
+            ],
+            vec![
+                corner(0, 1, 0),
+                corner(0, 1, 1),
+                corner(1, 1, 1),
+                corner(1, 1, 0),
+            ],
+            vec![
+                corner(0, 0, 0),
+                corner(0, 1, 0),
+                corner(1, 1, 0),
+                corner(1, 0, 0),
+            ],
+            vec![
+                corner(0, 0, 1),
+                corner(1, 0, 1),
+                corner(1, 1, 1),
+                corner(0, 1, 1),
+            ],
+        ]);
+    }
+    // The second cube's first corner is the first's last.
+    let shared = 7;
+    points.remove(8);
+    for r in rings.iter_mut().skip(6) {
+        for i in r.iter_mut() {
+            *i = if *i == 8 { shared } else { *i - 1 };
+        }
+    }
+    let s = ogeom_algo::make_faceted_solid(&mut m, &points, &rings, &[None; 12], T)
+        .unwrap()
+        .0
+        .shape;
+    let solids = explore_unique(&m, &s, ShapeType::Solid).unwrap().len();
+    let far: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            bb.high().unwrap().z < 0.01 && bb.high().unwrap().x < 0.5
+        })
+        .map(|e| (e, Chamfer::Symmetric(0.1)))
+        .collect();
+    assert_eq!(far.len(), 1);
+    let refused = ogeom_fillet::chamfer_edges_with(&mut m, &s, &far, T);
+    assert!(
+        matches!(&refused, Err(e) if e.to_string().contains("more than once")),
+        "{solids} solids: {:?}",
+        refused.map(|b| b.shape)
+    );
+}
+
 /// A compound of a block and a loose face: a chamfer cuts solids, so a
 /// chamfer of the block's edge within it is refused by name.
 #[test]
