@@ -438,8 +438,10 @@ pub(crate) fn engine_chamfer(
             }
             // A solid with curved faces: its seats on cylinders and cones,
             // read with its seams dissolved where it holds any.
+            // On planes, only where a corner's facet is off one plane: the
+            // curved path closes it with a patch.
             if crate::engine::bounded_by_planes(model, solid, tol)? {
-                return Ok(None);
+                return crate::engine::chamfer_patched(model, solid, specs, tol);
             }
             if let Some(seamless) = crate::engine::dissolve_curved(model, solid, tol)? {
                 let Some(specs) = seamless.specs(specs) else {

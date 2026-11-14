@@ -213,23 +213,26 @@ fn a_facet_closes_a_pyramid_s_apex_of_four_bevels_in_a_square() {
 }
 
 #[test]
-fn a_facet_through_four_points_off_one_plane_is_refused() {
-    // The apex moved off the middle: the four crossings no longer share a
-    // plane, and no facet passes through them all: refused by name.
+fn a_facet_through_five_points_off_one_plane_is_refused() {
+    // A pentagonal pyramid's apex moved off the middle: the five crossings
+    // no longer share a plane, no facet passes through them all, and no
+    // patch closes five: refused by name.
     let mut m = Model::new();
     let points = [
         Point::new(0.0, 0.0, 0.0),
         Point::new(20.0, 0.0, 0.0),
-        Point::new(20.0, 20.0, 0.0),
-        Point::new(0.0, 20.0, 0.0),
+        Point::new(26.0, 14.0, 0.0),
+        Point::new(10.0, 24.0, 0.0),
+        Point::new(-6.0, 14.0, 0.0),
         Point::new(5.0, 8.0, 12.0),
     ];
     let rings = vec![
-        vec![0, 3, 2, 1],
-        vec![0, 1, 4],
-        vec![1, 2, 4],
-        vec![2, 3, 4],
-        vec![3, 0, 4],
+        vec![0, 4, 3, 2, 1],
+        vec![0, 1, 5],
+        vec![1, 2, 5],
+        vec![2, 3, 5],
+        vec![3, 4, 5],
+        vec![4, 0, 5],
     ];
     let p = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
         .unwrap()
@@ -241,7 +244,7 @@ fn a_facet_through_four_points_off_one_plane_is_refused() {
             let (c, (s, t)) = ogeom_algo::placed_edge_curve(&m, e, T).unwrap().unwrap();
             [s, t]
                 .iter()
-                .any(|&u| c.point_at(u, T).unwrap().distance(points[4]) < 1e-9)
+                .any(|&u| c.point_at(u, T).unwrap().distance(points[5]) < 1e-9)
         })
         .map(|e| (e, Chamfer::Symmetric(2.0)))
         .collect();

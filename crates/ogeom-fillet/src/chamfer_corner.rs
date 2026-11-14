@@ -44,7 +44,9 @@ pub enum ChamferCorner {
 /// through them all to exist: as at a pyramid's apex beveled alike. The
 /// solid cut away is then the convex piece on the vertex's side of that
 /// plane and the solid's side of every bevel's plane, whose faces are the
-/// facet and the bevels' parts past it.
+/// facet and the bevels' parts past it. On a solid bounded by planes, a
+/// vertex of four bevels whose points leave one plane closes instead on
+/// the bilinear patch through them, its sides the bevels' ends.
 ///
 /// # Errors
 ///
@@ -54,7 +56,8 @@ pub enum ChamferCorner {
 /// a vertex of three or more of the request's bevels holds one that is not
 /// a straight convex edge between planes, two in turn round it that share
 /// no face, facet points that do not stand on the edges' own lengths, or,
-/// past three, facet points off one plane.
+/// past three, facet points off one plane that no patch closes (five or
+/// more, or four the engine hands back).
 pub fn chamfer_edges_cornered(
     model: &mut Model,
     solid: &Shape,
