@@ -266,6 +266,33 @@ pub(crate) fn curved_corners(
                     || t_in.cross(t_out).magnitude()
                         <= tol.angular() * t_in.magnitude() * t_out.magnitude()
                         && t_in.dot(t_out) > 0.0;
+                // Two fitted contacts running on into each other, each
+                // through stations of its own, share their ends, which may
+                // stand off the plane square to the edge there, or where a
+                // crease's fitted seam meets itself at a corner: the corner
+                // is that end.
+                if blend_in
+                    && blend_out
+                    && matches!(c_in, ogeom_geom::Curve::BSpline(_))
+                    && matches!(c_out, ogeom_geom::Curve::BSpline(_))
+                {
+                    let end_near = |c: &ogeom_geom::Curve| -> OgeomResult<(f64, Point)> {
+                        let (lo, hi) = c.domain();
+                        let (a, b) = (c.point_at(lo, tol)?, c.point_at(hi, tol)?);
+                        Ok(if a.distance(at) <= b.distance(at) {
+                            (lo, a)
+                        } else {
+                            (hi, b)
+                        })
+                    };
+                    let ((s, p), (u, q)) = (end_near(&c_in)?, end_near(&c_out)?);
+                    if p.distance(q) <= tol.confusion() {
+                        if !put(&mut out, (fi, v), p, [(e_in, s), (e_out, u)], tol) {
+                            return Ok(None);
+                        }
+                        continue;
+                    }
+                }
                 if straight {
                     let t = t_in / t_in.magnitude();
                     let (Some((s, p)), Some((u, q))) =
@@ -281,15 +308,24 @@ pub(crate) fn curved_corners(
                     }
                     continue;
                 }
-                let found = ogeom_intersect::curves::intersect_curves(
-                    &c_in,
-                    &c_out,
-                    ogeom_intersect::curves::CurveCurveOptions {
-                        gap: tol.confusion(),
-                        ..ogeom_intersect::curves::CurveCurveOptions::default()
-                    },
-                    tol,
-                )?;
+                let crossings = |gap: f64| {
+                    ogeom_intersect::curves::intersect_curves(
+                        &c_in,
+                        &c_out,
+                        ogeom_intersect::curves::CurveCurveOptions {
+                            gap,
+                            ..ogeom_intersect::curves::CurveCurveOptions::default()
+                        },
+                        tol,
+                    )
+                };
+                let mut found = crossings(tol.confusion())?;
+                // A fitted contact stands within the bands' fit target of
+                // its face, and may pass an edge on it that far off: its
+                // edges are widened to how far it stands.
+                if found.crossings.is_empty() {
+                    found = crossings(crate::marched::band_fit_target(tol))?;
+                }
                 let Some(nearest) = found
                     .crossings
                     .iter()
@@ -298,7 +334,17 @@ pub(crate) fn curved_corners(
                     return Ok(None);
                 };
                 let on = [(e_in, nearest.on_a), (e_out, nearest.on_b)];
-                if !put(&mut out, (fi, v), nearest.point, on, tol) {
+                // Where the two pass apart, the corner stands on the face's
+                // own edge, which is exact: the fitted contact is what stands
+                // off, within its widened edge.
+                let point = if !blend_in {
+                    c_in.point_at(nearest.on_a, tol)?
+                } else if !blend_out {
+                    c_out.point_at(nearest.on_b, tol)?
+                } else {
+                    nearest.point
+                };
+                if !put(&mut out, (fi, v), point, on, tol) {
                     return Ok(None);
                 }
             }
