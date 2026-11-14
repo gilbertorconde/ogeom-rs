@@ -12,7 +12,9 @@
 
 use ogeom_algo::Built;
 use ogeom_core::{FastMap, FastSet, OgeomResult, Tolerances};
-use ogeom_geom::{CircleCurve, Curve, CylinderSurface, LineCurve, SurfaceGeometry, TorusSurface};
+use ogeom_geom::{
+    CircleCurve, Curve, Curve3d as _, CylinderSurface, LineCurve, SurfaceGeometry, TorusSurface,
+};
 use ogeom_math::{Circle, Cylinder, Direction, Frame, Point, Torus, Vector};
 use ogeom_topo::{Model, Shape};
 
@@ -50,6 +52,19 @@ pub(crate) fn round(
     if asked.windows(2).any(|w| w[0].0 == w[1].0) {
         return Ok(None);
     }
+    // In order of where each edge stands, its key only between two that
+    // stand alike: a dissolved solid's keys change from one reading to the
+    // next, and the strips' order is the result's face order.
+    asked.sort_by_cached_key(|(e, _, _)| {
+        let c = &curved.edges[e];
+        let at = c
+            .curve
+            .point_at(0.5 * (c.range.0 + c.range.1), tol)
+            .map_or([u64::MAX; 3], |p| {
+                [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]
+            });
+        (at, *e)
+    });
     // P1.
     let mut strips: Vec<Strip> = Vec::with_capacity(asked.len());
     let mut boxes: Vec<(usize, ogeom_algo::HalfSpaces)> = Vec::new();

@@ -1092,3 +1092,61 @@ fn a_stadium_s_straight_edge_chamfered_alone_ends_on_a_cap_where_its_arcs_run_on
         "takes {taken} against the triangle's {want}"
     );
 }
+
+/// A stadium (a 10 × 4 × 3 box fused with a cylinder of radius 2 at each
+/// end): its seams dissolve into a new solid at every reading, whose keys
+/// differ from one reading to the next. The top loop chamfered at 0.5 and
+/// rounded at 0.5, each asked three times in one model (twice in one order,
+/// once reversed): the same solid to the bit every time, its volume and
+/// every vertex. The strips are ordered by where their edges stand, not by
+/// the dissolved solid's keys.
+#[test]
+fn a_stadium_s_top_loop_builds_the_same_solid_at_every_reading() {
+    let mut m = Model::new();
+    let core = ogeom_algo::make_box(&mut m, up_at(-5.0, -2.0, 0.0), (10.0, 4.0, 3.0), T)
+        .unwrap()
+        .shape;
+    let left = ogeom_algo::make_cylinder(&mut m, up_at(-5.0, 0.0, 0.0), 2.0, 3.0, T)
+        .unwrap()
+        .shape;
+    let right = ogeom_algo::make_cylinder(&mut m, up_at(5.0, 0.0, 0.0), 2.0, 3.0, T)
+        .unwrap()
+        .shape;
+    let st = ogeom_bool::fuse(&mut m, &core, &left, T).unwrap().shape;
+    let st = ogeom_bool::fuse(&mut m, &st, &right, T).unwrap().shape;
+    let top: Vec<Shape> = explore_unique(&m, &st, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| ogeom_algo::shape_bounds(&m, e, T).unwrap().low().unwrap().z > 3.0 - 1e-6)
+        .collect();
+    let back: Vec<Shape> = top.iter().rev().cloned().collect();
+    let bits = |m: &Model, s: &Shape| {
+        let volume = ogeom_algo::volume_properties(m, s, ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass;
+        let mut out: Vec<[u64; 3]> = explore_unique(m, s, ShapeType::Vertex)
+            .unwrap()
+            .iter()
+            .map(|v| {
+                let p = point_of(m, v);
+                [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]
+            })
+            .collect();
+        out.sort_unstable();
+        (volume.to_bits(), out)
+    };
+    let mut chamfered = Vec::new();
+    let mut rounded = Vec::new();
+    for asked in [&top, &top, &back] {
+        let built = ogeom_fillet::chamfer_edges(&mut m, &st, asked, 0.5, T).unwrap();
+        chamfered.push(bits(&m, &built.shape));
+        let rounds: Vec<(Shape, f64)> = asked.iter().map(|e| (e.clone(), 0.5)).collect();
+        let built = ogeom_fillet::fillet_edges_with(&mut m, &st, &rounds, T).unwrap();
+        rounded.push(bits(&m, &built.shape));
+    }
+    assert!(
+        chamfered.windows(2).all(|w| w[0] == w[1]),
+        "a chamfer differs"
+    );
+    assert!(rounded.windows(2).all(|w| w[0] == w[1]), "a round differs");
+}
