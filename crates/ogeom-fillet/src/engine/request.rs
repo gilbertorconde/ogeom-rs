@@ -10,6 +10,10 @@ use crate::chamfer::{Chamfer, Legs, legs};
 #[derive(Debug, Clone)]
 pub(crate) struct Request {
     pub blends: Vec<Blend>,
+    /// Whether a vertex of three chamfers closes by their mitre, the point
+    /// their planes share, rather than by the facet through their faces'
+    /// setback corners ([`ChamferCorner`](crate::ChamferCorner)).
+    pub mitre: bool,
 }
 
 /// One edge and the section swept along it.
@@ -69,7 +73,10 @@ impl Request {
                 },
             });
         }
-        Ok(Some(Self { blends }))
+        Ok(Some(Self {
+            blends,
+            mitre: false,
+        }))
     }
 
     /// Each edge rounded at its radius, as one request.
@@ -92,6 +99,9 @@ impl Request {
                 section: Section::Round { radius: *radius },
             });
         }
-        Ok(Self { blends })
+        Ok(Self {
+            blends,
+            mitre: false,
+        })
     }
 }

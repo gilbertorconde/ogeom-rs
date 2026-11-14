@@ -250,9 +250,10 @@ by exactly the two curves that meet there.
    (§13, question 2).
 3. **Chamfers at vertices of more than three bevels:**
    - The facet is planar where the setback corners are coplanar.
-   - Otherwise the corner is one patch through them, as the general case
-     with straight sections, never a triangulation (§13, question 1).
-   - Until M4 delivers that patch, such a corner is refused by name.
+   - Otherwise the corner is one patch through them, never a
+     triangulation (§13, question 1). It is G0, not the general case's G1
+     patch (see the amendment below): the bilinear patch at four corners,
+     the corners' Wachspress blend at five or more.
 
 ### 4.5 P4: one assembly
 
@@ -516,6 +517,45 @@ but with base points at its corners (weight zero there), which a
 tensor-product B-spline kernel cannot evaluate. The interpolated form is
 taken instead, its error measured on it.
 
+### Amendment: chamfer corners are G0 (#902, M4)
+
+§4.4 had the off-plane chamfer corner built as the general case with
+straight sections, on the round side's transfinite patch. That patch meets
+each side's support tangent along the side, which a round's hole allows:
+at each hole corner the two strips are tangent to the face they both touch,
+so their tangent planes agree there. A chamfer's hole does not. At each
+corner two bevels meet on a face at an angle, and their planes share no
+tangent plane at that point, so no surface is tangent to both. On a
+rectangular pyramid's apex chamfered on its four slant edges the patch, its
+supports the bevels, misses the bands' fit target in angle, as it must.
+
+A chamfer is G0 everywhere, between its bevels and its faces alike, so its
+corner patch is G0 too: it takes each bevel's end segment exactly and need
+not meet the bevels tangent.
+
+- **Four corners:** the bilinear patch through them. Its four sides are the
+  segments between them, it lies in their hull, and it halves their
+  tetrahedron, which gives an exact volume oracle (#952). SMLib builds the
+  same corner [14].
+- **Five or more:** the corners blended by the Wachspress coordinates of
+  the regular polygon of as many corners, `S(x) = sum_k l_k(x) P_k`. On each
+  side of the polygon the coordinates are its two corners' alone and linear
+  between them, so the patch takes each straight side exactly; on a square
+  they are bilinear, so four corners give the bilinear patch again; where
+  the corners are coplanar the patch is their plane. The face carries it as
+  the round side's five-or-more patch is carried, a clamped bicubic
+  B-spline on each side's sector, its pole at the polygon's centre,
+  neighbours sharing their line exactly; its miss from the exact blend is
+  measured and held to the bands' fit target.
+- **P5:** the patch is proved within the material every face at its vertex
+  bounds.
+- **A curved bevel there:** its end is where its surface meets the plane
+  through its two corners and the hole's middle (a cone's conic), and the
+  patch takes curved sides by adding each side's departure from its chord,
+  weighted by its two corners' coordinates. On side `i` the sides beside it
+  stand at an end of theirs, where a curve meets its chord, so every side is
+  taken exactly; on a square this is the bilinearly blended Coons patch.
+
 ## 12. Acceptance corpus
 
 From #902:
@@ -576,8 +616,9 @@ document was not found, the table says so rather than guessing.
 
 - The default chamfer corner is the **facet** through the setback corners
   wherever they are coplanar, always so at three bevels.
-- Otherwise it is **one patch** through them, built in M4. Until then such a
-  corner is refused by name.
+- Otherwise it is **one patch** through them, built in M4: G0, the bilinear
+  patch at four corners and their Wachspress blend at five or more (see the
+  amendment in §11).
 - The mitre stays available as an option (`ChamferCorner::Point`).
 - **API change:** today `chamfer_edges` mitres; under this rule it takes the
   facet. M1 records the change in the changelog as a change of default.

@@ -9,6 +9,7 @@
 //! never a search for another construction.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
+use ogeom_geom::Curve3d as _;
 use ogeom_math::{Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
@@ -169,8 +170,17 @@ pub(crate) fn solid_fits(model: &Model, solid: &Shape, tol: Tolerances) -> Ogeom
     for e in explore_unique(model, solid, ShapeType::Edge)? {
         let faces = ogeom_topo::ancestors_of(model, solid, &e, ShapeType::Face)?;
         if let [a, b] = faces.as_slice() {
-            let (_, na) = ogeom_algo::face_normal(model, a, tol)?;
-            let (_, nb) = ogeom_algo::face_normal(model, b, tol)?;
+            // Read at the edge: a face's normal at its own middle says
+            // nothing of how it meets a neighbour (a half drum's wall faces
+            // away from the flat it meets square).
+            let Some((curve, (lo, hi))) = ogeom_algo::placed_edge_curve(model, &e, tol)? else {
+                continue;
+            };
+            let at = curve.point_at(f64::midpoint(lo, hi), tol)?;
+            let (na, nb) = (
+                normal_near(model, a, at, tol)?,
+                normal_near(model, b, at, tol)?,
+            );
             if na.dot(nb) < -1.0 + tol.angular() {
                 ogeom_bail!(
                     Construction,
@@ -200,7 +210,7 @@ pub(crate) fn crosses_itself(pts: &[(f64, f64)], eps: f64) -> bool {
 }
 
 /// Whether any edge of the polygon `a` meets any edge of the polygon `b`.
-fn loops_meet(a: &[(f64, f64)], b: &[(f64, f64)], eps: f64) -> bool {
+pub(crate) fn loops_meet(a: &[(f64, f64)], b: &[(f64, f64)], eps: f64) -> bool {
     (0..a.len()).any(|i| {
         (0..b.len())
             .any(|j| segments_meet(a[i], a[(i + 1) % a.len()], b[j], b[(j + 1) % b.len()], eps))
@@ -227,7 +237,7 @@ fn segments_meet(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64), eps
 
 /// Whether `p` lies inside the polygon `pts`, farther than `eps` from its
 /// edges.
-fn strictly_inside(pts: &[(f64, f64)], p: (f64, f64), eps: f64) -> bool {
+pub(crate) fn strictly_inside(pts: &[(f64, f64)], p: (f64, f64), eps: f64) -> bool {
     let n = pts.len();
     let mut inside = false;
     for i in 0..n {
@@ -247,4 +257,28 @@ fn strictly_inside(pts: &[(f64, f64)], p: (f64, f64), eps: f64) -> bool {
         }
     }
     inside
+}
+
+/// `face`'s unit outward normal at the foot of `at` on its surface, where
+/// it has one there; else its normal at its own middle.
+fn normal_near(model: &Model, face: &Shape, at: Point, tol: Tolerances) -> OgeomResult<Vector> {
+    let placement = face.transform(model.datums())?;
+    let surface = model
+        .node(face)
+        .and_then(|n| n.data().as_face())
+        .and_then(|d| model.geometry().surface(d.surface));
+    let local = placement.inverse().map(|back| back.apply(at));
+    if let (Some(surface), Ok(local)) = (surface, local)
+        && let Ok(foot) = ogeom_geom::project::project_on_surface(surface, local, 16, tol)
+        && let Ok(normal) =
+            ogeom_geom::Surface::normal_at(surface, foot.parameters.0, foot.parameters.1, tol)
+    {
+        let placed = placement.apply_vector(normal.vector());
+        return Ok(if face.orientation() == ogeom_topo::Orientation::Reversed {
+            -placed
+        } else {
+            placed
+        });
+    }
+    Ok(ogeom_algo::face_normal(model, face, tol)?.1)
 }

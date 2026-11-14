@@ -1331,3 +1331,1462 @@ fn bevels_crossing_on_a_face_at_an_angle_leave_it_the_part_below() {
         .len();
     assert_eq!(faces, want_faces, "faces");
 }
+
+/// A slab: the polygon `outline` in (x, y), wound counter-clockwise seen
+/// from +z, from z = 0 to z = `height`.
+fn slab(m: &mut Model, outline: &[(f64, f64)], height: f64) -> Shape {
+    let n = outline.len();
+    let mut points: Vec<Point> = outline
+        .iter()
+        .map(|&(x, y)| Point::new(x, y, 0.0))
+        .collect();
+    points.extend(outline.iter().map(|&(x, y)| Point::new(x, y, height)));
+    let mut rings: Vec<Vec<usize>> = vec![(0..n).rev().collect(), (n..2 * n).collect()];
+    for i in 0..n {
+        let j = (i + 1) % n;
+        rings.push(vec![i, j, n + j, n + i]);
+    }
+    ogeom_algo::make_faceted_solid(m, &points, &rings, &[], T)
+        .unwrap()
+        .0
+        .shape
+}
+
+/// A web's section once both its top edges are bevelled past half its
+/// width: `(u, z)` with `u` across the web from its outer face, the web
+/// `w` wide and `t` thick, each bevel `d` on both its faces, meeting in a
+/// ridge at mid-web. Its area and its first moment about `u = 0`.
+fn ridged_web(w: f64, t: f64, d: f64) -> (f64, f64) {
+    assert!(
+        2.0 * d > w && d < t,
+        "the bevels meet above the web's sides"
+    );
+    let ring = [
+        (0.0, 0.0),
+        (w, 0.0),
+        (w, t - d),
+        (w / 2.0, t - d + w / 2.0),
+        (0.0, t - d),
+    ];
+    let (mut area, mut moment) = (0.0, 0.0);
+    for k in 0..ring.len() {
+        let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+        let cross = a.0 * b.1 - b.0 * a.1;
+        area += cross / 2.0;
+        moment += (a.0 + b.0) * cross / 6.0;
+    }
+    (area, moment)
+}
+
+/// The top edges of `s` at height `top`, each bevelled `d`.
+fn top_edges(m: &Model, s: &Shape, top: f64, d: f64) -> Vec<(Shape, Chamfer)> {
+    explore_unique(m, s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(m, e).unwrap().unwrap();
+            [a, b].iter().all(|v| {
+                let p = m.node(v).unwrap().data().as_vertex().unwrap().point;
+                (p.z - top).abs() < 1e-9
+            })
+        })
+        .map(|e| (e, Chamfer::Symmetric(d)))
+        .collect()
+}
+
+/// A frame 24 by 16 by 4, its 18 by 10 hole leaving webs 3 wide all
+/// round, its top edges outside and in the hole bevelled 2: past half the
+/// web, so the bevels consume the holed top face and meet in a ridge. At
+/// each corner the outer corner and the hole's stand on one diagonal, so
+/// the frame is four webs mitred there, each the ridged section swept
+/// along its length: a web `L` long outside is `L - 2u` long at `u` in,
+/// and holds `A L - 2 ∫u dA`.
+#[test]
+fn a_frame_bevelled_past_half_its_webs_meets_in_a_mitred_ridge() {
+    let (w, t, d) = (3.0, 4.0, 2.0);
+    let (area, moment) = ridged_web(w, t, d);
+    let want = 2.0 * (area * 24.0 - 2.0 * moment) + 2.0 * (area * 16.0 - 2.0 * moment);
+    let mut first: Option<Vec<[u64; 3]>> = None;
+    for seed in 0..3_u64 {
+        let mut m = Model::new();
+        let outer = block(&mut m, (0.0, 0.0, 0.0), (24.0, 16.0, t));
+        let hole = block(&mut m, (w, w, -1.0), (18.0, 10.0, t + 2.0));
+        let s = ogeom_bool::cut(&mut m, &outer, &hole, T).unwrap().shape;
+        let top = explore_unique(&m, &s, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .find(|f| ogeom_algo::face_normal(&m, f, T).unwrap().1.z > 0.5)
+            .unwrap();
+        assert_eq!(
+            m.children_of(&top).unwrap().len(),
+            2,
+            "the top holds the hole"
+        );
+        let specs = top_edges(&m, &s, t, d);
+        assert_eq!(specs.len(), 8);
+        let specs: Vec<(Shape, Chamfer)> = shuffled(specs.len(), seed)
+            .iter()
+            .map(|i| specs[*i].clone())
+            .collect();
+        let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert!(!folded(&m, &built.shape), "folded");
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "volume {got} against {want}"
+        );
+        // The bottom, the eight walls and the eight bevels.
+        let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+            .unwrap()
+            .len();
+        assert_eq!(faces, 17, "faces");
+        assert!(built.history.is_deleted(&top), "the top face left");
+        for (e, _) in &specs {
+            assert_eq!(
+                built.history.generated(e).len(),
+                1,
+                "an edge without its bevel"
+            );
+        }
+        let k = key(&m, &built.shape).1;
+        match &first {
+            None => first = Some(k),
+            Some(held) => assert!(*held == k, "order {seed} differs"),
+        }
+    }
+}
+
+/// An L-shaped slab 4 thick, legs 20 long and 3 wide, its long top edges
+/// bevelled 2 on both sides of each leg, its two end edges left sharp: the
+/// bevels consume the top face, reflex corner and all, and meet in a
+/// ridge that turns on the diagonal through the outline's corner and its
+/// reflex corner. Each leg is the ridged section swept from that diagonal
+/// to its square end: `20 - u` long at `u` in from its outer side.
+#[test]
+fn an_l_slab_bevelled_past_half_its_legs_turns_its_ridge_at_the_reflex_corner() {
+    let (w, t, d) = (3.0, 4.0, 2.0);
+    let (area, moment) = ridged_web(w, t, d);
+    let want = 2.0 * (area * 20.0 - moment);
+    let outline = [
+        (0.0, 0.0),
+        (20.0, 0.0),
+        (20.0, w),
+        (w, w),
+        (w, 20.0),
+        (0.0, 20.0),
+    ];
+    let mut first: Option<Vec<[u64; 3]>> = None;
+    for seed in 0..3_u64 {
+        let mut m = Model::new();
+        let s = slab(&mut m, &outline, t);
+        let top = explore_unique(&m, &s, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .find(|f| ogeom_algo::face_normal(&m, f, T).unwrap().1.z > 0.5)
+            .unwrap();
+        let specs: Vec<(Shape, Chamfer)> = top_edges(&m, &s, t, d)
+            .into_iter()
+            .filter(|(e, _)| {
+                let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+                let point = |v: &Shape| m.node(v).unwrap().data().as_vertex().unwrap().point;
+                let (p, q) = (point(&a), point(&b));
+                // Not an end: the ends lie at x = 20 or y = 20.
+                !((p.x - 20.0).abs() < 1e-9 && (q.x - 20.0).abs() < 1e-9
+                    || (p.y - 20.0).abs() < 1e-9 && (q.y - 20.0).abs() < 1e-9)
+            })
+            .collect();
+        assert_eq!(specs.len(), 4);
+        let specs: Vec<(Shape, Chamfer)> = shuffled(specs.len(), seed)
+            .iter()
+            .map(|i| specs[*i].clone())
+            .collect();
+        let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert!(!folded(&m, &built.shape), "folded");
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "volume {got} against {want}"
+        );
+        // The bottom, the six sides and the four bevels.
+        let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+            .unwrap()
+            .len();
+        assert_eq!(faces, 11, "faces");
+        assert!(built.history.is_deleted(&top), "the top face left");
+        let k = key(&m, &built.shape).1;
+        match &first {
+            None => first = Some(k),
+            Some(held) => assert!(*held == k, "order {seed} differs"),
+        }
+    }
+}
+
+/// Where three planes meet.
+fn meet(
+    (a, da): (ogeom_math::Vector, f64),
+    (b, db): (ogeom_math::Vector, f64),
+    (c, dc): (ogeom_math::Vector, f64),
+) -> ogeom_math::Vector {
+    (b.cross(c) * da + c.cross(a) * db + a.cross(b) * dc) / a.dot(b.cross(c))
+}
+
+/// The pyramid over the quadrilateral `base` (counter-clockwise seen from
+/// above, on z = 0) up to `apex`, its four slant edges bevelled `d`, where
+/// the apex's four corners (each where a face's two bevels' contacts
+/// cross) lie off one plane, so no facet closes the apex. It closes on the
+/// bilinear patch through them, its sides the bevels' ends: valid,
+/// nothing folded, a face for each face, bevel and the patch, one of them
+/// a B-spline, the apex generating the patch. The bilinear patch through a
+/// tetrahedron's four corners halves it, so the solid holds the corner
+/// closed by the two triangles that keep it convex (the polytope of the
+/// faces', the bevels' and those triangles' planes) less half the
+/// tetrahedron of the corners. The solid's centroid, returned.
+fn chamfered_apex(
+    base: [ogeom_math::Vector; 4],
+    apex: ogeom_math::Vector,
+    d: f64,
+) -> ogeom_math::Point {
+    use ogeom_math::Vector;
+    let h = apex.z;
+    let centre = (base.iter().fold(apex, |s, p| s + *p)) / 5.0;
+    // Side `k` through base corners `k` and `k + 1` and the apex.
+    let side = |k: usize| {
+        let (p, q) = (base[k], base[(k + 1) % 4]);
+        let mut n = (q - p).cross(apex - p);
+        n = n / n.magnitude();
+        if n.dot(p - centre) < 0.0 {
+            n = -n;
+        }
+        (n, n.dot(p))
+    };
+    // Slant edge `k`, from the apex to base corner `k`, between sides
+    // `k - 1` and `k`.
+    let bevel = |k: usize| {
+        let u = base[k] - apex;
+        bevel_plane(
+            apex,
+            u / u.magnitude(),
+            (side((k + 3) % 4).0, d),
+            (side(k).0, d),
+        )
+    };
+    let mut planes: Vec<(Vector, f64)> = vec![(Vector::new(0.0, 0.0, -1.0), 0.0)];
+    planes.extend((0..4).map(side));
+    planes.extend((0..4).map(bevel));
+    let corners: Vec<Vector> = (0..4)
+        .map(|k| meet(side(k), bevel(k), bevel((k + 1) % 4)))
+        .collect();
+    let low = corners.iter().map(|c| c.z).fold(f64::INFINITY, f64::min);
+    let high = corners
+        .iter()
+        .map(|c| c.z)
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!(
+        high - low > 1e-3,
+        "the corners lie off one plane: {corners:?}"
+    );
+    // Closed by the triangles on either diagonal, each facing away from
+    // the solid: the convex closure holds more.
+    let outward = |p: Vector, q: Vector, r: Vector| {
+        let mut n = (q - p).cross(r - p);
+        n = n / n.magnitude();
+        if n.dot(p - centre) < 0.0 {
+            n = -n;
+        }
+        (n, n.dot(p))
+    };
+    let closed = |i: usize| {
+        let c = |k: usize| corners[(i + k) % 4];
+        let mut with = planes.clone();
+        with.push(outward(c(0), c(1), c(2)));
+        with.push(outward(c(0), c(2), c(3)));
+        convex_polytope(&with).0
+    };
+    let convex = closed(0).max(closed(1));
+    let tetra = (corners[1] - corners[0])
+        .dot((corners[2] - corners[0]).cross(corners[3] - corners[0]))
+        .abs()
+        / 6.0;
+    let want = convex - tetra / 2.0;
+
+    let mut m = Model::new();
+    let points: Vec<Point> = base
+        .iter()
+        .chain([&apex])
+        .map(|v| Point::new(v.x, v.y, v.z))
+        .collect();
+    let rings = vec![
+        vec![0, 3, 2, 1],
+        vec![0, 1, 4],
+        vec![1, 2, 4],
+        vec![2, 3, 4],
+        vec![3, 0, 4],
+    ];
+    let s = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+        .unwrap()
+        .shape;
+    let top = explore_unique(&m, &s, ShapeType::Vertex)
+        .unwrap()
+        .into_iter()
+        .find(|v| (m.node(v).unwrap().data().as_vertex().unwrap().point.z - h).abs() < 1e-9)
+        .unwrap();
+    let specs: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (p, q) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+            p.is_same(&top) || q.is_same(&top)
+        })
+        .map(|e| (e, Chamfer::Symmetric(d)))
+        .collect();
+    assert_eq!(specs.len(), 4);
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert!(!folded(&m, &built.shape), "folded");
+    let faces = explore_unique(&m, &built.shape, ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 10, "faces");
+    let patches = faces
+        .iter()
+        .filter(|f| {
+            let data = m.node(f).unwrap().data().as_face().unwrap();
+            matches!(
+                m.geometry().surface(data.surface),
+                Some(ogeom_geom::SurfaceGeometry::BSpline(_))
+            )
+        })
+        .count();
+    assert_eq!(patches, 1, "one patch");
+    assert_eq!(built.history.generated(&top).len(), 1, "the apex's patch");
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-5,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let props = ogeom_algo::volume_properties(&m, &built.shape, fine, T).unwrap();
+    assert!(
+        (props.mass - want).abs() <= 1e-7 * want,
+        "volume {} against {want}",
+        props.mass
+    );
+    props.centre
+}
+
+/// The pyramid over the rectangle 8 by 6, height 4, its slant edges
+/// bevelled 1/2 ([`chamfered_apex`]): the long faces' corners and the
+/// short faces' stand at two heights. It keeps the pyramid's two mirrors:
+/// its centroid stands on the axis.
+#[test]
+fn a_rectangular_pyramid_s_apex_chamfered_closes_on_one_patch() {
+    use ogeom_math::Vector;
+    let (a, b) = (4.0, 3.0);
+    let base = [
+        Vector::new(-a, -b, 0.0),
+        Vector::new(a, -b, 0.0),
+        Vector::new(a, b, 0.0),
+        Vector::new(-a, b, 0.0),
+    ];
+    let centre = chamfered_apex(base, Vector::new(0.0, 0.0, 4.0), 0.5);
+    assert!(centre.x.abs() < 1e-6 && centre.y.abs() < 1e-6, "{centre:?}");
+}
+
+/// The pyramid over the square 20 by 20 with its apex moved off the middle
+/// to (5, 8, 12), its slant edges bevelled 2 ([`chamfered_apex`]): no two
+/// of the apex's corners mirror each other.
+#[test]
+fn a_leaning_pyramid_s_apex_chamfered_closes_on_one_patch() {
+    use ogeom_math::Vector;
+    let base = [
+        Vector::new(0.0, 0.0, 0.0),
+        Vector::new(20.0, 0.0, 0.0),
+        Vector::new(20.0, 20.0, 0.0),
+        Vector::new(0.0, 20.0, 0.0),
+    ];
+    chamfered_apex(base, Vector::new(5.0, 8.0, 12.0), 2.0);
+}
+
+/// The volume of the pyramid over the polygon `base` (counter-clockwise
+/// seen from above, on z = 0) up to `apex`, its slant edges bevelled `d`
+/// and the apex closed by the corners' Wachspress blend over the regular
+/// polygon of as many corners: by the divergence theorem about the solid's
+/// middle, each planar face's polygon from the planes meeting at its
+/// corners, the patch's part summed over `grid` by `grid` cells of each of
+/// its sectors.
+fn wachspress_apex_volume(
+    base: &[ogeom_math::Vector],
+    apex: ogeom_math::Vector,
+    d: f64,
+    grid: usize,
+) -> f64 {
+    use ogeom_math::Vector;
+    let n = base.len();
+    #[expect(clippy::cast_precision_loss, reason = "a handful of corners")]
+    let centre = base.iter().fold(apex, |s, p| s + *p) / (n + 1) as f64;
+    let side = |k: usize| {
+        let (p, q) = (base[k], base[(k + 1) % n]);
+        let mut m = (q - p).cross(apex - p);
+        m = m / m.magnitude();
+        if m.dot(p - centre) < 0.0 {
+            m = -m;
+        }
+        (m, m.dot(p))
+    };
+    let bevel = |k: usize| {
+        let u = base[k] - apex;
+        bevel_plane(
+            apex,
+            u / u.magnitude(),
+            (side((k + n - 1) % n).0, d),
+            (side(k).0, d),
+        )
+    };
+    let floor = (Vector::new(0.0, 0.0, -1.0), 0.0);
+    let corner = |k: usize| meet(side(k), bevel(k), bevel((k + 1) % n));
+    let low = |k: usize| meet(floor, side(k), bevel(k));
+    let high = |k: usize| meet(floor, side(k), bevel((k + 1) % n));
+    // A polygon's share, turned to face away from the middle.
+    let share = |ring: Vec<Vector>| {
+        let mut newell = Vector::ZERO;
+        let mut mid = Vector::ZERO;
+        for k in 0..ring.len() {
+            newell += ring[k].cross(ring[(k + 1) % ring.len()]);
+            mid += ring[k];
+        }
+        #[expect(clippy::cast_precision_loss, reason = "a few corners")]
+        let mid = mid / ring.len() as f64;
+        let sign = if newell.dot(mid - centre) < 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        let mut sum = 0.0;
+        for k in 1..ring.len() - 1 {
+            sum += (ring[0] - centre).dot((ring[k] - centre).cross(ring[k + 1] - centre));
+        }
+        sign * sum / 6.0
+    };
+    let mut volume = share((0..n).flat_map(|k| [low(k), high(k)]).collect());
+    for k in 0..n {
+        volume += share(vec![low(k), high(k), corner(k)]);
+        volume += share(vec![
+            high((k + n - 1) % n),
+            low(k),
+            corner(k),
+            corner((k + n - 1) % n),
+        ]);
+    }
+    // The patch: the corners blended by Wachspress's coordinates.
+    #[expect(clippy::cast_precision_loss, reason = "a handful of corners")]
+    let polygon: Vec<(f64, f64)> = (0..n)
+        .map(|k| {
+            let t = core::f64::consts::TAU * k as f64 / n as f64;
+            (t.cos(), t.sin())
+        })
+        .collect();
+    let corners: Vec<Vector> = (0..n).map(corner).collect();
+    let patch = |x: (f64, f64)| -> Vector {
+        let area = |j: usize| {
+            let (a, b) = (polygon[j], polygon[(j + 1) % n]);
+            ((a.0 - x.0) * (b.1 - x.1) - (a.1 - x.1) * (b.0 - x.0)).max(0.0)
+        };
+        let w: Vec<f64> = (0..n)
+            .map(|i| {
+                (0..n)
+                    .filter(|j| *j != i && *j != (i + n - 1) % n)
+                    .map(area)
+                    .product()
+            })
+            .collect();
+        let total: f64 = w.iter().sum();
+        corners
+            .iter()
+            .zip(&w)
+            .fold(Vector::ZERO, |s, (c, wi)| s + *c * (wi / total))
+    };
+    let mut cells = 0.0;
+    #[expect(clippy::cast_precision_loss, reason = "a fine grid")]
+    let g = grid as f64;
+    for k in 0..n {
+        let (a, b) = (polygon[k], polygon[(k + 1) % n]);
+        // The sector from the polygon's middle to side `k`, in barycentric
+        // cells: `x = (i a + j b) / grid` over the triangle.
+        let at = |i: usize, j: usize| {
+            #[expect(clippy::cast_precision_loss, reason = "a fine grid")]
+            let (s, t) = (i as f64 / g, j as f64 / g);
+            patch((s * a.0 + t * b.0, s * a.1 + t * b.1))
+        };
+        for i in 0..grid {
+            for j in 0..grid - i {
+                let tri = |p: Vector, q: Vector, r: Vector| {
+                    (p - centre).dot((q - centre).cross(r - centre)) / 6.0
+                };
+                cells += tri(at(i, j), at(i + 1, j), at(i, j + 1));
+                if i + j + 1 < grid {
+                    cells += tri(at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+                }
+            }
+        }
+    }
+    // The patch faces away from the base, toward the apex.
+    let up = (patch((0.0, 0.0)) - centre).dot(apex - centre);
+    volume
+        + if up * cells < 0.0 {
+            -cells.abs()
+        } else {
+            cells.abs()
+        }
+}
+
+/// [`wachspress_apex_volume`] on a square's corners is the bilinear
+/// patch's, so it agrees with [`chamfered_apex`]'s exact oracle on the
+/// rectangular pyramid; the oracle checked, the pyramid over an uneven
+/// pentagon with its apex off the middle, its five slant edges bevelled
+/// 1/2, closes on the five corners' patch, a face on each side's sector:
+/// valid, nothing folded, a face for each face and bevel and five for the
+/// patch, all five B-splines generated by the apex, the volume the
+/// oracle's.
+#[test]
+fn a_pentagonal_pyramid_s_apex_chamfered_closes_on_one_patch_of_five_sectors() {
+    use ogeom_math::Vector;
+    // The oracle against the exact one, on four corners.
+    let rectangle = [
+        Vector::new(-4.0, -3.0, 0.0),
+        Vector::new(4.0, -3.0, 0.0),
+        Vector::new(4.0, 3.0, 0.0),
+        Vector::new(-4.0, 3.0, 0.0),
+    ];
+    let exact = {
+        let mut m = Model::new();
+        let _ = chamfered_apex(rectangle, Vector::new(0.0, 0.0, 4.0), 0.5);
+        let points: Vec<Point> = rectangle
+            .iter()
+            .chain([&Vector::new(0.0, 0.0, 4.0)])
+            .map(|v| Point::new(v.x, v.y, v.z))
+            .collect();
+        let rings = vec![
+            vec![0, 3, 2, 1],
+            vec![0, 1, 4],
+            vec![1, 2, 4],
+            vec![2, 3, 4],
+            vec![3, 0, 4],
+        ];
+        let s = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+            .unwrap()
+            .shape;
+        let specs: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                let (p, q) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+                let z = |v: &Shape| m.node(v).unwrap().data().as_vertex().unwrap().point.z;
+                z(&p) > 1.0 || z(&q) > 1.0
+            })
+            .map(|e| (e, Chamfer::Symmetric(0.5)))
+            .collect();
+        let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+        volume(&m, &built.shape)
+    };
+    let oracle = wachspress_apex_volume(&rectangle, Vector::new(0.0, 0.0, 4.0), 0.5, 400);
+    assert!(
+        (oracle - exact).abs() <= 1e-7 * exact,
+        "oracle {oracle} against {exact}"
+    );
+
+    let base = [
+        Vector::new(-3.0, -2.0, 0.0),
+        Vector::new(3.0, -2.0, 0.0),
+        Vector::new(4.0, 1.5, 0.0),
+        Vector::new(0.0, 4.0, 0.0),
+        Vector::new(-4.0, 1.5, 0.0),
+    ];
+    let apex = Vector::new(0.5, 0.3, 5.0);
+    let d = 0.5;
+    let want = wachspress_apex_volume(&base, apex, d, 400);
+    let mut m = Model::new();
+    let points: Vec<Point> = base
+        .iter()
+        .chain([&apex])
+        .map(|v| Point::new(v.x, v.y, v.z))
+        .collect();
+    let rings = vec![
+        vec![0, 4, 3, 2, 1],
+        vec![0, 1, 5],
+        vec![1, 2, 5],
+        vec![2, 3, 5],
+        vec![3, 4, 5],
+        vec![4, 0, 5],
+    ];
+    let s = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+        .unwrap()
+        .shape;
+    let top = explore_unique(&m, &s, ShapeType::Vertex)
+        .unwrap()
+        .into_iter()
+        .find(|v| (m.node(v).unwrap().data().as_vertex().unwrap().point.z - apex.z).abs() < 1e-9)
+        .unwrap();
+    let specs: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (p, q) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+            p.is_same(&top) || q.is_same(&top)
+        })
+        .map(|e| (e, Chamfer::Symmetric(d)))
+        .collect();
+    assert_eq!(specs.len(), 5);
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert!(!folded(&m, &built.shape), "folded");
+    let faces = explore_unique(&m, &built.shape, ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 16, "faces");
+    let splines: Vec<&Shape> = faces
+        .iter()
+        .filter(|f| {
+            let data = m.node(f).unwrap().data().as_face().unwrap();
+            matches!(
+                m.geometry().surface(data.surface),
+                Some(ogeom_geom::SurfaceGeometry::BSpline(_))
+            )
+        })
+        .collect();
+    assert_eq!(splines.len(), 5, "the patch's sectors");
+    assert_eq!(built.history.generated(&top).len(), 5, "the apex's patch");
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-5,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let got = ogeom_algo::volume_properties(&m, &built.shape, fine, T)
+        .unwrap()
+        .mass;
+    assert!(
+        (got - want).abs() <= 1e-7 * want,
+        "volume {got} against {want}"
+    );
+}
+
+/// The prism of [`prism`]'s profile built as a sweep: the profile's face
+/// in x = 0 swept by `make_prism`, unbaked, so its sides are the profile's
+/// lines swept along x (flat faces on extrusion surfaces) and its far cap
+/// is the near one placed.
+fn swept_prism(m: &mut Model, profile: &[(f64, f64)], length: f64) -> Shape {
+    let corners: Vec<Shape> = profile
+        .iter()
+        .map(|&(y, z)| ogeom_algo::make_vertex(m, Point::new(0.0, y, z)).shape)
+        .collect();
+    let n = corners.len();
+    let edges: Vec<Shape> = (0..n)
+        .map(|k| {
+            let (p, q) = (profile[k], profile[(k + 1) % n]);
+            let (a, b) = (Point::new(0.0, p.0, p.1), Point::new(0.0, q.0, q.1));
+            let line = ogeom_geom::LineCurve::segment(a, b, T).unwrap();
+            let range = ogeom_geom::Curve3d::domain(&line);
+            ogeom_algo::make_edge_between(
+                m,
+                line.into(),
+                range,
+                &corners[k],
+                &corners[(k + 1) % n],
+                T,
+            )
+            .unwrap()
+            .shape
+        })
+        .collect();
+    let wire = ogeom_algo::make_wire(m, &edges, T).unwrap().shape;
+    let plane = ogeom_geom::PlaneSurface::over(
+        ogeom_math::Plane::through(Point::ORIGIN, ogeom_math::Direction::X),
+        (-1000.0, 1000.0),
+        (-1000.0, 1000.0),
+    )
+    .unwrap();
+    let face = ogeom_algo::make_face(m, plane.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    ogeom_algo::make_prism(m, &face, ogeom_math::Vector::new(length, 0.0, 0.0), T)
+        .unwrap()
+        .shape
+}
+
+/// The corpus's parts built as unbaked sweeps, every edge chamfered:
+/// valid, a face for every face, edge and vertex, the sections' closed
+/// form, every edge of the sweep as named (the far cap's through its
+/// placement) generating its bevel.
+#[test]
+fn a_swept_prism_with_its_far_cap_placed_chamfers_every_edge_exactly() {
+    for (name, profile, length) in corpus() {
+        let d = 1.0;
+        let want = chamfered_prism_volume(&profile, length, d);
+        let mut m = Model::new();
+        let s = swept_prism(&mut m, &profile, length);
+        let (f, e, v) = (
+            explore_unique(&m, &s, ShapeType::Face).unwrap().len(),
+            explore_unique(&m, &s, ShapeType::Edge).unwrap().len(),
+            explore_unique(&m, &s, ShapeType::Vertex).unwrap().len(),
+        );
+        let specs = all_edges(&m, &s, d);
+        let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T)
+            .unwrap_or_else(|err| panic!("{name}: {err}"));
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{name}: {:?}", found.problems);
+        assert!(!folded(&m, &built.shape), "{name}: folded");
+        let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+            .unwrap()
+            .len();
+        assert_eq!(faces, f + e + v, "{name}: faces");
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "{name}: volume {got} against {want}"
+        );
+        for (edge, _) in &specs {
+            assert_eq!(
+                built.history.generated(edge).len(),
+                1,
+                "{name}: an edge without its bevel"
+            );
+        }
+    }
+}
+
+/// A box's every edge chamfered with the mitre corner: at each corner the
+/// three bevels run on to the point their planes share, so the box keeps,
+/// past the facet chamfer's closed form, each corner's tetrahedron between
+/// that point and the facet's three corners, `d³ / 12`; no corner has a
+/// facet, a face for every face and edge of the box. The same solid to the
+/// bit under three orders.
+#[test]
+fn a_box_mitred_on_every_edge_keeps_each_corner_s_tetrahedron() {
+    let profile = vec![(0.0, 0.0), (40.0, 0.0), (40.0, 20.0), (0.0, 20.0)];
+    for d in [0.5, 2.0] {
+        let want = chamfered_prism_volume(&profile, 30.0, d) + 8.0 * d * d * d / 12.0;
+        let mut first: Option<(u64, Vec<[u64; 3]>)> = None;
+        for seed in 0..3_u64 {
+            let mut m = Model::new();
+            let s = prism(&mut m, &profile, 30.0);
+            let specs = all_edges(&m, &s, d);
+            let specs: Vec<(Shape, Chamfer)> = shuffled(specs.len(), seed)
+                .iter()
+                .map(|i| specs[*i].clone())
+                .collect();
+            let built =
+                ogeom_fillet::chamfer_edges_cornered(&mut m, &s, &specs, ChamferCorner::Point, T)
+                    .unwrap();
+            let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+            assert!(found.is_valid(), "d {d}: {:?}", found.problems);
+            assert!(!folded(&m, &built.shape), "d {d}: folded");
+            let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+                .unwrap()
+                .len();
+            assert_eq!(faces, 6 + 12, "d {d}: faces");
+            let got = volume(&m, &built.shape);
+            assert!(
+                (got - want).abs() <= 1e-9 * want,
+                "d {d}: volume {got} against {want}"
+            );
+            let k = key(&m, &built.shape);
+            match &first {
+                None => first = Some(k),
+                Some(held) => assert!(*held == k, "d {d}: order {seed} differs"),
+            }
+        }
+    }
+}
+
+/// A compound of two solids apart, a box and an L prism, every edge
+/// chamfered: each solid chamfered as it would be alone, the result a
+/// compound of the two, valid, a face for every face, edge and vertex of
+/// each, the two closed forms summed, every edge generating its bevel.
+#[test]
+fn a_compound_of_two_solids_chamfers_each_as_alone() {
+    let parts = corpus();
+    let (_, box_profile, box_length) = parts.iter().find(|p| p.0 == "box").unwrap().clone();
+    let (_, l_profile, l_length) = parts.iter().find(|p| p.0 == "L").unwrap().clone();
+    let d = 1.0;
+    let want = chamfered_prism_volume(&box_profile, box_length, d)
+        + chamfered_prism_volume(&l_profile, l_length, d);
+    let mut m = Model::new();
+    let a = prism(&mut m, &box_profile, box_length);
+    // The L moved clear of the box, 100 up.
+    let l: Vec<(f64, f64)> = l_profile.iter().map(|&(y, z)| (y, z + 100.0)).collect();
+    let b = prism(&mut m, &l, l_length);
+    let counts = |m: &Model, s: &Shape| {
+        explore_unique(m, s, ShapeType::Face).unwrap().len()
+            + explore_unique(m, s, ShapeType::Edge).unwrap().len()
+            + explore_unique(m, s, ShapeType::Vertex).unwrap().len()
+    };
+    let expected_faces = counts(&m, &a) + counts(&m, &b);
+    let compound = ogeom_algo::make_compound(&mut m, &[a, b]).unwrap().shape;
+    let specs = all_edges(&m, &compound, d);
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &compound, &specs, T).unwrap();
+    assert_eq!(
+        m.kind_of(&built.shape).unwrap(),
+        ShapeType::Compound,
+        "a compound back"
+    );
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert!(!folded(&m, &built.shape), "folded");
+    let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+        .unwrap()
+        .len();
+    assert_eq!(faces, expected_faces, "faces");
+    let got = volume(&m, &built.shape);
+    assert!(
+        (got - want).abs() <= 1e-9 * want,
+        "volume {got} against {want}"
+    );
+    for (edge, _) in &specs {
+        assert_eq!(
+            built.history.generated(edge).len(),
+            1,
+            "an edge without its bevel"
+        );
+    }
+}
+
+/// A box 30 by 40 by 20 holding a void 10 by 6 by 8 well inside it, cut by
+/// the boolean (a solid of two shells), every edge of its outer shell
+/// chamfered: the outer shell as the box alone, the void kept as it was.
+/// Valid, two shells, a face for every face, edge and vertex of the box
+/// and the void's six, the box's closed form less the void, every edge
+/// generating its bevel.
+#[test]
+fn a_box_with_a_void_chamfers_its_outside_and_keeps_the_void() {
+    let profile = vec![(0.0, 0.0), (40.0, 0.0), (40.0, 20.0), (0.0, 20.0)];
+    let d = 1.0;
+    let want = chamfered_prism_volume(&profile, 30.0, d) - 10.0 * 6.0 * 8.0;
+    let mut m = Model::new();
+    let outside = prism(&mut m, &profile, 30.0);
+    let edges = explore_unique(&m, &outside, ShapeType::Edge).unwrap();
+    let (f, e, v) = (
+        explore_unique(&m, &outside, ShapeType::Face).unwrap().len(),
+        edges.len(),
+        explore_unique(&m, &outside, ShapeType::Vertex)
+            .unwrap()
+            .len(),
+    );
+    let void = block(&mut m, (10.0, 15.0, 7.0), (10.0, 6.0, 8.0));
+    let s = ogeom_bool::cut(&mut m, &outside, &void, T).unwrap().shape;
+    assert_eq!(m.children_of(&s).unwrap().len(), 2, "a solid of two shells");
+    let outer_edges: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|edge| {
+            let b = ogeom_algo::shape_bounds(&m, edge, T).unwrap();
+            let (lo, hi) = (b.low().unwrap(), b.high().unwrap());
+            // On the box's outside: some coordinate at its bounds.
+            [lo.x, hi.x]
+                .iter()
+                .any(|x| x.abs() < 1e-6 || (x - 30.0).abs() < 1e-6)
+                || [lo.y, hi.y]
+                    .iter()
+                    .any(|y| y.abs() < 1e-6 || (y - 40.0).abs() < 1e-6)
+                || [lo.z, hi.z]
+                    .iter()
+                    .any(|z| z.abs() < 1e-6 || (z - 20.0).abs() < 1e-6)
+        })
+        .collect();
+    assert_eq!(outer_edges.len(), e, "the box's own edges");
+    let specs: Vec<(Shape, Chamfer)> = outer_edges
+        .into_iter()
+        .map(|edge| (edge, Chamfer::Symmetric(d)))
+        .collect();
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert_eq!(
+        m.children_of(&built.shape).unwrap().len(),
+        2,
+        "the void kept"
+    );
+    let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+        .unwrap()
+        .len();
+    assert_eq!(faces, f + e + v + 6, "faces");
+    let got = volume(&m, &built.shape);
+    assert!(
+        (got - want).abs() <= 1e-9 * want,
+        "volume {got} against {want}"
+    );
+    for (edge, _) in &specs {
+        assert_eq!(
+            built.history.generated(edge).len(),
+            1,
+            "an edge without its bevel"
+        );
+    }
+}
+
+/// The bevel plane along an edge through `at` of unit direction `u`
+/// between faces of outward normals `na` and `nb`, set back `d` square to
+/// it in each, convex or concave: into each face from the edge goes under
+/// the other face at a convex edge and over it at a concave one.
+fn bevel_plane_either(
+    at: ogeom_math::Vector,
+    u: ogeom_math::Vector,
+    na: ogeom_math::Vector,
+    nb: ogeom_math::Vector,
+    d: f64,
+    convex: bool,
+) -> (ogeom_math::Vector, f64) {
+    let inward = |n: ogeom_math::Vector, other: ogeom_math::Vector| {
+        let m = n.cross(u);
+        let m = m / m.magnitude();
+        if (m.dot(other) > 0.0) == convex {
+            -m
+        } else {
+            m
+        }
+    };
+    let (ca, cb) = (at + inward(na, nb) * d, at + inward(nb, na) * d);
+    let n = u.cross(cb - ca);
+    let n = n / n.magnitude();
+    (n, n.dot(ca))
+}
+
+/// The mitre's volume for a prism of [`prism`]'s profile, every edge
+/// chamfered `d`: the facet chamfer's closed form with, at each vertex,
+/// the tetrahedron between the point the three bevel planes share and the
+/// facet's three corners (each where a face's plane meets its two bevels),
+/// counted in where that point stands past the facet, away from the solid,
+/// and out where it stands within.
+fn mitred_prism_volume(profile: &[(f64, f64)], length: f64, d: f64) -> f64 {
+    use ogeom_math::Vector;
+    let n = profile.len();
+    let point = |k: usize, x: f64| Vector::new(x, profile[k % n].0, profile[k % n].1);
+    let side = |k: usize| {
+        let (a, b) = (profile[k % n], profile[(k + 1) % n]);
+        let e = Vector::new(0.0, b.0 - a.0, b.1 - a.1);
+        let m = Vector::new(0.0, e.z, -e.y);
+        m / m.magnitude()
+    };
+    let unit = |w: Vector| w / w.magnitude();
+    let mut extra = 0.0;
+    for k in 0..n {
+        let (prev, next) = (side(k + n - 1), side(k));
+        let (a, b, c) = (profile[(k + n - 1) % n], profile[k], profile[(k + 1) % n]);
+        let turn = (b.0 - a.0) * (c.1 - b.1) - (b.1 - a.1) * (c.0 - b.0);
+        let convex_corner = turn > 0.0;
+        for (x, cap) in [
+            (0.0, Vector::new(-1.0, 0.0, 0.0)),
+            (length, Vector::new(1.0, 0.0, 0.0)),
+        ] {
+            let v = point(k, x);
+            let along_prev = unit(point(k + n - 1, x) - v);
+            let along_next = unit(point(k + 1, x) - v);
+            let bevel_prev = bevel_plane_either(v, along_prev, cap, prev, d, true);
+            let bevel_next = bevel_plane_either(v, along_next, cap, next, d, true);
+            let bevel_long = bevel_plane_either(v, Vector::X, prev, next, d, convex_corner);
+            let plane = |nrm: Vector| (nrm, nrm.dot(v));
+            let c_cap = meet(plane(cap), bevel_prev, bevel_next);
+            let c_prev = meet(plane(prev), bevel_prev, bevel_long);
+            let c_next = meet(plane(next), bevel_next, bevel_long);
+            let tip = meet(bevel_prev, bevel_next, bevel_long);
+            let mut normal = (c_prev - c_cap).cross(c_next - c_cap);
+            if normal.dot(cap + prev + next) < 0.0 {
+                normal = -normal;
+            }
+            extra += (tip - c_cap).dot(normal) / 6.0;
+        }
+    }
+    chamfered_prism_volume(profile, length, d) + extra
+}
+
+/// Every edge of every part of the corpus chamfered with the mitre
+/// corner, convex, concave and mixed vertices alike: at each the bevels run
+/// on to the point their three planes share, so no corner has a facet.
+/// Valid, nothing folded, a face for every face and edge of the part, the
+/// volume [`mitred_prism_volume`]'s.
+#[test]
+fn every_edge_of_a_prismatic_part_mitres_to_its_bevels_shared_points() {
+    for (name, profile, length) in corpus() {
+        let d = 1.0;
+        let want = mitred_prism_volume(&profile, length, d);
+        let mut m = Model::new();
+        let s = prism(&mut m, &profile, length);
+        let (f, e) = (
+            explore_unique(&m, &s, ShapeType::Face).unwrap().len(),
+            explore_unique(&m, &s, ShapeType::Edge).unwrap().len(),
+        );
+        let specs = all_edges(&m, &s, d);
+        let built =
+            ogeom_fillet::chamfer_edges_cornered(&mut m, &s, &specs, ChamferCorner::Point, T)
+                .unwrap_or_else(|err| panic!("{name}: {err}"));
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{name}: {:?}", found.problems);
+        assert!(!folded(&m, &built.shape), "{name}: folded");
+        let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+            .unwrap()
+            .len();
+        assert_eq!(faces, f + e, "{name}: faces");
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "{name}: volume {got} against {want}"
+        );
+    }
+}
+
+/// [`a_box_with_a_void_chamfers_its_outside_and_keeps_the_void`]'s box and
+/// void, the void's twelve edges chamfered 1 (concave in the solid: each
+/// bevel fills a wedge of the cavity), then every edge of both: the void
+/// comes out as the void block chamfered alone, its every corner a facet,
+/// and the solid is the box (or the chamfered box) less it. Valid, two
+/// shells, every edge generating its bevel.
+#[test]
+fn a_void_s_own_edges_chamfer_as_the_void_block_would_alone() {
+    let profile = vec![(0.0, 0.0), (40.0, 0.0), (40.0, 20.0), (0.0, 20.0)];
+    let void_profile = vec![(15.0, 7.0), (21.0, 7.0), (21.0, 15.0), (15.0, 15.0)];
+    let d = 1.0;
+    let void_chamfered = chamfered_prism_volume(&void_profile, 10.0, d);
+    for outer_too in [false, true] {
+        let outside = if outer_too {
+            chamfered_prism_volume(&profile, 30.0, d)
+        } else {
+            30.0 * 40.0 * 20.0
+        };
+        let want = outside - void_chamfered;
+        let mut m = Model::new();
+        let solid = prism(&mut m, &profile, 30.0);
+        let void = block(&mut m, (10.0, 15.0, 7.0), (10.0, 6.0, 8.0));
+        let s = ogeom_bool::cut(&mut m, &solid, &void, T).unwrap().shape;
+        let on_void = |m: &Model, e: &Shape| {
+            let b = ogeom_algo::shape_bounds(m, e, T).unwrap();
+            let (lo, hi) = (b.low().unwrap(), b.high().unwrap());
+            lo.x > 9.0 && hi.x < 21.0 && lo.y > 14.0 && hi.y < 22.0 && lo.z > 6.0 && hi.z < 16.0
+        };
+        let specs: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| outer_too || on_void(&m, e))
+            .map(|e| (e, Chamfer::Symmetric(d)))
+            .collect();
+        assert_eq!(specs.len(), if outer_too { 24 } else { 12 });
+        let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{outer_too}: {:?}", found.problems);
+        assert_eq!(
+            m.children_of(&built.shape).unwrap().len(),
+            2,
+            "the void kept"
+        );
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "{outer_too}: volume {got} against {want}"
+        );
+        for (edge, _) in &specs {
+            assert_eq!(
+                built.history.generated(edge).len(),
+                1,
+                "an edge without its bevel"
+            );
+        }
+    }
+}
+
+/// The pyramid over the square 20 by 20 with its apex moved off the middle
+/// to (5, 8, 12), its four slant edges bevelled 2 and mitred: no point lies
+/// on all four bevels' planes, so each bevel runs on until the others cut
+/// it, as the pyramid cut by each of their planes is. The result is the
+/// polytope of the base's, the sides' and the bevels' planes, its volume
+/// and its face count, in both orders; the apex generates nothing.
+#[test]
+fn a_leaning_pyramid_s_apex_mitres_where_its_four_bevels_share_no_point() {
+    use ogeom_math::Vector;
+    let d = 2.0;
+    let base = [
+        Vector::new(0.0, 0.0, 0.0),
+        Vector::new(20.0, 0.0, 0.0),
+        Vector::new(20.0, 20.0, 0.0),
+        Vector::new(0.0, 20.0, 0.0),
+    ];
+    let apex = Vector::new(5.0, 8.0, 12.0);
+    let centre = (base.iter().fold(apex, |s, p| s + *p)) / 5.0;
+    let side = |k: usize| {
+        let (p, q) = (base[k], base[(k + 1) % 4]);
+        let mut n = (q - p).cross(apex - p);
+        n = n / n.magnitude();
+        if n.dot(p - centre) < 0.0 {
+            n = -n;
+        }
+        (n, n.dot(p))
+    };
+    let bevel = |k: usize| {
+        let u = base[k] - apex;
+        bevel_plane(
+            apex,
+            u / u.magnitude(),
+            (side((k + 3) % 4).0, d),
+            (side(k).0, d),
+        )
+    };
+    let mut planes: Vec<(Vector, f64)> = vec![(Vector::new(0.0, 0.0, -1.0), 0.0)];
+    planes.extend((0..4).map(side));
+    planes.extend((0..4).map(bevel));
+    let x = meet(bevel(0), bevel(1), bevel(2));
+    let (n, o) = bevel(3);
+    assert!(
+        (n.dot(x) - o).abs() > 1e-3,
+        "the four bevels share no point"
+    );
+    let (want, faces) = convex_polytope(&planes);
+
+    let mut m = Model::new();
+    let points: Vec<Point> = base
+        .iter()
+        .chain([&apex])
+        .map(|v| Point::new(v.x, v.y, v.z))
+        .collect();
+    let rings = vec![
+        vec![0, 3, 2, 1],
+        vec![0, 1, 4],
+        vec![1, 2, 4],
+        vec![2, 3, 4],
+        vec![3, 0, 4],
+    ];
+    let s = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+        .unwrap()
+        .shape;
+    let top = explore_unique(&m, &s, ShapeType::Vertex)
+        .unwrap()
+        .into_iter()
+        .find(|v| (m.node(v).unwrap().data().as_vertex().unwrap().point.z - 12.0).abs() < 1e-9)
+        .unwrap();
+    let specs: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (p, q) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+            p.is_same(&top) || q.is_same(&top)
+        })
+        .map(|e| (e, Chamfer::Symmetric(d)))
+        .collect();
+    assert_eq!(specs.len(), 4);
+    let back: Vec<(Shape, Chamfer)> = specs.iter().rev().cloned().collect();
+    for asked in [&specs, &back] {
+        let built =
+            ogeom_fillet::chamfer_edges_cornered(&mut m, &s, asked, ChamferCorner::Point, T)
+                .unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert!(!folded(&m, &built.shape), "folded");
+        assert_eq!(
+            explore_unique(&m, &built.shape, ShapeType::Face)
+                .unwrap()
+                .len(),
+            faces,
+            "faces"
+        );
+        assert!(built.history.generated(&top).is_empty(), "a facet");
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "volume {got} against {want}"
+        );
+    }
+}
+
+/// A square pyramid (base 20 by 20, apex 12 over its middle), three of its
+/// slant edges bevelled 2, 1.5 and 1 and the fourth left sharp, with, where
+/// `drilled`, a pocket of radius 1 and depth 1 in its base, so that it has
+/// a curved face. The sharp edge's two faces end at different points on it,
+/// one where each of its neighbours' bevels sets it back, and the four
+/// corners round the apex leave one plane: the apex closes on the bilinear
+/// patch through them, its side along the sharp edge the piece of that
+/// edge between the two. Valid, nothing folded, a face for each face,
+/// bevel and the patch (one a B-spline), the apex generating the patch;
+/// the volume as [`chamfered_apex`] reads it, less the pocket's `π`.
+fn three_bevels_and_a_sharp_edge_at_the_apex(drilled: bool) {
+    use ogeom_math::Vector;
+    let base = [
+        Vector::new(0.0, 0.0, 0.0),
+        Vector::new(20.0, 0.0, 0.0),
+        Vector::new(20.0, 20.0, 0.0),
+        Vector::new(0.0, 20.0, 0.0),
+    ];
+    let apex = Vector::new(10.0, 10.0, 12.0);
+    let d = [2.0, 1.5, 1.0];
+    let centre = (base.iter().fold(apex, |s, p| s + *p)) / 5.0;
+    let side = |k: usize| {
+        let (p, q) = (base[k % 4], base[(k + 1) % 4]);
+        let mut n = (q - p).cross(apex - p);
+        n = n / n.magnitude();
+        if n.dot(p - centre) < 0.0 {
+            n = -n;
+        }
+        (n, n.dot(p))
+    };
+    // Slant edge `k`, from the apex to base corner `k`, between sides
+    // `k - 1` and `k`.
+    let bevel = |k: usize| {
+        let u = base[k] - apex;
+        bevel_plane(
+            apex,
+            u / u.magnitude(),
+            (side((k + 3) % 4).0, d[k]),
+            (side(k).0, d[k]),
+        )
+    };
+    let corners = [
+        meet(side(0), bevel(0), bevel(1)),
+        meet(side(1), bevel(1), bevel(2)),
+        meet(side(2), bevel(2), side(3)),
+        meet(side(3), side(2), bevel(0)),
+    ];
+    assert!(
+        (corners[2] - corners[3]).magnitude() > 1e-3,
+        "the sharp edge's corners stand apart"
+    );
+    let normal = (corners[1] - corners[0]).cross(corners[2] - corners[0]);
+    assert!(
+        (corners[3] - corners[0])
+            .dot(normal / normal.magnitude())
+            .abs()
+            > 1e-3,
+        "the corners lie off one plane"
+    );
+    // By the divergence theorem, a third of each face's area times its
+    // plane's offset, each face's polygon from the planes meeting at its
+    // corners: the base's offset is nought; each side a triangle (its base
+    // segment between its bevels' or the sharp edge's feet, up to its
+    // corner); each bevel the quadrilateral between its feet on the base
+    // and its corners. The bilinear patch through the corners counts as
+    // the mean of its two triangulations, which it is for a bilinear patch.
+    let base_plane = (Vector::new(0.0, 0.0, -1.0), 0.0);
+    let foot = |k: usize, j: usize| meet(side(j), bevel(k), base_plane);
+    let flux = |ring: &[Vector], (_, o): (Vector, f64)| {
+        let mut area = Vector::ZERO;
+        for k in 0..ring.len() {
+            area += ring[k].cross(ring[(k + 1) % ring.len()]);
+        }
+        area.magnitude() / 2.0 * o / 3.0
+    };
+    let mut total = 0.0;
+    total += flux(&[foot(0, 0), foot(1, 0), corners[0]], side(0));
+    total += flux(&[foot(1, 1), foot(2, 1), corners[1]], side(1));
+    total += flux(&[foot(2, 2), base[3], corners[2]], side(2));
+    total += flux(&[base[3], foot(0, 3), corners[3]], side(3));
+    total += flux(&[foot(0, 3), foot(0, 0), corners[0], corners[3]], bevel(0));
+    total += flux(&[foot(1, 0), foot(1, 1), corners[1], corners[0]], bevel(1));
+    total += flux(&[foot(2, 1), foot(2, 2), corners[2], corners[1]], bevel(2));
+    // The patch's corners in turn, one way round for both triangulations,
+    // the sign from which way that turns about the outside.
+    let cone = |p: Vector, q: Vector, r: Vector| p.dot(q.cross(r)) / 6.0;
+    let c = |k: usize| corners[k % 4];
+    let mut newell = Vector::ZERO;
+    for k in 0..4 {
+        newell += c(k).cross(c(k + 1));
+    }
+    let middle = (c(0) + c(1) + c(2) + c(3)) / 4.0;
+    let sign = if newell.dot(middle - centre) < 0.0 {
+        -1.0
+    } else {
+        1.0
+    };
+    total += sign
+        * 0.5
+        * (cone(c(0), c(1), c(2))
+            + cone(c(0), c(2), c(3))
+            + cone(c(1), c(2), c(3))
+            + cone(c(1), c(3), c(0)));
+    let pocket = if drilled { core::f64::consts::PI } else { 0.0 };
+    let want = total - pocket;
+
+    let mut m = Model::new();
+    let points: Vec<Point> = base
+        .iter()
+        .chain([&apex])
+        .map(|v| Point::new(v.x, v.y, v.z))
+        .collect();
+    let rings = vec![
+        vec![0, 3, 2, 1],
+        vec![0, 1, 4],
+        vec![1, 2, 4],
+        vec![2, 3, 4],
+        vec![3, 0, 4],
+    ];
+    let mut s = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+        .unwrap()
+        .shape;
+    if drilled {
+        let frame = ogeom_math::Frame::new(
+            Point::new(5.0, 10.0, -1.0),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let tool = ogeom_algo::make_cylinder(&mut m, frame, 1.0, 2.0, T)
+            .unwrap()
+            .shape;
+        s = ogeom_bool::cut(&mut m, &s, &tool, T).unwrap().shape;
+    }
+    let top = explore_unique(&m, &s, ShapeType::Vertex)
+        .unwrap()
+        .into_iter()
+        .find(|v| (m.node(v).unwrap().data().as_vertex().unwrap().point.z - 12.0).abs() < 1e-9)
+        .unwrap();
+    let specs: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| {
+            let (p, q) = ogeom_algo::edge_vertices(&m, &e).unwrap()?;
+            let far = if p.is_same(&top) {
+                q
+            } else if q.is_same(&top) {
+                p
+            } else {
+                return None;
+            };
+            let at = m.node(&far).unwrap().data().as_vertex().unwrap().point;
+            let k = base
+                .iter()
+                .position(|b| (Point::new(b.x, b.y, b.z) - at).magnitude() < 1e-9)?;
+            (k < 3).then(|| (e, Chamfer::Symmetric(d[k])))
+        })
+        .collect();
+    assert_eq!(specs.len(), 3);
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert!(!folded(&m, &built.shape), "folded");
+    let faces = explore_unique(&m, &built.shape, ShapeType::Face).unwrap();
+    let pocket_faces = if drilled { 2 } else { 0 };
+    assert_eq!(faces.len(), 9 + pocket_faces, "faces");
+    assert_eq!(built.history.generated(&top).len(), 1, "the apex's patch");
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-6,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let got = ogeom_algo::volume_properties(&m, &built.shape, fine, T)
+        .unwrap()
+        .mass;
+    assert!((got - want).abs() <= 2e-5, "volume {got} against {want}");
+}
+
+#[test]
+fn a_pyramid_s_apex_of_three_bevels_and_a_sharp_edge_closes_on_one_patch() {
+    three_bevels_and_a_sharp_edge_at_the_apex(false);
+}
+
+#[test]
+fn a_drilled_pyramid_s_apex_of_three_bevels_and_a_sharp_edge_closes_on_one_patch() {
+    three_bevels_and_a_sharp_edge_at_the_apex(true);
+}
+
+/// A box 10 by 6 by 4 with one top corner raised 5e-7 off its three faces'
+/// planes, held there by its tolerance (and its edges' and faces'), 1e-6:
+/// inexact planar input, its four top edges chamfered 0.5. The planar
+/// engine reads exact planes only; the curved path builds each edge to how
+/// far it stands off its faces. Valid, the box's six faces and four bevels
+/// (each top corner two bevels mitred across its sharp upright), each edge
+/// generating its bevel; the volume the exact box's polytope cut by each
+/// bevel's plane holds, to the raised corner's share.
+#[test]
+fn an_inexact_box_s_top_edges_chamfer_through_the_engine() {
+    use ogeom_math::Vector;
+    let (off, d) = (5e-7_f64, 0.5_f64);
+    let mut m = Model::new();
+    let points = [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(10.0, 0.0, 0.0),
+        Point::new(10.0, 6.0, 0.0),
+        Point::new(0.0, 6.0, 0.0),
+        Point::new(0.0, 0.0, 4.0),
+        Point::new(10.0, 0.0, 4.0),
+        Point::new(10.0, 6.0, 4.0 + off),
+        Point::new(0.0, 6.0, 4.0),
+    ];
+    let rings = vec![
+        vec![0, 3, 2, 1],
+        vec![4, 5, 6, 7],
+        vec![0, 1, 5, 4],
+        vec![1, 2, 6, 5],
+        vec![2, 3, 7, 6],
+        vec![3, 0, 4, 7],
+    ];
+    let s = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+        .unwrap()
+        .shape;
+    let raised = explore_unique(&m, &s, ShapeType::Vertex)
+        .unwrap()
+        .into_iter()
+        .find(|v| m.node(v).unwrap().data().as_vertex().unwrap().point.z > 4.0 + 1e-7)
+        .unwrap();
+    let wide = ogeom_core::Tolerance::new(1e-6).unwrap();
+    m.widen(&raised, wide).unwrap();
+    for kind in [ShapeType::Edge, ShapeType::Face] {
+        for x in explore_unique(&m, &s, kind).unwrap() {
+            if explore_unique(&m, &x, ShapeType::Vertex)
+                .unwrap()
+                .iter()
+                .any(|v| v.is_same(&raised))
+            {
+                m.widen(&x, wide).unwrap();
+            }
+        }
+    }
+    let found = ogeom_algo::check(&m, &s, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let top: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let b = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            b.low().unwrap().z > 3.9
+        })
+        .collect();
+    assert_eq!(top.len(), 4);
+    let built = ogeom_fillet::chamfer_edges(&mut m, &s, &top, d, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert_eq!(
+        explore_unique(&m, &built.shape, ShapeType::Face)
+            .unwrap()
+            .len(),
+        10,
+        "the box's faces and four bevels"
+    );
+    for e in &top {
+        assert_eq!(
+            built.history.generated(e).len(),
+            1,
+            "an edge without its bevel"
+        );
+    }
+    let up = Vector::new(0.0, 0.0, 1.0);
+    let mut planes = box_planes((10.0, 6.0, 4.0));
+    for (at, u, side) in [
+        (
+            Vector::new(0.0, 0.0, 4.0),
+            Vector::X,
+            Vector::new(0.0, -1.0, 0.0),
+        ),
+        (Vector::new(10.0, 0.0, 4.0), Vector::Y, Vector::X),
+        (
+            Vector::new(10.0, 6.0, 4.0),
+            Vector::new(-1.0, 0.0, 0.0),
+            Vector::Y,
+        ),
+        (
+            Vector::new(0.0, 6.0, 4.0),
+            Vector::new(0.0, -1.0, 0.0),
+            Vector::new(-1.0, 0.0, 0.0),
+        ),
+    ] {
+        planes.push(bevel_plane(at, u, (up, d), (side, d)));
+    }
+    let (want, faces) = convex_polytope(&planes);
+    assert_eq!(faces, 10);
+    // The raised corner lifts the top by at most its rise over its area.
+    let got = volume(&m, &built.shape);
+    assert!(
+        (got - want).abs() <= 10.0 * 6.0 * off,
+        "volume {got} against {want}"
+    );
+}

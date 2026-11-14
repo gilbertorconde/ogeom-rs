@@ -428,7 +428,351 @@ pub(crate) fn engine_chamfer(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
+    if model.kind_of(solid)? == ogeom_topo::ShapeType::Compound {
+        return engine_chamfer_compound(model, solid, specs, tol);
+    }
+    // A solid with placed shapes in it (a prism's far end is its profile
+    // moved, the same nodes standing twice) is read with its placements
+    // baked in, the request traced onto the baked shapes and the history
+    // carried back.
+    let baked = ogeom_algo::baked_where_placed(model, solid, tol)?;
+    if baked.shape.is_same(solid) {
+        return engine_chamfer_unplaced(model, solid, specs, tol);
+    }
+    let Some(traced) = traced_specs(&baked.history, specs) else {
+        return Ok(None);
+    };
+    let Some(built) = engine_chamfer_unplaced(model, &baked.shape, &traced, tol)? else {
+        return Ok(None);
+    };
+    Ok(Some(Built::new(
+        built.shape,
+        baked.history.then(&built.history),
+    )))
+}
+
+/// [`engine_chamfer`] closing each vertex of three chamfers by their mitre:
+/// on a solid bounded by planes the bevels run on to the point their
+/// planes share, or, at a convex vertex of four or more sharing none, until
+/// the others cut them; on curved faces to the point their surfaces share,
+/// meeting each other along their sections from there. `None` elsewhere,
+/// the model then left as it was found.
+///
+/// # Errors
+///
+/// As [`engine_chamfer`].
+pub(crate) fn engine_chamfer_mitred(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let before = model.clone();
+    let built = engine_chamfer_mitred_attempt(model, solid, specs, tol);
+    if !matches!(built, Ok(Some(_))) {
+        *model = before;
+    }
+    built
+}
+
+/// [`engine_chamfer_mitred`]'s attempt, on the live model.
+fn engine_chamfer_mitred_attempt(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let baked = ogeom_algo::baked_where_placed(model, solid, tol)?;
+    let (solid, specs) = if baked.shape.is_same(solid) {
+        (solid.clone(), specs.to_vec())
+    } else {
+        let Some(traced) = traced_specs(&baked.history, specs) else {
+            return Ok(None);
+        };
+        (baked.shape.clone(), traced)
+    };
+    if !matches!(
+        crate::engine::dissolve(model, &solid, tol)?,
+        crate::engine::Dissolved::Plain
+    ) {
+        return Ok(None);
+    }
+    if let Some(mut request) = crate::engine::Request::from_chamfers(model, &solid, &specs, tol)? {
+        request.mitre = true;
+        if let Some(built) = crate::engine::run(model, &solid, &request, tol)? {
+            return Ok(Some(Built::new(
+                built.shape,
+                baked.history.then(&built.history),
+            )));
+        }
+    }
+    // A solid with curved faces: mitred on the curved path, its seams
+    // dissolved where it holds any.
+    if crate::engine::bounded_by_planes(model, &solid, tol)? {
+        return Ok(None);
+    }
+    let built = if let Some(seamless) = crate::engine::dissolve_curved(model, &solid, tol)? {
+        let Some(specs) = seamless.specs(&specs) else {
+            return Ok(None);
+        };
+        let Some(built) =
+            crate::engine::chamfer_curved_mitred(model, &seamless.solid, &specs, tol)?
+        else {
+            return Ok(None);
+        };
+        Built::new(built.shape, seamless.carry(&built.history))
+    } else {
+        let Some(built) = crate::engine::chamfer_curved_mitred(model, &solid, &specs, tol)? else {
+            return Ok(None);
+        };
+        built
+    };
+    Ok(Some(Built::new(
+        built.shape,
+        baked.history.then(&built.history),
+    )))
+}
+
+/// [`engine_chamfer`] on a compound of solids: each solid with the specs
+/// whose edges it holds, the rest kept as they are, the results gathered
+/// into a compound again. `None` where the compound holds anything but
+/// solids, an edge lies in no solid or in two, or any solid with specs is
+/// handed back.
+fn engine_chamfer_compound(
+    model: &mut Model,
+    compound: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    use ogeom_topo::ShapeType;
+    let parts = model.children_of(compound)?;
+    if parts.is_empty()
+        || parts
+            .iter()
+            .any(|p| !matches!(model.kind_of(p), Ok(ShapeType::Solid)))
+    {
+        return Ok(None);
+    }
+    let mut asked: Vec<Vec<(Shape, Chamfer)>> = vec![Vec::new(); parts.len()];
+    let edges: Vec<Vec<Shape>> = parts
+        .iter()
+        .map(|p| ogeom_topo::explore_unique(model, p, ShapeType::Edge))
+        .collect::<OgeomResult<_>>()?;
+    for (edge, spec) in specs {
+        let holders: Vec<usize> = (0..parts.len())
+            .filter(|k| edges[*k].iter().any(|e| e.is_same(edge)))
+            .collect();
+        let [k] = holders[..] else {
+            return Ok(None);
+        };
+        asked[k].push((edge.clone(), spec.clone()));
+    }
+    let mut out = Vec::with_capacity(parts.len());
+    let mut history = ogeom_algo::History::new();
+    for (part, own) in parts.iter().zip(&asked) {
+        if own.is_empty() {
+            out.push(part.clone());
+            continue;
+        }
+        let Some(built) = engine_chamfer(model, part, own, tol)? else {
+            return Ok(None);
+        };
+        history = history.then(&built.history);
+        out.push(built.shape);
+    }
+    let gathered = ogeom_algo::make_compound(model, &out)?.shape;
+    history.modify(compound, gathered.clone());
+    Ok(Some(Built::new(gathered, history)))
+}
+
+/// [`engine_chamfer`] on a solid with voids: the outer shell chamfered as a
+/// solid alone where it holds edges of the request, and each void holding
+/// some chamfered as the solid it bounds turned inside out (a void's
+/// edges are concave in the solid, and filling a wedge of the cavity is
+/// taking it off that solid), then the shells put together again. `None`
+/// where an edge lies on no shell or two, a shell's chamfer is handed back,
+/// or a void touches the outer shell or another void or lies outside the
+/// outer shell (in what a bevel takes off).
+fn engine_chamfer_voided(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    use ogeom_topo::ShapeType;
+    let shells = model.children_of(solid)?;
+    // The outer shell: the one whose bounds hold every other's.
+    let mut sized = Vec::with_capacity(shells.len());
+    for shell in &shells {
+        sized.push(ogeom_algo::shape_bounds(model, shell, tol)?.diagonal());
+    }
+    let outer = (0..shells.len())
+        .max_by(|a, b| sized[*a].total_cmp(&sized[*b]))
+        .unwrap_or(0);
+    let edges: Vec<Vec<Shape>> = shells
+        .iter()
+        .map(|shell| ogeom_topo::explore_unique(model, shell, ShapeType::Edge))
+        .collect::<OgeomResult<_>>()?;
+    let mut asked: Vec<Vec<(Shape, Chamfer)>> = vec![Vec::new(); shells.len()];
+    for (edge, spec) in specs {
+        let holders: Vec<usize> = (0..shells.len())
+            .filter(|k| edges[*k].iter().any(|e| e.is_same(edge)))
+            .collect();
+        let [k] = holders[..] else {
+            return Ok(None);
+        };
+        asked[k].push((edge.clone(), spec.clone()));
+    }
+    let mut history = ogeom_algo::History::new();
+    // Each shell as it comes out: the outer one first.
+    let mut order: Vec<usize> = vec![outer];
+    order.extend((0..shells.len()).filter(|k| *k != outer));
+    let mut kept: Vec<Shape> = Vec::with_capacity(shells.len());
+    for k in order {
+        if asked[k].is_empty() {
+            kept.push(shells[k].clone());
+            continue;
+        }
+        // The shell as a solid of its own, the outer one as it stands and
+        // a void turned inside out: whichever way bounds a valid solid.
+        let mut alone = None;
+        for shell in [shells[k].clone(), shells[k].reversed()] {
+            let candidate = ogeom_algo::make_solid(model, &[shell])?.shape;
+            if ogeom_algo::check(model, &candidate, tol)?.is_valid()
+                && ogeom_algo::volume_properties(
+                    model,
+                    &candidate,
+                    ogeom_mesh::Deflection::default(),
+                    tol,
+                )?
+                .mass
+                    > 0.0
+            {
+                alone = Some(candidate);
+                break;
+            }
+        }
+        let Some(alone) = alone else {
+            return Ok(None);
+        };
+        let Some(built) = engine_chamfer(model, &alone, &asked[k], tol)? else {
+            return Ok(None);
+        };
+        let [shell] = &model.children_of(&built.shape)?[..] else {
+            return Ok(None);
+        };
+        let shell = shell.clone();
+        // Back the way the solid held it.
+        let turned = model
+            .children_of(&alone)?
+            .first()
+            .is_some_and(|s| s.orientation() != shells[k].orientation());
+        kept.push(if turned { shell.reversed() } else { shell });
+        history = history.then(&built.history);
+    }
+    // Every void apart from the outer shell and from every other, and
+    // inside the outer shell.
+    let outside = ogeom_algo::make_solid(model, &[kept[0].clone()])?.shape;
+    for i in 1..kept.len() {
+        for j in 0..i {
+            let apart = ogeom_algo::distance_between_shapes(
+                model,
+                &kept[i],
+                &kept[j],
+                ogeom_intersect::ExtremaOptions::default(),
+                tol,
+            )?;
+            if apart.distance <= tol.confusion() {
+                return Ok(None);
+            }
+        }
+        let Some(corner) = ogeom_topo::explore_unique(model, &kept[i], ShapeType::Vertex)?
+            .first()
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let at = crate::setback::point_of(model, &corner)?;
+        if ogeom_algo::classify_in_solid_exact(model, &outside, at, tol)?
+            != ogeom_algo::Containment::In
+        {
+            return Ok(None);
+        }
+    }
+    let whole = ogeom_algo::make_solid(model, &kept)?.shape;
+    history.modify(solid, whole.clone());
+    Ok(Some(Built::new(whole, history)))
+}
+
+/// `specs` traced through `history`: each edge, and each face a spec names,
+/// to the one shape it went to; `None` where any went to none or several.
+fn traced_specs(
+    history: &ogeom_algo::History,
+    specs: &[(Shape, Chamfer)],
+) -> Option<Vec<(Shape, Chamfer)>> {
+    let one = |s: &Shape| match history.trace(s) {
+        [only] => Some(only.clone()),
+        _ => None,
+    };
+    specs
+        .iter()
+        .map(|(edge, spec)| {
+            let spec = match spec {
+                Chamfer::Symmetric(d) => Chamfer::Symmetric(*d),
+                Chamfer::Distances {
+                    face,
+                    on_face,
+                    on_other,
+                } => Chamfer::Distances {
+                    face: one(face)?,
+                    on_face: *on_face,
+                    on_other: *on_other,
+                },
+                Chamfer::Angle {
+                    face,
+                    distance,
+                    angle,
+                } => Chamfer::Angle {
+                    face: one(face)?,
+                    distance: *distance,
+                    angle: *angle,
+                },
+            };
+            Some((one(edge)?, spec))
+        })
+        .collect()
+}
+
+/// [`engine_chamfer`] on a solid with nothing placed in it. Dissolving
+/// seams rewrites nodes the solid shares, so where the engine hands the
+/// request back the model is left as it was found, for the caller's own
+/// path to read.
+fn engine_chamfer_unplaced(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let before = model.clone();
+    let built = engine_chamfer_attempt(model, solid, specs, tol);
+    if !matches!(built, Ok(Some(_))) {
+        *model = before;
+    }
+    built
+}
+
+/// [`engine_chamfer_unplaced`]'s attempt, on the live model.
+fn engine_chamfer_attempt(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
     use crate::engine::Dissolved;
+    if model.kind_of(solid)? == ogeom_topo::ShapeType::Solid && model.children_of(solid)?.len() > 1
+    {
+        return engine_chamfer_voided(model, solid, specs, tol);
+    }
     match crate::engine::dissolve(model, solid, tol)? {
         Dissolved::Plain => {
             if let Some(request) = crate::engine::Request::from_chamfers(model, solid, specs, tol)?
@@ -438,8 +782,10 @@ pub(crate) fn engine_chamfer(
             }
             // A solid with curved faces: its seats on cylinders and cones,
             // read with its seams dissolved where it holds any.
+            // On planes, only where a corner's facet is off one plane: the
+            // curved path closes it with a patch.
             if crate::engine::bounded_by_planes(model, solid, tol)? {
-                return Ok(None);
+                return crate::engine::chamfer_patched(model, solid, specs, tol);
             }
             if let Some(seamless) = crate::engine::dissolve_curved(model, solid, tol)? {
                 let Some(specs) = seamless.specs(specs) else {
@@ -1613,5 +1959,42 @@ fn same_spelling(a: &Chamfer, b: &Chamfer, tol: Tolerances) -> bool {
             },
         ) => fa.is_same(fb) && near(*da, *db) && (aa - ab).abs() <= tol.angular(),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    use super::*;
+    use ogeom_math::{Direction, Frame, Point};
+    use ogeom_topo::ShapeType;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    fn block(m: &mut Model, (x, y, z): (f64, f64, f64), size: (f64, f64, f64)) -> Shape {
+        let at = Frame::new(Point::new(x, y, z), Direction::Z, Direction::X, T).unwrap();
+        ogeom_algo::make_box(m, at, size, T).unwrap().shape
+    }
+
+    /// A plate, a step and a block fused: faces split by seams, which the
+    /// engine dissolves before it reads the solid. A chamfer wider than the
+    /// part, which the engine does not build, leaves the model as it was:
+    /// the dissolved solid's nodes are gone again, for the wedge path to
+    /// read the solid as given.
+    #[test]
+    fn a_request_the_engine_does_not_build_leaves_the_model_as_it_was() {
+        let mut m = Model::new();
+        let plate = block(&mut m, (0.0, 0.0, 0.0), (80.0, 60.0, 6.0));
+        let step = block(&mut m, (0.0, 30.0, 6.0), (80.0, 30.0, 10.0));
+        let s = ogeom_bool::fuse(&mut m, &plate, &step, T).unwrap().shape;
+        let edge = ogeom_topo::explore_unique(&m, &s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        let nodes = m.node_count();
+        let built = engine_chamfer(&mut m, &s, &[(edge, Chamfer::Symmetric(100.0))], T);
+        assert!(!matches!(built, Ok(Some(_))), "a chamfer of 100 built");
+        assert_eq!(m.node_count(), nodes, "nodes left behind");
     }
 }

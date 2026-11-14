@@ -3,7 +3,8 @@
 //! thin wall bevelled on both its edges, a plate bevelled all round past
 //! half its thickness, a face whose bevels cross on it at an angle), and a
 //! convex corner where two bevels of unequal setbacks meet beside a sharp
-//! edge, which mitres.
+//! edge, which mitres, as does a convex corner of four bevels or more
+//! asked to mitre whose planes share no point.
 //!
 //! A face is consumed where its setback corners no longer make a ring
 //! turning its way. Round such faces, and at a convex corner, every bevel
@@ -17,12 +18,24 @@
 //! across a consumed one is notched by the bevels; two bevels at a corner
 //! of two meet along the line their planes share, with no facet between.
 //!
+//! A consumed face may hold holes, each convex, and reflex corners, every
+//! edge of a hole or at a reflex corner bevelled. There the material is
+//! not the inner side of every plane but the union of the sides a group of
+//! bevels leaves: round a hole, its bevels', and at a reflex corner, its
+//! two bevels'. Every other ring keeps what of it lies under any bevel of
+//! the group: it loses the funnel above all of them. The group's own
+//! bevels and walls keep their setback corners, which mitre at the hole's
+//! corners as on any face, and do not run on; the walls are no cut for the
+//! rest, which lie outside the hole.
+//!
 //! The clip is local by construction: a ring may lose only the setback
 //! corners at those vertices, a consumed face's own corners, a bevel's
 //! run-on, or points the clip itself made. A clip that would take any
 //! other corner reaches past them, and the engine declines. A consumed face
-//! with holes or reflex corners, or a concave edge at any of those
-//! vertices, is outside the class too.
+//! with a hole that is not convex or not bevelled all round, a reflex
+//! corner beside an edge left sharp, or a concave edge at any of those
+//! vertices but one left sharp between a group's walls, is outside the
+//! class too.
 
 use ogeom_core::{FastSet, Tolerances};
 use ogeom_math::{Point, Vector};
@@ -35,6 +48,29 @@ use ogeom_core::FastMap;
 /// outward unit normal and its offset along it.
 pub(crate) type Cut = (Origin, Vector, f64);
 
+/// Bevels round a consumed face's hole or at one of its reflex corners,
+/// whose material is the union of the sides they leave.
+pub(crate) struct Group {
+    /// The group's bevels' edges.
+    pub edges: FastSet<Id>,
+    /// The faces beside the group's edges other than the consumed one.
+    pub walls: FastSet<usize>,
+    /// Each of the group's bevel planes: its outward unit normal and its
+    /// offset along it.
+    pub planes: Vec<(Vector, f64)>,
+}
+
+impl Group {
+    /// Whether a ring from `origin` is one of the group's own.
+    pub fn owns(&self, origin: &Origin) -> bool {
+        match origin {
+            Origin::Edge(e) => self.edges.contains(e),
+            Origin::Face(f) => self.walls.contains(f),
+            Origin::Vertex(_) => false,
+        }
+    }
+}
+
 /// The corners cut back by planes, and the planes.
 pub(crate) struct Cluster {
     /// Each consumed face, by index.
@@ -44,8 +80,13 @@ pub(crate) struct Cluster {
     /// The vertices whose facet ring the clip replaces: those of fewer than
     /// three bevels.
     pub unfaceted: FastSet<Id>,
-    /// Each face, bevel and facet plane round those vertices.
+    /// Each face, bevel and facet plane round those vertices but a
+    /// group's.
     pub cuts: Vec<Cut>,
+    /// The groups whose union the rest keep, and their vertices, which
+    /// keep their setback corners.
+    pub groups: Vec<Group>,
+    pub grouped: FastSet<Id>,
     /// Each blended edge's two ends.
     ends: FastMap<Id, (Id, Id)>,
     /// Each face's vertices, outer ring and holes.
@@ -118,17 +159,58 @@ fn newell(points: &[Point]) -> Vector {
     n
 }
 
-/// Whether the face's outline turns its way at every corner.
-fn convex(planar: &Planar, face: &Face) -> bool {
-    let n = face.corners.len();
-    (0..n).all(|k| {
-        let (a, b, c) = (
-            planar.points[&face.corners[(k + n - 1) % n]],
-            planar.points[&face.corners[k]],
-            planar.points[&face.corners[(k + 1) % n]],
-        );
-        (b - a).cross(c - b).dot(face.normal) > 0.0
-    })
+/// Whether the face's ring `ring` turns its way at its `k`th corner.
+fn turns(planar: &Planar, face: &Face, ring: &[Id], k: usize) -> bool {
+    let n = ring.len();
+    let (a, b, c) = (
+        planar.points[&ring[(k + n - 1) % n]],
+        planar.points[&ring[k]],
+        planar.points[&ring[(k + 1) % n]],
+    );
+    (b - a).cross(c - b).dot(face.normal) > 0.0
+}
+
+/// Whether the setback rings of a face keep apart: each turning its way
+/// (a hole the other way) without crossing itself, no two meeting, and
+/// each hole inside the outer one.
+fn apart(
+    planar: &Planar,
+    fi: usize,
+    corners: &FastMap<(usize, Id), Point>,
+    tol: Tolerances,
+) -> bool {
+    let face = &planar.faces[fi];
+    let rings: Vec<Vec<Point>> = face
+        .loops()
+        .map(|ring| ring.iter().map(|v| corners[&(fi, *v)]).collect())
+        .collect();
+    if !fair(&rings[0], face.normal, tol) {
+        return false;
+    }
+    if rings.len() == 1 {
+        return true;
+    }
+    if rings[1..].iter().any(|h| !fair(h, -face.normal, tol)) {
+        return false;
+    }
+    let o = rings[0][0];
+    let x = (rings[0][1] - o).cross(face.normal);
+    let x = x / x.magnitude();
+    let y = face.normal.cross(x) / face.normal.magnitude();
+    let flat: Vec<Vec<(f64, f64)>> = rings
+        .iter()
+        .map(|r| {
+            r.iter()
+                .map(|p| ((*p - o).dot(x), (*p - o).dot(y)))
+                .collect()
+        })
+        .collect();
+    let eps = tol.confusion();
+    (0..flat.len())
+        .all(|i| (i + 1..flat.len()).all(|j| !super::guards::loops_meet(&flat[i], &flat[j], eps)))
+        && flat[1..]
+            .iter()
+            .all(|h| super::guards::strictly_inside(&flat[0], h[0], eps))
 }
 
 /// Whether the ring `points` turns about `normal` without crossing itself.
@@ -154,29 +236,75 @@ pub(crate) fn consumed(
     blended: &FastSet<Id>,
     corners: &FastMap<(usize, Id), Point>,
     classes: &FastMap<Id, VertexClass>,
+    scattered: &FastSet<Id>,
     tol: Tolerances,
 ) -> Consumed {
     let mut faces: FastSet<usize> = FastSet::default();
-    for (fi, face) in planar.faces.iter().enumerate() {
-        let ring: Vec<Point> = face.corners.iter().map(|v| corners[&(fi, *v)]).collect();
-        if !fair(&ring, face.normal, tol) {
+    for fi in 0..planar.faces.len() {
+        if !apart(planar, fi, corners, tol) {
             faces.insert(fi);
         }
     }
+    let edge_of = |a: Id, b: Id| planar.edges.get(&(a.min(b), a.max(b))).copied();
+    // Each consumed face's groups: a hole, every corner of it reflex in the
+    // face and every edge bevelled; a reflex corner of the outline, both
+    // its edges bevelled.
+    let mut eaten: Vec<usize> = faces.iter().copied().collect();
+    eaten.sort_unstable();
+    let mut grouped_edges: Vec<(Vec<Id>, Vec<Id>)> = Vec::new();
+    let mut vertices: FastSet<Id> = FastSet::default();
+    for fi in &eaten {
+        let face = &planar.faces[*fi];
+        let n = face.corners.len();
+        for k in 0..n {
+            if turns(planar, face, &face.corners, k) {
+                continue;
+            }
+            let (a, v, b) = (
+                face.corners[(k + n - 1) % n],
+                face.corners[k],
+                face.corners[(k + 1) % n],
+            );
+            let (Some(e0), Some(e1)) = (edge_of(a, v), edge_of(v, b)) else {
+                return Consumed::Outside;
+            };
+            grouped_edges.push((vec![e0, e1], vec![v]));
+        }
+        for hole in &face.holes {
+            let m = hole.len();
+            if (0..m).any(|k| turns(planar, face, hole, k)) {
+                return Consumed::Outside;
+            }
+            let mut edges = Vec::with_capacity(m);
+            for k in 0..m {
+                let Some(e) = edge_of(hole[k], hole[(k + 1) % m]) else {
+                    return Consumed::Outside;
+                };
+                edges.push(e);
+            }
+            grouped_edges.push((edges, hole.clone()));
+        }
+        vertices.extend(face.loops().flatten().copied());
+    }
+    if grouped_edges
+        .iter()
+        .flat_map(|(edges, _)| edges)
+        .any(|e| !blended.contains(e))
+    {
+        return Consumed::Outside;
+    }
+    let grouped: FastSet<Id> = grouped_edges
+        .iter()
+        .flat_map(|(_, vs)| vs.iter().copied())
+        .collect();
+    // Every edge round the cluster convex, but a sharp one at a group's
+    // vertex (a hole's corner, the outline's reflex corner).
     let convex_at = |v: Id| {
         seats
             .iter()
             .filter(|((a, b), _)| *a == v || *b == v)
-            .all(|(_, seat)| seat.convex)
+            .all(|(_, seat)| seat.convex || (grouped.contains(&v) && !blended.contains(&seat.edge)))
     };
-    let mut vertices: FastSet<Id> = FastSet::default();
-    for fi in &faces {
-        let face = &planar.faces[*fi];
-        if !face.holes.is_empty() || !convex(planar, face) {
-            return Consumed::Outside;
-        }
-        vertices.extend(face.corners.iter().copied());
-    }
     if vertices.iter().any(|v| !convex_at(*v)) {
         return Consumed::Outside;
     }
@@ -195,6 +323,13 @@ pub(crate) fn consumed(
         if newell(&ring).magnitude() > tol.confusion() * tol.confusion() {
             vertices.insert(*v);
         }
+    }
+    // A mitre of four bevels or more sharing no point: cut back, convex.
+    for v in scattered {
+        if !convex_at(*v) {
+            return Consumed::Outside;
+        }
+        vertices.insert(*v);
     }
     if vertices.is_empty() {
         return Consumed::Nothing;
@@ -229,7 +364,28 @@ pub(crate) fn consumed(
     let unfaceted: FastSet<Id> = vertices
         .iter()
         .copied()
-        .filter(|v| classes.get(v).is_some_and(|c| c.blended < 3))
+        .filter(|v| scattered.contains(v) || classes.get(v).is_some_and(|c| c.blended < 3))
+        .collect();
+    let mut groups: Vec<Group> = grouped_edges
+        .iter()
+        .map(|(edges, _)| {
+            let edges: FastSet<Id> = edges.iter().copied().collect();
+            let walls = seats
+                .values()
+                .filter(|s| edges.contains(&s.edge))
+                .flat_map(|s| s.faces)
+                .filter(|f| !faces.contains(f))
+                .collect();
+            Group {
+                edges,
+                walls,
+                planes: Vec::new(),
+            }
+        })
+        .collect();
+    let walls: FastSet<usize> = groups
+        .iter()
+        .flat_map(|g| g.walls.iter().copied())
         .collect();
     let mut cuts: Vec<Cut> = Vec::new();
     let mut keys: Vec<&(Id, Id)> = seats.keys().collect();
@@ -251,7 +407,17 @@ pub(crate) fn consumed(
         let out = seat.normals[0] + seat.normals[1];
         let n = if n.dot(out) < 0.0 { -n } else { n };
         let n = n / n.magnitude();
-        cuts.push((Origin::Edge(seat.edge), n, n.dot(p.to_vector())));
+        let off = n.dot(p.to_vector());
+        let mut in_group = false;
+        for g in &mut groups {
+            if g.edges.contains(&seat.edge) {
+                g.planes.push((n, off));
+                in_group = true;
+            }
+        }
+        if !in_group {
+            cuts.push((Origin::Edge(seat.edge), n, off));
+        }
     }
     let mut round: Vec<Id> = vertices.iter().copied().collect();
     round.sort_unstable();
@@ -261,7 +427,7 @@ pub(crate) fn consumed(
             return Consumed::Outside;
         };
         for fi in &order {
-            if faced.insert(*fi) {
+            if !walls.contains(fi) && faced.insert(*fi) {
                 let face = &planar.faces[*fi];
                 let at = planar.points[&face.corners[0]];
                 cuts.push((
@@ -300,11 +466,14 @@ pub(crate) fn consumed(
         .iter()
         .map(|fi| {
             let face = &planar.faces[*fi];
-            let n = face.corners.len();
-            let pairs: Vec<(Id, Id)> = (0..n)
-                .map(|k| {
-                    let (a, b) = (face.corners[k], face.corners[(k + 1) % n]);
-                    (a.min(b), a.max(b))
+            let pairs: Vec<(Id, Id)> = face
+                .loops()
+                .flat_map(|ring| {
+                    let n = ring.len();
+                    (0..n).map(move |k| {
+                        let (a, b) = (ring[k], ring[(k + 1) % n]);
+                        (a.min(b), a.max(b))
+                    })
                 })
                 .collect();
             let edges = pairs
@@ -322,7 +491,7 @@ pub(crate) fn consumed(
                     }
                 })
                 .collect();
-            (edges, face.corners.iter().copied().collect(), beside)
+            (edges, face.loops().flatten().copied().collect(), beside)
         })
         .collect();
     Consumed::Cluster(Box::new(Cluster {
@@ -330,6 +499,8 @@ pub(crate) fn consumed(
         vertices,
         unfaceted,
         cuts,
+        groups,
+        grouped,
         ends,
         face_vertices,
         across,

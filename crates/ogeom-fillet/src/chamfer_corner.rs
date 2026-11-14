@@ -12,8 +12,10 @@ use ogeom_topo::{Model, Shape};
 /// meet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChamferCorner {
-    /// The bevels mitre into one point, by wedges built on the solid as given
-    /// and applied together.
+    /// The bevels run on to the point they share and meet each other from
+    /// there, with no facet between them; at a convex vertex of four bevels
+    /// or more on planes sharing no point, each runs on until the others
+    /// cut it.
     Point,
     /// Each bevel stops at the plane through the points where two bevels'
     /// contact lines cross on the face they share, and the corner is the
@@ -44,7 +46,11 @@ pub enum ChamferCorner {
 /// through them all to exist: as at a pyramid's apex beveled alike. The
 /// solid cut away is then the convex piece on the vertex's side of that
 /// plane and the solid's side of every bevel's plane, whose faces are the
-/// facet and the bevels' parts past it.
+/// facet and the bevels' parts past it. On a solid bounded by planes, a
+/// vertex of four bevels or more whose points leave one plane closes
+/// instead on the patch through them, its sides the bevels' ends: the
+/// bilinear patch at four, the points blended by the regular polygon's
+/// Wachspress coordinates at five or more, a face on each side's sector.
 ///
 /// # Errors
 ///
@@ -54,7 +60,8 @@ pub enum ChamferCorner {
 /// a vertex of three or more of the request's bevels holds one that is not
 /// a straight convex edge between planes, two in turn round it that share
 /// no face, facet points that do not stand on the edges' own lengths, or,
-/// past three, facet points off one plane.
+/// past three, facet points off one plane that no patch closes (where the
+/// engine hands the vertex back).
 pub fn chamfer_edges_cornered(
     model: &mut Model,
     solid: &Shape,
@@ -71,6 +78,11 @@ pub fn chamfer_edges_cornered(
     }
     let specs = &specs[..];
     if corner == ChamferCorner::Point {
+        // The blend engine mitres in one pass, on planes or on curved
+        // faces; what it hands back, the wedges do.
+        if let Some(built) = crate::chamfer::engine_chamfer_mitred(model, solid, specs, tol)? {
+            return Ok(built);
+        }
         return crate::chamfer::chamfer_edges_mitred(model, solid, specs, tol);
     }
     // A solid bounded by planes is chamfered by the blend engine in one

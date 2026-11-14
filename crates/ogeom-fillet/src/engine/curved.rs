@@ -48,7 +48,9 @@ pub(crate) struct Curved {
 
 /// `solid` read into faces and edges, or `None` where it is not one solid of
 /// one shell, a shape in it is placed (its node then stands in two places),
-/// or an edge has no curve (a sphere's pole).
+/// or an edge has no curve. A degenerate edge (a sphere's pole) is left out
+/// of the faces' loops, and [`build`] puts one back wherever a face's chart
+/// breaks at a pole.
 ///
 /// # Errors
 ///
@@ -76,11 +78,20 @@ pub(crate) fn read(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult
         shapes.insert(id(&v), v);
     }
     let mut edges: FastMap<Id, CurvedEdge> = FastMap::default();
+    let mut poles: Vec<Id> = Vec::new();
     for e in explore_unique(model, solid, ShapeType::Edge)? {
         if placed(&e) {
             return Ok(None);
         }
         let e = e.oriented(Orientation::Forward);
+        if model
+            .node(&e)
+            .and_then(|n| n.data().as_edge())
+            .is_some_and(|d| d.degenerate)
+        {
+            poles.push(id(&e));
+            continue;
+        }
         let Some((a, b)) = ogeom_algo::edge_vertices(model, &e)? else {
             return Ok(None);
         };
@@ -117,6 +128,7 @@ pub(crate) fn read(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult
             let walk: Vec<(Id, bool)> = model
                 .children_of(&wire)?
                 .iter()
+                .filter(|e| !poles.contains(&id(e)))
                 .map(|e| (id(e), e.orientation() == Orientation::Forward))
                 .collect();
             loops.push(walk);
@@ -177,24 +189,61 @@ pub(crate) fn build(
     faces: &[SheetRings],
     tol: Tolerances,
 ) -> OgeomResult<Sheet> {
+    build_with_widths(model, points, edges, faces, &[], tol)
+}
+
+/// [`build`], each edge given a width in `widths` (by the edges' order,
+/// missing or nought for none) widened to it with its vertices before any
+/// face fits its trim: a contact fitted to stand within that of a face it
+/// cannot lie on exactly.
+///
+/// # Errors
+///
+/// As [`build`], and where a width is not a finite distance.
+pub(crate) fn build_with_widths(
+    model: &mut Model,
+    points: &[Point],
+    edges: &[SheetCurve],
+    faces: &[SheetRings],
+    widths: &[f64],
+    tol: Tolerances,
+) -> OgeomResult<Sheet> {
     let vertices: Vec<Shape> = points
         .iter()
         .map(|p| ogeom_algo::make_vertex(model, *p).shape)
         .collect();
+    // Every widened edge's ends are widened first, so a fitted curve's ends
+    // reach them, and so do the other edges meeting it there.
+    for (k, e) in edges.iter().enumerate() {
+        if let Some(&width) = widths.get(k)
+            && width > 0.0
+        {
+            let wide = ogeom_core::Tolerance::new(width)?;
+            for shape in [&vertices[e.ends.0], &vertices[e.ends.1]] {
+                model.widen(shape, wide)?;
+            }
+        }
+    }
     let mut made = Vec::with_capacity(edges.len());
-    for e in edges {
+    for (k, e) in edges.iter().enumerate() {
         let (a, b) = e.ends;
-        made.push(
-            ogeom_algo::make_edge_between(
-                model,
-                e.curve.clone(),
-                e.range,
-                &vertices[a],
-                &vertices[b],
-                tol,
-            )?
-            .shape,
-        );
+        let wide = match widths.get(k) {
+            Some(&width) if width > 0.0 => Some(ogeom_core::Tolerance::new(width)?),
+            _ => None,
+        };
+        let edge = ogeom_algo::make_edge_between(
+            model,
+            e.curve.clone(),
+            e.range,
+            &vertices[a],
+            &vertices[b],
+            tol,
+        )?
+        .shape;
+        if let Some(wide) = wide {
+            model.widen(&edge, wide)?;
+        }
+        made.push(edge);
     }
     let mut out = Vec::with_capacity(faces.len());
     for face in faces {
@@ -212,8 +261,32 @@ pub(crate) fn build(
                 .collect();
             wires.push(ogeom_algo::make_wire(model, &walked, tol)?.shape);
         }
-        let built = ogeom_algo::make_face(model, face.surface.clone(), &wires, tol)?.shape;
+        let mut built = ogeom_algo::make_face(model, face.surface.clone(), &wires, tol)?.shape;
         ogeom_algo::trimmed_or_fitted_where_bare(model, &built, tol)?;
+        // A ring through a pole (a sphere's seam walked to it and back)
+        // meets itself there in space but not in the chart: the face is
+        // built again with the pole's degenerate edge closing it.
+        let surface = model
+            .node(&built)
+            .and_then(|n| n.data().as_face())
+            .map(|d| d.surface);
+        if let Some(surface) = surface {
+            let mut closed = Vec::with_capacity(face.rings.len());
+            let mut grew = false;
+            for wire in &wires {
+                let uses = model.children_of(wire)?;
+                let with_poles = ogeom_algo::closed_at_poles(model, surface, &uses, tol)?;
+                grew |= with_poles.len() > uses.len();
+                closed.push(with_poles);
+            }
+            if grew {
+                let wires = closed
+                    .iter()
+                    .map(|uses| Ok(ogeom_algo::make_wire(model, uses, tol)?.shape))
+                    .collect::<OgeomResult<Vec<_>>>()?;
+                built = ogeom_algo::make_face_on(model, surface, &wires, tol)?.shape;
+            }
+        }
         out.push(if face.reversed {
             built.reversed()
         } else {

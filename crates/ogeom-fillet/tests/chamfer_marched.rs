@@ -96,9 +96,16 @@ fn nearest_on_crease(p: Point) -> Point {
 }
 
 /// The holed drum's bore rim chamfered by `spec` (handed the drum's face
-/// and the bore's), checked: back come the bevel's rulings at 32
-/// stations, each from its drum end to its bore end.
-fn bore_rulings(spec: impl Fn(&Shape, &Shape) -> Chamfer) -> Vec<(Point, Point)> {
+/// and the bore's), checked: back come its bevel's two contacts, each as
+/// 32 points along each of the bevel faces' edges on that face, on the
+/// drum and on the bore; and the bevels' surfaces. The boolean leaves the
+/// rim in two pieces of one curve: with `whole`, both are asked, a bevel on
+/// each, meeting where the curve's fitted seam turns at its join; else the
+/// one nearest a point on it.
+fn bore_contacts(
+    spec: impl Fn(&Shape, &Shape) -> Chamfer,
+    whole: bool,
+) -> (Vec<Point>, Vec<Point>, Vec<ogeom_geom::SurfaceGeometry>) {
     let mut m = Model::new();
     let s = holed_drum(&mut m);
     let rim = edge_near(&m, &s, [0.0, 9.5, 18.0]);
@@ -133,31 +140,65 @@ fn bore_rulings(spec: impl Fn(&Shape, &Shape) -> Chamfer) -> Vec<(Point, Point)>
         .find(|f| !is_drum(f))
         .expect("the bore")
         .clone();
-    let built = chamfer_edges_with(&mut m, &s, &[(rim.clone(), spec(&drum, &bore))], T).unwrap();
+    let rims: Vec<Shape> = if whole {
+        let of = |f: &Shape| explore_unique(&m, f, ShapeType::Edge).unwrap();
+        let on_bore = of(&bore);
+        of(&drum)
+            .into_iter()
+            .filter(|e| {
+                on_bore.iter().any(|x| x.is_same(e))
+                    && ogeom_algo::shape_bounds(&m, e, T).unwrap().low().unwrap().y > 0.0
+            })
+            .collect()
+    } else {
+        vec![rim.clone()]
+    };
+    let specs: Vec<(Shape, Chamfer)> = rims
+        .iter()
+        .map(|e| (e.clone(), spec(&drum, &bore)))
+        .collect();
+    let built = chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
     let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
     assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
-    assert!(built.history.is_deleted(&rim));
-    let bevel = explore_unique(&m, &built.shape, ShapeType::Face)
+    for e in &rims {
+        assert!(built.history.is_deleted(e));
+    }
+    let bevels: Vec<Shape> = explore_unique(&m, &built.shape, ShapeType::Face)
         .unwrap()
         .into_iter()
-        .find(|f| matches!(surface(&m, f), ogeom_geom::SurfaceGeometry::BSpline(_)))
-        .expect("the bevel");
-    let geometry = surface(&m, &bevel);
-    let ((u0, u1), (v0, v1)) = geometry.domain();
-    (0..32)
-        .map(|i| {
-            let v = (v1 - v0).mul_add(f64::from(i) / 32.0, v0);
-            let (a, b) = (
-                geometry.point_at(u0, v, T).unwrap(),
-                geometry.point_at(u1, v, T).unwrap(),
-            );
-            if off_drum(a) < off_drum(b) {
-                (a, b)
-            } else {
-                (b, a)
-            }
-        })
-        .collect()
+        .filter(|f| matches!(surface(&m, f), ogeom_geom::SurfaceGeometry::BSpline(_)))
+        .collect();
+    assert!(!bevels.is_empty(), "the bevel");
+    if whole {
+        assert_eq!(bevels.len(), rims.len(), "a bevel on each piece");
+    }
+    let (mut on_drum, mut on_bore) = (Vec::new(), Vec::new());
+    for e in bevels
+        .iter()
+        .flat_map(|b| explore_unique(&m, b, ShapeType::Edge).unwrap())
+    {
+        let Some((c, (a, b))) = ogeom_algo::placed_edge_curve(&m, &e, T).unwrap() else {
+            continue;
+        };
+        let points: Vec<Point> = (0..32)
+            .map(|i| {
+                c.point_at((b - a).mul_add(f64::from(i) / 32.0, a), T)
+                    .unwrap()
+            })
+            .collect();
+        let middle = c.point_at(0.5 * (a + b), T).unwrap();
+        if off_drum(middle) <= FIT {
+            on_drum.extend(points);
+        } else if off_bore(middle) <= FIT {
+            on_bore.extend(points);
+        }
+    }
+    assert!(
+        !on_drum.is_empty() && !on_bore.is_empty(),
+        "a contact on each face"
+    );
+    let surfaces = bevels.iter().map(|b| surface(&m, b)).collect();
+    (on_drum, on_bore, surfaces)
 }
 
 /// The band's fit target: how far a rail may stand off its face.
@@ -186,68 +227,95 @@ fn kappa(r: f64, length: f64) -> f64 {
 
 #[test]
 fn a_bore_rim_on_a_drum_chamfers_symmetric() {
-    for (on_drum, on_bore) in bore_rulings(|_, _| Chamfer::Symmetric(0.5)) {
-        assert!(off_drum(on_drum) <= FIT && off_bore(on_bore) <= FIT);
-        leg_fits(
-            on_drum.distance(nearest_on_crease(on_drum)),
-            0.5,
-            kappa(10.0, 0.5),
-        );
-        leg_fits(
-            on_bore.distance(nearest_on_crease(on_bore)),
-            0.5,
-            kappa(3.0, 0.5),
-        );
+    let (on_drum, on_bore, _) = bore_contacts(|_, _| Chamfer::Symmetric(0.5), false);
+    for p in on_drum {
+        leg_fits(p.distance(nearest_on_crease(p)), 0.5, kappa(10.0, 0.5));
+    }
+    for p in on_bore {
+        leg_fits(p.distance(nearest_on_crease(p)), 0.5, kappa(3.0, 0.5));
     }
 }
 
 #[test]
 fn a_bore_rim_on_a_drum_chamfers_by_two_distances() {
-    let rulings = bore_rulings(|drum, _| Chamfer::Distances {
-        face: drum.clone(),
-        on_face: 0.8,
-        on_other: 0.4,
-    });
-    for (on_drum, on_bore) in rulings {
-        assert!(off_drum(on_drum) <= FIT && off_bore(on_bore) <= FIT);
-        leg_fits(
-            on_drum.distance(nearest_on_crease(on_drum)),
-            0.8,
-            kappa(10.0, 0.8),
+    // One piece asked, and the whole rim.
+    for whole in [false, true] {
+        let (on_drum, on_bore, _) = bore_contacts(
+            |drum, _| Chamfer::Distances {
+                face: drum.clone(),
+                on_face: 0.8,
+                on_other: 0.4,
+            },
+            whole,
         );
-        leg_fits(
-            on_bore.distance(nearest_on_crease(on_bore)),
-            0.4,
-            kappa(3.0, 0.4),
-        );
+        for p in on_drum {
+            leg_fits(p.distance(nearest_on_crease(p)), 0.8, kappa(10.0, 0.8));
+        }
+        for p in on_bore {
+            leg_fits(p.distance(nearest_on_crease(p)), 0.4, kappa(3.0, 0.4));
+        }
     }
 }
 
 #[test]
 fn a_bore_rim_on_a_drum_chamfers_by_distance_and_angle() {
     let angle = 40.0_f64.to_radians();
-    let rulings = bore_rulings(|drum, _| Chamfer::Angle {
-        face: drum.clone(),
-        distance: 0.6,
-        angle,
-    });
-    for (on_drum, on_bore) in rulings {
-        assert!(off_drum(on_drum) <= FIT && off_bore(on_bore) <= FIT);
-        leg_fits(
-            on_drum.distance(nearest_on_crease(on_drum)),
-            0.6,
-            kappa(10.0, 0.6),
+    // One piece asked, and the whole rim.
+    for whole in [false, true] {
+        let (on_drum, _, bevels) = bore_contacts(
+            |drum, _| Chamfer::Angle {
+                face: drum.clone(),
+                distance: 0.6,
+                angle,
+            },
+            whole,
         );
-        // The ruling lies in the plane square to the crease through the
-        // drum's contact, and leaves the drum's section there at the angle:
-        // its sine against the drum's normal within that plane.
-        let (_, along) = crease_near(on_drum);
-        let ruling = on_bore - on_drum;
-        assert!(ruling.dot(along).abs() <= FIT, "{}", ruling.dot(along));
-        let normal = Vector::new(on_drum.x, on_drum.y, 0.0) / 10.0;
-        let normal = normal - along * normal.dot(along);
-        let normal = normal / normal.magnitude();
-        let off = (ruling.dot(normal) / ruling.magnitude()).abs().asin();
-        assert!((off - angle).abs() <= 1e-3, "{} degrees", off.to_degrees());
+        for on_drum in on_drum {
+            leg_fits(
+                on_drum.distance(nearest_on_crease(on_drum)),
+                0.6,
+                kappa(10.0, 0.6),
+            );
+            // The bevel's line through the drum's contact in the plane square
+            // to the crease there leaves the drum's section at the angle: its
+            // sine against the drum's normal within that plane.
+            let (_, along) = crease_near(on_drum);
+            let (bevel, foot) = bevels
+                .iter()
+                .map(|b| {
+                    (
+                        b,
+                        ogeom_geom::project::project_on_surface(b, on_drum, 16, T).unwrap(),
+                    )
+                })
+                .min_by(|x, y| x.1.distance.total_cmp(&y.1.distance))
+                .unwrap();
+            assert!(foot.distance <= FIT, "the contact off the bevel");
+            let n = bevel
+                .normal_at(foot.parameters.0, foot.parameters.1, T)
+                .unwrap()
+                .vector();
+            let ruling = n.cross(along);
+            let normal = Vector::new(on_drum.x, on_drum.y, 0.0) / 10.0;
+            let normal = normal - along * normal.dot(along);
+            let normal = normal / normal.magnitude();
+            let off = (ruling.dot(normal) / ruling.magnitude()).abs().asin();
+            assert!((off - angle).abs() <= 1e-3, "{} degrees", off.to_degrees());
+        }
+    }
+}
+
+/// Both pieces of the bore's rim chamfered 0.5: they run on into each other
+/// round the whole loop, a bevel on each piece, meeting where the fitted
+/// seam turns at its join. Each contact on its face, each leg its length
+/// along its face's section.
+#[test]
+fn a_bore_rim_on_a_drum_chamfers_all_round() {
+    let (on_drum, on_bore, _) = bore_contacts(|_, _| Chamfer::Symmetric(0.5), true);
+    for p in on_drum {
+        leg_fits(p.distance(nearest_on_crease(p)), 0.5, kappa(10.0, 0.5));
+    }
+    for p in on_bore {
+        leg_fits(p.distance(nearest_on_crease(p)), 0.5, kappa(3.0, 0.5));
     }
 }

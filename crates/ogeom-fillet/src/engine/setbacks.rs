@@ -145,6 +145,12 @@ fn put(
     }
 }
 
+/// How far apart two edges' tangents may turn at a vertex and still run
+/// on into each other: a millionth of a radian, looser than the angular
+/// tolerance, since a vertex a boolean or a healing pass left a few
+/// picometres off turns them by as much as that over its curve.
+pub(crate) const TANGENT: f64 = 1e-6;
+
 /// Every face corner's setback corner on a solid with curved faces, keyed
 /// by face index and vertex: where the two contacts meeting at the vertex
 /// cross on the face. A contact is the blend's, given in `contacts` by face
@@ -264,10 +270,58 @@ pub(crate) fn curved_corners(
                     * if forward_out { 1.0 } else { -1.0 };
                 let straight = n == 1
                     || t_in.cross(t_out).magnitude()
-                        <= tol.angular() * t_in.magnitude() * t_out.magnitude()
+                        <= TANGENT * t_in.magnitude() * t_out.magnitude()
                         && t_in.dot(t_out) > 0.0;
+                // Two fitted contacts running on into each other, each
+                // through stations of its own, nearly touch at the vertex
+                // (their stations there agree, or a crease's fitted seam
+                // meets itself at a slight corner, where run on past their
+                // ends they may part rather than cross): the corner is
+                // midway between their points nearest the vertex, each
+                // contact's edge widened past half the gap.
+                if blend_in
+                    && blend_out
+                    && matches!(c_in, ogeom_geom::Curve::BSpline(_))
+                    && matches!(c_out, ogeom_geom::Curve::BSpline(_))
+                {
+                    let nearest = |c: &ogeom_geom::Curve| -> OgeomResult<(f64, Point)> {
+                        let s = super::trimmed::param_on(c, c.domain(), at, tol)?;
+                        Ok((s, c.point_at(s, tol)?))
+                    };
+                    let ((s, p), (u, q)) = (nearest(&c_in)?, nearest(&c_out)?);
+                    if p.distance(q) <= crate::marched::band_fit_target(tol) {
+                        if !put(
+                            &mut out,
+                            (fi, v),
+                            p.midpoint(q),
+                            [(e_in, s), (e_out, u)],
+                            tol,
+                        ) {
+                            return Ok(None);
+                        }
+                        continue;
+                    }
+                }
                 if straight {
                     let t = t_in / t_in.magnitude();
+                    // A contact running on into an edge left sharp along it:
+                    // the bevel ends on the plane square to the edge there,
+                    // its corner the contact's station on it, the face's
+                    // own edge kept from the vertex on.
+                    if blend_in != blend_out {
+                        let (blend, e_blend, e_own, own_at) = if blend_in {
+                            (&c_in, e_in, e_out, start_param(leaving, forward_out))
+                        } else {
+                            (&c_out, e_out, e_in, end_param(arriving, forward_in))
+                        };
+                        let Some((s, p)) = station(blend, at, t, tol)? else {
+                            return Ok(None);
+                        };
+                        if !put(&mut out, (fi, v), p, [(e_blend, s), (e_own, own_at)], tol) {
+                            return Ok(None);
+                        }
+                        continue;
+                    }
                     let (Some((s, p)), Some((u, q))) =
                         (station(&c_in, at, t, tol)?, station(&c_out, at, t, tol)?)
                     else {
@@ -281,15 +335,24 @@ pub(crate) fn curved_corners(
                     }
                     continue;
                 }
-                let found = ogeom_intersect::curves::intersect_curves(
-                    &c_in,
-                    &c_out,
-                    ogeom_intersect::curves::CurveCurveOptions {
-                        gap: tol.confusion(),
-                        ..ogeom_intersect::curves::CurveCurveOptions::default()
-                    },
-                    tol,
-                )?;
+                let crossings = |gap: f64| {
+                    ogeom_intersect::curves::intersect_curves(
+                        &c_in,
+                        &c_out,
+                        ogeom_intersect::curves::CurveCurveOptions {
+                            gap,
+                            ..ogeom_intersect::curves::CurveCurveOptions::default()
+                        },
+                        tol,
+                    )
+                };
+                let mut found = crossings(tol.confusion())?;
+                // A fitted contact stands within the bands' fit target of
+                // its face, and may pass an edge on it that far off: its
+                // edges are widened to how far it stands.
+                if found.crossings.is_empty() {
+                    found = crossings(crate::marched::band_fit_target(tol))?;
+                }
                 let Some(nearest) = found
                     .crossings
                     .iter()
@@ -298,7 +361,17 @@ pub(crate) fn curved_corners(
                     return Ok(None);
                 };
                 let on = [(e_in, nearest.on_a), (e_out, nearest.on_b)];
-                if !put(&mut out, (fi, v), nearest.point, on, tol) {
+                // Where the two pass apart, the corner stands on the face's
+                // own edge, which is exact: the fitted contact is what stands
+                // off, within its widened edge.
+                let point = if !blend_in {
+                    c_in.point_at(nearest.on_a, tol)?
+                } else if !blend_out {
+                    c_out.point_at(nearest.on_b, tol)?
+                } else {
+                    nearest.point
+                };
+                if !put(&mut out, (fi, v), point, on, tol) {
                     return Ok(None);
                 }
             }

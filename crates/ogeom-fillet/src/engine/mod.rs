@@ -33,13 +33,6 @@ mod consumed;
 mod curved;
 mod guards;
 mod request;
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "rounds of curved solids go through it from the M3 switch on"
-    )
-)]
 mod rims;
 mod rounds;
 mod seams;
@@ -49,8 +42,11 @@ mod trimmed;
 mod vertices;
 
 pub(crate) use request::{Request, Section};
+pub(crate) use rims::assemble as round_rims;
 pub(crate) use seams::{Dissolved, dissolve, dissolve_curved, is_seam};
-pub(crate) use trimmed::chamfer as chamfer_curved;
+pub(crate) use trimmed::{
+    chamfer as chamfer_curved, chamfer_mitred as chamfer_curved_mitred, chamfer_patched,
+};
 
 /// Whether `solid` is one the polyhedral classes read: one solid bounded by
 /// planes, each face its rings of straight edges.
@@ -153,11 +149,68 @@ pub(crate) fn run(
         }
         return rounds::assemble(model, &planar, &seats, &by_edge, &corners, tol);
     }
-    let cluster = match consumed::consumed(&planar, &seats, &blended, &corners, &classes, tol) {
+    // The mitred vertices, each of three chamfers or more, and the point
+    // their planes share; where four or more share no one point, the
+    // vertex is cut back by every plane round it instead (`scattered`),
+    // each bevel running on until the others cut it.
+    let mut mitres: FastMap<Id, ogeom_math::Point> = FastMap::default();
+    let mut scattered: FastSet<Id> = FastSet::default();
+    if request.mitre {
+        let mut vertices: Vec<Id> = planar.points.keys().copied().collect();
+        vertices.sort_unstable();
+        for v in vertices {
+            let at: Vec<&classify::Seat> = keys
+                .iter()
+                .filter(|(a, b)| *a == v || *b == v)
+                .map(|key| &seats[key])
+                .filter(|seat| blended.contains(&seat.edge))
+                .collect();
+            if at.len() < 3 {
+                continue;
+            }
+            let planes: Vec<(ogeom_math::Vector, f64)> = at
+                .iter()
+                .map(|seat| {
+                    let (a, b) = seat.ends;
+                    let (p, q, r) = (
+                        corners[&(seat.faces[0], a)],
+                        corners[&(seat.faces[0], b)],
+                        corners[&(seat.faces[1], a)],
+                    );
+                    let n = (q - p).cross(r - p);
+                    let n = n / n.magnitude();
+                    (n, n.dot(p.to_vector()))
+                })
+                .collect();
+            let ((a, da), (b, db), (c, dc)) = (planes[0], planes[1], planes[2]);
+            let det = a.dot(b.cross(c));
+            if det.abs() <= 1e-12 {
+                return Ok(None);
+            }
+            let x = (b.cross(c) * da + c.cross(a) * db + a.cross(b) * dc) / det;
+            // Past three bevels, the point only where every plane passes
+            // through it (a pyramid's apex bevelled alike).
+            if planes[3..]
+                .iter()
+                .any(|(n, d)| (n.dot(x) - d).abs() > tol.confusion())
+            {
+                scattered.insert(v);
+            } else {
+                mitres.insert(v, ogeom_math::Point::from_vector(x));
+            }
+        }
+    }
+    let cluster = match consumed::consumed(
+        &planar, &seats, &blended, &corners, &classes, &scattered, tol,
+    ) {
         consumed::Consumed::Nothing => None,
         consumed::Consumed::Cluster(cluster) => Some(cluster),
         consumed::Consumed::Outside => return Ok(None),
     };
+    // A mitre to one point inside a cut-back cluster is not built.
+    if cluster.is_some() && !mitres.is_empty() {
+        return Ok(None);
+    }
     let eaten = |fi: usize| cluster.as_ref().is_some_and(|c| c.faces.contains(&fi));
     let mut rings = Rings::new(tol);
     let mut sorted: Vec<((usize, Id), ogeom_math::Point)> =
@@ -217,7 +270,10 @@ pub(crate) fn run(
         // enough for the planes there to trim it to what it keeps; the
         // run-on lies past the solid, so any of them may take it.
         let mut end = |face: usize, v: Id, sign: f64| -> usize {
-            if cluster.as_ref().is_some_and(|c| c.vertices.contains(&v)) {
+            if cluster
+                .as_ref()
+                .is_some_and(|c| c.vertices.contains(&v) && !c.grouped.contains(&v))
+            {
                 let p = corners[&(face, v)] + seat.along * (sign * reach);
                 let i = rings.point(p);
                 run_on.insert(i, None);
@@ -231,7 +287,19 @@ pub(crate) fn run(
             second: [end(seat.faces[1], a, -1.0), end(seat.faces[1], b, 1.0)],
         };
         match sections::law(section).strip(seat, corners)? {
-            Strip::Planar(ring) => {
+            Strip::Planar(mut ring) => {
+                // At a mitred vertex the bevel runs on to the point its
+                // plane shares with the other two there: after its first
+                // face's corner at the start, after its second's at the
+                // end.
+                if let Some(m) = mitres.get(&b) {
+                    let i = rings.point(*m);
+                    ring.push(i);
+                }
+                if let Some(m) = mitres.get(&a) {
+                    let i = rings.point(*m);
+                    ring.insert(2, i);
+                }
                 let facing = seat.normals[0] + seat.normals[1];
                 rings.push(ring, Origin::Edge(seat.edge), Some(facing));
             }
@@ -249,7 +317,7 @@ pub(crate) fn run(
             .filter(|(a, b)| *a == v || *b == v)
             .filter_map(|key| by_edge.get(&seats[key].edge).copied())
             .collect();
-        if cluster.as_ref().is_some_and(|c| c.unfaceted.contains(&v)) {
+        if cluster.as_ref().is_some_and(|c| c.unfaceted.contains(&v)) || mitres.contains_key(&v) {
             continue;
         }
         match vertices::method(classes[&v], &met)? {
@@ -268,9 +336,12 @@ pub(crate) fn run(
                 allowed.insert(*i, Some(*v));
             }
         }
-        if !rings.clip_local(&cluster.cuts, &mut allowed, |ring, at, cut| {
-            cluster.may_take(ring, at, cut)
-        }) {
+        if !rings.clip_local(
+            &cluster.cuts,
+            &cluster.groups,
+            &mut allowed,
+            |ring, at, cut| cluster.may_take(ring, at, cut),
+        ) {
             return Ok(None);
         }
     }

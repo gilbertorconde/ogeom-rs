@@ -236,7 +236,11 @@ fn strip_behind(
             slack = slack.max(t.get());
         }
     }
-    if mesh.positions.iter().any(|p| !within(*p, slack)) {
+    // The caps stand where the march finds the ball leaving the faces,
+    // which the round holds only to the bands' fit target: the strip is
+    // between them within that, whatever its own edges hold.
+    let between = slack.max(crate::marched::band_fit_target(tol));
+    if mesh.positions.iter().any(|p| !within(*p, between)) {
         return Ok(false);
     }
     for face in outer {

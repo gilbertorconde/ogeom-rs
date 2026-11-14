@@ -455,6 +455,135 @@ pub(crate) fn marched_bevel_with(
     )
 }
 
+/// A chamfer's contacts on a marched seat at stations over the edge's own
+/// stretch, as the marched bevel reads them: each station's crease
+/// parameter and its contact on each of the seat's two faces.
+pub(crate) struct CreaseContacts {
+    /// The two faces either side of the edge.
+    pub faces: [Shape; 2],
+    /// Whether the edge closes on itself: the last station is the first
+    /// again.
+    pub closed: bool,
+    /// The stations' crease parameters, increasing.
+    pub along: Vec<f64>,
+    /// Each station's contact on the first face and on the second.
+    pub points: [Vec<Point>; 2],
+}
+
+/// [`CreaseContacts`] of `spec` on `edge` of `solid` at `count + 1`
+/// stations evenly over the edge's stretch of its crease, the legs walked
+/// as [`marched_bevel`] walks them. `None` where a station does not seat.
+///
+/// # Errors
+///
+/// As [`marched_bevel`] reading the seat and the law.
+pub(crate) fn crease_contacts(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    spec: &Chamfer,
+    count: u32,
+    tol: Tolerances,
+) -> OgeomResult<Option<CreaseContacts>> {
+    let reach = match spec {
+        Chamfer::Symmetric(d) => *d,
+        Chamfer::Distances {
+            on_face, on_other, ..
+        } => on_face.max(*on_other),
+        Chamfer::Angle { distance, .. } => *distance,
+    };
+    if !reach.is_finite() || reach <= tol.confusion() || count == 0 {
+        return Ok(None);
+    }
+    let MarchedSeat {
+        faces,
+        hosts: [(first, sign_first), (second, sign_second)],
+        guide,
+        edge_range,
+        closed,
+        ..
+    } = marched_seat(model, solid, edge, reach, tol)?;
+
+    let side = |face: &Shape| -> Option<usize> {
+        if faces[0].is_same(face) {
+            Some(0)
+        } else if faces[1].is_same(face) {
+            Some(1)
+        } else {
+            None
+        }
+    };
+    let law = match spec {
+        Chamfer::Symmetric(d) => Law::Distances(*d, *d),
+        Chamfer::Distances {
+            face,
+            on_face,
+            on_other,
+        } => match side(face) {
+            Some(0) => Law::Distances(*on_face, *on_other),
+            Some(_) => Law::Distances(*on_other, *on_face),
+            None => return Ok(None),
+        },
+        Chamfer::Angle {
+            face,
+            distance,
+            angle,
+        } => {
+            let Some(named) = side(face) else {
+                return Ok(None);
+            };
+            if !angle.is_finite() || *angle <= tol.angular() {
+                return Ok(None);
+            }
+            Law::Angle {
+                named,
+                distance: *distance,
+                angle: *angle,
+            }
+        }
+    };
+    let convex = crease_convexity(
+        model,
+        &faces[0],
+        [(&first, sign_first), (&second, sign_second)],
+        &guide,
+        edge_range,
+        reach,
+        tol,
+    )?;
+    let hosts = [
+        Host {
+            surface: &first,
+            sign: sign_first,
+        },
+        Host {
+            surface: &second,
+            sign: sign_second,
+        },
+    ];
+    let (lo, hi) = edge_range;
+    let mut along = Vec::with_capacity(count as usize + 1);
+    let mut points = [Vec::new(), Vec::new()];
+    let mut near = None;
+    for k in 0..=count {
+        let w = (hi - lo).mul_add(f64::from(k) / f64::from(count), lo);
+        let found = station_at(&hosts, &guide, law, convex, w, near, tol);
+        let Some(x) = found else {
+            return Ok(None);
+        };
+        near = Some([x[0], x[1], x[2], x[3]]);
+        along.push(w);
+        points[0].push(first.point_at(x[0], x[1], tol)?);
+        points[1].push(second.point_at(x[2], x[3], tol)?);
+    }
+    Ok(Some(CreaseContacts {
+        faces,
+        closed,
+        along,
+        points,
+    }))
+}
+
 /// The station at guide parameter `w`: both contacts' parameters and `w`.
 fn station_at(
     hosts: &[Host<'_>; 2],
