@@ -33,6 +33,10 @@ use crate::round::section::{PlanarSection, RoundSpec};
 ///
 /// As the strips', faces' and guards' own: a face that cannot be trimmed,
 /// or a solid failing its check.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the phases' products, as P4 takes them"
+)]
 pub(crate) fn assemble(
     model: &mut Model,
     planar: &Planar,
@@ -40,6 +44,7 @@ pub(crate) fn assemble(
     by_edge: &FastMap<Id, &Section>,
     corners: &FastMap<(usize, Id), Point>,
     steps: &FastMap<(usize, Id), [Point; 2]>,
+    setback_at: &[super::setbacks::SetbackCorner],
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     let mut keys: Vec<(Id, Id)> = seats.keys().copied().collect();
@@ -136,6 +141,23 @@ pub(crate) fn assemble(
             station.insert((*edge, v), 0.5 * (s[0] + s[1]));
         }
     }
+    // At a setback corner each strip ends square to its edge at its setback
+    // (ADR 0001, §13 question 2), its rails there its corners, and the
+    // opening between the strips' ends and the faces' trims is the patch's.
+    let setbacks: FastMap<Id, &super::setbacks::SetbackCorner> =
+        setback_at.iter().map(|c| (c.vertex, c)).collect();
+    for c in setback_at {
+        for end in &c.ends {
+            let (Some((section, _)), Some(seat)) =
+                (sections.get(&end.edge), edge_seat.get(&end.edge))
+            else {
+                return Ok(None);
+            };
+            let s = (end.at - section.crease(0.0)).dot(seat.along);
+            level.insert((end.edge, c.vertex), [s, s]);
+            station.insert((end.edge, c.vertex), s);
+        }
+    }
     let stands_level = |edge: Id, v: Id| {
         let s = level[&(edge, v)];
         (s[0] - s[1]).abs() <= reach
@@ -211,6 +233,11 @@ pub(crate) fn assemble(
     // faces' corners stand apart on it.
     let mut sharp_sides: FastMap<Id, SharpSide> = FastMap::default();
     for &v in &vertices {
+        // A setback corner closes on the patch over its opening.
+        if setbacks.contains_key(&v) {
+            method.insert(v, RoundVertex::Patch);
+            continue;
+        }
         let Some(round) = faces_round(&planar.faces, v) else {
             return Ok(None);
         };
@@ -479,6 +506,15 @@ pub(crate) fn assemble(
         sorted.sort_unstable_by_key(|(k, _)| *k);
         sorted.into_iter().map(|(k, p)| (k, point(p))).collect()
     };
+    // Each setback corner's rails, by vertex, strip and face.
+    let mut rails: FastMap<(Id, Id, usize), usize> = FastMap::default();
+    for c in setback_at {
+        for end in &c.ends {
+            for (face, p) in end.rails {
+                rails.insert((c.vertex, end.edge, face), point(p));
+            }
+        }
+    }
     // Each ridge's balls' feet, by vertex, face and ball.
     let mut ridge_points: FastMap<(Id, usize, usize), usize> = FastMap::default();
     let mut ridge_list: Vec<(&Id, &Ridge)> = ridges.iter().collect();
@@ -517,6 +553,18 @@ pub(crate) fn assemble(
     // setback corner, or at a ridge's faces either side the two balls'
     // feet, the one of the ball the arriving edge's strip ends on first.
     let passes = |fi: usize, prev: Id, v: Id| -> Option<Vec<usize>> {
+        if setbacks.contains_key(&v) {
+            // From the arriving strip's rail on this face to the leaving
+            // one's.
+            let arriving = seats.get(&(prev.min(v), prev.max(v)))?;
+            let leaving = seats_at(&keys, seats, v)
+                .into_iter()
+                .find(|s| s.edge != arriving.edge && s.faces.contains(&fi))?;
+            return Some(vec![
+                *rails.get(&(v, arriving.edge, fi))?,
+                *rails.get(&(v, leaving.edge, fi))?,
+            ]);
+        }
         if let Some(side) = sharp_sides.get(&v)
             && side.near == fi
             && step_faces.get(&v) == Some(&fi)
@@ -652,6 +700,23 @@ pub(crate) fn assemble(
                 continue;
             }
             if creases.contains_key(&v) {
+                continue;
+            }
+            // At a setback corner the strip ends square at its setback,
+            // between its rails.
+            if setbacks.contains_key(&v) {
+                let (Some(&q0), Some(&q1)) = (
+                    rails.get(&(v, *edge, seat.faces[0])),
+                    rails.get(&(v, *edge, seat.faces[1])),
+                ) else {
+                    return Ok(None);
+                };
+                let (curve, range) = section.arc_at(station[&(*edge, v)], tol)?;
+                edges.push(SheetEdge {
+                    ends: if from_face == 0 { (q0, q1) } else { (q1, q0) },
+                    curve: Some((curve, range)),
+                });
+                arcs.insert((*edge, v), (edges.len() - 1, from_face == 0));
                 continue;
             }
             // At a step the stepped face's strips end level where their
@@ -792,6 +857,28 @@ pub(crate) fn assemble(
             }
         }
     }
+    // At a setback corner each strip's corners are its rails.
+    for (&(v, edge, face), &q) in &rails {
+        strip_corner.insert((edge, face, v), q);
+    }
+    // Each setback corner's face trims, as sheet edges by vertex and face.
+    let mut trim_edges: FastMap<(Id, usize), usize> = FastMap::default();
+    for c in setback_at {
+        for (k, trim) in c.trims.iter().enumerate() {
+            let (from, to) = (&c.ends[k], &c.ends[(k + 1) % c.ends.len()]);
+            let (Some(&a), Some(&b)) = (
+                rails.get(&(c.vertex, from.edge, trim.face)),
+                rails.get(&(c.vertex, to.edge, trim.face)),
+            ) else {
+                return Ok(None);
+            };
+            edges.push(SheetEdge {
+                ends: (a, b),
+                curve: Some((trim.conic.clone(), ogeom_geom::Curve3d::domain(&trim.conic))),
+            });
+            trim_edges.insert((c.vertex, trim.face), edges.len() - 1);
+        }
+    }
     // At a ridge each strip's corners are its cap's ball's feet.
     for &(&v, ridge) in &ridge_list {
         for seat in seats_at(&keys, seats, v) {
@@ -829,6 +916,22 @@ pub(crate) fn assemble(
             let mut at_corner: Vec<Corner> = Vec::with_capacity(n);
             for k in 0..n {
                 let (prev, v, next) = (walk[(k + n - 1) % n], walk[k], walk[(k + 1) % n]);
+                if setbacks.contains_key(&v) {
+                    // Along the face's trim from the arriving strip's rail to
+                    // the leaving one's.
+                    let Some(pts) = passes(fi, prev, v) else {
+                        return Ok(None);
+                    };
+                    let Some(&trim) = trim_edges.get(&(v, fi)) else {
+                        return Ok(None);
+                    };
+                    let forward = edges[trim].ends == (pts[0], pts[1]);
+                    if !forward && edges[trim].ends != (pts[1], pts[0]) {
+                        return Ok(None);
+                    }
+                    at_corner.push((pts, vec![(trim, forward)]));
+                    continue;
+                }
                 if step_faces.get(&v) == Some(&fi)
                     || sharp_sides.get(&v).is_some_and(|side| side.near == fi)
                 {
@@ -1296,6 +1399,17 @@ pub(crate) fn assemble(
             // other (the crease ending there).
             along_sharp.insert(line, far_face);
             lines.push(line);
+        }
+        if let Some(c) = setbacks.get(&v) {
+            for trim in &c.trims {
+                let (Some(&line), Some(at_face)) =
+                    (trim_edges.get(&(v, trim.face)), face_at[trim.face])
+                else {
+                    return Ok(None);
+                };
+                owner.insert(line, at_face);
+                lines.push(line);
+            }
         }
         if let Some(&face) = step_faces.get(&v) {
             let ends: Vec<usize> = seats_at(&keys, seats, v)
@@ -2643,7 +2757,7 @@ pub(super) fn within_face(planar: &Planar, fi: usize, p: Point, reach: f64) -> b
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, reason = "test code")]
+    #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
     use super::super::{Request, run};
     use ogeom_core::Tolerances;
     use ogeom_math::Frame;
@@ -2772,6 +2886,69 @@ mod tests {
                 + 4.0 / 3.0 * pi * r * r * r;
             let v = volume(&m, &built.unwrap());
             assert!((v - want).abs() < 1e-6, "r {r}: {v} against {want}");
+        }
+    }
+
+    /// A 10 by 8 by 6 box's corner (10, 0, 6), its three edges rounded at
+    /// 1 and set back 1.5, 2 or 3 there (ADR 0001, §13 question 2): each
+    /// strip stops square to its edge at its setback, each face is trimmed
+    /// on its conic from one strip's rail to the next, and one patch closes
+    /// the six-sided opening, within the corner's faces. Valid, each edge
+    /// generating its strip; each strip exact clear of the corner's box (the
+    /// setback each way), so the volume lies between the box less them and
+    /// that less the corner box.
+    #[test]
+    fn a_box_corner_set_back_closes_its_opening_on_one_patch() {
+        for setback in [1.5, 2.0, 3.0] {
+            let mut m = Model::new();
+            let s = ogeom_algo::make_box(&mut m, Frame::WORLD, (10.0, 8.0, 6.0), T)
+                .unwrap()
+                .shape;
+            let corner = ogeom_math::Point::new(10.0, 0.0, 6.0);
+            let vertex = explore_unique(&m, &s, ShapeType::Vertex)
+                .unwrap()
+                .into_iter()
+                .find(|v| {
+                    m.node(v)
+                        .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                        .is_some_and(|p| p.distance(corner) < 1e-9)
+                })
+                .unwrap();
+            let edges: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+                .unwrap()
+                .into_iter()
+                .filter(|e| {
+                    let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+                    a.is_same(&vertex) || b.is_same(&vertex)
+                })
+                .collect();
+            assert_eq!(edges.len(), 3);
+            let asked: Vec<(Shape, f64)> = edges.iter().map(|e| (e.clone(), 1.0)).collect();
+            let mut request = Request::from_rounds(&asked, T).unwrap();
+            request.corners.push((
+                vertex,
+                crate::Setbacks {
+                    per_edge: Vec::new(),
+                    default: setback,
+                    continuity: ogeom_geom::Continuity::G1,
+                },
+            ));
+            let built = run(&mut m, &s, &request, T)
+                .unwrap()
+                .expect("built by the engine");
+            let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+            assert!(found.is_valid(), "{:?}", found.problems);
+            for e in &edges {
+                assert!(!built.history.generated(e).is_empty(), "each strip");
+            }
+            let section = 1.0 - core::f64::consts::FRAC_PI_4;
+            let strips = section * (10.0 + 8.0 + 6.0 - 3.0 * setback);
+            let (hi, lo) = (480.0 - strips, 480.0 - strips - setback.powi(3));
+            let v = volume(&m, &built.shape);
+            assert!(
+                v < hi && v > lo,
+                "setback {setback}: {v} outside ({lo}, {hi})"
+            );
         }
     }
 

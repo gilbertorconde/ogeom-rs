@@ -942,6 +942,18 @@ document was not found, the table says so rather than guessing.
 - Creo's sphere at the largest radius for unequal rounds is a minority
   default and is not adopted; SMLib and Fusion patch there.
 
+**Built (M4, setbacks asked).** P2 (the chamfer side's, #1038) stops each
+strip square to its edge at its setback and trims each face round the
+vertex on the conic tangent to both rails. P3 (the round side's) takes
+those as the vertex's sides: each strip ends on its section's arc at its
+setback, its corners there its rails; each face's ring passes the vertex
+along its conic trim; and one transfinite patch closes the `2 n`-sided
+opening, the end arcs on their strips and the trims on their faces' planes,
+G1 to both. Five or more sides blend with their distances to the fourth
+power: a trim's ribbon is its face's plane running on past the corner's
+other faces, and cubed it entered beside a neighbouring trim at second
+order (the patch stood 2e-4 past its face).
+
 ### Question 3: a chamfer and a round meeting at one vertex
 
 | Source | What it does |
