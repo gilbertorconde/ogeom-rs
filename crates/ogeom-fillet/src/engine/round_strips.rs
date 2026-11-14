@@ -7,8 +7,8 @@
 //! rounds on the cylinder its ball sweeps: the ball's centre stands a radius
 //! in from both faces, on the line where the plane moved in meets the other
 //! plane moved in, or the cylinder moved in or out (by the side its
-//! material is on). A rim between a planar cap and a coaxial cylinder or
-//! cone rounds on the torus its ball sweeps. Convex straight edges only.
+//! material is on), out of both at a concave edge. A rim between a planar
+//! cap and a coaxial cylinder or cone rounds on the torus its ball sweeps.
 
 use ogeom_algo::Built;
 use ogeom_core::{FastMap, FastSet, OgeomResult, Tolerances};
@@ -18,7 +18,7 @@ use ogeom_topo::{Model, Shape};
 
 use super::curved::{Curved, CurvedEdge, read};
 use super::setbacks::curved_corners;
-use super::trimmed::{Section, Strip, assemble, away, faces_of, outward};
+use super::trimmed::{Section, Strip, assemble, faces_of, outward};
 use super::{Id, id};
 
 /// The rounds of `rounds` (each an edge and its radius) on `solid` with
@@ -190,7 +190,7 @@ fn strip_of(
         return Ok(None);
     }
     match &e.curve {
-        Curve::Line(_) => Ok(straight(curved, edge, e, [f0, f1], radius, tol)?.map(|s| (s, None))),
+        Curve::Line(_) => Ok(straight(curved, edge, e, [f0, f1], radius, tol)?),
         Curve::Circle(circle) => {
             Ok(rim(curved, edge, circle, [f0, f1], radius, tol)?.map(|(s, c)| (s, Some(c))))
         }
@@ -198,8 +198,14 @@ fn strip_of(
     }
 }
 
-/// A convex straight edge's strip between two planes, or a plane and a
-/// cylinder along its ruling.
+/// A straight edge's strip between two planes, or a plane and a cylinder
+/// along its ruling: the ball's centre a radius in from both faces at a
+/// convex edge, out from both at a concave one. A concave strip's fill also
+/// gives the region every other face must keep to: past the edge's ends or
+/// farther from the spine than the edge stands, which holds the whole fill
+/// (from the ball's centre the fill's boundary is farthest at the edge:
+/// along the plane, and along the cylinder, whose nearest point is the
+/// foot).
 fn straight(
     curved: &Curved,
     edge: Id,
@@ -207,7 +213,7 @@ fn straight(
     faces: [usize; 2],
     radius: f64,
     tol: Tolerances,
-) -> OgeomResult<Option<Strip>> {
+) -> OgeomResult<Option<(Strip, Option<ogeom_algo::HalfSpaces>)>> {
     let (a, b) = (curved.points[&e.ends.0], curved.points[&e.ends.1]);
     let length = a.distance(b);
     if length <= tol.confusion() {
@@ -221,6 +227,20 @@ fn straight(
     ) else {
         return Ok(None);
     };
+    // Into each face from the edge, square to it: along the face's other
+    // edge leaving one of the edge's ends.
+    let (Some(into0), Some(into1)) = (
+        into_face(curved, faces[0], edge, u, tol)?,
+        into_face(curved, faces[1], edge, u, tol)?,
+    ) else {
+        return Ok(None);
+    };
+    let into = [into0, into1];
+    // Convex where the second face leaves under the first's tangent plane;
+    // the ball's centre a radius off each face, in at a convex edge and out
+    // at a concave one.
+    let convex = n0.dot(into1) < 0.0;
+    let side = if convex { -1.0 } else { 1.0 };
     // Each face as the ball's centre sees it: a plane's offset, or a
     // cylinder's axis and the radius its centre stands at.
     enum Offset {
@@ -244,7 +264,7 @@ fn straight(
                 // Material inside the cylinder where its outward normal
                 // points off the axis.
                 let inside = n.dot(mid - o) > 0.0;
-                let rho = if inside {
+                let rho = if inside == convex {
                     cyl.radius() - radius
                 } else {
                     cyl.radius() + radius
@@ -264,14 +284,14 @@ fn straight(
             if (1.0 + g).abs() <= tol.angular() {
                 return Ok(None);
             }
-            let s = -radius / (1.0 + g);
+            let s = side * radius / (1.0 + g);
             mid + (*p + *q) * s
         }
         (Offset::Plane(n), Offset::Cylinder(o, rho))
         | (Offset::Cylinder(o, rho), Offset::Plane(n)) => {
             // Along the plane moved in: `mid - n r + t m`.
             let m = n.cross(u);
-            let base = mid - *n * radius;
+            let base = mid + *n * (side * radius);
             let w = base - *o;
             let (qb, qc) = (2.0 * w.dot(m), w.dot(w) - rho * rho);
             let disc = qb * qb - 4.0 * qc;
@@ -294,7 +314,7 @@ fn straight(
     let mut feet = [Point::ORIGIN; 2];
     for (k, fi) in faces.iter().enumerate() {
         let foot = match &offsets[k] {
-            Offset::Plane(n) => centre + *n * radius,
+            Offset::Plane(n) => centre - *n * (side * radius),
             Offset::Cylinder(o, _) => {
                 let cyl_r = match &curved.faces[*fi].surface {
                     SurfaceGeometry::Cylinder(c) => c.cylinder().radius(),
@@ -304,15 +324,7 @@ fn straight(
                 *o + off / off.magnitude() * cyl_r
             }
         };
-        let Some(inside) = away(curved, *fi, edge) else {
-            return Ok(None);
-        };
-        // Into the face from the edge, square to it.
-        let into = {
-            let d = inside - mid;
-            d - u * d.dot(u)
-        };
-        if (foot - mid).dot(into) <= 0.0 {
+        if (foot - mid).dot(into[k]) <= 0.0 {
             return Ok(None);
         }
         feet[k] = foot;
@@ -346,15 +358,79 @@ fn straight(
         (0.0, length + 2.0 * reach),
     )?
     .into();
-    Ok(Some(Strip {
-        edge,
-        faces,
-        contacts,
-        surface,
-        section: Section::Arc {
-            spine: line(centre)?,
+    let clear = (!convex).then(|| {
+        let at = centre + (a - mid);
+        ogeom_algo::HalfSpaces::Any(vec![
+            ogeom_algo::HalfSpaces::Below { normal: u, at: a },
+            ogeom_algo::HalfSpaces::Below { normal: -u, at: b },
+            ogeom_algo::HalfSpaces::Revolved {
+                at,
+                axis: u,
+                radius: (mid - centre).magnitude(),
+                slope: 0.0,
+                inside: false,
+            },
+        ])
+    });
+    Ok(Some((
+        Strip {
+            edge,
+            faces,
+            contacts,
+            surface,
+            section: Section::Arc {
+                spine: line(centre)?,
+            },
         },
-    }))
+        clear,
+    )))
+}
+
+/// How far off a straight edge's line another edge must leave it, as a
+/// sine, to tell which side of the edge its face lies.
+const LEAVING: f64 = 1e-3;
+
+/// Into `face` from the straight `edge` along `u`, square to it: the
+/// face's other edge leaving one of the edge's ends, its tangent there with
+/// its part along `u` taken off, or where that runs on along `u` (an arc
+/// leaving tangent, a rim continuing a straight edge) its chord to its
+/// middle. `None` where every one runs along `u`.
+///
+/// # Errors
+///
+/// As evaluating the curves.
+fn into_face(
+    curved: &Curved,
+    face: usize,
+    edge: Id,
+    u: Vector,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vector>> {
+    use ogeom_geom::Curve3d as _;
+    let ends = curved.edges[&edge].ends;
+    for (e, _) in curved.faces[face].loops.iter().flatten() {
+        if *e == edge {
+            continue;
+        }
+        let c = &curved.edges[e];
+        for (v, at, sign) in [(c.ends.0, c.range.0, 1.0), (c.ends.1, c.range.1, -1.0)] {
+            if v != ends.0 && v != ends.1 {
+                continue;
+            }
+            let t = c.curve.d1_at(at, tol)? * sign;
+            let square = t - u * t.dot(u);
+            if square.magnitude() > LEAVING * t.magnitude() {
+                return Ok(Some(square));
+            }
+            let middle = c.curve.point_at(0.5 * (c.range.0 + c.range.1), tol)?;
+            let chord = middle - curved.points[&v];
+            let square = chord - u * chord.dot(u);
+            if square.magnitude() > LEAVING * chord.magnitude() {
+                return Ok(Some(square));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// The points each other edge of a rim's face is read at, to keep the
