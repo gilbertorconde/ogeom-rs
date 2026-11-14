@@ -147,9 +147,6 @@ pub(crate) fn run(
         .iter()
         .any(|b| matches!(b.section, Section::Round { .. }))
     {
-        if planar.faces.iter().any(|f| !f.holes.is_empty()) {
-            return Ok(None);
-        }
         return rounds::assemble(model, &planar, &seats, &by_edge, &corners, &steps, tol);
     }
     // Chamfers set back differently along one line are the current path's.
