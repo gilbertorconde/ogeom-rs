@@ -2791,19 +2791,23 @@ fn an_inexact_box_s_top_edges_chamfer_through_the_engine() {
     );
 }
 
-/// Two blocks 10 by 6 by 4 fused end to end: the top's front edge is two
-/// pieces of one edge, split at the seam the fuse leaves on the top and
-/// front. Asked with one chamfer the pieces bevel as the one edge, the
-/// seam naming nothing; asked with two, the request is refused by name: an
-/// edge of the form takes one chamfer, as a tangent chain takes one value
-/// in the mainstream applications (ADR 0001, "what M6 refuses by name").
+/// Two blocks fused end to end: their top front edge is one edge of the
+/// form in two pieces. Asked alike, the pieces bevel as the one edge.
+/// Asked apart, each piece bevels as asked and the bevels step at the
+/// vertex between them, each ending square to the edge there, as two
+/// chamfer features on the pieces would (ADR 0001, amendment "what M6
+/// refuses by name"): the step is the deeper bevel's end triangle less
+/// the shallower's. Two distances swapped between the pieces cross there,
+/// the step a triangle on each face's side of the crossing, facing the
+/// side whose bevel is deeper. Valid, nothing folded, each part less what
+/// its own bevel takes, the faces and the history, in two orders.
 #[test]
-fn pieces_of_one_edge_asked_with_different_chamfers_are_refused_by_name() {
+fn pieces_of_one_edge_asked_with_different_chamfers_step_between_them() {
     let mut m = Model::new();
     let a = block(&mut m, (0.0, 0.0, 0.0), (10.0, 6.0, 4.0));
     let b = block(&mut m, (10.0, 0.0, 0.0), (10.0, 6.0, 4.0));
     let s = ogeom_bool::fuse(&mut m, &a, &b, T).unwrap().shape;
-    let pieces: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+    let mut pieces: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
         .unwrap()
         .into_iter()
         .filter(|e| {
@@ -2813,6 +2817,11 @@ fn pieces_of_one_edge_asked_with_different_chamfers_are_refused_by_name() {
         })
         .collect();
     assert_eq!(pieces.len(), 2, "the front top edge's two pieces");
+    // The piece on the first block first.
+    pieces.sort_by(|x, y| {
+        let lo = |e: &Shape| ogeom_algo::shape_bounds(&m, e, T).unwrap().low().unwrap().x;
+        lo(x).total_cmp(&lo(y))
+    });
     let alike: Vec<(Shape, Chamfer)> = pieces
         .iter()
         .map(|e| (e.clone(), Chamfer::Symmetric(0.5)))
@@ -2826,15 +2835,56 @@ fn pieces_of_one_edge_asked_with_different_chamfers_are_refused_by_name() {
         (got - want).abs() < 1e-9 * want,
         "volume {got} against {want}"
     );
-    let apart = vec![
-        (pieces[0].clone(), Chamfer::Symmetric(0.5)),
-        (pieces[1].clone(), Chamfer::Symmetric(0.8)),
+
+    let top = explore_unique(&m, &s, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| ogeom_algo::face_normal(&m, f, T).unwrap().1.z > 0.5)
+        .unwrap();
+    let crossed = |on_top: f64, on_front: f64| Chamfer::Distances {
+        face: top.clone(),
+        on_face: on_top,
+        on_other: on_front,
+    };
+    // Each request: the two pieces' chamfers, what each takes per unit
+    // length, and the faces the result keeps (the six of the box, the two
+    // bevels and the step's one or two).
+    let cases = [
+        (
+            Chamfer::Symmetric(0.5),
+            Chamfer::Symmetric(0.8),
+            0.125,
+            0.32,
+            9,
+        ),
+        (crossed(0.5, 0.8), crossed(0.8, 0.5), 0.2, 0.2, 10),
     ];
-    let refused = ogeom_fillet::chamfer_edges_with(&mut m, &s, &apart, T).unwrap_err();
-    assert!(
-        refused.to_string().contains("different chamfers"),
-        "{refused}"
-    );
+    for (first, second, a_first, a_second, faces) in cases {
+        let apart = vec![(pieces[0].clone(), first), (pieces[1].clone(), second)];
+        let want = 480.0 - 10.0 * (a_first + a_second);
+        let back: Vec<(Shape, Chamfer)> = apart.iter().rev().cloned().collect();
+        for asked in [&apart, &back] {
+            let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, asked, T).unwrap();
+            let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+            assert!(found.is_valid(), "{:?}", found.problems);
+            assert!(!folded(&m, &built.shape), "folded");
+            let got = volume(&m, &built.shape);
+            assert!(
+                (got - want).abs() < 1e-9 * want,
+                "volume {got} against {want}"
+            );
+            assert_eq!(
+                explore_unique(&m, &built.shape, ShapeType::Face)
+                    .unwrap()
+                    .len(),
+                faces,
+                "faces"
+            );
+            for piece in &pieces {
+                assert_eq!(built.history.generated(piece).len(), 1, "a piece's bevel");
+            }
+        }
+    }
 }
 
 /// Two blocks touching along one upright edge, fused: one solid whose
