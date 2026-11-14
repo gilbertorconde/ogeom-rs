@@ -205,11 +205,30 @@ pub(crate) fn read_planar(
         let Some(data) = model.node(&shape).and_then(|n| n.data().as_face()) else {
             return Ok(None);
         };
-        let Some(SurfaceGeometry::Plane(surface)) = model.geometry().surface(data.surface) else {
-            return Ok(None);
+        // A plane, or a flat carrier read as its plane: a line swept along
+        // a direction off it (a polygon's sides under `make_prism`).
+        let carrier = match model.geometry().surface(data.surface) {
+            Some(SurfaceGeometry::Plane(surface)) => Some(surface.plane()),
+            Some(SurfaceGeometry::Extrusion(swept)) => match swept.curve() {
+                Curve::Line(line) => {
+                    let axis = line.axis();
+                    let normal = axis.direction.vector().cross(swept.direction().vector());
+                    let Ok(normal) = ogeom_math::Direction::new(normal, tol) else {
+                        return Ok(None);
+                    };
+                    Some(Plane::new(ogeom_math::Frame::new(
+                        axis.location,
+                        normal,
+                        axis.direction,
+                        tol,
+                    )?))
+                }
+                _ => return Ok(None),
+            },
+            _ => return Ok(None),
         };
         let unplaced = shape.location().is_identity() && data.location.is_identity();
-        let plane = unplaced.then(|| surface.plane());
+        let plane = carrier.filter(|_| unplaced);
         let (_, normal) = ogeom_algo::face_normal(model, &shape, tol)?;
         // Each wire's edges, joined into one cycle by their shared vertices;
         // the outer ring the one enclosing the most, turned about the
