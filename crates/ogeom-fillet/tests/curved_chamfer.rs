@@ -254,3 +254,134 @@ fn a_rim_chamfers_by_distance_and_angle_as_its_square_corner_says() {
     let (a, b) = (volume(&m, &angled.shape), volume(&m, &square.shape));
     assert!((a - b).abs() < 1e-9 * b, "{a} against {b}");
 }
+
+/// The D-shaped block (a drum of radius 3 halved along its axis, 10 long).
+fn d_block(m: &mut Model) -> Shape {
+    let full = ogeom_algo::make_cylinder(m, up_at(0.0, 0.0, 0.0), 3.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let half = ogeom_algo::make_box(m, up_at(-4.0, -4.0, -1.0), (4.0, 8.0, 12.0), T)
+        .unwrap()
+        .shape;
+    ogeom_bool::cut(m, &full, &half, T).unwrap().shape
+}
+
+/// `s` with what lies past the plane through `at` of outward normal `n`
+/// cut away, by a box standing on the plane.
+fn cut_past(m: &mut Model, s: &Shape, at: Point, n: Vector) -> Shape {
+    let z = n / n.magnitude();
+    let x = if z.x.abs() < 0.9 {
+        Vector::X
+    } else {
+        Vector::Y
+    };
+    let x = (x - z * x.dot(z)) / (x - z * x.dot(z)).magnitude();
+    let y = z.cross(x);
+    let corner = at - x * 30.0 - y * 30.0;
+    let frame = Frame::new(
+        corner,
+        Direction::new(z, T).unwrap(),
+        Direction::new(x, T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let cutter = ogeom_algo::make_box(m, frame, (60.0, 60.0, 30.0), T)
+        .unwrap()
+        .shape;
+    ogeom_bool::cut(m, s, &cutter, T).unwrap().shape
+}
+
+/// The D-shaped block with every edge chamfered 0.5: each corner of three
+/// bevels (the straight edge, the cap's straight edge and the cap's arc)
+/// closes with the facet through its faces' corners. The block is convex
+/// and every bevel convex, so the result is the block cut by each bevel's
+/// plane or, at a rim, its cone, and by each facet's plane: here cut by
+/// booleans, which share nothing with the engine's assembly, to the same
+/// volume. Each corner generates one triangular facet; where a cap's arc is
+/// split at the wall's seam its bevels run on into each other, with none.
+#[test]
+fn a_d_block_chamfered_on_every_edge_closes_each_corner_with_its_facet() {
+    let (big, d) = (3.0_f64, 0.5_f64);
+    let mut m = Model::new();
+    let block = d_block(&mut m);
+    let edges = explore_unique(&m, &block, ShapeType::Edge).unwrap();
+    let vertices = explore_unique(&m, &block, ShapeType::Vertex).unwrap();
+    let built = ogeom_fillet::chamfer_edges(&mut m, &block, &edges, d, T).unwrap();
+    assert!(ogeom_algo::check(&m, &built.shape, T).unwrap().is_valid());
+    let back: Vec<Shape> = edges.iter().rev().cloned().collect();
+    let again = ogeom_fillet::chamfer_edges(&mut m, &block, &back, d, T).unwrap();
+    assert!(
+        (volume(&m, &built.shape) - volume(&m, &again.shape)).abs() < 1e-9,
+        "the order changes the solid"
+    );
+    // The four corners on the flat take a facet each; where a cap's arc is
+    // split at the wall's seam, its two bevels run on into each other and
+    // take none.
+    let mut facets = 0;
+    for v in &vertices {
+        let made = built.history.generated(v);
+        if point_of(&m, v).x.abs() < 1e-9 {
+            assert_eq!(made.len(), 1, "a corner without its facet");
+            let corners = explore_unique(&m, &made[0], ShapeType::Vertex).unwrap();
+            assert_eq!(corners.len(), 3, "a facet that is not a triangle");
+            facets += 1;
+        } else {
+            assert!(made.is_empty(), "a facet where two bevels run on");
+        }
+    }
+    assert_eq!(facets, 4);
+
+    // The oracle: the same planes and cones, by booleans.
+    let mut o = Model::new();
+    let mut s = d_block(&mut o);
+    let theta = d / big;
+    let (wx, wy) = (big * theta.sin(), big * theta.cos());
+    // The rims' cones: the material inside each.
+    let top = ogeom_algo::make_cone(&mut o, up_at(0.0, 0.0, -1.0), 13.5, 2.5, 11.0, T)
+        .unwrap()
+        .shape;
+    s = ogeom_bool::common(&mut o, &s, &top, T).unwrap().shape;
+    let bottom = ogeom_algo::make_cone(&mut o, up_at(0.0, 0.0, 0.0), 2.5, 13.5, 11.0, T)
+        .unwrap()
+        .shape;
+    s = ogeom_bool::common(&mut o, &s, &bottom, T).unwrap().shape;
+    for side in [1.0_f64, -1.0] {
+        // The straight edge's bevel, from the flat's contact to the wall's.
+        let (p, q) = (
+            Point::new(0.0, side * (big - d), 0.0),
+            Point::new(wx, side * wy, 0.0),
+        );
+        let n = Vector::new(q.y - p.y, -(q.x - p.x), 0.0);
+        let n = if n.dot(Vector::new(-1.0, side, 0.0)) < 0.0 {
+            -n
+        } else {
+            n
+        };
+        s = cut_past(&mut o, &s, p, n);
+    }
+    for (z, up) in [(10.0_f64, 1.0_f64), (0.0, -1.0)] {
+        // The cap's straight edge's bevel.
+        s = cut_past(
+            &mut o,
+            &s,
+            Point::new(d, 0.0, z),
+            Vector::new(-1.0, 0.0, up),
+        );
+        // The two corners' facets.
+        for side in [1.0_f64, -1.0] {
+            let on_cap = Point::new(d, side * (big - d).mul_add(big - d, -(d * d)).sqrt(), z);
+            let on_flat = Point::new(0.0, side * (big - d), z - up * d);
+            let on_wall = Point::new(wx, side * wy, z - up * d);
+            let mut n = (on_flat - on_cap).cross(on_wall - on_cap);
+            if n.dot(Vector::new(-1.0, side, up)) < 0.0 {
+                n = -n;
+            }
+            s = cut_past(&mut o, &s, on_cap, n);
+        }
+    }
+    let (got, want) = (volume(&m, &built.shape), volume(&o, &s));
+    assert!(
+        (got - want).abs() < 1e-6,
+        "volume {got} against the booleans' {want}"
+    );
+}
