@@ -88,7 +88,31 @@ pub fn fillet_edge(
     if let Some(built) = rounds_by_engine(model, solid, &[(edge.clone(), radius)], tol)? {
         return Ok(built);
     }
+    to_current_path("fillet_edge");
     fillet_edge_wedge(model, solid, edge, radius, tol)
+}
+
+/// Where a round request leaves the blend engine for the current path:
+/// with the `old-path-log` feature, a line naming `entry` and the asking
+/// test (its thread's name) appended to the file `OGEOM_OLD_PATH_LOG`
+/// names, for `tools/old-path-rounds.sh` to count before M6 deletes that
+/// path; without it, nothing.
+fn to_current_path(entry: &str) {
+    #[cfg(feature = "old-path-log")]
+    {
+        use std::io::Write as _;
+        if let Some(path) = std::env::var_os("OGEOM_OLD_PATH_LOG")
+            && let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+        {
+            let test = std::thread::current().name().unwrap_or("?").to_owned();
+            let _ = writeln!(file, "{entry} {test}");
+        }
+    }
+    #[cfg(not(feature = "old-path-log"))]
+    let _ = entry;
 }
 
 /// [`fillet_edge`] on the current path alone: the band and its wedge, as
@@ -696,6 +720,7 @@ pub fn fillet_edges(
     if let Some(built) = rounds_by_engine(model, solid, &asked, tol)? {
         return Ok(built);
     }
+    to_current_path("fillet_edges");
     let radii = vec![radius; edges.len()];
     ogeom_algo::on_own_nodes(model, solid, edges, |model, solid, parts| {
         cut_off_bands(
@@ -757,6 +782,7 @@ pub fn fillet_edges_with(
     if let Some(built) = rounds_by_engine(model, solid, edges, tol)? {
         return Ok(built);
     }
+    to_current_path("fillet_edges_with");
     ogeom_algo::on_own_nodes(model, solid, &shapes, |model, solid, parts| {
         cut_off_bands(
             model,
