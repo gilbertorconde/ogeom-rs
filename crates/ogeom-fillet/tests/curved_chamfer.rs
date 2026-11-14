@@ -1236,3 +1236,127 @@ fn a_drum_s_rim_rolls_over_its_short_wall_through_the_one_boolean() {
     assert!((got - want).abs() <= 1e-6 * want, "{got} against {want}");
     assert_eq!(built.history.generated(&rim).len(), 1, "the bevel");
 }
+
+/// A D-block, the half of a cylinder of radius 3 and length 10 above its
+/// flat face, with a block 2 x 1 x 2 fused under the flat face 1 to 2 in
+/// from its straight edge. That edge, between the flat face and the
+/// cylinder, chamfered 1.5 (the distance on the cylinder along it): the
+/// curved path's rings decline the solid, and the bevel goes through the
+/// one boolean (ADR 0001, amendments "M5a" and "M5b"), its strip closed
+/// into its tool with flaps on the plane and the cylinder and caps on the
+/// end faces. What it takes is its section along the 10: the circular
+/// segment of the arc 1.5 / 3 and the triangle to the flat face's contact,
+/// 4.5 (t - sin t) + 1.5 x 1.5 sin t with t = 1/2. Valid, built by the
+/// booleans, the edge generating its bevel.
+#[test]
+fn a_crease_bevel_on_a_d_block_with_a_foot_goes_through_the_one_boolean() {
+    let mut m = Model::new();
+    let along_x = Frame::new(Point::new(0.0, 0.0, 0.0), Direction::X, Direction::Y, T).unwrap();
+    let full = ogeom_algo::make_cylinder(&mut m, along_x, 3.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let keep = ogeom_algo::make_box(&mut m, up_at(-1.0, -4.0, 0.0), (12.0, 8.0, 4.0), T)
+        .unwrap()
+        .shape;
+    let d_block = ogeom_bool::common(&mut m, &full, &keep, T).unwrap().shape;
+    let foot = ogeom_algo::make_box(&mut m, up_at(4.0, 1.0, -2.0), (2.0, 1.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &d_block, &foot, T).unwrap().shape;
+    let edge = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
+            l.y > 3.0 - 1e-6 && h.x - l.x > 9.0 && h.z.abs() < 1e-6
+        })
+        .unwrap();
+    let mass = |m: &Model, s: &Shape| {
+        ogeom_algo::volume_properties(m, s, ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    let before = mass(&m, &s);
+    let (built, work) = ogeom_bool::work::counted(|| {
+        ogeom_fillet::chamfer_edges_with(
+            &mut m,
+            &s,
+            &[(edge.clone(), ogeom_fillet::Chamfer::Symmetric(1.5))],
+            T,
+        )
+        .unwrap()
+    });
+    assert!(work.face_pairs > 0, "built by the booleans");
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let t: f64 = 0.5;
+    let want = 10.0 * (4.5 * (t - t.sin()) + 1.5 * 1.5 * t.sin());
+    let got = before - mass(&m, &built.shape);
+    assert!((got - want).abs() <= 1e-6 * want, "{got} against {want}");
+    assert_eq!(built.history.generated(&edge).len(), 1, "the bevel");
+}
+
+/// Two D-blocks (halves of a cylinder of radius 3 above its flat face)
+/// fused end to end, 5 and 5 long: their straight edge between the flat
+/// face and the cylinder is two pieces of one line, the seams between.
+/// Asked 1 on one piece and 1.5 on the other, each piece bevels as asked
+/// and the two step at the joint on the plane square to the edge (ADR
+/// 0001, amendment "what M6 refuses by name"), through the one boolean:
+/// what they take is each one's section along its 5, the circular
+/// segment of the arc d / 3 and the triangle to the flat face's contact,
+/// 4.5 (t - sin t) + 1.5 d sin t with t = d / 3. Valid, each piece
+/// generating its bevel.
+#[test]
+fn pieces_of_a_crease_asked_apart_step_between_them() {
+    let mut m = Model::new();
+    let half = |m: &mut Model, x0: f64| {
+        let along_x = Frame::new(Point::new(x0, 0.0, 0.0), Direction::X, Direction::Y, T).unwrap();
+        let full = ogeom_algo::make_cylinder(m, along_x, 3.0, 5.0, T)
+            .unwrap()
+            .shape;
+        let keep = ogeom_algo::make_box(m, up_at(x0 - 1.0, -4.0, 0.0), (7.0, 8.0, 4.0), T)
+            .unwrap()
+            .shape;
+        ogeom_bool::common(m, &full, &keep, T).unwrap().shape
+    };
+    let (a, b) = (half(&mut m, 0.0), half(&mut m, 5.0));
+    let s = ogeom_bool::fuse(&mut m, &a, &b, T).unwrap().shape;
+    let mut pieces: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
+            l.y > 3.0 - 1e-6 && h.x - l.x > 4.0 && h.z.abs() < 1e-6
+        })
+        .collect();
+    assert_eq!(pieces.len(), 2, "the straight edge's two pieces");
+    pieces.sort_by(|p, q| {
+        let lo = |e: &Shape| ogeom_algo::shape_bounds(&m, e, T).unwrap().low().unwrap().x;
+        lo(p).total_cmp(&lo(q))
+    });
+    let mass = |m: &Model, s: &Shape| {
+        ogeom_algo::volume_properties(m, s, ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    let before = mass(&m, &s);
+    let asked = vec![
+        (pieces[0].clone(), ogeom_fillet::Chamfer::Symmetric(1.0)),
+        (pieces[1].clone(), ogeom_fillet::Chamfer::Symmetric(1.5)),
+    ];
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &asked, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let section = |d: f64| {
+        let t = d / 3.0;
+        4.5 * (t - t.sin()) + 1.5 * d * t.sin()
+    };
+    let want = 5.0 * section(1.0) + 5.0 * section(1.5);
+    let got = before - mass(&m, &built.shape);
+    assert!((got - want).abs() <= 1e-6 * want, "{got} against {want}");
+    for p in &pieces {
+        assert_eq!(built.history.generated(p).len(), 1, "a piece's bevel");
+    }
+}

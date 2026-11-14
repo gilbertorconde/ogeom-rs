@@ -6448,6 +6448,129 @@ mod tests {
     }
 }
 
+/// Curved chamfers the rings do not place (a bevel rolling over its face's
+/// far side, or reaching a face it does not end at) built by the one
+/// boolean (ADR 0001, amendments "M5a" and "M5b"): each asked edge's
+/// bevel, read as the curved path reads it, closed into its tool by
+/// [`close_tool`] with its own ends, the tools applied together. Only
+/// where no two asked edges meet and each edge's ends are each on one
+/// other face, a plane square to the edge; `None` otherwise, or where a
+/// tool will not close, a boolean refuses or a bevel is left nothing of.
+///
+/// # Errors
+///
+/// As reading the solid and building the tools and the booleans, other
+/// than their refusals.
+pub(crate) fn creases_one_boolean(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let Some(curved) = read(model, solid, tol)? else {
+        return Ok(None);
+    };
+    // Each asked edge's ends: a joint where it runs on into another asked
+    // piece of its curve between the same two faces (capped there on the
+    // plane square to the curve, as two features on the pieces would end),
+    // else its own end. Asked edges meeting any other way decline.
+    let asked: Vec<Id> = specs.iter().map(|(e, _)| id(e)).collect();
+    let mut caps: Vec<[EndCap; 2]> = Vec::with_capacity(specs.len());
+    for e in &asked {
+        let Some(c) = curved.edges.get(e) else {
+            return Ok(None);
+        };
+        if c.ends.0 == c.ends.1 {
+            return Ok(None);
+        }
+        // Two faces on one carrier, facing one way: a seam between them.
+        let one = |a: usize, b: usize| -> OgeomResult<bool> {
+            ogeom_heal::same_domain(model, &curved.faces[a].shape, &curved.faces[b].shape, tol)
+        };
+        let own = faces_of(&curved, *e);
+        let mut pair = [EndCap::Own, EndCap::Own];
+        for (k, v) in [c.ends.0, c.ends.1].into_iter().enumerate() {
+            let others: Vec<Id> = asked
+                .iter()
+                .copied()
+                .filter(|x| {
+                    x != e && {
+                        let o = &curved.edges[x];
+                        o.ends.0 == v || o.ends.1 == v
+                    }
+                })
+                .collect();
+            match others[..] {
+                [] => {}
+                [o] => {
+                    // The same two surfaces either side, and nothing else at
+                    // the joint but seams (edges between faces on one
+                    // surface, which a boolean left).
+                    let beside = faces_of(&curved, o);
+                    let [a0, a1] = own[..] else {
+                        return Ok(None);
+                    };
+                    let [b0, b1] = beside[..] else {
+                        return Ok(None);
+                    };
+                    let same = (one(a0, b0)? && one(a1, b1)?) || (one(a0, b1)? && one(a1, b0)?);
+                    let mut seams_only = true;
+                    for (x, y) in &curved.edges {
+                        if *x == *e || *x == o || !(y.ends.0 == v || y.ends.1 == v) {
+                            continue;
+                        }
+                        let [f, g] = faces_of(&curved, *x)[..] else {
+                            seams_only = false;
+                            break;
+                        };
+                        if !one(f, g)? {
+                            seams_only = false;
+                            break;
+                        }
+                    }
+                    if !same || !seams_only {
+                        return Ok(None);
+                    }
+                    let t = if k == 0 { c.range.0 } else { c.range.1 };
+                    let h = (c.range.1 - c.range.0) * 1e-6;
+                    let p = c.curve.point_at(t, tol)?;
+                    let q = c.curve.point_at(if k == 0 { t + h } else { t - h }, tol)?;
+                    pair[k] = EndCap::Plane {
+                        at: p,
+                        normal: q - p,
+                    };
+                }
+                _ => return Ok(None),
+            }
+        }
+        caps.push(pair);
+    }
+    let mut tools = Vec::with_capacity(specs.len());
+    for (edge, spec) in specs {
+        let e = id(edge);
+        let strip = match bevel_of(model, solid, &curved, e, edge, spec, tol)? {
+            Some(strip) => strip,
+            None => {
+                let [f0, f1] = faces_of(&curved, e)[..] else {
+                    return Ok(None);
+                };
+                let Some((strip, _)) =
+                    general_crease(model, solid, &curved, e, edge, [f0, f1], spec, None, tol)?
+                else {
+                    return Ok(None);
+                };
+                strip
+            }
+        };
+        let Some(tool) = close_tool(model, &curved, &strip, caps[tools.len()], tol)? else {
+            return Ok(None);
+        };
+        tools.push(tool);
+    }
+    let edges: Vec<Shape> = specs.iter().map(|(e, _)| e.clone()).collect();
+    super::fallback::applied(model, solid, &edges, &tools, tol)
+}
+
 /// How a strip's end is closed in its tool ([`close_tool`]).
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum EndCap {
@@ -6620,15 +6743,20 @@ fn open_tool(
         }
         contact_ranges[k] = range;
     }
-    let Section::Arc { spine } = &strip.section else {
-        return Ok(None);
+    // A round's section is an arc about its spine's point at each cap; a
+    // chamfer's, the segment between its contacts' ends there.
+    let spine = match &strip.section {
+        Section::Arc { spine } => Some(spine),
+        Section::Line => None,
     };
     let mut centres = [Point::ORIGIN; 2];
-    for (j, (cap_at, normal)) in caps.iter().enumerate() {
-        let Some(t) = crossing(spine, spine.domain(), *cap_at, *normal, *cap_at, tol)? else {
-            return Ok(None);
-        };
-        centres[j] = spine.point_at(t, tol)?;
+    if let Some(spine) = spine {
+        for (j, (cap_at, normal)) in caps.iter().enumerate() {
+            let Some(t) = crossing(spine, spine.domain(), *cap_at, *normal, *cap_at, tol)? else {
+                return Ok(None);
+            };
+            centres[j] = spine.point_at(t, tol)?;
+        }
     }
     // The sheet's points: the edge's ends, then each contact's at each end.
     let points = vec![
@@ -6714,9 +6842,18 @@ fn open_tool(
             });
         }
     }
-    // Each end's section, the arc about its centre between the contacts.
+    // Each end's section, the arc about its centre between the contacts,
+    // or a chamfer's segment between them.
     for j in 0..2 {
         let (c0, c1) = (corners[0][j], corners[1][j]);
+        if spine.is_none() {
+            curves.push(SheetCurve {
+                ends: (corner_index(0, j), corner_index(1, j)),
+                curve: Curve::Line(LineCurve::segment(c0, c1, tol)?),
+                range: (0.0, c0.distance(c1)),
+            });
+            continue;
+        }
         let centre = centres[j];
         let (x, y) = (c0 - centre, c1 - centre);
         let radius = x.magnitude();
