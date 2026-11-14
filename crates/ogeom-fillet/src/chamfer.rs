@@ -867,7 +867,10 @@ fn engine_chamfer_attempt(
                 // each piece's rim tool ending on the plane through the
                 // joint (amendment "what M6 refuses by name").
                 if seamless.asked_apart(specs) {
-                    return match rims_one_boolean(model, solid, specs, tol)? {
+                    if let Some(built) = rims_one_boolean(model, solid, specs, tol)? {
+                        return Ok(Some(built));
+                    }
+                    return match crate::engine::creases_one_boolean(model, solid, specs, tol)? {
                         Some(built) => Ok(Some(built)),
                         None => Err(apart_refused()),
                     };
@@ -883,12 +886,18 @@ fn engine_chamfer_attempt(
                         seamless.carry(&built.history),
                     )));
                 }
-                return rims_one_boolean(model, solid, specs, tol);
+                if let Some(built) = rims_one_boolean(model, solid, specs, tol)? {
+                    return Ok(Some(built));
+                }
+                return crate::engine::creases_one_boolean(model, solid, specs, tol);
             }
             if let Some(built) = crate::engine::chamfer_curved(model, solid, specs, tol)? {
                 return Ok(Some(built));
             }
-            rims_one_boolean(model, solid, specs, tol)
+            if let Some(built) = rims_one_boolean(model, solid, specs, tol)? {
+                return Ok(Some(built));
+            }
+            crate::engine::creases_one_boolean(model, solid, specs, tol)
         }
         Dissolved::Outside => Ok(None),
         Dissolved::Into(seamless) => {
