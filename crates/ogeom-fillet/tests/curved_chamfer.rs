@@ -1025,3 +1025,70 @@ fn an_arch_web_s_outer_wall_consumed_by_its_uprights_bevels_meets_in_a_ridge() {
         );
     }
 }
+
+/// A stadium: the box from (-5, -2, 0) to (5, 2, 2) with a drum of radius
+/// 2 at each end, fused and its split faces made one.
+fn stadium(m: &mut Model) -> Shape {
+    let b = ogeom_algo::make_box(m, up_at(-5.0, -2.0, 0.0), (10.0, 4.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let mut s = b;
+    for x in [-5.0, 5.0] {
+        let drum = ogeom_algo::make_cylinder(m, up_at(x, 0.0, 0.0), 2.0, 2.0, T)
+            .unwrap()
+            .shape;
+        s = ogeom_bool::fuse(m, &s, &drum, T).unwrap().shape;
+    }
+    ogeom_heal::unify_same_domain(m, &s, T).unwrap().0.shape
+}
+
+/// One of the stadium's top straight edges chamfered 0.5, the arcs it runs
+/// on into left sharp: the bevel ends at each end on the plane square to
+/// the edge there, a triangular cap closing it. Valid, a face more than the
+/// stadium for the bevel and one for each cap, each end vertex generating
+/// its cap; the solid less exactly the bevel's triangle along the edge's
+/// 10 (the curved faces meshed alike in both).
+#[test]
+fn a_stadium_s_straight_edge_chamfered_alone_ends_on_a_cap_where_its_arcs_run_on() {
+    let d = 0.5_f64;
+    let mut m = Model::new();
+    let s = stadium(&mut m);
+    let edge: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let b = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            let (l, h) = (b.low().unwrap(), b.high().unwrap());
+            l.z > 2.0 - 1e-6 && l.y > 2.0 - 1e-6 && h.x - l.x > 5.0
+        })
+        .collect();
+    assert_eq!(edge.len(), 1, "the top straight edge");
+    let ends: Vec<Shape> = {
+        let (a, b) = ogeom_algo::edge_vertices(&m, &edge[0]).unwrap().unwrap();
+        vec![a, b]
+    };
+    let faces = explore_unique(&m, &s, ShapeType::Face).unwrap().len();
+    let built = ogeom_fillet::chamfer_edges(&mut m, &s, &edge, d, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert_eq!(
+        explore_unique(&m, &built.shape, ShapeType::Face)
+            .unwrap()
+            .len(),
+        faces + 3,
+        "the bevel and its two caps"
+    );
+    for v in &ends {
+        assert_eq!(
+            built.history.generated(v).len(),
+            1,
+            "an end without its cap"
+        );
+    }
+    let taken = volume(&m, &s) - volume(&m, &built.shape);
+    let want = d * d / 2.0 * 10.0;
+    assert!(
+        (taken - want).abs() < 1e-6,
+        "takes {taken} against the triangle's {want}"
+    );
+}

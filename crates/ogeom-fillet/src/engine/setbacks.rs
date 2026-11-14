@@ -145,6 +145,12 @@ fn put(
     }
 }
 
+/// How far apart two edges' tangents may turn at a vertex and still run
+/// on into each other: a millionth of a radian, looser than the angular
+/// tolerance, since a vertex a boolean or a healing pass left a few
+/// picometres off turns them by as much as that over its curve.
+pub(crate) const TANGENT: f64 = 1e-6;
+
 /// Every face corner's setback corner on a solid with curved faces, keyed
 /// by face index and vertex: where the two contacts meeting at the vertex
 /// cross on the face. A contact is the blend's, given in `contacts` by face
@@ -264,7 +270,7 @@ pub(crate) fn curved_corners(
                     * if forward_out { 1.0 } else { -1.0 };
                 let straight = n == 1
                     || t_in.cross(t_out).magnitude()
-                        <= tol.angular() * t_in.magnitude() * t_out.magnitude()
+                        <= TANGENT * t_in.magnitude() * t_out.magnitude()
                         && t_in.dot(t_out) > 0.0;
                 // Two fitted contacts running on into each other, each
                 // through stations of its own, nearly touch at the vertex
@@ -298,6 +304,24 @@ pub(crate) fn curved_corners(
                 }
                 if straight {
                     let t = t_in / t_in.magnitude();
+                    // A contact running on into an edge left sharp along it:
+                    // the bevel ends on the plane square to the edge there,
+                    // its corner the contact's station on it, the face's
+                    // own edge kept from the vertex on.
+                    if blend_in != blend_out {
+                        let (blend, e_blend, e_own, own_at) = if blend_in {
+                            (&c_in, e_in, e_out, start_param(leaving, forward_out))
+                        } else {
+                            (&c_out, e_out, e_in, end_param(arriving, forward_in))
+                        };
+                        let Some((s, p)) = station(blend, at, t, tol)? else {
+                            return Ok(None);
+                        };
+                        if !put(&mut out, (fi, v), p, [(e_blend, s), (e_own, own_at)], tol) {
+                            return Ok(None);
+                        }
+                        continue;
+                    }
                     let (Some((s, p)), Some((u, q))) =
                         (station(&c_in, at, t, tol)?, station(&c_out, at, t, tol)?)
                     else {
