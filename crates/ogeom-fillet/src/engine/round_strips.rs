@@ -18,7 +18,7 @@ use ogeom_topo::{Model, Shape};
 
 use super::curved::{Curved, CurvedEdge, read};
 use super::setbacks::{corner_for, curved_corners, roll_overs, rolls_over};
-use super::trimmed::{Section, Strip, assemble, faces_of, outward};
+use super::trimmed::{RolledRun, Section, Strip, assemble_rolled, faces_of, outward};
 use super::{Id, id};
 
 /// The rounds of `rounds` (each an edge and its radius) on `solid` with
@@ -72,17 +72,90 @@ pub(crate) fn round(
     let Some(corners) = curved_corners(&curved, &contacts, tol)? else {
         return Ok(None);
     };
-    // A contact leaving its face rolls over onto what bounds it there.
-    if rolls_over(&roll_overs(&curved, &contacts, &corners, tol)?) {
-        return Ok(None);
+    // A contact leaving its face rolls over onto what bounds it there: the
+    // ball rests on the edge it crosses until it comes back (ADR 0001,
+    // section 13, question 8), each run read from the crossing pairs.
+    let crossings = roll_overs(&curved, &contacts, &corners, tol)?;
+    let mut rolled: Vec<RolledRun> = Vec::new();
+    if rolls_over(&crossings) {
+        let mut k = 0;
+        while k < crossings.len() {
+            let (enter, Some(leave)) = (&crossings[k], crossings.get(k + 1)) else {
+                return Ok(None);
+            };
+            if (enter.face, enter.edge) != (leave.face, leave.edge) {
+                return Ok(None);
+            }
+            let Some(strip) = strips.iter().position(|s| s.edge == enter.edge) else {
+                return Ok(None);
+            };
+            let s = &strips[strip];
+            let Some(side) = s.faces.iter().position(|f| *f == enter.face) else {
+                return Ok(None);
+            };
+            let Section::Arc { spine } = &s.section else {
+                return Ok(None);
+            };
+            let radius = asked
+                .iter()
+                .find(|(e, _, _)| *e == s.edge)
+                .map_or(0.0, |(_, _, r)| *r);
+            let run = match super::seats::edge_run(
+                model,
+                &curved,
+                spine,
+                radius,
+                enter.face,
+                s.faces[1 - side],
+                enter,
+                leave,
+                tol,
+            )? {
+                Ok(run) => run,
+                // A seat change not built yet goes to the current path.
+                Err(_) => return Ok(None),
+            };
+            // Nothing else of the solid in the box the run's piece can take
+            // up: its arcs, the edge it rests on and the strip's edge there.
+            if !run_clear(model, &curved, s, &run, tol)? {
+                return Ok(None);
+            }
+            rolled.push(RolledRun {
+                strip,
+                side,
+                enter: enter.clone(),
+                leave: leave.clone(),
+                run,
+            });
+            k += 2;
+        }
     }
     // A rim's round reaching a face it does not blend (a cavity's wall
     // under a thin cap) is not built here: every face but the strip's two
     // proved outside the box the round can take up.
     let fit = crate::marched::band_fit_target(tol);
     for (k, clear) in &boxes {
+        // The faces met at the strip's ends close its corners there, and
+        // those of the edges its ball rests on hold its run.
+        let e = &curved.edges[&strips[*k].edge];
+        let local: Vec<usize> = (0..curved.faces.len())
+            .filter(|fi| {
+                curved.faces[*fi].loops.iter().flatten().any(|(x, _)| {
+                    let c = &curved.edges[x];
+                    [c.ends.0, c.ends.1]
+                        .iter()
+                        .any(|v| *v == e.ends.0 || *v == e.ends.1)
+                })
+            })
+            .chain(
+                rolled
+                    .iter()
+                    .filter(|r| r.strip == *k)
+                    .flat_map(|r| r.run.over.iter().flat_map(|o| faces_of(&curved, *o))),
+            )
+            .collect();
         for (fi, face) in curved.faces.iter().enumerate() {
-            if strips[*k].faces.contains(&fi) {
+            if strips[*k].faces.contains(&fi) || local.contains(&fi) {
                 continue;
             }
             if ogeom_algo::certify_face_within(model, &face.shape, clear, fit, tol)?.is_err() {
@@ -197,7 +270,7 @@ pub(crate) fn round(
     let blended: FastSet<Id> = strips.iter().map(|s| s.edge).collect();
     // P4 and P5; what the assembly or the solid's check refuses is handed
     // back.
-    let built = match assemble(model, &curved, &strips, &blended, &corners, tol) {
+    let built = match assemble_rolled(model, &curved, &strips, &blended, &corners, &rolled, tol) {
         Ok(Some(built)) => built,
         Ok(None) => return Ok(None),
         Err(e @ ogeom_core::OgeomError::Cancelled) => return Err(e),
@@ -431,9 +504,12 @@ const LEAVING: f64 = 1e-3;
 
 /// Into `face` from the straight `edge` along `u`, square to it: the
 /// face's other edge leaving one of the edge's ends, its tangent there with
-/// its part along `u` taken off, or where that runs on along `u` (an arc
-/// leaving tangent, a rim continuing a straight edge) its chord to its
-/// middle. `None` where every one runs along `u`.
+/// its part along `u` taken off; where every one runs on along `u` (an arc
+/// leaving tangent, a rim continuing a straight edge), on the left of the
+/// edge as the face walks it, about the face's outward normal at the edge's
+/// middle (every loop, a hole's too, walks with the face on its left: a
+/// neighbour's chord would point into a hole beside it). `None` where
+/// neither reads.
 ///
 /// # Errors
 ///
@@ -461,15 +537,24 @@ fn into_face(
             if square.magnitude() > LEAVING * t.magnitude() {
                 return Ok(Some(square));
             }
-            let middle = c.curve.point_at(0.5 * (c.range.0 + c.range.1), tol)?;
-            let chord = middle - curved.points[&v];
-            let square = chord - u * chord.dot(u);
-            if square.magnitude() > LEAVING * chord.magnitude() {
-                return Ok(Some(square));
-            }
         }
     }
-    Ok(None)
+    let f = &curved.faces[face];
+    let Some(&(_, w)) = f.loops.iter().flatten().find(|(e, _)| *e == edge) else {
+        return Ok(None);
+    };
+    let c = &curved.edges[&edge];
+    let mid = c.curve.point_at(0.5 * (c.range.0 + c.range.1), tol)?;
+    let Some(n) = outward(curved, face, mid) else {
+        return Ok(None);
+    };
+    let along = if w == f.reversed { -u } else { u };
+    let into = n.cross(along);
+    let square = into - u * into.dot(u);
+    if square.magnitude() <= LEAVING * into.magnitude().max(f64::MIN_POSITIVE) {
+        return Ok(None);
+    }
+    Ok(Some(square))
 }
 
 /// The points each other edge of a rim's face is read at, to keep the
@@ -723,4 +808,68 @@ fn rim(
         },
         clear,
     )))
+}
+
+/// Whether every face of `curved` but the strip's two and those of the edges
+/// the run rests on stands outside the box the run's piece can take up:
+/// round its balls' arcs, the edges it rests on between the crossings and
+/// the strip's own edge over the run's stations.
+///
+/// # Errors
+///
+/// As certifying the faces.
+fn run_clear(
+    model: &Model,
+    curved: &Curved,
+    strip: &Strip,
+    run: &super::seats::EdgeRun,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    use ogeom_geom::Curve3d as _;
+    let mut lo = Point::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    let mut hi = Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    let mut hold = |p: Point| {
+        lo = Point::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+        hi = Point::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+    };
+    let SurfaceGeometry::BSpline(surface) = &run.surface else {
+        return Ok(false);
+    };
+    // A B-spline surface lies in its control net's hull.
+    for w in surface.grid().points() {
+        hold(w.point());
+    }
+    let edge = &curved.edges[&strip.edge];
+    for (c, f) in run.centres.iter().zip(&run.feet) {
+        let t = super::trimmed::param_on(&edge.curve, edge.range, *c, tol)?;
+        hold(edge.curve.point_at(t, tol)?);
+        hold(*f);
+    }
+    for p in &run.on_edge {
+        hold(*p);
+    }
+    let pad = 2.0 * crate::marched::band_fit_target(tol);
+    let below = |normal: Vector, at: Point| ogeom_algo::HalfSpaces::Below { normal, at };
+    let clear = ogeom_algo::HalfSpaces::Any(vec![
+        below(-Vector::X, Point::new(lo.x - pad, 0.0, 0.0)),
+        below(Vector::X, Point::new(hi.x + pad, 0.0, 0.0)),
+        below(-Vector::Y, Point::new(0.0, lo.y - pad, 0.0)),
+        below(Vector::Y, Point::new(0.0, hi.y + pad, 0.0)),
+        below(-Vector::Z, Point::new(0.0, 0.0, lo.z - pad)),
+        below(Vector::Z, Point::new(0.0, 0.0, hi.z + pad)),
+    ]);
+    let mut own: Vec<usize> = strip.faces.to_vec();
+    for e in &run.over {
+        own.extend(faces_of(curved, *e));
+    }
+    let fit = crate::marched::band_fit_target(tol);
+    for (fi, face) in curved.faces.iter().enumerate() {
+        if own.contains(&fi) {
+            continue;
+        }
+        if ogeom_algo::certify_face_within(model, &face.shape, &clear, fit, tol)?.is_err() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
