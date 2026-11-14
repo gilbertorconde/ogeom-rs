@@ -95,16 +95,22 @@ pub enum HalfSpaces {
         /// Whether the region is the ball, as against what lies outside it.
         inside: bool,
     },
-    /// The points inside the tube of the torus about `centre` and the unit
-    /// `axis`, its centre circle `major` from the axis and its tube `minor`
-    /// round that circle: a point's height is its distance from the centre
-    /// circle less `minor`.
+    /// The points on one side of the tube of the torus about `centre` and
+    /// the unit `axis`, its centre circle `major` from the axis and its tube
+    /// `minor` round that circle: a point's height is its distance from the
+    /// centre circle less `minor` for `inside`, its negation for outside.
     ///
-    /// Bounded over a hull it is sound, not tight: the distance to the
-    /// circle is at most the distance to any one point `q` of it, which is
-    /// convex, so its greatest over the hull is at a hull point; with `q`
-    /// the circle's point nearest the hull's centroid the bound closes on
-    /// the height as the square of the hull's size.
+    /// Bounded over a hull both are sound, not tight, closing on the height
+    /// as the square of the hull's size. Inside: the distance to the circle
+    /// is at most the distance to any one point `q` of it, convex, so its
+    /// greatest over the hull is at a hull point; `q` is the circle's point
+    /// nearest the hull's centroid. Outside: in the meridian the distance
+    /// is at least `w . (rho - major, z)` for any unit `w`, taken from the
+    /// tube's centre toward the centroid; where `w` leans off the axis the
+    /// distance `rho` from the axis is at least a linear function of the
+    /// point (its reach along one direction square to the axis), and where
+    /// it leans toward the axis the whole is concave: either way the least
+    /// is at a hull point.
     Tube {
         /// The torus's centre.
         centre: Point,
@@ -114,6 +120,8 @@ pub enum HalfSpaces {
         major: f64,
         /// The tube's radius.
         minor: f64,
+        /// Whether the region is the tube's inside, as against its outside.
+        inside: bool,
     },
     /// The points inside every piece: a height the greatest of the
     /// pieces'.
@@ -177,11 +185,16 @@ impl HalfSpaces {
                 axis,
                 major,
                 minor,
+                inside,
             } => {
                 let d = p - tube_point(*centre, *axis, *major, p);
                 let rho = d.magnitude();
                 let out = if rho > 0.0 { d * (1.0 / rho) } else { *axis };
-                (rho - minor, out)
+                if *inside {
+                    (rho - minor, out)
+                } else {
+                    (minor - rho, -out)
+                }
             }
             Self::Every(pieces) => pieces.iter().map(|r| r.height(p)).fold(
                 (f64::NEG_INFINITY, Vector::ZERO),
@@ -273,15 +286,45 @@ impl HalfSpaces {
                 axis,
                 major,
                 minor,
+                inside,
             } => {
                 #[expect(clippy::cast_precision_loss, reason = "a hull's few corners")]
                 let mid = Point::ORIGIN
                     + hull.iter().fold(Vector::ZERO, |sum, p| sum + p.to_vector())
                         * (1.0 / hull.len() as f64);
                 let q = tube_point(*centre, *axis, *major, mid);
-                hull.iter()
-                    .map(|p| (*p - q).magnitude() - minor)
-                    .fold(f64::NEG_INFINITY, f64::max)
+                if *inside {
+                    return hull
+                        .iter()
+                        .map(|p| (*p - q).magnitude() - minor)
+                        .fold(f64::NEG_INFINITY, f64::max);
+                }
+                // The meridian through the centroid: off the axis `u`,
+                // along it `axis`; `w` from the tube's centre toward the
+                // centroid there.
+                let u = (q - *centre) * (1.0 / major);
+                let off = mid - q;
+                let (wr, wz) = (off.dot(u), off.dot(*axis));
+                let m = wr.hypot(wz);
+                if m <= 0.0 {
+                    return *minor;
+                }
+                let (wr, wz) = (wr / m, wz / m);
+                let least = hull
+                    .iter()
+                    .map(|p| {
+                        let rel = *p - *centre;
+                        let along = rel.dot(*axis);
+                        let rho = if wr >= 0.0 {
+                            // At least its reach along `u`.
+                            rel.dot(u)
+                        } else {
+                            (rel - *axis * along).magnitude()
+                        };
+                        wr.mul_add(rho - major, wz * along)
+                    })
+                    .fold(f64::INFINITY, f64::min);
+                minor - least.max(0.0)
             }
             Self::Every(pieces) => pieces
                 .iter()
@@ -1028,6 +1071,7 @@ mod tests {
             axis: Vector::Z,
             major: 5.0,
             minor,
+            inside: true,
         };
         assert_eq!(
             certify_face_within(&m, &faces[0], &tube(2.0), FIT, T).unwrap(),
@@ -1042,5 +1086,50 @@ mod tests {
             "{out:?}"
         );
         assert!((out.past - (rho - 1.95)).abs() < 1e-12, "{out:?}");
+    }
+
+    /// The same quarter torus lies outside the tube of minor 2 about its
+    /// centre circle, proved; outside the tube of minor 2.05 it does not, a
+    /// point found inside it by no more than 0.05.
+    #[test]
+    fn a_torus_lies_outside_its_tube_and_inside_one_drawn_out_is_found() {
+        let mut m = Model::new();
+        let surface = ogeom_geom::TorusSurface::new(
+            ogeom_math::Torus::new(Frame::WORLD, 5.0, 2.0, T).unwrap(),
+        );
+        let face = crate::make_natural_face(
+            &mut m,
+            ogeom_geom::SurfaceGeometry::Trimmed(Box::new(
+                ogeom_geom::TrimmedSurface::new(
+                    surface.into(),
+                    (0.0, core::f64::consts::FRAC_PI_2),
+                    (0.0, 2.0 * core::f64::consts::PI),
+                    T,
+                )
+                .unwrap(),
+            )),
+        )
+        .unwrap()
+        .shape;
+        let tube = |minor: f64| HalfSpaces::Tube {
+            centre: Point::ORIGIN,
+            axis: Vector::Z,
+            major: 5.0,
+            minor,
+            inside: false,
+        };
+        assert_eq!(
+            certify_face_within(&m, &face, &tube(2.0), FIT, T).unwrap(),
+            Ok(())
+        );
+        let out = certify_face_within(&m, &face, &tube(2.05), FIT, T)
+            .unwrap()
+            .unwrap_err();
+        let rho = (out.at.x.hypot(out.at.y) - 5.0).hypot(out.at.z);
+        assert!(
+            out.found && out.past > FIT && out.past <= 0.05 + 1e-12,
+            "{out:?}"
+        );
+        assert!((out.past - (2.05 - rho)).abs() < 1e-12, "{out:?}");
     }
 }
