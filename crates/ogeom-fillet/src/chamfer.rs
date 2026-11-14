@@ -813,23 +813,32 @@ fn engine_chamfer_attempt(
                 return Ok(Some(built));
             }
             if let Some(seamless) = crate::engine::dissolve_curved(model, solid, tol)? {
+                // Pieces of a curved edge asked apart step between them,
+                // each piece's rim tool ending on the plane through the
+                // joint (amendment "what M6 refuses by name").
                 if seamless.asked_apart(specs) {
-                    return Err(apart_refused());
+                    return match rims_one_boolean(model, solid, specs, tol)? {
+                        Some(built) => Ok(Some(built)),
+                        None => Err(apart_refused()),
+                    };
                 }
-                let Some(specs) = seamless.specs(specs) else {
+                let Some(asked) = seamless.specs(specs) else {
                     return Ok(None);
                 };
-                let Some(built) =
-                    crate::engine::chamfer_curved(model, &seamless.solid, &specs, tol)?
-                else {
-                    return Ok(None);
-                };
-                return Ok(Some(Built::new(
-                    built.shape,
-                    seamless.carry(&built.history),
-                )));
+                if let Some(built) =
+                    crate::engine::chamfer_curved(model, &seamless.solid, &asked, tol)?
+                {
+                    return Ok(Some(Built::new(
+                        built.shape,
+                        seamless.carry(&built.history),
+                    )));
+                }
+                return rims_one_boolean(model, solid, specs, tol);
             }
-            crate::engine::chamfer_curved(model, solid, specs, tol)
+            if let Some(built) = crate::engine::chamfer_curved(model, solid, specs, tol)? {
+                return Ok(Some(built));
+            }
+            rims_one_boolean(model, solid, specs, tol)
         }
         Dissolved::Outside => Ok(None),
         Dissolved::Into(seamless) => {
@@ -914,6 +923,95 @@ fn engine_chamfer_apart(
         }
     }
     Ok(Some(Built::new(built.shape, history)))
+}
+
+/// Rim chamfers the curved path's rings do not place (a rim rolling over
+/// its wall's far side as a notch, a rim reaching a face it does not end
+/// at, pieces of one rim asked apart), built by the engine's one boolean
+/// (ADR 0001, amendments "M5a" and "M5b"): each rim's tool is its bevel's
+/// meridian triangle turned about the axis over the rim's own span, its
+/// ends the planes through the axis at an arc's ends (the step at a joint).
+/// The tool's face on the bevel's cone is named for its edge. Only where
+/// every asked edge is a rim between a planar cap and a coaxial cylinder
+/// or cone, and no two meet but pieces of one circle; `None` otherwise or
+/// where a boolean refuses or a bevel is left nothing of.
+///
+/// # Errors
+///
+/// As reading the seats (a leg past the axis or a cone's apex is refused
+/// by name) and the booleans, other than their refusals.
+fn rims_one_boolean(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    if specs.is_empty() {
+        return Ok(None);
+    }
+    let mut seats: Vec<RevolvedSeat> = Vec::with_capacity(specs.len());
+    for (edge, spec) in specs {
+        let Ok(Legs::Rim(seat, _, _)) = legs(model, solid, edge, spec, tol) else {
+            return Ok(None);
+        };
+        seats.push(seat);
+    }
+    // No two asked edges meet, but pieces of one circle.
+    for (i, (a, _)) in specs.iter().enumerate() {
+        for (j, (b, _)) in specs.iter().enumerate().skip(i + 1) {
+            let ends = |e: &Shape| -> OgeomResult<Vec<Shape>> {
+                Ok(ogeom_algo::edge_vertices(model, e)?
+                    .map(|(u, v)| vec![u, v])
+                    .unwrap_or_default())
+            };
+            let (ea, eb) = (ends(a)?, ends(b)?);
+            let meet = ea.iter().any(|u| eb.iter().any(|v| u.is_same(v)));
+            let one_circle = seats[i].centre.distance(seats[j].centre) <= tol.confusion()
+                && (seats[i].radius - seats[j].radius).abs() <= tol.confusion()
+                && seats[i].up.dot(seats[j].up) >= 1.0 - tol.angular();
+            if meet && !one_circle {
+                return Ok(None);
+            }
+        }
+    }
+    let mut tools: Vec<crate::engine::Tool> = Vec::with_capacity(specs.len());
+    for ((edge, spec), seat) in specs.iter().zip(&seats) {
+        let wedge = wedge_for(model, solid, edge, spec, tol)?;
+        let shape = match &wedge.solid {
+            Some(s) => s.clone(),
+            None => match crate::support::wedge_solid(model, &wedge.faces, true, tol) {
+                Ok(s) => s,
+                Err(_) => return Ok(None),
+            },
+        };
+        // The tool's face on the bevel: neither on the cap's plane, nor on
+        // the wall, nor a plane through the axis.
+        let mut named = Vec::new();
+        for face in ogeom_topo::explore_unique(model, &shape, ogeom_topo::ShapeType::Face)? {
+            let (at, n) = ogeom_algo::face_normal(model, &face, tol)?;
+            let off_axis = at - seat.centre;
+            let h = off_axis.dot(seat.up);
+            let rho = (off_axis - seat.up * h).magnitude();
+            let on_cap = h.abs() <= tol.confusion() && n.dot(seat.up).abs() >= 1.0 - tol.angular();
+            let on_wall = (rho - seat.radius_at(h)).abs() <= tol.confusion();
+            let meridian = n.dot(seat.up).abs() <= tol.angular()
+                && n.dot(off_axis - seat.up * h).abs() <= tol.confusion() * rho.max(1.0);
+            if !(on_cap || on_wall || meridian) {
+                named.push((face, edge.clone()));
+            }
+        }
+        tools.push(crate::engine::Tool {
+            solid: shape,
+            sense: if wedge.additive {
+                crate::engine::Sense::Fuse
+            } else {
+                crate::engine::Sense::Cut
+            },
+            faces: named,
+        });
+    }
+    let edges: Vec<Shape> = specs.iter().map(|(e, _)| e.clone()).collect();
+    crate::engine::apply_tools(model, solid, &edges, &tools, tol)
 }
 
 /// The chamfer of `specs` by wedges built on the solid as given and
