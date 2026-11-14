@@ -466,6 +466,41 @@ pub(crate) fn applied(
     Ok(Some(Built::new(built.shape, history)))
 }
 
+/// Every face [`non_local`] finds a piece reaching or touching, in face
+/// order.
+pub(crate) fn non_local_faces(
+    planar: &Planar,
+    seats: &FastMap<(Id, Id), Seat>,
+    blended: &ogeom_core::FastSet<Id>,
+    corners: &FastMap<(usize, Id), Point>,
+    steps: &FastMap<(usize, Id), [Point; 2]>,
+    tol: Tolerances,
+) -> Vec<usize> {
+    let eps = tol.confusion();
+    let Some(pieces) = pieces(planar, seats, blended, corners, steps) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for piece in &pieces {
+        let Some((_, _, planes)) = hull(&piece.points, eps) else {
+            continue;
+        };
+        let near: Vec<usize> = piece
+            .ends
+            .iter()
+            .filter_map(|v| faces_round(&planar.faces, *v))
+            .flatten()
+            .collect();
+        let mut skip: Vec<usize> = near.into_iter().chain(found.iter().copied()).collect();
+        while let Some(fi) = reaches(planar, &planes, &skip, eps) {
+            found.push(fi);
+            skip.push(fi);
+        }
+    }
+    found.sort_unstable();
+    found
+}
+
 /// The request applied by booleans: each bevel's piece and each faceted
 /// vertex's, fused where concave, then cut where convex, the history traced
 /// through the booleans ([`apply`]), each piece's bevel or facet face
