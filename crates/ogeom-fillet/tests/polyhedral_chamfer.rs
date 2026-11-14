@@ -2051,3 +2051,47 @@ fn a_swept_prism_with_its_far_cap_placed_chamfers_every_edge_exactly() {
         }
     }
 }
+
+/// A box's every edge chamfered with the mitre corner: at each corner the
+/// three bevels run on to the point their planes share, so the box keeps,
+/// past the facet chamfer's closed form, each corner's tetrahedron between
+/// that point and the facet's three corners, `d³ / 12`; no corner has a
+/// facet, a face for every face and edge of the box. The same solid to the
+/// bit under three orders.
+#[test]
+fn a_box_mitred_on_every_edge_keeps_each_corner_s_tetrahedron() {
+    let profile = vec![(0.0, 0.0), (40.0, 0.0), (40.0, 20.0), (0.0, 20.0)];
+    for d in [0.5, 2.0] {
+        let want = chamfered_prism_volume(&profile, 30.0, d) + 8.0 * d * d * d / 12.0;
+        let mut first: Option<(u64, Vec<[u64; 3]>)> = None;
+        for seed in 0..3_u64 {
+            let mut m = Model::new();
+            let s = prism(&mut m, &profile, 30.0);
+            let specs = all_edges(&m, &s, d);
+            let specs: Vec<(Shape, Chamfer)> = shuffled(specs.len(), seed)
+                .iter()
+                .map(|i| specs[*i].clone())
+                .collect();
+            let built =
+                ogeom_fillet::chamfer_edges_cornered(&mut m, &s, &specs, ChamferCorner::Point, T)
+                    .unwrap();
+            let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+            assert!(found.is_valid(), "d {d}: {:?}", found.problems);
+            assert!(!folded(&m, &built.shape), "d {d}: folded");
+            let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+                .unwrap()
+                .len();
+            assert_eq!(faces, 6 + 12, "d {d}: faces");
+            let got = volume(&m, &built.shape);
+            assert!(
+                (got - want).abs() <= 1e-9 * want,
+                "d {d}: volume {got} against {want}"
+            );
+            let k = key(&m, &built.shape);
+            match &first {
+                None => first = Some(k),
+                Some(held) => assert!(*held == k, "d {d}: order {seed} differs"),
+            }
+        }
+    }
+}
