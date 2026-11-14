@@ -2790,3 +2790,94 @@ fn an_inexact_box_s_top_edges_chamfer_through_the_engine() {
         "volume {got} against {want}"
     );
 }
+
+/// Two blocks 10 by 6 by 4 fused end to end: the top's front edge is two
+/// pieces of one edge, split at the seam the fuse leaves on the top and
+/// front. Asked with one chamfer the pieces bevel as the one edge, the
+/// seam naming nothing; asked with two, the request is refused by name: an
+/// edge of the form takes one chamfer, as a tangent chain takes one value
+/// in the mainstream applications (ADR 0001, "what M6 refuses by name").
+#[test]
+fn pieces_of_one_edge_asked_with_different_chamfers_are_refused_by_name() {
+    let mut m = Model::new();
+    let a = block(&mut m, (0.0, 0.0, 0.0), (10.0, 6.0, 4.0));
+    let b = block(&mut m, (10.0, 0.0, 0.0), (10.0, 6.0, 4.0));
+    let s = ogeom_bool::fuse(&mut m, &a, &b, T).unwrap().shape;
+    let pieces: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
+            l.z > 4.0 - 1e-6 && h.y < 1e-6 && h.x - l.x > 1.0
+        })
+        .collect();
+    assert_eq!(pieces.len(), 2, "the front top edge's two pieces");
+    let alike: Vec<(Shape, Chamfer)> = pieces
+        .iter()
+        .map(|e| (e.clone(), Chamfer::Symmetric(0.5)))
+        .collect();
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &alike, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let want = 20.0 * 6.0 * 4.0 - 0.5 * 0.5 / 2.0 * 20.0;
+    let got = volume(&m, &built.shape);
+    assert!(
+        (got - want).abs() < 1e-9 * want,
+        "volume {got} against {want}"
+    );
+    let apart = vec![
+        (pieces[0].clone(), Chamfer::Symmetric(0.5)),
+        (pieces[1].clone(), Chamfer::Symmetric(0.8)),
+    ];
+    let refused = ogeom_fillet::chamfer_edges_with(&mut m, &s, &apart, T).unwrap_err();
+    assert!(
+        refused.to_string().contains("different chamfers"),
+        "{refused}"
+    );
+}
+
+/// Two blocks touching along one upright edge, fused: one solid whose
+/// shared edge four faces bound. Its topology is degenerate, and a
+/// chamfer of any of its edges is refused by name (ADR 0001, the M6
+/// refusals), as the mainstream applications refuse to model such a body.
+#[test]
+fn a_solid_with_an_edge_four_faces_bound_is_refused_by_name() {
+    let mut m = Model::new();
+    let a = block(&mut m, (0.0, 0.0, 0.0), (1.0, 1.0, 1.0));
+    let b = block(&mut m, (1.0, 1.0, 0.0), (1.0, 1.0, 1.0));
+    let s = ogeom_bool::fuse(&mut m, &a, &b, T).unwrap().shape;
+    let far: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            bb.low().unwrap().z > 0.99 && bb.high().unwrap().x < 0.5
+        })
+        .map(|e| (e, Chamfer::Symmetric(0.1)))
+        .collect();
+    assert_eq!(far.len(), 1);
+    let refused = ogeom_fillet::chamfer_edges_with(&mut m, &s, &far, T).unwrap_err();
+    assert!(refused.to_string().contains("degenerate"), "{refused}");
+}
+
+/// A compound of a block and a loose face: a chamfer cuts solids, so a
+/// chamfer of the block's edge within it is refused by name.
+#[test]
+fn a_compound_holding_a_face_is_refused_by_name() {
+    let mut m = Model::new();
+    let a = block(&mut m, (0.0, 0.0, 0.0), (2.0, 2.0, 2.0));
+    let other = block(&mut m, (5.0, 0.0, 0.0), (1.0, 1.0, 1.0));
+    let loose = explore_unique(&m, &other, ShapeType::Face).unwrap()[0].clone();
+    let both = ogeom_algo::make_compound(&mut m, &[a.clone(), loose])
+        .unwrap()
+        .shape;
+    let edge = explore_unique(&m, &a, ShapeType::Edge).unwrap()[0].clone();
+    let refused =
+        ogeom_fillet::chamfer_edges_with(&mut m, &both, &[(edge, Chamfer::Symmetric(0.2))], T)
+            .unwrap_err();
+    assert!(
+        refused.to_string().contains("other than solids"),
+        "{refused}"
+    );
+}

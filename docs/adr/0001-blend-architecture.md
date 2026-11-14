@@ -556,6 +556,44 @@ not meet the bevels tangent.
   stand at an end of theirs, where a curve meets its chord, so every side is
   taken exactly; on a square this is the bilinearly blended Coons patch.
 
+### Amendment: what M6 refuses by name (#902, M6)
+
+When M6 deletes the old paths, the engine builds a request or refuses it
+by name. The rule: refuse only what the mainstream applications refuse as
+well (the survey below, of their public documentation); build the rest.
+
+**Pieces of one edge asked with different chamfers.** A boolean or an
+import can leave one edge of the form as several edges that continue each
+other: collinear, or pieces of one curve, meeting at a vertex of no other
+edge. Asked alike, the pieces chamfer as the one edge (the seam layer on
+planes, #915). Asked with different chamfers:
+
+| Application | Different sizes on edges that continue each other |
+|---|---|
+| SOLIDWORKS | A tangent chain takes one value ("tangent propagation"). Different sizes in one feature only for symmetric offset-face chamfers ("Multi Distance Chamfer"); the multiple-radius fillet note says sizes cannot differ on faces or loops with common edges. [help.solidworks.com, Chamfer PropertyManager; Constant Size Fillets] |
+| Fusion | "Tangent Chain" is on by default; it must be cleared to give the pieces separate selection sets. The junction is not documented. [Fusion Chamfer and Tangent Chain references] |
+| Onshape | One set of distances per feature; per-edge overrides change only the direction. [Onshape Chamfer help] |
+| Creo | Separate chamfer sets are allowed, with documented "transitions" where sets meet (Intersect, Blend, Continue, Stop at Reference, Corner Plane, Patch). Which one applies between two sets that continue each other is not stated. [Creo, About Chamfer Transitions] |
+| NX | Not documented publicly (the help sits behind a login). |
+| Solid Edge | Refused within one feature: "multiple edges in one operation if they have the same setback value… you must construct separate chamfer features for each chamfer size". [Solid Edge ST6 help] |
+
+Practice treats a chain of edges that continue each other as one edge with
+one value by default. Two applications refuse different sizes inside one
+feature, and no application documents a taper between two sizes there; a
+size that varies along an edge is what a variable chamfer is for. So:
+
+- **Rule:** pieces of one edge asked with different chamfers are refused by
+  name ("two pieces of one edge are asked with different chamfers"). The
+  edge is asked once, or its pieces alike.
+- **Degenerate planar topology** (an edge bounded by other than two faces,
+  as where two blocks touch along an edge; an edge closing on itself; two
+  edges between one pair of vertices) is refused by name. The mainstream
+  applications do not model such a body, and a chamfer needs every edge
+  between exactly two faces.
+- **A compound holding anything but solids** (a shell, a face, a nested
+  compound, or nothing) is refused by name: a chamfer cuts solids. A
+  compound of solids is chamfered solid by solid (#960).
+
 ## 12. Acceptance corpus
 
 From #902:
