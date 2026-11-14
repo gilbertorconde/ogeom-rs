@@ -60,24 +60,6 @@ impl RadiusLaw {
             })
     }
 
-    /// Whether the law is linear along the chain: a linear law, or points
-    /// all on one line (the strip's contacts then straight).
-    pub(crate) fn is_linear(&self) -> bool {
-        let points = self.points();
-        let [first, .., last] = points[..] else {
-            return true;
-        };
-        let span = last.0 - first.0;
-        if span <= 0.0 {
-            return points.iter().all(|p| (p.1 - first.1).abs() <= 1e-12);
-        }
-        points.iter().all(|p| {
-            let on = first.1 + (last.1 - first.1) * (p.0 - first.0) / span;
-            (p.1 - on).abs() <= 1e-12 * on.abs().max(1.0)
-        }) && first.0 <= 0.0
-            && last.0 >= 1.0
-    }
-
     /// The law scaled by `k` and, `reversed`, read from the chain's other
     /// end.
     pub(crate) fn scaled(&self, k: f64, reversed: bool) -> Self {

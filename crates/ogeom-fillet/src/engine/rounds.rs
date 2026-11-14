@@ -655,6 +655,31 @@ pub(crate) fn assemble(
     // end arcs by edge and vertex.
     let mut edges: Vec<SheetEdge> = Vec::new();
     let mut segments: FastMap<(usize, usize), usize> = FastMap::default();
+    // A varying strip's contacts bend with its law: each is its section's
+    // contact curve between its corners, shared by the strip and the face,
+    // set down first where a straight one would go.
+    let mut contact_list: Vec<Id> = varying.iter().copied().collect();
+    contact_list.sort_unstable();
+    for edge in contact_list {
+        let (section, _) = &sections[&edge];
+        let seat = edge_seat[&edge];
+        for k in 0..2 {
+            let face = seat.faces[k];
+            let (a, b) = (at[&(face, seat.ends.0)], at[&(face, seat.ends.1)]);
+            let (curve, range) = section.contact_curve(k, (0.0, section.length()), tol)?;
+            let start = ogeom_geom::Curve3d::point_at(&curve, range.0, tol)?;
+            let ends = if start.distance(points[a]) <= start.distance(points[b]) {
+                (a, b)
+            } else {
+                (b, a)
+            };
+            segments.insert((a.min(b), a.max(b)), edges.len());
+            edges.push(SheetEdge {
+                ends,
+                curve: Some((curve, range)),
+            });
+        }
+    }
     let mut segment = |edges: &mut Vec<SheetEdge>, a: usize, b: usize| -> (usize, bool) {
         let key = (a.min(b), a.max(b));
         let index = *segments.entry(key).or_insert_with(|| {
@@ -664,7 +689,7 @@ pub(crate) fn assemble(
             });
             edges.len() - 1
         });
-        (index, a == key.0)
+        (index, edges[index].ends.0 == a)
     };
     // Each strip's arc at each end: the edge's index, from the first face's
     // corner to the second's.
