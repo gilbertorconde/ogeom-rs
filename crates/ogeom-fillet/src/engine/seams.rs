@@ -61,17 +61,18 @@ pub(crate) enum Dissolved {
     Into(Box<Seamless>),
 }
 
-/// A solid bounded by planes with its seams dissolved, and what each of
-/// its elements became.
+/// A solid with its seams dissolved, and what each of its elements became.
 pub(crate) struct Seamless {
-    /// The solid with its seams dissolved: each set of faces on one plane
-    /// joined across seams one face, each run of edges on one line joined
+    /// The solid with its seams dissolved: each set of faces on one carrier
+    /// joined across seams one face, each run of edges on one curve joined
     /// one edge.
     pub solid: Shape,
-    input: Planar,
-    unified: Planar,
-    /// Each face of the input: the face of `unified` holding it.
-    faces: Vec<usize>,
+    /// Each face of the input, and the face of the dissolved solid holding
+    /// it.
+    faces: Vec<(Shape, Shape)>,
+    /// The input's edges and vertices by key, and the dissolved solid's.
+    input: FastMap<Id, Shape>,
+    unified: FastMap<Id, Shape>,
     /// Each edge of the input: the edge of `unified` running along it, or
     /// none for a seam.
     edges: FastMap<Id, Option<Id>>,
@@ -112,6 +113,39 @@ pub(crate) fn dissolve(
         Some(seamless) => Dissolved::Into(Box::new(seamless)),
         None => Dissolved::Outside,
     })
+}
+
+/// `solid`, a solid with curved faces, with its seams dissolved: `None`
+/// where it holds none, or it is not one [`curved`](super::curved) reads,
+/// before or after.
+///
+/// # Errors
+///
+/// [`OgeomError::Cancelled`] when cancelled; any other failure to dissolve
+/// declines.
+pub(crate) fn dissolve_curved(
+    model: &mut Model,
+    solid: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<Seamless>> {
+    let Some(input) = super::curved::read(model, solid, tol)? else {
+        return Ok(None);
+    };
+    let unified = match ogeom_heal::unify_same_domain(model, solid, tol) {
+        Ok((_, 0)) => return Ok(None),
+        Ok((unified, _)) => unified,
+        Err(e @ OgeomError::Cancelled) => return Err(e),
+        Err(_) => return Ok(None),
+    };
+    let joined = match ogeom_heal::merge_edges(model, &unified.shape, tol) {
+        Ok((joined, _)) => joined.shape,
+        Err(e @ OgeomError::Cancelled) => return Err(e),
+        Err(_) => return Ok(None),
+    };
+    let Some(read) = super::curved::read(model, &joined, tol)? else {
+        return Ok(None);
+    };
+    Seamless::curved(model, joined, &input, &read, tol)
 }
 
 impl Seamless {
@@ -159,7 +193,7 @@ impl Seamless {
             }
         }
         let pair_of: FastMap<Id, (Id, Id)> = unified.edges.iter().map(|(k, e)| (*e, *k)).collect();
-        let mut faces = Vec::with_capacity(input.faces.len());
+        let mut faces: Vec<(Shape, Shape)> = Vec::with_capacity(input.faces.len());
         for face in &input.faces {
             let sides: Vec<(Id, Id)> = face
                 .loops()
@@ -178,16 +212,134 @@ impl Seamless {
                         dx.total_cmp(&dy)
                     })
             })?;
-            faces.push(image);
+            faces.push((face.shape.clone(), unified.faces[image].shape.clone()));
         }
         Some(Self {
             solid,
-            input,
-            unified,
             faces,
+            input: input.shapes,
+            unified: unified.shapes,
             edges,
             vertices,
         })
+    }
+
+    /// Each element of `input` matched to the one of `unified` holding it,
+    /// by where it lies: a vertex by its point, an edge by the curve of
+    /// `unified` its ends and its middle lie on, a face by the face across
+    /// one of its matched edges on its carrier facing its way
+    /// ([`ogeom_heal::same_domain`]), or, where every edge of it dissolved,
+    /// by what holds a neighbour across a seam. `None` where a face is held
+    /// by neither.
+    fn curved(
+        model: &Model,
+        solid: Shape,
+        input: &super::curved::Curved,
+        unified: &super::curved::Curved,
+        tol: Tolerances,
+    ) -> OgeomResult<Option<Self>> {
+        use ogeom_geom::Curve3d as _;
+        let near = tol.confusion();
+        let mut vertices: FastMap<Id, Option<Id>> = FastMap::default();
+        for (v, p) in &input.points {
+            let at = unified
+                .points
+                .iter()
+                .find(|(_, q)| q.distance(*p) <= near)
+                .map(|(w, _)| *w);
+            vertices.insert(*v, at);
+        }
+        let mut edges: FastMap<Id, Option<Id>> = FastMap::default();
+        for (e, edge) in &input.edges {
+            let mid = edge
+                .curve
+                .point_at(f64::midpoint(edge.range.0, edge.range.1), tol)?;
+            let probes = [input.points[&edge.ends.0], input.points[&edge.ends.1], mid];
+            let mut along = None;
+            for (f, other) in &unified.edges {
+                let mut on = true;
+                for p in probes {
+                    let t = super::trimmed::param_on(&other.curve, other.range, p, tol)?;
+                    if other.curve.point_at(t, tol)?.distance(p) > near {
+                        on = false;
+                        break;
+                    }
+                }
+                if on {
+                    along = Some(*f);
+                    break;
+                }
+            }
+            edges.insert(*e, along);
+        }
+        let walking = |read: &super::curved::Curved, e: Id| -> Vec<usize> {
+            (0..read.faces.len())
+                .filter(|fi| read.faces[*fi].loops.iter().flatten().any(|(x, _)| *x == e))
+                .collect()
+        };
+        let mut images: Vec<Option<Shape>> = Vec::with_capacity(input.faces.len());
+        for face in &input.faces {
+            let mut image = None;
+            'edges: for (e, _) in face.loops.iter().flatten() {
+                let Some(Some(f)) = edges.get(e) else {
+                    continue;
+                };
+                for g in walking(unified, *f) {
+                    let held = &unified.faces[g].shape;
+                    if ogeom_heal::same_domain(model, &face.shape, held, tol)? {
+                        image = Some(held.clone());
+                        break 'edges;
+                    }
+                }
+            }
+            images.push(image);
+        }
+        // A face every edge of which dissolved (a piece a boolean imprinted
+        // inside one flat) is held by what holds a neighbour across a seam
+        // on its carrier.
+        loop {
+            let mut found = false;
+            for fi in 0..input.faces.len() {
+                if images[fi].is_some() {
+                    continue;
+                }
+                let face = &input.faces[fi];
+                'seams: for (e, _) in face.loops.iter().flatten() {
+                    for gi in walking(input, *e) {
+                        if gi == fi {
+                            continue;
+                        }
+                        let Some(held) = images[gi].clone() else {
+                            continue;
+                        };
+                        if ogeom_heal::same_domain(model, &face.shape, &input.faces[gi].shape, tol)?
+                        {
+                            images[fi] = Some(held);
+                            found = true;
+                            break 'seams;
+                        }
+                    }
+                }
+            }
+            if !found {
+                break;
+            }
+        }
+        let mut faces: Vec<(Shape, Shape)> = Vec::with_capacity(input.faces.len());
+        for (face, image) in input.faces.iter().zip(images) {
+            let Some(image) = image else {
+                return Ok(None);
+            };
+            faces.push((face.shape.clone(), image));
+        }
+        Ok(Some(Self {
+            solid,
+            faces,
+            input: input.shapes.clone(),
+            unified: unified.shapes.clone(),
+            edges,
+            vertices,
+        }))
     }
 
     /// `specs`, named on the solid as given, named on [`Seamless::solid`]:
@@ -196,17 +348,15 @@ impl Seamless {
     /// pieces of one edge are asked differently.
     pub fn specs(&self, specs: &[(Shape, Chamfer)]) -> Option<Vec<(Shape, Chamfer)>> {
         let face = |named: &Shape| {
-            let fi = self
-                .input
-                .faces
+            self.faces
                 .iter()
-                .position(|f| f.shape.is_same(named))?;
-            Some(self.unified.faces[self.faces[fi]].shape.clone())
+                .find(|(f, _)| f.is_same(named))
+                .map(|(_, g)| g.clone())
         };
         let mut out: Vec<(Shape, Chamfer)> = Vec::with_capacity(specs.len());
         for (edge, spec) in specs {
             let f = (*self.edges.get(&id(edge))?)?;
-            let edge = self.unified.shapes[&f].clone();
+            let edge = self.unified[&f].clone();
             let spec = match spec {
                 Chamfer::Symmetric(d) => Chamfer::Symmetric(*d),
                 Chamfer::Distances {
@@ -254,8 +404,8 @@ impl Seamless {
                 history.modify(from, shape.clone());
             }
         };
-        for (fi, face) in self.input.faces.iter().enumerate() {
-            pass(&face.shape, &self.unified.faces[self.faces[fi]].shape);
+        for (face, image) in &self.faces {
+            pass(face, image);
         }
         let mut ids: Vec<(Id, Option<Id>)> = self
             .edges
@@ -267,12 +417,12 @@ impl Seamless {
         let mut gone = Vec::new();
         for (from, via) in ids {
             match via {
-                Some(via) => pass(&self.input.shapes[&from], &self.unified.shapes[&via]),
+                Some(via) => pass(&self.input[&from], &self.unified[&via]),
                 None => gone.push(from),
             }
         }
         for from in gone {
-            history.delete(&self.input.shapes[&from]);
+            history.delete(&self.input[&from]);
         }
         history
     }

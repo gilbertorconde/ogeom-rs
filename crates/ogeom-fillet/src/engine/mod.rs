@@ -45,10 +45,26 @@ mod rounds;
 mod seams;
 mod sections;
 mod setbacks;
+mod trimmed;
 mod vertices;
 
 pub(crate) use request::{Request, Section};
-pub(crate) use seams::{Dissolved, dissolve, is_seam};
+pub(crate) use seams::{Dissolved, dissolve, dissolve_curved, is_seam};
+pub(crate) use trimmed::chamfer as chamfer_curved;
+
+/// Whether `solid` is one the polyhedral classes read: one solid bounded by
+/// planes, each face its rings of straight edges.
+///
+/// # Errors
+///
+/// As reading the solid.
+pub(crate) fn bounded_by_planes(
+    model: &Model,
+    solid: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    Ok(classify::read_planar(model, solid, tol)?.is_some())
+}
 
 use ogeom_algo::{Built, History};
 use ogeom_core::{FastMap, FastSet, OgeomResult, Tolerances};
