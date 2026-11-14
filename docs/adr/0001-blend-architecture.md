@@ -878,7 +878,9 @@ each face its own distance, its section an ellipse or a conic of a given
   elliptical section of equal distances), the strip the current path's
   exact varying band. Each end sets back its own distance (P2's corners
   reset to the law's there, on end faces square to the edge), and the strip
-  ends flush; its chart's sense is read where it stands. At any other
+  ends flush; its chart's sense is read where it stands. Its contacts are
+  the section's contact curves, bending with a law of points, each shared
+  by the strip and its face. At any other
   vertex it is not built yet.
 
 ## 12. Acceptance corpus

@@ -189,7 +189,7 @@ impl Request {
     }
 
     /// One straight edge rounded at a radius following `law` from its first
-    /// vertex, as a request of one; `None` for a law not linear along it.
+    /// vertex, as a request of one.
     ///
     /// # Errors
     ///
@@ -199,11 +199,6 @@ impl Request {
         edge: &Shape,
         law: &crate::law::RadiusLaw,
     ) -> OgeomResult<Option<Self>> {
-        // A law curving along the edge bends the strip's contacts, which the
-        // sheet runs straight: that is the current path's for now.
-        if !law.is_linear() {
-            return Ok(None);
-        }
         let Some((start, _)) = ogeom_algo::edge_vertices(model, edge)? else {
             return Ok(None);
         };
