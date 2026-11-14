@@ -97,11 +97,11 @@ fn nearest_on_crease(p: Point) -> Point {
 
 /// The holed drum's bore rim chamfered by `spec` (handed the drum's face
 /// and the bore's), checked: back come its bevel's two contacts, each as
-/// 32 points along each of the bevel faces' edges on that face, on the
-/// drum and on the bore; and the bevels' surfaces. The boolean leaves the
-/// rim in two pieces of one curve: with `whole`, both are asked, a bevel on
-/// each, meeting where the curve's fitted seam turns at its join; else the
-/// one nearest a point on it.
+/// 32 points along the bevel face's edges on that face, on the drum and on
+/// the bore; and the bevel's surface. The boolean leaves the rim in two
+/// pieces of one curve, one edge of the form: with `whole` both are asked,
+/// else the one nearest a point on it; either way one bevel runs round the
+/// whole rim.
 fn bore_contacts(
     spec: impl Fn(&Shape, &Shape) -> Chamfer,
     whole: bool,
@@ -169,8 +169,13 @@ fn bore_contacts(
         .filter(|f| matches!(surface(&m, f), ogeom_geom::SurfaceGeometry::BSpline(_)))
         .collect();
     assert!(!bevels.is_empty(), "the bevel");
-    if whole {
-        assert_eq!(bevels.len(), rims.len(), "a bevel on each piece");
+    assert_eq!(bevels.len(), 1, "one bevel round the rim");
+    for rim in &rims {
+        assert_eq!(
+            built.history.generated(rim).len(),
+            1,
+            "a piece without the bevel"
+        );
     }
     let (mut on_drum, mut on_bore) = (Vec::new(), Vec::new());
     for e in bevels
@@ -305,10 +310,9 @@ fn a_bore_rim_on_a_drum_chamfers_by_distance_and_angle() {
     }
 }
 
-/// Both pieces of the bore's rim chamfered 0.5: they run on into each other
-/// round the whole loop, a bevel on each piece, meeting where the fitted
-/// seam turns at its join. Each contact on its face, each leg its length
-/// along its face's section.
+/// Both pieces of the bore's rim chamfered 0.5: one bevel round the whole
+/// loop. Each contact on its face, each leg its length along its face's
+/// section.
 #[test]
 fn a_bore_rim_on_a_drum_chamfers_all_round() {
     let (on_drum, on_bore, _) = bore_contacts(|_, _| Chamfer::Symmetric(0.5), true);

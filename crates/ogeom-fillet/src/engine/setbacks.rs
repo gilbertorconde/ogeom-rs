@@ -351,7 +351,26 @@ pub(crate) fn curved_corners(
                         let s = super::trimmed::param_on(c, c.domain(), at, tol)?;
                         Ok((s, c.point_at(s, tol)?))
                     };
-                    let ((s, p), (u, q)) = (nearest(&c_in)?, nearest(&c_out)?);
+                    let ((mut s, mut p), (mut u, mut q)) = (nearest(&c_in)?, nearest(&c_out)?);
+                    // One closed contact the two pieces share, meeting at its
+                    // start (nearer the point nearest the vertex than a
+                    // quarter of the leg): each piece stands there at the end of the
+                    // domain its walk reaches it by (walked along the curve,
+                    // the arriving piece at the domain's end, the leaving
+                    // one at its start; against it, the other way).
+                    if c_in == c_out {
+                        let (lo, hi) = c_in.domain();
+                        let start = c_in.point_at(lo, tol)?;
+                        if start.distance(c_in.point_at(hi, tol)?) <= tol.confusion()
+                            && start.distance(p) <= 0.25 * p.distance(at)
+                        {
+                            let (at_in, at_out) = (
+                                if forward_in { hi } else { lo },
+                                if forward_out { lo } else { hi },
+                            );
+                            (s, p, u, q) = (at_in, start, at_out, start);
+                        }
+                    }
                     if p.distance(q) <= crate::marched::band_fit_target(tol) {
                         if !put(
                             &mut out,
