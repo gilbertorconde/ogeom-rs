@@ -824,6 +824,53 @@ plate's side, the cusp of #900), the two count as joined by an edge of
 the convexity the faces either side give them, so the cusp is proved
 within the plate's corner, the boss above the top, or the foot's fill.
 
+### Question 8: a round whose contact runs off its face (roll-over)
+
+| Source | What it does |
+|---|---|
+| Parasolid family: T-FLEX [P27], Solid Edge [P28], NX [P29] | Overflow is resolved in a fixed order, every option on by default: **smooth overflow** (the round rolls across a tangent edge onto the next face), then **retain cliff edge** (the round is "formed by rolling a ball that is tangent to one of the original faces and supported by the retained edge"), then **notch** (the round is kept and the element it overflows is trimmed or extended to meet it). Smooth edges are resolved before sharp ones. |
+| SOLIDWORKS [P30] | Overflow type **Default** picks **Keep edge** (the model's edge stays, the fillet surface splits into pieces and its edge may dip) or **Keep surface** (the fillet stays smooth and the adjacent edge is changed) from the convexity of the edges met. |
+| Onshape [P7] | **Allow edge overflow** (on by default) lets the fillet change the edges it meets; off, or with edges picked to keep, the edges stay and the fillet adapts. |
+| SMLib [14, P31] | Its filleting framework's default rolls the fillet over onto the adjacent surface; a cliff rollover is trimmed by the cliff face's extension (`CreateCliffRollOverSideFG`). Its handler can instead cut the fillet, **roll a ball along the edge**, or quit. "The ball may actually roll onto an adjacent surface or onto adjacent edges." |
+| Fusion; Creo; CATIA | Not found. |
+
+**Practice agrees** that a round meeting an edge it was not seated on
+either rolls on that edge (the ball resting on it, the edge kept) or keeps
+its own surface and changes the neighbour. Every source offers the first;
+the Parasolid family tries it before notching, and SOLIDWORKS picks it for
+the convexities a boss's foot or a shelf's edge give. The second changes a
+face the request did not name, which is the non-local family (§4.5).
+
+**Rule: the rolling ball rests on whatever of the boundary it meets.** The
+ball of a round touches the solid's boundary on each side at a *seat*: a
+face, an edge of that face, or a vertex. Its centre lies where the two
+seats' offsets meet (the face's offset surface, the pipe about the edge,
+the sphere about the vertex), and the round is the envelope of those
+balls, piece by piece. A seat changes where the ball touches three seats
+at once, a point found by one intersection:
+
+- the contact on a face reaching the face's boundary edge: the seat moves
+  to the edge (a cliff edge, or a shelf's rim);
+- the ball on an edge coming down on the face beyond: the seat moves to
+  that face (the edge tangent, the piece on the edge has no length: smooth
+  overflow);
+- the contact on an edge reaching the edge's end: the seat moves to the
+  vertex.
+
+At each change the two offsets the centre leaves and joins are tangent, so
+the pieces meet G1 on one section. This is the one end condition of §4.3
+for a contact that leaves its face: P2 finds the crossing and labels it
+`RollOver` (face, edge, point); the strip runs on, re-seated, instead of
+ending.
+
+**Proof (P5).** Each piece is proved as the strips are, within the material
+it stands in or the fill a concave round makes, and the run is proved
+**clear**: every ball of it touches the solid only at its seats (none
+holds anything nearer than its radius), checked on the spine with the
+distance's Lipschitz bound between stations. A run that fails is refused
+by name, as is a seat change this milestone does not build (a vertex seat,
+a ball holding an edge on both sides at once).
+
 ### Decided by the maintainer
 
 - **Non-local blends** (a strip reaching a face that is not its neighbour)
@@ -938,5 +985,16 @@ within the plate's corner, the boss above the top, or the foot's fill.
 - [P26] SOLIDWORKS API, IFeatureManager::FilletXpertMakeCorner (the
   corner types):
   https://help.solidworks.com/2018/English/api/sldworksapi/SolidWorks.Interop.sldworks~SolidWorks.Interop.sldworks.IFeatureManager~FilletXpertMakeCorner.html
+- [P27] T-FLEX CAD 17, Overflow Processing of Edge Blend:
+  https://tflex.com/help/eng/T-FLEX%20CAD/17/blendedges_overflowprocessing.htm
+- [P28] Solid Edge (Parasolid), rounding overflow processing order:
+  https://soliddna.com/SEHelp/ST5/EN/i_v/roundingoverflow1a.htm
+- [P29] Siemens NX Open, EdgeBlendBuilder (the overflow resolution
+  options: roll over smooth edges, roll onto edges, maintain blend and move
+  sharp edges):
+  https://docs.plm.automation.siemens.com/data_services/resources/nx/12/nx_api/custom/en_US/nxopen_python_ref/NXOpen.Features.EdgeBlendBuilder.html
+- [P30] SOLIDWORKS 2022, Example: Overflow Type:
+  https://help.solidworks.com/2022/english/SolidWorks/sldworks/c_example_overflow_type.htm
+- [P31] SMLib manual, Fillets: https://docs.nvidia.com/smlib/manual/smlib/fillets
 
 No implementation source of any other kernel was read for this record.
