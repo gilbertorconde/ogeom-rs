@@ -446,14 +446,24 @@ fn two_setback_corners_on_one_edge_each_take_off_what_it_does_alone() {
     let swapped = cornered(&mut m, &[&v1, &v0]).shape;
     valid(&m, &both.shape);
     valid(&m, &swapped);
+    // Each corner's patch, one face or one per side, meets its three bands
+    // and three faces, and its own faces, tangent.
     for v in [&v0, &v1] {
-        let patch = both.history.generated(v)[0].clone();
-        let contacts = analyse_blend(&m, &both.shape, &patch, 17, T).unwrap();
-        assert_eq!(contacts.len(), 6, "{contacts:?}");
-        let tangency = contacts
-            .iter()
-            .map(|c| c.tangency_error)
-            .fold(0.0, f64::max);
+        let patch = both.history.generated(v);
+        assert!(!patch.is_empty(), "the corner's patch");
+        let mut neighbours: Vec<Shape> = Vec::new();
+        let mut tangency = 0.0_f64;
+        for face in patch {
+            for c in analyse_blend(&m, &both.shape, face, 17, T).unwrap() {
+                tangency = tangency.max(c.tangency_error);
+                if !patch.iter().any(|f| f.is_same(&c.neighbour))
+                    && !neighbours.iter().any(|n| n.is_same(&c.neighbour))
+                {
+                    neighbours.push(c.neighbour.clone());
+                }
+            }
+        }
+        assert_eq!(neighbours.len(), 6, "three bands and three faces");
         assert!(
             tangency < 1e-3,
             "a patch meets its neighbours within {tangency} rad"
@@ -691,4 +701,41 @@ fn a_setback_corner_never_stands_outside_its_solid() {
         T,
     );
     check("sixty", built, &m, &out);
+}
+
+/// `fillet_edges_cornered` goes through the blend engine (ADR 0001, §13
+/// question 2): the block's corner (0, 0, 10), its three edges rounded 2 and
+/// set back 5, builds with no boolean. Each strip ends square to its edge 5
+/// from the corner: the solid has a vertex at each end's rail, 2 in from the
+/// edge on each of its faces, and the corner generates its patch.
+#[test]
+fn a_setback_corner_rounds_through_the_engine_its_strips_ending_at_the_setbacks() {
+    let (mut m, b, v, edges) = block();
+    let corners = vec![(v.clone(), even(5.0, Continuity::G1))];
+    let (built, work) = ogeom_bool::work::counted(|| {
+        fillet_edges_cornered(&mut m, &b, &edges, 2.0, &corners, T).unwrap()
+    });
+    assert_eq!(work.face_pairs, 0, "built by the engine, no boolean");
+    valid(&m, &built.shape);
+    assert!(!built.history.generated(&v).is_empty(), "the patch");
+    let points: Vec<Point> = explore_unique(&m, &built.shape, ShapeType::Vertex)
+        .unwrap()
+        .iter()
+        .map(|x| m.node(x).unwrap().data().as_vertex().unwrap().point)
+        .collect();
+    let rails = [
+        [5.0, 2.0, 10.0],
+        [5.0, 0.0, 8.0],
+        [2.0, 5.0, 10.0],
+        [0.0, 5.0, 8.0],
+        [2.0, 0.0, 5.0],
+        [0.0, 2.0, 5.0],
+    ];
+    for [x, y, z] in rails {
+        let want = Point::new(x, y, z);
+        assert!(
+            points.iter().any(|p| p.distance(want) < 1e-7),
+            "a strip's end at {want:?}"
+        );
+    }
 }

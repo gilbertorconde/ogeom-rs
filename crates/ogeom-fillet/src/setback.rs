@@ -341,6 +341,12 @@ fn cornered_own(
             }
         }
     }
+    // The engine first (ADR 0001, §13 question 2): the strips end at the
+    // asked setbacks and one patch closes each corner's opening. A corner
+    // whose setbacks are the ball's own closes in the ball's corner.
+    if let Some(built) = cornered_by_engine(model, solid, edges, radius, corners, &read, tol)? {
+        return Ok(built);
+    }
     let mut built = crate::fillet::fillet_edges(model, solid, edges, radius, tol)?;
     for ((vertex, setbacks), corner) in corners.iter().zip(&read) {
         if corner.is_the_balls(tol) {
@@ -358,6 +364,37 @@ fn cornered_own(
         )?;
     }
     Ok(built)
+}
+
+/// [`cornered_own`] by the blend engine: the rounds of `edges` at `radius`
+/// with each corner of `corners` not the ball's own set back (`read`, the
+/// corners as read off the solid); `None` hands the request back.
+fn cornered_by_engine(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    radius: f64,
+    corners: &[(Shape, Setbacks)],
+    read: &[SetbackCorner],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let mut once: Vec<(Shape, f64)> = Vec::with_capacity(edges.len());
+    for edge in edges {
+        if !once.iter().any(|(e, _)| e.is_same(edge)) {
+            once.push((edge.clone(), radius));
+        }
+    }
+    if once.is_empty() || !(radius.is_finite() && radius > tol.confusion()) {
+        return Ok(None);
+    }
+    let mut request = crate::engine::Request::from_rounds(&once, tol)?;
+    request.corners = corners
+        .iter()
+        .zip(read)
+        .filter(|(_, corner)| !corner.is_the_balls(tol))
+        .map(|((vertex, setbacks), _)| (vertex.clone(), setbacks.clone()))
+        .collect();
+    crate::engine::run(model, solid, &request, tol)
 }
 
 /// The solid's edge along each of `frame`'s edge directions from `vertex`,
