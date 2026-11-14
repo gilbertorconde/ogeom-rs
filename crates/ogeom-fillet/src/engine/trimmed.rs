@@ -686,6 +686,7 @@ pub(crate) fn assemble(
             }
         }
     }
+    let mut facets: Vec<(Id, Vec<Point>)> = Vec::new();
     let mut keyed: Vec<&Id> = curved.points.keys().collect();
     keyed.sort_unstable();
     for v in keyed {
@@ -714,13 +715,109 @@ pub(crate) fn assemble(
                     }
                 }
             }
-            _ => return Ok(None),
+            _ => {
+                // Three bevels or more, every edge there bevelled by a
+                // segment: the facet through the faces' corners, its sides
+                // the bevels' ends, where those corners lie on one plane.
+                let degree = curved
+                    .edges
+                    .values()
+                    .filter(|c| c.ends.0 == *v || c.ends.1 == *v)
+                    .count();
+                let Some(ends) = sections.get(v) else {
+                    return Ok(None);
+                };
+                if degree != at_v.len()
+                    || ends
+                        .iter()
+                        .any(|(_, _, bi)| !matches!(bevels[*bi].section, Section::Line))
+                {
+                    return Ok(None);
+                }
+                let Some(cycle) = chained(ends, tol) else {
+                    return Ok(None);
+                };
+                facets.push((*v, cycle));
+            }
         }
     }
+    // Each facet's plane through its corners, facing out, and its corners
+    // in turn about that side.
+    let mut facet_planes: FastMap<Id, SurfaceGeometry> = FastMap::default();
+    let mut facet_rings: Vec<(Id, Vec<Point>)> = Vec::with_capacity(facets.len());
+    for (v, cycle) in &facets {
+        let mut out = Vector::ZERO;
+        for (e, c) in &curved.edges {
+            if c.ends.0 == *v || c.ends.1 == *v {
+                for fi in faces_of(curved, *e) {
+                    out += outward_at(curved, fi, curved.points[v]);
+                }
+            }
+        }
+        let mut newell = Vector::ZERO;
+        for k in 0..cycle.len() {
+            let (p, q) = (
+                cycle[k].to_vector(),
+                cycle[(k + 1) % cycle.len()].to_vector(),
+            );
+            newell += p.cross(q);
+        }
+        let m = newell.magnitude();
+        if m <= tol.confusion() * tol.confusion() {
+            return Ok(None);
+        }
+        let mut cycle = cycle.clone();
+        if newell.dot(out) < 0.0 {
+            cycle.reverse();
+        }
+        let normal = if newell.dot(out) < 0.0 {
+            -newell
+        } else {
+            newell
+        } / m;
+        if cycle
+            .iter()
+            .any(|p| (*p - cycle[0]).dot(normal).abs() > tol.confusion())
+        {
+            return Ok(None);
+        }
+        let frame = Frame::new(
+            cycle[0],
+            Direction::new(normal, tol)?,
+            Direction::new(cycle[1] - cycle[0], tol)?,
+            tol,
+        )?;
+        facet_planes.insert(*v, PlaneSurface::new(Plane::new(frame)).into());
+        facet_rings.push((*v, cycle));
+    }
+    // The plane a strip's end at `v`, from `p` to `q`, lies on: the
+    // vertex's facet, or a plane face there holding both, where the strip
+    // ends flush on it.
+    let cut_at = |strip: &Strip, v: Id, p: Point, q: Point| -> Option<SurfaceGeometry> {
+        if let Some(plane) = facet_planes.get(&v) {
+            return Some(plane.clone());
+        }
+        curved
+            .edges
+            .iter()
+            .filter(|(_, c)| c.ends.0 == v || c.ends.1 == v)
+            .flat_map(|(e, _)| faces_of(curved, *e))
+            .filter(|fi| !strip.faces.contains(fi))
+            .find_map(|fi| match &curved.faces[fi].surface {
+                SurfaceGeometry::Plane(plane) => {
+                    let pl = plane.plane();
+                    (pl.signed_distance_to(p).abs() <= tol.confusion()
+                        && pl.signed_distance_to(q).abs() <= tol.confusion())
+                    .then(|| curved.faces[fi].surface.clone())
+                }
+                _ => None,
+            })
+    };
     let section = |points: &mut Points,
                    edges: &mut Vec<SheetCurve>,
                    made: &mut FastMap<Key, usize>,
-                   kind: &Section,
+                   strip: &Strip,
+                   cut: Option<&SurfaceGeometry>,
                    p: Point,
                    q: Point|
      -> OgeomResult<(usize, bool)> {
@@ -729,12 +826,23 @@ pub(crate) fn assemble(
         if let Some(k) = made.get(&key) {
             return Ok((*k, edges[*k].ends.0 == i));
         }
-        let (curve, range, ends): (Curve, (f64, f64), (usize, usize)) = match kind {
+        let (curve, range, ends): (Curve, (f64, f64), (usize, usize)) = match &strip.section {
             Section::Line => {
-                let (a, b) = (points.points[i.min(j)], points.points[i.max(j)]);
-                let line = LineCurve::segment(a, b, tol)?;
-                let range = line.domain();
-                (line.into(), range, (i.min(j), i.max(j)))
+                let met = match (&strip.surface, cut) {
+                    (SurfaceGeometry::Plane(_), _) | (_, None) => None,
+                    (surface, Some(cut)) => met_between(surface, cut, p, q, tol)?,
+                };
+                match met {
+                    Some((curve, range, p_low)) => {
+                        (curve, range, if p_low { (i, j) } else { (j, i) })
+                    }
+                    None => {
+                        let (a, b) = (points.points[i.min(j)], points.points[i.max(j)]);
+                        let line = LineCurve::segment(a, b, tol)?;
+                        let range = line.domain();
+                        (line.into(), range, (i.min(j), i.max(j)))
+                    }
+                }
             }
             Section::Arc { spine } => {
                 let (a, b) = (points.points[i], points.points[j]);
@@ -814,11 +922,19 @@ pub(crate) fn assemble(
                     let Some((_, _, bi)) = joins else {
                         return Ok(None);
                     };
-                    let kind = &bevels[*bi].section;
-                    if !flush(face, kind, p, start.0, tol)? {
+                    let strip = &bevels[*bi];
+                    if !flush(face, &strip.section, p, start.0, tol)? {
                         return Ok(None);
                     }
-                    let (k, along) = section(&mut points, &mut edges, &mut made, kind, p, start.0)?;
+                    let (k, along) = section(
+                        &mut points,
+                        &mut edges,
+                        &mut made,
+                        strip,
+                        Some(&face.surface),
+                        p,
+                        start.0,
+                    )?;
                     ring.push((k, along));
                 }
                 let along_edge = {
@@ -861,11 +977,19 @@ pub(crate) fn assemble(
                 let Some((_, _, bi)) = joins else {
                     return Ok(None);
                 };
-                let kind = &bevels[*bi].section;
-                if !flush(face, kind, p, q, tol)? {
+                let strip = &bevels[*bi];
+                if !flush(face, &strip.section, p, q, tol)? {
                     return Ok(None);
                 }
-                let (k, along) = section(&mut points, &mut edges, &mut made, kind, p, q)?;
+                let (k, along) = section(
+                    &mut points,
+                    &mut edges,
+                    &mut made,
+                    strip,
+                    Some(&face.surface),
+                    p,
+                    q,
+                )?;
                 ring.push((k, along));
             }
             rings.push(ring);
@@ -897,14 +1021,28 @@ pub(crate) fn assemble(
         };
         let (p0, q0) = ends(k0, s0);
         let (p1, q1) = ends(k1, s1);
+        // The vertex an end of the strip stands at: the one whose corners
+        // it joins.
+        let vertex_of = |x: Point| -> Id {
+            let near = |v: Id| {
+                [b.faces[0], b.faces[1]].iter().any(|f| {
+                    corners
+                        .get(&(*f, v))
+                        .is_some_and(|c| c.point.distance(x) <= tol.confusion())
+                })
+            };
+            if near(e.ends.0) { e.ends.0 } else { e.ends.1 }
+        };
         let mut ring: Vec<(usize, bool)> = vec![(k0, s0)];
         if q0 != p1 {
             let (a, z) = (points.points[q0], points.points[p1]);
+            let cut = cut_at(b, vertex_of(a), a, z);
             ring.push(section(
                 &mut points,
                 &mut edges,
                 &mut made,
-                &b.section,
+                b,
+                cut.as_ref(),
                 a,
                 z,
             )?);
@@ -912,11 +1050,13 @@ pub(crate) fn assemble(
         ring.push((k1, s1));
         if q1 != p0 {
             let (a, z) = (points.points[q1], points.points[p0]);
+            let cut = cut_at(b, vertex_of(a), a, z);
             ring.push(section(
                 &mut points,
                 &mut edges,
                 &mut made,
-                &b.section,
+                b,
+                cut.as_ref(),
                 a,
                 z,
             )?);
@@ -938,6 +1078,40 @@ pub(crate) fn assemble(
             surface: b.surface.clone(),
             rings: vec![ring],
             reversed,
+        });
+    }
+    // Each facet: its ring the bevels' ends in turn about the side it
+    // faces.
+    for (v, cycle) in &facet_rings {
+        let mut ring = Vec::with_capacity(cycle.len());
+        for k in 0..cycle.len() {
+            let (p, q) = (cycle[k], cycle[(k + 1) % cycle.len()]);
+            let strip = sections.get(v).and_then(|ends| {
+                ends.iter()
+                    .find(|(x, y, _)| {
+                        (x.distance(p) <= tol.confusion() && y.distance(q) <= tol.confusion())
+                            || (y.distance(p) <= tol.confusion()
+                                && x.distance(q) <= tol.confusion())
+                    })
+                    .map(|(_, _, bi)| &bevels[*bi])
+            });
+            let Some(strip) = strip else {
+                return Ok(None);
+            };
+            ring.push(section(
+                &mut points,
+                &mut edges,
+                &mut made,
+                strip,
+                facet_planes.get(v),
+                p,
+                q,
+            )?);
+        }
+        rings_of.push(SheetRings {
+            surface: facet_planes[v].clone(),
+            rings: vec![ring],
+            reversed: false,
         });
     }
     let sheet = build(model, &points.points, &edges, &rings_of, tol)?;
@@ -976,6 +1150,12 @@ pub(crate) fn assemble(
         history.delete(edge);
         history.generate(edge, sheet.faces[curved.faces.len() + bi].clone());
     }
+    for (fi, (v, _)) in facets.iter().enumerate() {
+        history.generate(
+            &curved.shapes[v],
+            sheet.faces[curved.faces.len() + bevels.len() + fi].clone(),
+        );
+    }
     for (e, _) in &curved.edges {
         if let Some(k) = made.get(&Key::Sharp(*e)) {
             history.modify(&curved.shapes[e], sheet.edges[*k].clone());
@@ -1000,6 +1180,81 @@ pub(crate) fn assemble(
         }
     }
     Ok(Some(Built::new(solid, history)))
+}
+
+/// The bevels' ends at a vertex chained into one cycle of corners, each
+/// end joining the corners of two faces; `None` where they do not close one
+/// cycle through every corner once.
+fn chained(ends: &[(Point, Point, usize)], tol: Tolerances) -> Option<Vec<Point>> {
+    let same = |a: Point, b: Point| a.distance(b) <= tol.confusion();
+    let mut cycle = vec![ends[0].0, ends[0].1];
+    let mut used = vec![false; ends.len()];
+    used[0] = true;
+    loop {
+        let last = *cycle.last()?;
+        let next = ends
+            .iter()
+            .enumerate()
+            .find(|(i, (p, q, _))| !used[*i] && (same(*p, last) || same(*q, last)))
+            .map(|(i, (p, q, _))| (i, if same(*p, last) { *q } else { *p }));
+        let Some((i, far)) = next else {
+            break;
+        };
+        used[i] = true;
+        if same(far, cycle[0]) {
+            return used.iter().all(|u| *u).then_some(cycle);
+        }
+        cycle.push(far);
+    }
+    None
+}
+
+/// A piece of a curve: the curve, its range, and whether the first point
+/// asked for stands at the range's low end.
+type Met = (Curve, (f64, f64), bool);
+
+/// The piece of where `surface` meets the plane `cut` between `p` and `q`,
+/// the shorter way along it: its curve, its range, and whether `p` stands
+/// at the range's low end. `None` where the two have no closed-form meeting
+/// through both points.
+fn met_between(
+    surface: &SurfaceGeometry,
+    cut: &SurfaceGeometry,
+    p: Point,
+    q: Point,
+    tol: Tolerances,
+) -> OgeomResult<Option<Met>> {
+    let Ok(ogeom_intersect::surface::Meeting::Along(curves)) =
+        ogeom_intersect::surface::surface_surface(surface, cut, tol)
+    else {
+        return Ok(None);
+    };
+    for curve in curves {
+        let domain = curve.domain();
+        if !(domain.0.is_finite() && domain.1.is_finite()) {
+            continue;
+        }
+        let (tp, tq) = (
+            param_on(&curve, domain, p, tol)?,
+            param_on(&curve, domain, q, tol)?,
+        );
+        if curve.point_at(tp, tol)?.distance(p) > tol.confusion()
+            || curve.point_at(tq, tol)?.distance(q) > tol.confusion()
+        {
+            continue;
+        }
+        let period = curve.is_periodic().then_some(domain.1 - domain.0);
+        let (lo, hi, p_low) = if tp <= tq {
+            (tp, tq, true)
+        } else {
+            (tq, tp, false)
+        };
+        return Ok(Some(match period {
+            Some(period) if hi - lo > period / 2.0 => (curve, (hi, lo + period), !p_low),
+            _ => (curve, (lo, hi), p_low),
+        }));
+    }
+    Ok(None)
 }
 
 /// The material face `face` bounds, as a region the certify reads: the
