@@ -189,6 +189,25 @@ fn support_bend(
             let radial = (p - sp.sphere().frame().origin()).normalized(tol)?;
             Ok(radial * (-t.dot(t) / sp.sphere().radius()))
         }
+        SurfaceGeometry::Torus(to) => {
+            // Off the tube's core: the meridian's curvature is the tube's,
+            // the parallel's `cos phi / (R + a cos phi)`, `phi` the angle
+            // round the tube from the outer equator.
+            let torus = to.torus();
+            let frame = torus.frame();
+            let (o, z) = (frame.origin(), frame.z().vector());
+            let (big, small) = (torus.major_radius(), torus.minor_radius());
+            let off = p - o;
+            let radial = (off - z * off.dot(z)).normalized(tol)?;
+            let core = o + radial * big;
+            let out = (p - core).normalized(tol)?;
+            let cos_phi = out.dot(radial);
+            let parallel = z.cross(radial);
+            let meridian = out.cross(parallel);
+            let (tm, tp) = (t.dot(meridian), t.dot(parallel));
+            let bend = tm * tm / small + tp * tp * cos_phi / small.mul_add(cos_phi, big);
+            Ok(out * -bend)
+        }
         _ => ogeom_bail!(
             Construction,
             "a vertex patch's side runs along a surface whose curvature it cannot read"
@@ -215,6 +234,14 @@ fn support_normal(support: &SurfaceGeometry, p: Point, tol: Tolerances) -> Ogeom
             let z = frame.z().vector();
             let radial = (off - z * off.dot(z)).normalized(tol)?;
             (radial - z * cone.half_angle().tan()).normalized(tol)
+        }
+        SurfaceGeometry::Torus(to) => {
+            let torus = to.torus();
+            let frame = torus.frame();
+            let (o, z) = (frame.origin(), frame.z().vector());
+            let off = p - o;
+            let radial = (off - z * off.dot(z)).normalized(tol)?;
+            (p - (o + radial * torus.major_radius())).normalized(tol)
         }
         _ => ogeom_bail!(
             Construction,

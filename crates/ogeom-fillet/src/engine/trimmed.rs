@@ -2166,6 +2166,9 @@ fn assemble_widened(
     // Each vertex where rounds meet on one ball: its corners in turn, the
     // ball's centre and radius.
     let mut balls: Vec<(Id, Vec<Point>, Point, f64)> = Vec::new();
+    // Each vertex where rounds meet on no one ball: its corners in turn and
+    // the rounds' end arcs' centres.
+    let mut vertex_patches: Vec<(Id, Vec<Point>, Vec<Point>)> = Vec::new();
     let mut keyed: Vec<&Id> = curved.points.keys().collect();
     keyed.sort_unstable();
     for v in keyed {
@@ -2307,30 +2310,28 @@ fn assemble_widened(
                     continue;
                 }
                 // Rounds every one: the sphere where their end arcs are
-                // arcs of one ball, each about its spine's point there.
-                let mut centre: Option<Point> = None;
+                // arcs of one ball, each about its spine's point there; the
+                // patch through them where they are not.
+                let mut centres: Vec<Point> = Vec::with_capacity(ends.len());
                 for (p, _, bi) in ends {
                     let Section::Arc { spine } = &bevels[*bi].section else {
                         return Ok(None);
                     };
-                    let c = spine.point_at(param_on(spine, spine.domain(), *p, tol)?, tol)?;
-                    match centre {
-                        Some(o) if o.distance(c) > tol.confusion() => return Ok(None),
-                        Some(_) => {}
-                        None => centre = Some(c),
-                    }
+                    centres.push(spine.point_at(param_on(spine, spine.domain(), *p, tol)?, tol)?);
                 }
-                let Some(centre) = centre else {
-                    return Ok(None);
-                };
+                let centre = centres[0];
                 let radius = cycle[0].distance(centre);
-                if cycle
+                let one_ball = centres
                     .iter()
-                    .any(|p| (p.distance(centre) - radius).abs() > tol.confusion())
-                {
-                    return Ok(None);
+                    .all(|c| c.distance(centre) <= tol.confusion())
+                    && cycle
+                        .iter()
+                        .all(|p| (p.distance(centre) - radius).abs() <= tol.confusion());
+                if one_ball {
+                    balls.push((*v, cycle, centre, radius));
+                } else {
+                    vertex_patches.push((*v, cycle, centres));
                 }
-                balls.push((*v, cycle, centre, radius));
             }
         }
     }
@@ -2548,6 +2549,47 @@ fn assemble_widened(
             Section::Arc { spine } => {
                 let (a, b) = (points.points[i], points.points[j]);
                 let centre = spine.point_at(param_on(spine, spine.domain(), a, tol)?, tol)?;
+                let far = spine.point_at(param_on(spine, spine.domain(), b, tol)?, tol)?;
+                if centre.distance(far) > tol.confusion() {
+                    // A straight strip ending skew, its corners at two
+                    // stations: the strip cut by the plane through both
+                    // that holds square to the axis the chord of the
+                    // section at the first. That is the arc there carried
+                    // along the axis onto the plane, an affine map keeping
+                    // a rational quadratic arc's weights, so exact.
+                    let Curve::Line(_) = spine else {
+                        ogeom_core::ogeom_bail!(
+                            Construction,
+                            "a strip along a curved spine ending skew"
+                        );
+                    };
+                    let along = far - centre;
+                    let back = b - along;
+                    let (x, w) = (a - centre, back - centre);
+                    let radius = x.magnitude();
+                    let cos = (x.dot(w) / (radius * w.magnitude())).clamp(-1.0, 1.0);
+                    let half = ((1.0 + cos) / 2.0).sqrt();
+                    if half <= tol.angular() {
+                        ogeom_core::ogeom_bail!(Construction, "a skew end of a half turn");
+                    }
+                    let apex = centre + (x + w).normalized(tol)? * (radius / half);
+                    let normal = (b - a).cross(along.cross(back - a));
+                    let onto = |p: Point| p + along * (normal.dot(a - p) / normal.dot(along));
+                    let knots = ogeom_math::KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)?;
+                    let control = vec![
+                        ogeom_math::Weighted::new(a, 1.0, tol)?,
+                        ogeom_math::Weighted::new(onto(apex), half, tol)?,
+                        ogeom_math::Weighted::new(b, 1.0, tol)?,
+                    ];
+                    let curve = Curve::BSpline(ogeom_geom::BSplineCurve::rational(knots, control)?);
+                    edges.push(SheetCurve {
+                        ends: (i, j),
+                        curve,
+                        range: (0.0, 1.0),
+                    });
+                    made.insert(key, edges.len() - 1);
+                    return Ok((edges.len() - 1, true));
+                }
                 let (x, w) = (a - centre, b - centre);
                 let normal = x.cross(w);
                 let frame = Frame::new(
@@ -3301,6 +3343,66 @@ fn assemble_widened(
             reversed: false,
         });
     }
+    // Each patch: the rounds' end arcs in turn, wound counter-clockwise seen
+    // from outside, each with the strip it ends; its region the material of
+    // every face round the vertex. Convex corners only: every end arc's
+    // centre inside the material.
+    let mut patch_rings: Vec<PatchRing> = Vec::with_capacity(vertex_patches.len());
+    for (v, cycle, centres) in &vertex_patches {
+        let mut out = Vector::ZERO;
+        let mut round: Vec<usize> = Vec::new();
+        for (e, c) in &curved.edges {
+            if c.ends.0 == *v || c.ends.1 == *v {
+                for fi in faces_of(curved, *e) {
+                    out += outward_at(curved, fi, curved.points[v]);
+                    if !round.contains(&fi) {
+                        round.push(fi);
+                    }
+                }
+            }
+        }
+        if centres
+            .iter()
+            .any(|c| (*c - curved.points[v]).dot(out) >= 0.0)
+        {
+            return Ok(None);
+        }
+        round.sort_unstable();
+        let mut regions = Vec::with_capacity(round.len());
+        for fi in round {
+            let Some(m) = material(curved, fi) else {
+                return Ok(None);
+            };
+            regions.push(m);
+        }
+        let mut cycle = cycle.clone();
+        let mut newell = Vector::ZERO;
+        for k in 0..cycle.len() {
+            newell += cycle[k]
+                .to_vector()
+                .cross(cycle[(k + 1) % cycle.len()].to_vector());
+        }
+        if newell.dot(out) < 0.0 {
+            cycle.reverse();
+        }
+        let mut ring = Vec::with_capacity(cycle.len());
+        for k in 0..cycle.len() {
+            let (p, q) = (cycle[k], cycle[(k + 1) % cycle.len()]);
+            let found = sections.get(v).and_then(|ends| {
+                ends.iter().find(|(x, y, _)| {
+                    (x.distance(p) <= tol.confusion() && y.distance(q) <= tol.confusion())
+                        || (y.distance(p) <= tol.confusion() && x.distance(q) <= tol.confusion())
+                })
+            });
+            let Some(&(_, _, bi)) = found else {
+                return Ok(None);
+            };
+            let (edge, forward) =
+                section(&mut points, &mut edges, &mut made, &bevels[bi], None, p, q)?;
+            ring.push((edge, forward, bi));
+        }
+        patch_rings.push((*v, ring, ogeom_algo::HalfSpaces::Every(regions)));
+    }
     // A consumed face is not built: the sheet is every other.
     let built_rings: Vec<SheetRings> = rings_of
         .iter()
@@ -3475,10 +3577,32 @@ fn assemble_widened(
         }
         polygon_faces.push((*v, patch.faces));
     }
+    // The patches, each through its rounds' ends as built, tangent to them,
+    // held to the bands' fit target, or the request is handed back.
+    let mut vertex_faces: Vec<(Id, Vec<Shape>, ogeom_algo::HalfSpaces)> =
+        Vec::with_capacity(patch_rings.len());
+    for (v, ring, region) in patch_rings {
+        let sides: Vec<crate::round::transfinite::HoleSide> = ring
+            .iter()
+            .map(|&(e, forward, bi)| crate::round::transfinite::HoleSide {
+                edge: sheet.edges[e].clone(),
+                curve: edges[e].curve.clone(),
+                range: edges[e].range,
+                forward,
+                support: bevels[bi].surface.clone(),
+            })
+            .collect();
+        let patch = crate::round::transfinite::corner_patch(model, &sides, tol)?;
+        if !(patch.gap <= fit && patch.angle <= fit) {
+            return Ok(None);
+        }
+        vertex_faces.push((v, patch.faces, region));
+    }
     let shell_faces: Vec<Shape> = sheet
         .faces
         .iter()
         .chain(polygon_faces.iter().flat_map(|(_, f)| f))
+        .chain(vertex_faces.iter().flat_map(|(_, f, _)| f))
         .cloned()
         .collect();
     let shell = ogeom_algo::make_shell(model, &shell_faces)?.shape;
@@ -3634,6 +3758,16 @@ fn assemble_widened(
     for (k, (v, _, _, _)) in balls.iter().enumerate() {
         history.generate(&curved.shapes[v], sheet.faces[first_ball + k].clone());
     }
+    // Each patch proved within the material of the faces round its vertex,
+    // and made from it.
+    for (v, faces, region) in &vertex_faces {
+        for face in faces {
+            if ogeom_algo::certify_face_within(model, face, region, fit, tol)?.is_err() {
+                return Ok(None);
+            }
+            history.generate(&curved.shapes[v], face.clone());
+        }
+    }
     for (e, _) in &curved.edges {
         if let Some(k) = made.get(&Key::Sharp(*e)) {
             history.modify(&curved.shapes[e], sheet.edges[*k].clone());
@@ -3714,6 +3848,11 @@ fn turning(
     let (p, d) = (edge.curve.point_at(t, tol)?, edge.curve.d1_at(t, tol)?);
     Ok(Some((p - o).cross(d).dot(a).signum()))
 }
+
+/// A vertex patch's ring: its vertex, each side's sheet edge, whether the
+/// ring walks it forward and the strip it ends, and the region the patch is
+/// proved within.
+type PatchRing = (Id, Vec<(usize, bool, usize)>, ogeom_algo::HalfSpaces);
 
 /// A piece of a curve: the curve, its range, and whether the first point
 /// asked for stands at the range's low end.
