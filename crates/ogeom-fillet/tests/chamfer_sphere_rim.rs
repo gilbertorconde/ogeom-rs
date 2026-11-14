@@ -424,9 +424,9 @@ fn zone(m: &mut Model) -> Shape {
 /// two contacts cross on the sphere, which goes; the two bevel cones meet
 /// in their ridge, the circle at z = 0 where their radii agree. The
 /// boolean leaves each rim in arcs split at different places top and
-/// bottom, so the ridge is split at every one of their corners. Valid, the
-/// sphere deleted, the flats and a cone on each rim arc left, the same in
-/// both orders. The solid is the zone in common with the inside of each
+/// bottom, so the ridge is split at every one of their corners; each rim's
+/// arcs, pieces of one edge, take one cone face. Valid, the sphere deleted,
+/// the flats and one cone round each rim left, the same in both orders. The solid is the zone in common with the inside of each
 /// bevel's cone, through its flat's contact and its sphere's: by booleans,
 /// which share nothing with the engine.
 #[test]
@@ -483,8 +483,8 @@ fn a_thin_zone_s_rim_bevels_consume_the_sphere_and_meet_in_a_ridge() {
             explore_unique(&m, &built.shape, ShapeType::Face)
                 .unwrap()
                 .len(),
-            2 + specs.len(),
-            "the flats and a cone on each rim piece"
+            4,
+            "the flats and one cone round each rim"
         );
         let got = vol(&m, &built.shape);
         assert!(

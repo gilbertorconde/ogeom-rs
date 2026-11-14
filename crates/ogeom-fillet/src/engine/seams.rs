@@ -501,7 +501,7 @@ impl Seamless {
 
 /// Whether two specs ask one chamfer: one spelling, the same numbers, the
 /// same face named.
-fn alike(a: &Chamfer, b: &Chamfer) -> bool {
+pub(super) fn alike(a: &Chamfer, b: &Chamfer) -> bool {
     match (a, b) {
         (Chamfer::Symmetric(x), Chamfer::Symmetric(y)) => x == y,
         (

@@ -150,6 +150,13 @@ fn chamfer_with(
     if asked.windows(2).any(|w| w[0].0 == w[1].0) {
         return Ok(None);
     }
+    // The pieces of one curve the boolean left between the same two faces,
+    // meeting at vertices of no other edge, are one edge of the form: the
+    // chamfer asked on one runs on into the rest, one bevel round them. A
+    // piece asked otherwise is handed back.
+    let Some(chains) = chain_pieces(&curved, &mut asked) else {
+        return Ok(None);
+    };
     let mut bevels: Vec<Strip> = Vec::with_capacity(asked.len());
     // Each fitted contact's distance off its face, which its edges are
     // widened to.
@@ -162,15 +169,88 @@ fn chamfer_with(
         let [f0, f1] = faces_of(&curved, *edge)[..] else {
             return Ok(None);
         };
-        let Some((bevel, off)) =
-            general_crease(model, solid, &curved, *edge, shape, [f0, f1], spec, tol)?
-        else {
-            return Ok(None);
+        // A piece of a closed run: the bevel once round the whole loop, from
+        // the run's first vertex, its contacts and surface each piece's.
+        let run = chains
+            .iter()
+            .find(|(r, closed)| *closed && r.contains(edge));
+        // From the vertex where the crease's own curve starts (its fitted
+        // seam's join), as a marched band runs.
+        let whole = run.map(|(r, _)| {
+            let start = r
+                .iter()
+                .find(|x| {
+                    let c = &curved.edges[*x];
+                    (c.range.0 - c.curve.domain().0).abs() <= tol.parametric()
+                })
+                .unwrap_or(&r[0]);
+            curved.points[&curved.edges[start].ends.0]
+        });
+        let shared = run.and_then(|(r, _)| {
+            bevels
+                .iter()
+                .find(|b| r.contains(&b.edge) && b.edge != *edge)
+                .map(|b| {
+                    (
+                        b.clone(),
+                        widths.get(&(b.faces[0], b.edge)).copied(),
+                        widths.get(&(b.faces[1], b.edge)).copied(),
+                    )
+                })
+        });
+        let (bevel, off) = match shared {
+            Some((mut b, Some(w0), Some(w1))) if b.faces == [f0, f1] => {
+                b.edge = *edge;
+                (b, [w0, w1])
+            }
+            _ => {
+                let Some(found) = general_crease(
+                    model,
+                    solid,
+                    &curved,
+                    *edge,
+                    shape,
+                    [f0, f1],
+                    spec,
+                    whole,
+                    tol,
+                )?
+                else {
+                    return Ok(None);
+                };
+                found
+            }
         };
         for (face, width) in bevel.faces.iter().zip(off) {
             widths.insert((*face, bevel.edge), width);
         }
         bevels.push(bevel);
+    }
+    // The pieces of one run whose bevels are one surface (each built on its
+    // own, a cone's frame may differ) take the first piece's, so their
+    // strips are one face.
+    for (run, _) in &chains {
+        let Some(first) = bevels.iter().position(|b| run.contains(&b.edge)) else {
+            continue;
+        };
+        let surface = bevels[first].surface.clone();
+        for (bi, bevel) in bevels.iter_mut().enumerate() {
+            if bi == first || !run.contains(&bevel.edge) || bevel.surface == surface {
+                continue;
+            }
+            let e = &curved.edges[&bevel.edge];
+            let mid = e.curve.point_at(0.5 * (e.range.0 + e.range.1), tol)?;
+            let mut on = true;
+            for c in &bevel.contacts {
+                let (lo, hi) = c.domain();
+                let p = c.point_at(param_on(c, (lo.max(-1e6), hi.min(1e6)), mid, tol)?, tol)?;
+                let foot = ogeom_geom::project::project_on_surface(&surface, p, 16, tol)?;
+                on &= foot.distance <= tol.confusion();
+            }
+            if on {
+                bevel.surface = surface.clone();
+            }
+        }
     }
     // A wall the bevels of its two rims consume: its strips meet along
     // their ridge instead.
@@ -240,6 +320,95 @@ fn chamfer_with(
         return Ok(None);
     }
     Ok(Some(built))
+}
+
+/// The runs of pieces of one curve between the same two faces, each
+/// continuing the last through a vertex of no other edge, that hold an
+/// asked edge: every piece of such a run is asked as that edge is. Back
+/// come the runs, each in order along the curve with whether it closes;
+/// `None` where a piece of a run was asked with another chamfer.
+#[allow(
+    clippy::type_complexity,
+    reason = "the asked list as the caller holds it"
+)]
+fn chain_pieces<'a>(
+    curved: &'a Curved,
+    asked: &mut Vec<(Id, &'a Shape, &'a Chamfer)>,
+) -> Option<Vec<(Vec<Id>, bool)>> {
+    let mut runs: Vec<(Vec<Id>, bool)> = Vec::new();
+    let mut k = 0;
+    while k < asked.len() {
+        let (e, _, spec) = asked[k];
+        k += 1;
+        if runs.iter().any(|(r, _)| r.contains(&e)) {
+            continue;
+        }
+        let c = &curved.edges[&e];
+        if c.ends.0 == c.ends.1 {
+            continue;
+        }
+        let mut faces = faces_of(curved, e);
+        faces.sort_unstable();
+        // The piece continuing `x` through its end (or start).
+        let next = |x: Id, forward: bool| -> Option<Id> {
+            let c = &curved.edges[&x];
+            let v = if forward { c.ends.1 } else { c.ends.0 };
+            let at: Vec<Id> = curved
+                .edges
+                .iter()
+                .filter(|(y, o)| **y != x && (o.ends.0 == v || o.ends.1 == v))
+                .map(|(y, _)| *y)
+                .collect();
+            let [y] = at[..] else {
+                return None;
+            };
+            let o = &curved.edges[&y];
+            let mut beside = faces_of(curved, y);
+            beside.sort_unstable();
+            let joins = if forward {
+                o.ends.0 == v
+            } else {
+                o.ends.1 == v
+            };
+            (o.curve == c.curve && beside == faces && joins).then_some(y)
+        };
+        let mut run = vec![e];
+        let mut closed = false;
+        while let Some(y) = next(*run.last()?, true) {
+            if y == run[0] {
+                closed = true;
+                break;
+            }
+            if run.contains(&y) {
+                break;
+            }
+            run.push(y);
+        }
+        if !closed {
+            while let Some(y) = next(run[0], false) {
+                if run.contains(&y) {
+                    break;
+                }
+                run.insert(0, y);
+            }
+        }
+        if run.len() < 2 {
+            continue;
+        }
+        // It closes where its last piece ends at its first's start, other
+        // edges meeting there or not.
+        let closed =
+            closed || curved.edges[&run[0]].ends.0 == curved.edges[&run[run.len() - 1]].ends.1;
+        for piece in &run {
+            match asked.iter().find(|(x, _, _)| x == piece) {
+                Some((_, _, theirs)) if !super::seams::alike(theirs, spec) => return None,
+                Some(_) => {}
+                None => asked.push((*piece, &curved.edges[piece].shape, spec)),
+            }
+        }
+        runs.push((run, closed));
+    }
+    Some(runs)
 }
 
 /// The bilinear patch through the four corners `c`, wound about the side
@@ -1668,6 +1837,39 @@ fn ruled_bevel(
     .into())
 }
 
+/// The ruled band between two closed contacts as a marched band is laid
+/// out: `u` across each ruling from the first contact to the second, `v`
+/// round the loop on the contacts' shared knots. No run-on: a band round a
+/// loop ends on its contacts, as the marched band a later round over it
+/// reads does.
+///
+/// # Errors
+///
+/// As making the two compatible and building the surface.
+fn across_band(
+    a: &mut ogeom_geom::BSplineCurve,
+    b: &mut ogeom_geom::BSplineCurve,
+    tol: Tolerances,
+) -> OgeomResult<SurfaceGeometry> {
+    crate::bridge::compatible(a, b, tol)?;
+    let knots = a.knots().clone();
+    let cols = a.control_points().len();
+    let mut grid = Vec::with_capacity(2 * cols);
+    for p in a.control_points() {
+        grid.push(p.point());
+    }
+    for q in b.control_points() {
+        grid.push(q.point());
+    }
+    Ok(ogeom_geom::BSplineSurface::new(
+        ogeom_math::KnotVector::clamped_uniform(1, 2)?,
+        knots,
+        &ogeom_math::ControlGrid::new(grid, 2, cols)?,
+        tol,
+    )?
+    .into())
+}
+
 /// Whether every point of `face`'s mesh stands on `host`'s material side,
 /// within `fit` past its surface at the foot of the point: a measure, not
 /// a proof, for a host no certify region reads.
@@ -1743,6 +1945,7 @@ fn general_crease(
     shape: &Shape,
     faces: [usize; 2],
     spec: &Chamfer,
+    whole: Option<Point>,
     tol: Tolerances,
 ) -> OgeomResult<Option<(Strip, [f64; 2])>> {
     // Two planes meet in a straight edge, whose bevel is `bevel_of`'s; and
@@ -1764,8 +1967,12 @@ fn general_crease(
         4 * GENERAL_STATIONS,
         16 * GENERAL_STATIONS,
     ] {
+        let whole = whole.or_else(|| {
+            let c = &curved.edges[&edge];
+            (c.ends.0 == c.ends.1).then(|| curved.points[&c.ends.0])
+        });
         let Some(found) =
-            crate::chamfer_marched::crease_contacts(model, solid, shape, spec, count, tol)?
+            crate::chamfer_marched::crease_contacts(model, solid, shape, spec, count, whole, tol)?
         else {
             return Ok(None);
         };
@@ -1866,7 +2073,15 @@ fn general_crease(
         return Ok(None);
     };
     let (mut a, mut b) = (curves[0].clone(), curves[1].clone());
-    let bevel = ruled_bevel(&mut a, &mut b, tol)?;
+    let closed = a
+        .point_at(a.domain().0, tol)?
+        .distance(a.point_at(a.domain().1, tol)?)
+        <= tol.confusion();
+    let bevel = if closed {
+        across_band(&mut a, &mut b, tol)?
+    } else {
+        ruled_bevel(&mut a, &mut b, tol)?
+    };
     Ok(Some((
         Strip {
             edge,
@@ -1937,7 +2152,12 @@ fn piece(curve: &Curve, from: f64, to: f64, rising: bool, tol: Tolerances) -> ((
         None
     };
     let same = (from - to).abs() <= tol.parametric();
-    match (rising, period) {
+    // A whole turn of a closed curve that does not repeat past its domain
+    // (a fitted closed contact starting at its corner) is that domain.
+    if same && period.is_some() && !curve.is_periodic() {
+        return (curve.domain(), !rising);
+    }
+    let ((lo, hi), against) = match (rising, period) {
         (true, Some(p)) => {
             let mut to = to;
             while to <= from + if same { 0.5 * p } else { 0.0 } {
@@ -1954,6 +2174,27 @@ fn piece(curve: &Curve, from: f64, to: f64, rising: bool, tol: Tolerances) -> ((
         }
         (true, None) => ((from, to), false),
         (false, None) => ((to, from), true),
+    };
+    // A closed curve that does not repeat: an end within a ten-thousandth
+    // of a turn past its domain (a corner at its start read a turn on) is
+    // its domain's end.
+    match period {
+        Some(p) if !curve.is_periodic() => {
+            let (a, b) = curve.domain();
+            let near = |x: f64, y: f64| (x - y).abs() <= 1e-4 * p;
+            let lo = if near(lo, a + p) || near(lo, a) {
+                a
+            } else {
+                lo
+            };
+            let hi = if near(hi, b + p) || near(hi, b) {
+                b
+            } else {
+                hi
+            };
+            ((lo, hi), against)
+        }
+        _ => ((lo, hi), against),
     }
 }
 
@@ -3258,13 +3499,19 @@ fn assemble_widened(
         let so = if edges[ko].ends.0 != edges[ko].ends.1 {
             edges[ko].ends.0 == start_o
         } else {
-            let (Some(turn_r), Some(turn_o)) = (
+            match (
                 turning(&b.surface, &edges[kr], tol)?,
                 turning(&b.surface, &edges[ko], tol)?,
-            ) else {
-                return Ok(None);
-            };
-            (turn_r * if sr { 1.0 } else { -1.0 }) * turn_o < 0.0
+            ) {
+                (Some(turn_r), Some(turn_o)) => {
+                    (turn_r * if sr { 1.0 } else { -1.0 }) * turn_o < 0.0
+                }
+                // A closed ruled bevel's contacts come from the same stations
+                // made compatible, so they run one way along it: the other
+                // is walked against the first.
+                _ if matches!(b.surface, SurfaceGeometry::BSpline(_)) => !sr,
+                _ => return Ok(None),
+            }
         };
         let (po, qo) = ends(&edges, ko, so);
         let mut ring: Vec<(usize, bool)> = vec![(kr, sr)];
@@ -3386,6 +3633,75 @@ fn assemble_widened(
             rings: vec![ring],
             reversed,
         });
+    }
+    // Two strips on one surface running on into each other (pieces of one
+    // edge the boolean split) are one face: their rings join across the end
+    // they share, which goes, but at a fitted band's seam. `joined[i]` is
+    // the strip ring `i` was joined into.
+    let first_strip = curved.faces.len();
+    let mut joined: Vec<usize> = (0..bevels.len()).collect();
+    let find = |joined: &Vec<usize>, mut i: usize| {
+        while joined[i] != i {
+            i = joined[i];
+        }
+        i
+    };
+    let mut keyed_v: Vec<&Id> = curved.points.keys().collect();
+    keyed_v.sort_unstable();
+    for v in keyed_v {
+        let Some(ends) = sections.get(v) else {
+            continue;
+        };
+        let [(p, q, a), (_, _, b)] = ends[..] else {
+            continue;
+        };
+        if bevels[a].surface != bevels[b].surface {
+            continue;
+        }
+        // Not where a closed band's contacts start, the seam of its chart,
+        // on a surface that does not repeat (a fitted band); one that
+        // repeats (a cone) takes its seam where its faces are joined.
+        let repeats = ogeom_geom::Surface::is_periodic_u(&bevels[a].surface)
+            || ogeom_geom::Surface::is_periodic_v(&bevels[a].surface);
+        let seam = !repeats
+            && bevels[a].contacts.first().is_some_and(|c| {
+                let (lo, hi) = c.domain();
+                lo.is_finite()
+                    && hi.is_finite()
+                    && c.point_at(lo, tol).is_ok_and(|s| {
+                        c.point_at(hi, tol)
+                            .is_ok_and(|e| s.distance(e) <= points.merge)
+                            && (s.distance(p) <= points.merge || s.distance(q) <= points.merge)
+                    })
+            });
+        if seam {
+            continue;
+        }
+        let (i, j) = (points.index(p), points.index(q));
+        let Some(&k) = made.get(&Key::Section(i.min(j), i.max(j))) else {
+            continue;
+        };
+        let (ra, rb) = (find(&joined, a), find(&joined, b));
+        if ra == rb || rings_of[first_strip + ra].reversed != rings_of[first_strip + rb].reversed {
+            continue;
+        }
+        let ring_a = rings_of[first_strip + ra].rings[0].clone();
+        let ring_b = rings_of[first_strip + rb].rings[0].clone();
+        let (Some(ia), Some(ib)) = (
+            ring_a.iter().position(|(x, _)| *x == k),
+            ring_b.iter().position(|(x, _)| *x == k),
+        ) else {
+            continue;
+        };
+        if ring_a[ia].1 == ring_b[ib].1 {
+            continue;
+        }
+        let mut ring: Vec<(usize, bool)> = ring_a[ia + 1..].to_vec();
+        ring.extend_from_slice(&ring_a[..ia]);
+        ring.extend_from_slice(&ring_b[ib + 1..]);
+        ring.extend_from_slice(&ring_b[..ib]);
+        rings_of[first_strip + ra].rings = vec![ring];
+        joined[rb] = ra;
     }
     // Each facet: its ring the bevels' ends in turn about the side it
     // faces.
@@ -3592,11 +3908,18 @@ fn assemble_widened(
         }
         patch_rings.push((*v, ring, ogeom_algo::HalfSpaces::Every(regions)));
     }
-    // A consumed face is not built: the sheet is every other.
+    // A consumed face is not built, nor a strip joined into another: the
+    // sheet is every other.
+    let away = |i: usize| {
+        consumed.contains(&i)
+            || (i >= first_strip
+                && i < first_strip + bevels.len()
+                && joined[i - first_strip] != i - first_strip)
+    };
     let built_rings: Vec<SheetRings> = rings_of
         .iter()
         .enumerate()
-        .filter(|(i, _)| !consumed.contains(i))
+        .filter(|(i, _)| !away(*i))
         .map(|(_, r)| r.clone())
         .collect();
     let mut edge_widths = vec![0.0; edges.len()];
@@ -3707,6 +4030,54 @@ fn assemble_widened(
             if off > tol.confusion() && off <= fit {
                 edge_widths[k] = edge_widths[k].max(1.25 * off + tol.confusion());
             }
+        }
+    }
+    // A fitted edge running to an end of its curve is moved to end on its
+    // corner there exactly (its end control point, which a clamped curve
+    // passes through, shifted by the little it stands off), so its curve on
+    // each face meets the next edge's at the corner, not beside it.
+    for (k, e) in edges.iter_mut().enumerate() {
+        if edge_widths[k] <= 0.0 {
+            continue;
+        }
+        let Curve::BSpline(spline) = &e.curve else {
+            continue;
+        };
+        if spline.is_rational() || spline.is_periodic() {
+            continue;
+        }
+        let (lo, hi) = spline.domain();
+        let mut control: Vec<Point> = spline.control_points().iter().map(|w| w.point()).collect();
+        let n = control.len();
+        // A closed curve keeps closed: both its ends move together, onto
+        // the one corner at its start and end.
+        let closed = spline
+            .point_at(lo, tol)?
+            .distance(spline.point_at(hi, tol)?)
+            <= tol.confusion();
+        let mut moved = false;
+        for (t, at) in [(e.range.0, e.ends.0), (e.range.1, e.ends.1)] {
+            if (t - lo).abs() > tol.parametric() && (t - hi).abs() > tol.parametric() {
+                continue;
+            }
+            let end = if (t - lo).abs() <= tol.parametric() {
+                0
+            } else {
+                n - 1
+            };
+            let off = points.points[at] - spline.point_at(t, tol)?;
+            if off.magnitude() > tol.confusion() * 1e-3 && off.magnitude() <= edge_widths[k] {
+                if closed {
+                    control[0] = spline.control_points()[0].point() + off;
+                    control[n - 1] = spline.control_points()[n - 1].point() + off;
+                } else {
+                    control[end] += off;
+                }
+                moved = true;
+            }
+        }
+        if moved {
+            e.curve = ogeom_geom::BSplineCurve::new(spline.knots().clone(), control, tol)?.into();
         }
     }
     let mut sheet = super::curved::build_with_widths(
@@ -3850,11 +4221,19 @@ fn assemble_widened(
     for i in 0..rings_of.len() {
         match curved.faces.get(i) {
             Some(face) if consumed.contains(&i) => by_index.push(face.shape.clone()),
+            _ if away(i) => by_index.push(curved.faces[0].shape.clone()),
             _ => by_index.push(
                 next.next()
                     .cloned()
                     .unwrap_or_else(|| curved.faces[0].shape.clone()),
             ),
+        }
+    }
+    // A strip joined into another stands for that one's face.
+    for bi in 0..bevels.len() {
+        let root = find(&joined, bi);
+        if root != bi {
+            by_index[first_strip + bi] = by_index[first_strip + root].clone();
         }
     }
     sheet.faces = by_index;
