@@ -3787,3 +3787,40 @@ fn a_bevel_reaching_into_a_void_goes_through_the_one_boolean() {
     );
     assert_eq!(built.history.generated(&edge).len(), 1, "the bevel");
 }
+
+/// The plate with a block standing on its top, its front top edge chamfered
+/// 2 under the block's foot, asked mitred (`ChamferCorner::Point`): the
+/// non-local test sends it to the one boolean too, each bevel its edge's
+/// whole prism (amendment "M5a"). One bevel, so the plate less its prism
+/// plus the block, exactly; the edge generating its bevel.
+#[test]
+fn a_mitred_bevel_reaching_under_a_block_goes_through_the_one_boolean() {
+    let mut m = Model::new();
+    let plate = block(&mut m, (0.0, 0.0, 0.0), (20.0, 10.0, 4.0));
+    let boss = block(&mut m, (8.0, 1.0, 4.0), (4.0, 3.0, 2.0));
+    let s = ogeom_bool::fuse(&mut m, &plate, &boss, T).unwrap().shape;
+    let front: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
+            (l.z - 4.0).abs() < 1e-6 && (h.z - 4.0).abs() < 1e-6 && h.y < 1e-6
+        })
+        .map(|e| (e, Chamfer::Symmetric(2.0)))
+        .collect();
+    assert_eq!(front.len(), 1);
+    let (built, work) = ogeom_bool::work::counted(|| {
+        ogeom_fillet::chamfer_edges_cornered(&mut m, &s, &front, ChamferCorner::Point, T).unwrap()
+    });
+    assert!(work.face_pairs > 0, "built by the booleans");
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let want = 20.0 * 10.0 * 4.0 + 4.0 * 3.0 * 2.0 - 2.0 * 20.0;
+    let got = volume(&m, &built.shape);
+    assert!(
+        (got - want).abs() <= 1e-9 * want,
+        "volume {got} against {want}"
+    );
+    assert_eq!(built.history.generated(&front[0].0).len(), 1, "the bevel");
+}
