@@ -1195,3 +1195,44 @@ fn a_straight_bevel_under_a_cylindrical_boss_goes_through_the_one_boolean() {
     assert!((got - want).abs() <= 1e-6 * want, "{got} against {want}");
     assert_eq!(built.history.generated(&edge).len(), 1, "the bevel");
 }
+
+/// A drum of radius 5 and height 1, its top rim chamfered 0.5 on the top
+/// and 2 down the 1 mm wall: the cone rolls over the wall's foot onto the
+/// floor as a notch (ADR 0001, amendment "M5b"), the rim's tool the
+/// bevel's meridian triangle turned about the axis, applied by the one
+/// boolean. The drum less the region outside the cone, radius 4.75 - z / 4
+/// at height z: pi times the integral of r(z)^2 over [0, 1]. The rim
+/// generates its bevel.
+#[test]
+fn a_drum_s_rim_rolls_over_its_short_wall_through_the_one_boolean() {
+    let mut m = Model::new();
+    let s = ogeom_algo::make_cylinder(&mut m, up_at(0.0, 0.0, 0.0), 5.0, 1.0, T)
+        .unwrap()
+        .shape;
+    let faces = explore_unique(&m, &s, ShapeType::Face).unwrap();
+    let top = faces
+        .iter()
+        .find(|f| ogeom_algo::face_normal(&m, f, T).unwrap().1.z > 0.5)
+        .unwrap()
+        .clone();
+    let rim = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| ogeom_algo::shape_bounds(&m, e, T).unwrap().low().unwrap().z > 1.0 - 1e-6)
+        .unwrap();
+    let spec = ogeom_fillet::Chamfer::Distances {
+        face: top,
+        on_face: 0.5,
+        on_other: 2.0,
+    };
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &[(rim.clone(), spec)], T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let (c, k) = (4.75_f64, -0.25_f64);
+    let want = std::f64::consts::PI * (c * c + c * k + k * k / 3.0);
+    let got = ogeom_algo::volume_properties(&m, &built.shape, ogeom_mesh::Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!((got - want).abs() <= 1e-6 * want, "{got} against {want}");
+    assert_eq!(built.history.generated(&rim).len(), 1, "the bevel");
+}
