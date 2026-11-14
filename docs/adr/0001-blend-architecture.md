@@ -696,9 +696,10 @@ it for planar chamfers first.
   tools. This takes a corner not convex all round, strips meeting at an
   angle on a curved solid, a strip along one closed edge, and one along a
   cone. A corner of mixed convexity (concave and convex rounds at one
-  vertex) is not taken yet: the boolean of the copy less its rounding
-  fails at the signed corner's patch (`ogeom-bool`), and the request goes
-  on as before.
+  vertex) is refused by name until the boolean of the copy less its
+  rounding closes at the signed corner's patch (its section along the
+  patch, tangent to a face, is marched off the patch's corner: an
+  `ogeom-bool` layer, the chamfer side's).
 - **What takes it.** The non-local test (P2/P5) routes there, and so does a
   local request the assembly cannot place: chamfers set back differently
   in one line where a third face meets the step (the step's face is then
