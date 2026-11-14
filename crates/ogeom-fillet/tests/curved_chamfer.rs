@@ -1442,3 +1442,70 @@ fn pieces_of_a_d_block_s_straight_edge_asked_apart_step_at_the_seam() {
         assert_eq!(built.history.generated(e).len(), 1, "its bevel");
     }
 }
+
+/// `f` integrated over `[a, b]` by 32 panels of 8-point Gauss-Legendre.
+fn integral(f: impl Fn(f64) -> f64, a: f64, b: f64) -> f64 {
+    const X: [f64; 4] = [
+        0.183_434_642_495_649_8,
+        0.525_532_409_916_329,
+        0.796_666_477_413_626_7,
+        0.960_289_856_497_536_3,
+    ];
+    const W: [f64; 4] = [
+        0.362_683_783_378_362,
+        0.313_706_645_877_887_3,
+        0.222_381_034_453_374_5,
+        0.101_228_536_290_376_3,
+    ];
+    let n = 32;
+    let h = (b - a) / f64::from(n);
+    (0..n)
+        .map(|k| {
+            let mid = a + h * (f64::from(k) + 0.5);
+            X.iter()
+                .zip(W)
+                .map(|(x, w)| w * (f(mid + 0.5 * h * x) + f(mid - 0.5 * h * x)))
+                .sum::<f64>()
+                * 0.5
+                * h
+        })
+        .sum()
+}
+
+/// A D-shaped plate (half a disc of radius 5, 1 thick), every top edge
+/// chamfered 1.5: past the 1 mm walls, so the rim's cone and the straight
+/// edge's plane each roll over their wall onto the floor, and they meet at
+/// the two corners. The plate is convex and every bevel convex, so what is
+/// left is the plate inside the cone, radius 4.5 - z, and behind the
+/// plane x = z + 0.5: at height z the circle's segment past that line,
+/// integrated over the thickness.
+#[test]
+fn a_d_plate_chamfered_all_round_past_its_walls_rolls_over_onto_the_floor() {
+    let mut m = Model::new();
+    let full = ogeom_algo::make_cylinder(&mut m, up_at(0.0, 0.0, 0.0), 5.0, 1.0, T)
+        .unwrap()
+        .shape;
+    let half = ogeom_algo::make_box(&mut m, up_at(-6.0, -6.0, -1.0), (6.0, 12.0, 3.0), T)
+        .unwrap()
+        .shape;
+    let d = ogeom_bool::cut(&mut m, &full, &half, T).unwrap().shape;
+    let top: Vec<Shape> = explore_unique(&m, &d, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| ogeom_algo::shape_bounds(&m, e, T).unwrap().low().unwrap().z > 0.5)
+        .collect();
+    assert!(top.len() >= 2, "the arc and the straight edge on top");
+    let built = ogeom_fillet::chamfer_edges(&mut m, &d, &top, 1.5, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let segment = |z: f64| {
+        let (r, h) = (4.5 - z, z + 0.5);
+        r * r * (h / r).acos() - h * (r * r - h * h).sqrt()
+    };
+    let want = integral(segment, 0.0, 1.0);
+    let got = volume(&m, &built.shape);
+    assert!((got - want).abs() <= 1e-6 * want, "{got} against {want}");
+    for e in &top {
+        assert!(!built.history.generated(e).is_empty(), "its bevel");
+    }
+}

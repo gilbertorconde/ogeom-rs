@@ -6734,6 +6734,293 @@ pub(crate) fn rims_revolved(
     }
 }
 
+/// Chamfers on a convex solid whose bevels meet and roll over or reach a
+/// face, by booleans (ADR 0001, amendment "M5b"): on a convex solid a
+/// bevel's notch takes everything past its surface, so what is left is
+/// the solid in common with each bevel's material side, a half-space for
+/// a plane and the inside of a cone or cylinder about a rim's axis. Only
+/// where every face is a plane or a cylinder, cone or sphere with the
+/// material inside, every edge is convex at its samples (a connected
+/// solid convex near every point is convex), each asked edge's bevel is
+/// such a plane, cone or cylinder with the edge outside it, and no vertex
+/// has three asked edges (those close with a facet). Each bevel's face is
+/// named for its edge. `None` otherwise or where a boolean refuses.
+///
+/// # Errors
+///
+/// As reading the solid and its strips, other than their refusals.
+pub(crate) fn convex_one_boolean(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let ang = tol.angular();
+    if specs.is_empty() {
+        return Ok(None);
+    }
+    let Some(curved) = read(model, solid, tol)? else {
+        return Ok(None);
+    };
+    if !convex_solid(&curved, tol)? {
+        return Ok(None);
+    }
+    // No vertex of three asked edges.
+    let mut at_vertex: FastMap<Id, usize> = FastMap::default();
+    for (edge, _) in specs {
+        let Some(c) = curved.edges.get(&id(edge)) else {
+            return Ok(None);
+        };
+        for v in [c.ends.0, c.ends.1] {
+            *at_vertex.entry(v).or_default() += 1;
+        }
+        if c.ends.0 == c.ends.1 {
+            *at_vertex.entry(c.ends.0).or_default() -= 1;
+        }
+    }
+    if at_vertex.values().any(|n| *n >= 3) {
+        return Ok(None);
+    }
+    let bounds = ogeom_algo::shape_bounds(model, solid, tol)?;
+    let (Some(centre), reach) = (bounds.centre(), 2.0 * bounds.diagonal()) else {
+        return Ok(None);
+    };
+    let margin = 0.01 * bounds.diagonal() + tol.confusion();
+    let corners = bounds.corners();
+    // Each bevel's material side as a solid holding the whole solid but
+    // what the bevel takes, and its face on the bevel's surface.
+    let mut sides: Vec<(Shape, Vec<Shape>, Shape)> = Vec::with_capacity(specs.len());
+    for (edge, spec) in specs {
+        let e = id(edge);
+        let Some(strip) = bevel_of(model, solid, &curved, e, edge, spec, tol)? else {
+            return Ok(None);
+        };
+        let c = &curved.edges[&e];
+        let mid = c.curve.point_at(f64::midpoint(c.range.0, c.range.1), tol)?;
+        let side = match &strip.surface {
+            SurfaceGeometry::Plane(plane) => {
+                let plane = plane.plane();
+                let n = plane.normal().vector();
+                let off = (mid - plane.origin()).dot(n);
+                if off.abs() <= tol.confusion() {
+                    return Ok(None);
+                }
+                // Into the material: away from the edge.
+                let inward = n * -off.signum();
+                let foot = centre - n * (centre - plane.origin()).dot(n);
+                let z = Direction::new(inward, tol)?;
+                let x = Direction::new(
+                    if inward.x.abs() < 0.9 {
+                        Vector::X
+                    } else {
+                        Vector::Y
+                    },
+                    tol,
+                )?;
+                let frame = Frame::new(foot, z, x, tol)?;
+                let origin = foot - frame.x().vector() * reach - frame.y().vector() * reach;
+                let frame = Frame::new(origin, z, frame.x(), tol)?;
+                let block = ogeom_algo::make_box(
+                    model,
+                    frame,
+                    (2.0 * reach, 2.0 * reach, 2.0 * reach),
+                    tol,
+                )?
+                .shape;
+                let mut on = Vec::new();
+                for face in ogeom_topo::explore_unique(model, &block, ogeom_topo::ShapeType::Face)?
+                {
+                    let (at, out) = ogeom_algo::face_normal(model, &face, tol)?;
+                    if out.dot(inward) <= -1.0 + ang
+                        && (at - foot).dot(inward).abs() <= tol.confusion()
+                    {
+                        on.push(face);
+                    }
+                }
+                (block, on)
+            }
+            SurfaceGeometry::Cone(cone) => {
+                let cone = cone.cone();
+                let Some(side) = revolved_side(
+                    model,
+                    cone.frame(),
+                    |z| cone.radius_at(z),
+                    (&corners, margin, mid),
+                    tol,
+                )?
+                else {
+                    return Ok(None);
+                };
+                side
+            }
+            SurfaceGeometry::Cylinder(cylinder) => {
+                let cylinder = cylinder.cylinder();
+                let radius = cylinder.radius();
+                let Some(side) = revolved_side(
+                    model,
+                    cylinder.frame(),
+                    |_| radius,
+                    (&corners, margin, mid),
+                    tol,
+                )?
+                else {
+                    return Ok(None);
+                };
+                side
+            }
+            _ => return Ok(None),
+        };
+        sides.push((side.0, side.1, edge.clone()));
+    }
+    let mut built = Built::from_nothing(solid.clone());
+    for (side, _, _) in &sides {
+        let Ok(step) = ogeom_bool::common(model, &built.shape, side, tol) else {
+            return Ok(None);
+        };
+        built = Built {
+            shape: step.shape.clone(),
+            history: built.history.then(&step.history),
+        };
+    }
+    let kept = ogeom_topo::explore_unique(model, &built.shape, ogeom_topo::ShapeType::Face)?;
+    let mut history: History = built.history.clone();
+    for (_, faces, from) in &sides {
+        for face in faces {
+            for made in built
+                .history
+                .modified(face)
+                .iter()
+                .chain(built.history.generated(face))
+            {
+                if kept.iter().any(|k| k.is_same(made)) {
+                    history.generate(from, made.clone());
+                }
+            }
+        }
+    }
+    for (edge, _) in specs {
+        if history.generated(edge).is_empty() {
+            return Ok(None);
+        }
+        history.delete(edge);
+    }
+    Ok(Some(Built::new(built.shape, history)))
+}
+
+/// The inside of a cone or cylinder about `frame`'s `z`, radius `radius`
+/// at height `z` along it, as a solid over the heights the solid's bounds
+/// `corners` reach (and `margin` either side), with its face on the
+/// surface; `None` where the edge's middle `mid` is not outside it or the
+/// apex falls among those heights.
+#[allow(clippy::type_complexity, reason = "a solid and its named faces")]
+fn revolved_side(
+    model: &mut Model,
+    frame: Frame,
+    radius: impl Fn(f64) -> f64,
+    (corners, margin, mid): (&[Point], f64, Point),
+    tol: Tolerances,
+) -> OgeomResult<Option<(Shape, Vec<Shape>)>> {
+    let (o, a) = (frame.origin(), frame.z().vector());
+    let heights: Vec<f64> = corners.iter().map(|p| (*p - o).dot(a)).collect();
+    let low = heights.iter().copied().fold(f64::INFINITY, f64::min) - margin;
+    let high = heights.iter().copied().fold(f64::NEG_INFINITY, f64::max) + margin;
+    let (r_low, r_high) = (radius(low), radius(high));
+    if !(r_low > tol.confusion() && r_high > tol.confusion()) {
+        return Ok(None);
+    }
+    let q = mid - o;
+    let h = q.dot(a);
+    if (q - a * h).magnitude() <= radius(h) + tol.confusion() {
+        return Ok(None);
+    }
+    let base = Frame::new(o + a * low, frame.z(), frame.x(), tol)?;
+    let block = if (r_low - r_high).abs() <= tol.confusion() {
+        ogeom_algo::make_cylinder(model, base, r_low, high - low, tol)?.shape
+    } else {
+        ogeom_algo::make_cone(model, base, r_low, r_high, high - low, tol)?.shape
+    };
+    let mut on = Vec::new();
+    for face in ogeom_topo::explore_unique(model, &block, ogeom_topo::ShapeType::Face)? {
+        let (_, out) = ogeom_algo::face_normal(model, &face, tol)?;
+        if out.dot(a).abs() < 1.0 - tol.angular() {
+            on.push(face);
+        }
+    }
+    Ok(Some((block, on)))
+}
+
+/// Whether `curved` is convex: every face a plane, or a cylinder, cone or
+/// sphere with the material inside, and every edge between two faces
+/// convex at a quarter, the middle and three quarters of the way along it
+/// (tangent counts as convex). A connected solid convex near every point
+/// is convex.
+fn convex_solid(curved: &Curved, tol: Tolerances) -> OgeomResult<bool> {
+    let ang = tol.angular();
+    for (fi, f) in curved.faces.iter().enumerate() {
+        let Some((e, _)) = f.loops.iter().flatten().next() else {
+            return Ok(false);
+        };
+        let c = &curved.edges[e];
+        let p = c.curve.point_at(f64::midpoint(c.range.0, c.range.1), tol)?;
+        let Some(n) = outward(curved, fi, p) else {
+            return Ok(false);
+        };
+        let radial = match &f.surface {
+            SurfaceGeometry::Plane(_) => continue,
+            SurfaceGeometry::Cylinder(s) => {
+                let axis = s.cylinder().axis();
+                let q = p - axis.location;
+                q - axis.direction.vector() * q.dot(axis.direction.vector())
+            }
+            SurfaceGeometry::Cone(s) => {
+                let axis = s.cone().axis();
+                let q = p - axis.location;
+                q - axis.direction.vector() * q.dot(axis.direction.vector())
+            }
+            SurfaceGeometry::Sphere(s) => p - s.sphere().centre(),
+            _ => return Ok(false),
+        };
+        if n.dot(radial) <= 0.0 {
+            return Ok(false);
+        }
+    }
+    for (e, c) in &curved.edges {
+        let [f0, f1] = faces_of(curved, *e)[..] else {
+            continue;
+        };
+        let Some(&(_, w)) = curved.faces[f0]
+            .loops
+            .iter()
+            .flatten()
+            .find(|(x, _)| x == e)
+        else {
+            return Ok(false);
+        };
+        for share in [0.25, 0.5, 0.75] {
+            let t = c.range.0 + (c.range.1 - c.range.0) * share;
+            let p = c.curve.point_at(t, tol)?;
+            let d = c.curve.d1_at(t, tol)?;
+            let m = d.magnitude();
+            if m <= 0.0 {
+                return Ok(false);
+            }
+            let tangent = d / m;
+            let walk = if w == curved.faces[f0].reversed {
+                -tangent
+            } else {
+                tangent
+            };
+            let (Some(n0), Some(n1)) = (outward(curved, f0, p), outward(curved, f1, p)) else {
+                return Ok(false);
+            };
+            if n1.dot(n0.cross(walk)) > ang {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
 /// Whether another asked edge is a piece of `edge`'s circle (pieces of
 /// one rim asked together; alike, they close the turn as one tool, and
 /// with different chamfers they are asked apart).
