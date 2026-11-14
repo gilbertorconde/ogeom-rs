@@ -3201,3 +3201,113 @@ fn two_bevels_running_on_in_one_line_leaving_their_fronts_apart_end_on_the_step(
         assert_eq!(faces, 10, "faces");
     }
 }
+
+/// The L slab of the reflex-corner test (legs 20 × 3, 4 thick), its two
+/// outer long top edges and one inner one at d = 2, the other inner edge
+/// left sharp: the inner bevel runs into the reflex corner and stops on the
+/// sharp edge's wall plane, its end a triangle in that wall. Valid,
+/// nothing folded, eleven faces, the same corners to the bit in three
+/// orders, and the exact volume: over the two legs as convex boxes, each
+/// less the union of what the outer bevels take and what the inner one
+/// takes on its side of the sharp wall's plane.
+#[test]
+fn an_l_slab_s_reflex_corner_beside_a_sharp_edge_ends_its_bevel_on_that_wall() {
+    use ogeom_math::Vector;
+    let (w, t, d) = (3.0, 4.0, 2.0);
+    let outline = [
+        (0.0, 0.0),
+        (20.0, 0.0),
+        (20.0, w),
+        (w, w),
+        (w, 20.0),
+        (0.0, 20.0),
+    ];
+    let piece = |x0: f64, x1: f64, y0: f64, y1: f64| {
+        vec![
+            (-Vector::X, -x0),
+            (Vector::X, x1),
+            (-Vector::Y, -y0),
+            (Vector::Y, y1),
+            (-Vector::Z, 0.0),
+            (Vector::Z, t),
+        ]
+    };
+    let top = Vector::new(0.0, 0.0, t);
+    let past = |p: (Vector, f64)| (-p.0, -p.1);
+    let out_a = past(bevel_plane(top, Vector::X, (Vector::Z, d), (-Vector::Y, d)));
+    let out_b = past(bevel_plane(top, Vector::Y, (Vector::Z, d), (-Vector::X, d)));
+    let inner = past(bevel_plane(
+        Vector::new(w, w, t),
+        Vector::X,
+        (Vector::Z, d),
+        (Vector::Y, d),
+    ));
+    let taken: [Vec<(Vector, f64)>; 3] = [vec![out_a], vec![out_b], vec![inner, (-Vector::X, -w)]];
+    let vol = |sets: &[&[(Vector, f64)]]| {
+        let all: Vec<(Vector, f64)> = sets.iter().flat_map(|s| s.iter().copied()).collect();
+        convex_polytope(&all).0
+    };
+    let mut want = 0.0;
+    for leg in [piece(0.0, 20.0, 0.0, w), piece(0.0, w, w, 20.0)] {
+        want += vol(&[&leg]);
+        for mask in 1..8_u32 {
+            let mut sets: Vec<&[(Vector, f64)]> = vec![&leg];
+            for (k, set) in taken.iter().enumerate() {
+                if mask & (1 << k) != 0 {
+                    sets.push(set);
+                }
+            }
+            let sign = if mask.count_ones() % 2 == 1 {
+                -1.0
+            } else {
+                1.0
+            };
+            want += sign * vol(&sets);
+        }
+    }
+    let mut first: Option<Vec<[u64; 3]>> = None;
+    for seed in 0..3_u64 {
+        let mut m = Model::new();
+        let s = slab(&mut m, &outline, t);
+        let specs: Vec<(Shape, Chamfer)> = top_edges(&m, &s, t, d)
+            .into_iter()
+            .filter(|(e, _)| {
+                let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+                let point = |v: &Shape| m.node(v).unwrap().data().as_vertex().unwrap().point;
+                let (p, q) = (point(&a), point(&b));
+                let along = |f: fn(&ogeom_math::Point) -> f64, at: f64| {
+                    (f(&p) - at).abs() < 1e-9 && (f(&q) - at).abs() < 1e-9
+                };
+                // Not an end (at x = 20 or y = 20), nor the inner edge on
+                // x = w.
+                !(along(|p| p.x, 20.0) || along(|p| p.y, 20.0) || along(|p| p.x, w))
+            })
+            .collect();
+        assert_eq!(specs.len(), 3);
+        let specs: Vec<(Shape, Chamfer)> = shuffled(specs.len(), seed)
+            .iter()
+            .map(|i| specs[*i].clone())
+            .collect();
+        let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert!(!folded(&m, &built.shape), "folded");
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "volume {got} against {want}"
+        );
+        // The bottom, the six sides (the sharp wall holding the inner
+        // bevel's end), the three bevels and what the top keeps of the leg
+        // with one bevel.
+        let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+            .unwrap()
+            .len();
+        assert_eq!(faces, 11, "faces");
+        let k = key(&m, &built.shape).1;
+        match &first {
+            None => first = Some(k),
+            Some(held) => assert!(*held == k, "order {seed} differs"),
+        }
+    }
+}
