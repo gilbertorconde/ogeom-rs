@@ -519,8 +519,9 @@ pub(crate) fn apply(
 /// its setback corners, pushed twice as far out), which no other face
 /// reaches: at a concave edge that wedge is the room in front of it, whose
 /// edge is convex, and its round's spandrel is the concave round's fill.
-/// `None` where a round fails what the rings hold it to, a vertex ends two
-/// rounds or more or has other than three faces, or a tool will not build.
+/// Rounds joined at vertices, or ending where other than three faces meet,
+/// close together ([`group_tool`]). `None` where a round fails what the
+/// rings hold it to, or a tool will not build.
 ///
 /// # Errors
 ///
@@ -546,33 +547,66 @@ pub(crate) fn rounds_one_boolean(
     }
     let mut keys: Vec<&(Id, Id)> = seats.keys().collect();
     keys.sort_unstable();
-    let mut tools = Vec::new();
-    for key in keys {
-        let seat = &seats[key];
-        let Some(super::Section::Round { radius }) = by_edge.get(&seat.edge) else {
-            continue;
-        };
-        let (a, b) = seat.ends;
-        for v in [a, b] {
-            let ending = seats
-                .values()
-                .filter(|s| blended.contains(&s.edge) && (s.ends.0 == v || s.ends.1 == v))
-                .count();
-            if ending != 1 || faces_round(&planar.faces, v).is_none_or(|f| f.len() != 3) {
-                return Ok(None);
-            }
-        }
-        // Each contact on its own face, end to end: a contact running where
-        // its face does not reach (a wall cut away under a boss) leaves the
-        // ball no seat there, which is not a strip crossing a face but a
-        // ball leaving its seat, refused by name, not built.
+    let rounded: Vec<&Seat> = keys
+        .iter()
+        .map(|k| &seats[*k])
+        .filter(|s| matches!(by_edge.get(&s.edge), Some(super::Section::Round { .. })))
+        .collect();
+    // Each contact on its own face, end to end: a contact running where its
+    // face does not reach (a wall cut away under a boss) leaves the ball no
+    // seat there, which is not a strip crossing a face but a ball leaving
+    // its seat, refused by name, not built.
+    for seat in &rounded {
         for fi in &seat.faces {
-            let (p, q) = (corners[&(*fi, a)], corners[&(*fi, b)]);
+            let (p, q) = (corners[&(*fi, seat.ends.0)], corners[&(*fi, seat.ends.1)]);
             if !contact_on_face(planar, *fi, p, q, eps) {
                 return Ok(None);
             }
         }
-        let Some(tool) = round_tool(model, planar, seat, *radius, corners, tol)? else {
+    }
+    // The rounds joined at their vertices, in groups.
+    let mut group: Vec<usize> = (0..rounded.len()).collect();
+    fn top(group: &mut [usize], k: usize) -> usize {
+        let up = group[k];
+        if up == k {
+            return k;
+        }
+        let t = top(group, up);
+        group[k] = t;
+        t
+    }
+    for i in 0..rounded.len() {
+        for j in i + 1..rounded.len() {
+            let (a, b) = (rounded[i].ends, rounded[j].ends);
+            if [a.0, a.1].iter().any(|v| *v == b.0 || *v == b.1) {
+                let (x, y) = (top(&mut group, i), top(&mut group, j));
+                group[x] = y;
+            }
+        }
+    }
+    let mut tools = Vec::new();
+    let mut tops: Vec<usize> = (0..rounded.len()).map(|k| top(&mut group, k)).collect();
+    tops.sort_unstable();
+    tops.dedup();
+    for t in tops {
+        let members: Vec<&Seat> = (0..rounded.len())
+            .filter(|k| top(&mut group, *k) == t)
+            .map(|k| rounded[k])
+            .collect();
+        let alone = members.len() == 1
+            && [members[0].ends.0, members[0].ends.1]
+                .iter()
+                .all(|v| faces_round(&planar.faces, *v).is_some_and(|f| f.len() == 3));
+        let tool = if alone {
+            let seat = members[0];
+            let Some(super::Section::Round { radius }) = by_edge.get(&seat.edge) else {
+                return Ok(None);
+            };
+            round_tool(model, planar, seat, *radius, corners, tol)?
+        } else {
+            group_tool(model, planar, seats, by_edge, &members, corners, tol)?
+        };
+        let Some(tool) = tool else {
             return Ok(None);
         };
         tools.push(tool);
@@ -811,6 +845,185 @@ fn round_tool(
     }))
 }
 
+/// One tool for rounds joined at their vertices, or a round ending where
+/// other than three faces meet, where the solid is convex round every
+/// vertex they end at: the convex polytope the faces round those vertices
+/// bound (within a box well past the rounds' setbacks), less that polytope
+/// rounded by the engine (one boolean between the two, sharing their faces
+/// but the rounds'). The rounds' strips and corners are the engine's own,
+/// as on the solid where nothing else reaches them; each strip named for
+/// its edge, each corner for its vertex. `None` where a vertex is not
+/// convex all round, or the polytope will not build or round.
+fn group_tool(
+    model: &mut Model,
+    planar: &Planar,
+    seats: &FastMap<(Id, Id), Seat>,
+    by_edge: &FastMap<Id, &super::Section>,
+    members: &[&Seat],
+    corners: &FastMap<(usize, Id), Point>,
+    tol: Tolerances,
+) -> OgeomResult<Option<Tool>> {
+    let eps = tol.confusion();
+    let mut vertices: Vec<Id> = members.iter().flat_map(|s| [s.ends.0, s.ends.1]).collect();
+    vertices.sort_unstable();
+    vertices.dedup();
+    // Convex all round each vertex: the faces there bound the solid's own
+    // corner, a convex cone.
+    if seats
+        .values()
+        .any(|s| !s.convex && (vertices.contains(&s.ends.0) || vertices.contains(&s.ends.1)))
+    {
+        return Ok(None);
+    }
+    let mut faces: Vec<usize> = Vec::new();
+    for v in &vertices {
+        let Some(round) = faces_round(&planar.faces, *v) else {
+            return Ok(None);
+        };
+        faces.extend(round);
+    }
+    faces.sort_unstable();
+    faces.dedup();
+    let mut planes: Vec<(Vector, f64)> = faces
+        .iter()
+        .map(|fi| {
+            let face = &planar.faces[*fi];
+            let n = face.normal;
+            (n, n.dot(planar.points[&face.corners[0]].to_vector()))
+        })
+        .collect();
+    // A box well past the rounds' setbacks.
+    let mut reach: f64 = 0.0;
+    let (mut lo, mut hi) = (
+        Vector::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
+        Vector::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
+    );
+    for seat in members {
+        for v in [seat.ends.0, seat.ends.1] {
+            let p = planar.points[&v].to_vector();
+            lo = Vector::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+            hi = Vector::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+            for fi in &seat.faces {
+                if let Some(c) = corners.get(&(*fi, v)) {
+                    reach = reach.max(c.distance(planar.points[&v]));
+                }
+            }
+        }
+    }
+    let margin = 3.0 * reach + 10.0 * eps;
+    for (axis, k) in [(Vector::X, 0), (Vector::Y, 1), (Vector::Z, 2)] {
+        let (l, h) = match k {
+            0 => (lo.x, hi.x),
+            1 => (lo.y, hi.y),
+            _ => (lo.z, hi.z),
+        };
+        planes.push((axis, h + margin));
+        planes.push((-axis, -(l - margin)));
+    }
+    // The polytope's corners: where three planes meet within all of them.
+    let mut points: Vec<Point> = Vec::new();
+    for i in 0..planes.len() {
+        for j in i + 1..planes.len() {
+            for k in j + 1..planes.len() {
+                let ((a, da), (b, db), (c, dc)) = (planes[i], planes[j], planes[k]);
+                let det = a.dot(b.cross(c));
+                if det.abs() <= 1e-12 {
+                    continue;
+                }
+                let p = (b.cross(c) * da + c.cross(a) * db + a.cross(b) * dc) / det;
+                if planes.iter().all(|(n, d)| n.dot(p) <= d + eps) {
+                    points.push(Point::ORIGIN + p);
+                }
+            }
+        }
+    }
+    let Some((at, rings, _)) = hull(&points, eps) else {
+        return Ok(None);
+    };
+    let Ok((made, _)) =
+        ogeom_algo::make_faceted_solid(model, &at, &rings, &vec![None; rings.len()], tol)
+    else {
+        return Ok(None);
+    };
+    let helper = made.shape;
+    // The helper's edges and vertices standing where the rounds' do.
+    let point_of = |model: &Model, v: &Shape| -> Option<Point> {
+        model
+            .node(v)
+            .and_then(|n| n.data().as_vertex().map(|d| d.point))
+    };
+    let mut asked: Vec<(Shape, f64)> = Vec::with_capacity(members.len());
+    let mut names: Vec<(Shape, Shape)> = Vec::new();
+    for seat in members {
+        let Some(super::Section::Round { radius }) = by_edge.get(&seat.edge) else {
+            return Ok(None);
+        };
+        let (pa, pb) = (planar.points[&seat.ends.0], planar.points[&seat.ends.1]);
+        let mut found = None;
+        for e in explore_unique(model, &helper, ShapeType::Edge)? {
+            if let Some((p, q)) = ogeom_algo::edge_vertices(model, &e)? {
+                let (Some(p), Some(q)) = (point_of(model, &p), point_of(model, &q)) else {
+                    continue;
+                };
+                if (p.distance(pa) <= eps && q.distance(pb) <= eps)
+                    || (p.distance(pb) <= eps && q.distance(pa) <= eps)
+                {
+                    found = Some(e);
+                }
+            }
+        }
+        let Some(e) = found else {
+            return Ok(None);
+        };
+        names.push((e.clone(), planar.shapes[&seat.edge].clone()));
+        asked.push((e, *radius));
+    }
+    for v in &vertices {
+        let p = planar.points[v];
+        for hv in explore_unique(model, &helper, ShapeType::Vertex)? {
+            if point_of(model, &hv).is_some_and(|q| q.distance(p) <= eps) {
+                names.push((hv, planar.shapes[v].clone()));
+            }
+        }
+    }
+    let request = super::Request::from_rounds(&asked, tol)?;
+    let Ok(Some(rounded)) = super::run(model, &helper, &request, tol) else {
+        return Ok(None);
+    };
+    let Ok(spandrel) = ogeom_bool::cut(model, &helper, &rounded.shape, tol) else {
+        return Ok(None);
+    };
+    // Each face of the tool from a round's strip or corner, named for the
+    // solid's edge or vertex it comes from.
+    let kept = explore_unique(model, &spandrel.shape, ShapeType::Face)?;
+    let mut faces_named: Vec<(Shape, Shape)> = Vec::new();
+    for (from_helper, from_solid) in &names {
+        for blend in rounded.history.generated(from_helper) {
+            let images: Vec<Shape> = spandrel
+                .history
+                .modified(blend)
+                .iter()
+                .chain(spandrel.history.generated(blend))
+                .cloned()
+                .chain(std::iter::once(blend.clone()))
+                .collect();
+            for image in images {
+                if let Some(k) = kept.iter().find(|k| k.is_same(&image)) {
+                    faces_named.push((k.clone(), from_solid.clone()));
+                }
+            }
+        }
+    }
+    if explore_unique(model, &spandrel.shape, ShapeType::Solid)?.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(Tool {
+        solid: spandrel.shape,
+        sense: Sense::Cut,
+        faces: faces_named,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
@@ -913,6 +1126,57 @@ mod tests {
             let want = plate - 2.0 - spandrel + shared;
             rounds_to(&mut m, &s, &edge, r, want);
         }
+    }
+
+    /// A 20 by 10 by 6 block with a square pocket 1 by 1/2 through it, 1 in
+    /// from its front, the three edges at its corner (20, 0, 6) rounded at
+    /// 2: the front top edge's round runs through the pocket, and the three
+    /// close on the corner's sphere. One tool for the three, through the
+    /// one boolean. The block less the pocket and what the rounds take
+    /// (each edge's section `A = (1 - pi/4) r^2` along it short of the
+    /// corner's cube, and the cube `r^3` less the sphere's octant), less
+    /// what the front round and the pocket share.
+    #[test]
+    fn a_corner_s_rounds_crossing_a_pocket_go_through_the_one_boolean() {
+        let mut m = Model::new();
+        let solid = block(&mut m, (0.0, 0.0, 0.0), (20.0, 10.0, 6.0));
+        let pocket = block(&mut m, (8.0, 1.0, -1.0), (1.0, 0.5, 8.0));
+        let s = ogeom_bool::cut(&mut m, &solid, &pocket, T).unwrap().shape;
+        let near = |p: Point| {
+            explore_unique(&m, &s, ShapeType::Edge)
+                .unwrap()
+                .into_iter()
+                .filter(|e| {
+                    let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+                    let at = |v: &Shape| {
+                        m.node(v)
+                            .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                            .unwrap()
+                    };
+                    at(&a).distance(p) < 1e-9 || at(&b).distance(p) < 1e-9
+                })
+                .collect::<Vec<_>>()
+        };
+        let edges = near(Point::new(20.0, 0.0, 6.0));
+        assert_eq!(edges.len(), 3);
+        let r = 2.0;
+        let asked: Vec<(Shape, f64)> = edges.iter().map(|e| (e.clone(), r)).collect();
+        let request = Request::from_rounds(&asked, T).unwrap();
+        let built = run(&mut m, &s, &request, T)
+            .unwrap()
+            .expect("built by the engine");
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        for e in &edges {
+            assert_eq!(built.history.generated(e).len(), 1, "each strip");
+        }
+        let section = (1.0 - FRAC_PI_4) * r * r;
+        let corner = r * r * r * (1.0 - core::f64::consts::PI / 6.0);
+        let taken = section * (20.0 + 10.0 + 6.0 - 3.0 * r) + corner;
+        let shared = 1.0 - (under(r, 1.0) - under(r, 0.5));
+        let want = 1200.0 - 3.0 - taken + shared;
+        let got = volume(&m, &built.shape);
+        assert!((got - want).abs() < 1e-6, "{got} against {want}");
     }
 
     /// An L of a floor 20 by 10 by 2 and a wall 2 thick along its back, 10

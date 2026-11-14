@@ -653,9 +653,14 @@ it for planar chamfers first.
   Every contact must lie on its own face end to end: one running where its
   face does not reach (a wall cut away under a boss) leaves the ball no
   seat there, which is not a strip crossing a face, and stays refused by
-  name. A round ending at a vertex of other than three faces, or where
-  another round ends too, is not taken yet: the sheet builds it, as
-  before.
+  name. Rounds joined at vertices, or a round ending where other than three
+  faces meet, close into one tool where the solid is convex round every
+  vertex they end at: the convex polytope the faces round those vertices
+  bound (within a box well past the setbacks), less that polytope rounded
+  by the engine, one boolean between the two (which share every face but
+  the rounds'). Their strips and corners are the engine's own, as where
+  nothing else reaches them. Such rounds at a vertex not convex all round
+  are not taken yet: the sheet builds them, as before.
 - **Curved strips closed (M5c).** `trimmed::close_tool` closes any strip
   the trimmed assembly reads (`Strip`: contacts, surface, section) into
   its tool: the strip, each face's piece between the edge and its contact
