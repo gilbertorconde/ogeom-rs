@@ -6466,8 +6466,8 @@ pub(crate) enum EndCap {
 /// is convex, fused into it where concave; the strip's face is named for
 /// its edge. The strip is capped on a plane at each end, for now square to
 /// the edge there (the strip's own end where it ends square, or a step at
-/// a joint, as between the arcs of a rim), each cap's sides straight on
-/// the faces. `None` for a strip along a closed edge (no ends to cap), any
+/// a joint, as between the arcs of a rim), each cap's sides on the faces
+/// (the arc about a wall's axis square to the cap, else straight). `None` for a strip along a closed edge (no ends to cap), any
 /// other end, or where the pieces will not close.
 ///
 /// # Errors
@@ -6662,21 +6662,55 @@ fn open_tool(
         };
         curves.push(SheetCurve { ends, curve, range });
     }
-    // Each cap's sides, from the edge's end to each contact's: straight,
-    // and lying on the face.
+    // Each cap's sides, from the edge's end to each contact's, on the face:
+    // the arc about a wall's axis square to the cap, else straight.
     for j in 0..2 {
         for (k, (corner, fi)) in corners.iter().zip(strip.faces).enumerate() {
             let (from, to) = (points[j], corner[j]);
-            let middle = from + (to - from) * 0.5;
             let face = &curved.faces[fi];
+            let axis = match &face.surface {
+                SurfaceGeometry::Cylinder(c) => {
+                    let a = c.cylinder().axis();
+                    Some((a.location, a.direction.vector()))
+                }
+                SurfaceGeometry::Cone(c) => {
+                    let f = c.cone().frame();
+                    Some((f.origin(), f.z().vector()))
+                }
+                _ => None,
+            };
+            let (curve, range) = match axis {
+                Some((o, a)) if a.cross(caps[j].1).magnitude() <= tol.angular() => {
+                    let centre = o + a * (from - o).dot(a);
+                    let (x, y) = (from - centre, to - centre);
+                    let z = x.cross(y);
+                    if z.magnitude() <= eps * x.magnitude() {
+                        return Ok(None);
+                    }
+                    let frame = Frame::new(
+                        centre,
+                        Direction::new(z, tol)?,
+                        Direction::new(x, tol)?,
+                        tol,
+                    )?;
+                    let arc: Curve =
+                        CircleCurve::new(Circle::new(frame, x.magnitude(), tol)?).into();
+                    (arc, (0.0, x.angle(y, tol)?))
+                }
+                _ => (
+                    Curve::Line(LineCurve::segment(from, to, tol)?),
+                    (0.0, from.distance(to)),
+                ),
+            };
+            let middle = curve.point_at(0.5 * (range.0 + range.1), tol)?;
             let foot = ogeom_algo::project_on_surface(&face.surface, middle, 16, tol)?;
             if foot.distance > eps * 10.0 {
                 return Ok(None);
             }
             curves.push(SheetCurve {
                 ends: (j, corner_index(k, j)),
-                curve: Curve::Line(LineCurve::segment(from, to, tol)?),
-                range: (0.0, from.distance(to)),
+                curve,
+                range,
             });
         }
     }
