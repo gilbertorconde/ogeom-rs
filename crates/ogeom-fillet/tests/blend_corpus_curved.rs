@@ -293,6 +293,23 @@ fn line_circle_corner(big: f64, r: f64) -> f64 {
     (twice / 2.0).abs()
 }
 
+/// The area a round of `r` fills into the open corner where the line
+/// `x = 0` meets the circle of radius `big` about the origin at `(0, big)`,
+/// the material `x <= 0` or inside the circle: the corner, up the line to
+/// the ball's contact, round the ball's side facing the corner to its
+/// contact on the circle, and back along the circle to the corner.
+fn line_circle_fill(big: f64, r: f64) -> f64 {
+    let centre = (r, ((big + r) * (big + r) - r * r).sqrt());
+    let on_line = (0.0, centre.1);
+    let towards = centre.1.atan2(centre.0);
+    let boundary = [
+        Piece::Segment((0.0, big), on_line),
+        Piece::Arc(centre, r, PI, PI + towards),
+        Piece::Arc((0.0, 0.0), big, towards, PI / 2.0),
+    ];
+    (twice_area(&boundary) / 2.0).abs()
+}
+
 /// The area a chamfer `d` along both faces takes off [`line_circle_corner`]'s
 /// corner, the distance on the circle measured along it.
 fn line_circle_chamfer(big: f64, d: f64) -> f64 {
@@ -485,6 +502,43 @@ fn a_d_block_s_straight_edges_round_along_its_curved_face() {
     let v = volume(&m, &built.shape);
     assert!((v - want).abs() < 1e-6, "{v} against {want}");
     tangent(&m, &d, &built, &asked);
+}
+
+/// A drum of radius 3, 10 tall, fused on a 6 by 12 block's side through
+/// its axis, the two concave edges where its wall leaves the block rounded
+/// at 0.5: the block and half disc with the line-and-circle fill twice,
+/// along the 10. On main: built, the volume right, but a blend meets a
+/// neighbour square across their edge.
+#[test]
+#[ignore = "heavy"]
+fn a_drum_on_a_block_s_side_fills_both_concave_edges() {
+    if !asked() {
+        return;
+    }
+    let mut m = Model::new();
+    let drum = ogeom_algo::make_cylinder(&mut m, up_at(0.0, 0.0, 0.0), 3.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let block = ogeom_algo::make_box(&mut m, up_at(-6.0, -6.0, 0.0), (6.0, 12.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let part = ogeom_bool::fuse(&mut m, &block, &drum, T).unwrap().shape;
+    let asked: Vec<(Shape, f64)> = edges_where(&m, &part, |p, q| {
+        p.x.abs() < 1e-9
+            && q.x.abs() < 1e-9
+            && (p.y.abs() - 3.0).abs() < 1e-9
+            && (q.y.abs() - 3.0).abs() < 1e-9
+            && (p.z - q.z).abs() > 1.0
+    })
+    .into_iter()
+    .map(|e| (e, 0.5))
+    .collect();
+    assert_eq!(asked.len(), 2);
+    let built = every_order(&mut m, &part, &asked, 0.5);
+    let want = (6.0 * 12.0 + PI * 9.0 / 2.0 + 2.0 * line_circle_fill(3.0, 0.5)) * 10.0;
+    let v = volume(&m, &built.shape);
+    assert!((v - want).abs() < 1e-6, "{v} against {want}");
+    tangent(&m, &part, &built, &asked);
 }
 
 /// A stadium prism (a 10 by 4 box between two drums of radius 2, 3 tall),
@@ -842,6 +896,27 @@ fn the_oracles_agree_with_cases_worked_by_hand() {
         }
     }
     let exact = line_circle_corner(big, r);
+    assert!((exact - counted).abs() < 1e-5, "{exact} against {counted}");
+    // The line-and-circle fill likewise: the points outside both the
+    // circle and the ball, in the wedge from the ball's centre between its
+    // two contacts.
+    let centre = (r, ((big + r) * (big + r) - r * r).sqrt());
+    let towards = centre.1.atan2(centre.0);
+    let low = centre.1 * big / (big + r);
+    let (w, h) = (centre.0 * big / (big + r), centre.1 - low);
+    let cell = (w / f64::from(n)) * (h / f64::from(n));
+    let mut counted = 0.0;
+    for i in 0..n {
+        for j in 0..n {
+            let x = (f64::from(i) + 0.5) * w / f64::from(n);
+            let y = low + (f64::from(j) + 0.5) * h / f64::from(n);
+            let (dx, dy) = (x - centre.0, y - centre.1);
+            if x * x + y * y > big * big && dx.hypot(dy) > r && dy.atan2(dx) <= towards - PI {
+                counted += cell;
+            }
+        }
+    }
+    let exact = line_circle_fill(big, r);
     assert!((exact - counted).abs() < 1e-5, "{exact} against {counted}");
     // The chamfer's: the triangle and the circle's segment beyond its chord.
     let turn = 0.5 / big;
