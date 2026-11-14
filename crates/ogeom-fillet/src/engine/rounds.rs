@@ -46,13 +46,29 @@ pub(crate) fn assemble(
     keys.sort_unstable();
     // Each round's section, keyed by its edge.
     let mut sections: FastMap<Id, (PlanarSection, f64)> = FastMap::default();
+    let mut conic: ogeom_core::FastSet<Id> = ogeom_core::FastSet::default();
     for key in &keys {
         let seat = &seats[key];
         let Some(section) = by_edge.get(&seat.edge) else {
             continue;
         };
-        let Section::Round { radius } = section else {
-            return Ok(None);
+        // A conic round's spec, its distances in the seat's face order, and
+        // a length of its own for the margins a radius sets (no ball or
+        // mitre is read from it: its vertices close flush alone).
+        let (spec, radius) = match section {
+            Section::Round { radius } => (RoundSpec::Circular(*radius), *radius),
+            Section::Conic { profile, .. } => {
+                let d = super::sections::law(section).setbacks(seat, planar)?;
+                conic.insert(seat.edge);
+                (
+                    RoundSpec::Conic {
+                        d,
+                        profile: *profile,
+                    },
+                    d[0].max(d[1]),
+                )
+            }
+            Section::Chamfer { .. } => return Ok(None),
         };
         let support = crate::support::Seat {
             start: planar.points[&seat.ends.0],
@@ -65,8 +81,8 @@ pub(crate) fn assemble(
             ],
             convex: seat.convex,
         };
-        let solved = PlanarSection::new(&support, &RoundSpec::Circular(*radius), tol)?;
-        sections.insert(seat.edge, (solved, *radius));
+        let solved = PlanarSection::new(&support, &spec, tol)?;
+        sections.insert(seat.edge, (solved, radius));
     }
     // An edge asked that is not one of the solid's is the current path's to
     // refuse.
@@ -275,6 +291,7 @@ pub(crate) fn assemble(
                 flush.insert(v, (third, seat.edge));
                 RoundVertex::Flush
             }
+            (3, 2) if blended.iter().any(|s| conic.contains(&s.edge)) => return Ok(None),
             (3, 2) => {
                 match mitre(planar, &sections, &here, &round, corners, v, reach, tol)? {
                     Some((pair, normal)) => {
@@ -307,15 +324,31 @@ pub(crate) fn assemble(
             (n, k) if n >= 3 && k == n => {
                 let radius = sections[&blended[0].edge].1;
                 let convex = blended[0].convex;
-                let alike = blended.iter().all(|s| {
-                    s.convex == convex && sections[&s.edge].1 == radius && stands_level(s.edge, v)
-                });
+                // A conic round's section is no ball's: its corner is the
+                // patch's.
+                let conics = blended.iter().any(|s| conic.contains(&s.edge));
+                // A conic strip ends square to its edge only: one whose
+                // setback corners stand at different stations would need a
+                // skew end, which only the ball's circle has.
+                if blended
+                    .iter()
+                    .any(|s| conic.contains(&s.edge) && !stands_level(s.edge, v))
+                {
+                    return Ok(None);
+                }
+                let alike = !conics
+                    && blended.iter().all(|s| {
+                        s.convex == convex
+                            && sections[&s.edge].1 == radius
+                            && stands_level(s.edge, v)
+                    });
                 let ball = if alike {
                     one_ball(planar, &round, v, radius, convex, tol)
                 } else {
                     None
                 };
                 let ridge = if n == 4
+                    && !conics
                     && blended
                         .iter()
                         .all(|s| s.convex && sections[&s.edge].1 == radius)
@@ -376,6 +409,20 @@ pub(crate) fn assemble(
             && !matches!(
                 chosen,
                 RoundVertex::Sharp | RoundVertex::Flush | RoundVertex::Sphere
+            )
+        {
+            return Ok(None);
+        }
+        // A conic round closes flush in its third face alone, or on the
+        // patch with others at a vertex rounded on every edge; its other
+        // corners are not built here yet.
+        let ends_conic = seats
+            .values()
+            .any(|s| conic.contains(&s.edge) && (s.ends.0 == v || s.ends.1 == v));
+        if ends_conic
+            && !matches!(
+                chosen,
+                RoundVertex::Flush | RoundVertex::Sharp | RoundVertex::Patch
             )
         {
             return Ok(None);
