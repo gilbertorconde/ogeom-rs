@@ -42,7 +42,7 @@ use ogeom_math::{Circle, Direction, Frame, Plane, Point, Vector};
 use ogeom_topo::{Model, Shape};
 
 use super::curved::{Curved, CurvedEdge, SheetCurve, SheetRings, read};
-use super::setbacks::{Corner, curved_corners};
+use super::setbacks::{Corner, corner_for, curved_corners, pinched};
 use super::{Id, id};
 use crate::chamfer::{Chamfer, Legs, legs, rim_bevel_surface, wall_depth};
 use crate::chamfer_sphere::{SphereSeat, sphere_bevel_rings};
@@ -2097,11 +2097,11 @@ fn assemble_widened(
         if blended.contains(e) || kept.is_empty() {
             continue;
         }
-        for v in [edge.ends.0, edge.ends.1] {
+        for (end, v) in [edge.ends.0, edge.ends.1].into_iter().enumerate() {
             let at = curved.points[&v];
             let mut moved: Vec<Point> = Vec::new();
             for fi in kept.iter().copied() {
-                if let Some(c) = corners.get(&(fi, v))
+                if let Some(c) = corner_for(corners, curved, fi, v, *e, end == 0, tol)?
                     && c.point.distance(at) > tol.confusion()
                     && let Some(t) = c.on(*e)
                     && edge.curve.point_at(t, tol)?.distance(c.point) <= tol.confusion()
@@ -2143,13 +2143,51 @@ fn assemble_widened(
     }
     // A vertex's blends: one, or two running on into each other; each
     // bevel's end there, the segment between its two faces' corners.
+    // Each cusp's corners on the side and the wall moved to its lobes'.
+    let cusps = cusps_of(curved, bevels, corners, tol)?;
+    let reset;
+    let corners = if cusps.is_empty() {
+        corners
+    } else {
+        let mut map = corners.clone();
+        for c in &cusps {
+            let [_, side, wall] = c.faces;
+            for (k, lobe) in c.lobes.iter().enumerate() {
+                let rim = &bevels[lobe.rim];
+                let ring = &rim.contacts[usize::from(rim.faces[1] == wall)];
+                let at = if k == 0 { c.v } else { pinched(c.v) };
+                let line = &bevels[lobe.line];
+                let contact = &line.contacts[usize::from(line.faces[1] == side)];
+                map.insert(
+                    (side, at),
+                    Corner {
+                        point: lobe.side,
+                        on: vec![(
+                            line.edge,
+                            param_on(contact, contact.domain(), lobe.side, tol)?,
+                        )],
+                    },
+                );
+                map.insert(
+                    (wall, at),
+                    Corner {
+                        point: lobe.wall,
+                        on: vec![(rim.edge, param_on(ring, ring.domain(), lobe.wall, tol)?)],
+                    },
+                );
+            }
+        }
+        reset = map;
+        &reset
+    };
     let mut sections: FastMap<Id, Vec<(Point, Point, usize)>> = FastMap::default();
     for (bi, b) in bevels.iter().enumerate() {
         let e = &curved.edges[&b.edge];
-        for v in [e.ends.0, e.ends.1] {
-            let (Some(c0), Some(c1)) =
-                (corners.get(&(b.faces[0], v)), corners.get(&(b.faces[1], v)))
-            else {
+        for (end, v) in [e.ends.0, e.ends.1].into_iter().enumerate() {
+            let (Some(c0), Some(c1)) = (
+                corner_for(corners, curved, b.faces[0], v, b.edge, end == 0, tol)?,
+                corner_for(corners, curved, b.faces[1], v, b.edge, end == 0, tol)?,
+            ) else {
                 return Ok(None);
             };
             if c0.point.distance(c1.point) > tol.confusion() {
@@ -2172,6 +2210,9 @@ fn assemble_widened(
     let mut keyed: Vec<&Id> = curved.points.keys().collect();
     keyed.sort_unstable();
     for v in keyed {
+        if cusps.iter().any(|c| c.v == *v) {
+            continue;
+        }
         let mut at_v: Vec<Id> = curved
             .edges
             .iter()
@@ -2261,11 +2302,15 @@ fn assemble_widened(
             _ => {
                 // Three bevels or more, every edge there bevelled by a
                 // segment: the facet through the faces' corners, its sides
-                // the bevels' ends, where those corners lie on one plane.
+                // the bevels' ends, where those corners lie on one plane. A
+                // face's own seam there (a boss's, from its foot) is no edge
+                // to bevel.
                 let degree = curved
                     .edges
-                    .values()
-                    .filter(|c| c.ends.0 == *v || c.ends.1 == *v)
+                    .iter()
+                    .filter(|(e, c)| {
+                        (c.ends.0 == *v || c.ends.1 == *v) && faces_of(curved, **e).len() != 1
+                    })
                     .count();
                 let Some(ends) = sections.get(v) else {
                     return Ok(None);
@@ -2551,37 +2596,35 @@ fn assemble_widened(
                 let centre = spine.point_at(param_on(spine, spine.domain(), a, tol)?, tol)?;
                 let far = spine.point_at(param_on(spine, spine.domain(), b, tol)?, tol)?;
                 if centre.distance(far) > tol.confusion() {
-                    // A straight strip ending skew, its corners at two
-                    // stations: the strip cut by the plane through both
-                    // that holds square to the axis the chord of the
-                    // section at the first. That is the arc there carried
-                    // along the axis onto the plane, an affine map keeping
-                    // a rational quadratic arc's weights, so exact.
+                    // Its corners at two stations: on a torus, the curve
+                    // running evenly in both its angles; on a straight
+                    // strip, the strip cut by the plane through both (the
+                    // face it ends flush on, or the one holding square to
+                    // the axis the chord of the section at the first).
+                    if let SurfaceGeometry::Torus(torus) = &strip.surface {
+                        let (curve, range) = torus_skew(&torus.torus(), a, b, tol)?;
+                        edges.push(SheetCurve {
+                            ends: (i, j),
+                            curve,
+                            range,
+                        });
+                        made.insert(key, edges.len() - 1);
+                        return Ok((edges.len() - 1, true));
+                    }
                     let Curve::Line(_) = spine else {
                         ogeom_core::ogeom_bail!(
                             Construction,
                             "a strip along a curved spine ending skew"
                         );
                     };
-                    let along = far - centre;
-                    let back = b - along;
-                    let (x, w) = (a - centre, back - centre);
-                    let radius = x.magnitude();
-                    let cos = (x.dot(w) / (radius * w.magnitude())).clamp(-1.0, 1.0);
-                    let half = ((1.0 + cos) / 2.0).sqrt();
-                    if half <= tol.angular() {
-                        ogeom_core::ogeom_bail!(Construction, "a skew end of a half turn");
-                    }
-                    let apex = centre + (x + w).normalized(tol)? * (radius / half);
-                    let normal = (b - a).cross(along.cross(back - a));
-                    let onto = |p: Point| p + along * (normal.dot(a - p) / normal.dot(along));
-                    let knots = ogeom_math::KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)?;
-                    let control = vec![
-                        ogeom_math::Weighted::new(a, 1.0, tol)?,
-                        ogeom_math::Weighted::new(onto(apex), half, tol)?,
-                        ogeom_math::Weighted::new(b, 1.0, tol)?,
-                    ];
-                    let curve = Curve::BSpline(ogeom_geom::BSplineCurve::rational(knots, control)?);
+                    let normal = match cut {
+                        Some(SurfaceGeometry::Plane(plane)) => {
+                            Some(plane.plane().normal().vector())
+                        }
+                        _ => None,
+                    };
+                    let control = skew_control(centre, far - centre, a, b, normal, tol)?;
+                    let (curve, _) = rational_quadratics(&[control], tol)?;
                     edges.push(SheetCurve {
                         ends: (i, j),
                         curve,
@@ -2803,6 +2846,130 @@ fn assemble_widened(
         }
         Ok(Some(pieces))
     };
+    // Each cusp's hole: four sides, each one curve the patch meets, walked
+    // from the side face over the first lobe to the wall, along the wall,
+    // back over the second lobe and along the side. A lobe's side is its
+    // straight strip's end, cut by its meridian plane, running on into the
+    // rim's end in that plane, one rational quadratic; the wall's is one arc
+    // of the rim's ring, cut at the seam's foot; the side's a straight. Each
+    // edge of a side is a range of its curve, so the patch takes it exactly;
+    // they are the strips' ends there and the faces' pieces where they stop
+    // short of the patch.
+    let mut bounds: FastMap<Id, Vec<(Point, Point, usize)>> = FastMap::default();
+    let mut holes: Vec<(usize, Vec<HoleSpec>)> = Vec::with_capacity(cusps.len());
+    for (ci, c) in cusps.iter().enumerate() {
+        let [_, side, wall] = c.faces;
+        let mut lobes = Vec::with_capacity(2);
+        let mut ring_at = Point::ORIGIN;
+        for lobe in &c.lobes {
+            let rim = &bevels[lobe.rim];
+            let SurfaceGeometry::Torus(torus) = &rim.surface else {
+                return Ok(None);
+            };
+            let torus = torus.torus();
+            let (o, z) = (torus.frame().origin(), torus.frame().z().vector());
+            let Curve::Circle(ring) = &rim.contacts[usize::from(rim.faces[1] == wall)] else {
+                return Ok(None);
+            };
+            ring_at = ring.circle().frame().origin();
+            let line = &bevels[lobe.line];
+            let Section::Arc { spine } = &line.section else {
+                return Ok(None);
+            };
+            let centre = spine.point_at(param_on(spine, spine.domain(), lobe.side, tol)?, tol)?;
+            let far = spine.point_at(param_on(spine, spine.domain(), lobe.top, tol)?, tol)?;
+            let SurfaceGeometry::Plane(plane) = &lobe.plane else {
+                return Ok(None);
+            };
+            let normal = plane.plane().normal().vector();
+            let straight =
+                skew_control(centre, far - centre, lobe.side, lobe.top, Some(normal), tol)?;
+            let radial = {
+                let d = lobe.top - o;
+                (d - z * d.dot(z)).normalized(tol)?
+            };
+            let core = o + radial * torus.major_radius();
+            let round = arc_control(core, lobe.top, lobe.wall, tol)?;
+            let (curve, ends) = rational_quadratics(&[straight, round], tol)?;
+            let (i, j, k) = (
+                points.index(lobe.side),
+                points.index(lobe.top),
+                points.index(lobe.wall),
+            );
+            let low = piece_of(&mut edges, &mut made, &curve, (i, j), (0.0, ends[0]));
+            let high = piece_of(&mut edges, &mut made, &curve, (j, k), (ends[0], ends[1]));
+            lobes.push(HoleSpec {
+                curve,
+                range: (0.0, ends[1]),
+                forward: true,
+                pieces: vec![
+                    (low, (0.0, ends[0]), line.surface.clone()),
+                    (high, (ends[0], ends[1]), rim.surface.clone()),
+                ],
+            });
+        }
+        let [a, b] = [&c.lobes[0], &c.lobes[1]];
+        let straight: Curve = LineCurve::segment(b.side, a.side, tol)?.into();
+        let range = straight.domain();
+        edges.push(SheetCurve {
+            ends: (points.index(b.side), points.index(a.side)),
+            curve: straight.clone(),
+            range,
+        });
+        bounds
+            .entry(c.v)
+            .or_default()
+            .push((b.side, a.side, edges.len() - 1));
+        let along_side = HoleSpec {
+            curve: straight,
+            range,
+            forward: true,
+            pieces: vec![(edges.len() - 1, range, curved.faces[side].surface.clone())],
+        };
+        let (arc, _) = rational_quadratics(&[arc_control(ring_at, a.wall, b.wall, tol)?], tol)?;
+        let mut stops = vec![(a.wall, 0.0)];
+        if let Some(f) = c.foot {
+            stops.push((f, param_on(&arc, (0.0, 1.0), f, tol)?));
+        }
+        stops.push((b.wall, 1.0));
+        let mut pieces = Vec::with_capacity(2);
+        for w in stops.windows(2) {
+            let ((p, t0), (q, t1)) = (w[0], w[1]);
+            edges.push(SheetCurve {
+                ends: (points.index(p), points.index(q)),
+                curve: arc.clone(),
+                range: (t0, t1),
+            });
+            bounds.entry(c.v).or_default().push((p, q, edges.len() - 1));
+            pieces.push((
+                edges.len() - 1,
+                (t0, t1),
+                curved.faces[wall].surface.clone(),
+            ));
+        }
+        let along_wall = HoleSpec {
+            curve: arc,
+            range: (0.0, 1.0),
+            forward: true,
+            pieces,
+        };
+        let [first, second] = <[HoleSpec; 2]>::try_from(lobes).map_err(|_| {
+            ogeom_core::OgeomError::Construction("a cusp of other than two lobes".into())
+        })?;
+        holes.push((ci, vec![first, along_wall, second.back(), along_side]));
+    }
+    // A piece of a face's boundary a cusp's patch meets, joining `p` to `q`
+    // at `v`: its edge, and whether it runs from `p`.
+    let bound_between = |v: Id, p: Point, q: Point| -> Option<(usize, bool)> {
+        bounds.get(&v).and_then(|b| {
+            b.iter()
+                .find(|(x, y, _)| {
+                    (x.distance(p) <= tol.confusion() && y.distance(q) <= tol.confusion())
+                        || (y.distance(p) <= tol.confusion() && x.distance(q) <= tol.confusion())
+                })
+                .map(|(x, _, k)| (*k, x.distance(p) <= tol.confusion()))
+        })
+    };
     // P4: each face rebuilt, its loops in the stored order, each edge's
     // piece between the corners at its ends, walked the surface's way.
     let mut rings_of: Vec<SheetRings> = Vec::with_capacity(curved.faces.len() + bevels.len());
@@ -2844,8 +3011,8 @@ fn assemble_widened(
                 let (curve, start, end, key) = if blended.contains(e) {
                     let (Some(c), Some(a), Some(b)) = (
                         contact_of(fi, *e),
-                        corners.get(&(fi, vs)),
-                        corners.get(&(fi, ve)),
+                        corner_for(corners, curved, fi, vs, *e, forward, tol)?,
+                        corner_for(corners, curved, fi, ve, *e, !forward, tol)?,
                     ) else {
                         return Ok(None);
                     };
@@ -2870,6 +3037,14 @@ fn assemble_widened(
                     && p.distance(start.0) > tol.confusion()
                     && let Some(piece) =
                         tail_between(&mut points, &mut edges, &mut made, vs, p, start.0)?
+                {
+                    ring.push(piece);
+                    last = Some(start.0);
+                }
+                // A piece of the face's boundary a cusp's patch meets.
+                if let Some(p) = last
+                    && p.distance(start.0) > tol.confusion()
+                    && let Some(piece) = bound_between(vs, p, start.0)
                 {
                     ring.push(piece);
                     last = Some(start.0);
@@ -2926,6 +3101,13 @@ fn assemble_widened(
                     p,
                     q,
                 )?
+            {
+                ring.push(piece);
+                last = Some(q);
+            }
+            if let (Some(p), Some(q)) = (last, first)
+                && p.distance(q) > tol.confusion()
+                && let Some(piece) = bound_between(loop_start_vertex(curved, face, walk), p, q)
             {
                 ring.push(piece);
                 last = Some(q);
@@ -3050,9 +3232,11 @@ fn assemble_widened(
         let vertex_of = |x: Point| -> Id {
             let near = |v: Id| {
                 [b.faces[0], b.faces[1]].iter().any(|f| {
-                    corners
-                        .get(&(*f, v))
-                        .is_some_and(|c| c.point.distance(x) <= merge)
+                    [v, pinched(v)].iter().any(|w| {
+                        corners
+                            .get(&(*f, *w))
+                            .is_some_and(|c| c.point.distance(x) <= merge)
+                    })
                 })
             };
             if near(e.ends.0) { e.ends.0 } else { e.ends.1 }
@@ -3060,9 +3244,14 @@ fn assemble_widened(
         let other = b.faces[1 - r];
         // The other contact: from its corner where the first ended; a
         // closed one the other way round the strip's axis.
-        let start_o = corners
-            .get(&(other, vertex_of(points.points[qr])))
-            .map(|c| points.index(c.point));
+        // The vertex's corner on the other face, or its second where the
+        // face passes the vertex twice: the one ending the other contact.
+        let v = vertex_of(points.points[qr]);
+        let start_o = [v, pinched(v)]
+            .iter()
+            .filter_map(|w| corners.get(&(other, *w)))
+            .map(|c| points.index(c.point))
+            .find(|i| *i == edges[ko].ends.0 || *i == edges[ko].ends.1);
         let Some(start_o) = start_o else {
             return Ok(None);
         };
@@ -3564,6 +3753,7 @@ fn assemble_widened(
                 range: edges[e].range,
                 forward: edges[e].ends.0 == i,
                 support: strip.surface.clone(),
+                pieces: Vec::new(),
             });
         }
         let patch =
@@ -3590,6 +3780,7 @@ fn assemble_widened(
                 range: edges[e].range,
                 forward,
                 support: bevels[bi].surface.clone(),
+                pieces: Vec::new(),
             })
             .collect();
         let patch = crate::round::transfinite::corner_patch(model, &sides, tol)?;
@@ -3597,6 +3788,52 @@ fn assemble_widened(
             return Ok(None);
         }
         vertex_faces.push((v, patch.faces, region));
+    }
+    // Each cusp's patch, through its four sides wound counter-clockwise seen
+    // from outside, proved where the plate's corner, the boss or the foot's
+    // fill lies: within the top and the side, within the wall above the
+    // top, or outside both the top and the wall.
+    for (ci, mut sides) in holes {
+        let c = &cusps[ci];
+        let [top, side, wall] = c.faces;
+        let at = curved.points[&c.v];
+        let (Some(n0), Some(n1)) = (outward(curved, side, at), outward(curved, wall, at)) else {
+            return Ok(None);
+        };
+        let mut ring = Vec::with_capacity(4);
+        for spec in &sides {
+            ring.push(spec.start(tol)?);
+        }
+        let mut newell = Vector::ZERO;
+        for k in 0..ring.len() {
+            newell += ring[k]
+                .to_vector()
+                .cross(ring[(k + 1) % ring.len()].to_vector());
+        }
+        if newell.dot(n0 + n1) < 0.0 {
+            sides.reverse();
+            sides = sides.into_iter().map(HoleSpec::back).collect();
+        }
+        let hole: Vec<crate::round::transfinite::HoleSide> =
+            sides.iter().map(|spec| spec.side(&sheet.edges)).collect();
+        let patch = crate::round::transfinite::corner_patch(model, &hole, tol)?;
+        if !(patch.gap <= fit && patch.angle <= fit) {
+            return Ok(None);
+        }
+        let (Some(mt), Some(ms), Some(mw)) = (
+            material(curved, top),
+            material(curved, side),
+            material(curved, wall),
+        ) else {
+            return Ok(None);
+        };
+        use ogeom_algo::HalfSpaces;
+        let region = HalfSpaces::Any(vec![
+            HalfSpaces::Every(vec![mt.clone(), ms]),
+            HalfSpaces::Every(vec![mw.clone(), outside(&mt)]),
+            HalfSpaces::Every(vec![outside(&mt), outside(&mw)]),
+        ]);
+        vertex_faces.push((c.v, patch.faces, region));
     }
     let shell_faces: Vec<Shape> = sheet
         .faces
@@ -3775,9 +4012,11 @@ fn assemble_widened(
     }
     for (v, p) in &curved.points {
         let kept = curved.faces.iter().enumerate().all(|(fi, _)| {
-            corners
-                .get(&(fi, *v))
-                .is_none_or(|c| c.point.distance(*p) <= tol.confusion())
+            [*v, pinched(*v)].iter().all(|w| {
+                corners
+                    .get(&(fi, *w))
+                    .is_none_or(|c| c.point.distance(*p) <= tol.confusion())
+            })
         });
         let shape = &curved.shapes[v];
         if kept
@@ -3853,6 +4092,415 @@ fn turning(
 /// ring walks it forward and the strip it ends, and the region the patch is
 /// proved within.
 type PatchRing = (Id, Vec<(usize, bool, usize)>, ogeom_algo::HalfSpaces);
+
+/// A vertex where a face narrows to nothing between a convex straight
+/// round and a concave rim's round running tangent to it (a boss tangent
+/// to a plate's side, its foot and the plate's top edge there rounded):
+/// the top's loop passes the vertex twice, the rounds' contacts crossing on
+/// it either side. Each straight strip ends where the boss's meridian plane
+/// through its crossing cuts it, so it runs on tangent into the rim's
+/// round's end in that plane: one S side from the side face over the
+/// crossing to the wall. The hole between the two S sides, the wall along
+/// the rim's contact and the side along the straight rounds' closes on one
+/// patch.
+struct Cusp {
+    v: Id,
+    /// The top, the side and the wall.
+    faces: [usize; 3],
+    /// Each straight strip's side of the vertex.
+    lobes: [Lobe; 2],
+    /// Where the wall's own seam leaves the rim's contact, where it has one
+    /// there.
+    foot: Option<Point>,
+}
+
+/// A side of a cusp's hole: its curve over `range`, whether the walk runs
+/// with it, and its edges, each the sheet's edge over a range of the curve
+/// with the surface across it, in the curve's order.
+struct HoleSpec {
+    curve: Curve,
+    range: (f64, f64),
+    forward: bool,
+    pieces: Vec<(usize, (f64, f64), SurfaceGeometry)>,
+}
+
+impl HoleSpec {
+    /// The side walked the other way.
+    fn back(self) -> Self {
+        Self {
+            forward: !self.forward,
+            ..self
+        }
+    }
+
+    /// Where the walk starts.
+    fn start(&self, tol: Tolerances) -> OgeomResult<Point> {
+        self.curve.point_at(
+            if self.forward {
+                self.range.0
+            } else {
+                self.range.1
+            },
+            tol,
+        )
+    }
+
+    /// The patch's side, its edges the sheet's `edges`.
+    fn side(&self, edges: &[Shape]) -> crate::round::transfinite::HoleSide {
+        let (a, b) = self.range;
+        let along = |t: f64| {
+            let x = (t - a) / (b - a);
+            if self.forward { x } else { 1.0 - x }
+        };
+        let mut walked: Vec<&(usize, (f64, f64), SurfaceGeometry)> = self.pieces.iter().collect();
+        if !self.forward {
+            walked.reverse();
+        }
+        let first = walked[0];
+        crate::round::transfinite::HoleSide {
+            edge: edges[first.0].clone(),
+            curve: self.curve.clone(),
+            range: self.range,
+            forward: self.forward,
+            support: first.2.clone(),
+            pieces: if walked.len() == 1 {
+                Vec::new()
+            } else {
+                walked
+                    .iter()
+                    .map(|(k, (t0, t1), support)| {
+                        let (x, y) = (along(*t0), along(*t1));
+                        crate::round::transfinite::SidePiece {
+                            edge: edges[*k].clone(),
+                            range: (*t0, *t1),
+                            forward: self.forward,
+                            along: (x.min(y), x.max(y)),
+                            support: support.clone(),
+                        }
+                    })
+                    .collect()
+            },
+        }
+    }
+}
+
+/// The sheet's edge on `curve` over `range` from point `ends.0` to
+/// `ends.1`, kept as the strip's end between them.
+fn piece_of(
+    edges: &mut Vec<SheetCurve>,
+    made: &mut FastMap<Key, usize>,
+    curve: &Curve,
+    ends: (usize, usize),
+    range: (f64, f64),
+) -> usize {
+    edges.push(SheetCurve {
+        ends,
+        curve: curve.clone(),
+        range,
+    });
+    made.insert(
+        Key::Section(ends.0.min(ends.1), ends.0.max(ends.1)),
+        edges.len() - 1,
+    );
+    edges.len() - 1
+}
+
+/// One straight strip's side of a [`Cusp`].
+struct Lobe {
+    /// The strip.
+    line: usize,
+    /// The rim's strip it crosses on the top: the rim's one closed edge,
+    /// or its arc on this side.
+    rim: usize,
+    /// Its crossing with the rim's contact on the top.
+    top: Point,
+    /// Where the meridian plane through the crossing cuts its contact on
+    /// the side, and the rim's on the wall.
+    side: Point,
+    wall: Point,
+    /// That plane.
+    plane: SurfaceGeometry,
+}
+
+/// The [`Cusp`]s among `curved`'s vertices.
+///
+/// # Errors
+///
+/// As making the planes.
+fn cusps_of(
+    curved: &Curved,
+    bevels: &[Strip],
+    corners: &FastMap<(usize, Id), Corner>,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Cusp>> {
+    let mut found = Vec::new();
+    let mut keyed: Vec<&Id> = curved.points.keys().collect();
+    keyed.sort_unstable();
+    for v in keyed {
+        let Some(top) =
+            (0..curved.faces.len()).find(|fi| corners.contains_key(&(*fi, pinched(*v))))
+        else {
+            continue;
+        };
+        let ends_at = |bi: &usize| {
+            let e = &curved.edges[&bevels[*bi].edge];
+            e.ends.0 == *v || e.ends.1 == *v
+        };
+        let at: Vec<usize> = (0..bevels.len()).filter(ends_at).collect();
+        let rims: Vec<usize> = at
+            .iter()
+            .copied()
+            .filter(|bi| matches!(bevels[*bi].surface, SurfaceGeometry::Torus(_)))
+            .collect();
+        let lines: Vec<usize> = at
+            .iter()
+            .copied()
+            .filter(|bi| {
+                matches!(curved.edges[&bevels[*bi].edge].curve, Curve::Line(_))
+                    && matches!(bevels[*bi].surface, SurfaceGeometry::Cylinder(_))
+            })
+            .collect();
+        let [l0, l1] = lines.as_slice() else {
+            continue;
+        };
+        let closed = |bi: &usize| {
+            let e = &curved.edges[&bevels[*bi].edge];
+            e.ends.0 == e.ends.1
+        };
+        let one = matches!(rims.as_slice(), [r] if closed(r));
+        let two = matches!(rims.as_slice(), [a, b] if !closed(a) && !closed(b));
+        if !(one || two) || at.len() != 2 + rims.len() {
+            continue;
+        }
+        let other = |bi: usize| {
+            let f = bevels[bi].faces;
+            f.contains(&top)
+                .then(|| if f[0] == top { f[1] } else { f[0] })
+        };
+        let (Some(wall), Some(side), Some(side_too)) = (other(rims[0]), other(*l0), other(*l1))
+        else {
+            continue;
+        };
+        if side != side_too || rims.iter().any(|r| other(*r) != Some(wall)) {
+            continue;
+        }
+        let crossings = [corners.get(&(top, *v)), corners.get(&(top, pinched(*v)))];
+        let mut lobes = Vec::with_capacity(2);
+        for bi in [*l0, *l1] {
+            let e = bevels[bi].edge;
+            let Some(crossing) = crossings.iter().flatten().find(|c| c.on(e).is_some()) else {
+                break;
+            };
+            let t = crossing.point;
+            let Some(rim) = rims
+                .iter()
+                .copied()
+                .find(|r| crossing.on(bevels[*r].edge).is_some())
+            else {
+                break;
+            };
+            let r = &bevels[rim];
+            let (SurfaceGeometry::Torus(torus), Curve::Circle(ring)) =
+                (&r.surface, &r.contacts[usize::from(r.faces[1] == wall)])
+            else {
+                break;
+            };
+            let torus = torus.torus();
+            let (o, z) = (torus.frame().origin(), torus.frame().z().vector());
+            let (ring_at, ring_radius) = (ring.circle().frame().origin(), ring.circle().radius());
+            let radial = {
+                let d = t - o;
+                (d - z * d.dot(z)).normalized(tol)?
+            };
+            let normal = z.cross(radial);
+            let Curve::Line(line) = &bevels[bi].contacts[usize::from(bevels[bi].faces[1] == side)]
+            else {
+                break;
+            };
+            let axis = line.axis();
+            let (at, along) = (axis.location, axis.direction.vector());
+            if normal.dot(along).abs() <= tol.angular() {
+                break;
+            }
+            let frame = Frame::new(
+                t,
+                Direction::new(normal, tol)?,
+                Direction::new(z, tol)?,
+                tol,
+            )?;
+            lobes.push(Lobe {
+                line: bi,
+                rim,
+                top: t,
+                side: at + along * (normal.dot(t - at) / normal.dot(along)),
+                wall: ring_at + radial * ring_radius,
+                plane: PlaneSurface::new(Plane::new(frame)).into(),
+            });
+        }
+        let Ok(lobes) = <[Lobe; 2]>::try_from(lobes) else {
+            continue;
+        };
+        let foot = curved
+            .edges
+            .iter()
+            .find(|(e, c)| (c.ends.0 == *v || c.ends.1 == *v) && faces_of(curved, **e) == [wall])
+            .and_then(|(e, _)| corners.get(&(wall, *v)).filter(|c| c.on(*e).is_some()))
+            .map(|c| c.point);
+        found.push(Cusp {
+            v: *v,
+            faces: [top, side, wall],
+            lobes,
+            foot,
+        });
+    }
+    Ok(found)
+}
+
+/// A rational quadratic arc's three control points, each with its weight.
+type Conic = [(Point, f64); 3];
+
+/// The arc of the circle about `centre` from `a` to `b` the shorter way,
+/// as a rational quadratic: the two ends and where their tangents meet,
+/// weighted by the cosine of half its turn.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+/// where the arc turns half way round or more, or its ends meet.
+fn arc_control(centre: Point, a: Point, b: Point, tol: Tolerances) -> OgeomResult<Conic> {
+    let (x, w) = ((a - centre).normalized(tol)?, (b - centre).normalized(tol)?);
+    let radius = (a - centre).magnitude();
+    let half = ((1.0 + x.dot(w).clamp(-1.0, 1.0)) / 2.0).sqrt();
+    if half <= tol.angular() {
+        ogeom_core::ogeom_bail!(Construction, "an arc of a half turn");
+    }
+    let apex = centre + (x + w).normalized(tol)? * (radius / half);
+    Ok([(a, 1.0), (apex, half), (b, 1.0)])
+}
+
+/// A straight strip's end from `a` to `b`, its corners at stations
+/// `along` apart on its axis (`centre` the axis's point at `a`'s): the
+/// strip cut by the plane through both of normal `normal`, or where none is
+/// given the one holding square to the axis the chord of the section at
+/// `a`. That is the arc there carried along the axis onto the plane, an
+/// affine map keeping a rational quadratic arc's weights, so exact.
+///
+/// # Errors
+///
+/// As [`arc_control`], and where the plane runs along the axis.
+fn skew_control(
+    centre: Point,
+    along: Vector,
+    a: Point,
+    b: Point,
+    normal: Option<Vector>,
+    tol: Tolerances,
+) -> OgeomResult<Conic> {
+    let back = b - along;
+    let [_, (apex, half), _] = arc_control(centre, a, back, tol)?;
+    let normal = normal.unwrap_or_else(|| (b - a).cross(along.cross(back - a)));
+    if normal.dot(along).abs() <= tol.angular() * normal.magnitude() * along.magnitude() {
+        ogeom_core::ogeom_bail!(Construction, "a strip cut along its own axis has no end");
+    }
+    let onto = |p: Point| p + along * (normal.dot(a - p) / normal.dot(along));
+    Ok([(a, 1.0), (onto(apex), half), (b, 1.0)])
+}
+
+/// The rational quadratics `pieces`, each starting where the last ends, as
+/// one curve, a knot doubled at each join, and where each piece ends on it:
+/// the first over `(0, 1)`, each next over as long as keeps the curve's
+/// speed through the join (the pieces meeting tangent there, the curve is
+/// then smooth to first order in its parameter, as a patch fitted along it
+/// needs).
+///
+/// # Errors
+///
+/// As making the curve.
+fn rational_quadratics(pieces: &[Conic], tol: Tolerances) -> OgeomResult<(Curve, Vec<f64>)> {
+    let mut knots = vec![0.0; 3];
+    let mut ends = Vec::with_capacity(pieces.len());
+    let mut control = Vec::with_capacity(2 * pieces.len() + 1);
+    let (mut at, mut speed) = (0.0, 0.0);
+    for (k, piece) in pieces.iter().enumerate() {
+        let [(p0, _), (p1, w1), (p2, _)] = *piece;
+        let span = if k == 0 {
+            1.0
+        } else {
+            2.0 * w1 * (p1 - p0).magnitude() / speed
+        };
+        if !(span.is_finite() && span > 0.0) {
+            ogeom_core::ogeom_bail!(Construction, "a piece of a side without length");
+        }
+        for &(p, w) in &piece[usize::from(k > 0)..] {
+            control.push(ogeom_math::Weighted::new(p, w, tol)?);
+        }
+        at += span;
+        speed = 2.0 * w1 * (p2 - p1).magnitude() / span;
+        knots.extend_from_slice(&[at, at]);
+        if k + 1 == pieces.len() {
+            knots.push(at);
+        }
+        ends.push(at);
+    }
+    let knots = ogeom_math::KnotVector::new(knots, 2)?;
+    Ok((
+        Curve::BSpline(ogeom_geom::BSplineCurve::rational(knots, control)?),
+        ends,
+    ))
+}
+
+/// The points a torus strip's skew end is interpolated through.
+const SKEW_SAMPLES: u32 = 128;
+
+/// A torus strip's end from `a` to `b`, standing at two stations round its
+/// axis: the curve running evenly in both of the torus's angles from one
+/// to the other, the shorter way round in each, interpolated through
+/// [`SKEW_SAMPLES`] of its points (each on the torus) at even parameters;
+/// and its range.
+///
+/// # Errors
+///
+/// As the interpolation.
+fn torus_skew(
+    torus: &ogeom_math::Torus,
+    a: Point,
+    b: Point,
+    tol: Tolerances,
+) -> OgeomResult<(Curve, (f64, f64))> {
+    use core::f64::consts::{PI, TAU};
+    let frame = torus.frame();
+    let (o, x, y, z) = (
+        frame.origin(),
+        frame.x().vector(),
+        frame.y().vector(),
+        frame.z().vector(),
+    );
+    let (big, small) = (torus.major_radius(), torus.minor_radius());
+    let angles = |p: Point| {
+        let d = p - o;
+        let u = d.dot(y).atan2(d.dot(x));
+        let rho = d.dot(x).hypot(d.dot(y));
+        (u, d.dot(z).atan2(rho - big))
+    };
+    let shorter = |from: f64, to: f64| {
+        let d = (to - from).rem_euclid(TAU);
+        if d > PI { d - TAU } else { d }
+    };
+    let ((u0, v0), (u1, v1)) = (angles(a), angles(b));
+    let (du, dv) = (shorter(u0, u1), shorter(v0, v1));
+    let mut points = Vec::with_capacity(SKEW_SAMPLES as usize + 1);
+    for k in 0..=SKEW_SAMPLES {
+        let t = f64::from(k) / f64::from(SKEW_SAMPLES);
+        let (u, v) = (u0 + du * t, v0 + dv * t);
+        let rho = small.mul_add(v.cos(), big);
+        points.push(o + (x * u.cos() + y * u.sin()) * rho + z * (small * v.sin()));
+    }
+    points[0] = a;
+    points[SKEW_SAMPLES as usize] = b;
+    let curve = ogeom_algo::interpolate(&points, 3, ogeom_algo::Spacing::Uniform, tol)?;
+    let range = curve.domain();
+    Ok((Curve::BSpline(curve), range))
+}
 
 /// A piece of a curve: the curve, its range, and whether the first point
 /// asked for stands at the range's low end.
