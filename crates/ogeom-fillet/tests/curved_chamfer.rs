@@ -1509,3 +1509,193 @@ fn a_d_plate_chamfered_all_round_past_its_walls_rolls_over_onto_the_floor() {
         assert!(!built.history.generated(e).is_empty(), "its bevel");
     }
 }
+
+/// `∫ √(r² − y²) dy` from `lo` to `hi`, both in `[-r, r]`.
+fn under_circle(r: f64, lo: f64, hi: f64) -> f64 {
+    let g = |y: f64| 0.5 * (y * (r * r - y * y).max(0.0).sqrt() + r * r * (y / r).asin());
+    g(hi) - g(lo)
+}
+
+/// The quarter disc of radius 5 about the z axis (x, y >= 0) between
+/// heights `z0` and `z1`.
+fn quarter_plate(m: &mut Model, z0: f64, z1: f64) -> Shape {
+    let disc = ogeom_algo::make_cylinder(m, up_at(0.0, 0.0, z0), 5.0, z1 - z0, T)
+        .unwrap()
+        .shape;
+    let quarter = ogeom_algo::make_box(m, up_at(0.0, 0.0, z0 - 1.0), (6.0, 6.0, z1 - z0 + 2.0), T)
+        .unwrap()
+        .shape;
+    ogeom_bool::common(m, &disc, &quarter, T).unwrap().shape
+}
+
+/// The edges of `s` at height `z` on the quarter plate's rim and on its
+/// side y = 0.
+fn quarter_top_edges(m: &Model, s: &Shape, z: f64) -> Vec<Shape> {
+    explore_unique(m, s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let bb = ogeom_algo::shape_bounds(m, e, T).unwrap();
+            let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
+            let level = (l.z - z).abs() < 1e-6 && (h.z - z).abs() < 1e-6;
+            let rim = l.x > -1e-6 && l.y > -1e-6 && h.x > 1.0 && h.y > 1.0;
+            let side = h.y.abs() < 1e-6 && l.x > -1e-6 && h.x > 4.0;
+            level && (rim || side)
+        })
+        .collect()
+}
+
+/// Guard, a wall rising at the bevels' ends: a quarter-disc plate 1 thick
+/// with a wall 3 × 8 × 4 standing against its side x = 0, its top rim and
+/// top side edge y = 0 chamfered 1.5, past the 1 mm walls. The two bevels
+/// meet at the plate's convex corner and both end at the wall. Each
+/// chamfer takes the material between its edge and its bevel, its tool
+/// bounded by the bevel, its faces' surfaces and the planes square to the
+/// edge at its ends, the wall's face x = 0 among them (ADR 0001, amendment
+/// "M5b"): the wall is not cut. The plate keeps, at height z, the quarter
+/// disc inside the cone, radius 4.5 - z, behind the plane y = z + 0.5: the
+/// circle's area above that line.
+#[test]
+fn rolling_bevels_meeting_on_a_plate_against_a_wall_leave_the_wall() {
+    let mut m = Model::new();
+    let plate = quarter_plate(&mut m, 0.0, 1.0);
+    let wall = ogeom_algo::make_box(&mut m, up_at(-3.0, -1.0, 0.0), (3.0, 8.0, 4.0), T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &plate, &wall, T).unwrap().shape;
+    let asked = quarter_top_edges(&m, &s, 1.0);
+    assert_eq!(asked.len(), 2, "the rim and the side's top edge");
+    let built = ogeom_fillet::chamfer_edges(&mut m, &s, &asked, 1.5, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let kept = |z: f64| {
+        let (r, h) = (4.5 - z, z + 0.5);
+        under_circle(r, h, r)
+    };
+    let want = 96.0 + integral(kept, 0.0, 1.0);
+    let got = volume(&m, &built.shape);
+    assert!((got - want).abs() <= 1e-6 * want, "{got} against {want}");
+    for e in &asked {
+        assert_eq!(built.history.generated(e).len(), 1, "its bevel");
+    }
+}
+
+/// Guard, a far wall along the floor: a slab 10 × 14 × 1, a quarter-disc
+/// block 1 high on it (z in [1, 2]) and a wall 6 × 1 × 2 standing on the
+/// slab at y in [-5, -4]. The block's top rim and top side edge y = 0
+/// chamfered 1.5 roll over its 1 mm walls into the slab (ADR 0001,
+/// amendment "M5b"): the side's tool, between y = 0, z = 2 and its bevel
+/// y = z - 0.5 over x in [0, 5], and the rim's, between the cylinder,
+/// z = 2 and its cone, radius 5.5 - z, over the quarter turn, take the
+/// block's and the slab's material they reach, exactly at each height,
+/// and never the far wall.
+#[test]
+fn rolling_bevels_meeting_on_a_block_leave_a_far_wall_along_the_floor() {
+    let mut m = Model::new();
+    let slab = ogeom_algo::make_box(&mut m, up_at(-2.0, -6.0, 0.0), (10.0, 14.0, 1.0), T)
+        .unwrap()
+        .shape;
+    let quarter = quarter_plate(&mut m, 1.0, 2.0);
+    let far = ogeom_algo::make_box(&mut m, up_at(0.0, -5.0, 1.0), (6.0, 1.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &slab, &quarter, T).unwrap().shape;
+    let s = ogeom_bool::fuse(&mut m, &s, &far, T).unwrap().shape;
+    let asked = quarter_top_edges(&m, &s, 2.0);
+    assert_eq!(asked.len(), 2, "the rim and the side's top edge");
+    let built = ogeom_fillet::chamfer_edges(&mut m, &s, &asked, 1.5, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let quarter_area = 25.0 * std::f64::consts::FRAC_PI_4;
+    // In the block, what it keeps of the quarter disc; in the slab, the
+    // union of the side's strip y < h, x < 5 and the rim's quarter ring
+    // between radius r and 5.
+    let block_taken = |z: f64| {
+        let (r, h) = (5.5 - z, z - 0.5);
+        quarter_area - under_circle(r, h, r)
+    };
+    let slab_taken = |z: f64| {
+        let (r, h) = (5.5 - z, z - 0.5);
+        let ring = std::f64::consts::FRAC_PI_4 * (25.0 - r * r);
+        let both = under_circle(5.0, 0.0, h) - under_circle(r, 0.0, h);
+        5.0 * h + ring - both
+    };
+    let taken = integral(block_taken, 1.0, 2.0) + integral(slab_taken, 0.5, 1.0);
+    let want = 140.0 + quarter_area + 12.0 - taken;
+    let got = volume(&m, &built.shape);
+    assert!((got - want).abs() <= 1e-6 * want, "{got} against {want}");
+    // Each bevel runs through the block and the slab: the boolean may
+    // leave it in pieces along where they met, all on its one surface.
+    for e in &asked {
+        let made = built.history.generated(e);
+        assert!(!made.is_empty(), "its bevel");
+        let first = surface_kind(&m, &made[0]);
+        assert!(
+            made.iter().all(|f| surface_kind(&m, f) == first),
+            "one surface"
+        );
+    }
+}
+
+/// The two corners the rolling bevels' tools do not close are refused by
+/// name (ADR 0001, amendment "M5b"): a reflex corner where one bevel is a
+/// rim's cone (a square plate 1 thick with a half-disc tab, its straight
+/// top edge meeting the tab's arc at the tab's foot, both chamfered 1.5),
+/// and three rolling bevels at one vertex (the quarter plate against its
+/// wall, its rim, its side's top edge and the upright edge where they meet
+/// all chamfered 1.5).
+#[test]
+fn rolling_bevels_at_corners_no_tool_closes_are_refused_by_name() {
+    let mut m = Model::new();
+    let square = ogeom_algo::make_box(&mut m, up_at(0.0, 0.0, 0.0), (10.0, 10.0, 1.0), T)
+        .unwrap()
+        .shape;
+    let disc = ogeom_algo::make_cylinder(&mut m, up_at(5.0, 10.0, 0.0), 3.0, 1.0, T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &square, &disc, T).unwrap().shape;
+    let asked: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
+            let tab = l.y > 10.0 - 1e-6 && h.y > 12.0;
+            let side = (l.y - 10.0).abs() < 1e-6 && (h.y - 10.0).abs() < 1e-6 && h.x < 2.0 + 1e-6;
+            l.z > 0.5 && (tab || side)
+        })
+        .collect();
+    assert!(asked.len() >= 2, "the tab's arc and the side's top edge");
+    let refused = ogeom_fillet::chamfer_edges(&mut m, &s, &asked, 1.5, T).unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("reflex corner where a bevel or a face is curved"),
+        "{refused}"
+    );
+
+    let mut m = Model::new();
+    let plate = quarter_plate(&mut m, 0.0, 1.0);
+    let wall = ogeom_algo::make_box(&mut m, up_at(-3.0, -1.0, 0.0), (3.0, 8.0, 4.0), T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &plate, &wall, T).unwrap().shape;
+    let mut asked = quarter_top_edges(&m, &s, 1.0);
+    let upright = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
+            (l.x - 5.0).abs() < 1e-6 && (h.x - 5.0).abs() < 1e-6 && h.y.abs() < 1e-6
+        })
+        .unwrap();
+    asked.push(upright);
+    let refused = ogeom_fillet::chamfer_edges(&mut m, &s, &asked, 1.5, T).unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("three or more chamfers rolling over"),
+        "{refused}"
+    );
+}
