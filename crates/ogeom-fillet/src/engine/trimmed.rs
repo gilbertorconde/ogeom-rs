@@ -1871,9 +1871,8 @@ fn assemble_widened(
     // facet, or a plane face there holding both, where the strip ends flush
     // on it, or the other strip sharing the end where either is a plane,
     // or the plane through both and along an edge left sharp there, where
-    // two strips meet across it mirrored. Where the
-    // strips are not mirrored, the meeting found on that plane is off the
-    // other strip and its face is not built.
+    // two strips meet across it mirrored. Two curved strips that are not
+    // mirrored there meet on the other strip itself, the section marched.
     let cut_at = |strip: &Strip, v: Id, p: Point, q: Point| -> Option<SurfaceGeometry> {
         if let Some(plane) = facet_planes.get(&v) {
             return Some(plane.clone());
@@ -1921,7 +1920,7 @@ fn assemble_widened(
             return Some(other.surface.clone());
         }
         let at = curved.points[&v];
-        at_v()
+        let along_edge: Option<SurfaceGeometry> = at_v()
             .filter(|(e, _)| !blended.contains(*e))
             .find_map(|(_, c)| {
                 let t = if c.ends.0 == v { c.range.0 } else { c.range.1 };
@@ -1931,8 +1930,22 @@ fn assemble_widened(
                     Plane::new(Frame::new(p, normal, Direction::new(q - p, tol).ok()?, tol).ok()?);
                 (plane.signed_distance_to(at).abs() <= tol.confusion())
                     .then(|| PlaneSurface::new(plane).into())
-            })
+            });
+        if let Some(other) = other
+            && other.surface != strip.surface
+        {
+            let mirror = along_edge.as_ref().is_some_and(|plane| {
+                mirrored(&strip.surface, &other.surface, plane, p, q, tol).unwrap_or(false)
+            });
+            if !mirror {
+                return Some(other.surface.clone());
+            }
+        }
+        along_edge
     };
+    // The width each marched section's edge is built to, by its index.
+    let marched_widths: core::cell::RefCell<FastMap<usize, f64>> =
+        core::cell::RefCell::new(FastMap::default());
     let section = |points: &mut Points,
                    edges: &mut Vec<SheetCurve>,
                    made: &mut FastMap<Key, usize>,
@@ -1957,7 +1970,16 @@ fn assemble_widened(
                     (SurfaceGeometry::Plane(_), Some(cut)) => {
                         met_between(cut, &strip.surface, p, q, tol)?
                     }
-                    (surface, Some(cut)) => met_between(surface, cut, p, q, tol)?,
+                    (surface, Some(cut)) => match met_between(surface, cut, p, q, tol)? {
+                        Some(met) => Some(met),
+                        None if !matches!(cut, SurfaceGeometry::Plane(_)) => {
+                            marched_between(surface, cut, p, q, tol)?.map(|(met, width)| {
+                                marched_widths.borrow_mut().insert(edges.len(), width);
+                                met
+                            })
+                        }
+                        None => None,
+                    },
                 };
                 match met {
                     Some((curve, range, p_low)) => {
@@ -2328,6 +2350,9 @@ fn assemble_widened(
         .map(|(_, r)| r.clone())
         .collect();
     let mut edge_widths = vec![0.0; edges.len()];
+    for (k, w) in marched_widths.borrow().iter() {
+        edge_widths[*k] = *w;
+    }
     for (key, k) in &made {
         if let Key::Contact(fi, e) = key
             && let Some(w) = widths.get(&(*fi, *e))
@@ -2645,6 +2670,89 @@ fn met_between(
             Some(period) if hi - lo > period / 2.0 => (curve, (hi, lo + period), !p_low),
             _ => (curve, (lo, hi), p_low),
         }));
+    }
+    Ok(None)
+}
+
+/// Whether two curved strips ending on `p` and `q` mirror each other
+/// through `plane`: the curve `plane` cuts from `surface` between the two
+/// lies on `other` too, to the confusion distance at every sample.
+fn mirrored(
+    surface: &SurfaceGeometry,
+    other: &SurfaceGeometry,
+    plane: &SurfaceGeometry,
+    p: Point,
+    q: Point,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    const SAMPLES: u32 = 8;
+    let Some((curve, (lo, hi), _)) = met_between(surface, plane, p, q, tol)? else {
+        return Ok(false);
+    };
+    for i in 1..SAMPLES {
+        let t = lo + (hi - lo) * f64::from(i) / f64::from(SAMPLES);
+        let at = curve.point_at(t, tol)?;
+        let foot = ogeom_geom::project::project_on_surface(other, at, 16, tol)?;
+        if foot.point.distance(at) > tol.confusion() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Where two curved surfaces with no closed-form meeting meet between `p`
+/// and `q`, both on each: the marched section's curve through the two,
+/// its range between them (the low end first, and whether that is `p`),
+/// and the width its edge is built to: the section's own tolerance plus
+/// how far the curve passes from either end. `None` where no section
+/// curve passes through both, or the piece between them is not one run of
+/// its parameter.
+fn marched_between(
+    surface: &SurfaceGeometry,
+    cut: &SurfaceGeometry,
+    p: Point,
+    q: Point,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Met, f64)>> {
+    use ogeom_intersect::section::{IntersectOptions, SurfaceIntersection, intersect_surfaces};
+    let options = IntersectOptions::default();
+    let Ok(SurfaceIntersection::Along(curves)) = intersect_surfaces(surface, cut, options, tol)
+    else {
+        return Ok(None);
+    };
+    let middle = p.midpoint(q);
+    for section in curves {
+        let curve = section.curve;
+        let domain = curve.domain();
+        let (tp, tq) = (
+            param_on(&curve, domain, p, tol)?,
+            param_on(&curve, domain, q, tol)?,
+        );
+        let off = curve
+            .point_at(tp, tol)?
+            .distance(p)
+            .max(curve.point_at(tq, tol)?.distance(q));
+        if off > section.tolerance + tol.confusion() {
+            continue;
+        }
+        let (lo, hi, p_low) = if tp <= tq {
+            (tp, tq, true)
+        } else {
+            (tq, tp, false)
+        };
+        if section.closed {
+            // A loop holds two pieces between the ends: the one taken must
+            // be the nearer to the ends' midpoint of the two.
+            let inner = curve.point_at(0.5 * (lo + hi), tol)?.distance(middle);
+            let (a, b) = (
+                curve.point_at(0.5 * (domain.0 + lo), tol)?.distance(middle),
+                curve.point_at(0.5 * (hi + domain.1), tol)?.distance(middle),
+            );
+            if a.min(b) < inner {
+                continue;
+            }
+        }
+        return Ok(Some(((curve, (lo, hi), p_low), section.tolerance + off)));
     }
     Ok(None)
 }
