@@ -160,7 +160,7 @@ pub(crate) enum Consumed {
     Outside,
     /// Corners the rings cannot place but the one-boolean fallback builds
     /// (ADR 0001, amendment "M5a"): a group's edge left sharp, a hole not
-    /// bevelled all round.
+    /// bevelled all round, a bevelled concave edge at a group's corner.
     Boolean,
 }
 
@@ -363,6 +363,23 @@ pub(crate) fn consumed(
             .all(|(_, seat)| seat.convex || (grouped.contains(&v) && !blended.contains(&seat.edge)))
     };
     if vertices.iter().any(|v| !convex_at(*v)) {
+        // A bevelled concave edge at a group's corner (a hole's, a reflex
+        // corner's): the rings cannot place its fill against the group's
+        // bevels, the one boolean can.
+        let concave_bevel_at_group = |v: Id| {
+            grouped.contains(&v)
+                && seats
+                    .iter()
+                    .filter(|((a, b), _)| *a == v || *b == v)
+                    .all(|(_, seat)| seat.convex || blended.contains(&seat.edge))
+        };
+        if vertices
+            .iter()
+            .filter(|v| !convex_at(**v))
+            .all(|v| concave_bevel_at_group(*v))
+        {
+            return Consumed::Boolean;
+        }
         return Consumed::Outside;
     }
     // A convex corner of two bevels whose facet ring spans an area: the two

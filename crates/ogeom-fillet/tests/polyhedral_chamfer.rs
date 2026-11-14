@@ -3633,3 +3633,66 @@ fn a_frame_whose_hole_is_not_bevelled_all_round_goes_through_the_one_boolean() {
         }
     }
 }
+
+/// The frame of the mitred-ridge test, every top edge chamfered 2 (the top
+/// consumed, its webs ridged) and the hole's four upright edges, concave,
+/// chamfered 1: each hole corner mixes the top's convex bevels with the
+/// upright's fill, which the rings cannot place against the hole's group,
+/// and the one-boolean fallback builds it (ADR 0001, amendment "M5a"),
+/// each fill closed under its corner's facet. Valid, nothing folded, every
+/// edge generating its bevel, the same corners to the bit in three orders.
+/// The volume, 566 17/54, is pinned: no closed form holds the ridged webs
+/// and the fills together, but the fallback's pieces are the rings' (on
+/// the same frame chamfered 1 on top, unconsumed, the rings and the
+/// fallback both give 754 2/3), and the bounds hold: more than the 561 the
+/// top's bevels leave, less than that with the four fills whole.
+#[test]
+fn a_frame_with_its_hole_s_uprights_chamfered_goes_through_the_one_boolean() {
+    let (w, t, d) = (3.0, 4.0, 2.0);
+    let want = 566.0 + 17.0 / 54.0;
+    let mut first: Option<Vec<[u64; 3]>> = None;
+    for seed in 0..3_u64 {
+        let mut m = Model::new();
+        let outer = block(&mut m, (0.0, 0.0, 0.0), (24.0, 16.0, t));
+        let cut = block(&mut m, (w, w, -1.0), (18.0, 10.0, t + 2.0));
+        let s = ogeom_bool::cut(&mut m, &outer, &cut, T).unwrap().shape;
+        let mut specs: Vec<(Shape, Chamfer)> = top_edges(&m, &s, t, d);
+        for e in explore_unique(&m, &s, ShapeType::Edge).unwrap() {
+            let bb = ogeom_algo::shape_bounds(&m, &e, T).unwrap();
+            let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
+            if h.z - l.z > 3.0 && l.x > 1.0 && h.x < 23.0 && l.y > 1.0 && h.y < 15.0 {
+                specs.push((e, Chamfer::Symmetric(1.0)));
+            }
+        }
+        assert_eq!(
+            specs.len(),
+            12,
+            "the eight top edges and the hole's four uprights"
+        );
+        let specs: Vec<(Shape, Chamfer)> = shuffled(specs.len(), seed)
+            .iter()
+            .map(|i| specs[*i].clone())
+            .collect();
+        let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert!(!folded(&m, &built.shape), "folded");
+        let got = volume(&m, &built.shape);
+        assert!(
+            got > 561.0 && got < 561.0 + 4.0 * 2.0,
+            "volume {got} outside its bounds"
+        );
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "volume {got} against {want}"
+        );
+        for (e, _) in &specs {
+            assert_eq!(built.history.generated(e).len(), 1, "an edge's bevel");
+        }
+        let k = key(&m, &built.shape).1;
+        match &first {
+            None => first = Some(k),
+            Some(held) => assert!(*held == k, "order {seed} differs"),
+        }
+    }
+}
