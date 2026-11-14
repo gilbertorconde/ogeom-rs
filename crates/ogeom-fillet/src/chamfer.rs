@@ -855,7 +855,12 @@ fn engine_chamfer_attempt(
             // On planes, only where a corner's facet is off one plane: the
             // curved path closes it with a patch.
             if crate::engine::bounded_by_planes(model, solid, tol)? {
-                return crate::engine::chamfer_patched(model, solid, specs, tol);
+                if let Some(built) = crate::engine::chamfer_patched(model, solid, specs, tol)? {
+                    return Ok(Some(built));
+                }
+                // A bevel rolling over that the rings do not place: the
+                // union of the bevels' local tools (amendment "M5b").
+                return crate::engine::rolling_tools(model, solid, specs, tol);
             }
             // Straight bevels between planes reaching a face they do not end
             // at: the one boolean (ADR 0001, amendment "M5a").
@@ -909,16 +914,19 @@ fn engine_chamfer_attempt(
             if seamless.asked_apart(specs) {
                 return engine_chamfer_apart(model, &seamless, specs, tol);
             }
-            let Some(specs) = seamless.specs(specs) else {
+            let Some(asked) = seamless.specs(specs) else {
                 return Ok(None);
             };
             let Some(request) =
-                crate::engine::Request::from_chamfers(model, &seamless.solid, &specs, tol)?
+                crate::engine::Request::from_chamfers(model, &seamless.solid, &asked, tol)?
             else {
                 return Ok(None);
             };
             let Some(built) = crate::engine::run(model, &seamless.solid, &request, tol)? else {
-                return Ok(None);
+                // A bevel rolling over that the rings do not place: the
+                // union of the bevels' local tools, on the solid as given
+                // (amendment "M5b").
+                return crate::engine::rolling_tools(model, solid, specs, tol);
             };
             Ok(Some(Built::new(
                 built.shape,
@@ -930,7 +938,8 @@ fn engine_chamfer_attempt(
 
 /// Curved chamfers the rings decline, through the one boolean: creases
 /// closed by their strips' tools, else rims turned about their axes, else
-/// bevels meeting on a convex solid.
+/// bevels meeting on a convex solid, else the union of rolling bevels'
+/// local tools.
 fn creases_or_revolved(
     model: &mut Model,
     solid: &Shape,
@@ -943,7 +952,10 @@ fn creases_or_revolved(
     if let Some(built) = crate::engine::rims_revolved(model, solid, specs, false, tol)? {
         return Ok(Some(built));
     }
-    crate::engine::convex_one_boolean(model, solid, specs, tol)
+    if let Some(built) = crate::engine::convex_one_boolean(model, solid, specs, tol)? {
+        return Ok(Some(built));
+    }
+    crate::engine::rolling_tools(model, solid, specs, tol)
 }
 
 /// The chamfer of `specs` where pieces of one edge the seams split are

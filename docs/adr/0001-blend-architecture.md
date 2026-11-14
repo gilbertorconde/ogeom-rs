@@ -757,7 +757,7 @@ convex): there the notch takes everything past each bevel's surface, so
 the solid is taken in common with each bevel's material side, a
 half-space or the inside of a cone or cylinder about the rim's axis, as
 long as no vertex has three asked edges (those close with a facet).
-Elsewhere such bevels stay on the current path until M6. Any other curved bevel the rings do not
+Elsewhere such bevels take their local tools, below. Any other curved bevel the rings do not
 place (a crease rolling over or reaching a face, or pieces of one crease
 asked apart) goes to the one boolean too where it stands alone: its strip
 closed into its tool (`close_tool`, shared with rounds, a chamfer's caps
@@ -767,8 +767,44 @@ bevel the others leave nothing of
 stays refused by name where the one-boolean fallback builds (amendment
 "M5a"), as before.
 
+**What a rolling chamfer takes.** Fusion defines a chamfer as material
+removed from an exterior edge, or added to an interior one [P34]; T-FLEX's
+notch keeps the blend and trims the element it overflows [P27]; SOLIDWORKS
+documents its overflow types for fillets (the blend trimmed against the
+adjacent surface, or the adjacent edge kept) [P30], and none for chamfers.
+So a chamfer rolling over takes the material between its edge and its
+bevel, and nothing else: its **local tool** is bounded by the bevel, the
+two seat faces' surfaces carried on past the faces, and at each end of the
+edge either the neighbouring bevel's tool, where two bevels meet at the
+vertex, or the plane square to the edge there. The tools at a vertex are
+taken together and the union applied in the one boolean (cut at a convex
+edge, fused at a concave one). A wall rising at an edge's end is cut only
+where the tool reaches it (the wall square to the edge there is the cap's
+own plane, so not at all), and a far wall only where a tool reaches it.
+
+- **Planes.** #1028's rings build the notch where they place it: a rolling
+  bevel's plane cuts the rings of its cluster, which is the same material
+  as its tool where the rings build (a plate's edge rolling over, a plate's
+  edge ending at a rising wall, a reflex corner mitred without a notch).
+  Where the rings decline (a bevel rolling down a front whose foot meets
+  the floor at a concave edge), the union of the tools is applied.
+- **Curved solids.** Where the rim and crease tools decline because the
+  asked edges meet, and the solid is not convex, the union of the tools:
+  a rim's tool is its section turned over its own arc, any other strip's
+  is closed by `close_tool` with its caps square to the edge at its ends.
+- **Corners.** At a convex corner the tools capped square at the vertex
+  cover it between them. At a reflex corner each tool would run on past
+  the vertex to meet the other's; between plane bevels of convex edges on
+  planar faces that piece is built (the polytope beyond both caps, outside
+  both bevels, inside every seat face) and added to the union. **Refused
+  by name:** a reflex corner where a bevel or a face is curved or an edge
+  is concave, and three or more rolling bevels at one vertex (their corner
+  closes with a facet). No tool closes either today.
+
 - [P32] SOLIDWORKS 2018 Help, Chamfer - Cliff Chamfer:
   https://help.solidworks.com/2018/english/SolidWorks/fworks/IDS_FW_DIAGMSG_CHAMFER_CLIFF.htm
+- [P34] Autodesk Fusion, Chamfer reference:
+  https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-REF-CHAMFER.htm
 
 ### Amendment: M5c, non-local rounds keep their surfaces (#902)
 

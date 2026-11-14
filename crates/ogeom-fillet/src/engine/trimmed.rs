@@ -7021,6 +7021,357 @@ fn convex_solid(curved: &Curved, tol: Tolerances) -> OgeomResult<bool> {
     Ok(true)
 }
 
+/// Chamfers rolling over their faces that no other route builds, by the
+/// one boolean (ADR 0001, amendment "M5b"): each chamfer takes the
+/// material between its edge and its bevel, its tool bounded by the bevel,
+/// its two faces' surfaces carried on past the faces, and at each end of
+/// the edge the plane square to it there; where two bevels meet at a
+/// vertex their tools meet there, and the union of the tools is cut (or
+/// fused, at a concave edge) in one boolean. A wall rising at an edge's end
+/// is cut only where the tool reaches it, and a far face only where a tool
+/// reaches it. A rim's tool is its section turned over its own arc. Only
+/// where some asked bevel's contact leaves its face (a bevel rolling over
+/// or reaching past it); `None` otherwise, or where a tool will not close,
+/// a boolean refuses or a bevel is left nothing of.
+///
+/// # Errors
+///
+/// Refuses by name the two corners no tool closes: three or more such
+/// bevels at one vertex (their corner closes with a facet), and two
+/// meeting at a reflex corner of the face they share (each tool would run
+/// on past the vertex to the other's). As reading the solid and building
+/// the tools, other than their refusals.
+pub(crate) fn rolling_tools(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    if specs.is_empty() {
+        return Ok(None);
+    }
+    let Some(curved) = read(model, solid, tol)? else {
+        return Ok(None);
+    };
+    let mut strips: Vec<Strip> = Vec::with_capacity(specs.len());
+    for (edge, spec) in specs {
+        let e = id(edge);
+        if !curved.edges.contains_key(&e) {
+            return Ok(None);
+        }
+        let Some(strip) = bevel_of(model, solid, &curved, e, edge, spec, tol)? else {
+            return Ok(None);
+        };
+        strips.push(strip);
+    }
+    // Some contact leaves its face: a bevel rolling over or past it.
+    let mut rolling = false;
+    'strips: for strip in &strips {
+        for (k, contact) in strip.contacts.iter().enumerate() {
+            let (lo, hi) = contact.domain();
+            for share in [0.25, 0.5, 0.75] {
+                let p = contact.point_at(lo + (hi - lo) * share, tol)?;
+                let face = &curved.faces[strip.faces[k]].shape;
+                if ogeom_algo::classify_on_face(
+                    model,
+                    face,
+                    p,
+                    ogeom_mesh::Deflection::default(),
+                    tol,
+                )? == ogeom_algo::Containment::Out
+                {
+                    rolling = true;
+                    break 'strips;
+                }
+            }
+        }
+    }
+    if !rolling {
+        return Ok(None);
+    }
+    // The corners the tools close: at most two bevels at a vertex, meeting
+    // where the face they share turns less than half a turn.
+    let asked: Vec<Id> = strips.iter().map(|s| s.edge).collect();
+    let mut at_vertex: FastMap<Id, Vec<Id>> = FastMap::default();
+    for e in &asked {
+        let c = &curved.edges[e];
+        at_vertex.entry(c.ends.0).or_default().push(*e);
+        if c.ends.1 != c.ends.0 {
+            at_vertex.entry(c.ends.1).or_default().push(*e);
+        }
+    }
+    let mut reflex: Vec<(Id, Id, Id)> = Vec::new();
+    let mut vertices: Vec<&Id> = at_vertex.keys().collect();
+    vertices.sort_unstable();
+    for v in vertices {
+        let meeting = &at_vertex[v];
+        match meeting[..] {
+            [_] => {}
+            [a, b] => {
+                if reflex_between(model, &curved, *v, (a, b), tol)? {
+                    reflex.push((*v, a, b));
+                }
+            }
+            _ => ogeom_core::ogeom_bail!(
+                Construction,
+                "three or more chamfers rolling over their faces meet at one vertex, \
+                 whose corner closes with a facet; no tool closes that corner"
+            ),
+        }
+    }
+    let mut tools = Vec::with_capacity(strips.len());
+    for ((edge, _), strip) in specs.iter().zip(&strips) {
+        let c = &curved.edges[&strip.edge];
+        if let Curve::Circle(_) = &c.curve
+            && let Some((section, sweep)) = rim_section_of(&curved, strip, tol)?
+        {
+            let Some((solid, named, sense)) = revolved_tool(model, &curved, section, sweep, tol)?
+            else {
+                return Ok(None);
+            };
+            tools.push(super::fallback::Tool {
+                solid,
+                sense,
+                faces: vec![(named, edge.clone())],
+            });
+            continue;
+        }
+        if c.ends.0 == c.ends.1 {
+            return Ok(None);
+        }
+        let mut caps = [EndCap::Own, EndCap::Own];
+        for (k, t) in [c.range.0, c.range.1].into_iter().enumerate() {
+            let h = (c.range.1 - c.range.0) * 1e-6;
+            let p = c.curve.point_at(t, tol)?;
+            let q = c.curve.point_at(if k == 0 { t + h } else { t - h }, tol)?;
+            caps[k] = EndCap::Plane {
+                at: p,
+                normal: q - p,
+            };
+        }
+        let Some(tool) = close_tool(model, &curved, strip, caps, tol)? else {
+            return Ok(None);
+        };
+        tools.push(tool);
+    }
+    // At a reflex corner each tool would run on past the vertex until it
+    // met the other's: the corner piece both would take there, beyond both
+    // caps, outside both bevels and inside every seat face.
+    for (v, a, b) in reflex {
+        let by_edge = |e: Id| strips.iter().find(|s| s.edge == e);
+        let (Some(sa), Some(sb)) = (by_edge(a), by_edge(b)) else {
+            return Ok(None);
+        };
+        // Both edges convex: their tools cut.
+        let convex = |e: Id| {
+            strips
+                .iter()
+                .position(|s| s.edge == e)
+                .is_some_and(|k| tools[k].sense == super::fallback::Sense::Cut)
+        };
+        let piece = if convex(a) && convex(b) {
+            reflex_corner(model, &curved, v, [sa, sb], tol)?
+        } else {
+            None
+        };
+        let Some(piece) = piece else {
+            ogeom_core::ogeom_bail!(
+                Construction,
+                "two chamfers rolling over their faces meet at a reflex corner where a \
+                 bevel or a face is curved or an edge is concave; the corner piece their \
+                 tools meet in is built only between plane bevels of convex edges on \
+                 planar faces"
+            );
+        };
+        tools.push(super::fallback::Tool {
+            solid: piece,
+            sense: super::fallback::Sense::Cut,
+            faces: Vec::new(),
+        });
+    }
+    let edges: Vec<Shape> = specs.iter().map(|(e, _)| e.clone()).collect();
+    super::fallback::applied(model, solid, &edges, &tools, tol)
+}
+
+/// The piece two tools meeting at the reflex corner `v` take past both
+/// their caps: the polytope beyond each edge's plane square to it at `v`,
+/// outside each bevel's plane and inside each seat face's plane. `None`
+/// where a bevel or a seat face is not a plane, an edge is not straight,
+/// or the piece is not bounded.
+fn reflex_corner(
+    model: &mut Model,
+    curved: &Curved,
+    v: Id,
+    strips: [&Strip; 2],
+    tol: Tolerances,
+) -> OgeomResult<Option<Shape>> {
+    let at = curved.points[&v];
+    let mut planes: Vec<(Vector, f64)> = Vec::new();
+    // `n . p <= n . through`.
+    let mut keep = |n: Vector, through: Point| {
+        let n = n / n.magnitude();
+        planes.push((n, n.dot(through.to_vector())));
+    };
+    for strip in strips {
+        let c = &curved.edges[&strip.edge];
+        let Curve::Line(_) = &c.curve else {
+            return Ok(None);
+        };
+        let SurfaceGeometry::Plane(bevel) = &strip.surface else {
+            return Ok(None);
+        };
+        let away = {
+            let (t, sign) = if c.ends.0 == v {
+                (c.range.0, 1.0)
+            } else {
+                (c.range.1, -1.0)
+            };
+            c.curve.d1_at(t, tol)? * sign
+        };
+        // Beyond the cap: back from the vertex along the edge.
+        keep(away, at);
+        for fi in strip.faces {
+            let SurfaceGeometry::Plane(_) = &curved.faces[fi].surface else {
+                return Ok(None);
+            };
+            let Some(n) = outward(curved, fi, at) else {
+                return Ok(None);
+            };
+            keep(n, at);
+        }
+        let plane = bevel.plane();
+        let m = plane.normal().vector();
+        let side = (at - plane.origin()).dot(m);
+        if side.abs() <= tol.confusion() {
+            return Ok(None);
+        }
+        // Outside the bevel: on the edge's side of its plane.
+        keep(m * -side.signum(), plane.origin());
+    }
+    super::fallback::polytope(model, &planes, tol)
+}
+
+/// Whether the asked edges `a` and `b` meet at `v` at a reflex corner of a
+/// face they share (or of two faces on one carrier, as a boolean leaves a
+/// face split along seams): `b`, leaving `v`, runs out of the side of `a`
+/// its face lies on. Edges sharing no carrier, or running on into each
+/// other, are not reflex.
+fn reflex_between(
+    model: &Model,
+    curved: &Curved,
+    v: Id,
+    (a, b): (Id, Id),
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let at = curved.points[&v];
+    // An edge's direction away from `v`.
+    let away = |e: Id| -> OgeomResult<Vector> {
+        let c = &curved.edges[&e];
+        let (t, sign) = if c.ends.0 == v {
+            (c.range.0, 1.0)
+        } else {
+            (c.range.1, -1.0)
+        };
+        let d = c.curve.d1_at(t, tol)? * sign;
+        Ok(d / d.magnitude())
+    };
+    let (da, db) = (away(a)?, away(b)?);
+    for fa in faces_of(curved, a) {
+        let mut shared = false;
+        for fb in faces_of(curved, b) {
+            if fa == fb
+                || ogeom_heal::same_domain(
+                    model,
+                    &curved.faces[fa].shape,
+                    &curved.faces[fb].shape,
+                    tol,
+                )?
+            {
+                shared = true;
+            }
+        }
+        if !shared {
+            continue;
+        }
+        let face = &curved.faces[fa];
+        let (Some(n), Some(&(_, w))) = (
+            outward(curved, fa, at),
+            face.loops.iter().flatten().find(|(x, _)| *x == a),
+        ) else {
+            continue;
+        };
+        // Into the face from `a`: on the left of `a` as the face walks it.
+        let c = &curved.edges[&a];
+        let tangent = {
+            let d = c
+                .curve
+                .d1_at(if c.ends.0 == v { c.range.0 } else { c.range.1 }, tol)?;
+            d / d.magnitude()
+        };
+        let walk = if w == face.reversed {
+            -tangent
+        } else {
+            tangent
+        };
+        let into = n.cross(walk);
+        if da.cross(db).magnitude() <= tol.angular() {
+            return Ok(false);
+        }
+        return Ok(db.dot(into) < -tol.angular());
+    }
+    Ok(false)
+}
+
+/// The section [`revolved_tool`] turns for a rim's strip, and the rim's
+/// own sweep: `None` where its contacts are not circles about its axis.
+fn rim_section_of(
+    curved: &Curved,
+    strip: &Strip,
+    tol: Tolerances,
+) -> OgeomResult<Option<(RimSection, f64)>> {
+    let (eps, ang) = (tol.confusion(), tol.angular());
+    let c = &curved.edges[&strip.edge];
+    let Curve::Circle(circle) = &c.curve else {
+        return Ok(None);
+    };
+    let circle = circle.circle();
+    let (origin, axis) = (circle.centre(), circle.frame().z().vector());
+    let start = c.curve.point_at(c.range.0, tol)?;
+    let q = start - origin;
+    let radial = q - axis * q.dot(axis);
+    let u = radial / radial.magnitude();
+    let mut contacts = [Point::ORIGIN; 2];
+    for (k, contact) in strip.contacts.iter().enumerate() {
+        let Curve::Circle(ring) = contact else {
+            return Ok(None);
+        };
+        let ring = ring.circle();
+        let off = ring.centre() - origin;
+        if ring.frame().z().vector().cross(axis).magnitude() > ang
+            || (off - axis * off.dot(axis)).magnitude() > eps
+        {
+            return Ok(None);
+        }
+        contacts[k] = ring.centre() + u * ring.radius();
+    }
+    let sweep = if c.ends.0 == c.ends.1 {
+        core::f64::consts::TAU
+    } else {
+        c.range.1 - c.range.0
+    };
+    Ok(Some((
+        RimSection {
+            origin,
+            axis,
+            radial: u,
+            rim: start,
+            faces: strip.faces,
+            contacts,
+        },
+        sweep,
+    )))
+}
+
 /// Whether another asked edge is a piece of `edge`'s circle (pieces of
 /// one rim asked together; alike, they close the turn as one tool, and
 /// with different chamfers they are asked apart).
