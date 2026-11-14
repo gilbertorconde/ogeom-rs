@@ -177,7 +177,26 @@ struct Ribbon {
     /// turned to agree with the last's at their join (a convex round's
     /// normal faces out of the solid, a concave one's torus's into it).
     turns: Vec<f64>,
+    /// A point side: a corner whose two sides' tangent planes differ (a
+    /// crease ending in the patch) opened into a side of no length.
+    fan: Option<Fan>,
 }
+
+/// A point side's ribbon: the point, and its cross tangent turning from
+/// back along the side before (`d[0]`) to on along the side after
+/// (`d[1]`), its rates there (`v`) each in that side's support's tangent
+/// plane, so the patch's tangent plane turns from the one to the other
+/// round the point.
+#[derive(Debug, Clone, Copy)]
+struct Fan {
+    at: Point,
+    d: [Vector; 2],
+    v: [Vector; 2],
+}
+
+/// How far two sides' tangent planes at their corner may stand apart and
+/// still meet there: past it the corner is opened into a point side.
+const FAN_ANGLE: f64 = 1e-2;
 
 impl Ribbon {
     fn parameter(&self, s: f64) -> f64 {
@@ -190,11 +209,17 @@ impl Ribbon {
     }
 
     fn point(&self, s: f64, tol: Tolerances) -> OgeomResult<Point> {
+        if let Some(fan) = &self.fan {
+            return Ok(fan.at);
+        }
         self.side.curve.point_at(self.parameter(s), tol)
     }
 
     /// The curve's derivative in `s`.
     fn tangent(&self, s: f64, tol: Tolerances) -> OgeomResult<Vector> {
+        if self.fan.is_some() {
+            return Ok(Vector::ZERO);
+        }
         let (a, b) = self.side.range;
         let scale = if self.side.forward { b - a } else { a - b };
         Ok(self.side.curve.d1_at(self.parameter(s), tol)? * scale)
@@ -203,6 +228,9 @@ impl Ribbon {
     /// The unit tangent and the unit direction into the hole in the
     /// support's tangent plane, the latter of sign `sign`.
     fn frame(&self, s: f64, sign: f64, tol: Tolerances) -> OgeomResult<(Vector, Vector)> {
+        if self.fan.is_some() {
+            ogeom_bail!(Construction, "a point side has no frame");
+        }
         let p = self.point(s, tol)?;
         let t = self.tangent(s, tol)?.normalized(tol)?;
         let n = support_normal(self.side.support_at(s), p, tol)? * self.turn(s);
@@ -214,6 +242,13 @@ impl Ribbon {
     /// corners' by cubic Hermite interpolation of their values and slopes,
     /// in the frame there.
     fn cross(&self, s: f64, tol: Tolerances) -> OgeomResult<Vector> {
+        if let Some(fan) = &self.fan {
+            let (s2, s3) = (s * s, s * s * s);
+            return Ok(fan.d[0] * (2.0 * s3 - 3.0 * s2 + 1.0)
+                + fan.v[0] * (s3 - 2.0 * s2 + s)
+                + fan.d[1] * (-2.0 * s3 + 3.0 * s2)
+                + fan.v[1] * (s3 - s2));
+        }
         let (t, across) = self.frame(s, self.sign, tol)?;
         let [(a0, b0), (a1, b1)] = self.ends;
         let [(da0, db0), (da1, db1)] = self.slopes;
@@ -245,6 +280,9 @@ impl Ribbon {
     /// its side it keeps to the support's own continuation to second
     /// order.
     fn at(&self, s: f64, d: f64, tol: Tolerances) -> OgeomResult<Point> {
+        if self.fan.is_some() {
+            return Ok(self.point(s, tol)? + self.cross(s, tol)? * d);
+        }
         let p = self.point(s, tol)?;
         let t = self.cross(s, tol)?;
         let bend = self.bend(s, p, t, tol)?;
@@ -298,6 +336,54 @@ impl Ribbon {
     }
 }
 
+/// The point side opening the corner where `before` ends and `after` starts,
+/// where their supports' tangent planes there stand more than [`FAN_ANGLE`]
+/// apart; `None` where they meet.
+///
+/// # Errors
+///
+/// As reading the supports' normals.
+fn fan_between(
+    before: &Ribbon,
+    after: &Ribbon,
+    middle: Point,
+    tol: Tolerances,
+) -> OgeomResult<Option<Fan>> {
+    if before.fan.is_some() || after.fan.is_some() {
+        return Ok(None);
+    }
+    // Only a crease running into the patch along a straight side (an edge
+    // left sharp between the corners): two strips' ends meeting at a corner
+    // on the sharp edge itself the blend takes as it is, its tangent plane
+    // there between theirs.
+    if !matches!(before.side.curve, Curve::Line(_)) && !matches!(after.side.curve, Curve::Line(_)) {
+        return Ok(None);
+    }
+    let at = before.point(1.0, tol)?;
+    let (a, b) = (
+        support_normal(before.side.support_at(1.0), at, tol)?,
+        support_normal(after.side.support_at(0.0), at, tol)?,
+    );
+    if a.cross(b).magnitude().min(1.0).asin() <= FAN_ANGLE {
+        return Ok(None);
+    }
+    let (d0, d1) = (-before.tangent(1.0, tol)?, after.tangent(0.0, tol)?);
+    // Each end's rate in its side's tangent plane, square to that end's
+    // direction, of the turn's size, so the fan leaves `d0` and reaches
+    // `d1` from inside the hole (toward its middle).
+    let size = (d1 - d0).magnitude();
+    let inward = |n: Vector, d: Vector| -> OgeomResult<Vector> {
+        let w = n.cross(d).normalized(tol)?;
+        Ok(if w.dot(middle - at) >= 0.0 { w } else { -w })
+    };
+    let (w0, w1) = (inward(a, d0)?, inward(b, d1)?);
+    Ok(Some(Fan {
+        at,
+        d: [d0, d1],
+        v: [w0 * size, -w1 * size],
+    }))
+}
+
 /// How a curve on `support` through `p` with velocity `t` (tangent to it)
 /// accelerates across it: the normal curvature in `t`'s direction times
 /// `|t|^2`, toward the side the support curves to. A plane does not.
@@ -340,6 +426,29 @@ fn support_bend(
             let bend = tm * tm / small + tp * tp * cos_phi / small.mul_add(cos_phi, big);
             Ok(out * -bend)
         }
+        SurfaceGeometry::BSpline(_) => {
+            // The second fundamental form in `t`'s direction: `t` written
+            // in the chart's tangents, its normal part of the second
+            // derivatives.
+            let foot = ogeom_geom::project::project_on_surface(support, p, 16, tol)?;
+            let (u, v) = foot.parameters;
+            let (su, sv) = ogeom_geom::Surface::d1_at(support, u, v, tol)?;
+            let (suu, suv, svv) = ogeom_geom::Surface::d2_at(support, u, v, tol)?;
+            let n = su.cross(sv).normalized(tol)?;
+            let (e, f, g) = (su.dot(su), su.dot(sv), sv.dot(sv));
+            let det = e * g - f * f;
+            if det.abs() <= f64::EPSILON {
+                ogeom_bail!(
+                    Construction,
+                    "a vertex patch's side runs where its support's chart folds"
+                );
+            }
+            let (tu, tv) = (t.dot(su), t.dot(sv));
+            let a = (g * tu - f * tv) / det;
+            let b = (e * tv - f * tu) / det;
+            let second = (suu * (a * a) + suv * (2.0 * a * b) + svv * (b * b)).dot(n);
+            Ok(n * second)
+        }
         _ => ogeom_bail!(
             Construction,
             "a vertex patch's side runs along a surface whose curvature it cannot read"
@@ -375,6 +484,12 @@ fn support_normal(support: &SurfaceGeometry, p: Point, tol: Tolerances) -> Ogeom
             let radial = (off - z * off.dot(z)).normalized(tol)?;
             (p - (o + radial * torus.major_radius())).normalized(tol)
         }
+        SurfaceGeometry::BSpline(_) => {
+            let foot = ogeom_geom::project::project_on_surface(support, p, 16, tol)?;
+            let (u, v) = foot.parameters;
+            let (du, dv) = ogeom_geom::Surface::d1_at(support, u, v, tol)?;
+            du.cross(dv).normalized(tol)
+        }
         _ => ogeom_bail!(
             Construction,
             "a vertex patch's side runs along a surface whose normal it cannot read"
@@ -406,6 +521,16 @@ impl Transfinite {
     /// where there are fewer than three sides, the sides do not close, or a
     /// support's normal cannot be read.
     pub(crate) fn new(sides: &[HoleSide], tol: Tolerances) -> OgeomResult<Self> {
+        Self::opening(sides, false, tol)
+    }
+
+    /// [`Transfinite::new`], each corner whose two sides' tangent planes
+    /// stand apart opened into a point side where `open`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Transfinite::new`].
+    fn opening(sides: &[HoleSide], open: bool, tol: Tolerances) -> OgeomResult<Self> {
         let n = sides.len();
         if n < 3 {
             ogeom_bail!(
@@ -423,6 +548,7 @@ impl Transfinite {
                 reach: [1.0; 2],
                 lift: 0.0,
                 turns: Vec::new(),
+                fan: None,
             })
             .collect();
         for r in &mut ribbons {
@@ -450,6 +576,29 @@ impl Transfinite {
                 ogeom_bail!(Construction, "a vertex patch's sides do not close");
             }
         }
+        // A corner whose two sides' tangent planes stand apart is opened
+        // into a point side between them.
+        let mut middle = Vector::ZERO;
+        for r in &ribbons {
+            middle += r.point(0.5, tol)?.to_vector();
+        }
+        #[expect(clippy::cast_precision_loss, reason = "a few sides")]
+        let middle = Point::from_vector(middle / n as f64);
+        let mut opened: Vec<Ribbon> = Vec::with_capacity(n + 1);
+        for i in 0..n {
+            let next = (i + 1) % n;
+            opened.push(ribbons[i].clone());
+            if !open {
+                continue;
+            }
+            if let Some(fan) = fan_between(&ribbons[i], &ribbons[next], middle, tol)? {
+                let mut point = ribbons[i].clone();
+                point.fan = Some(fan);
+                opened.push(point);
+            }
+        }
+        let mut ribbons = opened;
+        let n = ribbons.len();
         // The hole's middle, for each side's way into it: read at the
         // side's middle, not at a corner, where the hole may turn straight
         // on and its cross tangent run along the side.
@@ -460,6 +609,9 @@ impl Transfinite {
         #[expect(clippy::cast_precision_loss, reason = "three or four sides")]
         let middle = Point::from_vector(middle / n as f64);
         for i in 0..n {
+            if ribbons[i].fan.is_some() {
+                continue;
+            }
             let (prev, next) = ((i + n - 1) % n, (i + 1) % n);
             let start = -ribbons[prev].tangent(1.0, tol)?;
             let end = ribbons[next].tangent(0.0, tol)?;
@@ -488,6 +640,9 @@ impl Transfinite {
         // the face, which no slope mends.
         for i in 0..n {
             let next = (i + 1) % n;
+            if ribbons[i].fan.is_some() || ribbons[next].fan.is_some() {
+                continue;
+            }
             let (t_end, across_end) = ribbons[i].frame(1.0, ribbons[i].sign, tol)?;
             let (t_start, across_start) = ribbons[next].frame(0.0, ribbons[next].sign, tol)?;
             let turning = |r: &Ribbon, k: usize, rate: (Vector, Vector)| {
@@ -508,6 +663,9 @@ impl Transfinite {
         // its basis, lowering the part by at most 4/27 of its reach times
         // the slope, takes a quarter of it off.
         for r in &mut ribbons {
+            if r.fan.is_some() {
+                continue;
+            }
             let (b0, b1) = (r.ends[0].1, r.ends[1].1);
             let mut folds = false;
             for i in 1..32 {
@@ -534,6 +692,9 @@ impl Transfinite {
         if n == 4 {
             for i in 0..4 {
                 let r = &ribbons[i];
+                if r.fan.is_some() || ribbons[(i + 2) % 4].fan.is_some() {
+                    continue;
+                }
                 let (_, across) = r.frame(0.5, r.sign, tol)?;
                 let opposite = ribbons[(i + 2) % 4].point(0.5, tol)?;
                 let wanted = (opposite - r.point(0.5, tol)?).dot(across);
@@ -806,15 +967,58 @@ pub(crate) fn corner_patch(
     } else {
         sides
     };
-    let exact = Transfinite::new(sides, tol)?;
-    if let Some(at) = split_at(sides) {
+    let exact = Transfinite::opening(sides, true, tol)?;
+    let fans = exact.ribbons.iter().filter(|r| r.fan.is_some()).count();
+    // Three sides and a point side: the point side the square's collapsed
+    // top, as a three-sided patch's pole is.
+    let rotated: Vec<HoleSide>;
+    let (sides, exact) = if sides.len() == 3 && fans == 1 {
+        let k = exact
+            .ribbons
+            .iter()
+            .position(|r| r.fan.is_some())
+            .unwrap_or(2);
+        // The point side follows side `k - 1`; it is wanted after side 1.
+        let shift = (k + 3 - 1 - 1) % 3;
+        rotated = (0..3).map(|j| sides[(j + shift) % 3].clone()).collect();
+        let exact = Transfinite::opening(&rotated, true, tol)?;
+        if exact.ribbons.get(2).is_none_or(|r| r.fan.is_none()) {
+            ogeom_bail!(
+                Construction,
+                "a three-sided patch's point side is not where its pole is"
+            );
+        }
+        (&rotated[..], exact)
+    } else {
+        (sides, exact)
+    };
+    if fans > 1 && sides.len() == 3 {
+        ogeom_bail!(
+            Construction,
+            "a three-sided patch with more than one point side"
+        );
+    }
+    if fans == 0
+        && let Some(at) = split_at(sides)
+    {
         return split_patch(model, sides, &exact, at, tol);
     }
-    if sides.len() >= 5 {
+    if exact.ribbons.len() >= 5 {
         return sector_patch(model, sides, &exact, tol);
     }
-    let surface = interpolated(&Across { exact: &exact, tol }, tol)?;
-    let (gap, angle) = measured(&exact, &surface, tol)?;
+    // A patch its net cannot follow to the bands' target (a side whose
+    // support turns fast along it) is fitted again on finer nets, each
+    // twice as fine across as the last.
+    let fit = crate::marched::band_fit_target(tol);
+    let mut net = NET;
+    let (surface, gap, angle) = loop {
+        let surface = interpolated_on(&Across { exact: &exact, tol }, net, tol)?;
+        let (gap, angle) = measured(&exact, &surface, net, tol)?;
+        if (gap <= fit && angle <= fit) || net >= FINEST_NET {
+            break (surface, gap, angle);
+        }
+        net = 2 * (net - 1) + 1;
+    };
     let mut off = 0.0f64;
     #[expect(clippy::cast_precision_loss, reason = "a net of thirty-three")]
     let step = 1.0 / (NET - 1) as f64;
@@ -1185,7 +1389,7 @@ fn sector_patch(
     exact: &Transfinite,
     tol: Tolerances,
 ) -> OgeomResult<CornerPatch> {
-    let n = sides.len();
+    let n = exact.ribbons.len();
     let corners = exact.polygon();
     let h = STEP;
     let at = |x: f64, y: f64| exact.point_polygon(Point2::new(x, y), tol);
@@ -1221,6 +1425,18 @@ fn sector_patch(
             if i == 0 || i == count {
                 continue;
             }
+            if ribbon.fan.is_some() {
+                continue;
+            }
+            // Beside a point side the tangent plane turns at the corner:
+            // the net's first span there cannot follow it, read past it.
+            #[expect(clippy::cast_precision_loss, reason = "a net of sixty-five")]
+            let first = 1.0 / (SECTOR_NET - 1) as f64;
+            if (exact.ribbons[(k + n - 1) % n].fan.is_some() && t < first)
+                || (exact.ribbons[(k + 1) % n].fan.is_some() && t > 1.0 - first)
+            {
+                continue;
+            }
             let (du, dv) = surface.d1_at(t, 0.0, tol)?;
             let support = support_normal(ribbon.side.support_at(t), on, tol)?;
             angle = angle.max(sine(du.cross(dv), support));
@@ -1252,7 +1468,7 @@ fn sector_patch(
             angle = angle.max(sine(du.cross(dv), eu.cross(ev)));
         }
     }
-    let faces = sector_faces(model, sides, &surfaces, gap, tol)?;
+    let faces = sector_faces(model, sides, exact, &surfaces, gap, tol)?;
     Ok(CornerPatch {
         faces,
         gap,
@@ -1269,11 +1485,19 @@ fn sector_patch(
 fn sector_faces(
     model: &mut Model,
     sides: &[HoleSide],
+    exact: &Transfinite,
     surfaces: &[BSplineSurface],
     gap: f64,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Shape>> {
-    let n = sides.len();
+    // Each sector's side, `None` for a point side.
+    let mut real = sides.iter();
+    let of: Vec<Option<&HoleSide>> = exact
+        .ribbons
+        .iter()
+        .map(|r| if r.fan.is_some() { None } else { real.next() })
+        .collect();
+    let n = of.len();
     let widened = Tolerance::new(gap + tol.confusion())?;
     let line = |from: Point2, to: Point2, (a, b): (f64, f64)| -> OgeomResult<BSpline2d> {
         BSpline2d::new(KnotVector::new(vec![a, a, b, b], 1)?, vec![from, to], tol)
@@ -1284,13 +1508,22 @@ fn sector_faces(
         Point2::new(0.0, 1.0),
         Point2::new(1.0, 1.0),
     );
-    let mut starts = Vec::with_capacity(n);
-    for side in sides {
+    let mut starts: Vec<Option<Shape>> = Vec::with_capacity(n);
+    for side in &of {
+        let Some(side) = side else {
+            starts.push(None);
+            continue;
+        };
         let Some((p, q)) = ogeom_algo::edge_vertices(model, &side.edge)? else {
             ogeom_bail!(Construction, "a vertex patch's side has no vertices");
         };
-        starts.push(if side.forward { p } else { q });
+        starts.push(Some(if side.forward { p } else { q }));
     }
+    // A point side starts where the side after it does.
+    let starts: Vec<Shape> = (0..n)
+        .map(|k| starts[k].clone().or_else(|| starts[(k + 1) % n].clone()))
+        .collect::<Option<_>>()
+        .ok_or_else(|| ogeom_core::OgeomError::Construction("two point sides in a row".into()))?;
     let ids: Vec<_> = surfaces
         .iter()
         .map(|s| model.geometry_mut().add_surface(s.clone().into()))
@@ -1324,7 +1557,45 @@ fn sector_faces(
         spokes.push(edge);
     }
     let mut faces = Vec::with_capacity(n);
-    for (k, side) in sides.iter().enumerate() {
+    for (k, side) in of.iter().enumerate() {
+        let degenerate = |model: &mut Model, at: &Shape| -> OgeomResult<Shape> {
+            let mut data = EdgeData::new();
+            data.degenerate = true;
+            model.add_edge(data, &[at.clone(), at.clone()])
+        };
+        let Some(side) = side else {
+            // A point side's sector: the two spokes from the point, the
+            // pole at the centre, and the point's own collapsed edge.
+            let point = degenerate(model, &starts[k])?;
+            ogeom_algo::attach_pcurve(
+                model,
+                &point,
+                line(o, x, (0.0, 1.0))?.into(),
+                ids[k],
+                Location::identity(),
+                (0.0, 1.0),
+            )?;
+            let pole = degenerate(model, &centre)?;
+            ogeom_algo::attach_pcurve(
+                model,
+                &pole,
+                line(xy, y, (0.0, 1.0))?.into(),
+                ids[k],
+                Location::identity(),
+                (0.0, 1.0),
+            )?;
+            let walked = vec![
+                point,
+                spokes[(k + 1) % n].clone(),
+                pole,
+                spokes[k].reversed(),
+            ];
+            let wire = ogeom_algo::make_wire(model, &walked, tol)?.shape;
+            faces.push(
+                ogeom_algo::make_face_on(model, ids[k], std::slice::from_ref(&wire), tol)?.shape,
+            );
+            continue;
+        };
         let (a, b) = side.range;
         let (from, to) = if side.forward { (o, x) } else { (x, o) };
         ogeom_algo::attach_pcurve(
@@ -1434,8 +1705,12 @@ impl Collocation {
 fn measured(
     exact: &Transfinite,
     surface: &BSplineSurface,
+    net: usize,
     tol: Tolerances,
 ) -> OgeomResult<(f64, f64)> {
+    let n = exact.ribbons.len();
+    #[expect(clippy::cast_precision_loss, reason = "a net of a few hundred")]
+    let first = 1.0 / (net - 1) as f64;
     let count = 8 * (NET - 1);
     let (mut gap, mut angle) = (0.0f64, 0.0f64);
     for (i, ribbon) in exact.ribbons.iter().enumerate() {
@@ -1463,6 +1738,14 @@ fn measured(
             if k == 0 || k == count {
                 continue;
             }
+            // Beside a point side the tangent plane turns at the corner:
+            // the net's first span there cannot follow it, read past it.
+            if ribbon.fan.is_some()
+                || (exact.ribbons[(i + n - 1) % n].fan.is_some() && s < first)
+                || (exact.ribbons[(i + 1) % n].fan.is_some() && s > 1.0 - first)
+            {
+                continue;
+            }
             let (du, dv) = surface.d1_at(u, v, tol)?;
             let n = du.cross(dv);
 
@@ -1473,6 +1756,9 @@ fn measured(
     }
     Ok((gap, angle))
 }
+
+/// The finest net a single patch is refitted on where [`NET`] misses.
+const FINEST_NET: usize = 8 * (NET - 1) + 1;
 
 /// The interpolation points along each direction of each part of a split
 /// patch: twice as fine as [`NET`], each part's exact patch turning faster.
