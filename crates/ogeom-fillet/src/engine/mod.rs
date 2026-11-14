@@ -302,6 +302,31 @@ pub(crate) fn run(
         .iter()
         .any(|b| matches!(b.section, Section::Round { .. }))
     {
+        // Setback corners asked: P2 stops each strip at its setback and
+        // trims each face round the vertex on its conic, refusing by name
+        // what it cannot; the patch over the opening is P3's (the round
+        // side's), and until it closes them the request is handed back.
+        if !request.corners.is_empty() {
+            for (vertex, setbacks) in &request.corners {
+                let distance = |e: Id| {
+                    setbacks
+                        .per_edge
+                        .iter()
+                        .find(|(x, _)| id(x) == e)
+                        .map_or(setbacks.default, |(_, s)| *s)
+                };
+                setbacks::setback_corner(
+                    &planar,
+                    &seats,
+                    &by_edge,
+                    &corners,
+                    id(vertex),
+                    &distance,
+                    tol,
+                )?;
+            }
+            return Ok(None);
+        }
         return rounds::assemble(model, &planar, &seats, &by_edge, &corners, &steps, tol);
     }
     // A bevel reaching or touching a face not round its ends changes a face
