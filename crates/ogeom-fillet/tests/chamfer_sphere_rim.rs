@@ -493,3 +493,103 @@ fn a_thin_zone_s_rim_bevels_consume_the_sphere_and_meet_in_a_ridge() {
         );
     }
 }
+
+/// The cap's tilt for [`tilted_zone`]: its plane's normal leans 0.03
+/// along x.
+const TILT: f64 = 0.03;
+
+/// A sphere of radius 5 between z = -1 and the plane through (0, 0, 1)
+/// of normal (0.03, 0, 1): a zone whose two rims are not coaxial.
+fn tilted_zone(m: &mut Model) -> Shape {
+    let s = ball(m);
+    let slab = ogeom_algo::make_box(m, at(-10.0, -10.0, -1.0), (20.0, 20.0, 20.0), T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::common(m, &s, &slab, T).unwrap().shape;
+    let up = ogeom_math::Vector::new(TILT, 0.0, 1.0);
+    let up = up / up.magnitude();
+    let x = ogeom_math::Vector::new(up.z, 0.0, -up.x);
+    let corner = Point::new(0.0, 0.0, 1.0) - x * 30.0 - ogeom_math::Vector::Y * 30.0;
+    let frame = Frame::new(
+        corner,
+        Direction::new(up, T).unwrap(),
+        Direction::new(x, T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let lid = ogeom_algo::make_box(m, frame, (60.0, 60.0, 30.0), T)
+        .unwrap()
+        .shape;
+    ogeom_bool::cut(m, &s, &lid, T).unwrap().shape
+}
+
+/// The cone of a sphere rim's bevel `d`, the rim's plane `h` from the
+/// centre along the unit `axis`: through the flat's contact, `d` in from
+/// the rim, and the sphere's, `d` down the arc; built from 2 behind the
+/// centre to 1.5 past it along the axis.
+fn rim_cone(m: &mut Model, axis: ogeom_math::Vector, h: f64, d: f64) -> Shape {
+    let rim = (25.0 - h * h).sqrt();
+    let below = (h / 5.0).asin() - d / 5.0;
+    let (r_sphere, z_sphere) = (5.0 * below.cos(), 5.0 * below.sin());
+    let slope = (rim - d - r_sphere) / (h - z_sphere);
+    let radius = |z: f64| r_sphere + slope * (z - z_sphere);
+    let x = if axis.x.abs() < 0.9 {
+        ogeom_math::Vector::X
+    } else {
+        ogeom_math::Vector::Y
+    };
+    let x = x - axis * x.dot(axis);
+    let frame = Frame::new(
+        Point::ORIGIN - axis * 2.0,
+        Direction::new(axis, T).unwrap(),
+        Direction::new(x, T).unwrap(),
+        T,
+    )
+    .unwrap();
+    ogeom_algo::make_cone(m, frame, radius(-2.0), radius(1.5), 3.5, T)
+        .unwrap()
+        .shape
+}
+
+/// The tilted zone's two rims chamfered 1.15: the arc between them runs
+/// from about 1.86 to 2.16, so the two contacts cross all round and the
+/// sphere goes. The two bevel cones are not coaxial, so they meet in a
+/// ridge that is no circle: their section, marched. Valid, the sphere
+/// deleted, the same in both orders. The solid is the zone in common with
+/// the inside of each rim's cone about its own axis: by booleans.
+#[test]
+fn a_tilted_zone_s_rim_bevels_consume_the_sphere_and_meet_on_their_section() {
+    let d = 1.15_f64;
+    let mut m = Model::new();
+    let s = tilted_zone(&mut m);
+    let found = rims(&m, &s);
+    assert!(found.len() >= 2, "the zone's two rims");
+    let spheres: Vec<Shape> = found.iter().map(|(_, _, f)| f.clone()).collect();
+    let specs: Vec<(Shape, Chamfer)> = found
+        .iter()
+        .map(|(e, _, _)| (e.clone(), Chamfer::Symmetric(d)))
+        .collect();
+    let back: Vec<(Shape, Chamfer)> = specs.iter().rev().cloned().collect();
+    let up = ogeom_math::Vector::new(TILT, 0.0, 1.0);
+    let up = up / up.magnitude();
+    let mut o = Model::new();
+    let mut want = tilted_zone(&mut o);
+    for (axis, h) in [(up, up.z), (ogeom_math::Vector::new(0.0, 0.0, -1.0), 1.0)] {
+        let cone = rim_cone(&mut o, axis, h, d);
+        want = ogeom_bool::common(&mut o, &want, &cone, T).unwrap().shape;
+    }
+    let want = vol(&o, &want);
+    for asked in [&specs, &back] {
+        let built = chamfer_edges_with(&mut m, &s, asked, T).unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        for sphere in &spheres {
+            assert!(built.history.is_deleted(sphere), "the sphere stays");
+        }
+        let got = vol(&m, &built.shape);
+        assert!(
+            (got - want).abs() < 1e-6,
+            "volume {got} against the booleans' {want}"
+        );
+    }
+}
