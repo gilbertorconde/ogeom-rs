@@ -656,6 +656,19 @@ it for planar chamfers first.
   name. A round ending at a vertex of other than three faces, or where
   another round ends too, is not taken yet: the sheet builds it, as
   before.
+- **Curved strips closed (M5c).** `trimmed::close_tool` closes any strip
+  the trimmed assembly reads (`Strip`: contacts, surface, section) into
+  its tool: the strip, each face's piece between the edge and its contact
+  on the face's own surface, and a cap at each end on a plane, either the
+  strip's own end (the one other face there, a plane square to the edge)
+  or a joint where another strip runs on (`EndCap::Plane`, square to the
+  edge); each cap's sides straight on the faces. The chamfer side's
+  curved classes close their strips with it too. A rim's round reaching a
+  face it does not end at (a face standing under the round within its
+  contact ring, or one not proved outside the box it can take up) is
+  closed so, arc by arc, read on the solid with its seams dissolved and
+  applied on the solid as given, each tool's strip named for the edges
+  asked. A strip along one closed edge (no ends to cap) declines for now.
 - **What takes it.** The non-local test (P2/P5) routes there, and so does a
   local request the assembly cannot place: chamfers set back differently
   in one line where a third face meets the step (the step's face is then

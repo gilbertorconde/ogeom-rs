@@ -44,9 +44,10 @@ mod setbacks;
 mod trimmed;
 mod vertices;
 
+pub(crate) use fallback::{Tool, applied as apply_tools};
 pub(crate) use request::{Request, Section};
 pub(crate) use rims::assemble as round_rims;
-pub(crate) use round_strips::round as round_curved;
+pub(crate) use round_strips::{non_local_tools as round_non_local_tools, round as round_curved};
 pub(crate) use seams::{Dissolved, Seamless, dissolve, dissolve_curved, is_seam};
 pub(crate) use trimmed::{
     chamfer as chamfer_curved, chamfer_mitred as chamfer_curved_mitred, chamfer_patched,
