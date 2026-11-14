@@ -686,12 +686,209 @@ fn station(
     Ok(best.map(|(s, p, _)| (s, p)))
 }
 
+/// One strip's end at a setback corner (ADR 0001, §13 question 2): its
+/// edge, the point on it at its setback from the vertex, the unit direction
+/// along the edge away from the vertex (the section plane's normal there,
+/// and the strip's direction across its end arc, into the strip),
+/// and the strip's end arc on that plane: the ball's centre, its radius,
+/// and its two ends, each on its face (by index).
+#[derive(Debug, Clone)]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the round side's patch closes the opening from these"
+    )
+)]
+pub(crate) struct SetbackEnd {
+    pub edge: Id,
+    pub at: Point,
+    pub along: Vector,
+    pub centre: Point,
+    pub radius: f64,
+    pub rails: [(usize, Point); 2],
+}
+
+/// One face's trim at a setback corner: on face `face` (its outward unit
+/// normal and its offset along it, the trim's support), from one strip's
+/// rail end to the next one's, the conic tangent to both rails, its middle
+/// control point the face's natural corner, where the rails meet.
+#[derive(Debug, Clone)]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the round side's patch closes the opening from these"
+    )
+)]
+pub(crate) struct FaceTrim {
+    pub face: usize,
+    pub plane: (Vector, f64),
+    pub from: Point,
+    pub to: Point,
+    pub conic: ogeom_geom::Curve,
+    pub apex: Point,
+}
+
+/// A vertex closed as a setback corner, P2's part: each strip's end, in the
+/// order of the faces round the vertex (the strip between face `k` and face
+/// `k + 1`), and each face's trim between two strips (face `k + 1`'s,
+/// between strip `k` and strip `k + 1`). The opening those end arcs and
+/// trims bound, a loop of `2 n` sides, is the vertex patch's (P3, the round
+/// side's).
+#[derive(Debug, Clone)]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the round side's patch closes the opening from these"
+    )
+)]
+pub(crate) struct SetbackCorner {
+    pub vertex: Id,
+    pub ends: Vec<SetbackEnd>,
+    pub trims: Vec<FaceTrim>,
+}
+
+/// Vertex `v`'s setback corner (ADR 0001, §13 question 2): every edge
+/// meeting it a convex round, each strip stopped square to its edge at
+/// `distance` of it from the vertex, measured along the edge, and each face
+/// between two strips trimmed on the conic from one rail end to the next,
+/// tangent to both rails (as the current path's `round_vertex_setback`
+/// builds it). Refused by name where an edge at the vertex is not a convex
+/// round, a setback is shorter than the ball's own along its edge (the
+/// corner the strips meet in unasked) or reaches past the edge's far end,
+/// or two rails on a face do not run towards each other.
+///
+/// # Errors
+///
+/// As above, and as the section law's setbacks.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the round side's patch closes the opening from these"
+    )
+)]
+pub(crate) fn setback_corner(
+    planar: &Planar,
+    seats: &FastMap<(Id, Id), super::classify::Seat>,
+    sections: &FastMap<Id, &super::request::Section>,
+    corners: &FastMap<(usize, Id), Point>,
+    v: Id,
+    distance: &dyn Fn(Id) -> f64,
+    tol: Tolerances,
+) -> OgeomResult<SetbackCorner> {
+    let eps = tol.confusion();
+    let Some(order) = super::classify::faces_round(&planar.faces, v) else {
+        ogeom_bail!(
+            Construction,
+            "a setback corner's faces do not close round it"
+        );
+    };
+    let n = order.len();
+    let at = planar.points[&v];
+    // The edge between face `k` and face `k + 1`, its seat.
+    let mut ends = Vec::with_capacity(n);
+    for k in 0..n {
+        let (f, g) = (order[k], order[(k + 1) % n]);
+        let Some(seat) = seats.values().find(|s| {
+            (s.ends.0 == v || s.ends.1 == v)
+                && ((s.faces[0] == f && s.faces[1] == g) || (s.faces[0] == g && s.faces[1] == f))
+        }) else {
+            ogeom_bail!(Construction, "a setback corner's faces meet along no edge");
+        };
+        let radius = match sections.get(&seat.edge) {
+            Some(super::request::Section::Round { radius }) if seat.convex => *radius,
+            _ => ogeom_bail!(
+                Construction,
+                "a setback corner rounds every edge meeting its vertex, each convex"
+            ),
+        };
+        let d = super::sections::law(sections[&seat.edge]).setbacks(seat, planar)?;
+        let far = if seat.ends.0 == v {
+            seat.ends.1
+        } else {
+            seat.ends.0
+        };
+        let length = (planar.points[&far] - at).magnitude();
+        let along = (planar.points[&far] - at) / length;
+        let s = distance(seat.edge);
+        if !(s.is_finite() && s > eps) || s >= length - eps {
+            ogeom_bail!(
+                Construction,
+                "a setback of {s} reaches past its edge's far end, {length} away"
+            );
+        }
+        // The ball's own: how far along the edge its strip ends unasked.
+        let own = seat
+            .faces
+            .iter()
+            .filter_map(|fi| corners.get(&(*fi, v)))
+            .map(|c| (*c - at).dot(along))
+            .fold(0.0, f64::max);
+        if s < own - eps {
+            ogeom_bail!(
+                Construction,
+                "a setback of {s} is shorter than the ball's own, {own}, along its edge"
+            );
+        }
+        let on = at + along * s;
+        let mut rails = [(0, Point::ORIGIN); 2];
+        for (j, fi) in seat.faces.iter().enumerate() {
+            let face = &planar.faces[*fi];
+            let other = seat.normals[1 - j];
+            let mut inward = face.normal.cross(along);
+            if inward.dot(other) > 0.0 {
+                inward = -inward;
+            }
+            let inward = inward / inward.magnitude();
+            rails[j] = (*fi, on + inward * d[j]);
+        }
+        let centre = rails[0].1 - seat.normals[0] * radius;
+        // Rails in the order of the faces round the vertex.
+        if rails[0].0 != f {
+            rails.swap(0, 1);
+        }
+        ends.push(SetbackEnd {
+            edge: seat.edge,
+            at: on,
+            along,
+            centre,
+            radius,
+            rails,
+        });
+    }
+    let mut trims = Vec::with_capacity(n);
+    for k in 0..n {
+        let next = (k + 1) % n;
+        let face = order[next];
+        let (from, to) = (ends[k].rails[1].1, ends[next].rails[0].1);
+        let (conic, apex) =
+            crate::setback::trim_conic((from, -ends[k].along), (to, -ends[next].along), tol)?;
+        let normal = planar.faces[face].normal;
+        trims.push(FaceTrim {
+            face,
+            plane: (normal, normal.dot(from.to_vector())),
+            from,
+            to,
+            conic,
+            apex,
+        });
+    }
+    Ok(SetbackCorner {
+        vertex: v,
+        ends,
+        trims,
+    })
+}
+
 #[cfg(test)]
 mod curved_tests {
     #![allow(clippy::unwrap_used, reason = "test code")]
     use super::*;
     use crate::engine::curved::read;
-    use ogeom_geom::{CircleCurve, Curve, LineCurve};
+    use ogeom_geom::{CircleCurve, Curve, Curve3d as _, LineCurve};
     use ogeom_math::{Circle, Direction, Frame};
     use ogeom_topo::{Model, Shape};
 
@@ -1058,5 +1255,245 @@ mod curved_tests {
                 assert!(matches!(over.curve, Curve::Circle(_)), "{r:?}");
             }
         }
+    }
+
+    /// The cube 10 on a side, its corner (10, 10, 10) and its three edges
+    /// there rounded 1: the planar read, the seats, the sections and P2's
+    /// own corners, for the setback corner tests.
+    #[allow(
+        clippy::type_complexity,
+        reason = "the fixtures a setback corner reads"
+    )]
+    fn cube_corner(
+        section: &super::super::request::Section,
+    ) -> (
+        Planar,
+        FastMap<(Id, Id), super::super::classify::Seat>,
+        FastMap<Id, &super::super::request::Section>,
+        FastMap<(usize, Id), Point>,
+        Id,
+    ) {
+        let mut m = Model::new();
+        let cube = ogeom_algo::make_box(&mut m, up_at(0.0, 0.0, 0.0), (10.0, 10.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let planar = super::super::classify::read_planar(&m, &cube, T)
+            .unwrap()
+            .unwrap();
+        let seats = planar.seats().unwrap();
+        let v = *planar
+            .points
+            .iter()
+            .find(|(_, p)| p.distance(Point::new(10.0, 10.0, 10.0)) < 1e-9)
+            .unwrap()
+            .0;
+        let sections: FastMap<Id, &super::super::request::Section> = seats
+            .values()
+            .filter(|s| s.ends.0 == v || s.ends.1 == v)
+            .map(|s| (s.edge, section))
+            .collect();
+        let mut setback: FastMap<(Id, Id), f64> = FastMap::default();
+        for s in seats.values() {
+            if let Some(sec) = sections.get(&s.edge) {
+                let d = super::super::sections::law(sec)
+                    .setbacks(s, &planar)
+                    .unwrap();
+                for (k, f) in s.faces.iter().enumerate() {
+                    setback.insert((id(&planar.faces[*f].shape), s.edge), d[k]);
+                }
+            }
+        }
+        let corners = setback_corners(&planar, &setback, &mut FastMap::default(), T)
+            .unwrap()
+            .unwrap();
+        (planar, seats, sections, corners, v)
+    }
+
+    /// The cube's corner closed as a setback corner 2 along each edge: each
+    /// strip ends square to its edge 2 from the corner, the ball's centre
+    /// there 1 in from both its faces, its rails on them and on its arc;
+    /// each face's trim is the conic from one rail end to the next, on the
+    /// face, its middle control point the face's natural corner 1 in from
+    /// both edges, weighted by the cosine of half its quarter turn; and the
+    /// three ends and three trims close a loop, end to trim to end.
+    #[test]
+    fn a_cube_corner_s_setback_corner_ends_its_strips_and_trims_its_faces() {
+        let section = super::super::request::Section::Round { radius: 1.0 };
+        let (planar, seats, sections, corners, v) = cube_corner(&section);
+        let corner = Point::new(10.0, 10.0, 10.0);
+        let built = setback_corner(&planar, &seats, &sections, &corners, v, &|_| 2.0, T).unwrap();
+        assert_eq!(built.vertex, v);
+        assert_eq!((built.ends.len(), built.trims.len()), (3, 3));
+        for end in &built.ends {
+            assert!(sections.contains_key(&end.edge));
+            assert!((end.at.distance(corner) - 2.0).abs() < 1e-12);
+            assert!((end.radius - 1.0).abs() < 1e-12);
+            let off = corner - end.centre;
+            let across = off - end.along * off.dot(end.along);
+            assert!((across.magnitude() - 2.0_f64.sqrt()).abs() < 1e-12);
+            assert!((end.centre - end.at).dot(end.along).abs() < 1e-12);
+            for (fi, rail) in end.rails {
+                let n = planar.faces[fi].normal;
+                assert!(
+                    (n.dot(rail.to_vector()) - 10.0).abs() < 1e-12,
+                    "on its face"
+                );
+                assert!(
+                    (rail.distance(end.centre) - 1.0).abs() < 1e-12,
+                    "on the arc"
+                );
+            }
+        }
+        for trim in &built.trims {
+            let (n, off) = trim.plane;
+            assert!((off - 10.0).abs() < 1e-12 && (n.magnitude() - 1.0).abs() < 1e-12);
+            let lean = corner - trim.apex;
+            let flat = lean - n * lean.dot(n);
+            assert!((flat.magnitude() - 2.0_f64.sqrt()).abs() < 1e-12);
+            let Curve::BSpline(c) = &trim.conic else {
+                panic!("a conic");
+            };
+            let w = c.control_points()[1].weight;
+            assert!((w - 0.5_f64.sqrt()).abs() < 1e-12, "{w}");
+            let (lo, hi) = trim.conic.domain();
+            for k in 0..=4 {
+                let t = lo + (hi - lo) * f64::from(k) / 4.0;
+                let p = trim.conic.point_at(t, T).unwrap();
+                assert!((n.dot(p.to_vector()) - off).abs() < 1e-12, "on the face");
+            }
+        }
+        for k in 0..3 {
+            let next = (k + 1) % 3;
+            assert!(built.ends[k].rails[1].1.distance(built.trims[k].from) < 1e-12);
+            assert!(built.trims[k].to.distance(built.ends[next].rails[0].1) < 1e-12);
+            assert_eq!(built.trims[k].face, built.ends[k].rails[1].0);
+            assert_eq!(built.trims[k].face, built.ends[next].rails[0].0);
+        }
+    }
+
+    /// The same corner's refusals by name: a setback shorter than the
+    /// ball's own (1 at a square corner), one past the edge's far end, and
+    /// an edge at the vertex not rounded.
+    #[test]
+    fn a_setback_corner_refuses_by_name_what_it_cannot_close() {
+        let section = super::super::request::Section::Round { radius: 1.0 };
+        let (planar, seats, sections, corners, v) = cube_corner(&section);
+        let short =
+            setback_corner(&planar, &seats, &sections, &corners, v, &|_| 0.5, T).unwrap_err();
+        assert!(
+            short.to_string().contains("shorter than the ball's own"),
+            "{short}"
+        );
+        let past =
+            setback_corner(&planar, &seats, &sections, &corners, v, &|_| 12.0, T).unwrap_err();
+        assert!(
+            past.to_string().contains("past its edge's far end"),
+            "{past}"
+        );
+        let mut two = sections.clone();
+        let one = *two.keys().next().unwrap();
+        two.remove(&one);
+        let sharp = setback_corner(&planar, &seats, &two, &corners, v, &|_| 2.0, T).unwrap_err();
+        assert!(sharp.to_string().contains("rounds every edge"), "{sharp}");
+    }
+
+    /// The cube corner's setback opening closed by the M4 corner patch, the
+    /// round side's stand-in until its 2n-sided patch lands: the three end
+    /// arcs, each on its strip's cylinder, and the three face trims, each
+    /// on its face, walked as one loop of six sides; the patch meets every
+    /// side and support within the corner patch's own fit target.
+    #[test]
+    fn a_cube_corner_s_setback_opening_closes_under_the_corner_patch() {
+        use crate::round::transfinite::{HoleSide, corner_patch};
+        use ogeom_geom::{CylinderSurface, PlaneSurface, SurfaceGeometry};
+        use ogeom_math::{Cylinder, Plane};
+        const FIT: f64 = 2e-4;
+        let section = super::super::request::Section::Round { radius: 1.0 };
+        let (planar, seats, sections, corners, v) = cube_corner(&section);
+        let built = setback_corner(&planar, &seats, &sections, &corners, v, &|_| 2.0, T).unwrap();
+        let mut m = Model::new();
+        // The loop's corners, end by end: each end's two rails.
+        let at: Vec<Point> = built
+            .ends
+            .iter()
+            .flat_map(|e| [e.rails[0].1, e.rails[1].1])
+            .collect();
+        let vertices: Vec<Shape> = at
+            .iter()
+            .map(|p| ogeom_algo::make_vertex(&mut m, *p).shape)
+            .collect();
+        let mut sides = Vec::new();
+        for (k, end) in built.ends.iter().enumerate() {
+            let (a, b) = (end.rails[0].1 - end.centre, end.rails[1].1 - end.centre);
+            let axis = Direction::new(a.cross(b), T).unwrap();
+            let x = Direction::new(a, T).unwrap();
+            let turn = a.angle(b, T).unwrap();
+            let arc = Curve::Circle(CircleCurve::new(
+                Circle::new(Frame::new(end.centre, axis, x, T).unwrap(), end.radius, T).unwrap(),
+            ));
+            let along = Direction::new(end.along, T).unwrap();
+            let band = Frame::new(end.centre, along, x, T).unwrap();
+            let support: SurfaceGeometry =
+                CylinderSurface::new(Cylinder::new(band, end.radius, T).unwrap(), (-1.0, 5.0))
+                    .unwrap()
+                    .into();
+            let edge = ogeom_algo::make_edge_between(
+                &mut m,
+                arc.clone(),
+                (0.0, turn),
+                &vertices[2 * k],
+                &vertices[2 * k + 1],
+                T,
+            )
+            .unwrap()
+            .shape;
+            sides.push(HoleSide {
+                edge,
+                curve: arc,
+                range: (0.0, turn),
+                forward: true,
+                support,
+                pieces: Vec::new(),
+            });
+            let trim = &built.trims[k];
+            let range = trim.conic.domain();
+            assert!(trim.conic.point_at(range.0, T).unwrap().distance(trim.from) < 1e-12);
+            let normal = Direction::new(trim.plane.0, T).unwrap();
+            let face = Frame::new(trim.from, normal, Direction::new(a, T).unwrap(), T)
+                .or_else(|_| Frame::new(trim.from, normal, Direction::X, T))
+                .unwrap();
+            let support: SurfaceGeometry = PlaneSurface::new(Plane::new(face)).into();
+            let edge = ogeom_algo::make_edge_between(
+                &mut m,
+                trim.conic.clone(),
+                range,
+                &vertices[2 * k + 1],
+                &vertices[(2 * k + 2) % 6],
+                T,
+            )
+            .unwrap()
+            .shape;
+            sides.push(HoleSide {
+                edge,
+                curve: trim.conic.clone(),
+                range,
+                forward: true,
+                support,
+                pieces: Vec::new(),
+            });
+        }
+        // Counter-clockwise seen from outside: the loop's area vector
+        // points out of the corner.
+        let area = (0..6).fold(Vector::new(0.0, 0.0, 0.0), |acc, k| {
+            acc + at[k].to_vector().cross(at[(k + 1) % 6].to_vector())
+        });
+        if area.dot(Vector::new(1.0, 1.0, 1.0)) < 0.0 {
+            sides.reverse();
+            for side in &mut sides {
+                side.forward = !side.forward;
+            }
+        }
+        let patch = corner_patch(&mut m, &sides, T).unwrap();
+        assert!(patch.gap <= FIT && patch.angle <= FIT, "{patch:?}");
     }
 }
