@@ -2881,3 +2881,136 @@ fn a_compound_holding_a_face_is_refused_by_name() {
         "{refused}"
     );
 }
+
+/// A plate 20 by 20 by 4 with an L-shaped hole through it, the union of
+/// [3, 17] by [3, 8] and [3, 8] by [8, 17]: webs 3 wide all round. Every
+/// top edge, the hole's and the outline's, chamfered 2: across each web the
+/// two bevels meet in a ridge, so the top face is consumed there, and the
+/// hole is not convex, its corner at (8, 8) the material's convex corner.
+/// The hole's bevels mitre at every corner, so what they take is the
+/// sum of their sides' bands (convex polytopes meeting only on their
+/// sides). Valid, nothing folded, and the exact volume over convex
+/// polytopes (the plate cut by the outline's bevels, less the hole's two
+/// blocks, less the bands), in two orders: 990 2/3 less 110.
+#[test]
+fn a_consumed_face_round_a_hole_that_is_not_convex_loses_its_sides_bands() {
+    use ogeom_math::Vector;
+    let d = 2.0_f64;
+    let mut m = Model::new();
+    let plate = block(&mut m, (0.0, 0.0, 0.0), (20.0, 20.0, 4.0));
+    let a = block(&mut m, (3.0, 3.0, -1.0), (14.0, 5.0, 6.0));
+    let b = block(&mut m, (3.0, 8.0, -1.0), (5.0, 9.0, 6.0));
+    let s = ogeom_bool::cut(&mut m, &plate, &a, T).unwrap().shape;
+    let s = ogeom_bool::cut(&mut m, &s, &b, T).unwrap().shape;
+    let top: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            bb.low().unwrap().z > 4.0 - 1e-6
+        })
+        .map(|e| (e, Chamfer::Symmetric(d)))
+        .collect();
+    assert!(top.len() >= 10, "the hole's and the outline's top edges");
+    let back: Vec<(Shape, Chamfer)> = top.iter().rev().cloned().collect();
+
+    // Each side's bevel plane, outward: through the line `d` in from the
+    // side on the top and the line `d` down the wall.
+    let up = Vector::new(0.0, 0.0, 1.0);
+    let side = |at: (f64, f64), u: Vector, wall: Vector| {
+        bevel_plane(Vector::new(at.0, at.1, 4.0), u, (up, d), (wall, d))
+    };
+    let (x, y) = (Vector::X, Vector::Y);
+    let mut outline = box_planes((20.0, 20.0, 4.0));
+    outline.push(side((0.0, 0.0), x, -y));
+    outline.push(side((20.0, 0.0), y, x));
+    outline.push(side((0.0, 20.0), x, y));
+    outline.push(side((0.0, 0.0), y, -x));
+    let left = side((3.0, 3.0), y, x);
+    let bottom = side((3.0, 3.0), x, y);
+    let right_a = side((17.0, 3.0), y, -x);
+    let top_a = side((8.0, 8.0), x, -y);
+    let right_b = side((8.0, 8.0), y, -x);
+    let top_b = side((3.0, 17.0), x, -y);
+    // The solid: the bevelled plate less the hole's two blocks, which
+    // meet in a face.
+    let vol = |sets: &[&[(Vector, f64)]]| {
+        let all: Vec<(Vector, f64)> = sets.iter().flat_map(|s| s.iter().copied()).collect();
+        convex_polytope(&all).0
+    };
+    let block_planes = |x0: f64, x1: f64, y0: f64, y1: f64| {
+        [
+            (-Vector::X, -x0),
+            (Vector::X, x1),
+            (-Vector::Y, -y0),
+            (Vector::Y, y1),
+        ]
+    };
+    let solid = vol(&[&outline])
+        - vol(&[&outline, &block_planes(3.0, 17.0, 3.0, 8.0)])
+        - vol(&[&outline, &block_planes(3.0, 8.0, 8.0, 17.0)]);
+    // What the hole's bevels take, as each side's band: past its bevel,
+    // behind its wall, and on its side of the plane through its bevel's
+    // and each neighbour's meeting line. At (8, 8), where the material is
+    // convex, a side's band holds what its bevel takes deeper than the
+    // neighbour's; at every other corner, what it takes less deep. The
+    // bands lie in the material and meet only on their sides.
+    let split = |e: (Vector, f64), f: (Vector, f64), convex: bool| {
+        let (n, o) = if convex {
+            (f.0 - e.0, f.1 - e.1)
+        } else {
+            (e.0 - f.0, e.1 - f.1)
+        };
+        (n / n.magnitude(), o / n.magnitude())
+    };
+    // The hole's sides in turn round from (3, 3), each with its bevel and
+    // the material side of its wall; the material is convex only at the
+    // corner after the third.
+    let sides = [
+        (bottom, (Vector::Y, 3.0)),
+        (right_a, (-Vector::X, -17.0)),
+        (top_a, (-Vector::Y, -8.0)),
+        (right_b, (-Vector::X, -8.0)),
+        (top_b, (-Vector::Y, -17.0)),
+        (left, (Vector::X, 3.0)),
+    ];
+    let convex = |corner: usize| corner == 3;
+    let taken: f64 = (0..6)
+        .map(|k| {
+            let (e, wall) = sides[k];
+            let (before, after) = (sides[(k + 5) % 6].0, sides[(k + 1) % 6].0);
+            let band = [
+                (-e.0, -e.1),
+                wall,
+                split(e, before, convex(k)),
+                split(e, after, convex((k + 1) % 6)),
+            ];
+            vol(&[&outline, &band])
+        })
+        .sum();
+    let want = solid - taken;
+    for asked in [&top, &back] {
+        let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, asked, T).unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert!(!folded(&m, &built.shape), "folded");
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "volume {got} against {want}"
+        );
+        // The bottom, the ten walls, the twelve bevels and what the top
+        // keeps past the hole's corner at (8, 8): the square [10, 18]².
+        let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+            .unwrap()
+            .len();
+        assert_eq!(faces, 22, "faces");
+        for (e, _) in asked.iter() {
+            assert_eq!(
+                built.history.generated(e).len(),
+                1,
+                "an edge without its bevel"
+            );
+        }
+    }
+}
