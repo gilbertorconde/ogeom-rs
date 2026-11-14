@@ -35,7 +35,10 @@
 //! polygon with as many corners, `d_i = 1 - l_i - l_{i+1}` and
 //! `s_i = l_{i+1} / (l_i + l_{i+1})` from its Wachspress coordinates `l`
 //! (for a triangle and a square these are the formulas above), their
-//! distances cubed too.
+//! distances to the fourth: a setback corner's face trims are planar
+//! sides, whose ribbons are their faces' planes running on past the
+//! corner's other faces, and cubed those entered beside a neighbouring
+//! trim at second order, the exact patch standing 2e-4 past its face.
 //!
 //! The patch is not a tensor product, so the face carries it interpolated:
 //! a clamped bicubic B-spline taking it at [`NET`] by [`NET`] points of the
@@ -881,7 +884,7 @@ impl Transfinite {
             .map(|k| {
                 (0..n)
                     .filter(|j| *j != k)
-                    .map(|j| d[j].powi(3))
+                    .map(|j| d[j].powi(4))
                     .product::<f64>()
             })
             .collect();
