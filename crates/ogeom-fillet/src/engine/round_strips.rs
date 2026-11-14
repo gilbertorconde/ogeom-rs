@@ -1,0 +1,552 @@
+//! Rounds on solids with curved faces through the trimmed assembly: each
+//! edge's strip in closed form, handed to [`assemble`] with the corners
+//! where the contacts cross ([`curved_corners`]).
+//!
+//! A straight edge between two planes, or between a plane and a cylinder
+//! along one of its rulings (the plane holding the cylinder's direction),
+//! rounds on the cylinder its ball sweeps: the ball's centre stands a radius
+//! in from both faces, on the line where the plane moved in meets the other
+//! plane moved in, or the cylinder moved in or out (by the side its
+//! material is on). A rim between a planar cap and a coaxial cylinder or
+//! cone rounds on the torus its ball sweeps. Convex straight edges only.
+
+use ogeom_algo::Built;
+use ogeom_core::{FastMap, FastSet, OgeomResult, Tolerances};
+use ogeom_geom::{CircleCurve, Curve, CylinderSurface, LineCurve, SurfaceGeometry, TorusSurface};
+use ogeom_math::{Circle, Cylinder, Direction, Frame, Point, Torus, Vector};
+use ogeom_topo::{Model, Shape};
+
+use super::curved::{Curved, CurvedEdge, read};
+use super::setbacks::curved_corners;
+use super::trimmed::{Section, Strip, assemble, away, faces_of, outward};
+use super::{Id, id};
+
+/// The rounds of `rounds` (each an edge and its radius) on `solid` with
+/// curved faces, or `None` where an edge, a vertex or the result lies
+/// outside the classes built here.
+///
+/// # Errors
+///
+/// Where the operation is cancelled.
+pub(crate) fn round(
+    model: &mut Model,
+    solid: &Shape,
+    rounds: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let Some(curved) = read(model, solid, tol)? else {
+        return Ok(None);
+    };
+    // A face's own seam (an edge one face walks both ways) names nothing.
+    let mut asked: Vec<(Id, &Shape, f64)> = rounds
+        .iter()
+        .map(|(e, r)| (id(e), e, *r))
+        .filter(|(e, _, _)| faces_of(&curved, *e).len() != 1)
+        .collect();
+    if asked.is_empty() {
+        return Ok(None);
+    }
+    asked.sort_unstable_by_key(|(e, _, _)| *e);
+    if asked.windows(2).any(|w| w[0].0 == w[1].0) {
+        return Ok(None);
+    }
+    // P1.
+    let mut strips: Vec<Strip> = Vec::with_capacity(asked.len());
+    let mut boxes: Vec<(usize, ogeom_algo::HalfSpaces)> = Vec::new();
+    for (edge, _, radius) in &asked {
+        let Some((strip, clear)) = strip_of(&curved, *edge, *radius, tol)? else {
+            return Ok(None);
+        };
+        if let Some(clear) = clear {
+            boxes.push((strips.len(), clear));
+        }
+        strips.push(strip);
+    }
+    // A rim's round reaching a face it does not blend (a cavity's wall
+    // under a thin cap) is not built here: every face but the strip's two
+    // proved outside the box the round can take up.
+    let fit = crate::marched::band_fit_target(tol);
+    for (k, clear) in &boxes {
+        for (fi, face) in curved.faces.iter().enumerate() {
+            if strips[*k].faces.contains(&fi) {
+                continue;
+            }
+            if ogeom_algo::certify_face_within(model, &face.shape, clear, fit, tol)?.is_err() {
+                return Ok(None);
+            }
+        }
+    }
+    let mut contacts: FastMap<(usize, Id), Curve> = FastMap::default();
+    for s in &strips {
+        for k in 0..2 {
+            contacts.insert((s.faces[k], s.edge), s.contacts[k].clone());
+        }
+    }
+    // P2.
+    let Some(corners) = curved_corners(&curved, &contacts, tol)? else {
+        return Ok(None);
+    };
+    // A straight strip's cylinder over its own stations, from the least of
+    // its corners' to the greatest: a surface reaching past its face's trim
+    // is one more thing a later operation reads. An end whose two corners
+    // stand at different stations (a leaning cap) is widened by a radius,
+    // for its arc between them.
+    for strip in &mut strips {
+        let SurfaceGeometry::Cylinder(c) = &strip.surface else {
+            continue;
+        };
+        let cyl = c.cylinder();
+        let frame = cyl.frame();
+        let (o, u) = (frame.origin(), frame.z().vector());
+        let e = &curved.edges[&strip.edge];
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for v in [e.ends.0, e.ends.1] {
+            let (Some(c0), Some(c1)) = (
+                corners.get(&(strip.faces[0], v)),
+                corners.get(&(strip.faces[1], v)),
+            ) else {
+                return Ok(None);
+            };
+            let (s0, s1) = ((c0.point - o).dot(u), (c1.point - o).dot(u));
+            let lean = if (s0 - s1).abs() > tol.confusion() {
+                cyl.radius()
+            } else {
+                0.0
+            };
+            lo = lo.min(s0.min(s1) - lean);
+            hi = hi.max(s0.max(s1) + lean);
+        }
+        if hi - lo <= tol.confusion() {
+            return Ok(None);
+        }
+        let start = Frame::new(o + u * lo, frame.z(), frame.x(), tol)?;
+        strip.surface =
+            CylinderSurface::new(Cylinder::new(start, cyl.radius(), tol)?, (0.0, hi - lo))?.into();
+        // Each contact the segment between its face's two corners, and the
+        // spine over the surface's span: the lines run past the edge only to
+        // find the corners, and a curve's domain past its edge is one more
+        // thing a later operation reads.
+        // Each keeps its own line and parameters (the corners hold theirs on
+        // it), its domain cut to them.
+        let trimmed = |curve: &Curve, from: Point, to: Point| -> OgeomResult<Option<Curve>> {
+            let Curve::Line(line) = curve else {
+                return Ok(None);
+            };
+            let axis = line.axis();
+            let t = |p: Point| (p - axis.location).dot(axis.direction.vector());
+            let (a, b) = (t(from), t(to));
+            Ok(Some(LineCurve::over(axis, a.min(b), a.max(b))?.into()))
+        };
+        for k in 0..2 {
+            let (p, q) = (
+                corners[&(strip.faces[k], e.ends.0)].point,
+                corners[&(strip.faces[k], e.ends.1)].point,
+            );
+            let Some(cut) = trimmed(&strip.contacts[k], p, q)? else {
+                return Ok(None);
+            };
+            strip.contacts[k] = cut;
+        }
+        let Section::Arc { spine } = &strip.section else {
+            return Ok(None);
+        };
+        let Some(spine) = trimmed(spine, o + u * lo, o + u * hi)? else {
+            return Ok(None);
+        };
+        strip.section = Section::Arc { spine };
+    }
+    let blended: FastSet<Id> = strips.iter().map(|s| s.edge).collect();
+    // P4 and P5; what the assembly or the solid's check refuses is handed
+    // back.
+    let built = match assemble(model, &curved, &strips, &blended, &corners, tol) {
+        Ok(Some(built)) => built,
+        Ok(None) => return Ok(None),
+        Err(e @ ogeom_core::OgeomError::Cancelled) => return Err(e),
+        Err(_) => return Ok(None),
+    };
+    match super::guards::solid_fits(model, &built.shape, tol) {
+        Ok(()) => Ok(Some(built)),
+        Err(e @ ogeom_core::OgeomError::Cancelled) => Err(e),
+        Err(_) => Ok(None),
+    }
+}
+
+/// The strip of `edge` rounded at `radius`, with, for a rim, the outside of
+/// the box its round can take up; `None` where its seat is not one built
+/// here.
+fn strip_of(
+    curved: &Curved,
+    edge: Id,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Strip, Option<ogeom_algo::HalfSpaces>)>> {
+    let Some(e) = curved.edges.get(&edge) else {
+        return Ok(None);
+    };
+    let [f0, f1] = faces_of(curved, edge)[..] else {
+        return Ok(None);
+    };
+    if !(radius.is_finite() && radius > tol.confusion()) {
+        return Ok(None);
+    }
+    match &e.curve {
+        Curve::Line(_) => Ok(straight(curved, edge, e, [f0, f1], radius, tol)?.map(|s| (s, None))),
+        Curve::Circle(circle) => {
+            Ok(rim(curved, edge, circle, [f0, f1], radius, tol)?.map(|(s, c)| (s, Some(c))))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// A convex straight edge's strip between two planes, or a plane and a
+/// cylinder along its ruling.
+fn straight(
+    curved: &Curved,
+    edge: Id,
+    e: &CurvedEdge,
+    faces: [usize; 2],
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Strip>> {
+    let (a, b) = (curved.points[&e.ends.0], curved.points[&e.ends.1]);
+    let length = a.distance(b);
+    if length <= tol.confusion() {
+        return Ok(None);
+    }
+    let u = (b - a) / length;
+    let mid = a + (b - a) * 0.5;
+    let (Some(n0), Some(n1)) = (
+        outward(curved, faces[0], mid),
+        outward(curved, faces[1], mid),
+    ) else {
+        return Ok(None);
+    };
+    // Each face as the ball's centre sees it: a plane's offset, or a
+    // cylinder's axis and the radius its centre stands at.
+    enum Offset {
+        Plane(Vector),
+        Cylinder(Point, f64),
+    }
+    let mut offsets = Vec::with_capacity(2);
+    for (k, fi) in faces.iter().enumerate() {
+        let n = if k == 0 { n0 } else { n1 };
+        match &curved.faces[*fi].surface {
+            SurfaceGeometry::Plane(_) => offsets.push(Offset::Plane(n)),
+            SurfaceGeometry::Cylinder(c) => {
+                let cyl = c.cylinder();
+                let axis = cyl.axis();
+                let (o, ax) = (axis.location, axis.direction.vector());
+                if u.cross(ax).magnitude() > tol.angular() {
+                    return Ok(None);
+                }
+                // The axis where it crosses the edge's section through `mid`.
+                let o = o + ax * (mid - o).dot(ax);
+                // Material inside the cylinder where its outward normal
+                // points off the axis.
+                let inside = n.dot(mid - o) > 0.0;
+                let rho = if inside {
+                    cyl.radius() - radius
+                } else {
+                    cyl.radius() + radius
+                };
+                if rho <= tol.confusion() {
+                    return Ok(None);
+                }
+                offsets.push(Offset::Cylinder(o, rho));
+            }
+            _ => return Ok(None),
+        }
+    }
+    // The ball's centre in the section through `mid`.
+    let centre = match (&offsets[0], &offsets[1]) {
+        (Offset::Plane(p), Offset::Plane(q)) => {
+            let g = p.dot(*q);
+            if (1.0 + g).abs() <= tol.angular() {
+                return Ok(None);
+            }
+            let s = -radius / (1.0 + g);
+            mid + (*p + *q) * s
+        }
+        (Offset::Plane(n), Offset::Cylinder(o, rho))
+        | (Offset::Cylinder(o, rho), Offset::Plane(n)) => {
+            // Along the plane moved in: `mid - n r + t m`.
+            let m = n.cross(u);
+            let base = mid - *n * radius;
+            let w = base - *o;
+            let (qb, qc) = (2.0 * w.dot(m), w.dot(w) - rho * rho);
+            let disc = qb * qb - 4.0 * qc;
+            if disc < 0.0 {
+                return Ok(None);
+            }
+            let root = disc.sqrt();
+            let pick = [(-qb - root) / 2.0, (-qb + root) / 2.0]
+                .into_iter()
+                .map(|t| base + m * t)
+                .min_by(|x, y| x.distance(mid).total_cmp(&y.distance(mid)));
+            let Some(c) = pick else {
+                return Ok(None);
+            };
+            c
+        }
+        _ => return Ok(None),
+    };
+    // Each contact, and its standing on its own face's side of the edge.
+    let mut feet = [Point::ORIGIN; 2];
+    for (k, fi) in faces.iter().enumerate() {
+        let foot = match &offsets[k] {
+            Offset::Plane(n) => centre + *n * radius,
+            Offset::Cylinder(o, _) => {
+                let cyl_r = match &curved.faces[*fi].surface {
+                    SurfaceGeometry::Cylinder(c) => c.cylinder().radius(),
+                    _ => return Ok(None),
+                };
+                let off = centre - *o;
+                *o + off / off.magnitude() * cyl_r
+            }
+        };
+        let Some(inside) = away(curved, *fi, edge) else {
+            return Ok(None);
+        };
+        // Into the face from the edge, square to it.
+        let into = {
+            let d = inside - mid;
+            d - u * d.dot(u)
+        };
+        if (foot - mid).dot(into) <= 0.0 {
+            return Ok(None);
+        }
+        feet[k] = foot;
+    }
+    // Lines run on past both ends; the assembly trims them.
+    let run = u * (2.0 * radius);
+    // Each line's parameter nought at the edge's start, as the edge's own.
+    let line = |p: Point| -> OgeomResult<Curve> {
+        let at = p + (a - mid);
+        let reach = run.magnitude();
+        Ok(LineCurve::over(
+            ogeom_math::Axis {
+                location: at,
+                direction: Direction::new(u, tol)?,
+            },
+            -reach,
+            length + reach,
+        )?
+        .into())
+    };
+    let contacts = [line(feet[0])?, line(feet[1])?];
+    // The surface over the edge and two radii past each end, no farther: a
+    // surface reaching far past its face's trim is one more thing a later
+    // operation reads. An end the assembly cuts beyond that refuses.
+    let reach = 2.0 * radius;
+    let start = centre + (a - mid) - u * reach;
+    let x = Direction::new(feet[0] - centre, tol)?;
+    let frame = Frame::new(start, Direction::new(u, tol)?, x, tol)?;
+    let surface: SurfaceGeometry = CylinderSurface::new(
+        Cylinder::new(frame, radius, tol)?,
+        (0.0, length + 2.0 * reach),
+    )?
+    .into();
+    Ok(Some(Strip {
+        edge,
+        faces,
+        contacts,
+        surface,
+        section: Section::Arc {
+            spine: line(centre)?,
+        },
+    }))
+}
+
+/// A rim's strip, between two faces of revolution about the rim's axis
+/// (a plane square to it, a coaxial cylinder or cone): the torus its ball
+/// sweeps. In the rim's meridian each face is a straight line leaving the
+/// rim's point, read from a point of the face off the rim; the ball's centre
+/// stands a radius in from both (out of the material at a concave rim), and
+/// its feet on them are the strip's contact rings.
+fn rim(
+    curved: &Curved,
+    edge: Id,
+    circle: &CircleCurve,
+    faces: [usize; 2],
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Strip, ogeom_algo::HalfSpaces)>> {
+    let c = circle.circle();
+    let frame = c.frame();
+    let (centre, up) = (frame.origin(), frame.z().vector());
+    let r0 = c.radius();
+    let x = frame.x();
+    let meridian = |p: Point| {
+        let off = p - centre;
+        let h = off.dot(up);
+        ((off - up * h).magnitude(), h)
+    };
+    let radial = x.vector();
+    // Each face's way out of the rim and its outward normal, in (radial,
+    // axial) coordinates.
+    let mut ways = [(0.0, 0.0); 2];
+    let mut outs = [(0.0, 0.0); 2];
+    for (k, fi) in faces.iter().enumerate() {
+        let face = &curved.faces[*fi];
+        let sign = if face.reversed { -1.0 } else { 1.0 };
+        let coaxial = |o: Point, a: Vector| {
+            a.cross(up).magnitude() <= tol.angular()
+                && ((o - centre) - up * (o - centre).dot(up)).magnitude() <= tol.confusion()
+        };
+        let natural: Vector = match &face.surface {
+            SurfaceGeometry::Plane(p) => {
+                let n = p.plane().normal().vector();
+                if n.cross(up).magnitude() > tol.angular() {
+                    return Ok(None);
+                }
+                n
+            }
+            SurfaceGeometry::Cylinder(cy) => {
+                let axis = cy.cylinder().axis();
+                if !coaxial(axis.location, axis.direction.vector())
+                    || (cy.cylinder().radius() - r0).abs() > tol.confusion()
+                {
+                    return Ok(None);
+                }
+                radial
+            }
+            SurfaceGeometry::Cone(co) => {
+                let cone = co.cone();
+                let f = cone.frame();
+                let a = f.z().vector();
+                if !coaxial(f.origin(), a) {
+                    return Ok(None);
+                }
+                radial - a * cone.half_angle().tan()
+            }
+            _ => return Ok(None),
+        };
+        let n = natural * sign;
+        let out = (n.dot(radial), n.dot(up));
+        let norm = out.0.hypot(out.1);
+        if norm <= tol.angular() {
+            return Ok(None);
+        }
+        outs[k] = (out.0 / norm, out.1 / norm);
+        // A wall's way out of the rim, read at a point of it off the rim; a
+        // plane's is read from the wall below, the plane being the one face
+        // that can reach both sides of the circle.
+        if !matches!(face.surface, SurfaceGeometry::Plane(_)) {
+            // A vertex of the face off the rim's circle (another arc of the
+            // rim stands on it).
+            let off = face
+                .loops
+                .iter()
+                .flatten()
+                .flat_map(|(e, _)| {
+                    let c = &curved.edges[e];
+                    [c.ends.0, c.ends.1]
+                })
+                .map(|v| {
+                    let (rho, h) = meridian(curved.points[&v]);
+                    (rho - r0, h)
+                })
+                .find(|w| w.0.hypot(w.1) > tol.confusion());
+            let Some(way) = off else {
+                return Ok(None);
+            };
+            let length = way.0.hypot(way.1);
+            ways[k] = (way.0 / length, way.1 / length);
+        }
+    }
+    let dot = |a: (f64, f64), b: (f64, f64)| a.0 * b.0 + a.1 * b.1;
+    let planes: Vec<usize> = (0..2)
+        .filter(|k| matches!(curved.faces[faces[*k]].surface, SurfaceGeometry::Plane(_)))
+        .collect();
+    match planes.as_slice() {
+        [] => {}
+        [k] => {
+            let (k, w) = (*k, 1 - *k);
+            // Convex where the wall leaves on the plane's material side; the
+            // plane then leaves on the wall's, and the other way round at a
+            // concave rim.
+            let convex = dot(ways[w], outs[k]) < 0.0;
+            let square = (-outs[k].1, outs[k].0);
+            let side = dot(square, outs[w]);
+            if side.abs() <= tol.angular() {
+                return Ok(None);
+            }
+            let toward = if convex {
+                -side.signum()
+            } else {
+                side.signum()
+            };
+            ways[k] = (square.0 * toward, square.1 * toward);
+        }
+        _ => return Ok(None),
+    }
+    // Convex where the other face leaves on this one's material side.
+    let convex = dot(ways[1], outs[0]) < 0.0;
+    let s = if convex { -radius } else { radius };
+    let g = dot(outs[0], outs[1]);
+    if (1.0 + g).abs() <= tol.angular() {
+        return Ok(None);
+    }
+    let t = s / (1.0 + g);
+    let ball = (
+        r0 + (outs[0].0 + outs[1].0) * t,
+        (outs[0].1 + outs[1].1) * t,
+    );
+    let mut feet = [(0.0, 0.0); 2];
+    for k in 0..2 {
+        let foot = (ball.0 - outs[k].0 * s, ball.1 - outs[k].1 * s);
+        if dot((foot.0 - r0, foot.1), ways[k]) <= tol.confusion() || foot.0 <= tol.confusion() {
+            return Ok(None);
+        }
+        feet[k] = foot;
+    }
+    if ball.0 <= radius + tol.confusion() {
+        return Ok(None);
+    }
+    let at = |h: f64| Frame::new(centre + up * h, frame.z(), x, tol);
+    let ring = |(rho, h): (f64, f64)| -> OgeomResult<Curve> {
+        Ok(CircleCurve::new(Circle::new(at(h)?, rho, tol)?).into())
+    };
+    let contacts = [ring(feet[0])?, ring(feet[1])?];
+    let surface: SurfaceGeometry =
+        TorusSurface::new(Torus::new(at(ball.1)?, ball.0, radius, tol)?).into();
+    // The box the round can take up: between the rim and both feet along
+    // the axis and off it.
+    let span = |v: [f64; 3]| {
+        (
+            v.iter().copied().fold(f64::INFINITY, f64::min),
+            v.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        )
+    };
+    let (h_lo, h_hi) = span([0.0, feet[0].1, feet[1].1]);
+    let (r_lo, r_hi) = span([r0, feet[0].0, feet[1].0]);
+    let off_axis = |radius: f64, inside: bool| ogeom_algo::HalfSpaces::Revolved {
+        at: centre,
+        axis: up,
+        radius,
+        slope: 0.0,
+        inside,
+    };
+    let clear = ogeom_algo::HalfSpaces::Any(vec![
+        ogeom_algo::HalfSpaces::Below {
+            normal: -up,
+            at: centre + up * h_hi,
+        },
+        ogeom_algo::HalfSpaces::Below {
+            normal: up,
+            at: centre + up * h_lo,
+        },
+        off_axis(r_lo, true),
+        off_axis(r_hi, false),
+    ]);
+    Ok(Some((
+        Strip {
+            edge,
+            faces,
+            contacts,
+            surface,
+            section: Section::Arc { spine: ring(ball)? },
+        },
+        clear,
+    )))
+}

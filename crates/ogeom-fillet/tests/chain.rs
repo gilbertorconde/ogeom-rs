@@ -2915,11 +2915,12 @@ fn rim_removed(tube: f64, r: f64, outward: bool) -> f64 {
 /// same history, and the volume the section turned about the axis takes.
 /// The cases are a cylinder's rims, both on one wall, a bore's through a
 /// block, a tube's four (its outer and inner rims each on the one annulus),
-/// a wall with a cross hole well below its rim, and a cup's rim clear of
-/// its cavity. Where the rounding reaches the cylinder's far end, a hole in
-/// the wall comes up into the band the round takes, or a cavity into the
-/// box it can take up, the engine hands the request back and the general
-/// fuse cuts it. No case is cut by trimming any more.
+/// a wall with a cross hole well below its rim, a cup's rim clear of its
+/// cavity, and a drum as tall as the rounding (its wall's ring on the far
+/// rim; the closed-form volume holds). Where a hole in the wall comes up
+/// into the band the round takes, or a cavity into the box it can take up,
+/// the engine hands the request back and the general fuse cuts it. No case
+/// is cut by trimming any more.
 #[test]
 fn rims_are_cut_by_trimming_to_the_general_fuse_s_solid() {
     use core::f64::consts::PI;
@@ -3009,7 +3010,7 @@ fn rims_are_cut_by_trimming_to_the_general_fuse_s_solid() {
         (
             "a drum as tall as the rounding",
             &|m| drum(m, 1.0, false),
-            false,
+            true,
         ),
         ("a cross hole into the band", &|m| crossed(m, 8.5), false),
         (
@@ -3218,13 +3219,14 @@ fn concave_rims_are_filled_by_trimming_to_the_general_fuse_s_solid() {
 }
 
 /// A rim rounded in one request with straight edges whose wedges stand
-/// apart from its own, and so are cut in one boolean with it, has its wedge
-/// trimmed out first and the rest cut from what is left. The rounding comes
-/// out as the general fuse makes it in one cut: the same solid, valid, with
-/// the same history, the trim keeping only the faces that cut sets aside. The cases are a boss's top rim with the plate's top
-/// loop, with its bottom loop and with one bottom edge, and a tube boss's
-/// two top rims with the plate's bottom loop; and for a union, a boss's
-/// base fused on with a rib's concave base edges.
+/// apart from its own comes out as the general fuse makes it in one cut:
+/// the same solid, valid, with the same history. A boss's top rim with the
+/// plate's top loop, with its bottom loop or with one bottom edge, and a
+/// tube boss's two top rims with the plate's bottom loop, go through the
+/// engine's trimmed assembly whole, with no boolean. For a union, a boss's
+/// base fused on with a rib's concave base edges, the rim's wedge is
+/// trimmed out first and the rest cut from what is left, the trim keeping
+/// only the faces that cut sets aside.
 #[test]
 fn rims_grouped_with_other_wedges_are_trimmed_before_the_rest_is_cut() {
     type Made = (ogeom_topo::Shape, Vec<ogeom_topo::Shape>, f64);
@@ -3363,7 +3365,14 @@ fn rims_grouped_with_other_wedges_are_trimmed_before_the_rest_is_cut() {
         } else {
             work.seated_cuts
         };
-        assert!(trimmed > 0, "{name}: the rims are trimmed");
+        // One bottom edge beside the boss's top rim: both rounds go through
+        // the engine's trimmed assembly, with no boolean.
+        if !fill {
+            assert_eq!(work.face_pairs, 0, "{name}: built with no boolean");
+            assert_eq!(trimmed, 0, "{name}: nothing trimmed");
+        } else {
+            assert!(trimmed > 0, "{name}: the rims are trimmed");
+        }
         let (want, got) = (
             account(&general, &solid, &edges, &fused),
             account(&model, &solid, &edges, &seated),
@@ -3392,9 +3401,11 @@ fn rims_grouped_with_other_wedges_are_trimmed_before_the_rest_is_cut() {
 /// the way it was. Where a band's rail leaves a vertex along another edge closely enough
 /// that the general fuse splits the two where they part (a corner rounded
 /// at a hundredth, a band ending on an edge stating a millimetre's
-/// thousandth), the cut is left to the general fuse. A solid of planes the
-/// blend engine takes (the cube, the corners, the bands across) is cut by
-/// neither: it is built in one pass, the same solid either way.
+/// thousandth), the cut is left to the general fuse. A solid the blend
+/// engine takes (the cube, the corners, the bands across, all of planes,
+/// and the holed block, whose bands run along planes beside a bore and go
+/// through its trimmed assembly) is cut by neither: it is built in one
+/// pass, the same solid either way.
 #[test]
 fn seated_bands_are_cut_by_trimming_to_the_general_fuse_s_solid() {
     type Made = (ogeom_topo::Shape, Vec<ogeom_topo::Shape>, f64);
@@ -3494,7 +3505,7 @@ fn seated_bands_are_cut_by_trimming_to_the_general_fuse_s_solid() {
         ("across", &|m| across(m, false), false),
         ("across a loose edge", &|m| across(m, true), false),
         ("slab", &slab, true),
-        ("holed", &holed, true),
+        ("holed", &holed, false),
     ];
     for (name, case, trimmed) in cases {
         let mut model = ogeom_topo::Model::new();
@@ -4068,7 +4079,8 @@ fn concave_bands_running_into_a_filled_corner_are_trimmed_to_the_general_fuse_s_
 /// than by the general fuse. The rounding comes out as the general fuse
 /// makes it: the same solid, valid, with the same history, and the volume
 /// the section swept along the chain takes or adds. The cases are a block's
-/// top loop once its upright edges are rounded, a stadium prism's top loop,
+/// top loop once its upright edges are rounded (now built by the engine's
+/// trimmed assembly, nothing trimmed), a stadium prism's top loop,
 /// a stadium slot's top loop (the arcs on a concave wall), and for a union a
 /// rounded pocket's floor loop, and the block's top loop with a hole coming
 /// up into the sector a corner's wedge lies in, its upright edges rounded
@@ -4208,7 +4220,7 @@ fn rims_pieces_in_a_tangent_chain_are_trimmed_to_the_general_fuse_s_solid() {
         (
             "a rounded block's top loop",
             &|m| rounded_block(m, None),
-            true,
+            false,
         ),
         ("a stadium prism's top loop", &stadium_top, true),
         ("a stadium slot's top loop", &slot, true),

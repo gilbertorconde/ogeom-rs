@@ -177,12 +177,32 @@ fn every_order_chamfered(m: &mut Model, original: &Shape, edges: &[Shape], d: f6
 }
 
 /// Every blend face of `built` (a face the history makes of an asked edge)
-/// meets the faces beside it tangent within [`FIT`].
-fn tangent(m: &Model, built: &ogeom_algo::Built, asked: &[(Shape, f64)]) {
+/// meets the faces its edge was between tangent within [`FIT`] (those of
+/// `original` beside the edge, as the history carries them), and every
+/// blend face it touches. A round's end on a face across its edge (a flush
+/// end on a cap) is a crease by design.
+fn tangent(m: &Model, original: &Shape, built: &ogeom_algo::Built, asked: &[(Shape, f64)]) {
+    let blends: Vec<Shape> = asked
+        .iter()
+        .flat_map(|(e, _)| built.history.generated(e).to_vec())
+        .collect();
     for (edge, _) in asked {
+        let mut beside: Vec<Shape> = ogeom_topo::ancestors_of(m, original, edge, ShapeType::Face)
+            .unwrap()
+            .iter()
+            .flat_map(|f| {
+                let mut images = built.history.modified(f).to_vec();
+                images.push(f.clone());
+                images
+            })
+            .collect();
+        beside.extend(blends.iter().cloned());
         for face in built.history.generated(edge) {
             let contacts = ogeom_fillet::analyse_blend(m, &built.shape, face, 17, T).unwrap();
-            for c in &contacts {
+            for c in contacts
+                .iter()
+                .filter(|c| beside.iter().any(|f| f.is_same(&c.neighbour)))
+            {
                 assert!(c.tangency_error <= FIT, "a crease across a blend: {c:?}");
             }
         }
@@ -315,7 +335,7 @@ fn a_short_drum_s_rims_take_their_rings_whatever_the_order() {
     let want = PI * 4.0 - rim_swept(2.0, IN, DOWN, 0.49) - rim_swept(2.0, IN, UP, 0.49);
     let v = volume(&m, &built.shape);
     assert!((v - want).abs() < 1e-6, "{v} against {want}");
-    tangent(&m, &built, &asked);
+    tangent(&m, &drum, &built, &asked);
 }
 
 /// A tube of radius 3 bored to 2, 4 tall, all four rims at 0.3: the outer
@@ -348,7 +368,7 @@ fn a_tube_s_four_rims_take_their_rings_whatever_the_order() {
         - rim_swept(2.0, OUT, UP, 0.3);
     let v = volume(&m, &built.shape);
     assert!((v - want).abs() < 1e-6, "{v} against {want}");
-    tangent(&m, &built, &asked);
+    tangent(&m, &tube, &built, &asked);
 }
 
 /// A conical tube, a frustum narrowing from radius 3 to 2 over 4 bored to
@@ -388,7 +408,7 @@ fn a_conical_tube_s_rims_meet_their_caps_off_square_whatever_the_order() {
         - rim_swept(1.0, OUT, UP, 0.3);
     let v = volume(&m, &built.shape);
     assert!((v - want).abs() < 1e-6, "{v} against {want}");
-    tangent(&m, &built, &asked);
+    tangent(&m, &cone, &built, &asked);
 }
 
 /// A block with a countersunk bore: radius 1.5 through it, a cone opening
@@ -432,7 +452,7 @@ fn a_countersink_s_rims_round_whatever_the_order() {
         - rim_swept(1.5, OUT, UP, 0.3);
     let v = volume(&m, &built.shape);
     assert!((v - want).abs() < 1e-6, "{v} against {want}");
-    tangent(&m, &built, &asked);
+    tangent(&m, &sunk, &built, &asked);
 }
 
 /// Half a drum (a D-shaped block, radius 3, 10 long), its two straight
@@ -464,7 +484,7 @@ fn a_d_block_s_straight_edges_round_along_its_curved_face() {
     let want = (PI * 9.0 / 2.0 - 2.0 * line_circle_corner(3.0, 0.5)) * 10.0;
     let v = volume(&m, &built.shape);
     assert!((v - want).abs() < 1e-6, "{v} against {want}");
-    tangent(&m, &built, &asked);
+    tangent(&m, &d, &built, &asked);
 }
 
 /// A stadium prism (a 10 by 4 box between two drums of radius 2, 3 tall),
@@ -492,7 +512,7 @@ fn a_stadium_s_top_loop_rounds_as_one_chain() {
     let want = body - 2.0 * area * 10.0 - 2.0 * rim_swept(2.0, IN, DOWN, 0.5) / 2.0;
     let v = volume(&m, &built.shape);
     assert!((v - want).abs() < 1e-6, "{v} against {want}");
-    tangent(&m, &built, &asked);
+    tangent(&m, &st, &built, &asked);
 }
 
 /// The stadium prism of [`a_stadium_s_top_loop_rounds_as_one_chain`].
@@ -544,7 +564,7 @@ fn a_bossed_plate_rounds_on_every_edge() {
         rounded_plate + PI * 36.0 * 5.0 - rim_swept(6.0, IN, DOWN, r) + rim_swept(6.0, OUT, UP, r);
     let v = volume(&m, &built.shape);
     assert!((v - want).abs() < 1e-6, "{v} against {want}");
-    tangent(&m, &built, &asked);
+    tangent(&m, &bossed, &built, &asked);
 }
 
 /// A plate of 40 by 40 by 5, a boss of radius 6 at (14, 0)
@@ -583,7 +603,7 @@ fn the_cusp_s_blend_closes_tangent_at_radii_other_than_one() {
             .map(|e| (e, r)),
         );
         let built = every_order(&mut m, &part, &asked, r);
-        tangent(&m, &built, &asked);
+        tangent(&m, &part, &built, &asked);
     }
 }
 
@@ -711,7 +731,7 @@ fn a_drilled_flange_rounds_on_every_edge() {
         - 4.0 * (rim_swept(2.0, OUT, DOWN, r) + rim_swept(2.0, OUT, UP, r));
     let v = volume(&m, &built.shape);
     assert!((v - want).abs() < 1e-6, "{v} against {want}");
-    tangent(&m, &built, &asked);
+    tangent(&m, &flange, &built, &asked);
 }
 
 /// The oracles' own closed forms against cases worked by hand: a square
