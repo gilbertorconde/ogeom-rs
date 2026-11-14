@@ -567,6 +567,74 @@ fn a_bossed_plate_rounds_on_every_edge() {
     tangent(&m, &bossed, &built, &asked);
 }
 
+/// The bossed plate of [`a_bossed_plate_rounds_on_every_edge`], its four
+/// upright edges rounded at 1 and every other edge at 0.5: no one ball fits
+/// a plate corner, so each closes on a vertex patch. The plate's part of
+/// the solid is the plain box rounded alike through the planar engine (the
+/// boss stands far from its corners), the boss's by Pappus; every patch
+/// meets its rounds tangent within the fit target and stays within the
+/// faces round its vertex. On main: refused ("a marched fillet needs an
+/// edge shared by exactly two faces").
+#[test]
+#[ignore = "heavy"]
+fn a_bossed_plate_s_corners_close_where_no_ball_fits() {
+    if !asked() {
+        return;
+    }
+    let mut m = Model::new();
+    let plate = ogeom_algo::make_box(&mut m, up_at(-20.0, -20.0, 0.0), (40.0, 40.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let boss = ogeom_algo::make_cylinder(&mut m, up_at(0.0, 0.0, 5.0), 6.0, 5.0, T)
+        .unwrap()
+        .shape;
+    let bossed = ogeom_bool::fuse(&mut m, &plate, &boss, T).unwrap().shape;
+    let (r, upright) = (0.5, 1.0);
+    let radius_of = |m: &Model, e: &Shape| {
+        let ends = ogeom_topo::explore_unique(m, e, ShapeType::Vertex).unwrap();
+        let (p, q) = (point_of(m, &ends[0]), point_of(m, &ends[ends.len() - 1]));
+        if ends.len() == 2 && (p.z - q.z).abs() > 1.0 {
+            upright
+        } else {
+            r
+        }
+    };
+    let asked: Vec<(Shape, f64)> = explore_unique(&m, &bossed, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .map(|e| {
+            let k = radius_of(&m, &e);
+            (e, k)
+        })
+        .collect();
+    let built = every_order(&mut m, &bossed, &asked, r);
+    let plain: Vec<(Shape, f64)> = explore_unique(&m, &plate, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .map(|e| {
+            let k = radius_of(&m, &e);
+            (e, k)
+        })
+        .collect();
+    let box_rounded = ogeom_fillet::fillet_edges_with(&mut m, &plate, &plain, T).unwrap();
+    let want = volume(&m, &box_rounded.shape) + PI * 36.0 * 5.0 - rim_swept(6.0, IN, DOWN, r)
+        + rim_swept(6.0, OUT, UP, r);
+    let v = volume(&m, &built.shape);
+    assert!((v - want).abs() < 1e-6, "{v} against {want}");
+    tangent(&m, &bossed, &built, &asked);
+    let mut patches = 0;
+    for corner in explore_unique(&m, &bossed, ShapeType::Vertex).unwrap() {
+        for face in built.history.generated(&corner) {
+            patches += 1;
+            let contacts = ogeom_fillet::analyse_blend(&m, &built.shape, face, 17, T).unwrap();
+            for c in &contacts {
+                assert!(c.tangency_error <= FIT, "a crease round a patch: {c:?}");
+            }
+        }
+    }
+    assert!(patches >= 8, "{patches} patches");
+}
+
 /// A plate of 40 by 40 by 5, a boss of radius 6 at (14, 0)
 /// tangent to the side x = 20, the foot and the top edge along x = 20
 /// rounded as one chain, the S-blend at the cusp where they meet. No closed
