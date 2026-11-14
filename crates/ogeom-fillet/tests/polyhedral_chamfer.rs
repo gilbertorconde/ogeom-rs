@@ -1331,3 +1331,196 @@ fn bevels_crossing_on_a_face_at_an_angle_leave_it_the_part_below() {
         .len();
     assert_eq!(faces, want_faces, "faces");
 }
+
+/// A slab: the polygon `outline` in (x, y), wound counter-clockwise seen
+/// from +z, from z = 0 to z = `height`.
+fn slab(m: &mut Model, outline: &[(f64, f64)], height: f64) -> Shape {
+    let n = outline.len();
+    let mut points: Vec<Point> = outline
+        .iter()
+        .map(|&(x, y)| Point::new(x, y, 0.0))
+        .collect();
+    points.extend(outline.iter().map(|&(x, y)| Point::new(x, y, height)));
+    let mut rings: Vec<Vec<usize>> = vec![(0..n).rev().collect(), (n..2 * n).collect()];
+    for i in 0..n {
+        let j = (i + 1) % n;
+        rings.push(vec![i, j, n + j, n + i]);
+    }
+    ogeom_algo::make_faceted_solid(m, &points, &rings, &[], T)
+        .unwrap()
+        .0
+        .shape
+}
+
+/// A web's section once both its top edges are bevelled past half its
+/// width: `(u, z)` with `u` across the web from its outer face, the web
+/// `w` wide and `t` thick, each bevel `d` on both its faces, meeting in a
+/// ridge at mid-web. Its area and its first moment about `u = 0`.
+fn ridged_web(w: f64, t: f64, d: f64) -> (f64, f64) {
+    assert!(
+        2.0 * d > w && d < t,
+        "the bevels meet above the web's sides"
+    );
+    let ring = [
+        (0.0, 0.0),
+        (w, 0.0),
+        (w, t - d),
+        (w / 2.0, t - d + w / 2.0),
+        (0.0, t - d),
+    ];
+    let (mut area, mut moment) = (0.0, 0.0);
+    for k in 0..ring.len() {
+        let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+        let cross = a.0 * b.1 - b.0 * a.1;
+        area += cross / 2.0;
+        moment += (a.0 + b.0) * cross / 6.0;
+    }
+    (area, moment)
+}
+
+/// The top edges of `s` at height `top`, each bevelled `d`.
+fn top_edges(m: &Model, s: &Shape, top: f64, d: f64) -> Vec<(Shape, Chamfer)> {
+    explore_unique(m, s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(m, e).unwrap().unwrap();
+            [a, b].iter().all(|v| {
+                let p = m.node(v).unwrap().data().as_vertex().unwrap().point;
+                (p.z - top).abs() < 1e-9
+            })
+        })
+        .map(|e| (e, Chamfer::Symmetric(d)))
+        .collect()
+}
+
+/// A frame 24 by 16 by 4, its 18 by 10 hole leaving webs 3 wide all
+/// round, its top edges outside and in the hole bevelled 2: past half the
+/// web, so the bevels consume the holed top face and meet in a ridge. At
+/// each corner the outer corner and the hole's stand on one diagonal, so
+/// the frame is four webs mitred there, each the ridged section swept
+/// along its length: a web `L` long outside is `L - 2u` long at `u` in,
+/// and holds `A L - 2 ∫u dA`.
+#[test]
+fn a_frame_bevelled_past_half_its_webs_meets_in_a_mitred_ridge() {
+    let (w, t, d) = (3.0, 4.0, 2.0);
+    let (area, moment) = ridged_web(w, t, d);
+    let want = 2.0 * (area * 24.0 - 2.0 * moment) + 2.0 * (area * 16.0 - 2.0 * moment);
+    let mut first: Option<Vec<[u64; 3]>> = None;
+    for seed in 0..3_u64 {
+        let mut m = Model::new();
+        let outer = block(&mut m, (0.0, 0.0, 0.0), (24.0, 16.0, t));
+        let hole = block(&mut m, (w, w, -1.0), (18.0, 10.0, t + 2.0));
+        let s = ogeom_bool::cut(&mut m, &outer, &hole, T).unwrap().shape;
+        let top = explore_unique(&m, &s, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .find(|f| ogeom_algo::face_normal(&m, f, T).unwrap().1.z > 0.5)
+            .unwrap();
+        assert_eq!(
+            m.children_of(&top).unwrap().len(),
+            2,
+            "the top holds the hole"
+        );
+        let specs = top_edges(&m, &s, t, d);
+        assert_eq!(specs.len(), 8);
+        let specs: Vec<(Shape, Chamfer)> = shuffled(specs.len(), seed)
+            .iter()
+            .map(|i| specs[*i].clone())
+            .collect();
+        let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert!(!folded(&m, &built.shape), "folded");
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "volume {got} against {want}"
+        );
+        // The bottom, the eight walls and the eight bevels.
+        let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+            .unwrap()
+            .len();
+        assert_eq!(faces, 17, "faces");
+        assert!(built.history.is_deleted(&top), "the top face left");
+        for (e, _) in &specs {
+            assert_eq!(
+                built.history.generated(e).len(),
+                1,
+                "an edge without its bevel"
+            );
+        }
+        let k = key(&m, &built.shape).1;
+        match &first {
+            None => first = Some(k),
+            Some(held) => assert!(*held == k, "order {seed} differs"),
+        }
+    }
+}
+
+/// An L-shaped slab 4 thick, legs 20 long and 3 wide, its long top edges
+/// bevelled 2 on both sides of each leg, its two end edges left sharp: the
+/// bevels consume the top face, reflex corner and all, and meet in a
+/// ridge that turns on the diagonal through the outline's corner and its
+/// reflex corner. Each leg is the ridged section swept from that diagonal
+/// to its square end: `20 - u` long at `u` in from its outer side.
+#[test]
+fn an_l_slab_bevelled_past_half_its_legs_turns_its_ridge_at_the_reflex_corner() {
+    let (w, t, d) = (3.0, 4.0, 2.0);
+    let (area, moment) = ridged_web(w, t, d);
+    let want = 2.0 * (area * 20.0 - moment);
+    let outline = [
+        (0.0, 0.0),
+        (20.0, 0.0),
+        (20.0, w),
+        (w, w),
+        (w, 20.0),
+        (0.0, 20.0),
+    ];
+    let mut first: Option<Vec<[u64; 3]>> = None;
+    for seed in 0..3_u64 {
+        let mut m = Model::new();
+        let s = slab(&mut m, &outline, t);
+        let top = explore_unique(&m, &s, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .find(|f| ogeom_algo::face_normal(&m, f, T).unwrap().1.z > 0.5)
+            .unwrap();
+        let specs: Vec<(Shape, Chamfer)> = top_edges(&m, &s, t, d)
+            .into_iter()
+            .filter(|(e, _)| {
+                let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+                let point = |v: &Shape| m.node(v).unwrap().data().as_vertex().unwrap().point;
+                let (p, q) = (point(&a), point(&b));
+                // Not an end: the ends lie at x = 20 or y = 20.
+                !((p.x - 20.0).abs() < 1e-9 && (q.x - 20.0).abs() < 1e-9
+                    || (p.y - 20.0).abs() < 1e-9 && (q.y - 20.0).abs() < 1e-9)
+            })
+            .collect();
+        assert_eq!(specs.len(), 4);
+        let specs: Vec<(Shape, Chamfer)> = shuffled(specs.len(), seed)
+            .iter()
+            .map(|i| specs[*i].clone())
+            .collect();
+        let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert!(!folded(&m, &built.shape), "folded");
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "volume {got} against {want}"
+        );
+        // The bottom, the six sides and the four bevels.
+        let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+            .unwrap()
+            .len();
+        assert_eq!(faces, 11, "faces");
+        assert!(built.history.is_deleted(&top), "the top face left");
+        let k = key(&m, &built.shape).1;
+        match &first {
+            None => first = Some(k),
+            Some(held) => assert!(*held == k, "order {seed} differs"),
+        }
+    }
+}
