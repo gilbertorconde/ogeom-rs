@@ -287,6 +287,7 @@ pub(crate) fn build_with_widths(
                 built = ogeom_algo::make_face_on(model, surface, &wires, tol)?.shape;
             }
         }
+        in_one_period(model, &built, tol)?;
         out.push(if face.reversed {
             built.reversed()
         } else {
@@ -387,6 +388,100 @@ pub(crate) fn build_faces(
         })
         .collect::<OgeomResult<Vec<_>>>()?;
     Ok(build(model, points, &curves, &rings, tol)?.faces)
+}
+
+/// Each ring of `face`, on a surface periodic in `u`, carried into one
+/// period of its chart: each edge's pcurve on the face's surface shifted
+/// by whole periods to start where the one before it ends. The trims a
+/// face's edges are given are found one by one and may each land in a
+/// period of their own (an arc read in the period before its neighbour's
+/// line); the mesher forgives the jump, a point read inside the face in its
+/// chart does not. An edge the ring walks twice (a seam, its two columns
+/// joined later) is left as it is, and the ring carried on from after it.
+fn in_one_period(model: &mut Model, face: &Shape, tol: Tolerances) -> OgeomResult<()> {
+    use ogeom_geom::{Curve2d as _, Surface as _};
+    let Some(id) = model
+        .node(face)
+        .and_then(|n| n.data().as_face())
+        .map(|d| d.surface)
+    else {
+        return Ok(());
+    };
+    let period = match model.geometry().surface(id) {
+        Some(surface) if surface.is_periodic_u() => {
+            let ((u0, u1), _) = surface.domain();
+            u1 - u0
+        }
+        _ => return Ok(()),
+    };
+    for wire in ogeom_topo::explore(model, face, ogeom_topo::Filter::OfType(ShapeType::Wire))? {
+        let walked = model.ordered_children_of(&wire)?;
+        let mut last: Option<f64> = None;
+        for e in &walked {
+            let twice = walked.iter().filter(|w| w.is_same(e)).count() > 1;
+            let Some(edge) = model.node(e).and_then(|n| n.data().as_edge()) else {
+                last = None;
+                continue;
+            };
+            let on: Vec<(usize, ogeom_topo::PCurveId, (f64, f64))> = edge
+                .representations
+                .iter()
+                .enumerate()
+                .filter_map(|(k, r)| match r {
+                    ogeom_topo::EdgeRepr::PCurve {
+                        curve,
+                        surface,
+                        range,
+                        ..
+                    } if *surface == id => Some((k, *curve, *range)),
+                    _ => None,
+                })
+                .collect();
+            let [(k, curve, range)] = on[..] else {
+                last = None;
+                continue;
+            };
+            if twice {
+                last = None;
+                continue;
+            }
+            let Some(pcurve) = model.geometry().pcurve(curve).cloned() else {
+                last = None;
+                continue;
+            };
+            let (a, b) = (
+                pcurve.point_at(range.0, tol)?,
+                pcurve.point_at(range.1, tol)?,
+            );
+            let (start, end) = if e.orientation() == Orientation::Reversed {
+                (b, a)
+            } else {
+                (a, b)
+            };
+            let turns = last.map_or(0.0, |u| ((u - start.x) / period).round());
+            if turns != 0.0 {
+                let moved = pcurve.transformed(
+                    &ogeom_math::Transform2::translation(ogeom_math::Vector2::new(
+                        turns * period,
+                        0.0,
+                    )),
+                    tol,
+                )?;
+                let fresh = model.geometry_mut().add_pcurve(moved);
+                let Some(ogeom_topo::NodeData::Edge(data)) =
+                    model.node_mut(e).map(|n| n.data_mut())
+                else {
+                    last = None;
+                    continue;
+                };
+                if let ogeom_topo::EdgeRepr::PCurve { curve, .. } = &mut data.representations[k] {
+                    *curve = fresh;
+                }
+            }
+            last = Some(end.x + turns * period);
+        }
+    }
+    Ok(())
 }
 
 /// `solid` read and built back face for face from what was read: the same
