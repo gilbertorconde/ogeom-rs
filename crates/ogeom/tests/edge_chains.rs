@@ -115,10 +115,12 @@ fn a_chamfer_chain_mitres_at_shared_vertices() {
     );
 }
 
-/// Three bevels at a convex corner meet at one point, and every edge of
-/// the box bevelled at once is the same inclusion and exclusion: the prisms,
-/// less their pairwise overlaps at each corner, plus the triple overlap,
-/// a quarter of the cube of the distance.
+/// Three bevels at a convex corner close on the facet through their
+/// setback corners (ADR 0001's default chamfer corner), and every edge of
+/// the box bevelled at once is the same sum at each corner: the prisms, less
+/// their pairwise overlaps (a third of the cube of the distance each), plus
+/// the triple overlap (a quarter), plus the tetrahedron the facet cuts off
+/// past the bevels' shared point (a twelfth).
 #[test]
 fn chamfer_chains_meet_three_at_a_corner() {
     let mut model = Model::new();
@@ -135,7 +137,7 @@ fn chamfer_chains_meet_three_at_a_corner() {
         .unwrap()
         .shape;
     assert!(ogeom::algo::check(&model, &bevelled, T).unwrap().is_valid());
-    let expected = 4000.0 - (0.5 * (20.0 + 20.0 + 10.0) - 3.0 / 3.0 + 0.25);
+    let expected = 4000.0 - (0.5 * (20.0 + 20.0 + 10.0) - 3.0 / 3.0 + 0.25 + 1.0 / 12.0);
     let measured = volume(&model, &bevelled);
     assert!(
         (measured - expected).abs() < 1e-2,
@@ -148,8 +150,12 @@ fn chamfer_chains_meet_three_at_a_corner() {
         .unwrap()
         .shape;
     assert!(ogeom::algo::check(&model, &bevelled, T).unwrap().is_valid());
-    assert_eq!(faces(&model, &bevelled), 18, "six walls and twelve bevels");
-    let expected = 4000.0 - (0.5 * (8.0 * 20.0 + 4.0 * 10.0) - 8.0 + 8.0 * 0.25);
+    assert_eq!(
+        faces(&model, &bevelled),
+        26,
+        "six walls, twelve bevels and eight facets"
+    );
+    let expected = 4000.0 - (0.5 * (8.0 * 20.0 + 4.0 * 10.0) - 8.0 + 8.0 * (0.25 + 1.0 / 12.0));
     let measured = volume(&model, &bevelled);
     assert!(
         (measured - expected).abs() < 1e-2,
