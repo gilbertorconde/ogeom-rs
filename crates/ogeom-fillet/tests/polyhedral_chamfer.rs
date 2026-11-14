@@ -2330,3 +2330,61 @@ fn every_edge_of_a_prismatic_part_mitres_to_its_bevels_shared_points() {
         );
     }
 }
+
+/// [`a_box_with_a_void_chamfers_its_outside_and_keeps_the_void`]'s box and
+/// void, the void's twelve edges chamfered 1 (concave in the solid: each
+/// bevel fills a wedge of the cavity), then every edge of both: the void
+/// comes out as the void block chamfered alone, its every corner a facet,
+/// and the solid is the box (or the chamfered box) less it. Valid, two
+/// shells, every edge generating its bevel.
+#[test]
+fn a_void_s_own_edges_chamfer_as_the_void_block_would_alone() {
+    let profile = vec![(0.0, 0.0), (40.0, 0.0), (40.0, 20.0), (0.0, 20.0)];
+    let void_profile = vec![(15.0, 7.0), (21.0, 7.0), (21.0, 15.0), (15.0, 15.0)];
+    let d = 1.0;
+    let void_chamfered = chamfered_prism_volume(&void_profile, 10.0, d);
+    for outer_too in [false, true] {
+        let outside = if outer_too {
+            chamfered_prism_volume(&profile, 30.0, d)
+        } else {
+            30.0 * 40.0 * 20.0
+        };
+        let want = outside - void_chamfered;
+        let mut m = Model::new();
+        let solid = prism(&mut m, &profile, 30.0);
+        let void = block(&mut m, (10.0, 15.0, 7.0), (10.0, 6.0, 8.0));
+        let s = ogeom_bool::cut(&mut m, &solid, &void, T).unwrap().shape;
+        let on_void = |m: &Model, e: &Shape| {
+            let b = ogeom_algo::shape_bounds(m, e, T).unwrap();
+            let (lo, hi) = (b.low().unwrap(), b.high().unwrap());
+            lo.x > 9.0 && hi.x < 21.0 && lo.y > 14.0 && hi.y < 22.0 && lo.z > 6.0 && hi.z < 16.0
+        };
+        let specs: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| outer_too || on_void(&m, e))
+            .map(|e| (e, Chamfer::Symmetric(d)))
+            .collect();
+        assert_eq!(specs.len(), if outer_too { 24 } else { 12 });
+        let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{outer_too}: {:?}", found.problems);
+        assert_eq!(
+            m.children_of(&built.shape).unwrap().len(),
+            2,
+            "the void kept"
+        );
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "{outer_too}: volume {got} against {want}"
+        );
+        for (edge, _) in &specs {
+            assert_eq!(
+                built.history.generated(edge).len(),
+                1,
+                "an edge without its bevel"
+            );
+        }
+    }
+}
