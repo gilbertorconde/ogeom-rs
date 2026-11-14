@@ -99,13 +99,30 @@ pub(crate) fn assemble(
     // A face set back to a line or a point, or past one of its sides, is
     // not a class this builds.
     for (fi, face) in planar.faces.iter().enumerate() {
-        let n = face.corners.len();
-        for k in 0..n {
-            let (v, w) = (face.corners[k], face.corners[(k + 1) % n]);
-            let side = planar.points[&w] - planar.points[&v];
-            let kept = corners[&(fi, w)] - corners[&(fi, v)];
-            if kept.dot(side) <= reach * side.magnitude() {
-                return Ok(None);
+        for walk in face.loops() {
+            let n = walk.len();
+            for k in 0..n {
+                let (v, w) = (walk[k], walk[(k + 1) % n]);
+                let side = planar.points[&w] - planar.points[&v];
+                let kept = corners[&(fi, w)] - corners[&(fi, v)];
+                if kept.dot(side) <= reach * side.magnitude() {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+
+    // Every strip's contact on each face within that face between its
+    // corners (ADR 0001, §3.5): one running off a face narrower than its
+    // setback rolls onto the face beyond (M5) and is not built here.
+    for (edge, _) in &sections {
+        let seat = edge_seat[edge];
+        for fi in seat.faces {
+            let (a, b) = (corners[&(fi, seat.ends.0)], corners[&(fi, seat.ends.1)]);
+            for t in [0.25, 0.5, 0.75] {
+                if !within_face(planar, fi, a + (b - a) * t, reach) {
+                    return Ok(None);
+                }
             }
         }
     }
@@ -366,18 +383,25 @@ pub(crate) fn assemble(
     // The faces' setback polygons: none crossing itself or another, none
     // turned over.
     let mut rings: Vec<super::assemble::Ring> = Vec::with_capacity(planar.faces.len());
+    let mut ring_holes: Vec<Vec<Vec<usize>>> = Vec::with_capacity(planar.faces.len());
     for (fi, face) in planar.faces.iter().enumerate() {
-        let n = face.corners.len();
-        let mut ring = Vec::with_capacity(n);
-        for k in 0..n {
-            let Some(pts) = passes(fi, face.corners[(k + n - 1) % n], face.corners[k]) else {
-                return Ok(None);
-            };
-            ring.extend(pts);
+        let mut walked = Vec::new();
+        for walk in face.loops() {
+            let n = walk.len();
+            let mut ring = Vec::with_capacity(n);
+            for k in 0..n {
+                let Some(pts) = passes(fi, walk[(k + n - 1) % n], walk[k]) else {
+                    return Ok(None);
+                };
+                ring.extend(pts);
+            }
+            walked.push(ring);
         }
-        rings.push((ring, vec![super::Origin::Face(fi)], Some(face.normal)));
+        let outer = walked.remove(0);
+        rings.push((outer, vec![super::Origin::Face(fi)], Some(face.normal)));
+        ring_holes.push(walked);
     }
-    super::guards::rings_fit(&points, &rings, tol)?;
+    super::guards::rings_fit_holed(&points, &rings, &ring_holes, tol)?;
 
     // The sheet's edges: straight segments by their ends, and each strip's
     // end arcs by edge and vertex.
@@ -561,104 +585,107 @@ pub(crate) fn assemble(
     // face, an edge's strip or a vertex's sphere.
     let mut origins: Vec<Result<usize, Id>> = Vec::new();
     for (fi, face) in planar.faces.iter().enumerate() {
-        let n = face.corners.len();
-        let mut ring: Vec<(usize, bool)> = Vec::new();
-        let mut at_corner: Vec<Corner> = Vec::with_capacity(n);
-        for k in 0..n {
-            let (prev, v, next) = (
-                face.corners[(k + n - 1) % n],
-                face.corners[k],
-                face.corners[(k + 1) % n],
-            );
-            if step_faces.get(&v) == Some(&fi) {
-                let Some(pts) = passes(fi, prev, v) else {
-                    return Ok(None);
-                };
-                let line = segment(&mut edges, pts[0], pts[1]);
-                at_corner.push((pts, vec![line]));
-                continue;
-            }
-            if let Some(corner) = signed.get(&v)
-                && fi == corner.carrier
-            {
-                // Along the sharp edge's line, from this face's corner past
-                // the vertex to the other's, or back.
-                let (own, other) = (at[&(fi, v)], at[&(corner.other, v)]);
-                let middle = index_of(&mut points, planar.points[&v], reach);
-                let arriving = seats.get(&(prev.min(v), prev.max(v)));
-                let pts = if arriving.is_some_and(|s| s.edge == corner.sharp) {
-                    vec![other, middle, own]
-                } else {
-                    vec![own, middle, other]
-                };
-                let lines = vec![
-                    segment(&mut edges, pts[0], pts[1]),
-                    segment(&mut edges, pts[1], pts[2]),
-                ];
-                at_corner.push((pts, lines));
-                continue;
-            }
-            if ridges
-                .get(&v)
-                .is_some_and(|r| fi == r.faces[0] || fi == r.faces[2])
-            {
-                // Along the ridge's line on this face, from the arriving
-                // strip's ball's foot to the other's.
-                let Some(pts) = passes(fi, prev, v) else {
-                    return Ok(None);
-                };
-                let line = segment(&mut edges, pts[0], pts[1]);
-                at_corner.push((pts, vec![line]));
-                continue;
-            }
-            match flush.get(&v) {
-                Some(&(third, edge)) if third == fi => {
-                    // In from the face across the arriving edge, out to the
-                    // face across the leaving one: each a strip's face.
-                    let across = |a: Id, b: Id| -> Option<usize> {
-                        let seat = seats.get(&(a.min(b), a.max(b)))?;
-                        seat.faces.iter().copied().find(|f| *f != fi)
-                    };
-                    let (Some(g_in), Some(g_out)) = (across(prev, v), across(v, next)) else {
+        // The outer loop's ring, then each hole's.
+        let mut walked: Vec<Vec<(usize, bool)>> = Vec::new();
+        for walk in face.loops() {
+            let n = walk.len();
+            let mut ring: Vec<(usize, bool)> = Vec::new();
+            let mut at_corner: Vec<Corner> = Vec::with_capacity(n);
+            for k in 0..n {
+                let (prev, v, next) = (walk[(k + n - 1) % n], walk[k], walk[(k + 1) % n]);
+                if step_faces.get(&v) == Some(&fi) {
+                    let Some(pts) = passes(fi, prev, v) else {
                         return Ok(None);
                     };
-                    let (entry, exit) = (at[&(g_in, v)], at[&(g_out, v)]);
-                    let (arc, _) = arcs[&(edge, v)];
-                    let runs = if edges[arc].ends == (entry, exit) {
-                        true
-                    } else if edges[arc].ends == (exit, entry) {
-                        false
-                    } else {
-                        return Ok(None);
-                    };
-                    at_corner.push((vec![entry, exit], vec![(arc, runs)]));
+                    let line = segment(&mut edges, pts[0], pts[1]);
+                    at_corner.push((pts, vec![line]));
+                    continue;
                 }
-                _ => match (creases.get(&v), crease_corners.get(&v)) {
-                    (Some(crease), Some(&(q, p_b, arc))) if crease.far == fi => {
-                        // In along the smaller round's contact to its corner,
-                        // round the larger's end in this face to the sharp
-                        // edge; or the other way.
-                        let arriving = seats.get(&(prev.min(v), prev.max(v))).map(|s| s.edge);
-                        let (entry, exit) = if arriving == Some(crease.pair[0]) {
-                            (q, p_b)
-                        } else {
-                            (p_b, q)
+                if let Some(corner) = signed.get(&v)
+                    && fi == corner.carrier
+                {
+                    // Along the sharp edge's line, from this face's corner past
+                    // the vertex to the other's, or back.
+                    let (own, other) = (at[&(fi, v)], at[&(corner.other, v)]);
+                    let middle = index_of(&mut points, planar.points[&v], reach);
+                    let arriving = seats.get(&(prev.min(v), prev.max(v)));
+                    let pts = if arriving.is_some_and(|s| s.edge == corner.sharp) {
+                        vec![other, middle, own]
+                    } else {
+                        vec![own, middle, other]
+                    };
+                    let lines = vec![
+                        segment(&mut edges, pts[0], pts[1]),
+                        segment(&mut edges, pts[1], pts[2]),
+                    ];
+                    at_corner.push((pts, lines));
+                    continue;
+                }
+                if ridges
+                    .get(&v)
+                    .is_some_and(|r| fi == r.faces[0] || fi == r.faces[2])
+                {
+                    // Along the ridge's line on this face, from the arriving
+                    // strip's ball's foot to the other's.
+                    let Some(pts) = passes(fi, prev, v) else {
+                        return Ok(None);
+                    };
+                    let line = segment(&mut edges, pts[0], pts[1]);
+                    at_corner.push((pts, vec![line]));
+                    continue;
+                }
+                match flush.get(&v) {
+                    Some(&(third, edge)) if third == fi => {
+                        // In from the face across the arriving edge, out to the
+                        // face across the leaving one: each a strip's face.
+                        let across = |a: Id, b: Id| -> Option<usize> {
+                            let seat = seats.get(&(a.min(b), a.max(b)))?;
+                            seat.faces.iter().copied().find(|f| *f != fi)
                         };
-                        at_corner
-                            .push((vec![entry, exit], vec![(arc, edges[arc].ends.0 == entry)]));
+                        let (Some(g_in), Some(g_out)) = (across(prev, v), across(v, next)) else {
+                            return Ok(None);
+                        };
+                        let (entry, exit) = (at[&(g_in, v)], at[&(g_out, v)]);
+                        let (arc, _) = arcs[&(edge, v)];
+                        let runs = if edges[arc].ends == (entry, exit) {
+                            true
+                        } else if edges[arc].ends == (exit, entry) {
+                            false
+                        } else {
+                            return Ok(None);
+                        };
+                        at_corner.push((vec![entry, exit], vec![(arc, runs)]));
                     }
-                    _ => at_corner.push((vec![at[&(fi, v)]], Vec::new())),
-                },
+                    _ => match (creases.get(&v), crease_corners.get(&v)) {
+                        (Some(crease), Some(&(q, p_b, arc))) if crease.far == fi => {
+                            // In along the smaller round's contact to its corner,
+                            // round the larger's end in this face to the sharp
+                            // edge; or the other way.
+                            let arriving = seats.get(&(prev.min(v), prev.max(v))).map(|s| s.edge);
+                            let (entry, exit) = if arriving == Some(crease.pair[0]) {
+                                (q, p_b)
+                            } else {
+                                (p_b, q)
+                            };
+                            at_corner
+                                .push((vec![entry, exit], vec![(arc, edges[arc].ends.0 == entry)]));
+                        }
+                        _ => at_corner.push((vec![at[&(fi, v)]], Vec::new())),
+                    },
+                }
             }
-        }
-        for (k, (pts, arcs_here)) in at_corner.iter().enumerate() {
-            let next_first = at_corner[(k + 1) % n].0[0];
-            ring.extend(arcs_here.iter().copied());
-            let last = *pts.last().unwrap_or(&next_first);
-            if last != next_first {
-                ring.push(segment(&mut edges, last, next_first));
+            for (k, (pts, arcs_here)) in at_corner.iter().enumerate() {
+                let next_first = at_corner[(k + 1) % n].0[0];
+                ring.extend(arcs_here.iter().copied());
+                let last = *pts.last().unwrap_or(&next_first);
+                if last != next_first {
+                    ring.push(segment(&mut edges, last, next_first));
+                }
             }
+            walked.push(ring);
         }
+        let ring = walked.remove(0);
+        let holes = walked;
         let (surface, out) = match face.plane {
             Some(plane) => {
                 let out = plane.normal().vector().dot(face.normal) > 0.0;
@@ -669,7 +696,14 @@ pub(crate) fn assemble(
             }
             None => (None, true),
         };
-        faces.push((SheetFace { surface, ring }, out));
+        faces.push((
+            SheetFace {
+                surface,
+                ring,
+                holes,
+            },
+            out,
+        ));
         origins.push(Ok(fi));
     }
     // Each strip's face in the sheet, by its edge.
@@ -759,6 +793,7 @@ pub(crate) fn assemble(
             SheetFace {
                 surface: Some(surface),
                 ring,
+                holes: Vec::new(),
             },
             seat.convex,
         ));
@@ -789,6 +824,7 @@ pub(crate) fn assemble(
             SheetFace {
                 surface: Some(surface),
                 ring,
+                holes: Vec::new(),
             },
             seat.convex,
         ));
@@ -879,6 +915,7 @@ pub(crate) fn assemble(
                 SheetFace {
                     surface: Some(surface),
                     ring,
+                    holes: Vec::new(),
                 },
                 true,
             ));
@@ -917,6 +954,7 @@ pub(crate) fn assemble(
             SheetFace {
                 surface: Some(surface),
                 ring: vec![arc0, line0, arc1, line1],
+                holes: Vec::new(),
             },
             true,
         ));
@@ -933,6 +971,11 @@ pub(crate) fn assemble(
                 SheetFace {
                     surface: f.surface.clone(),
                     ring: f.ring.iter().rev().map(|(e, w)| (*e, !w)).collect(),
+                    holes: f
+                        .holes
+                        .iter()
+                        .map(|h| h.iter().rev().map(|(e, w)| (*e, !w)).collect())
+                        .collect(),
                 }
             }
         })
@@ -2157,31 +2200,41 @@ fn section_length(planar: &Planar, seat: &Seat) -> f64 {
 }
 
 /// Whether `p`, a point of face `fi`'s plane, lies within the face's
-/// polygon or within `reach` of its boundary.
+/// polygon, outside its holes, or within `reach` of its boundary.
 fn within_face(planar: &Planar, fi: usize, p: Point, reach: f64) -> bool {
     let face = &planar.faces[fi];
-    let ring: Vec<Point> = face.corners.iter().map(|c| planar.points[c]).collect();
     let n = face.normal;
-    let x = ring
-        .iter()
-        .map(|q| *q - ring[0])
-        .find(|d| d.magnitude() > reach)
-        .map_or(Vector::ZERO, |d| d / d.magnitude());
-    let y = n.cross(x);
-    let flat = |q: Point| ((q - p).dot(x), (q - p).dot(y));
-    let mut winding = 0.0;
-    for k in 0..ring.len() {
-        let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
-        // On the boundary, within reach.
-        let side = b - a;
-        let t = ((p - a).dot(side) / side.dot(side)).clamp(0.0, 1.0);
-        if (a + side * t).distance(p) <= reach {
-            return true;
+    // Within reach of a loop, or how many times the loop winds round `p`.
+    let wound = |walk: &[Id]| -> Option<bool> {
+        let ring: Vec<Point> = walk.iter().map(|c| planar.points[c]).collect();
+        let x = ring
+            .iter()
+            .map(|q| *q - ring[0])
+            .find(|d| d.magnitude() > reach)
+            .map_or(Vector::ZERO, |d| d / d.magnitude());
+        let y = n.cross(x);
+        let flat = |q: Point| ((q - p).dot(x), (q - p).dot(y));
+        let mut winding = 0.0;
+        for k in 0..ring.len() {
+            let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+            let side = b - a;
+            let t = ((p - a).dot(side) / side.dot(side)).clamp(0.0, 1.0);
+            if (a + side * t).distance(p) <= reach {
+                return None;
+            }
+            let ((ax, ay), (bx, by)) = (flat(a), flat(b));
+            winding += (ax * by - ay * bx).atan2(ax * bx + ay * by);
         }
-        let ((ax, ay), (bx, by)) = (flat(a), flat(b));
-        winding += (ax * by - ay * bx).atan2(ax * bx + ay * by);
+        Some(winding.abs() > core::f64::consts::PI)
+    };
+    match wound(&face.corners) {
+        None => true,
+        Some(false) => false,
+        Some(true) => face
+            .holes
+            .iter()
+            .all(|hole| wound(hole).is_none_or(|inside| !inside)),
     }
-    winding.abs() > core::f64::consts::PI
 }
 
 #[cfg(test)]
@@ -3092,6 +3145,115 @@ mod tests {
                 assert!(inside(p), "outside the solid at {p:?}");
             }
         }
+    }
+
+    /// A 20 by 12 by 6 plate with a 6 by 4 hole through its middle, its top
+    /// face holding the hole: its four outer top edges rounded at 1 through
+    /// the engine, each corner the mitre of two rounds beside an upright
+    /// edge left sharp, the top face rebuilt with its hole. The box less
+    /// each edge's spandrel `(1 - pi/4) r^2` along it, plus each corner's
+    /// overlap `r^3 (5/3 - pi/2)` taken off twice, less the hole. With the
+    /// hole's four top edges rounded too, at 1/2 like the rest, each of its
+    /// corners is the mitre of two rounds beside a re-entrant upright edge:
+    /// each strip runs on past the corner to the plane bisecting it, every
+    /// point of its section by its offset into the top, which takes off the
+    /// spandrel's area times its centroid's offset `r (10 - 3 pi)/(12 - 3 pi)`
+    /// twice more at each.
+    #[test]
+    fn a_holed_plate_s_top_edges_round_with_its_hole_kept() {
+        use core::f64::consts::PI;
+        use ogeom_math::Point;
+        let mut m = Model::new();
+        let at = |x: f64, y: f64, z: f64| {
+            Frame::new(
+                Point::new(x, y, z),
+                ogeom_math::Direction::Z,
+                ogeom_math::Direction::X,
+                T,
+            )
+            .unwrap()
+        };
+        let plate = ogeom_algo::make_box(&mut m, at(0.0, 0.0, 0.0), (20.0, 12.0, 6.0), T)
+            .unwrap()
+            .shape;
+        let hole = ogeom_algo::make_box(&mut m, at(7.0, 4.0, -1.0), (6.0, 4.0, 8.0), T)
+            .unwrap()
+            .shape;
+        let s = ogeom_bool::cut(&mut m, &plate, &hole, T).unwrap().shape;
+        let top: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+                let (p, q) = (
+                    m.node(&a).unwrap().data().as_vertex().unwrap().point,
+                    m.node(&b).unwrap().data().as_vertex().unwrap().point,
+                );
+                let outer = |p: Point| {
+                    p.x.abs() < 1e-9
+                        || (p.x - 20.0).abs() < 1e-9
+                        || p.y.abs() < 1e-9
+                        || (p.y - 12.0).abs() < 1e-9
+                };
+                (p.z - 6.0).abs() < 1e-9 && (q.z - 6.0).abs() < 1e-9 && outer(p) && outer(q)
+            })
+            .collect();
+        assert_eq!(top.len(), 4);
+        let all_top: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+                [a, b].iter().all(|v| {
+                    (m.node(v).unwrap().data().as_vertex().unwrap().point.z - 6.0).abs() < 1e-9
+                })
+            })
+            .collect();
+        assert_eq!(all_top.len(), 8);
+        let mut built = Vec::new();
+        for order in [all_top.clone(), all_top.iter().rev().cloned().collect()] {
+            let request = Request::from_rounds(
+                &order.iter().map(|e| (e.clone(), 0.5)).collect::<Vec<_>>(),
+                T,
+            )
+            .unwrap();
+            let b = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+            let found = ogeom_algo::check(&m, &b, T).unwrap();
+            assert!(found.is_valid(), "{:?}", found.problems);
+            built.push(b);
+        }
+        assert_eq!(bits(&m, &built[0]), bits(&m, &built[1]));
+        let r = 0.5;
+        let spandrel = (1.0 - PI / 4.0) * r * r;
+        let offset = r * (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI);
+        let want = 20.0 * 12.0 * 6.0 - spandrel * (2.0 * 20.0 + 2.0 * 12.0)
+            + 4.0 * r * r * r * (5.0 / 3.0 - PI / 2.0)
+            - 6.0 * 4.0 * 6.0
+            - spandrel * (2.0 * 6.0 + 2.0 * 4.0)
+            - 4.0 * 2.0 * spandrel * offset;
+        let got = volume(&m, &built[0]);
+        assert!(
+            (got - want).abs() < 1e-6,
+            "every top edge: {got} against {want}"
+        );
+        let r = 1.0;
+        let mut built = Vec::new();
+        for order in [top.clone(), top.iter().rev().cloned().collect()] {
+            let request =
+                Request::from_rounds(&order.iter().map(|e| (e.clone(), r)).collect::<Vec<_>>(), T)
+                    .unwrap();
+            let b = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+            let found = ogeom_algo::check(&m, &b, T).unwrap();
+            assert!(found.is_valid(), "{:?}", found.problems);
+            built.push(b);
+        }
+        assert_eq!(bits(&m, &built[0]), bits(&m, &built[1]));
+        let spandrel = (1.0 - PI / 4.0) * r * r;
+        let want = 20.0 * 12.0 * 6.0 - spandrel * (2.0 * 20.0 + 2.0 * 12.0)
+            + 4.0 * r * r * r * (5.0 / 3.0 - PI / 2.0)
+            - 6.0 * 4.0 * 6.0;
+        let got = volume(&m, &built[0]);
+        assert!((got - want).abs() < 1e-6, "{got} against {want}");
     }
 
     /// The pyramid over the pentagon `(-3, -2)`, `(3, -2)`, `(3.5, 1.5)`,
