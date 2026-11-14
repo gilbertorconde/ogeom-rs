@@ -158,6 +158,10 @@ pub(crate) enum Consumed {
     Cluster(Box<Cluster>),
     /// Corners past the class: the engine declines.
     Outside,
+    /// Corners the rings cannot place but the one-boolean fallback builds
+    /// (ADR 0001, amendment "M5a"): a group's edge left sharp, a hole not
+    /// bevelled all round.
+    Boolean,
 }
 
 /// A ring's normal by Newell's sum, twice its area long.
@@ -344,7 +348,7 @@ pub(crate) fn consumed(
         .flat_map(|(edges, _)| edges)
         .any(|e| !blended.contains(e) && !sharp_ok.contains(e))
     {
-        return Consumed::Outside;
+        return Consumed::Boolean;
     }
     let grouped: FastSet<Id> = grouped_edges
         .iter()
