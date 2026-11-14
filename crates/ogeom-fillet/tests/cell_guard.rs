@@ -2,6 +2,7 @@
 //! the corner's own patches and trims: anything else of the solid in that
 //! cell (here a 1 × 1 × 1 void) would be lost from a solid that still
 //! checks valid. Each corner that cuts a cell refuses it by name instead.
+//! The engine's corners cut no cell: there a void clear of the round stays.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;
@@ -146,17 +147,47 @@ fn setback_corners_through_fillet_edges_with_a_void_in_a_cell_are_refused_by_nam
 }
 
 /// The void of the three-radii corner: a cube of 0.4 at (1.7, 1.7, 8.0),
-/// inside its smaller cell, clear of the bands and of the balls' centres.
+/// inside the old path's smaller cell, clear of the bands and of the balls'
+/// centres.
 const SPOT: [f64; 4] = [1.7, 1.7, 8.0, 0.4];
 
+/// The three-radii corner closes on the engine's patch, which cuts no cell:
+/// the outer shell rounds alone and the void, clear of what the round
+/// takes, comes back as it stood. Built, valid, two shells, and the
+/// volume the block's own rounding less the void's.
 #[test]
-fn a_corner_of_three_radii_with_a_void_in_its_cell_is_refused_by_name() {
+fn a_corner_of_three_radii_keeps_a_void_clear_of_its_patch() {
+    let asked = |m: &Model, s: &Shape| {
+        let [x, y, z] = top_corner_edges(m, s);
+        [(x, 1.0), (y, 1.5), (z, 1.25)]
+    };
+    let volume = |m: &Model, s: &Shape| {
+        ogeom_algo::volume_properties(m, s, ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    let mut plain = Model::new();
+    let block = boxed(&mut plain, [0.0, 0.0, 0.0], [20.0, 20.0, 10.0]);
+    let edges = asked(&plain, &block);
+    let rounded = ogeom_fillet::fillet_edges_with(&mut plain, &block, &edges, T).unwrap();
+    let want = volume(&plain, &rounded.shape) - SPOT[3].powi(3);
+
     let mut m = Model::new();
     let block = boxed(&mut m, [0.0, 0.0, 0.0], [20.0, 20.0, 10.0]);
     let s = voided_sized(&mut m, &block, [SPOT[0], SPOT[1], SPOT[2]], SPOT[3]);
-    let [x, y, z] = top_corner_edges(&m, &s);
-    let got = ogeom_fillet::fillet_edges_with(&mut m, &s, &[(x, 1.0), (y, 1.5), (z, 1.25)], T);
-    refused("fillet_edges_with", got, &m);
+    let edges = asked(&m, &s);
+    let built = ogeom_fillet::fillet_edges_with(&mut m, &s, &edges, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert_eq!(
+        explore_unique(&m, &built.shape, ShapeType::Shell)
+            .unwrap()
+            .len(),
+        2,
+        "the void kept"
+    );
+    let got = volume(&m, &built.shape);
+    assert!((got - want).abs() < 1e-9, "{got} against {want}");
 }
 
 /// The box corner at the origin of `blend_edges`' own tests, with the void

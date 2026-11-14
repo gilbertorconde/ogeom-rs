@@ -2678,6 +2678,39 @@ mod tests {
         }
     }
 
+    /// A 20 by 20 by 2 plate rounded on every edge a hair under half its
+    /// thickness: its sides set back to slivers `2 - 2r` wide (1.1e-7 and
+    /// 2e-6), within the sheet's reach but past the confusion distance, so
+    /// their points are merged and the curves meeting them widened to the
+    /// gap. Valid, and the exact rounded plate's volume within what the
+    /// slivers hold.
+    #[test]
+    fn a_plate_rounded_a_hair_under_half_its_thickness_keeps_its_sides_as_slivers() {
+        for r in [0.999_999_943_436_093_7, 0.999_999] {
+            let mut m = Model::new();
+            let s = ogeom_algo::make_box(&mut m, Frame::WORLD, (20.0, 20.0, 2.0), T)
+                .unwrap()
+                .shape;
+            let asked: Vec<(Shape, f64)> = explore_unique(&m, &s, ShapeType::Edge)
+                .unwrap()
+                .into_iter()
+                .map(|e| (e, r))
+                .collect();
+            let request = Request::from_rounds(&asked, T).unwrap();
+            let built = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+            let found = ogeom_algo::check(&m, &built, T).unwrap();
+            assert!(found.is_valid(), "{:?}", found.problems);
+            let (a, c) = (20.0 - 2.0 * r, 2.0 - 2.0 * r);
+            let pi = core::f64::consts::PI;
+            let want = a * a * c
+                + 2.0 * r * (a * a + 2.0 * a * c)
+                + pi * r * r * (2.0 * a + c)
+                + 4.0 / 3.0 * pi * r * r * r;
+            let v = volume(&m, &built);
+            assert!((v - want).abs() < 1e-6, "r {r}: {v} against {want}");
+        }
+    }
+
     /// The request's order is not the solid's: every edge of the box asked
     /// backwards builds the same points, bit for bit, and the same volume.
     #[test]
