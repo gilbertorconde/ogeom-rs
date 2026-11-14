@@ -3072,11 +3072,11 @@ fn rims_are_cut_by_trimming_to_the_general_fuse_s_solid() {
 /// them: the same solid, valid, with the same history, and the volume the
 /// section turned about the axis adds. The cases are a boss's base on a
 /// plate, a blind hole's floor, a stepped shaft's shoulder, two bosses'
-/// bases in one union, a bored boss's base and a shelf over the ring's top.
-/// Where the ring reaches a side of the plate, a shelf hangs into the box
-/// the round can take up, or the rounding reaches the boss's top, the
-/// engine hands the request back and the general fuse fills it. No case is
-/// filled by trimming any more.
+/// bases in one union, a bored boss's base, a shelf over the ring's top, a
+/// boss whose ring just meets the plate's side and a boss as tall as the
+/// rounding (their closed-form volumes hold). Where a shelf hangs into the
+/// box the round can take up, the engine hands the request back and the
+/// general fuse fills it. No case is filled by trimming any more.
 #[test]
 fn concave_rims_are_filled_by_trimming_to_the_general_fuse_s_solid() {
     use core::f64::consts::PI;
@@ -3167,13 +3167,13 @@ fn concave_rims_are_filled_by_trimming_to_the_general_fuse_s_solid() {
         (
             "a boss whose ring meets the plate's side",
             &|m| boss(m, 4.0, 5.0),
-            false,
+            true,
         ),
         ("a shelf into the ring", &|m| shelved(m, 0.5), false),
         (
             "a boss as tall as the rounding",
             &|m| boss(m, 10.0, 1.0),
-            false,
+            true,
         ),
     ];
     for (name, case, by_engine) in cases {

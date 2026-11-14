@@ -357,6 +357,10 @@ fn straight(
     }))
 }
 
+/// The points each other edge of a rim's face is read at, to keep the
+/// contact ring clear of it.
+const RING_SAMPLES: u32 = 32;
+
 /// A rim's strip, between two faces of revolution about the rim's axis
 /// (a plane square to it, a coaxial cylinder or cone): the torus its ball
 /// sweeps. In the rim's meridian each face is a straight line leaving the
@@ -502,6 +506,50 @@ fn rim(
     }
     if ball.0 <= radius + tol.confusion() {
         return Ok(None);
+    }
+    // Each face holds its contact ring: nothing else of a plane face stands
+    // between the rim and the ring, and nothing else of a wall between the
+    // rim and the ring's height; a straight edge leaving the rim's circle is
+    // read at its far end. A face narrower than the round (a cap the ring
+    // runs off) is left to the current path.
+    let on_rim =
+        |p: (f64, f64)| (p.0 - r0).abs() <= tol.confusion() && p.1.abs() <= tol.confusion();
+    for (k, fi) in faces.iter().enumerate() {
+        let plane = matches!(curved.faces[*fi].surface, SurfaceGeometry::Plane(_));
+        let foot = feet[k];
+        let between = |p: (f64, f64)| {
+            let (a, b, x) = if plane {
+                (r0, foot.0, p.0)
+            } else {
+                (0.0, foot.1, p.1)
+            };
+            x > a.min(b) + tol.confusion() && x < a.max(b) - tol.confusion()
+        };
+        for (e, _) in curved.faces[*fi].loops.iter().flatten() {
+            if *e == edge {
+                continue;
+            }
+            let c = &curved.edges[e];
+            let ends = (
+                meridian(curved.points[&c.ends.0]),
+                meridian(curved.points[&c.ends.1]),
+            );
+            let samples: Vec<(f64, f64)> =
+                if matches!(c.curve, Curve::Line(_)) && (on_rim(ends.0) || on_rim(ends.1)) {
+                    vec![if on_rim(ends.0) { ends.1 } else { ends.0 }]
+                } else {
+                    let (t0, t1) = c.range;
+                    (0..=RING_SAMPLES)
+                        .map(|j| {
+                            let t = t0 + (t1 - t0) * f64::from(j) / f64::from(RING_SAMPLES);
+                            ogeom_geom::Curve3d::point_at(&c.curve, t, tol).map(meridian)
+                        })
+                        .collect::<OgeomResult<_>>()?
+                };
+            if samples.into_iter().any(between) {
+                return Ok(None);
+            }
+        }
     }
     let at = |h: f64| Frame::new(centre + up * h, frame.z(), x, tol);
     let ring = |(rho, h): (f64, f64)| -> OgeomResult<Curve> {

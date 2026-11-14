@@ -389,13 +389,17 @@ impl Seamless {
 
     /// `rounds` (each an edge and its radius), named on the solid as given,
     /// named on [`Seamless::solid`]: the pieces of one edge the seams split,
-    /// asked at one radius, ask once. `None` where a round names a seam or
-    /// no edge of the solid, or two pieces of one edge are asked at
-    /// different radii.
+    /// asked at one radius, ask once; a seam names nothing. `None` where a
+    /// round names no edge of the solid, or two pieces of one edge are asked
+    /// at different radii.
     pub fn rounds(&self, rounds: &[(Shape, f64)]) -> Option<Vec<(Shape, f64)>> {
         let mut out: Vec<(Shape, f64)> = Vec::with_capacity(rounds.len());
         for (edge, radius) in rounds {
-            let f = (*self.edges.get(&id(edge))?)?;
+            // A piece no edge of the dissolved solid holds is a seam: it
+            // names nothing.
+            let Some(f) = *self.edges.get(&id(edge))? else {
+                continue;
+            };
             let edge = self.unified[&f].clone();
             match out.iter().find(|(e, _)| e.is_same(&edge)) {
                 Some((_, asked)) if asked == radius => {}
