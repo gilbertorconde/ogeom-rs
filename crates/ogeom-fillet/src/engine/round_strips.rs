@@ -17,7 +17,7 @@ use ogeom_math::{Circle, Cylinder, Direction, Frame, Point, Torus, Vector};
 use ogeom_topo::{Model, Shape};
 
 use super::curved::{Curved, CurvedEdge, read};
-use super::setbacks::curved_corners;
+use super::setbacks::{corner_for, curved_corners};
 use super::trimmed::{Section, Strip, assemble, faces_of, outward};
 use super::{Id, id};
 
@@ -100,10 +100,26 @@ pub(crate) fn round(
         let (o, u) = (frame.origin(), frame.z().vector());
         let e = &curved.edges[&strip.edge];
         let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-        for v in [e.ends.0, e.ends.1] {
+        for (end, v) in [e.ends.0, e.ends.1].into_iter().enumerate() {
             let (Some(c0), Some(c1)) = (
-                corners.get(&(strip.faces[0], v)),
-                corners.get(&(strip.faces[1], v)),
+                corner_for(
+                    &corners,
+                    &curved,
+                    strip.faces[0],
+                    v,
+                    strip.edge,
+                    end == 0,
+                    tol,
+                )?,
+                corner_for(
+                    &corners,
+                    &curved,
+                    strip.faces[1],
+                    v,
+                    strip.edge,
+                    end == 0,
+                    tol,
+                )?,
             ) else {
                 return Ok(None);
             };
@@ -138,10 +154,29 @@ pub(crate) fn round(
             Ok(Some(LineCurve::over(axis, a.min(b), a.max(b))?.into()))
         };
         for k in 0..2 {
-            let (p, q) = (
-                corners[&(strip.faces[k], e.ends.0)].point,
-                corners[&(strip.faces[k], e.ends.1)].point,
-            );
+            let (Some(p), Some(q)) = (
+                corner_for(
+                    &corners,
+                    &curved,
+                    strip.faces[k],
+                    e.ends.0,
+                    strip.edge,
+                    true,
+                    tol,
+                )?,
+                corner_for(
+                    &corners,
+                    &curved,
+                    strip.faces[k],
+                    e.ends.1,
+                    strip.edge,
+                    false,
+                    tol,
+                )?,
+            ) else {
+                return Ok(None);
+            };
+            let (p, q) = (p.point, q.point);
             let Some(cut) = trimmed(&strip.contacts[k], p, q)? else {
                 return Ok(None);
             };

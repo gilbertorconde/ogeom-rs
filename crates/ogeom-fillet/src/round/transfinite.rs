@@ -50,6 +50,22 @@
 //! achieves is measured on it, never assumed from the exact patch: its gap
 //! to each side's curve, its angle to each side's support, and how far it
 //! stands from the exact patch inside.
+//!
+//! A side may run over several edges, each on its own support (an S side:
+//! a convex round's end running on tangent into a concave one's, the two
+//! bending opposite ways); its normal's sign is carried across each join,
+//! and its bend eased across it. Four sides whose second and fourth sides
+//! each make such a join at one `v` are fitted as two faces split along
+//! that line, which one smooth surface cannot follow, on a finer net.
+//! Four sides' weights read each distance in the hole's extent across it
+//! (the mean length of the two sides it runs between, to the fourth), so
+//! a long hole's short sides reach only near their own ends: their ribbons,
+//! carried half the hole's length, are not the surface there. Each cross
+//! tangent's part into the hole is lifted at its side's middle to the
+//! distance across to the opposite side, so the two meet rather than
+//! overshoot, and a corner's slope reaches along its side only as far as
+//! lowers that part by a quarter at most, so the patch never folds over
+//! its side; on a square-like hole both leave the patch as it was.
 
 use ogeom_core::{OgeomResult, Tolerance, Tolerances, ogeom_bail};
 use ogeom_geom::{BSpline2d, BSplineSurface, Curve, Curve3d as _, Surface as _, SurfaceGeometry};
@@ -73,6 +89,64 @@ pub(crate) struct HoleSide {
     pub forward: bool,
     /// The surface across the side.
     pub support: SurfaceGeometry,
+    /// Where the side runs over more than one edge (an S side, a strip's
+    /// end running on into another's through a point both are tangent at):
+    /// each edge in the walk's order with its own surface, and `curve` the
+    /// whole side's; empty for a side of one edge, `edge` and `support`.
+    pub pieces: Vec<SidePiece>,
+}
+
+/// One edge of a side running over several.
+#[derive(Debug, Clone)]
+pub(crate) struct SidePiece {
+    /// The edge, as a node (its own orientation forward).
+    pub edge: Shape,
+    /// The range of its own curve it covers.
+    pub range: (f64, f64),
+    /// Whether the walk runs with its own curve's parameter.
+    pub forward: bool,
+    /// Where along the side it starts and ends, between nought and one.
+    pub along: (f64, f64),
+    /// The surface across it.
+    pub support: SurfaceGeometry,
+}
+
+/// An edge of a side: the edge, its own range, whether the walk runs with
+/// it, and where along the side it starts and ends.
+type SideEdge = (Shape, (f64, f64), bool, (f64, f64));
+
+/// How far either side of a join of two pieces on different surfaces the
+/// ribbon's bend is carried from the one's to the other's, along the side.
+const JOIN_REACH: f64 = 0.05;
+
+impl HoleSide {
+    /// The surface across the side at `s` along it.
+    fn support_at(&self, s: f64) -> &SurfaceGeometry {
+        self.pieces
+            .iter()
+            .find(|p| s <= p.along.1)
+            .or(self.pieces.last())
+            .map_or(&self.support, |p| &p.support)
+    }
+
+    /// Whether the side runs from one kind of surface onto another.
+    fn bends(&self) -> bool {
+        self.pieces.windows(2).any(|w| {
+            core::mem::discriminant(&w[0].support) != core::mem::discriminant(&w[1].support)
+        })
+    }
+
+    /// The side's edges in the walk's order: each with its own range,
+    /// whether the walk runs with it, and where along the side it stands.
+    fn edges(&self) -> Vec<SideEdge> {
+        if self.pieces.is_empty() {
+            return vec![(self.edge.clone(), self.range, self.forward, (0.0, 1.0))];
+        }
+        self.pieces
+            .iter()
+            .map(|p| (p.edge.clone(), p.range, p.forward, p.along))
+            .collect()
+    }
 }
 
 /// A side's ribbon: its curve over `[0, 1]` and its cross tangent.
@@ -87,6 +161,22 @@ struct Ribbon {
     ends: [(f64, f64); 2],
     /// Those components' derivatives in `s` at the side's start and end.
     slopes: [(f64, f64); 2],
+    /// How far along the side from each corner its slope reaches: the whole
+    /// side, or, where the slopes carried over it turn the cross tangent's
+    /// part into the hole back out between the corners (a long side between
+    /// sharply turning corners, the patch folding over its side), as far as
+    /// lowers that part by a quarter at most.
+    reach: [f64; 2],
+    /// For a side of four, how far the part into the hole is lowered at the
+    /// side's middle, by a bump nought with its slope at both corners, where
+    /// it reaches past the opposite side there: to that distance, so the two
+    /// sides' ribbons meet across a long hole rather than overshoot (a short
+    /// side's speed at the corners, carried along, can be far more).
+    lift: f64,
+    /// Each piece's normal's sign, where the side runs over several: each
+    /// turned to agree with the last's at their join (a convex round's
+    /// normal faces out of the solid, a concave one's torus's into it).
+    turns: Vec<f64>,
 }
 
 impl Ribbon {
@@ -115,7 +205,7 @@ impl Ribbon {
     fn frame(&self, s: f64, sign: f64, tol: Tolerances) -> OgeomResult<(Vector, Vector)> {
         let p = self.point(s, tol)?;
         let t = self.tangent(s, tol)?.normalized(tol)?;
-        let n = support_normal(&self.side.support, p, tol)?;
+        let n = support_normal(self.side.support_at(s), p, tol)? * self.turn(s);
         let across = n.cross(t).normalized(tol)? * sign;
         Ok((t, across))
     }
@@ -128,14 +218,25 @@ impl Ribbon {
         let [(a0, b0), (a1, b1)] = self.ends;
         let [(da0, db0), (da1, db1)] = self.slopes;
         let (s2, s3) = (s * s, s * s * s);
+        // A slope's basis `x (1 - x)^2` over its reach from its corner: its
+        // value nought and its slope one there, both nought where it ends.
+        let slope = |x: f64, reach: f64| {
+            let x = x / reach;
+            if x < 1.0 {
+                reach * x * (1.0 - x) * (1.0 - x)
+            } else {
+                0.0
+            }
+        };
         let h = [
             2.0 * s3 - 3.0 * s2 + 1.0,
-            s3 - 2.0 * s2 + s,
+            slope(s, self.reach[0]),
             -2.0 * s3 + 3.0 * s2,
-            s3 - s2,
+            -slope(1.0 - s, self.reach[1]),
         ];
         let along = h[0] * a0 + h[1] * da0 + h[2] * a1 + h[3] * da1;
-        let into = h[0] * b0 + h[1] * db0 + h[2] * b1 + h[3] * db1;
+        let bump = 16.0 * s2 * (1.0 - s) * (1.0 - s);
+        let into = h[0] * b0 + h[1] * db0 + h[2] * b1 + h[3] * db1 + bump * self.lift;
         Ok(t * along + across * into)
     }
 
@@ -146,8 +247,39 @@ impl Ribbon {
     fn at(&self, s: f64, d: f64, tol: Tolerances) -> OgeomResult<Point> {
         let p = self.point(s, tol)?;
         let t = self.cross(s, tol)?;
-        let bend = support_bend(&self.side.support, p, t, tol)?;
+        let bend = self.bend(s, p, t, tol)?;
         Ok(p + t * d + bend * (0.5 * d * d))
+    }
+
+    /// The sign [`Ribbon::turns`] gives the piece at `s`.
+    fn turn(&self, s: f64) -> f64 {
+        self.side
+            .pieces
+            .iter()
+            .position(|p| s <= p.along.1)
+            .or_else(|| self.side.pieces.len().checked_sub(1))
+            .and_then(|k| self.turns.get(k).copied())
+            .unwrap_or(1.0)
+    }
+
+    /// How the ribbon bends at `s`, from `p` along `t`: as the support does,
+    /// and within [`JOIN_REACH`] of a join of two pieces on different
+    /// surfaces carried evenly from the one's bend to the other's, so the
+    /// ribbon holds together across it.
+    fn bend(&self, s: f64, p: Point, t: Vector, tol: Tolerances) -> OgeomResult<Vector> {
+        for pair in self.side.pieces.windows(2) {
+            let at = pair[0].along.1;
+            if (s - at).abs() < JOIN_REACH {
+                let x = (s - at + JOIN_REACH) / (2.0 * JOIN_REACH);
+                let w = x * x * (3.0 - 2.0 * x);
+                let (a, b) = (
+                    support_bend(&pair[0].support, p, t, tol)?,
+                    support_bend(&pair[1].support, p, t, tol)?,
+                );
+                return Ok(a * (1.0 - w) + b * w);
+            }
+        }
+        support_bend(self.side.support_at(s), p, t, tol)
     }
 
     /// The derivative in `s` of the frame's two directions, by differences
@@ -258,6 +390,10 @@ pub(crate) struct Transfinite {
     ribbons: Vec<Ribbon>,
     /// The hole's corners, where the patch is their Wachspress blend.
     through: Option<Vec<Point>>,
+    /// For four sides, the hole's extent along the square's `u` and `v`:
+    /// the mean length of the first and third sides, and of the second and
+    /// fourth.
+    extent: [f64; 2],
 }
 
 impl Transfinite {
@@ -284,8 +420,25 @@ impl Transfinite {
                 sign: 1.0,
                 ends: [(0.0, 0.0); 2],
                 slopes: [(0.0, 0.0); 2],
+                reach: [1.0; 2],
+                lift: 0.0,
+                turns: Vec::new(),
             })
             .collect();
+        for r in &mut ribbons {
+            let mut turns = Vec::with_capacity(r.side.pieces.len());
+            for (k, piece) in r.side.pieces.iter().enumerate() {
+                if k == 0 {
+                    turns.push(1.0);
+                    continue;
+                }
+                let at = r.point(piece.along.0, tol)?;
+                let before = support_normal(&r.side.pieces[k - 1].support, at, tol)?;
+                let after = support_normal(&piece.support, at, tol)?;
+                turns.push(turns[k - 1] * before.dot(after).signum());
+            }
+            r.turns = turns;
+        }
         let reach = tol.confusion() * 100.0;
         for i in 0..n {
             let next = (i + 1) % n;
@@ -349,9 +502,67 @@ impl Transfinite {
             ribbons[i].slopes[1] = (half.dot(t_end), half.dot(across_end));
             ribbons[next].slopes[0] = (half.dot(t_start), half.dot(across_start));
         }
+        // Where the part into the hole, carried with its slopes over the
+        // whole side, turns back out of the hole between the corners (the
+        // patch folding over its side), each slope reaches only as far as
+        // its basis, lowering the part by at most 4/27 of its reach times
+        // the slope, takes a quarter of it off.
+        for r in &mut ribbons {
+            let (b0, b1) = (r.ends[0].1, r.ends[1].1);
+            let mut folds = false;
+            for i in 1..32 {
+                let s = f64::from(i) / 32.0;
+                let (s2, s3) = (s * s, s * s * s);
+                let into = (2.0 * s3 - 3.0 * s2 + 1.0) * b0
+                    + (s3 - 2.0 * s2 + s) * r.slopes[0].1
+                    + (-2.0 * s3 + 3.0 * s2) * b1
+                    + (s3 - s2) * r.slopes[1].1;
+                if into * b0.signum() < 0.0 && b0 * b1 > 0.0 {
+                    folds = true;
+                }
+            }
+            if !folds {
+                continue;
+            }
+            for k in 0..2 {
+                let (into, rate) = (r.ends[k].1.abs(), r.slopes[k].1.abs());
+                if rate > 0.0 {
+                    r.reach[k] = (27.0 / 16.0 * into / rate).min(1.0);
+                }
+            }
+        }
+        if n == 4 {
+            for i in 0..4 {
+                let r = &ribbons[i];
+                let (_, across) = r.frame(0.5, r.sign, tol)?;
+                let opposite = ribbons[(i + 2) % 4].point(0.5, tol)?;
+                let wanted = (opposite - r.point(0.5, tol)?).dot(across);
+                let into = r.cross(0.5, tol)?.dot(across);
+                if wanted > 0.0 && into > wanted {
+                    ribbons[i].lift = wanted - into;
+                }
+            }
+        }
+        let mut extent = [1.0; 2];
+        if n == 4 {
+            let mut lengths = [0.0; 4];
+            for (length, r) in lengths.iter_mut().zip(&ribbons) {
+                let mut last = r.point(0.0, tol)?;
+                for k in 1..=16 {
+                    let p = r.point(f64::from(k) / 16.0, tol)?;
+                    *length += p.distance(last);
+                    last = p;
+                }
+            }
+            extent = [
+                0.5 * (lengths[0] + lengths[2]),
+                0.5 * (lengths[1] + lengths[3]),
+            ];
+        }
         Ok(Self {
             ribbons,
             through: None,
+            extent,
         })
     }
 
@@ -402,11 +613,20 @@ impl Transfinite {
     /// As evaluating the sides' curves.
     pub(crate) fn point_square(&self, u: f64, v: f64, tol: Tolerances) -> OgeomResult<Point> {
         let d = [v, 1.0 - u, 1.0 - v, u];
+        // The weights read each distance in the hole's extent across it, so
+        // a long hole's short sides reach only near their own ends.
+        let [across_u, across_v] = self.extent.map(|e| e.powi(4));
+        let far = [
+            v * across_v,
+            (1.0 - u) * across_u,
+            (1.0 - v) * across_v,
+            u * across_u,
+        ];
         let s = [u, v, 1.0 - u, 1.0 - v];
         let weight = |k: usize| -> f64 {
             (0..4)
                 .filter(|j| *j != k)
-                .map(|j| d[j].abs().powi(3))
+                .map(|j| far[j].abs().powi(3))
                 .product::<f64>()
         };
         let w = [weight(0), weight(1), weight(2), weight(3)];
@@ -571,7 +791,25 @@ pub(crate) fn corner_patch(
     sides: &[HoleSide],
     tol: Tolerances,
 ) -> OgeomResult<CornerPatch> {
+    if sides.len() != 4 && sides.iter().any(|s| !s.pieces.is_empty()) {
+        ogeom_bail!(
+            Construction,
+            "a vertex patch takes a side of several edges only among four"
+        );
+    }
+    // Sides running from one surface onto another second and fourth,
+    // where they are.
+    let turned: Vec<HoleSide>;
+    let sides = if sides.len() == 4 && (sides[0].bends() || sides[2].bends()) {
+        turned = sides[1..].iter().chain(&sides[..1]).cloned().collect();
+        &turned[..]
+    } else {
+        sides
+    };
     let exact = Transfinite::new(sides, tol)?;
+    if let Some(at) = split_at(sides) {
+        return split_patch(model, sides, &exact, at, tol);
+    }
     if sides.len() >= 5 {
         return sector_patch(model, sides, &exact, tol);
     }
@@ -645,15 +883,20 @@ pub(crate) fn corner_patch_through_corners(
 /// plane over about its first span. The spans there fall as the square of
 /// the cosine's.
 fn net_parameters() -> Vec<f64> {
+    net_parameters_of(NET)
+}
+
+/// [`net_parameters`] for a net of `net` points.
+fn net_parameters_of(net: usize) -> Vec<f64> {
     #[expect(clippy::cast_precision_loss, reason = "a net of thirty-three")]
-    let last = (NET - 1) as f64;
-    (0..NET)
+    let last = (net - 1) as f64;
+    (0..net)
         .map(|k| {
             #[expect(clippy::cast_precision_loss, reason = "a net of thirty-three")]
             let t = k as f64 / last;
             if k == 0 {
                 0.0
-            } else if k == NET - 1 {
+            } else if k == net - 1 {
                 1.0
             } else {
                 {
@@ -763,19 +1006,24 @@ impl Data for Across<'_> {
 /// square's sides at each of them, its twists at the corners as
 /// [`Data::twist`] gives them.
 fn interpolated(across: &dyn Data, tol: Tolerances) -> OgeomResult<BSplineSurface> {
-    let params = net_parameters();
+    interpolated_on(across, NET, tol)
+}
+
+/// [`interpolated`] on a net of `net` by `net` points.
+fn interpolated_on(across: &dyn Data, net: usize, tol: Tolerances) -> OgeomResult<BSplineSurface> {
+    let params = net_parameters_of(net);
     let mut knots = vec![0.0; 4];
-    knots.extend_from_slice(&params[1..NET - 1]);
+    knots.extend_from_slice(&params[1..net - 1]);
     knots.extend_from_slice(&[1.0; 4]);
     let knots = KnotVector::new(knots, 3)?;
-    let count = NET + 2;
+    let count = net + 2;
     // Rows: the point at the first parameter, the derivative there, the
     // points between, the derivative at the last, the point there.
     let mut a = vec![vec![0.0; count]; count];
     let mut rows: Vec<(f64, usize)> = Vec::with_capacity(count);
     rows.push((0.0, 0));
     rows.push((0.0, 1));
-    for &t in &params[1..NET - 1] {
+    for &t in &params[1..net - 1] {
         rows.push((t, 0));
     }
     rows.push((1.0, 1));
@@ -794,15 +1042,15 @@ fn interpolated(across: &dyn Data, tol: Tolerances) -> OgeomResult<BSplineSurfac
         let mut rhs = Vec::with_capacity(count);
         rhs.push(points[0]);
         rhs.push(Point::from_vector(start));
-        rhs.extend_from_slice(&points[1..NET - 1]);
+        rhs.extend_from_slice(&points[1..net - 1]);
         rhs.push(Point::from_vector(end));
-        rhs.push(points[NET - 1]);
+        rhs.push(points[net - 1]);
         solve.apply(&rhs)
     };
     // Along `u` at each sampled `v`, the derivatives across `u = 0` and
     // `u = 1` at its ends.
     let mut along_u: Vec<Vec<Point>> = Vec::with_capacity(count);
-    let mut rows_u: Vec<Vec<Point>> = Vec::with_capacity(NET);
+    let mut rows_u: Vec<Vec<Point>> = Vec::with_capacity(net);
     for &v in &params {
         let points = params
             .iter()
@@ -969,7 +1217,7 @@ fn sector_patch(
                 continue;
             }
             let (du, dv) = surface.d1_at(t, 0.0, tol)?;
-            let support = support_normal(&ribbon.side.support, on, tol)?;
+            let support = support_normal(ribbon.side.support_at(t), on, tol)?;
             angle = angle.max(sine(du.cross(dv), support));
         }
         #[expect(clippy::cast_precision_loss, reason = "a net of thirty-three")]
@@ -1213,12 +1461,285 @@ fn measured(
             let (du, dv) = surface.d1_at(u, v, tol)?;
             let n = du.cross(dv);
 
-            let support = support_normal(&ribbon.side.support, on, tol)?;
+            let support = support_normal(ribbon.side.support_at(s), on, tol)?;
             let sine = n.cross(support).magnitude() / n.magnitude();
             angle = angle.max(sine.clamp(0.0, 1.0).asin());
         }
     }
     Ok((gap, angle))
+}
+
+/// The interpolation points along each direction of each part of a split
+/// patch: twice as fine as [`NET`], each part's exact patch turning faster.
+const SPLIT_NET: usize = 4 * (NET - 1) + 1;
+
+/// Where across the square a patch of four sides is split in two: where
+/// its second and fourth sides each run from one edge into another, a
+/// join of two surfaces bending opposite ways (a convex round's end running
+/// on into a concave one's) that one smooth surface cannot follow, both at
+/// the same `v`. `None` for any other.
+fn split_at(sides: &[HoleSide]) -> Option<f64> {
+    if sides.len() != 4 || sides[0].bends() || sides[2].bends() {
+        return None;
+    }
+    let join = |s: &HoleSide| match s.pieces.as_slice() {
+        [a, _] if s.bends() => Some(a.along.1),
+        _ => None,
+    };
+    let (right, left) = (join(&sides[1])?, join(&sides[3])?);
+    ((right - (1.0 - left)).abs() <= 1e-9).then_some(right)
+}
+
+/// The exact patch over `lo..hi` of the square's `v`, taken onto a square
+/// of its own.
+struct Part<'a> {
+    across: &'a Across<'a>,
+    lo: f64,
+    hi: f64,
+}
+
+impl Part<'_> {
+    /// The exact patch's derivative in `v` at `(u, v)`: the sides' own at
+    /// the square's bottom and top, by differences a millionth apart
+    /// between.
+    fn rate(&self, u: f64, v: f64) -> OgeomResult<Vector> {
+        if v <= 0.0 {
+            return self.across.dv_bottom(u);
+        }
+        if v >= 1.0 {
+            return self.across.dv_top(u);
+        }
+        let h = 1e-6;
+        Ok((self.across.point(u, v + h)? - self.across.point(u, v - h)?) / (2.0 * h))
+    }
+
+    fn at(&self, w: f64) -> f64 {
+        self.lo + (self.hi - self.lo) * w
+    }
+}
+
+impl Data for Part<'_> {
+    fn point(&self, u: f64, w: f64) -> OgeomResult<Point> {
+        self.across.point(u, self.at(w))
+    }
+
+    fn dv_bottom(&self, u: f64) -> OgeomResult<Vector> {
+        Ok(self.rate(u, self.lo)? * (self.hi - self.lo))
+    }
+
+    fn dv_top(&self, u: f64) -> OgeomResult<Vector> {
+        Ok(self.rate(u, self.hi)? * (self.hi - self.lo))
+    }
+
+    fn du_left(&self, w: f64) -> OgeomResult<Vector> {
+        self.across.du_left(self.at(w))
+    }
+
+    fn du_right(&self, w: f64) -> OgeomResult<Vector> {
+        self.across.du_right(self.at(w))
+    }
+}
+
+/// The patch of four sides split at `at` across the square: a face on each
+/// part, below and above, each fitted on its own, so the join its second
+/// and fourth sides run through falls on the line between them; and what
+/// they achieved, each measured against its sides and the two against each
+/// other along that line.
+fn split_patch(
+    model: &mut Model,
+    sides: &[HoleSide],
+    exact: &Transfinite,
+    at: f64,
+    tol: Tolerances,
+) -> OgeomResult<CornerPatch> {
+    let across = Across { exact, tol };
+    let parts = [(0.0, at), (at, 1.0)];
+    let mut surfaces = Vec::with_capacity(2);
+    for (lo, hi) in parts {
+        surfaces.push(interpolated_on(
+            &Part {
+                across: &across,
+                lo,
+                hi,
+            },
+            SPLIT_NET,
+            tol,
+        )?);
+    }
+    let sine = |a: Vector, b: Vector| {
+        (a.cross(b).magnitude() / (a.magnitude() * b.magnitude()))
+            .clamp(0.0, 1.0)
+            .asin()
+    };
+    let chart = |v: f64| -> (usize, f64) {
+        if v <= at {
+            (0, v / at)
+        } else {
+            (1, (v - at) / (1.0 - at))
+        }
+    };
+    let count = 8 * (NET - 1);
+    #[expect(clippy::cast_precision_loss, reason = "a few hundred samples")]
+    let sample = |i: usize| i as f64 / count as f64;
+    let (mut gap, mut angle, mut off) = (0.0f64, 0.0f64, 0.0f64);
+    for (i, ribbon) in exact.ribbons.iter().enumerate() {
+        for k in 0..=count {
+            let s = sample(k);
+            let (u, v) = match i {
+                0 => (s, 0.0),
+                1 => (1.0, s),
+                2 => (1.0 - s, 1.0),
+                _ => (0.0, 1.0 - s),
+            };
+            let (part, w) = chart(v);
+            let on = ribbon.point(s, tol)?;
+            gap = gap.max(surfaces[part].point_at(u, w, tol)?.distance(on));
+            if k == 0 || k == count {
+                continue;
+            }
+            let (du, dv) = surfaces[part].d1_at(u, w, tol)?;
+            let support = support_normal(ribbon.side.support_at(s), on, tol)?;
+            angle = angle.max(sine(du.cross(dv), support));
+        }
+    }
+    for k in 0..=count {
+        let u = sample(k);
+        let (a, b) = (&surfaces[0], &surfaces[1]);
+        gap = gap.max(a.point_at(u, 1.0, tol)?.distance(b.point_at(u, 0.0, tol)?));
+        if k == 0 || k == count {
+            continue;
+        }
+        let (du, dv) = a.d1_at(u, 1.0, tol)?;
+        let (eu, ev) = b.d1_at(u, 0.0, tol)?;
+        angle = angle.max(sine(du.cross(dv), eu.cross(ev)));
+    }
+    #[expect(clippy::cast_precision_loss, reason = "a net of thirty-three")]
+    let step = 1.0 / (SPLIT_NET - 1) as f64;
+    for (surface, (lo, hi)) in surfaces.iter().zip(parts) {
+        for i in 0..SPLIT_NET - 1 {
+            for j in 0..SPLIT_NET - 1 {
+                #[expect(clippy::cast_precision_loss, reason = "a net of thirty-three")]
+                let (u, w) = ((i as f64 + 0.5) * step, (j as f64 + 0.5) * step);
+                let p = surface.point_at(u, w, tol)?;
+                off = off.max(p.distance(across.point(u, lo + (hi - lo) * w)?));
+            }
+        }
+    }
+    let faces = split_faces(model, sides, &surfaces, at, gap, tol)?;
+    Ok(CornerPatch {
+        faces,
+        gap,
+        angle,
+        off,
+    })
+}
+
+/// The faces of [`split_patch`] on `surfaces`, below and above `at`: the
+/// lower bounded by the first side, the second's edges up to its join, the
+/// line across between the joins (one edge on the lower's top and the
+/// upper's bottom) and the fourth's edges from its join; the upper by that
+/// line, the rest of the second's edges, the third side and the rest of the
+/// fourth's. The edges are widened to the gap measured.
+fn split_faces(
+    model: &mut Model,
+    sides: &[HoleSide],
+    surfaces: &[BSplineSurface],
+    at: f64,
+    gap: f64,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Shape>> {
+    let widened = Tolerance::new(gap + tol.confusion())?;
+    let line = |from: Point2, to: Point2, (a, b): (f64, f64)| -> OgeomResult<BSpline2d> {
+        BSpline2d::new(KnotVector::new(vec![a, a, b, b], 1)?, vec![from, to], tol)
+    };
+    let ids: Vec<_> = surfaces
+        .iter()
+        .map(|s| model.geometry_mut().add_surface(s.clone().into()))
+        .collect();
+    // Each join's vertex: where the side's first edge ends.
+    let mut joins = Vec::with_capacity(2);
+    for side in [&sides[1], &sides[3]] {
+        let first = &side.pieces[0];
+        let Some((p, q)) = ogeom_algo::edge_vertices(model, &first.edge)? else {
+            ogeom_bail!(Construction, "a vertex patch's side has no vertices");
+        };
+        let join = if first.forward { q } else { p };
+        model.widen(&join, widened)?;
+        joins.push(join);
+    }
+    let across = ogeom_algo::make_edge_between(
+        model,
+        Curve::BSpline(surfaces[0].iso_v_curve(1.0, tol)?),
+        (0.0, 1.0),
+        &joins[1],
+        &joins[0],
+        tol,
+    )?
+    .shape;
+    for (id, v) in [(ids[0], 1.0), (ids[1], 0.0)] {
+        ogeom_algo::attach_pcurve(
+            model,
+            &across,
+            line(Point2::new(0.0, v), Point2::new(1.0, v), (0.0, 1.0))?.into(),
+            id,
+            Location::identity(),
+            (0.0, 1.0),
+        )?;
+    }
+    model.widen(&across, widened)?;
+    // Where a side's point `s` along it stands on the square.
+    let square = |i: usize, s: f64| match i {
+        0 => (s, 0.0),
+        1 => (1.0, s),
+        2 => (1.0 - s, 1.0),
+        _ => (0.0, 1.0 - s),
+    };
+    let reach = 1e-9;
+    let mut faces = Vec::with_capacity(2);
+    for (k, (lo, hi)) in [(0.0, at), (at, 1.0)].into_iter().enumerate() {
+        let mut walked = Vec::new();
+        if k == 1 {
+            walked.push(across.clone());
+        }
+        for (i, side) in sides.iter().enumerate() {
+            for (edge, (a, b), forward, (s0, s1)) in side.edges() {
+                let (v0, v1) = (square(i, s0).1, square(i, s1).1);
+                if v0.min(v1) < lo - reach || v0.max(v1) > hi + reach {
+                    continue;
+                }
+                let chart = |s: f64| {
+                    let (u, v) = square(i, s);
+                    Point2::new(u, (v - lo) / (hi - lo))
+                };
+                let (start, end) = if forward {
+                    (chart(s0), chart(s1))
+                } else {
+                    (chart(s1), chart(s0))
+                };
+                ogeom_algo::attach_pcurve(
+                    model,
+                    &edge,
+                    line(start, end, (a, b))?.into(),
+                    ids[k],
+                    Location::identity(),
+                    (a, b),
+                )?;
+                model.widen(&edge, widened)?;
+                if let Some((p, q)) = ogeom_algo::edge_vertices(model, &edge)? {
+                    model.widen(&p, widened)?;
+                    model.widen(&q, widened)?;
+                }
+                walked.push(if forward { edge } else { edge.reversed() });
+            }
+            if k == 0 && i == 1 {
+                walked.push(across.reversed());
+            }
+        }
+        let wire = ogeom_algo::make_wire(model, &walked, tol)?.shape;
+        faces
+            .push(ogeom_algo::make_face_on(model, ids[k], std::slice::from_ref(&wire), tol)?.shape);
+    }
+    Ok(faces)
 }
 
 /// The face on `surface` bounded by the sides' edges, and a pole at the
@@ -1248,27 +1769,23 @@ fn face_on(
     let widened = Tolerance::new(gap + tol.confusion())?;
     let mut walked = Vec::with_capacity(4);
     for (side, &(from, to)) in sides.iter().zip(corners) {
-        let (a, b) = side.range;
-        let (start, end) = if side.forward { (from, to) } else { (to, from) };
-        let line = BSpline2d::new(KnotVector::new(vec![a, a, b, b], 1)?, vec![start, end], tol)?;
-        ogeom_algo::attach_pcurve(
-            model,
-            &side.edge,
-            line.into(),
-            id,
-            Location::identity(),
-            (a, b),
-        )?;
-        model.widen(&side.edge, widened)?;
-        if let Some((p, q)) = ogeom_algo::edge_vertices(model, &side.edge)? {
-            model.widen(&p, widened)?;
-            model.widen(&q, widened)?;
+        let at = |x: f64| Point2::new(from.x + (to.x - from.x) * x, from.y + (to.y - from.y) * x);
+        for (edge, (a, b), forward, (s0, s1)) in side.edges() {
+            let (start, end) = if forward {
+                (at(s0), at(s1))
+            } else {
+                (at(s1), at(s0))
+            };
+            let line =
+                BSpline2d::new(KnotVector::new(vec![a, a, b, b], 1)?, vec![start, end], tol)?;
+            ogeom_algo::attach_pcurve(model, &edge, line.into(), id, Location::identity(), (a, b))?;
+            model.widen(&edge, widened)?;
+            if let Some((p, q)) = ogeom_algo::edge_vertices(model, &edge)? {
+                model.widen(&p, widened)?;
+                model.widen(&q, widened)?;
+            }
+            walked.push(if forward { edge } else { edge.reversed() });
         }
-        walked.push(if side.forward {
-            side.edge.clone()
-        } else {
-            side.edge.reversed()
-        });
     }
     if sides.len() == 4 {
         let wire = ogeom_algo::make_wire(model, &walked, tol)?.shape;
@@ -1361,6 +1878,7 @@ mod tests {
                     range,
                     forward,
                     support,
+                    pieces: Vec::new(),
                 }
             })
             .collect();
@@ -1503,6 +2021,7 @@ mod tests {
                     range,
                     forward: true,
                     support: plane.clone(),
+                    pieces: Vec::new(),
                 }
             })
             .collect();
@@ -1560,6 +2079,7 @@ mod tests {
                     range,
                     forward: true,
                     support: plane.clone(),
+                    pieces: Vec::new(),
                 }
             })
             .collect();
@@ -1619,6 +2139,7 @@ mod tests {
                     range,
                     forward: true,
                     support: plane.clone(),
+                    pieces: Vec::new(),
                 }
             })
             .collect();

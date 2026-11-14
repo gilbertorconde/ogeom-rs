@@ -112,9 +112,66 @@ impl Corner {
     }
 }
 
+/// The key a face's corner at vertex `v` is kept under where the face's
+/// loop passes `v` again and puts it elsewhere (a face pinched at `v`, as
+/// a top narrowing to nothing where a boss runs tangent into its side):
+/// `v` with its top bit set, which no vertex's own key has.
+#[cfg_attr(not(test), allow(dead_code, reason = "read by the trimmed assembly"))]
+pub(crate) const fn pinched(v: Id) -> Id {
+    v | 1 << 31
+}
+
+/// The corner of `face` at `v` an end of `edge` meets: the face's one
+/// corner there; where the face passes `v` twice with a corner each, the
+/// one on `edge`'s contact; and where both are (an edge closing on `v`),
+/// the one ahead of `v` along the edge from its start where `start`, the
+/// one behind it from its end otherwise. `None` where there is none.
+///
+/// # Errors
+///
+/// As evaluating the edge's curve.
+#[cfg_attr(not(test), allow(dead_code, reason = "read by the trimmed assembly"))]
+pub(crate) fn corner_for<'a>(
+    corners: &'a FastMap<(usize, Id), Corner>,
+    curved: &super::curved::Curved,
+    face: usize,
+    v: Id,
+    edge: Id,
+    start: bool,
+    tol: Tolerances,
+) -> OgeomResult<Option<&'a Corner>> {
+    use ogeom_geom::Curve3d as _;
+    let Some(second) = corners.get(&(face, pinched(v))) else {
+        return Ok(corners.get(&(face, v)));
+    };
+    let on: Vec<&Corner> = [corners.get(&(face, v)), Some(second)]
+        .into_iter()
+        .flatten()
+        .filter(|c| c.on(edge).is_some())
+        .collect();
+    match on.as_slice() {
+        [one] => Ok(Some(*one)),
+        [a, b] => {
+            let e = &curved.edges[&edge];
+            let t = if start { e.range.0 } else { e.range.1 };
+            let ahead = e.curve.d1_at(t, tol)? * if start { 1.0 } else { -1.0 };
+            let at = curved.points[&v];
+            Ok(Some(
+                if (a.point - at).dot(ahead) >= (b.point - at).dot(ahead) {
+                    *a
+                } else {
+                    *b
+                },
+            ))
+        }
+        _ => Ok(None),
+    }
+}
+
 /// Record the corner at `key`, standing at `point`, with parameters `on`; a
 /// vertex the loop passes again keeps one corner with every edge's
-/// parameter. `false` where the two passes put it in different places.
+/// parameter, or where it puts it elsewhere a second, under the vertex's
+/// [`pinched`] key. `false` where a third pass puts it elsewhere again.
 fn put(
     out: &mut FastMap<(usize, Id), Corner>,
     key: (usize, Id),
@@ -125,7 +182,8 @@ fn put(
     match out.get_mut(&key) {
         Some(held) => {
             if held.point.distance(point) > tol.confusion() {
-                return false;
+                return key.1 & pinched(0) == 0
+                    && put(out, (key.0, pinched(key.1)), point, on, tol);
             }
             for (e, t) in on {
                 if held.on(e).is_none() {
