@@ -1707,3 +1707,263 @@ fn a_leaning_pyramid_s_apex_chamfered_closes_on_one_patch() {
     ];
     chamfered_apex(base, Vector::new(5.0, 8.0, 12.0), 2.0);
 }
+
+/// The volume of the pyramid over the polygon `base` (counter-clockwise
+/// seen from above, on z = 0) up to `apex`, its slant edges bevelled `d`
+/// and the apex closed by the corners' Wachspress blend over the regular
+/// polygon of as many corners: by the divergence theorem about the solid's
+/// middle, each planar face's polygon from the planes meeting at its
+/// corners, the patch's part summed over `grid` by `grid` cells of each of
+/// its sectors.
+fn wachspress_apex_volume(
+    base: &[ogeom_math::Vector],
+    apex: ogeom_math::Vector,
+    d: f64,
+    grid: usize,
+) -> f64 {
+    use ogeom_math::Vector;
+    let n = base.len();
+    #[expect(clippy::cast_precision_loss, reason = "a handful of corners")]
+    let centre = base.iter().fold(apex, |s, p| s + *p) / (n + 1) as f64;
+    let side = |k: usize| {
+        let (p, q) = (base[k], base[(k + 1) % n]);
+        let mut m = (q - p).cross(apex - p);
+        m = m / m.magnitude();
+        if m.dot(p - centre) < 0.0 {
+            m = -m;
+        }
+        (m, m.dot(p))
+    };
+    let bevel = |k: usize| {
+        let u = base[k] - apex;
+        bevel_plane(
+            apex,
+            u / u.magnitude(),
+            (side((k + n - 1) % n).0, d),
+            (side(k).0, d),
+        )
+    };
+    let floor = (Vector::new(0.0, 0.0, -1.0), 0.0);
+    let corner = |k: usize| meet(side(k), bevel(k), bevel((k + 1) % n));
+    let low = |k: usize| meet(floor, side(k), bevel(k));
+    let high = |k: usize| meet(floor, side(k), bevel((k + 1) % n));
+    // A polygon's share, turned to face away from the middle.
+    let share = |ring: Vec<Vector>| {
+        let mut newell = Vector::ZERO;
+        let mut mid = Vector::ZERO;
+        for k in 0..ring.len() {
+            newell += ring[k].cross(ring[(k + 1) % ring.len()]);
+            mid += ring[k];
+        }
+        #[expect(clippy::cast_precision_loss, reason = "a few corners")]
+        let mid = mid / ring.len() as f64;
+        let sign = if newell.dot(mid - centre) < 0.0 {
+            -1.0
+        } else {
+            1.0
+        };
+        let mut sum = 0.0;
+        for k in 1..ring.len() - 1 {
+            sum += (ring[0] - centre).dot((ring[k] - centre).cross(ring[k + 1] - centre));
+        }
+        sign * sum / 6.0
+    };
+    let mut volume = share((0..n).flat_map(|k| [low(k), high(k)]).collect());
+    for k in 0..n {
+        volume += share(vec![low(k), high(k), corner(k)]);
+        volume += share(vec![
+            high((k + n - 1) % n),
+            low(k),
+            corner(k),
+            corner((k + n - 1) % n),
+        ]);
+    }
+    // The patch: the corners blended by Wachspress's coordinates.
+    #[expect(clippy::cast_precision_loss, reason = "a handful of corners")]
+    let polygon: Vec<(f64, f64)> = (0..n)
+        .map(|k| {
+            let t = core::f64::consts::TAU * k as f64 / n as f64;
+            (t.cos(), t.sin())
+        })
+        .collect();
+    let corners: Vec<Vector> = (0..n).map(corner).collect();
+    let patch = |x: (f64, f64)| -> Vector {
+        let area = |j: usize| {
+            let (a, b) = (polygon[j], polygon[(j + 1) % n]);
+            ((a.0 - x.0) * (b.1 - x.1) - (a.1 - x.1) * (b.0 - x.0)).max(0.0)
+        };
+        let w: Vec<f64> = (0..n)
+            .map(|i| {
+                (0..n)
+                    .filter(|j| *j != i && *j != (i + n - 1) % n)
+                    .map(area)
+                    .product()
+            })
+            .collect();
+        let total: f64 = w.iter().sum();
+        corners
+            .iter()
+            .zip(&w)
+            .fold(Vector::ZERO, |s, (c, wi)| s + *c * (wi / total))
+    };
+    let mut cells = 0.0;
+    #[expect(clippy::cast_precision_loss, reason = "a fine grid")]
+    let g = grid as f64;
+    for k in 0..n {
+        let (a, b) = (polygon[k], polygon[(k + 1) % n]);
+        // The sector from the polygon's middle to side `k`, in barycentric
+        // cells: `x = (i a + j b) / grid` over the triangle.
+        let at = |i: usize, j: usize| {
+            #[expect(clippy::cast_precision_loss, reason = "a fine grid")]
+            let (s, t) = (i as f64 / g, j as f64 / g);
+            patch((s * a.0 + t * b.0, s * a.1 + t * b.1))
+        };
+        for i in 0..grid {
+            for j in 0..grid - i {
+                let tri = |p: Vector, q: Vector, r: Vector| {
+                    (p - centre).dot((q - centre).cross(r - centre)) / 6.0
+                };
+                cells += tri(at(i, j), at(i + 1, j), at(i, j + 1));
+                if i + j + 1 < grid {
+                    cells += tri(at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+                }
+            }
+        }
+    }
+    // The patch faces away from the base, toward the apex.
+    let up = (patch((0.0, 0.0)) - centre).dot(apex - centre);
+    volume
+        + if up * cells < 0.0 {
+            -cells.abs()
+        } else {
+            cells.abs()
+        }
+}
+
+/// [`wachspress_apex_volume`] on a square's corners is the bilinear
+/// patch's, so it agrees with [`chamfered_apex`]'s exact oracle on the
+/// rectangular pyramid; the oracle checked, the pyramid over an uneven
+/// pentagon with its apex off the middle, its five slant edges bevelled
+/// 1/2, closes on the five corners' patch, a face on each side's sector:
+/// valid, nothing folded, a face for each face and bevel and five for the
+/// patch, all five B-splines generated by the apex, the volume the
+/// oracle's.
+#[test]
+fn a_pentagonal_pyramid_s_apex_chamfered_closes_on_one_patch_of_five_sectors() {
+    use ogeom_math::Vector;
+    // The oracle against the exact one, on four corners.
+    let rectangle = [
+        Vector::new(-4.0, -3.0, 0.0),
+        Vector::new(4.0, -3.0, 0.0),
+        Vector::new(4.0, 3.0, 0.0),
+        Vector::new(-4.0, 3.0, 0.0),
+    ];
+    let exact = {
+        let mut m = Model::new();
+        let _ = chamfered_apex(rectangle, Vector::new(0.0, 0.0, 4.0), 0.5);
+        let points: Vec<Point> = rectangle
+            .iter()
+            .chain([&Vector::new(0.0, 0.0, 4.0)])
+            .map(|v| Point::new(v.x, v.y, v.z))
+            .collect();
+        let rings = vec![
+            vec![0, 3, 2, 1],
+            vec![0, 1, 4],
+            vec![1, 2, 4],
+            vec![2, 3, 4],
+            vec![3, 0, 4],
+        ];
+        let s = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+            .unwrap()
+            .shape;
+        let specs: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                let (p, q) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+                let z = |v: &Shape| m.node(v).unwrap().data().as_vertex().unwrap().point.z;
+                z(&p) > 1.0 || z(&q) > 1.0
+            })
+            .map(|e| (e, Chamfer::Symmetric(0.5)))
+            .collect();
+        let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+        volume(&m, &built.shape)
+    };
+    let oracle = wachspress_apex_volume(&rectangle, Vector::new(0.0, 0.0, 4.0), 0.5, 400);
+    assert!(
+        (oracle - exact).abs() <= 1e-7 * exact,
+        "oracle {oracle} against {exact}"
+    );
+
+    let base = [
+        Vector::new(-3.0, -2.0, 0.0),
+        Vector::new(3.0, -2.0, 0.0),
+        Vector::new(4.0, 1.5, 0.0),
+        Vector::new(0.0, 4.0, 0.0),
+        Vector::new(-4.0, 1.5, 0.0),
+    ];
+    let apex = Vector::new(0.5, 0.3, 5.0);
+    let d = 0.5;
+    let want = wachspress_apex_volume(&base, apex, d, 400);
+    let mut m = Model::new();
+    let points: Vec<Point> = base
+        .iter()
+        .chain([&apex])
+        .map(|v| Point::new(v.x, v.y, v.z))
+        .collect();
+    let rings = vec![
+        vec![0, 4, 3, 2, 1],
+        vec![0, 1, 5],
+        vec![1, 2, 5],
+        vec![2, 3, 5],
+        vec![3, 4, 5],
+        vec![4, 0, 5],
+    ];
+    let s = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+        .unwrap()
+        .shape;
+    let top = explore_unique(&m, &s, ShapeType::Vertex)
+        .unwrap()
+        .into_iter()
+        .find(|v| (m.node(v).unwrap().data().as_vertex().unwrap().point.z - apex.z).abs() < 1e-9)
+        .unwrap();
+    let specs: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (p, q) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+            p.is_same(&top) || q.is_same(&top)
+        })
+        .map(|e| (e, Chamfer::Symmetric(d)))
+        .collect();
+    assert_eq!(specs.len(), 5);
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert!(!folded(&m, &built.shape), "folded");
+    let faces = explore_unique(&m, &built.shape, ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 16, "faces");
+    let splines: Vec<&Shape> = faces
+        .iter()
+        .filter(|f| {
+            let data = m.node(f).unwrap().data().as_face().unwrap();
+            matches!(
+                m.geometry().surface(data.surface),
+                Some(ogeom_geom::SurfaceGeometry::BSpline(_))
+            )
+        })
+        .collect();
+    assert_eq!(splines.len(), 5, "the patch's sectors");
+    assert_eq!(built.history.generated(&top).len(), 5, "the apex's patch");
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-5,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let got = ogeom_algo::volume_properties(&m, &built.shape, fine, T)
+        .unwrap()
+        .mass;
+    assert!(
+        (got - want).abs() <= 1e-7 * want,
+        "volume {got} against {want}"
+    );
+}

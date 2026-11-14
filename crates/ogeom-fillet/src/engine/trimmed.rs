@@ -1632,6 +1632,7 @@ pub(crate) fn assemble_consuming(
     let mut facet_planes: FastMap<Id, SurfaceGeometry> = FastMap::default();
     let mut facet_rings: Vec<(Id, Vec<Point>)> = Vec::with_capacity(facets.len());
     let mut patches: FastMap<Id, SurfaceGeometry> = FastMap::default();
+    let mut polygons: Vec<(Id, Vec<Point>)> = Vec::new();
     for (v, cycle) in &facets {
         let mut out = Vector::ZERO;
         for (e, c) in &curved.edges {
@@ -1666,18 +1667,23 @@ pub(crate) fn assemble_consuming(
             .iter()
             .any(|p| (*p - cycle[0]).dot(normal).abs() > tol.confusion())
         {
-            // Off one plane, four corners: the bilinear patch through them,
-            // its sides the four segments between them, where each bevel
-            // there is a plane and its end that segment.
-            if cycle.len() != 4
-                || sections[v]
-                    .iter()
-                    .any(|(_, _, bi)| !matches!(bevels[*bi].surface, SurfaceGeometry::Plane(_)))
+            // Off one plane: the patch through the corners, its sides the
+            // segments between them, where each bevel there is a plane and
+            // its end that segment; at four corners the bilinear patch.
+            if sections[v]
+                .iter()
+                .any(|(_, _, bi)| !matches!(bevels[*bi].surface, SurfaceGeometry::Plane(_)))
             {
                 return Ok(None);
             }
-            patches.insert(*v, bilinear(&cycle, tol)?);
-            facet_rings.push((*v, cycle));
+            if cycle.len() == 4 {
+                patches.insert(*v, bilinear(&cycle, tol)?);
+                facet_rings.push((*v, cycle));
+            } else {
+                // Five corners or more: their Wachspress blend, built on
+                // the sheet's edges once it stands.
+                polygons.push((*v, cycle));
+            }
             continue;
         }
         let frame = Frame::new(
@@ -2121,7 +2127,62 @@ pub(crate) fn assemble_consuming(
         .map(|(_, r)| r.clone())
         .collect();
     let mut sheet = build(model, &points.points, &edges, &built_rings, tol)?;
-    let shell = ogeom_algo::make_shell(model, &sheet.faces)?.shape;
+    // Each corner of five bevels or more off one plane: the patch through
+    // its corners on the bevels' end segments, held to the bands' fit
+    // target where it is interpolated.
+    let fit = crate::marched::band_fit_target(tol);
+    let mut polygon_faces: Vec<(Id, Vec<Shape>)> = Vec::with_capacity(polygons.len());
+    for (v, cycle) in &polygons {
+        let index = |p: Point| {
+            points
+                .points
+                .iter()
+                .position(|x| x.distance(p) <= tol.confusion())
+        };
+        let mut sides = Vec::with_capacity(cycle.len());
+        for k in 0..cycle.len() {
+            let (p, q) = (cycle[k], cycle[(k + 1) % cycle.len()]);
+            let (Some(i), Some(j)) = (index(p), index(q)) else {
+                return Ok(None);
+            };
+            let Some(&e) = made.get(&Key::Section(i.min(j), i.max(j))) else {
+                return Ok(None);
+            };
+            let strip = sections[v].iter().find_map(|(x, y, bi)| {
+                let at = |a: Point, b: Point| {
+                    a.distance(p) <= tol.confusion() && b.distance(q) <= tol.confusion()
+                };
+                (at(*x, *y) || at(*y, *x)).then_some(&bevels[*bi])
+            });
+            let Some(strip) = strip else {
+                return Ok(None);
+            };
+            sides.push(crate::round::transfinite::HoleSide {
+                edge: sheet.edges[e].clone(),
+                curve: edges[e].curve.clone(),
+                range: edges[e].range,
+                forward: edges[e].ends.0 == i,
+                support: strip.surface.clone(),
+            });
+        }
+        let patch =
+            match crate::round::transfinite::corner_patch_through_corners(model, &sides, tol) {
+                Ok(patch) => patch,
+                Err(e @ ogeom_core::OgeomError::Cancelled) => return Err(e),
+                Err(_) => return Ok(None),
+            };
+        if !(patch.gap <= fit && patch.off <= fit) {
+            return Ok(None);
+        }
+        polygon_faces.push((*v, patch.faces));
+    }
+    let shell_faces: Vec<Shape> = sheet
+        .faces
+        .iter()
+        .chain(polygon_faces.iter().flat_map(|(_, f)| f))
+        .cloned()
+        .collect();
+    let shell = ogeom_algo::make_shell(model, &shell_faces)?.shape;
     // The sheet's faces again by the rings' indices, a consumed face's slot
     // holding the face's own shape, never used.
     let mut by_index: Vec<Shape> = Vec::with_capacity(rings_of.len());
@@ -2146,7 +2207,6 @@ pub(crate) fn assemble_consuming(
     // P5: each bevel proved within the material its two faces bound there,
     // to the bands' fit target: under a plane, inside a wall (outside a
     // bore's).
-    let fit = crate::marched::band_fit_target(tol);
     for (bi, b) in bevels.iter().enumerate() {
         // An extruded wall has no region the certify reads: its bevel's
         // rulings stand in their sections on its material side by
@@ -2171,11 +2231,23 @@ pub(crate) fn assemble_consuming(
         }
     }
     // Each patch within the material every face at its vertex bounds.
-    for (fi, (v, _)) in facet_rings.iter().enumerate() {
-        if !patches.contains_key(v) {
-            continue;
-        }
-        let face = &sheet.faces[curved.faces.len() + bevels.len() + fi];
+    let patch_faces: Vec<(Id, Shape)> = facet_rings
+        .iter()
+        .enumerate()
+        .filter(|(_, (v, _))| patches.contains_key(v))
+        .map(|(fi, (v, _))| {
+            (
+                *v,
+                sheet.faces[curved.faces.len() + bevels.len() + fi].clone(),
+            )
+        })
+        .chain(
+            polygon_faces
+                .iter()
+                .flat_map(|(v, faces)| faces.iter().map(move |f| (*v, f.clone()))),
+        )
+        .collect();
+    for (v, face) in &patch_faces {
         let mut round: Vec<usize> = curved
             .edges
             .iter()
@@ -2217,6 +2289,11 @@ pub(crate) fn assemble_consuming(
             &curved.shapes[v],
             sheet.faces[curved.faces.len() + bevels.len() + fi].clone(),
         );
+    }
+    for (v, faces) in &polygon_faces {
+        for face in faces {
+            history.generate(&curved.shapes[v], face.clone());
+        }
     }
     for (e, _) in &curved.edges {
         if let Some(k) = made.get(&Key::Sharp(*e)) {
