@@ -750,7 +750,14 @@ surfaces of revolution about its axis that no other route builds (a
 torus's rim, its arcs asked apart) takes the same tool, its section the
 faces' traces in the half-plane (a line on a plane, cylinder or cone, an
 arc on a sphere or torus) and the bevel's line, turned by
-`make_revolution`. Any other curved bevel the rings do not
+`make_revolution`. Curved bevels that meet each other and roll over or
+reach a face are built on a convex solid (every face a plane or a
+cylinder, cone or sphere holding the material inside, every edge
+convex): there the notch takes everything past each bevel's surface, so
+the solid is taken in common with each bevel's material side, a
+half-space or the inside of a cone or cylinder about the rim's axis, as
+long as no vertex has three asked edges (those close with a facet).
+Elsewhere such bevels stay on the current path until M6. Any other curved bevel the rings do not
 place (a crease rolling over or reaching a face, or pieces of one crease
 asked apart) goes to the one boolean too where it stands alone: its strip
 closed into its tool (`close_tool`, shared with rounds, a chamfer's caps
