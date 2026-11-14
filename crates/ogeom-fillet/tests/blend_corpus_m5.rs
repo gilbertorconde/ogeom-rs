@@ -285,3 +285,213 @@ fn a_stadium_boss_s_foot_rolls_on_the_plate_s_edges() {
         }
     }
 }
+
+// The chamfer side's cases (ADR 0001, amendments "M5a" and "M5b"): a bevel
+// rolling over its face as a notch, a bevel reaching a face it does not end
+// at through the one boolean, and pieces of a curved edge asked apart. Each
+// is measured against its exact volume; a notch on planes is built by the
+// rings with no boolean, the others by the engine's one-boolean fallback.
+
+fn block(model: &mut Model, at: (f64, f64, f64), size: (f64, f64, f64)) -> Shape {
+    ogeom_algo::make_box(model, up_at(at.0, at.1, at.2), size, T)
+        .unwrap()
+        .shape
+}
+
+fn volume(model: &Model, shape: &Shape) -> f64 {
+    ogeom_algo::volume_properties(model, shape, ogeom_mesh::Deflection::default(), T)
+        .unwrap()
+        .mass
+}
+
+/// The face of `solid` whose normal leans most along `towards`.
+fn face_towards(model: &Model, solid: &Shape, towards: Vector) -> Shape {
+    explore_unique(model, solid, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .max_by(|a, b| {
+            let lean = |f: &Shape| ogeom_algo::face_normal(model, f, T).unwrap().1.dot(towards);
+            lean(a).total_cmp(&lean(b))
+        })
+        .unwrap()
+}
+
+/// `specs` chamfered, asserted valid, in the order given and reversed, the
+/// two the same solid in volume; the first.
+fn chamfered(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, ogeom_fillet::Chamfer)],
+) -> ogeom_algo::Built {
+    let built = ogeom_fillet::chamfer_edges_with(model, solid, specs, T).unwrap();
+    let check = ogeom_algo::check(model, &built.shape, T).unwrap();
+    assert!(check.is_valid(), "{:?}", check.problems);
+    let back: Vec<_> = specs.iter().rev().cloned().collect();
+    let again = ogeom_fillet::chamfer_edges_with(model, solid, &back, T).unwrap();
+    assert!(
+        (volume(model, &built.shape) - volume(model, &again.shape)).abs() < 1e-9,
+        "the order changes the solid"
+    );
+    built
+}
+
+/// A plate 12 × 8 × 3, its top front edge chamfered 1.5 on the top and 4
+/// down its 3 mm front: the bevel rolls over the front's foot onto the
+/// floor as a notch, its plane z = 3 - 4 + (4 / 1.5) y carrying on. The
+/// plate less the region past that plane, its section the strip above the
+/// line from the floor to the top: built by the rings with no boolean.
+#[test]
+fn a_tall_bevel_on_a_thin_plate_notches_its_floor() {
+    if !asked() {
+        return;
+    }
+    let (w, l, t, a, b) = (8.0, 12.0, 3.0, 1.5, 4.0);
+    let mut m = Model::new();
+    let s = block(&mut m, (0.0, 0.0, 0.0), (l, w, t));
+    let top = face_towards(&m, &s, Vector::new(0.0, 0.0, 1.0));
+    let edge = edges_where(&m, &s, |p| p.y.abs() < 1e-9 && (p.z - t).abs() < 1e-9);
+    assert_eq!(edge.len(), 1);
+    let spec = ogeom_fillet::Chamfer::Distances {
+        face: top,
+        on_face: a,
+        on_other: b,
+    };
+    let (built, work) =
+        ogeom_bool::work::counted(|| chamfered(&mut m, &s, &[(edge[0].clone(), spec)]));
+    assert_eq!(work.face_pairs, 0, "built by the rings");
+    // The plane z = t - b + (b / a) y meets the floor at y0 = a (b - t) / b.
+    let y0 = a * (b - t) / b;
+    let section = t * y0 + (a - y0) * t / 2.0;
+    let want = l * w * t - l * section;
+    let got = volume(&m, &built.shape);
+    assert!((got - want).abs() <= 1e-9 * want, "{got} against {want}");
+}
+
+/// A plate 24 × 12 × 4 with a block 6 × 4 × 3 standing on its top 1 back
+/// from the front: the front top edge chamfered 2 reaches under the block.
+/// The bevel runs on beneath it, the block untouched above the top: the
+/// plate less the bevel's prism, plus the block.
+#[test]
+fn a_bevel_under_a_block_on_the_top_is_non_local() {
+    if !asked() {
+        return;
+    }
+    let mut m = Model::new();
+    let plate = block(&mut m, (0.0, 0.0, 0.0), (24.0, 12.0, 4.0));
+    let boss = block(&mut m, (9.0, 1.0, 4.0), (6.0, 4.0, 3.0));
+    let s = ogeom_bool::fuse(&mut m, &plate, &boss, T).unwrap().shape;
+    let edge = edges_where(&m, &s, |p| p.y.abs() < 1e-9 && (p.z - 4.0).abs() < 1e-9);
+    assert_eq!(edge.len(), 1);
+    let built = chamfered(
+        &mut m,
+        &s,
+        &[(edge[0].clone(), ogeom_fillet::Chamfer::Symmetric(2.0))],
+    );
+    let want = 24.0 * 12.0 * 4.0 + 6.0 * 4.0 * 3.0 - 2.0 * 24.0;
+    let got = volume(&m, &built.shape);
+    assert!((got - want).abs() <= 1e-9 * want, "{got} against {want}");
+}
+
+/// A plate 20 × 10 × 4 with a cylindrical boss of radius 1.5 and height 3
+/// standing on its top, its axis at (10, 2): the front top edge chamfered 2
+/// reaches under the boss's foot. The bevel runs on beneath it, the boss
+/// untouched above the top: the plate less the bevel's prism, plus the
+/// boss's cylinder.
+#[test]
+fn a_bevel_under_a_cylindrical_boss_is_non_local() {
+    if !asked() {
+        return;
+    }
+    let mut m = Model::new();
+    let plate = block(&mut m, (0.0, 0.0, 0.0), (20.0, 10.0, 4.0));
+    let boss = ogeom_algo::make_cylinder(&mut m, up_at(10.0, 2.0, 4.0), 1.5, 3.0, T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &plate, &boss, T).unwrap().shape;
+    let edge = edges_where(&m, &s, |p| p.y.abs() < 1e-9 && (p.z - 4.0).abs() < 1e-9);
+    assert_eq!(edge.len(), 1);
+    let built = chamfered(
+        &mut m,
+        &s,
+        &[(edge[0].clone(), ogeom_fillet::Chamfer::Symmetric(2.0))],
+    );
+    let want = 20.0 * 10.0 * 4.0 + std::f64::consts::PI * 1.5 * 1.5 * 3.0 - 2.0 * 20.0;
+    let got = volume(&m, &built.shape);
+    assert!((got - want).abs() <= 1e-6 * want, "{got} against {want}");
+}
+
+/// A drum of radius 5 and height 1, its top rim chamfered 0.5 on the top
+/// and 2 down the 1 mm wall: the cone rolls over the wall's foot onto the
+/// floor as a notch. The drum less the region outside the cone, whose
+/// radius at height z is 4.5 + (1 - z) / 4: a solid of revolution in
+/// closed form, the integral of pi r(z)^2 over the height.
+#[test]
+fn a_drum_s_rim_rolls_over_its_short_wall_as_a_notch() {
+    if !asked() {
+        return;
+    }
+    let mut m = Model::new();
+    let s = ogeom_algo::make_cylinder(&mut m, up_at(0.0, 0.0, 0.0), 5.0, 1.0, T)
+        .unwrap()
+        .shape;
+    let top = face_towards(&m, &s, Vector::new(0.0, 0.0, 1.0));
+    let rim = edges_where(&m, &s, |p| (p.z - 1.0).abs() < 1e-9);
+    assert_eq!(rim.len(), 1);
+    let spec = ogeom_fillet::Chamfer::Distances {
+        face: top,
+        on_face: 0.5,
+        on_other: 2.0,
+    };
+    let built = chamfered(&mut m, &s, &[(rim[0].clone(), spec)]);
+    // r(z) = c + k z with c = 4.75, k = -0.25, over 0 <= z <= 1.
+    let (c, k) = (4.75_f64, -0.25_f64);
+    let want = std::f64::consts::PI * (c * c + c * k + k * k / 3.0);
+    let got = volume(&m, &built.shape);
+    assert!((got - want).abs() <= 1e-6 * want, "{got} against {want}");
+}
+
+/// A drum of radius 5 and height 2 fused from its two halves either side of
+/// x = 0: its top rim is pieces of one circle. Asked 0.5 on the half at
+/// x > 0 and 0.8 on the other, each half bevels as asked and the two step
+/// at the joints, on the plane through the axis: each half less half its
+/// own ring, of section d^2 / 2 about the radius 5 - d / 3 (Pappus).
+#[test]
+fn pieces_of_a_drum_s_rim_asked_apart_step_between_them() {
+    if !asked() {
+        return;
+    }
+    let mut m = Model::new();
+    let half = |m: &mut Model, x0: f64| {
+        let full = ogeom_algo::make_cylinder(m, up_at(0.0, 0.0, 0.0), 5.0, 2.0, T)
+            .unwrap()
+            .shape;
+        let keep = block(m, (x0, -6.0, -1.0), (6.0, 12.0, 4.0));
+        ogeom_bool::common(m, &full, &keep, T).unwrap().shape
+    };
+    let (a, b) = (half(&mut m, 0.0), half(&mut m, -6.0));
+    let s = ogeom_bool::fuse(&mut m, &a, &b, T).unwrap().shape;
+    let rim = edges_where(&m, &s, |p| (p.z - 2.0).abs() < 1e-9 && p.x.hypot(p.y) > 4.9);
+    let side = |e: &Shape| {
+        let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+        bb.low().unwrap().x + bb.high().unwrap().x > 0.0
+    };
+    // The rim's pieces, each half one piece or more (a cylinder's own seam
+    // splits one again).
+    assert!(
+        rim.iter().any(&side) && rim.iter().any(|e| !side(e)),
+        "both halves"
+    );
+    let specs: Vec<(Shape, ogeom_fillet::Chamfer)> = rim
+        .iter()
+        .map(|e| {
+            let d = if side(e) { 0.5 } else { 0.8 };
+            (e.clone(), ogeom_fillet::Chamfer::Symmetric(d))
+        })
+        .collect();
+    let built = chamfered(&mut m, &s, &specs);
+    // Half of a ring's volume, 2 pi (5 - d / 3) d^2 / 2.
+    let ring = |d: f64| std::f64::consts::PI * (5.0 - d / 3.0) * d * d / 2.0;
+    let want = std::f64::consts::PI * 25.0 * 2.0 - ring(0.5) - ring(0.8);
+    let got = volume(&m, &built.shape);
+    assert!((got - want).abs() <= 1e-6 * want, "{got} against {want}");
+}
