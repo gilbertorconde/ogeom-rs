@@ -585,11 +585,24 @@ pub(crate) fn assemble(
         else {
             return Ok(None);
         };
-        points.push(built.q);
-        let q = points.len() - 1;
         let [small, large] = crease.pair;
         let c_f = at[&(crease.shared, v)];
         let p_b = at[&(crease.near, v)];
+        // The smaller's corner on the far face where the crease ends on the
+        // sharp edge itself: the larger's flush end there has shrunk to it.
+        if built.q.distance(points[p_b]) <= reach {
+            edges.push(SheetEdge {
+                ends: (c_f, p_b),
+                curve: Some(built.crease),
+            });
+            let crease_edge = edges.len() - 1;
+            end_paths.insert((small, v), vec![crease_edge]);
+            end_paths.insert((large, v), vec![crease_edge]);
+            strip_corner.insert((small, crease.far, v), p_b);
+            continue;
+        }
+        points.push(built.q);
+        let q = points.len() - 1;
         edges.push(SheetEdge {
             ends: (c_f, q),
             curve: Some(built.crease),
@@ -1878,10 +1891,19 @@ fn crease_at(
         corners[&(fa, v)].distance(at_v),
         corners[&(fb, v)].distance(at_v),
     );
-    if (da - db).abs() <= reach {
+    // Corners standing together on the sharp edge: the crease runs to that
+    // point, the larger's flush end in the far face shrunk to it. Rounds of
+    // one radius there mitre instead.
+    let together = (da - db).abs() <= reach;
+    if together && (sections[&a.edge].1 - sections[&b.edge].1).abs() <= reach {
         return None;
     }
-    Some(if da < db {
+    let a_first = if together {
+        sections[&a.edge].1 < sections[&b.edge].1
+    } else {
+        da < db
+    };
+    Some(if a_first {
         Crease {
             pair: [a.edge, b.edge],
             shared,
@@ -1911,8 +1933,11 @@ struct CreaseEdges {
     arc_ends: (f64, f64),
 }
 
-/// How many points the crease is solved at and fitted through.
+/// How many points the crease is solved at and fitted through, at first.
 const CREASE_POINTS: u32 = 64;
+
+/// The most points the crease is solved at.
+const MOST_CREASE_POINTS: u32 = 512;
 
 #[allow(
     clippy::too_many_arguments,
@@ -1982,45 +2007,59 @@ fn crease_edges(
     let e2 = (rq - e1 * rq.dot(e1)).normalized(tol)?;
     let sweep = rq.dot(e2).atan2(rq.dot(e1));
     // Solved from `q` back to the corner, each root the one nearest the
-    // last: the two strips touch at the corner, where both roots meet.
-    let mut solved: Vec<Point> = Vec::with_capacity(CREASE_POINTS as usize + 1);
-    let mut last = (q - a_s).dot(d_s);
-    for k in (0..=CREASE_POINTS).rev() {
-        let u =
-            0.5 * (1.0 - (core::f64::consts::PI * f64::from(k) / f64::from(CREASE_POINTS)).cos());
-        let theta = sweep * u;
-        let base = a_s + (e1 * theta.cos() + e2 * theta.sin()) * *r_s;
-        let Some(t) = on_large(base, d_s)
-            .into_iter()
-            .min_by(|x, y| (x - last).abs().total_cmp(&(y - last).abs()))
-        else {
-            return Ok(None);
-        };
-        last = t;
-        solved.push(base + d_s * t);
-    }
-    solved.reverse();
-    if solved[0].distance(c_f) > 1e3 * tol.confusion() {
-        return Ok(None);
-    }
-    solved[0] = c_f;
-    if let Some(end) = solved.last_mut() {
-        *end = q;
-    }
-    let fitted = ogeom_algo::interpolate(&solved, 3, ogeom_algo::Spacing::default(), tol)?;
-    let (t0, t1) = ogeom_geom::Curve3d::domain(&fitted);
-    // Held to both cylinders between the points it was fitted through.
+    // last: the two strips touch at the corner, where both roots meet. Held
+    // to both cylinders between the points it was fitted through, at twice
+    // the points where it is not (sharper where the corners stand together
+    // on the sharp edge).
     let off = |p: Point, a: Point, d: Vector, r: f64| {
         let w = p - a;
         ((w - d * w.dot(d)).magnitude() - r).abs()
     };
-    for k in 0..(4 * CREASE_POINTS) {
-        let t = t0 + (t1 - t0) * (f64::from(k) + 0.5) / f64::from(4 * CREASE_POINTS);
-        let p = ogeom_geom::Curve3d::point_at(&fitted, t, tol)?;
-        if off(p, a_s, d_s, *r_s).max(off(p, a_l, d_l, *r_l)) > tol.confusion() {
+    let mut count = CREASE_POINTS;
+    let fitted = loop {
+        let mut solved: Vec<Point> = Vec::with_capacity(count as usize + 1);
+        let mut last = (q - a_s).dot(d_s);
+        for k in (0..=count).rev() {
+            let u = 0.5 * (1.0 - (core::f64::consts::PI * f64::from(k) / f64::from(count)).cos());
+            let theta = sweep * u;
+            let base = a_s + (e1 * theta.cos() + e2 * theta.sin()) * *r_s;
+            let Some(t) = on_large(base, d_s)
+                .into_iter()
+                .min_by(|x, y| (x - last).abs().total_cmp(&(y - last).abs()))
+            else {
+                return Ok(None);
+            };
+            last = t;
+            solved.push(base + d_s * t);
+        }
+        solved.reverse();
+        if solved[0].distance(c_f) > 1e3 * tol.confusion() {
             return Ok(None);
         }
-    }
+        solved[0] = c_f;
+        if let Some(end) = solved.last_mut() {
+            *end = q;
+        }
+        let fitted = ogeom_algo::interpolate(&solved, 3, ogeom_algo::Spacing::default(), tol)?;
+        let (t0, t1) = ogeom_geom::Curve3d::domain(&fitted);
+        let mut held = true;
+        for k in 0..(4 * count) {
+            let t = t0 + (t1 - t0) * (f64::from(k) + 0.5) / f64::from(4 * count);
+            let p = ogeom_geom::Curve3d::point_at(&fitted, t, tol)?;
+            if off(p, a_s, d_s, *r_s).max(off(p, a_l, d_l, *r_l)) > tol.confusion() {
+                held = false;
+                break;
+            }
+        }
+        if held {
+            break fitted;
+        }
+        if count >= MOST_CREASE_POINTS {
+            return Ok(None);
+        }
+        count *= 2;
+    };
+    let (t0, t1) = ogeom_geom::Curve3d::domain(&fitted);
     // The larger's end in the far face's plane, from its corner on the sharp
     // edge (its contact on the near face) to its contact on the shared face.
     let normal = planar.faces[crease.far].normal;
@@ -3564,6 +3603,72 @@ mod tests {
         for v in &volumes {
             assert!((v - want).abs() < 1e-6, "{v} against {want}");
         }
+    }
+
+    /// A 10 cube whose face `y = 10` is drafted 20 degrees in toward the top
+    /// (`y <= 10 - z tan 20`), its top edges at the corner `x = 10`, `y =
+    /// 10 - 10 tan 20` rounded: the one along `y` (on the upright face `x =
+    /// 10`) at `r_a`, the one along `x` (on the drafted face) at 2, the
+    /// drafted face's edge with `x = 10` left sharp. At `r_a = 2 cos 20
+    /// cot 55` the two rounds' corners on that sharp edge stand together:
+    /// the larger's flush end in the upright face shrinks to that point, and
+    /// the two meet along their cylinders' crease from the top's corner to
+    /// it. The solid is valid either way round, and its volume lies on the
+    /// line through the volumes the crease of #947 gives a hundredth either
+    /// side, within the line's own curvature.
+    #[test]
+    fn two_rounds_whose_corners_stand_together_on_a_sharp_edge_meet_in_their_crease() {
+        use ogeom_math::{Direction, Vector};
+        let draft = 20f64.to_radians();
+        let y0 = 10.0 - 10.0 * draft.tan();
+        let together = 2.0 * draft.cos() / (core::f64::consts::FRAC_PI_4 + 0.5 * draft).tan();
+        let build = |r_a: f64, flip: bool| -> f64 {
+            let mut m = Model::new();
+            let cube = ogeom_algo::make_box(&mut m, Frame::WORLD, (10.0, 10.0, 10.0), T)
+                .unwrap()
+                .shape;
+            // The tool beyond the drafted plane `y + z tan 20 = 10`.
+            let up = Vector::new(0.0, -draft.sin(), draft.cos());
+            let origin = ogeom_math::Point::new(-1.0, 10.0, 0.0) - up * 15.0;
+            let frame = Frame::new(
+                origin,
+                Direction::new(up, T).unwrap(),
+                Direction::new(Vector::X, T).unwrap(),
+                T,
+            )
+            .unwrap();
+            let tool = ogeom_algo::make_box(&mut m, frame, (12.0, 10.0, 30.0), T)
+                .unwrap()
+                .shape;
+            let s = ogeom_bool::cut(&mut m, &cube, &tool, T).unwrap().shape;
+            let along_y = edge_at(&m, &s, ogeom_math::Point::new(10.0, 0.5 * y0, 10.0));
+            let along_x = edge_at(&m, &s, ogeom_math::Point::new(5.0, y0, 10.0));
+            let mut asked = vec![(along_y, r_a), (along_x, 2.0)];
+            if flip {
+                asked.reverse();
+            }
+            let request = Request::from_rounds(&asked, T).unwrap();
+            let built = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+            let found = ogeom_algo::check(&m, &built, T).unwrap();
+            assert!(found.is_valid(), "r {r_a}: {:?}", found.problems);
+            volume(&m, &built)
+        };
+        let at = build(together, false);
+        assert!((build(together, true) - at).abs() < 1e-9, "either order");
+        let h = 1e-2;
+        let (below, above) = (build(together - h, false), build(together + h, false));
+        let (further_below, further_above) = (
+            build(together - 2.0 * h, false),
+            build(together + 2.0 * h, false),
+        );
+        // The line through the two either side, and how far the volume
+        // bends off a line over that step, from the pairs a step further.
+        let line = 0.5 * (below + above);
+        let bend = (0.5 * (further_below + further_above) - line).abs();
+        assert!(
+            (at - line).abs() <= bend + 1e-6,
+            "{at} against {line}, bending {bend}"
+        );
     }
 
     /// A 10 by 8 by 6 block with the corner `x < 4`, `y < 3`, `z > 3` cut
