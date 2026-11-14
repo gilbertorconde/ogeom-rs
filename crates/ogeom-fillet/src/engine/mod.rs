@@ -222,8 +222,7 @@ pub(crate) fn run(
             if at.len() < 3 {
                 continue;
             }
-            // Convex corners only: elsewhere the wedges' mitre stays.
-            if cluster.is_some() || at.iter().any(|seat| !seat.convex) {
+            if cluster.is_some() {
                 return Ok(None);
             }
             let planes: Vec<(ogeom_math::Vector, f64)> = at

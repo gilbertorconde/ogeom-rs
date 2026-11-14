@@ -2220,3 +2220,113 @@ fn a_box_with_a_void_chamfers_its_outside_and_keeps_the_void() {
         );
     }
 }
+
+/// The bevel plane along an edge through `at` of unit direction `u`
+/// between faces of outward normals `na` and `nb`, set back `d` square to
+/// it in each, convex or concave: into each face from the edge goes under
+/// the other face at a convex edge and over it at a concave one.
+fn bevel_plane_either(
+    at: ogeom_math::Vector,
+    u: ogeom_math::Vector,
+    na: ogeom_math::Vector,
+    nb: ogeom_math::Vector,
+    d: f64,
+    convex: bool,
+) -> (ogeom_math::Vector, f64) {
+    let inward = |n: ogeom_math::Vector, other: ogeom_math::Vector| {
+        let m = n.cross(u);
+        let m = m / m.magnitude();
+        if (m.dot(other) > 0.0) == convex {
+            -m
+        } else {
+            m
+        }
+    };
+    let (ca, cb) = (at + inward(na, nb) * d, at + inward(nb, na) * d);
+    let n = u.cross(cb - ca);
+    let n = n / n.magnitude();
+    (n, n.dot(ca))
+}
+
+/// The mitre's volume for a prism of [`prism`]'s profile, every edge
+/// chamfered `d`: the facet chamfer's closed form with, at each vertex,
+/// the tetrahedron between the point the three bevel planes share and the
+/// facet's three corners (each where a face's plane meets its two bevels),
+/// counted in where that point stands past the facet, away from the solid,
+/// and out where it stands within.
+fn mitred_prism_volume(profile: &[(f64, f64)], length: f64, d: f64) -> f64 {
+    use ogeom_math::Vector;
+    let n = profile.len();
+    let point = |k: usize, x: f64| Vector::new(x, profile[k % n].0, profile[k % n].1);
+    let side = |k: usize| {
+        let (a, b) = (profile[k % n], profile[(k + 1) % n]);
+        let e = Vector::new(0.0, b.0 - a.0, b.1 - a.1);
+        let m = Vector::new(0.0, e.z, -e.y);
+        m / m.magnitude()
+    };
+    let unit = |w: Vector| w / w.magnitude();
+    let mut extra = 0.0;
+    for k in 0..n {
+        let (prev, next) = (side(k + n - 1), side(k));
+        let (a, b, c) = (profile[(k + n - 1) % n], profile[k], profile[(k + 1) % n]);
+        let turn = (b.0 - a.0) * (c.1 - b.1) - (b.1 - a.1) * (c.0 - b.0);
+        let convex_corner = turn > 0.0;
+        for (x, cap) in [
+            (0.0, Vector::new(-1.0, 0.0, 0.0)),
+            (length, Vector::new(1.0, 0.0, 0.0)),
+        ] {
+            let v = point(k, x);
+            let along_prev = unit(point(k + n - 1, x) - v);
+            let along_next = unit(point(k + 1, x) - v);
+            let bevel_prev = bevel_plane_either(v, along_prev, cap, prev, d, true);
+            let bevel_next = bevel_plane_either(v, along_next, cap, next, d, true);
+            let bevel_long = bevel_plane_either(v, Vector::X, prev, next, d, convex_corner);
+            let plane = |nrm: Vector| (nrm, nrm.dot(v));
+            let c_cap = meet(plane(cap), bevel_prev, bevel_next);
+            let c_prev = meet(plane(prev), bevel_prev, bevel_long);
+            let c_next = meet(plane(next), bevel_next, bevel_long);
+            let tip = meet(bevel_prev, bevel_next, bevel_long);
+            let mut normal = (c_prev - c_cap).cross(c_next - c_cap);
+            if normal.dot(cap + prev + next) < 0.0 {
+                normal = -normal;
+            }
+            extra += (tip - c_cap).dot(normal) / 6.0;
+        }
+    }
+    chamfered_prism_volume(profile, length, d) + extra
+}
+
+/// Every edge of every part of the corpus chamfered with the mitre
+/// corner, convex, concave and mixed vertices alike: at each the bevels run
+/// on to the point their three planes share, so no corner has a facet.
+/// Valid, nothing folded, a face for every face and edge of the part, the
+/// volume [`mitred_prism_volume`]'s.
+#[test]
+fn every_edge_of_a_prismatic_part_mitres_to_its_bevels_shared_points() {
+    for (name, profile, length) in corpus() {
+        let d = 1.0;
+        let want = mitred_prism_volume(&profile, length, d);
+        let mut m = Model::new();
+        let s = prism(&mut m, &profile, length);
+        let (f, e) = (
+            explore_unique(&m, &s, ShapeType::Face).unwrap().len(),
+            explore_unique(&m, &s, ShapeType::Edge).unwrap().len(),
+        );
+        let specs = all_edges(&m, &s, d);
+        let built =
+            ogeom_fillet::chamfer_edges_cornered(&mut m, &s, &specs, ChamferCorner::Point, T)
+                .unwrap_or_else(|err| panic!("{name}: {err}"));
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{name}: {:?}", found.problems);
+        assert!(!folded(&m, &built.shape), "{name}: folded");
+        let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+            .unwrap()
+            .len();
+        assert_eq!(faces, f + e, "{name}: faces");
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "{name}: volume {got} against {want}"
+        );
+    }
+}
