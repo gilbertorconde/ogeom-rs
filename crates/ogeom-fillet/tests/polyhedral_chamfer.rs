@@ -908,7 +908,13 @@ fn a_thin_wall_chamfered_on_both_edges_meets_in_a_ridge() {
             .iter()
             .map(|i| specs[*i].clone())
             .collect();
-        let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+        // Built by the rings, with no boolean: the one-boolean fallback's
+        // pieces miss this ridge (forced, it takes 0.525 too little), so
+        // it must never be routed here (ADR 0001, amendment "M5a").
+        let (built, work) = ogeom_bool::work::counted(|| {
+            ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap()
+        });
+        assert_eq!(work.face_pairs, 0, "built by the rings, not the booleans");
         let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
         assert!(found.is_valid(), "{:?}", found.problems);
         assert!(!folded(&m, &built.shape), "folded");
@@ -3695,4 +3701,50 @@ fn a_frame_with_its_hole_s_uprights_chamfered_goes_through_the_one_boolean() {
             Some(held) => assert!(*held == k, "order {seed} differs"),
         }
     }
+}
+
+/// A plate 10 × 10 × 2, its top front edge chamfered 1 on the top and 3
+/// down the 2 mm front: the bevel's contact runs past the front's far side
+/// and the bevel rolls over onto the floor as a notch, its plane carrying
+/// on (ADR 0001, amendment "M5b"). The plate is the box less the region
+/// past that plane, z > 3 y - 1: 4/3 of section along its 10. Valid,
+/// nothing folded, built by the rings with no boolean, the front gone and
+/// the edge generating its bevel.
+#[test]
+fn a_bevel_past_its_face_rolls_over_as_a_notch() {
+    let mut m = Model::new();
+    let s = block(&mut m, (0.0, 0.0, 0.0), (10.0, 10.0, 2.0));
+    let faces = explore_unique(&m, &s, ShapeType::Face).unwrap();
+    let normal = |f: &Shape| ogeom_algo::face_normal(&m, f, T).unwrap().1;
+    let top = faces.iter().find(|f| normal(f).z > 0.5).unwrap().clone();
+    let front = faces.iter().find(|f| normal(f).y < -0.5).unwrap().clone();
+    let edge = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
+            l.z > 2.0 - 1e-6 && h.y < 1e-6 && h.x - l.x > 1.0
+        })
+        .unwrap();
+    let spec = Chamfer::Distances {
+        face: top,
+        on_face: 1.0,
+        on_other: 3.0,
+    };
+    let (built, work) = ogeom_bool::work::counted(|| {
+        ogeom_fillet::chamfer_edges_with(&mut m, &s, &[(edge.clone(), spec)], T).unwrap()
+    });
+    assert_eq!(work.face_pairs, 0, "built by the rings");
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert!(!folded(&m, &built.shape), "folded");
+    let want = 200.0 - 10.0 * 4.0 / 3.0;
+    let got = volume(&m, &built.shape);
+    assert!(
+        (got - want).abs() <= 1e-9 * want,
+        "volume {got} against {want}"
+    );
+    assert!(built.history.is_deleted(&front), "the front gone");
+    assert_eq!(built.history.generated(&edge).len(), 1, "the bevel");
 }

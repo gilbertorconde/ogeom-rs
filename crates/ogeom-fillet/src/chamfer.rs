@@ -1162,8 +1162,8 @@ fn sphere_leg(seat: &SphereSeat, face: &Shape, on_wall: f64, on_cap: f64) -> f64
 }
 
 /// The largest measure up to `up_to` at which a chamfer of `spec`'s
-/// spelling on `edge` of `solid` is not refused for running past its
-/// faces: for [`Chamfer::Symmetric`] the distance, for
+/// spelling on `edge` of `solid` stays seated on its faces, its contacts
+/// short of their faces' far sides: for [`Chamfer::Symmetric`] the distance, for
 /// [`Chamfer::Distances`] the largest common scale of its two distances,
 /// and for [`Chamfer::Angle`] the distance along its face at its angle;
 /// the measure `spec` itself names is not read. None where no measure
@@ -1171,9 +1171,10 @@ fn sphere_leg(seat: &SphereSeat, face: &Shape, on_wall: f64, on_cap: f64) -> f64
 ///
 /// Read from the seat, without building a wedge. On a straight edge
 /// between planes, a convex bevel's leg runs at most as far as its face
-/// reaches back from the edge, the bound [`chamfer_edges_with`] refuses
-/// past, and the answer is exact against it; a concave one fuses and runs
-/// past no face. On a rim, the cap's leg stops short of the axis, and
+/// reaches back from the edge, and the answer is exact against it; past
+/// it [`chamfer_edges_with`] rolls the bevel over its face's far side as a
+/// notch (ADR 0001, amendment "M5b"); a concave one fuses and runs past no
+/// face. On a rim, the cap's leg stops short of the axis, and
 /// each leg's contact stays on its face at the stations
 /// [`largest_fillet_radius`](crate::largest_fillet_radius) reads, a
 /// confusion distance short.
