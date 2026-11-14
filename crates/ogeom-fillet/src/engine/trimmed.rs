@@ -194,7 +194,7 @@ fn away(curved: &Curved, face: usize, edge: Id) -> Option<Point> {
 }
 
 /// The two distances of `spec` on `edge`'s faces in `faces`' order, `None`
-/// for an angle (its second distance needs the section's own geometry).
+/// for an angle, whose second distance [`angled`] reads from the section.
 fn distances(curved: &Curved, faces: [usize; 2], spec: &Chamfer) -> Option<[f64; 2]> {
     match spec {
         Chamfer::Symmetric(d) => Some([*d, *d]),
@@ -232,16 +232,156 @@ fn bevel_of(
         return Ok(None);
     };
     let faces = [f0, f1];
-    let Some(d) = distances(curved, faces, spec) else {
-        return Ok(None);
-    };
-    if d.iter().any(|x| !(x.is_finite() && *x > tol.confusion())) {
-        return Ok(None);
-    }
     match &e.curve {
-        Curve::Line(_) => straight(curved, edge, e, faces, d, tol),
+        Curve::Line(_) => {
+            let d = match spec {
+                Chamfer::Angle {
+                    face,
+                    distance,
+                    angle,
+                } => {
+                    let Some(k) = faces
+                        .iter()
+                        .position(|f| curved.faces[*f].shape.is_same(face))
+                    else {
+                        return Ok(None);
+                    };
+                    let Some(other) = angled(curved, edge, e, faces, k, *distance, *angle, tol)
+                    else {
+                        return Ok(None);
+                    };
+                    let mut d = [other; 2];
+                    d[k] = *distance;
+                    d
+                }
+                _ => {
+                    let Some(d) = distances(curved, faces, spec) else {
+                        return Ok(None);
+                    };
+                    d
+                }
+            };
+            if d.iter().any(|x| !(x.is_finite() && *x > tol.confusion())) {
+                return Ok(None);
+            }
+            straight(curved, edge, e, faces, d, tol)
+        }
         Curve::Circle(_) => rim(model, solid, curved, edge, shape, faces, spec, tol),
         _ => Ok(None),
+    }
+}
+
+/// A distance-angle chamfer's second distance on a straight seat: in the
+/// edge's section, the bevel leaves face `k`'s contact, `distance` in from
+/// the edge, at `angle` from that face into the material, and runs to the
+/// other face's trace, a line or the cylinder's circle; the distance there
+/// is measured along it from the edge. `None` where the bevel does not
+/// reach the other face, or a face is not a plane or a cylinder along the
+/// edge.
+#[allow(clippy::too_many_arguments, reason = "the seat's whole section")]
+fn angled(
+    curved: &Curved,
+    edge: Id,
+    e: &CurvedEdge,
+    faces: [usize; 2],
+    k: usize,
+    distance: f64,
+    angle: f64,
+    tol: Tolerances,
+) -> Option<f64> {
+    if !(angle.is_finite() && angle > tol.angular() && angle < std::f64::consts::PI)
+        || !(distance.is_finite() && distance > tol.confusion())
+    {
+        return None;
+    }
+    let (a, b) = (curved.points[&e.ends.0], curved.points[&e.ends.1]);
+    let u = (b - a) / a.distance(b);
+    let at = a + (b - a) * 0.5;
+    let normals = [
+        outward(curved, faces[0], at)?,
+        outward(curved, faces[1], at)?,
+    ];
+    // Each face's trace in the section: a line from the edge, or a circle.
+    enum Trace {
+        Line(Vector),
+        Circle(Point, f64, Vector),
+    }
+    let trace = |j: usize| -> Option<Trace> {
+        match &curved.faces[faces[j]].surface {
+            SurfaceGeometry::Plane(_) => {
+                let m = normals[j].cross(u);
+                let inside = away(curved, faces[j], edge)?;
+                let m = if (inside - at).dot(m) < 0.0 { -m } else { m };
+                Some(Trace::Line(m / m.magnitude()))
+            }
+            SurfaceGeometry::Cylinder(c) => {
+                let cyl = c.cylinder();
+                let axis = cyl.axis();
+                let (o, ax) = (axis.location, axis.direction.vector());
+                if u.cross(ax).magnitude() > tol.angular() {
+                    return None;
+                }
+                let centre = o + ax * (at - o).dot(ax);
+                Some(Trace::Circle(centre, cyl.radius(), ax))
+            }
+            _ => None,
+        }
+    };
+    let (named, other) = (trace(k)?, trace(1 - k)?);
+    let into = |p: Point| -> Option<Vector> { Some(-outward(curved, faces[k], p)?) };
+    // Where the bevel leaves the named face, and the way back along it.
+    let (start, back) = match named {
+        Trace::Line(m) => (at + m * distance, -m),
+        Trace::Circle(centre, radius, ax) => {
+            let r = at - centre;
+            let turn = |sign: f64| {
+                let w = ax.cross(r);
+                centre + r * (distance / radius).cos() + w * (sign * (distance / radius).sin())
+            };
+            let n_other = normals[1 - k];
+            let (plus, minus) = (turn(1.0), turn(-1.0));
+            let p = if (plus - at).dot(n_other) < (minus - at).dot(n_other) {
+                plus
+            } else {
+                minus
+            };
+            let w = ax.cross(p - centre);
+            let w = w / w.magnitude();
+            (p, if w.dot(at - p) > 0.0 { w } else { -w })
+        }
+    };
+    let t = back * angle.cos() + into(start)? * angle.sin();
+    match other {
+        Trace::Line(m) => {
+            let n = normals[1 - k];
+            let s = n.dot(at - start) / n.dot(t);
+            let hit = start + t * s;
+            let lambda = (hit - at).dot(m);
+            (s > 0.0 && lambda > tol.confusion()).then_some(lambda)
+        }
+        Trace::Circle(centre, radius, _) => {
+            let w = start - centre;
+            let (qa, qb, qc) = (t.dot(t), 2.0 * w.dot(t), w.dot(w) - radius * radius);
+            let disc = qb * qb - 4.0 * qa * qc;
+            if disc < 0.0 {
+                return None;
+            }
+            let root = disc.sqrt();
+            let s = [(-qb - root) / (2.0 * qa), (-qb + root) / (2.0 * qa)]
+                .into_iter()
+                .filter(|s| *s > tol.confusion())
+                .fold(f64::INFINITY, f64::min);
+            if !s.is_finite() {
+                return None;
+            }
+            let hit = start + t * s;
+            let (x, y) = (at - centre, hit - centre);
+            let arc = radius
+                * (x.dot(y) / (x.magnitude() * y.magnitude()))
+                    .clamp(-1.0, 1.0)
+                    .acos();
+            (arc > tol.confusion()).then_some(arc)
+        }
     }
 }
 
