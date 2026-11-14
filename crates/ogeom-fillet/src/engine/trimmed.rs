@@ -1158,6 +1158,10 @@ fn torus_rim(
 /// through.
 const CREASE_STATIONS: u32 = 128;
 
+/// How many stations a rational crease is moved down its wall through, as
+/// a polynomial curve held within half the confusion distance of it.
+const RATIONAL_STATIONS: u32 = 512;
+
 /// How far an extruded crease's ruled bevel runs on past each contact, as
 /// a share of its rulings' length.
 const BEVEL_RUN_ON: f64 = 0.5;
@@ -1206,11 +1210,38 @@ fn extruded_crease(
     let Curve::BSpline(crease) = &e.curve else {
         return Ok(None);
     };
-    if crease.is_rational() {
-        return Ok(None);
-    }
     let (t0, t1) = e.range;
     let at = |k: u32| (t1 - t0).mul_add(f64::from(k) / f64::from(CREASE_STATIONS), t0);
+    // A rational crease (a conic's arc) is moved down the wall as a
+    // polynomial one through stations at its own parameters, held within
+    // half the confusion distance of it between them, so the contact
+    // lies on the wall as an exact one does.
+    let polynomial;
+    let crease = if crease.is_rational() {
+        let fine = |k: u32| (t1 - t0).mul_add(f64::from(k) / f64::from(RATIONAL_STATIONS), t0);
+        let mut parameters = Vec::with_capacity(RATIONAL_STATIONS as usize + 1);
+        let mut points = Vec::with_capacity(RATIONAL_STATIONS as usize + 1);
+        for k in 0..=RATIONAL_STATIONS {
+            parameters.push(fine(k));
+            points.push(e.curve.point_at(fine(k), tol)?);
+        }
+        let fitted = ogeom_geom::fit::fit_points_at(&parameters, &points, 3, 0.1 * eps, tol)?;
+        for k in 0..RATIONAL_STATIONS {
+            // Off the crease, not off its point at the same parameter:
+            // the two need not run at one speed between stations.
+            let at_middle = fitted
+                .curve
+                .point_at(f64::midpoint(fine(k), fine(k + 1)), tol)?;
+            let near = param_on(&e.curve, (fine(k), fine(k + 1)), at_middle, tol)?;
+            if e.curve.point_at(near, tol)?.distance(at_middle) > 0.5 * eps {
+                return Ok(None);
+            }
+        }
+        polynomial = fitted.curve;
+        &polynomial
+    } else {
+        crease
+    };
     // The crease in the cap's plane, and which way into the cap and down
     // the wall: toward the faces' other points.
     let mid = e.curve.point_at(at(CREASE_STATIONS / 2), tol)?;
@@ -1970,16 +2001,22 @@ fn assemble_widened(
                     (SurfaceGeometry::Plane(_), Some(cut)) => {
                         met_between(cut, &strip.surface, p, q, tol)?
                     }
-                    (surface, Some(cut)) => match met_between(surface, cut, p, q, tol)? {
-                        Some(met) => Some(met),
-                        None if !matches!(cut, SurfaceGeometry::Plane(_)) => {
-                            marched_between(surface, cut, p, q, tol)?.map(|(met, width)| {
-                                marched_widths.borrow_mut().insert(edges.len(), width);
-                                met
-                            })
-                        }
-                        None => None,
-                    },
+                    (surface, Some(cut)) => met_between(surface, cut, p, q, tol)?,
+                };
+                // With no closed form, the segment where it lies on both
+                // (a ruling), else the section marched.
+                let met = match (met, cut) {
+                    (None, Some(cut))
+                        if !(matches!(strip.surface, SurfaceGeometry::Plane(_))
+                            && matches!(cut, SurfaceGeometry::Plane(_)))
+                            && !segment_on(&[&strip.surface, cut], p, q, tol)? =>
+                    {
+                        marched_between(&strip.surface, cut, p, q, tol)?.map(|(met, width)| {
+                            marched_widths.borrow_mut().insert(edges.len(), width);
+                            met
+                        })
+                    }
+                    (met, _) => met,
                 };
                 match met {
                     Some((curve, range, p_low)) => {
@@ -2674,6 +2711,27 @@ fn met_between(
     Ok(None)
 }
 
+/// Whether the segment from `p` to `q` lies on every one of `surfaces`,
+/// to the confusion distance at each sample.
+fn segment_on(
+    surfaces: &[&SurfaceGeometry],
+    p: Point,
+    q: Point,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    const SAMPLES: u32 = 4;
+    for i in 1..SAMPLES {
+        let at = p + (q - p) * (f64::from(i) / f64::from(SAMPLES));
+        for surface in surfaces {
+            let foot = ogeom_geom::project::project_on_surface(surface, at, 16, tol)?;
+            if foot.point.distance(at) > tol.confusion() {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
 /// Whether two curved strips ending on `p` and `q` mirror each other
 /// through `plane`: the curve `plane` cuts from `surface` between the two
 /// lies on `other` too, to the confusion distance at every sample.
@@ -2715,7 +2773,15 @@ fn marched_between(
     tol: Tolerances,
 ) -> OgeomResult<Option<(Met, f64)>> {
     use ogeom_intersect::section::{IntersectOptions, SurfaceIntersection, intersect_surfaces};
-    let options = IntersectOptions::default();
+    // Traced to ten confusion distances and fitted to one: the edge is
+    // built to what that leaves, and the faces either side must meet it.
+    let options = IntersectOptions {
+        tolerance: 1e-7,
+        marching: ogeom_intersect::march::Marching {
+            chord: 1e-6,
+            ..Default::default()
+        },
+    };
     let Ok(SurfaceIntersection::Along(curves)) = intersect_surfaces(surface, cut, options, tol)
     else {
         return Ok(None);
