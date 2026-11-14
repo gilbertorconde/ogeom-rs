@@ -684,6 +684,34 @@ it for planar chamfers first.
   place, each listed here as it is routed, so that M6 deletes the current
   path with every planar chamfer built through the engine.
 
+### Amendment: M5b, a chamfer rolling over its face (#902, M5b)
+
+A chamfer whose contact runs past its face's far side (a leg longer than
+the face is wide) was refused by name ("runs past its face"). The rule is
+to refuse only what the mainstream applications refuse (amendment "what
+M6 refuses by name"); their public documentation:
+
+| Source | A chamfer meeting an edge it was not seated on |
+|---|---|
+| T-FLEX CAD 17 (Parasolid) [P27] | Overflow processing applies to chamfers as to roundings, but for the cliff-edge options: "Notch option is applicable both to Roundings and Chamfers", "Process Smooth Overflow option is applicable both to Roundings and Chamfers", "Retain Cliff Edges option is not applicable to chamfers". Notch keeps the blend and trims or extends the element it overflows. |
+| SOLIDWORKS [P32] | Its "cliff chamfer" ("the chamfer face replaces one of the support faces") is a FeatureWorks recognition diagnostic for imported bodies, not a modelling refusal. |
+| Solid Edge, NX, Onshape, Fusion, Creo | Not found. |
+
+So a chamfer rolls over as a notch: its plane carries on past the face's
+far side and trims the faces it meets there, the face it ran past gone
+where the plane passes all of it. On planes the rings build it: a bevel
+rolling over (its setback past its face's width) is marked so in P0, and
+its plane may cut any ring of its cluster (`Cluster::rolling`), the faces
+beyond included; a request rolling over is not labelled non-local (the
+notch trims what it reaches, by definition). On a convex plate every edge
+chamfered past the plate's thickness is the polytope of the plate's, the
+bevels' and the facets' planes. A bevel the others leave nothing of
+stays refused by name where the one-boolean fallback builds (amendment
+"M5a"), as before.
+
+- [P32] SOLIDWORKS 2018 Help, Chamfer - Cliff Chamfer:
+  https://help.solidworks.com/2018/english/SolidWorks/fworks/IDS_FW_DIAGMSG_CHAMFER_CLIFF.htm
+
 ## 12. Acceptance corpus
 
 From #902:

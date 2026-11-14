@@ -150,6 +150,11 @@ fn chamfer_with(
     if asked.windows(2).any(|w| w[0].0 == w[1].0) {
         return Ok(None);
     }
+    // An edge not of the solid is no request of the curved path's: handed
+    // back, refused by name on the current path.
+    if asked.iter().any(|(e, _, _)| !curved.edges.contains_key(e)) {
+        return Ok(None);
+    }
     // In order of where each edge stands, its key only between two that
     // stand alike: a dissolved solid's keys change from one reading to the
     // next, and the bevels' order is the result's face order.

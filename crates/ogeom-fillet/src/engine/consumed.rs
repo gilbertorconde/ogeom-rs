@@ -101,6 +101,10 @@ pub(crate) struct Cluster {
     /// keep their setback corners.
     pub groups: Vec<Group>,
     pub grouped: FastSet<Id>,
+    /// The bevels whose contact runs past their face's far side: each rolls
+    /// over onto the faces beyond as a notch (ADR 0001, amendment "M5b"),
+    /// its plane cutting every ring of the cluster it reaches.
+    pub rolling: FastSet<Id>,
     /// Each blended edge's two ends.
     ends: FastMap<Id, (Id, Id)>,
     /// Each face's vertices, outer ring and holes.
@@ -120,6 +124,11 @@ impl Cluster {
     /// past them). A consumed face's outline, and a point with no vertex,
     /// may go to any cut.
     pub fn may_take(&self, ring: &Origin, at: Option<Id>, cut: &Origin) -> bool {
+        if let Origin::Edge(e) = cut
+            && self.rolling.contains(e)
+        {
+            return true;
+        }
         let Some(v) = at else {
             return true;
         };
@@ -408,9 +417,10 @@ pub(crate) fn consumed(
     if vertices.is_empty() {
         return Consumed::Nothing;
     }
-    // Each bevel at a consumed face must fit its two faces on its own: a
-    // contact line past the face's far side leaves the face it is seated
-    // on, which is refused, not cut back.
+    // A bevel whose contact line runs past its face's far side rolls over
+    // onto the faces beyond: its plane carries on and notches them, as a
+    // chamfer's overflow does (ADR 0001, amendment "M5b").
+    let mut rolling: FastSet<Id> = FastSet::default();
     for seat in seats.values() {
         let at_cluster = |v: Id| faces.iter().any(|f| planar.faces[*f].corners.contains(&v));
         if !blended.contains(&seat.edge) || !(at_cluster(seat.ends.0) || at_cluster(seat.ends.1)) {
@@ -431,7 +441,7 @@ pub(crate) fn consumed(
                 return Consumed::Outside;
             };
             if d > width + tol.confusion() {
-                return Consumed::Outside;
+                rolling.insert(seat.edge);
             }
         }
     }
@@ -625,10 +635,41 @@ pub(crate) fn consumed(
         cuts,
         groups,
         grouped,
+        rolling,
         ends,
         face_vertices,
         across,
     }))
+}
+
+/// Whether a bevel of the request rolls over: its contact line, read back
+/// from its setback corner, runs past its face's far side.
+pub(crate) fn rolls_over(
+    planar: &Planar,
+    seats: &FastMap<(Id, Id), Seat>,
+    blended: &FastSet<Id>,
+    corners: &FastMap<(usize, Id), Point>,
+    tol: Tolerances,
+) -> bool {
+    seats
+        .values()
+        .filter(|s| blended.contains(&s.edge))
+        .any(|seat| {
+            (0..2).any(|k| {
+                let face = &planar.faces[seat.faces[k]];
+                let inward = face
+                    .normal
+                    .cross(if k == 0 { seat.along } else { -seat.along });
+                let from = planar.points[&seat.ends.0];
+                let width = face
+                    .corners
+                    .iter()
+                    .map(|c| (planar.points[c] - from).dot(inward))
+                    .fold(0.0, f64::max);
+                corners_setback(planar, corners, seat, k)
+                    .is_some_and(|d| d > width + tol.confusion())
+            })
+        })
 }
 
 /// The setback of `seat`'s bevel on its `k`th face, read back from its
