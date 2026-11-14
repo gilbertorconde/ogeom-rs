@@ -462,6 +462,158 @@ pub(crate) fn curved_corners(
     Ok(Some(out))
 }
 
+/// Where a blend's contact leaves its face between its two corners (ADR
+/// 0001, section 4.3): it crosses `over`, an edge of the face's boundary,
+/// at `point`, `at` on the contact. The blend on `edge` runs on there,
+/// its ball re-seated on `over` (section 13, question 8), rather than
+/// ending.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RollOver {
+    /// The face the contact leaves.
+    pub face: usize,
+    /// The blended edge whose contact it is.
+    pub edge: Id,
+    /// The face's edge the contact crosses.
+    pub over: Id,
+    /// Where it crosses.
+    pub point: Point,
+    /// The crossing's parameter on the contact.
+    pub at: f64,
+}
+
+/// Every place a contact in `contacts` (by face and blended edge) leaves
+/// its face between the face's corners at the edge's two ends: each
+/// crossing with an edge of any of the face's loops other than the blended
+/// edge itself, a corner's own crossing left out. Sorted by face, edge and
+/// parameter. A contact with no corner at an end (the solid's own seams)
+/// is read from its domain's end there.
+///
+/// The P2 end of a contact leaving its face, labelled once here: what the
+/// engine does not yet build hands the request back from
+/// [`rolls_over`].
+///
+/// # Errors
+///
+/// As intersecting the curves.
+pub(crate) fn roll_overs(
+    curved: &super::curved::Curved,
+    contacts: &FastMap<(usize, Id), ogeom_geom::Curve>,
+    corners: &FastMap<(usize, Id), Corner>,
+    tol: Tolerances,
+) -> OgeomResult<Vec<RollOver>> {
+    use ogeom_geom::Curve3d as _;
+    let mut out = Vec::new();
+    let mut keys: Vec<&(usize, Id)> = contacts.keys().collect();
+    keys.sort_unstable();
+    for &(fi, e) in keys {
+        let contact = &contacts[&(fi, e)];
+        let edge = &curved.edges[&e];
+        let (lo, hi) = contact.domain();
+        let mut ends = [(lo, None), (hi, None)];
+        for (k, (v, start)) in [(edge.ends.0, true), (edge.ends.1, false)]
+            .into_iter()
+            .enumerate()
+        {
+            if let Some(c) = corner_for(corners, curved, fi, v, e, start, tol)?
+                && let Some(t) = c.on(e)
+            {
+                ends[k] = (t, Some(c.point));
+            }
+        }
+        let (mut a, mut b) = (ends[0].0.min(ends[1].0), ends[0].0.max(ends[1].0));
+        // A closed contact whose corners stand together (a rim's) is
+        // crossed anywhere but there.
+        let whole = edge.ends.0 == edge.ends.1 && (b - a).abs() <= tol.parametric();
+        // On a closed contact the piece between the corners is the way
+        // round beside the edge: its middle the nearer the edge's own.
+        if !whole && (contact.is_periodic() || contact.is_closed(tol)) {
+            let period = hi - lo;
+            let middle = edge
+                .curve
+                .point_at(0.5 * (edge.range.0 + edge.range.1), tol)?;
+            let inner = contact.point_at(0.5 * (a + b), tol)?.distance(middle);
+            let outer = contact
+                .point_at(0.5 * (a + b) + 0.5 * period, tol)?
+                .distance(middle);
+            if outer < inner {
+                (a, b) = (b, a + period);
+            }
+        }
+        let corner_points: Vec<Point> = ends.iter().filter_map(|(_, p)| *p).collect();
+        let face = &curved.faces[fi];
+        let mut met: Vec<RollOver> = Vec::new();
+        let mut seen: Vec<Id> = Vec::new();
+        for &(over, _) in face.loops.iter().flatten() {
+            // A seam the face walks both ways is read once.
+            if over == e || seen.contains(&over) {
+                continue;
+            }
+            seen.push(over);
+            let o = &curved.edges[&over];
+            let boundary: ogeom_geom::Curve = {
+                let (dlo, dhi) = o.curve.domain();
+                if (o.range.0 - dlo).abs() <= tol.parametric()
+                    && (o.range.1 - dhi).abs() <= tol.parametric()
+                {
+                    o.curve.clone()
+                } else {
+                    ogeom_geom::TrimmedCurve::new(o.curve.clone(), o.range.0, o.range.1, tol)?
+                        .into()
+                }
+            };
+            let found = ogeom_intersect::curves::intersect_curves(
+                contact,
+                &boundary,
+                ogeom_intersect::curves::CurveCurveOptions {
+                    gap: tol.confusion(),
+                    ..ogeom_intersect::curves::CurveCurveOptions::default()
+                },
+                tol,
+            )?;
+            for x in found.crossings {
+                let at = if b > hi {
+                    if x.on_a < a {
+                        x.on_a + (hi - lo)
+                    } else {
+                        x.on_a
+                    }
+                } else {
+                    x.on_a
+                };
+                let inside = whole || (at > a + tol.parametric() && at < b - tol.parametric());
+                if !inside
+                    || corner_points
+                        .iter()
+                        .any(|c| c.distance(x.point) <= tol.confusion())
+                    || met
+                        .iter()
+                        .any(|m| m.point.distance(x.point) <= tol.confusion())
+                {
+                    continue;
+                }
+                met.push(RollOver {
+                    face: fi,
+                    edge: e,
+                    over,
+                    point: x.point,
+                    at: x.on_a,
+                });
+            }
+        }
+        met.sort_by(|p, q| p.at.total_cmp(&q.at));
+        out.extend(met);
+    }
+    Ok(out)
+}
+
+/// Whether any of `found` stands where the engine builds no roll-over
+/// yet: the one place a request whose contact leaves its face is handed
+/// back from, to the current path, which builds or refuses it as before.
+#[must_use]
+pub(crate) fn rolls_over(found: &[RollOver]) -> bool {
+    !found.is_empty()
+}
+
 /// The parameter an edge walked `forward` (or not) ends its walk at.
 #[cfg_attr(not(test), allow(dead_code, reason = "used by curved_corners"))]
 fn end_param(edge: &super::curved::CurvedEdge, forward: bool) -> f64 {
@@ -838,5 +990,73 @@ mod curved_tests {
             junctions += 1;
         }
         assert!(junctions >= 4, "the top's junctions: {junctions}");
+    }
+
+    /// A shelf (#974's): a box beside a taller cylinder, the box's top front
+    /// edge rounded at 3. On the top, the contact a radius in from the front
+    /// crosses the cylinder's rim, where the top narrows under the round:
+    /// two roll-overs, both over the rim, at y = ±2.8 (`9.6² + y² = 10²`).
+    /// The front's contact stays on its face, and the box alone has none.
+    #[test]
+    fn a_shelf_s_top_contact_rolls_over_the_cylinder_s_rim_twice() {
+        for with_cylinder in [true, false] {
+            let mut model = Model::new();
+            let block =
+                ogeom_algo::make_box(&mut model, up_at(0.0, -5.0, 0.0), (12.6, 10.0, 21.0), T)
+                    .unwrap()
+                    .shape;
+            let solid = if with_cylinder {
+                let cylinder = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 10.0, 26.0, T)
+                    .unwrap()
+                    .shape;
+                ogeom_bool::fuse(&mut model, &cylinder, &block, T)
+                    .unwrap()
+                    .shape
+            } else {
+                block
+            };
+            let curved = read(&model, &solid, T).unwrap().unwrap();
+            let edge = edge_where(&curved, |a, b| {
+                [a, b]
+                    .iter()
+                    .all(|p| (p.x - 12.6).abs() < 1e-7 && (p.z - 21.0).abs() < 1e-7)
+            });
+            let faces = faces_of(&curved, edge);
+            assert_eq!(faces.len(), 2);
+            let line =
+                |a: Point, b: Point| -> Curve { LineCurve::segment(a, b, T).unwrap().into() };
+            let mut contacts: FastMap<(usize, Id), Curve> = FastMap::default();
+            let mut top = usize::MAX;
+            for fi in faces {
+                let on_top = curved.faces[fi].loops.iter().flatten().any(|(e, _)| {
+                    let c = &curved.edges[e];
+                    (curved.points[&c.ends.0].z - 21.0).abs() < 1e-7
+                        && (curved.points[&c.ends.1].z - 21.0).abs() < 1e-7
+                        && *e != edge
+                });
+                let c = if on_top {
+                    top = fi;
+                    line(Point::new(9.6, -10.0, 21.0), Point::new(9.6, 10.0, 21.0))
+                } else {
+                    line(Point::new(12.6, -10.0, 18.0), Point::new(12.6, 10.0, 18.0))
+                };
+                contacts.insert((fi, edge), c);
+            }
+            let corners = curved_corners(&curved, &contacts, T).unwrap().unwrap();
+            let found = roll_overs(&curved, &contacts, &corners, T).unwrap();
+            if !with_cylinder {
+                assert!(found.is_empty(), "{found:?}");
+                assert!(!rolls_over(&found));
+                continue;
+            }
+            assert_eq!(found.len(), 2, "{found:?}");
+            assert!(rolls_over(&found));
+            for (r, y) in found.iter().zip([-2.8, 2.8]) {
+                assert_eq!((r.face, r.edge), (top, edge));
+                assert!(r.point.distance(Point::new(9.6, y, 21.0)) < 1e-7, "{r:?}");
+                let over = &curved.edges[&r.over];
+                assert!(matches!(over.curve, Curve::Circle(_)), "{r:?}");
+            }
+        }
     }
 }
