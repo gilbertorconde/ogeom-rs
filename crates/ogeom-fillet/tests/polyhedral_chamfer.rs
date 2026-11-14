@@ -3105,3 +3105,99 @@ fn a_consumed_face_round_a_hole_that_is_not_convex_loses_its_sides_bands() {
         }
     }
 }
+
+/// A box 5 × 4 × 4 fused with a wedge beside it whose front leans out
+/// (from the top front line to 2 forward at the floor): their top front
+/// edges run on in one line through the vertex where the wedge's exposed
+/// side steps out. Both chamfered 1/2: the two bevels share their top
+/// contact line but leave their fronts at different heights, so neither
+/// ends at a corner the other shares; each ends on the step's plane, the
+/// step's face gaining what lies between their traces. Valid, nothing
+/// folded, ten faces, and the exact volume: each part less what its own
+/// bevel takes, in two orders.
+#[test]
+fn two_bevels_running_on_in_one_line_leaving_their_fronts_apart_end_on_the_step() {
+    use ogeom_math::{Point, Vector};
+    let d = 0.5;
+    let mut m = Model::new();
+    let base = block(&mut m, (0.0, 0.0, 0.0), (5.0, 4.0, 4.0));
+    let mut points = Vec::new();
+    for x in [5.0, 10.0] {
+        for (y, z) in [(0.0, 4.0), (4.0, 4.0), (4.0, 0.0), (-2.0, 0.0)] {
+            points.push(Point::new(x, y, z));
+        }
+    }
+    let rings = vec![
+        vec![0, 4, 5, 1],
+        vec![1, 5, 6, 2],
+        vec![2, 6, 7, 3],
+        vec![3, 7, 4, 0],
+        vec![0, 1, 2, 3],
+        vec![4, 7, 6, 5],
+    ];
+    let wedge = ogeom_algo::make_faceted_solid(&mut m, &points, &rings, &[None; 6], T)
+        .unwrap()
+        .0
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &base, &wedge, T).unwrap().shape;
+    let front: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            let (lo, hi) = (bb.low().unwrap(), bb.high().unwrap());
+            lo.z > 4.0 - 1e-6 && lo.y > -1e-6 && hi.y < 1e-6
+        })
+        .map(|e| (e, Chamfer::Symmetric(d)))
+        .collect();
+    assert_eq!(front.len(), 2, "the two top front edges");
+    let back: Vec<(Shape, Chamfer)> = front.iter().rev().cloned().collect();
+
+    let leaning = Vector::new(0.0, -2.0, 1.0) / 5.0_f64.sqrt();
+    let wedge_planes = vec![
+        (-Vector::X, -5.0),
+        (Vector::X, 10.0),
+        (Vector::Y, 4.0),
+        (-Vector::Z, 0.0),
+        (Vector::Z, 4.0),
+        (leaning, 4.0 / 5.0_f64.sqrt()),
+    ];
+    let box_part = box_planes((5.0, 4.0, 4.0));
+    let first = bevel_plane(
+        Vector::new(0.0, 0.0, 4.0),
+        Vector::X,
+        (Vector::Z, d),
+        (-Vector::Y, d),
+    );
+    let second = bevel_plane(
+        Vector::new(5.0, 0.0, 4.0),
+        Vector::X,
+        (Vector::Z, d),
+        (leaning, d),
+    );
+    let past = |p: (Vector, f64)| (-p.0, -p.1);
+    let vol = |sets: &[&[(Vector, f64)]]| {
+        let all: Vec<(Vector, f64)> = sets.iter().flat_map(|s| s.iter().copied()).collect();
+        convex_polytope(&all).0
+    };
+    let want = vol(&[&box_part]) + vol(&[&wedge_planes])
+        - vol(&[&box_part, &[past(first)]])
+        - vol(&[&wedge_planes, &[past(second)]]);
+    for asked in [&front, &back] {
+        let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, asked, T).unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert!(!folded(&m, &built.shape), "folded");
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "volume {got} against {want}"
+        );
+        // The top, back and floor the fuse joins, the two fronts, the two
+        // ends, the step and the two bevels.
+        let faces = explore_unique(&m, &built.shape, ShapeType::Face)
+            .unwrap()
+            .len();
+        assert_eq!(faces, 10, "faces");
+    }
+}
