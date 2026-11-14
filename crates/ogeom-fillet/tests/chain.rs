@@ -4080,9 +4080,10 @@ fn concave_bands_running_into_a_filled_corner_are_trimmed_to_the_general_fuse_s_
 /// than by the general fuse. The rounding comes out as the general fuse
 /// makes it: the same solid, valid, with the same history, and the volume
 /// the section swept along the chain takes or adds. The cases are a block's
-/// top loop once its upright edges are rounded and a stadium slot's top
-/// loop (the arcs on a concave wall), both now built by the engine's trimmed
-/// assembly, nothing trimmed; a stadium prism's top loop; and for a union a
+/// top loop once its upright edges are rounded, a stadium slot's top loop
+/// (the arcs on a concave wall) and a stadium prism's top loop (its placed
+/// top baked), all now built by the engine's trimmed assembly, nothing
+/// trimmed; and for a union a
 /// rounded pocket's floor loop, and the block's top loop with a hole coming
 /// up into the sector a corner's wedge lies in, its upright edges rounded
 /// each on a cylinder spanning its strip alone.
@@ -4223,7 +4224,7 @@ fn rims_pieces_in_a_tangent_chain_are_trimmed_to_the_general_fuse_s_solid() {
             &|m| rounded_block(m, None),
             false,
         ),
-        ("a stadium prism's top loop", &stadium_top, true),
+        ("a stadium prism's top loop", &stadium_top, false),
         ("a stadium slot's top loop", &slot, false),
         ("a rounded pocket's floor loop", &pocket, true),
         (
