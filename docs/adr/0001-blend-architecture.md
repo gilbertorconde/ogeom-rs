@@ -650,10 +650,10 @@ it for planar chamfers first.
   edge and its contact lines) and its two caps (its end faces' planes). At
   a concave edge that wedge is the room in front of the edge, whose edge is
   convex, and its round's spandrel is the concave round's fill, fused.
-  Every contact must lie on its own face end to end: one running where its
-  face does not reach (a wall cut away under a boss) leaves the ball no
-  seat there, which is not a strip crossing a face, and stays refused by
-  name. Rounds joined at vertices, or a round ending where other than three
+  Every contact must lie on its own face end to end for these tools; one
+  running where its face does not reach (a wall cut away under a boss)
+  goes to the general route below (amendment "M5c, non-local rounds keep
+  their surfaces"). Rounds joined at vertices, or a round ending where other than three
   faces meet, close into one tool where the solid is convex round every
   vertex they end at: the convex polytope the faces round those vertices
   bound (within a box well past the setbacks), less that polytope rounded
@@ -751,6 +751,49 @@ stays refused by name where the one-boolean fallback builds (amendment
 
 - [P32] SOLIDWORKS 2018 Help, Chamfer - Cliff Chamfer:
   https://help.solidworks.com/2018/english/SolidWorks/fworks/IDS_FW_DIAGMSG_CHAMFER_CLIFF.htm
+
+### Amendment: M5c, non-local rounds keep their surfaces (#902)
+
+Three behaviours of the non-local rounds were chosen in M5c and are
+settled here by survey of the mainstream systems' public documentation.
+
+**The question.** A round whose ball, rolled on its two faces, meets
+another feature of the part: its fill reaching over a pocket's mouth, its
+spandrel holding a hole, or its contact running where its face does not
+reach (a wall cut away under a boss, the ball touching the wall's plane
+inside the boss).
+
+**What the systems do.**
+
+| System | Behaviour |
+|---|---|
+| Creo [P33] | "When you create a convex round and attach it as a solid or as a same quilt, the radius of the round is maintained and the adjacent geometry is trimmed." For a concave round, "If you attach the round as a solid, the neighboring surfaces are extended." (Extended surface rounds: a radius larger than the adjacent surface.) |
+| SOLIDWORKS [P30] | Overflow type **Keep surface**: the fillet stays smooth and the adjacent edge is changed; **Default** picks it or keep edge from the convexity met. |
+| Parasolid family [P27, P28, P29] | After smooth overflow and retain cliff edge, **notch**: the round is kept and the element it overflows is trimmed or extended to meet it. |
+| Onshape [P7] | **Allow edge overflow**, on by default: the fillet may change the edges it meets to stay one smooth surface. |
+| Fusion | Its fillet documentation describes no overflow option; not found. |
+
+**Rule.** A non-local round keeps its own surface, the one its ball rolled
+on its two faces sweeps, and the feature it reaches is trimmed or
+extended to meet it. Hence:
+
+- a convex round's spandrel is taken whole, a hole within it going with
+  it, and the part beyond its contact trimmed by its surface (the boss
+  over a cut-away wall keeps the spandrel cut under it);
+- a concave round's fill is added whole, roofing a pocket's mouth where it
+  reaches over it (the neighbouring surfaces extended), the pocket below
+  kept.
+
+Retaining the cliff edge instead (the ball resting on the boss's
+underside edge) needs the ball to pass the vertex where that edge meets
+the wall's cut, a vertex seat this milestone refuses (§13, question 8);
+the notch, which every surveyed system with an overflow option builds, is
+built instead. The engine builds all three by the general route of
+amendment "M5a" (the far feature off a copy, the rounds built there, the
+differences applied by booleans).
+
+- [P33] Creo Parametric 10.0 Help, About Extended Surface Rounds:
+  https://support.ptc.com/help/creo/creo_pma/r10.0/usascii/part_modeling/part_modeling/About_Extended_Surface_Rounds.html
 
 ## 12. Acceptance corpus
 

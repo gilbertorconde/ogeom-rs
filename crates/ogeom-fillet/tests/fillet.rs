@@ -1952,45 +1952,59 @@ fn a_round_on_a_chord_runs_out_across_the_drum_at_both_ends() {
 
 /// A floor edge whose wall carries a boss along part of it, the boss's
 /// underside 0.2 over the floor: there the wall reaches no higher than
-/// that, and a ball of radius 0.5 touching the floor and the wall's plane
-/// touches it 0.3 inside the material, under the boss. No ball rolling on
-/// the floor and the wall rounds the edge there, and a band cut along it
-/// would groove the block under the boss. Alone and as a request of one
-/// edge, the round is refused by name.
+/// that, and the round of radius 0.5 touches the wall's plane 0.3 inside
+/// the material, under the boss. The round keeps its surface and the boss
+/// is trimmed by it, as the mainstream systems build it (ADR 0001,
+/// amendment "M5c, non-local rounds keep their surfaces": a convex round's
+/// radius maintained and the adjacent geometry trimmed): the spandrel runs
+/// on under the boss. Alone and as a request of one edge, valid, the block
+/// and the boss less the spandrel `(1 - pi/4) r^2` along the block's 10.
 #[test]
-fn a_round_whose_ball_would_touch_the_wall_inside_a_boss_is_refused() {
+fn a_round_whose_ball_would_touch_the_wall_inside_a_boss_keeps_its_surface() {
     use ogeom_math::Direction;
-    let mut model = ogeom_topo::Model::new();
-    let block = ogeom_algo::make_box(
-        &mut model,
-        Frame::new(Point::new(-4.0, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap(),
-        (4.0, 10.0, 4.0),
-        T,
-    )
-    .unwrap()
-    .shape;
-    let boss = ogeom_algo::make_box(
-        &mut model,
-        Frame::new(Point::new(0.0, 6.0, 0.2), Direction::Z, Direction::X, T).unwrap(),
-        (2.0, 3.0, 2.8),
-        T,
-    )
-    .unwrap()
-    .shape;
-    let part = ogeom_bool::fuse(&mut model, &block, &boss, T)
+    for alone in [true, false] {
+        let mut model = ogeom_topo::Model::new();
+        let block = ogeom_algo::make_box(
+            &mut model,
+            Frame::new(Point::new(-4.0, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap(),
+            (4.0, 10.0, 4.0),
+            T,
+        )
         .unwrap()
         .shape;
-    let edge = edge_with_midpoint(&model, &part, Point::new(0.0, 5.0, 0.0));
-    let alone = ogeom_fillet::fillet_edge(&mut model, &part, &edge, 0.5, T);
-    let together = ogeom_fillet::fillet_edges(&mut model, &part, &[edge], 0.5, T);
-    for (by, outcome) in [("fillet_edge", alone), ("fillet_edges", together)] {
-        let Err(ogeom_core::OgeomError::Construction(why)) = outcome else {
-            panic!("{by} rounded an edge whose ball touches the wall inside the boss");
+        let boss = ogeom_algo::make_box(
+            &mut model,
+            Frame::new(Point::new(0.0, 6.0, 0.2), Direction::Z, Direction::X, T).unwrap(),
+            (2.0, 3.0, 2.8),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let part = ogeom_bool::fuse(&mut model, &block, &boss, T)
+            .unwrap()
+            .shape;
+        let edge = edge_with_midpoint(&model, &part, Point::new(0.0, 5.0, 0.0));
+        let built = if alone {
+            ogeom_fillet::fillet_edge(&mut model, &part, &edge, 0.5, T).unwrap()
+        } else {
+            ogeom_fillet::fillet_edges(&mut model, &part, std::slice::from_ref(&edge), 0.5, T)
+                .unwrap()
         };
+        let found = ogeom_algo::check(&model, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert!(!built.history.generated(&edge).is_empty(), "the strip");
+        let want = 160.0 + 2.0 * 3.0 * 2.8 - (1.0 - core::f64::consts::FRAC_PI_4) * 0.25 * 10.0;
+        let got = ogeom_algo::volume_properties(
+            &model,
+            &built.shape,
+            ogeom_mesh::Deflection::default(),
+            T,
+        )
+        .unwrap()
+        .mass;
         assert!(
-            why.to_string()
-                .contains("across a face that does not reach so far"),
-            "{by}: {why}"
+            (got - want).abs() < 1e-6,
+            "alone {alone}: {got} against {want}"
         );
     }
 }
