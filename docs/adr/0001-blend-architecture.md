@@ -792,14 +792,40 @@ own plane, so not at all), and a far wall only where a tool reaches it.
   asked edges meet, and the solid is not convex, the union of the tools:
   a rim's tool is its section turned over its own arc, any other strip's
   is closed by `close_tool` with its caps square to the edge at its ends.
-- **Corners.** At a convex corner the tools capped square at the vertex
-  cover it between them. At a reflex corner each tool would run on past
-  the vertex to meet the other's; between plane bevels of convex edges on
-  planar faces that piece is built (the polytope beyond both caps, outside
-  both bevels, inside every seat face) and added to the union. **Refused
-  by name:** a reflex corner where a bevel or a face is curved or an edge
-  is concave, and three or more rolling bevels at one vertex (their corner
-  closes with a facet). No tool closes either today.
+- **Corners.** Mainstream applications close every such corner: Creo's
+  chamfer transitions name the corner closings ("Corner Plane", "Patch")
+  where chamfer sets meet, and the planar engine closes a vertex of three
+  bevels or more with the facet through their setback corners by default.
+  So the rolling tools close them too:
+  - At a convex corner of two bevels the tools capped square at the vertex
+    cover it between them.
+  - At a reflex corner each tool runs on past the vertex until it meets the
+    other's. The piece they meet in is beyond both caps, on the edge's side
+    of both bevels and on each seat face's side that holds the strip's other
+    contact. Between plane bevels on planar faces it is the polytope of
+    those planes; otherwise the box round the vertex is taken in common
+    with each side kept (a half-space, or the inside of a cylinder, cone or
+    sphere) and less each side dropped, the box grown until the piece
+    stands clear of it. A kept cone stops short of its apex, and the piece
+    must too. Concave edges' pieces are fused like their tools. Because each
+    tool keeps to its own seat faces, a curved seat face bounds the piece:
+    on a tab whose arc meets a straight edge at a reflex foot, the square's
+    material just outside the tab's cylinder stays.
+  - At a vertex of three rolling bevels or more the facet closes the corner:
+    the plane through the setback corners (where the curves bounding each
+    face at the vertex meet, an asked edge's contact or the edge itself),
+    or, where four or more corners leave one plane, a fan of triangles about
+    their centroid (G0, amendment "chamfer corners are G0"). Its piece is
+    what lies inside every bevel on the vertex's side of the facet: between
+    plane bevels the tetrahedron of the three setback corners and the point
+    the bevels share. The planar rings build the same corner where they
+    place it.
+  - **Refused by name:** two rolling bevels meeting at a reflex corner, one
+    convex and one concave, and a corner of three or more mixing convex and
+    concave bevels (a cut and a fill meet there, which no one tool closes);
+    a corner piece that does not stand clear of a box of 64 times the
+    strips' reach. A bevel the others leave nothing of stays refused, as in
+    amendment "M5a".
 
 - [P32] SOLIDWORKS 2018 Help, Chamfer - Cliff Chamfer:
   https://help.solidworks.com/2018/english/SolidWorks/fworks/IDS_FW_DIAGMSG_CHAMFER_CLIFF.htm

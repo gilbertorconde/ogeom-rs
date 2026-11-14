@@ -7096,8 +7096,12 @@ pub(crate) fn rolling_tools(
         if !curved.edges.contains_key(&e) {
             return Ok(None);
         }
-        let Some(strip) = bevel_of(model, solid, &curved, e, edge, spec, tol)? else {
-            return Ok(None);
+        let strip = match bevel_of(model, solid, &curved, e, edge, spec, tol)? {
+            Some(strip) => strip,
+            None => match concave_straight(model, &curved, e, spec, tol)? {
+                Some(strip) => strip,
+                None => return Ok(None),
+            },
         };
         strips.push(strip);
     }
@@ -7138,6 +7142,7 @@ pub(crate) fn rolling_tools(
         }
     }
     let mut reflex: Vec<(Id, Id, Id)> = Vec::new();
+    let mut faceted: Vec<Id> = Vec::new();
     let mut vertices: Vec<&Id> = at_vertex.keys().collect();
     vertices.sort_unstable();
     for v in vertices {
@@ -7149,11 +7154,7 @@ pub(crate) fn rolling_tools(
                     reflex.push((*v, a, b));
                 }
             }
-            _ => ogeom_core::ogeom_bail!(
-                Construction,
-                "three or more chamfers rolling over their faces meet at one vertex, \
-                 whose corner closes with a facet; no tool closes that corner"
-            ),
+            _ => faceted.push(*v),
         }
     }
     let mut tools = Vec::with_capacity(strips.len());
@@ -7199,35 +7200,585 @@ pub(crate) fn rolling_tools(
         let (Some(sa), Some(sb)) = (by_edge(a), by_edge(b)) else {
             return Ok(None);
         };
-        // Both edges convex: their tools cut.
-        let convex = |e: Id| {
+        // Both edges convex: their tools cut; both concave: fused.
+        let sense_of = |e: Id| {
             strips
                 .iter()
                 .position(|s| s.edge == e)
-                .is_some_and(|k| tools[k].sense == super::fallback::Sense::Cut)
+                .map(|k| tools[k].sense)
         };
-        let piece = if convex(a) && convex(b) {
-            reflex_corner(model, &curved, v, [sa, sb], tol)?
-        } else {
-            None
+        let (Some(sense), Some(other)) = (sense_of(a), sense_of(b)) else {
+            return Ok(None);
         };
+        let mut piece = None;
+        if sense == other {
+            if sense == super::fallback::Sense::Cut {
+                piece = reflex_corner(model, &curved, v, [sa, sb], tol)?.map(Some);
+            }
+            if piece.is_none() {
+                piece = reflex_piece(model, &curved, v, [sa, sb], tol)?;
+            }
+        }
         let Some(piece) = piece else {
             ogeom_core::ogeom_bail!(
                 Construction,
-                "two chamfers rolling over their faces meet at a reflex corner where a \
-                 bevel or a face is curved or an edge is concave; the corner piece their \
-                 tools meet in is built only between plane bevels of convex edges on \
-                 planar faces"
+                "two chamfers rolling over their faces meet at a reflex corner, one \
+                 convex and one concave, or where the piece their tools meet in is not \
+                 bounded near the vertex; no tool closes that corner"
             );
         };
-        tools.push(super::fallback::Tool {
-            solid: piece,
-            sense: super::fallback::Sense::Cut,
-            faces: Vec::new(),
-        });
+        if let Some(piece) = piece {
+            tools.push(super::fallback::Tool {
+                solid: piece,
+                sense,
+                faces: Vec::new(),
+            });
+        }
     }
+    // Three or more at a vertex close with the facet through their setback
+    // corners: the piece inside every bevel on the vertex's side of it.
+    for v in faceted {
+        let meeting = &at_vertex[&v];
+        let mut senses = meeting.iter().map(|e| {
+            strips
+                .iter()
+                .position(|s| s.edge == *e)
+                .map(|k| tools[k].sense)
+        });
+        let Some(Some(sense)) = senses.next() else {
+            return Ok(None);
+        };
+        if senses.any(|s| s != Some(sense)) {
+            ogeom_core::ogeom_bail!(
+                Construction,
+                "chamfers rolling over their faces meet at one vertex, some convex and \
+                 some concave; their corner's facet is not closed by one tool"
+            );
+        }
+        let at_v: Vec<&Strip> = strips
+            .iter()
+            .filter(|s| meeting.contains(&s.edge))
+            .collect();
+        let Some(piece) = facet_piece(model, &curved, v, &at_v, tol)? else {
+            ogeom_core::ogeom_bail!(
+                Construction,
+                "three or more chamfers rolling over their faces meet at one vertex, \
+                 and the facet through their setback corners does not close it"
+            );
+        };
+        if let Some(piece) = piece {
+            tools.push(super::fallback::Tool {
+                solid: piece,
+                sense,
+                faces: Vec::new(),
+            });
+        }
+    }
+    // The corner pieces first: each bevel's tool then meets them across a
+    // face, not only along the line where two tools touch at a corner.
+    let pieces = tools.split_off(strips.len());
+    tools.splice(0..0, pieces);
     let edges: Vec<Shape> = specs.iter().map(|(e, _)| e.clone()).collect();
     super::fallback::applied(model, solid, &edges, &tools, tol)
+}
+
+/// A solid on one side of a surface over a box round a corner, and whether
+/// the corner keeps what lies in it (else what lies outside it). A kept
+/// cone's inside stops short of its apex: `Keep`'s bound is the axis
+/// (a point on it and its direction) and the height along it the piece
+/// must stay short of.
+enum Side {
+    Keep(Shape, Option<(Point, Vector, f64)>),
+    Drop(Shape),
+}
+
+/// The side of the plane through `through` of normal `n` holding `keep`,
+/// as a block reaching well past the box `(centre, half)`. `None` where
+/// `keep` lies on the plane.
+fn plane_side(
+    model: &mut Model,
+    (n, through): (Vector, Point),
+    keep: Point,
+    (centre, half): (Point, f64),
+    tol: Tolerances,
+) -> OgeomResult<Option<Side>> {
+    let n = n / n.magnitude();
+    let off = (keep - through).dot(n);
+    if off.abs() <= tol.confusion() {
+        return Ok(None);
+    }
+    let up = n * off.signum();
+    let reach = 4.0 * half;
+    let foot = centre - n * (centre - through).dot(n);
+    let z = Direction::new(up, tol)?;
+    let x = Direction::new(
+        if up.x.abs() < 0.9 {
+            Vector::X
+        } else {
+            Vector::Y
+        },
+        tol,
+    )?;
+    let frame = Frame::new(foot, z, x, tol)?;
+    let origin = foot - frame.x().vector() * reach - frame.y().vector() * reach;
+    let frame = Frame::new(origin, z, frame.x(), tol)?;
+    let block = ogeom_algo::make_box(model, frame, (2.0 * reach, 2.0 * reach, reach), tol)?.shape;
+    Ok(Some(Side::Keep(block, None)))
+}
+
+/// The side of `surface` holding `keep`, over the box `(centre, half)`: a
+/// plane's half-space, or the inside or outside of a cylinder, cone or
+/// sphere. `None` for another surface, a cone whose apex falls by the box,
+/// or `keep` on the surface.
+fn surface_side(
+    model: &mut Model,
+    surface: &SurfaceGeometry,
+    keep: Point,
+    (centre, half): (Point, f64),
+    tol: Tolerances,
+) -> OgeomResult<Option<Side>> {
+    let eps = tol.confusion();
+    let revolved = |model: &mut Model,
+                    frame: Frame,
+                    radius: &dyn Fn(f64) -> f64|
+     -> OgeomResult<Option<Side>> {
+        let (o, a) = (frame.origin(), frame.z().vector());
+        let mut heights = Vec::with_capacity(8);
+        for k in 0..8 {
+            let corner = centre
+                + Vector::new(
+                    if k & 1 == 0 { -half } else { half },
+                    if k & 2 == 0 { -half } else { half },
+                    if k & 4 == 0 { -half } else { half },
+                );
+            heights.push((corner - o).dot(a));
+        }
+        let mut low = heights.iter().copied().fold(f64::INFINITY, f64::min) - 0.01 * half;
+        let mut high = heights.iter().copied().fold(f64::NEG_INFINITY, f64::max) + 0.01 * half;
+        let q = keep - o;
+        let h = q.dot(a);
+        let rho = (q - a * h).magnitude();
+        if (rho - radius(h)).abs() <= eps || radius(h) <= eps {
+            return Ok(None);
+        }
+        // A cone's apex among the heights: the nappe holding `keep` only,
+        // stopped where its radius is a thousandth of the box's.
+        let mut bound = None;
+        let slope = radius(h + 1.0) - radius(h);
+        if slope.abs() > eps {
+            let apex = h - radius(h) / slope;
+            let stop = apex + (1e-3 * half) / slope;
+            if apex > low && apex < high {
+                if apex > h {
+                    high = stop.min(high);
+                    bound = Some((o, a, high));
+                } else {
+                    low = stop.max(low);
+                    bound = Some((o, -a, -low));
+                }
+            }
+        }
+        let (r_low, r_high) = (radius(low), radius(high));
+        if !(r_low > eps && r_high > eps && high > low) {
+            return Ok(None);
+        }
+        let base = Frame::new(o + a * low, frame.z(), frame.x(), tol)?;
+        let solid = if (r_low - r_high).abs() <= eps {
+            ogeom_algo::make_cylinder(model, base, r_low, high - low, tol)?.shape
+        } else {
+            ogeom_algo::make_cone(model, base, r_low, r_high, high - low, tol)?.shape
+        };
+        Ok(Some(if rho < radius(h) {
+            Side::Keep(solid, bound)
+        } else {
+            Side::Drop(solid)
+        }))
+    };
+    match surface {
+        SurfaceGeometry::Plane(p) => {
+            let plane = p.plane();
+            plane_side(
+                model,
+                (plane.normal().vector(), plane.origin()),
+                keep,
+                (centre, half),
+                tol,
+            )
+        }
+        SurfaceGeometry::Cylinder(c) => {
+            let r = c.cylinder().radius();
+            revolved(model, c.cylinder().frame(), &|_| r)
+        }
+        SurfaceGeometry::Cone(c) => {
+            let cone = c.cone();
+            revolved(model, cone.frame(), &|z| cone.radius_at(z))
+        }
+        SurfaceGeometry::Sphere(s) => {
+            let sphere = s.sphere();
+            let d = keep.distance(sphere.centre());
+            if (d - sphere.radius()).abs() <= eps {
+                return Ok(None);
+            }
+            let frame = Frame::new(sphere.centre(), Direction::Z, Direction::X, tol)?;
+            let ball = ogeom_algo::make_sphere(model, frame, sphere.radius(), tol)?.shape;
+            Ok(Some(if d < sphere.radius() {
+                Side::Keep(ball, None)
+            } else {
+                Side::Drop(ball)
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// The box `(centre, half)` taken in common with each side kept and less
+/// each side dropped: `Some(None)` where nothing is left, `None` where a
+/// boolean refuses or what is left reaches the box's boundary (the piece
+/// is not bounded near the corner).
+fn corner_piece(
+    model: &mut Model,
+    (centre, half): (Point, f64),
+    sides: Vec<Side>,
+    tol: Tolerances,
+) -> OgeomResult<Option<Option<Shape>>> {
+    let low = centre - Vector::new(half, half, half);
+    let frame = Frame::new(low, Direction::Z, Direction::X, tol)?;
+    let mut piece =
+        ogeom_algo::make_box(model, frame, (2.0 * half, 2.0 * half, 2.0 * half), tol)?.shape;
+    for side in &sides {
+        let step = match side {
+            Side::Keep(s, _) => ogeom_bool::common(model, &piece, s, tol),
+            Side::Drop(s) => ogeom_bool::cut(model, &piece, s, tol),
+        };
+        let Ok(step) = step else {
+            return Ok(None);
+        };
+        piece = step.shape;
+        if ogeom_topo::explore_unique(model, &piece, ogeom_topo::ShapeType::Face)?.is_empty() {
+            return Ok(Some(None));
+        }
+    }
+    let bounds = ogeom_algo::shape_bounds(model, &piece, tol)?;
+    let (Some(lo), Some(hi)) = (bounds.low(), bounds.high()) else {
+        return Ok(Some(None));
+    };
+    let margin = 1e-6 * half;
+    let high = centre + Vector::new(half, half, half);
+    if lo.x <= low.x + margin
+        || lo.y <= low.y + margin
+        || lo.z <= low.z + margin
+        || hi.x >= high.x - margin
+        || hi.y >= high.y - margin
+        || hi.z >= high.z - margin
+    {
+        return Ok(None);
+    }
+    // Short of each kept cone's stop: else the stop, not the cone, bounds it.
+    for side in &sides {
+        if let Side::Keep(_, Some((o, a, stop))) = side {
+            for v in ogeom_topo::explore_unique(model, &piece, ogeom_topo::ShapeType::Vertex)? {
+                let Some(p) = model
+                    .node(&v)
+                    .and_then(|n| n.data().as_vertex())
+                    .map(|d| d.point)
+                else {
+                    continue;
+                };
+                if (p - *o).dot(*a) >= stop - margin {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+    Ok(Some(Some(piece)))
+}
+
+/// How far a strip's contacts stand from `v`, at most.
+fn contact_reach(strip: &Strip, at: Point, tol: Tolerances) -> OgeomResult<f64> {
+    let mut far = 0.0_f64;
+    for contact in &strip.contacts {
+        far = far.max(ogeom_algo::project_on_curve(contact, at, 64, tol)?.distance);
+    }
+    Ok(far)
+}
+
+/// The piece two tools meeting at the reflex corner `v` take past both
+/// their caps, for any bevels and faces the sides are read on: beyond each
+/// edge's plane square to it at `v`, on the edge's side of each bevel, and
+/// on each seat face's side that holds the strip's other contact. `None`
+/// where a side is not read, or the piece is not bounded near `v`;
+/// `Some(None)` where it is empty.
+fn reflex_piece(
+    model: &mut Model,
+    curved: &Curved,
+    v: Id,
+    strips: [&Strip; 2],
+    tol: Tolerances,
+) -> OgeomResult<Option<Option<Shape>>> {
+    let at = curved.points[&v];
+    let mut reach = 0.0_f64;
+    for strip in strips {
+        reach = reach.max(contact_reach(strip, at, tol)?);
+    }
+    let reach = reach.max(tol.confusion() * 1e3);
+    // The box grown until the piece stands clear of it.
+    for scale in [4.0, 16.0, 64.0] {
+        if let Some(piece) = reflex_piece_in(model, curved, v, strips, (at, scale * reach), tol)? {
+            return Ok(Some(piece));
+        }
+    }
+    Ok(None)
+}
+
+/// [`reflex_piece`] over the box `bx` round the vertex.
+fn reflex_piece_in(
+    model: &mut Model,
+    curved: &Curved,
+    v: Id,
+    strips: [&Strip; 2],
+    bx: (Point, f64),
+    tol: Tolerances,
+) -> OgeomResult<Option<Option<Shape>>> {
+    let (at, half) = bx;
+    let reach = half / 4.0;
+    let mut sides = Vec::new();
+    // The half-spaces taken so far, each `n . p <= off` with `n` a unit
+    // normal: a plane met twice (a cap on another edge's face) is taken
+    // once, as two booleans on one plane would leave nothing.
+    let mut seen: Vec<(Vector, f64)> = Vec::new();
+    let mut half_space = |n: Vector, through: Point, keep: Point| -> Option<(Vector, f64)> {
+        let n = n / n.magnitude();
+        let n = if (keep - through).dot(n) > 0.0 { -n } else { n };
+        let off = n.dot(through.to_vector());
+        if seen
+            .iter()
+            .any(|(m, o)| m.dot(n) >= 1.0 - tol.angular() && (o - off).abs() <= tol.confusion())
+        {
+            return None;
+        }
+        seen.push((n, off));
+        Some((n, off))
+    };
+    for strip in strips {
+        let c = &curved.edges[&strip.edge];
+        let away = {
+            let (t, sign) = if c.ends.0 == v {
+                (c.range.0, 1.0)
+            } else {
+                (c.range.1, -1.0)
+            };
+            let d = c.curve.d1_at(t, tol)? * sign;
+            d / d.magnitude()
+        };
+        let beyond = at - away * reach;
+        if half_space(away, at, beyond).is_some() {
+            let Some(cap) = plane_side(model, (away, at), beyond, bx, tol)? else {
+                return Ok(None);
+            };
+            sides.push(cap);
+        }
+        let Some(bevel) = surface_side(model, &strip.surface, at, bx, tol)? else {
+            return Ok(None);
+        };
+        sides.push(bevel);
+        for k in 0..2 {
+            let other = ogeom_algo::project_on_curve(&strip.contacts[1 - k], at, 64, tol)?.point;
+            let surface = &curved.faces[strip.faces[k]].surface;
+            if let SurfaceGeometry::Plane(p) = surface {
+                let plane = p.plane();
+                if half_space(plane.normal().vector(), plane.origin(), other).is_none() {
+                    continue;
+                }
+            }
+            let Some(face) = surface_side(model, surface, other, bx, tol)? else {
+                return Ok(None);
+            };
+            sides.push(face);
+        }
+    }
+    corner_piece(model, bx, sides, tol)
+}
+
+/// The facet piece at the vertex `v` of three or more rolling bevels: the
+/// facet through the setback corners (each face's corner where the curves
+/// bounding it at `v` meet: an asked edge's contact on it, else the edge),
+/// a plane where they are coplanar, else a fan of triangles about their
+/// centroid (a G0 corner, ADR 0001, "chamfer corners are G0"); the piece is
+/// what lies on the vertex's side of it and inside every bevel. `None`
+/// where a corner or a side is not read or the piece is not bounded near
+/// `v`; `Some(None)` where it is empty.
+fn facet_piece(
+    model: &mut Model,
+    curved: &Curved,
+    v: Id,
+    strips: &[&Strip],
+    tol: Tolerances,
+) -> OgeomResult<Option<Option<Shape>>> {
+    let at = curved.points[&v];
+    let mut reach = 0.0_f64;
+    for strip in strips {
+        reach = reach.max(contact_reach(strip, at, tol)?);
+    }
+    let long = 100.0 * reach.max(1.0);
+    // The curve bounding face `f` at `v` along edge `e`: its contact there
+    // where asked, else the edge; lines carried on far either way.
+    let bounding = |f: usize, e: Id| -> OgeomResult<Option<Curve>> {
+        let curve = match strips.iter().find(|s| s.edge == e) {
+            Some(s) => match s.faces.iter().position(|x| *x == f) {
+                Some(k) => s.contacts[k].clone(),
+                None => return Ok(None),
+            },
+            None => curved.edges[&e].curve.clone(),
+        };
+        Ok(Some(match &curve {
+            Curve::Line(line) => {
+                let (lo, hi) = curve.domain();
+                let p = curve.point_at(lo, tol)?;
+                let q = curve.point_at(hi, tol)?;
+                let d = (q - p) / p.distance(q);
+                let _ = line;
+                Curve::Line(LineCurve::segment(p - d * long, p + d * long, tol)?)
+            }
+            _ => curve,
+        }))
+    };
+    // Each face round `v` and its two edges there.
+    let mut corners: Vec<Point> = Vec::new();
+    for (fi, face) in curved.faces.iter().enumerate() {
+        let at_v: Vec<Id> = face
+            .loops
+            .iter()
+            .flatten()
+            .map(|(e, _)| *e)
+            .filter(|e| {
+                let c = &curved.edges[e];
+                c.ends.0 == v || c.ends.1 == v
+            })
+            .collect();
+        if at_v.is_empty() {
+            continue;
+        }
+        let [e1, e2] = at_v[..] else {
+            return Ok(None);
+        };
+        if !strips.iter().any(|s| s.edge == e1 || s.edge == e2) {
+            return Ok(None);
+        }
+        let (Some(c1), Some(c2)) = (bounding(fi, e1)?, bounding(fi, e2)?) else {
+            return Ok(None);
+        };
+        let found = ogeom_intersect::curves::intersect_curves(
+            &c1,
+            &c2,
+            ogeom_intersect::curves::CurveCurveOptions {
+                gap: 1e3 * tol.confusion(),
+                ..ogeom_intersect::curves::CurveCurveOptions::default()
+            },
+            tol,
+        )?;
+        let Some(nearest) = found
+            .crossings
+            .iter()
+            .min_by(|a, b| a.point.distance(at).total_cmp(&b.point.distance(at)))
+        else {
+            return Ok(None);
+        };
+        corners.push(nearest.point);
+    }
+    if corners.len() < 3 {
+        return Ok(None);
+    }
+    #[expect(clippy::cast_precision_loss, reason = "a vertex's few corners")]
+    let n = corners.len() as f64;
+    let centroid = Point::new(
+        corners.iter().map(|p| p.x).sum::<f64>() / n,
+        corners.iter().map(|p| p.y).sum::<f64>() / n,
+        corners.iter().map(|p| p.z).sum::<f64>() / n,
+    );
+    let half = 4.0 * corners.iter().map(|p| p.distance(at)).fold(reach, f64::max);
+    let bx = (at, half);
+    // Inside every bevel: on the side of each holding the centroid.
+    let bevels = |model: &mut Model| -> OgeomResult<Option<Vec<Side>>> {
+        let mut sides = Vec::new();
+        for strip in strips {
+            let Some(side) = surface_side(model, &strip.surface, centroid, bx, tol)? else {
+                return Ok(None);
+            };
+            sides.push(side);
+        }
+        Ok(Some(sides))
+    };
+    // The corners in order round the vertex, by their angle about the
+    // centroid's direction.
+    let axis = centroid - at;
+    if axis.magnitude() <= tol.confusion() {
+        return Ok(None);
+    }
+    let axis = axis / axis.magnitude();
+    let x = {
+        let r = corners[0] - centroid;
+        let r = r - axis * r.dot(axis);
+        r / r.magnitude()
+    };
+    let y = axis.cross(x);
+    let mut order: Vec<Point> = corners.clone();
+    order.sort_by(|a, b| {
+        let angle = |p: &Point| {
+            let r = *p - centroid;
+            r.dot(y).atan2(r.dot(x))
+        };
+        angle(a).total_cmp(&angle(b))
+    });
+    // Coplanar corners: one facet.
+    let normal = (order[1] - order[0]).cross(order[2] - order[0]);
+    if normal.magnitude() <= tol.confusion() {
+        return Ok(None);
+    }
+    let flat = order
+        .iter()
+        .all(|p| (*p - order[0]).dot(normal / normal.magnitude()).abs() <= tol.confusion());
+    if flat {
+        let Some(mut sides) = bevels(model)? else {
+            return Ok(None);
+        };
+        let Some(facet) = plane_side(model, (normal, order[0]), at, bx, tol)? else {
+            return Ok(None);
+        };
+        sides.push(facet);
+        return corner_piece(model, bx, sides, tol);
+    }
+    // A fan of triangles about the centroid, each over its sector.
+    let mut pieces: Vec<Shape> = Vec::new();
+    for i in 0..order.len() {
+        let (a, b) = (order[i], order[(i + 1) % order.len()]);
+        let Some(mut sides) = bevels(model)? else {
+            return Ok(None);
+        };
+        let tri = (a - centroid).cross(b - centroid);
+        let (Some(facet), Some(from), Some(to)) = (
+            plane_side(model, (tri, centroid), at, bx, tol)?,
+            plane_side(model, ((a - at).cross(centroid - at), at), b, bx, tol)?,
+            plane_side(model, ((b - at).cross(centroid - at), at), a, bx, tol)?,
+        ) else {
+            return Ok(None);
+        };
+        sides.extend([facet, from, to]);
+        match corner_piece(model, bx, sides, tol)? {
+            None => return Ok(None),
+            Some(None) => {}
+            Some(Some(piece)) => pieces.push(piece),
+        }
+    }
+    let Some(mut joined) = pieces.first().cloned() else {
+        return Ok(Some(None));
+    };
+    for piece in &pieces[1..] {
+        let Ok(step) = ogeom_bool::fuse(model, &joined, piece, tol) else {
+            return Ok(None);
+        };
+        joined = step.shape;
+    }
+    Ok(Some(Some(joined)))
 }
 
 /// The piece two tools meeting at the reflex corner `v` take past both
@@ -7286,6 +7837,86 @@ fn reflex_corner(
         keep(m * -side.signum(), plane.origin());
     }
     super::fallback::polytope(model, &planes, tol)
+}
+
+/// A concave straight edge's strip between two planes, its legs as asked:
+/// each contact the edge moved its leg into its face (the side read on the
+/// face itself, [`into_face`]), the length of the edge and half again past
+/// each end; the bevel the plane through both. `None` for any other edge,
+/// a convex one, or a spelling not read.
+fn concave_straight(
+    model: &Model,
+    curved: &Curved,
+    edge: Id,
+    spec: &Chamfer,
+    tol: Tolerances,
+) -> OgeomResult<Option<Strip>> {
+    let e = &curved.edges[&edge];
+    let Curve::Line(_) = &e.curve else {
+        return Ok(None);
+    };
+    let [f0, f1] = faces_of(curved, edge)[..] else {
+        return Ok(None);
+    };
+    let faces = [f0, f1];
+    if faces
+        .iter()
+        .any(|f| !matches!(curved.faces[*f].surface, SurfaceGeometry::Plane(_)))
+    {
+        return Ok(None);
+    }
+    let Some(d) = distances(curved, faces, spec) else {
+        return Ok(None);
+    };
+    if d.iter().any(|x| !(x.is_finite() && *x > tol.confusion())) {
+        return Ok(None);
+    }
+    let (a, b) = (curved.points[&e.ends.0], curved.points[&e.ends.1]);
+    let length = a.distance(b);
+    if length <= tol.confusion() {
+        return Ok(None);
+    }
+    let u = (b - a) / length;
+    let run = u * (length / 2.0);
+    let tm = f64::midpoint(e.range.0, e.range.1);
+    let mid = e.curve.point_at(tm, tol)?;
+    let mut lines: Vec<(Point, Point)> = Vec::with_capacity(2);
+    for k in 0..2 {
+        let (Some(into), Some(other)) = (
+            into_face(model, curved, (faces[k], edge), (mid, tm), tol)?,
+            outward(curved, faces[1 - k], mid),
+        ) else {
+            return Ok(None);
+        };
+        // A concave edge: into each face goes over the other.
+        if into.dot(other) <= 0.0 {
+            return Ok(None);
+        }
+        let shift = into * d[k];
+        lines.push((a + shift - run, b + shift + run));
+    }
+    let contacts = [
+        Curve::from(LineCurve::segment(lines[0].0, lines[0].1, tol)?),
+        Curve::from(LineCurve::segment(lines[1].0, lines[1].1, tol)?),
+    ];
+    let across = lines[1].0 - lines[0].0;
+    let n = u.cross(across);
+    if n.magnitude() <= tol.confusion() {
+        return Ok(None);
+    }
+    let frame = Frame::new(
+        lines[0].0,
+        Direction::new(n, tol)?,
+        Direction::new(u, tol)?,
+        tol,
+    )?;
+    Ok(Some(Strip {
+        edge,
+        faces,
+        contacts,
+        surface: PlaneSurface::new(Plane::new(frame)).into(),
+        section: Section::Line,
+    }))
 }
 
 /// Whether the asked edges `a` and `b` meet at `v` at a reflex corner of a

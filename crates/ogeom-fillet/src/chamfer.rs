@@ -820,7 +820,14 @@ fn engine_chamfer_unplaced(
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     let before = model.clone();
-    let built = engine_chamfer_attempt(model, solid, specs, tol);
+    let mut built = engine_chamfer_attempt(model, solid, specs, tol);
+    // A bevel rolling over that no route above places, on any path that
+    // hands the request back: the union of the bevels' local tools
+    // (amendment "M5b").
+    if matches!(built, Ok(None)) {
+        *model = before.clone();
+        built = crate::engine::rolling_tools(model, solid, specs, tol);
+    }
     if !matches!(built, Ok(Some(_))) {
         *model = before;
     }

@@ -1637,15 +1637,21 @@ fn rolling_bevels_meeting_on_a_block_leave_a_far_wall_along_the_floor() {
     }
 }
 
-/// The two corners the rolling bevels' tools do not close are refused by
-/// name (ADR 0001, amendment "M5b"): a reflex corner where one bevel is a
-/// rim's cone (a square plate 1 thick with a half-disc tab, its straight
-/// top edge meeting the tab's arc at the tab's foot, both chamfered 1.5),
-/// and three rolling bevels at one vertex (the quarter plate against its
-/// wall, its rim, its side's top edge and the upright edge where they meet
-/// all chamfered 1.5).
+/// Reflex corners where a rim's cone meets a plane bevel, rolling (ADR
+/// 0001, amendment "M5b"): a square plate 10 × 10 × 1 with a half-disc tab
+/// of radius 3 about (5, 10) on its back, the back's top edges either side
+/// of the tab and the tab's arc chamfered 1.5, past the 1 mm walls. At each
+/// of the tab's feet the tools run on past the vertex until they meet: the
+/// corner piece is beyond both caps (x past the foot, y below 10), outside
+/// both bevels (y > 9.5 - z, and radius about the tab's axis above
+/// 2.5 - z) and inside every seat face (z <= 1, y <= 10, and inside the
+/// tab's cylinder), so the square's material just outside the cylinder
+/// stays. At height z, with w = 0.5 + z and r = 2.5 - z, what goes is the
+/// two strips 2 long and w deep, two corner pieces each the integral of
+/// √(9 - t²) - √(r² - t²) over t in [0, w], and the tab's half ring between
+/// r and 3: integrated over the thickness.
 #[test]
-fn rolling_bevels_at_corners_no_tool_closes_are_refused_by_name() {
+fn rolling_bevels_at_a_tab_s_reflex_feet_meet_in_their_corner_pieces() {
     let mut m = Model::new();
     let square = ogeom_algo::make_box(&mut m, up_at(0.0, 0.0, 0.0), (10.0, 10.0, 1.0), T)
         .unwrap()
@@ -1661,41 +1667,29 @@ fn rolling_bevels_at_corners_no_tool_closes_are_refused_by_name() {
             let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
             let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
             let tab = l.y > 10.0 - 1e-6 && h.y > 12.0;
-            let side = (l.y - 10.0).abs() < 1e-6 && (h.y - 10.0).abs() < 1e-6 && h.x < 2.0 + 1e-6;
-            l.z > 0.5 && (tab || side)
+            let back = (l.y - 10.0).abs() < 1e-6
+                && (h.y - 10.0).abs() < 1e-6
+                && (h.x < 2.0 + 1e-6 || l.x > 8.0 - 1e-6);
+            l.z > 0.5 && (tab || back)
         })
         .collect();
-    assert!(asked.len() >= 2, "the tab's arc and the side's top edge");
-    let refused = ogeom_fillet::chamfer_edges(&mut m, &s, &asked, 1.5, T).unwrap_err();
     assert!(
-        refused
-            .to_string()
-            .contains("reflex corner where a bevel or a face is curved"),
-        "{refused}"
+        asked.len() >= 3,
+        "the tab's arc and the back's two top edges"
     );
-
-    let mut m = Model::new();
-    let plate = quarter_plate(&mut m, 0.0, 1.0);
-    let wall = ogeom_algo::make_box(&mut m, up_at(-3.0, -1.0, 0.0), (3.0, 8.0, 4.0), T)
-        .unwrap()
-        .shape;
-    let s = ogeom_bool::fuse(&mut m, &plate, &wall, T).unwrap().shape;
-    let mut asked = quarter_top_edges(&m, &s, 1.0);
-    let upright = explore_unique(&m, &s, ShapeType::Edge)
-        .unwrap()
-        .into_iter()
-        .find(|e| {
-            let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
-            let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
-            (l.x - 5.0).abs() < 1e-6 && (h.x - 5.0).abs() < 1e-6 && h.y.abs() < 1e-6
-        })
-        .unwrap();
-    asked.push(upright);
-    let refused = ogeom_fillet::chamfer_edges(&mut m, &s, &asked, 1.5, T).unwrap_err();
-    assert!(
-        refused
-            .to_string()
-            .contains("three or more chamfers rolling over"),
-        "{refused}"
-    );
+    let built = ogeom_fillet::chamfer_edges(&mut m, &s, &asked, 1.5, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let taken = |z: f64| {
+        let (w, r) = (0.5 + z, 2.5 - z);
+        4.0 * w
+            + 2.0 * (under_circle(3.0, 0.0, w) - under_circle(r, 0.0, w))
+            + std::f64::consts::FRAC_PI_2 * (9.0 - r * r)
+    };
+    let want = 100.0 + 4.5 * std::f64::consts::PI - integral(taken, 0.0, 1.0);
+    let got = volume(&m, &built.shape);
+    assert!((got - want).abs() <= 1e-6 * want, "{got} against {want}");
+    for e in &asked {
+        assert!(!built.history.generated(e).is_empty(), "its bevel");
+    }
 }

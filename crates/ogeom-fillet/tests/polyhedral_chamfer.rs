@@ -3963,3 +3963,275 @@ fn rolling_bevels_meeting_at_a_reflex_corner_take_the_corner_square() {
         assert!(!built.history.generated(e).is_empty(), "its bevel");
     }
 }
+
+/// Three bevels at one vertex, one rolling, close with the facet through
+/// their setback corners (ADR 0001, amendment "M5b"): an L-shaped prism,
+/// its front x = 0 4 high for y in [0, 5] and 1 high (z in [3, 4]) beyond,
+/// 10 deep. The corner (0, 0, 4) and its three edges are chamfered: the
+/// front's top edge 1 along the top and 2 down the front, past the short
+/// part of the front (it rolls over there); the left top edge and the
+/// upright 1. Each tool is the region between its edge, its bevel and its
+/// faces' planes, capped square at its ends. The facet is the plane through
+/// the corners (1, 1, 4), (0, 1, 2) and (1, 0, 3), 2x + y - z = -1, and its
+/// piece the tetrahedron it cuts from inside all three bevels on the
+/// vertex's side. What goes is the union of the four, in common with the
+/// prism's two boxes (which share only a face), by inclusion and exclusion
+/// over convex polytopes: the prism less it, exactly.
+#[test]
+fn three_bevels_at_a_vertex_one_rolling_close_with_their_facet() {
+    three_bevels_one_rolling(false, false);
+}
+
+/// The same corner with a ledge 13 × 5 × 3 under the short part of the
+/// prism and 3 out in front of it (x in [-3, 10], y in [5, 10], z in
+/// [0, 3]): the rolling bevel's foot is a concave edge, which the rings
+/// decline, and the corner goes to the union of the tools and the facet's
+/// piece in one boolean. The front's tool reaches into the ledge under the
+/// prism, behind the front's plane, and takes it there; the ledge out in
+/// front, which no tool reaches, stays whole. Exactly, as before, with the
+/// ledge a third box.
+#[test]
+fn three_bevels_at_a_vertex_rolling_onto_a_ledge_close_with_their_facet() {
+    three_bevels_one_rolling(true, false);
+}
+
+/// The same corner on the prism with a boss of radius 1 and height 1
+/// standing on its top at (7, 2), far from the corner: a solid with a
+/// curved face, whose rings decline a rolling bevel. The corner goes to the
+/// union of the tools and the facet's piece in one boolean: the same
+/// material goes, exactly, and the boss (pi) stays whole.
+#[test]
+fn three_bevels_at_a_vertex_rolling_on_a_curved_solid_close_with_their_facet() {
+    three_bevels_one_rolling(false, true);
+}
+
+/// [`three_bevels_at_a_vertex_one_rolling_close_with_their_facet`], with
+/// a ledge under its short part or a boss on its top, or neither.
+fn three_bevels_one_rolling(ledge: bool, boss: bool) {
+    use ogeom_math::Vector;
+    let mut m = Model::new();
+    let profile = [
+        (0.0, 0.0),
+        (5.0, 0.0),
+        (5.0, 3.0),
+        (10.0, 3.0),
+        (10.0, 4.0),
+        (0.0, 4.0),
+    ];
+    // The profile in (y, z), swept along x: the front is its face x = 0.
+    let mut s = prism(&mut m, &profile, 10.0);
+    if ledge {
+        let shelf = block(&mut m, (-3.0, 5.0, 0.0), (13.0, 5.0, 3.0));
+        s = ogeom_bool::fuse(&mut m, &s, &shelf, T).unwrap().shape;
+    }
+    if boss {
+        let at = ogeom_math::Frame::new(
+            Point::new(7.0, 2.0, 4.0),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let post = ogeom_algo::make_cylinder(&mut m, at, 1.0, 1.0, T)
+            .unwrap()
+            .shape;
+        s = ogeom_bool::fuse(&mut m, &s, &post, T).unwrap().shape;
+    }
+    let edges = explore_unique(&m, &s, ShapeType::Edge).unwrap();
+    let find = |want: &dyn Fn(Point, Point) -> bool| {
+        edges
+            .iter()
+            .find(|e| {
+                let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+                want(bb.low().unwrap(), bb.high().unwrap())
+            })
+            .unwrap()
+            .clone()
+    };
+    let front = find(&|l, h| h.x.abs() < 1e-6 && l.z > 4.0 - 1e-6 && h.y > 9.0);
+    let left = find(&|l, h| h.y.abs() < 1e-6 && l.z > 4.0 - 1e-6 && h.x > 9.0);
+    let upright = find(&|l, h| h.x.abs() < 1e-6 && h.y.abs() < 1e-6 && h.z - l.z > 3.0);
+    let top = explore_unique(&m, &s, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let (at, n) = ogeom_algo::face_normal(&m, f, T).unwrap();
+            n.z > 0.5 && (at.z - 4.0).abs() < 1e-6
+        })
+        .unwrap();
+    let specs = vec![
+        (
+            front.clone(),
+            Chamfer::Distances {
+                face: top,
+                on_face: 1.0,
+                on_other: 2.0,
+            },
+        ),
+        (left.clone(), Chamfer::Symmetric(1.0)),
+        (upright.clone(), Chamfer::Symmetric(1.0)),
+    ];
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    // Unit normals: the polytope's volume reads offsets as distances.
+    let p = |x: f64, y: f64, z: f64, o: f64| {
+        let n = Vector::new(x, y, z);
+        (n / n.magnitude(), o / n.magnitude())
+    };
+    let near = vec![
+        p(-1.0, 0.0, 0.0, 0.0),
+        p(1.0, 0.0, 0.0, 10.0),
+        p(0.0, -1.0, 0.0, 0.0),
+        p(0.0, 1.0, 0.0, 5.0),
+        p(0.0, 0.0, -1.0, 0.0),
+        p(0.0, 0.0, 1.0, 4.0),
+    ];
+    let far = vec![
+        p(-1.0, 0.0, 0.0, 0.0),
+        p(1.0, 0.0, 0.0, 10.0),
+        p(0.0, -1.0, 0.0, -5.0),
+        p(0.0, 1.0, 0.0, 10.0),
+        p(0.0, 0.0, -1.0, -3.0),
+        p(0.0, 0.0, 1.0, 4.0),
+    ];
+    // The front's tool: x >= 0, z <= 4, x <= (z - 2) / 2, y in [0, 10].
+    let front_tool = vec![
+        p(-1.0, 0.0, 0.0, 0.0),
+        p(0.0, 0.0, 1.0, 4.0),
+        p(2.0, 0.0, -1.0, -2.0),
+        p(0.0, -1.0, 0.0, 0.0),
+        p(0.0, 1.0, 0.0, 10.0),
+    ];
+    // The left's: y >= 0, z <= 4, y <= z - 3, x in [0, 10].
+    let left_tool = vec![
+        p(0.0, -1.0, 0.0, 0.0),
+        p(0.0, 0.0, 1.0, 4.0),
+        p(0.0, 1.0, -1.0, -3.0),
+        p(-1.0, 0.0, 0.0, 0.0),
+        p(1.0, 0.0, 0.0, 10.0),
+    ];
+    // The upright's: x, y >= 0, x + y <= 1, z in [0, 4].
+    let upright_tool = vec![
+        p(-1.0, 0.0, 0.0, 0.0),
+        p(0.0, -1.0, 0.0, 0.0),
+        p(1.0, 1.0, 0.0, 1.0),
+        p(0.0, 0.0, -1.0, 0.0),
+        p(0.0, 0.0, 1.0, 4.0),
+    ];
+    // The facet's piece: 2x + y - z <= -1, inside each bevel.
+    let facet = vec![
+        p(2.0, 1.0, -1.0, -1.0),
+        p(-2.0, 0.0, 1.0, 2.0),
+        p(0.0, -1.0, 1.0, 3.0),
+        p(-1.0, -1.0, 0.0, -1.0),
+    ];
+    let tools = [front_tool, left_tool, upright_tool, facet];
+    let mut taken = 0.0;
+    for mask in 1_u32..16 {
+        let mut planes: Vec<(Vector, f64)> = Vec::new();
+        for (k, tool) in tools.iter().enumerate() {
+            if mask & (1 << k) != 0 {
+                planes.extend(tool.iter().copied());
+            }
+        }
+        let sign = if mask.count_ones() % 2 == 1 {
+            1.0
+        } else {
+            -1.0
+        };
+        let shelf = vec![
+            p(-1.0, 0.0, 0.0, 3.0),
+            p(1.0, 0.0, 0.0, 10.0),
+            p(0.0, -1.0, 0.0, -5.0),
+            p(0.0, 1.0, 0.0, 10.0),
+            p(0.0, 0.0, -1.0, 0.0),
+            p(0.0, 0.0, 1.0, 3.0),
+        ];
+        let solids: Vec<&Vec<(Vector, f64)>> = if ledge {
+            vec![&near, &far, &shelf]
+        } else {
+            vec![&near, &far]
+        };
+        for solid in solids {
+            let mut all = planes.clone();
+            all.extend(solid.iter().copied());
+            // Each plane once: the polytope counts a face per plane.
+            let mut once: Vec<(Vector, f64)> = Vec::new();
+            for (n, o) in all {
+                if !once
+                    .iter()
+                    .any(|(m, q)| (*m - n).magnitude() < 1e-12 && (q - o).abs() < 1e-12)
+                {
+                    once.push((n, o));
+                }
+            }
+            taken += sign * convex_polytope(&once).0;
+        }
+    }
+    let post = if boss { std::f64::consts::PI } else { 0.0 };
+    let want = 250.0 + if ledge { 195.0 } else { 0.0 } + post - taken;
+    let got = ogeom_algo::volume_properties(
+        &m,
+        &built.shape,
+        ogeom_mesh::Deflection {
+            chord: 1e-6,
+            ..ogeom_mesh::Deflection::default()
+        },
+        T,
+    )
+    .unwrap()
+    .mass;
+    let bar = if boss { 1e-7 } else { 1e-9 };
+    assert!(
+        (got - want).abs() <= bar * want,
+        "volume {got} against {want}"
+    );
+    for (e, _) in &specs {
+        assert!(!built.history.generated(e).is_empty(), "its bevel");
+    }
+}
+
+/// Concave bevels meeting at reflex corners, rolling (ADR 0001, amendment
+/// "M5b"): a box 10 × 4 × 1 standing on a plate 20 × 20 × 1, its four foot
+/// edges chamfered 1.5, up past the box's 1 mm walls. Each fill's tool is
+/// the room between its two faces' planes and its bevel, fused; at each of
+/// the box's corners the plate's top turns three quarters round it, and the
+/// two tools run on past the vertex until they meet, the corner piece
+/// mitring them. At height z in [1, 2.5] the fills hold the box's footprint
+/// grown by 2.5 - z, its corners square, less the footprint: the integral
+/// of (10 + 2d)(4 + 2d) - 40 over d in [0, 1.5], 36, exactly.
+#[test]
+fn concave_rolling_bevels_at_reflex_corners_meet_in_their_corner_pieces() {
+    let mut m = Model::new();
+    let plate = block(&mut m, (0.0, 0.0, 0.0), (20.0, 20.0, 1.0));
+    let boss = block(&mut m, (5.0, 5.0, 1.0), (10.0, 4.0, 1.0));
+    let s = ogeom_bool::fuse(&mut m, &plate, &boss, T).unwrap().shape;
+    let feet: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
+            (l.z - 1.0).abs() < 1e-6
+                && (h.z - 1.0).abs() < 1e-6
+                && l.x > 5.0 - 1e-6
+                && h.x < 15.0 + 1e-6
+                && l.y > 5.0 - 1e-6
+                && h.y < 9.0 + 1e-6
+        })
+        .collect();
+    assert_eq!(feet.len(), 4, "the box's four foot edges");
+    let built = ogeom_fillet::chamfer_edges(&mut m, &s, &feet, 1.5, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let want = 400.0 + 40.0 + 36.0;
+    let got = volume(&m, &built.shape);
+    assert!(
+        (got - want).abs() <= 1e-9 * want,
+        "volume {got} against {want}"
+    );
+    for e in &feet {
+        assert!(!built.history.generated(e).is_empty(), "its fill");
+    }
+}
