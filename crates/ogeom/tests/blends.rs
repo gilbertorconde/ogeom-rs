@@ -4045,17 +4045,16 @@ fn vertex_near(model: &Model, shape: &Shape, near: Point) -> Shape {
 }
 
 /// The bracket's re-entrant edge and the leg's front edge asked together,
-/// both ways round. They meet at a vertex whose third edge is left sharp:
-/// a wedge's cut would eat a fill and a fill cannot run on through a
-/// wedge's band, so no ball rolls round the corner, and the corner is
-/// closed by bands set back from it. On this bracket, its legs as thick as
-/// two of the bands are wide, the front band's setback reaches the far end
-/// of its edge, where its section would fall on the end face. The request
-/// is refused by name in either order, where once whichever was asked
-/// first took the corner and the two orders landed on different solids.
+/// both ways round. They meet at a vertex whose third edge is left sharp: a
+/// convex and a concave round beside it, which the blend engine closes on
+/// one patch (ADR 0001, section 13, question 6), its legs as thick as two of
+/// the bands are wide notwithstanding. Once whichever was asked first took
+/// the corner and the two orders landed on different solids, then the
+/// request was refused; now both orders give one valid solid, to the bit.
 #[test]
-fn a_fill_and_a_wedge_meeting_beside_a_sharp_edge_are_refused_in_either_order() {
+fn a_fill_and_a_wedge_meeting_beside_a_sharp_edge_close_one_corner_in_either_order() {
     let r = 0.5_f64;
+    let mut solids = Vec::new();
     for fill_first in [true, false] {
         let mut model = Model::new();
         let bracket = l_bracket(&mut model);
@@ -4066,15 +4065,25 @@ fn a_fill_and_a_wedge_meeting_beside_a_sharp_edge_are_refused_in_either_order() 
         } else {
             [wedge, fill]
         };
-        let Err(why) = ogeom::fillet::fillet_edges(&mut model, &bracket, &asked, r, T) else {
-            panic!("fill first {fill_first}: the corner is taken in the order asked");
-        };
+        let rounded = ogeom::fillet::fillet_edges(&mut model, &bracket, &asked, r, T)
+            .unwrap_or_else(|e| panic!("fill first {fill_first}: {e}"));
+        let found = ogeom::algo::check(&model, &rounded.shape, T).unwrap();
         assert!(
-            why.to_string()
-                .contains("each edge runs on past its band's setback"),
-            "fill first {fill_first}: {why}"
+            found.is_valid(),
+            "fill first {fill_first}: {:?}",
+            found.problems
         );
+        let volume = ogeom::algo::volume_properties(
+            &model,
+            &rounded.shape,
+            ogeom::mesh::Deflection::default(),
+            T,
+        )
+        .unwrap()
+        .mass;
+        solids.push(volume.to_bits());
     }
+    assert_eq!(solids[0], solids[1], "the two orders give two solids");
 }
 
 /// The blend face of a result: the one face on a surface that is neither

@@ -1094,6 +1094,11 @@ fn interpolated_on(across: &dyn Data, net: usize, tol: Tolerances) -> OgeomResul
     )
 }
 
+/// The interpolation points along each direction of each sector of a
+/// patch of five sides or more: twice as fine as [`NET`], a sector's exact
+/// patch turning faster across its narrow triangle.
+const SECTOR_NET: usize = 2 * NET - 1;
+
 /// The step of the differences a sector's derivatives are read by.
 const STEP: f64 = 1e-5;
 
@@ -1188,7 +1193,7 @@ fn sector_patch(
         (at(h, 0.0)? - at(-h, 0.0)?) / (2.0 * h),
         (at(0.0, h)? - at(0.0, -h)?) / (2.0 * h),
     );
-    let count = 8 * (NET - 1);
+    let count = 8 * (SECTOR_NET - 1);
     #[expect(clippy::cast_precision_loss, reason = "a few hundred samples")]
     let sample = |i: usize| i as f64 / count as f64;
     let (mut gap, mut angle, mut off) = (0.0f64, 0.0f64, 0.0f64);
@@ -1205,7 +1210,7 @@ fn sector_patch(
             centre,
             tol,
         };
-        let surface = interpolated(&sector, tol)?;
+        let surface = interpolated_on(&sector, SECTOR_NET, tol)?;
         // Along its side, where the exact patch is the side's curve at the
         // same parameter; the angle read short of the corners.
         let ribbon = &exact.ribbons[k];
@@ -1221,9 +1226,9 @@ fn sector_patch(
             angle = angle.max(sine(du.cross(dv), support));
         }
         #[expect(clippy::cast_precision_loss, reason = "a net of thirty-three")]
-        let step = 1.0 / (NET - 1) as f64;
-        for i in 0..NET - 1 {
-            for j in 0..NET - 1 {
+        let step = 1.0 / (SECTOR_NET - 1) as f64;
+        for i in 0..SECTOR_NET - 1 {
+            for j in 0..SECTOR_NET - 1 {
                 #[expect(clippy::cast_precision_loss, reason = "a net of thirty-three")]
                 let (u, v) = ((i as f64 + 0.5) * step, (j as f64 + 0.5) * step);
                 let p = surface.point_at(u, v, tol)?;
