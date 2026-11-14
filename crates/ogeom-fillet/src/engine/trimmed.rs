@@ -6762,7 +6762,7 @@ pub(crate) fn convex_one_boolean(
     let Some(curved) = read(model, solid, tol)? else {
         return Ok(None);
     };
-    if !convex_solid(&curved, tol)? {
+    if !convex_solid(model, &curved, tol)? {
         return Ok(None);
     }
     // No vertex of three asked edges.
@@ -6954,7 +6954,7 @@ fn revolved_side(
 /// convex at a quarter, the middle and three quarters of the way along it
 /// (tangent counts as convex). A connected solid convex near every point
 /// is convex.
-fn convex_solid(curved: &Curved, tol: Tolerances) -> OgeomResult<bool> {
+fn convex_solid(model: &Model, curved: &Curved, tol: Tolerances) -> OgeomResult<bool> {
     let ang = tol.angular();
     for (fi, f) in curved.faces.iter().enumerate() {
         let Some((e, _)) = f.loops.iter().flatten().next() else {
@@ -6988,37 +6988,74 @@ fn convex_solid(curved: &Curved, tol: Tolerances) -> OgeomResult<bool> {
         let [f0, f1] = faces_of(curved, *e)[..] else {
             continue;
         };
-        let Some(&(_, w)) = curved.faces[f0]
-            .loops
-            .iter()
-            .flatten()
-            .find(|(x, _)| x == e)
-        else {
-            return Ok(false);
-        };
         for share in [0.25, 0.5, 0.75] {
             let t = c.range.0 + (c.range.1 - c.range.0) * share;
             let p = c.curve.point_at(t, tol)?;
-            let d = c.curve.d1_at(t, tol)?;
-            let m = d.magnitude();
-            if m <= 0.0 {
-                return Ok(false);
-            }
-            let tangent = d / m;
-            let walk = if w == curved.faces[f0].reversed {
-                -tangent
-            } else {
-                tangent
-            };
-            let (Some(n0), Some(n1)) = (outward(curved, f0, p), outward(curved, f1, p)) else {
+            let (Some(into), Some(n1)) = (
+                into_face(model, curved, (f0, *e), (p, t), tol)?,
+                outward(curved, f1, p),
+            ) else {
                 return Ok(false);
             };
-            if n1.dot(n0.cross(walk)) > ang {
+            if n1.dot(into) > ang {
                 return Ok(false);
             }
         }
     }
     Ok(true)
+}
+
+/// The unit direction into face `face` from its edge `edge` at `p`, the
+/// edge's point at `t`: square to the edge in the face's tangent plane, the
+/// way a short step (a hundredth of the edge's span) lands inside the face
+/// (read on the face itself, not from its loops' orientation). `None` where
+/// neither way, or both, does.
+fn into_face(
+    model: &Model,
+    curved: &Curved,
+    (face, edge): (usize, Id),
+    (p, t): (Point, f64),
+    tol: Tolerances,
+) -> OgeomResult<Option<Vector>> {
+    let c = &curved.edges[&edge];
+    let d = c.curve.d1_at(t, tol)?;
+    let Some(n) = outward(curved, face, p) else {
+        return Ok(None);
+    };
+    let across = n.cross(d);
+    let m = across.magnitude();
+    if m <= 0.0 {
+        return Ok(None);
+    }
+    let across = across / m;
+    let span = c
+        .curve
+        .point_at(c.range.0, tol)?
+        .distance(c.curve.point_at(c.range.1, tol)?)
+        .max(1.0);
+    // Clear of the face's boundary band, still close to the edge.
+    let step = (span * 1e-2).max(100.0 * tol.confusion());
+    let shape = &curved.faces[face].shape;
+    let lands = |dir: Vector| -> OgeomResult<bool> {
+        let q = p + dir * step;
+        let foot =
+            ogeom_geom::project::project_on_surface(&curved.faces[face].surface, q, 16, tol)?;
+        // The trim drawn finer than the step, so its uncertain band (the
+        // tolerance and the chord's sag) leaves the step clear.
+        let fine = ogeom_mesh::Deflection {
+            chord: step * 0.1,
+            ..ogeom_mesh::Deflection::default()
+        };
+        Ok(
+            ogeom_algo::classify_on_face(model, shape, foot.point, fine, tol)?
+                == ogeom_algo::Containment::In,
+        )
+    };
+    match (lands(across)?, lands(-across)?) {
+        (true, false) => Ok(Some(across)),
+        (false, true) => Ok(Some(-across)),
+        _ => Ok(None),
+    }
 }
 
 /// Chamfers rolling over their faces that no other route builds, by the
@@ -7263,7 +7300,6 @@ fn reflex_between(
     (a, b): (Id, Id),
     tol: Tolerances,
 ) -> OgeomResult<bool> {
-    let at = curved.points[&v];
     // An edge's direction away from `v`.
     let away = |e: Id| -> OgeomResult<Vector> {
         let c = &curved.edges[&e];
@@ -7293,27 +7329,17 @@ fn reflex_between(
         if !shared {
             continue;
         }
-        let face = &curved.faces[fa];
-        let (Some(n), Some(&(_, w))) = (
-            outward(curved, fa, at),
-            face.loops.iter().flatten().find(|(x, _)| *x == a),
-        ) else {
+        // Into the face from `a`, read a tenth of the way along it from `v`.
+        let c = &curved.edges[&a];
+        let t = if c.ends.0 == v {
+            c.range.0 + (c.range.1 - c.range.0) * 0.1
+        } else {
+            c.range.1 - (c.range.1 - c.range.0) * 0.1
+        };
+        let near = c.curve.point_at(t, tol)?;
+        let Some(into) = into_face(model, curved, (fa, a), (near, t), tol)? else {
             continue;
         };
-        // Into the face from `a`: on the left of `a` as the face walks it.
-        let c = &curved.edges[&a];
-        let tangent = {
-            let d = c
-                .curve
-                .d1_at(if c.ends.0 == v { c.range.0 } else { c.range.1 }, tol)?;
-            d / d.magnitude()
-        };
-        let walk = if w == face.reversed {
-            -tangent
-        } else {
-            tangent
-        };
-        let into = n.cross(walk);
         if da.cross(db).magnitude() <= tol.angular() {
             return Ok(false);
         }
