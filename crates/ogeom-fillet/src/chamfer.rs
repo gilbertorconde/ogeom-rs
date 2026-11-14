@@ -687,7 +687,10 @@ fn engine_chamfer_voided(
         history = history.then(&built.history);
     }
     // Every void apart from the outer shell and from every other, and
-    // inside the outer shell.
+    // inside the outer shell. A bevel reaching a void is non-local (ADR
+    // 0001, amendment "M5a"): what it takes there is already empty, so the
+    // solid is the outer shell's chamfered body less each void's, by one
+    // boolean a void.
     let outside = ogeom_algo::make_solid(model, &[kept[0].clone()])?.shape;
     for i in 1..kept.len() {
         for j in 0..i {
@@ -699,7 +702,7 @@ fn engine_chamfer_voided(
                 tol,
             )?;
             if apart.distance <= tol.confusion() {
-                return Ok(None);
+                return voids_cut(model, solid, &kept, history, tol);
             }
         }
         let Some(corner) = ogeom_topo::explore_unique(model, &kept[i], ShapeType::Vertex)?
@@ -718,6 +721,53 @@ fn engine_chamfer_voided(
     let whole = ogeom_algo::make_solid(model, &kept)?.shape;
     history.modify(solid, whole.clone());
     Ok(Some(Built::new(whole, history)))
+}
+
+/// The outer shell's body less each void's, one boolean a void, where a
+/// bevel reaches a void (amendment "M5a"): each void's shell turned to face
+/// out bounds the void's body. `history` is the shells' chamfers', carried
+/// on through the booleans. `None` where a boolean refuses.
+///
+/// # Errors
+///
+/// As the solid builder and the booleans, other than their refusals.
+fn voids_cut(
+    model: &mut Model,
+    solid: &Shape,
+    kept: &[Shape],
+    history: ogeom_algo::History,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let mut body = ogeom_algo::make_solid(model, &[kept[0].clone()])?.shape;
+    let mut history = history;
+    for void in &kept[1..] {
+        let mut hollow = None;
+        for shell in [void.reversed(), void.clone()] {
+            let candidate = ogeom_algo::make_solid(model, &[shell])?.shape;
+            if ogeom_algo::volume_properties(
+                model,
+                &candidate,
+                ogeom_mesh::Deflection::default(),
+                tol,
+            )?
+            .mass
+                > 0.0
+            {
+                hollow = Some(candidate);
+                break;
+            }
+        }
+        let Some(hollow) = hollow else {
+            return Ok(None);
+        };
+        let Ok(step) = ogeom_bool::cut(model, &body, &hollow, tol) else {
+            return Ok(None);
+        };
+        body = step.shape.clone();
+        history = history.then(&step.history);
+    }
+    history.modify(solid, body.clone());
+    Ok(Some(Built::new(body, history)))
 }
 
 /// `specs` traced through `history`: each edge, and each face a spec names,
