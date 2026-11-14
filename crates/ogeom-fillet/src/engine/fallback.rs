@@ -103,7 +103,7 @@ fn hull(points: &[Point], eps: f64) -> Option<(Vec<Point>, Vec<Vec<usize>>, Vec<
 }
 
 /// Each bevel's piece and each vertex's of two bevels or more, in key
-/// order; `None` where a vertex mixes convex and concave bevels.
+/// order; `None` where a vertex's faces do not close round it once.
 fn pieces(
     planar: &Planar,
     seats: &FastMap<(Id, Id), Seat>,
@@ -158,11 +158,31 @@ fn pieces(
             continue;
         }
         let convex = at.iter().filter(|s| s.convex).count();
-        if convex != 0 && convex != at.len() {
-            return None;
-        }
         let order = faces_round(&planar.faces, v)?;
         let carried: Vec<Point> = order.iter().map(|fi| corners[&(*fi, v)]).collect();
+        // A vertex of convex and concave bevels: the corner between its
+        // facet and the vertex is taken where the facet faces the vertex
+        // (the vertex stands outside the result), filled where it faces
+        // away. The facet faces out of the solid, as P3 winds it.
+        let additive = if convex == 0 {
+            true
+        } else if convex == at.len() {
+            false
+        } else {
+            let mut n = Vector::ZERO;
+            for k in 0..carried.len() {
+                n += carried[k]
+                    .to_vector()
+                    .cross(carried[(k + 1) % carried.len()].to_vector());
+            }
+            let out = order
+                .iter()
+                .fold(Vector::ZERO, |s, fi| s + planar.faces[*fi].normal);
+            if n.dot(out) < 0.0 {
+                n = -n;
+            }
+            n.dot(planar.points[&v] - carried[0]) < 0.0
+        };
         let mut points = carried.clone();
         points.push(planar.points[&v]);
         pieces.push(Piece {
@@ -170,7 +190,7 @@ fn pieces(
             carried,
             from: planar.shapes[&v].clone(),
             ends: vec![v],
-            additive: convex == 0,
+            additive,
         });
     }
     Some(pieces)
@@ -237,8 +257,9 @@ pub(crate) fn non_local(
 /// vertex's, fused where concave, then cut where convex, the history traced
 /// through the booleans ([`apply`]), each piece's bevel or facet face
 /// named for its edge or vertex.
-/// `None` where a vertex mixes convex and concave bevels, or a piece will
-/// not build or apply.
+/// `None` where a bevel runs past its face, a setback corner stands off
+/// its face, a bevel is left nothing of, or a piece will not build or
+/// apply: each refused by name on the current path.
 ///
 /// # Errors
 ///
@@ -357,6 +378,14 @@ pub(crate) fn one_boolean(
     let Some(built) = apply(model, solid, &tools, tol)? else {
         return Ok(None);
     };
+    // A bevel the others leave nothing of is past what the part holds:
+    // refused by name, not built.
+    if blended
+        .iter()
+        .any(|e| built.history.generated(&planar.shapes[e]).is_empty())
+    {
+        return Ok(None);
+    }
     let mut history = built.history;
     for e in blended {
         history.delete(&planar.shapes[e]);

@@ -626,7 +626,13 @@ it for planar chamfers first.
   applies its wedges: pieces that share faces (two bevels' ends at a
   vertex) are not fused into one tool first, since the boolean refuses
   same-domain contact between its arguments but melts a tool's planes
-  into the solid's own. A vertex mixing convex and concave bevels declines.
+  into the solid's own. At a vertex mixing convex and concave bevels the
+  corner piece is cut where the facet faces the vertex (the vertex stands
+  outside the result) and fused where it faces away.
+- **Held to the rings' domain.** A bevel whose contact runs past its
+  face's far side, a setback corner standing off its face, or a bevel the
+  others leave nothing of is not built: these are past what the part
+  holds, refused by name as before.
 - **History** is traced through the booleans: each tool names the faces
   that carry a blend's face (a bevel's, a facet's) with the edge or vertex
   they come from, and what the booleans make of those faces is generated
@@ -639,7 +645,8 @@ it for planar chamfers first.
   local request the assembly cannot place: chamfers set back differently
   in one line where a third face meets the step (the step's face is then
   that face, less and plus the two bevels' end sections, which the
-  booleans resolve). This is a boolean on a local request, which §4.5
+  booleans resolve); a consumed face's hole not bevelled all round; a
+  bevelled concave edge at a consumed face's hole or reflex corner. This is a boolean on a local request, which §4.5
   rules out for the one assembly; it is kept to the cases the rings cannot
   place, each listed here as it is routed, so that M6 deletes the current
   path with every planar chamfer built through the engine.
