@@ -1524,3 +1524,186 @@ fn an_l_slab_bevelled_past_half_its_legs_turns_its_ridge_at_the_reflex_corner() 
         }
     }
 }
+
+/// Where three planes meet.
+fn meet(
+    (a, da): (ogeom_math::Vector, f64),
+    (b, db): (ogeom_math::Vector, f64),
+    (c, dc): (ogeom_math::Vector, f64),
+) -> ogeom_math::Vector {
+    (b.cross(c) * da + c.cross(a) * db + a.cross(b) * dc) / a.dot(b.cross(c))
+}
+
+/// The pyramid over the quadrilateral `base` (counter-clockwise seen from
+/// above, on z = 0) up to `apex`, its four slant edges bevelled `d`, where
+/// the apex's four corners (each where a face's two bevels' contacts
+/// cross) lie off one plane, so no facet closes the apex. It closes on the
+/// bilinear patch through them, its sides the bevels' ends: valid,
+/// nothing folded, a face for each face, bevel and the patch, one of them
+/// a B-spline, the apex generating the patch. The bilinear patch through a
+/// tetrahedron's four corners halves it, so the solid holds the corner
+/// closed by the two triangles that keep it convex (the polytope of the
+/// faces', the bevels' and those triangles' planes) less half the
+/// tetrahedron of the corners. The solid's centroid, returned.
+fn chamfered_apex(
+    base: [ogeom_math::Vector; 4],
+    apex: ogeom_math::Vector,
+    d: f64,
+) -> ogeom_math::Point {
+    use ogeom_math::Vector;
+    let h = apex.z;
+    let centre = (base.iter().fold(apex, |s, p| s + *p)) / 5.0;
+    // Side `k` through base corners `k` and `k + 1` and the apex.
+    let side = |k: usize| {
+        let (p, q) = (base[k], base[(k + 1) % 4]);
+        let mut n = (q - p).cross(apex - p);
+        n = n / n.magnitude();
+        if n.dot(p - centre) < 0.0 {
+            n = -n;
+        }
+        (n, n.dot(p))
+    };
+    // Slant edge `k`, from the apex to base corner `k`, between sides
+    // `k - 1` and `k`.
+    let bevel = |k: usize| {
+        let u = base[k] - apex;
+        bevel_plane(
+            apex,
+            u / u.magnitude(),
+            (side((k + 3) % 4).0, d),
+            (side(k).0, d),
+        )
+    };
+    let mut planes: Vec<(Vector, f64)> = vec![(Vector::new(0.0, 0.0, -1.0), 0.0)];
+    planes.extend((0..4).map(side));
+    planes.extend((0..4).map(bevel));
+    let corners: Vec<Vector> = (0..4)
+        .map(|k| meet(side(k), bevel(k), bevel((k + 1) % 4)))
+        .collect();
+    let low = corners.iter().map(|c| c.z).fold(f64::INFINITY, f64::min);
+    let high = corners
+        .iter()
+        .map(|c| c.z)
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!(
+        high - low > 1e-3,
+        "the corners lie off one plane: {corners:?}"
+    );
+    // Closed by the triangles on either diagonal, each facing away from
+    // the solid: the convex closure holds more.
+    let outward = |p: Vector, q: Vector, r: Vector| {
+        let mut n = (q - p).cross(r - p);
+        n = n / n.magnitude();
+        if n.dot(p - centre) < 0.0 {
+            n = -n;
+        }
+        (n, n.dot(p))
+    };
+    let closed = |i: usize| {
+        let c = |k: usize| corners[(i + k) % 4];
+        let mut with = planes.clone();
+        with.push(outward(c(0), c(1), c(2)));
+        with.push(outward(c(0), c(2), c(3)));
+        convex_polytope(&with).0
+    };
+    let convex = closed(0).max(closed(1));
+    let tetra = (corners[1] - corners[0])
+        .dot((corners[2] - corners[0]).cross(corners[3] - corners[0]))
+        .abs()
+        / 6.0;
+    let want = convex - tetra / 2.0;
+
+    let mut m = Model::new();
+    let points: Vec<Point> = base
+        .iter()
+        .chain([&apex])
+        .map(|v| Point::new(v.x, v.y, v.z))
+        .collect();
+    let rings = vec![
+        vec![0, 3, 2, 1],
+        vec![0, 1, 4],
+        vec![1, 2, 4],
+        vec![2, 3, 4],
+        vec![3, 0, 4],
+    ];
+    let s = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+        .unwrap()
+        .shape;
+    let top = explore_unique(&m, &s, ShapeType::Vertex)
+        .unwrap()
+        .into_iter()
+        .find(|v| (m.node(v).unwrap().data().as_vertex().unwrap().point.z - h).abs() < 1e-9)
+        .unwrap();
+    let specs: Vec<(Shape, Chamfer)> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (p, q) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+            p.is_same(&top) || q.is_same(&top)
+        })
+        .map(|e| (e, Chamfer::Symmetric(d)))
+        .collect();
+    assert_eq!(specs.len(), 4);
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert!(!folded(&m, &built.shape), "folded");
+    let faces = explore_unique(&m, &built.shape, ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 10, "faces");
+    let patches = faces
+        .iter()
+        .filter(|f| {
+            let data = m.node(f).unwrap().data().as_face().unwrap();
+            matches!(
+                m.geometry().surface(data.surface),
+                Some(ogeom_geom::SurfaceGeometry::BSpline(_))
+            )
+        })
+        .count();
+    assert_eq!(patches, 1, "one patch");
+    assert_eq!(built.history.generated(&top).len(), 1, "the apex's patch");
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-5,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let props = ogeom_algo::volume_properties(&m, &built.shape, fine, T).unwrap();
+    assert!(
+        (props.mass - want).abs() <= 1e-7 * want,
+        "volume {} against {want}",
+        props.mass
+    );
+    props.centre
+}
+
+/// The pyramid over the rectangle 8 by 6, height 4, its slant edges
+/// bevelled 1/2 ([`chamfered_apex`]): the long faces' corners and the
+/// short faces' stand at two heights. It keeps the pyramid's two mirrors:
+/// its centroid stands on the axis.
+#[test]
+fn a_rectangular_pyramid_s_apex_chamfered_closes_on_one_patch() {
+    use ogeom_math::Vector;
+    let (a, b) = (4.0, 3.0);
+    let base = [
+        Vector::new(-a, -b, 0.0),
+        Vector::new(a, -b, 0.0),
+        Vector::new(a, b, 0.0),
+        Vector::new(-a, b, 0.0),
+    ];
+    let centre = chamfered_apex(base, Vector::new(0.0, 0.0, 4.0), 0.5);
+    assert!(centre.x.abs() < 1e-6 && centre.y.abs() < 1e-6, "{centre:?}");
+}
+
+/// The pyramid over the square 20 by 20 with its apex moved off the middle
+/// to (5, 8, 12), its slant edges bevelled 2 ([`chamfered_apex`]): no two
+/// of the apex's corners mirror each other.
+#[test]
+fn a_leaning_pyramid_s_apex_chamfered_closes_on_one_patch() {
+    use ogeom_math::Vector;
+    let base = [
+        Vector::new(0.0, 0.0, 0.0),
+        Vector::new(20.0, 0.0, 0.0),
+        Vector::new(20.0, 20.0, 0.0),
+        Vector::new(0.0, 20.0, 0.0),
+    ];
+    chamfered_apex(base, Vector::new(5.0, 8.0, 12.0), 2.0);
+}
