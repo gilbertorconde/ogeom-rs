@@ -20,7 +20,7 @@ use ogeom_math::{Circle, Direction, Frame, Point, Torus};
 use ogeom_topo::{Model, Shape};
 
 use super::Id;
-use super::curved::{Curved, SheetCurve, SheetRings, build, read};
+use super::curved::{Curved, SheetCurve, SheetRings, build_with_widths, read};
 
 /// One arc of a rim, solved: its cap and wall faces, its arcs on the cap's
 /// and the wall's rings, and its vertices from first to last.
@@ -51,7 +51,15 @@ struct Rim {
     torus: SurfaceGeometry,
     fills: bool,
     material: HalfSpaces,
+    /// Outside the box the round can take up: past the cap's plane or the
+    /// wall's ring along the axis, or nearer or farther off it than the
+    /// rim and both rings.
+    clear: HalfSpaces,
 }
+
+/// The points each other edge of a rim's cap or wall is read at, to keep
+/// the ring clear of it.
+const CAP_SAMPLES: u32 = 32;
 
 /// The rounded solid of `rounds` (each a rim's arc and its radius) on
 /// `solid`, or `None` where `solid` is not one [`read`] takes or the edges
@@ -75,6 +83,29 @@ pub(crate) fn assemble(
     let Some(rims) = rims(model, solid, &read, rounds, tol)? else {
         return Ok(None);
     };
+    // A round reaching a face it does not blend (a cavity's wall under a
+    // thin cap) is not built here: every face but the rim's caps and walls
+    // proved outside the box the round can take up, to the bands' fit
+    // target.
+    for rim in &rims {
+        let own: Vec<usize> = rim.arcs.iter().flat_map(|a| [a.cap, a.wall]).collect();
+        for (fi, face) in read.faces.iter().enumerate() {
+            if own.contains(&fi) {
+                continue;
+            }
+            if ogeom_algo::certify_face_within(
+                model,
+                &face.shape,
+                &rim.clear,
+                crate::marched::band_fit_target(tol),
+                tol,
+            )?
+            .is_err()
+            {
+                return Ok(None);
+            }
+        }
+    }
 
     // The sheet's points: every vertex but the rims', and each rim
     // vertex's two contact points.
@@ -114,6 +145,8 @@ pub(crate) fn assemble(
         .collect();
     edge_ids.sort_unstable();
     let mut edges: Vec<SheetCurve> = Vec::new();
+    // Each edge carried over as it was keeps the tolerance it stood within.
+    let mut widened: Vec<Option<ogeom_core::Tolerance>> = Vec::new();
     let mut edge_index: FastMap<Id, usize> = FastMap::default();
     for e in &edge_ids {
         let edge = &read.edges[e];
@@ -129,8 +162,10 @@ pub(crate) fn assemble(
         let moved = contact.contains_key(&edge.ends.0) || contact.contains_key(&edge.ends.1);
         let (curve, range) = if moved {
             let line = LineCurve::segment(points[a], points[b], tol)?;
+            widened.push(None);
             (Curve::Line(line), (0.0, points[a].distance(points[b])))
         } else {
+            widened.push(model.tolerance_of(&edge.shape)?);
             (edge.curve.clone(), edge.range)
         };
         edge_index.insert(*e, edges.len());
@@ -159,7 +194,8 @@ pub(crate) fn assemble(
             });
             ring_arcs.insert(a.edge, (edges.len() - 2, edges.len() - 1));
         }
-        for v in &rim.vertices {
+        // The torus's seam: the meridian at the rim's first vertex.
+        for v in rim.vertices.iter().take(1) {
             let (c, w) = contact[&v.vertex];
             edges.push(SheetCurve {
                 ends: (c, w),
@@ -207,8 +243,14 @@ pub(crate) fn assemble(
     // cap's walk of the rim arc, on along the meridian at that arc's end to
     // the wall's ring, its wall ring arc against the wall's walk, and back
     // along the meridian at its start.
-    let mut torus_of: Vec<Id> = Vec::new();
+    // Each rim's torus, one face: its cap ring's arcs walked against the
+    // cap's walk of the rim all the way round from the seam, on along the
+    // seam to the wall's ring, its wall ring's arcs back round against the
+    // wall's walk, and back along the seam.
+    let mut torus_of: Vec<Vec<Id>> = Vec::new();
     for rim in &rims {
+        let mut on_cap_ring = Vec::with_capacity(rim.arcs.len());
+        let mut on_wall_ring = Vec::with_capacity(rim.arcs.len());
         for a in &rim.arcs {
             let walked_on = |fi: usize| -> Option<bool> {
                 read.faces[fi]
@@ -221,30 +263,46 @@ pub(crate) fn assemble(
             let (Some(on_cap), Some(on_wall)) = (walked_on(a.cap), walked_on(a.wall)) else {
                 return Ok(None);
             };
-            let (cap, wall) = ring_arcs[&a.edge];
-            let (first, last) = (meridians[&a.ends.0], meridians[&a.ends.1]);
-            // The torus walks the cap's arc against the cap: from the arc's
-            // last vertex to its first where the cap walks it forward.
-            let (from, to) = if on_cap { (last, first) } else { (first, last) };
-            let standing = [(cap, !on_cap), (to, true), (wall, !on_wall), (from, false)];
             if on_cap == on_wall {
                 return Ok(None);
             }
-            let ring: Vec<(usize, bool)> = if rim.fills {
-                standing.iter().rev().map(|(e, w)| (*e, !w)).collect()
-            } else {
-                standing.to_vec()
-            };
-            faces.push(SheetRings {
-                surface: rim.torus.clone(),
-                rings: vec![ring],
-                reversed: rim.fills,
-            });
-            torus_of.push(a.edge);
+            let (cap, wall) = ring_arcs[&a.edge];
+            on_cap_ring.push((cap, !on_cap));
+            on_wall_ring.push((wall, !on_wall));
         }
+        let Some(first) = rim.vertices.first() else {
+            return Ok(None);
+        };
+        let seam = meridians[&first.vertex];
+        let (c0, w0) = edges[seam].ends;
+        let (Some(cap_round), Some(wall_round)) = (
+            chained(&edges, &on_cap_ring, c0),
+            chained(&edges, &on_wall_ring, w0),
+        ) else {
+            return Ok(None);
+        };
+        let mut standing = cap_round;
+        standing.push((seam, true));
+        standing.extend(wall_round);
+        standing.push((seam, false));
+        let ring: Vec<(usize, bool)> = if rim.fills {
+            standing.iter().rev().map(|(e, w)| (*e, !w)).collect()
+        } else {
+            standing
+        };
+        faces.push(SheetRings {
+            surface: rim.torus.clone(),
+            rings: vec![ring],
+            reversed: rim.fills,
+        });
+        torus_of.push(rim.arcs.iter().map(|a| a.edge).collect());
     }
 
-    let sheet = build(model, &points, &edges, &faces, tol)?;
+    let widths: Vec<f64> = widened
+        .iter()
+        .map(|w| w.map_or(0.0, ogeom_core::Tolerance::get))
+        .collect();
+    let sheet = build_with_widths(model, &points, &edges, &faces, &widths, tol)?;
     let shell = ogeom_algo::make_shell(model, &sheet.faces)?.shape;
     let rounded = ogeom_algo::make_solid(model, &[shell])?.shape;
     // A wall's or a torus's seam, walked twice, as a seam's pair of pcurves.
@@ -253,9 +311,7 @@ pub(crate) fn assemble(
     // P5: each piece of torus proved within its rim's material, to the
     // bands' fit target.
     let fit = crate::marched::band_fit_target(tol);
-    let materials = rims
-        .iter()
-        .flat_map(|r| r.arcs.iter().map(move |_| &r.material));
+    let materials = rims.iter().map(|r| &r.material);
     for (face, region) in sheet.faces[read.faces.len()..].iter().zip(materials) {
         if let Err(out) = ogeom_algo::certify_face_within(model, face, region, fit, tol)? {
             ogeom_core::ogeom_bail!(
@@ -272,9 +328,11 @@ pub(crate) fn assemble(
     for (f, b) in read.faces.iter().zip(&sheet.faces) {
         history.modify(&f.shape, b.clone());
     }
-    for (e, torus) in torus_of.iter().zip(&sheet.faces[read.faces.len()..]) {
-        history.delete(&read.shapes[e]);
-        history.generate(&read.shapes[e], torus.clone());
+    for (arcs, torus) in torus_of.iter().zip(&sheet.faces[read.faces.len()..]) {
+        for e in arcs {
+            history.delete(&read.shapes[e]);
+            history.generate(&read.shapes[e], torus.clone());
+        }
     }
     for v in &gone {
         history.delete(&read.shapes[v]);
@@ -395,18 +453,64 @@ fn rims(
         }
         let rim_edges: Vec<Id> = arcs.iter().map(|(e, _)| *e).collect();
         // The wall's ring stands on every wall face, short of its far side:
-        // each of their vertices off the rim farther along the axis.
+        // every other edge of the wall farther along the axis from the rim
+        // than the ring, read along its length, or at its far end for a
+        // straight edge from a rim vertex, which is cut back to the ring.
         for a in &solved_arcs {
-            for l in &read.faces[a.wall].loops {
-                for (x, _) in l {
-                    for w in [read.edges[x].ends.0, read.edges[x].ends.1] {
-                        if vertex_ids.contains(&w) {
-                            continue;
-                        }
-                        let along = (read.points[&w] - seat.centre).dot(seat.up).abs();
-                        if ball.wall_height.abs() >= along - tol.confusion() {
-                            return Ok(None);
-                        }
+            for (x, _) in read.faces[a.wall].loops.iter().flatten() {
+                if rim_edges.contains(x) {
+                    continue;
+                }
+                let edge = &read.edges[x];
+                let from_rim = [edge.ends.0, edge.ends.1]
+                    .iter()
+                    .any(|w| vertex_ids.contains(w));
+                let (t0, t1) = edge.range;
+                let samples: Vec<Point> = if from_rim {
+                    [edge.ends.0, edge.ends.1]
+                        .iter()
+                        .filter(|w| !vertex_ids.contains(w))
+                        .map(|w| read.points[w])
+                        .collect()
+                } else {
+                    (0..=CAP_SAMPLES)
+                        .map(|k| {
+                            let t = t0 + (t1 - t0) * f64::from(k) / f64::from(CAP_SAMPLES);
+                            ogeom_geom::Curve3d::point_at(&edge.curve, t, tol)
+                        })
+                        .collect::<OgeomResult<_>>()?
+                };
+                for p in samples {
+                    let along = (p - seat.centre).dot(seat.up).abs();
+                    if ball.wall_height.abs() >= along - tol.confusion() {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+        // The cap's ring stands on every cap face, nothing else of the cap
+        // between it and the rim: every other edge of the cap, read along
+        // its length, stays farther from the rim than the ring. A cap
+        // narrower than the setback is left to the current path.
+        let inward = ball.rho < seat.radius;
+        for a in &solved_arcs {
+            for (x, _) in read.faces[a.cap].loops.iter().flatten() {
+                if rim_edges.contains(x) {
+                    continue;
+                }
+                let edge = &read.edges[x];
+                let (t0, t1) = edge.range;
+                for k in 0..=CAP_SAMPLES {
+                    let t = t0 + (t1 - t0) * f64::from(k) / f64::from(CAP_SAMPLES);
+                    let off = ogeom_geom::Curve3d::point_at(&edge.curve, t, tol)? - seat.centre;
+                    let rho = (off - seat.up * off.dot(seat.up)).magnitude();
+                    let clear = if inward {
+                        rho < ball.rho - tol.confusion()
+                    } else {
+                        rho > ball.rho + tol.confusion()
+                    };
+                    if !clear {
+                        return Ok(None);
                     }
                 }
             }
@@ -483,15 +587,62 @@ fn rims(
         } else {
             HalfSpaces::Every(vec![below(0.0), wall(seat.radius)])
         };
+        let (h_lo, h_hi) = (ball.wall_height.min(0.0), ball.wall_height.max(0.0));
+        let radii = [seat.radius, ball.rho, ball.wall_rho];
+        let (r_lo, r_hi) = (
+            radii.iter().copied().fold(f64::INFINITY, f64::min),
+            radii.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        );
+        let off_axis = |radius: f64, inside: bool| HalfSpaces::Revolved {
+            at: seat.centre,
+            axis: seat.up,
+            radius,
+            slope: 0.0,
+            inside,
+        };
+        let clear = HalfSpaces::Any(vec![
+            HalfSpaces::Below {
+                normal: -seat.up,
+                at: seat.centre + seat.up * h_hi,
+            },
+            below(h_lo),
+            off_axis(r_lo, true),
+            off_axis(r_hi, false),
+        ]);
         out.push(Rim {
             arcs: solved_arcs,
             vertices,
             torus,
             fills: seat.additive(),
             material,
+            clear,
         });
     }
     Ok(Some(out))
+}
+
+/// The oriented `pieces` (each an edge and whether it is walked from its
+/// first end) chained into one loop from `start` back to it, or `None`
+/// where they do not close.
+fn chained(
+    edges: &[SheetCurve],
+    pieces: &[(usize, bool)],
+    start: usize,
+) -> Option<Vec<(usize, bool)>> {
+    let ends = |(e, forward): (usize, bool)| {
+        let (a, b) = edges[e].ends;
+        if forward { (a, b) } else { (b, a) }
+    };
+    let mut left: Vec<(usize, bool)> = pieces.to_vec();
+    let mut at = start;
+    let mut out = Vec::with_capacity(pieces.len());
+    while !left.is_empty() {
+        let k = left.iter().position(|p| ends(*p).0 == at)?;
+        let p = left.remove(k);
+        at = ends(p).1;
+        out.push(p);
+    }
+    (at == start).then_some(out)
 }
 
 #[cfg(test)]
