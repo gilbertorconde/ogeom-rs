@@ -12,8 +12,10 @@ use ogeom_topo::{Model, Shape};
 /// meet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChamferCorner {
-    /// The bevels mitre into one point, by wedges built on the solid as given
-    /// and applied together.
+    /// The bevels run on to the point they share and meet each other from
+    /// there, with no facet between them; at a convex vertex of four bevels
+    /// or more on planes sharing no point, each runs on until the others
+    /// cut it.
     Point,
     /// Each bevel stops at the plane through the points where two bevels'
     /// contact lines cross on the face they share, and the corner is the
@@ -76,8 +78,8 @@ pub fn chamfer_edges_cornered(
     }
     let specs = &specs[..];
     if corner == ChamferCorner::Point {
-        // On a solid bounded by planes the blend engine mitres in one
-        // pass; elsewhere the wedges do.
+        // The blend engine mitres in one pass, on planes or on curved
+        // faces; what it hands back, the wedges do.
         if let Some(built) = crate::chamfer::engine_chamfer_mitred(model, solid, specs, tol)? {
             return Ok(built);
         }
