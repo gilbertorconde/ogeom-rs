@@ -105,13 +105,17 @@ impl Rings {
     /// Every ring holding a point of `allowed` clipped by each of `cuts`
     /// but its own, keeping the side each cut's normal points away from:
     /// a ring's part beyond a cut is taken off, the cut's line across it
-    /// put in. `false` where a clip would take a corner outside `allowed`,
-    /// or one `may_take` refuses to the cut given the ring and the vertex
-    /// the corner stands at (points the clips make join `allowed` with no
-    /// vertex as they are made). A ring holding a hole is outside the clip.
+    /// put in. Then each ring not one of a group's own loses the funnel
+    /// above all of that group's planes ([`Rings::clip_funnel`]). `false`
+    /// where a clip would take a corner outside `allowed`, or one
+    /// `may_take` refuses to the cut given the ring and the vertex the
+    /// corner stands at (to a group, to any of its bevels; points the clips
+    /// make join `allowed` with no vertex as they are made). A ring holding
+    /// a hole is outside the clip.
     pub fn clip_local(
         &mut self,
         cuts: &[super::consumed::Cut],
+        groups: &[super::consumed::Group],
         allowed: &mut FastMap<usize, Option<super::Id>>,
         may_take: impl Fn(&Origin, Option<super::Id>, &Origin) -> bool,
     ) -> bool {
@@ -155,7 +159,204 @@ impl Rings {
                 }
                 self.rings[ri].0 = out;
             }
+            let ring_origin = self.rings[ri].1[0];
+            for g in groups {
+                if self.rings[ri].1.iter().any(|o| g.owns(o)) {
+                    continue;
+                }
+                let may = |at: Option<super::Id>| {
+                    g.edges
+                        .iter()
+                        .any(|e| may_take(&ring_origin, at, &Origin::Edge(*e)))
+                };
+                if !self.clip_funnel(ri, &g.planes, allowed, &may) {
+                    return false;
+                }
+            }
         }
+        true
+    }
+
+    /// Ring `ri` less the funnel above every one of `planes` (each an
+    /// outward normal and offset; the funnel is where a point stands past
+    /// all of them): the ring keeps what lies under any. Where the ring's
+    /// boundary runs into the funnel and out again, the funnel's own
+    /// boundary across the ring is put in: along one plane, or along two
+    /// through the corner where they and the ring's plane meet. `false`
+    /// where a corner the funnel takes is not in `allowed` or `may` refuses
+    /// it, where the way round the funnel is not along one plane or two
+    /// meeting at a corner of it inside the ring, or where the funnel lies
+    /// inside the ring, holing it.
+    fn clip_funnel(
+        &mut self,
+        ri: usize,
+        planes: &[(Vector, f64)],
+        allowed: &mut FastMap<usize, Option<super::Id>>,
+        may: &dyn Fn(Option<super::Id>) -> bool,
+    ) -> bool {
+        let eps = self.tol.confusion();
+        let ring = self.rings[ri].0.clone();
+        let n = ring.len();
+        if n < 3 || planes.is_empty() {
+            return true;
+        }
+        let past = |p: Point| {
+            planes
+                .iter()
+                .map(|(nv, off)| nv.dot(p.to_vector()) - off)
+                .fold(f64::INFINITY, f64::min)
+        };
+        let pts: Vec<Point> = ring.iter().map(|i| self.points[*i]).collect();
+        let inside: Vec<bool> = pts.iter().map(|p| past(*p) > eps).collect();
+        let normal = self.newell(&ring);
+        if normal.magnitude() <= eps * eps {
+            return true;
+        }
+        let normal = normal / normal.magnitude();
+        let on_ring = normal.dot(pts[0].to_vector());
+        // Where the ring's plane and planes `i` and `j` meet, if they do at
+        // a point of the funnel's closure.
+        let corner = |i: usize, j: usize| -> Option<Point> {
+            let (a, da) = planes[i];
+            let (b, db) = planes[j];
+            let det = normal.dot(a.cross(b));
+            if det.abs() <= 1e-9 {
+                return None;
+            }
+            let x = (a.cross(b) * on_ring + b.cross(normal) * da + normal.cross(a) * db) / det;
+            let x = Point::ORIGIN + x;
+            (past(x) >= -eps).then_some(x)
+        };
+        // A ring point's place in the ring's plane, for inside tests.
+        let ux = (pts[1] - pts[0]).cross(normal);
+        let ux = ux / ux.magnitude();
+        let uy = normal.cross(ux);
+        let flat = |p: Point| ((p - pts[0]).dot(ux), (p - pts[0]).dot(uy));
+        let outline: Vec<(f64, f64)> = pts.iter().map(|p| flat(*p)).collect();
+        let within = |p: Point| {
+            let q = flat(p);
+            super::guards::strictly_inside(&outline, q, eps)
+                || (0..n).any(|k| {
+                    let (a, b) = (outline[k], outline[(k + 1) % n]);
+                    let ab = (b.0 - a.0, b.1 - a.1);
+                    let t = (((q.0 - a.0) * ab.0 + (q.1 - a.1) * ab.1)
+                        / ab.0.mul_add(ab.0, ab.1 * ab.1))
+                    .clamp(0.0, 1.0);
+                    (a.0 + ab.0 * t - q.0).hypot(a.1 + ab.1 * t - q.1) <= eps
+                })
+        };
+        // Each edge's run inside the funnel: where it enters and where it
+        // leaves.
+        let run = |a: Point, b: Point| -> Option<(f64, f64)> {
+            let (mut t0, mut t1) = (0.0_f64, 1.0_f64);
+            for (nv, off) in planes {
+                let (fa, fb) = (nv.dot(a.to_vector()) - off, nv.dot(b.to_vector()) - off);
+                if fa <= eps && fb <= eps {
+                    return None;
+                }
+                if fa > eps && fb > eps {
+                    continue;
+                }
+                let t = fa / (fa - fb);
+                if fa <= eps {
+                    t0 = t0.max(t);
+                } else {
+                    t1 = t1.min(t);
+                }
+            }
+            (t1 - t0 > 1e-12).then_some((t0, t1))
+        };
+        // The planes whose boundary a point of the funnel's closure is on.
+        let on = |p: Point| -> Vec<usize> {
+            (0..planes.len())
+                .filter(|j| {
+                    let (nv, off) = planes[*j];
+                    (nv.dot(p.to_vector()) - off).abs() <= eps
+                })
+                .collect()
+        };
+        let Some(start) = (0..n).find(|k| !inside[*k]) else {
+            // The whole ring lies in the funnel.
+            for i in &ring {
+                match allowed.get(i) {
+                    Some(at) if may(*at) => {}
+                    _ => return false,
+                }
+            }
+            self.rings[ri].0 = Vec::new();
+            return true;
+        };
+        let mut out: Vec<usize> = Vec::with_capacity(n + 4);
+        let mut entered: Option<Vec<usize>> = None;
+        let mut crossed = false;
+        for step in 0..n {
+            let k = (start + step) % n;
+            let (a, b) = (pts[k], pts[(k + 1) % n]);
+            if inside[k] {
+                match allowed.get(&ring[k]) {
+                    Some(at) if may(*at) => {}
+                    _ => return false,
+                }
+            } else {
+                out.push(ring[k]);
+            }
+            let Some((t0, t1)) = run(a, b) else {
+                continue;
+            };
+            crossed = true;
+            if !inside[k] {
+                let p = a + (b - a) * t0;
+                let x = self.point(p);
+                allowed.entry(x).or_insert(None);
+                out.push(x);
+                entered = Some(on(p));
+            }
+            if t1 < 1.0 - 1e-12 || !inside[(k + 1) % n] {
+                let Some(from) = entered.take() else {
+                    return false;
+                };
+                let q = a + (b - a) * t1;
+                let to = on(q);
+                // Along a plane both ends are on; else round the corner of
+                // two, one at each end, inside the ring.
+                if !from.iter().any(|j| to.contains(j)) {
+                    let Some(x) = from.iter().find_map(|i| {
+                        to.iter()
+                            .find_map(|j| corner(*i, *j).filter(|x| within(*x)))
+                    }) else {
+                        return false;
+                    };
+                    let x = self.point(x);
+                    allowed.entry(x).or_insert(None);
+                    out.push(x);
+                }
+                let x = self.point(q);
+                allowed.entry(x).or_insert(None);
+                out.push(x);
+            }
+        }
+        if entered.is_some() {
+            return false;
+        }
+        if !crossed {
+            // The ring's boundary keeps clear of the funnel: refused where
+            // the funnel stands inside it.
+            for i in 0..planes.len() {
+                for j in i + 1..planes.len() {
+                    if corner(i, j)
+                        .is_some_and(|x| super::guards::strictly_inside(&outline, flat(x), eps))
+                    {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+        out.dedup();
+        while out.len() > 1 && out.first() == out.last() {
+            out.pop();
+        }
+        self.rings[ri].0 = out;
         true
     }
 

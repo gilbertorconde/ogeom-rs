@@ -217,7 +217,10 @@ pub(crate) fn run(
         // enough for the planes there to trim it to what it keeps; the
         // run-on lies past the solid, so any of them may take it.
         let mut end = |face: usize, v: Id, sign: f64| -> usize {
-            if cluster.as_ref().is_some_and(|c| c.vertices.contains(&v)) {
+            if cluster
+                .as_ref()
+                .is_some_and(|c| c.vertices.contains(&v) && !c.grouped.contains(&v))
+            {
                 let p = corners[&(face, v)] + seat.along * (sign * reach);
                 let i = rings.point(p);
                 run_on.insert(i, None);
@@ -268,9 +271,12 @@ pub(crate) fn run(
                 allowed.insert(*i, Some(*v));
             }
         }
-        if !rings.clip_local(&cluster.cuts, &mut allowed, |ring, at, cut| {
-            cluster.may_take(ring, at, cut)
-        }) {
+        if !rings.clip_local(
+            &cluster.cuts,
+            &cluster.groups,
+            &mut allowed,
+            |ring, at, cut| cluster.may_take(ring, at, cut),
+        ) {
             return Ok(None);
         }
     }

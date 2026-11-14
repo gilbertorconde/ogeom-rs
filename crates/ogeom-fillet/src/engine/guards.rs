@@ -200,7 +200,7 @@ pub(crate) fn crosses_itself(pts: &[(f64, f64)], eps: f64) -> bool {
 }
 
 /// Whether any edge of the polygon `a` meets any edge of the polygon `b`.
-fn loops_meet(a: &[(f64, f64)], b: &[(f64, f64)], eps: f64) -> bool {
+pub(crate) fn loops_meet(a: &[(f64, f64)], b: &[(f64, f64)], eps: f64) -> bool {
     (0..a.len()).any(|i| {
         (0..b.len())
             .any(|j| segments_meet(a[i], a[(i + 1) % a.len()], b[j], b[(j + 1) % b.len()], eps))
@@ -227,7 +227,7 @@ fn segments_meet(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64), eps
 
 /// Whether `p` lies inside the polygon `pts`, farther than `eps` from its
 /// edges.
-fn strictly_inside(pts: &[(f64, f64)], p: (f64, f64), eps: f64) -> bool {
+pub(crate) fn strictly_inside(pts: &[(f64, f64)], p: (f64, f64), eps: f64) -> bool {
     let n = pts.len();
     let mut inside = false;
     for i in 0..n {
