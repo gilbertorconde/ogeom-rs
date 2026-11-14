@@ -222,20 +222,24 @@ impl PlanarSection {
     /// the crease the chord of the sections there. That is the arc at the
     /// first station carried along the crease onto the plane, an affine map
     /// that keeps a rational quadratic arc's control points' weights, so the
-    /// end is exact; and over `(0, 1)`. For a circular section only.
+    /// end is exact; and over `(0, 1)`. For a section the same all along its
+    /// crease (the ball's circle, a conic), not a varying one.
     ///
     /// # Errors
     ///
     /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
-    /// where the contacts coincide or the section is not circular.
+    /// where the contacts coincide or the section varies along its crease.
     pub(crate) fn skew_end(
         &self,
         faces: [usize; 2],
         at: [f64; 2],
         tol: Tolerances,
     ) -> OgeomResult<(Curve, (f64, f64))> {
-        if !matches!(self.kind, Kind::Ball(..)) {
-            ogeom_bail!(Construction, "a skew end of a section that is not circular");
+        if matches!(self.kind, Kind::Varying(..)) {
+            ogeom_bail!(
+                Construction,
+                "a skew end of a section varying along its crease"
+            );
         }
         let along = self.seat.along;
         let (p0, p1) = (self.contact(faces[0], at[0]), self.contact(faces[1], at[1]));
@@ -251,7 +255,7 @@ impl PlanarSection {
     /// through both whose normal is `normal`: the arc at the first station
     /// carried along the crease onto that plane, an affine map keeping a
     /// rational quadratic arc's weights, so exact; over `(0, 1)`. For a
-    /// circular section only, and a plane not along the crease.
+    /// section the same all along its crease, and a plane not along it.
     ///
     /// # Errors
     ///
@@ -264,8 +268,11 @@ impl PlanarSection {
         normal: Vector,
         tol: Tolerances,
     ) -> OgeomResult<(Curve, (f64, f64))> {
-        if !matches!(self.kind, Kind::Ball(..)) {
-            ogeom_bail!(Construction, "a cut end of a section that is not circular");
+        if matches!(self.kind, Kind::Varying(..)) {
+            ogeom_bail!(
+                Construction,
+                "a cut end of a section varying along its crease"
+            );
         }
         let along = self.seat.along;
         if normal.dot(along).abs() <= tol.angular() * normal.magnitude() {
@@ -275,7 +282,11 @@ impl PlanarSection {
         let q = self.contact(faces[1], at[0]);
         let apex = self.crease(at[0]);
         let (u0, u1) = ((apex - p0).normalized(tol)?, (q - apex).normalized(tol)?);
-        let weight = ((1.0 + u0.dot(u1)) / 2.0).max(0.0).sqrt();
+        // The ball's arc's middle weight from its turn, a conic's its own.
+        let weight = match &self.kind {
+            Kind::Conic(_, w) => *w,
+            _ => ((1.0 + u0.dot(u1)) / 2.0).max(0.0).sqrt(),
+        };
         let onto = |x: Point| x + along * (normal.dot(p0 - x) / normal.dot(along));
         let knots = ogeom_math::KnotVector::new(vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 2)?;
         let control = vec![

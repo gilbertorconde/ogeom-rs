@@ -347,6 +347,9 @@ pub(crate) fn assemble(
                 flush.insert(v, (third, seat.edge));
                 RoundVertex::Flush
             }
+            // A conic round beside an edge left sharp: no mitre or crease is
+            // read from its section, and its strip and the other's cross
+            // where their setbacks differ; not built here yet.
             (3, 2) if blended.iter().any(|s| conic.contains(&s.edge)) => return Ok(None),
             (3, 2) => {
                 match mitre(planar, &sections, &here, &round, corners, v, reach, tol)? {
@@ -383,12 +386,10 @@ pub(crate) fn assemble(
                 // A conic round's section is no ball's: its corner is the
                 // patch's.
                 let conics = blended.iter().any(|s| conic.contains(&s.edge));
-                // A conic strip ends square to its edge only: one whose
-                // setback corners stand at different stations would need a
-                // skew end, which only the ball's circle has.
+                // A varying strip has no skew end.
                 if blended
                     .iter()
-                    .any(|s| conic.contains(&s.edge) && !stands_level(s.edge, v))
+                    .any(|s| varying.contains(&s.edge) && !stands_level(s.edge, v))
                 {
                     return Ok(None);
                 }
