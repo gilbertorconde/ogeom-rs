@@ -39,6 +39,7 @@ pub(crate) fn assemble(
     seats: &FastMap<(Id, Id), Seat>,
     by_edge: &FastMap<Id, &Section>,
     corners: &FastMap<(usize, Id), Point>,
+    steps: &FastMap<(usize, Id), [Point; 2]>,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     let mut keys: Vec<(Id, Id)> = seats.keys().copied().collect();
@@ -121,6 +122,11 @@ pub(crate) fn assemble(
     let mut creases: FastMap<Id, Crease> = FastMap::default();
     // For a vertex the ball rounds rolling along a ridge.
     let mut ridges: FastMap<Id, Ridge> = FastMap::default();
+    // For a convex and a concave round beside an edge left sharp.
+    let mut signed: FastMap<Id, Signed> = FastMap::default();
+    // For a vertex where a face's two edges run on in one line set back
+    // differently, that face.
+    let mut step_faces: FastMap<Id, usize> = FastMap::default();
     for &v in &vertices {
         let Some(round) = faces_round(&planar.faces, v) else {
             return Ok(None);
@@ -135,6 +141,23 @@ pub(crate) fn assemble(
             .copied()
             .filter(|s| sections.contains_key(&s.edge))
             .collect();
+        // A face whose two edges here run on in one line, set back
+        // differently (ADR 0001, §13, question 5): with every edge here
+        // rounded, the strips end level where their other faces' corners
+        // stand and the patch closes the hole, its side on that face.
+        let stepped: Vec<usize> = round
+            .iter()
+            .copied()
+            .filter(|f| steps.contains_key(&(*f, v)))
+            .collect();
+        if !stepped.is_empty() {
+            if stepped.len() != 1 || blended.len() != here.len() || here.len() < 4 {
+                return Ok(None);
+            }
+            step_faces.insert(v, stepped[0]);
+            method.insert(v, RoundVertex::Patch);
+            continue;
+        }
         let chosen = match (here.len(), blended.len()) {
             (_, 0) => RoundVertex::Sharp,
             (3, 1) => {
@@ -189,12 +212,19 @@ pub(crate) fn assemble(
                         mitres.insert(v, (pair, normal));
                     }
                     None => {
-                        let Some(crease) =
+                        if let Some(crease) =
                             crease_at(&sections, &here, &round, corners, v, planar, reach)
-                        else {
+                        {
+                            creases.insert(v, crease);
+                        } else if let Some(corner) =
+                            signed_at(&sections, &here, &round, corners, v, planar, reach)
+                        {
+                            signed.insert(v, corner);
+                            method.insert(v, RoundVertex::Signed);
+                            continue;
+                        } else {
                             return Ok(None);
-                        };
-                        creases.insert(v, crease);
+                        }
                     }
                 }
                 RoundVertex::Mitre
@@ -242,7 +272,15 @@ pub(crate) fn assemble(
                     {
                         RoundVertex::Sphere
                     }
-                    _ if n == 3 || blended.iter().all(|s| s.convex == convex) => RoundVertex::Patch,
+                    // Mixed convexity at four edges or more closes on the
+                    // patch too (ADR 0001, §13, question 7), proved against
+                    // the solid's own material there.
+                    _ if n == 3
+                        || blended.iter().all(|s| s.convex == convex)
+                        || local_cone(planar, &here, &round, v).is_some() =>
+                    {
+                        RoundVertex::Patch
+                    }
                     _ => return Ok(None),
                 }
             }
@@ -278,10 +316,40 @@ pub(crate) fn assemble(
             }
         }
     }
+    // At each step, each of the stepped face's strips' corner there: on its
+    // contact on that face at the station of its other face's corner, and
+    // that station.
+    let mut step_points: FastMap<(Id, Id), (usize, f64)> = FastMap::default();
+    let mut step_list: Vec<(Id, usize)> = step_faces.iter().map(|(v, f)| (*v, *f)).collect();
+    step_list.sort_unstable();
+    for &(v, face) in &step_list {
+        for seat in seats_at(&keys, seats, v) {
+            let Some(k) = seat.faces.iter().position(|f| *f == face) else {
+                continue;
+            };
+            let Some((section, _)) = sections.get(&seat.edge) else {
+                return Ok(None);
+            };
+            let other = corners[&(seat.faces[1 - k], v)];
+            let s = (other - section.crease(0.0)).dot(seat.along);
+            step_points.insert((v, seat.edge), (point(section.contact(k, s)), s));
+        }
+    }
     // Where face `fi`'s ring passes vertex `v`, coming from `prev`: its
     // setback corner, or at a ridge's faces either side the two balls'
     // feet, the one of the ball the arriving edge's strip ends on first.
     let passes = |fi: usize, prev: Id, v: Id| -> Option<Vec<usize>> {
+        if step_faces.get(&v) == Some(&fi) {
+            // From the arriving strip's corner to the leaving one's.
+            let arriving = seats.get(&(prev.min(v), prev.max(v)))?;
+            let leaving = seats_at(&keys, seats, v)
+                .into_iter()
+                .find(|s| s.edge != arriving.edge && s.faces.contains(&fi))?;
+            return Some(vec![
+                step_points.get(&(v, arriving.edge))?.0,
+                step_points.get(&(v, leaving.edge))?.0,
+            ]);
+        }
         let Some(ridge) = ridges.get(&v) else {
             return Some(vec![at[&(fi, v)]]);
         };
@@ -342,6 +410,23 @@ pub(crate) fn assemble(
             let [from_face, _] = order;
             let (p0, p1) = (at[&(seat.faces[0], v)], at[&(seat.faces[1], v)]);
             if creases.contains_key(&v) {
+                continue;
+            }
+            // At a step the stepped face's strips end level where their
+            // other faces' corners stand.
+            if let Some(&(q, s)) = step_points.get(&(v, *edge)) {
+                let face = step_faces[&v];
+                let (q0, q1) = if seat.faces[0] == face {
+                    (q, p1)
+                } else {
+                    (p0, q)
+                };
+                let (curve, range) = section.arc_at(s, tol)?;
+                edges.push(SheetEdge {
+                    ends: if from_face == 0 { (q0, q1) } else { (q1, q0) },
+                    curve: Some((curve, range)),
+                });
+                arcs.insert((*edge, v), (edges.len() - 1, from_face == 0));
                 continue;
             }
             // At a ridge the strip ends on its cap's ball, its section's arc
@@ -444,6 +529,14 @@ pub(crate) fn assemble(
         crease_corners.insert(v, (q, p_b, arc_edge));
     }
 
+    // At a step the stepped face's strips' corners there are their own.
+    for &(v, face) in &step_list {
+        for seat in seats_at(&keys, seats, v) {
+            if let Some(&(q, _)) = step_points.get(&(v, seat.edge)) {
+                strip_corner.insert((seat.edge, face, v), q);
+            }
+        }
+    }
     // At a ridge each strip's corners are its cap's ball's feet.
     for &(&v, ridge) in &ridge_list {
         for seat in seats_at(&keys, seats, v) {
@@ -477,6 +570,34 @@ pub(crate) fn assemble(
                 face.corners[k],
                 face.corners[(k + 1) % n],
             );
+            if step_faces.get(&v) == Some(&fi) {
+                let Some(pts) = passes(fi, prev, v) else {
+                    return Ok(None);
+                };
+                let line = segment(&mut edges, pts[0], pts[1]);
+                at_corner.push((pts, vec![line]));
+                continue;
+            }
+            if let Some(corner) = signed.get(&v)
+                && fi == corner.carrier
+            {
+                // Along the sharp edge's line, from this face's corner past
+                // the vertex to the other's, or back.
+                let (own, other) = (at[&(fi, v)], at[&(corner.other, v)]);
+                let middle = index_of(&mut points, planar.points[&v], reach);
+                let arriving = seats.get(&(prev.min(v), prev.max(v)));
+                let pts = if arriving.is_some_and(|s| s.edge == corner.sharp) {
+                    vec![other, middle, own]
+                } else {
+                    vec![own, middle, other]
+                };
+                let lines = vec![
+                    segment(&mut edges, pts[0], pts[1]),
+                    segment(&mut edges, pts[1], pts[2]),
+                ];
+                at_corner.push((pts, lines));
+                continue;
+            }
             if ridges
                 .get(&v)
                 .is_some_and(|r| fi == r.faces[0] || fi == r.faces[2])
@@ -487,7 +608,7 @@ pub(crate) fn assemble(
                     return Ok(None);
                 };
                 let line = segment(&mut edges, pts[0], pts[1]);
-                at_corner.push((pts, Some(line)));
+                at_corner.push((pts, vec![line]));
                 continue;
             }
             match flush.get(&v) {
@@ -510,7 +631,7 @@ pub(crate) fn assemble(
                     } else {
                         return Ok(None);
                     };
-                    at_corner.push((vec![entry, exit], Some((arc, runs))));
+                    at_corner.push((vec![entry, exit], vec![(arc, runs)]));
                 }
                 _ => match (creases.get(&v), crease_corners.get(&v)) {
                     (Some(crease), Some(&(q, p_b, arc))) if crease.far == fi => {
@@ -524,17 +645,15 @@ pub(crate) fn assemble(
                             (p_b, q)
                         };
                         at_corner
-                            .push((vec![entry, exit], Some((arc, edges[arc].ends.0 == entry))));
+                            .push((vec![entry, exit], vec![(arc, edges[arc].ends.0 == entry)]));
                     }
-                    _ => at_corner.push((vec![at[&(fi, v)]], None)),
+                    _ => at_corner.push((vec![at[&(fi, v)]], Vec::new())),
                 },
             }
         }
-        for (k, (pts, arc)) in at_corner.iter().enumerate() {
+        for (k, (pts, arcs_here)) in at_corner.iter().enumerate() {
             let next_first = at_corner[(k + 1) % n].0[0];
-            if let Some(arc) = arc {
-                ring.push(*arc);
-            }
+            ring.extend(arcs_here.iter().copied());
             let last = *pts.last().unwrap_or(&next_first);
             if last != next_first {
                 ring.push(segment(&mut edges, last, next_first));
@@ -591,6 +710,9 @@ pub(crate) fn assemble(
         // stations between them.
         // A ridge's strip stands level at its cap's ball.
         let level_at = |w: Id| -> [f64; 2] {
+            if let Some(&(_, s)) = step_points.get(&(w, *edge)) {
+                return [s, s];
+            }
             ridges
                 .get(&w)
                 .and_then(|r| r.ball_of(seat))
@@ -829,24 +951,49 @@ pub(crate) fn assemble(
             continue;
         }
         let here = seats_at(&keys, seats, v);
-        let Some(ring) = hole_at(&here, &arcs, &edges, &at, v) else {
-            return Ok(None);
-        };
-        // Each end's strip, by its arc.
-        let owner: FastMap<usize, Id> = here
+        // Each side's built face to borrow its edge from and surface across
+        // it: a strip's end its strip's, a step's line its face's.
+        let mut owner: FastMap<usize, usize> = here
             .iter()
-            .map(|s| (arcs[&(s.edge, v)].0, s.edge))
+            .map(|s| (arcs[&(s.edge, v)].0, strip_face[&s.edge]))
             .collect();
+        let ring = if let Some(&face) = step_faces.get(&v) {
+            let lines: Vec<usize> = here
+                .iter()
+                .filter_map(|s| step_points.get(&(v, s.edge)).map(|p| p.0))
+                .collect();
+            let [a, b] = lines[..] else {
+                return Ok(None);
+            };
+            let line = segments[&(a.min(b), a.max(b))];
+            owner.insert(line, face);
+            let Some(ring) = hole_through(&here, &arcs, &edges, &strip_corner, &at, v, line) else {
+                return Ok(None);
+            };
+            ring
+        } else {
+            let Some(ring) = hole_at(&here, &arcs, &edges, &at, v) else {
+                return Ok(None);
+            };
+            ring
+        };
         let mut sides = Vec::with_capacity(ring.len());
         for (e, walk) in &ring {
-            let strip = strip_face[&owner[e]];
+            let strip = owner[e];
             let (a, b) = edges[*e].ends;
             let Some(edge) = edge_between(model, &built[strip], points[a], points[b], reach)?
             else {
                 return Ok(None);
             };
-            let (Some((curve, range)), Some(support)) =
-                (edges[*e].curve.clone(), faces[strip].0.surface.clone())
+            let curve = match edges[*e].curve.clone() {
+                Some(c) => Some(c),
+                None => {
+                    let line = ogeom_geom::LineCurve::segment(points[a], points[b], tol)?;
+                    let range = ogeom_geom::Curve3d::domain(&line);
+                    Some((Curve::Line(line), range))
+                }
+            };
+            let (Some((curve, range)), Some(support)) = (curve, faces[strip].0.surface.clone())
             else {
                 return Ok(None);
             };
@@ -865,6 +1012,102 @@ pub(crate) fn assemble(
                 Construction,
                 "a round vertex's patch misses the bands' fit target: {:.1e} off its strips' \
                  ends, {:.1e} rad off their tangent planes",
+                patch.gap,
+                patch.angle
+            );
+        }
+        for face in patch.faces {
+            built.push(face);
+            origins.push(Err(v));
+        }
+    }
+    // Each signed corner's patch: the convex strip's end, the sharp edge's
+    // line from its face's corner to the vertex and on to the concave
+    // strip's face's corner, each piece tangent to the face whose corner it
+    // ends at, and the concave strip's end; wound counter-clockwise seen
+    // from outside, held to the bands' fit target.
+    let mut signed_list: Vec<(&Id, &Signed)> = signed.iter().collect();
+    signed_list.sort_unstable_by_key(|(v, _)| **v);
+    for &(&v, corner) in &signed_list {
+        let middle = index_of(&mut points, planar.points[&v], reach);
+        let (c_shared, c_a, c_b) = (
+            at[&(corner.shared, v)],
+            at[&(corner.faces[0], v)],
+            at[&(corner.faces[1], v)],
+        );
+        // Each side: its sheet edge, whether the walk runs with it, the
+        // built face it borrows the edge from (the carrier holds both
+        // lines) and the face whose surface stands across it (a line's, the
+        // face whose corner it ends at).
+        let side_of = |e: usize, from: usize, face: usize, across: usize| {
+            (e, edges[e].ends.0 == from, face, across)
+        };
+        let (arc_a, arc_b) = (strip_face[&corner.rounds[0]], strip_face[&corner.rounds[1]]);
+        let mut ring = vec![
+            side_of(arcs[&(corner.rounds[0], v)].0, c_shared, arc_a, arc_a),
+            side_of(
+                segments[&(c_a.min(middle), c_a.max(middle))],
+                c_a,
+                corner.carrier,
+                corner.faces[0],
+            ),
+            side_of(
+                segments[&(middle.min(c_b), middle.max(c_b))],
+                middle,
+                corner.carrier,
+                corner.faces[1],
+            ),
+            side_of(arcs[&(corner.rounds[1], v)].0, c_b, arc_b, arc_b),
+        ];
+        let cycle = [c_shared, c_a, middle, c_b];
+        let mut newell = Vector::ZERO;
+        for k in 0..4 {
+            newell += points[cycle[k]]
+                .to_vector()
+                .cross(points[cycle[(k + 1) % 4]].to_vector());
+        }
+        let out: Vector = [corner.shared, corner.faces[0], corner.faces[1]]
+            .iter()
+            .map(|f| planar.faces[*f].normal)
+            .fold(Vector::ZERO, |a, b| a + b);
+        if newell.dot(out) < 0.0 {
+            ring.reverse();
+            for side in &mut ring {
+                side.1 = !side.1;
+            }
+        }
+        let mut sides = Vec::with_capacity(4);
+        for (e, walk, face, across) in ring {
+            let (a, b) = edges[e].ends;
+            let Some(edge) = edge_between(model, &built[face], points[a], points[b], reach)? else {
+                return Ok(None);
+            };
+            let (curve, range) = match edges[e].curve.clone() {
+                Some(c) => c,
+                None => {
+                    let line = ogeom_geom::LineCurve::segment(points[a], points[b], tol)?;
+                    let range = ogeom_geom::Curve3d::domain(&line);
+                    (Curve::Line(line), range)
+                }
+            };
+            let Some(support) = faces[across].0.surface.clone() else {
+                return Ok(None);
+            };
+            sides.push(crate::round::transfinite::HoleSide {
+                edge,
+                curve,
+                range,
+                forward: walk,
+                support,
+                pieces: Vec::new(),
+            });
+        }
+        let patch = crate::round::transfinite::corner_patch(model, &sides, tol)?;
+        if !(patch.gap <= fit && patch.angle <= fit) {
+            ogeom_core::ogeom_bail!(
+                Construction,
+                "a signed corner's patch misses the bands' fit target: {:.1e} off its sides, \
+                 {:.1e} rad off their tangent planes",
                 patch.gap,
                 patch.angle
             );
@@ -1011,6 +1254,68 @@ fn hole_at(
     (tip == start).then_some(ring)
 }
 
+/// [`hole_at`] where a face's two strips here end apart on it (a step):
+/// each strip's end walked against it, as there, its corner on that face
+/// its own (`strip_corner`), and the face's `line` between them, walked
+/// whichever way closes the ring.
+fn hole_through(
+    here: &[&Seat],
+    arcs: &FastMap<(Id, Id), (usize, bool)>,
+    edges: &[SheetEdge],
+    strip_corner: &FastMap<(Id, usize, Id), usize>,
+    at: &FastMap<(usize, Id), usize>,
+    v: Id,
+    line: usize,
+) -> Option<Vec<(usize, bool)>> {
+    let mut pending: Vec<(usize, bool)> = here
+        .iter()
+        .map(|s| {
+            let (arc, _) = arcs[&(s.edge, v)];
+            let face = if v == s.ends.0 {
+                s.faces[0]
+            } else {
+                s.faces[1]
+            };
+            let corner = strip_corner
+                .get(&(s.edge, face, v))
+                .copied()
+                .unwrap_or(at[&(face, v)]);
+            (arc, edges[arc].ends.0 != corner)
+        })
+        .collect();
+    let ends = |(e, walk): (usize, bool)| {
+        let (a, b) = edges[e].ends;
+        if walk { (a, b) } else { (b, a) }
+    };
+    let first = pending.remove(0);
+    let start = ends(first).0;
+    let mut tip = ends(first).1;
+    let mut ring = vec![first];
+    let mut line_left = true;
+    while !pending.is_empty() || (line_left && tip != start) {
+        if let Some(k) = pending.iter().position(|m| ends(*m).0 == tip) {
+            let next = pending.remove(k);
+            tip = ends(next).1;
+            ring.push(next);
+        } else if line_left {
+            let (a, b) = edges[line].ends;
+            let walk = if a == tip {
+                true
+            } else if b == tip {
+                false
+            } else {
+                return None;
+            };
+            line_left = false;
+            tip = ends((line, walk)).1;
+            ring.push((line, walk));
+        } else {
+            return None;
+        }
+    }
+    (tip == start && !line_left).then_some(ring)
+}
+
 /// The edge of `face` running between `from` and `to`, as a node (its own
 /// orientation forward).
 fn edge_between(
@@ -1121,6 +1426,16 @@ fn corner_material(
         .collect();
     // The face round `v` the edge `seat` does not bound.
     let opposite = |seat: &Seat| round.iter().copied().find(|f| !seat.faces.contains(f));
+    if round.len() > 3 && !concave.is_empty() {
+        // Four faces or more of mixed convexity: the solid's own material
+        // there, or a fill.
+        let mut any = vec![local_cone(planar, here, round, v).map_or_else(
+            || HalfSpaces::Every(round.iter().map(|f| side(*f)).collect()),
+            |cone| cone.half_spaces(&side),
+        )];
+        any.extend(fills);
+        return HalfSpaces::Any(any);
+    }
     match (concave.len(), here.iter().find(|s| s.convex)) {
         (0, _) => HalfSpaces::Every(round.iter().map(|f| side(*f)).collect()),
         (1, _) => {
@@ -1149,9 +1464,154 @@ fn corner_material(
     }
 }
 
+/// The solid's material near a vertex as a formula of its faces' sides.
+#[derive(Debug, Clone)]
+enum Cone {
+    Face(usize),
+    Every(Vec<Cone>),
+    Any(Vec<Cone>),
+}
+
+impl Cone {
+    fn holds(&self, planar: &Planar, v: Id, p: Point) -> bool {
+        match self {
+            Self::Face(f) => (p - planar.points[&v]).dot(planar.faces[*f].normal) <= 0.0,
+            Self::Every(all) => all.iter().all(|c| c.holds(planar, v, p)),
+            Self::Any(any) => any.iter().any(|c| c.holds(planar, v, p)),
+        }
+    }
+
+    fn half_spaces(&self, side: &dyn Fn(usize) -> HalfSpaces) -> HalfSpaces {
+        match self {
+            Self::Face(f) => side(*f),
+            Self::Every(all) => {
+                HalfSpaces::Every(all.iter().map(|c| c.half_spaces(side)).collect())
+            }
+            Self::Any(any) => HalfSpaces::Any(any.iter().map(|c| c.half_spaces(side)).collect()),
+        }
+    }
+}
+
+/// The directions the local solid at a vertex is read along: a Fibonacci
+/// spiral's points over the sphere.
+const CONE_SAMPLES: u32 = 256;
+
+/// The solid's material at `v`, whose faces `round` (in turn round it) meet
+/// along the edges `here`, as a formula of their sides (ADR 0001, §13,
+/// question 7): around the cycle, faces joined by concave edges unite and
+/// the runs intersect, or faces joined by convex edges intersect and the
+/// runs unite, whichever agrees with the solid along every direction read
+/// (each classified by a ray's crossings with the faces' sectors at `v`).
+/// `None` where neither does, or the faces' edges cannot be read.
+fn local_cone(planar: &Planar, here: &[&Seat], round: &[usize], v: Id) -> Option<Cone> {
+    let n = round.len();
+    let origin = planar.points[&v];
+    // The edge between each face and the next, its convexity and its
+    // direction from `v`.
+    let mut joins = Vec::with_capacity(n);
+    for k in 0..n {
+        let (a, b) = (round[k], round[(k + 1) % n]);
+        let seat = here
+            .iter()
+            .find(|s| s.faces.contains(&a) && s.faces.contains(&b))?;
+        let far = if seat.ends.0 == v {
+            seat.ends.1
+        } else {
+            seat.ends.0
+        };
+        let d = planar.points[&far] - origin;
+        joins.push((seat.convex, d / d.magnitude()));
+    }
+    // Face `k`'s sector: between the edges it shares with the last face and
+    // the next.
+    let inside = |p: Point| -> bool {
+        let rays = [
+            Vector::new(0.371, 0.557, 0.743),
+            Vector::new(-0.612, 0.288, 0.737),
+            Vector::new(0.205, -0.859, 0.469),
+        ];
+        let mut votes = 0;
+        for w in rays {
+            let mut crossings = 0;
+            for k in 0..n {
+                let normal = planar.faces[round[k]].normal;
+                let den = normal.dot(w);
+                if den.abs() < 1e-12 {
+                    continue;
+                }
+                let t = normal.dot(origin - p) / den;
+                if t <= 0.0 {
+                    continue;
+                }
+                let x = p + w * t - origin;
+                let (e0, e1) = (joins[(k + n - 1) % n].1, joins[k].1);
+                // `x = a e0 + b e1` in the face's plane.
+                let (g00, g01, g11) = (e0.dot(e0), e0.dot(e1), e1.dot(e1));
+                let (r0, r1) = (x.dot(e0), x.dot(e1));
+                let det = g00 * g11 - g01 * g01;
+                let within = if det.abs() < 1e-12 {
+                    // A face running straight on through `v`: near it, the
+                    // half-plane on the face's side of its edges' line.
+                    let face = &planar.faces[round[k]];
+                    let mut middle = Vector::ZERO;
+                    for c in &face.corners {
+                        middle += planar.points[c] - origin;
+                    }
+                    let into = normal.cross(e0);
+                    let into = if into.dot(middle) < 0.0 { -into } else { into };
+                    x.dot(into) >= 0.0
+                } else {
+                    let a = (r0 * g11 - r1 * g01) / det;
+                    let b = (r1 * g00 - r0 * g01) / det;
+                    a >= 0.0 && b >= 0.0
+                };
+                if within {
+                    crossings += 1;
+                }
+            }
+            votes += crossings % 2;
+        }
+        votes >= 2
+    };
+    // The runs of faces joined by edges of convexity `joined`, in turn round
+    // the cycle from just after an edge of the other.
+    let runs = |joined: bool| -> Vec<Vec<usize>> {
+        let Some(cut) = joins.iter().position(|(c, _)| *c != joined) else {
+            return vec![round.to_vec()];
+        };
+        let mut out: Vec<Vec<usize>> = Vec::new();
+        let mut run = Vec::new();
+        for step in 1..=n {
+            let k = (cut + step) % n;
+            run.push(round[k]);
+            if joins[k].0 != joined {
+                out.push(core::mem::take(&mut run));
+            }
+        }
+        out
+    };
+    let faces = |run: &[usize]| run.iter().map(|f| Cone::Face(*f)).collect::<Vec<_>>();
+    let candidates = [
+        Cone::Every(runs(false).iter().map(|r| Cone::Any(faces(r))).collect()),
+        Cone::Any(runs(true).iter().map(|r| Cone::Every(faces(r))).collect()),
+    ];
+    let scale = joins.iter().map(|(_, d)| d.magnitude()).fold(0.0, f64::max) * 1e-3;
+    let golden = core::f64::consts::PI * (3.0 - 5.0f64.sqrt());
+    candidates.into_iter().find(|cone| {
+        (0..CONE_SAMPLES).all(|i| {
+            let z = 1.0 - 2.0 * (f64::from(i) + 0.5) / f64::from(CONE_SAMPLES);
+            let rho = (1.0 - z * z).sqrt();
+            let t = golden * f64::from(i);
+            let p = origin + Vector::new(rho * t.cos(), rho * t.sin(), z) * scale;
+            cone.holds(planar, v, p) == inside(p)
+        })
+    })
+}
+
 /// The points a face's boundary passes at one of its corners, in turn, and
-/// the arc between them where a strip ends flush in the face.
-type Corner = (Vec<usize>, Option<(usize, bool)>);
+/// the edges between them (a strip's end flush in the face, a ridge's or a
+/// signed corner's lines).
+type Corner = (Vec<usize>, Vec<(usize, bool)>);
 
 /// Two rounds of one sense meeting beside an edge left sharp other than in
 /// a mitre (radii differing, or axes not meeting): the round whose corner on
@@ -1164,6 +1624,96 @@ struct Crease {
     shared: usize,
     near: usize,
     far: usize,
+}
+
+/// A convex and a concave round beside an edge left sharp: the rounds'
+/// shared face, each round's other face (the convex's first), the rounds
+/// in that order, the sharp edge, the face whose setback corner stands on
+/// the sharp edge's line past the vertex (off the edge), and the other.
+struct Signed {
+    shared: usize,
+    faces: [usize; 2],
+    rounds: [Id; 2],
+    sharp: Id,
+    carrier: usize,
+    other: usize,
+}
+
+/// The [`Signed`] corner at `v`, or `None` where it is not one: two rounds
+/// of opposite convexity sharing a face at a vertex of three planes, the
+/// third edge sharp between their other faces, those faces' setback
+/// corners on the sharp edge's line either side of the vertex.
+fn signed_at(
+    sections: &FastMap<Id, (PlanarSection, f64)>,
+    here: &[&Seat],
+    round: &[usize],
+    corners: &FastMap<(usize, Id), Point>,
+    v: Id,
+    planar: &Planar,
+    reach: f64,
+) -> Option<Signed> {
+    let rounds: Vec<&&Seat> = here
+        .iter()
+        .filter(|s| sections.contains_key(&s.edge))
+        .collect();
+    let sharp = here.iter().find(|s| !sections.contains_key(&s.edge))?;
+    let [a, b] = rounds.as_slice() else {
+        return None;
+    };
+    if a.convex == b.convex || round.len() != 3 {
+        return None;
+    }
+    let (convex, concave) = if a.convex { (a, b) } else { (b, a) };
+    let shared = convex
+        .faces
+        .iter()
+        .copied()
+        .find(|f| concave.faces.contains(f))?;
+    let other = |s: &Seat| s.faces.iter().copied().find(|f| *f != shared);
+    let faces = [other(convex)?, other(concave)?];
+    if !(sharp.faces.contains(&faces[0]) && sharp.faces.contains(&faces[1])) {
+        return None;
+    }
+    let at_v = planar.points[&v];
+    let far = if sharp.ends.0 == v {
+        sharp.ends.1
+    } else {
+        sharp.ends.0
+    };
+    let along = (planar.points[&far] - at_v) / planar.points[&far].distance(at_v);
+    let mut stations = [0.0; 2];
+    for (k, f) in faces.iter().enumerate() {
+        let off = *corners.get(&(*f, v))? - at_v;
+        if off.cross(along).magnitude() > reach {
+            return None;
+        }
+        stations[k] = off.dot(along);
+    }
+    let (carrier, other) = if stations[0] < -reach && stations[1] > reach {
+        (faces[0], faces[1])
+    } else if stations[1] < -reach && stations[0] > reach {
+        (faces[1], faces[0])
+    } else {
+        return None;
+    };
+    Some(Signed {
+        shared,
+        faces,
+        rounds: [convex.edge, concave.edge],
+        sharp: sharp.edge,
+        carrier,
+        other,
+    })
+}
+
+/// The index of the sheet point at `p`, added where none stands within
+/// `reach`.
+fn index_of(points: &mut Vec<Point>, p: Point, reach: f64) -> usize {
+    if let Some(i) = points.iter().position(|q| q.distance(p) <= reach) {
+        return i;
+    }
+    points.push(p);
+    points.len() - 1
 }
 
 /// The crease vertex's reading, or `None` where it is not one this engine
@@ -2269,6 +2819,279 @@ mod tests {
     #[test]
     fn an_elongated_pyramid_s_apex_rounds_as_the_ball_rolls_along_its_ridge() {
         rolls_along_its_ridge(10.0, 5.0, 15.0, 1.5);
+    }
+
+    /// A roof whose ridge rises along `x` through a saddle where a valley
+    /// falls along `y`: four triangles round the vertex at the origin, its
+    /// edges to `(+-2, 0, 1)` convex and to `(0, +-2, -1)` concave, walled
+    /// down to `z = -3`. Every edge rounded at 0.25: the saddle, a vertex of
+    /// four edges of mixed convexity, closes on one patch (ADR 0001, §13,
+    /// question 7), held to the bands' fit target and proved within the
+    /// solid's own material there (the ridge's sides meet across the
+    /// convex edges, the runs between unite across the concave ones) by the
+    /// engine. No closed form: valid, the same solid in either order, and
+    /// its two mirrors kept (the centroid on the axis).
+    #[test]
+    fn a_saddle_vertex_of_four_edges_of_mixed_convexity_closes_on_one_patch() {
+        use ogeom_math::Point;
+        let points = [
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(2.0, 0.0, 1.0),
+            Point::new(0.0, 2.0, -1.0),
+            Point::new(-2.0, 0.0, 1.0),
+            Point::new(0.0, -2.0, -1.0),
+            Point::new(2.0, 0.0, -3.0),
+            Point::new(0.0, 2.0, -3.0),
+            Point::new(-2.0, 0.0, -3.0),
+            Point::new(0.0, -2.0, -3.0),
+        ];
+        let rings = vec![
+            vec![0, 1, 2],
+            vec![0, 2, 3],
+            vec![0, 3, 4],
+            vec![0, 4, 1],
+            vec![1, 5, 6, 2],
+            vec![2, 6, 7, 3],
+            vec![3, 7, 8, 4],
+            vec![4, 8, 5, 1],
+            vec![5, 8, 7, 6],
+        ];
+        let mut m = Model::new();
+        let s = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+            .unwrap()
+            .shape;
+        let edges = explore_unique(&m, &s, ShapeType::Edge).unwrap();
+        let mut built = Vec::new();
+        for order in [edges.clone(), edges.iter().rev().cloned().collect()] {
+            let request = Request::from_rounds(
+                &order.iter().map(|e| (e.clone(), 0.25)).collect::<Vec<_>>(),
+                T,
+            )
+            .unwrap();
+            let b = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+            let found = ogeom_algo::check(&m, &b, T).unwrap();
+            assert!(found.is_valid(), "{:?}", found.problems);
+            built.push(b);
+        }
+        assert_eq!(bits(&m, &built[0]), bits(&m, &built[1]));
+        assert!(count_of(&m, &built[0], ogeom_geom::SurfaceKind::BSpline) >= 1);
+        let centre = ogeom_algo::volume_properties(
+            &m,
+            &built[0],
+            ogeom_mesh::Deflection {
+                chord: 1e-5,
+                ..ogeom_mesh::Deflection::default()
+            },
+            T,
+        )
+        .unwrap()
+        .centre;
+        assert!(centre.x.abs() < 1e-6 && centre.y.abs() < 1e-6, "{centre:?}");
+    }
+
+    /// An L-bracket in one piece: a base 20 by 20 by 5 and an upright 5 by
+    /// 20 by 20 fused, the seams the fuse leaves between coplanar faces
+    /// dissolved.
+    fn bracket(m: &mut Model) -> Shape {
+        let at = Frame::new(
+            ogeom_math::Point::ORIGIN,
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let base = ogeom_algo::make_box(m, at, (20.0, 20.0, 5.0), T)
+            .unwrap()
+            .shape;
+        let upright = ogeom_algo::make_box(m, at, (5.0, 20.0, 20.0), T)
+            .unwrap()
+            .shape;
+        let fused = ogeom_bool::fuse(m, &base, &upright, T).unwrap().shape;
+        ogeom_heal::unify_same_domain(m, &fused, T).unwrap().0.shape
+    }
+
+    /// The bracket's front edge along the base's top (convex) and its
+    /// re-entrant edge (concave) rounded at 1, 1.5 and 2, the upright's
+    /// front edge between them left sharp: the strips end through their
+    /// faces' setback corners and one patch closes the corner, its sides
+    /// along the sharp edge's line through the vertex tangent to the front
+    /// below it and to the upright above (ADR 0001, §13, question 6). No
+    /// closed form: valid, the same solid in either order, and within 2e-4
+    /// of the bracket with the concave round's fill near the vertex (a
+    /// convex round only takes material off).
+    #[test]
+    fn a_convex_and_a_concave_round_beside_an_edge_left_sharp_close_on_one_patch() {
+        use ogeom_math::Point;
+        for r in [1.0, 1.5, 2.0] {
+            let mut m = Model::new();
+            let s = bracket(&mut m);
+            let front = edges_through(&m, &s, Point::new(20.0, 0.0, 5.0))
+                .into_iter()
+                .chain(edges_through(&m, &s, Point::new(5.0, 20.0, 5.0)))
+                .filter(|e| {
+                    let (a, b) = ogeom_algo::edge_vertices(&m, e).unwrap().unwrap();
+                    [a, b].iter().any(|v| {
+                        let q = m.node(v).unwrap().data().as_vertex().unwrap().point;
+                        q.distance(Point::new(5.0, 0.0, 5.0)) < 1e-9
+                    })
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(front.len(), 2);
+            let mut built = Vec::new();
+            for order in [front.clone(), front.iter().rev().cloned().collect()] {
+                let request = Request::from_rounds(
+                    &order.iter().map(|e| (e.clone(), r)).collect::<Vec<_>>(),
+                    T,
+                )
+                .unwrap();
+                let b = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+                let found = ogeom_algo::check(&m, &b, T).unwrap();
+                assert!(found.is_valid(), "r {r}: {:?}", found.problems);
+                built.push(b);
+            }
+            assert_eq!(bits(&m, &built[0]), bits(&m, &built[1]), "r {r}");
+            assert!(count_of(&m, &built[0], ogeom_geom::SurfaceKind::BSpline) >= 1);
+            let out = |p: Point| -> f64 {
+                let in_box = |lo: [f64; 3], hi: [f64; 3]| {
+                    let q = [p.x, p.y, p.z];
+                    (0..3)
+                        .map(|i| (lo[i] - q[i]).max(q[i] - hi[i]))
+                        .fold(f64::NEG_INFINITY, f64::max)
+                };
+                let base = in_box([0.0, 0.0, 0.0], [20.0, 20.0, 5.0]);
+                let upright = in_box([0.0, 0.0, 0.0], [5.0, 20.0, 20.0]);
+                let fill = in_box([5.0, 0.0, 5.0], [5.0 + r, 20.0, 5.0 + r])
+                    .max(r - (p.x - 5.0 - r).hypot(p.z - 5.0 - r));
+                base.min(upright).min(fill)
+            };
+            let mut worst = f64::NEG_INFINITY;
+            for f in explore_unique(&m, &built[0], ShapeType::Face).unwrap() {
+                let mesh = ogeom_mesh::triangulate_face(
+                    &m,
+                    &f,
+                    ogeom_mesh::Deflection {
+                        chord: 1e-3,
+                        ..ogeom_mesh::Deflection::default()
+                    },
+                    T,
+                )
+                .unwrap();
+                for p in mesh.positions {
+                    if p.distance(Point::new(5.0, 0.0, 5.0)) <= 10.0 {
+                        worst = worst.max(out(p));
+                    }
+                }
+            }
+            assert!(
+                worst <= 2e-4,
+                "r {r}: {worst} past the bracket and its fill"
+            );
+        }
+    }
+
+    /// A 10 by 6 by 4 box with a wedge fused along the front of its right
+    /// half, leaning the front out to `y = -2` at the foot from `x = 5`
+    /// on: at `(5, 0, 4)` the top's front edge runs on in one line, set back
+    /// by a 0.5 round 0.5 from it on the left and less on the right, where
+    /// the front leans, and two edges run down, the wedge's end between
+    /// them. The four edges there rounded at 0.5, the strips along the
+    /// front end level where their front faces' corners stand and one
+    /// patch closes the hole, its fifth side on the top between them (ADR
+    /// 0001, §13, question 5). No closed form: valid, the same solid in
+    /// either order, and every point within the box, the wedge or the
+    /// fill of the concave edge down between the box's front and the
+    /// wedge's end.
+    #[test]
+    fn rounds_running_on_in_one_line_set_back_differently_close_on_one_patch() {
+        use ogeom_math::Point;
+        let mut m = Model::new();
+        let at = Frame::new(
+            Point::ORIGIN,
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let block = ogeom_algo::make_box(&mut m, at, (10.0, 6.0, 4.0), T)
+            .unwrap()
+            .shape;
+        let points = [
+            Point::new(5.0, 0.0, 4.0),
+            Point::new(5.0, 0.0, 0.0),
+            Point::new(5.0, -2.0, 0.0),
+            Point::new(10.0, 0.0, 4.0),
+            Point::new(10.0, 0.0, 0.0),
+            Point::new(10.0, -2.0, 0.0),
+        ];
+        let rings = vec![
+            vec![1, 2, 0],
+            vec![5, 4, 3],
+            vec![2, 1, 4, 5],
+            vec![1, 0, 3, 4],
+            vec![0, 2, 5, 3],
+        ];
+        let wedge = ogeom_algo::make_polyhedron(&mut m, &points, &rings, T)
+            .unwrap()
+            .shape;
+        let fused = ogeom_bool::fuse(&mut m, &block, &wedge, T).unwrap().shape;
+        let s = ogeom_heal::unify_same_domain(&mut m, &fused, T)
+            .unwrap()
+            .0
+            .shape;
+        let here = edges_through(&m, &s, Point::new(5.0, 0.0, 4.0));
+        assert_eq!(here.len(), 4);
+        let mut built = Vec::new();
+        for order in [here.clone(), here.iter().rev().cloned().collect()] {
+            let request = Request::from_rounds(
+                &order.iter().map(|e| (e.clone(), 0.5)).collect::<Vec<_>>(),
+                T,
+            )
+            .unwrap();
+            let b = run(&mut m, &s, &request, T).unwrap().unwrap().shape;
+            let found = ogeom_algo::check(&m, &b, T).unwrap();
+            assert!(found.is_valid(), "{:?}", found.problems);
+            built.push(b);
+        }
+        assert_eq!(bits(&m, &built[0]), bits(&m, &built[1]));
+        assert!(count_of(&m, &built[0], ogeom_geom::SurfaceKind::BSpline) >= 1);
+        let inside = |p: Point| {
+            let e = 2e-4;
+            let in_block = p.x >= -e
+                && p.x <= 10.0 + e
+                && p.y >= -e
+                && p.y <= 6.0 + e
+                && p.z >= -e
+                && p.z <= 4.0 + e;
+            // Below the slope from (y, z) = (0, 4) to (-2, 0): 2 y - z >= -4.
+            let in_wedge = p.x >= 5.0 - e
+                && p.x <= 10.0 + e
+                && p.y <= e
+                && p.z >= -e
+                && (2.0 * p.y - p.z) >= -4.0 - e * 3.0;
+            // The concave round's fill where the block's front meets the
+            // wedge's end, down from the vertex.
+            let fill = p.x <= 5.0 + e
+                && p.y <= e
+                && p.x >= 4.5 - e
+                && p.y >= -0.5 - e
+                && (p.x - 4.5).hypot(p.y + 0.5) >= 0.5 - e;
+            in_block || in_wedge || fill
+        };
+        for f in explore_unique(&m, &built[0], ShapeType::Face).unwrap() {
+            let mesh = ogeom_mesh::triangulate_face(
+                &m,
+                &f,
+                ogeom_mesh::Deflection {
+                    chord: 1e-3,
+                    ..ogeom_mesh::Deflection::default()
+                },
+                T,
+            )
+            .unwrap();
+            for p in mesh.positions {
+                assert!(inside(p), "outside the solid at {p:?}");
+            }
+        }
     }
 
     /// The pyramid over the pentagon `(-3, -2)`, `(3, -2)`, `(3.5, 1.5)`,

@@ -68,6 +68,14 @@ pub(crate) enum RoundVertex {
     /// transfinite patch closes the hole tangent to all of them, on one
     /// face for three or four sides and on a face per side for more.
     Patch,
+    /// A convex and a concave round beside an edge left sharp at a vertex of
+    /// three planes: the strips end through their faces' setback corners,
+    /// and one patch closes the corner between them, its fourth and third
+    /// sides along the sharp edge's line through the vertex, tangent to the
+    /// face whose corner stands on that line's extension below the vertex
+    /// and to the other above it, its normal turning at the vertex (ADR
+    /// 0001, §13, question 6).
+    Signed,
     /// Rounds of one radius at every edge of a convex vertex of four planes
     /// where no one ball touches all four but one touches three at each end
     /// of a ridge (an elongated pyramid's apex): the ball rolls along the
