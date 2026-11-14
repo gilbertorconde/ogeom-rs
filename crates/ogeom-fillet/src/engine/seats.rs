@@ -68,6 +68,24 @@ pub(crate) enum NotSeated {
     NoCentre,
 }
 
+impl NotSeated {
+    /// The refusal's name.
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::PastAVertex => {
+                "a round's ball would roll past a vertex of the edge it rests on, a seat not built"
+            }
+            Self::OffTheEdge => {
+                "a round's ball would run off the end of the edge it rests on, a seat not built"
+            }
+            Self::OntoTheFaceBeyond => {
+                "a round's ball would come down on the face beyond the edge it rests on"
+            }
+            Self::NoCentre => "a round's ball cannot rest on the edge its contact leaves over",
+        }
+    }
+}
+
 /// How close the fit holds the run to its exact stations.
 const RUN_FIT: f64 = 2e-7;
 

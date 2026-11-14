@@ -779,6 +779,232 @@ fn rounds_by_engine(
     edges: &[(Shape, f64)],
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
+    use ogeom_topo::ShapeType;
+    match model.kind_of(solid)? {
+        ShapeType::Compound => return rounds_by_engine_compound(model, solid, edges, tol),
+        ShapeType::Solid if model.children_of(solid)?.len() > 1 => {
+            return rounds_by_engine_voided(model, solid, edges, tol);
+        }
+        _ => {}
+    }
+    // A solid with placed shapes in it (a prism's far end is its profile
+    // moved, the same nodes standing twice) is read with its placements
+    // baked in, the request traced onto the baked shapes and the history
+    // carried back.
+    let baked = ogeom_algo::baked_where_placed(model, solid, tol)?;
+    if baked.shape.is_same(solid) {
+        return rounds_by_engine_unplaced(model, solid, edges, tol);
+    }
+    let mut traced = Vec::with_capacity(edges.len());
+    for (edge, radius) in edges {
+        let [only] = baked.history.trace(edge) else {
+            return Ok(None);
+        };
+        traced.push((only.clone(), *radius));
+    }
+    let Some(built) = rounds_by_engine_unplaced(model, &baked.shape, &traced, tol)? else {
+        return Ok(None);
+    };
+    Ok(Some(Built::new(
+        built.shape,
+        baked.history.then(&built.history),
+    )))
+}
+
+/// [`rounds_by_engine`] on a compound of solids: each solid with the edges
+/// it holds, the rest kept as they are, the results gathered into a
+/// compound again. `None` where the compound holds anything but solids (a
+/// sheet's rounds are the current path's), an edge lies in no solid or in
+/// two, or any solid's rounds are handed back.
+fn rounds_by_engine_compound(
+    model: &mut Model,
+    compound: &Shape,
+    edges: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    use ogeom_topo::ShapeType;
+    let parts = model.children_of(compound)?;
+    if parts.is_empty()
+        || parts
+            .iter()
+            .any(|p| !matches!(model.kind_of(p), Ok(ShapeType::Solid)))
+    {
+        return Ok(None);
+    }
+    let held: Vec<Vec<Shape>> = parts
+        .iter()
+        .map(|p| ogeom_topo::explore_unique(model, p, ShapeType::Edge))
+        .collect::<OgeomResult<_>>()?;
+    let mut asked: Vec<Vec<(Shape, f64)>> = vec![Vec::new(); parts.len()];
+    for (edge, radius) in edges {
+        let holders: Vec<usize> = (0..parts.len())
+            .filter(|k| held[*k].iter().any(|e| e.is_same(edge)))
+            .collect();
+        let [k] = holders[..] else {
+            return Ok(None);
+        };
+        asked[k].push((edge.clone(), *radius));
+    }
+    let mut out = Vec::with_capacity(parts.len());
+    let mut history = ogeom_algo::History::new();
+    for (part, own) in parts.iter().zip(&asked) {
+        if own.is_empty() {
+            out.push(part.clone());
+            continue;
+        }
+        let Some(built) = rounds_by_engine(model, part, own, tol)? else {
+            return Ok(None);
+        };
+        history = history.then(&built.history);
+        out.push(built.shape);
+    }
+    let gathered = ogeom_algo::make_compound(model, &out)?.shape;
+    history.modify(compound, gathered.clone());
+    Ok(Some(Built::new(gathered, history)))
+}
+
+/// [`rounds_by_engine`] on a solid with voids: the outer shell rounded as a
+/// solid alone where it holds edges of the request, and each void holding
+/// some rounded as the solid it bounds turned inside out (a void's edges
+/// are concave in the solid, and filling its corner is taking it off that
+/// solid), then the shells put together again. `None` where an edge lies on
+/// no shell or two, or a shell's rounds are handed back.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction),
+/// refused by name, where a round reaches into a void: what a shell's
+/// rounds leave of it touches another shell, or a void then stands outside
+/// the outer shell (in what a round took off).
+fn rounds_by_engine_voided(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    use ogeom_topo::ShapeType;
+    let shells = model.children_of(solid)?;
+    // The outer shell: the one whose bounds hold every other's.
+    let mut sized = Vec::with_capacity(shells.len());
+    for shell in &shells {
+        sized.push(ogeom_algo::shape_bounds(model, shell, tol)?.diagonal());
+    }
+    let outer = (0..shells.len())
+        .max_by(|a, b| sized[*a].total_cmp(&sized[*b]))
+        .unwrap_or(0);
+    let held: Vec<Vec<Shape>> = shells
+        .iter()
+        .map(|shell| ogeom_topo::explore_unique(model, shell, ShapeType::Edge))
+        .collect::<OgeomResult<_>>()?;
+    let mut asked: Vec<Vec<(Shape, f64)>> = vec![Vec::new(); shells.len()];
+    for (edge, radius) in edges {
+        let holders: Vec<usize> = (0..shells.len())
+            .filter(|k| held[*k].iter().any(|e| e.is_same(edge)))
+            .collect();
+        let [k] = holders[..] else {
+            return Ok(None);
+        };
+        asked[k].push((edge.clone(), *radius));
+    }
+    let mut history = ogeom_algo::History::new();
+    let mut order: Vec<usize> = vec![outer];
+    order.extend((0..shells.len()).filter(|k| *k != outer));
+    let mut kept: Vec<Shape> = Vec::with_capacity(shells.len());
+    for k in order {
+        if asked[k].is_empty() {
+            kept.push(shells[k].clone());
+            continue;
+        }
+        // The shell as a solid of its own, the outer one as it stands and
+        // a void turned inside out: whichever way bounds a valid solid.
+        let mut alone = None;
+        for shell in [shells[k].clone(), shells[k].reversed()] {
+            let candidate = ogeom_algo::make_solid(model, &[shell])?.shape;
+            if ogeom_algo::check(model, &candidate, tol)?.is_valid()
+                && ogeom_algo::volume_properties(
+                    model,
+                    &candidate,
+                    ogeom_mesh::Deflection::default(),
+                    tol,
+                )?
+                .mass
+                    > 0.0
+            {
+                alone = Some(candidate);
+                break;
+            }
+        }
+        let Some(alone) = alone else {
+            return Ok(None);
+        };
+        let Some(built) = rounds_by_engine(model, &alone, &asked[k], tol)? else {
+            return Ok(None);
+        };
+        let [shell] = &model.children_of(&built.shape)?[..] else {
+            return Ok(None);
+        };
+        let shell = shell.clone();
+        let turned = model
+            .children_of(&alone)?
+            .first()
+            .is_some_and(|s| s.orientation() != shells[k].orientation());
+        kept.push(if turned { shell.reversed() } else { shell });
+        history = history.then(&built.history);
+    }
+    // No round reaches into a void: every void apart from every other shell
+    // and wholly inside the outer one.
+    let outside = ogeom_algo::make_solid(model, &[kept[0].clone()])?.shape;
+    for i in 1..kept.len() {
+        for j in 0..i {
+            let apart = ogeom_algo::distance_between_shapes(
+                model,
+                &kept[i],
+                &kept[j],
+                ogeom_intersect::ExtremaOptions::default(),
+                tol,
+            )?;
+            if apart.distance <= tol.confusion() {
+                ogeom_core::ogeom_bail!(
+                    Construction,
+                    "a round reaches into a void: what it leaves of the solid meets the void"
+                );
+            }
+        }
+        let faces = ogeom_topo::explore_unique(model, &kept[i], ShapeType::Face)?;
+        let Some(face) = faces.first() else {
+            return Ok(None);
+        };
+        // A point of the void's: a triangle of its first face, at its
+        // centroid (within the mesh's chord of the face).
+        let mesh =
+            ogeom_mesh::triangulate_face(model, face, ogeom_mesh::Deflection::default(), tol)?;
+        let Some(&[i, j, k]) = mesh.triangles.first() else {
+            return Ok(None);
+        };
+        let at = |n: u32| mesh.positions[n as usize].to_vector();
+        let probe = ogeom_math::Point::from_vector((at(i) + at(j) + at(k)) / 3.0);
+        if ogeom_algo::classify_in_solid_exact(model, &outside, probe, tol)?
+            != ogeom_algo::Containment::In
+        {
+            ogeom_core::ogeom_bail!(
+                Construction,
+                "a round reaches into a void: the void stands in what the round takes off"
+            );
+        }
+    }
+    let whole = ogeom_algo::make_solid(model, &kept)?.shape;
+    history.modify(solid, whole.clone());
+    Ok(Some(Built::new(whole, history)))
+}
+
+/// [`rounds_by_engine`] on one solid of one shell with nothing placed in
+/// it.
+fn rounds_by_engine_unplaced(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
     let mut once: Vec<(Shape, f64)> = Vec::with_capacity(edges.len());
     for (edge, radius) in edges {
         if !once.iter().any(|(e, _)| e.is_same(edge)) {

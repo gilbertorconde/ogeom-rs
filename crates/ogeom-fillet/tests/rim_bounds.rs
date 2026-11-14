@@ -52,12 +52,11 @@ fn a_shelf_round_refuses_contact_beyond_the_circular_edges_end() {
     // Where the two planes are free at y=2, their R=3 round has centre
     // (9.6,2,18). A transfer onto the continuation of the trimmed-away
     // circular rim would raise it and miss that exact round by 0.00456 mm.
-    // The carried-rim family must refuse this extra support change.
+    // This extra support change must be refused: the engine refuses it by
+    // name, its ball rolling past the vertex where the rim ends.
     let refusal = ogeom_fillet::fillet_edges(&mut model, &solid, &edges, 3.0, T).unwrap_err();
     assert!(
-        refusal
-            .to_string()
-            .contains("a carried shelf contact leaves its circular rim"),
+        refusal.to_string().contains("roll past a vertex"),
         "{refusal}"
     );
 }

@@ -391,7 +391,25 @@ pub(crate) fn build_faces(
             })
         })
         .collect::<OgeomResult<Vec<_>>>()?;
-    Ok(build(model, points, &curves, &rings, tol)?.faces)
+    // A curve whose end stands off the point it was merged into (within the
+    // sheet's reach, past the confusion distance: a face or strip set back to
+    // a sliver, its two sides' points taken as one) is widened to that gap
+    // with its ends, so it meets them.
+    let widths = curves
+        .iter()
+        .map(|c| {
+            let mut gap: f64 = 0.0;
+            for (t, v) in [(c.range.0, c.ends.0), (c.range.1, c.ends.1)] {
+                gap = gap.max(ogeom_geom::Curve3d::point_at(&c.curve, t, tol)?.distance(points[v]));
+            }
+            Ok(if gap > tol.confusion() {
+                gap + tol.confusion()
+            } else {
+                0.0
+            })
+        })
+        .collect::<OgeomResult<Vec<f64>>>()?;
+    Ok(build_with_widths(model, points, &curves, &rings, &widths, tol)?.faces)
 }
 
 /// Each ring of `face`, on a surface periodic in `u`, carried into one
