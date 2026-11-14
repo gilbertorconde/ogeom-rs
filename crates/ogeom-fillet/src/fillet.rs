@@ -746,7 +746,8 @@ pub fn fillet_edges_with(
 
 /// The rounds of `edges` built by the blend engine in one pass, where the
 /// solid is bounded by planes and every vertex is one the engine closes, or
-/// where every edge asked is a rim between a planar cap and a coaxial wall;
+/// where every edge asked is a rim between a planar cap and a coaxial wall,
+/// or a straight edge along planes and cylinders or such a rim beside them;
 /// `None` leaves the request to the current path. An edge asked twice at
 /// one radius is asked once.
 fn rounds_by_engine(
@@ -774,12 +775,51 @@ fn rounds_by_engine(
     if let Some(built) = crate::engine::run(model, solid, &request, tol)? {
         return Ok(Some(built));
     }
-    // A solid with curved faces: rims between a planar cap and a coaxial
-    // cylinder or cone, each the torus its ball sweeps.
+    // A solid with curved faces, read with its seams dissolved where it
+    // holds any: rims between a planar cap and a coaxial cylinder or cone,
+    // each the torus its ball sweeps; else straight edges along planes and
+    // cylinders, and rims beside them, through the trimmed assembly.
     if crate::engine::bounded_by_planes(model, solid, tol)? {
         return Ok(None);
     }
-    crate::engine::round_rims(model, solid, &once, tol)
+    let on_curved = |model: &mut Model, solid: &Shape, once: &[(Shape, f64)]| {
+        if let Some(built) = crate::engine::round_rims(model, solid, once, tol)? {
+            return Ok(Some(built));
+        }
+        crate::engine::round_curved(model, solid, once, tol)
+    };
+    // A seam (an edge between faces of one carrier a boolean split) names
+    // nothing, as for chamfers.
+    let mut kept = Vec::with_capacity(once.len());
+    for (edge, radius) in &once {
+        if !crate::engine::is_seam(model, solid, edge, tol)? {
+            kept.push((edge.clone(), *radius));
+        }
+    }
+    if kept.is_empty() {
+        return Ok(None);
+    }
+    let once = kept;
+    // The seams dissolved on a copy of the model: dissolving builds over
+    // the solid's own nodes, and a request the engine hands back must
+    // reach the current path as it came.
+    let mut scratch = model.clone();
+    match crate::engine::dissolve_curved(&mut scratch, solid, tol)? {
+        Some(seamless) => {
+            let Some(rounds) = seamless.rounds(&once) else {
+                return Ok(None);
+            };
+            let Some(built) = on_curved(&mut scratch, &seamless.solid, &rounds)? else {
+                return Ok(None);
+            };
+            *model = scratch;
+            Ok(Some(Built::new(
+                built.shape,
+                seamless.carry(&built.history),
+            )))
+        }
+        None => on_curved(model, solid, &once),
+    }
 }
 
 /// [`fillet_edges_with`] on a shape every node below which is its own, its
