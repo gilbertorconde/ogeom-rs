@@ -833,6 +833,15 @@ each face its own distance, its section an ellipse or a conic of a given
   kinds, no bevels) take the engine first.
 - The patch reads the normal and curvature of any parametric strip surface
   from its chart, an extruded conic among them.
+- **A varying radius** (`fillet_edges_variable` on one straight edge
+  between planes): `Section::Varying` carries the law and the vertex its
+  fraction starts at. Each face's distance is the ball's radius over the
+  half-angle's tangent along the law, the section the circle (the
+  elliptical section of equal distances), the strip the current path's
+  exact varying band. Each end sets back its own distance (P2's corners
+  reset to the law's there, on end faces square to the edge), and the strip
+  ends flush; its chart's sense is read where it stands. At any other
+  vertex it is not built yet.
 
 ## 12. Acceptance corpus
 

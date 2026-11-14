@@ -236,9 +236,39 @@ pub(crate) fn run(
     }
     // P2.
     let mut steps = FastMap::default();
-    let Some(corners) = setbacks::setback_corners(&planar, &setback, &mut steps, tol)? else {
+    let Some(mut corners) = setbacks::setback_corners(&planar, &setback, &mut steps, tol)? else {
         return Ok(None);
     };
+    // A round of varying radius sets back each end its law's distance there:
+    // its corners on the end faces, which must stand square to its edge.
+    for key in &keys {
+        let seat = &seats[key];
+        let Some(Section::Varying { law, start }) = by_edge.get(&seat.edge).copied() else {
+            continue;
+        };
+        let theta = if seat.convex {
+            seat.opening
+        } else {
+            core::f64::consts::TAU - seat.opening
+        };
+        let k = 1.0 / (0.5 * theta).tan();
+        for v in [seat.ends.0, seat.ends.1] {
+            let d = law.at_fraction(if v == id(start) { 0.0 } else { 1.0 }) * k;
+            let at = planar.points[&v];
+            for face in seat.faces {
+                let Some(corner) = corners.get_mut(&(face, v)) else {
+                    return Ok(None);
+                };
+                let off = *corner - at;
+                let length = off.magnitude();
+                if length <= tol.confusion() || off.dot(seat.along).abs() > tol.angular() * length {
+                    return Ok(None);
+                }
+                *corner = at + off * (d / length);
+            }
+        }
+    }
+    let corners = corners;
     // A round reaching or touching a face not round its ends: the non-local
     // test, then the one-boolean fallback (ADR 0001, M5c): each round's own
     // tool where it closes, else the general one (the far feature taken off
@@ -251,7 +281,7 @@ pub(crate) fn run(
         && request
             .blends
             .iter()
-            .any(|b| matches!(b.section, Section::Conic { .. }))
+            .any(|b| matches!(b.section, Section::Conic { .. } | Section::Varying { .. }))
     {
         return Ok(None);
     }
@@ -284,7 +314,9 @@ pub(crate) fn run(
                 .iter()
                 .filter_map(|b| match b.section {
                     Section::Round { radius } => Some((b.edge.clone(), radius)),
-                    Section::Chamfer { .. } | Section::Conic { .. } => None,
+                    Section::Chamfer { .. } | Section::Conic { .. } | Section::Varying { .. } => {
+                        None
+                    }
                 })
                 .collect();
             let edges: Vec<Shape> = rounds.iter().map(|(e, _)| e.clone()).collect();

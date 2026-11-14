@@ -59,13 +59,22 @@ pub(crate) enum Section {
         on: [(Shape, f64); 2],
         profile: crate::asym::RoundProfile,
     },
+    /// A round whose ball's radius follows `law` along the edge, its
+    /// fraction nought at the vertex `start`.
+    Varying {
+        law: crate::law::RadiusLaw,
+        start: Shape,
+    },
 }
 
 impl Section {
     /// Whether the section is a round's (curved, built by the rounds'
     /// sheet) rather than a bevel's.
     pub(crate) const fn is_round(&self) -> bool {
-        matches!(self, Self::Round { .. } | Self::Conic { .. })
+        matches!(
+            self,
+            Self::Round { .. } | Self::Conic { .. } | Self::Varying { .. }
+        )
     }
 }
 
@@ -177,6 +186,39 @@ impl Request {
             request.blends.extend(one.blends);
         }
         Ok(Some(request))
+    }
+
+    /// One straight edge rounded at a radius following `law` from its first
+    /// vertex, as a request of one; `None` for a law not linear along it.
+    ///
+    /// # Errors
+    ///
+    /// As reading the edge's ends.
+    pub fn from_varying(
+        model: &Model,
+        edge: &Shape,
+        law: &crate::law::RadiusLaw,
+    ) -> OgeomResult<Option<Self>> {
+        // A law curving along the edge bends the strip's contacts, which the
+        // sheet runs straight: that is the current path's for now.
+        if !law.is_linear() {
+            return Ok(None);
+        }
+        let Some((start, _)) = ogeom_algo::edge_vertices(model, edge)? else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            blends: vec![Blend {
+                edge: edge.clone(),
+                section: Section::Varying {
+                    law: law.clone(),
+                    start,
+                },
+            }],
+            mitre: false,
+            splits: Vec::new(),
+            corners: Vec::new(),
+        }))
     }
 
     /// Each edge rounded at its radius, as one request.
