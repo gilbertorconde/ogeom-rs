@@ -325,8 +325,9 @@ fn strip_of(
     }
 }
 
-/// A straight edge's strip between two planes, or a plane and a cylinder
-/// along its ruling: the ball's centre a radius in from both faces at a
+/// A straight edge's strip between two planes, a plane and a cylinder
+/// along its ruling, or two cylinders along their rulings, their axes
+/// parallel: the ball's centre a radius in from both faces at a
 /// convex edge, out from both at a concave one. A concave strip's fill also
 /// gives the region every other face must keep to: past the edge's ends or
 /// farther from the spine than the edge stands, which holds the whole fill
@@ -435,7 +436,32 @@ fn straight(
             };
             c
         }
-        _ => return Ok(None),
+        (Offset::Cylinder(o0, r0), Offset::Cylinder(o1, r1)) => {
+            // Two walls along the edge (a boss's lobes fused side by side):
+            // where the two circles their axes and offset radii draw in the
+            // section cross, the crossing nearer the edge.
+            let d = *o1 - *o0;
+            let gap = d.magnitude();
+            if gap <= tol.confusion() {
+                return Ok(None);
+            }
+            let e = d / gap;
+            let along = (r0 * r0 - r1 * r1 + gap * gap) / (2.0 * gap);
+            let h2 = r0 * r0 - along * along;
+            if h2 < 0.0 {
+                return Ok(None);
+            }
+            let w = u.cross(e);
+            let base = *o0 + e * along;
+            let h = h2.sqrt();
+            let Some(c) = [base + w * h, base - w * h]
+                .into_iter()
+                .min_by(|x, y| x.distance(mid).total_cmp(&y.distance(mid)))
+            else {
+                return Ok(None);
+            };
+            c
+        }
     };
     // Each contact, and its standing on its own face's side of the edge.
     let mut feet = [Point::ORIGIN; 2];
