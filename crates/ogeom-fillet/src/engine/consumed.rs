@@ -267,6 +267,9 @@ pub(crate) fn consumed(
     eaten.sort_unstable();
     let mut grouped_edges: Vec<(Vec<Id>, Vec<Id>)> = Vec::new();
     let mut bands: Vec<(usize, Band)> = Vec::new();
+    // Reflex corners with one edge sharp: the group, the bevelled edge,
+    // the sharp one, the consumed face and the corner.
+    let mut halves: Vec<(usize, Id, Id, usize, Id)> = Vec::new();
     let mut vertices: FastSet<Id> = FastSet::default();
     for fi in &eaten {
         let face = &planar.faces[*fi];
@@ -283,6 +286,15 @@ pub(crate) fn consumed(
             let (Some(e0), Some(e1)) = (edge_of(a, v), edge_of(v, b)) else {
                 return Consumed::Outside;
             };
+            // One edge left sharp: the other's bevel runs into the corner
+            // and stops on the sharp edge's wall plane, past which its
+            // group takes nothing; its end, a facet at the corner, lies in
+            // that wall.
+            match (blended.contains(&e0), blended.contains(&e1)) {
+                (true, false) => halves.push((grouped_edges.len(), e0, e1, *fi, v)),
+                (false, true) => halves.push((grouped_edges.len(), e1, e0, *fi, v)),
+                _ => {}
+            }
             grouped_edges.push((vec![e0, e1], vec![v]));
         }
         for hole in &face.holes {
@@ -326,10 +338,11 @@ pub(crate) fn consumed(
         }
         vertices.extend(face.loops().flatten().copied());
     }
+    let sharp_ok: FastSet<Id> = halves.iter().map(|h| h.2).collect();
     if grouped_edges
         .iter()
         .flat_map(|(edges, _)| edges)
-        .any(|e| !blended.contains(e))
+        .any(|e| !blended.contains(e) && !sharp_ok.contains(e))
     {
         return Consumed::Outside;
     }
@@ -401,10 +414,14 @@ pub(crate) fn consumed(
             }
         }
     }
+    let ended: FastSet<Id> = halves.iter().map(|h| h.4).collect();
     let unfaceted: FastSet<Id> = vertices
         .iter()
         .copied()
-        .filter(|v| scattered.contains(v) || classes.get(v).is_some_and(|c| c.blended < 3))
+        .filter(|v| {
+            !ended.contains(v)
+                && (scattered.contains(v) || classes.get(v).is_some_and(|c| c.blended < 3))
+        })
         .collect();
     let mut groups: Vec<Group> = grouped_edges
         .iter()
@@ -489,6 +506,21 @@ pub(crate) fn consumed(
         }
         groups[*gi].planes = planes;
     }
+    for (gi, bevelled, sharp, fi, _) in &halves {
+        let Some(&(n, off)) = bevels.get(bevelled) else {
+            return Consumed::Outside;
+        };
+        let Some(wall) = seats
+            .values()
+            .find(|s| s.edge == *sharp)
+            .and_then(|s| s.faces.into_iter().find(|f| *f != *fi))
+        else {
+            return Consumed::Outside;
+        };
+        let wall = &planar.faces[wall];
+        let at = planar.points[&wall.corners[0]];
+        groups[*gi].planes = vec![(n, off), (wall.normal, wall.normal.dot(at.to_vector()))];
+    }
     let mut round: Vec<Id> = vertices.iter().copied().collect();
     round.sort_unstable();
     let mut faced: FastSet<usize> = FastSet::default();
@@ -507,7 +539,8 @@ pub(crate) fn consumed(
                 ));
             }
         }
-        if unfaceted.contains(&v) {
+        // A facet ending a bevel on a sharp wall lies in that wall: no cut.
+        if unfaceted.contains(&v) || ended.contains(&v) {
             continue;
         }
         let ring: Vec<Point> = order.iter().map(|fi| corners[&(*fi, v)]).collect();
