@@ -593,3 +593,150 @@ fn a_tilted_zone_s_rim_bevels_consume_the_sphere_and_meet_on_their_section() {
         );
     }
 }
+
+/// The angle an arc of a rim turns through: its circle's parameter range.
+fn arc_turn(m: &Model, e: &Shape) -> f64 {
+    let data = m.node(e).and_then(|n| n.data().as_edge()).expect("an edge");
+    let Some(ogeom_topo::EdgeRepr::Curve3d { range, .. }) = data.curve3d() else {
+        panic!("an edge in space");
+    };
+    (range.1 - range.0).abs()
+}
+
+/// `∫ (a + b z)² dz` over `[lo, hi]`.
+fn square_integral(a: f64, b: f64, lo: f64, hi: f64) -> f64 {
+    let f = |z: f64| a * a * z + a * b * z * z + b * b * z * z * z / 3.0;
+    f(hi) - f(lo)
+}
+
+/// The zone's top rim alone chamfered 2.5: its sphere contact 2.5 down the
+/// arc lands below the bottom rim (the arc between them is about 2.01), so
+/// the bevel rolls over the sphere's far side onto the bottom flat (ADR
+/// 0001, amendment "M5b"). What is left is the zone inside the bevel's
+/// cone, the frustum of radius a + b z over z in [-1, 1]: pi times the
+/// integral of its radius squared, exactly. The sphere goes; the flats and
+/// the cone are left; each rim arc generates the cone.
+#[test]
+fn a_zone_s_rim_rolls_over_the_sphere_onto_the_far_flat() {
+    let d = 2.5_f64;
+    let mut m = Model::new();
+    let s = zone(&mut m);
+    let found: Vec<(Shape, Shape, Shape)> = rims(&m, &s)
+        .into_iter()
+        .filter(|(e, _, _)| ogeom_algo::shape_bounds(&m, e, T).unwrap().low().unwrap().z > 0.5)
+        .collect();
+    assert!(!found.is_empty(), "the top rim");
+    let specs: Vec<(Shape, Chamfer)> = found
+        .iter()
+        .map(|(e, _, _)| (e.clone(), Chamfer::Symmetric(d)))
+        .collect();
+    let built = chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+    let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let rim = 24.0_f64.sqrt();
+    let lat = (1.0_f64 / 5.0).asin() - d / 5.0;
+    let (rw, zw) = (5.0 * lat.cos(), 5.0 * lat.sin());
+    assert!(zw < -1.0, "the contact lands past the far rim");
+    let b = (rim - d - rw) / (1.0 - zw);
+    let a = rim - d - b;
+    let want = core::f64::consts::PI * square_integral(a, b, -1.0, 1.0);
+    close(vol(&m, &built.shape), want);
+    assert!(built.history.is_deleted(&found[0].2), "the sphere goes");
+    assert_eq!(
+        explore_unique(&m, &built.shape, ShapeType::Face)
+            .unwrap()
+            .len(),
+        3,
+        "the flats and the cone"
+    );
+    for (e, _, _) in &found {
+        assert_eq!(built.history.generated(e).len(), 1, "the cone");
+    }
+}
+
+/// The flat-sided sphere bored through by a hole of radius 3 along z, its
+/// rim chamfered 2: the flat's contact, at radius √21 - 2, lies in the
+/// bore, so the bevel runs past the flat into the bore's wall, which it
+/// trims (ADR 0001, amendment "M5b"). The cone's radius is a + b z from
+/// the flat's contact to the sphere's; what it takes is, for z above
+/// where it reaches the bore, the ring between the bore and the sphere,
+/// and below, the ring between the cone and the sphere: pi times
+/// integrals of polynomials, exactly.
+#[test]
+fn a_bored_sphere_s_rim_bevel_runs_into_the_bore() {
+    let d = 2.0_f64;
+    let mut m = Model::new();
+    let s = flat_side(&mut m);
+    let bore = ogeom_algo::make_cylinder(&mut m, at(0.0, 0.0, -10.0), 3.0, 20.0, T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::cut(&mut m, &s, &bore, T).unwrap().shape;
+    let pi = core::f64::consts::PI;
+    close(vol(&m, &s), 72.0 * pi);
+    let found: Vec<(Shape, Shape, Shape)> = rims(&m, &s)
+        .into_iter()
+        .filter(|(e, _, _)| ogeom_algo::shape_bounds(&m, e, T).unwrap().low().unwrap().z > 1.5)
+        .collect();
+    assert!(!found.is_empty(), "the top rim");
+    let specs: Vec<(Shape, Chamfer)> = found
+        .iter()
+        .map(|(e, _, _)| (e.clone(), Chamfer::Symmetric(d)))
+        .collect();
+    let built = chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+    let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let rim = 21.0_f64.sqrt();
+    let lat = 2.0_f64.atan2(rim) - d / 5.0;
+    let (rw, zw) = (5.0 * lat.cos(), 5.0 * lat.sin());
+    let b = (rim - d - rw) / (2.0 - zw);
+    let a = rim - d - 2.0 * b;
+    let reach = (3.0 - a) / b;
+    assert!(zw < reach && reach < 2.0, "the cone meets the bore");
+    let sphere = |lo: f64, hi: f64| 25.0 * (hi - lo) - (hi.powi(3) - lo.powi(3)) / 3.0;
+    let taken = pi
+        * (sphere(reach, 2.0) - 9.0 * (2.0 - reach) + sphere(zw, reach)
+            - square_integral(a, b, zw, reach));
+    close(vol(&m, &built.shape), 72.0 * pi - taken);
+    for (e, _, _) in &found {
+        assert_eq!(built.history.generated(e).len(), 1, "the cone");
+    }
+}
+
+/// The flat-sided sphere's rim arcs asked apart, the first 0.5 and the
+/// rest 0.8: each arc's bevel is its section turned over the arc's own
+/// sweep, the two stepping on the plane through the axis at each joint
+/// (ADR 0001, amendment "M5b"). The volume is the whole less each arc's
+/// share of its section's ring, exactly (Pappus).
+#[test]
+fn a_sphere_rim_s_arcs_asked_apart_step_at_their_joints() {
+    let mut m = Model::new();
+    let s = flat_side(&mut m);
+    let found = rims(&m, &s);
+    assert!(found.len() >= 2, "the rim's arcs");
+    let ds: Vec<f64> = (0..found.len())
+        .map(|k| if k == 0 { 0.5 } else { 0.8 })
+        .collect();
+    let specs: Vec<(Shape, Chamfer)> = found
+        .iter()
+        .zip(&ds)
+        .map(|((e, _, _), d)| (e.clone(), Chamfer::Symmetric(*d)))
+        .collect();
+    let built = chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+    let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let tau = core::f64::consts::TAU;
+    let taken: f64 = found
+        .iter()
+        .zip(&ds)
+        .map(|((e, _, _), d)| {
+            let (area, rho) = removed(*d, *d);
+            area * rho * arc_turn(&m, e)
+        })
+        .sum();
+    let turns: f64 = found.iter().map(|(e, _, _)| arc_turn(&m, e)).sum();
+    assert!((turns - tau).abs() < 1e-9, "the arcs close the rim");
+    close(vol(&m, &built.shape), flat_whole() - taken);
+    for (e, _, _) in &found {
+        assert_eq!(built.history.generated(e).len(), 1, "its bevel");
+    }
+}
