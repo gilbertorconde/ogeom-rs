@@ -23,6 +23,14 @@
 mod assemble;
 mod classify;
 mod consumed;
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "rounds of curved solids go through it from the rim layer on"
+    )
+)]
+mod curved;
 mod guards;
 mod request;
 mod rounds;
