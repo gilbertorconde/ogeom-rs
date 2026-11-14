@@ -44,7 +44,7 @@ mod setbacks;
 mod trimmed;
 mod vertices;
 
-pub(crate) use fallback::{Tool, applied as apply_tools};
+pub(crate) use fallback::{Tool, applied as apply_tools, straight_non_local};
 pub(crate) use request::{Request, Section};
 pub(crate) use rims::assemble as round_rims;
 pub(crate) use round_strips::{non_local_tools as round_non_local_tools, round as round_curved};
