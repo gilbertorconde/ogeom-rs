@@ -879,3 +879,149 @@ fn two_unequal_rim_bevels_meet_across_a_concave_upright_on_their_cones_curve() {
 fn two_unequal_rim_bevels_meet_across_a_convex_upright_on_their_cones_curve() {
     twin_rims_chamfer_as_each_drum_alone(false);
 }
+
+/// A web of an arch: the annular sector between radii 10 and 11 about z,
+/// from -15 to 15 degrees, 1 tall.
+fn arch_web(m: &mut Model) -> Shape {
+    use ogeom_geom::{CircleCurve, Curve, LineCurve};
+    use ogeom_math::{Axis, Circle, Plane};
+    let w = 15.0_f64.to_radians();
+    let on = |r: f64, a: f64| Point::new(r * a.cos(), r * a.sin(), 0.0);
+    let vertex = |m: &mut Model, p: Point| ogeom_algo::make_vertex(m, p).shape;
+    let (oa, ob, ib, ia) = (
+        vertex(m, on(11.0, -w)),
+        vertex(m, on(11.0, w)),
+        vertex(m, on(10.0, w)),
+        vertex(m, on(10.0, -w)),
+    );
+    let arc = |m: &mut Model, r: f64, z: Direction, from: f64, a: &Shape, b: &Shape| {
+        let x = Direction::new(Vector::new(from.cos(), from.sin(), 0.0), T).unwrap();
+        let frame = Frame::new(Point::ORIGIN, z, x, T).unwrap();
+        let curve: Curve = CircleCurve::new(Circle::new(frame, r, T).unwrap()).into();
+        ogeom_algo::make_edge_between(m, curve, (0.0, 2.0 * w), a, b, T)
+            .unwrap()
+            .shape
+    };
+    let line = |m: &mut Model, p: Point, q: Point, a: &Shape, b: &Shape| {
+        let curve: Curve = LineCurve::new(Axis::new(p, Direction::new(q - p, T).unwrap())).into();
+        ogeom_algo::make_edge_between(m, curve, (0.0, p.distance(q)), a, b, T)
+            .unwrap()
+            .shape
+    };
+    let down = Direction::new(Vector::new(0.0, 0.0, -1.0), T).unwrap();
+    let edges = [
+        arc(m, 11.0, Direction::Z, -w, &oa, &ob),
+        line(m, on(11.0, w), on(10.0, w), &ob, &ib),
+        arc(m, 10.0, down, w, &ib, &ia),
+        line(m, on(10.0, -w), on(11.0, -w), &ia, &oa),
+    ];
+    let wire = ogeom_algo::make_wire(m, &edges, T).unwrap().shape;
+    let plane = ogeom_geom::PlaneSurface::over(
+        Plane::through(Point::ORIGIN, Direction::Z),
+        (-100.0, 100.0),
+        (-100.0, 100.0),
+    )
+    .unwrap();
+    let face = ogeom_algo::make_face(m, plane.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    ogeom_algo::make_prism(m, &face, Vector::new(0.0, 0.0, 1.0), T)
+        .unwrap()
+        .shape
+}
+
+/// The arch web's two outer uprights chamfered 0.5 on the end faces and
+/// 3.2 round the outer wall: the two contacts on the wall cross (its arc is
+/// about 2.88 a side), so the wall goes and the two bevel planes meet in
+/// their ridge, an upright line midway. Valid, the wall deleted, the same
+/// in both orders. Every face but the ends stands square to the ends, so
+/// the volume is the section's area: the polygon from the inner arc's ends
+/// to the bevels' feet on the ends and the ridge, less the inner arc's
+/// segment.
+#[test]
+fn an_arch_web_s_outer_wall_consumed_by_its_uprights_bevels_meets_in_a_ridge() {
+    let (on_end, on_wall) = (0.5_f64, 3.2_f64);
+    let w = 15.0_f64.to_radians();
+    let mut m = Model::new();
+    let web = arch_web(&mut m);
+    let found = ogeom_algo::check(&m, &web, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let uprights: Vec<Shape> = explore_unique(&m, &web, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let b = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            let (p, q) = (b.low().unwrap(), b.high().unwrap());
+            q.z - p.z > 0.5 && q.x.hypot(q.y.abs().max(p.y.abs())) > 10.99
+        })
+        .collect();
+    assert_eq!(uprights.len(), 2, "the outer uprights");
+    let wall = explore_unique(&m, &web, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            surface_kind(&m, f) == ogeom_geom::SurfaceKind::Cylinder && {
+                let b = ogeom_algo::shape_bounds(&m, f, T).unwrap();
+                b.high().unwrap().x > 10.9
+            }
+        })
+        .unwrap();
+    let specs: Vec<(Shape, ogeom_fillet::Chamfer)> = uprights
+        .iter()
+        .map(|e| {
+            let end = explore_unique(&m, &web, ShapeType::Face)
+                .unwrap()
+                .into_iter()
+                .find(|f| {
+                    surface_kind(&m, f) == ogeom_geom::SurfaceKind::Plane
+                        && explore_unique(&m, f, ShapeType::Edge)
+                            .unwrap()
+                            .iter()
+                            .any(|x| x.is_same(e))
+                })
+                .unwrap();
+            (
+                e.clone(),
+                ogeom_fillet::Chamfer::Distances {
+                    face: end,
+                    on_face: on_end,
+                    on_other: on_wall,
+                },
+            )
+        })
+        .collect();
+    // The section: bevel A from its foot on the end at -15 degrees to its
+    // contact on the wall, meeting its mirror at 0 degrees.
+    let polar = |r: f64, a: f64| (r * a.cos(), r * a.sin());
+    let foot = polar(11.0 - on_end, -w);
+    let contact = polar(11.0, -w + on_wall / 11.0);
+    let x = foot.0 - foot.1 * (contact.0 - foot.0) / (contact.1 - foot.1);
+    assert!(x > 10.0 && x < 11.0, "the ridge stands in the web: {x}");
+    let inner = polar(10.0, -w);
+    let ring = [
+        inner,
+        foot,
+        (x, 0.0),
+        (foot.0, -foot.1),
+        (inner.0, -inner.1),
+    ];
+    let mut twice = 0.0;
+    for k in 0..ring.len() {
+        let (p, q) = (ring[k], ring[(k + 1) % ring.len()]);
+        twice += p.0 * q.1 - q.0 * p.1;
+    }
+    let segment = 50.0 * (2.0 * w - (2.0 * w).sin());
+    let want = twice.abs() / 2.0 - segment;
+    let back: Vec<(Shape, ogeom_fillet::Chamfer)> = specs.iter().rev().cloned().collect();
+    for asked in [&specs, &back] {
+        let built = ogeom_fillet::chamfer_edges_with(&mut m, &web, asked, T).unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert!(built.history.is_deleted(&wall), "the wall stays");
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() < 1e-6,
+            "volume {got} against the section's {want}"
+        );
+    }
+}
