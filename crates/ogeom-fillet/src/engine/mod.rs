@@ -259,7 +259,10 @@ pub(crate) fn run(
     // A bevel reaching or touching a face not round its ends changes a face
     // the request does not name, which the rings do not trim: the
     // non-local test, then the one-boolean fallback (ADR 0001, M5a).
+    // A bevel rolling over its face's far side notches the faces beyond:
+    // that is the rings' (amendment "M5b"), not a non-local blend.
     if !request.mitre
+        && !consumed::rolls_over(&planar, &seats, &blended, &corners, tol)
         && fallback::non_local(&planar, &seats, &blended, &corners, &steps, tol).is_some()
     {
         return fallback::one_boolean(

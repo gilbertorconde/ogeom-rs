@@ -1,5 +1,6 @@
-//! A chamfer or fillet is refused where its setback runs past a face: 12 mm
-//! back on a 10 mm face would cut through it into the solid beyond.
+//! A setback that runs past a face: 12 mm back on a 10 mm face. A fillet is
+//! refused there; a chamfer rolls over the face's far side as a notch, its
+//! plane carrying on into the solid beyond (ADR 0001, amendment "M5b").
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{make_face, make_polygon, make_prism, volume_properties};
@@ -40,12 +41,15 @@ fn block_and_edge(model: &mut Model) -> (Shape, Shape) {
     (block, edge)
 }
 
+/// A chamfer of 12 on the 10 mm front notches past it: its plane z = y - 2
+/// takes the section 2 x 10 + the integral of 12 - y over [2, 12], 70, along
+/// the 20.
 #[test]
-fn a_chamfer_wider_than_its_face_is_refused() {
+fn a_chamfer_wider_than_its_face_notches_past_it() {
     for (d, want) in [
         (9.0, Some(4000.0 - 0.5 * 81.0 * 20.0)),
         (10.0, Some(3000.0)),
-        (12.0, None),
+        (12.0, Some(4000.0 - 70.0 * 20.0)),
     ] {
         let mut model = Model::new();
         let (block, edge) = block_and_edge(&mut model);
