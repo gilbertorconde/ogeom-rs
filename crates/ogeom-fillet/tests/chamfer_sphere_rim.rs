@@ -408,3 +408,88 @@ fn a_square_hole_through_a_sphere_chamfers_its_rim_arcs_by_distance_and_angle() 
         before - mitred_arcs(d, cap_angle_contact_about(d, angle, 2.0)),
     );
 }
+
+/// A sphere of radius 5 between the planes z = ±1: a zone of the sphere
+/// two rims of radius √24 bound.
+fn zone(m: &mut Model) -> Shape {
+    let s = ball(m);
+    let slab = ogeom_algo::make_box(m, at(-10.0, -10.0, -1.0), (20.0, 20.0, 2.0), T)
+        .unwrap()
+        .shape;
+    ogeom_bool::common(m, &s, &slab, T).unwrap().shape
+}
+
+/// The zone's two rims chamfered 1.2: each sphere contact 1.2 down the
+/// arc from its rim, and the arc between the rims is about 2.01, so the
+/// two contacts cross on the sphere, which goes; the two bevel cones meet
+/// in their ridge, the circle at z = 0 where their radii agree. The
+/// boolean leaves each rim in arcs split at different places top and
+/// bottom, so the ridge is split at every one of their corners. Valid, the
+/// sphere deleted, the flats and a cone on each rim arc left, the same in
+/// both orders. The solid is the zone in common with the inside of each
+/// bevel's cone, through its flat's contact and its sphere's: by booleans,
+/// which share nothing with the engine.
+#[test]
+fn a_thin_zone_s_rim_bevels_consume_the_sphere_and_meet_in_a_ridge() {
+    let d = 1.2_f64;
+    let mut m = Model::new();
+    let s = zone(&mut m);
+    let found = rims(&m, &s);
+    assert!(
+        found.len() >= 2,
+        "the zone's two rims, as the pieces the boolean leaves"
+    );
+    let spheres: Vec<Shape> = found.iter().map(|(_, _, f)| f.clone()).collect();
+    let specs: Vec<(Shape, Chamfer)> = found
+        .iter()
+        .map(|(e, _, _)| (e.clone(), Chamfer::Symmetric(d)))
+        .collect();
+    let back: Vec<(Shape, Chamfer)> = specs.iter().rev().cloned().collect();
+    // Each bevel's cone, by its radius at two heights: the flat's contact
+    // at the rim's height, the sphere's 1.2 down the arc.
+    let rim = 24.0_f64.sqrt();
+    let below = (1.0_f64 / 5.0).asin() - d / 5.0;
+    let (r_sphere, z_sphere) = (5.0 * below.cos(), 5.0 * below.sin());
+    let slope = (rim - d - r_sphere) / (1.0 - z_sphere);
+    let radius = |z: f64| r_sphere + slope * (z - z_sphere);
+    let mut o = Model::new();
+    let mut want = zone(&mut o);
+    for up in [1.0_f64, -1.0] {
+        let frame = Frame::new(
+            Point::new(0.0, 0.0, -2.0 * up),
+            if up > 0.0 {
+                Direction::Z
+            } else {
+                Direction::new(ogeom_math::Vector::new(0.0, 0.0, -1.0), T).unwrap()
+            },
+            Direction::X,
+            T,
+        )
+        .unwrap();
+        let cone = ogeom_algo::make_cone(&mut o, frame, radius(-2.0), radius(1.5), 3.5, T).unwrap();
+        want = ogeom_bool::common(&mut o, &want, &cone.shape, T)
+            .unwrap()
+            .shape;
+    }
+    let want = vol(&o, &want);
+    for asked in [&specs, &back] {
+        let built = chamfer_edges_with(&mut m, &s, asked, T).unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        for sphere in &spheres {
+            assert!(built.history.is_deleted(sphere), "the sphere stays");
+        }
+        assert_eq!(
+            explore_unique(&m, &built.shape, ShapeType::Face)
+                .unwrap()
+                .len(),
+            2 + specs.len(),
+            "the flats and a cone on each rim piece"
+        );
+        let got = vol(&m, &built.shape);
+        assert!(
+            (got - want).abs() < 1e-6,
+            "volume {got} against the booleans' {want}"
+        );
+    }
+}
