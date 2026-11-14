@@ -280,8 +280,16 @@ impl Rings {
         // cut by each plane in turn.
         let section: Vec<(f64, f64)> = {
             let (lo, hi) = outline.iter().fold(
-                ((f64::INFINITY, f64::INFINITY), (f64::NEG_INFINITY, f64::NEG_INFINITY)),
-                |(lo, hi), q| ((lo.0.min(q.0), lo.1.min(q.1)), (hi.0.max(q.0), hi.1.max(q.1))),
+                (
+                    (f64::INFINITY, f64::INFINITY),
+                    (f64::NEG_INFINITY, f64::NEG_INFINITY),
+                ),
+                |(lo, hi), q| {
+                    (
+                        (lo.0.min(q.0), lo.1.min(q.1)),
+                        (hi.0.max(q.0), hi.1.max(q.1)),
+                    )
+                },
             );
             let far = 10.0 * (hi.0 - lo.0).max(hi.1 - lo.1) + 1.0;
             let mut poly = vec![
@@ -291,11 +299,7 @@ impl Rings {
                 (lo.0 - far, hi.1 + far),
             ];
             for (nv, off) in planes {
-                let (a, b, c) = (
-                    nv.dot(ux),
-                    nv.dot(uy),
-                    nv.dot(pts[0].to_vector()) - off,
-                );
+                let (a, b, c) = (nv.dot(ux), nv.dot(uy), nv.dot(pts[0].to_vector()) - off);
                 let f = |q: (f64, f64)| a.mul_add(q.0, b.mul_add(q.1, c));
                 let mut cut = Vec::with_capacity(poly.len() + 1);
                 for k in 0..poly.len() {
@@ -306,7 +310,10 @@ impl Rings {
                     }
                     if (fh >= 0.0) != (fn_ >= 0.0) {
                         let t = fh / (fh - fn_);
-                        cut.push((here.0 + (next.0 - here.0) * t, here.1 + (next.1 - here.1) * t));
+                        cut.push((
+                            here.0 + (next.0 - here.0) * t,
+                            here.1 + (next.1 - here.1) * t,
+                        ));
                     }
                 }
                 poly = cut;
@@ -447,7 +454,11 @@ impl Rings {
     /// `false` where a loop turns the other way.
     pub fn drop_in(&mut self, face: usize, normal: Vector, holes: &[Vec<Point>]) -> bool {
         let eps = self.tol.confusion();
-        let ux = if normal.x.abs() < 0.9 { Vector::X } else { Vector::Y };
+        let ux = if normal.x.abs() < 0.9 {
+            Vector::X
+        } else {
+            Vector::Y
+        };
         let ux = ux - normal * ux.dot(normal);
         let ux = ux / ux.magnitude();
         let uy = normal.cross(ux);
@@ -485,7 +496,8 @@ impl Rings {
                 // A point just inside the loop off its longest side.
                 let m = l.len();
                 let Some(k) = (0..m).max_by(|x, y| {
-                    let d = |k: usize| (self.points[l[(k + 1) % m]] - self.points[l[k]]).magnitude();
+                    let d =
+                        |k: usize| (self.points[l[(k + 1) % m]] - self.points[l[k]]).magnitude();
                     d(*x).total_cmp(&d(*y))
                 }) else {
                     continue;
