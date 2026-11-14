@@ -301,7 +301,7 @@ fn cut_past(m: &mut Model, s: &Shape, at: Point, n: Vector) -> Shape {
 /// split at the wall's seam its bevels run on into each other, with none.
 #[test]
 fn a_d_block_chamfered_on_every_edge_closes_each_corner_with_its_facet() {
-    let (big, d) = (3.0_f64, 0.5_f64);
+    let d = 0.5_f64;
     let mut m = Model::new();
     let block = d_block(&mut m);
     let edges = explore_unique(&m, &block, ShapeType::Edge).unwrap();
@@ -333,18 +333,31 @@ fn a_d_block_chamfered_on_every_edge_closes_each_corner_with_its_facet() {
 
     // The oracle: the same planes and cones, by booleans.
     let mut o = Model::new();
-    let mut s = d_block(&mut o);
+    let s = d_block_cut_by_every_bevel(&mut o, d, true);
+    let (got, want) = (volume(&m, &built.shape), volume(&o, &s));
+    assert!(
+        (got - want).abs() < 1e-6,
+        "volume {got} against the booleans' {want}"
+    );
+}
+
+/// The D-shaped block with every edge bevelled `d` by booleans: in common
+/// with each rim's cone, cut past each straight edge's bevel plane and,
+/// with `facets`, past each corner's facet plane.
+fn d_block_cut_by_every_bevel(o: &mut Model, d: f64, facets: bool) -> Shape {
+    let big = 3.0_f64;
+    let mut s = d_block(o);
     let theta = d / big;
     let (wx, wy) = (big * theta.sin(), big * theta.cos());
     // The rims' cones: the material inside each.
-    let top = ogeom_algo::make_cone(&mut o, up_at(0.0, 0.0, -1.0), 13.5, 2.5, 11.0, T)
+    let top = ogeom_algo::make_cone(o, up_at(0.0, 0.0, -1.0), 13.5, 2.5, 11.0, T)
         .unwrap()
         .shape;
-    s = ogeom_bool::common(&mut o, &s, &top, T).unwrap().shape;
-    let bottom = ogeom_algo::make_cone(&mut o, up_at(0.0, 0.0, 0.0), 2.5, 13.5, 11.0, T)
+    s = ogeom_bool::common(o, &s, &top, T).unwrap().shape;
+    let bottom = ogeom_algo::make_cone(o, up_at(0.0, 0.0, 0.0), 2.5, 13.5, 11.0, T)
         .unwrap()
         .shape;
-    s = ogeom_bool::common(&mut o, &s, &bottom, T).unwrap().shape;
+    s = ogeom_bool::common(o, &s, &bottom, T).unwrap().shape;
     for side in [1.0_f64, -1.0] {
         // The straight edge's bevel, from the flat's contact to the wall's.
         let (p, q) = (
@@ -357,18 +370,16 @@ fn a_d_block_chamfered_on_every_edge_closes_each_corner_with_its_facet() {
         } else {
             n
         };
-        s = cut_past(&mut o, &s, p, n);
+        s = cut_past(o, &s, p, n);
     }
     for (z, up) in [(10.0_f64, 1.0_f64), (0.0, -1.0)] {
         // The cap's straight edge's bevel.
-        s = cut_past(
-            &mut o,
-            &s,
-            Point::new(d, 0.0, z),
-            Vector::new(-1.0, 0.0, up),
-        );
+        s = cut_past(o, &s, Point::new(d, 0.0, z), Vector::new(-1.0, 0.0, up));
         // The two corners' facets.
         for side in [1.0_f64, -1.0] {
+            if !facets {
+                break;
+            }
             let on_cap = Point::new(d, side * (big - d).mul_add(big - d, -(d * d)).sqrt(), z);
             let on_flat = Point::new(0.0, side * (big - d), z - up * d);
             let on_wall = Point::new(wx, side * wy, z - up * d);
@@ -376,14 +387,54 @@ fn a_d_block_chamfered_on_every_edge_closes_each_corner_with_its_facet() {
             if n.dot(Vector::new(-1.0, side, up)) < 0.0 {
                 n = -n;
             }
-            s = cut_past(&mut o, &s, on_cap, n);
+            s = cut_past(o, &s, on_cap, n);
         }
     }
-    let (got, want) = (volume(&m, &built.shape), volume(&o, &s));
-    assert!(
-        (got - want).abs() < 1e-6,
-        "volume {got} against the booleans' {want}"
-    );
+    s
+}
+
+/// The D-shaped block with every edge chamfered 0.5 and mitred: at each of
+/// its four corners on the flat the three bevels (two planes and a rim's
+/// cone) run on to the point the three share and meet each other along
+/// their sections from there, with no facet. The block is convex, so the
+/// result is the block cut by each bevel's plane or cone alone: by
+/// booleans, which share nothing with the engine, to the same volume, in
+/// both orders. No corner generates a facet.
+#[test]
+fn a_d_block_chamfered_on_every_edge_mitres_each_corner_to_its_bevels_shared_point() {
+    let d = 0.5_f64;
+    let mut m = Model::new();
+    let block = d_block(&mut m);
+    let edges = explore_unique(&m, &block, ShapeType::Edge).unwrap();
+    let vertices = explore_unique(&m, &block, ShapeType::Vertex).unwrap();
+    let specs: Vec<(Shape, ogeom_fillet::Chamfer)> = edges
+        .iter()
+        .map(|e| (e.clone(), ogeom_fillet::Chamfer::Symmetric(d)))
+        .collect();
+    let mut o = Model::new();
+    let s = d_block_cut_by_every_bevel(&mut o, d, false);
+    let want = volume(&o, &s);
+    let back: Vec<(Shape, ogeom_fillet::Chamfer)> = specs.iter().rev().cloned().collect();
+    for asked in [&specs, &back] {
+        let built = ogeom_fillet::chamfer_edges_cornered(
+            &mut m,
+            &block,
+            asked,
+            ogeom_fillet::ChamferCorner::Point,
+            T,
+        )
+        .unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        for v in &vertices {
+            assert!(built.history.generated(v).is_empty(), "a facet");
+        }
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() < 1e-6,
+            "volume {got} against the booleans' {want}"
+        );
+    }
 }
 
 /// A disc of radius 5 and 2 thick, both rims chamfered 1.5: the bevels'

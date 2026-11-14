@@ -92,7 +92,23 @@ pub(crate) fn chamfer(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
-    declining(chamfer_with(model, solid, specs, false, tol))
+    declining(chamfer_with(model, solid, specs, false, false, tol))
+}
+
+/// [`chamfer`] with each vertex of three bevels or more mitred: the bevels
+/// run on to the point their surfaces share and meet each other along
+/// their sections from there, with no facet.
+///
+/// # Errors
+///
+/// As [`chamfer`].
+pub(crate) fn chamfer_mitred(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    declining(chamfer_with(model, solid, specs, false, true, tol))
 }
 
 /// What the curved path builds, any failure in it but a cancellation
@@ -118,7 +134,7 @@ pub(crate) fn chamfer_patched(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
-    declining(chamfer_with(model, solid, specs, true, tol))
+    declining(chamfer_with(model, solid, specs, true, false, tol))
 }
 
 fn chamfer_with(
@@ -126,6 +142,7 @@ fn chamfer_with(
     solid: &Shape,
     specs: &[(Shape, Chamfer)],
     patched_only: bool,
+    mitre: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     let Some(curved) = read(model, solid, tol)? else {
@@ -205,6 +222,7 @@ fn chamfer_with(
         &corners,
         &bands.faces,
         &widths,
+        mitre,
         tol,
     ) {
         Ok(Some(built)) => built,
@@ -1675,13 +1693,15 @@ pub(crate) fn assemble_consuming(
         corners,
         consumed,
         &FastMap::default(),
+        false,
         tol,
     )
 }
 
 /// [`assemble_consuming`], each contact keyed by face and edge in `widths`
 /// a fitted curve standing within that of its face, its edges widened to
-/// it.
+/// it; with `mitre`, each vertex of three bevels or more mitred instead of
+/// closed by its facet.
 ///
 /// # Errors
 ///
@@ -1695,6 +1715,7 @@ fn assemble_widened(
     corners: &FastMap<(usize, Id), Corner>,
     consumed: &FastSet<usize>,
     widths: &FastMap<(usize, Id), f64>,
+    mitre: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     let mut points = Points {
@@ -1765,6 +1786,8 @@ fn assemble_widened(
         }
     }
     let mut facets: Vec<(Id, Vec<Point>)> = Vec::new();
+    // Each mitred vertex's point, where every bevel there passes.
+    let mut mitred: FastMap<Id, Point> = FastMap::default();
     let mut keyed: Vec<&Id> = curved.points.keys().collect();
     keyed.sort_unstable();
     for v in keyed {
@@ -1815,6 +1838,18 @@ fn assemble_widened(
                 let Some(cycle) = chained(ends, tol) else {
                     return Ok(None);
                 };
+                if mitre {
+                    let surfaces: Vec<&SurfaceGeometry> =
+                        ends.iter().map(|(_, _, bi)| &bevels[*bi].surface).collect();
+                    #[expect(clippy::cast_precision_loss, reason = "a few corners")]
+                    let start = cycle.iter().fold(Vector::ZERO, |s, p| s + p.to_vector())
+                        / cycle.len() as f64;
+                    let Some(x) = shared_point(&surfaces, Point::from_vector(start), tol)? else {
+                        return Ok(None);
+                    };
+                    mitred.insert(*v, x);
+                    continue;
+                }
                 facets.push((*v, cycle));
             }
         }
@@ -2050,6 +2085,48 @@ fn assemble_widened(
         edges.push(SheetCurve { ends, curve, range });
         made.insert(key, edges.len() - 1);
         Ok((edges.len() - 1, ends.0 == i))
+    };
+    // A strip's end at a mitred vertex, from `a` to `z`: on to the
+    // vertex's point along its section with the bevel sharing `a`, then on
+    // to `z` along its section with the one sharing `z`. `false` where the
+    // end stands at no mitred vertex.
+    let mitred_end = |points: &mut Points,
+                      edges: &mut Vec<SheetCurve>,
+                      made: &mut FastMap<Key, usize>,
+                      ring: &mut Vec<(usize, bool)>,
+                      strip: &Strip,
+                      a: Point,
+                      z: Point|
+     -> OgeomResult<bool> {
+        let close = |x: Point, y: Point| x.distance(y) <= tol.confusion();
+        let found = mitred.iter().find(|(v, _)| {
+            sections.get(*v).is_some_and(|ends| {
+                ends.iter().any(|(p, q, bi)| {
+                    bevels[*bi].edge == strip.edge
+                        && ((close(*p, a) && close(*q, z)) || (close(*p, z) && close(*q, a)))
+                })
+            })
+        });
+        let Some((v, x)) = found else {
+            return Ok(false);
+        };
+        let beside = |at: Point| {
+            sections[v]
+                .iter()
+                .find(|(p, q, bi)| {
+                    bevels[*bi].edge != strip.edge && (close(*p, at) || close(*q, at))
+                })
+                .map(|(_, _, bi)| &bevels[*bi].surface)
+        };
+        let (Some(first), Some(second)) = (beside(a), beside(z)) else {
+            ogeom_core::ogeom_bail!(
+                Construction,
+                "a mitred bevel's end shares no corner with another bevel"
+            );
+        };
+        ring.push(section(points, edges, made, strip, Some(first), a, *x)?);
+        ring.push(section(points, edges, made, strip, Some(second), *x, z)?);
+        Ok(true)
     };
     // P4: each face rebuilt, its loops in the stored order, each edge's
     // piece between the corners at its ends, walked the surface's way.
@@ -2297,30 +2374,34 @@ fn assemble_widened(
         let mut ring: Vec<(usize, bool)> = vec![(kr, sr)];
         if qr != po {
             let (a, z) = (points.points[qr], points.points[po]);
-            let cut = cut_at(b, vertex_of(a), a, z);
-            ring.push(section(
-                &mut points,
-                &mut edges,
-                &mut made,
-                b,
-                cut.as_ref(),
-                a,
-                z,
-            )?);
+            if !mitred_end(&mut points, &mut edges, &mut made, &mut ring, b, a, z)? {
+                let cut = cut_at(b, vertex_of(a), a, z);
+                ring.push(section(
+                    &mut points,
+                    &mut edges,
+                    &mut made,
+                    b,
+                    cut.as_ref(),
+                    a,
+                    z,
+                )?);
+            }
         }
         ring.push((ko, so));
         if qo != pr {
             let (a, z) = (points.points[qo], points.points[pr]);
-            let cut = cut_at(b, vertex_of(a), a, z);
-            ring.push(section(
-                &mut points,
-                &mut edges,
-                &mut made,
-                b,
-                cut.as_ref(),
-                a,
-                z,
-            )?);
+            if !mitred_end(&mut points, &mut edges, &mut made, &mut ring, b, a, z)? {
+                let cut = cut_at(b, vertex_of(a), a, z);
+                ring.push(section(
+                    &mut points,
+                    &mut edges,
+                    &mut made,
+                    b,
+                    cut.as_ref(),
+                    a,
+                    z,
+                )?);
+            }
         }
         let p0 = pr;
         // The bevel faces out: away from both faces at the edge.
@@ -2709,6 +2790,48 @@ fn met_between(
         }));
     }
     Ok(None)
+}
+
+/// The point every one of `surfaces` passes through near `start`: Newton's
+/// steps on the first three's signed distances (each surface's normal at
+/// the foot of the point), the rest checked to pass there too. `None`
+/// where the steps do not settle within the confusion distance, three
+/// normals there span no corner, or another surface misses the point.
+fn shared_point(
+    surfaces: &[&SurfaceGeometry],
+    start: Point,
+    tol: Tolerances,
+) -> OgeomResult<Option<Point>> {
+    const STEPS: usize = 50;
+    if surfaces.len() < 3 {
+        return Ok(None);
+    }
+    let off = |surface: &SurfaceGeometry, x: Point| -> OgeomResult<(f64, Vector)> {
+        let foot = ogeom_geom::project::project_on_surface(surface, x, 16, tol)?;
+        let n = ogeom_geom::Surface::normal_at(surface, foot.parameters.0, foot.parameters.1, tol)?
+            .vector();
+        Ok(((x - foot.point).dot(n), n))
+    };
+    let mut x = start;
+    for _ in 0..STEPS {
+        let (fa, a) = off(surfaces[0], x)?;
+        let (fb, b) = off(surfaces[1], x)?;
+        let (fc, c) = off(surfaces[2], x)?;
+        if fa.abs().max(fb.abs()).max(fc.abs()) <= 1e-3 * tol.confusion() {
+            break;
+        }
+        let det = a.dot(b.cross(c));
+        if det.abs() <= 1e-12 {
+            return Ok(None);
+        }
+        x -= (b.cross(c) * fa + c.cross(a) * fb + a.cross(b) * fc) / det;
+    }
+    for surface in surfaces {
+        if off(surface, x)?.0.abs() > tol.confusion() {
+            return Ok(None);
+        }
+    }
+    Ok(Some(x))
 }
 
 /// Whether the segment from `p` to `q` lies on every one of `surfaces`,
