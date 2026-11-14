@@ -74,7 +74,7 @@ pub(crate) fn round(
         let Some((strip, clear, under)) = strip_of(&curved, *edge, *radius, tol)? else {
             return Ok(None);
         };
-        non_local |= under;
+        non_local |= !under.is_empty();
         if let Some(clear) = clear {
             boxes.push((strips.len(), clear));
         }
@@ -313,6 +313,10 @@ pub(crate) fn round(
     }
 }
 
+/// A strip, the outside of the box its round can take up where read, and
+/// the edges of other faces standing under its round.
+type Seated = (Strip, Option<ogeom_algo::HalfSpaces>, Vec<Id>);
+
 /// The strip of `edge` rounded at `radius`, with, for a rim, the outside of
 /// the box its round can take up; `None` where its seat is not one built
 /// here.
@@ -321,7 +325,7 @@ fn strip_of(
     edge: Id,
     radius: f64,
     tol: Tolerances,
-) -> OgeomResult<Option<(Strip, Option<ogeom_algo::HalfSpaces>, bool)>> {
+) -> OgeomResult<Option<Seated>> {
     let Some(e) = curved.edges.get(&edge) else {
         return Ok(None);
     };
@@ -333,7 +337,7 @@ fn strip_of(
     }
     match &e.curve {
         Curve::Line(_) => {
-            Ok(straight(curved, edge, e, [f0, f1], radius, tol)?.map(|(s, c)| (s, c, false)))
+            Ok(straight(curved, edge, e, [f0, f1], radius, tol)?.map(|(s, c)| (s, c, Vec::new())))
         }
         Curve::Circle(circle) => {
             Ok(rim(curved, edge, circle, [f0, f1], radius, tol)?.map(|(s, c, u)| (s, Some(c), u)))
@@ -659,11 +663,11 @@ fn rim(
     faces: [usize; 2],
     radius: f64,
     tol: Tolerances,
-) -> OgeomResult<Option<(Strip, ogeom_algo::HalfSpaces, bool)>> {
+) -> OgeomResult<Option<(Strip, ogeom_algo::HalfSpaces, Vec<Id>)>> {
     let c = circle.circle();
-    // Whether an edge of another face stands under the round, wholly
-    // within its contact ring: the round reaches a face it does not end at.
-    let mut under = false;
+    // Each edge of another face standing under the round, wholly within its
+    // contact ring: the round reaches a face it does not end at.
+    let mut under: Vec<Id> = Vec::new();
     let frame = c.frame();
     let (centre, up) = (frame.origin(), frame.z().vector());
     let r0 = c.radius();
@@ -846,7 +850,7 @@ fn rim(
                 (x - b) * (b - a) > tol.confusion() * (b - a).abs()
             };
             if samples.iter().copied().any(between) && !samples.iter().any(beyond) {
-                under = true;
+                under.push(*e);
             }
         }
     }
@@ -1092,6 +1096,34 @@ fn fitted_straight(
         let c0 = ogeom_geom::fit::fit_points(&feet[0], 3, STRAIGHT_FIT, tol)?;
         let c1 = ogeom_geom::fit::fit_points(&feet[1], 3, STRAIGHT_FIT, tol)?;
         if surface.met && spine.met && c0.met && c1.met {
+            // Outside the box a convex round takes up: between the edge's
+            // ends, inside both faces' tangent planes along it (a cone's is
+            // one plane along its ruling), and no deeper than its feet.
+            let clear = (side < 0.0).then(|| {
+                let (u, mid) = ((b - a) / length, a + (b - a) * 0.5);
+                let w = -(normals[0] + normals[1]);
+                let w = w / w.magnitude();
+                let deep = feet
+                    .iter()
+                    .flatten()
+                    .map(|p| (*p - mid).dot(w))
+                    .fold(0.0, f64::max);
+                let mut outside = vec![
+                    ogeom_algo::HalfSpaces::Below { normal: u, at: a },
+                    ogeom_algo::HalfSpaces::Below { normal: -u, at: b },
+                    ogeom_algo::HalfSpaces::Below {
+                        normal: -w,
+                        at: mid + w * deep,
+                    },
+                ];
+                for n in normals {
+                    outside.push(ogeom_algo::HalfSpaces::Below {
+                        normal: -(n / n.magnitude()),
+                        at: mid,
+                    });
+                }
+                ogeom_algo::HalfSpaces::Any(outside)
+            });
             return Ok(Some((
                 Strip {
                     edge,
@@ -1102,7 +1134,7 @@ fn fitted_straight(
                         spine: Curve::BSpline(spine.curve),
                     },
                 },
-                None,
+                clear,
             )));
         }
         if n >= MOST {
@@ -1231,7 +1263,7 @@ pub(crate) fn non_local_tools(
         let Some((strip, clear, under)) = strip_of(&curved, *edge, *radius, tol)? else {
             return Ok(None);
         };
-        non_local |= under;
+        non_local |= !under.is_empty();
         boxes.push(clear);
         strips.push(strip);
     }
@@ -1315,4 +1347,95 @@ pub(crate) fn non_local_tools(
         tools.push(tool);
     }
     Ok(Some(tools))
+}
+
+/// The faces `rounds` on `solid` reach without ending at them, and the
+/// faces they end at, where any is reached (ADR 0001, §4.5): those with an
+/// edge standing under a rim's round within its contact ring, and those not
+/// proved outside the box a round can take up; its two faces and those at
+/// its ends are the faces it ends at. `None` where every round is local,
+/// any edge's seat is not one read here, or a contact rolls over.
+///
+/// # Errors
+///
+/// As reading the solid and certifying its faces.
+pub(crate) fn far_faces(
+    model: &mut Model,
+    solid: &Shape,
+    rounds: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Option<(Vec<Shape>, Vec<Shape>)>> {
+    let Some(curved) = read(model, solid, tol)? else {
+        return Ok(None);
+    };
+    let mut far: Vec<usize> = Vec::new();
+    let mut near: Vec<usize> = Vec::new();
+    let mut strips = Vec::with_capacity(rounds.len());
+    let mut boxes = Vec::with_capacity(rounds.len());
+    for (edge, radius) in rounds {
+        let e = id(edge);
+        if faces_of(&curved, e).len() == 1 {
+            continue;
+        }
+        let Some((strip, clear, under)) = strip_of(&curved, e, *radius, tol)? else {
+            return Ok(None);
+        };
+        for u in under {
+            far.extend(
+                faces_of(&curved, u)
+                    .into_iter()
+                    .filter(|f| !strip.faces.contains(f)),
+            );
+        }
+        near.extend(strip.faces);
+        let c = &curved.edges[&e];
+        for (fi, face) in curved.faces.iter().enumerate() {
+            if face.loops.iter().flatten().any(|(x, _)| {
+                let d = &curved.edges[x];
+                [d.ends.0, d.ends.1]
+                    .iter()
+                    .any(|v| *v == c.ends.0 || *v == c.ends.1)
+            }) {
+                near.push(fi);
+            }
+        }
+        boxes.push(clear);
+        strips.push(strip);
+    }
+    let mut contacts: FastMap<(usize, Id), Curve> = FastMap::default();
+    for s in &strips {
+        for k in 0..2 {
+            contacts.insert((s.faces[k], s.edge), s.contacts[k].clone());
+        }
+    }
+    let Some(corners) = curved_corners(&curved, &contacts, tol)? else {
+        return Ok(None);
+    };
+    if rolls_over(&roll_overs(&curved, &contacts, &corners, tol)?) {
+        return Ok(None);
+    }
+    let fit = crate::marched::band_fit_target(tol);
+    for clear in boxes.iter().flatten() {
+        for (fi, face) in curved.faces.iter().enumerate() {
+            if near.contains(&fi) || far.contains(&fi) {
+                continue;
+            }
+            if ogeom_algo::certify_face_within(model, &face.shape, clear, fit, tol)?.is_err() {
+                far.push(fi);
+            }
+        }
+    }
+    far.retain(|f| !near.contains(f));
+    if far.is_empty() {
+        return Ok(None);
+    }
+    far.sort_unstable();
+    far.dedup();
+    near.sort_unstable();
+    near.dedup();
+    let shape = |f: &usize| curved.faces[*f].shape.clone();
+    Ok(Some((
+        far.iter().map(shape).collect(),
+        near.iter().map(shape).collect(),
+    )))
 }
