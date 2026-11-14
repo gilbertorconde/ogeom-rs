@@ -214,3 +214,55 @@ fn a_torus_rim_chamfers_by_distance_and_angle() {
         ),
     );
 }
+
+/// The angle an arc of a rim turns through: its circle's parameter range.
+fn arc_turn(m: &Model, e: &Shape) -> f64 {
+    let data = m.node(e).and_then(|n| n.data().as_edge()).expect("an edge");
+    let Some(ogeom_topo::EdgeRepr::Curve3d { range, .. }) = data.curve3d() else {
+        panic!("an edge in space");
+    };
+    (range.1 - range.0).abs()
+}
+
+/// The sliced torus's outer rim, its arcs asked apart: the first 0.5, the
+/// rest 0.8. Each arc's bevel is its section turned over the arc's own
+/// sweep, the two stepping on the plane through the axis at each joint
+/// (ADR 0001, amendment "M5b"): the volume lost is each arc's share of
+/// its section's ring, exactly (Pappus).
+#[test]
+fn a_torus_rim_s_arcs_asked_apart_step_at_their_joints() {
+    let mut m = Model::new();
+    let s = sliced(&mut m);
+    let before = vol(&m, &s);
+    let outer: Vec<Shape> = rims(&m, &s)
+        .into_iter()
+        .filter(|r| r.3)
+        .map(|r| r.0)
+        .collect();
+    assert!(outer.len() >= 2, "the outer rim's arcs");
+    let turns: f64 = outer.iter().map(|e| arc_turn(&m, e)).sum();
+    assert!((turns - TAU).abs() < 1e-9, "the arcs close the rim");
+    let ds: Vec<f64> = (0..outer.len())
+        .map(|k| if k == 0 { 0.5 } else { 0.8 })
+        .collect();
+    let specs: Vec<(Shape, Chamfer)> = outer
+        .iter()
+        .zip(&ds)
+        .map(|(e, d)| (e.clone(), Chamfer::Symmetric(*d)))
+        .collect();
+    let built = chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
+    let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let want: f64 = outer
+        .iter()
+        .zip(&ds)
+        .map(|(e, d)| {
+            let (area, rho) = removed(true, *d, *d);
+            area * rho * arc_turn(&m, e)
+        })
+        .sum();
+    close(before - vol(&m, &built.shape), want);
+    for e in &outer {
+        assert_eq!(built.history.generated(e).len(), 1, "its bevel");
+    }
+}
