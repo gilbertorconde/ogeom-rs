@@ -571,20 +571,33 @@ planes, #915). Asked with different chamfers:
 | Application | Different sizes on edges that continue each other |
 |---|---|
 | SOLIDWORKS | A tangent chain takes one value ("tangent propagation"). Different sizes in one feature only for symmetric offset-face chamfers ("Multi Distance Chamfer"); the multiple-radius fillet note says sizes cannot differ on faces or loops with common edges. [help.solidworks.com, Chamfer PropertyManager; Constant Size Fillets] |
-| Fusion | "Tangent Chain" is on by default; it must be cleared to give the pieces separate selection sets. The junction is not documented. [Fusion Chamfer and Tangent Chain references] |
+| Fusion | "Tangent Chain" is on by default; cleared, each piece takes its own selection set with its own size and the feature builds. The junction's shape is not documented. [Fusion Chamfer reference: help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-REF-CHAMFER.htm] |
 | Onshape | One set of distances per feature; per-edge overrides change only the direction. [Onshape Chamfer help] |
-| Creo | Separate chamfer sets are allowed, with documented "transitions" where sets meet (Intersect, Blend, Continue, Stop at Reference, Corner Plane, Patch). Which one applies between two sets that continue each other is not stated. [Creo, About Chamfer Transitions] |
+| Creo | Separate chamfer sets are allowed, with documented "transitions" where sets meet (Stop Case, Stop at Reference, Blend, Continue, Corner Plane, Intersect, Patch); Blend and Continue are shown "between two collinear chamfer pieces". Which one applies between two sets of different sizes is not stated. [Creo 9.0 help, About Chamfer Transitions: support.ptc.com/help/creo/creo_pma/r9.0/usascii/part_modeling/part_modeling/About_Chamfer_Transitions.html] |
 | NX | Not documented publicly (the help sits behind a login). |
 | Solid Edge | Refused within one feature: "multiple edges in one operation if they have the same setback value… you must construct separate chamfer features for each chamfer size". [Solid Edge ST6 help] |
 
 Practice treats a chain of edges that continue each other as one edge with
-one value by default. Two applications refuse different sizes inside one
-feature, and no application documents a taper between two sizes there; a
-size that varies along an edge is what a variable chamfer is for. So:
+one value by default. Onshape and Solid Edge refuse different sizes inside
+one feature, but Fusion (separate selection sets) and Creo (separate sets,
+with transitions between collinear pieces) build them, and every
+application builds two chamfer features on the two pieces. No application
+documents a taper between two sizes there; a size that varies along an
+edge is what a variable chamfer is for. So (revised in M6: the step
+replaced #1003's refusal):
 
-- **Rule:** pieces of one edge asked with different chamfers are refused by
-  name ("two pieces of one edge are asked with different chamfers"). The
-  edge is asked once, or its pieces alike.
+- **Rule:** pieces of one edge asked with different chamfers are built, not
+  refused: each piece is an edge of its own, chamfered as asked, and the
+  bevels step at the vertex between two pieces, each ending on the plane
+  through it square to the edge, as two features on the pieces would build.
+  The step's face is the deeper bevel's end section less the shallower's;
+  where two distances swapped between the pieces make the sections cross,
+  it is a triangle on each face's side of the crossing, each facing the
+  side whose bevel is deeper. A piece asked alone still stands for the
+  whole edge (one value per tangent chain, the default above); once pieces
+  are asked apart, an unasked piece stays sharp. Planar edges first; pieces
+  of a curved edge asked apart are still refused by name until the curved
+  engine builds the step.
 - **Degenerate planar topology** (an edge bounded by other than two faces,
   as where two blocks touch along an edge; an edge closing on itself; two
   edges between one pair of vertices; a vertex whose faces close round it
