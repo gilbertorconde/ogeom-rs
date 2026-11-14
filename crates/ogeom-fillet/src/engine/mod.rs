@@ -241,6 +241,16 @@ pub(crate) fn run(
     {
         return rounds::assemble(model, &planar, &seats, &by_edge, &corners, &steps, tol);
     }
+    // A bevel reaching or touching a face not round its ends changes a face
+    // the request does not name, which the rings do not trim: the
+    // non-local test, then the one-boolean fallback (ADR 0001, M5a).
+    if !request.mitre
+        && fallback::non_local(&planar, &seats, &blended, &corners, &steps, tol).is_some()
+    {
+        return fallback::one_boolean(
+            model, solid, &planar, &seats, &blended, &corners, &steps, tol,
+        );
+    }
     // Chamfers set back differently along one line step there: only where
     // the line's two faces alone meet, at a joint between two pieces of one
     // edge. Elsewhere (a third face at the vertex) they are the current

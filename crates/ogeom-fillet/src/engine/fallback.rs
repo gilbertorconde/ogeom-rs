@@ -24,6 +24,8 @@ struct Piece {
     points: Vec<Point>,
     carried: Vec<Point>,
     from: Shape,
+    /// The vertices it ends at: an edge's two, a vertex itself.
+    ends: Vec<Id>,
     additive: bool,
 }
 
@@ -100,31 +102,15 @@ fn hull(points: &[Point], eps: f64) -> Option<(Vec<Point>, Vec<Vec<usize>>, Vec<
     Some((at, rings, planes))
 }
 
-/// The request applied by booleans: each bevel's piece and each faceted
-/// vertex's, fused where concave, then cut where convex, the history traced
-/// through the booleans ([`apply`]), each piece's bevel or facet face
-/// named for its edge or vertex.
-/// `None` where a vertex mixes convex and concave bevels, or a piece will
-/// not build or apply.
-///
-/// # Errors
-///
-/// As the booleans, other than their refusals, which decline.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the phases' products, as P4 takes them"
-)]
-pub(crate) fn one_boolean(
-    model: &mut Model,
-    solid: &Shape,
+/// Each bevel's piece and each vertex's of two bevels or more, in key
+/// order; `None` where a vertex mixes convex and concave bevels.
+fn pieces(
     planar: &Planar,
     seats: &FastMap<(Id, Id), Seat>,
     blended: &ogeom_core::FastSet<Id>,
     corners: &FastMap<(usize, Id), Point>,
     steps: &FastMap<(usize, Id), [Point; 2]>,
-    tol: Tolerances,
-) -> OgeomResult<Option<Built>> {
-    let eps = tol.confusion();
+) -> Option<Vec<Piece>> {
     // The corner of `face` at `v` on `seat`'s own line where the face steps.
     let corner = |seat: &Seat, k: usize, v: Id| -> Point {
         let face = seat.faces[k];
@@ -157,6 +143,7 @@ pub(crate) fn one_boolean(
             points,
             carried,
             from: planar.shapes[&seat.edge].clone(),
+            ends: vec![a, b],
             additive: !seat.convex,
         });
     }
@@ -172,11 +159,9 @@ pub(crate) fn one_boolean(
         }
         let convex = at.iter().filter(|s| s.convex).count();
         if convex != 0 && convex != at.len() {
-            return Ok(None);
+            return None;
         }
-        let Some(order) = faces_round(&planar.faces, v) else {
-            return Ok(None);
-        };
+        let order = faces_round(&planar.faces, v)?;
         let carried: Vec<Point> = order.iter().map(|fi| corners[&(*fi, v)]).collect();
         let mut points = carried.clone();
         points.push(planar.points[&v]);
@@ -184,9 +169,158 @@ pub(crate) fn one_boolean(
             points,
             carried,
             from: planar.shapes[&v].clone(),
+            ends: vec![v],
             additive: convex == 0,
         });
     }
+    Some(pieces)
+}
+
+/// The non-local test (ADR 0001, §4.5, M5a): the first piece that reaches
+/// or touches a face not round the vertices it ends at, with that face's
+/// index, before any surface is built. Its blend would change a face the
+/// request does not name, which the rings do not trim.
+pub(crate) fn non_local(
+    planar: &Planar,
+    seats: &FastMap<(Id, Id), Seat>,
+    blended: &ogeom_core::FastSet<Id>,
+    corners: &FastMap<(usize, Id), Point>,
+    steps: &FastMap<(usize, Id), [Point; 2]>,
+    tol: Tolerances,
+) -> Option<(Shape, usize)> {
+    let eps = tol.confusion();
+    let pieces = pieces(planar, seats, blended, corners, steps)?;
+    for piece in &pieces {
+        let Some((_, _, planes)) = hull(&piece.points, eps) else {
+            continue;
+        };
+        let near: Vec<usize> = piece
+            .ends
+            .iter()
+            .filter_map(|v| faces_round(&planar.faces, *v))
+            .flatten()
+            .collect();
+        for (fi, face) in planar.faces.iter().enumerate() {
+            if near.contains(&fi) {
+                continue;
+            }
+            // The face's outline clipped to the piece, touching counted.
+            let mut ring: Vec<Point> = face.corners.iter().map(|v| planar.points[v]).collect();
+            for (n, off) in &planes {
+                let side = |p: &Point| n.dot(p.to_vector()) - off;
+                let mut out = Vec::with_capacity(ring.len() + 1);
+                for k in 0..ring.len() {
+                    let (p, q) = (ring[k], ring[(k + 1) % ring.len()]);
+                    let (sp, sq) = (side(&p), side(&q));
+                    if sp <= eps {
+                        out.push(p);
+                    }
+                    if (sp <= eps) != (sq <= eps) {
+                        let t = (sp - eps) / (sp - sq);
+                        out.push(p + (q - p) * t);
+                    }
+                }
+                ring = out;
+                if ring.is_empty() {
+                    break;
+                }
+            }
+            if !ring.is_empty() {
+                return Some((piece.from.clone(), fi));
+            }
+        }
+    }
+    None
+}
+
+/// The request applied by booleans: each bevel's piece and each faceted
+/// vertex's, fused where concave, then cut where convex, the history traced
+/// through the booleans ([`apply`]), each piece's bevel or facet face
+/// named for its edge or vertex.
+/// `None` where a vertex mixes convex and concave bevels, or a piece will
+/// not build or apply.
+///
+/// # Errors
+///
+/// As the booleans, other than their refusals, which decline.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the phases' products, as P4 takes them"
+)]
+pub(crate) fn one_boolean(
+    model: &mut Model,
+    solid: &Shape,
+    planar: &Planar,
+    seats: &FastMap<(Id, Id), Seat>,
+    blended: &ogeom_core::FastSet<Id>,
+    corners: &FastMap<(usize, Id), Point>,
+    steps: &FastMap<(usize, Id), [Point; 2]>,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let eps = tol.confusion();
+    // Each bevel must fit its two faces on its own: a contact line past a
+    // face's far side leaves the face it is seated on, which is refused by
+    // name, not built.
+    for seat in seats.values().filter(|s| blended.contains(&s.edge)) {
+        for (k, fi) in seat.faces.iter().enumerate() {
+            let face = &planar.faces[*fi];
+            let inward = face
+                .normal
+                .cross(if k == 0 { seat.along } else { -seat.along });
+            let from = planar.points[&seat.ends.0];
+            let width = face
+                .loops()
+                .flatten()
+                .map(|c| (planar.points[c] - from).dot(inward))
+                .fold(0.0, f64::max);
+            let Some(corner) = corners.get(&(*fi, seat.ends.0)) else {
+                return Ok(None);
+            };
+            if (*corner - from).dot(inward) > width + eps {
+                return Ok(None);
+            }
+        }
+    }
+    // Every setback corner on its own face: one standing off the face (past
+    // what the part holds) is refused by name, not built.
+    for ((fi, _), corner) in corners {
+        let face = &planar.faces[*fi];
+        let n = face.normal;
+        let u = if n.x.abs() < 0.9 {
+            Vector::X
+        } else {
+            Vector::Y
+        };
+        let u = u - n * u.dot(n);
+        let u = u / u.magnitude();
+        let w = n.cross(u);
+        let flat = |p: Point| (p.to_vector().dot(u), p.to_vector().dot(w));
+        let at = flat(*corner);
+        let ring =
+            |l: &[Id]| -> Vec<(f64, f64)> { l.iter().map(|v| flat(planar.points[v])).collect() };
+        let on = |l: &[(f64, f64)]| {
+            super::guards::strictly_inside(l, at, eps)
+                || (0..l.len()).any(|k| {
+                    let (a, b) = (l[k], l[(k + 1) % l.len()]);
+                    let ab = (b.0 - a.0, b.1 - a.1);
+                    let t = (((at.0 - a.0) * ab.0 + (at.1 - a.1) * ab.1)
+                        / ab.0.mul_add(ab.0, ab.1 * ab.1))
+                    .clamp(0.0, 1.0);
+                    (a.0 + ab.0 * t - at.0).hypot(a.1 + ab.1 * t - at.1) <= eps
+                })
+        };
+        if !on(&ring(&face.corners))
+            || face
+                .holes
+                .iter()
+                .any(|h| super::guards::strictly_inside(&ring(h), at, eps))
+        {
+            return Ok(None);
+        }
+    }
+    let Some(pieces) = pieces(planar, seats, blended, corners, steps) else {
+        return Ok(None);
+    };
     // Each piece built as a tool, the face carrying its bevel or facet
     // named for its edge or vertex.
     let mut tools: Vec<Tool> = Vec::with_capacity(pieces.len());
