@@ -673,7 +673,13 @@ it for planar chamfers first.
   contact ring, or one not proved outside the box it can take up) is
   closed so, arc by arc, read on the solid with its seams dissolved and
   applied on the solid as given, each tool's strip named for the edges
-  asked. A strip along one closed edge (no ends to cap) declines for now.
+  asked. A straight round along a cylinder's ruling is labelled so too:
+  every face but its two and those at its ends proved outside the box it
+  can take up (between its ends, within the spine's cylinder through the
+  edge, and at a convex edge on the edge's side of the spine and inside
+  both faces' tangent planes there); its caps' sides on a wall square to
+  the cap are the arcs about the wall's axis. A strip along one closed
+  edge (no ends to cap) declines for now.
 - **What takes it.** The non-local test (P2/P5) routes there, and so does a
   local request the assembly cannot place: chamfers set back differently
   in one line where a third face meets the step (the step's face is then
