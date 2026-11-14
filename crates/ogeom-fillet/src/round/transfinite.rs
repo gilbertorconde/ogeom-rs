@@ -426,10 +426,10 @@ fn support_bend(
             let bend = tm * tm / small + tp * tp * cos_phi / small.mul_add(cos_phi, big);
             Ok(out * -bend)
         }
-        SurfaceGeometry::BSpline(_) => {
-            // The second fundamental form in `t`'s direction: `t` written
-            // in the chart's tangents, its normal part of the second
-            // derivatives.
+        // Any other surface (a spline, an extruded conic): the second
+        // fundamental form in `t`'s direction, `t` written in the chart's
+        // tangents, its normal part of the second derivatives.
+        _ => {
             let foot = ogeom_geom::project::project_on_surface(support, p, 16, tol)?;
             let (u, v) = foot.parameters;
             let (su, sv) = ogeom_geom::Surface::d1_at(support, u, v, tol)?;
@@ -449,10 +449,6 @@ fn support_bend(
             let second = (suu * (a * a) + suv * (2.0 * a * b) + svv * (b * b)).dot(n);
             Ok(n * second)
         }
-        _ => ogeom_bail!(
-            Construction,
-            "a vertex patch's side runs along a surface whose curvature it cannot read"
-        ),
     }
 }
 
@@ -484,16 +480,13 @@ fn support_normal(support: &SurfaceGeometry, p: Point, tol: Tolerances) -> Ogeom
             let radial = (off - z * off.dot(z)).normalized(tol)?;
             (p - (o + radial * torus.major_radius())).normalized(tol)
         }
-        SurfaceGeometry::BSpline(_) => {
+        // Any other surface: its chart's normal at the foot of `p`.
+        _ => {
             let foot = ogeom_geom::project::project_on_surface(support, p, 16, tol)?;
             let (u, v) = foot.parameters;
             let (du, dv) = ogeom_geom::Surface::d1_at(support, u, v, tol)?;
             du.cross(dv).normalized(tol)
         }
-        _ => ogeom_bail!(
-            Construction,
-            "a vertex patch's side runs along a surface whose normal it cannot read"
-        ),
     }
 }
 

@@ -52,6 +52,21 @@ pub(crate) enum Section {
     Chamfer { on: [(Shape, f64); 2] },
     /// A round: the rolling ball of this radius.
     Round { radius: f64 },
+    /// A round meeting each named face its distance from the edge, its
+    /// section `profile` between the two contacts (an ellipse, or a conic
+    /// of its own `rho`).
+    Conic {
+        on: [(Shape, f64); 2],
+        profile: crate::asym::RoundProfile,
+    },
+}
+
+impl Section {
+    /// Whether the section is a round's (curved, built by the rounds'
+    /// sheet) rather than a bevel's.
+    pub(crate) const fn is_round(&self) -> bool {
+        matches!(self, Self::Round { .. } | Self::Conic { .. })
+    }
 }
 
 impl Request {
@@ -97,6 +112,71 @@ impl Request {
             splits: Vec::new(),
             corners: Vec::new(),
         }))
+    }
+
+    /// One edge rounded meeting `a.face` `a.on_face` from it and its other
+    /// face `a.on_other`, its section `a.profile`, as a request of one;
+    /// `None` where the edge is not straight between two planes or the face
+    /// named is not one of them.
+    ///
+    /// # Errors
+    ///
+    /// As reading the edge's seat.
+    pub fn from_round_distances(
+        model: &Model,
+        solid: &Shape,
+        a: &crate::asym::Asymmetric,
+        tol: Tolerances,
+    ) -> OgeomResult<Option<Self>> {
+        let Ok(seat) = crate::support::planar_seat(model, solid, &a.edge, tol) else {
+            return Ok(None);
+        };
+        let other = if seat.faces[0].is_same(&a.face) {
+            seat.faces[1].clone()
+        } else if seat.faces[1].is_same(&a.face) {
+            seat.faces[0].clone()
+        } else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            blends: vec![Blend {
+                edge: a.edge.clone(),
+                section: Section::Conic {
+                    on: [(a.face.clone(), a.on_face), (other, a.on_other)],
+                    profile: a.profile,
+                },
+            }],
+            mitre: false,
+            splits: Vec::new(),
+            corners: Vec::new(),
+        }))
+    }
+
+    /// Rounds of one radius and rounds of their own distances, as one
+    /// request: each distance round's edge straight between two planes,
+    /// `face` one of them; `None` where one is not.
+    ///
+    /// # Errors
+    ///
+    /// As [`Request::from_rounds`].
+    pub fn from_mixed_rounds(
+        model: &Model,
+        solid: &Shape,
+        rounds: &[(Shape, f64)],
+        distances: &[crate::asym::Asymmetric],
+        tol: Tolerances,
+    ) -> OgeomResult<Option<Self>> {
+        let mut request = Self::from_rounds(rounds, tol)?;
+        for a in distances {
+            if request.blends.iter().any(|b| b.edge.is_same(&a.edge)) {
+                ogeom_bail!(Construction, "an edge is asked to be rounded twice");
+            }
+            let Some(one) = Self::from_round_distances(model, solid, a, tol)? else {
+                return Ok(None);
+            };
+            request.blends.extend(one.blends);
+        }
+        Ok(Some(request))
     }
 
     /// Each edge rounded at its radius, as one request.

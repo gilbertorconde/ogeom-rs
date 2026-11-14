@@ -54,6 +54,7 @@ pub(crate) fn law(section: &Section) -> Box<dyn SectionLaw + '_> {
     match section {
         Section::Chamfer { on } => Box::new(ChamferLaw { on }),
         Section::Round { radius } => Box::new(RoundLaw { radius: *radius }),
+        Section::Conic { on, .. } => Box::new(ConicLaw { on }),
     }
 }
 
@@ -120,6 +121,25 @@ impl SectionLaw for RoundLaw {
         ogeom_bail!(
             Invariant,
             "a round's strip is curved: the round sheet builds it, not the planar rings"
+        )
+    }
+}
+
+/// A conic round's: each face named with its distance, as a chamfer's; its
+/// strip is the rounds' sheet's to build.
+struct ConicLaw<'a> {
+    on: &'a [(ogeom_topo::Shape, f64); 2],
+}
+
+impl SectionLaw for ConicLaw<'_> {
+    fn setbacks(&self, seat: &Seat, planar: &Planar) -> OgeomResult<[f64; 2]> {
+        ChamferLaw { on: self.on }.setbacks(seat, planar)
+    }
+
+    fn strip(&self, _seat: &Seat, _corners: StripCorners) -> OgeomResult<Strip> {
+        ogeom_bail!(
+            Construction,
+            "a conic round's strip is built by the rounds' sheet"
         )
     }
 }

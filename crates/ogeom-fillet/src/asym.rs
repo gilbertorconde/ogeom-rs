@@ -390,6 +390,20 @@ pub fn fillet_edge_distances(
         let radius = equal_round(model, solid, edge, face, on_face, tol)?;
         return crate::fillet_edge(model, solid, edge, radius, tol);
     }
+    // The blend engine first, as for a round of one radius: a straight edge
+    // between two planes on a solid bounded by planes.
+    let asked = Asymmetric {
+        edge: edge.clone(),
+        face: face.clone(),
+        on_face,
+        on_other,
+        profile,
+    };
+    if let Some(request) = crate::engine::Request::from_round_distances(model, solid, &asked, tol)?
+        && let Some(built) = crate::engine::run(model, solid, &request, tol)?
+    {
+        return Ok(built);
+    }
     ogeom_algo::on_own_nodes(
         model,
         solid,

@@ -2375,39 +2375,58 @@ fn asymmetric_rounds_close_a_box_corner_with_rounds_and_bevels() {
 }
 
 /// Where an asymmetric round meets other rounds at a corner that is not a
-/// convex corner of planes (the L-bracket's re-entrant edge where it meets
-/// the convex edges of its plate and its upright), the corner is refused
-/// by name.
+/// convex corner of planes (the L-bracket's re-entrant edge, 1.5 on the
+/// floor and 1 up the wall, where it meets the convex edges of its plate and
+/// its upright, each round at 1), the blend engine closes the corner on one
+/// patch, as it closes such a corner of rounds of one radius. Built with no
+/// boolean, valid, every edge generating its strip, the same solid in either
+/// order; the bracket with the fill along its 20 and less each round along
+/// its 12, within the corner's own box (the setbacks' 1.5 each way).
 #[test]
-fn an_asymmetric_round_at_a_corner_that_is_not_convex_is_refused() {
-    let mut m = Model::new();
-    let (s, edge, floor, _) = l_bracket(&mut m);
-    let plate = edge_where(&m, &s, |p| {
-        p.y.abs() < 1e-9 && (p.z - 8.0).abs() < 1e-9 && p.x >= 8.0 - 1e-9
-    });
-    let upright = edge_where(&m, &s, |p| {
-        p.y.abs() < 1e-9 && (p.x - 8.0).abs() < 1e-9 && p.z >= 8.0 - 1e-9
-    });
-    let request = vec![
-        (
-            edge,
-            Blend::RoundDistances {
-                face: floor,
-                on_face: 1.5,
-                on_other: 1.0,
-                profile: RoundProfile::Elliptical,
-            },
-        ),
-        (plate, Blend::Round(1.0)),
-        (upright, Blend::Round(1.0)),
-    ];
-    let message = ogeom_fillet::blend_edges(&mut m, &s, &request, ChamferCorner::Point, T)
-        .expect_err("refused")
-        .to_string();
-    assert!(
-        message.contains("not a convex corner of planes"),
-        "{message}"
-    );
+fn an_asymmetric_round_at_a_corner_that_is_not_convex_closes_on_one_patch() {
+    let mut volumes = Vec::new();
+    for flip in [false, true] {
+        let mut m = Model::new();
+        let (s, edge, floor, _) = l_bracket(&mut m);
+        let plate = edge_where(&m, &s, |p| {
+            p.y.abs() < 1e-9 && (p.z - 8.0).abs() < 1e-9 && p.x >= 8.0 - 1e-9
+        });
+        let upright = edge_where(&m, &s, |p| {
+            p.y.abs() < 1e-9 && (p.x - 8.0).abs() < 1e-9 && p.z >= 8.0 - 1e-9
+        });
+        let mut request = vec![
+            (
+                edge,
+                Blend::RoundDistances {
+                    face: floor,
+                    on_face: 1.5,
+                    on_other: 1.0,
+                    profile: RoundProfile::Elliptical,
+                },
+            ),
+            (plate, Blend::Round(1.0)),
+            (upright, Blend::Round(1.0)),
+        ];
+        if flip {
+            request.reverse();
+        }
+        let (built, work) = ogeom_bool::work::counted(|| {
+            ogeom_fillet::blend_edges(&mut m, &s, &request, ChamferCorner::Point, T).unwrap()
+        });
+        assert_eq!(work.face_pairs, 0, "built with no boolean");
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        for (e, _) in &request {
+            assert!(!built.history.generated(e).is_empty(), "each strip");
+        }
+        volumes.push(volume(&m, &built.shape));
+    }
+    let spandrel = 1.0 - core::f64::consts::FRAC_PI_4;
+    let want = 5120.0 + spandrel * 1.5 * 20.0 - spandrel * 24.0;
+    for v in &volumes {
+        assert!((v - want).abs() < 1.5 * 1.5 * 1.5, "{v} against {want}");
+    }
+    assert!((volumes[0] - volumes[1]).abs() < 1e-9, "either order");
 }
 
 /// The largest pair: on a box edge the top's contact runs off the top's
