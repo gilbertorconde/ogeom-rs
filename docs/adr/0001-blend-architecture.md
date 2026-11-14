@@ -707,6 +707,83 @@ application closes a mixed corner in one feature.
   2. drop those edges;
   3. evaluate again, until the rest fit.
 
+### Question 5: rounds running on into each other with different sections
+
+Two rounded edges meeting tangent at a vertex (one straight edge split by a
+third edge, or a straight edge running into a rim) whose sections differ
+there: different radii, or the same radius set back differently by a third
+edge's round on one face.
+
+| Source | What it does |
+|---|---|
+| Creo [P13] | **Blend** between two collinear round pieces: a fillet surface between them, then a stop. **Continue:** the round geometry extended across. The default is chosen by context. |
+| SOLIDWORKS [P24, P9] | Variable size fillets: a **smooth transition**, the fillet changing from one radius to the other matching its neighbour's tangency, or a straight one. Setbacks make "a smooth transition ... into the fillet corner". |
+| SMLib [14] | The Nx2 tangent case "might have to put another fillet surface in between the two that are there now" (`AdjustTangentCorner`). |
+| Fusion; NX; Onshape; CATIA | Not found. |
+
+**Practice agrees:** two such rounds are joined by a transition surface
+tangent to both, never left stepped or cut square.
+
+**Rule:**
+
+- Where the two sections agree at the vertex, one strip runs on through
+  it (today's case).
+- Otherwise the two strips end at their natural ends and **one G1 patch**
+  joins them, bounded by their end sections and by each face's setback
+  curves between the two contacts, through whatever the third edge's
+  round or sharp edge leaves there.
+
+### Question 6: a convex and a concave round beside an edge left sharp
+
+| Source | What it does |
+|---|---|
+| SMLib [14] | `SmFillet3x2MixedConvexityCorner`: the two rails do not meet; a **three-sided patch** goes between them, its third side along the sharp edge's face. |
+| SOLIDWORKS [P25, P26] | FilletXpert corners need three filleted edges; what two fillets beside a sharp edge make: not found. |
+| Creo [P13] | Stop cases chosen by context; nothing specific to mixed convexity found. |
+| Fusion; NX; Onshape; CATIA | Not found. |
+
+**Rule:** the two strips end at their natural ends and **one G1 patch**
+closes the corner between them, bounded by both ends and the sharp edge's
+faces' setback curves, as SMLib builds it. It is proved against the
+material set out under question 7.
+
+### Question 7: mixed convexity where three or more rounds meet (saddle corners)
+
+| Source | What it does |
+|---|---|
+| SOLIDWORKS [P25, P26] | Three fillets of one convexity, or of one radius: "only one fillet corner type exists". Mixed: alternatives, a **triangular patch**, a **quadrilateral patch**, or two triangles splitting a quadrilateral, chosen by which two edges share convexity and radius. |
+| Creo [P13] | **Patch** for three or four round pieces, whatever their convexity. **Round Only 1 / 2** have variants for three pieces of mixed convexity. Corner Sphere only where three pieces overlap. |
+| SMLib [14] | Every fully filleted vertex with a concave edge is a `SmFilletConcaveNxNCorner`: one patch through the rails, with an opt-in setback. |
+| Fusion; NX; Onshape; CATIA | Not found. |
+
+**Practice agrees:** no source puts a sphere at a mixed corner (no one ball
+touches every face from one side). Each closes it with one patch through
+the strips' ends; the split or quadrilateral layouts are options.
+
+**Rule:**
+
+- A vertex where rounds of mixed convexity meet closes on **one G1
+  n-sided patch** through the strips' natural ends, as unequal radii do.
+- No class of mixed convexity is refused by name: every source above
+  builds them.
+
+**The material a mixed corner is proved against (P5).** A corner's patch
+may stand only where the solid was or where a concave round fills:
+
+- the original solid's material at the vertex: around the vertex's cycle
+  of faces, the half-spaces of faces joined by convex edges intersect and
+  the runs joined by concave edges unite. Three faces give the table
+  `corner_material` already proves against: all convex, every face; one
+  concave edge, the opposite face and either of the edge's; two, the
+  opposite face or both of the convex edge's; three, any face;
+- or a concave round's fill: outside both of its faces, within its
+  contacts.
+
+Where a face is tangent to the next at the vertex (a boss running into a
+plate's side, the cusp of #900), the two count as joined by an edge of
+the convexity the faces either side give them, so the cusp is proved
+within the plate's corner, the boss above the top, or the foot's fill.
+
 ### Decided by the maintainer
 
 - **Non-local blends** (a strip reaching a face that is not its neighbour)
@@ -813,5 +890,13 @@ application closes a mixed corner in one feature.
 - [P23] Onshape forum, chamfer before fillet (user advice, not
   documentation):
   https://forum.onshape.com/discussion/21699/how-can-i-put-a-fillet-tail-on-my-chamfer-edge-like-this
+
+- [P24] SOLIDWORKS 2024, Variable Size Fillets:
+  https://help.solidworks.com/2024/English/SolidWorks/Sldworks/r_Variable_Size_Fillet.htm
+- [P25] SOLIDWORKS 2021, FilletXpert Corner PropertyManager:
+  https://help.solidworks.com/2021/english/SolidWorks/sldworks/hidd_fillet_mgr_corner.htm
+- [P26] SOLIDWORKS API, IFeatureManager::FilletXpertMakeCorner (the
+  corner types):
+  https://help.solidworks.com/2018/English/api/sldworksapi/SolidWorks.Interop.sldworks~SolidWorks.Interop.sldworks.IFeatureManager~FilletXpertMakeCorner.html
 
 No implementation source of any other kernel was read for this record.
