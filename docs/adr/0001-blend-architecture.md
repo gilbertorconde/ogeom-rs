@@ -862,7 +862,9 @@ each face its own distance, its section an ellipse or a conic of a given
 - **Its vertices.** Alone at a vertex of three planes it ends flush in the
   third face, as a ball's round does. With rounds at every edge of a vertex
   it closes on the transfinite patch: its section is no ball's, so no
-  sphere, ridge or mitre is read from it. Beside an edge left sharp, or
+  sphere, ridge or mitre is read from it. Where its corners there stand at
+  different stations its end is skew, the strip (an extrusion along its
+  edge) cut by the plane through both, exact as the ball's. Beside an edge left sharp, or
   reaching a face it does not end at, it is not built yet and goes on as
   before.
 - **Routing.** `fillet_edge_distances` and `blend_edges` (rounds of both
