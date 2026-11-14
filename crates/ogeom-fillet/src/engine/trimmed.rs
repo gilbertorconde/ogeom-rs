@@ -150,6 +150,17 @@ fn chamfer_with(
     if asked.windows(2).any(|w| w[0].0 == w[1].0) {
         return Ok(None);
     }
+    // In order of where each edge stands, its key only between two that
+    // stand alike: a dissolved solid's keys change from one reading to the
+    // next, and the bevels' order is the result's face order.
+    let place = |e: Id| -> [u64; 3] {
+        let c = &curved.edges[&e];
+        c.curve
+            .point_at(0.5 * (c.range.0 + c.range.1), tol)
+            .map_or([u64::MAX; 3], |p| {
+                [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]
+            })
+    };
     // The pieces of one curve the boolean left between the same two faces,
     // meeting at vertices of no other edge, are one edge of the form: the
     // chamfer asked on one runs on into the rest, one bevel round them. A
@@ -157,6 +168,7 @@ fn chamfer_with(
     let Some(chains) = chain_pieces(&curved, &mut asked) else {
         return Ok(None);
     };
+    asked.sort_by_cached_key(|(e, _, _)| (place(*e), *e));
     let mut bevels: Vec<Strip> = Vec::with_capacity(asked.len());
     // Each fitted contact's distance off its face, which its edges are
     // widened to.
@@ -230,7 +242,16 @@ fn chamfer_with(
     // own, a cone's frame may differ) take the first piece's, so their
     // strips are one face.
     for (run, _) in &chains {
-        let Some(first) = bevels.iter().position(|b| run.contains(&b.edge)) else {
+        // The piece starting lowest on the run's curve, not the first in
+        // key order: the keys of a dissolved solid change from one reading
+        // to the next.
+        let Some(first) = (0..bevels.len())
+            .filter(|bi| run.contains(&bevels[*bi].edge))
+            .min_by(|x, y| {
+                let start = |bi: &usize| curved.edges[&bevels[*bi].edge].range.0;
+                start(x).total_cmp(&start(y))
+            })
+        else {
             continue;
         };
         let surface = bevels[first].surface.clone();
@@ -4409,6 +4430,13 @@ fn assemble_widened(
         if ra == rb || rings_of[first_strip + ra].reversed != rings_of[first_strip + rb].reversed {
             continue;
         }
+        // The one starting lower on its curve keeps the joined ring.
+        let start = |r: usize| curved.edges[&bevels[r].edge].range.0;
+        let (ra, rb) = if start(rb) < start(ra) {
+            (rb, ra)
+        } else {
+            (ra, rb)
+        };
         let ring_a = rings_of[first_strip + ra].rings[0].clone();
         let ring_b = rings_of[first_strip + rb].rings[0].clone();
         let (Some(ia), Some(ib)) = (
