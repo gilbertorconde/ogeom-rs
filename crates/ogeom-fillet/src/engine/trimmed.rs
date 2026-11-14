@@ -1640,10 +1640,11 @@ pub(crate) fn assemble_consuming(
         facet_planes.insert(*v, PlaneSurface::new(Plane::new(frame)).into());
         facet_rings.push((*v, cycle));
     }
-    // The plane a strip's end at `v`, from `p` to `q`, lies on: the
-    // vertex's facet, or a plane face there holding both, where the strip
-    // ends flush on it, or the plane through both and along an edge left
-    // sharp there, where two strips meet across it mirrored. Where the
+    // What a strip's end at `v`, from `p` to `q`, lies on: the vertex's
+    // facet, or a plane face there holding both, where the strip ends flush
+    // on it, or the other strip sharing the end where either is a plane,
+    // or the plane through both and along an edge left sharp there, where
+    // two strips meet across it mirrored. Where the
     // strips are not mirrored, the meeting found on that plane is off the
     // other strip and its face is not built.
     let cut_at = |strip: &Strip, v: Id, p: Point, q: Point| -> Option<SurfaceGeometry> {
@@ -1670,6 +1671,21 @@ pub(crate) fn assemble_consuming(
             });
         if flush_plane.is_some() {
             return flush_plane;
+        }
+        // Another strip sharing this end: where either of the two is a
+        // plane, they meet along the other cut by it.
+        let close = |a: Point, b: Point| a.distance(b) <= tol.confusion();
+        let other = sections.get(&v).and_then(|ends| {
+            ends.iter().find_map(|(x, y, bi)| {
+                let same = (close(*x, p) && close(*y, q)) || (close(*x, q) && close(*y, p));
+                (same && bevels[*bi].edge != strip.edge).then_some(&bevels[*bi])
+            })
+        });
+        if let Some(other) = other
+            && (matches!(other.surface, SurfaceGeometry::Plane(_))
+                || matches!(strip.surface, SurfaceGeometry::Plane(_)))
+        {
+            return Some(other.surface.clone());
         }
         let at = curved.points[&v];
         at_v()
@@ -1699,8 +1715,15 @@ pub(crate) fn assemble_consuming(
         }
         let (curve, range, ends): (Curve, (f64, f64), (usize, usize)) = match &strip.section {
             Section::Line => {
+                // Two planes meet in the segment; a plane and a curved
+                // surface in the curved one cut by the plane.
                 let met = match (&strip.surface, cut) {
-                    (SurfaceGeometry::Plane(_), _) | (_, None) => None,
+                    (_, None) | (SurfaceGeometry::Plane(_), Some(SurfaceGeometry::Plane(_))) => {
+                        None
+                    }
+                    (SurfaceGeometry::Plane(_), Some(cut)) => {
+                        met_between(cut, &strip.surface, p, q, tol)?
+                    }
                     (surface, Some(cut)) => met_between(surface, cut, p, q, tol)?,
                 };
                 match met {

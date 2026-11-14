@@ -456,3 +456,67 @@ fn a_thin_disc_s_rim_bevels_consume_its_wall_and_meet_in_a_ridge() {
         "lost {lost} against {want}"
     );
 }
+
+/// The D-shaped block with only its top cap's edges chamfered 0.5, the
+/// straight one and the arc: at each end of the straight edge the plane
+/// bevel and the arc's cone meet across the upright edge left sharp, along
+/// the conic the plane cuts from the cone, with no facet. Valid, the same
+/// solid in either order, each edge generating its bevel and the corners
+/// on the flat none. The oracle: the block inside the arc's cone and under
+/// the straight edge's bevel plane, by booleans.
+#[test]
+fn a_d_block_s_cap_chamfered_meets_its_bevels_across_the_sharp_uprights() {
+    let d = 0.5_f64;
+    let mut m = Model::new();
+    let block = d_block(&mut m);
+    let top: Vec<Shape> = explore_unique(&m, &block, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let b = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            b.low().unwrap().z > 10.0 - 1e-6
+        })
+        .collect();
+    assert!(top.len() >= 2, "the cap's straight edge and its arc");
+    let built = ogeom_fillet::chamfer_edges(&mut m, &block, &top, d, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let back: Vec<Shape> = top.iter().rev().cloned().collect();
+    let again = ogeom_fillet::chamfer_edges(&mut m, &block, &back, d, T).unwrap();
+    assert!(
+        (volume(&m, &built.shape) - volume(&m, &again.shape)).abs() < 1e-9,
+        "the order changes the solid"
+    );
+    for e in &top {
+        assert_eq!(
+            built.history.generated(e).len(),
+            1,
+            "an edge without its bevel"
+        );
+    }
+    for v in explore_unique(&m, &block, ShapeType::Vertex).unwrap() {
+        if point_of(&m, &v).x.abs() < 1e-9 && point_of(&m, &v).z > 10.0 - 1e-6 {
+            assert!(
+                built.history.generated(&v).is_empty(),
+                "a facet at a corner of two"
+            );
+        }
+    }
+    let mut o = Model::new();
+    let mut s = d_block(&mut o);
+    let cone = ogeom_algo::make_cone(&mut o, up_at(0.0, 0.0, -1.0), 13.5, 2.5, 11.0, T)
+        .unwrap()
+        .shape;
+    s = ogeom_bool::common(&mut o, &s, &cone, T).unwrap().shape;
+    s = cut_past(
+        &mut o,
+        &s,
+        Point::new(d, 0.0, 10.0),
+        Vector::new(-1.0, 0.0, 1.0),
+    );
+    let (got, want) = (volume(&m, &built.shape), volume(&o, &s));
+    assert!(
+        (got - want).abs() < 1e-6,
+        "volume {got} against the booleans' {want}"
+    );
+}
