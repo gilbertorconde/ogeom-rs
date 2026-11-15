@@ -83,6 +83,7 @@ pub fn chamfer_edges_cornered(
         if let Some(built) = crate::chamfer::engine_chamfer_mitred(model, solid, specs, tol)? {
             return Ok(built);
         }
+        crate::fillet::to_current_path("chamfer_edges_cornered");
         return crate::chamfer::chamfer_edges_mitred(model, solid, specs, tol);
     }
     // A solid bounded by planes is chamfered by the blend engine in one
@@ -91,6 +92,7 @@ pub fn chamfer_edges_cornered(
         return Ok(built);
     }
     let cuts = facets(model, solid, specs, tol)?;
+    crate::fillet::to_current_path("chamfer_edges_cornered");
     let mut built = crate::chamfer::chamfer_edges_mitred(model, solid, specs, tol)?;
     for cut in cuts {
         let faces = match cut {

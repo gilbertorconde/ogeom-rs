@@ -92,12 +92,14 @@ pub fn fillet_edge(
     fillet_edge_wedge(model, solid, edge, radius, tol)
 }
 
-/// Where a round request leaves the blend engine for the current path:
+/// Where a round or chamfer request leaves the blend engine for the
+/// current path:
 /// with the `old-path-log` feature, a line naming `entry` and the asking
 /// test (its thread's name) appended to the file `OGEOM_OLD_PATH_LOG`
-/// names, for `tools/old-path-rounds.sh` to count before M6 deletes that
+/// names, for `tools/old-path-rounds.sh` and `tools/old-path-chamfers.sh`
+/// to count before M6 deletes that
 /// path; without it, nothing.
-fn to_current_path(entry: &str) {
+pub(crate) fn to_current_path(entry: &str) {
     #[cfg(feature = "old-path-log")]
     {
         use std::io::Write as _;

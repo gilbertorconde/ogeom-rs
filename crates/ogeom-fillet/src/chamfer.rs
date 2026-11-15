@@ -81,6 +81,7 @@ fn chamfer_edge_own(
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
     }
+    crate::fillet::to_current_path("chamfer_edge");
     wedge_for(model, solid, edge, &specs[0].1, tol)?.apply(model, solid, edge, tol)
 }
 
@@ -138,6 +139,7 @@ fn chamfer_edge_distances_own(
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
     }
+    crate::fillet::to_current_path("chamfer_edge_distances");
     wedge_for(model, solid, edge, &specs[0].1, tol)?.apply(model, solid, edge, tol)
 }
 
@@ -196,6 +198,7 @@ fn chamfer_edge_angle_own(
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
     }
+    crate::fillet::to_current_path("chamfer_edge_angle");
     wedge_for(model, solid, edge, &specs[0].1, tol)?.apply(model, solid, edge, tol)
 }
 
@@ -380,6 +383,7 @@ pub(crate) fn chamfer_edges_blamed(
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
     }
+    crate::fillet::to_current_path("chamfer_edges_with");
     chamfer_edges_mitred_blamed(model, solid, &specs, tol).map_err(|mut blamed| {
         for i in &mut blamed.edges {
             *i = index[*i];
