@@ -808,10 +808,12 @@ own plane, so not at all), and a far wall only where a tool reaches it.
     with each side kept (a half-space, or the inside of a cylinder, cone or
     sphere) and less each side dropped, the box grown until the piece
     stands clear of it. A kept cone stops short of its apex, and the piece
-    must too. Concave edges' pieces are fused like their tools. Because each
-    tool keeps to its own seat faces, a curved seat face bounds the piece:
-    on a tab whose arc meets a straight edge at a reflex foot, the square's
-    material just outside the tab's cylinder stays.
+    must too. Concave edges' pieces are fused like their tools. The piece
+    is bounded by the bevels carried on and the face both edges share, not
+    by each edge's other face: its lump reaching the vertex is kept, so each
+    bevel runs on until it meets the other, flush, as the planar case
+    closes (on a tab whose arc meets a straight edge at a reflex foot, no
+    sliver of the square stays outside the tab's cylinder).
   - At a vertex of three rolling bevels or more the facet closes the corner:
     the plane through the setback corners (where the curves bounding each
     face at the vertex meet, an asked edge's contact or the edge itself),

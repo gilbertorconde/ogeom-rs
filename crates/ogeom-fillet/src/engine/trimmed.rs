@@ -7432,13 +7432,15 @@ fn surface_side(
 }
 
 /// The box `(centre, half)` taken in common with each side kept and less
-/// each side dropped: `Some(None)` where nothing is left, `None` where a
-/// boolean refuses or what is left reaches the box's boundary (the piece
+/// each side dropped, and where `near` is given only the lumps of it that
+/// reach that point: `Some(None)` where nothing is left, `None` where a
+/// boolean refuses or what is kept reaches the box's boundary (the piece
 /// is not bounded near the corner).
 fn corner_piece(
     model: &mut Model,
     (centre, half): (Point, f64),
     sides: Vec<Side>,
+    near: Option<Point>,
     tol: Tolerances,
 ) -> OgeomResult<Option<Option<Shape>>> {
     let low = centre - Vector::new(half, half, half);
@@ -7456,6 +7458,46 @@ fn corner_piece(
         piece = step.shape;
         if ogeom_topo::explore_unique(model, &piece, ogeom_topo::ShapeType::Face)?.is_empty() {
             return Ok(Some(None));
+        }
+    }
+    // The lumps reaching `near` alone: the region past a bevel carried on
+    // can part round the other bevel, and only the corner's own lump is
+    // the corner's.
+    if let Some(at) = near {
+        let shells = ogeom_topo::explore_unique(model, &piece, ogeom_topo::ShapeType::Shell)?;
+        let reach = 1e-6 * half + tol.confusion() * 10.0;
+        let mut kept: Vec<Shape> = Vec::new();
+        for shell in &shells {
+            let b = ogeom_algo::shape_bounds(model, shell, tol)?;
+            let (Some(lo), Some(hi)) = (b.low(), b.high()) else {
+                continue;
+            };
+            if at.x >= lo.x - reach
+                && at.y >= lo.y - reach
+                && at.z >= lo.z - reach
+                && at.x <= hi.x + reach
+                && at.y <= hi.y + reach
+                && at.z <= hi.z + reach
+            {
+                kept.push(shell.clone());
+            }
+        }
+        if kept.is_empty() {
+            return Ok(Some(None));
+        }
+        if kept.len() < shells.len() {
+            let mut lumps = Vec::with_capacity(kept.len());
+            for shell in kept {
+                lumps.push(ogeom_algo::make_solid(model, &[shell])?.shape);
+            }
+            let mut joined = lumps[0].clone();
+            for lump in &lumps[1..] {
+                let Ok(step) = ogeom_bool::fuse(model, &joined, lump, tol) else {
+                    return Ok(None);
+                };
+                joined = step.shape;
+            }
+            piece = joined;
         }
     }
     let bounds = ogeom_algo::shape_bounds(model, &piece, tol)?;
@@ -7542,6 +7584,23 @@ fn reflex_piece_in(
     let (at, half) = bx;
     let reach = half / 4.0;
     let mut sides = Vec::new();
+    // The faces both strips stand on (or two on one carrier, a face split
+    // along seams).
+    let mut shared: Vec<usize> = Vec::new();
+    for fa in strips[0].faces {
+        for fb in strips[1].faces {
+            if fa == fb
+                || ogeom_heal::same_domain(
+                    model,
+                    &curved.faces[fa].shape,
+                    &curved.faces[fb].shape,
+                    tol,
+                )?
+            {
+                shared.extend([fa, fb]);
+            }
+        }
+    }
     // The half-spaces taken so far, each `n . p <= off` with `n` a unit
     // normal: a plane met twice (a cap on another edge's face) is taken
     // once, as two booleans on one plane would leave nothing.
@@ -7582,6 +7641,13 @@ fn reflex_piece_in(
         };
         sides.push(bevel);
         for k in 0..2 {
+            // Only the face both edges bound: each bevel carried on past
+            // its own other face, which would stop the piece short of the
+            // neighbouring bevel (a sliver beside a curved face's edge).
+            let face = strip.faces[k];
+            if !shared.contains(&face) {
+                continue;
+            }
             let other = ogeom_algo::project_on_curve(&strip.contacts[1 - k], at, 64, tol)?.point;
             let surface = &curved.faces[strip.faces[k]].surface;
             if let SurfaceGeometry::Plane(p) = surface {
@@ -7596,7 +7662,7 @@ fn reflex_piece_in(
             sides.push(face);
         }
     }
-    corner_piece(model, bx, sides, tol)
+    corner_piece(model, bx, sides, Some(at), tol)
 }
 
 /// The facet piece at the vertex `v` of three or more rolling bevels: the
@@ -7745,7 +7811,7 @@ fn facet_piece(
             return Ok(None);
         };
         sides.push(facet);
-        return corner_piece(model, bx, sides, tol);
+        return corner_piece(model, bx, sides, None, tol);
     }
     // A fan of triangles about the centroid, each over its sector.
     let mut pieces: Vec<Shape> = Vec::new();
@@ -7763,7 +7829,7 @@ fn facet_piece(
             return Ok(None);
         };
         sides.extend([facet, from, to]);
-        match corner_piece(model, bx, sides, tol)? {
+        match corner_piece(model, bx, sides, None, tol)? {
             None => return Ok(None),
             Some(None) => {}
             Some(Some(piece)) => pieces.push(piece),

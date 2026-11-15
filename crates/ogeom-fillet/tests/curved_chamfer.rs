@@ -1644,12 +1644,13 @@ fn rolling_bevels_meeting_on_a_block_leave_a_far_wall_along_the_floor() {
 /// of the tab's feet the tools run on past the vertex until they meet: the
 /// corner piece is beyond both caps (x past the foot, y below 10), outside
 /// both bevels (y > 9.5 - z, and radius about the tab's axis above
-/// 2.5 - z) and inside every seat face (z <= 1, y <= 10, and inside the
-/// tab's cylinder), so the square's material just outside the cylinder
-/// stays. At height z, with w = 0.5 + z and r = 2.5 - z, what goes is the
-/// two strips 2 long and w deep, two corner pieces each the integral of
-/// √(9 - t²) - √(r² - t²) over t in [0, w], and the tab's half ring between
-/// r and 3: integrated over the thickness.
+/// 2.5 - z), under the top they share, and the lump of that reaching the
+/// foot: each bevel carried on until it meets the other, flush, as the
+/// planar case closes, with no sliver left beside the tab's cylinder. At
+/// height z, with w = 0.5 + z and r = 2.5 - z, what goes is the two strips
+/// 2 long and w deep, two corner pieces each the integral of
+/// 3 - √(r² - t²) over t in [0, w] (from the foot at x = 2 to the cone),
+/// and the tab's half ring between r and 3: integrated over the thickness.
 #[test]
 fn rolling_bevels_at_a_tab_s_reflex_feet_meet_in_their_corner_pieces() {
     let mut m = Model::new();
@@ -1683,7 +1684,7 @@ fn rolling_bevels_at_a_tab_s_reflex_feet_meet_in_their_corner_pieces() {
     let taken = |z: f64| {
         let (w, r) = (0.5 + z, 2.5 - z);
         4.0 * w
-            + 2.0 * (under_circle(3.0, 0.0, w) - under_circle(r, 0.0, w))
+            + 2.0 * (3.0 * w - under_circle(r, 0.0, w))
             + std::f64::consts::FRAC_PI_2 * (9.0 - r * r)
     };
     let want = 100.0 + 4.5 * std::f64::consts::PI - integral(taken, 0.0, 1.0);
