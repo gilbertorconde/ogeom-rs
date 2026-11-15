@@ -764,10 +764,11 @@ fn gather(
                         ogeom_bail!(Construction, "a pole with no vertex is nowhere");
                     };
                     let placed = edge.transform(model.datums())?.apply(point);
+                    let (pcurve, prange) = straight_pole(planar, *range, tol)?;
                     poles.push(PoleEdge {
                         point: placed,
-                        pcurve: planar.clone(),
-                        prange: *range,
+                        pcurve,
+                        prange,
                     });
                     pole_keys.push(EdgeKey::of(&edge));
                 }
@@ -11725,6 +11726,40 @@ fn retried(
     Ok(None)
 }
 
+/// A pole's pcurve over `range` as the straight line it runs along in the
+/// chart, where it does (a line trimmed to the pole's stretch, as a
+/// boolean writes a pole edge back): the poles are cut where strands end
+/// on them by reading their line, and a pole read as some other curve was
+/// never cut. Any other curve is kept as it is.
+fn straight_pole(
+    planar: &PlanarCurve,
+    range: (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<(PlanarCurve, (f64, f64))> {
+    use ogeom_geom::Curve2d as _;
+    if matches!(planar, PlanarCurve::Line(_)) {
+        return Ok((planar.clone(), range));
+    }
+    let (a, b) = (
+        planar.point_at(range.0, tol)?,
+        planar.point_at(range.1, tol)?,
+    );
+    let length = a.distance(b);
+    if length <= tol.parametric() {
+        return Ok((planar.clone(), range));
+    }
+    for k in 1..8 {
+        let t = range.0 + (range.1 - range.0) * f64::from(k) / 8.0;
+        let (run, off) = (b - a, planar.point_at(t, tol)? - a);
+        if (run.x * off.y - run.y * off.x).abs() / length > tol.parametric() {
+            return Ok((planar.clone(), range));
+        }
+    }
+    let line = ogeom_geom::Line2d::segment(a, b, tol)?;
+    let domain = line.domain();
+    Ok((line.into(), domain))
+}
+
 /// The widest tolerance a retried result may state: the weld distance, and
 /// the wider confusion the welding run itself states its vertices to.
 fn weld_limit(tol: Tolerances) -> f64 {
@@ -12351,16 +12386,52 @@ fn general_fuse_as(
                 }
             }
         }
+        // A boundary edge ending at a pole (a patch's side running into its
+        // collapsed corner) ends there in space, but its pcurve may end off
+        // the pole's line by the edge's tolerance over the chart's shrinking
+        // scale, and anywhere along it: it is carried onto the line at its
+        // foot, as a section's end is above.
+        for strand in &mut strands {
+            let Tag::Boundary { edge, .. } = strand.tag else {
+                continue;
+            };
+            let window = (face.edges[edge].tolerance * 2.0).max(tol.confusion() * 1e2);
+            let last = strand.polyline.len() - 1;
+            for end in [0, last] {
+                let at = strand.polyline[end];
+                let Ok(q) = face.surface.point_at(at.x, at.y, tol) else {
+                    continue;
+                };
+                for pole in &face.poles {
+                    let PlanarCurve::Line(line) = &pole.pcurve else {
+                        continue;
+                    };
+                    if q.distance(pole.point) > window {
+                        continue;
+                    }
+                    let axis = line.axis();
+                    let along = (at - axis.location)
+                        .dot(axis.direction.vector())
+                        .clamp(pole.prange.0, pole.prange.1);
+                    strand.polyline[end] = axis.point_at(along);
+                }
+            }
+        }
         // The poles, after the sections, because a section can end *on*
         // a pole (a plane through a ball's axis cuts it exactly there),
         // and the pole has to be cut where that happens or the two meet
         // at no shared node and the arrangement sees a dangling section.
+        // A boundary edge ending on it cuts it too. Where any strand ends
+        // on the pole, a piece of it with an end no strand meets lies past
+        // the face's own boundary (the face spans only part of the pole's
+        // line) and would only dangle: it is left out.
         for (pi, pole) in face.poles.iter().enumerate() {
             let mut stops = vec![pole.prange.0, pole.prange.1];
+            let mut met: Vec<f64> = Vec::new();
             if let PlanarCurve::Line(line) = &pole.pcurve {
                 let axis = line.axis();
                 for strand in &strands {
-                    if strand.boundary {
+                    if matches!(strand.tag, Tag::Pole { .. }) {
                         continue;
                     }
                     for end in [strand.polyline.first(), strand.polyline.last()]
@@ -12369,9 +12440,11 @@ fn general_fuse_as(
                     {
                         let along = (*end - axis.location).dot(axis.direction.vector());
                         let foot = axis.point_at(along);
-                        if foot.distance(*end) <= PARAM_SNAP
-                            && along > pole.prange.0 + PARAM_SNAP
-                            && along < pole.prange.1 - PARAM_SNAP
+                        if foot.distance(*end) > PARAM_SNAP {
+                            continue;
+                        }
+                        met.push(along);
+                        if along > pole.prange.0 + PARAM_SNAP && along < pole.prange.1 - PARAM_SNAP
                         {
                             stops.push(along);
                         }
@@ -12380,7 +12453,11 @@ fn general_fuse_as(
             }
             stops.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
             stops.dedup_by(|a, b| (*a - *b).abs() <= PARAM_SNAP);
+            let meets = |t: f64| met.iter().any(|m| (m - t).abs() <= PARAM_SNAP);
             for pair in stops.windows(2) {
+                if !met.is_empty() && !(meets(pair[0]) && meets(pair[1])) {
+                    continue;
+                }
                 let sub = (pair[0], pair[1]);
                 strands.push(Strand {
                     polyline: pcurve_polyline(

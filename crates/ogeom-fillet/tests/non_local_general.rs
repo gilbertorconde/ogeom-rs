@@ -172,43 +172,55 @@ fn a_cone_s_ruling_rounds_past_a_hole_through_the_general_route() {
 /// its back, 10 tall, a pillar 4 by 0.4 by 3 standing on the floor 0.3 in
 /// front of the wall, and the three edges at the wall's foot's end (0, 8,
 /// 2) rounded at 1: the concave foot and the two convex edges leaving it,
-/// a corner of mixed convexity whose fill reaches the pillar. The general
-/// route's boolean of the copy less its rounding does not close at that
-/// corner's patch yet: refused by name.
+/// a corner of mixed convexity whose fill reaches the pillar. The L rounded
+/// alike with no pillar (the engine's own corner), with the pillar, less
+/// what the foot's fill and the pillar share (its height `1 - sqrt(1 -
+/// u^2)` at `u = 8 - y` in front of the wall, across the pillar).
 #[test]
-fn a_mixed_corner_s_rounds_reaching_a_pillar_are_refused_by_name() {
-    let mut m = Model::new();
-    let corners = [
-        (0.0, 0.0),
-        (10.0, 0.0),
-        (10.0, 10.0),
-        (8.0, 10.0),
-        (8.0, 2.0),
-        (0.0, 2.0),
-    ]
-    .map(|(y, z)| Point::new(0.0, y, z));
-    let wire = ogeom_algo::make_polygon(&mut m, &corners, true, T)
-        .unwrap()
-        .shape;
-    let plane = ogeom_geom::PlaneSurface::new(ogeom_math::Plane::new(
-        Frame::new(Point::ORIGIN, Direction::X, Direction::Y, T).unwrap(),
-    ));
-    let face = ogeom_algo::make_face(&mut m, plane.into(), &[wire], T)
-        .unwrap()
-        .shape;
-    let swept = ogeom_algo::make_prism(&mut m, &face, ogeom_math::Vector::new(20.0, 0.0, 0.0), T)
-        .unwrap()
-        .shape;
-    let l = ogeom_algo::baked_shape(&mut m, &swept, T).unwrap().shape;
-    let pillar = block(&mut m, (8.0, 7.3, 2.0), (4.0, 0.4, 3.0));
-    let s = ogeom_bool::fuse(&mut m, &l, &pillar, T).unwrap().shape;
-    let edges = edges_at(&m, &s, Point::new(0.0, 8.0, 2.0));
+fn a_mixed_corner_s_rounds_reaching_a_pillar_go_through_the_general_route() {
+    let l = |m: &mut Model| {
+        let corners = [
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (8.0, 10.0),
+            (8.0, 2.0),
+            (0.0, 2.0),
+        ]
+        .map(|(y, z)| Point::new(0.0, y, z));
+        let wire = ogeom_algo::make_polygon(m, &corners, true, T)
+            .unwrap()
+            .shape;
+        let plane = ogeom_geom::PlaneSurface::new(ogeom_math::Plane::new(
+            Frame::new(Point::ORIGIN, Direction::X, Direction::Y, T).unwrap(),
+        ));
+        let face = ogeom_algo::make_face(m, plane.into(), &[wire], T)
+            .unwrap()
+            .shape;
+        let swept = ogeom_algo::make_prism(m, &face, ogeom_math::Vector::new(20.0, 0.0, 0.0), T)
+            .unwrap()
+            .shape;
+        ogeom_algo::baked_shape(m, &swept, T).unwrap().shape
+    };
+    let corner = Point::new(0.0, 8.0, 2.0);
+    let mut plain = Model::new();
+    let p = l(&mut plain);
+    let edges = edges_at(&plain, &p, corner);
     assert_eq!(edges.len(), 3);
-    let refusal = ogeom_fillet::fillet_edges(&mut m, &s, &edges, 1.0, T)
-        .expect_err("refused")
-        .to_string();
-    assert!(
-        refusal.contains("at a corner of concave and convex rounds"),
-        "{refusal}"
-    );
+    let (built, work) = ogeom_bool::work::counted(|| {
+        ogeom_fillet::fillet_edges(&mut plain, &p, &edges, 1.0, T).unwrap()
+    });
+    assert_eq!(work.face_pairs, 0, "the corner alone, the engine's own");
+    let alone = volume(&plain, &built.shape);
+
+    let mut m = Model::new();
+    let p = l(&mut m);
+    let pillar = block(&mut m, (8.0, 7.3, 2.0), (4.0, 0.4, 3.0));
+    let s = ogeom_bool::fuse(&mut m, &p, &pillar, T).unwrap().shape;
+    let edges = edges_at(&m, &s, corner);
+    assert_eq!(edges.len(), 3);
+    let shared = 4.0 * (0.4 - (under(1.0, 0.7) - under(1.0, 0.3)));
+    let want = alone + 4.0 * 0.4 * 3.0 - shared;
+    let got = rounded(&mut m, &s, &edges, 1.0);
+    assert!((got - want).abs() < 1e-6, "{got} against {want}");
 }
