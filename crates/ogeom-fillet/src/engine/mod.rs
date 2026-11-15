@@ -53,7 +53,10 @@ pub(crate) use defeatured::tools as defeatured_tools;
 pub(crate) use fallback::{Sense, Tool, applied as apply_tools, straight_non_local};
 pub(crate) use far_edge::rounds as far_edge_rounds;
 pub(crate) use marched_seats::rounds as marched_rounds;
-pub(crate) use meeting::{carried_out as carried_out_rounds, rounds as meeting_rounds};
+pub(crate) use meeting::{
+    Spec as MeetingSpec, carried_out as carried_out_rounds, rounds as meeting_rounds,
+    rounds_with as meeting_rounds_with,
+};
 pub(crate) use request::{Request, Section};
 pub(crate) use rims::{RimSection, assemble as round_rims, assemble_with as round_rims_with};
 pub(crate) use round_strips::{
@@ -261,7 +264,7 @@ pub(crate) fn run(
         };
         let k = 1.0 / (0.5 * theta).tan();
         for v in [seat.ends.0, seat.ends.1] {
-            let d = law.at_fraction(if v == id(start) { 0.0 } else { 1.0 }) * k;
+            let d = law.at_end(if v == id(start) { 0.0 } else { 1.0 }) * k;
             let at = planar.points[&v];
             for face in seat.faces {
                 let Some(corner) = corners.get_mut(&(face, v)) else {

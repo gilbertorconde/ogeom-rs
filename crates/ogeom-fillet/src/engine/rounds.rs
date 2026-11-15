@@ -89,8 +89,7 @@ pub(crate) fn assemble(
                 }
                 let k = 1.0 / (0.5 * theta).tan();
                 let reversed = super::id(start) != seat.ends.0;
-                let scaled = law.scaled(k, reversed);
-                let along = crate::law::Profile::new(&scaled, false, tol)?;
+                let along = law.along(k, reversed, tol)?;
                 conic.insert(seat.edge);
                 varying.insert(seat.edge);
                 let largest = along.largest();

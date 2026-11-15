@@ -40,8 +40,11 @@ struct Crease {
     b: Point,
     faces: [usize; 2],
     planes: [(Vector, f64); 2],
+    /// The largest radius it is rounded at.
     radius: f64,
     kind: Kind,
+    /// A varying round's law over the crease, from its first vertex.
+    law: Option<crate::law::Profile>,
 }
 
 /// A crease's kind: straight between two planes, or a rim, an arc about an
@@ -82,6 +85,14 @@ impl Crease {
     }
 }
 
+/// What a crease is rounded with: a radius, or a law laid over it from the
+/// end at the point given to the other.
+#[derive(Debug, Clone)]
+pub(crate) enum Spec {
+    Round(f64),
+    Law(crate::law::Profile, Point),
+}
+
 /// The rounds of `asked` on `solid` where every asked edge is a straight
 /// convex crease between planes, two or more of them meet at inside
 /// corners of a face they share, and every crease end met by no other
@@ -98,16 +109,40 @@ pub(crate) fn rounds(
     asked: &[(Shape, f64)],
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
+    let specs: Vec<(Shape, Spec)> = asked
+        .iter()
+        .map(|(e, r)| (e.clone(), Spec::Round(*r)))
+        .collect();
+    rounds_with(model, solid, &specs, tol)
+}
+
+/// [`rounds`] with each crease's own [`Spec`]: a varying round's band
+/// follows its law over its crease and holds level past its ends.
+///
+/// # Errors
+///
+/// As [`rounds`].
+pub(crate) fn rounds_with(
+    model: &mut Model,
+    solid: &Shape,
+    asked: &[(Shape, Spec)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
     let ang = tol.angular();
     if asked.len() < 2 {
         return Ok(None);
     }
+    let varying = asked.iter().any(|(_, s)| matches!(s, Spec::Law(..)));
     let Some(curved) = read(model, solid, tol)? else {
         return Ok(None);
     };
     let mut creases = Vec::with_capacity(asked.len());
-    for (edge, radius) in asked {
-        let Some(crease) = crease_of(model, &curved, id(edge), edge, *radius, tol)? else {
+    for (edge, spec) in asked {
+        let radius = match spec {
+            Spec::Round(r) => *r,
+            Spec::Law(profile, _) => profile.largest(),
+        };
+        let Some(mut crease) = crease_of(model, &curved, id(edge), edge, radius, tol)? else {
             return Ok(None);
         };
         // A straight crease's ball seated on both its faces: one running
@@ -115,6 +150,11 @@ pub(crate) fn rounds(
         // carried on.
         if matches!(crease.kind, Kind::Straight) && !seated_along(model, solid, &crease, tol)? {
             return Ok(None);
+        }
+        if let Spec::Law(profile, from) = spec {
+            // Laid from the crease's own first vertex.
+            let reversed = from.distance(crease.b) < from.distance(crease.a);
+            crease.law = Some(profile.scaled_by(1.0, reversed));
         }
         creases.push(crease);
     }
@@ -258,13 +298,16 @@ pub(crate) fn rounds(
                     // is kept only past that wall or within the other's
                     // band. A convex turn: each runs out past the vertex as
                     // it does alone. Anything else is not built here. Only
-                    // an inside corner takes the request here: with
-                    // convex turns alone the other routes close it, as one
-                    // piece with no boolean where they can.
+                    // an inside corner takes a constant request here:
+                    // with convex turns alone the other routes close it, as
+                    // one piece with no boolean where they can. A varying
+                    // chain they do not take closes here at either.
                     if go > ang && back > ang {
                         neighbours[i][k] = Some((j, wall));
                         met = true;
-                    } else if !(go < -ang && back < -ang) {
+                    } else if go < -ang && back < -ang {
+                        met |= varying;
+                    } else {
                         return Ok(None);
                     }
                 }
@@ -635,6 +678,7 @@ fn crease_of(
         ],
         radius,
         kind: Kind::Straight,
+        law: None,
     }))
 }
 
@@ -695,12 +739,36 @@ fn spandrel(
     let Some(edge) = edge else {
         return Ok(None);
     };
+    // A varying round's law over the crease, held level past its ends, laid
+    // over the wedge's edge from the end before the crease's start.
+    let section = match &crease.law {
+        None => super::Section::Round {
+            radius: crease.radius,
+        },
+        Some(profile) => {
+            let length = crease.a.distance(crease.b);
+            let before = crease.a - along * reach;
+            let Some((p, q)) = ogeom_algo::edge_vertices(model, &edge)? else {
+                return Ok(None);
+            };
+            let (Some(pp), Some(pq)) = (point(model, &p), point(model, &q)) else {
+                return Ok(None);
+            };
+            let start = if pp.distance(before) <= pq.distance(before) {
+                p
+            } else {
+                q
+            };
+            super::Section::Varying {
+                law: crate::law::EdgeLaw::Laid(profile.stretched(reach / length, reach / length)),
+                start,
+            }
+        }
+    };
     let request = super::Request {
         blends: vec![super::request::Blend {
             edge: edge.clone(),
-            section: super::Section::Round {
-                radius: crease.radius,
-            },
+            section,
         }],
         mitre: false,
         splits: Vec::new(),
@@ -816,6 +884,7 @@ fn rim_of(
             range: c.range,
             top,
         },
+        law: None,
     }))
 }
 

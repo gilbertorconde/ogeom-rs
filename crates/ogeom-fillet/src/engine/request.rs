@@ -62,7 +62,7 @@ pub(crate) enum Section {
     /// A round whose ball's radius follows `law` along the edge, its
     /// fraction nought at the vertex `start`.
     Varying {
-        law: crate::law::RadiusLaw,
+        law: crate::law::EdgeLaw,
         start: Shape,
     },
 }
@@ -219,7 +219,7 @@ impl Request {
             blends: vec![Blend {
                 edge: edge.clone(),
                 section: Section::Varying {
-                    law: law.clone(),
+                    law: crate::law::EdgeLaw::Stated(law.clone()),
                     start,
                 },
             }],
