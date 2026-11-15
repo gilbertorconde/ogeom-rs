@@ -7298,30 +7298,64 @@ pub(crate) fn rolling_tools(
         }
     }
     // Three or more at a vertex close with the facet through their setback
-    // corners: the piece inside every bevel on the vertex's side of it.
+    // corners: the piece inside every bevel on the vertex's side of it. Of
+    // mixed convexity (ADR 0001, amendment "mixed rolling corners"), the
+    // vertex's side of the facet takes the sense most of the vertex's
+    // bevels take (the complement's corner is the complement), and the
+    // bevels' tools spare what the facet settles: the cuts after the fuses
+    // neither undo the piece nor keep what the facet gives up.
     for v in faceted {
         let meeting = &at_vertex[&v];
-        let mut senses = meeting.iter().map(|e| {
-            strips
-                .iter()
-                .position(|s| s.edge == *e)
-                .map(|k| tools[k].sense)
-        });
-        let Some(Some(sense)) = senses.next() else {
-            return Ok(None);
-        };
-        if senses.any(|s| s != Some(sense)) {
+        let mut cuts = 0_usize;
+        let mut fuses = 0_usize;
+        let mut own: Vec<usize> = Vec::new();
+        for e in meeting {
+            let Some(k) = strips.iter().position(|s| s.edge == *e) else {
+                return Ok(None);
+            };
+            own.push(k);
+            match tools[k].sense {
+                super::fallback::Sense::Cut => cuts += 1,
+                super::fallback::Sense::Fuse => fuses += 1,
+            }
+        }
+        if cuts == fuses {
             ogeom_core::ogeom_bail!(
                 Construction,
-                "chamfers rolling over their faces meet at one vertex, some convex and \
-                 some concave; their corner's facet is not closed by one tool"
+                "chamfers rolling over their faces meet at one vertex, as many convex as \
+                 concave; which side of their corner's facet the material keeps is not \
+                 settled by the bevels"
             );
         }
+        let sense = if cuts > fuses {
+            super::fallback::Sense::Cut
+        } else {
+            super::fallback::Sense::Fuse
+        };
         let at_v: Vec<&Strip> = strips
             .iter()
             .filter(|s| meeting.contains(&s.edge))
             .collect();
-        let Some(piece) = facet_piece(model, &curved, v, &at_v, tol)? else {
+        let mixed = cuts > 0 && fuses > 0;
+        // Of mixed convexity the facet's side runs on into the solid (or
+        // out of it) past the bevels: what changes is what of it lies
+        // outside the solid where the piece is fused, inside where it is
+        // cut.
+        let within = match sense {
+            super::fallback::Sense::Fuse => Side::Drop(solid.clone()),
+            super::fallback::Sense::Cut => Side::Keep(solid.clone(), None),
+        };
+        let Some(piece) = facet_piece(
+            model,
+            &curved,
+            v,
+            &at_v,
+            mixed.then_some(&within),
+            true,
+            false,
+            tol,
+        )?
+        else {
             ogeom_core::ogeom_bail!(
                 Construction,
                 "three or more chamfers rolling over their faces meet at one vertex, \
@@ -7329,6 +7363,46 @@ pub(crate) fn rolling_tools(
             );
         };
         if let Some(piece) = piece {
+            // The facet's two sides inside every bevel, as the box clips
+            // them: the vertex's (what the piece's sense keeps there) spared
+            // by the tools of the other sense, the far one (what it gives
+            // up) by the tools of the piece's sense.
+            let cells = if mixed {
+                let mut both = Vec::with_capacity(2);
+                for far in [false, true] {
+                    match facet_piece(model, &curved, v, &at_v, None, false, far, tol)? {
+                        Some(cell) => both.push(cell),
+                        None => return Ok(None),
+                    }
+                }
+                Some(both)
+            } else {
+                None
+            };
+            for &k in &own {
+                let Some(cells) = &cells else {
+                    continue;
+                };
+                let Some(cell) = &cells[usize::from(tools[k].sense == sense)] else {
+                    continue;
+                };
+                let Ok(spared) = ogeom_bool::cut(model, &tools[k].solid, cell, tol) else {
+                    return Ok(None);
+                };
+                tools[k].faces = tools[k]
+                    .faces
+                    .iter()
+                    .flat_map(|(face, from)| {
+                        spared
+                            .history
+                            .trace(face)
+                            .iter()
+                            .map(|f| (f.clone(), from.clone()))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+                tools[k].solid = spared.shape;
+            }
             tools.push(super::fallback::Tool {
                 solid: piece,
                 sense,
@@ -7349,6 +7423,7 @@ pub(crate) fn rolling_tools(
 /// cone's inside stops short of its apex: `Keep`'s bound is the axis
 /// (a point on it and its direction) and the height along it the piece
 /// must stay short of.
+#[derive(Clone)]
 enum Side {
     Keep(Shape, Option<(Point, Vector, f64)>),
     Drop(Shape),
@@ -7505,6 +7580,23 @@ fn corner_piece(
     near: Option<Point>,
     tol: Tolerances,
 ) -> OgeomResult<Option<Option<Shape>>> {
+    corner_piece_bounded(model, (centre, half), sides, true, near, None, tol)
+}
+
+/// [`corner_piece`], its piece held bounded near the corner only where
+/// `bounded` asks (else the piece as the box clips it, for a tool to be
+/// spared what the corner's facet keeps), only the lumps reaching
+/// `reaching` where given (as [`corner_piece`] keeps them), and of a piece
+/// in lumps only the lump nearest `nearest_to`, where given.
+fn corner_piece_bounded(
+    model: &mut Model,
+    (centre, half): (Point, f64),
+    sides: Vec<Side>,
+    bounded: bool,
+    reaching: Option<Point>,
+    nearest_to: Option<Point>,
+    tol: Tolerances,
+) -> OgeomResult<Option<Option<Shape>>> {
     let low = centre - Vector::new(half, half, half);
     let frame = Frame::new(low, Direction::Z, Direction::X, tol)?;
     let mut piece =
@@ -7522,10 +7614,13 @@ fn corner_piece(
             return Ok(Some(None));
         }
     }
-    // The lumps reaching `near` alone: the region past a bevel carried on
+    if !bounded {
+        return Ok(Some(Some(piece)));
+    }
+    // The lumps reaching `reaching` alone: the region past a bevel carried on
     // can part round the other bevel, and only the corner's own lump is
     // the corner's.
-    if let Some(at) = near {
+    if let Some(at) = reaching {
         let shells = ogeom_topo::explore_unique(model, &piece, ogeom_topo::ShapeType::Shell)?;
         let reach = 1e-6 * half + tol.confusion() * 10.0;
         let mut kept: Vec<Shape> = Vec::new();
@@ -7562,6 +7657,31 @@ fn corner_piece(
             piece = joined;
         }
     }
+    if let Some(at) = nearest_to {
+        let lumps = ogeom_topo::explore_unique(model, &piece, ogeom_topo::ShapeType::Solid)?;
+        if lumps.len() > 1 {
+            let mut nearest: Option<(f64, Shape)> = None;
+            for lump in lumps {
+                let b = ogeom_algo::shape_bounds(model, &lump, tol)?;
+                let (Some(l), Some(h)) = (b.low(), b.high()) else {
+                    continue;
+                };
+                let clamp = Point::new(
+                    at.x.clamp(l.x, h.x),
+                    at.y.clamp(l.y, h.y),
+                    at.z.clamp(l.z, h.z),
+                );
+                let d = clamp.distance(at);
+                if nearest.as_ref().is_none_or(|(best, _)| d < *best) {
+                    nearest = Some((d, lump));
+                }
+            }
+            let Some((_, lump)) = nearest else {
+                return Ok(Some(None));
+            };
+            piece = lump;
+        }
+    }
     let bounds = ogeom_algo::shape_bounds(model, &piece, tol)?;
     let (Some(lo), Some(hi)) = (bounds.low(), bounds.high()) else {
         return Ok(Some(None));
@@ -7595,6 +7715,12 @@ fn corner_piece(
         }
     }
     Ok(Some(Some(piece)))
+}
+
+/// `p` reflected across the plane through `through` of normal `n`.
+fn reflected(p: Point, (n, through): (Vector, Point)) -> Point {
+    let unit = n / n.magnitude();
+    p - unit * (2.0 * (p - through).dot(unit))
 }
 
 /// How far a strip's contacts stand from `v`, at most.
@@ -7735,11 +7861,18 @@ fn reflex_piece_in(
 /// what lies on the vertex's side of it and inside every bevel. `None`
 /// where a corner or a side is not read or the piece is not bounded near
 /// `v`; `Some(None)` where it is empty.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one vertex's corner and the three ways it is read"
+)]
 fn facet_piece(
     model: &mut Model,
     curved: &Curved,
     v: Id,
     strips: &[&Strip],
+    within: Option<&Side>,
+    bounded: bool,
+    far: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Option<Shape>>> {
     let at = curved.points[&v];
@@ -7834,6 +7967,9 @@ fn facet_piece(
             };
             sides.push(side);
         }
+        if let Some(side) = within {
+            sides.push(side.clone());
+        }
         Ok(Some(sides))
     };
     // The corners in order round the vertex, by their angle about the
@@ -7869,11 +8005,16 @@ fn facet_piece(
         let Some(mut sides) = bevels(model)? else {
             return Ok(None);
         };
-        let Some(facet) = plane_side(model, (normal, order[0]), at, bx, tol)? else {
+        let keep = if far {
+            reflected(at, (normal, order[0]))
+        } else {
+            at
+        };
+        let Some(facet) = plane_side(model, (normal, order[0]), keep, bx, tol)? else {
             return Ok(None);
         };
         sides.push(facet);
-        return corner_piece(model, bx, sides, None, tol);
+        return corner_piece_bounded(model, bx, sides, bounded, None, within.map(|_| at), tol);
     }
     // A fan of triangles about the centroid, each over its sector.
     let mut pieces: Vec<Shape> = Vec::new();
@@ -7884,14 +8025,24 @@ fn facet_piece(
         };
         let tri = (a - centroid).cross(b - centroid);
         let (Some(facet), Some(from), Some(to)) = (
-            plane_side(model, (tri, centroid), at, bx, tol)?,
+            plane_side(
+                model,
+                (tri, centroid),
+                if far {
+                    reflected(at, (tri, centroid))
+                } else {
+                    at
+                },
+                bx,
+                tol,
+            )?,
             plane_side(model, ((a - at).cross(centroid - at), at), b, bx, tol)?,
             plane_side(model, ((b - at).cross(centroid - at), at), a, bx, tol)?,
         ) else {
             return Ok(None);
         };
         sides.extend([facet, from, to]);
-        match corner_piece(model, bx, sides, None, tol)? {
+        match corner_piece_bounded(model, bx, sides, bounded, None, within.map(|_| at), tol)? {
             None => return Ok(None),
             Some(None) => {}
             Some(Some(piece)) => pieces.push(piece),

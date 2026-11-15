@@ -902,6 +902,48 @@ not rewritten; the engine takes it as the strip builder for these seats.
   current path meets flush), a round over a bevel it takes off whole,
   and the refusals those raise. Each is migrated with its class.
 
+### Amendment: mixed rolling corners (#902)
+
+Chamfers rolling over their faces (amendment "M5b") that meet at one
+vertex, some convex and some concave, were refused by name: their corner's
+facet is not one tool's.
+
+**What the systems do.**
+
+| System | Behaviour |
+|---|---|
+| Creo Elements/Direct Modeling [P40] | "You cannot create two chamfers that meet at a vertex, where one is concave and one is convex." |
+| COMSOL (Parasolid kernel) [P41] | A "Y-shaped chamfer at a vertex where three or more edges meet and there are two chamfer surfaces of different convexity"; "in some cases, using this option is necessary for the operation to succeed". |
+| ACIS [P42] | At a vertex of mixed convexity a convex vertex chamfer is assumed, and a vertex of three edges of mixed convexity "may not chamfer successfully". |
+| Cimatron [P43] | Vertex selection is ignored where the result is added material on a concave and convex chamfer at one vertex. |
+
+**Rule.**
+
+- **Three or more** at a vertex, of mixed convexity, are built (the
+  Parasolid-based system builds them). The corner is the rings' own: the
+  facet through the setback corners (ADR 0001, "chamfer corners are G0").
+  Through the union of local tools, the vertex's side of the facet takes
+  the sense most of the vertex's bevels take (chamfering the complement
+  gives the complement, so the rule is the one that commutes with it).
+  The piece is that side inside every bevel, less the solid where it is
+  fused (within it where it is cut), its lump at the vertex. Each bevel of
+  the other sense spares that side; each of the piece's sense spares the
+  far side. On wide faces this is the rings' corner exactly.
+- **As many convex as concave** at one vertex is refused by name: the
+  bevels do not settle which side of the facet the material keeps.
+- **Two** meeting at a reflex corner, one convex and one concave, stay
+  refused by name, as Creo Elements/Direct refuses them and no surveyed
+  system documents building them.
+
+- [P40] Creo Elements/Direct Modeling, Modify3D Chamfer:
+  https://support.ptc.com/help/creo/ced_modeling/r20.2.0.0/en/ced_modeling/OSDM_Main/Modify3D_Chamfer.html
+- [P41] COMSOL Design Module User's Guide, Chamfer:
+  https://doc.comsol.com/6.3/doc/com.comsol.help.design/design_ug_function.5.40.html
+- [P42] ACIS, solid:chamfer-vertex:
+  http://www-isl.ece.arizona.edu/ACIS-docs/HTM/DATA/BLND/BLND/02SC/0033.HTM
+- [P43] Cimatron, Chamfer options and results:
+  https://help.cimatron.com/en/2026/Chamfer_Options_Results.htm
+
 ### Amendment: round section laws, conic and elliptical (#902)
 
 The round side's section laws beyond the rolling ball: a round meeting

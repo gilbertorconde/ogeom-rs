@@ -4235,3 +4235,130 @@ fn concave_rolling_bevels_at_reflex_corners_meet_in_their_corner_pieces() {
         assert!(!built.history.generated(e).is_empty(), "its fill");
     }
 }
+
+/// The edges of `s` with an end at `v`.
+fn edges_at_point(m: &Model, s: &Shape, v: Point) -> Vec<Shape> {
+    explore_unique(m, s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(m, e).unwrap().unwrap();
+            [a, b].iter().any(|x| {
+                m.node(x)
+                    .unwrap()
+                    .data()
+                    .as_vertex()
+                    .unwrap()
+                    .point
+                    .distance(v)
+                    < 1e-9
+            })
+        })
+        .collect()
+}
+
+/// A slab 20 × 20 × 1 carrying a rib x in [3, 7], y in [3, 6], 3 high,
+/// and, where `lip`, a lip 6 × 3 × 0.3 out of its front at x in [12, 18],
+/// y in [-3, 0], z in [0.7, 1].
+fn ribbed_slab(m: &mut Model, lip: bool) -> Shape {
+    let mut s = block(m, (0.0, 0.0, 0.0), (20.0, 20.0, 1.0));
+    let rib = block(m, (3.0, 3.0, 1.0), (4.0, 3.0, 3.0));
+    s = ogeom_bool::fuse(m, &s, &rib, T).unwrap().shape;
+    if lip {
+        let l = block(m, (12.0, -3.0, 0.7), (6.0, 3.0, 0.3));
+        s = ogeom_bool::fuse(m, &s, &l, T).unwrap().shape;
+    }
+    s
+}
+
+/// A corner of bevels of both kinds through the rolling route (ADR 0001,
+/// amendment "mixed rolling corners"): at the rib's foot (7, 3, 1) its
+/// upright edge (convex) and its two foot edges (concave) chamfered 0.5,
+/// with the lip's top front edge, which rolls over the lip's 0.3 front as a
+/// notch, so the request goes to the union of local tools. The corner
+/// closes as the rings close it on the slab without the lip: the facet
+/// through the setback corners, the vertex's side of it kept (as two of
+/// its three bevels keep), the upright's tool sparing that side and the
+/// foot's tools the far one. Within a box round the corner the two results
+/// differ by nothing either way, and what the request takes is what the
+/// corner takes alone plus what the lip's edge takes alone. Before, the
+/// corner was refused by name ("some convex and some concave").
+///
+/// The same corner on a rib 1 wide, chamfered 1.5, rolls itself (the
+/// upright's bevel runs past the rib's end): it builds valid, each edge
+/// generating its bevel.
+#[test]
+fn a_rolling_corner_of_two_concave_bevels_and_a_convex_one_closes_as_the_rings_close_it() {
+    let d = 0.5;
+    let v = Point::new(7.0, 3.0, 1.0);
+    let lip_edge = |m: &Model, s: &Shape| -> Shape {
+        explore_unique(m, s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                let bb = ogeom_algo::shape_bounds(m, e, T).unwrap();
+                let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
+                (l.y + 3.0).abs() < 1e-6
+                    && (h.y + 3.0).abs() < 1e-6
+                    && (l.z - 1.0).abs() < 1e-6
+                    && (h.z - 1.0).abs() < 1e-6
+                    && h.x - l.x > 5.0
+            })
+            .unwrap()
+    };
+    let mut m = Model::new();
+    // The corner alone, by the rings.
+    let plain = ribbed_slab(&mut m, false);
+    let corner = edges_at_point(&m, &plain, v);
+    assert_eq!(corner.len(), 3);
+    let rings = ogeom_fillet::chamfer_edges(&mut m, &plain, &corner, d, T)
+        .unwrap()
+        .shape;
+    let corner_takes = volume(&m, &plain) - volume(&m, &rings);
+    // The lip's edge alone.
+    let lipped = ribbed_slab(&mut m, true);
+    let lip = lip_edge(&m, &lipped);
+    let alone = ogeom_fillet::chamfer_edges(&mut m, &lipped, std::slice::from_ref(&lip), d, T)
+        .unwrap()
+        .shape;
+    let lip_takes = volume(&m, &lipped) - volume(&m, &alone);
+    // Both, through the rolling route.
+    let mut asked = edges_at_point(&m, &lipped, v);
+    asked.push(lip);
+    let built = ogeom_fillet::chamfer_edges(&mut m, &lipped, &asked, d, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let takes = volume(&m, &lipped) - volume(&m, &built.shape);
+    let want = corner_takes + lip_takes;
+    assert!(
+        (takes - want).abs() <= 1e-9 * volume(&m, &lipped),
+        "{takes} against {want}"
+    );
+    let round = block(&mut m, (5.0, 1.0, 0.0), (4.0, 4.0, 3.0));
+    let here = ogeom_bool::common(&mut m, &built.shape, &round, T)
+        .unwrap()
+        .shape;
+    let there = ogeom_bool::common(&mut m, &rings, &round, T).unwrap().shape;
+    for (a, b) in [(&here, &there), (&there, &here)] {
+        let apart = ogeom_bool::cut(&mut m, a, b, T).unwrap().shape;
+        assert!(
+            volume(&m, &apart) <= 1e-9,
+            "the corners differ by {}",
+            volume(&m, &apart)
+        );
+    }
+    for e in &asked {
+        assert!(!built.history.generated(e).is_empty(), "its bevel");
+    }
+    // Rolling at the corner itself.
+    let slab = block(&mut m, (0.0, 0.0, 0.0), (10.0, 10.0, 1.0));
+    let rib = block(&mut m, (3.0, 3.0, 1.0), (4.0, 1.0, 3.0));
+    let thin = ogeom_bool::fuse(&mut m, &slab, &rib, T).unwrap().shape;
+    let asked = edges_at_point(&m, &thin, v);
+    let built = ogeom_fillet::chamfer_edges(&mut m, &thin, &asked, 1.5, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    for e in &asked {
+        assert!(!built.history.generated(e).is_empty(), "its bevel");
+    }
+}
