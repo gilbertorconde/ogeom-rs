@@ -1404,6 +1404,11 @@ fn rounds_by_engine_unplaced(
     {
         return Ok(Some(built));
     }
+    // Creases meeting only across convex turns, each built as it is alone,
+    // the cuts taking their union (amendment "M5e").
+    if let Some(built) = crate::engine::alone_rounds(model, solid, &once, rounds_by_engine, tol)? {
+        return Ok(Some(built));
+    }
     crate::engine::marched_rounds(model, solid, &once, tol)
 }
 

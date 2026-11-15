@@ -22,6 +22,7 @@
 
 mod assemble;
 mod classify;
+mod alone;
 mod consumed;
 #[cfg_attr(
     not(test),
@@ -49,6 +50,7 @@ mod taken_whole;
 mod trimmed;
 mod vertices;
 
+pub(crate) use alone::rounds as alone_rounds;
 pub(crate) use defeatured::tools as defeatured_tools;
 pub(crate) use fallback::{Sense, Tool, applied as apply_tools, straight_non_local};
 pub(crate) use far_edge::rounds as far_edge_rounds;
