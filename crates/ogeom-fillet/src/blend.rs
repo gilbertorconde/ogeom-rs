@@ -99,6 +99,7 @@ pub fn blend_edges(
         return Ok(built);
     }
     if !asymmetric.is_empty() {
+        crate::fillet::to_current_path("blend_edges");
         // The corners where an asymmetric round meets the request's other
         // edges, read off the solid as it stands, their edges set apart.
         let corners =
