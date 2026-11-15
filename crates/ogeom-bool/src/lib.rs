@@ -2575,6 +2575,28 @@ fn measured_overlaps(
             Ok(false)
         };
         let (ends_lo, ends_hi) = (ends_there(lo, start == 0)?, ends_there(hi, end == SAMPLES)?);
+        // A fitted curve that ends on the edge and leaves it tangentially
+        // from there, nearest it at its own end and apart by more than both
+        // state halfway out, touches the edge at that end and runs beside
+        // it: two surfaces tangent along a line, met by a third where the
+        // line crosses it, cut the third in two curves tangent there (a
+        // round's spandrel cut back by a drum, its edges on the drum along
+        // the wall and along the round). Read as along the edge out to the
+        // measuring width, it split the edge there and nothing split the
+        // edge's twin on the curve's own solid.
+        if !(exact(curve) && exact(&e.curve))
+            && touches_from_own_end(
+                curve,
+                (lo, hi),
+                (start == 0, end == SAMPLES),
+                (ends_lo, ends_hi),
+                tolerance,
+                e,
+                tol,
+            )?
+        {
+            continue;
+        }
         let (lo, hi) = if exact(curve) && exact(&e.curve) {
             if !(ends_lo && ends_hi) {
                 continue;
@@ -2670,6 +2692,52 @@ fn measured_overlaps(
         out.push(overlap);
     }
     Ok(out)
+}
+
+/// Whether the stretch `(lo, hi)` of the fitted `curve` near `e` starts
+/// at one of the curve's own ends lying on `e` (not at one of `e`'s ends)
+/// and ends inside both, the two nearest at that own end and standing
+/// apart halfway along by more than both curves state: a touch at the
+/// curve's end, not a run along the edge (see [`measured_overlaps`]).
+fn touches_from_own_end(
+    curve: &Curve,
+    (lo, hi): (f64, f64),
+    (own_lo, own_hi): (bool, bool),
+    (ends_lo, ends_hi): (bool, bool),
+    tolerance: f64,
+    e: &BoundaryEdge,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let at_edge_end = |t: f64| -> OgeomResult<bool> {
+        let p = curve.point_at(t, tol)?;
+        let width = measuring_width(curve, tolerance, e, tol);
+        for end in [e.crange.0, e.crange.1] {
+            if e.curve.point_at(end, tol)?.distance(p) <= width * 2.0 {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    };
+    let (from, to) = if own_lo && !ends_hi && !at_edge_end(lo)? {
+        (lo, hi)
+    } else if own_hi && !ends_lo && !at_edge_end(hi)? {
+        (hi, lo)
+    } else {
+        return Ok(false);
+    };
+    let off = |t: f64| -> OgeomResult<f64> {
+        distance_to_edge_curve(&e.curve, e.crange, curve.point_at(t, tol)?, tol)
+    };
+    const STEPS: usize = 16;
+    let at_own = off(from)?;
+    for k in 1..=STEPS {
+        #[allow(clippy::cast_precision_loss)]
+        let t = from + (to - from) * (k as f64) / (STEPS as f64);
+        if off(t)? < at_own {
+            return Ok(false);
+        }
+    }
+    Ok(off(f64::midpoint(from, to))? > tolerance + e.tolerance)
 }
 
 /// The radius an edge holds to where stretches end at it: its widest
