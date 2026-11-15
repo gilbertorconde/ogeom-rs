@@ -70,7 +70,7 @@ use ogeom_geom::Curve2d as _;
 use ogeom_geom::Curve3d as _;
 use ogeom_geom::Surface as _;
 use ogeom_geom::{Curve, PlanarCurve, SurfaceGeometry, Transformable};
-use ogeom_math::{Point, Point2};
+use ogeom_math::{Point, Point2, Vector, Weighted};
 use ogeom_topo::{
     EdgeRepr, Filter, Location, Model, NodeData, Shape, ShapeType, explore, explore_unique,
 };
@@ -3347,6 +3347,178 @@ struct TangentRec {
     face_b: usize,
 }
 
+/// A marched section of faces `fa` and `fb` with each end that stopped
+/// short of a vertex of either face moved onto it, and how far it moved.
+///
+/// Where a section runs into a point both surfaces pass through nearly
+/// tangent to each other (a transfinite patch's point side lying on the
+/// plane it meets), the surfaces stay within the marcher's tolerance of
+/// each other for a stretch, and the trace stops somewhere along it, short
+/// of the point: its end then stands off the vertex the other curves end
+/// at, and the wire through it does not close. An end within
+/// [`SNAP_REACH`] of the faces' chord scale (and past [`SNAP_FLOOR`]
+/// confusions, which the arrangement welds) of a vertex that is a pole of
+/// either surface ([`SNAP_POLE`]) lying on both
+/// surfaces (to within [`SNAP_ON`] confusions), the surfaces nearly
+/// touching at the end ([`SNAP_TOUCH`]), is moved there: the curve's
+/// end control point, and each pcurve's, to the vertex's parameters found
+/// from the end's own (a pole keeps its side's parameter). The section's
+/// tolerance widens by the move. Curves or pcurves other than clamped
+/// B-splines are left as they are.
+fn snapped_to_vertices(
+    fa: &GFace,
+    fb: &GFace,
+    curve: Curve,
+    pa: PlanarCurve,
+    pb: PlanarCurve,
+    tol: Tolerances,
+) -> OgeomResult<(Curve, PlanarCurve, PlanarCurve, f64)> {
+    let (Curve::BSpline(c), PlanarCurve::BSpline(qa), PlanarCurve::BSpline(qb)) =
+        (&curve, &pa, &pb)
+    else {
+        return Ok((curve, pa, pb, 0.0));
+    };
+    let reach = SNAP_REACH * fa.chord_scale.min(fb.chord_scale);
+    let on = SNAP_ON * tol.confusion();
+    let mut vertices: Vec<Point> = Vec::new();
+    for e in fa.edges.iter().chain(&fb.edges) {
+        for t in [e.crange.0, e.crange.1] {
+            vertices.push(e.curve.point_at(t, tol)?);
+        }
+    }
+    let (lo, hi) = curve.domain();
+    let mut control: Vec<Weighted<Point>> = c.control_points().to_vec();
+    let mut control_a: Vec<Weighted<Point2>> = qa.control_points().to_vec();
+    let mut control_b: Vec<Weighted<Point2>> = qb.control_points().to_vec();
+    let mut moved = 0.0_f64;
+    for (end, t) in [(0usize, lo), (1, hi)] {
+        let at = curve.point_at(t, tol)?;
+        // Only where the surfaces nearly touch at the end: a section
+        // crossing an edge beside a vertex ends there truly.
+        let mut normals = [Vector::ZERO; 2];
+        for (k, (face, pcurve)) in [(fa, &pa), (fb, &pb)].into_iter().enumerate() {
+            let (pl, ph) = pcurve.domain();
+            let uv = pcurve.point_at(if end == 0 { pl } else { ph }, tol)?;
+            let Ok(n) = face.surface.normal_at(uv.x, uv.y, tol) else {
+                continue;
+            };
+            normals[k] = n.vector();
+        }
+        if normals[0].cross(normals[1]).magnitude() > SNAP_TOUCH {
+            continue;
+        }
+        let Some(&vertex) = vertices
+            .iter()
+            .filter(|v| {
+                let d = v.distance(at);
+                d > SNAP_FLOOR * tol.confusion() && d <= reach
+            })
+            .min_by(|a, b| a.distance(at).total_cmp(&b.distance(at)))
+        else {
+            continue;
+        };
+        // The vertex on both surfaces, its parameters on each found from the
+        // end's own.
+        let mut images = [Point2::ORIGIN; 2];
+        let mut ok = true;
+        for (k, (face, pcurve)) in [(fa, &pa), (fb, &pb)].into_iter().enumerate() {
+            let (pl, ph) = pcurve.domain();
+            let guess = pcurve.point_at(if end == 0 { pl } else { ph }, tol)?;
+            let foot = ogeom_algo::project_on_surface_from(
+                &face.surface,
+                vertex,
+                (guess.x, guess.y),
+                tol,
+            )?;
+            if foot.distance > on {
+                ok = false;
+                break;
+            }
+            images[k] = Point2::new(foot.parameters.0, foot.parameters.1);
+        }
+        if !ok {
+            continue;
+        }
+        // The vertex a pole of either surface: a side of its chart
+        // collapsed to the point, one derivative vanishing there.
+        let mut pole = false;
+        for (k, face) in [fa, fb].into_iter().enumerate() {
+            let Ok((du, dv)) = face.surface.d1_at(images[k].x, images[k].y, tol) else {
+                continue;
+            };
+            let (mu, mv) = (du.magnitude(), dv.magnitude());
+            if mu.min(mv) <= SNAP_POLE * mu.max(mv) {
+                pole = true;
+            }
+        }
+        if !pole {
+            continue;
+        }
+        let move_to = |points: &mut [Weighted<Point>], p: Point| {
+            let k = if end == 0 { 0 } else { points.len() - 1 };
+            let w = points[k].weight;
+            points[k] = Weighted {
+                scaled: Point::from_vector(p.to_vector() * w),
+                weight: w,
+            };
+        };
+        let move_to_2d = |points: &mut [Weighted<Point2>], p: Point2| {
+            let k = if end == 0 { 0 } else { points.len() - 1 };
+            let w = points[k].weight;
+            points[k] = Weighted {
+                scaled: Point2::new(p.x * w, p.y * w),
+                weight: w,
+            };
+        };
+        move_to(&mut control, vertex);
+        move_to_2d(&mut control_a, images[0]);
+        move_to_2d(&mut control_b, images[1]);
+        moved = moved.max(vertex.distance(at));
+        if *DEBUG_WIRE {
+            eprintln!("SNAP end {end} {at:?} -> {vertex:?}");
+        }
+    }
+    if moved == 0.0 {
+        return Ok((curve, pa, pb, 0.0));
+    }
+    let (Ok(c), Ok(qa), Ok(qb)) = (
+        ogeom_geom::BSplineCurve::rational(c.knots().clone(), control),
+        ogeom_geom::BSpline2d::rational(qa.knots().clone(), control_a),
+        ogeom_geom::BSpline2d::rational(qb.knots().clone(), control_b),
+    ) else {
+        return Ok((curve, pa, pb, 0.0));
+    };
+    Ok((
+        Curve::BSpline(c),
+        PlanarCurve::BSpline(qa),
+        PlanarCurve::BSpline(qb),
+        moved,
+    ))
+}
+
+/// How far a marched section's end may stop short of a vertex both
+/// surfaces pass through and still be moved onto it
+/// ([`snapped_to_vertices`]), as a share of the faces' chord scale.
+const SNAP_REACH: f64 = 1e-3;
+
+/// How far off each surface, in confusions, a vertex a marched section's
+/// end is moved onto may lie.
+const SNAP_ON: f64 = 100.0;
+
+/// How small one chart derivative must be against the other, at a vertex,
+/// for the vertex to be a pole of the surface (a side collapsed to it).
+const SNAP_POLE: f64 = 1e-6;
+
+/// How far, in confusions, a marched section's end may stand off a vertex
+/// and be left where it is: the arrangement welds the wire through such a
+/// gap itself, other curves meeting the end where it stands.
+const SNAP_FLOOR: f64 = 1e3;
+
+/// The sine of the angle between the two surfaces' normals at a marched
+/// section's end under which they nearly touch there, and the end may be
+/// moved onto a vertex.
+const SNAP_TOUCH: f64 = 1e-2;
+
 /// Whether a line edge of one face, its ends at `ends`, runs along a line
 /// edge of `target` end to end, each end within `weld` of that edge.
 fn shared_line(ends: &[Point], target: &GFace, weld: f64, tol: Tolerances) -> OgeomResult<bool> {
@@ -6169,15 +6341,25 @@ fn fill(
                             }
                         }
                         match (sc.on_a.clone(), sc.on_b.clone()) {
-                            (Some(pa), Some(pb)) => out.sections.push(SectionRec {
-                                curve: sc.curve,
-                                pc_a: pa,
-                                pc_b: pb,
-                                face_a: ia,
-                                face_b: ib,
-                                closed: sc.closed,
-                                tolerance: sc.tolerance,
-                            }),
+                            (Some(pa), Some(pb)) => {
+                                // A marched section's ends snapped onto a
+                                // vertex both surfaces pass through, where
+                                // the marcher stopped short of it.
+                                let (curve, pa, pb, moved) = if sc.exact || sc.closed {
+                                    (sc.curve, pa, pb, 0.0)
+                                } else {
+                                    snapped_to_vertices(fa, fb, sc.curve, pa, pb, tol)?
+                                };
+                                out.sections.push(SectionRec {
+                                    curve,
+                                    pc_a: pa,
+                                    pc_b: pb,
+                                    face_a: ia,
+                                    face_b: ib,
+                                    closed: sc.closed,
+                                    tolerance: sc.tolerance.max(moved),
+                                });
+                            }
                             _ => {
                                 // A section running through a chart
                                 // degeneracy (a plane cutting a ball on its
