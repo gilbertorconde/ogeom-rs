@@ -886,19 +886,25 @@ into its wedge by its legs on the two faces and its caps. That
 construction exists (`marched.rs` and the constructions it calls) and is
 not rewritten; the engine takes it as the strip builder for these seats.
 
-- **Scope.** A request every edge of which is a marched seat, where
-  every ball fits beside its edge (no strip taken off whole, no ball on a
-  far edge). Each edge's wedge is built on the solid as given, with the
-  request's other edges as its mates, and set aside unapplied.
+- **Scope.** A request one edge of which at least is a marched seat,
+  where every ball fits beside its edge (no strip taken off whole, no ball
+  on a far edge). Each edge's wedge is built on the solid as given, with
+  the request's other edges as its mates, and set aside unapplied.
+- **Junctions.** Where two of the edges' creases turn at a shared vertex
+  (a rib's spline crease into a boss's rim), the bands meet as the
+  current path's junctions meet them: each fitted to the plane the two
+  meet in (carried on past its cap across a re-entrant turn, trimmed back
+  across a convex one), a flush pair joined across it into one wedge, a
+  crossed re-entrant pair's corner built from the two. A marched edge
+  meeting one of another kind anywhere but at such a junction, or with a
+  third at a vertex, is still built after it on the current path.
 - **Application.** The wedges are the one-boolean fallback's tools
   (amendment "M5a"): cut where the crease is convex, fused where it is
   concave, one boolean each, every face of a wedge named for its edge
   (or the edge its builder credits it to). A result that does not check
   valid is handed back.
-- **Still the current path's:** a marched seat meeting a round of
-  another kind at a junction (a rib's round into a boss's rim, which the
-  current path meets flush), a round over a bevel it takes off whole,
-  and the refusals those raise. Each is migrated with its class.
+- **Still the current path's:** a round over a bevel it takes off
+  whole, and the refusals it raises.
 
 ### Amendment: mixed rolling corners (#902)
 
