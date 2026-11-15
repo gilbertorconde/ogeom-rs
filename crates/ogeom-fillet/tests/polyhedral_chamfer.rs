@@ -4545,3 +4545,82 @@ fn a_bevel_on_a_face_round_a_slot_beside_a_rolling_bevel_runs_into_its_face() {
         assert!(!built.history.generated(e).is_empty(), "its bevel");
     }
 }
+
+/// A corner of rolling bevels of both kinds, two of them cutting: a block
+/// 7.4 × 10 × 4 with a slot x in [3, 7], y < 3, z > 2 from its front, the
+/// slot's top back corner (7, 3, 4) and its three edges chamfered 0.5. The
+/// top's strip beside the slot is 0.4 wide, so the top side edge's bevel
+/// z - x = -3.5 rolls over the block's side x = 7.4; the top back edge's
+/// bevel is z - y = 0.5, the slot's upright (concave) fills to
+/// x + y = 9.5. The facet through the setback corners (7.5, 3.5, 4),
+/// (6.5, 3, 3.5) and (7, 2.5, 3.5) is -x - y + 3z = 1; its vertex's side
+/// inside every bevel is cut within the solid (two of the three bevels
+/// cut), the fill sparing it, the cuts sparing the far side (ADR 0001,
+/// amendment "mixed rolling corners"). What the block keeps within a box
+/// round the corner, summed over the convex cells of every plane
+/// involved, gives the result's volume exactly. Through the union of local
+/// tools (booleans counted).
+#[test]
+fn a_corner_of_rolling_bevels_two_cutting_keeps_what_the_facet_rule_keeps() {
+    use ogeom_math::Vector;
+    let mut m = Model::new();
+    let solid = block(&mut m, (0.0, 0.0, 0.0), (7.4, 10.0, 4.0));
+    let slot = block(&mut m, (3.0, -1.0, 2.0), (4.0, 4.0, 3.0));
+    let s = ogeom_bool::cut(&mut m, &solid, &slot, T).unwrap().shape;
+    let asked = edges_at_point(&m, &s, Point::new(7.0, 3.0, 4.0));
+    assert_eq!(asked.len(), 3);
+    let (built, work) = ogeom_bool::work::counted(|| {
+        ogeom_fillet::chamfer_edges(&mut m, &s, &asked, 0.5, T).unwrap()
+    });
+    assert!(work.face_pairs > 0, "through the union of local tools");
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    for e in &asked {
+        assert!(!built.history.generated(e).is_empty(), "its bevel");
+    }
+    let v = |x: f64, y: f64, z: f64| Vector::new(x, y, z);
+    let in_solid = |p: Vector| {
+        let block =
+            (0.0..=7.4).contains(&p.x) && (0.0..=10.0).contains(&p.y) && (0.0..=4.0).contains(&p.z);
+        let slot = (3.0..=7.0).contains(&p.x) && p.y <= 3.0 && p.z >= 2.0;
+        block && !slot
+    };
+    let facet = |p: Vector| -p.x - p.y + 3.0 * p.z;
+    let inside_bevels = |p: Vector| p.z - p.y >= 0.5 && p.z - p.x >= -3.5 && p.x + p.y >= 9.5;
+    let near = |p: Vector| inside_bevels(p) && facet(p) >= 1.0;
+    let far = |p: Vector| inside_bevels(p) && facet(p) <= 1.0;
+    let back =
+        |p: Vector| p.y >= 3.0 && p.z <= 4.0 && p.z - p.y >= 0.5 && (3.0..=7.0).contains(&p.x);
+    let side =
+        |p: Vector| p.x >= 7.0 && p.z <= 4.0 && p.z - p.x >= -3.5 && (0.0..=3.0).contains(&p.y);
+    let fill =
+        |p: Vector| p.x <= 7.0 && p.y <= 3.0 && p.x + p.y >= 9.5 && (2.0..=4.0).contains(&p.z);
+    let kept = |p: Vector| {
+        let filled = in_solid(p) || (fill(p) && !near(p));
+        let cut = ((back(p) || side(p)) && !far(p)) || (near(p) && in_solid(p));
+        filled && !cut
+    };
+    let bound = [
+        (v(-1.0, 0.0, 0.0), -2.0),
+        (v(1.0, 0.0, 0.0), 7.4),
+        (v(0.0, -1.0, 0.0), 0.0),
+        (v(0.0, 1.0, 0.0), 6.0),
+        (v(0.0, 0.0, -1.0), -1.0),
+        (v(0.0, 0.0, 1.0), 4.0),
+    ];
+    let cuts = [
+        (v(1.0, 0.0, 0.0), 3.0),
+        (v(1.0, 0.0, 0.0), 7.0),
+        (v(0.0, 1.0, 0.0), 3.0),
+        (v(0.0, 0.0, 1.0), 2.0),
+        (v(0.0, -1.0, 1.0), 0.5),
+        (v(-1.0, 0.0, 1.0), -3.5),
+        (v(1.0, 1.0, 0.0), 9.5),
+        (v(-1.0, -1.0, 3.0), 1.0),
+    ];
+    let before = kept_volume(&bound, &cuts, &in_solid);
+    let after = kept_volume(&bound, &cuts, &kept);
+    let want = volume(&m, &s) - before + after;
+    let got = volume(&m, &built.shape);
+    assert!((got - want).abs() <= 1e-9 * want, "{got} against {want}");
+}
