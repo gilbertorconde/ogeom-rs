@@ -308,6 +308,24 @@ fn chamfer_with(
             .collect();
         corners.insert((*fi, *v), Corner { point: *point, on });
     }
+    // Each contact as far off its corners as it stands: two fitted pieces
+    // of one run meet at their joint each within its own fit of the
+    // corner, and the edges there widen to cover the gap.
+    for ((fi, _), corner) in &corners {
+        for (e, t) in &corner.on {
+            let Some(b) = bevels.iter().find(|b| b.edge == *e) else {
+                continue;
+            };
+            let Some(k) = b.faces.iter().position(|f| f == fi) else {
+                continue;
+            };
+            let off = b.contacts[k].point_at(*t, tol)?.distance(corner.point);
+            if off > tol.confusion() {
+                let width = widths.entry((*fi, *e)).or_insert(0.0);
+                *width = width.max(off + tol.confusion());
+            }
+        }
+    }
     let blended: FastSet<Id> = bevels.iter().map(|b| b.edge).collect();
     if patched_only && !off_plane_corner(&curved, &blended, &corners, tol) {
         return Ok(None);
