@@ -36,6 +36,7 @@ mod fallback;
 mod far_edge;
 mod guards;
 mod marched_seats;
+mod meeting;
 mod request;
 mod rims;
 mod round_strips;
@@ -52,6 +53,7 @@ pub(crate) use defeatured::tools as defeatured_tools;
 pub(crate) use fallback::{Sense, Tool, applied as apply_tools, straight_non_local};
 pub(crate) use far_edge::rounds as far_edge_rounds;
 pub(crate) use marched_seats::rounds as marched_rounds;
+pub(crate) use meeting::rounds as meeting_rounds;
 pub(crate) use request::{Request, Section};
 pub(crate) use rims::assemble as round_rims;
 pub(crate) use round_strips::{

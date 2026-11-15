@@ -1057,6 +1057,34 @@ here.
   face, a ball on a vertex, an end met by other than one plane, two such
   seams meeting.
 
+### Amendment: M5e, rounds carried on through an inside corner (#902)
+
+Two rounded creases meeting at a corner that is reflex in plan (a notch's
+inside corner, a pocket's rim) are each carried on past the corner, and
+the solid keeps whatever lies under either band. A point is taken only
+where it lies above both bands carried on, or above one and past the
+other's wall, where the corner is open. On square walls this is the
+rings' flush meeting in the bisecting plane. Off square in plan, or where
+the walls lean (drafted or moulded pockets), the bands meet along their
+own intersection: no flush cap or patch at the vertex holds that meeting,
+and capping there left the corner standing.
+
+- **Built** (straight convex creases between planes, where the rings
+  decline) by the one boolean of amendment "M5a":
+  - each crease's band carried on is its spandrel prism, the wedge of its
+    two faces' planes far longer than the solid, less that wedge rounded
+    by the engine (an exact cylinder);
+  - each crease's tool is its spandrel where, at each end shared with
+    another asked crease, it also lies past that crease's wall or within
+    its spandrel;
+  - the solid is cut by the tools.
+- **Ends.** A crease end met by no other asked crease must carry its band
+  out of the solid, so the band ends flush on the faces it meets.
+  Anything else is handed back.
+- **Not yet built.** Rims and arcs on curved walls meeting at such corners
+  (drums, bores, D-shaped blocks) stay on the current path until their
+  revolved spandrels join this route.
+
 ## 12. Acceptance corpus
 
 From #902:
