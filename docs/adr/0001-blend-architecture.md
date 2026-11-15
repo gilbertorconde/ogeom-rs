@@ -997,8 +997,15 @@ each face its own distance, its section an ellipse or a conic of a given
   reset to the law's there, on end faces square to the edge), and the strip
   ends flush; its chart's sense is read where it stands. Its contacts are
   the section's contact curves, bending with a law of points, each shared
-  by the strip and its face. At any other
-  vertex it is not built yet.
+  by the strip and its face.
+- **A varying radius over a chain** of straight edges between planes,
+  open or closed, the law laid over the chain by arc length from its
+  first edge's start (or, asked from the middle of an open chain, from
+  where the chain begins): each edge takes its own stretch of the law,
+  held level past its ends, and the bands meet at the chain's turns as
+  constant rounds meet there (amendment "M5e"): carried on through an
+  inside corner, running out past a convex turn. At any other vertex a
+  varying round is not built yet.
 
 ### Amendment: M5d, a round resting on a far edge (#902)
 

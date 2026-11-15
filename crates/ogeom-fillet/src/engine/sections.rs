@@ -56,7 +56,7 @@ pub(crate) fn law(section: &Section) -> Box<dyn SectionLaw + '_> {
         Section::Round { radius } => Box::new(RoundLaw { radius: *radius }),
         Section::Conic { on, .. } => Box::new(ConicLaw { on }),
         Section::Varying { law, .. } => Box::new(RoundLaw {
-            radius: law.at_fraction(0.0),
+            radius: law.at_end(0.0),
         }),
     }
 }

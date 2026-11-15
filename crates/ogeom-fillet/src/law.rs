@@ -73,6 +73,38 @@ impl RadiusLaw {
     }
 }
 
+/// The law a varying round follows along one edge: as the request states
+/// it, or laid already (a stretch of a chain's law, held level past the
+/// edge's ends).
+#[derive(Debug, Clone)]
+pub(crate) enum EdgeLaw {
+    Stated(RadiusLaw),
+    Laid(Profile),
+}
+
+impl EdgeLaw {
+    /// The radius at the edge's start (`0`) or end (`1`).
+    pub(crate) fn at_end(&self, end: f64) -> f64 {
+        match self {
+            Self::Stated(law) => law.at_fraction(end),
+            Self::Laid(profile) => profile.at(end).0,
+        }
+    }
+
+    /// The law scaled by `k` and, `reversed`, read from the edge's other
+    /// end, as Hermite pieces over the edge.
+    ///
+    /// # Errors
+    ///
+    /// As [`Profile::new`].
+    pub(crate) fn along(&self, k: f64, reversed: bool, tol: Tolerances) -> OgeomResult<Profile> {
+        match self {
+            Self::Stated(law) => Profile::new(&law.scaled(k, reversed), false, tol),
+            Self::Laid(profile) => Ok(profile.scaled_by(k, reversed)),
+        }
+    }
+}
+
 /// A validated law, as cubic Hermite pieces over the fractions.
 #[derive(Debug, Clone)]
 pub(crate) struct Profile {
@@ -276,6 +308,30 @@ impl Profile {
             radius: self.radius.clone(),
             slope: self.slope.iter().map(|&m| m * whole).collect(),
             closed: false,
+        }
+    }
+
+    /// The law scaled by `k` and, `reversed`, read from the other end.
+    pub(crate) fn scaled_by(&self, k: f64, reversed: bool) -> Self {
+        let mut nodes: Vec<(f64, f64, f64)> = self
+            .at
+            .iter()
+            .zip(&self.radius)
+            .zip(&self.slope)
+            .map(|((&s, &r), &m)| {
+                if reversed {
+                    (1.0 - s, r * k, -m * k)
+                } else {
+                    (s, r * k, m * k)
+                }
+            })
+            .collect();
+        nodes.sort_by(|a, b| a.0.total_cmp(&b.0));
+        Self {
+            at: nodes.iter().map(|n| n.0).collect(),
+            radius: nodes.iter().map(|n| n.1).collect(),
+            slope: nodes.iter().map(|n| n.2).collect(),
+            closed: self.closed,
         }
     }
 

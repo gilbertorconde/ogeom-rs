@@ -3440,10 +3440,116 @@ pub fn fillet_edges_variable(
     {
         return Ok(built);
     }
+    // A chain of straight edges between planes: each edge rounded under its
+    // own stretch of the law, the bands meeting at its turns as the engine
+    // meets rounds (amendment "M5e").
+    if chain.len() > 1
+        && let Some(specs) = straight_chain_laws(model, chain, law, tol)?
+        && let Some(built) = crate::engine::meeting_rounds_with(model, solid, &specs, tol)?
+    {
+        return Ok(built);
+    }
     to_current_path("fillet_edges_variable");
     ogeom_algo::on_own_nodes(model, solid, chain, |model, solid, parts| {
         fillet_chain_law_own(model, solid, parts, law, tol)
     })
+}
+
+/// Each edge of `chain` (straight, end to end, open or closed) with the
+/// stretch of `law` it covers by arc length, and the point the stretch
+/// starts at; `None` where an edge is not straight or the edges do not run
+/// end to end.
+///
+/// # Errors
+///
+/// As reading the edges and laying the law.
+fn straight_chain_laws(
+    model: &Model,
+    chain: &[Shape],
+    law: &RadiusLaw,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<(Shape, crate::engine::MeetingSpec)>>> {
+    let point = |v: &Shape| {
+        model
+            .node(v)
+            .and_then(|n| n.data().as_vertex().map(|d| d.point))
+    };
+    // Each edge's ends, the way it runs (its orientation's way).
+    let mut ends: Vec<[Point; 2]> = Vec::with_capacity(chain.len());
+    for e in chain {
+        let (curve, _) = edge_curve(model, e, tol)?;
+        if !matches!(curve, Curve::Line(_)) {
+            return Ok(None);
+        }
+        let Some((a, b)) = ogeom_algo::edge_vertices(model, e)? else {
+            return Ok(None);
+        };
+        let (Some(a), Some(b)) = (point(&a), point(&b)) else {
+            return Ok(None);
+        };
+        ends.push([a, b]);
+    }
+    // `edge_vertices` reads them the way each edge runs already.
+    let runs = ends;
+    let near = |p: Point, q: Point| p.distance(q) <= tol.confusion() * 1e3;
+    // The walk from the first edge's start, each step an edge and the
+    // point it starts at.
+    let mut walk: Vec<(usize, Point, Point)> = vec![(0, runs[0][0], runs[0][1])];
+    let mut used = vec![false; chain.len()];
+    used[0] = true;
+    let mut head = runs[0][1];
+    while let Some(k) =
+        (0..chain.len()).find(|&k| !used[k] && runs[k].iter().any(|p| near(*p, head)))
+    {
+        let with = near(runs[k][0], head);
+        used[k] = true;
+        let (from, to) = if with {
+            (runs[k][0], runs[k][1])
+        } else {
+            (runs[k][1], runs[k][0])
+        };
+        walk.push((k, from, to));
+        head = to;
+    }
+    let closed = near(head, runs[0][0]);
+    // An open chain asked from its middle: on back from the first edge's
+    // start, the chain starting where that walk ends.
+    if !closed {
+        let mut tail = runs[0][0];
+        while let Some(k) =
+            (0..chain.len()).find(|&k| !used[k] && runs[k].iter().any(|p| near(*p, tail)))
+        {
+            let with = near(runs[k][1], tail);
+            used[k] = true;
+            let (from, to) = if with {
+                (runs[k][0], runs[k][1])
+            } else {
+                (runs[k][1], runs[k][0])
+            };
+            walk.insert(0, (k, from, to));
+            tail = from;
+        }
+    }
+    if used.iter().any(|u| !u) {
+        return Ok(None);
+    }
+    let profile = crate::law::Profile::new(law, closed, tol)?;
+    let total: f64 = walk.iter().map(|(_, a, b)| a.distance(*b)).sum();
+    if total <= tol.confusion() {
+        return Ok(None);
+    }
+    let mut out: Vec<(Shape, crate::engine::MeetingSpec)> = Vec::with_capacity(chain.len());
+    let mut before = 0.0;
+    for (k, from, to) in walk {
+        let length = from.distance(to);
+        let (f0, f1) = (before / total, (before + length) / total);
+        before += length;
+        out.push((
+            chain[k].clone(),
+            crate::engine::MeetingSpec::Law(profile.window(f0, f1), from),
+        ));
+    }
+    Ok(Some(out))
 }
 
 /// Whether `chain` runs end to end and back to its start, each edge
