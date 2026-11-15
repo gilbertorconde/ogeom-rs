@@ -55,7 +55,7 @@ pub(crate) use far_edge::rounds as far_edge_rounds;
 pub(crate) use marched_seats::rounds as marched_rounds;
 pub(crate) use meeting::{carried_out as carried_out_rounds, rounds as meeting_rounds};
 pub(crate) use request::{Request, Section};
-pub(crate) use rims::assemble as round_rims;
+pub(crate) use rims::{RimSection, assemble as round_rims, assemble_with as round_rims_with};
 pub(crate) use round_strips::{
     far_faces as round_far_faces, non_local_tools as round_non_local_tools, round as round_curved,
 };
