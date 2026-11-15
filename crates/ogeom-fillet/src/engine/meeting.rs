@@ -104,21 +104,7 @@ pub(crate) fn rounds(
                 .collect();
             match others[..] {
                 [] => {
-                    // Carried on past a free end, the band leaves the
-                    // solid: a point just past the vertex, a little inside
-                    // the wedge, stands outside it.
-                    let (at, away) = if k == 0 {
-                        (c.a, c.a - c.b)
-                    } else {
-                        (c.b, c.b - c.a)
-                    };
-                    let away = away / away.magnitude();
-                    let inward = -(c.planes[0].0 + c.planes[1].0);
-                    let inward = inward / inward.magnitude();
-                    let probe = at + away * (c.radius * 0.5) + inward * (c.radius * 0.1);
-                    if ogeom_algo::classify_in_solid_exact(model, solid, probe, tol)?
-                        != ogeom_algo::Containment::Out
-                    {
+                    if !runs_out(model, solid, c, k, tol)? {
                         return Ok(None);
                     }
                 }
@@ -200,6 +186,166 @@ pub(crate) fn rounds(
             tool = kept.shape;
         }
         if explore_unique(&scratch, &tool, ShapeType::Solid)?.is_empty() || named.is_empty() {
+            return Ok(None);
+        }
+        tools.push(Tool {
+            solid: tool,
+            sense: Sense::Cut,
+            faces: named.into_iter().map(|f| (f, c.shape.clone())).collect(),
+        });
+    }
+    let edges: Vec<Shape> = creases.iter().map(|c| c.shape.clone()).collect();
+    let Some(built) = super::fallback::applied(&mut scratch, solid, &edges, &tools, tol)? else {
+        return Ok(None);
+    };
+    match super::guards::solid_fits(&scratch, &built.shape, tol) {
+        Ok(()) => {
+            *model = scratch;
+            Ok(Some(built))
+        }
+        Err(e @ ogeom_core::OgeomError::Cancelled) => Err(e),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Whether `crease`'s band, carried on past its end `k` (0 its start),
+/// leaves the solid: a point just past the vertex, a little inside the
+/// wedge, stands outside it.
+fn runs_out(
+    model: &Model,
+    solid: &Shape,
+    crease: &Crease,
+    k: usize,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let (at, away) = if k == 0 {
+        (crease.a, crease.a - crease.b)
+    } else {
+        (crease.b, crease.b - crease.a)
+    };
+    let away = away / away.magnitude();
+    let inward = -(crease.planes[0].0 + crease.planes[1].0);
+    let inward = inward / inward.magnitude();
+    let probe = at + away * (crease.radius * 0.5) + inward * (crease.radius * 0.1);
+    Ok(
+        ogeom_algo::classify_in_solid_exact(model, solid, probe, tol)?
+            == ogeom_algo::Containment::Out,
+    )
+}
+
+/// How many stations along a carried-out crease its contacts are read at
+/// on its faces, ends apart.
+const CONTACT_STATIONS: u32 = 16;
+
+/// The rounds of `asked` on `solid` where every asked edge is a straight
+/// convex crease between planes, no two meeting, each carried on past both
+/// ends out of the solid (a chord's crease running out across a drum): the
+/// band ends flush on the faces it meets past each end, as a free end at an
+/// inside corner does (ADR 0001, amendment "M5e"). Each tool is the
+/// crease's spandrel carried on, which must meet the solid in one piece:
+/// the band alone, nothing it reaches farther along its line. `None`
+/// otherwise, or where a tool or the boolean will not build.
+///
+/// # Errors
+///
+/// As reading the solid and building the tools, other than refusals,
+/// which decline.
+pub(crate) fn carried_out(
+    model: &mut Model,
+    solid: &Shape,
+    asked: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    if asked.is_empty() {
+        return Ok(None);
+    }
+    let Some(curved) = read(model, solid, tol)? else {
+        return Ok(None);
+    };
+    let mut creases: Vec<Crease> = Vec::with_capacity(asked.len());
+    for (edge, radius) in asked {
+        let Some(crease) = crease_of(&curved, id(edge), edge, *radius, tol)? else {
+            return Ok(None);
+        };
+        // No two meeting or sharing a face: two bands on one face are
+        // checked against each other where they are built together.
+        let shares = |c: &Crease| {
+            [c.ends.0, c.ends.1]
+                .iter()
+                .any(|v| *v == crease.ends.0 || *v == crease.ends.1)
+                || c.faces.iter().any(|f| crease.faces.contains(f))
+        };
+        if creases.iter().any(shares) {
+            return Ok(None);
+        }
+        for k in 0..2 {
+            if !runs_out(model, solid, &crease, k, tol)? {
+                return Ok(None);
+            }
+        }
+        // Each end on the solid's own faces, each meeting the crease's at an
+        // angle: one running on tangent from them (a band an earlier round
+        // left) is that round's to meet, not a face the band runs out across.
+        for v in [crease.ends.0, crease.ends.1] {
+            let at = curved.points[&v];
+            let [(na, _), (nb, _)] = crease.planes;
+            for (f, face) in curved.faces.iter().enumerate() {
+                if crease.faces.contains(&f)
+                    || !face.loops.iter().flatten().any(|(x, _)| {
+                        let g = &curved.edges[x];
+                        g.ends.0 == v || g.ends.1 == v
+                    })
+                {
+                    continue;
+                }
+                let Some(n) = outward(&curved, f, at) else {
+                    return Ok(None);
+                };
+                if n.cross(na).magnitude() <= tol.angular()
+                    || n.cross(nb).magnitude() <= tol.angular()
+                {
+                    return Ok(None);
+                }
+            }
+        }
+        // The ball seated on both faces along the crease: each contact on
+        // the solid's boundary between its ends.
+        let [(na, _), (nb, _)] = crease.planes;
+        let centre = -(na + nb) * (crease.radius / (1.0 + na.dot(nb)));
+        for i in 1..CONTACT_STATIONS {
+            let at =
+                crease.a + (crease.b - crease.a) * (f64::from(i) / f64::from(CONTACT_STATIONS));
+            for n in [na, nb] {
+                let contact = at + centre + n * crease.radius;
+                if ogeom_algo::classify_in_solid_exact(model, solid, contact, tol)?
+                    != ogeom_algo::Containment::On
+                {
+                    return Ok(None);
+                }
+            }
+        }
+        creases.push(crease);
+    }
+    let (mut lo, mut hi) = (
+        Vector::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
+        Vector::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
+    );
+    for p in curved.points.values() {
+        let v = *p - Point::ORIGIN;
+        lo = Vector::new(lo.x.min(v.x), lo.y.min(v.y), lo.z.min(v.z));
+        hi = Vector::new(hi.x.max(v.x), hi.y.max(v.y), hi.z.max(v.z));
+    }
+    let reach = (hi - lo).magnitude() + 4.0 * creases.iter().map(|c| c.radius).fold(0.0, f64::max);
+    let mut scratch = model.clone();
+    let mut tools = Vec::with_capacity(creases.len());
+    for c in &creases {
+        let Some((tool, named)) = spandrel(&mut scratch, c, reach, tol)? else {
+            return Ok(None);
+        };
+        let Ok(taken) = ogeom_bool::common(&mut scratch, &tool, solid, tol) else {
+            return Ok(None);
+        };
+        if explore_unique(&scratch, &taken.shape, ShapeType::Solid)?.len() != 1 {
             return Ok(None);
         }
         tools.push(Tool {

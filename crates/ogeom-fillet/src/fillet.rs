@@ -1122,8 +1122,9 @@ fn rounds_by_engine_voided(
 }
 
 /// [`rounds_by_engine`] on one solid of one shell with nothing placed in
-/// it: the engine's routes, and where none takes the request, the marched
-/// seats' strips (ADR 0001, amendment "marched seats").
+/// it: the engine's routes, and where none takes the request, the creases
+/// carried out of the solid, then the marched seats' strips (ADR 0001,
+/// amendments "M5e" and "marched seats").
 fn rounds_by_engine_unplaced(
     model: &mut Model,
     solid: &Shape,
@@ -1142,10 +1143,20 @@ fn rounds_by_engine_unplaced(
     if once.is_empty() {
         return Ok(None);
     }
+    // Then straight creases no route closes, each carried on past both ends
+    // out of the solid (amendment "M5e"'s free ends).
+    if once
+        .iter()
+        .all(|(_, r)| r.is_finite() && *r > tol.confusion())
+        && let Some(built) = crate::engine::carried_out_rounds(model, solid, &once, tol)?
+    {
+        return Ok(Some(built));
+    }
     crate::engine::marched_rounds(model, solid, &once, tol)
 }
 
-/// [`rounds_by_engine_unplaced`]'s routes but the marched seats.
+/// The engine's routes for [`rounds_by_engine_unplaced`], in turn, but the
+/// carried-out creases and the marched seats, tried last.
 fn rounds_by_engine_routes(
     model: &mut Model,
     solid: &Shape,
@@ -1197,10 +1208,11 @@ fn rounds_by_engine_routes(
         return Ok(None);
     }
     let on_curved = |model: &mut Model, solid: &Shape, once: &[(Shape, f64)]| {
-        if let Some(built) = crate::engine::round_rims(model, solid, once, tol)? {
+        let once = whole_rims(model, solid, once, tol)?;
+        if let Some(built) = crate::engine::round_rims(model, solid, &once, tol)? {
             return Ok(Some(built));
         }
-        crate::engine::round_curved(model, solid, once, tol)
+        crate::engine::round_curved(model, solid, &once, tol)
     };
     // A seam (an edge between faces of one carrier a boolean split) names
     // nothing, as for chamfers.
@@ -5269,6 +5281,76 @@ fn rim_circle(model: &Model, edge: &Shape, tol: Tolerances) -> Option<ogeom_math
         Curve::Circle(c) => Some(c.circle()),
         _ => None,
     }
+}
+
+/// `asked` with each rim closed: where the pieces of a circle asked all
+/// take one radius and the solid's arcs of that circle run the whole turn,
+/// the arcs not asked join at that radius. One value rounds a tangent chain
+/// (ADR 0001, "what M6 refuses by name"), and the current path rounds the
+/// whole turn where a rim closes; a rim that stops, or pieces asked at
+/// different radii, are as asked.
+///
+/// # Errors
+///
+/// As reading the solid's edges.
+fn whole_rims(
+    model: &Model,
+    solid: &Shape,
+    asked: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Vec<(Shape, f64)>> {
+    let mut out = asked.to_vec();
+    let circles: Vec<Option<ogeom_math::Circle>> = asked
+        .iter()
+        .map(|(e, _)| rim_circle(model, e, tol))
+        .collect();
+    if circles.iter().all(Option::is_none) {
+        return Ok(out);
+    }
+    let all = ogeom_topo::explore_unique(model, solid, ShapeType::Edge)?;
+    let on: Vec<(Shape, Option<ogeom_math::Circle>)> = all
+        .into_iter()
+        .map(|e| {
+            let c = rim_circle(model, &e, tol);
+            (e, c)
+        })
+        .collect();
+    let mut done: Vec<ogeom_math::Circle> = Vec::new();
+    for (k, circle) in circles.iter().enumerate() {
+        let Some(circle) = circle else {
+            continue;
+        };
+        if done.iter().any(|d| same_circle(d, circle, tol)) {
+            continue;
+        }
+        done.push(*circle);
+        let radius = asked[k].1;
+        let alike = asked.iter().zip(&circles).all(|((_, r), c)| {
+            c.as_ref().is_none_or(|c| !same_circle(c, circle, tol)) || *r == radius
+        });
+        if !alike {
+            continue;
+        }
+        let pieces: Vec<&Shape> = on
+            .iter()
+            .filter(|(_, c)| c.as_ref().is_some_and(|c| same_circle(c, circle, tol)))
+            .map(|(e, _)| e)
+            .collect();
+        let mut turn = 0.0;
+        for piece in &pieces {
+            let (_, (a, b)) = edge_curve(model, piece, tol)?;
+            turn += (b - a).abs();
+        }
+        if (turn - core::f64::consts::TAU).abs() > tol.angular() {
+            continue;
+        }
+        for piece in pieces {
+            if !out.iter().any(|(e, _)| e.is_same(piece)) {
+                out.push((piece.clone(), radius));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Whether two circles are one: the same centre, radius and plane.
