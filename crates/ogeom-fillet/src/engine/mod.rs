@@ -44,6 +44,7 @@ mod seams;
 mod seats;
 mod sections;
 mod setbacks;
+mod taken_whole;
 mod trimmed;
 mod vertices;
 
@@ -57,6 +58,7 @@ pub(crate) use round_strips::{
     far_faces as round_far_faces, non_local_tools as round_non_local_tools, round as round_curved,
 };
 pub(crate) use seams::{Dissolved, Seamless, dissolve, dissolve_curved, is_seam};
+pub(crate) use taken_whole::rounds as taken_whole_rounds;
 pub(crate) use trimmed::{
     chamfer as chamfer_curved, chamfer_mitred as chamfer_curved_mitred, chamfer_patched,
     convex_one_boolean, creases_one_boolean, rims_revolved, rolling_tools,
