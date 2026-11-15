@@ -8680,21 +8680,42 @@ fn open_tool(
     ends: [EndCap; 2],
     tol: Tolerances,
 ) -> OgeomResult<Option<super::fallback::Tool>> {
+    open_tool_over(model, curved, strip, None, ends, tol)
+}
+
+/// [`close_tool`] for an open strip along `over` (a curve and its range)
+/// in place of its edge where given: a strip running on past its edge's
+/// ends, each cap a [`EndCap::Plane`] through an end of `over`.
+///
+/// # Errors
+///
+/// As building the faces.
+pub(crate) fn open_tool_over(
+    model: &mut Model,
+    curved: &Curved,
+    strip: &Strip,
+    over: Option<(&Curve, (f64, f64))>,
+    ends: [EndCap; 2],
+    tol: Tolerances,
+) -> OgeomResult<Option<super::fallback::Tool>> {
     let eps = tol.confusion();
     let edge = &curved.edges[&strip.edge];
-    let (e0, e1) = edge.range;
+    let (line, (e0, e1)) = over.unwrap_or((&edge.curve, edge.range));
     let h = (e1 - e0) * 1e-6;
     // Each end's point and its cap's plane.
     let mut caps = [(Point::ORIGIN, Vector::ZERO); 2];
     for (k, end) in ends.iter().enumerate() {
         let (t, inward) = if k == 0 { (e0, h) } else { (e1, -h) };
-        let p = edge.curve.point_at(t, tol)?;
-        let along = edge.curve.point_at(t + inward, tol)? - p;
+        let p = line.point_at(t, tol)?;
+        let along = line.point_at(t + inward, tol)? - p;
         let along = along / along.magnitude();
         caps[k] = match end {
             // The strip's own end: on the one other face at its vertex,
             // a plane square to the edge there (any other end declines).
             EndCap::Own => {
+                if over.is_some() {
+                    return Ok(None);
+                }
                 let v = if k == 0 { edge.ends.0 } else { edge.ends.1 };
                 let others: Vec<usize> = (0..curved.faces.len())
                     .filter(|fi| {
@@ -8744,7 +8765,7 @@ fn open_tool(
             corners[k][j] = contact.point_at(t, tol)?;
         }
         // The piece between the crossings beside the edge.
-        let middle = edge.curve.point_at(0.5 * (e0 + e1), tol)?;
+        let middle = line.point_at(0.5 * (e0 + e1), tol)?;
         let (a, b) = (at[0].min(at[1]), at[0].max(at[1]));
         let mut range = (a, b);
         if closed {
@@ -8784,7 +8805,7 @@ fn open_tool(
     ];
     let corner_index = |k: usize, j: usize| 2 + 2 * k + j;
     let mut curves: Vec<SheetCurve> = Vec::new();
-    let Some((edge_curve, edge_range)) = within_domain(&edge.curve, edge.range, tol)? else {
+    let Some((edge_curve, edge_range)) = within_domain(line, (e0, e1), tol)? else {
         return Ok(None);
     };
     curves.push(SheetCurve {

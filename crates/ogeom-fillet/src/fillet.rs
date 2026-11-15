@@ -1171,6 +1171,11 @@ fn rounds_by_engine_routes(
     if let Some(built) = crate::engine::run(model, solid, &request, tol)? {
         return Ok(Some(built));
     }
+    // A concave seam whose ball rests on the far edge of the narrow face
+    // beside it all along: its fill, fused (ADR 0001, amendment "M5d").
+    if let Some(built) = crate::engine::far_edge_rounds(model, solid, &once, tol)? {
+        return Ok(Some(built));
+    }
     // A solid with curved faces, read with its seams dissolved where it
     // holds any: rims between a planar cap and a coaxial cylinder or cone,
     // each the torus its ball sweeps; else straight edges along planes and
