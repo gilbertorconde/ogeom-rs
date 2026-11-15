@@ -769,9 +769,11 @@ fn blends_at_an_inside_corner_their_edge_runs_past_meet_at_the_vertex() {
 /// off the second edge's line by as much. Measured from the vertex, neither
 /// line runs past it; measured against the second edge, which runs along
 /// that wall, the first does. The blends meet where the edges' lines do:
-/// the bevels capped there, flush with each other, and the rounds in the
-/// plane bisecting the corner through it, as above, in either order. A cap
-/// at the vertex would cut into the other blend past the corner.
+/// the bevels running on past it to each other's plane (the column `d³/3`,
+/// as above, read on the faces' exact planes whatever the vertex does), and
+/// the rounds in the plane bisecting the corner through it, as above, in
+/// either order. A cap at the vertex would cut into the other blend past
+/// the corner.
 #[test]
 fn blends_at_an_inside_corner_whose_vertex_stands_off_the_wall_meet_at_the_wall() {
     let size = 1.0;
@@ -800,8 +802,13 @@ fn blends_at_an_inside_corner_whose_vertex_stands_off_the_wall_meet_at_the_wall(
             .unwrap_or_else(|e| panic!("chamfer {chamfer}, reversed {reversed}: {e}"))
             .shape;
             assert!(ogeom_algo::check(&model, &blended, T).unwrap().is_valid());
+            // The faces are exact planes: the bevels are the plain L's,
+            // each running on past the vertex to the other's plane at the
+            // reflex corner and taking the column `d³/3` both strips reach,
+            // as above. (The wedges capped them at the lines' meeting and
+            // left that column standing.)
             let cell = if chamfer {
-                0.0
+                size * size * size / 3.0
             } else {
                 square_corner_cell(size)
             };
