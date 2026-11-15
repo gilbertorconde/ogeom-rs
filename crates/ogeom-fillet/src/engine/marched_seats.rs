@@ -34,7 +34,42 @@ pub(crate) fn rounds(
 ) -> OgeomResult<Option<Built>> {
     let mut scratch = model.clone();
     let Some(wedges) = crate::fillet::marched_wedges(&mut scratch, solid, once, tol)? else {
-        return Ok(None);
+        // A rim whose own seat is refused, a ring beside it taken off
+        // whole: the same tools, the march's corner of the faces either
+        // side of the ring.
+        let [(edge, radius)] = once else {
+            return Ok(None);
+        };
+        let mut scratch = model.clone();
+        let Some(wedges) =
+            crate::fillet::rim_ring_taken_whole(&mut scratch, solid, edge, *radius, tol)?
+        else {
+            return Ok(None);
+        };
+        // A rim's band sits on the faces either side of it: applied by the
+        // seated booleans, which trim those faces where nothing else
+        // reaches into them, as the ring's own faces need.
+        let set: Vec<(Shape, crate::support::Wedge)> =
+            wedges.into_iter().map(|w| (edge.clone(), w)).collect();
+        let built = match crate::fillet::apply_set_aside(
+            &mut scratch,
+            Built::from_nothing(solid.clone()),
+            set,
+            tol,
+        ) {
+            Ok(built) => built,
+            Err(e @ ogeom_core::OgeomError::Cancelled) => return Err(e),
+            Err(_) => return Ok(None),
+        };
+        if built.history.generated(edge).is_empty()
+            || !ogeom_algo::check(&scratch, &built.shape, tol)?.is_valid()
+        {
+            return Ok(None);
+        }
+        let mut history = built.history;
+        history.delete(edge);
+        *model = scratch;
+        return Ok(Some(Built::new(built.shape, history)));
     };
     if let Some(built) = applied(&mut scratch, solid, once, &wedges, tol)? {
         *model = scratch;
