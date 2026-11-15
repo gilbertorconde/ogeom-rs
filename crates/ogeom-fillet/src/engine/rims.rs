@@ -61,6 +61,28 @@ struct Rim {
 /// the ring clear of it.
 const CAP_SAMPLES: u32 = 32;
 
+/// A rim's section: the rolling ball's, or a conic meeting the cap and the
+/// wall each its own distance from the rim (an asymmetric round, ADR 0001,
+/// amendment "round section laws, conic and elliptical").
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RimSection {
+    Ball(f64),
+    Conic {
+        cap: f64,
+        wall: f64,
+        profile: crate::asym::RoundProfile,
+    },
+}
+
+/// Where a rim's round meets its cap and its wall, in the meridian: the cap
+/// ring's radius, the wall ring's height along `up` and radius.
+#[derive(Debug, Clone, Copy)]
+struct Placed {
+    rho: f64,
+    wall_height: f64,
+    wall_rho: f64,
+}
+
 /// The rounded solid of `rounds` (each a rim's arc and its radius) on
 /// `solid`, or `None` where `solid` is not one [`read`] takes or the edges
 /// asked are not whole rims, each between a planar cap and a coaxial wall,
@@ -75,6 +97,25 @@ pub(crate) fn assemble(
     model: &mut Model,
     solid: &Shape,
     rounds: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let sections: Vec<(Shape, RimSection)> = rounds
+        .iter()
+        .map(|(e, r)| (e.clone(), RimSection::Ball(*r)))
+        .collect();
+    assemble_with(model, solid, &sections, tol)
+}
+
+/// [`assemble`] with each rim's own [`RimSection`]: a conic round's strip
+/// is its meridian conic turned about the axis.
+///
+/// # Errors
+///
+/// As [`assemble`].
+pub(crate) fn assemble_with(
+    model: &mut Model,
+    solid: &Shape,
+    rounds: &[(Shape, RimSection)],
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     let Some(read) = read(model, solid, tol)? else {
@@ -356,8 +397,8 @@ pub(crate) fn assemble(
     Ok(Some(Built::new(rounded, history)))
 }
 
-/// A rim as asked: its seat, its radius and its arcs with their circles.
-type RimAsked = (crate::support::RevolvedSeat, f64, Vec<(Id, Circle)>);
+/// A rim as asked: its seat, its section and its arcs with their circles.
+type RimAsked = (crate::support::RevolvedSeat, RimSection, Vec<(Id, Circle)>);
 
 /// The rims `rounds` asks, each solved, or `None` where they are not whole
 /// rims of the class [`assemble`] builds.
@@ -365,7 +406,7 @@ fn rims(
     model: &Model,
     solid: &Shape,
     read: &Curved,
-    rounds: &[(Shape, f64)],
+    rounds: &[(Shape, RimSection)],
     tol: Tolerances,
 ) -> OgeomResult<Option<Vec<Rim>>> {
     // Each arc asked with its seat, grouped by its circle.
@@ -393,7 +434,7 @@ fn rims(
                 }
                 arcs.push((e, c));
             }
-            None => groups.push((seat, *radius, vec![(e, c)])),
+            None => groups.push((seat, radius.clone(), vec![(e, c)])),
         }
     }
     // Built in the solid's order, not the request's: each rim's arcs by
@@ -414,7 +455,39 @@ fn rims(
         if (turn - tau).abs() > tol.angular() {
             return Ok(None);
         }
-        let ball = seat.ball(radius);
+        // Where the round meets the cap and the wall: the ball's rings, or
+        // a conic's at its two distances (the cap's along it, the wall's
+        // along its generator, both away from the rim into the material).
+        let (ball, weight) = match &radius {
+            RimSection::Ball(r) => {
+                let b = seat.ball(*r);
+                (
+                    Placed {
+                        rho: b.rho,
+                        wall_height: b.wall_height,
+                        wall_rho: b.wall_rho,
+                    },
+                    None,
+                )
+            }
+            RimSection::Conic {
+                cap: d_cap,
+                wall: d_wall,
+                profile,
+            } => {
+                let (d_cap, d_wall) = (*d_cap, *d_wall);
+                let w = seat.slope.hypot(1.0);
+                let wall_height = -seat.tau * d_wall / w;
+                (
+                    Placed {
+                        rho: seat.radius - seat.sigma * seat.tau * d_cap,
+                        wall_height,
+                        wall_rho: seat.radius_at(wall_height),
+                    },
+                    Some(*profile),
+                )
+            }
+        };
         if ball.rho <= tol.confusion() || ball.wall_rho <= tol.confusion() {
             return Ok(None);
         }
@@ -543,35 +616,42 @@ fn rims(
             }
             let off = read.points[&v] - seat.centre;
             let radial = (off - seat.up * off.dot(seat.up)).normalized(tol)?;
-            let on_cap = seat.centre + radial * ball.rho;
-            let on_wall = seat.centre + seat.up * ball.wall_height + radial * ball.wall_rho;
-            let centre = seat.centre + seat.up * ball.height + radial * ball.rho;
-            let from = (on_cap - centre).normalized(tol)?;
-            let to = on_wall - centre;
-            let normal = Direction::new(from.cross(to), tol)?;
-            let circle = Circle::new(
-                Frame::new(centre, normal, Direction::new(from, tol)?, tol)?,
-                radius,
-                tol,
-            )?;
-            let y = normal.vector().cross(from);
+            let meridian = meridian_at(&seat, &radius, ball, weight, radial, tol)?;
             vertices.push(RimVertex {
                 vertex: v,
-                on_cap,
-                on_wall,
-                meridian: (
-                    Curve::Circle(CircleCurve::new(circle)),
-                    (0.0, to.dot(y).atan2(to.dot(from))),
-                ),
+                on_cap: meridian.0,
+                on_wall: meridian.1,
+                meridian: meridian.2,
             });
         }
-        let torus: SurfaceGeometry = TorusSurface::new(Torus::new(
-            seat.frame_at(seat.centre + seat.up * ball.height, tol)?,
-            ball.rho,
-            radius,
-            tol,
-        )?)
-        .into();
+        let torus: SurfaceGeometry = match &radius {
+            RimSection::Ball(r) => TorusSurface::new(Torus::new(
+                seat.frame_at(seat.centre + seat.up * seat.ball(*r).height, tol)?,
+                ball.rho,
+                *r,
+                tol,
+            )?)
+            .into(),
+            RimSection::Conic { .. } => {
+                // The meridian conic at the rim frame's own `x`, turned the
+                // whole way about the axis.
+                let frame = seat.frame_at(seat.centre, tol)?;
+                let (_, _, (curve, _)) =
+                    meridian_at(&seat, &radius, ball, weight, frame.x().vector(), tol)?;
+                // Run from the wall to the cap, as the torus's own tube
+                // turns, so the surface faces the way the torus would.
+                let curve = ogeom_geom::Reversible::reversed(&curve);
+                ogeom_geom::RevolutionSurface::new(
+                    curve,
+                    ogeom_math::Axis {
+                        location: seat.centre,
+                        direction: frame.z(),
+                    },
+                    core::f64::consts::TAU,
+                )?
+                .into()
+            }
+        };
         // The material round the rim once rounded: below the cap and on the
         // wall's side of it at a convex rim; at a concave one below the cap,
         // or on the wall's side, or in the fill, the wedge between the cap
@@ -653,6 +733,108 @@ fn chained(
         out.push(p);
     }
     (at == start).then_some(out)
+}
+
+/// A meridian as [`meridian_at`] reads it: the touches on the cap and the
+/// wall, and the section's curve between them with its range.
+type Meridian = (Point, Point, (Curve, (f64, f64)));
+
+/// A rim's meridian at the radial direction `radial`: where its round
+/// meets the cap and the wall there, and the section between them (the
+/// ball's arc, or the conic whose control point is the rim's own point,
+/// tangent to the cap and the wall at its contacts, of `weight`'s
+/// profile).
+fn meridian_at(
+    seat: &crate::support::RevolvedSeat,
+    section: &RimSection,
+    at: Placed,
+    weight: Option<crate::asym::RoundProfile>,
+    radial: ogeom_math::Vector,
+    tol: Tolerances,
+) -> OgeomResult<Meridian> {
+    let on_cap = seat.centre + radial * at.rho;
+    let on_wall = seat.centre + seat.up * at.wall_height + radial * at.wall_rho;
+    match (section, weight) {
+        (RimSection::Ball(r), _) => {
+            let ball = seat.ball(*r);
+            let centre = seat.centre + seat.up * ball.height + radial * ball.rho;
+            let from = (on_cap - centre).normalized(tol)?;
+            let to = on_wall - centre;
+            let normal = Direction::new(from.cross(to), tol)?;
+            let circle = Circle::new(
+                Frame::new(centre, normal, Direction::new(from, tol)?, tol)?,
+                *r,
+                tol,
+            )?;
+            let y = normal.vector().cross(from);
+            Ok((
+                on_cap,
+                on_wall,
+                (
+                    Curve::Circle(CircleCurve::new(circle)),
+                    (0.0, to.dot(y).atan2(to.dot(from))),
+                ),
+            ))
+        }
+        (RimSection::Conic { .. }, profile) => {
+            let rim = seat.centre + radial * seat.radius;
+            let (a, b) = (
+                (on_cap - rim).normalized(tol)?,
+                (on_wall - rim).normalized(tol)?,
+            );
+            let w = profile
+                .unwrap_or(crate::asym::RoundProfile::Elliptical)
+                .weight(a.dot(b))?;
+            // The conic in quarters, each exact (its homogeneous control
+            // polygon halved twice): a strongly weighted conic is one span
+            // too few for the measures that integrate along it.
+            let mut pieces: Vec<[(ogeom_math::Vector, f64); 3]> = vec![[
+                (on_cap - Point::ORIGIN, 1.0),
+                ((rim - Point::ORIGIN) * w, w),
+                (on_wall - Point::ORIGIN, 1.0),
+            ]];
+            for _ in 0..2 {
+                pieces = pieces
+                    .iter()
+                    .flat_map(|[a, b, c]| {
+                        let mid = |p: &(ogeom_math::Vector, f64), q: &(ogeom_math::Vector, f64)| {
+                            ((p.0 + q.0) * 0.5, 0.5 * (p.1 + q.1))
+                        };
+                        let (ab, bc) = (mid(a, b), mid(b, c));
+                        let abc = mid(&ab, &bc);
+                        [[*a, ab, abc], [abc, bc, *c]]
+                    })
+                    .collect();
+            }
+            let n = pieces.len();
+            let mut knots = vec![0.0; 3];
+            #[expect(clippy::cast_precision_loss, reason = "four pieces")]
+            for k in 1..n {
+                let at = k as f64 / n as f64;
+                knots.extend_from_slice(&[at, at]);
+            }
+            knots.extend_from_slice(&[1.0; 3]);
+            let knots = ogeom_math::KnotVector::new(knots, 2)?;
+            let mut control = Vec::with_capacity(2 * n + 1);
+            for (k, piece) in pieces.iter().enumerate() {
+                for (h, wt) in &piece[usize::from(k > 0)..] {
+                    control.push(ogeom_math::Weighted::new(
+                        Point::ORIGIN + *h / *wt,
+                        *wt,
+                        tol,
+                    )?);
+                }
+            }
+            Ok((
+                on_cap,
+                on_wall,
+                (
+                    Curve::BSpline(ogeom_geom::BSplineCurve::rational(knots, control)?),
+                    (0.0, 1.0),
+                ),
+            ))
+        }
+    }
 }
 
 #[cfg(test)]

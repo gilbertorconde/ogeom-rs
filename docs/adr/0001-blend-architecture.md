@@ -962,6 +962,12 @@ each face its own distance, its section an ellipse or a conic of a given
   before.
 - **Routing.** `fillet_edge_distances` and `blend_edges` (rounds of both
   kinds, no bevels) take the engine first.
+- **On a rim** (a circle between a planar cap and a coaxial cylinder or
+  cone, `fillet_edge_distances`): the rings stand at the two distances, the
+  cap's along it and the wall's along its generator, and the strip is the
+  meridian conic (its control point the rim's own point, its weight the
+  profile's for the legs' angle) turned the whole way about the axis, a
+  surface of revolution, built by the rims' sheet as the ball's torus is.
 - The patch reads the normal and curvature of any parametric strip surface
   from its chart, an extruded conic among them.
 - **A varying radius** (`fillet_edges_variable` on one straight edge

@@ -404,6 +404,36 @@ pub fn fillet_edge_distances(
     {
         return Ok(built);
     }
+    // A rim between a planar cap and a coaxial wall: its conic turned about
+    // the axis, through the engine's rims, over every arc of its circle; a
+    // rim it does not build is handed on.
+    let along = ogeom_topo::ancestors_of(model, solid, edge, ogeom_topo::ShapeType::Face)?;
+    if along.iter().any(|f| f.is_same(face))
+        && let Some(arcs) = rim_arcs(model, solid, edge, tol)?
+    {
+        let cap_named = ogeom_topo::Model::node(model, face)
+            .and_then(|n| n.data().as_face().map(|d| d.surface))
+            .and_then(|s| model.geometry().surface(s))
+            .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::Plane(_)));
+        let (cap, wall) = if cap_named {
+            (on_face, on_other)
+        } else {
+            (on_other, on_face)
+        };
+        let section = crate::engine::RimSection::Conic { cap, wall, profile };
+        let asked: Vec<(Shape, crate::engine::RimSection)> =
+            arcs.iter().map(|e| (e.clone(), section.clone())).collect();
+        match crate::engine::round_rims_with(model, solid, &asked, tol) {
+            Ok(Some(built)) => return Ok(built),
+            Ok(None) | Err(ogeom_core::OgeomError::Construction(_)) => {}
+            Err(e) => return Err(e),
+        }
+        // A rim the seams split (a wall a boolean left in pieces): its pieces
+        // and faces joined, rounded there, the history carried back.
+        if let Some(built) = conic_rim_dissolved(model, solid, &arcs, &section, tol)? {
+            return Ok(built);
+        }
+    }
     crate::fillet::to_current_path("fillet_edge_distances");
     ogeom_algo::on_own_nodes(
         model,
@@ -1657,4 +1687,86 @@ pub fn largest_fillet_distances(
         );
     }
     Ok(Some(largest))
+}
+
+/// The edges of `solid` on `edge`'s circle (the arcs of one rim), `edge`
+/// first; `None` where `edge` is not an arc of a circle.
+///
+/// # Errors
+///
+/// As reading the solid.
+fn rim_arcs(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<Shape>>> {
+    let circle_of = |e: &Shape| -> OgeomResult<Option<ogeom_math::Circle>> {
+        Ok(match ogeom_algo::placed_edge_curve(model, e, tol)? {
+            Some((Curve::Circle(c), _)) => Some(c.circle()),
+            _ => None,
+        })
+    };
+    let Some(own) = circle_of(edge)? else {
+        return Ok(None);
+    };
+    let mut arcs = vec![edge.clone()];
+    for e in ogeom_topo::explore_unique(model, solid, ogeom_topo::ShapeType::Edge)? {
+        if e.is_same(edge) {
+            continue;
+        }
+        if let Some(c) = circle_of(&e)?
+            && c.centre().distance(own.centre()) <= tol.confusion()
+            && (c.radius() - own.radius()).abs() <= tol.confusion()
+            && c.frame()
+                .z()
+                .vector()
+                .cross(own.frame().z().vector())
+                .magnitude()
+                <= tol.angular()
+        {
+            arcs.push(e);
+        }
+    }
+    Ok(Some(arcs))
+}
+
+/// The conic round of the rim of `arcs` on `solid` with its seams
+/// dissolved: the arcs named on the dissolved solid, rounded by the
+/// engine's rims there, the history told of the solid as given; `None`
+/// where nothing dissolves or the rims decline.
+///
+/// # Errors
+///
+/// As dissolving; a construction failure of the rims declines.
+fn conic_rim_dissolved(
+    model: &mut Model,
+    solid: &Shape,
+    arcs: &[Shape],
+    section: &crate::engine::RimSection,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let mut scratch = model.clone();
+    let Some(seamless) = crate::engine::dissolve_curved(&mut scratch, solid, tol)? else {
+        return Ok(None);
+    };
+    let asked: Vec<(Shape, f64)> = arcs.iter().map(|e| (e.clone(), 1.0)).collect();
+    let Some(rounds) = seamless.rounds(&asked) else {
+        return Ok(None);
+    };
+    let asked: Vec<(Shape, crate::engine::RimSection)> = rounds
+        .into_iter()
+        .map(|(e, _)| (e, section.clone()))
+        .collect();
+    match crate::engine::round_rims_with(&mut scratch, &seamless.solid, &asked, tol) {
+        Ok(Some(built)) => {
+            *model = scratch;
+            Ok(Some(Built::new(
+                built.shape,
+                seamless.carry(&built.history),
+            )))
+        }
+        Ok(None) | Err(ogeom_core::OgeomError::Construction(_)) => Ok(None),
+        Err(e) => Err(e),
+    }
 }
