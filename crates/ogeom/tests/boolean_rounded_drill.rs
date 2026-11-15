@@ -31,7 +31,7 @@ fn holes_beside_a_rounded_corner_cut_and_fill_valid() {
     let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 2.0, T)
         .unwrap()
         .shape;
-    let whole = volume(&model, &rounded);
+    let whole = steiner((20.0, 20.0, 10.0), 2.0);
     for (x, y, r) in [
         (4.3, 2.3, 1.4),
         (1.1, 4.45, 1.0),
