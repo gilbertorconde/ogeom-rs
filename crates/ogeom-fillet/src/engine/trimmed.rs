@@ -7184,21 +7184,26 @@ pub(crate) fn rolling_tools(
         };
         strips.push(strip);
     }
-    // Some contact leaves its face: a bevel rolling over or past it.
+    // Some contact leaves its face: a bevel rolling over or past it. Read
+    // on the face's trim drawn finer than the bevel's distances, so a
+    // contact past the face's far side by less than the default chord's
+    // band reads out, not on.
     let mut rolling = false;
     'strips: for strip in &strips {
         for (k, contact) in strip.contacts.iter().enumerate() {
             let (lo, hi) = contact.domain();
+            let edge = &curved.edges[&strip.edge];
+            let at = edge.curve.point_at(edge.range.0, tol)?;
+            let away = ogeom_algo::project_on_curve(contact, at, 64, tol)?.distance;
+            let fine = ogeom_mesh::Deflection {
+                chord: (away * 1e-3).max(tol.confusion() * 10.0),
+                ..ogeom_mesh::Deflection::default()
+            };
             for share in [0.25, 0.5, 0.75] {
                 let p = contact.point_at(lo + (hi - lo) * share, tol)?;
                 let face = &curved.faces[strip.faces[k]].shape;
-                if ogeom_algo::classify_on_face(
-                    model,
-                    face,
-                    p,
-                    ogeom_mesh::Deflection::default(),
-                    tol,
-                )? == ogeom_algo::Containment::Out
+                if ogeom_algo::classify_on_face(model, face, p, fine, tol)?
+                    == ogeom_algo::Containment::Out
                 {
                     rolling = true;
                     break 'strips;
