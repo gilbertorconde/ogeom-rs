@@ -1232,7 +1232,18 @@ fn straight(
     d: [f64; 2],
     tol: Tolerances,
 ) -> OgeomResult<Option<Strip>> {
-    let (a, b) = (curved.points[&e.ends.0], curved.points[&e.ends.1]);
+    let (mut a, mut b) = (curved.points[&e.ends.0], curved.points[&e.ends.1]);
+    // Between two planes the edge is their line, exactly: its ends taken
+    // onto it, so a vertex standing off its faces (inexact input) does not
+    // tilt the contacts off their faces.
+    if let (SurfaceGeometry::Plane(p0), SurfaceGeometry::Plane(p1)) = (
+        &curved.faces[faces[0]].surface,
+        &curved.faces[faces[1]].surface,
+    ) && let Some((on, dir)) = planes_line(&p0.plane(), &p1.plane(), a, tol)
+    {
+        let onto = |p: Point| on + dir * (p - on).dot(dir);
+        (a, b) = (onto(a), onto(b));
+    }
     let length = a.distance(b);
     if length <= tol.confusion() {
         return Ok(None);
@@ -1321,6 +1332,39 @@ fn straight(
         surface: PlaneSurface::new(Plane::new(frame)).into(),
         section: Section::Line,
     }))
+}
+
+/// The line two planes meet along: its point nearest `near` and its unit
+/// direction; `None` for planes all but parallel.
+fn planes_line(
+    a: &ogeom_math::Plane,
+    b: &ogeom_math::Plane,
+    near: Point,
+    tol: Tolerances,
+) -> Option<(Point, Vector)> {
+    let (na, nb) = (a.normal().vector(), b.normal().vector());
+    let dir = na.cross(nb);
+    let m = dir.magnitude();
+    if m <= tol.angular() {
+        return None;
+    }
+    let dir = dir / m;
+    // The point of both planes nearest `near`: `near` moved onto each plane
+    // in turn along the other's in-plane direction square to the line.
+    let (da, db) = (
+        na.dot(a.origin().to_vector()),
+        nb.dot(b.origin().to_vector()),
+    );
+    let (ca, cb) = (da - na.dot(near.to_vector()), db - nb.dot(near.to_vector()));
+    // Solve near + x na + y nb on both planes.
+    let (k, aa, bb) = (na.dot(nb), na.dot(na), nb.dot(nb));
+    let det = aa * bb - k * k;
+    if det.abs() <= tol.angular() {
+        return None;
+    }
+    let x = (ca * bb - cb * k) / det;
+    let y = (cb * aa - ca * k) / det;
+    Some((near + na * x + nb * y, dir))
 }
 
 /// A rim between a planar cap and a coaxial cylinder or cone, as the wedge
