@@ -878,6 +878,30 @@ differences applied by booleans).
 - [P33] Creo Parametric 10.0 Help, About Extended Surface Rounds:
   https://support.ptc.com/help/creo/creo_pma/r10.0/usascii/part_modeling/part_modeling/About_Extended_Surface_Rounds.html
 
+### Amendment: marched seats through the engine (#902)
+
+A round whose crease no closed-form section reads (a spline edge, the
+seam of two cylinders crossing, a converted solid's every edge, the
+rims of a pinched pair of drums) has its strip from the march: the
+ball's arcs marched along the crease and fitted into the band, closed
+into its wedge by its legs on the two faces and its caps. That
+construction exists (`marched.rs` and the constructions it calls) and is
+not rewritten; the engine takes it as the strip builder for these seats.
+
+- **Scope.** A request every edge of which is a marched seat, where
+  every ball fits beside its edge (no strip taken off whole, no ball on a
+  far edge). Each edge's wedge is built on the solid as given, with the
+  request's other edges as its mates, and set aside unapplied.
+- **Application.** The wedges are the one-boolean fallback's tools
+  (amendment "M5a"): cut where the crease is convex, fused where it is
+  concave, one boolean each, every face of a wedge named for its edge
+  (or the edge its builder credits it to). A result that does not check
+  valid is handed back.
+- **Still the current path's:** a marched seat meeting a round of
+  another kind at a junction (a rib's round into a boss's rim, which the
+  current path meets flush), a round over a bevel it takes off whole,
+  and the refusals those raise. Each is migrated with its class.
+
 ### Amendment: round section laws, conic and elliptical (#902)
 
 The round side's section laws beyond the rolling ball: a round meeting

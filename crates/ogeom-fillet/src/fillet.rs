@@ -479,6 +479,102 @@ fn fillet_edge_seat(
     }
 }
 
+/// The mates of a request's `edges` by their ends, each end settled where
+/// it stands at one of the `rounded` corners.
+fn request_mates(
+    model: &Model,
+    edges: &[Shape],
+    rounded: &[Point],
+    tol: Tolerances,
+) -> OgeomResult<Vec<Mate>> {
+    use ogeom_geom::Curve3d as _;
+    edges
+        .iter()
+        .map(|e| -> OgeomResult<Mate> {
+            let (curve, range) = edge_curve(model, e, tol)?;
+            let end_of = |t: f64, leaving: f64| -> OgeomResult<(Point, Vector)> {
+                let d = curve.d1_at(t, tol)?;
+                let m = d.magnitude();
+                let unit = if m > tol.confusion() {
+                    d / m
+                } else {
+                    Vector::ZERO
+                };
+                Ok((curve.point_at(t, tol)?, unit * leaving))
+            };
+            let ends = [end_of(range.0, 1.0)?, end_of(range.1, -1.0)?];
+            let settled = ends.map(|(p, _)| {
+                rounded
+                    .iter()
+                    .any(|q| q.distance(p) <= tol.confusion() * 1e3)
+            });
+            Ok(Mate {
+                ends,
+                settled,
+                meets: [false, false],
+                alone: [false, false],
+            })
+        })
+        .collect()
+}
+
+/// The wedges the march rounds each of `once`'s edges by, each built on
+/// `solid` as given with the request's other edges as its mates and set
+/// aside unapplied (ADR 0001, amendment "marched seats"): the marched seats' strips,
+/// for the engine to apply in one boolean each. `None` where an edge is
+/// not a marched seat, its construction applies itself rather than
+/// setting a wedge aside, or it declines.
+///
+/// # Errors
+///
+/// [`OgeomError::Cancelled`] where the work is cancelled, and the reading
+/// of an edge's curve.
+pub(crate) fn marched_wedges(
+    model: &mut Model,
+    solid: &Shape,
+    once: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<crate::support::Wedge>>> {
+    for (edge, _) in once {
+        if !matches!(route(model, solid, edge, Rims::Exact, tol)?, Route::Marched) {
+            return Ok(None);
+        }
+    }
+    let edges: Vec<Shape> = once.iter().map(|(e, _)| e.clone()).collect();
+    let radii: Vec<f64> = once.iter().map(|(_, r)| *r).collect();
+    // A ball that does not fit beside its edge (a strip it takes off whole)
+    // or rests on a far edge is the current path's reading.
+    match request_fits(model, solid, &edges, &radii, tol) {
+        Ok(rolled) if !rolled.iter().any(|r| *r) => {}
+        Err(crate::support::Blamed {
+            error: e @ OgeomError::Cancelled,
+            ..
+        }) => return Err(e),
+        _ => return Ok(None),
+    }
+    let mates = request_mates(model, &edges, &[], tol)?;
+    let mut all = Vec::new();
+    for (index, (edge, radius)) in once.iter().enumerate() {
+        let (built, wedges) = crate::support::collecting_wedges(|| {
+            fillet_edge_seat(
+                model,
+                solid,
+                edge,
+                *radius,
+                Some((index, &mates)),
+                Rims::Exact,
+                tol,
+            )
+        });
+        match built {
+            Ok(built) if built.shape.is_same(solid) && !wedges.is_empty() => all.extend(wedges),
+            Err(e @ OgeomError::Cancelled) => return Err(e),
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some(all))
+}
+
 /// Whether an open rim arc's torus band, capped in the meridian half-plane
 /// through its end `at` (the crease leaving along `ahead` past it), would
 /// stop short of a face the arc ends on: the crease terminates there, no
@@ -1026,8 +1122,31 @@ fn rounds_by_engine_voided(
 }
 
 /// [`rounds_by_engine`] on one solid of one shell with nothing placed in
-/// it.
+/// it: the engine's routes, and where none takes the request, the marched
+/// seats' strips (ADR 0001, amendment "marched seats").
 fn rounds_by_engine_unplaced(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    if let Some(built) = rounds_by_engine_routes(model, solid, edges, tol)? {
+        return Ok(Some(built));
+    }
+    let mut once: Vec<(Shape, f64)> = Vec::with_capacity(edges.len());
+    for (edge, radius) in edges {
+        if !once.iter().any(|(e, _)| e.is_same(edge)) {
+            once.push((edge.clone(), *radius));
+        }
+    }
+    if once.is_empty() {
+        return Ok(None);
+    }
+    crate::engine::marched_rounds(model, solid, &once, tol)
+}
+
+/// [`rounds_by_engine_unplaced`]'s routes but the marched seats.
+fn rounds_by_engine_routes(
     model: &mut Model,
     solid: &Shape,
     edges: &[(Shape, f64)],
@@ -1584,7 +1703,6 @@ fn fillet_edges_own(
             };
         }
     };
-    use ogeom_geom::Curve3d as _;
     // The vertices three or more of the chain's edges meet at: the corners
     // the ball rolls round, closed by the corner tool.
     // Each holds the radii of the edges ending there.
@@ -1670,34 +1788,7 @@ fn fillet_edges_own(
         }
         built = Some(after);
     }
-    let mut mates: Vec<Mate> = edges
-        .iter()
-        .map(|e| -> OgeomResult<Mate> {
-            let (curve, range) = edge_curve(model, e, tol)?;
-            let end_of = |t: f64, leaving: f64| -> OgeomResult<(Point, Vector)> {
-                let d = curve.d1_at(t, tol)?;
-                let m = d.magnitude();
-                let unit = if m > tol.confusion() {
-                    d / m
-                } else {
-                    Vector::ZERO
-                };
-                Ok((curve.point_at(t, tol)?, unit * leaving))
-            };
-            let ends = [end_of(range.0, 1.0)?, end_of(range.1, -1.0)?];
-            let settled = ends.map(|(p, _)| {
-                rounded
-                    .iter()
-                    .any(|q| q.distance(p) <= tol.confusion() * 1e3)
-            });
-            Ok(Mate {
-                ends,
-                settled,
-                meets: [false, false],
-                alone: [false, false],
-            })
-        })
-        .collect::<OgeomResult<_>>()?;
+    let mut mates = request_mates(model, edges, &rounded, tol)?;
     // The circles this chain has rounded the whole turn round. A piece of
     // a rim that closes on the solid in parts is blended the whole turn
     // round, so the rim's other pieces, asked for later or split off by the
