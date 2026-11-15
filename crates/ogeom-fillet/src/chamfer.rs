@@ -380,6 +380,20 @@ pub(crate) fn chamfer_edges_blamed(
     if specs.is_empty() {
         return Ok(unchanged(solid));
     }
+    // An edge that is not one of the solid's is refused by name, by itself.
+    let own = ogeom_topo::explore_unique(model, solid, ogeom_topo::ShapeType::Edge)?;
+    if let Some(i) = specs
+        .iter()
+        .position(|(e, _)| !own.iter().any(|o| o.is_same(e)))
+    {
+        return Err(Blamed {
+            edges: vec![index[i]],
+            error: ogeom_core::ogeom_err!(
+                Construction,
+                "an edge asked to be chamfered is not one of the solid's edges"
+            ),
+        });
+    }
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
     }
