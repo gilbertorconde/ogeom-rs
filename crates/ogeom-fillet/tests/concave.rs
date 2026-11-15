@@ -859,10 +859,10 @@ fn a_round_rolling_on_a_far_edge_refuses_where_the_ball_leaves_it() {
 }
 
 /// The strip's far edge parallel to the plate's top: the ball's centre
-/// runs on a line, a radius over the top and a radius off the edge, and
-/// the fill is a prism whose section, square to the seam, is the triangle
-/// from the seam to the two contacts less the segment the ball's arc cuts
-/// off it.
+/// runs on a line, a radius over the top and a radius off the edge, the
+/// round is the cylinder about it, and the fill is a prism whose section,
+/// square to the seam, is the triangle from the seam to the two contacts
+/// less the segment the ball's arc cuts off it.
 #[test]
 fn a_round_rolls_on_a_far_edge_parallel_to_the_face_it_touches() {
     let (radius, lift) = (0.5, 0.3);
@@ -901,13 +901,25 @@ fn a_round_rolls_on_a_far_edge_parallel_to_the_face_it_touches() {
     let (worst, area) = fitted_round(&model, &generated, &|p| {
         (p.y - centre.0).hypot(p.z - centre.1) - radius
     });
-    // The band's fit target, and the fill moved by no more than the band's
-    // furthest stand-off over its area.
-    assert!(worst < 2e-4, "the round stands {worst} off the balls");
+    // The centre runs on a line: the round is the cylinder about it, exact,
+    // and the fill the prism to rounding.
+    let cylinder = generated.iter().any(|f| {
+        let data = model.node(f).unwrap().data().as_face().unwrap();
+        matches!(
+            model.geometry().surface(data.surface),
+            Some(ogeom_geom::SurfaceGeometry::Cylinder(c))
+                if (c.cylinder().radius() - radius).abs() < 1e-12
+        )
+    });
+    assert!(cylinder, "the round is not the cylinder of its radius");
+    assert!(
+        area == 0.0 && worst == 0.0,
+        "a fitted band beside the cylinder"
+    );
     let got = volume(&model, &rounded.shape) - before;
     assert!(
-        (got - want).abs() <= worst * area,
-        "the round added {got} against {want}, with the band within {worst} over {area}"
+        (got - want).abs() <= want * 1e-12,
+        "the round added {got} against {want}"
     );
 }
 
@@ -1406,18 +1418,21 @@ fn a_round_rolls_on_the_upper_far_edge_of_a_staircase() {
             "r {radius}: the round stands {worst} off the balls"
         );
         let got = volume(&model, &rounded.shape) - before;
+        // A fitted band moves the fill by no more than its stand-off over
+        // its area; the cylinder about the line of centres is exact, to
+        // rounding.
         assert!(
-            (got - want).abs() <= worst * area,
+            (got - want).abs() <= worst * area + want * 1e-12,
             "r {radius}: the round added {got} against {want}, within {worst} over {area}"
         );
         // Every ball stands clear of the result's boundary but for the
-        // band's own fit.
+        // band's own fit (rounding, on the exact cylinder).
         let boundary = ogeom_algo::PointDistance::of(&model, &rounded.shape, T).unwrap();
         for k in 0..=40 {
             let c = Point::new(cx, 20.0 * f64::from(k) / 40.0, cz);
             let (d, _) = boundary.nearest(c, T).unwrap();
             assert!(
-                d >= radius - worst,
+                d >= radius - worst - 1e-12,
                 "r {radius}: a ball at {c:?} is {d} from the solid"
             );
         }
@@ -1976,7 +1991,7 @@ fn slanted_staircase(cut_all: bool) {
         let y = 20.0 * f64::from(k) / 40.0;
         let (gap, _) = boundary.nearest(centre(y), T).unwrap();
         assert!(
-            gap >= radius - worst,
+            gap >= radius - worst.max(1e-9),
             "a ball at {y} is {gap} from the solid"
         );
         // Its contact on the lower far edge lies on the result.
@@ -2088,7 +2103,7 @@ fn a_round_comes_down_on_the_floor_past_steps_slanted_to_its_seam() {
         let y = 20.0 * f64::from(k) / 40.0;
         let (gap, _) = boundary.nearest(centre(y), T).unwrap();
         assert!(
-            gap >= radius - worst,
+            gap >= radius - worst.max(1e-9),
             "a ball at {y} is {gap} from the solid"
         );
         for contact in [Point::new(8.0, y, radius), Point::new(8.0 + radius, y, 0.0)] {
