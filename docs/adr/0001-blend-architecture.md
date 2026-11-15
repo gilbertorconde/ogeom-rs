@@ -976,6 +976,44 @@ each face its own distance, its section an ellipse or a conic of a given
   by the strip and its face. At any other
   vertex it is not built yet.
 
+### Amendment: M5d, a round resting on a far edge (#902)
+
+The current path's rolling rounds (`rolled.rs`, `stepped.rs`,
+`carried.rs`), which M6 deletes, are §13 question 8's rule applied where the
+seat change covers a whole seam. Their first class moves to the engine
+here.
+
+- **The case.** A concave straight seam between planar faces whose narrow
+  face is narrower than the ball's setback all along. The ball touching the
+  other face rests on the narrow face's far edge, a straight convex edge,
+  from one end of the seam to the other: its seat on that side is the edge
+  throughout, and no crossing starts or ends the run. Its centre stands a
+  radius off the touched face's plane and a radius from the edge's line,
+  in closed form at each station square to the seam.
+- **Built** as one fused tool (amendment "M5a"): the balls' arcs from the
+  touched face to the far edge, fitted within 1e-8 of their exact stations,
+  closed by the two faces' planes (the far edge lies on the narrow face's),
+  capped in the arcs' planes past the seam's ends and cut back to the end
+  faces' planes.
+- **Ends.** Flush on the end faces' planes, as every round of the engine
+  ends (§4.3). The current path capped the fill in the end arcs' planes,
+  which stand proud of, or short of, an end face not square to the ball's
+  path; on the slanted test part that was 5% of the fill. Its exact
+  oracle now clips each swept section to the end faces' planes.
+- **Proof** (§13 question 8). At stations between the caps, wherever the
+  end faces' planes keep any of the arc:
+  - each ball rests on the far edge alone, its centre strictly inside the
+    edge's normal cone and its touch within the edge;
+  - its other touch lies on its face;
+  - every other face stands clear by the radius, with the distance's
+    Lipschitz bound up to the next station (a planar face wholly behind
+    the touched face's plane is clear outright);
+  - the arcs' planes cross the seam in order.
+- **Not yet built.** Each of these is handed to the current path until its
+  own layer: the ball on the strip over part of the seam (carried), on a
+  further strip's far edge or a floor beyond (stepped), on a vertex, an
+  end met by other than one planar face, two such seams meeting.
+
 ## 12. Acceptance corpus
 
 From #902:

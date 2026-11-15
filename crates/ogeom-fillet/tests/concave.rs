@@ -306,6 +306,9 @@ struct Slant {
     ends: (f64, f64),
     /// A point of the top edge.
     lift: Point,
+    /// The plate's end faces' planes, each as its outward normal and
+    /// offset: the plate keeps `n . p <= d`.
+    caps: [(ogeom_math::Vector, f64); 2],
 }
 
 fn slanted_seam(model: &mut ogeom_topo::Model, seat: &Seat) -> Slant {
@@ -347,6 +350,17 @@ fn slanted_seam(model: &mut ogeom_topo::Model, seat: &Seat) -> Slant {
         let d = Vector::new(-s, c, 0.0);
         through + d * ((y - through.y) / d.y)
     };
+    // Each end face's plane: upright through the seam's end, turned with
+    // the plate's end, its normal facing away from the seam's other end.
+    let caps =
+        [(ends.0, seat.turns.0, -1.0), (ends.1, seat.turns.1, 1.0)].map(|(at, angle, out)| {
+            let (s, c) = f64::to_radians(angle).sin_cos();
+            let mut n = Vector::new(c, s, 0.0);
+            if n.dot(along) * out < 0.0 {
+                n = -n;
+            }
+            (n, n.dot((start + along * at) - Point::ORIGIN))
+        });
     let quad = [
         corner(ends.0, seat.turns.0, -2.0),
         corner(ends.1, seat.turns.1, -2.0),
@@ -412,6 +426,7 @@ fn slanted_seam(model: &mut ogeom_topo::Model, seat: &Seat) -> Slant {
         along,
         ends,
         lift,
+        caps,
     }
 }
 
@@ -497,40 +512,123 @@ fn rolling_span(slant: &Slant, radius: f64) -> (f64, f64) {
     (at(slant.ends.0), at(slant.ends.1))
 }
 
-/// The volume between the seam's corner and the rolling ball, swept by
-/// the ball's sections: each section, in the plane square to the centre's
-/// path, is the triangle from the seam to the two contacts less the
-/// circular segment the ball's arc cuts off it, and a plane turning with
-/// the path sweeps `(|c'| - n'.(p - c)) dA da` at each point `p` of it.
+/// The volume between the seam's corner and the rolling ball, ending flush
+/// on the plate's end faces as the engine ends a round, swept by the ball's
+/// sections: each section, in the plane square to the centre's path, is
+/// the triangle from the seam to the two contacts less the circular
+/// segment the ball's arc cuts off it, clipped to the side of both end
+/// faces' planes the plate keeps, and a plane turning with the path sweeps
+/// `(|c'| - n'.(p - c)) dA da` at each point `p` of it. The arc is read as
+/// chords, each chord's sliver of the ball taken off where both of its ends
+/// are kept (a sliver the clip cuts is a part in ten million of a
+/// section), over the angles from where the first section is kept to the
+/// last, integrated adaptively (the clip puts kinks in the rate).
 fn rolling_fill(slant: &Slant, radius: f64) -> f64 {
-    let (a0, a1) = rolling_span(slant, radius);
-    let (lo, hi) = (a0.min(a1), a0.max(a1));
-    let rate = |a: f64| -> f64 {
+    use ogeom_math::Vector;
+    const CHORDS: usize = 1024;
+    let kept = |p: Point| {
+        slant
+            .caps
+            .iter()
+            .all(|(n, d)| n.dot(p - Point::ORIGIN) <= *d)
+    };
+    // The clipped section's area and first moment, and the rate it sweeps.
+    let section = |a: f64| -> (f64, f64) {
         let (c, d, dd) = rolling_centre(slant, radius, a);
         let x = Point::ORIGIN + slant.along * rolling_crossing(slant, radius, a);
-        let touch = c - ogeom_math::Vector::Z * radius;
+        let touch = c - Vector::Z * radius;
         let foot = c - u_v_reach(slant, radius, a);
-        let triangle = (touch - x).cross(foot - x).magnitude() / 2.0;
-        let tri_moment = ((x - Point::ORIGIN) + (touch - Point::ORIGIN) + (foot - Point::ORIGIN))
-            * (triangle / 3.0);
-        let angle = ((touch - c).dot(foot - c) / (radius * radius))
-            .clamp(-1.0, 1.0)
-            .acos();
-        let segment = radius * radius * (angle - angle.sin()) / 2.0;
-        let chord_mid = touch.midpoint(foot);
-        let toward = (chord_mid - c) * (1.0 / chord_mid.distance(c));
-        let lever = 4.0 * radius * (angle / 2.0).sin().powi(3) / (3.0 * (angle - angle.sin()));
-        let seg_moment = ((c - Point::ORIGIN) + toward * lever) * segment;
-        let area = triangle - segment;
-        let moment = tri_moment - seg_moment;
+        let (p1, q1) = ((touch - c) / radius, (foot - c) / radius);
+        let axis = p1.cross(q1) / p1.cross(q1).magnitude();
+        let sweep = p1.dot(q1).clamp(-1.0, 1.0).acos();
+        #[allow(clippy::cast_precision_loss)]
+        let angle = |i: usize| sweep * (i as f64) / (CHORDS as f64);
+        let on_arc = |t: f64| c + (p1 * t.cos() + axis.cross(p1) * t.sin()) * radius;
+        let mut ring: Vec<Point> = vec![x];
+        ring.extend((0..=CHORDS).map(|i| on_arc(angle(i))));
+        for (n, off) in &slant.caps {
+            let side = |p: Point| n.dot(p - Point::ORIGIN) - off;
+            let mut clipped = Vec::with_capacity(ring.len() + 2);
+            for (i, &p) in ring.iter().enumerate() {
+                let q = ring[(i + 1) % ring.len()];
+                let (sp, sq) = (side(p), side(q));
+                if sp <= 0.0 {
+                    clipped.push(p);
+                }
+                if (sp < 0.0 && sq > 0.0) || (sp > 0.0 && sq < 0.0) {
+                    clipped.push(p + (q - p) * (sp / (sp - sq)));
+                }
+            }
+            ring = clipped;
+        }
+        let normal = d / d.magnitude();
+        let (mut area, mut moment) = (0.0, Vector::ZERO);
+        for i in 1..ring.len().saturating_sub(1) {
+            let (o, p, q) = (ring[0], ring[i], ring[i + 1]);
+            let piece = (p - o).cross(q - o).dot(normal) / 2.0;
+            area += piece;
+            moment +=
+                ((o - Point::ORIGIN) + (p - Point::ORIGIN) + (q - Point::ORIGIN)) * (piece / 3.0);
+        }
+        if area < 0.0 {
+            area = -area;
+            moment = -moment;
+        }
+        // The chords cut through the ball: each kept sliver comes off.
+        #[allow(clippy::cast_precision_loss)]
+        let step = sweep / (CHORDS as f64);
+        let sliver = radius * radius * (step - step.sin()) / 2.0;
+        let lever = 4.0 * radius * (step / 2.0).sin().powi(3) / (3.0 * (step - step.sin()));
+        for i in 0..CHORDS {
+            let (a0, a1) = (angle(i), angle(i + 1));
+            if kept(on_arc(a0)) && kept(on_arc(a1)) {
+                let mid = on_arc(0.5 * (a0 + a1));
+                area -= sliver;
+                moment -= ((c - Point::ORIGIN) + (mid - c) * (lever / radius)) * sliver;
+            }
+        }
         let speed = d.magnitude();
-        let normal = d * (1.0 / speed);
         let turning = (dd - normal * dd.dot(normal)) * (1.0 / speed);
-        speed * area - turning.dot(moment - (c - Point::ORIGIN) * area)
+        (
+            area,
+            speed * area - turning.dot(moment - (c - Point::ORIGIN) * area),
+        )
     };
-    let nodes = gauss_legendre(40);
-    let (m, h) = ((lo + hi) / 2.0, (hi - lo) / 2.0);
-    nodes.iter().map(|&(x, w)| w * h * rate(m + h * x)).sum()
+    // From the seam's ends' sections out until none is kept.
+    let (a0, a1) = rolling_span(slant, radius);
+    let (mut lo, mut hi) = (a0.min(a1), a0.max(a1));
+    while section(lo).0 > 0.0 {
+        lo -= 1e-3;
+    }
+    while section(hi).0 > 0.0 {
+        hi += 1e-3;
+    }
+    #[allow(clippy::too_many_arguments, reason = "one step of adaptive Simpson")]
+    fn simpson(
+        f: &dyn Fn(f64) -> f64,
+        a: f64,
+        b: f64,
+        fa: f64,
+        fm: f64,
+        fb: f64,
+        whole: f64,
+        depth: u32,
+    ) -> f64 {
+        let m = 0.5 * (a + b);
+        let (l, r) = (0.5 * (a + m), 0.5 * (m + b));
+        let (fl, fr) = (f(l), f(r));
+        let left = (m - a) * (fa + 4.0 * fl + fm) / 6.0;
+        let right = (b - m) * (fm + 4.0 * fr + fb) / 6.0;
+        if depth == 0 || (left + right - whole).abs() <= 1e-13 {
+            return left + right + (left + right - whole) / 15.0;
+        }
+        simpson(f, a, m, fa, fl, fm, left, depth - 1)
+            + simpson(f, m, b, fm, fr, fb, right, depth - 1)
+    }
+    let rate = |a: f64| section(a).1;
+    let (fa, fm, fb) = (rate(lo), rate(0.5 * (lo + hi)), rate(hi));
+    let whole = (hi - lo) * (fa + 4.0 * fm + fb) / 6.0;
+    simpson(&rate, lo, hi, fa, fm, fb, whole, 40)
 }
 
 /// From the ball's centre to its contact on the block's top edge.
@@ -580,16 +678,23 @@ fn fitted_round(
         if !matches!(surface, ogeom_geom::SurfaceGeometry::BSpline(_)) {
             continue;
         }
+        // Over the face's own trim: a surface may run on past it.
+        let trim = ogeom_algo::classify::FaceTrim::of(model, face, fine(), T).unwrap();
         let ((u0, u1), (v0, v1)) = surface.domain();
         for i in 0..=40 {
             for j in 0..=40 {
-                let p = surface
-                    .point_at(
-                        u0 + (u1 - u0) * f64::from(i) / 40.0,
-                        v0 + (v1 - v0) * f64::from(j) / 40.0,
-                        T,
-                    )
-                    .unwrap();
+                let at = (
+                    u0 + (u1 - u0) * f64::from(i) / 40.0,
+                    v0 + (v1 - v0) * f64::from(j) / 40.0,
+                );
+                if !trim
+                    .holds(model, at, T.confusion(), T)
+                    .unwrap()
+                    .is_inside_or_on()
+                {
+                    continue;
+                }
+                let p = surface.point_at(at.0, at.1, T).unwrap();
                 worst = worst.max(off(p).abs());
             }
         }
@@ -605,8 +710,9 @@ fn fitted_round(
 /// edge, the block's top edge, its centre on the ellipse where the plane a
 /// radius over the top meets the cylinder a radius about the edge. The
 /// fill is the volume between the seam and the balls, integrated over
-/// their sections from the boxes' own planes and edge, and the round
-/// stands a radius off the top and off the edge's line along its rails.
+/// their sections from the boxes' own planes and edge and clipped flush to
+/// the plate's end faces, and the round stands a radius off the top and
+/// off the edge's line along its rails.
 #[test]
 fn a_round_rolls_on_the_far_edge_of_a_strip_narrower_than_its_setback() {
     let radius = 0.5;
