@@ -66,9 +66,11 @@ fn rounded(m: &mut Model, s: &Shape, edges: &[Shape], r: f64) -> f64 {
 /// its wall `y = 2`; the three concave edges at the pocket's corner (2, 2,
 /// 3) rounded at 1, closing on the corner's sphere, a vertex not convex all
 /// round. The fill along the wall's foot reaches into the pillar. The block
-/// rounded alike with no pillar (the engine's own corner), with the
-/// pillar, less what the fill and the pillar share (its height `1 - sqrt(1
-/// - u^2)` at `u = 3 - y` behind the ball's centre, across the pillar).
+/// pocket is 16 by 16 by 7; the three perpendicular concave edges add
+/// the quarter-square spandrel over their lengths short of the unit corner
+/// and the unit corner's cube less a sphere octant. The pillar adds its
+/// prism volume less what it shares with the wall's fill (its height
+/// `1 - sqrt(1 - u^2)` at `u = 3 - y` behind the ball's centre).
 #[test]
 fn a_concave_corner_s_rounds_reaching_a_pillar_go_through_the_general_route() {
     let pocketed = |m: &mut Model| {
@@ -77,16 +79,6 @@ fn a_concave_corner_s_rounds_reaching_a_pillar_go_through_the_general_route() {
         ogeom_bool::cut(m, &solid, &pocket, T).unwrap().shape
     };
     let corner = Point::new(2.0, 2.0, 3.0);
-    let mut plain = Model::new();
-    let p = pocketed(&mut plain);
-    let edges = edges_at(&plain, &p, corner);
-    assert_eq!(edges.len(), 3);
-    let (built, work) = ogeom_bool::work::counted(|| {
-        ogeom_fillet::fillet_edges(&mut plain, &p, &edges, 1.0, T).unwrap()
-    });
-    assert_eq!(work.face_pairs, 0, "the corner alone, the engine's own");
-    let alone = volume(&plain, &built.shape);
-
     let mut m = Model::new();
     let p = pocketed(&mut m);
     let pillar = block(&mut m, (8.0, 2.3, 3.0), (4.0, 0.4, 3.0));
@@ -94,7 +86,9 @@ fn a_concave_corner_s_rounds_reaching_a_pillar_go_through_the_general_route() {
     let edges = edges_at(&m, &s, corner);
     assert_eq!(edges.len(), 3);
     let shared = 4.0 * (0.4 - (under(1.0, 0.7) - under(1.0, 0.3)));
-    let want = alone + 4.0 * 0.4 * 3.0 - shared;
+    let pocketed = 20.0 * 20.0 * 10.0 - 16.0 * 16.0 * 7.0;
+    let corner_fill = (1.0 - FRAC_PI_4) * (16.0 + 16.0 + 7.0 - 3.0) + 1.0 - PI / 6.0;
+    let want = pocketed + corner_fill + 4.0 * 0.4 * 3.0 - shared;
     let got = rounded(&mut m, &s, &edges, 1.0);
     assert!((got - want).abs() < 1e-6, "{got} against {want}");
 }

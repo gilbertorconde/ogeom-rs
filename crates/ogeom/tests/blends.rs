@@ -916,18 +916,16 @@ fn a_face_blend_takes_off_two_corners_whose_balls_overlap_but_whose_corners_stan
     assert!((got - want).abs() < 1e-9, "{got} against {want}");
 }
 
-/// The volume between the balls' arcs and the two walls of a tee, a pipe
-/// of radius `big` along x through a branch of radius `small` along z,
-/// rolled round by a ball of radius `r` outside both: its centre runs on
-/// `(b cos t, b sin t, sqrt(B^2 - b^2 sin^2 t))`, `b = small + r`,
-/// `B = big + r`. Each normal section of the balls' tube is a fan of rays
-/// from the centre between the contacts, from the ball out to the first
-/// wall, weighted by the tube's Jacobian `s (|c'| - s <u, T'>)`: the
-/// rolling-ball integration the face-blend stress oracle uses, by the
-/// trapezoid rule round the closed path (exact to rounding for a smooth
-/// periodic integrand at this count) and Gauss-Legendre across each fan.
-fn tee_corner(big: f64, small: f64, r: f64) -> f64 {
-    let (b, bb) = (small + r, big + r);
+/// The swept corner volume between perpendicular cylinder walls, with
+/// ball centres on `(b cos t, b sin t, sqrt(B² − b² sin² t))`. For a
+/// concave tee `b = small + r` and `B = big + r`; for the convex common
+/// they are `small − r` and `big − r`. Normal-section rays run from the
+/// ball to the first wall. Their tube Jacobian is
+/// `s (|c'| − s <u, T'>)`; the angular quadrature splits where the two
+/// exact ray/cylinder intersections exchange.
+fn tee_corner(big: f64, small: f64, r: f64, concave: bool) -> f64 {
+    let side = if concave { 1.0 } else { -1.0 };
+    let (b, bb) = (small + side * r, big + side * r);
     let centre = |t: f64| {
         let (sin, cos) = t.sin_cos();
         Vector::new(b * cos, b * sin, b.mul_add(-b * sin * sin, bb * bb).sqrt())
@@ -975,28 +973,39 @@ fn tee_corner(big: f64, small: f64, r: f64) -> f64 {
             let w = c - axis * c.dot(axis);
             -(w / w.magnitude())
         };
-        let (ua, ub) = (toward(Vector::X), toward(Vector::Z));
+        let (ua, ub) = (toward(Vector::X) * side, toward(Vector::Z) * side);
         let sweep = ua.cross(ub).magnitude().atan2(ua.dot(ub));
         let e2 = ub - ua * ub.dot(ua);
         let e2 = e2 / e2.magnitude();
         let ray = |phi: f64| ua * phi.cos() + e2 * phi.sin();
-        let reach =
-            |phi: f64| hit(c, ray(phi), Vector::X, big).min(hit(c, ray(phi), Vector::Z, small));
-        let pieces = 32;
+        let reach = |phi: f64, face: usize| {
+            if face == 0 {
+                hit(c, ray(phi), Vector::X, big)
+            } else {
+                hit(c, ray(phi), Vector::Z, small)
+            }
+        };
+        let (mut lo, mut hi) = (0.0, sweep);
+        for _ in 0..64 {
+            let mid = f64::midpoint(lo, hi);
+            if reach(mid, 0) < reach(mid, 1) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let kink = f64::midpoint(lo, hi);
         let mut section = 0.0;
-        for p in 0..pieces {
-            let (lo, hi) = (
-                sweep * f64::from(p) / f64::from(pieces),
-                sweep * f64::from(p + 1) / f64::from(pieces),
-            );
-            let (mid, half) = (f64::midpoint(lo, hi), (hi - lo) / 2.0);
+        for (a, b, face) in [(0.0, kink, 0), (kink, sweep, 1)] {
+            let (mid, half) = (f64::midpoint(a, b), (b - a) / 2.0);
             for (x, w) in nodes {
                 let phi = half.mul_add(x, mid);
-                let s = reach(phi);
+                let distance = reach(phi, face);
                 let bend = ray(phi).dot(turn);
                 section += w
                     * half
-                    * (speed * (s * s - r * r) / 2.0 - bend * (s * s * s - r * r * r) / 3.0);
+                    * (speed * (distance * distance - r * r) / 2.0
+                        - bend * (distance.powi(3) - r.powi(3)) / 3.0);
             }
         }
         total += section;
@@ -1065,7 +1074,7 @@ fn a_marched_face_blend_fills_over_an_older_round_just_smaller() {
                 .mass
         })
         .sum();
-    let want = sharp + tee_corner(big, small, r);
+    let want = sharp + tee_corner(big, small, r, true);
     let got = exact_volume(&model, &blended);
     let slack = 2e-4 * band_area;
     assert!(
@@ -1073,6 +1082,35 @@ fn a_marched_face_blend_fills_over_an_older_round_just_smaller() {
         "{got} against {want}, off {:.3e} against {slack:.3e}",
         got - want
     );
+}
+
+/// Volume common to perpendicular cylinders of radii `wide` and `radial`.
+/// A slice at y has width 2√(radial²−y²) in x and
+/// 2√(wide²−y²) in z; y = radial sin θ smooths both endpoints.
+fn crossed_cylinder_volume(wide: f64, radial: f64) -> f64 {
+    let nodes = [
+        (-0.906_179_845_938_664, 0.236_926_885_056_189),
+        (-0.538_469_310_105_683, 0.478_628_670_499_366),
+        (0.0, 0.568_888_888_888_889),
+        (0.538_469_310_105_683, 0.478_628_670_499_366),
+        (0.906_179_845_938_664, 0.236_926_885_056_189),
+    ];
+    let n = 64;
+    let quarter = core::f64::consts::FRAC_PI_2;
+    let mut sum = 0.0;
+    for k in 0..n {
+        let (a, b) = (
+            quarter * f64::from(k) / f64::from(n),
+            quarter * f64::from(k + 1) / f64::from(n),
+        );
+        let (mid, half) = (f64::midpoint(a, b), (b - a) / 2.0);
+        for (node, weight) in nodes {
+            let theta = half.mul_add(node, mid);
+            let (sin, cos) = theta.sin_cos();
+            sum += weight * half * cos * cos * (wide * wide - radial * radial * sin * sin).sqrt();
+        }
+    }
+    8.0 * radial * radial * sum
 }
 
 /// The solid common to a cylinder of radius 3 along x and one of radius 2
@@ -1169,11 +1207,14 @@ fn a_marched_face_blend_rounds_a_part_thinner_than_its_ball_where_the_lune_stays
     })
     .sum();
     assert!(band_area > 0.0, "a fitted band");
-    let cut_away = exact_volume(&model, &whole) - exact_volume(&model, &bored);
-    let want = exact_volume(&model, &blended[0]) - cut_away;
+    let whole_want = crossed_cylinder_volume(wide, narrow) - tee_corner(wide, narrow, r, false);
+    let want = whole_want - crossed_cylinder_volume(wide, bore);
     let got = exact_volume(&model, &blended[1]);
     let slack = 2e-4 * band_area;
-    eprintln!("the bored blend {got} against {want}, slack {slack:.3e}");
+    assert!(
+        (exact_volume(&model, &blended[0]) - whole_want).abs() < slack,
+        "whole blend against {whole_want}"
+    );
     assert!(
         (got - want).abs() < slack,
         "{got} against {want}, off {:.3e} against {slack:.3e}",
@@ -1326,7 +1367,7 @@ fn foot_blended(model: &mut Model, slant: f64, r: f64) -> (Shape, f64) {
 /// ellipse and share no direction or axis. Blending them marches the ball
 /// round the ellipse and fills the corner with a fitted band, which takes
 /// the small round whole. The band rides both faces within a tenth of a
-/// degree, and the fill is what rounding the sharp foot as an edge fills.
+/// degree, and the fill follows the tilted cylinder/plane section integral.
 #[test]
 #[ignore = "heavy"]
 fn a_face_blend_marches_round_a_slanted_drum_s_foot() {
@@ -1349,18 +1390,17 @@ fn a_face_blend_marches_round_a_slanted_drum_s_foot() {
     }
     let filled = exact_volume(&model, &blended) - before;
 
-    // The same corner rounded as the edge it is on the sharp solid.
-    let mut other = Model::new();
-    let sharp = slanted_drum_on_block(&mut other, 15.0);
-    let foot = shared_edges(
-        &other,
-        &drum_wall(&other, &sharp),
-        &lid_at(&other, &sharp, 10.0),
+    let want = leaning_foot_fill(
+        &Leaning {
+            radius: 6.0,
+            lean: 15.0_f64.to_radians(),
+            toward: core::f64::consts::FRAC_PI_2,
+            side: 40.0,
+            base: 10.0,
+            foot: (20.0, 20.0),
+        },
+        r,
     );
-    let rounded = ogeom::fillet::fillet_edges(&mut other, &sharp, &foot, r, T)
-        .unwrap()
-        .shape;
-    let want = exact_volume(&other, &rounded) - exact_volume(&other, &sharp);
     assert!(
         (filled - want).abs() < want * 1e-4,
         "the blend fills what the edge round does: {filled} against {want}"
@@ -5258,6 +5298,80 @@ struct FootWedge {
     at: f64,
 }
 
+/// Volume between a tilted drum and a plane, swept around the ball-centre
+/// ellipse. Each normal section runs from the ball to the first of the
+/// plane and cylinder, splitting where their ray intersections exchange.
+fn leaning_foot_fill(drum: &Leaning, r: f64) -> f64 {
+    use core::f64::consts::TAU;
+    let (s, c) = drum.lean.sin_cos();
+    let h = Vector::new(drum.toward.cos(), drum.toward.sin(), 0.0);
+    let w = Vector::new(-drum.toward.sin(), drum.toward.cos(), 0.0);
+    let axis = h * s + Vector::Z * c;
+    let radius = drum.radius;
+    let ball = radius + r;
+    let nodes = [
+        (-0.906_179_845_938_664, 0.236_926_885_056_189),
+        (-0.538_469_310_105_683, 0.478_628_670_499_366),
+        (0.0, 0.568_888_888_888_889),
+        (0.538_469_310_105_683, 0.478_628_670_499_366),
+        (0.906_179_845_938_664, 0.236_926_885_056_189),
+    ];
+    let panels = 720;
+    let mut total = 0.0;
+    for k in 0..panels {
+        let t = TAU * (f64::from(k) + 0.5) / f64::from(panels);
+        let centre = axis * (r / c) + h * (ball / c * t.cos()) + w * (ball * t.sin());
+        let velocity = h * (-ball / c * t.sin()) + w * (ball * t.cos());
+        let acceleration = h * (-ball / c * t.cos()) + w * (-ball * t.sin());
+        let speed = velocity.magnitude();
+        let tangent = velocity / speed;
+        let turn = (acceleration - tangent * acceleration.dot(tangent)) / speed;
+        let radial = centre - axis * centre.dot(axis);
+        let ua = -Vector::Z;
+        let ub = -radial / radial.magnitude();
+        let sweep = ua.dot(ub).clamp(-1.0, 1.0).acos();
+        let e2 = (ub - ua * ua.dot(ub)) / sweep.sin();
+        let ray = |phi: f64| ua * phi.cos() + e2 * phi.sin();
+        let reach = |phi: f64, face: usize| {
+            let u = ray(phi);
+            if face == 0 {
+                return r / -u.z;
+            }
+            let up = u - axis * u.dot(axis);
+            let a = up.dot(up);
+            let b = radial.dot(up);
+            let disc = b.mul_add(b, -a * (ball * ball - radius * radius));
+            if disc < 0.0 {
+                return f64::INFINITY;
+            }
+            (-b - disc.sqrt()) / a
+        };
+        let (mut lo, mut hi) = (0.0, sweep);
+        for _ in 0..64 {
+            let mid = f64::midpoint(lo, hi);
+            if reach(mid, 0) < reach(mid, 1) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let kink = f64::midpoint(lo, hi);
+        for (a, b, face) in [(0.0, kink, 0), (kink, sweep, 1)] {
+            let (mid, half) = (f64::midpoint(a, b), (b - a) / 2.0);
+            for (x, weight) in nodes {
+                let phi = half.mul_add(x, mid);
+                let distance = reach(phi, face);
+                let bend = ray(phi).dot(turn);
+                total += weight
+                    * half
+                    * (speed * (distance * distance - r * r) / 2.0
+                        - bend * (distance.powi(3) - r.powi(3)) / 3.0);
+            }
+        }
+    }
+    total * TAU / f64::from(panels)
+}
+
 impl Leaning {
     fn axis(&self) -> Vector {
         Vector::new(
@@ -5382,8 +5496,8 @@ impl Leaning {
 /// sharing the foot's edges either side of it: the wedge lies wholly in
 /// the corner the round fills, so the blend fills the same ring as the
 /// bare foot's and takes the wedge in whole. Its fill against the sharp solid
-/// is the one the face-blend stress scenario integrates over the balls'
-/// normal sections, 12.105707, and the bare foot's edge round agrees.
+/// is the volume integrated over the balls' normal sections, and the
+/// bare foot's edge round agrees.
 #[test]
 fn a_face_blend_fills_over_a_wedge_on_the_foot_s_edges_its_ball_clears() {
     let drum = Leaning {
@@ -5401,7 +5515,7 @@ fn a_face_blend_fills_over_a_wedge_on_the_foot_s_edges_its_ball_clears() {
         at: 0.8073,
     };
     let r = 1.3733;
-    let want = 12.105_707;
+    let want = leaning_foot_fill(&drum, r);
     let mut model = Model::new();
     let (sharp, wall, top, _) = drum.build(&mut model, None);
     let before = exact_volume(&model, &sharp);
