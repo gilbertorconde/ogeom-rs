@@ -660,9 +660,11 @@ pub(crate) fn apply(
     let mut history: History = built.history.clone();
     for tool in tools {
         for (face, from) in &tool.faces {
+            // Traced whatever the booleans recorded: a named face the solid
+            // leaves untouched comes through as a copy.
             for made in built
                 .history
-                .modified(face)
+                .trace(face)
                 .iter()
                 .chain(built.history.generated(face))
             {

@@ -1184,6 +1184,11 @@ fn rounds_by_engine_routes(
     {
         return Ok(Some(built));
     }
+    // Rounds meeting at inside corners, each carried on past the other
+    // (amendment "M5e").
+    if let Some(built) = crate::engine::meeting_rounds(model, solid, &once, tol)? {
+        return Ok(Some(built));
+    }
     // A solid with curved faces, read with its seams dissolved where it
     // holds any: rims between a planar cap and a coaxial cylinder or cone,
     // each the torus its ball sweeps; else straight edges along planes and
