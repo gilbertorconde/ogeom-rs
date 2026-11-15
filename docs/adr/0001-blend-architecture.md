@@ -903,8 +903,15 @@ not rewritten; the engine takes it as the strip builder for these seats.
   concave, one boolean each, every face of a wedge named for its edge
   (or the edge its builder credits it to). A result that does not check
   valid is handed back.
-- **Still the current path's:** a round over a bevel it takes off
-  whole, and the refusals it raises.
+- **A strip taken off whole.** One marched edge whose ball does not fit
+  beside it, or whose band the boolean refuses, takes the strip beside it
+  (a bevel) off whole as the current path reads that round: the corner of
+  the faces either side of the strip, marched, its wedge set aside and
+  applied as the engine's tool; a ring beside a rim likewise. Where the
+  ball does not fit and no such round is read, the current path's refusal
+  is the engine's, by name.
+- **Still the current path's:** a band the boolean refuses where no strip
+  is taken off whole (its refusal follows the current path's retries).
 
 ### Amendment: mixed rolling corners (#902)
 

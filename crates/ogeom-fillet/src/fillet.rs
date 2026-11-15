@@ -518,6 +518,41 @@ fn request_mates(
         .collect()
 }
 
+/// The wedges of the round of the one marched `edge` at `radius` that
+/// takes a strip beside it off whole (ADR 0001, amendment "marched
+/// seats"), where its own band is refused by the boolean, as the current
+/// path reads that round; `None` where it reads none.
+///
+/// # Errors
+///
+/// [`OgeomError::Cancelled`] where the work is cancelled.
+pub(crate) fn marched_strip_taken_whole(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<crate::support::Wedge>>> {
+    let (taken, wedges) = crate::support::collecting_wedges(|| {
+        crate::consumed_marched::consumed_marched(model, solid, edge, radius, tol)
+    });
+    match taken {
+        Ok(Some(built)) if built.shape.is_same(solid) && !wedges.is_empty() => Ok(Some(
+            wedges
+                .into_iter()
+                .map(|mut w| {
+                    if w.edges.is_empty() {
+                        w.edges.push(edge.clone());
+                    }
+                    w
+                })
+                .collect(),
+        )),
+        Err(e @ OgeomError::Cancelled) => Err(e),
+        _ => Ok(None),
+    }
+}
+
 /// The wedges the march rounds `once`'s edges by (ADR 0001, amendment
 /// "marched seats"), each built on `solid` as given with the request's
 /// other edges as its mates and set aside unapplied, for the engine to
@@ -562,6 +597,36 @@ pub(crate) fn marched_wedges(
             error: e @ OgeomError::Cancelled,
             ..
         }) => return Err(e),
+        // One marched edge whose ball does not fit beside it: the round
+        // takes the strip beside it off whole, as the current path's
+        // reading of it builds that round's wedges, or is refused as the
+        // current path refuses it.
+        Err(crate::support::Blamed {
+            error: refusal @ OgeomError::Construction(_),
+            ..
+        }) if all_marched && once.len() == 1 => {
+            let (edge, radius) = &once[0];
+            let (built, wedges) = crate::support::collecting_wedges(|| {
+                consuming(model, solid, edge, *radius, refusal, tol)
+            });
+            // The round's wedges are the corner's of the faces either side
+            // of the strip, built for no edge of the solid: they round this
+            // one.
+            let wedges: Vec<crate::support::Wedge> = wedges
+                .into_iter()
+                .map(|mut w| {
+                    if w.edges.is_empty() {
+                        w.edges.push(edge.clone());
+                    }
+                    w
+                })
+                .collect();
+            return match built {
+                Ok(built) if built.shape.is_same(solid) && !wedges.is_empty() => Ok(Some(wedges)),
+                Ok(_) => Ok(None),
+                Err(e) => Err(e),
+            };
+        }
         _ => return Ok(None),
     }
     let mut ends: Vec<Vec<Shape>> = Vec::with_capacity(edges.len());
@@ -576,6 +641,9 @@ pub(crate) fn marched_wedges(
     if !all_marched && ends.iter().flatten().any(|v| at_vertex(v) >= 3) {
         return Ok(None);
     }
+    // The refusal of a one-edge request whose seat does not build and whose
+    // strip is not taken off whole either: the current path's, by name.
+    let mut refused: Option<OgeomError> = None;
     let built = (|| -> OgeomResult<Option<Vec<crate::support::Wedge>>> {
         let mut mates = request_mates(model, &edges, &[], tol)?;
         let mut host_faces: ogeom_core::FastMap<ogeom_topo::TShapeId, Vec<Shape>> =
@@ -624,6 +692,7 @@ pub(crate) fn marched_wedges(
         }
         let mut set_aside: Vec<(Vec<usize>, Shape, crate::support::Wedge)> = Vec::new();
         for (index, (edge, radius)) in once.iter().enumerate() {
+            let mark = model.note_widened();
             let (built, wedges) = crate::support::collecting_wedges(|| {
                 fillet_edge_meeting(
                     model,
@@ -635,11 +704,59 @@ pub(crate) fn marched_wedges(
                     tol,
                 )
             });
-            match built {
-                Ok(built) if built.shape.is_same(solid) && !wedges.is_empty() => {}
+            let wedges = match built {
+                Ok(built) if built.shape.is_same(solid) && !wedges.is_empty() => wedges,
                 Err(e @ OgeomError::Cancelled) => return Err(e),
+                // One edge whose seat does not build: a ring or strip beside
+                // it taken off whole, as the current path reads one, or its
+                // refusal.
+                Err(refusal @ (OgeomError::Construction(_) | OgeomError::NotDone(_)))
+                    if once.len() == 1 =>
+                {
+                    // A ring beside a rim is read only past a construction
+                    // refusal, a strip beside a marched seat past either;
+                    // what the refused attempt widened is put back before a
+                    // ring is taken off whole and kept otherwise, as the
+                    // current path does.
+                    let rim = match refusal {
+                        OgeomError::Construction(_) => {
+                            crate::consumed_rim::consumed_rim(model, solid, edge, *radius, tol)?
+                        }
+                        _ => None,
+                    };
+                    let (taken, wedges) = crate::support::collecting_wedges(|| match rim {
+                        Some(rim) => {
+                            model.undo_widened(mark);
+                            rim_consuming(model, solid, edge, rim, *radius, tol)
+                        }
+                        None => {
+                            model.keep_widened(mark);
+                            crate::consumed_marched::consumed_marched(
+                                model, solid, edge, *radius, tol,
+                            )?
+                            .ok_or(refusal)
+                        }
+                    });
+                    match taken {
+                        Ok(taken) if taken.shape.is_same(solid) && !wedges.is_empty() => wedges
+                            .into_iter()
+                            .map(|mut w| {
+                                if w.edges.is_empty() {
+                                    w.edges.push(edge.clone());
+                                }
+                                w
+                            })
+                            .collect(),
+                        Ok(_) => return Ok(None),
+                        Err(e @ OgeomError::Cancelled) => return Err(e),
+                        Err(e) => {
+                            refused = Some(e);
+                            return Ok(None);
+                        }
+                    }
+                }
                 _ => return Ok(None),
-            }
+            };
             for mut wedge in wedges {
                 fit_to_junctions(
                     model,
@@ -656,6 +773,9 @@ pub(crate) fn marched_wedges(
         let joined = join_flush(model, set_aside, &junctions, &halves, tol)?;
         Ok(Some(joined.into_iter().map(|(_, wedge)| wedge).collect()))
     })();
+    if let Some(refusal) = refused {
+        return Err(refusal);
+    }
     match built {
         Ok(found) => Ok(found),
         Err(e @ OgeomError::Cancelled) => Err(e),
