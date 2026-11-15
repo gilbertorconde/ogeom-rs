@@ -990,11 +990,20 @@ here.
   throughout, and no crossing starts or ends the run. Its centre stands a
   radius off the touched face's plane and a radius from the edge's line,
   in closed form at each station square to the seam.
+- **Past the narrow face.** Clear of the narrow face's far edge, the ball
+  may rest on the far edge of a strip beyond it (a staircase), or come
+  down on the face past the strips (a floor). The strips are walked out
+  from the seam, and the first support proved all along is taken. The
+  strips before it go into the fill whole: the fill closes on the crease
+  where the touched face's plane meets the plane of the strip whose far
+  edge holds the ball (or the floor's), and each strip it takes must be
+  gone from the result.
 - **Built** as one fused tool (amendment "M5a"): the balls' arcs from the
-  touched face to the far edge, fitted within 1e-8 of their exact stations,
-  closed by the two faces' planes (the far edge lies on the narrow face's),
-  capped in the arcs' planes past the seam's ends and cut back to the end
-  faces' planes.
+  touched face to the support, closed by the two planes (the far edge lies
+  on its strip's), capped in the arcs' planes past the seam's ends and cut
+  back to the end faces' planes. Where the centre runs on a line (a floor,
+  or a far edge along the seam) the round is the cylinder about it, exact;
+  otherwise the arcs are fitted within 1e-8 of their exact stations.
 - **Ends.** Flush on the end faces' planes, as every round of the engine
   ends (§4.3). The current path capped the fill in the end arcs' planes,
   which stand proud of, or short of, an end face not square to the ball's
@@ -1006,8 +1015,10 @@ here.
     edge's normal cone and its touch within the edge;
   - its other touch lies on its face;
   - every other face stands clear by the radius, with the distance's
-    Lipschitz bound up to the next station (a planar face wholly behind
-    the touched face's plane is clear outright);
+    Lipschitz bound up to the next station, the interval halved where the
+    bound is close (a planar face wholly behind a plane the ball touches is
+    clear outright; the end faces are not asked, the fill being cut to
+    their planes);
   - the arcs' planes cross the seam in order.
 - **A narrow face taken off whole.** Where no ball touches both of an
   edge's faces because one of them is narrower than the setback, and the
@@ -1022,8 +1033,7 @@ here.
   face is left.
 - **Not yet built.** Each of these is handed to the current path until its
   own layer: the ball on the strip over part of the seam (carried), on a
-  further strip's far edge or a floor beyond (stepped), on a vertex, an
-  end met by other than one planar face, two such seams meeting.
+  vertex, an end met by other than one plane, two such seams meeting.
 
 ## 12. Acceptance corpus
 
