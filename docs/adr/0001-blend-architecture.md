@@ -1007,6 +1007,53 @@ each face its own distance, its section an ellipse or a conic of a given
   inside corner, running out past a convex turn. At any other vertex a
   varying round is not built yet.
 
+### Amendment: varying rounds on curved seats (#902)
+
+A varying radius (`fillet_edges_variable`) over a chain the planar
+engine does not read: a drum's rim, an open arc, a chain of arcs of one
+circle, a drum's ruling, the seam of two drums, a marched crease, the
+top loop of a pad whose sides are planes and whose corners are drums.
+
+- **Survey.** Mainstream applications take a variable radius over any
+  chain of edges, curved and closed ones included, and lay its points by
+  arc length. NX stores a variable-radius point as a share of the whole
+  chain's length since NX 11.0.1
+  (https://support.sw.siemens.com/en-US/okba/PL8015439/The-variable-radius-points-cannot-be-specified-by-percent-Arc-Length-of-each-edge/index.html),
+  and T-FLEX places points as percentages of the chain's total length
+  (https://tflex.com/help/eng/T-FLEX%20CAD/17/14_edgeblend_types_roundvarrad.htm).
+  SOLIDWORKS places control points by percentage of an edge's length
+  (https://help.solidworks.com/2024/English/SolidWorks/Sldworks/r_Variable_Size_Fillet.htm).
+  Inventor notes that a closed loop has no start or end point
+  (https://help.autodesk.com/cloudhelp/2014/ENU/Inventor/files/GUID-A72E7D7B-80EB-4D4F-B6F9-C623104FE3E9.htm).
+  Onshape propagates a fillet along tangent edges by default
+  (https://cad.onshape.com/help/Content/PartStudio/fillet.htm).
+  This is the law the current path already lays, and it does not change:
+  - by arc length from the chain's first edge's start, held level past an
+    open chain's ends;
+  - periodic round a closed one;
+  - each edge taking its own window of it;
+  - the ball one radius from either side of a junction.
+- **The band.** Each band is the march under the law (`marched.rs`), or
+  the exact envelope on a straight edge between planes. An open chain of
+  arcs of one curve is one band over them all, named for the first arc;
+  the others go with it. Each band is closed into its wedge and built on
+  the solid as given, with the chain's other edges as its mates, as
+  amendment "marched seats" builds a constant one. Bands joined across
+  tangent junctions are one wedge. A loop closing round a sharp corner
+  opens on a straight edge between two of its junctions, the two halves
+  meeting flush. Bands meeting at a convex or re-entrant turn are fitted
+  to the plane they meet in, as the constant bands of the meeting's
+  radius are.
+- **Application.** The wedges are the one-boolean fallback's tools, as a
+  marched seat's are: cut where the crease is convex, fused where it is
+  concave, every face named for its edge. A result that does not check
+  valid is handed back.
+- **Still the current path's:**
+  - a chain whose turn the bands meet in rounds, one built against what
+    the other left (a drum's ruling turning into its rim);
+  - a law's ball running off a narrow face (the cut-off family);
+  - a law refused by name.
+
 ### Amendment: M5d, a round resting on a far edge (#902)
 
 The current path's rolling rounds (`rolled.rs`, `stepped.rs`,

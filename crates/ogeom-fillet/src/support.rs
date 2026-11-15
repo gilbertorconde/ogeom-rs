@@ -1778,6 +1778,21 @@ pub(crate) fn collecting_wedges<T>(f: impl FnOnce() -> T) -> (T, Vec<Wedge>) {
     (out, wedges)
 }
 
+/// Whether a caller collects wedges ([`collecting_wedges`]).
+pub(crate) fn collecting() -> bool {
+    WEDGES.with(|held| held.borrow().is_some())
+}
+
+/// Set `wedges` aside for the caller collecting them; nothing where none
+/// does.
+pub(crate) fn set_aside(wedges: Vec<Wedge>) {
+    WEDGES.with(|held| {
+        if let Some(held) = held.borrow_mut().as_mut() {
+            held.extend(wedges);
+        }
+    });
+}
+
 /// Sew the wedge's faces, demand a closed shell, and apply it to the solid:
 /// subtracted on a convex edge, fused on a concave one. Either way the
 /// history reads the same truth: the edge the blend replaces is gone.

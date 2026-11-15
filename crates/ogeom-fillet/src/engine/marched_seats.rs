@@ -95,7 +95,7 @@ pub(crate) fn rounds(
 /// wedge's faces named for its edge or the edge it credits them to;
 /// `None` where a boolean refuses, an edge of `once` is left nothing of,
 /// or the result is not valid.
-fn applied(
+pub(super) fn applied(
     model: &mut Model,
     solid: &Shape,
     once: &[(Shape, f64)],
