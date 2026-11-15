@@ -22,8 +22,8 @@
 
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances};
-use ogeom_geom::{Curve, SurfaceGeometry};
-use ogeom_math::{Point, Vector};
+use ogeom_geom::{Curve, Curve3d as _, SurfaceGeometry};
+use ogeom_math::{Axis, Direction, Frame, Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
 use super::curved::{Curved, read};
@@ -32,7 +32,7 @@ use super::trimmed::{faces_of, outward};
 use super::{Id, id};
 
 /// One asked crease: its edge, its ends, its two faces with their outward
-/// normals and offsets, and its radius.
+/// normals and offsets at its start, its radius, and its kind.
 struct Crease {
     shape: Shape,
     ends: (Id, Id),
@@ -41,6 +41,45 @@ struct Crease {
     faces: [usize; 2],
     planes: [(Vector, f64); 2],
     radius: f64,
+    kind: Kind,
+}
+
+/// A crease's kind: straight between two planes, or a rim, an arc about an
+/// axis between a plane square to it and a coaxial cylinder or cone.
+#[derive(Clone, Copy)]
+enum Kind {
+    Straight,
+    /// The arc's circle (its curve), its range on it, and which face is
+    /// the plane (the other is the wall).
+    Rim {
+        range: (f64, f64),
+        top: usize,
+    },
+}
+
+impl Crease {
+    /// The direction the crease leaves vertex `v` in.
+    fn leaving(&self, curved: &Curved, v: Id, tol: Tolerances) -> OgeomResult<Vector> {
+        let start = self.ends.0 == v;
+        let d = match self.kind {
+            Kind::Straight => {
+                if start {
+                    self.b - self.a
+                } else {
+                    self.a - self.b
+                }
+            }
+            Kind::Rim { range, .. } => {
+                let curve = &curved.edges[&id(&self.shape)].curve;
+                if start {
+                    curve.d1_at(range.0, tol)?
+                } else {
+                    -curve.d1_at(range.1, tol)?
+                }
+            }
+        };
+        Ok(d / d.magnitude())
+    }
 }
 
 /// The rounds of `asked` on `solid` where every asked edge is a straight
@@ -68,9 +107,15 @@ pub(crate) fn rounds(
     };
     let mut creases = Vec::with_capacity(asked.len());
     for (edge, radius) in asked {
-        let Some(crease) = crease_of(&curved, id(edge), edge, *radius, tol)? else {
+        let Some(crease) = crease_of(model, &curved, id(edge), edge, *radius, tol)? else {
             return Ok(None);
         };
+        // A straight crease's ball seated on both its faces: one running
+        // off a face narrower than its setback is cut off there, not
+        // carried on.
+        if matches!(crease.kind, Kind::Straight) && !seated_along(model, solid, &crease, tol)? {
+            return Ok(None);
+        }
         creases.push(crease);
     }
     // The extent of the solid, for the wedges and the walls' half-spaces.
@@ -96,6 +141,13 @@ pub(crate) fn rounds(
     // vertex, with the face both walk and the neighbour's other face (its
     // wall); the corner reflex in plan.
     let mut neighbours: Vec<[Option<(usize, usize)>; 2]> = vec![[None, None]; creases.len()];
+    // The planes a crease's band ends flush on, at free ends past which the
+    // material goes on.
+    // With each, the half of space beyond the crease's middle from that end
+    // (the plane there square to a straight crease, the meridian plane for a
+    // rim), where the clip does not reach: the band carried on past the
+    // other end is that end's to keep.
+    let mut ends_at: Vec<Vec<[(Vector, f64); 2]>> = vec![Vec::new(); creases.len()];
     let mut met = false;
     for (i, c) in creases.iter().enumerate() {
         for (k, v) in [c.ends.0, c.ends.1].into_iter().enumerate() {
@@ -104,8 +156,74 @@ pub(crate) fn rounds(
                 .collect();
             match others[..] {
                 [] => {
-                    if !runs_out(model, solid, c, k, tol)? {
+                    // Carried on past a free end, the band leaves the
+                    // solid: a point just past the vertex, a little inside
+                    // the wedge, stands outside it.
+                    let at = if k == 0 { c.a } else { c.b };
+                    let away = -c.leaving(&curved, v, tol)?;
+                    let (Some(n0), Some(n1)) = (
+                        outward(&curved, c.faces[0], at),
+                        outward(&curved, c.faces[1], at),
+                    ) else {
                         return Ok(None);
+                    };
+                    let inward = -(n0 + n1);
+                    let inward = inward / inward.magnitude();
+                    let probe = at + away * (c.radius * 0.5) + inward * (c.radius * 0.1);
+                    if ogeom_algo::classify_in_solid_exact(model, solid, probe, tol)?
+                        != ogeom_algo::Containment::Out
+                    {
+                        // Into the material: the band ends flush on the one
+                        // plane the crease meets there, cut to the crease's
+                        // side of it.
+                        let at_v: Vec<usize> = (0..curved.faces.len())
+                            .filter(|f| {
+                                !c.faces.contains(f)
+                                    && curved.faces[*f].loops.iter().flatten().any(|(x, _)| {
+                                        let g = &curved.edges[x];
+                                        g.ends.0 == v || g.ends.1 == v
+                                    })
+                            })
+                            .collect();
+                        let planes: Vec<Vector> = at_v
+                            .iter()
+                            .filter_map(|f| match curved.faces[*f].surface {
+                                SurfaceGeometry::Plane(_) => outward(&curved, *f, at),
+                                _ => None,
+                            })
+                            .collect();
+                        let Some(&n) = planes.first() else {
+                            return Ok(None);
+                        };
+                        if planes.len() != at_v.len()
+                            || planes
+                                .iter()
+                                .any(|m| m.cross(n).magnitude() > ang || m.dot(n) < 0.0)
+                        {
+                            return Ok(None);
+                        }
+                        let d = n.dot(at - Point::ORIGIN);
+                        let inside = c.leaving(&curved, v, tol)?;
+                        let plane = if inside.dot(n) <= 0.0 {
+                            (n, d)
+                        } else {
+                            (-n, -d)
+                        };
+                        let (middle, split) = match c.kind {
+                            Kind::Straight => (c.a.midpoint(c.b), c.b - c.a),
+                            Kind::Rim { range, .. } => {
+                                let e = &curved.edges[&id(&c.shape)];
+                                let t = 0.5 * (range.0 + range.1);
+                                (e.curve.point_at(t, tol)?, e.curve.d1_at(t, tol)?)
+                            }
+                        };
+                        let toward = if (at - middle).dot(split) >= 0.0 {
+                            split
+                        } else {
+                            -split
+                        };
+                        let toward = toward / toward.magnitude();
+                        ends_at[i].push([plane, (toward, toward.dot(middle - Point::ORIGIN))]);
                     }
                 }
                 [j] => {
@@ -119,23 +237,36 @@ pub(crate) fn rounds(
                     let [top] = shared[..] else {
                         return Ok(None);
                     };
-                    let Some(wall) = n.faces.iter().position(|f| *f != top) else {
+                    let (Some(wall), Some(own)) = (
+                        n.faces.iter().copied().find(|f| *f != top),
+                        c.faces.iter().copied().find(|f| *f != top),
+                    ) else {
                         return Ok(None);
                     };
-                    // An inside corner: this crease, leaving the vertex,
-                    // runs on the open side of the neighbour's wall, and the
-                    // neighbour on the open side of this one's.
-                    let along = |x: &Crease, at: Id| {
-                        let d = if x.ends.0 == at { x.b - x.a } else { x.a - x.b };
-                        d / d.magnitude()
+                    let at = curved.points[&v];
+                    let (Some(n_wall), Some(own_wall)) =
+                        (outward(&curved, wall, at), outward(&curved, own, at))
+                    else {
+                        return Ok(None);
                     };
-                    let own_wall = c.planes[usize::from(c.faces[0] == top)].0;
-                    if along(c, v).dot(n.planes[wall].0) <= ang || along(n, v).dot(own_wall) <= ang
-                    {
+                    let (go, back) = (
+                        c.leaving(&curved, v, tol)?.dot(n_wall),
+                        n.leaving(&curved, v, tol)?.dot(own_wall),
+                    );
+                    // An inside corner: each crease, leaving the vertex,
+                    // runs on the open side of the other's wall, and its band
+                    // is kept only past that wall or within the other's
+                    // band. A convex turn: each runs out past the vertex as
+                    // it does alone. Anything else is not built here. Only
+                    // an inside corner takes the request here: with
+                    // convex turns alone the other routes close it, as one
+                    // piece with no boolean where they can.
+                    if go > ang && back > ang {
+                        neighbours[i][k] = Some((j, wall));
+                        met = true;
+                    } else if !(go < -ang && back < -ang) {
                         return Ok(None);
                     }
-                    neighbours[i][k] = Some((j, wall));
-                    met = true;
                 }
                 _ => return Ok(None),
             }
@@ -148,7 +279,7 @@ pub(crate) fn rounds(
     // Each crease's spandrel carried on, its band's face named.
     let mut spandrels: Vec<(Shape, Vec<Shape>)> = Vec::with_capacity(creases.len());
     for c in &creases {
-        let Some(spandrel) = spandrel(&mut scratch, c, reach, tol)? else {
+        let Some(spandrel) = spandrel(&mut scratch, &curved, c, reach, tol)? else {
             return Ok(None);
         };
         spandrels.push(spandrel);
@@ -162,10 +293,33 @@ pub(crate) fn rounds(
             let either = match &open[*j] {
                 Some(s) => s.clone(),
                 None => {
-                    let (n, d) = creases[*j].planes[*wall];
-                    let mut planes = vec![(-n, -d)];
-                    boxed(&mut planes);
-                    let Some(past) = polytope(&mut scratch, &planes, tol)? else {
+                    let past = match &curved.faces[*wall].surface {
+                        SurfaceGeometry::Plane(_) => {
+                            let at = creases[*j].a;
+                            let Some(n) = outward(&curved, *wall, at) else {
+                                return Ok(None);
+                            };
+                            let mut planes = vec![(-n, -n.dot(at - Point::ORIGIN))];
+                            boxed(&mut planes);
+                            polytope(&mut scratch, &planes, tol)?
+                        }
+                        _ => {
+                            let mut planes = Vec::new();
+                            boxed(&mut planes);
+                            match polytope(&mut scratch, &planes, tol)? {
+                                Some(bounds) => past_wall(
+                                    &mut scratch,
+                                    &curved,
+                                    &creases[*j],
+                                    *wall,
+                                    &bounds,
+                                    tol,
+                                )?,
+                                None => None,
+                            }
+                        }
+                    };
+                    let Some(past) = past else {
                         return Ok(None);
                     };
                     let Ok(both) = ogeom_bool::fuse(&mut scratch, &past, &spandrels[*j].0, tol)
@@ -177,6 +331,30 @@ pub(crate) fn rounds(
                 }
             };
             let Ok(kept) = ogeom_bool::common(&mut scratch, &tool, &either, tol) else {
+                return Ok(None);
+            };
+            named = named
+                .iter()
+                .flat_map(|f| kept.history.trace(f).to_vec())
+                .collect();
+            tool = kept.shape;
+        }
+        for [plane, (toward, offset)] in ends_at[i].clone() {
+            // The crease's side of the end plane, or the half away from it.
+            let mut front = vec![plane];
+            boxed(&mut front);
+            let mut away = vec![(toward, offset)];
+            boxed(&mut away);
+            let (Some(front), Some(away)) = (
+                polytope(&mut scratch, &front, tol)?,
+                polytope(&mut scratch, &away, tol)?,
+            ) else {
+                return Ok(None);
+            };
+            let Ok(either) = ogeom_bool::fuse(&mut scratch, &front, &away, tol) else {
+                return Ok(None);
+            };
+            let Ok(kept) = ogeom_bool::common(&mut scratch, &tool, &either.shape, tol) else {
                 return Ok(None);
             };
             named = named
@@ -233,9 +411,47 @@ fn runs_out(
     )
 }
 
-/// How many stations along a carried-out crease its contacts are read at
-/// on its faces, ends apart.
+/// How many stations along a straight crease its contacts are read at on
+/// its faces, ends apart.
 const CONTACT_STATIONS: u32 = 16;
+
+/// Whether a straight crease's ball, at its largest radius, sits on both
+/// its faces along it: each contact, and the way to it from the crease
+/// across its face, on the solid's boundary between the crease's ends (a
+/// contact past a groove beside the crease lands on the boundary again,
+/// the way to it over the groove does not).
+///
+/// # Errors
+///
+/// As classifying the contacts.
+fn seated_along(
+    model: &Model,
+    solid: &Shape,
+    crease: &Crease,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let [(na, _), (nb, _)] = crease.planes;
+    let centre = -(na + nb) * (crease.radius / (1.0 + na.dot(nb)));
+    for i in 1..CONTACT_STATIONS {
+        let at = crease.a + (crease.b - crease.a) * (f64::from(i) / f64::from(CONTACT_STATIONS));
+        for n in [na, nb] {
+            let contact = at + centre + n * crease.radius;
+            for j in 1..=ACROSS_STATIONS {
+                let p = at + (contact - at) * (f64::from(j) / f64::from(ACROSS_STATIONS));
+                if ogeom_algo::classify_in_solid_exact(model, solid, p, tol)?
+                    != ogeom_algo::Containment::On
+                {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// How many points across its face, out to its contact, a straight
+/// crease's seat is read at.
+const ACROSS_STATIONS: u32 = 8;
 
 /// The rounds of `asked` on `solid` where every asked edge is a straight
 /// convex crease between planes, no two meeting, each carried on past both
@@ -264,9 +480,12 @@ pub(crate) fn carried_out(
     };
     let mut creases: Vec<Crease> = Vec::with_capacity(asked.len());
     for (edge, radius) in asked {
-        let Some(crease) = crease_of(&curved, id(edge), edge, *radius, tol)? else {
+        let Some(crease) = crease_of(model, &curved, id(edge), edge, *radius, tol)? else {
             return Ok(None);
         };
+        if !matches!(crease.kind, Kind::Straight) {
+            return Ok(None);
+        }
         // No two meeting or sharing a face: two bands on one face are
         // checked against each other where they are built together.
         let shares = |c: &Crease| {
@@ -308,21 +527,8 @@ pub(crate) fn carried_out(
                 }
             }
         }
-        // The ball seated on both faces along the crease: each contact on
-        // the solid's boundary between its ends.
-        let [(na, _), (nb, _)] = crease.planes;
-        let centre = -(na + nb) * (crease.radius / (1.0 + na.dot(nb)));
-        for i in 1..CONTACT_STATIONS {
-            let at =
-                crease.a + (crease.b - crease.a) * (f64::from(i) / f64::from(CONTACT_STATIONS));
-            for n in [na, nb] {
-                let contact = at + centre + n * crease.radius;
-                if ogeom_algo::classify_in_solid_exact(model, solid, contact, tol)?
-                    != ogeom_algo::Containment::On
-                {
-                    return Ok(None);
-                }
-            }
+        if !seated_along(model, solid, &crease, tol)? {
+            return Ok(None);
         }
         creases.push(crease);
     }
@@ -339,7 +545,7 @@ pub(crate) fn carried_out(
     let mut scratch = model.clone();
     let mut tools = Vec::with_capacity(creases.len());
     for c in &creases {
-        let Some((tool, named)) = spandrel(&mut scratch, c, reach, tol)? else {
+        let Some((tool, named)) = spandrel(&mut scratch, &curved, c, reach, tol)? else {
             return Ok(None);
         };
         let Ok(taken) = ogeom_bool::common(&mut scratch, &tool, solid, tol) else {
@@ -371,6 +577,7 @@ pub(crate) fn carried_out(
 /// `edge` as a crease: straight, open, between two planar faces, convex;
 /// `None` otherwise.
 fn crease_of(
+    model: &Model,
     curved: &Curved,
     edge: Id,
     shape: &Shape,
@@ -380,7 +587,13 @@ fn crease_of(
     let Some(c) = curved.edges.get(&edge) else {
         return Ok(None);
     };
-    if c.ends.0 == c.ends.1 || !matches!(c.curve, Curve::Line(_)) {
+    if c.ends.0 == c.ends.1 {
+        return Ok(None);
+    }
+    if matches!(c.curve, Curve::Circle(_)) {
+        return rim_of(model, curved, edge, shape, radius, tol);
+    }
+    if !matches!(c.curve, Curve::Line(_)) {
         return Ok(None);
     }
     let (a, b) = (curved.points[&c.ends.0], curved.points[&c.ends.1]);
@@ -421,6 +634,7 @@ fn crease_of(
             (nb, nb.dot(a - Point::ORIGIN)),
         ],
         radius,
+        kind: Kind::Straight,
     }))
 }
 
@@ -430,10 +644,14 @@ fn crease_of(
 /// exact cylinder); with the band's faces in it.
 fn spandrel(
     model: &mut Model,
+    curved: &Curved,
     crease: &Crease,
     reach: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<(Shape, Vec<Shape>)>> {
+    if let Kind::Rim { range, top } = crease.kind {
+        return rim_spandrel(model, curved, crease, range, top, reach, tol);
+    }
     let eps = tol.confusion();
     let along = (crease.b - crease.a) / crease.a.distance(crease.b);
     let o = crease.a;
@@ -518,4 +736,290 @@ fn spandrel(
             .collect();
     }
     Ok(Some((cut.shape, named)))
+}
+
+/// `edge` as a rim crease: an arc of a circle between a plane square to
+/// its axis and a coaxial cylinder or cone, convex; `None` otherwise.
+fn rim_of(
+    model: &Model,
+    curved: &Curved,
+    edge: Id,
+    shape: &Shape,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Crease>> {
+    let ang = tol.angular();
+    let c = &curved.edges[&edge];
+    let Curve::Circle(circle) = &c.curve else {
+        return Ok(None);
+    };
+    let axis = circle.circle().frame().z().vector();
+    let [fa, fb] = faces_of(curved, edge)[..] else {
+        return Ok(None);
+    };
+    let kind = |f: usize| match curved.faces[f].surface {
+        SurfaceGeometry::Plane(_) => Some(true),
+        SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_) => Some(false),
+        _ => None,
+    };
+    let (top, wall) = match (kind(fa), kind(fb)) {
+        (Some(true), Some(false)) => (fa, fb),
+        (Some(false), Some(true)) => (fb, fa),
+        _ => return Ok(None),
+    };
+    let (a, b) = (curved.points[&c.ends.0], curved.points[&c.ends.1]);
+    let t_mid = 0.5 * (c.range.0 + c.range.1);
+    let mid = c.curve.point_at(t_mid, tol)?;
+    let (Some(nt), Some(nw)) = (outward(curved, top, mid), outward(curved, wall, mid)) else {
+        return Ok(None);
+    };
+    if nt.cross(axis).magnitude() > ang {
+        return Ok(None);
+    }
+    // Convex: the top runs from the rim behind the wall's tangent plane.
+    let tangent = c.curve.d1_at(t_mid, tol)?;
+    let length = c.curve.point_at(c.range.0, tol)?.distance(mid) * 2.0;
+    let Some(into) = super::far_edge::into_face(
+        model,
+        curved,
+        top,
+        (mid, tangent / tangent.magnitude(), length),
+        tol,
+    )?
+    else {
+        return Ok(None);
+    };
+    if into.dot(nw) >= -ang {
+        return Ok(None);
+    }
+    let [ta, wa] = [top, wall].map(|f| outward(curved, f, a).unwrap_or(nt));
+    let planes = if top == fa {
+        [
+            (ta, ta.dot(a - Point::ORIGIN)),
+            (wa, wa.dot(a - Point::ORIGIN)),
+        ]
+    } else {
+        [
+            (wa, wa.dot(a - Point::ORIGIN)),
+            (ta, ta.dot(a - Point::ORIGIN)),
+        ]
+    };
+    Ok(Some(Crease {
+        shape: shape.clone(),
+        ends: c.ends,
+        a,
+        b,
+        faces: [fa, fb],
+        planes,
+        radius,
+        kind: Kind::Rim {
+            range: c.range,
+            top,
+        },
+    }))
+}
+
+/// A rim's section at parameter `t` of its circle: the face in the plane
+/// through the axis there, bounded by the rim's point, its two contacts
+/// (a radius in from both faces) and the ball's arc between them; with
+/// that arc's edge and the circle's unit tangent there.
+fn rim_section(
+    model: &mut Model,
+    curved: &Curved,
+    crease: &Crease,
+    top: usize,
+    t: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Shape, Shape, Vector)>> {
+    use ogeom_geom::{CircleCurve, LineCurve, PlaneSurface};
+    let r = crease.radius;
+    let curve = &curved.edges[&id(&crease.shape)].curve;
+    let wall = if crease.faces[0] == top {
+        crease.faces[1]
+    } else {
+        crease.faces[0]
+    };
+    let p = curve.point_at(t, tol)?;
+    let tangent = curve.d1_at(t, tol)?;
+    let tangent = tangent / tangent.magnitude();
+    let (Some(nt), Some(nw)) = (outward(curved, top, p), outward(curved, wall, p)) else {
+        return Ok(None);
+    };
+    let g = nt.dot(nw);
+    if (1.0 + g).abs() <= tol.angular() {
+        return Ok(None);
+    }
+    let centre = p - (nt + nw) * (r / (1.0 + g));
+    let (on_top, on_wall) = (centre + nt * r, centre + nw * r);
+    let (x, y) = (on_top - centre, on_wall - centre);
+    let normal = x.cross(y);
+    if normal.magnitude() <= tol.confusion() * r {
+        return Ok(None);
+    }
+    // The section's other sides stand off the wall's surface: from the top
+    // contact along the top past the rim, out through the open side, and in
+    // to the wall contact square to the wall. A tool's face on the wall's
+    // own cone would meet the solid's along it, which the boolean does not
+    // resolve; past the wall the tool takes only the open side.
+    let off = r * 0.25;
+    let past = p + (p - on_top) / p.distance(on_top) * off;
+    let out = on_wall + nw * off;
+    let [vt, vq, vo, vw] =
+        [on_top, past, out, on_wall].map(|q| ogeom_algo::make_vertex(model, q).shape);
+    let mut line = |from: Point, to: Point, a: &Shape, b: &Shape| -> OgeomResult<Shape> {
+        Ok(ogeom_algo::make_edge_between(
+            model,
+            LineCurve::segment(from, to, tol)?.into(),
+            (0.0, from.distance(to)),
+            a,
+            b,
+            tol,
+        )?
+        .shape)
+    };
+    let back = line(on_wall, out, &vw, &vo)?;
+    let across = line(out, past, &vo, &vq)?;
+    let along_top = line(past, on_top, &vq, &vt)?;
+    let frame = Frame::new(
+        centre,
+        Direction::new(normal, tol)?,
+        Direction::new(x, tol)?,
+        tol,
+    )?;
+    let arc_curve: Curve = CircleCurve::new(ogeom_math::Circle::new(frame, r, tol)?).into();
+    let arc =
+        ogeom_algo::make_edge_between(model, arc_curve, (0.0, x.angle(y, tol)?), &vt, &vw, tol)?
+            .shape;
+    let wire = ogeom_algo::make_wire(model, &[arc.clone(), back, across, along_top], tol)?.shape;
+    let plane = PlaneSurface::new(ogeom_math::Plane::through(p, Direction::new(tangent, tol)?));
+    let face = ogeom_algo::make_face(model, plane.into(), &[wire], tol)?.shape;
+    Ok(Some((face, arc, tangent)))
+}
+
+/// A rim's spandrel carried on: its section turned about the axis over the
+/// rim's arc (the torus band's spandrel), and past each end the end
+/// section run straight along the tangent `reach` on; with the band's
+/// faces in it.
+fn rim_spandrel(
+    model: &mut Model,
+    curved: &Curved,
+    crease: &Crease,
+    range: (f64, f64),
+    top: usize,
+    reach: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Shape, Vec<Shape>)>> {
+    let curve = &curved.edges[&id(&crease.shape)].curve;
+    let Curve::Circle(circle) = curve else {
+        return Ok(None);
+    };
+    let circle = circle.circle();
+    let built = (|| -> OgeomResult<Option<(Shape, Vec<Shape>)>> {
+        let (Some((f0, arc0, t0)), Some((f1, arc1, t1))) = (
+            rim_section(model, curved, crease, top, range.0, tol)?,
+            rim_section(model, curved, crease, top, range.1, tol)?,
+        ) else {
+            return Ok(None);
+        };
+        let turned = ogeom_algo::make_revolution(
+            model,
+            &f0,
+            Axis {
+                location: circle.centre(),
+                direction: circle.frame().z(),
+            },
+            range.1 - range.0,
+            tol,
+        )?;
+        let before = ogeom_algo::make_prism(model, &f0, -t0 * reach, tol)?;
+        let after = ogeom_algo::make_prism(model, &f1, t1 * reach, tol)?;
+        let mut band: Vec<Shape> = turned.history.generated(&arc0).to_vec();
+        band.extend(before.history.generated(&arc0).iter().cloned());
+        band.extend(after.history.generated(&arc1).iter().cloned());
+        let one = ogeom_bool::fuse(model, &turned.shape, &before.shape, tol)?;
+        band = band
+            .iter()
+            .flat_map(|f| one.history.trace(f).to_vec())
+            .collect();
+        let all = ogeom_bool::fuse(model, &one.shape, &after.shape, tol)?;
+        band = band
+            .iter()
+            .flat_map(|f| all.history.trace(f).to_vec())
+            .collect();
+        let kept = explore_unique(model, &all.shape, ShapeType::Face)?;
+        band.retain(|f| kept.iter().any(|k| k.is_same(f)));
+        Ok((!band.is_empty()).then_some((all.shape, band)))
+    })();
+    match built {
+        Ok(found) => Ok(found),
+        Err(e @ ogeom_core::OgeomError::Cancelled) => Err(e),
+        Err(_) => Ok(None),
+    }
+}
+
+/// The open side of a rim's curved wall within `bounds`: outside the wall's
+/// cylinder or cone where the material stands inside it (a drum), inside it
+/// where the material stands outside (a bore); the frustum taken a few
+/// radii either way of the rim. `None` where the cone would close within
+/// that, or a solid will not build.
+fn past_wall(
+    model: &mut Model,
+    curved: &Curved,
+    crease: &Crease,
+    wall: usize,
+    bounds: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<Shape>> {
+    let eps = tol.confusion();
+    let Curve::Circle(circle) = &curved.edges[&id(&crease.shape)].curve else {
+        return Ok(None);
+    };
+    let circle = circle.circle();
+    let (o, z) = (circle.centre(), circle.frame().z().vector());
+    let p = crease.a;
+    let radial = (p - o) - z * (p - o).dot(z);
+    let rho = radial.magnitude();
+    let er = radial / rho;
+    let Some(nw) = outward(curved, wall, p) else {
+        return Ok(None);
+    };
+    let tangent = z.cross(er);
+    let mut g = nw.cross(tangent);
+    if g.dot(z) < 0.0 {
+        g = -g;
+    }
+    if g.dot(z).abs() <= tol.angular() {
+        return Ok(None);
+    }
+    let slope = g.dot(er) / g.dot(z);
+    let h = 6.0 * crease.radius;
+    let (lo, hi) = (rho - h * slope, rho + h * slope);
+    if lo <= eps || hi <= eps {
+        return Ok(None);
+    }
+    let frame = Frame::new(
+        o - z * h,
+        Direction::new(z, tol)?,
+        Direction::new(er, tol)?,
+        tol,
+    )?;
+    let built = (|| -> OgeomResult<Shape> {
+        let frustum = match curved.faces[wall].surface {
+            SurfaceGeometry::Cylinder(_) => {
+                ogeom_algo::make_cylinder(model, frame, rho, 2.0 * h, tol)?
+            }
+            _ => ogeom_algo::make_cone(model, frame, lo, hi, 2.0 * h, tol)?,
+        }
+        .shape;
+        if nw.dot(er) > 0.0 {
+            Ok(ogeom_bool::cut(model, bounds, &frustum, tol)?.shape)
+        } else {
+            Ok(frustum)
+        }
+    })();
+    match built {
+        Ok(shape) => Ok(Some(shape)),
+        Err(e @ ogeom_core::OgeomError::Cancelled) => Err(e),
+        Err(_) => Ok(None),
+    }
 }

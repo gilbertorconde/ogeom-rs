@@ -1105,9 +1105,27 @@ and capping there left the corner standing.
 - **Ends.** A crease end met by no other asked crease must carry its band
   out of the solid, so the band ends flush on the faces it meets.
   Anything else is handed back.
-- **Not yet built.** Rims and arcs on curved walls meeting at such corners
-  (drums, bores, D-shaped blocks) stay on the current path until their
-  revolved spandrels join this route.
+- **Rims.** A rim (an arc between a plane square to its axis and a
+  coaxial cylinder or cone, convex: a drum's, a bore's, a D-shaped block's)
+  meets a straight crease or another rim at such a corner by the same rule.
+  Its band carried on is its section turned about the axis over the arc,
+  and past each end the end section run straight on along the arc's
+  tangent there. Past its wall is the open side of the wall's cylinder or
+  cone. The section's other sides stand off the wall's surface, so no tool
+  face lies on the solid's own cone.
+- **A convex turn.** In a request holding an inside corner, two creases
+  meeting at a corner convex in plan each run out past the vertex as they
+  do alone. A request of convex turns alone is left to the routes that
+  close it, in one piece where they can.
+- **A free end into the material.** Where a crease end met by no other
+  asked crease runs on into the material, the band ends flush on the one
+  plane the crease meets there, cut to the crease's side of it; past the
+  crease's middle the clip does not reach, so the band carried on past
+  the other end stays that end's.
+- **Not built.** Two bands carried on that would pinch the solid where they
+  meet (a crease turning back on itself, its notch and the bands' overlap
+  past the corner meeting on the corner's line) fail the solid's guard and
+  are handed back.
 
 ### Amendment: M5f, a strip's end cut by its end faces' planes (#902)
 
