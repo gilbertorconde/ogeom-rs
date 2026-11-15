@@ -2176,8 +2176,11 @@ fn ring_law(s: f64) -> f64 {
 /// through the axis, turned round it, is what the round takes off, within
 /// the march's fit (measured 1.5e-6), between the constant rounds at the
 /// law's least and largest radius. A ring raised beside the rim's strip,
-/// where the contact stands in the material, is refused, as the constant
-/// round is.
+/// where the contact stands in the material, is refused under the law. The
+/// constant round there keeps its surface and notches the ring's underside
+/// (ADR 0001, amendment "M5c, non-local rounds keep their surfaces"): it
+/// takes off the whole spandrel, its section turned about the axis at its
+/// centroid.
 #[test]
 fn a_law_round_a_marched_rim_beside_a_narrow_face_is_cut_off_as_the_constant_round() {
     let law = RadiusLaw::Points(vec![(0.0, 1.6), (0.5, 2.4)]);
@@ -2225,13 +2228,28 @@ fn a_law_round_a_marched_rim_beside_a_narrow_face_is_cut_off_as_the_constant_rou
         why.contains("across a face that does not reach so far"),
         "{why}"
     );
-    let why = ogeom_fillet::fillet_edges(&mut model, &stepped, &rim, 1.6, T)
-        .err()
-        .map(|e| e.to_string())
-        .unwrap_or_default();
+    let before =
+        ogeom_algo::volume_properties(&model, &stepped, ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass;
+    let notched = ogeom_fillet::fillet_edges(&mut model, &stepped, &rim, 1.6, T).unwrap();
     assert!(
-        why.contains("across a face that does not reach so far"),
-        "{why}"
+        ogeom_algo::check(&model, &notched.shape, T)
+            .unwrap()
+            .is_valid()
+    );
+    let after =
+        ogeom_algo::volume_properties(&model, &notched.shape, ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass;
+    let (r, pi) = (1.6_f64, core::f64::consts::PI);
+    let section = (1.0 - pi / 4.0) * r * r;
+    let centroid = r * (10.0 - 3.0 * pi) / (3.0 * (4.0 - pi));
+    let spandrel = core::f64::consts::TAU * (10.0 - centroid) * section;
+    assert!(
+        (before - after - spandrel).abs() <= 1e-5 * spandrel,
+        "{} against {spandrel}",
+        before - after
     );
 }
 
