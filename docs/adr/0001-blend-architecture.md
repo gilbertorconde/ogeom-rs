@@ -1085,6 +1085,36 @@ and capping there left the corner standing.
   (drums, bores, D-shaped blocks) stay on the current path until their
   revolved spandrels join this route.
 
+### Amendment: M5f, a strip's end cut by its end faces' planes (#902)
+
+A strip of the rounds' sheet ends flush in the third face of a vertex of
+three (§4.3), cut by that face's plane. Two more ends are cut the same way,
+by the end faces' planes, as mainstream CAD caps a blend on the faces
+around its end.
+
+- **Two faces beyond, meeting on an edge left sharp.** One round at a
+  vertex of four faces (a pyramid's base corner, its ridge rounded): the
+  strip carried on is cut by the plane of the face beyond each of its own
+  faces, from its corner on the face beside it to where the two cuts meet
+  on the sharp edge, past the vertex. The sharp edge's end comes off with
+  the strip, and each face beyond ends on its cut. Each cut is the
+  section's exact plane end, trimmed where it crosses the other plane,
+  found once on it. Built for a convex round beside a convex sharp edge,
+  each cut within its face and the meeting point within the sharp edge.
+- **Past the face, under a roof.** A leaning end face whose plane runs on
+  past its edge through the round's material (a rib running up under a
+  roof): the strip's end there stands in that plane, which caps it, the
+  face carried on over the cap. Each point of the end must lie in the face,
+  or in its plane with the solid's material on both sides of it at the
+  vertex, read from the vertex's local cone.
+- **Local cones at reflex corners.** The vertex's local cone reads each
+  face's sector the wide way round where the face's corner there turns
+  past a half turn, from the turn of its ring against the ring's winding.
+- **Unproved faces.** A round's face whose proof within its material
+  neither clears nor finds a point past it (a patch tangent to a face only
+  to its fit) is handed back, not refused. One found standing past the
+  material is still refused.
+
 ## 12. Acceptance corpus
 
 From #902:

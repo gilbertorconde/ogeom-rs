@@ -2310,3 +2310,103 @@ fn a_rim_arc_ending_obliquely_on_a_flat_rounds_on_past_its_ends() {
         );
     }
 }
+
+/// A round down the ridge of a box's two leaning top faces, `x + z = 10`
+/// and `y + z = 10`, from the top face to the corner where its two faces
+/// meet the walls `x = 10` and `y = 10`, the walls' edge left sharp: the
+/// strip carried on past that corner is cut by both walls' planes, and
+/// takes the vertical edge's top with it. The removed volume is the
+/// strip's section (the corner between the faces outside the ball's arc)
+/// swept along the ridge and clipped to the box's planes at every station,
+/// the top's at one end and the walls' at the other.
+#[test]
+fn a_round_into_a_corner_of_two_walls_left_sharp_is_cut_by_both() {
+    use ogeom_math::{Direction, Vector};
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-4,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let caps = [
+        (Vector::X, 10.0),
+        (Vector::Y, 10.0),
+        (Vector::Z, 10.0),
+        (-Vector::X, 10.0),
+        (-Vector::Y, 10.0),
+        (-Vector::Z, 10.0),
+    ];
+    for radius in [0.5, 1.0, 2.0] {
+        let mut model = ogeom_topo::Model::new();
+        let base = ogeom_algo::make_box(
+            &mut model,
+            Frame::new(
+                Point::new(-10.0, -10.0, -10.0),
+                Direction::Z,
+                Direction::X,
+                T,
+            )
+            .unwrap(),
+            (20.0, 20.0, 20.0),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let mut solid = base;
+        for (nx, ny) in [(1.0, 0.0), (0.0, 1.0)] {
+            let normal = Vector::new(nx, ny, 1.0);
+            let across = Vector::new(-ny, nx, 0.0);
+            let side = normal.cross(across) / normal.cross(across).magnitude();
+            let corner = Point::new(0.0, 0.0, 10.0) - across * 40.0 - side * 40.0;
+            let frame = Frame::new(
+                corner,
+                Direction::new(normal, T).unwrap(),
+                Direction::new(across, T).unwrap(),
+                T,
+            )
+            .unwrap();
+            let away = ogeom_algo::make_box(&mut model, frame, (80.0, 80.0, 40.0), T)
+                .unwrap()
+                .shape;
+            solid = ogeom_bool::cut(&mut model, &solid, &away, T).unwrap().shape;
+        }
+        let before = ogeom_algo::volume_properties(&model, &solid, fine, T)
+            .unwrap()
+            .mass;
+        let ridge = edge_with_midpoint(&model, &solid, Point::new(5.0, 5.0, 5.0));
+        let rounded = ogeom_fillet::fillet_edges(&mut model, &solid, &[ridge], radius, T)
+            .unwrap()
+            .shape;
+        let diagnosis = ogeom_algo::check(&model, &rounded, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let removed = before
+            - ogeom_algo::volume_properties(&model, &rounded, fine, T)
+                .unwrap()
+                .mass;
+        // The faces' outward normals turn a sixth of a turn apart, so the
+        // ball's centre stands r / sin(60°) in from the ridge, along the
+        // two normals' bisector.
+        let (na, nb) = (
+            Vector::new(1.0, 0.0, 1.0) / 2.0f64.sqrt(),
+            Vector::new(0.0, 1.0, 1.0) / 2.0f64.sqrt(),
+        );
+        let e = Vector::new(1.0, 1.0, -1.0) / 3.0f64.sqrt();
+        let inward = -(na + nb) / (na + nb).magnitude();
+        let offset = inward * (radius / (core::f64::consts::PI / 3.0).sin());
+        let start = Point::new(0.0, 0.0, 10.0);
+        let section = |s: f64| {
+            let x = start + e * s;
+            let c = x + offset;
+            clipped_section(
+                &caps,
+                (c, e, Vector::ZERO),
+                [x, c + na * radius, c + nb * radius],
+                radius,
+            )
+            .1
+        };
+        let want = adaptive(&section, -10.0, 30.0);
+        assert!(
+            (removed - want).abs() < 1e-5 * want,
+            "radius {radius}: the round took {removed} against {want}"
+        );
+    }
+}
