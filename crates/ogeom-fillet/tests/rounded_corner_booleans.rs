@@ -116,7 +116,12 @@ fn booleans_against_a_corner_patch_with_a_point_side_on_a_plane_close() {
 /// less its rounding, their common part and the reverse cut each build
 /// valid, and cut plus common gives each solid's volume back. (The round
 /// side's general route meets this: the far feature off a copy, the copy
-/// less its rounding cut.)
+/// less its rounding cut.) The rounding less the L, the corner's fill, then
+/// fuses onto the L with its pillar (the route's next step): the fill's
+/// corner patch meets its pole partway along the pole's line in its chart,
+/// and the pole, cut only where sections ended on it, left the patch's side
+/// dangling there. The fill lies outside the L, so what it shares with the
+/// L and pillar is what it shares with the pillar alone.
 #[test]
 fn booleans_against_a_corner_patch_on_a_defeatured_l_close() {
     use ogeom_math::{Direction, Frame};
@@ -205,5 +210,18 @@ fn booleans_against_a_corner_patch_on_a_defeatured_l_close() {
     assert!(
         (vback + vboth - vr).abs() <= 1e-6 * vr,
         "{vback} + {vboth} against {vr}"
+    );
+    let filled = ogeom_bool::fuse(&mut m, &with.shape, &back, T)
+        .unwrap()
+        .shape;
+    let found = ogeom_algo::check(&m, &filled, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let shared = ogeom_bool::common(&mut m, &back, &pillar, T).unwrap().shape;
+    let (vwith, vshared) = (volume(&m, &with.shape), volume(&m, &shared));
+    let vfilled = volume(&m, &filled);
+    assert!(vshared > 0.0, "the pillar stands in the fill");
+    assert!(
+        (vfilled - (vwith + vback - vshared)).abs() <= 1e-6 * vwith,
+        "{vfilled} against {vwith} + {vback} - {vshared}"
     );
 }

@@ -335,25 +335,6 @@ pub(crate) fn run(
                 return Ok(Some(built));
             }
         }
-        // A corner of concave and convex rounds reaching a face it does not
-        // end at: the copy less its rounding, which the general route cuts
-        // by, is not one the boolean closes yet (its section along the
-        // corner's patch, tangent to a face, is marched off the patch's
-        // corner), so it is refused by name until it does.
-        let mixed = planar.points.keys().any(|v| {
-            let at: Vec<&classify::Seat> = seats
-                .values()
-                .filter(|s| blended.contains(&s.edge) && (s.ends.0 == *v || s.ends.1 == *v))
-                .collect();
-            at.iter().any(|s| s.convex) && at.iter().any(|s| !s.convex)
-        });
-        if mixed {
-            ogeom_core::ogeom_bail!(
-                Construction,
-                "a round reaching a face it does not end at, at a corner of concave and \
-                 convex rounds, is not built yet"
-            );
-        }
     }
     // Rounds are curved: their strips and vertex blends go into a sheet.
     if request.blends.iter().any(|b| b.section.is_round()) {
