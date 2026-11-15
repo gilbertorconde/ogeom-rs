@@ -4362,3 +4362,51 @@ fn a_rolling_corner_of_two_concave_bevels_and_a_convex_one_closes_as_the_rings_c
         assert!(!built.history.generated(e).is_empty(), "its bevel");
     }
 }
+
+/// A bevel beside a rolling one on a face that is not convex: a block
+/// 20 × 20 × 4 with a slot 4 wide and 2 deep from its front (x in [3, 7],
+/// y < 3, z > 2), and a lip 6 × 3 × 0.3 out of its front flush with its
+/// top (x in [12, 18], y in [-3, 0], z in [3.7, 4]), so the top is one face
+/// round the slot and over the lip. The slot's top back edge (y = 3) and
+/// the lip's top front edge (y = -3) chamfered 0.5: the lip's rolls over
+/// its 0.3 front as a notch, so the request takes the union of local tools.
+/// The top's other vertices stand either side of the slot's back edge's
+/// line, and read from them its bevel ran the wrong way and the request was
+/// refused ("runs past its face"); each strip now reads the way into its
+/// face on the face. What goes is the slot edge's 0.5²/2 × 4 = 0.5 and the
+/// lip's notch, 6 × ∫ (z - 3.5) dz over [3.7, 4] = 0.63.
+#[test]
+fn a_bevel_on_a_face_round_a_slot_beside_a_rolling_bevel_runs_into_its_face() {
+    let mut m = Model::new();
+    let solid = block(&mut m, (0.0, 0.0, 0.0), (20.0, 20.0, 4.0));
+    let slot = block(&mut m, (3.0, -1.0, 2.0), (4.0, 4.0, 3.0));
+    let s = ogeom_bool::cut(&mut m, &solid, &slot, T).unwrap().shape;
+    let lip = block(&mut m, (12.0, -3.0, 3.7), (6.0, 3.0, 0.3));
+    let s = ogeom_bool::fuse(&mut m, &s, &lip, T).unwrap().shape;
+    let along = |m: &Model, y: f64, x0: f64, x1: f64| -> Shape {
+        explore_unique(m, &s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                let bb = ogeom_algo::shape_bounds(m, e, T).unwrap();
+                let (l, h) = (bb.low().unwrap(), bb.high().unwrap());
+                (l.y - y).abs() < 1e-6
+                    && (h.y - y).abs() < 1e-6
+                    && (l.z - 4.0).abs() < 1e-6
+                    && (h.z - 4.0).abs() < 1e-6
+                    && (l.x - x0).abs() < 1e-6
+                    && (h.x - x1).abs() < 1e-6
+            })
+            .unwrap()
+    };
+    let asked = [along(&m, 3.0, 3.0, 7.0), along(&m, -3.0, 12.0, 18.0)];
+    let built = ogeom_fillet::chamfer_edges(&mut m, &s, &asked, 0.5, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let want = volume(&m, &s) - 0.5 - 0.63;
+    let got = volume(&m, &built.shape);
+    assert!((got - want).abs() <= 1e-9 * want, "{got} against {want}");
+    for e in &asked {
+        assert!(!built.history.generated(e).is_empty(), "its bevel");
+    }
+}
