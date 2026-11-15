@@ -1611,6 +1611,94 @@ pub fn branches_cut_at_poles(
         .collect())
 }
 
+/// Each open branch's end that stopped short of a pole of either chart the
+/// other surface passes through, carried onto the pole.
+///
+/// Where the section runs into a pole the two surfaces nearly touch at (a
+/// transfinite patch's point side lying on a plane it is all but tangent
+/// to there), the surfaces stay within the march's chord of each other for
+/// a stretch, and the walk (or a seed standing in that stretch) ends short
+/// of the pole: the section's end then stands off the vertex the other
+/// curves end at. An end within [`joining_reach`] of such a pole is the
+/// section running into it, its last state carried onto the pole: on the
+/// collapsed chart at the end's own free parameter, on the other surface
+/// at the pole's foot found from the end's state. Every surface pair whose
+/// section ends there is carried alike, so the curves meet at the pole.
+fn join_ends_to_poles(
+    branches: &mut [Traced],
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    options: Marching,
+    tol: Tolerances,
+) {
+    let reach = joining_reach(options, tol);
+    let mut poles: Vec<(usize, usize, f64, Point)> = Vec::new();
+    for (surface, other, first) in [(a, b, 0_usize), (b, a, 2)] {
+        for (k, bound, point) in chart_poles(surface, tol) {
+            if ogeom_geom::project_on_surface(other, point, 16, tol)
+                .is_ok_and(|foot| foot.distance <= tol.confusion() * 10.0)
+            {
+                poles.push((first, k, bound, point));
+            }
+        }
+    }
+    if poles.is_empty() {
+        return;
+    }
+    for branch in branches.iter_mut() {
+        let n = branch.points.len();
+        if n == 0 || branch.stopped == Stopped::Closed {
+            continue;
+        }
+        for at_start in [true, false] {
+            let i = if at_start { 0 } else { branch.points.len() - 1 };
+            let end = branch.points[i];
+            let Some(&(first, k, bound, pole)) = poles
+                .iter()
+                .min_by(|x, y| x.3.distance(end).total_cmp(&y.3.distance(end)))
+            else {
+                continue;
+            };
+            let gap = pole.distance(end);
+            if gap <= tol.confusion() || gap > reach {
+                continue;
+            }
+            let mut state = [
+                branch.on_a[i].0,
+                branch.on_a[i].1,
+                branch.on_b[i].0,
+                branch.on_b[i].1,
+            ];
+            state[first + k] = bound;
+            let other = if first == 0 { 2 } else { 0 };
+            let other_surface = if first == 0 { b } else { a };
+            let Ok(foot) = ogeom_geom::project::project_on_surface_from(
+                other_surface,
+                pole,
+                (state[other], state[other + 1]),
+                tol,
+            ) else {
+                continue;
+            };
+            if foot.distance > tol.confusion() * 10.0 {
+                continue;
+            }
+            state[other] = foot.parameters.0;
+            state[other + 1] = foot.parameters.1;
+            let (on_a, on_b) = ((state[0], state[1]), (state[2], state[3]));
+            if at_start {
+                branch.points.insert(0, pole);
+                branch.on_a.insert(0, on_a);
+                branch.on_b.insert(0, on_b);
+            } else {
+                branch.points.push(pole);
+                branch.on_a.push(on_a);
+                branch.on_b.push(on_b);
+            }
+        }
+    }
+}
+
 /// Every branch of the intersection, as [`branches`], each with whether it
 /// leaves a touch where the section crosses itself along one of the
 /// touch's arms: see [`ArmsOf::leaves`]; then the tangential contacts
@@ -1619,6 +1707,24 @@ pub(crate) type Branches = (Vec<(Traced, bool)>, Vec<Traced>);
 
 /// See [`Branches`].
 pub(crate) fn branches_from_touches(
+    a: &SurfaceGeometry,
+    b: &SurfaceGeometry,
+    options: Marching,
+    pole_reach: f64,
+    tol: Tolerances,
+) -> OgeomResult<Branches> {
+    let (mut traced, mut touched) = branches_traced(a, b, options, pole_reach, tol)?;
+    let mut ends: Vec<Traced> = traced.iter().map(|(t, _)| t.clone()).collect();
+    join_ends_to_poles(&mut ends, a, b, options, tol);
+    for ((t, _), joined) in traced.iter_mut().zip(ends) {
+        *t = joined;
+    }
+    join_ends_to_poles(&mut touched, a, b, options, tol);
+    Ok((traced, touched))
+}
+
+/// [`branches_from_touches`] before its ends are carried onto the poles.
+fn branches_traced(
     a: &SurfaceGeometry,
     b: &SurfaceGeometry,
     options: Marching,
