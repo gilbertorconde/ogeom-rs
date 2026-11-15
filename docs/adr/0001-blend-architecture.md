@@ -1110,6 +1110,23 @@ around its end.
 - **Local cones at reflex corners.** The vertex's local cone reads each
   face's sector the wide way round where the face's corner there turns
   past a half turn, from the turn of its ring against the ring's winding.
+- **A crease carried out at both ends.** A straight convex crease between
+  planes that no other route closes (a chord's crease on a D-shaped block,
+  its ends on the drum, square, drafted or overhanging), whose ball sits on
+  both faces along it and whose band carried on past each end leaves the
+  solid: the band ends flush on the faces it meets there, as a free end
+  of amendment "M5e" does. Each end's faces meet the crease's at an
+  angle; a face running on tangent from them (a band an earlier round
+  left) is that round's to meet. Its tool is its spandrel carried on, which must
+  meet the solid in one piece, so it takes the band and nothing farther
+  along its line. Asked edges meeting or sharing a face are left to the
+  routes that check their bands against each other.
+- **A rim asked by one of its arcs.** Where a boolean leaves a closed rim
+  as several arcs and the request asks some of them at one radius, the
+  rim's other arcs join at that radius for the curved routes: one value
+  rounds a tangent chain (amendment "what M6 refuses by name"), and the
+  current path rounded the whole turn where the rim closes. A rim that
+  stops, or arcs asked at different radii, are as asked.
 - **Unproved faces.** A round's face whose proof within its material
   neither clears nor finds a point past it (a patch tangent to a face only
   to its fit) is handed back, not refused. One found standing past the
