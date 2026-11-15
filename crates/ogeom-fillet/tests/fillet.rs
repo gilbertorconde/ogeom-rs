@@ -1,6 +1,10 @@
 //! The rolling-ball fillet, where the ball's envelope is a cylinder.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/swept.rs"]
+mod swept;
+use swept::{adaptive, clipped_section};
+
 use ogeom_core::Tolerances;
 use ogeom_math::{Frame, Point};
 use ogeom_topo::{Filter, ShapeType, explore};
@@ -1505,26 +1509,79 @@ fn polygon_prism(
         .shape
 }
 
+/// The volume the step's foot round adds in
+/// [`two_seams_resting_on_a_step_s_edge_from_either_side_round_as_alone`]:
+/// the floor `z = 0`, the step's wall `y = 0` from `x = 1` to `x = 9`, its
+/// top edge falling from `(1, 0, 1.7)` to `(9, 0, 0.5)`, rounded at 1. Where
+/// the wall stands a radius or more tall the ball touches it, its centre
+/// at `(x, 1, 1)` and its section the corner less the quarter circle;
+/// past `x = 17/3`, where the wall is a radius tall, it rests on the top
+/// edge (ADR 0001, section 13, question 8), its centre a radius over the
+/// floor and a radius from the edge's line, at `y = sqrt(D)` with
+/// `D = 1 - |q|^2 + (q . e)^2` for `q` from the edge's start and `e` its
+/// direction. Each section is swept in the plane square to the centre's
+/// path, clipped to the step's ends `x = 1` and `x = 9`.
+fn step_band() -> f64 {
+    use ogeom_math::Vector;
+    let r = 1.0;
+    let caps = [(-Vector::X, -1.0), (Vector::X, 9.0)];
+    let start = Point::new(1.0, 0.0, 1.7);
+    let e = Vector::new(8.0, 0.0, -1.2) / 8.0f64.hypot(1.2);
+    let switch = 1.0 + 0.7 / 0.15;
+    // Touching the wall: the quarter circle's corner, x from the step's
+    // start (a cap square to the seam) to the switch.
+    let wall = |x: f64| {
+        let c = Point::new(x, r, r);
+        clipped_section(
+            &caps,
+            (c, Vector::X, Vector::ZERO),
+            [
+                Point::new(x, 0.0, 0.0),
+                c - Vector::Z * r,
+                c - Vector::Y * r,
+            ],
+            r,
+        )
+        .1
+    };
+    // Resting on the edge: the centre, its first and second derivatives
+    // in `x`, in closed form.
+    let edge = |x: f64| {
+        let u = x - 1.0;
+        let k = u * e.x - 0.7 * e.z;
+        let d = 1.0 - u * u - 0.49 + k * k;
+        let (dd, ddd) = (-2.0 * u + 2.0 * k * e.x, -2.0 + 2.0 * e.x * e.x);
+        let y = d.sqrt();
+        let y1 = dd / (2.0 * y);
+        let y2 = ddd / (2.0 * y) - dd * dd / (4.0 * y * y * y);
+        let c = Point::new(x, y, r);
+        let foot = start + e * (c - start).dot(e);
+        clipped_section(
+            &caps,
+            (c, Vector::new(1.0, y1, 0.0), Vector::new(0.0, y2, 0.0)),
+            [Point::new(x + y * y1, 0.0, 0.0), c - Vector::Z * r, foot],
+            r,
+        )
+    };
+    let mut last = 9.0;
+    while edge(last).0 > 0.0 {
+        last += 1e-3;
+    }
+    adaptive(&wall, 1.0, switch) + adaptive(&|x| edge(x).1, switch, last)
+}
+
 /// A step on a floor, its top sloping down along x, and a block standing
 /// on the step, its face slanting toward the step's edge: two concave
 /// seams sharing no face and no vertex, the step's foot on the floor and
 /// the block's foot on the step. Each stands under the radius over part
 /// of its length, the step's wall in height and the step's top beside the
-/// block in width, so each ball runs off its narrow face there, out of
-/// the solid, and each band is cut off on the face across that face's
-/// side: the step's band on the step's top, which the block's band
-/// rounds, and the block's band on the step's wall. Rounded alone, the
-/// two fills of the radius overlap past the step's edge: their common
-/// volume is positive and the request would round each edge with a band
-/// cutting into the other, so it is refused by name. With the block set
-/// back, its band clear of the step's edge, the request rounds each edge
-/// as it rounds alone: the step's band is the closed form `(1 - pi/4) r^2
-/// L` for its square crease of length `L`, and the two together add the
-/// sum of what each adds alone. Before, a band sharing nothing with the
-/// others was never checked against them.
+/// block in width, so each ball rests on the step's front top edge there
+/// (ADR 0001, section 13, question 8), one from in front, one from above.
+/// The step's foot adds its exact swept fill ([`step_band`]), and the two
+/// asked together add what each adds alone less what their fills share,
+/// with the block close to the step's edge and set back from it.
 #[test]
-fn a_band_alone_cut_off_on_a_face_another_band_rounds_is_checked() {
-    use core::f64::consts::FRAC_PI_4;
+fn two_seams_resting_on_a_step_s_edge_from_either_side_round_as_alone() {
     use ogeom_math::{Direction, Vector};
     let fine = ogeom_mesh::Deflection {
         chord: 1e-4,
@@ -1539,7 +1596,8 @@ fn a_band_alone_cut_off_on_a_face_another_band_rounds_is_checked() {
             .unwrap()
             .mass
     };
-    for (beside, overlap) in [((1.7, 0.5), true), ((3.0, 2.5), false)] {
+    let want = step_band();
+    for beside in [(1.7, 0.5), (3.0, 2.5)] {
         let mut model = ogeom_topo::Model::new();
         let floor = polygon_prism(
             &mut model,
@@ -1589,6 +1647,8 @@ fn a_band_alone_cut_off_on_a_face_another_band_rounds_is_checked() {
         let mut added = Vec::new();
         for edge in [&foot, &seat] {
             let alone = ogeom_fillet::fillet_edge(&mut model, &part, edge, radius, T).unwrap();
+            let diagnosis = ogeom_algo::check(&model, &alone.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
             added.push(volume(&model, &alone.shape) - before);
             fills.push(
                 ogeom_bool::cut(&mut model, &alone.shape, &part, T)
@@ -1596,38 +1656,27 @@ fn a_band_alone_cut_off_on_a_face_another_band_rounds_is_checked() {
                     .shape,
             );
         }
-        let crease = (1.0 - FRAC_PI_4) * radius * radius * 8.0;
+        // The band is fitted within 1e-8 of its balls, under a unit of
+        // area: the fill to a part in a million.
         assert!(
-            (added[0] - crease).abs() < 1e-9,
-            "the step's band added {} against {crease}",
+            (added[0] - want).abs() <= want * 1e-6,
+            "the step's band added {} against {want}",
             added[0]
         );
         let common = ogeom_bool::common(&mut model, &fills[0], &fills[1], T)
             .unwrap()
             .shape;
         let shared = volume(&model, &common);
-        let asked = ogeom_fillet::fillet_edges(&mut model, &part, &[foot, seat], radius, T);
-        if overlap {
-            assert!(shared > 1e-3, "the fills alone share {shared}");
-            let Err(ogeom_core::OgeomError::Construction(why)) = asked else {
-                panic!("two bands overlapping past a face's side were rounded");
-            };
-            assert!(
-                why.to_string()
-                    .contains("two blends of the chain overlap across a face they share"),
-                "{why}"
-            );
-        } else {
-            assert!(shared < 1e-9, "the fills alone share {shared}");
-            let rounded = asked.unwrap();
-            let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
-            assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
-            let both = volume(&model, &rounded.shape) - before;
-            assert!(
-                (both - added.iter().sum::<f64>()).abs() < 1e-9,
-                "the two bands added {both} against {added:?} alone"
-            );
-        }
+        let rounded =
+            ogeom_fillet::fillet_edges(&mut model, &part, &[foot, seat], radius, T).unwrap();
+        let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let both = volume(&model, &rounded.shape) - before;
+        // The same bands either way, to the volume's own reading.
+        assert!(
+            (both - (added[0] + added[1] - shared)).abs() < 1e-8,
+            "the two bands added {both} against {added:?} alone, sharing {shared}"
+        );
     }
 }
 

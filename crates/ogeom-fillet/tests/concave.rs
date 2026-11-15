@@ -1,6 +1,10 @@
 //! The additive blends: concave edges, and the revolved seats in every sign.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/swept.rs"]
+mod swept;
+use swept::{adaptive, clipped_section};
+
 use ogeom_core::Tolerances;
 use ogeom_math::{Frame, Point};
 use ogeom_topo::{Filter, ShapeType, explore};
@@ -430,6 +434,27 @@ fn slanted_seam(model: &mut ogeom_topo::Model, seat: &Seat) -> Slant {
     }
 }
 
+/// `slant`'s seam found again in its shape, by the middle of the seam it
+/// holds: after a boolean that leaves the seam where it was.
+fn seam_of(model: &ogeom_topo::Model, slant: &Slant) -> ogeom_topo::Shape {
+    let point = |v: &ogeom_topo::Shape| {
+        model
+            .node(v)
+            .and_then(|n| n.data().as_vertex().map(|d| d.point))
+            .unwrap()
+    };
+    let middle = |e: &ogeom_topo::Shape| {
+        let (a, b) = ogeom_algo::edge_vertices(model, e).unwrap().unwrap();
+        point(&a).midpoint(point(&b))
+    };
+    let was = middle(&slant.seam);
+    explore(model, &slant.shape, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| middle(e).distance(was) < 1e-9)
+        .expect("the seam stands where it was")
+}
+
 /// Gauss-Legendre nodes and weights on `[-1, 1]`, by Newton's method on
 /// the Legendre polynomial.
 fn gauss_legendre(n: usize) -> Vec<(f64, f64)> {
@@ -524,111 +549,78 @@ fn rolling_span(slant: &Slant, radius: f64) -> (f64, f64) {
 /// section), over the angles from where the first section is kept to the
 /// last, integrated adaptively (the clip puts kinks in the rate).
 fn rolling_fill(slant: &Slant, radius: f64) -> f64 {
-    use ogeom_math::Vector;
-    const CHORDS: usize = 1024;
-    let kept = |p: Point| {
-        slant
-            .caps
-            .iter()
-            .all(|(n, d)| n.dot(p - Point::ORIGIN) <= *d)
-    };
-    // The clipped section's area and first moment, and the rate it sweeps.
-    let section = |a: f64| -> (f64, f64) {
+    rolling_fill_within(slant, radius, &[])
+}
+
+/// [`rolling_fill`] within the half-spaces `within` as well (each
+/// `n . p <= d`): what the fill shares with a box.
+fn rolling_fill_within(slant: &Slant, radius: f64, within: &[(ogeom_math::Vector, f64)]) -> f64 {
+    let caps: Vec<_> = slant.caps.iter().chain(within).copied().collect();
+    let section = |a: f64, caps: &[(ogeom_math::Vector, f64)]| -> (f64, f64) {
         let (c, d, dd) = rolling_centre(slant, radius, a);
         let x = Point::ORIGIN + slant.along * rolling_crossing(slant, radius, a);
-        let touch = c - Vector::Z * radius;
+        let touch = c - ogeom_math::Vector::Z * radius;
         let foot = c - u_v_reach(slant, radius, a);
-        let (p1, q1) = ((touch - c) / radius, (foot - c) / radius);
-        let axis = p1.cross(q1) / p1.cross(q1).magnitude();
-        let sweep = p1.dot(q1).clamp(-1.0, 1.0).acos();
-        #[allow(clippy::cast_precision_loss)]
-        let angle = |i: usize| sweep * (i as f64) / (CHORDS as f64);
-        let on_arc = |t: f64| c + (p1 * t.cos() + axis.cross(p1) * t.sin()) * radius;
-        let mut ring: Vec<Point> = vec![x];
-        ring.extend((0..=CHORDS).map(|i| on_arc(angle(i))));
-        for (n, off) in &slant.caps {
-            let side = |p: Point| n.dot(p - Point::ORIGIN) - off;
-            let mut clipped = Vec::with_capacity(ring.len() + 2);
-            for (i, &p) in ring.iter().enumerate() {
-                let q = ring[(i + 1) % ring.len()];
-                let (sp, sq) = (side(p), side(q));
-                if sp <= 0.0 {
-                    clipped.push(p);
-                }
-                if (sp < 0.0 && sq > 0.0) || (sp > 0.0 && sq < 0.0) {
-                    clipped.push(p + (q - p) * (sp / (sp - sq)));
-                }
-            }
-            ring = clipped;
-        }
-        let normal = d / d.magnitude();
-        let (mut area, mut moment) = (0.0, Vector::ZERO);
-        for i in 1..ring.len().saturating_sub(1) {
-            let (o, p, q) = (ring[0], ring[i], ring[i + 1]);
-            let piece = (p - o).cross(q - o).dot(normal) / 2.0;
-            area += piece;
-            moment +=
-                ((o - Point::ORIGIN) + (p - Point::ORIGIN) + (q - Point::ORIGIN)) * (piece / 3.0);
-        }
-        if area < 0.0 {
-            area = -area;
-            moment = -moment;
-        }
-        // The chords cut through the ball: each kept sliver comes off.
-        #[allow(clippy::cast_precision_loss)]
-        let step = sweep / (CHORDS as f64);
-        let sliver = radius * radius * (step - step.sin()) / 2.0;
-        let lever = 4.0 * radius * (step / 2.0).sin().powi(3) / (3.0 * (step - step.sin()));
-        for i in 0..CHORDS {
-            let (a0, a1) = (angle(i), angle(i + 1));
-            if kept(on_arc(a0)) && kept(on_arc(a1)) {
-                let mid = on_arc(0.5 * (a0 + a1));
-                area -= sliver;
-                moment -= ((c - Point::ORIGIN) + (mid - c) * (lever / radius)) * sliver;
-            }
-        }
-        let speed = d.magnitude();
-        let turning = (dd - normal * dd.dot(normal)) * (1.0 / speed);
-        (
-            area,
-            speed * area - turning.dot(moment - (c - Point::ORIGIN) * area),
-        )
+        clipped_section(caps, (c, d, dd), [x, touch, foot], radius)
     };
     // From the seam's ends' sections out until none is kept.
     let (a0, a1) = rolling_span(slant, radius);
     let (mut lo, mut hi) = (a0.min(a1), a0.max(a1));
-    while section(lo).0 > 0.0 {
+    while section(lo, &slant.caps).0 > 0.0 {
         lo -= 1e-3;
     }
-    while section(hi).0 > 0.0 {
+    while section(hi, &slant.caps).0 > 0.0 {
         hi += 1e-3;
     }
-    #[allow(clippy::too_many_arguments, reason = "one step of adaptive Simpson")]
-    fn simpson(
-        f: &dyn Fn(f64) -> f64,
-        a: f64,
-        b: f64,
-        fa: f64,
-        fm: f64,
-        fb: f64,
-        whole: f64,
-        depth: u32,
-    ) -> f64 {
-        let m = 0.5 * (a + b);
-        let (l, r) = (0.5 * (a + m), 0.5 * (m + b));
-        let (fl, fr) = (f(l), f(r));
-        let left = (m - a) * (fa + 4.0 * fl + fm) / 6.0;
-        let right = (b - m) * (fm + 4.0 * fr + fb) / 6.0;
-        if depth == 0 || (left + right - whole).abs() <= 1e-13 {
-            return left + right + (left + right - whole) / 15.0;
-        }
-        simpson(f, a, m, fa, fl, fm, left, depth - 1)
-            + simpson(f, m, b, fm, fr, fb, right, depth - 1)
+    adaptive(&|a| section(a, &caps).1, lo, hi)
+}
+
+/// The fill of the seam whose strip widens past the ball's setback (the
+/// ball resting on the strip's far edge, then on the strip past the
+/// station where it is as wide as the setback), ending flush on the
+/// plate's end faces, within the half-spaces `within` as well: each piece's
+/// sections swept as [`rolling_fill`] sweeps them.
+fn widening_fill(slant: &Slant, radius: f64, within: &[(ogeom_math::Vector, f64)]) -> f64 {
+    use ogeom_math::Vector;
+    let caps: Vec<_> = slant.caps.iter().chain(within).copied().collect();
+    let switch = rolling_crossing(slant, radius, 0.0);
+    let start = bisect(
+        &|a| rolling_crossing(slant, radius, a) - slant.ends.0,
+        0.0,
+        core::f64::consts::FRAC_PI_2,
+    );
+    let n = slant.side;
+    let m = Vector::Z.dot(n);
+    let k = (radius - m * radius) / (1.0 - m * m);
+    let w = Vector::Z * k + n * k;
+    // The rolling piece: its angle grows toward the seam's start.
+    let rolled = |a: f64, caps: &[(Vector, f64)]| {
+        let (c, d, dd) = rolling_centre(slant, radius, a);
+        let x = Point::ORIGIN + slant.along * rolling_crossing(slant, radius, a);
+        let foot = c - u_v_reach(slant, radius, a);
+        clipped_section(caps, (c, d, dd), [x, c - Vector::Z * radius, foot], radius)
+    };
+    // The line's piece, from the switch on past the seam's end.
+    let lined = |x: f64, caps: &[(Vector, f64)]| {
+        let c = Point::ORIGIN + slant.along * x + w;
+        let at = Point::ORIGIN + slant.along * x;
+        clipped_section(
+            caps,
+            (c, slant.along, Vector::ZERO),
+            [at, c - Vector::Z * radius, c - n * radius],
+            radius,
+        )
+    };
+    let mut first = start;
+    while rolled(first, &slant.caps).0 > 0.0 {
+        first += 1e-3;
     }
-    let rate = |a: f64| section(a).1;
-    let (fa, fm, fb) = (rate(lo), rate(0.5 * (lo + hi)), rate(hi));
-    let whole = (hi - lo) * (fa + 4.0 * fm + fb) / 6.0;
-    simpson(&rate, lo, hi, fa, fm, fb, whole, 40)
+    let mut last = slant.ends.1;
+    while lined(last, &slant.caps).0 > 0.0 {
+        last += 1e-3;
+    }
+    adaptive(&|a| rolled(a, &caps).1, 0.0, first).abs()
+        + adaptive(&|x| lined(x, &caps).1, switch, last).abs()
 }
 
 /// From the ball's centre to its contact on the block's top edge.
@@ -813,48 +805,119 @@ fn a_round_rolls_on_the_far_edge_of_a_strip_narrower_than_its_setback() {
 /// Where the rolling run does not hold, the round is refused by name: the
 /// seam running back to where the strip narrows to nothing, so the ball
 /// comes onto the block's top beyond the strip's far edge and rounds the
-/// corner between the top and the plate, and a post standing within the
-/// ball's reach, beside a run resting on the edge all along and beside one
-/// carried onto the strip.
+/// corner between the top and the plate.
 #[test]
 fn a_round_rolling_on_a_far_edge_refuses_where_the_ball_leaves_it() {
-    for (seat, why) in [
-        (
-            Seat {
-                ends: (0.0, 1.3),
-                ..SLANT
-            },
-            "comes onto the face beyond that edge along the crease, rounding the corner between \
-             that face and the one it touches rather than this edge",
-        ),
-        (
-            Seat {
-                post: true,
-                ..SLANT
-            },
-            "comes within its radius of another face",
-        ),
-        (
-            Seat {
-                ends: (0.6, 1.9),
-                turns: (-20.0, 20.0),
-                post: true,
-                ..SLANT
-            },
-            "comes within its radius of another face",
-        ),
-    ] {
-        let ends = seat.ends;
-        let mut model = ogeom_topo::Model::new();
-        let slant = slanted_seam(&mut model, &seat);
-        let refusal = ogeom_fillet::fillet_edge(&mut model, &slant.shape, &slant.seam, 0.5, T)
-            .err()
-            .unwrap_or_else(|| panic!("{ends:?}: the round was built"))
-            .to_string();
-        assert!(
-            refusal.contains("rests on the far edge") && refusal.contains(why),
-            "{ends:?}: {refusal}"
-        );
+    let seat = Seat {
+        ends: (0.0, 1.3),
+        ..SLANT
+    };
+    let mut model = ogeom_topo::Model::new();
+    let slant = slanted_seam(&mut model, &seat);
+    let refusal = ogeom_fillet::fillet_edge(&mut model, &slant.shape, &slant.seam, 0.5, T)
+        .expect_err("refused")
+        .to_string();
+    assert!(
+        refusal.contains("rests on the far edge")
+            && refusal.contains(
+                "comes onto the face beyond that edge along the crease, rounding the corner \
+                 between that face and the one it touches rather than this edge"
+            ),
+        "{refusal}"
+    );
+}
+
+/// A post standing on the plate within the ball's reach, beside a run
+/// resting on the strip's far edge all along and beside one carried onto
+/// the strip: the round keeps its surface (ADR 0001, amendment "M5c").
+/// Built through the general route (the post off a copy, the seam rounded
+/// there), valid, the fill added less what it shares with the post: each
+/// the swept sections clipped flush to the plate's end faces, the shared
+/// part also to the post's six planes. The seat's own post stands in the
+/// ball's reach but clear of the fill, which it leaves whole; a post set
+/// in by the seam stands in the fill.
+#[test]
+fn a_round_resting_on_a_far_edge_reaching_a_post_keeps_its_surface() {
+    use ogeom_math::Vector;
+    // A box's six planes, each `n . p <= d`.
+    let planes = |lo: Point, hi: Point| {
+        [
+            (Vector::X, hi.x),
+            (-Vector::X, -lo.x),
+            (Vector::Y, hi.y),
+            (-Vector::Y, -lo.y),
+            (Vector::Z, hi.z),
+            (-Vector::Z, -lo.z),
+        ]
+    };
+    let radius = 0.5;
+    for widening in [false, true] {
+        for inner in [false, true] {
+            let seat = Seat {
+                post: !inner,
+                ..if widening {
+                    Seat {
+                        ends: (0.6, 1.9),
+                        turns: (-20.0, 20.0),
+                        ..SLANT
+                    }
+                } else {
+                    SLANT
+                }
+            };
+            let mut model = ogeom_topo::Model::new();
+            let mut slant = slanted_seam(&mut model, &seat);
+            let (lo, hi) = if inner {
+                (Point::new(0.8, -0.3, -0.1), Point::new(1.0, -0.2, 0.15))
+            } else {
+                (Point::new(0.8, -1.05, -0.1), Point::new(1.0, -0.9, 0.3))
+            };
+            if inner {
+                let post = ogeom_algo::make_box(
+                    &mut model,
+                    Frame::new(lo, ogeom_math::Direction::Z, ogeom_math::Direction::X, T).unwrap(),
+                    (hi.x - lo.x, hi.y - lo.y, hi.z - lo.z),
+                    T,
+                )
+                .unwrap();
+                slant.shape = ogeom_bool::fuse(&mut model, &slant.shape, &post.shape, T)
+                    .unwrap()
+                    .shape;
+                slant.seam = seam_of(&model, &slant);
+            }
+            let before = volume(&model, &slant.shape);
+            let (rounded, work) = ogeom_bool::work::counted(|| {
+                ogeom_fillet::fillet_edge(&mut model, &slant.shape, &slant.seam, radius, T).unwrap()
+            });
+            assert!(work.face_pairs > 0, "through the booleans");
+            let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+            assert!(
+                !rounded.history.generated(&slant.seam).is_empty(),
+                "the seam generates its round"
+            );
+            let post = planes(lo, hi);
+            let (fill, shared) = if widening {
+                (
+                    widening_fill(&slant, radius, &[]),
+                    widening_fill(&slant, radius, &post),
+                )
+            } else {
+                (
+                    rolling_fill(&slant, radius),
+                    rolling_fill_within(&slant, radius, &post),
+                )
+            };
+            assert_eq!(shared > 0.0, inner, "the post in the fill");
+            let want = fill - shared;
+            let got = volume(&model, &rounded.shape) - before;
+            // The band is fitted within 1e-8 of its balls, under a unit of
+            // area: the fill to a part in a million.
+            assert!(
+                (got - want).abs() <= want * 1e-6,
+                "widening {widening}, inner {inner}: the round added {got} against {want}"
+            );
+        }
     }
 }
 
@@ -1038,11 +1101,31 @@ fn crossing_of(run: &Run<'_>, origin: Point, along: ogeom_math::Vector, s: f64) 
 /// sections: each, in the plane square to the centre's path, is the
 /// triangle from the seam to the two contacts less the circular segment
 /// the ball's arc cuts off it, and a plane turning with the path sweeps
-/// `(|c'| - n'.(p - c)) dA ds` at each point `p` of it.
-fn swept_runs(runs: &[Run<'_>], origin: Point, along: ogeom_math::Vector, radius: f64) -> f64 {
+/// `(|c'| - n'.(p - c)) dA ds` at each point `p` of it. With `caps`, each
+/// section is clipped to the end faces' planes ([`clipped_section`]), the
+/// spans given running out past them.
+fn swept_runs(
+    runs: &[Run<'_>],
+    origin: Point,
+    along: ogeom_math::Vector,
+    radius: f64,
+    caps: Option<&[(ogeom_math::Vector, f64)]>,
+) -> f64 {
     let nodes = gauss_legendre(40);
     let mut total = 0.0;
     for run in runs {
+        // Cut to the end faces' planes: each section clipped, its span run
+        // out past them.
+        if let Some(caps) = caps {
+            let section = |s: f64| {
+                let (c, d, dd) = (run.centre)(s);
+                let x = origin + along * crossing_of(run, origin, along, s);
+                let touch = c - ogeom_math::Vector::Z * radius;
+                clipped_section(caps, (c, d, dd), [x, touch, (run.contact)(c)], radius).1
+            };
+            total += adaptive(&section, run.span.0, run.span.1).abs();
+            continue;
+        }
         let rate = |s: f64| -> f64 {
             let (c, d, dd) = (run.centre)(s);
             let x = origin + along * crossing_of(run, origin, along, s);
@@ -1115,8 +1198,9 @@ fn off_runs(runs: &[Run<'_>], radius: f64, p: Point) -> f64 {
 
 /// Round `seam` alone: the result valid, its fitted bands within the
 /// band's fit target of the envelope of `runs`' balls, and the volume it
-/// added equal to their swept sections within what the bands' stand-off
-/// over their area can move it. Returns how many fitted bands it has.
+/// added equal to their swept sections (clipped to `caps` where given)
+/// within what the bands' stand-off over their area can move it. Returns
+/// how many bands it has, fitted or the exact cylinder.
 fn holds_to_runs(
     model: &mut ogeom_topo::Model,
     shape: &ogeom_topo::Shape,
@@ -1124,6 +1208,7 @@ fn holds_to_runs(
     radius: f64,
     runs: &[Run<'_>],
     (origin, along): (Point, ogeom_math::Vector),
+    caps: Option<&[(ogeom_math::Vector, f64)]>,
 ) -> usize {
     let before = volume(model, shape);
     let rounded = ogeom_fillet::fillet_edge(model, shape, seam, radius, T).unwrap();
@@ -1136,17 +1221,18 @@ fn holds_to_runs(
             let data = model.node(face).unwrap().data().as_face().unwrap();
             matches!(
                 model.geometry().surface(data.surface).unwrap(),
-                ogeom_geom::SurfaceGeometry::BSpline(_)
+                ogeom_geom::SurfaceGeometry::BSpline(_) | ogeom_geom::SurfaceGeometry::Cylinder(_)
             )
         })
         .count();
     let (worst, area) = fitted_round(model, &generated, &|p| off_runs(runs, radius, p));
     // The band's fit target, 2e-4 at unit scale.
     assert!(worst < 2e-4, "the round stands {worst} off the balls");
-    let want = swept_runs(runs, origin, along, radius);
+    let want = swept_runs(runs, origin, along, radius, caps);
     let got = volume(model, &rounded.shape) - before;
+    // A cylinder about a line of centres is exact, to rounding.
     assert!(
-        (got - want).abs() <= worst * area,
+        (got - want).abs() <= worst * area + want * 1e-12,
         "the round added {got} against {want}, off {} with the bands within {worst} over \
          {area}",
         got - want
@@ -1160,8 +1246,9 @@ fn holds_to_runs(
 /// line a radius over the plate and a radius off the strip, tangent to it,
 /// and runs on that line, the cylinder between the two planes, to the
 /// seam's end. The fill is the two pieces' swept sections, from the boxes'
-/// own planes and edge. The round is two bands meeting on the section
-/// where the ball holds all three.
+/// own planes and edge, clipped flush to the plate's end faces. The round
+/// is two bands, the rolling piece's fitted and the line's the exact
+/// cylinder, meeting on the section where the ball holds all three.
 #[test]
 fn a_round_rolls_onto_a_strip_that_widens_past_its_setback() {
     use ogeom_math::Vector;
@@ -1212,16 +1299,40 @@ fn a_round_rolls_onto_a_strip_that_widens_past_its_setback() {
         "the ellipse meets the line where the ball comes down"
     );
     let on_strip = |c: Point| c - n * radius;
+    // Each piece run out past its end face's plane until none of its
+    // section is kept: the rolling piece's angle grows toward the seam's
+    // start, the line runs on past its end.
+    let kept = |centre: &dyn Fn(f64) -> (Point, Vector, Vector),
+                contact: &dyn Fn(Point) -> Point,
+                s: f64| {
+        let (c, d, dd) = centre(s);
+        let x = Point::ORIGIN + slant.along * (d.dot(c - Point::ORIGIN) / d.dot(slant.along));
+        clipped_section(
+            &slant.caps,
+            (c, d, dd),
+            [x, c - Vector::Z * radius, contact(c)],
+            radius,
+        )
+        .0
+    };
+    let mut first = start;
+    while kept(&rolled, &on_edge, first) > 0.0 {
+        first += 1e-3;
+    }
+    let mut last = slant.ends.1;
+    while kept(&on_line, &on_strip, last) > 0.0 {
+        last += 1e-3;
+    }
     let runs = [
         Run {
             centre: &rolled,
             contact: &on_edge,
-            span: (start, 0.0),
+            span: (first, 0.0),
         },
         Run {
             centre: &on_line,
             contact: &on_strip,
-            span: (switch, slant.ends.1),
+            span: (switch, last),
         },
     ];
     let bands = holds_to_runs(
@@ -1231,6 +1342,7 @@ fn a_round_rolls_onto_a_strip_that_widens_past_its_setback() {
         radius,
         &runs,
         (Point::ORIGIN, slant.along),
+        Some(&slant.caps),
     );
     assert_eq!(bands, 2, "a band for each piece");
 }
@@ -1351,6 +1463,7 @@ fn a_round_rolls_round_the_corner_of_a_narrow_triangle() {
         radius,
         &runs,
         (p1, along),
+        None,
     );
     assert_eq!(bands, 2, "a band for each piece");
 }
