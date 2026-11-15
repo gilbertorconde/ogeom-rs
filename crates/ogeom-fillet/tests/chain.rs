@@ -1,6 +1,13 @@
 //! Filleting a tangent chain of edges in one call.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
+#[path = "support/swept.rs"]
+#[allow(
+    dead_code,
+    reason = "this file sums its oracles with the adaptive rule alone"
+)]
+mod swept;
+
 use ogeom_core::Tolerances;
 use ogeom_geom::CircleCurve;
 use ogeom_math::{Circle, Direction, Frame, Plane, Point, Vector};
@@ -1772,13 +1779,134 @@ fn curved_turn(
     (prism, [along_arc, straight])
 }
 
+/// What rounding [`curved_turn`]'s two top creases at `r` takes, by the
+/// rule of the bands carried on through an inside corner (ADR 0001,
+/// amendment "M5e"), summed independently of any boolean. The arc's band
+/// carried on is its torus band over the arc, then each end's section run
+/// straight on along the arc's tangent there; the straight edge's is its
+/// band along the whole line. Past the arc's wall is outside its cylinder,
+/// past the straight wall the open side of its plane. A point of the solid
+/// goes where it lies in one band and past the other's wall or in the
+/// other's band. At height `z` a band is the strip `w = r - sqrt(r^2 - t^2)`
+/// in from its wall, `t = z - (2 - r)`, so each height's slice is integrated
+/// across `x`, each column's length in `y` read exactly between the roots
+/// of every boundary there, and the slices summed over `t = r sin(phi)`.
+fn turn_removed(turn: f64, r: f64) -> f64 {
+    let (cx, cy, big) = (6.0, 3.4 - 5.2, 5.2);
+    let angle = |x: f64, y: f64| (y - cy).atan2(x - cx);
+    let (tf, tc) = (angle(8.0, 3.0), angle(4.0, 3.0));
+    let at = |t: f64| (cx + big * t.cos(), cy + big * t.sin());
+    // Each end, its tangent running on past it and its outward radial.
+    let ends = [
+        (at(tf), (tf.sin(), -tf.cos()), (tf.cos(), tf.sin())),
+        (at(tc), (-tc.sin(), tc.cos()), (tc.cos(), tc.sin())),
+    ];
+    let ahead = ends[1].1;
+    let (s, c) = turn.sin_cos();
+    let along = (
+        ahead.0.mul_add(c, ahead.1 * s),
+        (-ahead.0).mul_add(s, ahead.1 * c),
+    );
+    let into = (-along.1, along.0);
+    let corner = (4.0, 3.0);
+    let tip = (corner.0 + 3.0 * along.0, corner.1 + 3.0 * along.1);
+    let outline = [
+        (0.0, 0.0),
+        (8.0, 0.0),
+        (8.0, 3.0),
+        corner,
+        tip,
+        (tip.0, 9.0),
+        (0.0, 9.0),
+    ];
+    let dot = |a: (f64, f64), b: (f64, f64)| a.0.mul_add(b.0, a.1 * b.1);
+    let rho = |x: f64, y: f64| (x - cx).hypot(y - cy);
+    let in_outline = |x: f64, y: f64| {
+        let mut inside = false;
+        for k in 0..outline.len() {
+            let (a, b) = (outline[k], outline[(k + 1) % outline.len()]);
+            if (a.1 > y) != (b.1 > y) && x < a.0 + (b.0 - a.0) * (y - a.1) / (b.1 - a.1) {
+                inside = !inside;
+            }
+        }
+        // The chord's polygon, or the segment between the chord and the arc.
+        inside || (y > 3.0 && rho(x, y) < big)
+    };
+    let removed_at = |w: f64, x: f64, y: f64| {
+        if !in_outline(x, y) {
+            return false;
+        }
+        let d = dot((x - corner.0, y - corner.1), into);
+        let in_b = (0.0..=w).contains(&d);
+        let past_b = d < 0.0;
+        let q = rho(x, y);
+        let torus = (big - w..=big).contains(&q) && (tf..=tc).contains(&angle(x, y));
+        let run_on = ends.iter().any(|(e, t, n)| {
+            let off = (x - e.0, y - e.1);
+            dot(off, *t) >= 0.0 && (0.0..=w).contains(&-dot(off, *n))
+        });
+        let in_a = torus || run_on;
+        let past_a = q > big;
+        (in_a && (past_b || in_b)) || (in_b && (past_a || in_a))
+    };
+    // A column's length in `y` within the removed set at `x`, between the
+    // roots there of every boundary the set is read against.
+    let column = |w: f64, x: f64| {
+        let mut ys: Vec<f64> = vec![0.0, 9.0, 3.0];
+        let mut line = |p: (f64, f64), dir: (f64, f64)| {
+            if dir.0.abs() > 1e-15 {
+                ys.push(p.1 + dir.1 * (x - p.0) / dir.0);
+            }
+        };
+        for off in [0.0, w] {
+            line((corner.0 + into.0 * off, corner.1 + into.1 * off), along);
+        }
+        for (e, t, n) in &ends {
+            line(*e, (-t.1, t.0));
+            for off in [0.0, w] {
+                line((e.0 - n.0 * off, e.1 - n.1 * off), *t);
+            }
+        }
+        for th in [tf, tc] {
+            line((cx, cy), (th.cos(), th.sin()));
+        }
+        for k in 0..outline.len() {
+            let (a, b) = (outline[k], outline[(k + 1) % outline.len()]);
+            if (a.0 - x) * (b.0 - x) <= 0.0 && (b.0 - a.0).abs() > 1e-15 {
+                ys.push(a.1 + (b.1 - a.1) * (x - a.0) / (b.0 - a.0));
+            }
+        }
+        for rad in [big, big - w] {
+            let h = rad * rad - (x - cx) * (x - cx);
+            if h >= 0.0 {
+                ys.push(cy + h.sqrt());
+                ys.push(cy - h.sqrt());
+            }
+        }
+        ys.retain(|y| (0.0..=9.0).contains(y));
+        ys.sort_by(f64::total_cmp);
+        ys.windows(2)
+            .filter(|p| removed_at(w, x, 0.5 * (p[0] + p[1])))
+            .map(|p| p[1] - p[0])
+            .sum::<f64>()
+    };
+    let slice = |phi: f64| {
+        let w = r * (1.0 - phi.cos());
+        swept::adaptive(&|x| column(w, x), 0.0, 8.0) * r * phi.cos()
+    };
+    swept::adaptive(&slice, 0.0, core::f64::consts::FRAC_PI_2)
+}
+
 /// Two top creases, an arc's and a straight edge's, rounded where the
 /// outline turns back on itself past them. At 150 degrees the corner cell
-/// both rounds hold lies in the material and the two meet in the plane
-/// bisecting their straight continuations, in either order. Turned 170 or
-/// 178 degrees back, the continuations reach that plane only past the
-/// solid's far side: no junction is taken, and the request rounds exactly
-/// as it does with none. Those figures are what the rounding without
+/// both rounds hold lies in the material and the two bands, carried on
+/// through the inside corner, take what the rule takes ([`turn_removed`]),
+/// in either order. Turned 170 or 178 degrees back, the straight
+/// continuations reach the plane bisecting them only past the solid's far
+/// side: no junction is taken, and the request rounds exactly
+/// as it does with none (the current path's; the bands carried on there
+/// would pinch the solid at the corner, the notch and the bands' overlap
+/// past it meeting on its line). Those figures are what the rounding without
 /// junctions takes; each holds the arc's band running on past its far end
 /// at (8, 3), where the arc meets the wall x = 8 obliquely, through the
 /// corner its ball still finds in the solid there: 0.002505, the torus
@@ -1788,8 +1916,12 @@ fn rounds_at_a_curved_crease_turning_nearly_back_on_itself() {
     let mut model = ogeom_topo::Model::new();
     let (prism, edges) = curved_turn(&mut model, 150.0_f64.to_radians());
     let removed = removed_both_ways(&model, &prism, &edges, 0.5);
+    let want = turn_removed(150.0_f64.to_radians(), 0.5);
     assert!((removed[0] - removed[1]).abs() < 2e-6, "{removed:?}");
-    assert!((removed[0] - 0.431_572).abs() < 2e-6, "{removed:?}");
+    assert!(
+        (removed[0] - want).abs() < 2e-6,
+        "{removed:?} against {want}"
+    );
     for (degrees, want) in [
         (170.0_f64, [0.381_783, 0.382_840]),
         (178.0, [0.381_542, 0.381_751]),
