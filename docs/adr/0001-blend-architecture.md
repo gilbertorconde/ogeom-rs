@@ -998,6 +998,26 @@ here.
   where the touched face's plane meets the plane of the strip whose far
   edge holds the ball (or the floor's), and each strip it takes must be
   gone from the result.
+- **Carried across the change.** Where the narrow face widens past the
+  setback along the seam, the ball rests on its far edge up to the station
+  where the face is as wide as the setback, and touches the face past it
+  (§13 question 8: the face's offset and the edge's pipe are tangent
+  there, so the two pieces meet on one section). Each piece is its own
+  tool, the two capped on the plane square to the seam at that station.
+- **Reaching a face.** Where the balls come within their radius of another
+  face (a post standing on the touched face), the round keeps its surface
+  (amendment "M5c"): the faces reached come off a copy, the seam is rounded
+  there, and the differences are applied, the post left standing in the
+  fill or beside it. The current path refused these. A face joined to those
+  the run holds, or to the touched face's outline, is not reached: a ball
+  that does not clear it is not this run's.
+- **Beside other rounds.** Asked with edges that are no such run, sharing
+  no face and no vertex with the runs, those are rounded first by the
+  engine and the fills fused into what they leave. A plain concave round
+  (the ball on both faces) that the rings leave because its end stands in
+  the open past a corner of the face it ends on is built the same way,
+  its fill ended flush on the end face's plane; along the seam both its
+  touches must stand on their faces within the end faces' planes.
 - **Built** as one fused tool (amendment "M5a"): the balls' arcs from the
   touched face to the support, closed by the two planes (the far edge lies
   on its strip's), capped in the arcs' planes past the seam's ends and cut
@@ -1011,8 +1031,9 @@ here.
   oracle now clips each swept section to the end faces' planes.
 - **Proof** (§13 question 8). At stations between the caps, wherever the
   end faces' planes keep any of the arc:
-  - each ball rests on the far edge alone, its centre strictly inside the
-    edge's normal cone and its touch within the edge;
+  - each ball rests on the far edge alone, its centre within the edge's
+    normal cone (on its side only where the ball comes down on a face) and
+    its touch within the edge;
   - its other touch lies on its face;
   - every other face stands clear by the radius, with the distance's
     Lipschitz bound up to the next station, the interval halved where the
@@ -1032,8 +1053,9 @@ here.
   face trimmed to nothing. It is built only where nothing of the narrow
   face is left.
 - **Not yet built.** Each of these is handed to the current path until its
-  own layer: the ball on the strip over part of the seam (carried), on a
-  vertex, an end met by other than one plane, two such seams meeting.
+  own layer: a ball carried across a change of support past the narrow
+  face, a ball on a vertex, an end met by other than one plane, two such
+  seams meeting.
 
 ## 12. Acceptance corpus
 

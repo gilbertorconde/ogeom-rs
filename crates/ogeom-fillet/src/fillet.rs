@@ -1173,7 +1173,8 @@ fn rounds_by_engine_routes(
     }
     // A concave seam whose ball rests on the far edge of the narrow face
     // beside it all along: its fill, fused (ADR 0001, amendment "M5d").
-    if let Some(built) = crate::engine::far_edge_rounds(model, solid, &once, tol)? {
+    if let Some(built) = crate::engine::far_edge_rounds(model, solid, &once, rounds_by_engine, tol)?
+    {
         return Ok(Some(built));
     }
     // A round wider than a narrow face beside its edge: the face taken off
