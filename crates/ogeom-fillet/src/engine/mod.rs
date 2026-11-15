@@ -47,6 +47,7 @@ mod sections;
 mod setbacks;
 mod taken_whole;
 mod trimmed;
+mod varying_seats;
 mod vertices;
 
 pub(crate) use defeatured::tools as defeatured_tools;
@@ -68,6 +69,7 @@ pub(crate) use trimmed::{
     chamfer as chamfer_curved, chamfer_mitred as chamfer_curved_mitred, chamfer_patched,
     convex_one_boolean, creases_one_boolean, rims_revolved, rolling_tools,
 };
+pub(crate) use varying_seats::rounds as varying_rounds;
 
 /// Whether `solid` is one the polyhedral classes read: one solid bounded by
 /// planes, each face its rings of straight edges.

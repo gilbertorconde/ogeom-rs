@@ -3449,10 +3449,31 @@ pub fn fillet_edges_variable(
     {
         return Ok(built);
     }
+    // Any other chain: the bands the march builds under the law, applied
+    // by the engine as one-boolean tools.
+    if let Some(built) = crate::engine::varying_rounds(model, solid, chain, law, tol)? {
+        return Ok(built);
+    }
     to_current_path("fillet_edges_variable");
     ogeom_algo::on_own_nodes(model, solid, chain, |model, solid, parts| {
         fillet_chain_law_own(model, solid, parts, law, tol)
     })
+}
+
+/// The bands of `chain` under `law`, as the current path builds them, for
+/// the engine to collect as wedges (see [`crate::engine::varying_rounds`]).
+///
+/// # Errors
+///
+/// As the current path's round of the chain.
+pub(crate) fn chain_law_bands(
+    model: &mut Model,
+    solid: &Shape,
+    chain: &[Shape],
+    law: &RadiusLaw,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    fillet_chain_law_own(model, solid, chain, law, tol)
 }
 
 /// Each edge of `chain` (straight, end to end, open or closed) with the
@@ -4660,6 +4681,25 @@ fn chain_law(
     }
     let halves = with_corners(model, &mut set_aside, &junctions, solid, true, tol)?;
     let joined = join_flush(model, set_aside, &junctions, &halves, tol)?;
+    // Where the engine collects the bands, it applies them.
+    if crate::support::collecting() {
+        crate::support::set_aside(
+            joined
+                .into_iter()
+                .map(|(edge, mut wedge)| {
+                    if wedge.edges.is_empty() {
+                        wedge.edges.push(edge);
+                    }
+                    wedge
+                })
+                .collect(),
+        );
+        let mut history = ogeom_algo::History::new();
+        for edge in chain {
+            history.delete(edge);
+        }
+        return Ok(Built::new(solid.clone(), history));
+    }
     let mut built = apply_set_aside(model, Built::from_nothing(solid.clone()), joined, tol)?;
     for edge in chain {
         built.history.delete(edge);
