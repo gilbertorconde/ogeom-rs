@@ -486,6 +486,11 @@ fn engine_chamfer_mitred_attempt(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
+    // A solid with voids: each shell mitred as the solid it bounds.
+    if model.kind_of(solid)? == ogeom_topo::ShapeType::Solid && model.children_of(solid)?.len() > 1
+    {
+        return engine_chamfer_voided(model, solid, specs, true, tol);
+    }
     let baked = ogeom_algo::baked_where_placed(model, solid, tol)?;
     let (solid, specs) = if baked.shape.is_same(solid) {
         (solid.clone(), specs.to_vec())
@@ -617,6 +622,7 @@ fn engine_chamfer_voided(
     model: &mut Model,
     solid: &Shape,
     specs: &[(Shape, Chamfer)],
+    mitre: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     use ogeom_topo::ShapeType;
@@ -675,7 +681,12 @@ fn engine_chamfer_voided(
         let Some(alone) = alone else {
             return Ok(None);
         };
-        let Some(built) = engine_chamfer(model, &alone, &asked[k], tol)? else {
+        let built = if mitre {
+            engine_chamfer_mitred(model, &alone, &asked[k], tol)?
+        } else {
+            engine_chamfer(model, &alone, &asked[k], tol)?
+        };
+        let Some(built) = built else {
             return Ok(None);
         };
         let [shell] = &model.children_of(&built.shape)?[..] else {
@@ -848,7 +859,7 @@ fn engine_chamfer_attempt(
     use crate::engine::Dissolved;
     if model.kind_of(solid)? == ogeom_topo::ShapeType::Solid && model.children_of(solid)?.len() > 1
     {
-        return engine_chamfer_voided(model, solid, specs, tol);
+        return engine_chamfer_voided(model, solid, specs, false, tol);
     }
     // Degenerate planar topology is refused by name, not chamfered past.
     if let Some(what) = crate::engine::degenerate_planar(model, solid)? {
