@@ -2696,10 +2696,12 @@ fn measured_overlaps(
 }
 
 /// Whether the stretch `(lo, hi)` of the fitted `curve` near `e` starts
-/// at one of the curve's own ends lying on `e` (not at one of `e`'s ends)
-/// and ends inside both, the two nearest at that own end and standing
-/// apart halfway along by more than both curves state: a touch at the
-/// curve's end, not a run along the edge (see [`measured_overlaps`]).
+/// at one of the curve's own ends lying on `e` (inside it, or at one of
+/// its ends, a vertex both leave tangentially) and ends inside both, the
+/// two nearest at that own end and standing apart halfway along by more
+/// than both curves state: a touch at the curve's end, not a run along
+/// the edge (see [`measured_overlaps`]). A fitted copy of the edge that
+/// ends with it stays within those radii, and is a run.
 fn touches_from_own_end(
     curve: &Curve,
     (lo, hi): (f64, f64),
@@ -2709,19 +2711,9 @@ fn touches_from_own_end(
     e: &BoundaryEdge,
     tol: Tolerances,
 ) -> OgeomResult<bool> {
-    let at_edge_end = |t: f64| -> OgeomResult<bool> {
-        let p = curve.point_at(t, tol)?;
-        let width = measuring_width(curve, tolerance, e, tol);
-        for end in [e.crange.0, e.crange.1] {
-            if e.curve.point_at(end, tol)?.distance(p) <= width * 2.0 {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    };
-    let (from, to) = if own_lo && !ends_hi && !at_edge_end(lo)? {
+    let (from, to) = if own_lo && !ends_hi {
         (lo, hi)
-    } else if own_hi && !ends_lo && !at_edge_end(hi)? {
+    } else if own_hi && !ends_lo {
         (hi, lo)
     } else {
         return Ok(false);

@@ -2345,3 +2345,176 @@ fn a_wall_leaning_across_a_spline_arch_s_crown_splits_its_section_at_the_rim() {
         }
     }
 }
+/// The cut of `ogeom-bool`'s `contact.rs` (a block whose wall
+/// `y - z/10 = 0.8` leans out, fused with a drum of radius three, less
+/// its top crease's spandrel cut back by the drum and capped at
+/// `z = 1.52`) on a block built in two prisms split at the round's contact
+/// height on the wall: the drum's edge along the wall then ends at the
+/// point where the spandrel's fitted edge on the drum leaves it
+/// tangentially, an end of both. Read as running along it from that
+/// shared end, the fitted edge split the drum's edge where they parted by
+/// the fitted width, and the cut closed only on the boolean's last retry,
+/// which reads contacts at their stated radii. It closes on the first,
+/// and removes the spandrel's integral of `7 - sqrt(9 - y^2)` over its
+/// section.
+#[test]
+fn a_fitted_edge_leaving_an_edge_tangentially_from_both_their_ends_runs_beside_it() {
+    use ogeom::geom::{CircleCurve, LineCurve, PlaneSurface};
+    use ogeom::math::{Circle, Plane, Vector};
+    let mut model = Model::new();
+    let face_through = |model: &mut Model, corners: &[Point], arc: Option<(usize, Point)>| {
+        let vertices: Vec<_> = corners
+            .iter()
+            .map(|&p| ogeom_algo::make_vertex(model, p).shape)
+            .collect();
+        let mut edges = Vec::new();
+        for k in 0..corners.len() {
+            let next = (k + 1) % corners.len();
+            let (a, b) = (corners[k], corners[next]);
+            let (curve, range) = match arc {
+                Some((at, centre)) if at == k => {
+                    let (x, y) = (a - centre, b - centre);
+                    let frame = Frame::new(
+                        centre,
+                        Direction::new(x.cross(y), T).unwrap(),
+                        Direction::new(x, T).unwrap(),
+                        T,
+                    )
+                    .unwrap();
+                    let circle = Circle::new(frame, x.magnitude(), T).unwrap();
+                    (
+                        Curve::Circle(CircleCurve::new(circle)),
+                        (0.0, x.angle(y, T).unwrap()),
+                    )
+                }
+                _ => (
+                    Curve::Line(LineCurve::segment(a, b, T).unwrap()),
+                    (0.0, a.distance(b)),
+                ),
+            };
+            edges.push(
+                ogeom_algo::make_edge_between(
+                    model,
+                    curve,
+                    range,
+                    &vertices[k],
+                    &vertices[next],
+                    T,
+                )
+                .unwrap()
+                .shape,
+            );
+        }
+        let wire = ogeom_algo::make_wire(model, &edges, T).unwrap().shape;
+        let plane = Plane::through(corners[0], Direction::X);
+        ogeom_algo::make_face(model, PlaneSurface::new(plane).into(), &[wire], T)
+            .unwrap()
+            .shape
+    };
+    let at = |x: f64, y: f64, z: f64| Point::new(x, y, z);
+    // The ball of radius one half in the crease: a half below the top, a
+    // half in from the wall along its normal.
+    let r = 0.5;
+    let lean = 1.01_f64.sqrt();
+    let yc = 0.95 - r * lean;
+    let (ny, nz) = (1.0 / lean, -0.1 / lean);
+    let on_wall = (yc + r * ny, 1.5 + r * nz);
+    let split = on_wall.1;
+    let lower = face_through(
+        &mut model,
+        &[
+            at(-7.0, -5.0, 0.0),
+            at(-7.0, 0.8, 0.0),
+            at(-7.0, 0.1_f64.mul_add(split, 0.8), split),
+            at(-7.0, -5.0, split),
+        ],
+        None,
+    );
+    let upper = face_through(
+        &mut model,
+        &[
+            at(-7.0, -5.0, split),
+            at(-7.0, 0.1_f64.mul_add(split, 0.8), split),
+            at(-7.0, 1.0, 2.0),
+            at(-7.0, -5.0, 2.0),
+        ],
+        None,
+    );
+    let lower = ogeom_algo::make_prism(&mut model, &lower, Vector::new(7.0, 0.0, 0.0), T)
+        .unwrap()
+        .shape;
+    let upper = ogeom_algo::make_prism(&mut model, &upper, Vector::new(7.0, 0.0, 0.0), T)
+        .unwrap()
+        .shape;
+    let block = ogeom_bool::fuse(&mut model, &lower, &upper, T)
+        .unwrap()
+        .shape;
+    let drum = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 3.0, 2.0, T)
+        .unwrap()
+        .shape;
+    let solid = ogeom_bool::fuse(&mut model, &block, &drum, T)
+        .unwrap()
+        .shape;
+    let section = face_through(
+        &mut model,
+        &[
+            at(-8.0, 1.0, 2.0),
+            at(-8.0, yc, 2.0),
+            at(-8.0, on_wall.0, on_wall.1),
+        ],
+        Some((1, at(-8.0, yc, 1.5))),
+    );
+    let spandrel = ogeom_algo::make_prism(&mut model, &section, Vector::new(7.0, 0.0, 0.0), T)
+        .unwrap()
+        .shape;
+    let below = Frame::new(at(0.0, 0.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let tall = ogeom_algo::make_cylinder(&mut model, below, 3.0, 4.0, T)
+        .unwrap()
+        .shape;
+    let past = ogeom_bool::cut(&mut model, &spandrel, &tall, T)
+        .unwrap()
+        .shape;
+    // Kept below `z = cap`, a little above the contact: the fitted edge
+    // short enough that its stretch near the ellipse spans samples.
+    let cap = 1.52;
+    let slab = Frame::new(at(-9.0, -1.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let slab = ogeom_algo::make_box(&mut model, slab, (10.0, 3.0, cap), T)
+        .unwrap()
+        .shape;
+    let tool = ogeom_bool::common(&mut model, &past, &slab, T)
+        .unwrap()
+        .shape;
+    let (rounded, work) =
+        ogeom_bool::work::counted(|| ogeom_bool::cut(&mut model, &solid, &tool, T));
+    let rounded = rounded.unwrap().shape;
+    assert_eq!(work.stated_retries, 0, "closed on the first attempt");
+    assert!(ogeom_algo::check(&model, &rounded, T).unwrap().is_valid());
+    let fine = Deflection {
+        chord: 1e-4,
+        ..Deflection::default()
+    };
+    let volume = |model: &Model, s: &Shape| {
+        ogeom_algo::volume_properties(model, s, fine, T)
+            .unwrap()
+            .mass
+    };
+    // Across the section at height `z = 1.5 + r sin t`, from the arc to the
+    // wall; the length's antiderivative in `y` is closed, the angle taken
+    // by Simpson's rule.
+    let length = |y: f64| 7.0 * y - (y * (9.0 - y * y).sqrt() / 2.0 + 4.5 * (y / 3.0).asin());
+    let across = |t: f64| {
+        let z = r.mul_add(t.sin(), 1.5);
+        let (from, to) = (r.mul_add(t.cos(), yc), 0.1_f64.mul_add(z, 0.8));
+        (length(to) - length(from)) * r * t.cos()
+    };
+    let (t0, t1) = (nz.atan2(ny), ((cap - 1.5) / r).asin());
+    let n = 4000;
+    let h = (t1 - t0) / f64::from(n);
+    let mut sum = across(t0) + across(t1);
+    for k in 1..n {
+        sum += across(f64::from(k).mul_add(h, t0)) * if k % 2 == 1 { 4.0 } else { 2.0 };
+    }
+    let removed = sum * h / 3.0;
+    let got = volume(&model, &solid) - volume(&model, &rounded);
+    assert!((got - removed).abs() < 1e-7, "{got} against {removed}");
+}
