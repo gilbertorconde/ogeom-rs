@@ -232,6 +232,9 @@ pub(crate) fn assemble(
     // For a vertex of four edges or more with one left sharp whose two
     // faces' corners stand apart on it.
     let mut sharp_sides: FastMap<Id, SharpSide> = FastMap::default();
+    // For a vertex of four faces where one strip ends cut by the two
+    // beyond its own.
+    let mut splits: FastMap<Id, SplitEnd> = FastMap::default();
     for &v in &vertices {
         // A setback corner closes on the patch over its opening.
         if setbacks.contains_key(&v) {
@@ -328,6 +331,19 @@ pub(crate) fn assemble(
                             && within_face(planar, seat.faces[k], corner, reach)
                     };
                     let cuts = normal.dot(seat.along).abs() > tol.angular() && on(0) && on(1);
+                    // Past the face, the end stands in its plane where the
+                    // plane runs on through the round's material (a band
+                    // running up under a roof): the cut caps the band there,
+                    // the face carried on over it.
+                    let cone = local_cone(planar, &here, &round, v);
+                    let under = |p: Point| {
+                        cone.as_ref().is_some_and(|cone| {
+                            [1.0, -1.0].iter().all(|side| {
+                                cone.holds(planar, v, p + normal * (side * 10.0 * reach))
+                                    == seat.convex
+                            })
+                        })
+                    };
                     cuts && {
                         let (section, _) = &sections[&seat.edge];
                         let order = section.order();
@@ -337,7 +353,7 @@ pub(crate) fn assemble(
                         (0..=16).all(|k| {
                             let t = a + (b - a) * f64::from(k) / 16.0;
                             ogeom_geom::Curve3d::point_at(&end, t, tol)
-                                .is_ok_and(|p| within_face(planar, third, p, reach))
+                                .is_ok_and(|p| within_face(planar, third, p, reach) || under(p))
                         })
                     }
                 };
@@ -448,6 +464,22 @@ pub(crate) fn assemble(
                     }
                     _ => return Ok(None),
                 }
+            }
+            // One round at a vertex of four faces, the two beyond its own
+            // meeting on an edge left sharp: its strip carried on ends cut by
+            // both their planes, the cuts meeting on the sharp edge.
+            (4, 1) => {
+                let seat = blended[0];
+                if varying.contains(&seat.edge) || round.iter().any(|f| consumed[*f]) {
+                    return Ok(None);
+                }
+                let (section, _) = &sections[&seat.edge];
+                let Some(end) = split_end(planar, section, seat, &here, corners, v, reach, tol)?
+                else {
+                    return Ok(None);
+                };
+                splits.insert(v, end);
+                RoundVertex::Flush
             }
             // Every edge rounded but one, left sharp: the patch closes the
             // hole, along the sharp edge between its faces' corners where
@@ -694,6 +726,8 @@ pub(crate) fn assemble(
     // Each strip's arc at each end: the edge's index, from the first face's
     // corner to the second's.
     let mut arcs: FastMap<(Id, Id), (usize, bool)> = FastMap::default();
+    // Each split end's meeting point and its two cuts, by strip and vertex.
+    let mut split_paths: FastMap<(Id, Id), (usize, [usize; 2])> = FastMap::default();
     // For each crease vertex: the smaller round's corner on the far face,
     // the larger's corner on the sharp edge, and the larger's end there.
     let mut crease_corners: FastMap<Id, (usize, usize, usize)> = FastMap::default();
@@ -726,6 +760,28 @@ pub(crate) fn assemble(
                 continue;
             }
             if creases.contains_key(&v) {
+                continue;
+            }
+            // A split end: its two cuts, from the strip's first face's corner
+            // to the meeting point and on to the second's.
+            if let Some(split) = splits.get(&v)
+                && split.edge == *edge
+            {
+                let meet = index_of(&mut points, split.meet, reach);
+                let mut path = [0; 2];
+                for (k, (curve, range, from_corner)) in split.cuts.iter().enumerate() {
+                    let corner = at[&(seat.faces[k], v)];
+                    edges.push(SheetEdge {
+                        ends: if *from_corner {
+                            (corner, meet)
+                        } else {
+                            (meet, corner)
+                        },
+                        curve: Some((curve.clone(), *range)),
+                    });
+                    path[k] = edges.len() - 1;
+                }
+                split_paths.insert((*edge, v), (meet, path));
                 continue;
             }
             // At a setback corner the strip ends square at its setback,
@@ -827,6 +883,9 @@ pub(crate) fn assemble(
     // strip's end at the vertex as a path of edges from its first face's
     // corner to its second's, and the smaller's corner on the far face.
     let mut end_paths: FastMap<(Id, Id), Vec<usize>> = FastMap::default();
+    for (key, (_, path)) in &split_paths {
+        end_paths.insert(*key, path.to_vec());
+    }
     let mut strip_corner: FastMap<(Id, usize, Id), usize> = FastMap::default();
     let mut crease_list: Vec<(&Id, &Crease)> = creases.iter().collect();
     crease_list.sort_unstable_by_key(|(v, _)| **v);
@@ -1002,6 +1061,26 @@ pub(crate) fn assemble(
                     };
                     let line = segment(&mut edges, pts[0], pts[1]);
                     at_corner.push((pts, vec![line]));
+                    continue;
+                }
+                if let Some(split) = splits.get(&v)
+                    && let Some(k) = split.faces.iter().position(|f| *f == fi)
+                {
+                    // In along the edge beside the strip's face to its corner,
+                    // along the cut to the sharp edge; or the other way.
+                    let seat = edge_seat[&split.edge];
+                    let corner = at[&(seat.faces[k], v)];
+                    let (meet, path) = split_paths[&(split.edge, v)];
+                    let cut = path[k];
+                    let beside = seats
+                        .get(&(prev.min(v), prev.max(v)))
+                        .is_some_and(|s| s.faces.contains(&seat.faces[k]));
+                    let (entry, exit) = if beside {
+                        (corner, meet)
+                    } else {
+                        (meet, corner)
+                    };
+                    at_corner.push((vec![entry, exit], vec![(cut, edges[cut].ends.0 == entry)]));
                     continue;
                 }
                 match flush.get(&v) {
@@ -1639,12 +1718,16 @@ pub(crate) fn assemble(
             }
         };
         if let Err(out) = ogeom_algo::certify_face_within(model, face, &region, fit, tol)? {
+            // Not proved either way (a patch tangent to a face only to its
+            // fit, its bound stalling there): the current path's to take.
+            if !out.found {
+                return Ok(None);
+            }
             ogeom_core::ogeom_bail!(
                 Construction,
-                "a round's face stands {:.1e} past the material it blends, at {:?}{}",
+                "a round's face stands {:.1e} past the material it blends, at {:?}",
                 out.past,
                 out.at,
-                if out.found { "" } else { " (not cleared)" }
             );
         }
     }
@@ -2023,8 +2106,34 @@ fn local_cone(planar: &Planar, here: &[&Seat], round: &[usize], v: Id) -> Option
         let d = planar.points[&far] - origin;
         joins.push((seat.convex, d / d.magnitude()));
     }
+    // Whether face `k`'s corner at `v` turns past a half turn (a notch's
+    // inside corner): its ring's turn there against the way the ring winds
+    // about the face's normal, the material on the ring's left on the outer
+    // ring and on its right on a hole's.
+    let reflex: Vec<bool> = round
+        .iter()
+        .map(|&fi| {
+            let face = &planar.faces[fi];
+            face.loops().enumerate().any(|(i, ring)| {
+                let Some(k) = ring.iter().position(|c| *c == v) else {
+                    return false;
+                };
+                let m = ring.len();
+                let at = |j: usize| planar.points[&ring[j % m]];
+                let mut area = Vector::ZERO;
+                for j in 1..m.saturating_sub(1) {
+                    area += (at(j) - at(0)).cross(at(j + 1) - at(0));
+                }
+                let left = (area.dot(face.normal) > 0.0) == (i == 0);
+                let turn = (at(k) - at(k + m - 1))
+                    .cross(at(k + 1) - at(k))
+                    .dot(face.normal);
+                if left { turn < 0.0 } else { turn > 0.0 }
+            })
+        })
+        .collect();
     // Face `k`'s sector: between the edges it shares with the last face and
-    // the next.
+    // the next, the wide way round where its corner is reflex.
     let inside = |p: Point| -> bool {
         let rays = [
             Vector::new(0.371, 0.557, 0.743),
@@ -2064,7 +2173,7 @@ fn local_cone(planar: &Planar, here: &[&Seat], round: &[usize], v: Id) -> Option
                 } else {
                     let a = (r0 * g11 - r1 * g01) / det;
                     let b = (r1 * g00 - r0 * g01) / det;
-                    a >= 0.0 && b >= 0.0
+                    (a >= 0.0 && b >= 0.0) != reflex[k]
                 };
                 if within {
                     crossings += 1;
@@ -2126,6 +2235,175 @@ struct Crease {
     near: usize,
     far: usize,
 }
+
+/// A strip ending at a vertex of four faces whose two faces beyond its own
+/// meet on an edge left sharp: the strip carried on is cut by each of their
+/// planes, from its corner on the face beside that one to where the two
+/// cuts meet on the sharp edge, past the vertex (the rounds' flush end in
+/// two planes; ADR 0001's amendment "M5f").
+struct SplitEnd {
+    edge: Id,
+    /// The faces beyond the strip's, each beside the seat's face of the
+    /// same index.
+    faces: [usize; 2],
+    /// Where the two cuts meet, on the sharp edge.
+    meet: Point,
+    /// Each cut: its curve, its range, and whether the range runs from the
+    /// strip's corner to `meet`.
+    cuts: [(Curve, (f64, f64), bool); 2],
+}
+
+/// The [`SplitEnd`] of `seat`'s strip at `v`, a vertex of four faces where
+/// it is the one round; `None` where the faces beyond do not meet on a
+/// convex edge left sharp, a corner does not stand on its face beyond, the
+/// cuts do not meet once on the sharp edge or leave their faces.
+///
+/// # Errors
+///
+/// As evaluating the cuts.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one vertex's reading of the solid"
+)]
+fn split_end(
+    planar: &Planar,
+    section: &PlanarSection,
+    seat: &Seat,
+    here: &[&Seat],
+    corners: &FastMap<(usize, Id), Point>,
+    v: Id,
+    reach: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<SplitEnd>> {
+    use ogeom_geom::Curve3d as _;
+    let at_v = planar.points[&v];
+    // The face beyond each of the seat's faces, across its other edge here.
+    let beyond = |k: usize| -> Option<usize> {
+        let other = here
+            .iter()
+            .find(|s| s.edge != seat.edge && s.faces.contains(&seat.faces[k]))?;
+        other.faces.iter().copied().find(|f| *f != seat.faces[k])
+    };
+    let (Some(c0), Some(c1)) = (beyond(0), beyond(1)) else {
+        return Ok(None);
+    };
+    let Some(sharp) = here
+        .iter()
+        .find(|s| s.faces.contains(&c0) && s.faces.contains(&c1))
+    else {
+        return Ok(None);
+    };
+    if !seat.convex || !sharp.convex || c0 == c1 {
+        return Ok(None);
+    }
+    let faces = [c0, c1];
+    let normal = |f: usize| planar.faces[f].normal;
+    // Each strip corner on its face beyond, the faces beyond keeping theirs.
+    for k in 0..2 {
+        let corner = corners[&(seat.faces[k], v)];
+        if (corner - at_v).dot(normal(faces[k])).abs() > reach
+            || corners[&(faces[k], v)].distance(at_v) > reach
+        {
+            return Ok(None);
+        }
+    }
+    let order = section.order();
+    let along = seat.along;
+    let mut cuts = Vec::with_capacity(2);
+    let mut meets = Vec::with_capacity(2);
+    for k in 0..2 {
+        let n = normal(faces[k]);
+        if n.dot(along).abs() <= tol.angular() {
+            return Ok(None);
+        }
+        // The stations where each contact crosses this face's plane: the
+        // strip's corner's own, and the other contact's carried on.
+        let mut stations = [0.0; 2];
+        for (j, station) in stations.iter_mut().enumerate() {
+            let p = section.contact(j, 0.0);
+            *station = (at_v - p).dot(n) / along.dot(n);
+        }
+        let (curve, _) =
+            section.plane_end(order, [stations[order[0]], stations[order[1]]], n, tol)?;
+        // The cut runs from the first face of the order's contact: from the
+        // strip's corner where that face is this one's neighbour.
+        let from_corner = seat.faces[order[0]] == seat.faces[k];
+        let other = normal(faces[1 - k]);
+        let side = |t: f64| -> OgeomResult<f64> { Ok((curve.point_at(t, tol)? - at_v).dot(other)) };
+        // Inside the other plane at the strip's corner, outside it at the
+        // far contact, crossing it once between.
+        let (inner, outer) = if from_corner { (0.0, 1.0) } else { (1.0, 0.0) };
+        if side(inner)? >= -reach || side(outer)? <= reach {
+            return Ok(None);
+        }
+        let mut changes = 0;
+        let mut last = side(0.0)?;
+        for i in 1..=SPLIT_SAMPLES {
+            let next = side(f64::from(i) / f64::from(SPLIT_SAMPLES))?;
+            if (last < 0.0) != (next < 0.0) {
+                changes += 1;
+            }
+            last = next;
+        }
+        if changes != 1 {
+            return Ok(None);
+        }
+        let (mut lo, mut hi) = (inner, outer);
+        for _ in 0..60 {
+            let mid = 0.5 * (lo + hi);
+            if side(mid)? < 0.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let t = 0.5 * (lo + hi);
+        meets.push(curve.point_at(t, tol)?);
+        let range = if from_corner { (0.0, t) } else { (t, 1.0) };
+        // The cut within its face, end to end.
+        for i in 0..=SPLIT_SAMPLES {
+            let u = range.0 + (range.1 - range.0) * f64::from(i) / f64::from(SPLIT_SAMPLES);
+            if !within_face(planar, faces[k], curve.point_at(u, tol)?, reach) {
+                return Ok(None);
+            }
+        }
+        cuts.push((curve, range, from_corner));
+    }
+    // One meeting point, on the sharp edge past the vertex, short of its
+    // other end.
+    let meet = meets[0];
+    if meets[1].distance(meet) > reach {
+        return Ok(None);
+    }
+    let far = if sharp.ends.0 == v {
+        sharp.ends.1
+    } else {
+        sharp.ends.0
+    };
+    let line = planar.points[&far] - at_v;
+    let length = line.magnitude();
+    let t = (meet - at_v).dot(line) / (length * length);
+    if (meet - (at_v + line * t)).magnitude() > reach
+        || t * length <= reach
+        || (1.0 - t) * length <= reach
+    {
+        return Ok(None);
+    }
+    let [first, second]: [(Curve, (f64, f64), bool); 2] = match cuts.try_into() {
+        Ok(cuts) => cuts,
+        Err(_) => return Ok(None),
+    };
+    Ok(Some(SplitEnd {
+        edge: seat.edge,
+        faces,
+        meet,
+        cuts: [first, second],
+    }))
+}
+
+/// How finely a split end's cuts are sampled: for the one crossing of the
+/// other face's plane, and lying within their faces.
+const SPLIT_SAMPLES: u32 = 32;
 
 /// A convex and a concave round beside an edge left sharp: the rounds'
 /// shared face, each round's other face (the convex's first), the rounds
