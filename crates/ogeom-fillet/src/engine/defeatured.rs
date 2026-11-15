@@ -83,20 +83,75 @@ pub(crate) fn tools(
     round: Rounder,
     tol: Tolerances,
 ) -> OgeomResult<Option<Vec<Tool>>> {
+    tools_across(model, solid, rounds, far, near, &[], round, tol)
+}
+
+/// [`tools`], each edge of `rounds` named in `across` with two faces
+/// rounded on the copy as the edge where those two faces meet there (an
+/// edge of a face the feature takes, which the copy no longer has, standing
+/// for the crease its neighbours close in). `None` also where those faces
+/// do not meet on the copy along one edge.
+///
+/// # Errors
+///
+/// As [`tools`].
+#[allow(clippy::too_many_arguments, reason = "the tools' whole reading")]
+pub(crate) fn tools_across(
+    model: &mut Model,
+    solid: &Shape,
+    rounds: &[(Shape, f64)],
+    far: &[Shape],
+    near: &[Shape],
+    across: &[(Shape, [Shape; 2])],
+    round: Rounder,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<Tool>>> {
     let Some(taken) = feature(model, solid, far, near)? else {
         return Ok(None);
     };
     let Ok(copy) = ogeom_bool::remove_faces(model, solid, &taken, tol) else {
         return Ok(None);
     };
-    let mut traced = Vec::with_capacity(rounds.len());
+    let mut traced: Vec<(Shape, f64)> = Vec::with_capacity(rounds.len());
     for (edge, radius) in rounds {
-        let [only] = copy.history.trace(edge) else {
-            return Ok(None);
+        let image = match across.iter().find(|(e, _)| e.is_same(edge)) {
+            Some((_, [a, b])) => {
+                let ([a], [b]) = (copy.history.trace(a), copy.history.trace(b)) else {
+                    return Ok(None);
+                };
+                let edges_of = |f: &Shape| explore_unique(model, f, ShapeType::Edge);
+                let of_b = edges_of(b)?;
+                let shared: Vec<Shape> = edges_of(a)?
+                    .into_iter()
+                    .filter(|e| of_b.iter().any(|x| x.is_same(e)))
+                    .collect();
+                let [only] = &shared[..] else {
+                    return Ok(None);
+                };
+                only.clone()
+            }
+            None => {
+                let [only] = copy.history.trace(edge) else {
+                    return Ok(None);
+                };
+                only.clone()
+            }
         };
-        traced.push((only.clone(), *radius));
+        // Two edges standing for one crease are rounded once, alike.
+        if let Some((_, r)) = traced.iter().find(|(e, _)| e.is_same(&image))
+            && (r - radius).abs() > tol.confusion()
+        {
+            return Ok(None);
+        }
+        traced.push((image, *radius));
     }
-    let Some(rounded) = round(model, &copy.shape, &traced, tol)? else {
+    let mut once: Vec<(Shape, f64)> = Vec::with_capacity(traced.len());
+    for (e, r) in &traced {
+        if !once.iter().any(|(x, _)| x.is_same(e)) {
+            once.push((e.clone(), *r));
+        }
+    }
+    let Some(rounded) = round(model, &copy.shape, &once, tol)? else {
         return Ok(None);
     };
     let mut tools = Vec::with_capacity(2);

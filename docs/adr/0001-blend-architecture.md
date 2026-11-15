@@ -1009,6 +1009,17 @@ here.
     Lipschitz bound up to the next station (a planar face wholly behind
     the touched face's plane is clear outright);
   - the arcs' planes cross the seam in order.
+- **A narrow face taken off whole.** Where no ball touches both of an
+  edge's faces because one of them is narrower than the setback, and the
+  ball touching the other face and the face beyond the narrow one's far
+  edge holds the narrow face in the corner it takes off (or under the fill
+  it adds), the round is that crease's round: the narrow face comes off a
+  copy, its neighbours closing over it, the crease is rounded there by the
+  engine, and the differences are applied to the solid as the general
+  route of amendment "M5c" applies them. This is that amendment's rule (the
+  round keeps its surface, the feature it reaches is trimmed), the narrow
+  face trimmed to nothing. It is built only where nothing of the narrow
+  face is left.
 - **Not yet built.** Each of these is handed to the current path until its
   own layer: the ball on the strip over part of the seam (carried), on a
   further strip's far edge or a floor beyond (stepped), on a vertex, an

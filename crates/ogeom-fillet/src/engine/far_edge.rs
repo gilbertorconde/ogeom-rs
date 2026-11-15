@@ -223,7 +223,7 @@ fn fine(tol: Tolerances) -> ogeom_mesh::Deflection {
 /// straight edge of length `length` along `along`, square to it in the
 /// face's plane: the side a probe a thousandth of the edge's length off it
 /// lands on the face. `None` where neither side does, or both.
-fn into_face(
+pub(super) fn into_face(
     model: &Model,
     curved: &Curved,
     face: usize,
@@ -393,7 +393,7 @@ fn run_of(
 /// met crossing it from `mid` on `edge`, along `into`; with where it is
 /// met and its unit direction. `None` where the first edge met is not
 /// straight, or none is.
-fn far_edge(
+pub(super) fn far_edge(
     curved: &Curved,
     face: usize,
     edge: Id,

@@ -1176,6 +1176,13 @@ fn rounds_by_engine_routes(
     if let Some(built) = crate::engine::far_edge_rounds(model, solid, &once, tol)? {
         return Ok(Some(built));
     }
+    // A round wider than a narrow face beside its edge: the face taken off
+    // whole, the crease its neighbours close in rounded (amendment "M5d").
+    if let Some(built) =
+        crate::engine::taken_whole_rounds(model, solid, &once, rounds_by_engine, tol)?
+    {
+        return Ok(Some(built));
+    }
     // A solid with curved faces, read with its seams dissolved where it
     // holds any: rims between a planar cap and a coaxial cylinder or cone,
     // each the torus its ball sweeps; else straight edges along planes and
