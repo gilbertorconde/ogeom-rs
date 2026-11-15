@@ -1545,7 +1545,7 @@ tests = [
     "crates/ogeom-fillet/tests/radius_per_edge.rs::three_radii_at_a_corner_close_with_one_patch_in_any_order",
     "crates/ogeom-fillet/tests/mixed_vertex.rs",
     "crates/ogeom-fillet/tests/cell_guard.rs",
-    "crates/ogeom-fillet/tests/blend_edges.rs::a_round_meeting_a_bevel_beside_a_sharp_edge_closes_whatever_the_order",
+    "crates/ogeom-fillet/tests/blend_edges.rs::a_round_meeting_a_bevel_beside_a_sharp_edge_is_the_bevel_then_the_round",
     "crates/ogeom-fillet/tests/blend_corpus_rounds.rs",
 ]
 

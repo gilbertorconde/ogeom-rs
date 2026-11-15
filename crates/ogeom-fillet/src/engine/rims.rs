@@ -86,11 +86,21 @@ pub(crate) fn assemble(
     // A round reaching a face it does not blend (a cavity's wall under a
     // thin cap) is not built here: every face but the rim's caps and walls
     // proved outside the box the round can take up, to the bands' fit
-    // target.
+    // target. A face whose guaranteed bounding box the region's bound
+    // already holds is proved without drawing it: the box's corners span a
+    // hull holding the face, and the bound is at least the height over it.
+    let boxes: Vec<Vec<Point>> = read
+        .faces
+        .iter()
+        .map(|f| Ok(ogeom_algo::shape_bounds(model, &f.shape, tol)?.corners()))
+        .collect::<OgeomResult<_>>()?;
     for rim in &rims {
         let own: Vec<usize> = rim.arcs.iter().flat_map(|a| [a.cap, a.wall]).collect();
         for (fi, face) in read.faces.iter().enumerate() {
             if own.contains(&fi) {
+                continue;
+            }
+            if !boxes[fi].is_empty() && rim.clear.bound_over(&boxes[fi]) <= 0.0 {
                 continue;
             }
             if ogeom_algo::certify_face_within(

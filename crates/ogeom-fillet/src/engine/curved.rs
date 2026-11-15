@@ -412,16 +412,23 @@ pub(crate) fn build_faces(
     Ok(build_with_widths(model, points, &curves, &rings, &widths, tol)?.faces)
 }
 
-/// Each ring of `face`, on a surface periodic in `u`, carried into one
-/// period of its chart: each edge's pcurve on the face's surface shifted
-/// by whole periods to start where the one before it ends. The trims a
-/// face's edges are given are found one by one and may each land in a
-/// period of their own (an arc read in the period before its neighbour's
-/// line); the mesher forgives the jump, a point read inside the face in its
-/// chart does not. An edge the ring walks twice (a seam, its two columns
-/// joined later) is left as it is, and the ring carried on from after it.
+/// Each ring of `face`, on a surface periodic in `u` or `v`, carried into
+/// one period of its chart: each edge's pcurve on the face's surface
+/// shifted by whole periods to start where the one before it ends. The
+/// trims a face's edges are given are found one by one and may each land in
+/// a period of their own (an arc read in the period before its neighbour's
+/// line, a torus's ring a turn of the tube away from the meridian it meets);
+/// the mesher forgives the jump, a point read inside the face in its chart
+/// does not, nor does a boolean walking the rings in the chart.
+///
+/// An edge the ring walks twice, once each way, is a seam: its column
+/// stands for both sides of the face, so it keeps its place in `u` and is
+/// carried like any other edge along `v`, once. A ring round such a seam
+/// goes once round the surface, so every other edge of it is carried into
+/// the period starting at the seam's column, where the seam's two walks
+/// can then be told apart (`ogeom_algo::join_seam_columns`).
 fn in_one_period(model: &mut Model, face: &Shape, tol: Tolerances) -> OgeomResult<()> {
-    use ogeom_geom::{Curve2d as _, Surface as _};
+    use ogeom_geom::Surface as _;
     let Some(id) = model
         .node(face)
         .and_then(|n| n.data().as_face())
@@ -429,78 +436,166 @@ fn in_one_period(model: &mut Model, face: &Shape, tol: Tolerances) -> OgeomResul
     else {
         return Ok(());
     };
-    let period = match model.geometry().surface(id) {
-        Some(surface) if surface.is_periodic_u() => {
-            let ((u0, u1), _) = surface.domain();
-            u1 - u0
+    let (period_u, period_v) = match model.geometry().surface(id) {
+        Some(surface) => {
+            let ((u0, u1), (v0, v1)) = surface.domain();
+            (
+                surface.is_periodic_u().then_some(u1 - u0),
+                surface.is_periodic_v().then_some(v1 - v0),
+            )
         }
-        _ => return Ok(()),
+        None => return Ok(()),
+    };
+    if period_u.is_none() && period_v.is_none() {
+        return Ok(());
+    }
+    let turns = |last: Option<f64>, at: f64, period: Option<f64>| match (last, period) {
+        (Some(last), Some(period)) => ((last - at) / period).round() * period,
+        _ => 0.0,
     };
     for wire in ogeom_topo::explore(model, face, ogeom_topo::Filter::OfType(ShapeType::Wire))? {
         let walked = model.ordered_children_of(&wire)?;
-        let mut last: Option<f64> = None;
+        let mut last_u: Option<f64> = None;
+        let mut last_v: Option<f64> = None;
+        let mut carried: Vec<&Shape> = Vec::new();
+        let mut columns: Vec<f64> = Vec::new();
         for e in &walked {
             let twice = walked.iter().filter(|w| w.is_same(e)).count() > 1;
-            let Some(edge) = model.node(e).and_then(|n| n.data().as_edge()) else {
-                last = None;
+            let Some((start, end)) = walk_ends(model, e, id, tol)? else {
+                (last_u, last_v) = (None, None);
                 continue;
             };
-            let on: Vec<(usize, ogeom_topo::PCurveId, (f64, f64))> = edge
-                .representations
-                .iter()
-                .enumerate()
-                .filter_map(|(k, r)| match r {
-                    ogeom_topo::EdgeRepr::PCurve {
-                        curve,
-                        surface,
-                        range,
-                        ..
-                    } if *surface == id => Some((k, *curve, *range)),
-                    _ => None,
-                })
-                .collect();
-            let [(k, curve, range)] = on[..] else {
-                last = None;
-                continue;
-            };
-            if twice {
-                last = None;
-                continue;
-            }
-            let Some(pcurve) = model.geometry().pcurve(curve).cloned() else {
-                last = None;
-                continue;
-            };
-            let (a, b) = (
-                pcurve.point_at(range.0, tol)?,
-                pcurve.point_at(range.1, tol)?,
+            // A seam's second walk finds it where its first left it.
+            let again = carried.iter().any(|c| c.is_same(e));
+            let shift = ogeom_math::Vector2::new(
+                if twice {
+                    0.0
+                } else {
+                    turns(last_u, start.x, period_u)
+                },
+                if again {
+                    0.0
+                } else {
+                    turns(last_v, start.y, period_v)
+                },
             );
-            let (start, end) = if e.orientation() == Orientation::Reversed {
-                (b, a)
-            } else {
-                (a, b)
-            };
-            let turns = last.map_or(0.0, |u| ((u - start.x) / period).round());
-            if turns != 0.0 {
-                let moved = pcurve.transformed(
-                    &ogeom_math::Transform2::translation(ogeom_math::Vector2::new(
-                        turns * period,
-                        0.0,
-                    )),
-                    tol,
-                )?;
-                let fresh = model.geometry_mut().add_pcurve(moved);
-                let Some(ogeom_topo::NodeData::Edge(data)) =
-                    model.node_mut(e).map(|n| n.data_mut())
-                else {
-                    last = None;
-                    continue;
-                };
-                if let ogeom_topo::EdgeRepr::PCurve { curve, .. } = &mut data.representations[k] {
-                    *curve = fresh;
-                }
+            carried.push(e);
+            if twice && !again && (start.x - end.x).abs() <= SEAM_COLUMN {
+                columns.push(start.x);
             }
-            last = Some(end.x + turns * period);
+            last_u = (!twice).then_some(end.x + shift.x);
+            last_v = Some(end.y + shift.y);
+            shift_pcurve(model, e, id, shift, tol)?;
+        }
+        // The rest of a ring round one seam, into the period from its
+        // column.
+        let (Some(period), [column]) = (period_u, columns.as_slice()) else {
+            continue;
+        };
+        for e in &walked {
+            if walked.iter().filter(|w| w.is_same(e)).count() > 1 {
+                continue;
+            }
+            let Some((start, end)) = walk_ends(model, e, id, tol)? else {
+                continue;
+            };
+            let middle = f64::midpoint(start.x, end.x);
+            let shift = -((middle - column) / period).floor() * period;
+            shift_pcurve(model, e, id, ogeom_math::Vector2::new(shift, 0.0), tol)?;
+        }
+    }
+    Ok(())
+}
+
+/// How far apart in `u` a seam's ends may stand and the seam still be one
+/// column of the chart.
+const SEAM_COLUMN: f64 = 1e-9;
+
+/// Where the walk of `edge` starts and ends on its one pcurve on `surface`,
+/// or `None` where it has none there, or more than one.
+fn walk_ends(
+    model: &Model,
+    edge: &Shape,
+    surface: ogeom_topo::SurfaceId,
+    tol: Tolerances,
+) -> OgeomResult<Option<(ogeom_math::Point2, ogeom_math::Point2)>> {
+    use ogeom_geom::Curve2d as _;
+    let Some((curve, range)) = one_pcurve(model, edge, surface) else {
+        return Ok(None);
+    };
+    let Some(pcurve) = model.geometry().pcurve(curve) else {
+        return Ok(None);
+    };
+    let (a, b) = (
+        pcurve.point_at(range.0, tol)?,
+        pcurve.point_at(range.1, tol)?,
+    );
+    Ok(Some(if edge.orientation() == Orientation::Reversed {
+        (b, a)
+    } else {
+        (a, b)
+    }))
+}
+
+/// The one pcurve `edge` holds on `surface`, and its range.
+fn one_pcurve(
+    model: &Model,
+    edge: &Shape,
+    surface: ogeom_topo::SurfaceId,
+) -> Option<(ogeom_topo::PCurveId, (f64, f64))> {
+    let data = model.node(edge).and_then(|n| n.data().as_edge())?;
+    let on: Vec<(ogeom_topo::PCurveId, (f64, f64))> = data
+        .representations
+        .iter()
+        .filter_map(|r| match r {
+            ogeom_topo::EdgeRepr::PCurve {
+                curve,
+                surface: s,
+                range,
+                ..
+            } if *s == surface => Some((*curve, *range)),
+            _ => None,
+        })
+        .collect();
+    match on[..] {
+        [one] => Some(one),
+        _ => None,
+    }
+}
+
+/// `edge`'s one pcurve on `surface` moved by `shift`, where it is not
+/// nought.
+fn shift_pcurve(
+    model: &mut Model,
+    edge: &Shape,
+    surface: ogeom_topo::SurfaceId,
+    shift: ogeom_math::Vector2,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    if shift.x == 0.0 && shift.y == 0.0 {
+        return Ok(());
+    }
+    let Some((curve, _)) = one_pcurve(model, edge, surface) else {
+        return Ok(());
+    };
+    let Some(pcurve) = model.geometry().pcurve(curve).cloned() else {
+        return Ok(());
+    };
+    let moved = pcurve.transformed(&ogeom_math::Transform2::translation(shift), tol)?;
+    let fresh = model.geometry_mut().add_pcurve(moved);
+    let Some(ogeom_topo::NodeData::Edge(data)) = model.node_mut(edge).map(|n| n.data_mut()) else {
+        return Ok(());
+    };
+    for r in &mut data.representations {
+        if let ogeom_topo::EdgeRepr::PCurve {
+            curve: c,
+            surface: s,
+            ..
+        } = r
+            && *s == surface
+            && *c == curve
+        {
+            *c = fresh;
         }
     }
     Ok(())
