@@ -3174,6 +3174,7 @@ pub fn fillet_edges_variable(
     {
         return Ok(built);
     }
+    to_current_path("fillet_edges_variable");
     ogeom_algo::on_own_nodes(model, solid, chain, |model, solid, parts| {
         fillet_chain_law_own(model, solid, parts, law, tol)
     })

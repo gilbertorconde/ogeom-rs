@@ -404,6 +404,7 @@ pub fn fillet_edge_distances(
     {
         return Ok(built);
     }
+    crate::fillet::to_current_path("fillet_edge_distances");
     ogeom_algo::on_own_nodes(
         model,
         solid,
