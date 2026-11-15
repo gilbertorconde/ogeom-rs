@@ -228,7 +228,8 @@ fn narrow_cylinder_shelf() {
         }
     }
     // A cavity between the supports intersects the new envelope but leaves
-    // both contact rails intact. The swept-ball guard must still refuse it.
+    // both contact rails intact: the round reaches into the void, refused
+    // by name.
     let frame = Frame::new(Point::new(11.7, 0.2, 20.0), Direction::Z, Direction::X, T).unwrap();
     let hole = ogeom_algo::make_sphere(&mut model, frame, 0.3, T)
         .unwrap()
@@ -241,9 +242,7 @@ fn narrow_cylinder_shelf() {
     let refusal =
         ogeom_fillet::fillet_edges(&mut model, &drilled.shape, &selected, 3.0, T).unwrap_err();
     assert!(
-        refusal
-            .to_string()
-            .contains("enters a carried shelf's ball"),
+        refusal.to_string().contains("a round reaches into a void"),
         "{refusal}"
     );
 }
