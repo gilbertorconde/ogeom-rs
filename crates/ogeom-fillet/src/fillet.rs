@@ -518,6 +518,50 @@ fn request_mates(
         .collect()
 }
 
+/// The wedges of the round of the one rim `edge` (a revolved seat) at
+/// `radius` that takes a ring beside it off whole (a chamfer or a smaller
+/// round on the rim), where [`crate::consumed_rim::consumed_rim`] finds
+/// one: the rim's own band would stand on the ring's faces, not on the cap
+/// and wall the round meets. `None` where no ring is read.
+///
+/// # Errors
+///
+/// [`OgeomError::Cancelled`] where the work is cancelled.
+pub(crate) fn rim_ring_taken_whole(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<crate::support::Wedge>>> {
+    if !matches!(
+        route(model, solid, edge, Rims::Exact, tol)?,
+        Route::Revolved(..)
+    ) {
+        return Ok(None);
+    }
+    let Some(rim) = crate::consumed_rim::consumed_rim(model, solid, edge, radius, tol)? else {
+        return Ok(None);
+    };
+    let (taken, wedges) =
+        crate::support::collecting_wedges(|| rim_consuming(model, solid, edge, rim, radius, tol));
+    match taken {
+        Ok(built) if built.shape.is_same(solid) && !wedges.is_empty() => Ok(Some(
+            wedges
+                .into_iter()
+                .map(|mut w| {
+                    if w.edges.is_empty() {
+                        w.edges.push(edge.clone());
+                    }
+                    w
+                })
+                .collect(),
+        )),
+        Err(e @ OgeomError::Cancelled) => Err(e),
+        _ => Ok(None),
+    }
+}
+
 /// The wedges of the round of the one marched `edge` at `radius` that
 /// takes a strip beside it off whole (ADR 0001, amendment "marched
 /// seats"), where its own band is refused by the boolean, as the current

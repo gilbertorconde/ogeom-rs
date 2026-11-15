@@ -910,6 +910,11 @@ not rewritten; the engine takes it as the strip builder for these seats.
   applied as the engine's tool; a ring beside a rim likewise. Where the
   ball does not fit and no such round is read, the current path's refusal
   is the engine's, by name.
+- **A ring beside a rim.** One rim (a revolved seat) beside a ring a
+  round takes off whole (a chamfer or a smaller round on the rim, as
+  `consumed_rim` reads one): the round of the cap and wall either side of
+  the ring, its wedge set aside and applied by the seated booleans, which
+  trim the faces a rim's band sits on.
 - **Still the current path's:** a band the boolean refuses where no strip
   is taken off whole (its refusal follows the current path's retries).
 
