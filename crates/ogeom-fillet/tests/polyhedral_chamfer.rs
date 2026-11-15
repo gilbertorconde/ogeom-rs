@@ -4283,10 +4283,6 @@ fn ribbed_slab(m: &mut Model, lip: bool) -> Shape {
 /// differ by nothing either way, and what the request takes is what the
 /// corner takes alone plus what the lip's edge takes alone. Before, the
 /// corner was refused by name ("some convex and some concave").
-///
-/// The same corner on a rib 1 wide, chamfered 1.5, rolls itself (the
-/// upright's bevel runs past the rib's end): it builds valid, each edge
-/// generating its bevel.
 #[test]
 fn a_rolling_corner_of_two_concave_bevels_and_a_convex_one_closes_as_the_rings_close_it() {
     let d = 0.5;
@@ -4350,17 +4346,156 @@ fn a_rolling_corner_of_two_concave_bevels_and_a_convex_one_closes_as_the_rings_c
     for e in &asked {
         assert!(!built.history.generated(e).is_empty(), "its bevel");
     }
-    // Rolling at the corner itself.
+}
+
+/// The convex polytope `{x : n·x <= c}` over `planes`, as
+/// [`convex_polytope`] reads it: its volume and the mean of its corners, a
+/// point inside it. `None` where it holds no volume.
+fn polytope_cell(planes: &[(ogeom_math::Vector, f64)]) -> Option<(f64, ogeom_math::Vector)> {
+    use ogeom_math::Vector;
+    let (volume, _) = convex_polytope(planes);
+    if volume <= 1e-12 {
+        return None;
+    }
+    let mut corners: Vec<Vector> = Vec::new();
+    for i in 0..planes.len() {
+        for j in i + 1..planes.len() {
+            for k in j + 1..planes.len() {
+                let (a, b, c) = (planes[i], planes[j], planes[k]);
+                let det = a.0.dot(b.0.cross(c.0));
+                if det.abs() < 1e-12 {
+                    continue;
+                }
+                let x = (b.0.cross(c.0) * a.1 + c.0.cross(a.0) * b.1 + a.0.cross(b.0) * c.1) / det;
+                if planes.iter().all(|(n, o)| n.dot(x) <= o + 1e-9)
+                    && !corners.iter().any(|y| (*y - x).magnitude() < 1e-9)
+                {
+                    corners.push(x);
+                }
+            }
+        }
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let n = corners.len() as f64;
+    let inside = corners.iter().fold(Vector::ZERO, |s, x| s + *x) / n;
+    Some((volume, inside))
+}
+
+/// The volume of what `keep` holds within the box `bound`: the box cut
+/// into convex cells by every plane of `cuts`, each cell kept or not as its
+/// inside point is. Exact where `keep` is constant on each cell (every face
+/// it reads among `cuts`). Normals need not be unit.
+fn kept_volume(
+    bound: &[(ogeom_math::Vector, f64)],
+    cuts: &[(ogeom_math::Vector, f64)],
+    keep: &dyn Fn(ogeom_math::Vector) -> bool,
+) -> f64 {
+    // The helper reads offsets as distances: every normal a unit one.
+    let unit = |(n, c): (ogeom_math::Vector, f64)| (n / n.magnitude(), c / n.magnitude());
+    let mut cells: Vec<Vec<(ogeom_math::Vector, f64)>> =
+        vec![bound.iter().copied().map(unit).collect()];
+    for (n, c) in cuts.iter().copied().map(unit) {
+        let mut split = Vec::with_capacity(cells.len() * 2);
+        for cell in cells {
+            for side in [(n, c), (-n, -c)] {
+                let mut child = cell.clone();
+                child.push(side);
+                if polytope_cell(&child).is_some() {
+                    split.push(child);
+                }
+            }
+        }
+        cells = split;
+    }
+    cells
+        .iter()
+        .filter_map(|cell| polytope_cell(cell))
+        .filter(|(_, inside)| keep(*inside))
+        .map(|(volume, _)| volume)
+        .sum()
+}
+
+/// The corner of [`a_rolling_corner_of_two_concave_bevels_and_a_convex_one_closes_as_the_rings_close_it`]
+/// rolling itself: a slab 10 × 10 × 1, a rib x in [3, 7], y in [3, 4], 3
+/// high, the upright at (7, 3) and the two foot edges there chamfered 1.5,
+/// so the upright's bevel x - y = 2.5 runs past the rib's 1 wide end. The
+/// result against the rule of ADR 0001's amendment "mixed rolling corners",
+/// read by half-spaces alone:
+/// - the foot bevels' fills, between their faces and z - y = -0.5 over
+///   x in [3, 7], and x + z = 9.5 over y in [3, 4];
+/// - the upright's cut, between x = 7, y = 3, its bevel and its caps z = 1
+///   and z = 4;
+/// - the facet through the setback corners (8.5, 1.5, 1), (5.5, 3, 2.5)
+///   and (7, 4.5, 2.5), x - y + 3z = 10, and its cells inside every bevel:
+///   the vertex's side fused where it lies outside the solid (two of the
+///   three bevels fill), the cut sparing it, the fills sparing the far one.
+///
+/// What the solid keeps within a box round the rib is summed over the cells
+/// of every plane involved, exactly: the result's volume is the solid's
+/// less what it held there plus that. Each edge generates its bevel.
+#[test]
+fn a_corner_of_rolling_bevels_of_both_kinds_keeps_what_the_facet_rule_keeps() {
+    use ogeom_math::Vector;
+    let mut m = Model::new();
     let slab = block(&mut m, (0.0, 0.0, 0.0), (10.0, 10.0, 1.0));
     let rib = block(&mut m, (3.0, 3.0, 1.0), (4.0, 1.0, 3.0));
     let thin = ogeom_bool::fuse(&mut m, &slab, &rib, T).unwrap().shape;
-    let asked = edges_at_point(&m, &thin, v);
+    let asked = edges_at_point(&m, &thin, Point::new(7.0, 3.0, 1.0));
+    assert_eq!(asked.len(), 3);
     let built = ogeom_fillet::chamfer_edges(&mut m, &thin, &asked, 1.5, T).unwrap();
     let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
     assert!(found.is_valid(), "{:?}", found.problems);
     for e in &asked {
         assert!(!built.history.generated(e).is_empty(), "its bevel");
     }
+    let v = |x: f64, y: f64, z: f64| Vector::new(x, y, z);
+    let in_solid = |p: Vector| {
+        let slab = (0.0..=10.0).contains(&p.x)
+            && (0.0..=10.0).contains(&p.y)
+            && (0.0..=1.0).contains(&p.z);
+        let rib =
+            (3.0..=7.0).contains(&p.x) && (3.0..=4.0).contains(&p.y) && (1.0..=4.0).contains(&p.z);
+        slab || rib
+    };
+    let facet = |p: Vector| p.x - p.y + 3.0 * p.z;
+    let inside_bevels = |p: Vector| p.x - p.y >= 2.5 && p.z - p.y <= -0.5 && p.x + p.z <= 9.5;
+    let near = |p: Vector| inside_bevels(p) && facet(p) <= 10.0;
+    let far = |p: Vector| inside_bevels(p) && facet(p) >= 10.0;
+    let fill_x =
+        |p: Vector| p.y <= 3.0 && p.z >= 1.0 && p.z - p.y <= -0.5 && (3.0..=7.0).contains(&p.x);
+    let fill_y =
+        |p: Vector| p.x >= 7.0 && p.z >= 1.0 && p.x + p.z <= 9.5 && (3.0..=4.0).contains(&p.y);
+    let cut =
+        |p: Vector| p.x <= 7.0 && p.y >= 3.0 && p.x - p.y >= 2.5 && (1.0..=4.0).contains(&p.z);
+    let kept = |p: Vector| {
+        let filled = in_solid(p) || ((fill_x(p) || fill_y(p)) && !far(p)) || near(p);
+        filled && !(cut(p) && !near(p))
+    };
+    let bound = [
+        (v(-1.0, 0.0, 0.0), -2.0),
+        (v(1.0, 0.0, 0.0), 10.0),
+        (v(0.0, -1.0, 0.0), 0.0),
+        (v(0.0, 1.0, 0.0), 6.0),
+        (v(0.0, 0.0, -1.0), 0.0),
+        (v(0.0, 0.0, 1.0), 5.0),
+    ];
+    let cuts = [
+        (v(1.0, 0.0, 0.0), 3.0),
+        (v(1.0, 0.0, 0.0), 7.0),
+        (v(0.0, 1.0, 0.0), 3.0),
+        (v(0.0, 1.0, 0.0), 4.0),
+        (v(0.0, 0.0, 1.0), 1.0),
+        (v(0.0, 0.0, 1.0), 4.0),
+        (v(1.0, -1.0, 0.0), 2.5),
+        (v(0.0, -1.0, 1.0), -0.5),
+        (v(1.0, 0.0, 1.0), 9.5),
+        (v(1.0, -1.0, 3.0), 10.0),
+    ];
+    let before = kept_volume(&bound, &cuts, &in_solid);
+    let after = kept_volume(&bound, &cuts, &kept);
+    let want = volume(&m, &thin) - before + after;
+    let got = volume(&m, &built.shape);
+    assert!((got - want).abs() <= 1e-9 * want, "{got} against {want}");
 }
 
 /// A bevel beside a rolling one on a face that is not convex: a block
