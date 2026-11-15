@@ -1062,6 +1062,15 @@ fn bevel_of(
     let faces = [f0, f1];
     match &e.curve {
         Curve::Line(_) => {
+            // Which way each face runs from the edge, read on the face: a
+            // face that is not convex can hold its other vertices on either
+            // side of the edge's line.
+            let t = f64::midpoint(e.range.0, e.range.1);
+            let p = e.curve.point_at(t, tol)?;
+            let into = [
+                into_face(model, curved, (f0, edge), (p, t), tol)?,
+                into_face(model, curved, (f1, edge), (p, t), tol)?,
+            ];
             let d = match spec {
                 Chamfer::Angle {
                     face,
@@ -1074,7 +1083,8 @@ fn bevel_of(
                     else {
                         return Ok(None);
                     };
-                    let Some(other) = angled(curved, edge, e, faces, k, *distance, *angle, tol)
+                    let Some(other) =
+                        angled(curved, edge, e, (faces, into), k, *distance, *angle, tol)
                     else {
                         return Ok(None);
                     };
@@ -1092,7 +1102,7 @@ fn bevel_of(
             if d.iter().any(|x| !(x.is_finite() && *x > tol.confusion())) {
                 return Ok(None);
             }
-            straight(curved, edge, e, faces, d, tol)
+            straight(curved, edge, e, (faces, into), d, tol)
         }
         Curve::Circle(circle) => match legs(model, solid, shape, spec, tol) {
             Ok(Legs::Rim(seat, on_wall, on_cap)) => {
@@ -1119,7 +1129,7 @@ fn angled(
     curved: &Curved,
     edge: Id,
     e: &CurvedEdge,
-    faces: [usize; 2],
+    (faces, into): ([usize; 2], [Option<Vector>; 2]),
     k: usize,
     distance: f64,
     angle: f64,
@@ -1146,8 +1156,11 @@ fn angled(
         match &curved.faces[faces[j]].surface {
             SurfaceGeometry::Plane(_) => {
                 let m = normals[j].cross(u);
-                let inside = away(curved, faces[j], edge)?;
-                let m = if (inside - at).dot(m) < 0.0 { -m } else { m };
+                let towards = match into[j] {
+                    Some(d) => d,
+                    None => away(curved, faces[j], edge)? - at,
+                };
+                let m = if towards.dot(m) < 0.0 { -m } else { m };
                 Some(Trace::Line(m / m.magnitude()))
             }
             SurfaceGeometry::Cylinder(c) => {
@@ -1228,7 +1241,7 @@ fn straight(
     curved: &Curved,
     edge: Id,
     e: &CurvedEdge,
-    faces: [usize; 2],
+    (faces, into): ([usize; 2], [Option<Vector>; 2]),
     d: [f64; 2],
     tol: Tolerances,
 ) -> OgeomResult<Option<Strip>> {
@@ -1265,10 +1278,14 @@ fn straight(
         let shift: Vector = match &face.surface {
             SurfaceGeometry::Plane(_) => {
                 let m = normals[k].cross(u);
-                let Some(inside) = away(curved, fi, edge) else {
-                    return Ok(None);
+                let towards = match into[k] {
+                    Some(d) => d,
+                    None => match away(curved, fi, edge) {
+                        Some(inside) => inside - mid,
+                        None => return Ok(None),
+                    },
                 };
-                let m = if (inside - mid).dot(m) < 0.0 { -m } else { m };
+                let m = if towards.dot(m) < 0.0 { -m } else { m };
                 // A convex edge only: into the face goes under the other.
                 if m.dot(other) >= 0.0 {
                     return Ok(None);
