@@ -94,7 +94,20 @@ impl Request {
     ) -> OgeomResult<Option<Self>> {
         let mut blends: Vec<Blend> = Vec::with_capacity(specs.len());
         for (edge, spec) in specs {
-            let Ok(Legs::Straight(seat, distances)) = legs(model, solid, edge, spec, tol) else {
+            // A chamfer the seat cannot take (a face named that is not the
+            // edge's, an angle whose bevel never meets the other face) is
+            // refused by name here, not handed on.
+            let seat = match legs(model, solid, edge, spec, tol) {
+                Ok(seat) => seat,
+                Err(e)
+                    if matches!(e, ogeom_core::OgeomError::Construction(_))
+                        && straight_between_planes(model, solid, edge, tol)? =>
+                {
+                    return Err(e);
+                }
+                Err(_) => return Ok(None),
+            };
+            let Legs::Straight(seat, distances) = seat else {
                 return Ok(None);
             };
             if blends.iter().any(|b| b.edge.is_same(edge)) {
@@ -243,4 +256,35 @@ impl Request {
             corners: Vec::new(),
         })
     }
+}
+
+/// Whether `edge` of `solid` is a line between two planar faces: the seat
+/// the planar engine reads, whose refusals are its own.
+fn straight_between_planes(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let Some((curve, _)) = ogeom_algo::placed_edge_curve(model, edge, tol)? else {
+        return Ok(false);
+    };
+    if !matches!(curve, ogeom_geom::Curve::Line(_)) {
+        return Ok(false);
+    }
+    let faces = ogeom_topo::ancestors_of(model, solid, edge, ogeom_topo::ShapeType::Face)?;
+    if faces.len() != 2 {
+        return Ok(false);
+    }
+    for face in &faces {
+        let plane = model
+            .node(face)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| model.geometry().surface(d.surface))
+            .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::Plane(_)));
+        if !plane {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
