@@ -570,3 +570,17 @@ point, where the arcs meet: an isolated touch whose curvatures differ by
 exactly a quarter of their larger difference on the outer wall. The
 reproducer for marching from seeds beside such a touch: each trace ran
 out of points within 2e-5 of it, and the rounding took 30 s.
+
+## bore_chord_junction_trim.ogeom
+
+Two solids in this kernel's native format, as rounding the rims of a
+drafted pocket of a disc up to a chord trims them at their junction
+(`rounds_at_a_bore_meeting_a_drafted_chord_take_all_above_both` in
+`crates/ogeom-fillet/tests/chain.rs`, the chord through the disc's centre,
+its wall drafted 0.1, r = 0.5): the arc's band carried on past the corner,
+and the region either side of the junction it is kept within. A section of
+the two runs exactly along an edge of one of the band's faces, between the
+same two vertices. The reproducer for a section strand lying on a face's
+own boundary strand: walked with it, it closed a cycle of no area, the
+face's outline went unwalked, and the common was refused (the arrangement
+left no piece of the face). This repository's own licence (LGPL-2.1-only).
