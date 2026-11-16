@@ -612,6 +612,23 @@ replaced #1003's refusal):
 - **A compound holding anything but solids** (a shell, a face, a nested
   compound, or nothing) is refused by name: a chamfer cuts solids. A
   compound of solids is chamfered solid by solid (#960).
+- **Rounds that no ball fits** (a ball set back past its face's far side
+  along an edge that shares a face or a vertex with another of the
+  request, two bands overlapping across a face they share, a plate rounded
+  past half its thickness) are refused by name, as every mainstream
+  application refuses a fillet whose faces cannot hold it. A request of two
+  edges or more that no route builds is checked as the current path checks
+  it before building any band (its corners read, each ball seated, no two
+  bands overlapping), within the current path's cut-offs, so a concave
+  band running past its face's side is kept for the cut-off at that side
+  as there; one failing is refused there in the same words, without
+  entering the current path. The check refuses nothing the current path
+  builds, since that path refuses on it before building anything. A
+  request of one edge is checked as its entry checks it (`request_fits`
+  through `fillet_edges`, the ball on its two faces through
+  `fillet_edge`), and where that fails, the strip or ring beside it is
+  read as taken off whole, as the current path reads it; only where that
+  reads nothing either is it refused, in the same words.
 
 ### Amendment: M5a, the one-boolean fallback (#902, M5a)
 

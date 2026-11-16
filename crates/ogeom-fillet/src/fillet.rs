@@ -88,8 +88,103 @@ pub fn fillet_edge(
     if let Some(built) = rounds_by_engine(model, solid, &[(edge.clone(), radius)], tol)? {
         return Ok(built);
     }
+    refused_alone(model, solid, edge, radius, Check::Ball, tol)?;
     to_current_path("fillet_edge");
     fillet_edge_wedge(model, solid, edge, radius, tol)
+}
+
+/// A request of two edges or more that no engine route builds, checked as
+/// it is checked before any band of it is built: its corners of both
+/// kinds and of mixed radii read, then each ball seated on both faces of
+/// its edge and no two bands overlapping across a face they share
+/// ([`request_fits`]), a concave band past its face's side kept for the
+/// cut-off as there. One failing is refused here, by name, in the words
+/// the current path refuses it in, for it refuses there before it builds
+/// anything (ADR 0001, amendment "what M6 refuses by name"); one passing
+/// goes on. A request of one edge is [`refused_alone`]'s: a strip beside
+/// it may be taken off whole.
+///
+/// # Errors
+///
+/// The refusal, as the current path would raise it.
+fn refused_as_checked(
+    model: &Model,
+    solid: &Shape,
+    edges: &[Shape],
+    radii: &[f64],
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    if let [edge] = edges {
+        return refused_alone(model, solid, edge, radii[0], Check::Request, tol);
+    }
+    // In the current path's order: its corners first, then the bands, in
+    // node order where a corner of both kinds or a cusp is met.
+    let request: Vec<(Shape, f64)> = edges.iter().cloned().zip(radii.iter().copied()).collect();
+    let signed = crate::setback::signed_corners(model, solid, &request, tol)?;
+    let cusps = crate::setback::cusp_corners(model, solid, &request, tol)?;
+    let (edges, radii): (Vec<Shape>, Vec<f64>) = if signed.is_empty() && cusps.is_empty() {
+        (edges.to_vec(), radii.to_vec())
+    } else {
+        let mut sorted = request;
+        sorted.sort_by_key(|(edge, _)| edge.node());
+        sorted.into_iter().unzip()
+    };
+    mixed_corners(model, &edges, &radii)?;
+    // As the current path checks them, within its cut-offs: a concave band
+    // running past its face's side there is cut off at that side after it
+    // is built ([`cut_off_bands`]), not refused.
+    let (fits, _) =
+        crate::support::with_cut_offs(|| request_fits(model, solid, &edges, &radii, tol));
+    fits.map_err(|b| b.error)?;
+    Ok(())
+}
+
+/// Which of the current path's first checks a request of one edge meets:
+/// [`request_fits`] (a request through [`fillet_edges`]), or the ball on
+/// its two faces alone ([`fillet_edge`]).
+#[derive(Clone, Copy)]
+enum Check {
+    Request,
+    Ball,
+}
+
+/// [`refused_as_checked`] for one edge: checked as the current path checks
+/// it, and where that refuses, the strip or ring beside it read as taken
+/// off whole as there ([`consuming`], on a copy of the model). Refused, in
+/// the current path's words, only where that reads nothing either: the
+/// current path then refuses before it builds anything.
+///
+/// # Errors
+///
+/// The refusal, as the current path would raise it.
+fn refused_alone(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    radius: f64,
+    check: Check,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    if !radius.is_finite() || radius <= tol.confusion() {
+        return Ok(());
+    }
+    let (checked, _) = crate::support::with_cut_offs(|| match check {
+        Check::Request => request_fits(model, solid, std::slice::from_ref(edge), &[radius], tol)
+            .map(|_| ())
+            .map_err(|b| b.error),
+        Check::Ball => {
+            crate::support::ball_fits(model, solid, edge, radius, false, tol).map(|_| ())
+        }
+    });
+    let refusal = match checked {
+        Err(refusal @ OgeomError::Construction(_)) => refusal,
+        _ => return Ok(()),
+    };
+    let mut scratch = model.clone();
+    let (taken, _) = crate::support::with_cut_offs(|| {
+        consuming(&mut scratch, solid, edge, radius, refusal, tol)
+    });
+    taken.map(|_| ())
 }
 
 /// Where a round or chamfer request leaves the blend engine for the
@@ -1070,8 +1165,9 @@ pub fn fillet_edges(
     if let Some(built) = rounds_by_engine(model, solid, &asked, tol)? {
         return Ok(built);
     }
-    to_current_path("fillet_edges");
     let radii = vec![radius; edges.len()];
+    refused_as_checked(model, solid, edges, &radii, tol)?;
+    to_current_path("fillet_edges");
     ogeom_algo::on_own_nodes(model, solid, edges, |model, solid, parts| {
         cut_off_bands(
             model,
@@ -1132,6 +1228,7 @@ pub fn fillet_edges_with(
     if let Some(built) = rounds_by_engine(model, solid, edges, tol)? {
         return Ok(built);
     }
+    refused_as_checked(model, solid, &shapes, &radii, tol)?;
     to_current_path("fillet_edges_with");
     ogeom_algo::on_own_nodes(model, solid, &shapes, |model, solid, parts| {
         cut_off_bands(
