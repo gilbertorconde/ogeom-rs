@@ -147,6 +147,9 @@ pub(crate) fn assemble(
         setback_at.iter().map(|c| (c.vertex, c)).collect();
     for c in setback_at {
         for end in &c.ends {
+            if end.radius == 0.0 {
+                continue;
+            }
             let (Some((section, _)), Some(seat)) =
                 (sections.get(&end.edge), edge_seat.get(&end.edge))
             else {
@@ -1552,8 +1555,10 @@ pub(crate) fn assemble(
             ring
         };
         let mut sides = Vec::with_capacity(ring.len());
+        let mut supports = Vec::with_capacity(ring.len());
         for (e, walk) in &ring {
             let strip = owner[e];
+            supports.push(built[strip].clone());
             let (a, b) = edges[*e].ends;
             let Some(edge) = edge_between(model, &built[strip], points[a], points[b], reach)?
             else {
@@ -1583,17 +1588,33 @@ pub(crate) fn assemble(
                 pieces: Vec::new(),
             });
         }
-        let patch = crate::round::transfinite::corner_patch(model, &sides, tol)?;
-        if !(patch.gap <= fit && patch.angle <= fit) {
-            ogeom_core::ogeom_bail!(
-                Construction,
-                "a round vertex's patch misses the bands' fit target: {:.1e} off its strips' \
-                 ends, {:.1e} rad off their tangent planes",
-                patch.gap,
-                patch.angle
-            );
-        }
-        for face in patch.faces {
+        let patches = if let Some(corner) = setbacks.get(&v) {
+            let round = faces_round(&planar.faces, v).ok_or_else(|| {
+                ogeom_core::ogeom_err!(Construction, "a setback vertex has no closed face ring")
+            })?;
+            let within: Vec<_> = round
+                .iter()
+                .map(|f| (planar.faces[*f].normal, planar.points[&v]))
+                .collect();
+            if corner.ends.iter().any(|end| end.radius == 0.0) {
+                super::vertex_setbacks::opening(model, &sides, &supports, &within, tol)?
+            } else {
+                super::vertex_setbacks::filled_opening(model, &sides, &supports, &within, tol)?
+            }
+        } else {
+            let patch = crate::round::transfinite::corner_patch(model, &sides, tol)?;
+            if !(patch.gap <= fit && patch.angle <= fit) {
+                ogeom_core::ogeom_bail!(
+                    Construction,
+                    "a round vertex's patch misses the bands' fit target: {:.1e} off its strips' \
+                     ends, {:.1e} rad off their tangent planes",
+                    patch.gap,
+                    patch.angle
+                );
+            }
+            patch.faces
+        };
+        for face in patches {
             built.push(face);
             origins.push(Err(v));
         }
@@ -1700,6 +1721,32 @@ pub(crate) fn assemble(
             built.push(face);
             origins.push(Err(v));
         }
+    }
+    if !setback_at.is_empty() {
+        let sewn = ogeom_algo::sew_within(model, &built, fit, tol)?;
+        let [shell] = sewn.shells.as_slice() else {
+            ogeom_core::ogeom_bail!(Construction, "the setback corner's faces did not close");
+        };
+        let joined = explore_unique(model, shell, ShapeType::Face)?;
+        built = built
+            .iter()
+            .map(|face| {
+                let image = sewn
+                    .history
+                    .copy_of(face)
+                    .unwrap_or_else(|| sewn.history.modified(face).first().unwrap_or(face));
+                joined
+                    .iter()
+                    .find(|candidate| candidate.is_same(image))
+                    .cloned()
+                    .ok_or_else(|| {
+                        ogeom_core::ogeom_err!(
+                            Construction,
+                            "a setback corner's face is missing from its sheet"
+                        )
+                    })
+            })
+            .collect::<OgeomResult<Vec<_>>>()?;
     }
     let shell = ogeom_algo::make_shell(model, &built)?.shape;
     let solid = ogeom_algo::make_solid(model, &[shell])?.shape;
