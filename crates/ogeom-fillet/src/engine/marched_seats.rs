@@ -91,6 +91,11 @@ pub(crate) fn rounds(
     fitted: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
+    building_tools(|| seated(model, solid, once, fitted, tol))
+}
+
+/// Run an engine tool builder with the old-constructor back-edge guard.
+pub(super) fn building_tools<T>(f: impl FnOnce() -> T) -> T {
     struct Restore(bool);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -98,7 +103,7 @@ pub(crate) fn rounds(
         }
     }
     let _restore = Restore(IN_SEATS.with(|flag| flag.replace(true)));
-    seated(model, solid, once, fitted, tol)
+    f()
 }
 
 thread_local! {

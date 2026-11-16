@@ -2486,9 +2486,9 @@ fn kidney_floor() -> (
     (model, solid, edges)
 }
 
-/// The kidney pocket's floor rounded at r 1 all round: the loop's band
-/// adds 11.834, to a solid of 8304.9759153466, as each arc's band does
-/// alone.
+/// The pocket's floor loop has perimeter 18 pi and total signed turn
+/// 2 pi. Its radius-one fillet adds the corner-section area times that
+/// perimeter, less the section's first moment times the turn.
 #[test]
 fn a_kidney_pocket_floor_loop_rounds_to_its_volume() {
     let (mut model, solid, edges) = kidney_floor();
@@ -2502,9 +2502,19 @@ fn a_kidney_pocket_floor_loop_rounds_to_its_volume() {
     let volume = ogeom::algo::volume_properties(&model, &rounded.shape, fine, T)
         .unwrap()
         .mass;
+    let pi = std::f64::consts::PI;
+    let radius: f64 = 1.0;
+    // The pocket is a 120-degree annular sector, R=6..12, with two
+    // radius-three semicircular ends. Its depth is five in a 30x30x10 box.
+    let pocket_area = (12.0_f64.powi(2) - 6.0_f64.powi(2)) * pi / 3.0 + 9.0 * pi;
+    let unrounded = 30.0 * 30.0 * 10.0 - 5.0 * pocket_area;
+    let section = (1.0 - pi / 4.0) * radius.powi(2);
+    let moment = (5.0 / 6.0 - pi / 4.0) * radius.powi(3);
+    let expected = unrounded + section * 18.0 * pi - moment * 2.0 * pi;
+    // The fine mesh resolves these analytic arcs to 1e-6 cubic mm.
     assert!(
-        (volume - 8304.9759153466).abs() < 1e-6,
-        "rounded to {volume}"
+        (volume - expected).abs() < 1e-6,
+        "rounded to {volume}, expected {expected} from the section and turn"
     );
 }
 
