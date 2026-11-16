@@ -442,6 +442,60 @@ fn walk<'s, T>(
         }
     }
 
+    // A section strand lying on a boundary strand (the same two nodes, its
+    // middle on the boundary's polyline) separates no material: a section
+    // curve running along the face's own edge, where the other operand's
+    // face touches it there. Walked with the boundary it would close a cycle
+    // of no area against it and leave the face's own outline unwalked.
+    {
+        let near = |p: Point2, line: &[Point2]| -> bool {
+            line.windows(2).any(|w| {
+                let (a, b) = (w[0], w[1]);
+                let (dx, dy) = (b.x - a.x, b.y - a.y);
+                let len2 = dx.mul_add(dx, dy * dy);
+                let t = if len2 > 0.0 {
+                    (((p.x - a.x) * dx + (p.y - a.y) * dy) / len2).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let (qx, qy) = (t.mul_add(dx, a.x), t.mul_add(dy, a.y));
+                (p.x - qx).hypot(p.y - qy) <= snap
+            })
+        };
+        let middle = |line: &[Point2]| -> Point2 {
+            let half = polyline_length(line) / 2.0;
+            let mut run = 0.0;
+            for w in line.windows(2) {
+                let step = w[0].distance(w[1]);
+                if run + step >= half && step > 0.0 {
+                    let t = (half - run) / step;
+                    return Point2::new(
+                        t.mul_add(w[1].x - w[0].x, w[0].x),
+                        t.mul_add(w[1].y - w[0].y, w[0].y),
+                    );
+                }
+                run += step;
+            }
+            line[0]
+        };
+        let same_ends = |a: (usize, usize), b: (usize, usize)| a == b || (a.0 == b.1 && a.1 == b.0);
+        let lying: Vec<bool> = (0..live.len())
+            .map(|i| {
+                !live[i].boundary
+                    && (0..live.len()).any(|j| {
+                        live[j].boundary
+                            && same_ends(ends[i], ends[j])
+                            && near(middle(&live[i].polyline), &live[j].polyline)
+                    })
+            })
+            .collect();
+        if lying.iter().any(|&l| l) {
+            from = kept_where(from, &lying);
+            live = kept_where(live, &lying);
+            ends = kept_where(ends, &lying);
+        }
+    }
+
     // Prune dangling chains. A section that fails to separate material hangs
     // by an end. A *boundary* strand doing so means the face's own boundary
     // does not close, which no amount of pruning repairs.
@@ -811,6 +865,15 @@ fn walk<'s, T>(
         nodes,
         cycles,
     })
+}
+
+/// The items of `items` whose flag in `gone` is not set.
+fn kept_where<I>(items: Vec<I>, gone: &[bool]) -> Vec<I> {
+    items
+        .into_iter()
+        .zip(gone)
+        .filter_map(|(item, &g)| (!g).then_some(item))
+        .collect()
 }
 
 /// The polyline a cycle traces, for area, containment and interior points.
