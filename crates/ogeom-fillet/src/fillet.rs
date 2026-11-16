@@ -189,27 +189,26 @@ fn refused_alone(
     taken.map(|_| ())
 }
 
-/// Where a round or chamfer request leaves the blend engine for the
-/// current path:
-/// with the `old-path-log` feature, a line naming `entry` and the asking
-/// test (its thread's name) appended to the file `OGEOM_OLD_PATH_LOG`
-/// names, for `tools/old-path-rounds.sh` and `tools/old-path-chamfers.sh`
-/// to count before M6 deletes that
-/// path; without it, nothing.
+/// Records old-path entry attempts with their asking test and executable
+/// in `OGEOM_OLD_PATH_LOG`, only with the `old-path-log` feature enabled.
+#[inline]
 pub(crate) fn to_current_path(entry: &str) {
     #[cfg(feature = "old-path-log")]
     {
         use std::io::Write as _;
-        if let Some(path) = std::env::var_os("OGEOM_OLD_PATH_LOG")
-            && let Ok(mut file) = std::fs::OpenOptions::new()
+        if let Some(path) = std::env::var_os("OGEOM_OLD_PATH_LOG") {
+            let mut file = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(path)
-        {
+                .unwrap_or_else(|error| panic!("cannot open old-path log: {error}"));
             let test = std::thread::current().name().unwrap_or("?").to_owned();
+            let executable = std::env::current_exe()
+                .unwrap_or_else(|error| panic!("cannot identify old-path caller: {error}"));
             // One append keeps concurrent test names on separate lines.
-            let line = format!("{entry} {test}\n");
-            let _ = file.write_all(line.as_bytes());
+            let line = format!("{entry}\t{test}\t{}\n", executable.display());
+            file.write_all(line.as_bytes())
+                .unwrap_or_else(|error| panic!("cannot write old-path log: {error}"));
         }
     }
     #[cfg(not(feature = "old-path-log"))]
@@ -229,6 +228,7 @@ pub(crate) fn fillet_edge_wedge(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    to_current_path("round:fillet_edge_wedge");
     ogeom_algo::on_own_nodes(
         model,
         solid,
@@ -1361,6 +1361,7 @@ fn fillet_edges_meeting(
     radii: &[f64],
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    to_current_path("round:fillet_edges_meeting");
     // Where a convex and a concave band meet at a vertex, the bands are
     // built in one order whatever the request's, and the corner closed
     // after.
@@ -2065,6 +2066,7 @@ pub(crate) fn apply_set_aside(
     set_aside: Vec<(Shape, crate::support::Wedge)>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    to_current_path("marched-backedge:apply_set_aside");
     if set_aside.is_empty() {
         return Ok(built);
     }

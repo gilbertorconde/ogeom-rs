@@ -465,7 +465,7 @@ fn fillet_edge_distances_own(
     profile: RoundProfile,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    crate::fillet::to_current_path("fillet_edge_distances");
+    crate::fillet::to_current_path("round:fillet_edge_distances_own");
     if let Some(rim) = rim_conic(model, solid, edge, face, on_face, on_other, profile, tol)? {
         let mut built = if rim.whole {
             rim_round(model, solid, edge, &rim, tol)?

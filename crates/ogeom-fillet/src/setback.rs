@@ -211,6 +211,7 @@ fn setback_own(
     setbacks: &Setbacks,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    crate::fillet::to_current_path("vertex:setback_own");
     let corner = read_corner(model, solid, vertex, radius, setbacks, tol)?;
 
     cornered_by_engine(
@@ -493,6 +494,7 @@ pub(crate) fn close_corner_ends(
     continuity: Continuity,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    crate::fillet::to_current_path("vertex:close_corner_ends");
     let n = frame.d.len();
     // The cell the patch replaces: in from every plane through the vertex,
     // and short of each band's section.

@@ -131,6 +131,7 @@ fn facets(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> OgeomResult<Vec<Cut>> {
+    crate::fillet::to_current_path("chamfer:facets");
     let conf = tol.confusion();
     let mut ends: Vec<[ogeom_topo::TShapeId; 2]> = Vec::with_capacity(specs.len());
     let mut points: Vec<(ogeom_topo::TShapeId, Point)> = Vec::new();

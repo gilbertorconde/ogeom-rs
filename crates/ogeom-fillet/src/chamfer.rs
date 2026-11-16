@@ -1285,6 +1285,7 @@ fn chamfer_edges_mitred_blamed(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> Result<Built, Blamed> {
+    crate::fillet::to_current_path("chamfer:chamfer_edges_mitred_blamed");
     let mut blame = Vec::new();
     ogeom_algo::on_own_nodes(
         model,
