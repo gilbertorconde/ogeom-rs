@@ -1676,6 +1676,51 @@ planes, a patch P5 did not prove has its net held within those planes
   fit, no such net exists. The patch is not held and is declined as before;
   scaling the cross-derivative rows is not tried.
 
+### Amendment: rounds either side of a cusp (#902)
+
+Where a flat side runs tangent into a drum's wall (a plate's side into a
+boss), the top between them narrows to a cusp at the tangent point. The
+top's rim on the wall (the boss's foot) and the top's edge with the side
+continue each other through the cusp, one concave and one convex. Where an
+asked rim and an asked straight edge leave the cusp on the same side, the
+two bands turn through an S, the trimmed assembly's cusp patch. This
+amendment covers the requests where they do not: the foot alone, or the
+foot on one side of the cusp and the edge on the other.
+
+| Source | What it says |
+|---|---|
+| SOLIDWORKS, Fillet PropertyManager, "Overflow Type" | Where a fillet runs into adjacent geometry, "Keep surface" trims the fillet by the adjacent face; "Keep edge" keeps the adjacent edges and splits the fillet. [help.solidworks.com, Example: Overflow Type] |
+| Fusion, Tangent chain reference; fillet best practices | A tangent chain is selected as one set; fillets that pass from concave to convex edges are best made as separate fillets, concave first. [help.autodesk.com, SLD-REF-TANGENT-CHAIN; Autodesk blog, Fillet Best Practices] |
+| Onshape, Fillet help and forum | Tangent propagation extends a fillet along tangent edges; fillets passing from convex to concave edges are reported as unreliable. [cad.onshape.com/help, Fillet] |
+
+No application documents a blend between a convex and a concave band of one
+tangent chain other than as separate fillets. Where a band runs past the
+face it stands on, the documented choice that keeps the round whole is to
+trim it by the adjacent face. So:
+
+- **Rule.** Each band is built as it is alone. A rim's band runs over its
+  arc and ends in the meridian planes through the arc's ends. Where it runs
+  past the side at a cusp, the side's plane trims it, and its fill ends
+  flush with the side. A straight edge's band ends in the plane square to
+  the edge through the cusp, as a band ends where a round of another kind
+  continues it tangentially, and at its far end in its end face's plane.
+  The request builds the same solid in any order.
+- **Built** as the one boolean's tools (amendment "M5a"). A rim's tool is
+  its section (the corner between the cap and the wall less the ball's
+  disc, or the ball's fill) turned about the drum's axis over its arc. A
+  straight edge's tool is its section swept along the edge. Only the
+  round's own face (the torus or the cylinder) is named for its edge. The
+  tools are applied in the solid's order of its edges, so the request's
+  order does not change the result.
+- **Refused by name:** a rim and a straight edge leaving a cusp the same way
+  on one side of it while the top runs on past the cusp with its edges
+  there left sharp. The S has nothing to close against on the cusp's other
+  side, and the request is refused with a request to round the chain on
+  both sides (the trimmed assembly's S), as before.
+- **Not this route:** a rim and a straight edge leaving a cusp the same way
+  where the top ends at the cusp (the one-sided S); a rim on a cone; any
+  other edge in the request.
+
 ## 12. Acceptance corpus
 
 From #902:
