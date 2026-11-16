@@ -1245,6 +1245,23 @@ fn rounds_by_engine_routes(
     if let Some(built) = crate::engine::meeting_rounds(model, solid, &once, tol)? {
         return Ok(Some(built));
     }
+    // The same where a seam splits the face the creases share at their
+    // corner: read with the seams dissolved, on a copy of the model.
+    {
+        let mut scratch = model.clone();
+        if let Some(seamless) = crate::engine::dissolve_curved(&mut scratch, solid, tol)?
+            && let Some(rounds) = seamless.rounds(&once)
+            && !rounds.is_empty()
+            && let Some(built) =
+                crate::engine::meeting_rounds(&mut scratch, &seamless.solid, &rounds, tol)?
+        {
+            *model = scratch;
+            return Ok(Some(Built::new(
+                built.shape,
+                seamless.carry(&built.history),
+            )));
+        }
+    }
     // A straight crease ending at a band an earlier round left, seated on
     // planes: its band runs on into that band, which trims it (amendment
     // "a later round reaching an earlier band at its end"), before the
