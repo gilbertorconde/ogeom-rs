@@ -1877,9 +1877,15 @@ square to it there. Rounded alone, where does the round end?
   section (the corner between the cap and the wall less the ball's disc,
   or the ball's fill) turned a whole turn about the drum's axis, cut by the
   plane of each face the arc ends on. Only its torus is named for the edge.
-- **Not this route:** an arc ending on more than one face at an end, on a
-  curved face, or square to it (a meridian plane, where it ends flush), and
-  an arc asked with other edges.
+- **Also built so:** an arc in pieces of one circle asked together (a
+  wall's seam splits a drum's foot), a concave arc (a drum standing on a
+  block's top over its side, its foot filled and the fill cut back to the
+  side), and an end on a plane square to the arc (a meridian plane: the
+  whole turn cut there ends the round flush in it, as §4.3 ends a strip in
+  its third face). The cap and the wall must share no edge but the arc's
+  pieces: the whole turn rounds every edge they share.
+- **Not this route:** an arc ending on more than one face at an end or on
+  a curved face, and an arc asked with other edges.
 
 ### Amendment: contour chains on swept walls use engine-owned tools
 

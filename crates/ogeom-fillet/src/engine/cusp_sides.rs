@@ -527,10 +527,13 @@ pub(crate) fn rounds(
 /// on a flat"): the ball rolls on past each end through the corner it still
 /// finds in the solid, while its contact on the cap stands on the cap. The
 /// round's tool is the rim's section turned a whole turn about the drum's
-/// axis, cut by the plane of each face the arc ends on. `None` where the
-/// request is not one such arc, an end's face is not one plane standing
-/// oblique to the arc, the tool does not build, the boolean refuses, or the
-/// result is not valid.
+/// axis, cut by the plane of each face the arc ends on. The arc may come in
+/// pieces of one circle (a wall's seam), and be concave (a drum's foot on a
+/// block's top, filled); an end's plane may stand square to the arc (a
+/// meridian), where the round ends flush in it. `None` where the request is
+/// not one such arc, the cap and the wall share an edge not asked, an end's
+/// face is not one plane, or holds the rim's way on, the tool does not
+/// build, the boolean refuses, or the result is not valid.
 ///
 /// # Errors
 ///
@@ -541,25 +544,95 @@ pub(crate) fn oblique_rim_rounds(
     once: &[(Shape, f64)],
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
-    let [(edge, radius)] = once else {
+    let Some((edge, radius)) = once.first() else {
         return Ok(None);
     };
     let Some(Asked::Rim(seat, circle, range)) = read(model, solid, edge, tol)? else {
         return Ok(None);
     };
-    let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
+    // The arc may come in pieces of one circle (a wall's seam splits a
+    // drum's foot), asked with one radius: the arc ends where a piece's
+    // vertex is no other piece's.
+    let mut vertices: Vec<Shape> = Vec::new();
+    for (piece, r) in once {
+        if (r - radius).abs() > tol.confusion() {
+            return Ok(None);
+        }
+        if !piece.is_same(edge) {
+            let Some(Asked::Rim(other, c, _)) = read(model, solid, piece, tol)? else {
+                return Ok(None);
+            };
+            let same = |p: Point, q: Point| p.distance(q) <= tol.confusion();
+            if !(same(other.centre, seat.centre)
+                && (other.radius - seat.radius).abs() <= tol.confusion()
+                && other.up.dot(seat.up) >= 1.0 - tol.angular()
+                && (c.circle().radius() - circle.circle().radius()).abs() <= tol.confusion()
+                && other.additive() == seat.additive())
+            {
+                return Ok(None);
+            }
+        }
+        let Some((a, b)) = ogeom_algo::edge_vertices(model, piece)? else {
+            return Ok(None);
+        };
+        if a.is_same(&b) {
+            return Ok(None);
+        }
+        for v in [a, b] {
+            match vertices.iter().position(|w| w.is_same(&v)) {
+                Some(i) => {
+                    vertices.remove(i);
+                }
+                None => vertices.push(v),
+            }
+        }
+    }
+    let [a, b] = vertices.as_slice() else {
         return Ok(None);
     };
-    if a.is_same(&b) {
-        return Ok(None);
+    // The section turned a whole turn rounds every edge the cap and the
+    // wall share: those must be the pieces asked (a drum cut across its
+    // rim leaves it one arc; a drum cutting a block's corners leaves it
+    // an arc at each).
+    let cap_edges = explore_unique(model, &seat.cap_face, ShapeType::Edge)?;
+    for shared in explore_unique(model, &seat.wall_face, ShapeType::Edge)? {
+        if cap_edges.iter().any(|e| e.is_same(&shared))
+            && !once.iter().any(|(piece, _)| piece.is_same(&shared))
+        {
+            return Ok(None);
+        }
     }
     let mut cuts: Vec<(Point, Vector)> = Vec::new();
-    for (v, t, leaving) in [(&a, range.0, 1.0), (&b, range.1, -1.0)] {
+    for v in [a, b] {
         let p = point_of(model, v)?;
-        let ahead = circle.d1_at(t, tol)? * -leaving;
+        // The way the circle runs on past the arc's end at `v`: out of
+        // the arc, away from the pieces.
+        let radial = {
+            let d = p - seat.centre;
+            let r = d - seat.up * d.dot(seat.up);
+            r / r.magnitude()
+        };
+        let tangent = seat.up.cross(radial);
+        let into_arc = once.iter().find_map(|(piece, _)| {
+            let (c, (lo, hi)) = crate::support::edge_curve(model, piece, tol).ok()?;
+            let Curve::Circle(c) = c else { return None };
+            let mid = c.point_at(0.5 * (lo + hi), tol).ok()?;
+            let ends = ogeom_algo::edge_vertices(model, piece).ok()??;
+            (ends.0.is_same(v) || ends.1.is_same(v)).then_some(mid - p)
+        });
+        let Some(into_arc) = into_arc else {
+            return Ok(None);
+        };
+        let ahead = if tangent.dot(into_arc) > 0.0 {
+            -tangent
+        } else {
+            tangent
+        };
         let mut ends = Vec::new();
         for f in ogeom_topo::ancestors_of(model, solid, v, ShapeType::Face)? {
-            if f.is_same(&seat.cap_face) || f.is_same(&seat.wall_face) {
+            if once.iter().any(|(piece, _)| {
+                faces_at(model, solid, piece).is_ok_and(|fs| fs.iter().any(|g| g.is_same(&f)))
+            }) {
                 continue;
             }
             if !ends.iter().any(|g: &Shape| g.is_same(&f)) {
@@ -572,11 +645,11 @@ pub(crate) fn oblique_rim_rounds(
         let Some((on, out)) = plane_of(model, end, tol)? else {
             return Ok(None);
         };
-        // Oblique: the face's plane neither runs on along the rim (square
-        // to its tangent, a meridian plane, where the arc ends square) nor
-        // holds it.
+        // The face's plane must not hold the rim's way on (square to the
+        // meridian there): oblique, or square to the rim (a meridian
+        // plane, where the round ends flush in it).
         let lean = out.dot(ahead) / ahead.magnitude();
-        if lean.abs() <= tol.angular() || lean.abs() >= 1.0 - tol.angular() {
+        if lean.abs() <= tol.angular() {
             return Ok(None);
         }
         if (p - on).dot(out).abs() > tol.confusion() * 10.0 {
@@ -607,7 +680,9 @@ pub(crate) fn oblique_rim_rounds(
             .and_then(|d| scratch.geometry().surface(d.surface))
             .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::Torus(_)));
         if torus {
-            faces.push((f, edge.clone()));
+            for (piece, _) in once {
+                faces.push((f.clone(), piece.clone()));
+            }
         }
     }
     let tools = [Tool {
@@ -619,9 +694,8 @@ pub(crate) fn oblique_rim_rounds(
         },
         faces,
     }];
-    let Some(built) =
-        super::fallback::applied(&mut scratch, solid, std::slice::from_ref(edge), &tools, tol)?
-    else {
+    let edges: Vec<Shape> = once.iter().map(|(e, _)| e.clone()).collect();
+    let Some(built) = super::fallback::applied(&mut scratch, solid, &edges, &tools, tol)? else {
         return Ok(None);
     };
     if !ogeom_algo::check(&scratch, &built.shape, tol)?.is_valid() {
