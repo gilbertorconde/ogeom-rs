@@ -762,8 +762,6 @@ pub(crate) enum Ball<'a> {
 /// What a band with no ball crosses from one touch to the other.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Chord {
-    /// The straight segment: a bevel.
-    Straight,
     /// The conic arc tangent to each host's section at its touch, through
     /// the shoulder where those tangents meet, of the weight `ConicWeight`
     /// gives: an asymmetric round.
@@ -1234,7 +1232,6 @@ pub(crate) fn closed_band_wedge(
     // fitted *closed*: the join is C1 wherever the seam lands, so anchoring
     // the seam column costs nothing.
     let (fitted, rows) = match ball {
-        Ball::Ruled(_, Chord::Straight) => fit_closed_ruled(&blend, fit_target, tol)?,
         Ball::Ruled(_, Chord::Conic(weight)) => {
             let sections = conic_sections(&blend, [first, second], guide, weight, tol)?;
             fit_closed_conic(&sections, fit_target, tol)?
@@ -1543,39 +1540,6 @@ pub(crate) fn owned_once(blend: &mut crate::march::MarchedBlend, tol: Tolerances
         blend.on_second.pop();
         blend.along.pop();
     }
-}
-
-/// The closed ruled band through each station's chord from the first
-/// support's touch to the second's, as [`fit_closed_band`] fits the
-/// ball's arcs: `u` across, `v` round the loop, closed, at the target
-/// `aim`.
-pub(crate) fn fit_closed_ruled(
-    blend: &crate::march::MarchedBlend,
-    aim: f64,
-    tol: Tolerances,
-) -> OgeomResult<(
-    ogeom_geom::fit::Fitted<ogeom_geom::BSplineSurface>,
-    Vec<Vec<Point>>,
-)> {
-    let n = blend.len();
-    let mut rows: Vec<Vec<Point>> = (0..ACROSS).map(|_| Vec::with_capacity(n + 1)).collect();
-    for i in 0..=n {
-        let at = i % n;
-        let (a, b) = (blend.touch_first[at], blend.touch_second[at]);
-        if a.distance(b) <= tol.confusion() {
-            ogeom_bail!(Construction, "a bevel's section collapsed at station {at}");
-        }
-        for (k, row) in rows.iter_mut().enumerate() {
-            #[allow(clippy::cast_precision_loss)]
-            let s = (k as f64) / ((ACROSS - 1) as f64);
-            row.push(a + (b - a) * s);
-        }
-    }
-    let loops: Vec<Vec<Point>> = (0..=n)
-        .map(|i| (0..ACROSS).map(|k| rows[k][i]).collect())
-        .collect();
-    let fitted = ogeom_geom::fit::fit_surface_grid_closed_v_chordal(&loops, 3, aim, tol)?;
-    Ok((fitted, rows))
 }
 
 /// The closed band through each station's exact ball arc, fitted round
@@ -3037,7 +3001,7 @@ fn fit_open_conic(
 }
 
 /// The closed band through each station's conic section round the loop,
-/// as [`fit_closed_ruled`] fits the chords: the fit and the rows across.
+/// fitted closed as the ball's arcs are: the fit and the rows across.
 fn fit_closed_conic(
     sections: &[([Point; 3], f64)],
     aim: f64,
