@@ -3008,16 +3008,30 @@ fn d_shaped_block(
     (solid, corner, edges)
 }
 
+/// Where the arc's band of [`d_shaped_block`] stops past the vertex, alone
+/// (ADR 0001, amendment "corners where a round's rail misses"): it runs on
+/// round the axis while its contact on the top stands in the solid, and
+/// ends in the plane through the axis where that contact, a circle of
+/// radius `big + top` about `(4, 4)` (`top` the contact's offset from the
+/// rim, negative), crosses the chord's top line `y = 4 + c`. The plane's
+/// unit normal pointing on past it: a point `(x, y)` is past the stop
+/// where `((x - 4), (y - 4))` dotted with it is positive.
+fn arc_stop(c: f64, big: f64, top: f64) -> (f64, f64) {
+    let rho = big + top;
+    let x = rho.mul_add(rho, -c * c).sqrt();
+    (-c / rho, x / rho)
+}
+
 /// What rounding the arc and the chord of [`d_shaped_block`] takes within
 /// the square of half side `half` round its corner `at`, a column at a
 /// time: the union of what each band takes as it does alone, in the
-/// material. The arc's band is its torus band up to its cap, in the plane
-/// through the axis and the vertex; the chord's is its straight band up to
+/// material. The arc's band is its torus band run on past the vertex to
+/// [`arc_stop`]; the chord's is its straight band up to
 /// its own cap, square to the chord at the vertex.
 fn d_shaped_corner_removed(at: (f64, f64), c: f64, r: f64, half: f64) -> f64 {
     let (centre, big) = ((4.0, 4.0), 2.5);
-    let ahead = (-c / big, (at.0 - centre.0) / big);
     let section = Section::new(0.0, (1.0, 0.0), r);
+    let ahead = arc_stop(c, big, section.centre.0);
     integral(
         (at.0 - half, at.0 + half),
         (at.1 - half, at.1 + half),
@@ -3028,7 +3042,7 @@ fn d_shaped_corner_removed(at: (f64, f64), c: f64, r: f64, half: f64) -> f64 {
                 return 0.0;
             }
             let (px, py) = (x - at.0, y - at.1);
-            let arc = if px.mul_add(ahead.0, py * ahead.1) > 0.0 {
+            let arc = if (x - centre.0).mul_add(ahead.0, (y - centre.1) * ahead.1) > 0.0 {
                 [(0.0, 0.0); 2]
             } else {
                 section.column(off)
@@ -3074,13 +3088,13 @@ fn rounds_of_a_d_shaped_block_take_both_bands_as_alone() {
 /// the square of half side `half` round its corner `at`, the chord's wall
 /// leaning `d` and the drum drafted by `k`, a column at a time: the union
 /// of what each band takes as it does alone, in the material. The arc's
-/// band is its torus band up to its cap, in the plane through the axis and
-/// the vertex; the chord's is its straight band run out past the vertex
+/// band is its torus band run on past the vertex to [`arc_stop`]; the
+/// chord's is its straight band run out past the vertex
 /// across the drum, in the material within the drum's wall at each height.
 fn leaning_d_corner_removed(at: (f64, f64), c: f64, (d, k): (f64, f64), r: f64, half: f64) -> f64 {
     let (centre, big) = ((4.0, 4.0), 2.5);
-    let ahead = (-c / big, (at.0 - centre.0) / big);
     let arc_band = Section::new(0.0, (1.0, k), r);
+    let ahead = arc_stop(c, big, arc_band.centre.0);
     let chord_band = Section::new(0.0, (1.0, d), r);
     integral(
         (at.0 - half, at.0 + half),
@@ -3097,13 +3111,13 @@ fn leaning_d_corner_removed(at: (f64, f64), c: f64, (d, k): (f64, f64), r: f64, 
             } else {
                 ((2.0 - off / k).max(0.0), 2.0)
             };
-            let (px, py) = (x - at.0, y - at.1);
+            let py = y - at.1;
             let within = |runs: [(f64, f64); 2]| -> Vec<(f64, f64)> {
                 runs.iter()
                     .map(|&(p, q)| (p.max(0.0), q.min(2.0)))
                     .collect()
             };
-            let arc = if px.mul_add(ahead.0, py * ahead.1) > 0.0 {
+            let arc = if (x - centre.0).mul_add(ahead.0, (y - centre.1) * ahead.1) > 0.0 {
                 Vec::new()
             } else {
                 within(arc_band.column(off))

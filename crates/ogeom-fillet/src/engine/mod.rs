@@ -20,6 +20,7 @@
 //!
 //! The polyhedral classes (a solid bounded by planes) go through here.
 
+mod alone;
 mod assemble;
 mod classify;
 mod collected;
@@ -54,6 +55,7 @@ mod taken_whole;
 mod trimmed;
 mod vertices;
 
+pub(crate) use alone::rounds as alone_rounds;
 pub(crate) use collected::{
     asymmetric as asymmetric_rounds, distances as distances_rounds, varying as varying_rounds,
 };

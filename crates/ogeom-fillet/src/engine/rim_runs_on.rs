@@ -10,7 +10,12 @@
 //! mainstream applications end a fillet there; it is not capped in the
 //! meridian plane through the vertex. Its tool is the rim's section turned
 //! about the axis from where, behind one end, the section has left the
-//! solid to where, past the other, it has; the solid is cut by it.
+//! solid to where, past the other, it has; the solid is cut by it. A band
+//! that does not run on at an end stops there inside the material and ends
+//! in the plane through the axis at the vertex where that vertex is a
+//! corner convex in plan, or a seam where the rim's circle runs on
+//! unasked, or where a face beside the cap or the wall carries it on; at an
+//! inside corner such a free end is amendment "M5e"'s.
 //!
 //! Other edges asked with such a rim are rounded alone by the engine and
 //! the rim's tool is cut from what that leaves: past where the bands meet
@@ -48,11 +53,13 @@ const ALONG: u32 = 16;
 const ACROSS: u32 = 8;
 
 /// The rounds of `asked` on `solid` where some asked edge is a convex rim
-/// between a plane square to its axis and a coaxial cylinder or cone, open,
-/// whose band runs on past an end of its arc in the solid, each such rim's
-/// ball sitting on its faces along the arc and its ends' faces meeting its
-/// own at an angle; the other edges asked rounded alone by `round`. `None`
-/// otherwise, or where a tool or a boolean will not build.
+/// between a plane square to its axis and a coaxial cylinder or cone,
+/// open, its band run on past an end of its arc in the solid where it runs
+/// on and else, at a corner convex in plan or a seam, ended in the plane
+/// through the axis at the vertex, each
+/// such rim's ball sitting on its faces along the arc and its ends' faces
+/// meeting its own at an angle; the other edges asked rounded alone by
+/// `round`. `None` otherwise, or where a tool or a boolean will not build.
 ///
 /// # Errors
 ///
@@ -70,7 +77,6 @@ pub(crate) fn rounds(
     };
     let mut rims: Vec<(Rim, (f64, f64))> = Vec::new();
     let mut others: Vec<(Shape, f64)> = Vec::new();
-    let mut runs_on = false;
     for (edge, radius) in asked {
         let Some(rim) = rim_of(model, solid, &curved, id(edge), edge, *radius, tol)? else {
             others.push((edge.clone(), *radius));
@@ -82,10 +88,16 @@ pub(crate) fn rounds(
         let Some((span, longer)) = span(model, solid, &curved, &rim, tol)? else {
             return Ok(None);
         };
-        runs_on |= longer;
+        // A band that runs on nowhere ends at its vertices, in the plane
+        // through the axis, only where each is a corner convex in plan or
+        // the cap or wall carried on: at an inside corner a free end is
+        // amendment "M5e"'s, flush on the plane the crease meets there.
+        if !longer && !ends_closed(&curved, &rim, tol)? {
+            return Ok(None);
+        }
         rims.push((rim, span));
     }
-    if !runs_on {
+    if rims.is_empty() {
         return Ok(None);
     }
     let mut scratch = model.clone();
@@ -354,6 +366,11 @@ fn ends_apart(curved: &Curved, rim: &Rim, edge: Id, tol: Tolerances) -> bool {
             {
                 continue;
             }
+            // The cap or the wall carried on past a boolean's split (a
+            // neck fused on flush with the drum's top) is that face itself.
+            if continues(curved, rim, f, tol) {
+                continue;
+            }
             let Some(n) = outward(curved, f, at) else {
                 return false;
             };
@@ -364,6 +381,61 @@ fn ends_apart(curved: &Curved, rim: &Rim, edge: Id, tol: Tolerances) -> bool {
         }
     }
     true
+}
+
+/// Whether each end of the rim's arc is a corner convex in plan (the arc
+/// carried on leaving through every face at its vertex but its own and
+/// those carrying them on) or the cap and wall carried on alone (a seam
+/// the rim's circle runs on through, unasked).
+fn ends_closed(curved: &Curved, rim: &Rim, tol: Tolerances) -> OgeomResult<bool> {
+    for (k, sign) in [(0, -1.0), (1, 1.0)] {
+        let v = if k == 0 { rim.ends.0 } else { rim.ends.1 };
+        let from = if k == 0 { rim.range.0 } else { rim.range.1 };
+        let at = curved.points[&v];
+        let ahead = CircleCurve::new(rim.circle).d1_at(from, tol)? * sign;
+        let closed = curved.faces.iter().enumerate().all(|(f, face)| {
+            f == rim.top
+                || f == rim.wall
+                || !face.loops.iter().flatten().any(|(x, _)| {
+                    let g = &curved.edges[x];
+                    g.ends.0 == v || g.ends.1 == v
+                })
+                || continues(curved, rim, f, tol)
+                || outward(curved, f, at).is_some_and(|n| n.dot(ahead) > tol.angular())
+        });
+        if !closed {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether face `f` carries on the rim's cap or wall: a plane the cap's
+/// own, or the wall's own cylinder, faced alike.
+fn continues(curved: &Curved, rim: &Rim, f: usize, tol: Tolerances) -> bool {
+    let same = |a: &SurfaceGeometry, b: &SurfaceGeometry| match (a, b) {
+        (SurfaceGeometry::Plane(p), SurfaceGeometry::Plane(q)) => {
+            let (p, q) = (p.plane(), q.plane());
+            p.normal().vector().cross(q.normal().vector()).magnitude() <= tol.angular()
+                && p.distance_to(q.origin()) <= tol.confusion()
+        }
+        (SurfaceGeometry::Cylinder(p), SurfaceGeometry::Cylinder(q)) => {
+            let (p, q) = (p.cylinder(), q.cylinder());
+            (p.radius() - q.radius()).abs() <= tol.confusion()
+                && p.axis()
+                    .direction
+                    .vector()
+                    .cross(q.axis().direction.vector())
+                    .magnitude()
+                    <= tol.angular()
+                && p.axis().distance_to(q.axis().location) <= tol.confusion()
+        }
+        _ => false,
+    };
+    let faced = |g: usize| curved.faces[g].shape.orientation();
+    [rim.top, rim.wall].iter().any(|&g| {
+        g != f && faced(g) == faced(f) && same(&curved.faces[g].surface, &curved.faces[f].surface)
+    })
 }
 
 /// The stations of the rim's circle its band runs between (ADR 0001,
