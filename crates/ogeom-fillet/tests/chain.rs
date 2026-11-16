@@ -1779,19 +1779,54 @@ fn curved_turn(
     (prism, [along_arc, straight])
 }
 
-/// What rounding [`curved_turn`]'s two top creases at `r` takes, by the
-/// rule of the bands carried on through an inside corner (ADR 0001,
-/// amendment "M5e"), summed independently of any boolean. The arc's band
-/// carried on is its torus band over the arc, then each end's section run
-/// straight on along the arc's tangent there; the straight edge's is its
-/// band along the whole line. Past the arc's wall is outside its cylinder,
-/// past the straight wall the open side of its plane. A point of the solid
-/// goes where it lies in one band and past the other's wall or in the
-/// other's band. At height `z` a band is the strip `w = r - sqrt(r^2 - t^2)`
-/// in from its wall, `t = z - (2 - r)`, so each height's slice is integrated
-/// across `x`, each column's length in `y` read exactly between the roots
-/// of every boundary there, and the slices summed over `t = r sin(phi)`.
-fn turn_removed(turn: f64, r: f64) -> f64 {
+/// How a notch's corner is closed in [`turn_removed_by`]: the bands
+/// carried on through the inside corner (amendment "M5e"), the ball rolled
+/// round the notch's edge, the bands alone with nothing between them, or
+/// the bands with the whole sector behind the corner taken to the depth
+/// where the ball touches the edge.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Corner {
+    Joined,
+    Rolled,
+    Flat,
+    Hollow,
+}
+
+/// What rounding [`curved_turn`]'s two top creases at `r` takes, summed
+/// independently of any boolean, the corner closed as `corner` says.
+///
+/// [`Corner::Joined`], by the rule of the bands carried on through an
+/// inside corner (ADR 0001, amendment "M5e"): the arc's band carried on is
+/// its torus band over the arc, then each end's section run straight on
+/// along the arc's tangent there; the straight edge's is its band along the
+/// whole line. Past the arc's wall is outside its cylinder, past the
+/// straight wall the open side of its plane. A point of the solid goes
+/// where it lies in one band and past the other's wall or in the other's
+/// band.
+///
+/// [`Corner::Rolled`], by the rule for a notch whose rails meet only past
+/// the top (ADR 0001, amendment "corners where a round's rail misses"):
+/// each band ends where its ball touches the notch's edge, in the plane
+/// through that edge square to its own crease, and the ball rolls round the
+/// edge behind the corner, touching it and the top. At each height that
+/// roll takes the sector of the disc of the band's width about the corner,
+/// through the turn, centred on the way back from the notch. [`Corner::Flat`]
+/// and [`Corner::Hollow`] bound it: nothing taken there, or the sector of
+/// the radius at every height down to the ball's touch on the edge.
+///
+/// At height `z` a band is the strip `w = r - sqrt(r^2 - t^2)` in from its
+/// wall, `t = z - (2 - r)`, so each height's slice is integrated across
+/// `x`, each column's length in `y` read exactly between the roots of every
+/// boundary there, and the slices summed over `t = r sin(phi)`.
+fn turn_removed_by(turn: f64, r: f64, corner_by: Corner) -> f64 {
+    turn_removed_within(turn, r, corner_by, false)
+}
+
+/// [`turn_removed_by`], with `sector`: only what lies in the sector of the
+/// radius behind the notch's corner, through the turn, centred on the way
+/// back from the notch (the region the rolled corner stands in).
+fn turn_removed_within(turn: f64, r: f64, corner_by: Corner, sector: bool) -> f64 {
+    let pivot = corner_by != Corner::Joined;
     let (cx, cy, big) = (6.0, 3.4 - 5.2, 5.2);
     let angle = |x: f64, y: f64| (y - cy).atan2(x - cx);
     let (tf, tc) = (angle(8.0, 3.0), angle(4.0, 3.0));
@@ -1832,9 +1867,39 @@ fn turn_removed(turn: f64, r: f64) -> f64 {
         // The chord's polygon, or the segment between the chord and the arc.
         inside || (y > 3.0 && rho(x, y) < big)
     };
+    // The way back from the notch, and the cosine of half the turn.
+    let back = {
+        let b = (-(-ahead.0 + along.0), -(-ahead.1 + along.1));
+        let l = b.0.hypot(b.1);
+        (b.0 / l, b.1 / l)
+    };
+    let half = (0.5 * turn).cos();
+    let in_sector = |x: f64, y: f64| {
+        let off = (x - corner.0, y - corner.1);
+        let reach = off.0.hypot(off.1);
+        reach <= r && (reach == 0.0 || dot(off, back) >= half * reach)
+    };
     let removed_at = |w: f64, x: f64, y: f64| {
-        if !in_outline(x, y) {
+        if !in_outline(x, y) || (sector && !in_sector(x, y)) {
             return false;
+        }
+        if pivot {
+            let off = (x - corner.0, y - corner.1);
+            let d = dot(off, into);
+            let b_band = (0.0..=w).contains(&d) && dot(off, along) >= 0.0;
+            let q = rho(x, y);
+            let torus = (big - w..=big).contains(&q) && (tf..=tc).contains(&angle(x, y));
+            let (e, t, n) = ends[0];
+            let far = (x - e.0, y - e.1);
+            let run_on = dot(far, t) >= 0.0 && (0.0..=w).contains(&-dot(far, n));
+            let reach = off.0.hypot(off.1);
+            let depth = match corner_by {
+                Corner::Flat => -1.0,
+                Corner::Hollow => r,
+                _ => w,
+            };
+            let rolled = reach <= depth && (reach == 0.0 || dot(off, back) >= half * reach);
+            return torus || run_on || b_band || rolled;
         }
         let d = dot((x - corner.0, y - corner.1), into);
         let in_b = (0.0..=w).contains(&d);
@@ -1870,6 +1935,26 @@ fn turn_removed(turn: f64, r: f64) -> f64 {
         for th in [tf, tc] {
             line((cx, cy), (th.cos(), th.sin()));
         }
+        if pivot || sector {
+            line(corner, into);
+            let (c, s) = ((0.5 * turn).cos(), (0.5 * turn).sin());
+            for sign in [1.0, -1.0] {
+                line(
+                    corner,
+                    (
+                        back.0 * c - sign * back.1 * s,
+                        sign * back.0 * s + back.1 * c,
+                    ),
+                );
+            }
+            for disc in [w, r] {
+                let h = disc * disc - (x - corner.0) * (x - corner.0);
+                if h >= 0.0 {
+                    ys.push(corner.1 + h.sqrt());
+                    ys.push(corner.1 - h.sqrt());
+                }
+            }
+        }
         for k in 0..outline.len() {
             let (a, b) = (outline[k], outline[(k + 1) % outline.len()]);
             if (a.0 - x) * (b.0 - x) <= 0.0 && (b.0 - a.0).abs() > 1e-15 {
@@ -1897,43 +1982,175 @@ fn turn_removed(turn: f64, r: f64) -> f64 {
     swept::adaptive(&slice, 0.0, core::f64::consts::FRAC_PI_2)
 }
 
+/// What rounding takes from [`curved_turn`]'s prism within the sector of
+/// radius `r` behind the notch's corner (as [`turn_removed_within`] clips
+/// it), through the top `r` of the prism, estimated by sampling: a fixed
+/// stream of points uniform over that sector, each counted where `prism`
+/// holds it and `rounded` does not, each read against its own boundary
+/// meshed to a chord of 1e-4. With one standard error of the estimate.
+fn sector_sampled(
+    model: &ogeom_topo::Model,
+    prism: &ogeom_topo::Shape,
+    rounded: &ogeom_topo::Shape,
+    turn: f64,
+    r: f64,
+) -> (f64, f64) {
+    use ogeom_algo::{Containment, SolidMesh};
+    const SAMPLES: u32 = 20_000;
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-4,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let (before, after) = (
+        SolidMesh::of(model, prism, fine, T).unwrap(),
+        SolidMesh::of(model, rounded, fine, T).unwrap(),
+    );
+    // The way back from the notch: between the arc's end tangent reversed
+    // and the straight edge's direction, as the oracle reads it.
+    let (cx, cy) = (6.0_f64, 3.4_f64 - 5.2);
+    let tc = (3.0 - cy).atan2(4.0 - cx);
+    let ahead = (-tc.sin(), tc.cos());
+    let (s, c) = turn.sin_cos();
+    let along = (
+        ahead.0.mul_add(c, ahead.1 * s),
+        (-ahead.0).mul_add(s, ahead.1 * c),
+    );
+    let back = {
+        let b = (ahead.0 - along.0, ahead.1 - along.1);
+        let l = b.0.hypot(b.1);
+        (b.0 / l, b.1 / l)
+    };
+    let mid = back.1.atan2(back.0);
+    // SplitMix64, seeded: the same points every run.
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut unit = || {
+        state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^= z >> 31;
+        f64::from(u32::try_from(z >> 32).unwrap()) / 4_294_967_296.0
+    };
+    let mut taken = 0_u32;
+    for _ in 0..SAMPLES {
+        let reach = r * unit().sqrt();
+        let theta = mid + turn * (unit() - 0.5);
+        let z = 2.0 - r * unit();
+        let p = Point::new(4.0 + reach * theta.cos(), 3.0 + reach * theta.sin(), z);
+        let held = |mesh: &SolidMesh| mesh.holds(p, T).unwrap() == Containment::In;
+        if held(&before) && !held(&after) {
+            taken += 1;
+        }
+    }
+    let region = 0.5 * turn * r * r * r;
+    let share = f64::from(taken) / f64::from(SAMPLES);
+    (
+        region * share,
+        region * (share * (1.0 - share) / f64::from(SAMPLES)).sqrt(),
+    )
+}
+
+/// The near-closed notch's bounds stand far apart, the sector its rolled
+/// corner stands in being much larger than what the corner takes there
+/// ([`rounds_at_a_curved_crease_turning_nearly_back_on_itself`]), so what
+/// rounding takes in that sector is also sampled, the points read off the
+/// prism's and the rounded solid's own boundaries, and held to the exact
+/// figure clipped to the sector within four standard errors.
+#[test]
+#[ignore = "heavy"]
+fn a_near_closed_notch_s_rolled_corner_takes_what_sampling_finds() {
+    for degrees in [170.0_f64, 178.0] {
+        let mut model = ogeom_topo::Model::new();
+        let (prism, edges) = curved_turn(&mut model, degrees.to_radians());
+        let rounded = ogeom_fillet::fillet_edges(&mut model, &prism, &edges, 0.5, T).unwrap();
+        let within = turn_removed_within(degrees.to_radians(), 0.5, Corner::Rolled, true);
+        let sampled = sector_sampled(&model, &prism, &rounded.shape, degrees.to_radians(), 0.5);
+        println!(
+            "{degrees} degrees: in the corner's sector, exact {within:.6}, sampled {:.6} \
+             +- {:.6} (one standard error)",
+            sampled.0, sampled.1
+        );
+        assert!(
+            (sampled.0 - within).abs() < 4.0 * sampled.1,
+            "{degrees} degrees: sampled {sampled:?} against {within}"
+        );
+    }
+}
+
 /// Two top creases, an arc's and a straight edge's, rounded where the
-/// outline turns back on itself past them. At 150 degrees the corner cell
-/// both rounds hold lies in the material and the two bands, carried on
-/// through the inside corner, take what the rule takes ([`turn_removed`]),
-/// in either order. Turned 170 or 178 degrees back, the straight
-/// continuations reach the plane bisecting them only past the solid's far
-/// side: no junction is taken, and the request rounds exactly
-/// as it does with none (the current path's; the bands carried on there
-/// would pinch the solid at the corner, the notch and the bands' overlap
-/// past it meeting on its line). Those figures are what the rounding without
-/// junctions takes; each holds the arc's band running on past its far end
-/// at (8, 3), where the arc meets the wall x = 8 obliquely, through the
-/// corner its ball still finds in the solid there: 0.002505, the torus
-/// corner past that end within x <= 8, the same at every turn.
+/// outline turns back on itself past them, one request in either order.
+/// At 150 degrees the two contacts on the top, carried on past the corner,
+/// cross within the solid: the two bands, carried on through the inside
+/// corner, take what that rule takes ([`turn_removed_by`] with
+/// [`Corner::Joined`]). Turned 170 or 178
+/// degrees back they cross only past the solid's far side, and the ball
+/// rolls round the notch's edge between the two bands' ends, touching it
+/// and the top ([`turn_removed_by`]; ADR 0001, amendment "corners where a
+/// round's rail misses"): carried on, the bands' overlap past the corner
+/// would meet the notch on the corner's line and pinch the solid. One
+/// request is one rounding, so the order the edges are asked in changes
+/// nothing, to the bit. Each figure holds the arc's band running on past
+/// its far end at (8, 3), where the arc meets the wall x = 8 obliquely,
+/// through the corner its ball still finds there.
 #[test]
 fn rounds_at_a_curved_crease_turning_nearly_back_on_itself() {
-    let mut model = ogeom_topo::Model::new();
-    let (prism, edges) = curved_turn(&mut model, 150.0_f64.to_radians());
-    let removed = removed_both_ways(&model, &prism, &edges, 0.5);
-    let want = turn_removed(150.0_f64.to_radians(), 0.5);
-    assert!((removed[0] - removed[1]).abs() < 2e-6, "{removed:?}");
-    assert!(
-        (removed[0] - want).abs() < 2e-6,
-        "{removed:?} against {want}"
-    );
-    for (degrees, want) in [
-        (170.0_f64, [0.381_783, 0.382_840]),
-        (178.0, [0.381_542, 0.381_751]),
+    for (degrees, corner) in [
+        (150.0_f64, Corner::Joined),
+        (170.0, Corner::Rolled),
+        (178.0, Corner::Rolled),
     ] {
         let mut model = ogeom_topo::Model::new();
         let (prism, edges) = curved_turn(&mut model, degrees.to_radians());
         let removed = removed_both_ways(&model, &prism, &edges, 0.5);
-        for (got, want) in removed.iter().zip(want) {
-            assert!(
-                (got - want).abs() < 2e-6,
-                "{degrees} degrees: {removed:?} against {want}"
-            );
+        let want = turn_removed_by(degrees.to_radians(), 0.5, corner);
+        assert_eq!(
+            removed[0].to_bits(),
+            removed[1].to_bits(),
+            "{degrees} degrees: {removed:?}"
+        );
+        assert!(
+            (removed[0] - want).abs() < 2e-6,
+            "{degrees} degrees: {removed:?} against {want}"
+        );
+        if corner != Corner::Rolled {
+            continue;
+        }
+        // Between nothing taken behind the corner and the whole sector to
+        // the ball's touch on the edge.
+        let (flat, hollow) = (
+            turn_removed_by(degrees.to_radians(), 0.5, Corner::Flat),
+            turn_removed_by(degrees.to_radians(), 0.5, Corner::Hollow),
+        );
+        println!(
+            "{degrees} degrees: flat {flat:.6}, rolled {:.6} (oracle {want:.6}), hollow \
+             {hollow:.6}, gap {:.6}",
+            removed[0],
+            hollow - flat
+        );
+        assert!(
+            flat < removed[0] && removed[0] < hollow,
+            "{degrees} degrees: {flat} < {} < {hollow}",
+            removed[0]
+        );
+        let rounded = ogeom_fillet::fillet_edges(&mut model, &prism, &edges, 0.5, T).unwrap();
+        // The rolled corner, the faces both rounds generate, tangent to each
+        // band and to the top where it meets them.
+        let (a, b) = (
+            rounded.history.generated(&edges[0]),
+            rounded.history.generated(&edges[1]),
+        );
+        let rolled: Vec<_> = a
+            .iter()
+            .filter(|f| b.iter().any(|g| g.is_same(f)))
+            .collect();
+        assert!(!rolled.is_empty(), "{degrees} degrees: no rolled corner");
+        for face in rolled {
+            for c in ogeom_fillet::analyse_blend(&model, &rounded.shape, face, 17, T).unwrap() {
+                assert!(
+                    c.tangency_error < 1e-6 && c.gap < 1e-6,
+                    "{degrees} degrees: {c:?}"
+                );
+            }
         }
     }
 }
