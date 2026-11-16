@@ -1406,6 +1406,37 @@ out as the corner rounded in one call.
   block and placement in `crates/ogeom/tests/blends.rs`. Its port (the
   vertex agent, #902 tracker) inherits that contract unchanged.
 
+### Amendment: a crease's seat past an earlier blend (#902)
+
+Extends amendment "a later round reaching an earlier band at its end"
+to the faces an earlier round cut back. A straight crease's ball must sit
+on both its faces along the crease, and the way to each contact must lie
+on the solid's boundary: a groove beside the crease breaks that, and such
+a band is cut off, not carried on. Near an end that meets an earlier
+blend, the crease's faces are cut back by that blend, and the way to the
+contact stands in air there although no groove is near.
+
+- **A blend of planes.** A cylinder or a sphere tangent along its edges
+  to at least two faces, each a plane or, two levels down, itself a blend
+  of planes: a band on a crease between planes, and a corner tool's sphere
+  and ridge beside the bands it meets. A face tangent to fewer than two
+  (a drum a band runs along) is no ball's seat and is not one.
+- **Cut back, not grooved.** A point of the way in air is cut back by an
+  earlier blend where, straight in from the face's plane, the first
+  surface met is the own cylinder or sphere of a blend of planes bordering
+  that face, solved in closed form, the point met on the solid's boundary
+  and the way to it in air. Over a groove the first surface met is its
+  floor or wall, neither such a blend, so a groove still cuts the band
+  off.
+- **Past an end face.** For a crease carried out, a point of the way in
+  air on the outer side of a planar end face at one of the crease's own
+  ends is past that end, where the band runs out across the face (a
+  pyramid's lateral edge meeting its base obliquely).
+- **Ending at a blend.** A crease end that meets a blend of planes
+  tangent there to one of its faces needs no run-out past it: the band
+  carried on takes what lies under that blend's surface, the two bands'
+  mitre.
+
 ### Amendment: M5d, a round resting on a far edge (#902)
 
 The current path's rolling rounds (`rolled.rs`, `stepped.rs`,
