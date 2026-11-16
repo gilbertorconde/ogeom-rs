@@ -25,10 +25,16 @@ pub(crate) enum EndSurface {
         cone: ogeom_math::Cone,
         outside: bool,
     },
-    /// A torus, the crease's side outside its tube where `outside`.
+    /// A torus, the crease's side outside its tube where `outside`, and
+    /// then round the ring from the axis where `ringward` (farther from the
+    /// axis than the tube's centre circle). Past the surface from outside
+    /// lies the tube and, within the tube's height, the ring's hole on the
+    /// far side of its centre circle: a way carried on through the tube
+    /// does not come out again on the other side.
     Torus {
         torus: ogeom_math::Torus,
         outside: bool,
+        ringward: bool,
     },
 }
 
@@ -67,10 +73,47 @@ impl EndSurface {
             SurfaceGeometry::Torus(t) => {
                 let torus = t.torus();
                 let outside = torus.signed_distance_to(crease) >= 0.0;
-                Self::Torus { torus, outside }
+                let ringward = off_axis(torus.axis(), crease) >= torus.major_radius();
+                Self::Torus {
+                    torus,
+                    outside,
+                    ringward,
+                }
             }
             _ => return None,
         })
+    }
+}
+
+impl EndSurface {
+    /// Whether `p` stands on the crease's side of the surface.
+    pub(crate) fn keeps(&self, p: Point) -> bool {
+        match self {
+            Self::Plane { at, keep } => (p - *at).dot(*keep) >= 0.0,
+            Self::Cylinder { cylinder, outside } => {
+                (off_axis(cylinder.axis(), p) >= cylinder.radius()) == *outside
+            }
+            Self::Cone { cone, outside } => {
+                let axis = cone.axis();
+                let z = axis.direction.vector().dot(p - axis.location);
+                (off_axis(axis, p) >= cone.radius_at(z)) == *outside
+            }
+            Self::Torus {
+                torus,
+                outside,
+                ringward,
+            } => {
+                let in_tube = torus.signed_distance_to(p) < 0.0;
+                if !*outside {
+                    return in_tube;
+                }
+                let axis = torus.axis();
+                let height = axis.direction.vector().dot(p - axis.location);
+                let beside = height.abs() <= torus.minor_radius();
+                let hole_side = (off_axis(axis, p) < torus.major_radius()) == *ringward;
+                !(in_tube || (beside && hole_side))
+            }
+        }
     }
 }
 
@@ -83,11 +126,17 @@ fn off_axis(axis: ogeom_math::Axis, p: Point) -> f64 {
 
 /// `tool` with what lies on the far side of `end` from the crease, within
 /// `span` of the vertex `at`, cut away, and `faces` of it traced through
-/// the cut. `None` where a boolean refuses or leaves other than one solid.
+/// the cut. A curved end face can leave the tool in pieces, its way
+/// carried on through the surface and out again past it (an earlier
+/// round's band, a tube): the piece holding `crease`, a point of the tool
+/// on the crease's own stretch, is the band, and what lies past the
+/// surface is past its end. `None` where a boolean refuses or no one piece
+/// holds `crease`.
 ///
 /// # Errors
 ///
-/// As building the cutting solids.
+/// As building the cutting solids and classifying `crease`.
+#[allow(clippy::too_many_arguments, reason = "one cut, all its data")]
 pub(crate) fn cut_far(
     model: &mut Model,
     tool: &Shape,
@@ -95,6 +144,7 @@ pub(crate) fn cut_far(
     end: &EndSurface,
     at: Point,
     span: f64,
+    crease: Option<Point>,
     tol: Tolerances,
 ) -> OgeomResult<Option<(Shape, Vec<Shape>)>> {
     let Some(far) = far_side(model, end, at, span, tol)? else {
@@ -104,12 +154,29 @@ pub(crate) fn cut_far(
         return Ok(None);
     };
     let solids = explore_unique(model, &cut.shape, ShapeType::Solid)?;
-    let [kept] = solids.as_slice() else {
-        return Ok(None);
+    let kept = match (solids.as_slice(), crease) {
+        ([one], _) => one,
+        ([], _) | (_, None) => return Ok(None),
+        (many, Some(p)) => {
+            let mut holding = Vec::new();
+            for s in many {
+                if ogeom_algo::classify_in_solid_exact(model, s, p, tol)?
+                    == ogeom_algo::Containment::In
+                {
+                    holding.push(s);
+                }
+            }
+            let [one] = holding[..] else {
+                return Ok(None);
+            };
+            one
+        }
     };
+    let own = explore_unique(model, kept, ShapeType::Face)?;
     let traced = faces
         .iter()
         .flat_map(|f| cut.history.trace(f).to_vec())
+        .filter(|f| own.iter().any(|g| g.is_same(f)))
         .collect();
     Ok(Some((kept.clone(), traced)))
 }
@@ -206,16 +273,38 @@ fn far_side(
             let frustum = ogeom_algo::make_cone(model, frame, r_lo, r_hi, hi - lo, tol)?.shape;
             (frustum, *outside)
         }
-        EndSurface::Torus { torus, outside } => {
-            let ring = ogeom_algo::make_torus(
-                model,
-                torus.frame(),
-                torus.major_radius(),
-                torus.minor_radius(),
-                tol,
-            )?
-            .shape;
-            (ring, *outside)
+        EndSurface::Torus {
+            torus,
+            outside,
+            ringward,
+        } => {
+            let frame = torus.frame();
+            let (big, small) = (torus.major_radius(), torus.minor_radius());
+            let ring = ogeom_algo::make_torus(model, frame, big, small, tol)?.shape;
+            if !*outside {
+                (ring, false)
+            } else {
+                // The tube with the slab of the tube's height on the far
+                // side of its centre circle from the crease.
+                let z = frame.z().vector();
+                let foot = Frame::new(frame.origin() - z * small, frame.z(), frame.x(), tol)?;
+                let puck = ogeom_algo::make_cylinder(model, foot, big, 2.0 * small, tol)?.shape;
+                let slab = if *ringward {
+                    puck
+                } else {
+                    let wide = off_axis(torus.axis(), at) + small + 2.0 * reach;
+                    let disc =
+                        ogeom_algo::make_cylinder(model, foot, wide, 2.0 * small, tol)?.shape;
+                    let Ok(annulus) = ogeom_bool::cut(model, &disc, &puck, tol) else {
+                        return Ok(None);
+                    };
+                    annulus.shape
+                };
+                let Ok(past) = ogeom_bool::fuse(model, &ring, &slab, tol) else {
+                    return Ok(None);
+                };
+                (past.shape, true)
+            }
         }
     };
     let far = if outside {
@@ -256,4 +345,77 @@ fn behind(
         tol,
     )?
     .shape)
+}
+
+/// `built` with each of the faces `around` (new faces of it) unified with
+/// the faces on its carrier it reaches, and the edge chains that leaves on
+/// one curve joined: a band cut flush on a face's surface leaves a piece of
+/// that surface beside the face, and a crease running on along both stays
+/// one edge to its real end. Where merging leaves the solid unfit, `built`
+/// as it is.
+///
+/// # Errors
+///
+/// As unifying and joining, and a cancelled guard.
+pub(crate) fn rejoined(
+    model: &mut Model,
+    built: ogeom_algo::Built,
+    around: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<ogeom_algo::Built> {
+    if around.is_empty() {
+        return Ok(built);
+    }
+    let mut scratch = model.clone();
+    let (unified, merged) =
+        ogeom_heal::unify_same_domain_around(&mut scratch, &built.shape, around, tol)?;
+    if merged == 0 {
+        return Ok(built);
+    }
+    let (joined, _) = ogeom_heal::merge_edges(&mut scratch, &unified.shape, tol)?;
+    let history = rejoined_edges(&scratch, &unified.shape, &joined)?;
+    let shape = joined.shape;
+    match super::guards::solid_fits(&scratch, &shape, tol) {
+        Ok(()) => {
+            *model = scratch;
+            let history = built.history.then(&unified.history).then(&history);
+            Ok(ogeom_algo::Built::new(shape, history))
+        }
+        Err(e @ ogeom_core::OgeomError::Cancelled) => Err(e),
+        Err(_) => Ok(built),
+    }
+}
+
+/// `joined`'s history with each edge of `before` it merged away traced to
+/// the edge it joined: the neighbour across a vertex it shares, which
+/// became a new edge reaching on over both.
+fn rejoined_edges(
+    model: &Model,
+    before: &Shape,
+    joined: &ogeom_algo::Built,
+) -> OgeomResult<ogeom_algo::History> {
+    let mut history = joined.history.clone();
+    let edges = explore_unique(model, before, ShapeType::Edge)?;
+    let ends = |e: &Shape| -> OgeomResult<Vec<Shape>> {
+        Ok(ogeom_algo::edge_vertices(model, e)?
+            .map(|(a, b)| vec![a, b])
+            .unwrap_or_default())
+    };
+    let meets = |a: &[Shape], b: &[Shape]| a.iter().any(|v| b.iter().any(|w| w.is_same(v)));
+    for gone in edges.iter().filter(|e| joined.history.is_deleted(e)) {
+        let own = ends(gone)?;
+        for next in &edges {
+            if next.is_same(gone) || !meets(&ends(next)?, &own) {
+                continue;
+            }
+            if let [image] = joined.history.trace(next)
+                && !image.is_same(next)
+                && meets(&ends(image)?, &own)
+            {
+                history.modify(gone, image.clone());
+                break;
+            }
+        }
+    }
+    Ok(history)
 }

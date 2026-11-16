@@ -2902,11 +2902,16 @@ fn rounds_at_a_drum_drafted_foot_out_meeting_a_wall_take_all_above_both() {
 ///   while the crease's cut leaves its contact on the top in the solid and
 ///   its contact on the cone carried on outside it, and ends in the plane
 ///   through the axis there (amendment "corners where a round's rail
-///   misses").
+///   misses");
+/// - the crease after the rim runs on along the top and the piece of the
+///   wall the rim's flush end left, one edge, until the rim's band trims
+///   it (amendment "M5e"; #1098's rule for a band ending at an earlier
+///   one), its section kept short of the band's tube.
 ///
-/// The crease after the rim still goes to the current path; the two orders
-/// differ only within the box. The current path took one corner in either
-/// order, its own figure.
+/// The two orders differ only within the box. The current path took one
+/// corner in either order, its own figure. The crease after the rim was
+/// built by the current path, its own figure, while the rim's flush end
+/// left the crease's line split at the old corner.
 #[test]
 fn a_cone_rim_that_meets_unresolved_is_rounded_fitted() {
     let r = 0.5;
@@ -2969,6 +2974,12 @@ fn a_cone_rim_that_meets_unresolved_is_rounded_fitted() {
                 both,
                 want(ConeRimCorner::RimAfterCrease),
             );
+        } else {
+            close(
+                "the crease after the rim",
+                both,
+                want(ConeRimCorner::CreaseAfterRim),
+            );
         }
         windows.push(both);
         totals.push(total_before - volume(&model, &rounded.shape, 1e-4));
@@ -2988,6 +2999,7 @@ enum ConeRimCorner {
     CreaseAlone,
     RimAlone,
     RimAfterCrease,
+    CreaseAfterRim,
 }
 
 /// What a step of [`a_cone_rim_that_meets_unresolved_is_rounded_fitted`]
@@ -2999,7 +3011,12 @@ enum ConeRimCorner {
 /// the rim's is its torus band's, over the arc from the corner round the
 /// drum (polar angle at most the corner's), kept on the wall's open side
 /// when the rim is rounded alone, and run on past the corner after the
-/// crease to where it stops.
+/// crease to where it stops. After the rim, the crease runs on along the
+/// top and the wall's piece the rim left, to the rim's torus band, and
+/// ends flush on it: a point of its section is taken while the line
+/// through it along the crease has not yet reached the band's tube (the
+/// tube's centre circle of radius `3 + u`, `u` the rim section's centre,
+/// at the height of that centre, its radius `r`).
 fn cone_rim_corner_removed(at: (f64, f64), half: f64, r: f64, rule: ConeRimCorner) -> f64 {
     let k = 0.1;
     let lean = -0.1_f64.atan();
@@ -3084,6 +3101,26 @@ fn cone_rim_corner_removed(at: (f64, f64), half: f64, r: f64, rule: ConeRimCorne
                 }
                 ConeRimCorner::RimAfterCrease => {
                     span(&crease_runs) + span(&rim_runs) - overlap(&crease_runs, &rim_runs)
+                }
+                ConeRimCorner::CreaseAfterRim => {
+                    let open = [(2.0 - ny / nz * (y - 2.0), f64::INFINITY)];
+                    let rim_part = meet(&rim_runs, &open);
+                    // Before the tube along the crease's line: farther out
+                    // than the tube at this height, or at a height the
+                    // tube does not reach.
+                    let (rc, zc) = (3.0 + rim.centre.0, rim.centre.1);
+                    let below = (f64::NEG_INFINITY, zc - r);
+                    let above = (zc + r, f64::INFINITY);
+                    let before: Vec<(f64, f64)> = if rho - rc >= r {
+                        vec![(f64::NEG_INFINITY, f64::INFINITY)]
+                    } else if rho > rc {
+                        let h = r.mul_add(r, -(rho - rc).powi(2)).sqrt();
+                        vec![(f64::NEG_INFINITY, zc - h), (zc + h, f64::INFINITY)]
+                    } else {
+                        vec![below, above]
+                    };
+                    let crease_part = meet(&crease.column(y), &before);
+                    span(&crease_part) + span(&rim_part) - overlap(&crease_part, &rim_part)
                 }
             }
         },

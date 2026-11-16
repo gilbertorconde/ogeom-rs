@@ -1595,6 +1595,16 @@ and capping there left the corner standing.
     time, the drafted drum on a leaning block takes a corner in each order
     by that order's own rule. Separate rounds depend on their order, as in
     every application.
+  - **A crease past a rim's flush end.** A rim's band ending flush on a
+    plane leaves a piece of that plane beside the face it ended on; the
+    route merges the two, and the crease along them is one edge again, to
+    its real end on the band. A crease ending at an earlier band it runs
+    tangent to ends there only while its line carried on stays on the
+    solid (one of its faces runs on past the band); where the line leaves
+    the solid over the band, it runs out as #1098 says. Past a torus band
+    from outside lies its tube and, within the tube's height, the ring's
+    hole beyond the tube's centre circle: a crease carried on through the
+    tube does not come out again on the other side (`engine/flush.rs`).
 - **Not built.** Two bands carried on that would pinch the solid where they
   meet (a crease turning back on itself, its notch and the bands' overlap
   past the corner meeting on the corner's line) fail the solid's guard and

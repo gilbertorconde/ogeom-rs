@@ -153,7 +153,7 @@ pub(crate) fn rounds_with(
         // off a face narrower than its setback is cut off there, not
         // carried on.
         if matches!(crease.kind, Kind::Straight)
-            && !seated_along(model, solid, &curved, &crease, false, tol)?
+            && !seated_along(model, solid, &curved, &crease, false, &[None, None], tol)?
         {
             return Ok(None);
         }
@@ -535,6 +535,8 @@ fn runs_out(
 /// [`EndSurface`]. `None` where the end meets no such face or more than
 /// one, or one [`EndSurface`] does not read.
 fn free_end(
+    model: &Model,
+    solid: &Shape,
     curved: &Curved,
     crease: &Crease,
     k: usize,
@@ -561,12 +563,30 @@ fn free_end(
         let Some(n) = outward(curved, f, curved.points[&v]) else {
             return Ok(None);
         };
-        // A face the crease carried on leaves through, or runs tangent to,
-        // is not where it ends: only a face standing across its way is.
-        if n.dot(ahead) > -tol.angular() {
+        // A face the crease carried on leaves through is not where it ends;
+        // a face standing across its way is.
+        if n.dot(ahead) > tol.angular() {
             continue;
         }
-        ends.push((f, n));
+        if n.dot(ahead) < -tol.angular() {
+            ends.push((f, n));
+            continue;
+        }
+        // An earlier round's band the crease runs tangent to is where it
+        // ends only while the line carried on stays on the solid: there one
+        // of the crease's faces runs on past the band (a crease left after
+        // a rim's band ended flush on its wall). Where the line leaves the
+        // solid over the band, the crease runs out past it (a block's
+        // corner rounded one edge at a time).
+        if matches!(curved.faces[f].surface, SurfaceGeometry::Plane(_)) {
+            continue;
+        }
+        let on = at + ahead * (0.05 * crease.radius);
+        if ogeom_algo::classify_in_solid_exact(model, solid, on, tol)?
+            != ogeom_algo::Containment::Out
+        {
+            ends.push((f, n));
+        }
     }
     let [(f, n)] = ends[..] else {
         return Ok(None);
@@ -611,9 +631,17 @@ fn seated_along(
     curved: &Curved,
     crease: &Crease,
     past_ends: bool,
+    free: &[Option<(Point, EndSurface)>; 2],
     tol: Tolerances,
 ) -> OgeomResult<bool> {
     use ogeom_algo::Containment;
+    // Near a free end, a point past the surface the band ends flush on is
+    // past the band's end.
+    let past = |p: Point| {
+        free.iter()
+            .flatten()
+            .any(|(at, end)| p.distance(*at) <= 3.0 * crease.radius && !end.keeps(p))
+    };
     let [(na, _), (nb, _)] = crease.planes;
     let centre = -(na + nb) * (crease.radius / (1.0 + na.dot(nb)));
     for i in 1..CONTACT_STATIONS {
@@ -622,6 +650,9 @@ fn seated_along(
             let contact = at + centre + n * crease.radius;
             for j in 1..=ACROSS_STATIONS {
                 let p = at + (contact - at) * (f64::from(j) / f64::from(ACROSS_STATIONS));
+                if past(p) {
+                    continue;
+                }
                 match ogeom_algo::classify_in_solid_exact(model, solid, p, tol)? {
                     Containment::On => {}
                     // In air where an earlier blend cut the face back (ADR
@@ -708,7 +739,7 @@ pub(crate) fn carried_out(
             {
                 continue;
             }
-            let Some(end) = free_end(&curved, &crease, k, tol)? else {
+            let Some(end) = free_end(model, solid, &curved, &crease, k, tol)? else {
                 return Ok(None);
             };
             *slot = Some(end);
@@ -740,7 +771,7 @@ pub(crate) fn carried_out(
                 }
             }
         }
-        if !seated_along(model, solid, &curved, &crease, true, tol)? {
+        if !seated_along(model, solid, &curved, &crease, true, &into, tol)? {
             return Ok(None);
         }
         creases.push(crease);
@@ -771,9 +802,26 @@ pub(crate) fn carried_out(
         else {
             return Ok(None);
         };
+        // A point of the spandrel at the crease's middle, half way in
+        // along the bisector to the band.
+        let within = {
+            let [(na, _), (nb, _)] = c.planes;
+            let half = f64::midpoint(1.0, na.dot(nb)).sqrt();
+            let depth = c.radius * (1.0 / half - 1.0);
+            let inward = -(na + nb) / (na + nb).magnitude();
+            c.a.midpoint(c.b) + inward * (0.5 * depth)
+        };
         for (at, end) in into.iter().flatten() {
-            let Some((kept, traced)) =
-                super::flush::cut_far(&mut scratch, &tool, &named, end, *at, near, tol)?
+            let Some((kept, traced)) = super::flush::cut_far(
+                &mut scratch,
+                &tool,
+                &named,
+                end,
+                *at,
+                near,
+                Some(within),
+                tol,
+            )?
             else {
                 return Ok(None);
             };
