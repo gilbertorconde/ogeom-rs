@@ -177,9 +177,9 @@ fn two_edges_in_either_order(radius: f64) {
 /// All three edges at the vertex rounded at 2: one patch closes the
 /// opening between the bands' ends, tangent to every band it meets, each of
 /// its edges on a face at the vertex or on a band. Every order of
-/// the request gives the same solid, to the bit. Outside the cell the
-/// corner rebuilds (the box from each section back to 4 behind the vertex)
-/// the solid is the three bands built one after another.
+/// the request gives the same solid, to the bit. Outside a cell round the
+/// corner, each band is the straight prism of its section, and the solid
+/// there measures exactly what the bracket and the three sections give.
 #[test]
 fn three_rounds_of_both_kinds_at_a_vertex_close_one_corner_whatever_the_order() {
     let orders = [
@@ -256,17 +256,12 @@ fn three_rounds_of_both_kinds_at_a_vertex_close_one_corner_whatever_the_order() 
             let p = c.point_at(f64::midpoint(lo, hi), T).unwrap();
             assert!(on_face_or_band(p, 2.0), "a patch edge at {p:?}");
         }
-        // Outside the cell, the bands as one after another builds them.
-        let mut stepwise = l.clone();
-        for k in order {
-            let edge = {
-                let [a, b, c] = corner_edges(&m, &stepwise);
-                [a, b, c][k].clone()
-            };
-            stepwise = ogeom_fillet::fillet_edge(&mut m, &stepwise, &edge, 2.0, T)
-                .unwrap()
-                .shape;
-        }
+        // Outside the cell, each band is the straight prism of its section,
+        // so the solid there is exact: the bracket outside the cell, less the
+        // front band and the upright's band and plus the re-entrant band's
+        // fill, each section `r^2 (1 - pi / 4)` times its length outside the
+        // cell (the front band from x = 9.25 to 20, the fill from y = 4.25 to
+        // 20, the upright's band from z = 9.25 to 20).
         // The cell, a quarter wider all round, so its walls stand off the
         // bands' section planes the patch meets them in.
         let cell = ogeom_algo::make_box(
@@ -277,16 +272,17 @@ fn three_rounds_of_both_kinds_at_a_vertex_close_one_corner_whatever_the_order() 
         )
         .unwrap()
         .shape;
-        let outside = |m: &mut Model, s: &Shape| {
-            let left = ogeom_bool::cut(m, s, &cell, T).unwrap().shape;
-            volume(m, &left)
-        };
-        let (a, b) = (outside(&mut m, &rounded), outside(&mut m, &stepwise));
-        assert!((a - b).abs() < 1e-9, "outside the cell {a} against {b}");
-        eprintln!(
-            "the signed corner {} against the stepwise bands {}",
-            volume(&m, &rounded),
-            volume(&m, &stepwise)
+        let left = ogeom_bool::cut(&mut m, &rounded, &cell, T).unwrap().shape;
+        let got = volume(&m, &left);
+        let section = 4.0 - core::f64::consts::PI;
+        // The bracket within the cell: the base there, and the upright above
+        // the base's top.
+        let within = 4.25 * 4.25 * (8.5 + 4.25);
+        let want = (3500.0 - within) - section * (20.0 - 9.25) + section * (20.0 - 4.25)
+            - section * (20.0 - 9.25);
+        assert!(
+            (got - want).abs() < 1e-9 * want,
+            "outside the cell {got} against {want}"
         );
     }
 }
