@@ -5800,3 +5800,91 @@ fn a_round_of_one_piece_of_a_split_edge_rounds_the_whole_edge() {
         .collect();
     assert!(strip.iter().all(|s| s.is_same(&strip[0])));
 }
+
+/// Every edge of a slab rounded at half its thickness: the bands from top
+/// and bottom along a side are one half cylinder, and the corner balls
+/// from top and bottom one ball. Each stands as one face, not two pieces
+/// with a line between them, and the history names the merged faces: every
+/// face an edge generated is a face of the result.
+#[test]
+fn a_slab_rounded_at_half_its_thickness_keeps_each_surface_one_face() {
+    for (x, y) in [(2.0, 2.0), (3.0, 2.0)] {
+        let mut model = Model::new();
+        let slab = ogeom::algo::make_box(&mut model, Frame::WORLD, (x, y, 1.0), T)
+            .unwrap()
+            .shape;
+        let edges = explore_unique(&model, &slab, ShapeType::Edge).unwrap();
+        let rounded = ogeom::fillet::fillet_edges(&mut model, &slab, &edges, 0.5, T).unwrap();
+        let found = ogeom::algo::check(&model, &rounded.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        assert_eq!(
+            split_carriers(&model, &rounded.shape),
+            Vec::new(),
+            "{x} x {y}"
+        );
+        let faces = explore_unique(&model, &rounded.shape, ShapeType::Face).unwrap();
+        for edge in &edges {
+            for made in rounded.history.generated(edge) {
+                assert!(
+                    faces.iter().any(|f| f.is_same(made)),
+                    "{x} x {y}: an edge generated a face the result does not hold"
+                );
+            }
+        }
+        let pi = core::f64::consts::PI;
+        let (a, b) = (x - 1.0, y - 1.0);
+        let want = a * b + (a + b) * pi * 0.25 + pi / 6.0;
+        let got = exact_volume(&model, &rounded.shape);
+        assert!((got - want).abs() < 1e-6, "{x} x {y}: {got} against {want}");
+    }
+}
+
+/// The L-bracket's concave band ends on the bracket's end faces. The end
+/// of its fill lies on each end face's plane, so each end face stays one
+/// face with the band's end in it, no line across it. Its rim (the leg's
+/// top edge, the band's arc, the wall's edge) then turns smoothly through
+/// each end of the arc, the face running on straight across the tangent
+/// point: no cusp, and the rim's round still rolls over the band, a
+/// torus quarter between two straight runs, to the closed form.
+#[test]
+fn a_concave_band_s_end_joins_the_end_face_and_its_rim_still_rolls_over() {
+    let r = 0.5_f64;
+    let pi = core::f64::consts::PI;
+    let mut model = Model::new();
+    let bracket = l_bracket(&mut model);
+    let reentrant = edge_near(&model, &bracket, Point::new(1.0, 1.0, 1.0));
+    let concave = ogeom::fillet::fillet_edge(&mut model, &bracket, &reentrant, r, T)
+        .unwrap()
+        .shape;
+    assert_eq!(split_carriers(&model, &concave), Vec::new());
+    assert_eq!(face_kinds(&model, &concave), [8, 1, 0, 0]);
+    let end = planar_face_at(&model, &concave, Point::new(0.5, 0.0, 0.5));
+    let arc_mid = 1.0 + r - r / core::f64::consts::SQRT_2;
+    let rim = [
+        edge_near(&model, &concave, Point::new(1.75, 0.0, 1.0)),
+        edge_near(&model, &concave, Point::new(arc_mid, 0.0, arc_mid)),
+        edge_near(&model, &concave, Point::new(1.0, 0.0, 1.75)),
+    ];
+    let bounding = explore_unique(&model, &end, ShapeType::Edge).unwrap();
+    for e in &rim {
+        assert!(
+            bounding.iter().any(|b| b.is_same(e)),
+            "the rim bounds the one end face"
+        );
+    }
+    let fine = ogeom::mesh::Deflection::with_chord(1e-4).unwrap();
+    let volume = |model: &Model, shape: &Shape| {
+        ogeom::algo::volume_properties(model, shape, fine, T)
+            .unwrap()
+            .mass
+    };
+    let rolled = ogeom::fillet::fillet_edges(&mut model, &concave, &rim, r, T)
+        .unwrap()
+        .shape;
+    let found = ogeom::algo::check(&model, &rolled, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let removed = volume(&model, &concave) - volume(&model, &rolled);
+    let want = 2.0 * (1.0 - pi / 4.0) * r * r * (1.0 - r)
+        + (pi / 2.0) * (11.0 / 6.0 - pi / 2.0) * r * r * r;
+    assert!((removed - want).abs() < want * 2e-3, "{removed} vs {want}");
+}

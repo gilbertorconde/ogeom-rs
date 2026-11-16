@@ -2112,7 +2112,8 @@ outline standing as edges.
   of the current path is not reached.
 - **Unification joins edges by default.** `ogeom_heal::unify_same_domain`
   now joins each run of edges on one curve after merging faces, as
-  `merge_edges` does, and counts both. Public documentation of
+  `merge_edges` does, and counts both; its history modifies each face
+  of a merged set into the merged face. Public documentation of
   mainstream refinement does the same: in CadQuery's `clean`, "adjacent
   faces and edges lying on the same underlying geometry are merged", and
   it runs after every boolean unless `clean=False` [P46]; build123d's
@@ -2120,6 +2121,40 @@ outline standing as edges.
   [P47]. `unify_same_domain_with` and `UnifyOptions { edges: false }`
   keep the edges split; `unify_same_domain_around` merges faces only,
   since an edge it joined is another face's boundary too.
+- **Pieces on one carrier merged after any route.** Other routes do
+  leave them: strips applied by a boolean, rolling bevels meeting in
+  corner pieces, a slab rounded at half its thickness whose top and
+  bottom bands are one half cylinder. Every round and chamfer the engine
+  builds is followed by one merge (`engine::merged`): the faces the
+  blend made, unified with their neighbours on one carrier
+  (`unify_same_domain_around`), the result checked, and the merge's
+  history composed after the blend's. A face taken into another is
+  modified into the merged face, so an edge still names the face its
+  blend became. A cluster the unification leaves split (a band closing
+  round its axis with no seam) stays split; splits between faces the
+  blend left alone stay as the input held them.
+- **A cusp is a pinch, not a smooth turn.** A concave band's end lies on
+  the face it ends on, so the merge joins the two: an L-bracket's end
+  face then holds the band's arc between the leg's top edge and the
+  wall's edge, each tangent to the arc where they meet. The route for
+  rounds either side of a cusp read those tangent points as cusps (a
+  flat side tangent to a drum's wall) and built the rim's round as its
+  separate tools, cut off at the "cusp". A cusp is where the top narrows
+  to nothing: the straight edge and the rim's arc leave the tangent point
+  the same way. Where they leave it opposite ways, the top runs on
+  straight across it, the chain turns smoothly, and the route does not
+  apply.
+- **A cusp edge is not a fold.** P5 refused two faces meeting along an
+  edge facing opposite ways as folded flat. Two elementary surfaces of
+  different kinds (a rim's torus and a drum's cone) cannot lie on one
+  another; meeting so, they are tangent along the edge and the material
+  narrows to it, as a rim's band carried round past a crease's flush end
+  leaves it (the crease's cone piece beside the torus). The fold guard
+  holds where the two can coincide: one surface kind, or a B-spline or
+  other non-elementary surface. The merge above joins the drum's cone
+  that the crease's end split, and the rim's round carried past the
+  corner, refused before for that edge and built by the current path,
+  goes through the engine's exact route to the same volume.
 
 ## 12. Acceptance corpus
 
