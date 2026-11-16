@@ -1092,7 +1092,20 @@ fn rounds_by_engine_unplaced(
     {
         return Ok(Some(built));
     }
-    crate::engine::marched_rounds(model, solid, &once, tol)
+    if let Some(built) = crate::engine::marched_rounds(model, solid, &once, false, tol)? {
+        return Ok(Some(built));
+    }
+    // A cone rim asked alone whose exact torus band nothing above closes,
+    // its band fitted through the ball's arcs as the march builds it, as
+    // the current path retries it: the boolean resolves some meetings of
+    // the fitted band it does not of the exact one. With other edges the
+    // rim's band meets theirs at their corners, which the march's
+    // junctions do not read as the exact rounds do.
+    let edges: Vec<Shape> = once.iter().map(|(e, _)| e.clone()).collect();
+    if edges.len() != 1 || !has_cone_rim(model, solid, &edges, tol)? {
+        return Ok(None);
+    }
+    crate::engine::marched_rounds(model, solid, &once, true, tol)
 }
 
 /// The engine's routes for [`rounds_by_engine_unplaced`], in turn, but the

@@ -31,8 +31,15 @@ enum Seat {
 
 /// How `edge` of `solid` is seated: a straight edge between planes or a
 /// ruled pair of hosts, a rim on a planar cap and its coaxial wall, and
-/// any other crease the march's.
-fn seat(model: &Model, solid: &Shape, edge: &Shape, tol: Tolerances) -> OgeomResult<Seat> {
+/// any other crease the march's; a rim on a cone the march's too where
+/// `fitted` asks its band fitted through the ball's arcs.
+fn seat(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    fitted: bool,
+    tol: Tolerances,
+) -> OgeomResult<Seat> {
     let (curve, _) = crate::support::edge_curve(model, edge, tol)?;
     Ok(match curve {
         Curve::Line(_) if crate::support::hosts_planar(model, solid, edge, tol)? => Seat::Straight,
@@ -41,6 +48,7 @@ fn seat(model: &Model, solid: &Shape, edge: &Shape, tol: Tolerances) -> OgeomRes
             None => Seat::Marched,
         },
         Curve::Circle(c) => match crate::support::revolved_seat(model, solid, edge, &c, tol) {
+            Ok(seat) if fitted && seat.slope != 0.0 => Seat::Marched,
             Ok(_) => Seat::Rim,
             Err(OgeomError::Construction(_)) => Seat::Marched,
             Err(e) => return Err(e),
@@ -69,7 +77,8 @@ enum Bands {
 /// alone. `None` where no edge is a marched seat and none is taken off
 /// whole, a wedge does not build, a boolean refuses, or the result is not
 /// valid, nor where a one-edge request's band is refused and no strip
-/// comes off whole: the request goes on then.
+/// comes off whole: the request goes on then. Where `fitted`, a rim on a
+/// cone is a marched seat, its band fitted through the ball's arcs.
 ///
 /// # Errors
 ///
@@ -79,6 +88,7 @@ pub(crate) fn rounds(
     model: &mut Model,
     solid: &Shape,
     once: &[(Shape, f64)],
+    fitted: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     struct Restore(bool);
@@ -88,7 +98,7 @@ pub(crate) fn rounds(
         }
     }
     let _restore = Restore(IN_SEATS.with(|flag| flag.replace(true)));
-    seated(model, solid, once, tol)
+    seated(model, solid, once, fitted, tol)
 }
 
 thread_local! {
@@ -149,7 +159,7 @@ pub(crate) fn wedges(
     let _restore = Restore(IN_SEATS.with(|flag| flag.replace(true)));
     let mut seats = Vec::with_capacity(once.len());
     for (edge, _) in once {
-        seats.push(seat(model, solid, edge, tol)?);
+        seats.push(seat(model, solid, edge, false, tol)?);
     }
     if !seats.contains(&Seat::Marched) {
         return Ok(None);
@@ -165,11 +175,12 @@ fn seated(
     model: &mut Model,
     solid: &Shape,
     once: &[(Shape, f64)],
+    fitted: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     let mut seats = Vec::with_capacity(once.len());
     for (edge, _) in once {
-        seats.push(seat(model, solid, edge, tol)?);
+        seats.push(seat(model, solid, edge, fitted, tol)?);
     }
     let alone = match once {
         [(edge, radius)] => Some((edge, *radius)),
