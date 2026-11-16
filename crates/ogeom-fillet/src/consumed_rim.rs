@@ -254,6 +254,7 @@ pub(crate) fn consumed_rim(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<RevolvedSeat>> {
+    crate::engine::old_marched_constructor("consumed_rim");
     let Some((centre_e, axis, _)) = circle_of(model, edge, tol)? else {
         return Ok(None);
     };

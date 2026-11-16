@@ -92,7 +92,7 @@ pub(crate) fn rounds(
     // The other edges on marched seats: their wedges as each builds alone,
     // applied with the rims' tools, the rims' first.
     if !others.is_empty()
-        && let Some(wedges) = crate::fillet::marched_wedges(&mut scratch, solid, &others, tol)?
+        && let Some(wedges) = super::marched_seats::wedges(&mut scratch, solid, &others, tol)?
     {
         let mut tools = Vec::with_capacity(rims.len() + wedges.len());
         for (rim, span) in &rims {

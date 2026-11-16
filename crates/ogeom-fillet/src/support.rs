@@ -1761,6 +1761,7 @@ thread_local! {
 /// Run `f` with every wedge [`apply_wedge`] builds set aside rather than
 /// applied, and hand the wedges back with its result.
 pub(crate) fn collecting_wedges<T>(f: impl FnOnce() -> T) -> (T, Vec<Wedge>) {
+    crate::engine::old_marched_constructor("collecting_wedges");
     struct Restore(Option<Vec<Wedge>>);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -1793,6 +1794,69 @@ pub(crate) fn set_aside(wedges: Vec<Wedge>) {
     });
 }
 
+/// Where a strip builder hands its wedge, unapplied: the engine's list of
+/// tools, which it applies in one boolean each. `None` applies the wedge.
+pub(crate) type Aside<'a> = Option<&'a core::cell::RefCell<Vec<Wedge>>>;
+
+/// Sew the wedge's faces, demand a closed shell, and set it `aside` as a
+/// tool for `edge`, the solid unchanged but `edge` gone from its history;
+/// with no sink, apply it as [`apply_wedge`] does.
+pub(crate) fn finish_wedge(
+    model: &mut Model,
+    solid: &Shape,
+    edge: Option<&Shape>,
+    faces: &[Shape],
+    additive: bool,
+    aside: Aside<'_>,
+    tol: Tolerances,
+) -> OgeomResult<ogeom_algo::Built> {
+    if aside.is_none() {
+        return apply_wedge(model, solid, edge, faces, additive, tol);
+    }
+    let wedge = wedge_solid(model, faces, true, tol)?;
+    finish_wedge_solid(model, solid, edge, &wedge, additive, aside, tol)
+}
+
+/// [`finish_wedge`] for a wedge already sewn into a solid.
+pub(crate) fn finish_wedge_solid(
+    model: &mut Model,
+    solid: &Shape,
+    edge: Option<&Shape>,
+    wedge: &Shape,
+    additive: bool,
+    aside: Aside<'_>,
+    tol: Tolerances,
+) -> OgeomResult<ogeom_algo::Built> {
+    let Some(aside) = aside else {
+        return apply_wedge_solid(model, solid, edge, wedge, additive, tol);
+    };
+    aside.borrow_mut().push(Wedge {
+        solid: wedge.clone(),
+        additive,
+        edges: edge.into_iter().cloned().collect(),
+        melt_refusal: None,
+        credit: Vec::new(),
+    });
+    let mut history = ogeom_algo::History::new();
+    if let Some(edge) = edge {
+        history.delete(edge);
+    }
+    Ok(ogeom_algo::Built::new(solid.clone(), history))
+}
+
+/// Name the refusal the wedge last set `aside` is refused as, should the
+/// boolean fail to apply it; with no sink, as [`note_melt_refusal`].
+pub(crate) fn note_melt_refusal_in(aside: Aside<'_>, refusal: &'static str) {
+    match aside {
+        Some(aside) => {
+            if let Some(last) = aside.borrow_mut().last_mut() {
+                last.melt_refusal = Some(refusal);
+            }
+        }
+        None => note_melt_refusal(refusal),
+    }
+}
+
 /// Sew the wedge's faces, demand a closed shell, and apply it to the solid:
 /// subtracted on a convex edge, fused on a concave one. Either way the
 /// history reads the same truth: the edge the blend replaces is gone.
@@ -1804,6 +1868,7 @@ pub(crate) fn apply_wedge(
     additive: bool,
     tol: Tolerances,
 ) -> OgeomResult<ogeom_algo::Built> {
+    crate::engine::old_marched_constructor("apply_wedge");
     let wedge = wedge_solid(model, faces, true, tol)?;
     apply_wedge_solid(model, solid, edge, &wedge, additive, tol)
 }
@@ -1880,6 +1945,7 @@ pub(crate) fn apply_wedge_solid(
     additive: bool,
     tol: Tolerances,
 ) -> OgeomResult<ogeom_algo::Built> {
+    crate::engine::old_marched_constructor("apply_wedge_solid");
     let wedge = wedge.clone();
     let set_aside = WEDGES.with(|held| {
         held.borrow_mut().as_mut().map(|wedges| {

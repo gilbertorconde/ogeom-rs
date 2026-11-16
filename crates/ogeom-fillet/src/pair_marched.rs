@@ -1958,6 +1958,7 @@ pub(crate) fn apply_to_solid(
     seat: PairSeat,
     radius: f64,
     behind: bool,
+    aside: crate::support::Aside<'_>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let PairSeat {
@@ -1986,6 +1987,7 @@ pub(crate) fn apply_to_solid(
                 surfaces,
                 crate::marched::Ball::Constant(radius),
                 behind,
+                aside,
                 tol,
             )
         }
@@ -2016,6 +2018,7 @@ pub(crate) fn apply_to_solid(
                     radius,
                     behind,
                     [false, false],
+                    aside,
                     tol,
                 )?;
                 built = Some(match built {

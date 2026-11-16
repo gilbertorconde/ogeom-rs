@@ -82,6 +82,7 @@ pub(crate) fn pinched_fillet(
     radius: f64,
     law: Option<&Profile>,
     pinched: [bool; 2],
+    aside: crate::support::Aside<'_>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let (guide, (lo, hi)) = edge_curve(model, edge, tol)?;
@@ -219,6 +220,7 @@ pub(crate) fn pinched_fillet(
         pinched,
         None,
         [None, None],
+        aside,
         tol,
     )
 }

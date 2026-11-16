@@ -59,7 +59,32 @@ pub(crate) fn marched_fillet(
     mates: Option<(usize, &[crate::fillet::Mate])>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    marched_fillet_by(model, solid, edge, radius, None, None, mates, tol)
+    marched_fillet_by(model, solid, edge, radius, None, None, mates, None, tol)
+}
+
+/// [`marched_fillet`] with the wedge set `aside` unapplied, the solid as
+/// given handed back, where the solid stands as given; a seat whose leg
+/// needs the solid rebuilt on a turned chart hands that solid back.
+pub(crate) fn marched_wedge(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    radius: f64,
+    mates: Option<(usize, &[crate::fillet::Mate])>,
+    aside: &core::cell::RefCell<Vec<crate::support::Wedge>>,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    marched_fillet_by(
+        model,
+        solid,
+        edge,
+        radius,
+        None,
+        None,
+        mates,
+        Some(aside),
+        tol,
+    )
 }
 
 /// Round an edge as [`marched_fillet`] does, the ball's radius following
@@ -83,6 +108,7 @@ pub(crate) fn marched_fillet_law(
         Some(law),
         span,
         mates,
+        None,
         tol,
     )
 }
@@ -102,6 +128,7 @@ fn marched_fillet_by(
     law: Option<&Profile>,
     span: Option<(f64, f64)>,
     mates: Option<(usize, &[crate::fillet::Mate])>,
+    aside: crate::support::Aside<'_>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let MarchedSeat {
@@ -205,6 +232,7 @@ fn marched_fillet_by(
             radius,
             law,
             pinched,
+            aside,
             tol,
         );
     }
@@ -365,6 +393,7 @@ fn marched_fillet_by(
             along.as_ref(),
             None,
             convex,
+            aside,
             tol,
         );
     }
@@ -399,6 +428,7 @@ fn marched_fillet_by(
         [(&first, sign_first), (&second, sign_second)],
         ball,
         convex,
+        aside,
         tol,
     )
 }
@@ -955,6 +985,7 @@ pub(crate) fn closed_band_wedge(
     hosts: [(&SurfaceGeometry, f64); 2],
     ball: Ball<'_>,
     convex: bool,
+    aside: crate::support::Aside<'_>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     use ogeom_geom::Surface as _;
@@ -1472,15 +1503,16 @@ pub(crate) fn closed_band_wedge(
     ];
     let fitted_host = matches!(first, SurfaceGeometry::BSpline(_))
         || matches!(second, SurfaceGeometry::BSpline(_));
-    let applied = match apply_wedge(model, &solid, edge, &faces, additive, tol) {
-        Err(e) if fitted_host => ogeom_bail!(
-            NotDone,
-            "the blend marched and its wedge was built, but the melt against a \
+    let applied =
+        match crate::support::finish_wedge(model, &solid, edge, &faces, additive, aside, tol) {
+            Err(e) if fitted_host => ogeom_bail!(
+                NotDone,
+                "the blend marched and its wedge was built, but the melt against a \
              fitted host is beyond what the boolean resolves ({e}); see \
              docs/CAPABILITIES.md, fillet.edge-blends"
-        ),
-        other => other?,
-    };
+            ),
+            other => other?,
+        };
     Ok(match turned_history {
         Some(turned) => Built::new(applied.shape, turned.then(&applied.history)),
         None => applied,
@@ -1632,6 +1664,7 @@ fn open_runout_wedge(
     law: Option<&crate::law::RadiusAlong>,
     ruled: Option<(Station<'_>, Chord)>,
     convex: bool,
+    aside: crate::support::Aside<'_>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     use ogeom_geom::Surface as _;
@@ -2191,6 +2224,7 @@ fn open_runout_wedge(
         [false, false],
         None,
         walls,
+        aside,
         tol,
     ) {
         Err(ogeom_core::OgeomError::NotDone(e)) if ends_on_a_wall => {
@@ -2198,7 +2232,7 @@ fn open_runout_wedge(
         }
         Ok(built) => {
             if ends_on_a_wall {
-                crate::support::note_melt_refusal(RUNS_OUT_ON_A_FACE);
+                crate::support::note_melt_refusal_in(aside, RUNS_OUT_ON_A_FACE);
             }
             Ok(built)
         }
@@ -2239,6 +2273,7 @@ pub(crate) fn open_ruled_wedge(
         None,
         Some((station, chord)),
         convex,
+        None,
         tol,
     )
 }
@@ -2263,10 +2298,25 @@ pub(crate) fn build_open_band(
     radius: f64,
     convex: bool,
     pinched: [bool; 2],
+    aside: crate::support::Aside<'_>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    build_held_band(
-        model, solid, edge, blend, guide, hosts, radius, convex, pinched, None, tol,
+    build_held_band_by(
+        model,
+        solid,
+        edge,
+        blend,
+        guide,
+        hosts,
+        radius,
+        false,
+        None,
+        convex,
+        pinched,
+        None,
+        [None, None],
+        aside,
+        tol,
     )
 }
 
@@ -2355,6 +2405,7 @@ pub(crate) fn build_held_band(
         pinched,
         exact,
         [None, None],
+        None,
         tol,
     )
 }
@@ -2379,6 +2430,7 @@ pub(crate) fn build_held_band_by(
     pinched: [bool; 2],
     exact: Option<&ExactBand<'_>>,
     walls: [Option<(Point, Vector)>; 2],
+    aside: crate::support::Aside<'_>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     use ogeom_geom::Surface as _;
@@ -3040,7 +3092,7 @@ pub(crate) fn build_held_band_by(
     faces.extend(strip_faces.into_iter().map(|f| orient(f, 1.0)));
     faces.push(blend_face);
     faces.extend(caps);
-    apply_wedge(model, solid, edge, &faces, additive, tol)
+    crate::support::finish_wedge(model, solid, edge, &faces, additive, aside, tol)
 }
 
 /// [`build_held_band`] over a chain of runs, each starting where the one
