@@ -978,6 +978,15 @@ only who builds it does.
   count and panics in a debug build, so every marched test fails if the
   engine goes back to old code.
 
+- **A cone rim fitted.** Where no route closes a rim on a planar cap and
+  a coaxial cone asked alone, its exact torus band is taken by the march
+  instead, fitted through the ball's arcs, and the request goes through
+  these seats as above. This is the current path's retry
+  (`with_fitted_rims`): the boolean resolves some meetings of the fitted
+  band, within its fit of the torus, that it does not of the exact one
+  (a drum drafted out, on a block whose leaning crease an earlier round
+  has rounded).
+
 ### Amendment: mixed rolling corners (#902)
 
 Chamfers rolling over their faces (amendment "M5b") that meet at one
