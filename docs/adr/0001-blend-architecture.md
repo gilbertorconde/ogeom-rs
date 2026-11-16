@@ -1843,6 +1843,79 @@ is the perimeter, `A = 1 - pi/4` the corner-section area and
 derived oracle replaces the recorded rounded-volume figure without
 changing its tolerance.
 
+### Amendment: rolling corners (#902)
+
+`fillet_edges` closes a vertex where convex and concave rounds meet on one
+G1 patch between the bands' ends (§13, questions 2 and 7). Users of other
+systems also expect the corner the rolling ball itself makes, with no
+patch. This amendment adds it as an option, `FilletCorner::Rolling`, through
+`fillet_edges_corner`. `FilletCorner::Setback`, the default, is
+`fillet_edges` unchanged.
+
+**What the systems offer.**
+
+| System | Behaviour |
+|---|---|
+| Autodesk Fusion [P44] | A corner type per fillet feature, **rolling ball** or **setback**. Asymmetric fillets always take the setback. |
+| SOLIDWORKS [P45] | **Round corners**: constant-size fillets with "a smooth transition between edges", the ball's own corner. Setbacks are a separate, opt-in section. |
+| SMLib [14, S1] | Equal radii at a vertex: the ball's sphere where it touches all three faces, and rolling-ball surfaces where a ball rolls round an edge's end. Coons patches only where neither fits. |
+
+**Rule.** With rolling corners asked, every vertex where two or more of the
+rounds meet is closed by the ball rolling through it. Every new face is a
+plane, a cylinder, a torus or a sphere, and every contact is G1. The result
+does not depend on the request's order.
+
+- **Three rounds of one sense:** the ball's sphere, as by default.
+- **Two convex and one concave, or two concave and one convex** (the lone
+  round), at a vertex of three planes with every edge rounded at one
+  radius `r`:
+  - The lone band runs unbroken to where its ball touches the face across
+    from it (the cap).
+  - The other two bands end square at their corners on their other faces.
+    Between those ends their ball rolls round the lone band's end, touching
+    the cap and the lone band, so its centre runs on the circle of radius
+    `2 r` about the lone band's axis, in the plane of the bands' centres.
+  - The corner face is the torus that ball sweeps: major radius `2 r`,
+    minor radius `r`, its axis the lone band's axis.
+  - It meets the lone band along that band's end arc (the torus's inner
+    equator), each straight band along a meridian, and the cap along its
+    contact circle of radius `2 r`.
+  - This is a torus only where the lone round's edge stands square to the
+    cap, so the bands' centres stay `2 r` off its axis on a circle.
+    Elsewhere the sweep is a canal surface on an ellipse, which is not
+    analytic, and the vertex is refused.
+- **Two rounds of one sense beside an edge left sharp:** the bands meet
+  along the curve where they cross, as by default.
+- **Refused by name, naming the vertex**, never closed by setbacks
+  instead:
+  - a vertex where rounds meet that touches a curved face;
+  - a vertex that joins other than three edges;
+  - radii that differ;
+  - a convex and a concave round beside an edge left sharp;
+  - a lone round's edge not square to the cap;
+  - any vertex the default would close on a patch.
+
+  A request that lies outside the engine's rounds between planes (a round
+  reaching a face beyond its ends, a face with a hole) is refused too.
+
+**Oracle.** With every edge of a prism rounded, the rolled body is the
+opening of the prism's closing. Its volume follows from the cap's offset
+region by slices. The printCAD stairs (three blocks, ten faces, 24 edges,
+`r = 1`) give `4966 + 157π/3 + π²`. That equals the blocks less the
+straight spandrels, `(1 − π/4)·r²·L` each, the twelve octant corners at
+`r³(1 − π/6)` each, and the four elbows, each giving back
+`r³(1 − 7π/6 + π²/4)`.
+A boss 6 square and 6 high on a plate 20 square and 4 thick, rounded at
+`r = 1` on its upright edges and its foot, gives `1808 + 17π/3 − π²`. There
+each elbow takes `r³(1 − 7π/6 + π²/4)`, the same term with its sign turned,
+as rounding the complement turns it.
+
+- [P44] Autodesk Fusion API, `FilletFeature.isRollingBallCorner`:
+  https://help.autodesk.com/cloudhelp/ENU/Fusion-360-API/files/FilletFeature_isRollingBallCorner.htm
+- [P45] SOLIDWORKS, Constant Size Fillets (Round corners):
+  https://help.solidworks.com/2019/english/SolidWorks/sldworks/r_constant_size_fillets.htm
+- [S1] NVIDIA, SMLib Fillets: https://docs.nvidia.com/smlib/manual/smlib/fillets/
+
 ## 12. Acceptance corpus
 
 From #902:
