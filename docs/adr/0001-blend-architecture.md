@@ -1993,6 +1993,17 @@ reaches the corner).
   meet within the seam, a corner on a curved face, a piece whose fill
   shell does not close.
 
+### Amendment: inside-corner meetings on a solid holding seams
+
+Rounds meeting at an inside corner (amendment "M5e") read the face both
+creases share. On an imported solid with curved faces elsewhere, a seam
+can split that face at the corner into two faces on one plane, and the
+creases then share none. As for a solid bounded by planes holding seams,
+the request is read again on a copy of the solid with its seams dissolved,
+and the history is told of the solid as given. Nothing else changes:
+where the solid holds no seam, or the dissolved solid does not close the
+corner either, the request goes on as before.
+
 ## 12. Acceptance corpus
 
 From #902:
