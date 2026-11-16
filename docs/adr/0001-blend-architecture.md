@@ -1787,6 +1787,27 @@ trim it by the adjacent face. So:
   where the top ends at the cusp (the one-sided S); a rim on a cone; any
   other edge in the request.
 
+### Amendment: a rim arc ending obliquely on a flat (#902)
+
+A drum cut flat across its rim leaves the cap's rim an arc whose ends meet
+the flat obliquely: the flat's plane neither holds the rim nor stands
+square to it there. Rounded alone, where does the round end?
+
+- **Rule.** The ball rolls on past each end through the corner it still
+  finds in the solid, while its contact on the cap stands on the cap, and
+  the flat's plane trims it. No sliver of sharp crease is left between the
+  cap and the flat. This is the trim by the adjacent face that SOLIDWORKS
+  documents as its "Keep surface" overflow [help.solidworks.com, Example:
+  Overflow Type]. It matches how a straight round ends on its end faces'
+  planes (amendment "M5f").
+- **Built** as one tool of the one boolean (amendment "M5a"): the rim's
+  section (the corner between the cap and the wall less the ball's disc,
+  or the ball's fill) turned a whole turn about the drum's axis, cut by the
+  plane of each face the arc ends on. Only its torus is named for the edge.
+- **Not this route:** an arc ending on more than one face at an end, on a
+  curved face, or square to it (a meridian plane, where it ends flush), and
+  an arc asked with other edges.
+
 ## 12. Acceptance corpus
 
 From #902:
