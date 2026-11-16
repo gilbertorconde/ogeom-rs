@@ -31,10 +31,17 @@ mod curved;
 /// shifted, by a period where it repeats); the shared edges dissolve, or
 /// stay as a seam where the merged face closes round its carrier; the
 /// faces' own seams stay seams; the remaining boundary re-chains into an
-/// outer ring and one ring per hole. Faces whose boundary does not
+/// outer ring and one ring per hole, and the history modifies every face
+/// of a merged set into the merged face. Faces whose boundary does not
 /// re-chain so (two rings through one vertex, an edge a third face also
 /// bounds, a band closing round its axis with no seam) are left split, the
 /// rest merged. Faces on any other surface pass through untouched.
+///
+/// Then, as [`merge_edges`] does, each run of edges continuing one curve
+/// becomes one edge and the vertices between them dissolve: a wall the
+/// unification joined keeps no split along a straight side. The count is
+/// the faces merged and the edges joined. [`unify_same_domain_with`] and
+/// [`UnifyOptions::edges`] leave the edges split.
 ///
 /// # Errors
 ///
@@ -45,12 +52,56 @@ pub fn unify_same_domain(
     shape: &Shape,
     tol: Tolerances,
 ) -> OgeomResult<(Built, usize)> {
-    unify(model, shape, None, tol)
+    unify_same_domain_with(model, shape, UnifyOptions::default(), tol)
+}
+
+/// What [`unify_same_domain_with`] merges besides faces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnifyOptions {
+    /// Join each run of edges continuing one curve into one edge, as
+    /// [`merge_edges`] does, after the faces merge. On by default; off,
+    /// only faces merge and the edges are left as they stand.
+    pub edges: bool,
+}
+
+impl Default for UnifyOptions {
+    fn default() -> Self {
+        Self { edges: true }
+    }
+}
+
+/// [`unify_same_domain`] with its [`UnifyOptions`]: the faces merged as
+/// there, and the edges joined after only where `options.edges` asks.
+/// The count is the faces merged, plus the edges joined where asked.
+///
+/// # Errors
+///
+/// As [`unify_same_domain`], and as [`merge_edges`] where edges are
+/// joined.
+pub fn unify_same_domain_with(
+    model: &mut Model,
+    shape: &Shape,
+    options: UnifyOptions,
+    tol: Tolerances,
+) -> OgeomResult<(Built, usize)> {
+    let (faces, merged) = unify(model, shape, None, tol)?;
+    if !options.edges {
+        return Ok((faces, merged));
+    }
+    let (edges, joined) = merge_edges(model, &faces.shape, tol)?;
+    if joined == 0 {
+        return Ok((faces, merged));
+    }
+    Ok((
+        Built::new(edges.shape, faces.history.then(&edges.history)),
+        merged + joined,
+    ))
 }
 
 /// [`unify_same_domain`] for the faces `around` alone: each is merged with
 /// the faces on its carrier it reaches across shared edges, and every other
-/// face of `shape` is left as it is, split or not.
+/// face of `shape` is left as it is, split or not. Edges are not joined:
+/// a split along an edge another face bounds is that face's business too.
 ///
 /// What an application refining after a feature wants: the faces the
 /// feature made unified with their neighbours, and the splits the part
@@ -216,6 +267,9 @@ fn unify_own(
     }
 
     let mut reshape = Reshape::new();
+    // Each merged face's first member and the members it took in, whose
+    // image is the merged face, not nothing.
+    let mut absorbed: Vec<(usize, Vec<usize>)> = Vec::new();
     for members in &clusters {
         if members.len() < 2 {
             continue;
@@ -235,6 +289,7 @@ fn unify_own(
                     for &other in &attempt[1..] {
                         reshape.remove(&faces[other]);
                     }
+                    absorbed.push((attempt[0], attempt[1..].to_vec()));
                 }
                 // A curved merge edits nothing before its face builds, and
                 // a flat cluster's plain clusters are itself.
@@ -254,7 +309,16 @@ fn unify_own(
         return Ok((built, 0));
     }
     let unified = reshape.len();
-    Ok((reshape.apply(model, shape)?, unified))
+    let mut built = reshape.apply(model, shape)?;
+    for (kept, others) in &absorbed {
+        let images = built.history.trace(&faces[*kept]).to_vec();
+        for &other in others {
+            for image in &images {
+                built.history.modify(&faces[other], image.clone());
+            }
+        }
+    }
+    Ok((built, unified))
 }
 
 /// The clusters `members` falls into when only plain pairs join: faces

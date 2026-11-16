@@ -31,54 +31,55 @@ fn a_fused_pair_of_halves_unifies_back_to_a_box() {
         "the fuse leaves four walls split"
     );
 
-    let unified = ogeom::heal::unify_same_domain(&mut model, &fused, T)
-        .unwrap()
-        .0
-        .shape;
-    assert_eq!(
-        explore_unique(&model, &unified, ShapeType::Face)
+    let count = |model: &Model, s: &ogeom::topo::Shape, kind: ShapeType| {
+        explore_unique(model, s, kind).unwrap().len()
+    };
+    let volume = |model: &Model, s: &ogeom::topo::Shape| {
+        ogeom::algo::volume_properties(model, s, Deflection::default(), T)
             .unwrap()
-            .len(),
-        6,
-        "one face per box side again"
-    );
-    let volume = ogeom::algo::volume_properties(&model, &unified, Deflection::default(), T)
-        .unwrap()
-        .mass;
-    assert!(
-        (volume - 1000.0).abs() < 1e-6,
-        "nothing changed shape: {volume}"
-    );
+            .mass
+    };
 
-    // The unified walls still carry split collinear boundary edges. The
-    // edge merge takes those out too.
-    let merged = ogeom::heal::merge_edges(&mut model, &unified, T)
+    // Faces only: one face per box side, its walls still carrying the
+    // split collinear edges the fuse left.
+    let faces_only = ogeom::heal::unify_same_domain_with(
+        &mut model,
+        &fused,
+        ogeom::heal::UnifyOptions { edges: false },
+        T,
+    )
+    .unwrap()
+    .0
+    .shape;
+    assert_eq!(count(&model, &faces_only, ShapeType::Face), 6);
+    assert!(count(&model, &faces_only, ShapeType::Edge) > 12);
+    assert!((volume(&model, &faces_only) - 1000.0).abs() < 1e-6);
+
+    // By default the split edges join too, as the edge merge alone joins
+    // them: twelve edges between eight corners. A fresh vertex at a corner
+    // would leave the walls meeting there apart.
+    let (unified, n) = ogeom::heal::unify_same_domain(&mut model, &fused, T).unwrap();
+    let merged = ogeom::heal::merge_edges(&mut model, &faces_only, T)
         .unwrap()
         .0
         .shape;
-    let edges = explore_unique(&model, &merged, ShapeType::Edge)
-        .unwrap()
-        .len();
-    assert!(
-        edges <= 12,
-        "a box has twelve edges; the merge got to {edges}"
-    );
-    // Each joined edge runs between the vertices its neighbours end at: a
-    // fresh vertex at a corner would leave the walls meeting there apart.
-    let vertices = explore_unique(&model, &merged, ShapeType::Vertex)
-        .unwrap()
-        .len();
-    assert_eq!(
-        vertices, 8,
-        "a box has eight corners; the merge left {vertices}"
-    );
-    let volume = ogeom::algo::volume_properties(&model, &merged, Deflection::default(), T)
-        .unwrap()
-        .mass;
-    assert!(
-        (volume - 1000.0).abs() < 1e-6,
-        "still the same box: {volume}"
-    );
+    for (s, what) in [(&unified.shape, "unify"), (&merged, "merge")] {
+        assert_eq!(count(&model, s, ShapeType::Face), 6, "{what}");
+        assert_eq!(count(&model, s, ShapeType::Edge), 12, "{what}");
+        assert_eq!(count(&model, s, ShapeType::Vertex), 8, "{what}");
+        let v = volume(&model, s);
+        assert!((v - 1000.0).abs() < 1e-6, "{what}: still the same box: {v}");
+    }
+    assert!(n > 4, "four faces merged away and edges joined: {n}");
+
+    // Every face of the fused pair ends up in one face of the box: a face
+    // taken into another is modified into the merged face, not deleted.
+    let sides = explore_unique(&model, &unified.shape, ShapeType::Face).unwrap();
+    for face in explore_unique(&model, &fused, ShapeType::Face).unwrap() {
+        let images = unified.history.trace(&face);
+        assert_eq!(images.len(), 1, "one image per fused face");
+        assert!(sides.iter().any(|s| s.is_same(&images[0])));
+    }
 }
 
 #[test]
