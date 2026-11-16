@@ -100,57 +100,14 @@ pub fn blend_edges(
     {
         return Ok(built);
     }
-    // Asymmetric rounds alone, meeting nothing but each other along tangent
-    // chains: their bands, applied by the engine as one-boolean tools.
-    if !asymmetric.is_empty()
-        && rounds.is_empty()
-        && bevels.is_empty()
-        && crate::asym::asymmetric_corners(model, solid, &rounds, &bevels, &asymmetric, tol)
-            .is_ok_and(|corners| corners.edges.is_empty())
-        && let Some(built) = crate::engine::asymmetric_rounds(model, solid, &asymmetric, tol)?
-    {
-        return Ok(built);
-    }
     if !asymmetric.is_empty() {
-        #[cfg(feature = "old-path-log")]
-        let _old_path_entry = crate::fillet::to_current_path("blend_edges");
-        // The corners where an asymmetric round meets the request's other
-        // edges, read off the solid as it stands, their edges set apart.
-        let corners =
-            crate::asym::asymmetric_corners(model, solid, &rounds, &bevels, &asymmetric, tol)?;
-        let at_corner = |e: &Shape| corners.edges.iter().any(|c| c.is_same(e));
-        let (corner_rounds, rounds): (Vec<_>, Vec<_>) =
-            rounds.into_iter().partition(|(e, _)| at_corner(e));
-        let (corner_bevels, bevels): (Vec<_>, Vec<_>) =
-            bevels.into_iter().partition(|(e, _)| at_corner(e));
-        let (corner_asymmetric, asymmetric): (Vec<_>, Vec<_>) =
-            asymmetric.into_iter().partition(|a| at_corner(&a.edge));
-        let others: Vec<Shape> = rounds
-            .iter()
-            .map(|(e, _)| e.clone())
-            .chain(bevels.iter().map(|(e, _)| e.clone()))
-            .chain(corners.edges.iter().cloned())
-            .collect();
-        let symmetric_only = rounds.is_empty() && bevels.is_empty();
-        let built = crate::asym::after_symmetric(
-            model,
-            &others,
-            asymmetric,
-            |model| {
-                if symmetric_only {
-                    Ok(Built::new(solid.clone(), ogeom_algo::History::new()))
-                } else {
-                    blend_symmetric(model, solid, rounds, bevels, corner, tol)
-                }
-            },
-            tol,
-        )?;
-        return crate::asym::close_asymmetric_corners(
+        return crate::engine::mixed_asymmetric(
             model,
             solid,
-            built,
-            &corners,
-            (&corner_rounds, &corner_bevels, &corner_asymmetric),
+            &rounds,
+            &bevels,
+            &asymmetric,
+            corner,
             tol,
         );
     }

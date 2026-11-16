@@ -1779,11 +1779,6 @@ pub(crate) fn collecting_wedges<T>(f: impl FnOnce() -> T) -> (T, Vec<Wedge>) {
     (out, wedges)
 }
 
-/// Whether a caller collects wedges ([`collecting_wedges`]).
-pub(crate) fn collecting() -> bool {
-    WEDGES.with(|held| held.borrow().is_some())
-}
-
 /// Where a strip builder hands its wedge, unapplied: the engine's list of
 /// tools, which it applies in one boolean each. `None` applies the wedge.
 pub(crate) type Aside<'a> = Option<&'a core::cell::RefCell<Vec<Wedge>>>;

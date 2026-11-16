@@ -43,6 +43,8 @@ mod law_tools;
 mod marched_junctions;
 mod marched_seats;
 mod meeting;
+pub(crate) mod mixed_corner;
+mod mixed_tools;
 mod planar_tools;
 pub(crate) mod point_corner;
 mod request;
@@ -68,7 +70,7 @@ mod vertex_tools;
 mod vertices;
 
 pub(crate) use alone::rounds as alone_rounds;
-pub(crate) use conic_tools::{asymmetric as asymmetric_rounds, distances as distances_rounds};
+pub(crate) use conic_tools::distances as distances_rounds;
 pub(crate) use cusp_sides::rounds as cusp_side_rounds;
 pub(crate) use defeatured::tools as defeatured_tools;
 pub(crate) use fallback::{Sense, Tool, applied as apply_tools, straight_non_local};
@@ -83,6 +85,7 @@ pub(crate) use meeting::{
     Spec as MeetingSpec, carried_out as carried_out_rounds, reaches_earlier_band,
     rounds as meeting_rounds, rounds_with as meeting_rounds_with,
 };
+pub(crate) use mixed_tools::blend as mixed_asymmetric;
 pub(crate) use planar_tools::{linear_round, varying_distances};
 pub(crate) use request::{Request, Section};
 pub(crate) use rim_runs_on::rounds as rim_runs_on_rounds;
