@@ -1200,7 +1200,8 @@ fn off_runs(runs: &[Run<'_>], radius: f64, p: Point) -> f64 {
 /// band's fit target of the envelope of `runs`' balls, and the volume it
 /// added equal to their swept sections (clipped to `caps` where given)
 /// within what the bands' stand-off over their area can move it. Returns
-/// how many bands it has, fitted or the exact cylinder.
+/// how many bands it has: fitted, the exact cylinder, or the exact turn of
+/// an arc about a vertex.
 fn holds_to_runs(
     model: &mut ogeom_topo::Model,
     shape: &ogeom_topo::Shape,
@@ -1221,7 +1222,9 @@ fn holds_to_runs(
             let data = model.node(face).unwrap().data().as_face().unwrap();
             matches!(
                 model.geometry().surface(data.surface).unwrap(),
-                ogeom_geom::SurfaceGeometry::BSpline(_) | ogeom_geom::SurfaceGeometry::Cylinder(_)
+                ogeom_geom::SurfaceGeometry::BSpline(_)
+                    | ogeom_geom::SurfaceGeometry::Cylinder(_)
+                    | ogeom_geom::SurfaceGeometry::Revolution(_)
             )
         })
         .count();

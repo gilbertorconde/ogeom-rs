@@ -1484,8 +1484,8 @@ here.
   face is left.
 - **Not yet built.** Each of these is handed to the current path until its
   own layer: a ball carried across a change of support past the narrow
-  face, a ball on a vertex, an end met by other than one plane, two such
-  seams meeting.
+  face, an end met by other than one plane, two such seams meeting. A
+  ball on a vertex is amendment "a round rolling round a vertex".
 
 ### Amendment: M5e, rounds carried on through an inside corner (#902)
 
@@ -1946,6 +1946,52 @@ a hub: one S).
   on to T. Held to the bands' fit target, gap and tangency.
 - **Refused by name:** one lobe asked while the top runs on past T with its
   edges left sharp (amendment "rounds either side of a cusp").
+
+### Amendment: a round rolling round a vertex (#902)
+
+Where the narrow face is a triangle over the seam, the ball resting on its
+far edge reaches the triangle's corner before the seam's end. Past it the
+ball touches the corner alone: its centre runs on the circle where the
+plane a radius over the touched face meets the sphere a radius about the
+corner, tangent there to the path it had on the edge (§13 question 8: the
+edge's pipe and the corner's sphere are tangent where the edge's touch
+reaches the corner).
+
+- **The case.** Amendment "M5d"'s run, where the touch on the far edge
+  reaches an end of the edge inside the seam. The ball on the edge, then
+  on the corner, are two pieces meeting on the arc's plane where the touch
+  is at the corner; the corner's piece runs on to the seam's end.
+- **Built** as M5d's tools, one a piece. The corner's band is the ball's
+  arc from the touched face to the corner turned about the line through
+  the corner square to that face, exact: a spindle torus, every arc ending
+  on the corner. The edge's piece is fitted as M5d's are. Each fill is
+  closed by the touched face's plane, the narrow face's plane from the
+  crease to the support, and the arcs' planes at its ends. Where a
+  piece runs to the seam's end, the arc's plane caps it where the plane
+  crosses the seam's end.
+- **Ends.** Not cut to the end faces' planes. Both end faces carry the
+  support (the corner lies on each, and the far edge in one), so their
+  planes pass through the balls' touch on it and would cut into the fill
+  the support itself holds. The fill is each piece's sections whole, to
+  the arc's plane through the seam's end, and the oracle sums those
+  sections unclipped. Sampled point by point against the rolling balls
+  (each point in its nearest centre's normal plane, outside that ball,
+  between the seam's two faces and on the corner side of the chord from
+  the touch to the support), the material past the end faces' planes is
+  that region and nothing else. Cutting flush (the boolean does it on the
+  exact band) takes 28% of the fill, the edge piece's whole touch on the
+  touched face with it, which lies past the plane of the end face holding
+  the far edge: its round would no longer meet that face tangentially.
+- **Proof** as M5d's, the corner standing for the far edge, at every
+  station whether or not the end faces' planes keep it: each ball's touch
+  on its face lies on the face, no face of the solid stands nearer than
+  the radius (the end faces and the narrow face asked too, so the ball
+  meets the faces at the corner only at the corner), and the arcs' planes
+  cross the seam in order. The edge's piece is proved on the edge, within
+  its normal cone, up to the switch.
+- **Not this route:** a corner where the circle and the edge's path do not
+  meet within the seam, a corner on a curved face, a piece whose fill
+  shell does not close.
 
 ## 12. Acceptance corpus
 
