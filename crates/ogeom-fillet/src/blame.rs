@@ -65,7 +65,7 @@ pub fn fillet_edges_checked(
         });
     }
     if let Err(Blamed { edges: named, .. }) =
-        crate::fillet::request_fits(model, solid, edges, &vec![radius; edges.len()], tol)
+        crate::engine::request_fits(model, solid, edges, &vec![radius; edges.len()], tol)
         && !named.is_empty()
     {
         return Err(BlendRefusal {
@@ -137,7 +137,7 @@ pub fn fillet_edges_partial(
             if set.len() < 2 {
                 return None;
             }
-            match crate::fillet::request_fits(
+            match crate::engine::request_fits(
                 model,
                 solid,
                 &pick(set),
