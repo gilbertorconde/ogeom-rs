@@ -1784,16 +1784,6 @@ pub(crate) fn collecting() -> bool {
     WEDGES.with(|held| held.borrow().is_some())
 }
 
-/// Set `wedges` aside for the caller collecting them; nothing where none
-/// does.
-pub(crate) fn set_aside(wedges: Vec<Wedge>) {
-    WEDGES.with(|held| {
-        if let Some(held) = held.borrow_mut().as_mut() {
-            held.extend(wedges);
-        }
-    });
-}
-
 /// Where a strip builder hands its wedge, unapplied: the engine's list of
 /// tools, which it applies in one boolean each. `None` applies the wedge.
 pub(crate) type Aside<'a> = Option<&'a core::cell::RefCell<Vec<Wedge>>>;

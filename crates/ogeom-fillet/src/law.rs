@@ -397,40 +397,6 @@ impl Profile {
         pieces[last].1 = 1.0;
         pieces
     }
-
-    /// The open law as a cubic B-spline over the fraction: the knots,
-    /// doubled inside (C1) or tripled where the slope steps (C0), and the
-    /// radii's control values. Each piece is
-    /// its Hermite cubic's own Bezier form, and the C1 join is the point
-    /// knot removal drops.
-    pub(crate) fn spline(&self, tol: Tolerances) -> (Vec<f64>, Vec<f64>) {
-        let pieces = self.pieces(tol);
-        let last = pieces.len() - 1;
-        let mut knots = vec![0.0; 4];
-        let mut values = vec![pieces[0].2[0]];
-        for (k, &(x0, x1, bezier)) in pieces.iter().enumerate() {
-            values.push(bezier[1]);
-            values.push(bezier[2]);
-            if k == last {
-                values.push(bezier[3]);
-                knots.extend([1.0; 4]);
-                continue;
-            }
-            // A join where the slope steps (a law held level past an
-            // edge's end beside a piece that is not) keeps its own value
-            // under a triple knot; elsewhere the doubled knot drops it.
-            let (y0, y1, next) = (x0, x1, pieces[k + 1]);
-            let before = (bezier[3] - bezier[2]) / (y1 - y0);
-            let after = (next.2[1] - next.2[0]) / (next.1 - next.0);
-            if (before - after).abs() > tol.parametric() {
-                values.push(bezier[3]);
-                knots.extend([x1; 3]);
-            } else {
-                knots.extend([x1, x1]);
-            }
-        }
-        (knots, values)
-    }
 }
 
 /// How many pieces a curve's arc length is tabulated over.

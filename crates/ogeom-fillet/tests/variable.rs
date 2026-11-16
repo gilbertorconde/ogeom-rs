@@ -2296,3 +2296,157 @@ fn a_law_round_a_rim_crossing_a_bevel_s_width_is_refused_by_name() {
         "{why}"
     );
 }
+
+/// The old-path instrumentation measures the constructor boundary, not the
+/// resulting geometry: an old builder could return the same valid solid.
+#[cfg(feature = "old-path-log")]
+#[test]
+#[ignore = "heavy"]
+fn variable_laws_and_conic_tools_do_not_enter_old_builders() {
+    const CHILD: &str = "OGEOM_VARIABLE_TOOLS_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        use ogeom_fillet::{
+            Blend, RoundProfile, blend_edges, fillet_edge_distances, fillet_edge_distances_variable,
+        };
+        let mut model = Model::new();
+        let block = ogeom_algo::make_box(&mut model, at(0.0, 0.0, 0.0), (10.0, 10.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let edge = edge_near(&model, &block, [0.0, 0.0, 5.0]);
+        let face =
+            ogeom_topo::ancestors_of(&model, &block, &edge, ShapeType::Face).unwrap()[0].clone();
+        if std::env::var_os(CHILD).is_some_and(|mode| mode == "control") {
+            let other = edge_near(&model, &block, [10.0, 10.0, 5.0]);
+            let built = blend_edges(
+                &mut model,
+                &block,
+                &[
+                    (
+                        edge.clone(),
+                        Blend::RoundDistances {
+                            face,
+                            on_face: 1.0,
+                            on_other: 2.0,
+                            profile: RoundProfile::Elliptical,
+                        },
+                    ),
+                    (other, Blend::Chamfer(ogeom_fillet::Chamfer::Symmetric(1.0))),
+                ],
+                ogeom_fillet::ChamferCorner::Point,
+                T,
+            )
+            .unwrap();
+            valid(&model, &built.shape);
+            return;
+        }
+        for (start, end) in [(1.0, 2.0), (2.0, 2.0)] {
+            let built = fillet_edge_variable(&mut model, &block, &edge, start, end, T).unwrap();
+            valid(&model, &built.shape);
+            assert!(built.history.is_deleted(&edge));
+        }
+        let linear = RadiusLaw::Linear {
+            start: 1.0,
+            end: 2.0,
+        };
+        let built = fillet_edge_distances_variable(
+            &mut model,
+            &block,
+            &edge,
+            &face,
+            &linear,
+            &linear,
+            RoundProfile::Elliptical,
+            T,
+        )
+        .unwrap();
+        valid(&model, &built.shape);
+        assert!(built.history.is_deleted(&edge));
+
+        let drum = ogeom_algo::make_cylinder(&mut model, at(0.0, 0.0, 0.0), 5.0, 10.0, T)
+            .unwrap()
+            .shape;
+        let rim = edge_near(&model, &drum, [-5.0, 0.0, 10.0]);
+        let face =
+            ogeom_topo::ancestors_of(&model, &drum, &rim, ShapeType::Face).unwrap()[0].clone();
+        let built =
+            fillet_edges_variable(&mut model, &drum, std::slice::from_ref(&rim), &hump(), T)
+                .unwrap();
+        valid(&model, &built.shape);
+        assert!(built.history.is_deleted(&rim));
+        let built = fillet_edge_distances(
+            &mut model,
+            &drum,
+            &rim,
+            &face,
+            1.0,
+            2.0,
+            RoundProfile::Elliptical,
+            T,
+        )
+        .unwrap();
+        valid(&model, &built.shape);
+        assert!(built.history.is_deleted(&rim));
+        let built = blend_edges(
+            &mut model,
+            &drum,
+            &[(
+                rim.clone(),
+                Blend::RoundDistances {
+                    face,
+                    on_face: 1.0,
+                    on_other: 2.0,
+                    profile: RoundProfile::Elliptical,
+                },
+            )],
+            ogeom_fillet::ChamferCorner::Point,
+            T,
+        )
+        .unwrap();
+        valid(&model, &built.shape);
+        assert!(built.history.is_deleted(&rim));
+        let away = ogeom_algo::make_box(&mut model, at(3.0, -10.0, -1.0), (10.0, 20.0, 12.0), T)
+            .unwrap()
+            .shape;
+        let flat = ogeom_bool::cut(&mut model, &drum, &away, T).unwrap().shape;
+        let chain = [
+            edge_near(&model, &flat, [3.0, 4.0, 5.0]),
+            edge_near(&model, &flat, [-5.0, 0.0, 10.0]),
+        ];
+        let built = fillet_edges_variable(&mut model, &flat, &chain, &hump(), T).unwrap();
+        valid(&model, &built.shape);
+        assert!(chain.iter().all(|edge| built.history.is_deleted(edge)));
+        return;
+    }
+    let path =
+        std::env::temp_dir().join(format!("ogeom-variable-tools-{}.log", std::process::id()));
+    for mode in ["control", "owned"] {
+        std::fs::File::create(&path).unwrap();
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "variable_laws_and_conic_tools_do_not_enter_old_builders",
+                "--include-ignored",
+                "--nocapture",
+            ])
+            .env(CHILD, mode)
+            .env("OGEOM_OLD_PATH_LOG", &path)
+            .output()
+            .unwrap();
+        let log = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            out.status.success(),
+            "{mode}: {}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        if mode == "control" {
+            assert!(
+                log.lines().any(|line| line.starts_with("blend_edges ")),
+                "the old-constructor control was not observed: {log}"
+            );
+        } else {
+            assert!(log.is_empty(), "old constructors reached:\n{log}");
+        }
+    }
+}
