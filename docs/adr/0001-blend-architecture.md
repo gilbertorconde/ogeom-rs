@@ -1798,6 +1798,41 @@ features depend on their order).
   wall's contact enters it, which would cut a groove with a cliff on the
   wall's surface carried on.
 
+### Amendment: a band's run past its end (#902)
+
+Amendment "corners where a round's rail misses" runs a rim's band on
+past its vertex while its contact on the cap stands in the solid and its
+contact on the wall's surface carried on stands outside it. Amendment
+"M5f" and the oblique rim arc run a band on "until its section has left
+the solid". On a drum cutting a cube's corners the two part: the cap's
+contact circle touches the cube's side at one point, a quarter turn from
+the corner, and stays on the cap past it. Read by contacts, the band runs
+on along the whole side to the next corner, taking a sliver that meets
+the corner's own only at that point. Read by sections, it stops there.
+
+**Survey.** SMLib's manual (*Fillets*) trims a surface fillet "to the
+first intersection with a boundary of one of the base surfaces" (minimal
+trim), and at one rounded edge of three of one convexity "the end face
+will be trimmed back to the fillet surface". SOLIDWORKS' "Keep surface"
+and the Parasolid family's notch trim the face a round overflows to it
+(amendment "M5c, non-local rounds keep their surfaces"). None runs a
+round on past the first boundary its contacts meet.
+
+**Rule.** Past an end with no face standing across its way, the band runs
+on along its spine and the end face is trimmed back to it, up to the
+first station where either contact meets a boundary:
+- the cap's contact meets an edge of the cap, crossing it (the contact
+  leaves the solid) or touching it (the section's material shrinks to a
+  point there: the section has left the solid);
+- the wall's contact, carried on, enters the solid.
+That station is found exactly: the cap's contact circle is intersected
+with the cap's edges, touching points included. At a crossing the tool
+runs half a step on, holding nothing; elsewhere it ends in the plane
+through the axis there. This is one rule for both readings: where the
+contacts cross the boundaries, the sections leave the solid at the same
+station; where the cap's contact only touches, the section leaves and the
+contacts alone do not see it.
+
 ### Amendment: a corner patch held within a convex corner (#902)
 
 A corner's transfinite patch is interpolated on a net and held to the
