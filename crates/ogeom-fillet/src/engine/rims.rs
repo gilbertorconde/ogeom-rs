@@ -488,8 +488,17 @@ fn rims(
                 )
             }
         };
+        // The round would touch its cap at or past the axis: no ring is
+        // left on the cap for it to stand on, the ball as wide as the cap
+        // or wider. Refused by name, as mainstream refuses a round that
+        // consumes the face it rounds onto.
         if ball.rho <= tol.confusion() || ball.wall_rho <= tol.confusion() {
-            return Ok(None);
+            ogeom_core::ogeom_bail!(
+                Construction,
+                "a rim's round meets its cap at or past the axis: the round is as \
+                 wide as the cap it rounds onto, or wider; see docs/CAPABILITIES.md, \
+                 fillet.edge-blends"
+            );
         }
         let mut solved_arcs = Vec::with_capacity(arcs.len());
         let mut vertex_ids: Vec<Id> = Vec::new();
