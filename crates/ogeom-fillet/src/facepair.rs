@@ -144,6 +144,8 @@ pub fn blend_faces(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("blend_faces");
     if !radius.is_finite() || radius <= tol.confusion() {
         ogeom_bail!(Construction, "a blend of radius {radius} rounds nothing");
     }

@@ -396,6 +396,8 @@ pub fn largest_fillet_radius(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("largest_fillet_radius");
     largest_fillet_radius_all(model, solid, std::slice::from_ref(edge), up_to, tol)
 }
 
@@ -426,6 +428,8 @@ pub fn largest_fillet_radius_all(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("largest_fillet_radius_all");
     let conf = tol.confusion();
     if !up_to.is_finite() || up_to <= conf {
         ogeom_bail!(

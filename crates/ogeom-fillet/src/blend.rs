@@ -55,6 +55,8 @@ pub fn blend_edges(
     corner: ChamferCorner,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("blend_edges");
     let mut rounds: Vec<(Shape, f64)> = Vec::new();
     let mut bevels: Vec<(Shape, Chamfer)> = Vec::new();
     let mut asymmetric: Vec<crate::asym::Asymmetric> = Vec::new();
@@ -110,7 +112,8 @@ pub fn blend_edges(
         return Ok(built);
     }
     if !asymmetric.is_empty() {
-        crate::fillet::to_current_path("blend_edges");
+        #[cfg(feature = "old-path-log")]
+        let _old_path_entry = crate::fillet::to_current_path("blend_edges");
         // The corners where an asymmetric round meets the request's other
         // edges, read off the solid as it stands, their edges set apart.
         let corners =

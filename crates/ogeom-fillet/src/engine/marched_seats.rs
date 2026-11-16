@@ -114,7 +114,8 @@ thread_local! {
 /// regression.
 pub(crate) fn old_marched_constructor(entry: &str) {
     if IN_SEATS.with(core::cell::Cell::get) {
-        crate::fillet::to_current_path(entry);
+        #[cfg(feature = "old-path-log")]
+        let _old_path_entry = crate::fillet::to_current_path(entry);
         if cfg!(debug_assertions) {
             panic!("the engine's marched seats reached the old constructor {entry}");
         }

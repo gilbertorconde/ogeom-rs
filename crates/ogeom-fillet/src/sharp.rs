@@ -79,6 +79,8 @@ pub fn round_vertex_setback_sharp(
     setbacks: &Setbacks,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("round_vertex_setback_sharp");
     let mut own: Vec<Shape> = vec![vertex.clone(), sharp.clone()];
     own.extend(setbacks.per_edge.iter().map(|(e, _)| e.clone()));
     ogeom_algo::on_own_nodes(model, solid, &own, |model, solid, parts| {
@@ -107,6 +109,8 @@ fn sharp_own(
     setbacks: &Setbacks,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = crate::fillet::to_current_path("vertex:sharp_own");
     if !radius.is_finite() || radius <= tol.confusion() {
         ogeom_bail!(Construction, "a blend radius must be a positive distance");
     }
