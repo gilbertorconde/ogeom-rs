@@ -781,6 +781,127 @@ pub(crate) fn rounds_one_boolean(
     finished(model, solid, planar, blended, &tools, tol)
 }
 
+/// Independent circular strips whose contacts leave their faces over part
+/// of the edge. Each tool ends square at the edge's vertices. A convex
+/// strip takes only material the original solid holds, and a concave one
+/// extends the neighbouring faces to its fill. Strips sharing a vertex
+/// need the sheet's common vertex blend.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the sections and their original topology"
+)]
+pub(crate) fn cut_off_rounds(
+    model: &mut Model,
+    solid: &Shape,
+    planar: &Planar,
+    seats: &FastMap<(Id, Id), Seat>,
+    by_edge: &FastMap<Id, &super::Section>,
+    corners: &FastMap<(usize, Id), Point>,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let eps = tol.confusion() * 100.0;
+    let mut rounded: Vec<&Seat> = seats
+        .values()
+        .filter(|s| by_edge.contains_key(&s.edge))
+        .collect();
+    rounded.sort_unstable_by_key(|s| s.edge);
+    if rounded.len() != by_edge.len()
+        || rounded
+            .iter()
+            .any(|s| !matches!(by_edge[&s.edge], super::Section::Round { .. }))
+    {
+        return Ok(None);
+    }
+    for (i, a) in rounded.iter().enumerate() {
+        if rounded[i + 1..].iter().any(|b| {
+            [a.ends.0, a.ends.1]
+                .iter()
+                .any(|v| *v == b.ends.0 || *v == b.ends.1)
+        }) {
+            return Ok(None);
+        }
+    }
+    if !rounded.iter().any(|s| {
+        s.faces.iter().any(|fi| {
+            !contact_on_face(
+                planar,
+                *fi,
+                corners[&(*fi, s.ends.0)],
+                corners[&(*fi, s.ends.1)],
+                eps,
+            )
+        })
+    }) {
+        return Ok(None);
+    }
+    let edges: Vec<Shape> = rounded
+        .iter()
+        .map(|s| planar.shapes[&s.edge].clone())
+        .collect();
+    let mut contacts = Vec::with_capacity(rounded.len());
+    let mut tools = Vec::with_capacity(rounded.len());
+    for seat in &rounded {
+        let super::Section::Round { radius } = by_edge[&seat.edge] else {
+            return Ok(None);
+        };
+        // A ball held nowhere belongs to a consumed-face or rolling-edge
+        // route, not to a strip cut off over only part of its length.
+        match crate::support::ball_fits(
+            model,
+            solid,
+            &planar.shapes[&seat.edge],
+            *radius,
+            true,
+            tol,
+        ) {
+            Ok(on) => contacts.push(on),
+            Err(e @ ogeom_core::OgeomError::Cancelled) => return Err(e),
+            Err(_) => return Ok(None),
+        }
+    }
+    crate::support::bands_clear(model, &edges, &contacts, tol).map_err(|b| b.error)?;
+    for seat in &rounded {
+        let super::Section::Round { radius } = by_edge[&seat.edge] else {
+            return Ok(None);
+        };
+        let support = crate::support::Seat {
+            start: planar.points[&seat.ends.0],
+            end: planar.points[&seat.ends.1],
+            along: seat.along,
+            normals: seat.normals,
+            faces: seat.faces.map(|fi| planar.faces[fi].shape.clone()),
+            convex: seat.convex,
+        };
+        let section = crate::round::section::PlanarSection::new(
+            &support,
+            &crate::round::section::RoundSpec::Circular(*radius),
+            tol,
+        )?;
+        let mut square = FastMap::default();
+        for (v, s) in [(seat.ends.0, 0.0), (seat.ends.1, section.length())] {
+            for (k, face) in seat.faces.iter().enumerate() {
+                square.insert((*face, v), section.contact(k, s));
+            }
+        }
+        let Some(tool) = round_tool(model, planar, seat, *radius, &square, tol)? else {
+            return Ok(None);
+        };
+        tools.push(tool);
+    }
+    let Some(built) = applied(model, solid, &edges, &tools, tol)? else {
+        return Ok(None);
+    };
+    let found = ogeom_algo::check(model, &built.shape, tol)?;
+    if !found.is_valid() {
+        ogeom_core::ogeom_bail!(
+            Construction,
+            "the clipped strips fail their check: {:?}",
+            found.problems
+        );
+    }
+    Ok(Some(built))
+}
+
 /// Whether the segment `p` to `q` lies on face `fi`: its middle within the
 /// face, and the segment crossing none of the face's sides (touching one is
 /// on it).

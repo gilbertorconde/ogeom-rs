@@ -988,6 +988,64 @@ facet is not one tool's.
 - [P43] Cimatron, Chamfer options and results:
   https://help.cimatron.com/en/2026/Chamfer_Options_Results.htm
 
+### Amendment: narrow faces and extended flush ends
+
+The narrow-face cut-off requests use the existing **keep-surface/notch**
+semantics, not a new refusal based on the width of a neighbouring face.
+The public evidence is:
+
+| Source | A round reaching the end or side of a neighbouring face |
+|---|---|
+| Creo [P33] | Extended surface rounds maintain a convex round's radius and trim adjacent geometry. Concave solid rounds extend neighbouring surfaces. Stop, Blend and Intersect transitions are supported. |
+| Onshape [P7] | Allow edge overflow is on by default and permits changing the neighbouring edges to keep a smooth, continuous surface. |
+| SOLIDWORKS [P30] | The existing survey records Keep surface as maintaining the round and changing the adjacent edge. The current public page serves a JavaScript shell rather than its example text. |
+| Fusion [P10] | Documents material removed at exterior edges and added at interior edges. No cut-off or overflow end rule is stated. |
+| NX [P29] | The existing survey records maintaining the blend and moving sharp edges. The public API URL could not be retrieved for this amendment. |
+| T-FLEX [P27] | Notch leaves the rounding surface undeformed and trims or extends the affected element's surfaces to it. |
+
+The papers supply the geometric construction, not an application dialog's
+end default: the offset intersection gives the constant-radius strip
+[1, 2], and trimming resolves its interaction with other faces [12].
+In particular, an old face's outline is not a new limit on the round's
+radius once that face is extended.
+
+- **Flush ends.** A concave strip extends its neighbouring face to its end
+  section, in that face's plane even outside the original outline. Its
+  contacts must still end on its two support faces. The same rule applies
+  where two cylindrical strips meet in a crease: their crossing must meet
+  the end section in the far face's plane, but that face may extend to the
+  crossing. A convex strip retains amendment "M5f"'s local-material proof
+  where its end leaves the original face.
+- **Support first.** Amendment "M5d"'s far-edge round takes precedence over
+  the ordinary sheet and its cut-off tools: where the ball rests on a
+  narrow face's far edge, the changing support determines the round, not
+  a full cylinder extended across that face.
+- **Independent overflowing strips.** Where a contact leaves a support
+  face over part of the edge and the sheet cannot place its rings, the
+  engine closes its own cylindrical strip into a finite tool. Its ends
+  are the sections square to the guiding edge at its original vertices,
+  so it does not round material past the selected edge. The convex tool
+  is cut from the original solid; the concave tool is fused, extending
+  the neighbouring faces to meet it. This is the finite-tool convention
+  of the non-local route, not a projection of the contact back onto a
+  narrower face and not a reduction of the requested radius.
+- **Domain and guards.** The original ball-fit and band-clearance
+  predicates apply before tool construction. A face taken off whole is
+  not this class. Bands sharing a vertex still use the sheet's common
+  vertex blend. The migration retains the existing named overlap and
+  mixed-sharp-corner refusals without enlarging their domain. The tools
+  and result are closed, and the result passes `check`. An exposed flap
+  of a concave tool can meet its cylinder at a zero-angle edge: the
+  sheet's opposite-normal fold test is not a test for this solid's
+  validity.
+
+Independent checks are the roof's closed-form spandrel moment, the
+straight dihedral's exact section area times its length, and a voxel
+volume bound at two concave strips' joint. The latter uses only the
+original three planes and the two tangent circles. Plane distance and
+axis distance are 1-Lipschitz, so each voxel's half diagonal bounds the
+uncertainty, independently of the blend and volume implementations.
+
 ### Amendment: round section laws, conic and elliptical (#902)
 
 The round side's section laws beyond the rolling ball: a round meeting

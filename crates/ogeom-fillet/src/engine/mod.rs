@@ -375,7 +375,7 @@ pub(crate) fn run(
                 tol,
             )?);
         }
-        return rounds::assemble(
+        let built = rounds::assemble(
             model,
             &planar,
             &seats,
@@ -384,7 +384,11 @@ pub(crate) fn run(
             &steps,
             &setback_at,
             tol,
-        );
+        )?;
+        if built.is_some() || !request.corners.is_empty() || !steps.is_empty() {
+            return Ok(built);
+        }
+        return fallback::cut_off_rounds(model, solid, &planar, &seats, &by_edge, &corners, tol);
     }
     // A bevel reaching or touching a face not round its ends changes a face
     // the request does not name, which the rings do not trim: the

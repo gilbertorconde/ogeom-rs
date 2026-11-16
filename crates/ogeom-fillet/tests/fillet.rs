@@ -1100,6 +1100,139 @@ fn edges_between(
         .collect()
 }
 
+/// Bound the added volume near two concave rounds' common vertex using
+/// only the original planes and the circles tangent to each plane pair.
+/// The material is `H0 union (H1 intersect H2)`, with `H0` the shared face.
+/// Rounding the two concave edges intersects the two pairwise closings.
+/// Each closing adds the triangle between its contacts less the circle.
+fn check_concave_pair_volume(
+    model: &mut ogeom_topo::Model,
+    original: &ogeom_topo::Shape,
+    rounded: &ogeom_topo::Shape,
+    edges: &[ogeom_topo::Shape],
+    radius: f64,
+) {
+    use ogeom_math::Vector;
+    use ogeom_topo::ShapeType;
+    let faces: Vec<_> = edges
+        .iter()
+        .map(|e| ogeom_topo::ancestors_of(model, original, e, ShapeType::Face).unwrap())
+        .collect();
+    let shared = faces[0]
+        .iter()
+        .find(|f| faces[1].iter().any(|g| f.is_same(g)))
+        .unwrap();
+    let other: Vec<_> = faces
+        .iter()
+        .map(|fs| fs.iter().find(|f| !f.is_same(shared)).unwrap())
+        .collect();
+    let normal = |f: &ogeom_topo::Shape| ogeom_algo::face_normal(model, f, T).unwrap().1;
+    let ns = normal(shared);
+    let no = [normal(other[0]), normal(other[1])];
+    let (a, b) = ogeom_algo::edge_vertices(model, &edges[0])
+        .unwrap()
+        .unwrap();
+    let (c, d) = ogeom_algo::edge_vertices(model, &edges[1])
+        .unwrap()
+        .unwrap();
+    let v = [&a, &b]
+        .into_iter()
+        .find(|v| v.is_same(&c) || v.is_same(&d))
+        .unwrap();
+    let at = v
+        .transform(model.datums())
+        .unwrap()
+        .apply(model.node(v).unwrap().data().as_vertex().unwrap().point);
+    let half = radius * 0.75;
+    let frame = Frame::new(
+        at - Vector::new(half, half, half),
+        ogeom_math::Direction::Z,
+        ogeom_math::Direction::X,
+        T,
+    )
+    .unwrap();
+    let cell = ogeom_algo::make_box(model, frame, (2.0 * half, 2.0 * half, 2.0 * half), T)
+        .unwrap()
+        .shape;
+    let mut volumes = Vec::new();
+    for part in [original, rounded] {
+        let inside = ogeom_bool::common(model, part, &cell, T).unwrap().shape;
+        volumes.push(
+            ogeom_algo::volume_properties(model, &inside, ogeom_mesh::Deflection::default(), T)
+                .unwrap()
+                .mass,
+        );
+    }
+    // A comparison's two booleans mean certainly true and possibly true
+    // throughout one voxel. Plane distance and distance to an axis are
+    // 1-Lipschitz, so the voxel's half diagonal bounds every comparison.
+    const N: u32 = 96;
+    let step = 2.0 * half / f64::from(N);
+    let delta = 3.0_f64.sqrt() * step / 2.0;
+    let below = |d: f64| (d <= -delta, d <= delta);
+    let and = |a: (bool, bool), b: (bool, bool)| (a.0 && b.0, a.1 && b.1);
+    let or = |a: (bool, bool), b: (bool, bool)| (a.0 || b.0, a.1 || b.1);
+    let not = |a: (bool, bool)| (!a.1, !a.0);
+    let pairs = no.map(|n| {
+        let centre = (ns + n) * (radius / (1.0 + ns.dot(n)));
+        let bisector = centre / centre.magnitude();
+        let axis = ns.cross(n);
+        (
+            n,
+            centre,
+            bisector,
+            axis / axis.magnitude(),
+            (centre - ns * radius).dot(bisector),
+        )
+    });
+    let mut lower = [0_u32; 2];
+    let mut upper = [0_u32; 2];
+    for i in 0..N {
+        for j in 0..N {
+            for k in 0..N {
+                let coordinate = |n| (f64::from(n) + 0.5) * step - half;
+                let p = Vector::new(coordinate(i), coordinate(j), coordinate(k));
+                let shared = below(p.dot(ns));
+                let original = or(shared, and(below(p.dot(no[0])), below(p.dot(no[1]))));
+                let closing = pairs.map(|(n, centre, bisector, axis, chord)| {
+                    let q = p - axis * p.dot(axis);
+                    let other = below(p.dot(n));
+                    let triangle =
+                        and(and(not(shared), not(other)), below(q.dot(bisector) - chord));
+                    or(
+                        or(shared, other),
+                        and(triangle, not(below((q - centre).magnitude() - radius))),
+                    )
+                });
+                for (index, bounds) in [original, and(and(closing[0], closing[1]), not(original))]
+                    .into_iter()
+                    .enumerate()
+                {
+                    lower[index] += u32::from(bounds.0);
+                    upper[index] += u32::from(bounds.1);
+                }
+            }
+        }
+    }
+    volumes[1] -= volumes[0];
+    let voxel = step.powi(3);
+    // Surface fits are held to the confusion distance. The cell's surface
+    // area times that distance also covers the volume integral's roundoff.
+    let slack = 24.0 * half * half * T.confusion();
+    for i in 0..2 {
+        let (lo, hi) = (f64::from(lower[i]) * voxel, f64::from(upper[i]) * voxel);
+        assert!(
+            (lo - slack..=hi + slack).contains(&volumes[i]),
+            "cell {i}: {} outside [{lo}, {hi}]",
+            volumes[i]
+        );
+    }
+    assert!(
+        lower[1] > 0,
+        "the independent bounds must distinguish the fill from the original corner: {volumes:?}, {lower:?}, {upper:?}"
+    );
+}
+
 /// Seams of two boxes fused at a slant, each asked with edges that share a
 /// face or a corner with it, at radii whose ball runs off a narrow face
 /// beside the seam over part of it, out of the solid: the face holds the
@@ -1304,12 +1437,38 @@ fn seams_whose_ball_runs_off_a_narrow_face_round_beside_other_edges() {
         // cube of the radius, and the request's result.
         let past_alone = |r: f64| {
             let mut alone = 0.0;
-            for edge in &edges {
+            for (index, edge) in edges.iter().enumerate() {
                 let mut own = model.clone();
                 let rounded =
                     ogeom_fillet::fillet_edges(&mut own, &part, std::slice::from_ref(edge), r, T)
                         .unwrap_or_else(|e| panic!("case {k}, radius {r}, alone: {e}"));
-                alone += volume(&own, &rounded.shape) - before;
+                let moved = volume(&own, &rounded.shape) - before;
+                if (k == 0 && index != 1) || (k == 1 && index == 2) {
+                    // A convex box edge's spandrel has the exact section
+                    // r^2 (tan(turn/2) - turn/2) along the whole edge.
+                    let faces =
+                        ogeom_topo::ancestors_of(&model, &part, edge, ogeom_topo::ShapeType::Face)
+                            .unwrap();
+                    let normals: Vec<_> = faces
+                        .iter()
+                        .map(|f| ogeom_algo::face_normal(&model, f, T).unwrap().1)
+                        .collect();
+                    let turn = normals[0].dot(normals[1]).clamp(-1.0, 1.0).acos();
+                    let (a, b) = ogeom_algo::edge_vertices(&model, edge).unwrap().unwrap();
+                    let at = |v: &ogeom_topo::Shape| {
+                        v.transform(model.datums())
+                            .unwrap()
+                            .apply(model.node(v).unwrap().data().as_vertex().unwrap().point)
+                    };
+                    let exact = r * r * ((turn / 2.0).tan() - turn / 2.0) * at(&a).distance(at(&b));
+                    // Analytic strips and planes integrate within 1e-9 mm^3.
+                    assert!(
+                        (moved + exact).abs() < 1e-9,
+                        "case {k}, edge {index}: removed {} against {exact}",
+                        -moved
+                    );
+                }
+                alone += moved;
             }
             let mut own = model.clone();
             let rounded = ogeom_fillet::fillet_edges(&mut own, &part, &edges, r, T)
@@ -1324,7 +1483,16 @@ fn seams_whose_ball_runs_off_a_narrow_face_round_beside_other_edges() {
             ((moved - alone) / r.powi(3), own, rounded)
         };
         let (small, _, _) = past_alone(SMALL);
-        let (past, model, rounded) = past_alone(radius);
+        let (past, mut model, rounded) = past_alone(radius);
+        if k == 1 {
+            check_concave_pair_volume(&mut model, &part, &rounded.shape, &edges[..2], radius);
+        } else {
+            // Disjoint strips have no joint volume, at either radius.
+            assert!(
+                small.abs() < 1e-8 && past.abs() < 1e-8,
+                "disjoint strips added a joint: {small}, {past}"
+            );
+        }
         assert!(
             (past - small).abs() < 1e-8,
             "case {k}: the request moved {past} r^3 past its edges alone, against {small} r^3 \
