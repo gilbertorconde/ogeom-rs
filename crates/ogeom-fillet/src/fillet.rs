@@ -1069,6 +1069,11 @@ fn rounds_by_engine_unplaced(
     if let Some(built) = crate::engine::cusp_side_rounds(model, solid, &once, tol)? {
         return Ok(Some(built));
     }
+    // A rim arc ending obliquely on flats, rolled on past its ends (amendment
+    // "a rim arc ending obliquely on a flat").
+    if let Some(built) = crate::engine::oblique_rim_rounds(model, solid, &once, tol)? {
+        return Ok(Some(built));
+    }
     // Then straight creases no route closes, each carried on past both ends
     // out of the solid (amendment "M5e"'s free ends).
     if once

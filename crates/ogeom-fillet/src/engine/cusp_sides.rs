@@ -230,7 +230,7 @@ fn rim_tool(
     model: &mut Model,
     (seat, circle, range): (&crate::support::RevolvedSeat, &CircleCurve, (f64, f64)),
     radius: f64,
-    cusps: &[Cusp],
+    (cuts, whole): (&[(Point, Vector)], bool),
     tol: Tolerances,
 ) -> OgeomResult<Option<Shape>> {
     let ball = seat.ball(radius);
@@ -245,7 +245,7 @@ fn rim_tool(
     let x0 = radial_of(start);
     // The arc's turn about `up`, the way the circle runs.
     let runs_up = circle.circle().frame().z().vector().dot(up) > 0.0;
-    let closed = start.distance(end) <= tol.confusion();
+    let closed = whole || start.distance(end) <= tol.confusion();
     let sweep = if closed {
         core::f64::consts::TAU
     } else {
@@ -281,8 +281,8 @@ fn rim_tool(
     let axis = Axis::new(seat.centre, Direction::new(up, tol)?);
     let mut tool = ogeom_algo::make_revolution(model, &face, axis, sweep, tol)?.shape;
     let span = (seat.radius + 2.0 * radius) * 4.0;
-    for cusp in cusps {
-        let Some(kept) = cut_past(model, &tool, cusp.side, span, tol)? else {
+    for cut in cuts {
+        let Some(kept) = cut_past(model, &tool, *cut, span, tol)? else {
             return Ok(None);
         };
         tool = kept;
@@ -452,8 +452,17 @@ pub(crate) fn rounds(
     for ((edge, radius), read) in once.iter().zip(&asked) {
         let (solid_tool, additive) = match read {
             Asked::Rim(seat, circle, range) => {
-                let own = cusps_of(&scratch, solid, seat, tol)?;
-                let Some(t) = rim_tool(&mut scratch, (seat, circle, *range), *radius, &own, tol)?
+                let own: Vec<(Point, Vector)> = cusps_of(&scratch, solid, seat, tol)?
+                    .into_iter()
+                    .map(|c| c.side)
+                    .collect();
+                let Some(t) = rim_tool(
+                    &mut scratch,
+                    (seat, circle, *range),
+                    *radius,
+                    (&own, false),
+                    tol,
+                )?
                 else {
                     return Ok(None);
                 };
@@ -504,6 +513,115 @@ pub(crate) fn rounds(
     let tools: Vec<Tool> = ranked.into_iter().map(|(_, t)| t).collect();
     let edges: Vec<Shape> = once.iter().map(|(e, _)| e.clone()).collect();
     let Some(built) = super::fallback::applied(&mut scratch, solid, &edges, &tools, tol)? else {
+        return Ok(None);
+    };
+    if !ogeom_algo::check(&scratch, &built.shape, tol)?.is_valid() {
+        return Ok(None);
+    }
+    *model = scratch;
+    Ok(Some(built))
+}
+
+/// One rim arc of a drum ending obliquely on flats (a drum cut flat across
+/// its rim), rounded alone (ADR 0001, amendment "a rim arc ending obliquely
+/// on a flat"): the ball rolls on past each end through the corner it still
+/// finds in the solid, while its contact on the cap stands on the cap. The
+/// round's tool is the rim's section turned a whole turn about the drum's
+/// axis, cut by the plane of each face the arc ends on. `None` where the
+/// request is not one such arc, an end's face is not one plane standing
+/// oblique to the arc, the tool does not build, the boolean refuses, or the
+/// result is not valid.
+///
+/// # Errors
+///
+/// As reading the edge and the booleans, other than their refusals.
+pub(crate) fn oblique_rim_rounds(
+    model: &mut Model,
+    solid: &Shape,
+    once: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let [(edge, radius)] = once else {
+        return Ok(None);
+    };
+    let Some(Asked::Rim(seat, circle, range)) = read(model, solid, edge, tol)? else {
+        return Ok(None);
+    };
+    let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
+        return Ok(None);
+    };
+    if a.is_same(&b) {
+        return Ok(None);
+    }
+    let mut cuts: Vec<(Point, Vector)> = Vec::new();
+    for (v, t, leaving) in [(&a, range.0, 1.0), (&b, range.1, -1.0)] {
+        let p = point_of(model, v)?;
+        let ahead = circle.d1_at(t, tol)? * -leaving;
+        let mut ends = Vec::new();
+        for f in ogeom_topo::ancestors_of(model, solid, v, ShapeType::Face)? {
+            if f.is_same(&seat.cap_face) || f.is_same(&seat.wall_face) {
+                continue;
+            }
+            if !ends.iter().any(|g: &Shape| g.is_same(&f)) {
+                ends.push(f);
+            }
+        }
+        let [end] = ends.as_slice() else {
+            return Ok(None);
+        };
+        let Some((on, out)) = plane_of(model, end, tol)? else {
+            return Ok(None);
+        };
+        // Oblique: the face's plane neither runs on along the rim (square
+        // to its tangent, a meridian plane, where the arc ends square) nor
+        // holds it.
+        let lean = out.dot(ahead) / ahead.magnitude();
+        if lean.abs() <= tol.angular() || lean.abs() >= 1.0 - tol.angular() {
+            return Ok(None);
+        }
+        if (p - on).dot(out).abs() > tol.confusion() * 10.0 {
+            return Ok(None);
+        }
+        if !cuts.iter().any(|(o, n)| {
+            n.dot(out) >= 1.0 - tol.angular() && (*o - on).dot(out).abs() <= tol.confusion()
+        }) {
+            cuts.push((on, out));
+        }
+    }
+    let mut scratch = model.clone();
+    let Some(tool) = rim_tool(
+        &mut scratch,
+        (&seat, &circle, range),
+        *radius,
+        (&cuts, true),
+        tol,
+    )?
+    else {
+        return Ok(None);
+    };
+    let mut faces = Vec::new();
+    for f in explore_unique(&scratch, &tool, ShapeType::Face)? {
+        let torus = scratch
+            .node(&f)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| scratch.geometry().surface(d.surface))
+            .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::Torus(_)));
+        if torus {
+            faces.push((f, edge.clone()));
+        }
+    }
+    let tools = [Tool {
+        solid: tool,
+        sense: if seat.additive() {
+            Sense::Fuse
+        } else {
+            Sense::Cut
+        },
+        faces,
+    }];
+    let Some(built) =
+        super::fallback::applied(&mut scratch, solid, std::slice::from_ref(edge), &tools, tol)?
+    else {
         return Ok(None);
     };
     if !ogeom_algo::check(&scratch, &built.shape, tol)?.is_valid() {
