@@ -28,6 +28,7 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
 use super::curved::{Curved, read};
 use super::fallback::{Sense, Tool, polytope};
+use super::flush::EndSurface;
 use super::trimmed::{faces_of, outward};
 use super::{Id, id};
 
@@ -528,6 +529,69 @@ fn runs_out(
     )
 }
 
+/// The face a straight crease's end `k` runs into the material at, read as
+/// the surface its band ends flush on: the one face at the vertex past the
+/// crease's own and those carrying them on, as a point there and an
+/// [`EndSurface`]. `None` where the end meets no such face or more than
+/// one, or one [`EndSurface`] does not read.
+fn free_end(
+    curved: &Curved,
+    crease: &Crease,
+    k: usize,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Point, EndSurface)>> {
+    let v = if k == 0 { crease.ends.0 } else { crease.ends.1 };
+    let at = if k == 0 { crease.a } else { crease.b };
+    let other = if k == 0 { crease.b } else { crease.a };
+    let ahead = (at - other) / at.distance(other);
+    let mut ends = Vec::new();
+    for (f, face) in curved.faces.iter().enumerate() {
+        if crease.faces.contains(&f)
+            || !face.loops.iter().flatten().any(|(x, _)| {
+                let g = &curved.edges[x];
+                g.ends.0 == v || g.ends.1 == v
+            })
+            || crease
+                .faces
+                .iter()
+                .any(|g| coplanar(curved, *g, f, curved.points[&v], tol))
+        {
+            continue;
+        }
+        let Some(n) = outward(curved, f, curved.points[&v]) else {
+            return Ok(None);
+        };
+        // A face the crease carried on leaves through, or runs tangent to,
+        // is not where it ends: only a face standing across its way is.
+        if n.dot(ahead) > -tol.angular() {
+            continue;
+        }
+        ends.push((f, n));
+    }
+    let [(f, n)] = ends[..] else {
+        return Ok(None);
+    };
+    // The crease's side: a point just back along it from its end.
+    let back = at + (other - at) * 1e-3;
+    Ok(EndSurface::of(&curved.faces[f].surface, at, n, back).map(|end| (at, end)))
+}
+
+/// Whether faces `f` and `g` lie on one plane, faced alike at `at`, a
+/// point of both.
+fn coplanar(curved: &Curved, f: usize, g: usize, at: Point, tol: Tolerances) -> bool {
+    let (SurfaceGeometry::Plane(p), SurfaceGeometry::Plane(q)) =
+        (&curved.faces[f].surface, &curved.faces[g].surface)
+    else {
+        return false;
+    };
+    let (Some(nf), Some(ng)) = (outward(curved, f, at), outward(curved, g, at)) else {
+        return false;
+    };
+    nf.cross(ng).magnitude() <= tol.angular()
+        && nf.dot(ng) > 0.0
+        && p.plane().distance_to(q.plane().origin()) <= tol.confusion()
+}
+
 /// How many stations along a straight crease its contacts are read at on
 /// its faces, ends apart.
 const CONTACT_STATIONS: u32 = 16;
@@ -614,6 +678,7 @@ pub(crate) fn carried_out(
         return Ok(None);
     };
     let mut creases: Vec<Crease> = Vec::with_capacity(asked.len());
+    let mut free: Vec<[Option<(Point, EndSurface)>; 2]> = Vec::with_capacity(asked.len());
     for (edge, radius) in asked {
         let Some(crease) = crease_of(model, &curved, id(edge), edge, *radius, tol)? else {
             return Ok(None);
@@ -632,22 +697,31 @@ pub(crate) fn carried_out(
         if creases.iter().any(shares) {
             return Ok(None);
         }
-        // Each end runs out of the solid, or ends at a band an earlier
-        // round left there, whose own surface trims the band carried on.
-        for k in 0..2 {
-            if !runs_out(model, solid, &crease, k, tol)?
-                && !ends_at_blend(&curved, &crease, k, tol)?
+        // Each end runs out of the solid, ends at a band an earlier round
+        // left there (whose own surface trims the band carried on), or runs
+        // into the material, where the band ends flush on the one face it
+        // meets there (a free end).
+        let mut into: [Option<(Point, EndSurface)>; 2] = [None, None];
+        for (k, slot) in into.iter_mut().enumerate() {
+            if runs_out(model, solid, &crease, k, tol)? || ends_at_blend(&curved, &crease, k, tol)?
             {
-                return Ok(None);
+                continue;
             }
+            let Some(end) = free_end(&curved, &crease, k, tol)? else {
+                return Ok(None);
+            };
+            *slot = Some(end);
         }
         // Each end on the solid's own faces. One running on tangent from
         // the crease's faces is a band an earlier round left there: the band
         // runs on into it and is trimmed by it (ADR 0001, amendment "a later
         // round reaching an earlier band at its end"), built where that band
         // is seated on planes; one seated on a curved face is not built here
-        // yet.
-        for v in [crease.ends.0, crease.ends.1] {
+        // yet. A free end is cut flush on its end face instead.
+        for (k, v) in [crease.ends.0, crease.ends.1].into_iter().enumerate() {
+            if into[k].is_some() {
+                continue;
+            }
             let at = curved.points[&v];
             let [(na, _), (nb, _)] = crease.planes;
             for f in 0..curved.faces.len() {
@@ -669,6 +743,7 @@ pub(crate) fn carried_out(
             return Ok(None);
         }
         creases.push(crease);
+        free.push(into);
     }
     let (mut lo, mut hi) = (
         Vector::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
@@ -682,10 +757,28 @@ pub(crate) fn carried_out(
     let reach = (hi - lo).magnitude() + 4.0 * creases.iter().map(|c| c.radius).fold(0.0, f64::max);
     let mut scratch = model.clone();
     let mut tools = Vec::with_capacity(creases.len());
-    for c in &creases {
-        let Some((tool, named)) = spandrel(&mut scratch, &curved, c, reach, tol)? else {
+    for (c, into) in creases.iter().zip(&free) {
+        // Past a free end the band is carried on only near that end, and
+        // cut flush on the face it meets there.
+        let near = 3.0 * c.radius;
+        let reaches = (
+            if into[0].is_some() { near } else { reach },
+            if into[1].is_some() { near } else { reach },
+        );
+        let Some((mut tool, mut named)) =
+            spandrel_reaching(&mut scratch, &curved, c, reaches, tol)?
+        else {
             return Ok(None);
         };
+        for (at, end) in into.iter().flatten() {
+            let Some((kept, traced)) =
+                super::flush::cut_far(&mut scratch, &tool, &named, end, *at, near, tol)?
+            else {
+                return Ok(None);
+            };
+            tool = kept;
+            named = traced;
+        }
         let Ok(taken) = ogeom_bool::common(&mut scratch, &tool, solid, tol) else {
             return Ok(None);
         };
@@ -1247,6 +1340,21 @@ fn spandrel(
     if let Kind::Rim { range, top } = crease.kind {
         return rim_spandrel(model, curved, crease, range, top, reach, tol);
     }
+    spandrel_reaching(model, curved, crease, (reach, reach), tol)
+}
+
+/// [`spandrel`] of a straight crease, carried on `reaches.0` past its first
+/// end and `reaches.1` past its last.
+fn spandrel_reaching(
+    model: &mut Model,
+    curved: &Curved,
+    crease: &Crease,
+    (reach, reach_b): (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<Option<(Shape, Vec<Shape>)>> {
+    if let Kind::Rim { range, top } = crease.kind {
+        return rim_spandrel(model, curved, crease, range, top, reach.max(reach_b), tol);
+    }
     let eps = tol.confusion();
     let along = (crease.b - crease.a) / crease.a.distance(crease.b);
     let o = crease.a;
@@ -1254,7 +1362,7 @@ fn spandrel(
     let bisect = crease.planes[0].0 + crease.planes[1].0;
     let bisect = bisect / bisect.magnitude();
     let mut planes = crease.planes.to_vec();
-    planes.push((along, o_along + crease.a.distance(crease.b) + reach));
+    planes.push((along, o_along + crease.a.distance(crease.b) + reach_b));
     planes.push((-along, -(o_along - reach)));
     // Behind the crease, a few radii in: the wedge's back.
     planes.push((

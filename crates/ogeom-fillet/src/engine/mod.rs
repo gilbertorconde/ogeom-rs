@@ -39,6 +39,7 @@ mod defeatured;
 mod fallback;
 mod far_edge;
 mod fits;
+mod flush;
 mod guards;
 mod law_tools;
 mod marched_junctions;
