@@ -1075,6 +1075,11 @@ fn rounds_by_engine_unplaced(
     if once.is_empty() {
         return Ok(None);
     }
+    // Rounds either side of a cusp, each its own tool (amendment "rounds
+    // either side of a cusp").
+    if let Some(built) = crate::engine::cusp_side_rounds(model, solid, &once, tol)? {
+        return Ok(Some(built));
+    }
     // Then straight creases no route closes, each carried on past both ends
     // out of the solid (amendment "M5e"'s free ends).
     if once
