@@ -1107,10 +1107,16 @@ fn rounds_by_engine_unplaced(
     // rim's band meets theirs at their corners, which the march's
     // junctions do not read as the exact rounds do.
     let edges: Vec<Shape> = once.iter().map(|(e, _)| e.clone()).collect();
-    if edges.len() != 1 || !has_cone_rim(model, solid, &edges, tol)? {
-        return Ok(None);
+    if edges.len() == 1
+        && has_cone_rim(model, solid, &edges, tol)?
+        && let Some(built) = crate::engine::marched_rounds(model, solid, &once, true, tol)?
+    {
+        return Ok(Some(built));
     }
-    crate::engine::marched_rounds(model, solid, &once, true, tol)
+    // Last, a contour on a planar host beside swept or circular walls that
+    // no route above closes, its bands joined at their junctions (amendment
+    // "contour chains on swept walls").
+    crate::engine::contour_rounds(model, solid, &once, tol)
 }
 
 /// The engine's routes for [`rounds_by_engine_unplaced`], in turn, but the
