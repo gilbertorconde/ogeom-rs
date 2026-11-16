@@ -199,29 +199,40 @@ pub(super) fn sweep(
         vec![(5, true), (8, true), (6, false), (7, false)],
     ];
     let surface = section.surface((0.0, length), tol)?;
-    let sheet: Vec<SheetFace> = rings
-        .into_iter()
-        .enumerate()
-        .map(|(i, ring)| SheetFace {
-            surface: (i == 4).then(|| surface.clone()),
-            ring,
-            holes: Vec::new(),
-        })
-        .collect();
-    let mut faces = build_faces(model, &points, &edges, &sheet, tol)?;
     // The strip's chart can run either way across the crease. Its outward
     // normal points from the crease through the middle of its arc.
     let (arc, range) = section.arc_at(length * 0.5, tol)?;
     let middle = arc.point_at(f64::midpoint(range.0, range.1), tol)?;
     let projected = ogeom_algo::project_on_surface(&surface, middle, 16, tol)?;
     let (du, dv) = surface.d1_at(projected.parameters.0, projected.parameters.1, tol)?;
-    if du.cross(dv).dot(middle - section.crease(length * 0.5)) < 0.0 {
-        faces[4] = faces[4].reversed();
-    }
+    let reverse_strip = du.cross(dv).dot(middle - section.crease(length * 0.5)) < 0.0;
     let reverse = (points[2] - points[0])
         .cross(points[4] - points[0])
         .dot(section.seat().along)
         > 0.0;
+    let sheet: Vec<SheetFace> = rings
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut ring)| {
+            // The surface sense and the adjoining planes' senses can differ;
+            // their final walks must still oppose along every shared edge.
+            if i == 4 && reverse_strip != reverse {
+                ring.reverse();
+                for (_, forward) in &mut ring {
+                    *forward = !*forward;
+                }
+            }
+            SheetFace {
+                surface: (i == 4).then(|| surface.clone()),
+                ring,
+                holes: Vec::new(),
+            }
+        })
+        .collect();
+    let mut faces = build_faces(model, &points, &edges, &sheet, tol)?;
+    if reverse_strip {
+        faces[4] = faces[4].reversed();
+    }
     if reverse {
         for face in &mut faces[..4] {
             *face = face.reversed();
@@ -303,4 +314,58 @@ fn face_normal(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Opti
         SurfaceGeometry::Plane(p) => Some(p.plane().normal().vector()),
         _ => None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::round::section::RoundSpec;
+    use ogeom_math::{Frame, Point};
+
+    #[test]
+    fn a_section_sweep_closes_with_consistent_outward_faces() -> OgeomResult<()> {
+        let tol = Tolerances::default();
+        let mut model = Model::new();
+        let solid = ogeom_algo::make_box(&mut model, Frame::WORLD, (12.0, 12.0, 12.0), tol)?.shape;
+        let mut selected = None;
+        for edge in explore_unique(&model, &solid, ShapeType::Edge)? {
+            let b = ogeom_algo::shape_bounds(&model, &edge, tol)?;
+            if b.centre()
+                .is_some_and(|p| p.distance(Point::new(0.0, 0.0, 6.0)) <= tol.confusion())
+            {
+                selected = Some(edge);
+                break;
+            }
+        }
+        let Some(edge) = selected else {
+            ogeom_bail!(Construction, "the box has no edge along the Z axis");
+        };
+        let seat = crate::support::planar_seat(&model, &solid, &edge, tol)?;
+        for spec in [
+            RoundSpec::Circular(1.0),
+            RoundSpec::Conic {
+                d: [1.0, 1.0],
+                profile: RoundProfile::Elliptical,
+            },
+        ] {
+            let section = PlanarSection::new(&seat, &spec, tol)?;
+            let tool = sweep(&mut model, &edge, &section, tol)?;
+            let found = ogeom_algo::check(&model, &tool.solid, tol)?;
+            assert!(found.is_valid(), "{spec:?}: {found}");
+            let volume = ogeom_algo::volume_properties(
+                &model,
+                &tool.solid,
+                ogeom_mesh::Deflection::default(),
+                tol,
+            )?
+            .mass;
+            let expected = 12.0 * (1.0 - std::f64::consts::FRAC_PI_4);
+            // Both sections bound the unit circular spandrel, swept twelve mm.
+            assert!(
+                (volume - expected).abs() < 1e-6,
+                "{spec:?}: {volume}, expected {expected}"
+            );
+        }
+        Ok(())
+    }
 }

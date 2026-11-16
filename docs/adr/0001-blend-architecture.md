@@ -1808,6 +1808,41 @@ square to it there. Rounded alone, where does the round end?
   curved face, or square to it (a meridian plane, where it ends flush), and
   an arc asked with other edges.
 
+### Amendment: contour chains on swept walls use engine-owned tools
+
+A contour here is a chain of constant-radius creases on a planar host
+whose other faces are straight walls, circular walls or walls swept from
+fitted profiles. A tangent continuation may cross a split between planar
+hosts. The rules are the existing end-trimming and marched-junction
+rules, which mainstream systems share: a straight run under an
+overhanging planar roof ends on that roof's plane; a split rim that stops
+is restricted to its own arc; a fitted crease meeting its contour at a
+re-entrant turn includes the junction between the two bands. No new
+vertex type is introduced and nothing beyond the request is rounded.
+
+The route is the last the engine tries. A rim whose band runs on past a
+free end (amendment "corners where a round's rail misses") and every
+other route keep the requests they take, so the route only receives
+requests no engine route closed before it.
+
+The engine builds every section on the original solid, using the whole
+request for tangent stops and junction planes. The exact planar section,
+revolved arc and marched band supply unapplied tools; no contour adapter
+calls the old edge dispatcher, intercepts an old constructor, or applies
+one edge before constructing the next. The tools retain their source-edge
+credits when their adjoining caps are joined. Topology, fitted-contact
+error, orientation and generated history remain independently checked.
+
+The rib's straight and curved sections already have independent section
+area, centroid and turn-moment oracles. For the radius-one fillet on the
+closed pocket floor, the added volume is `L A - 2 pi M`, where `L = 18 pi`
+is the perimeter, `A = 1 - pi/4` the corner-section area and
+`M = 5/6 - pi/4` its first moment. The pocket's unrounded volume is
+`30*30*10 - 5*(45 pi)`: a five-deep 120-degree annular sector of radii
+6 and 12, with two radius-three semicircular ends. This independently
+derived oracle replaces the recorded rounded-volume figure without
+changing its tolerance.
+
 ## 12. Acceptance corpus
 
 From #902:
