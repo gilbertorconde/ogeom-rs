@@ -57,7 +57,7 @@ pub use asym::{RoundProfile, fillet_edge_distances, largest_fillet_distances};
 pub use asym_law::fillet_edge_distances_variable;
 pub use blame::{
     BlendRefusal, chamfer_edges_checked, chamfer_edges_partial, fillet_edges_checked,
-    fillet_edges_partial,
+    fillet_edges_corner_checked, fillet_edges_partial,
 };
 pub use blend::{Blend, blend_edges};
 pub use bridge::{End, make_blend_curve, make_blend_surface};
@@ -71,7 +71,8 @@ pub use engine::vertex::round_vertex;
 pub use facepair::blend_faces;
 pub use fill_n::{FillBoundary, FillSide, Filled, make_filling_n};
 pub use fillet::{
-    fillet_edge, fillet_edge_variable, fillet_edges, fillet_edges_variable, fillet_edges_with,
+    FilletCorner, fillet_edge, fillet_edge_variable, fillet_edges, fillet_edges_corner,
+    fillet_edges_variable, fillet_edges_with,
 };
 pub use fits::{largest_fillet_radius, largest_fillet_radius_all};
 pub use law::RadiusLaw;

@@ -11,6 +11,25 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+### Added
+
+- **Rolling-ball corners for rounds: `fillet_edges_corner` and
+  `FilletCorner`.** (#902; ADR 0001, amendment "rolling corners")
+  - `FilletCorner::Setback`, the default, is `fillet_edges` unchanged.
+  - With `FilletCorner::Rolling`, each vertex where rounds meet is closed
+    by the ball rolling through it, with no setback and no patch.
+  - Two convex rounds and one concave (a step's inside corner), or the
+    reverse: the lone band runs to the vertex unbroken, and the other two
+    run on round its end as a torus. That torus meets the lone band, the
+    face across and the straight bands along circles.
+  - Three rounds of one sense close on the ball's sphere.
+  - A vertex the ball's sweep does not close is refused by name, giving
+    the vertex: a curved face there, other than three edges, a convex and
+    a concave round beside a sharp edge, or an edge not square to the face
+    across it.
+  - `fillet_edges_corner_checked` names the refused edges, as
+    `fillet_edges_checked` does.
+
 ### Changed
 
 - **Chamfers of a solid bounded by planes go through the blend engine,

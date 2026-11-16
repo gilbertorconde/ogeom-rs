@@ -91,4 +91,11 @@ pub(crate) enum RoundVertex {
     /// the sharp edge's crease carries on between them, and there is no
     /// vertex face.
     Mitre,
+    /// Rolling corners asked: a convex and a concave round of one radius
+    /// with the third edge of a vertex of three planes rounded too, the
+    /// lone round's edge square to the face across it. The lone band runs
+    /// on to where its ball touches that face; the other two run on round
+    /// its end as the torus their ball sweeps rolling round it, meeting the
+    /// lone band, the face and each other's straight bands along circles.
+    Elbow,
 }
