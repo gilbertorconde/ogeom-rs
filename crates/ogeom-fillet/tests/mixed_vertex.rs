@@ -77,12 +77,12 @@ fn corners_of(m: &Model, s: &Shape) -> Vec<[u64; 3]> {
 }
 
 /// The issue's request: the front edge and the re-entrant edge rounded at
-/// 2, the upright's front edge left sharp. The opening between the two
-/// bands' ends crosses the sharp edge; it runs into a point there, where a
-/// patch with a shrunk side turns its normal from the front face's to the
-/// upright's, and one patch closes the rest. Both orders give the same
-/// solid to the bit, valid, every patch tangent to its neighbours, each
-/// band stopped short of the vertex on its section plane.
+/// 2, 1 and 1.5, the upright's front edge left sharp (ADR 0001, §13
+/// question 6). Both orders give the same solid to the bit, valid, within
+/// the bracket and the concave round's fill; patches close the opening
+/// between the bands' ends, each patch edge on a face at the vertex or on
+/// a band, every patch tangent to its neighbours but along the edge left
+/// sharp, which stays sharp up to the vertex.
 #[test]
 fn a_convex_and_a_concave_round_beside_an_edge_left_sharp_close_one_corner_in_either_order() {
     for radius in [2.0, 1.0, 1.5] {
@@ -137,39 +137,33 @@ fn two_edges_in_either_order(radius: f64) {
                 )
             })
             .collect();
-        assert_eq!(
-            patches.len(),
-            2,
-            "flip {flip}: a patch at the sharp edge and one over the rest"
+        assert!(
+            !patches.is_empty(),
+            "flip {flip}: no patch closes the corner"
         );
         let mut worst = 0.0_f64;
-        let mut ends = (false, false);
         for patch in &patches {
-            for c in ogeom_fillet::analyse_blend(&m, &rounded, patch, 17, T).unwrap() {
-                worst = worst.max(c.tangency_error);
-            }
-            // Each band's end arc lies on its section, short of the vertex:
-            // the front band's on a plane x = c past 5, the re-entrant
-            // band's on a plane y = c past 0.
+            worst = worst.max(tangent_but_at_the_sharp_edge(&m, &rounded, patch));
+            // Each edge of the patches' outline lies on a face at the vertex
+            // or on a band: the patches close the opening between the
+            // bands' ends.
             for e in explore_unique(&m, patch, ShapeType::Edge).unwrap() {
-                // The patch at the sharp edge's point has a side shrunk to
-                // it, an edge with no curve.
+                let between_patches = ogeom_topo::ancestors_of(&m, &rounded, &e, ShapeType::Face)
+                    .unwrap()
+                    .iter()
+                    .all(|f| patches.iter().any(|q| q.is_same(f)));
+                if between_patches {
+                    continue;
+                }
+                // A side shrunk to a point has no curve.
                 let Some((c, (lo, hi))) = ogeom_algo::placed_edge_curve(&m, &e, T).unwrap() else {
                     continue;
                 };
-                let p: Vec<Point> = [lo, f64::midpoint(lo, hi), hi]
-                    .iter()
-                    .map(|t| c.point_at(*t, T).unwrap())
-                    .collect();
-                let flat = |f: fn(&Point) -> f64| {
-                    (f(&p[0]) - f(&p[1])).abs() < 1e-9 && (f(&p[0]) - f(&p[2])).abs() < 1e-9
-                };
-                if flat(|q| q.x) && p[0].x > 5.0 + 1e-6 && p[1].y > 1e-6 {
-                    ends.0 = true;
-                }
-                if flat(|q| q.y) && p[0].y > 1e-6 && p[1].x > 5.0 + 1e-6 {
-                    ends.1 = true;
-                }
+                let p = c.point_at(f64::midpoint(lo, hi), T).unwrap();
+                assert!(
+                    on_face_or_band(p, radius),
+                    "flip {flip}: a patch edge at {p:?}"
+                );
             }
         }
         eprintln!(
@@ -177,16 +171,12 @@ fn two_edges_in_either_order(radius: f64) {
             volume(&m, &rounded)
         );
         assert!(worst < 2e-4, "flip {flip}: tangent within {worst} rad");
-        assert!(
-            ends.0 && ends.1,
-            "flip {flip}: a band ends on the other's rail: {ends:?}"
-        );
     }
 }
 
-/// All three edges at the vertex rounded at 2: each band (2 wide on its
-/// faces) stops 4 from the vertex, on x = 9, y = 4 and z = 9, and one patch
-/// closes the opening, tangent to every band end and face. Every order of
+/// All three edges at the vertex rounded at 2: one patch closes the
+/// opening between the bands' ends, tangent to every band it meets, each of
+/// its edges on a face at the vertex or on a band. Every order of
 /// the request gives the same solid, to the bit. Outside the cell the
 /// corner rebuilds (the box from each section back to 4 behind the vertex)
 /// the solid is the three bands built one after another.
@@ -245,10 +235,9 @@ fn three_rounds_of_both_kinds_at_a_vertex_close_one_corner_whatever_the_order() 
             panic!("{} fitted faces", patches.len());
         };
         let contacts = ogeom_fillet::analyse_blend(&m, &rounded, patch, 17, T).unwrap();
-        assert_eq!(
-            contacts.len(),
-            6,
-            "three band ends and three faces: {contacts:?}"
+        assert!(
+            contacts.len() >= 3,
+            "the patch meets at least the three band ends: {contacts:?}"
         );
         let tangency = contacts
             .iter()
@@ -260,12 +249,12 @@ fn three_rounds_of_both_kinds_at_a_vertex_close_one_corner_whatever_the_order() 
             "the patch meets its neighbours within {tangency} rad"
         );
         for e in explore_unique(&m, patch, ShapeType::Edge).unwrap() {
-            let (c, (lo, hi)) = ogeom_algo::placed_edge_curve(&m, &e, T).unwrap().unwrap();
+            // A side shrunk to a point has no curve.
+            let Some((c, (lo, hi))) = ogeom_algo::placed_edge_curve(&m, &e, T).unwrap() else {
+                continue;
+            };
             let p = c.point_at(f64::midpoint(lo, hi), T).unwrap();
-            let on_face = (p.x - 5.0).abs() < 1e-6 || p.y.abs() < 1e-6 || (p.z - 5.0).abs() < 1e-6;
-            let on_end =
-                (p.x - 9.0).abs() < 1e-6 || (p.y - 4.0).abs() < 1e-6 || (p.z - 9.0).abs() < 1e-6;
-            assert!(on_face || on_end, "a patch edge at {p:?}");
+            assert!(on_face_or_band(p, 2.0), "a patch edge at {p:?}");
         }
         // Outside the cell, the bands as one after another builds them.
         let mut stepwise = l.clone();
@@ -302,30 +291,102 @@ fn three_rounds_of_both_kinds_at_a_vertex_close_one_corner_whatever_the_order() 
     }
 }
 
-/// Bands as wide as the upright is thick: the cell the corner cuts reaches
-/// twice the widest band behind the vertex, through the upright's far
-/// face, which nothing would put back. Refused by name, with all three
-/// edges rounded or the upright's front edge left sharp, as the cell
-/// guard refuses any other feature inside the cell.
+/// Bands of radius 3 on an upright 5 thick, with all three edges rounded or
+/// the upright's front edge left sharp. The current path refused this
+/// corner by name: the box it rebuilds the corner in, twice the widest band
+/// behind the vertex, reached through the upright's far face. The rounds
+/// themselves stay clear of that face, so the corner closes as it does at
+/// smaller radii (ADR 0001, §13 question 7: no corner of mixed convexity is
+/// refused). In either order the solid is the same to the bit and valid,
+/// it lies within the bracket and the concave round's fill, and every
+/// fitted face is tangent to its neighbours.
 #[test]
-fn a_signed_corner_whose_cell_reaches_through_the_wall_is_refused_by_name() {
+fn a_signed_corner_as_wide_as_the_wall_closes_in_either_order() {
     for three in [false, true] {
-        let mut m = Model::new();
-        let l = bracket(&mut m);
-        let [front, crease, upright] = corner_edges(&m, &l);
-        let mut edges = vec![front, crease];
-        if three {
-            edges.push(upright);
+        let mut first: Option<(Vec<[u64; 3]>, usize, u64)> = None;
+        for flip in [false, true] {
+            let mut m = Model::new();
+            let l = bracket(&mut m);
+            let [front, crease, upright] = corner_edges(&m, &l);
+            let mut edges = vec![front, crease];
+            if three {
+                edges.push(upright);
+            }
+            if flip {
+                edges.reverse();
+            }
+            let what = format!("three {three}, flip {flip}");
+            let rounded = ogeom_fillet::fillet_edges(&mut m, &l, &edges, 3.0, T)
+                .unwrap_or_else(|e| panic!("{what}: {e}"))
+                .shape;
+            let diagnosis = ogeom_algo::check(&m, &rounded, T).unwrap();
+            assert!(diagnosis.is_valid(), "{what}: {:?}", diagnosis.problems);
+            let past = outside_bracket(&m, &rounded, 3.0);
+            assert!(
+                past <= 2e-4,
+                "{what}: the corner stands {past} outside the bracket and its fill"
+            );
+            let faces = explore_unique(&m, &rounded, ShapeType::Face).unwrap();
+            let mut worst = 0.0_f64;
+            for face in &faces {
+                let d = m.node(face).unwrap().data().as_face().unwrap();
+                if !matches!(
+                    m.geometry().surface(d.surface),
+                    Some(ogeom_geom::SurfaceGeometry::BSpline(_))
+                ) {
+                    continue;
+                }
+                worst = worst.max(tangent_but_at_the_sharp_edge(&m, &rounded, face));
+            }
+            assert!(worst < 1e-3, "{what}: tangent within {worst} rad");
+            let got = (
+                corners_of(&m, &rounded),
+                faces.len(),
+                volume(&m, &rounded).to_bits(),
+            );
+            match &first {
+                None => first = Some(got),
+                Some(want) => assert!(*want == got, "{what} lands on another solid"),
+            }
         }
-        let err = ogeom_fillet::fillet_edges(&mut m, &l, &edges, 3.0, T)
-            .map(|_| ())
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("another feature of the solid lies inside the setback corner's cell"),
-            "three {three}: {err}"
-        );
     }
+}
+
+/// The largest angle `patch` meets a neighbour at, sampled along each edge
+/// they share, but along the upright's front edge's line (x = 5, y = 0):
+/// an edge left sharp stays sharp up to the vertex, between whatever lies
+/// either side of it there.
+fn tangent_but_at_the_sharp_edge(m: &Model, shape: &Shape, patch: &Shape) -> f64 {
+    let mut worst = 0.0_f64;
+    for c in ogeom_fillet::analyse_blend(m, shape, patch, 17, T).unwrap() {
+        let on_sharp = ogeom_algo::placed_edge_curve(m, &c.edge, T)
+            .unwrap()
+            .is_some_and(|(curve, (lo, hi))| {
+                [lo, f64::midpoint(lo, hi), hi].iter().all(|t| {
+                    let p = curve.point_at(*t, T).unwrap();
+                    (p.x - 5.0).abs() < 1e-6 && p.y.abs() < 1e-6
+                })
+            });
+        if !on_sharp {
+            worst = worst.max(c.tangency_error);
+        }
+    }
+    worst
+}
+
+/// Whether `p` lies on a face of the bracket at the vertex (x = 5, y = 0
+/// or z = 5) or on the surface of one of the three bands of radius `r`
+/// there: the front edge's cylinder about y = r, z = 5 - r, the re-entrant
+/// edge's about x = z = 5 + r, the upright's front edge's about x = 5 - r,
+/// y = r.
+fn on_face_or_band(p: Point, r: f64) -> bool {
+    let near = |d: f64| d.abs() < 1e-6;
+    near(p.x - 5.0)
+        || near(p.y)
+        || near(p.z - 5.0)
+        || near((p.y - r).hypot(p.z - (5.0 - r)) - r)
+        || near((p.x - (5.0 + r)).hypot(p.z - (5.0 + r)) - r)
+        || near((p.x - (5.0 - r)).hypot(p.y - r) - r)
 }
 
 /// How far any point of `shape`'s mesh within 10 of the vertex (5, 0, 5)

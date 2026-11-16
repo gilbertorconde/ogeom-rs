@@ -1093,6 +1093,43 @@ onto a ramp.
   - the largest-pair search;
   - refusals by name.
 
+### Amendment: rounds on a solid bounded by planes holding seams (#902)
+
+A solid bounded by planes that a boolean built from boxes (an L-bracket
+fused from a base and an upright) holds seams: edges between two faces
+of one plane, which mainstream CAD merges after the boolean. The
+chamfers read such a solid with its seams dissolved (M1, seam layer);
+the rounds did not, so the planar engine read a corner of three faces
+there as five, matched none of its vertex classes, and handed the
+request to the current path.
+
+- **The rule.** Rounds read the solid with its seams dissolved, as
+  chamfers do: an edge asked that is a seam names nothing, the rounds
+  are built on the dissolved solid, and the history is told of the solid
+  as given. A solid with curved faces was read so already.
+- **What it opens.** The mixed corners of §13 questions 6 and 7 on a
+  fused bracket close as the engine closes them on a prism, its signed
+  corner where an edge is left sharp. The current path's construction
+  differs: it ends each band on its section plane and turns a shrunk
+  patch round the sharp edge. The engine ends the bands on each other's
+  rails, and the edge left sharp stays sharp up to the vertex. Both
+  close one corner, G1 to the bands. The tests now hold any correct
+  corner:
+  - bit-equal orders;
+  - a valid solid within the bracket and the concave round's fill;
+  - every patch tangent to its neighbours but along the edge left
+    sharp;
+  - the patches' outline on the faces and bands;
+  - the solid outside the corner's cell equal to the bands built one
+    after another.
+- **No refusal for a cell.** The current path refused a mixed corner
+  whose rebuild box held a void, or reached through the upright's far
+  face, because of how it builds the corner, not because of the
+  geometry. The engine refuses a voided solid's rounds by name only where
+  a round reaches a void. These corners are built (§13 question 7: no
+  class of mixed convexity is refused), and the void comes through
+  whole.
+
 ### Amendment: M5d, a round resting on a far edge (#902)
 
 The current path's rolling rounds (`rolled.rs`, `stepped.rs`,

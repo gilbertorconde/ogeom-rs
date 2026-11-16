@@ -290,31 +290,61 @@ fn a_setback_corner_with_an_edge_left_sharp_and_a_void_in_its_cell_is_refused_by
     refused("round_vertex_setback_sharp", got, &m);
 }
 
+/// A convex and a concave round meeting at the L-bracket's corner
+/// (5, 0, 5), with a void of side 1 at (2.5, 1, 2.5) in the material behind
+/// it. No round reaches the void, so the corner closes as it does on the
+/// bracket without one (ADR 0001, §13 question 7: no corner of mixed
+/// convexity is refused; a voided solid's rounds are refused by name only
+/// where one reaches a void). The current path refused it because the box
+/// it rebuilds the corner in held the void. The void stays whole, its own
+/// shell: the result holds exactly the void's volume less than the bracket
+/// rounded alike without it, whichever edges are asked and in either order.
 #[test]
-fn a_convex_and_a_concave_round_with_a_void_in_their_cell_are_refused_by_name() {
+fn a_convex_and_a_concave_round_beside_a_void_they_do_not_reach_close_the_corner() {
     let mut m = Model::new();
     let base = boxed(&mut m, [0.0, 0.0, 0.0], [20.0, 20.0, 5.0]);
     let upright = boxed(&mut m, [0.0, 0.0, 0.0], [5.0, 20.0, 20.0]);
     let bracket = ogeom_bool::fuse(&mut m, &base, &upright, T).unwrap().shape;
     let s = voided(&mut m, &bracket, [2.5, 1.0, 2.5]);
-    let edges = vec![
-        edge_near(&m, &s, [12.5, 0.0, 5.0]),
-        edge_near(&m, &s, [5.0, 10.0, 5.0]),
-        edge_near(&m, &s, [5.0, 0.0, 12.5]),
-    ];
-    // All three edges rounded, and the upright's front edge left sharp,
-    // in either order.
-    for asked in [
-        edges.clone(),
-        edges[..2].to_vec(),
-        vec![edges[1].clone(), edges[0].clone()],
-    ] {
+    let near = [[12.5, 0.0, 5.0], [5.0, 10.0, 5.0], [5.0, 0.0, 12.5]];
+    let volume = |m: &Model, shape: &Shape| {
+        ogeom_algo::volume_properties(m, shape, ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    // All three edges rounded, and the upright's front edge left sharp, in
+    // either order.
+    for picks in [vec![0, 1, 2], vec![0, 1], vec![1, 0]] {
         let mut own = m.clone();
-        let got = ogeom_fillet::fillet_edges(&mut own, &s, &asked, 2.0, T);
-        refused(
-            &format!("fillet_edges at a signed corner, {} edges", asked.len()),
-            got,
-            &own,
+        let on = |m: &Model, solid: &Shape| -> Vec<Shape> {
+            picks
+                .iter()
+                .map(|&k| edge_near(m, solid, near[k]))
+                .collect()
+        };
+        let (asked, plain_asked) = (on(&own, &s), on(&own, &bracket));
+        let what = format!("fillet_edges at a signed corner, {} edges", picks.len());
+        let rounded = ogeom_fillet::fillet_edges(&mut own, &s, &asked, 2.0, T)
+            .unwrap_or_else(|e| panic!("{what}: {e}"))
+            .shape;
+        assert!(
+            ogeom_algo::check(&own, &rounded, T).unwrap().is_valid(),
+            "{what}: not valid"
+        );
+        assert_eq!(
+            explore_unique(&own, &rounded, ShapeType::Shell)
+                .unwrap()
+                .len(),
+            2,
+            "{what}: the void is a shell of its own"
+        );
+        let plain = ogeom_fillet::fillet_edges(&mut own, &bracket, &plain_asked, 2.0, T)
+            .unwrap()
+            .shape;
+        let (with, without) = (volume(&own, &rounded), volume(&own, &plain));
+        assert!(
+            (without - with - 1.0).abs() < 1e-6,
+            "{what}: {with} with the void against {without} without"
         );
     }
 }

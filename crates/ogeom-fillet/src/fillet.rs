@@ -1442,6 +1442,29 @@ fn rounds_by_engine_routes(
     if let Some(built) = crate::engine::run(model, solid, &request, tol)? {
         return Ok(Some(built));
     }
+    // A solid bounded by planes holding seams (two flats a boolean joined
+    // into one): read with its seams dissolved, as the chamfers read it, on
+    // a copy of the model, the history told of the solid as given.
+    {
+        let mut scratch = model.clone();
+        if let crate::engine::Dissolved::Into(seamless) =
+            crate::engine::dissolve(&mut scratch, solid, tol)?
+            && let Some(rounds) = seamless.rounds(&once)
+            && !rounds.is_empty()
+            && let Some(built) = crate::engine::run(
+                &mut scratch,
+                &seamless.solid,
+                &crate::engine::Request::from_rounds(&rounds, tol)?,
+                tol,
+            )?
+        {
+            *model = scratch;
+            return Ok(Some(Built::new(
+                built.shape,
+                seamless.carry(&built.history),
+            )));
+        }
+    }
     // A concave seam whose ball rests on the far edge of the narrow face
     // beside it all along: its fill, fused (ADR 0001, amendment "M5d").
     if let Some(built) = crate::engine::far_edge_rounds(model, solid, &once, rounds_by_engine, tol)?
