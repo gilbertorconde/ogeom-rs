@@ -173,6 +173,46 @@ pub(crate) fn corner_for<'a>(
     }
 }
 
+/// Where `ring`, a round's contact on the cylinder `face`, crosses the line
+/// of `edge`, a straight edge of the face along its axis ending at `at`,
+/// past that end, with the ring's parameter there; `None` for any other
+/// face, contact or edge, or where the line does not reach the ring.
+fn over_the_edge(
+    face: &super::curved::CurvedFace,
+    ring: &ogeom_geom::Curve,
+    edge: &super::curved::CurvedEdge,
+    at: Point,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Point, f64)>> {
+    use ogeom_geom::Curve3d as _;
+    let (ogeom_geom::SurfaceGeometry::Cylinder(wall), ogeom_geom::Curve::Line(line)) =
+        (&face.surface, &edge.curve)
+    else {
+        return Ok(None);
+    };
+    let ogeom_geom::Curve::Circle(circle) = ring else {
+        return Ok(None);
+    };
+    let axis = wall.cylinder().frame().z().vector();
+    let along = line.axis().direction.vector();
+    let normal = circle.circle().frame().z().vector();
+    if along.cross(axis).magnitude() > tol.angular()
+        || along.dot(normal).abs() < 1.0 - tol.angular()
+    {
+        return Ok(None);
+    }
+    let centre = circle.circle().frame().origin();
+    let t = (centre - at).dot(normal) / along.dot(normal);
+    let point = at + along * t;
+    if (point.distance(centre) - circle.circle().radius()).abs()
+        > crate::marched::band_fit_target(tol)
+    {
+        return Ok(None);
+    }
+    let s = super::trimmed::param_on(ring, ring.domain(), point, tol)?;
+    Ok(Some((point, s)))
+}
+
 /// Record the corner at `key`, standing at `point`, with parameters `on`; a
 /// vertex the loop passes again keeps one corner with every edge's
 /// parameter, or where it puts it elsewhere a second, under the vertex's
@@ -440,6 +480,27 @@ pub(crate) fn curved_corners(
                     .iter()
                     .min_by(|a, b| a.point.distance(at).total_cmp(&b.point.distance(at)))
                 else {
+                    // A wall's straight edge along its axis ending where a
+                    // round's contact ring passes above it (the drum's edge
+                    // with a side tangent to it, at a cusp of the top): the
+                    // wall's corner on the ring is where the edge's line
+                    // crosses it, past the edge's end. The cusp's patch
+                    // takes the gap between the two.
+                    let (ring, e_ring, own_edge) = if blend_in {
+                        (&c_in, e_in, leaving)
+                    } else {
+                        (&c_out, e_out, arriving)
+                    };
+                    let Some((point, s)) = over_the_edge(face, ring, own_edge, at, tol)? else {
+                        return Ok(None);
+                    };
+                    if blend_in != blend_out {
+                        out.entry((fi, v)).or_insert(Corner {
+                            point,
+                            on: vec![(e_ring, s)],
+                        });
+                        continue;
+                    }
                     return Ok(None);
                 };
                 let on = [(e_in, nearest.on_a), (e_out, nearest.on_b)];
