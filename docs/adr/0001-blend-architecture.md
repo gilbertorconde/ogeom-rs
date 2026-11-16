@@ -1220,6 +1220,40 @@ onto a ramp.
   - the largest-pair search;
   - refusals by name.
 
+### Amendment: engine-owned variable-law and conic tools
+
+The variable-radius amendments above and M5f's end-plane rule retain
+their public meaning. Equal endpoint radii are a level law, not a reason
+to enter a different constructor. The arc-length parameter, periodic
+closed laws, endpoint holding and each edge's law window are unchanged.
+
+- **Construction.** The engine closes the planar section's exact sweep
+  into its own tool. It reuses the radius profile and varying-distance
+  rational net as section mathematics, not the old solid constructors.
+  Curved strips use the low-level march or exact revolved section;
+  asymmetric-only tangent chains join those tools at shared end sections.
+  This supersedes the collected-constructor implementation described in
+  the two preceding amendments, including its narrow-face and curved-turn
+  exceptions. Mixed asymmetric requests remain outside this migration.
+- **End resolution.** Intersecting curved strips retain their original
+  support surfaces. The surviving crease interval restricts the original
+  law by its original arc-length fraction; the law is not restarted on the
+  shorter crease. Guides resolve in a fixed order, straight before curved
+  and then by source identity, independent of request enumeration. Planar
+  end faces intersect the section's control hull to bound its extension;
+  an overhanging end plane clips the tool, as M5f requires.
+- **Compatibility.** No new public law or refusal rule is introduced.
+  The earlier mainstream survey already supports variable circular and
+  conic sections and edge overflow; Onshape's public fillet documentation
+  also explicitly permits variable values for every cross-section type
+  (https://cad.onshape.com/help/Content/PartStudio/fillet.htm). Existing
+  named computation limits remain limits, not claims that mainstream CAD
+  rejects the same geometry.
+- **Evidence.** The variable and asymmetric suites retain their geometric
+  and analytic oracles. An instrumented subprocess additionally exercises
+  all three law APIs and curved conic entry points, requiring no old
+  constructor event; result validity alone cannot distinguish the builders.
+
 ### Amendment: rounds on a solid bounded by planes holding seams (#902)
 
 A solid bounded by planes that a boolean built from boxes (an L-bracket

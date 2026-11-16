@@ -1,0 +1,306 @@
+//! Exact section sweeps closed by their rails, crease and end sections.
+
+use crate::RoundProfile;
+use crate::law::Profile;
+use ogeom_algo::Built;
+use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
+use ogeom_geom::{Curve3d as _, Surface as _, SurfaceGeometry};
+use ogeom_math::Vector;
+use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
+
+use super::curved::{SheetEdge, SheetFace, build_faces};
+use super::fallback::{Sense, Tool};
+use crate::round::section::PlanarSection;
+
+/// Apply each tool on its seated faces, retaining only newly created
+/// faces as the edge's generated geometry.
+pub(super) fn applied(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    tools: &[Tool],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let mut built = Built::from_nothing(solid.clone());
+    for tool in tools {
+        let step = match tool.sense {
+            Sense::Cut => ogeom_bool::cut_seated(model, &built.shape, &tool.solid, tol),
+            Sense::Fuse => ogeom_bool::fuse_seated(model, &built.shape, &tool.solid, tol),
+        }?;
+        let inherited: Vec<_> = explore_unique(model, &built.shape, ShapeType::Face)?
+            .iter()
+            .flat_map(|f| step.history.trace(f).to_vec())
+            .collect();
+        let kept = explore_unique(model, &step.shape, ShapeType::Face)?;
+        let mut history = built.history.then(&step.history);
+        for (face, owner) in &tool.faces {
+            for image in step.history.trace(face) {
+                if kept.iter().any(|f| f.is_same(image))
+                    && !inherited.iter().any(|f| f.is_same(image))
+                {
+                    history.generate(owner, image.clone());
+                }
+            }
+        }
+        built = Built::new(step.shape, history);
+    }
+    for edge in edges {
+        built.history.delete(edge);
+    }
+    super::guards::solid_fits(model, &built.shape, tol)?;
+    Ok(Some(built))
+}
+
+/// A straight planar round under a radius law, including a narrow strip
+/// taken wholly at every radius. The law is read from the stored curve's
+/// start, independently of the edge occurrence's orientation.
+pub(crate) fn linear_round(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    law: &Profile,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let consumed = |radius| -> OgeomResult<Option<crate::support::Seat>> {
+        match crate::support::ball_fits(model, solid, edge, radius, false, tol) {
+            Ok(_) => Ok(None),
+            Err(ogeom_core::OgeomError::Construction(_)) => {
+                crate::consumed::consumed_seat(model, solid, edge, radius, tol)
+            }
+            Err(e) => Err(e),
+        }
+    };
+    let seat = match (consumed(law.least())?, consumed(law.largest())?) {
+        (Some(_), Some(seat)) => seat,
+        (None, None) => {
+            let fractions: Vec<f64> = (1..32).map(|k| f64::from(k) / 32.0).collect();
+            crate::support::ball_fits_by(
+                model,
+                solid,
+                edge,
+                &|s| law.at(s).0,
+                &fractions,
+                false,
+                tol,
+            )?;
+            crate::support::ball_fits(model, solid, edge, law.largest(), false, tol)?;
+            crate::support::planar_seat(model, solid, edge, tol)?
+        }
+        _ => ogeom_bail!(
+            Construction,
+            "a variable radius whose ball sits on a narrow face beside the edge at some radii of the law and takes it off whole at others is still owed: the constant round changes construction between them; see docs/CAPABILITIES.md, fillet.variable"
+        ),
+    };
+    let unit = PlanarSection::new(&seat, &crate::round::section::RoundSpec::Circular(1.0), tol)?;
+    let distance = law.scaled_by(unit.distances(0.0)[0], false);
+    let section = PlanarSection::new(
+        &seat,
+        &crate::round::section::RoundSpec::Varying {
+            laws: [distance.clone(), distance],
+            profile: RoundProfile::Elliptical,
+        },
+        tol,
+    )?;
+    let tool = sweep(model, edge, &section, tol)?;
+    applied(model, solid, std::slice::from_ref(edge), &[tool], tol)?.ok_or_else(|| {
+        ogeom_core::ogeom_err!(
+            Construction,
+            "a varying round's tool does not close on its solid"
+        )
+    })
+}
+
+/// A straight round whose two distances vary, with its contacts checked
+/// on the original faces and its square ends on the original end faces.
+#[allow(clippy::too_many_arguments, reason = "one edge's two distance laws")]
+pub(crate) fn varying_distances(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    face: &Shape,
+    laws: &[Profile; 2],
+    profile: RoundProfile,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let (seat, named) = crate::asym::straight_seat(model, solid, edge, face, tol)?;
+    square_ends(model, solid, edge, &seat, tol)?;
+    let laws = if named == 0 {
+        laws.clone()
+    } else {
+        [laws[1].clone(), laws[0].clone()]
+    };
+    let section = PlanarSection::new(
+        &seat,
+        &crate::round::section::RoundSpec::Varying { laws, profile },
+        tol,
+    )?;
+    for k in 0..=16 {
+        let s = section.length() * f64::from(k) / 16.0;
+        for (i, face) in seat.faces.iter().enumerate() {
+            if !crate::support::on_face_or_boundary(model, solid, face, section.contact(i, s), tol)?
+            {
+                ogeom_bail!(
+                    Construction,
+                    "an asymmetric round sets back {} along a face of the edge, at {:.3} of it, past that face's side; see docs/CAPABILITIES.md, fillet.asymmetric-rounds",
+                    section.distances(s)[i],
+                    s / section.length()
+                );
+            }
+        }
+    }
+    let tool = sweep(model, edge, &section, tol)?;
+    applied(model, solid, std::slice::from_ref(edge), &[tool], tol)?.ok_or_else(|| {
+        ogeom_core::ogeom_err!(
+            Construction,
+            "a varying distance round's tool does not close on its solid"
+        )
+    })
+}
+
+/// Close a section's sweep over its seat into an engine tool. Every edge
+/// is shared by its two faces; the planar legs and caps use the section's
+/// own boundary curves.
+pub(super) fn sweep(
+    model: &mut Model,
+    owner: &Shape,
+    section: &PlanarSection,
+    tol: Tolerances,
+) -> OgeomResult<Tool> {
+    let length = section.length();
+    let [a, b] = section.order();
+    let points = [
+        section.crease(0.0),
+        section.crease(length),
+        section.contact(a, 0.0),
+        section.contact(a, length),
+        section.contact(b, 0.0),
+        section.contact(b, length),
+    ];
+    let mut edges: Vec<SheetEdge> = [(0, 1), (0, 2), (1, 3), (0, 4), (1, 5)]
+        .into_iter()
+        .map(|ends| SheetEdge { ends, curve: None })
+        .collect();
+    for (ends, boundary) in [
+        ((2, 3), section.contact_curve(a, (0.0, length), tol)?),
+        ((4, 5), section.contact_curve(b, (0.0, length), tol)?),
+        ((2, 4), section.arc_at(0.0, tol)?),
+        ((3, 5), section.arc_at(length, tol)?),
+    ] {
+        edges.push(SheetEdge {
+            ends,
+            curve: Some(boundary),
+        });
+    }
+    let rings = [
+        vec![(0, true), (2, true), (5, false), (1, false)],
+        vec![(0, false), (3, true), (6, true), (4, false)],
+        vec![(1, true), (7, true), (3, false)],
+        vec![(2, false), (4, true), (8, false)],
+        vec![(5, true), (8, true), (6, false), (7, false)],
+    ];
+    let surface = section.surface((0.0, length), tol)?;
+    let sheet: Vec<SheetFace> = rings
+        .into_iter()
+        .enumerate()
+        .map(|(i, ring)| SheetFace {
+            surface: (i == 4).then(|| surface.clone()),
+            ring,
+            holes: Vec::new(),
+        })
+        .collect();
+    let mut faces = build_faces(model, &points, &edges, &sheet, tol)?;
+    // The strip's chart can run either way across the crease. Its outward
+    // normal points from the crease through the middle of its arc.
+    let (arc, range) = section.arc_at(length * 0.5, tol)?;
+    let middle = arc.point_at(f64::midpoint(range.0, range.1), tol)?;
+    let projected = ogeom_algo::project_on_surface(&surface, middle, 16, tol)?;
+    let (du, dv) = surface.d1_at(projected.parameters.0, projected.parameters.1, tol)?;
+    if du.cross(dv).dot(middle - section.crease(length * 0.5)) < 0.0 {
+        faces[4] = faces[4].reversed();
+    }
+    let reverse = (points[2] - points[0])
+        .cross(points[4] - points[0])
+        .dot(section.seat().along)
+        > 0.0;
+    if reverse {
+        for face in &mut faces[..4] {
+            *face = face.reversed();
+        }
+    }
+    let shell = model.add_shell(&faces)?;
+    let solid = model.add_solid(&[shell])?;
+    let faces = explore_unique(model, &solid, ShapeType::Face)?
+        .into_iter()
+        .map(|f| (f, owner.clone()))
+        .collect();
+    Ok(Tool {
+        solid,
+        sense: if section.seat().convex {
+            Sense::Cut
+        } else {
+            Sense::Fuse
+        },
+        faces,
+    })
+}
+
+/// Refuses by name where an end of the straight seat's edge meets a face
+/// of `solid`, other than the edge's own two, whose plane is not square to
+/// the edge: a band capped square there would leave or cut what that face
+/// bounds.
+fn square_ends(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    seat: &crate::support::Seat,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
+        return Ok(());
+    };
+    for face in explore_unique(model, solid, ShapeType::Face)? {
+        if seat.faces.iter().any(|f| f.is_same(&face)) {
+            continue;
+        }
+        let vertices = explore_unique(model, &face, ShapeType::Vertex)?;
+        let meets = vertices.iter().any(|v| {
+            crate::support::same_occurrence(model, v, &a, tol)
+                || crate::support::same_occurrence(model, v, &b, tol)
+        });
+        if !meets {
+            continue;
+        }
+        let square = match face_normal(model, &face, tol)? {
+            Some(normal) => normal.cross(seat.along).magnitude() <= tol.angular(),
+            None => false,
+        };
+        if !square {
+            ogeom_bail!(
+                Construction,
+                "an asymmetric round whose distances vary is capped square at its edge's \
+                 ends, and an end of this edge meets a face not square to it; see \
+                 docs/CAPABILITIES.md, fillet.asymmetric-rounds"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A planar face's unit normal, placed; `None` for a face on any other
+/// surface.
+fn face_normal(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<Vector>> {
+    use ogeom_geom::Transformable as _;
+    let Some(data) = model.node(face).and_then(|n| n.data().as_face()) else {
+        return Ok(None);
+    };
+    let Some(surface) = model.geometry().surface(data.surface) else {
+        return Ok(None);
+    };
+    let placed = surface
+        .clone()
+        .transformed(&face.transform(model.datums())?, tol)?;
+    Ok(match placed {
+        SurfaceGeometry::Plane(p) => Some(p.plane().normal().vector()),
+        _ => None,
+    })
+}

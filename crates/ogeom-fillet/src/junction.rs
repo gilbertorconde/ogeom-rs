@@ -103,12 +103,6 @@ pub(crate) struct Junction {
     /// axis, and whose other is straight: that band, a torus band, its
     /// section the same at every turn about the axis.
     pub turned: Option<Turned>,
-    /// The creases continue each other through the vertex (a side of a
-    /// rounded rectangle running into its corner's arc): the bands' end
-    /// sections are one, and they meet flush in the plane square to both
-    /// creases there. Such a junction reads no host normals; `top` and
-    /// `sides` are zero.
-    pub tangent: bool,
 }
 
 /// The turned band of a crossed junction: its crease a circle about an
@@ -536,7 +530,6 @@ fn junction(
         top,
         sides: [side_0, side_1],
         turned,
-        tangent: false,
     }))
 }
 
@@ -572,7 +565,6 @@ pub(crate) fn tangent_junctions(edges: &[Shape], mates: &[Mate], tol: Tolerances
                         top: Vector::ZERO,
                         sides: [Vector::ZERO, Vector::ZERO],
                         turned: None,
-                        tangent: true,
                     });
                 }
             }

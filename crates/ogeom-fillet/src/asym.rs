@@ -441,7 +441,6 @@ pub fn fillet_edge_distances(
     {
         return Ok(built);
     }
-    crate::fillet::to_current_path("fillet_edge_distances");
     ogeom_algo::on_own_nodes(
         model,
         solid,
@@ -452,27 +451,6 @@ pub fn fillet_edge_distances(
             )
         },
     )
-}
-
-/// The band of [`fillet_edge_distances`] as the current path builds it,
-/// for the engine to collect as wedges (see
-/// [`crate::engine::distances_rounds`]).
-///
-/// # Errors
-///
-/// As the current path's round of the edge.
-#[allow(clippy::too_many_arguments, reason = "fillet_edge_distances' own")]
-pub(crate) fn distances_bands(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    face: &Shape,
-    on_face: f64,
-    on_other: f64,
-    profile: RoundProfile,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    fillet_edge_distances_own(model, solid, edge, face, on_face, on_other, profile, tol)
 }
 
 /// [`fillet_edge_distances`] on a shape every node below which is its own.
@@ -487,6 +465,7 @@ fn fillet_edge_distances_own(
     profile: RoundProfile,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    crate::fillet::to_current_path("fillet_edge_distances");
     if let Some(rim) = rim_conic(model, solid, edge, face, on_face, on_other, profile, tol)? {
         let mut built = if rim.whole {
             rim_round(model, solid, edge, &rim, tol)?
@@ -655,7 +634,7 @@ fn equal_radius(
 /// the middle and three quarters of the edge, stands off its face and off
 /// every other face of the solid: the band would set back past the face's
 /// side.
-fn contacts_fit(
+pub(crate) fn contacts_fit(
     model: &Model,
     solid: &Shape,
     edge: &Shape,
@@ -713,6 +692,7 @@ pub(crate) fn after_symmetric(
     symmetric: impl FnOnce(&mut Model) -> OgeomResult<Built>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    crate::fillet::to_current_path("blend_edges");
     asymmetric.sort_by_key(|a| a.edge.node());
     let ends = |model: &Model, edge: &Shape| -> OgeomResult<Vec<Shape>> {
         Ok(match ogeom_algo::edge_vertices(model, edge)? {
@@ -845,7 +825,7 @@ pub(crate) fn after_symmetric(
 /// Whether two asymmetric rounds meeting at `vertex` continue each other:
 /// the same face named, the same distances and section, and their edges
 /// tangent there.
-fn continues(
+pub(crate) fn continues(
     model: &Model,
     a: &Asymmetric,
     b: &Asymmetric,
@@ -937,20 +917,20 @@ fn trace_request(
 /// reference direction.
 pub(crate) struct RimConic {
     /// The rim.
-    seat: crate::support::RevolvedSeat,
+    pub(crate) seat: crate::support::RevolvedSeat,
     /// The edge's circle.
-    circle: ogeom_geom::CircleCurve,
+    pub(crate) circle: ogeom_geom::CircleCurve,
     /// Whether the rims on the circle run its whole turn.
-    whole: bool,
+    pub(crate) whole: bool,
     /// The wall's contact's depth along the axis from the cap's plane.
-    wall_depth: f64,
+    pub(crate) wall_depth: f64,
     /// The cap's contact ring's radius.
-    cap_rho: f64,
+    pub(crate) cap_rho: f64,
     /// The section's control points: the wall's contact, the rim, the
     /// cap's contact.
-    points: [Point; 3],
+    pub(crate) points: [Point; 3],
     /// The weight of the rim's control point.
-    w: f64,
+    pub(crate) w: f64,
 }
 
 impl RimConic {
@@ -1082,7 +1062,7 @@ impl RimConic {
 /// a whole turn of a rim on a cap and its coaxial wall, `face` is neither,
 /// or a contact would reach the axis.
 #[allow(clippy::too_many_arguments, reason = "the request's own")]
-fn rim_conic(
+pub(crate) fn rim_conic(
     model: &Model,
     solid: &Shape,
     edge: &Shape,
@@ -1258,7 +1238,7 @@ fn constant_dihedral(
 
 /// Refuses by name where the rim's contacts stand off their faces, read
 /// across from a quarter, the middle and three quarters of the edge.
-fn rim_fits(
+pub(crate) fn rim_fits(
     model: &Model,
     solid: &Shape,
     edge: &Shape,
