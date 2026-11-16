@@ -1019,24 +1019,43 @@ pub(crate) fn closed_band_wedge(
         // iso between the rings, where it cannot cross either of them; a
         // connector thrown diagonally across the band does, and the
         // arrangement downstream cannot hold strands that cross mid-span.
-        let anchor_host = if w1.abs() > 0.5 {
-            Some((&first, &blend.on_first))
+        // A patch closed round `v` alone (a fitted band, not periodic) is
+        // anchored first, on its own `v` column: its leg's chart then runs
+        // the patch's domain and no further, where the boolean finds what
+        // lies on it. A periodic host reads any column alike.
+        let closed_v = |host: &SurfaceGeometry| {
+            matches!(host, SurfaceGeometry::BSpline(_))
+                && period_of(host).is_none()
+                && period_v_of(host).is_some()
+        };
+        let anchor_host = if closed_v(first) {
+            Some((&first, &blend.on_first, true))
+        } else if closed_v(second) {
+            Some((&second, &blend.on_second, true))
+        } else if w1.abs() > 0.5 {
+            Some((&first, &blend.on_first, false))
         } else if w2.abs() > 0.5 {
-            Some((&second, &blend.on_second))
+            Some((&second, &blend.on_second, false))
         } else {
             None
         };
-        if let Some((host, on)) = anchor_host
-            && let Some(period) = period_of(host)
+        if let Some((host, on, in_v)) = anchor_host
+            && let Some(period) = if in_v {
+                period_v_of(host)
+            } else {
+                period_of(host)
+            }
         {
-            let apex_u = chart_of(host, guide.point_at(guide_range.0, tol)?, None, tol)?.x;
+            let column = |uv: (f64, f64)| if in_v { uv.1 } else { uv.0 };
+            let apex = chart_of(host, guide.point_at(guide_range.0, tol)?, None, tol)?;
+            let apex_u = if in_v { apex.y } else { apex.x };
             let circular = |u: f64| -> f64 {
                 let d = (u - apex_u).rem_euclid(period);
                 d.min(period - d)
             };
             let mut k = 0;
-            for (i, &(u, _)) in on.iter().enumerate() {
-                if circular(u) < circular(on[k].0) {
+            for (i, &uv) in on.iter().enumerate() {
+                if circular(column(uv)) < circular(column(on[k])) {
                     k = i;
                 }
             }
@@ -1053,7 +1072,12 @@ pub(crate) fn closed_band_wedge(
             // no arrangement holds. Station zero is re-solved exactly on
             // the column, bracketed by its two neighbours.
             let host_is_first = core::ptr::eq(host, &first);
-            let u_of = |x: &[f64; 5]| if host_is_first { x[0] } else { x[2] };
+            let u_of = |x: &[f64; 5]| match (host_is_first, in_v) {
+                (true, false) => x[0],
+                (true, true) => x[1],
+                (false, false) => x[2],
+                (false, true) => x[3],
+            };
             let signed = |u: f64| -> f64 {
                 let d = (u - apex_u).rem_euclid(period);
                 if d <= period / 2.0 { d } else { d - period }
@@ -4358,6 +4382,37 @@ fn host_leg(
     fit_target: f64,
     tol: Tolerances,
 ) -> OgeomResult<Result<(Shape, RailPieces), ogeom_core::OgeomError>> {
+    // A patch closed round `v` alone (a marched band, closed in `v` by the
+    // fit's convention) is charted transposed, so its loops wind in `u` as
+    // every leg below reads them; the leg is then rebuilt on the patch's
+    // own chart, where the solid's face on it lies.
+    if let SurfaceGeometry::BSpline(patch) = host
+        && period_of(host).is_none()
+        && period_v_of(host).is_some()
+    {
+        let transposed: SurfaceGeometry = ogeom_geom::BSplineSurface::rational(
+            patch.v_knots().clone(),
+            patch.u_knots().clone(),
+            patch.grid().transposed(),
+        )?
+        .into();
+        let swapped: Vec<(f64, f64)> = on_host.iter().map(|&(u, v)| (v, u)).collect();
+        let leg = host_leg(
+            model,
+            &transposed,
+            &swapped,
+            u_params,
+            rail,
+            guide,
+            guide_range,
+            fit_target,
+            tol,
+        )?;
+        let Ok((leg, pieces)) = leg else {
+            return Ok(leg);
+        };
+        return Ok(Ok((untransposed(model, &leg, host, tol)?, pieces)));
+    }
     let n = on_host.len();
     // The rail's chart image, closed: the marcher solved these parameters,
     // so the fit through them at the grid's own u-parameters is
@@ -4614,6 +4669,74 @@ fn host_leg(
             None,
         )))
     }
+}
+
+/// `leg`, a face on a patch's transposed chart, rebuilt on `host`, the
+/// patch itself: each edge's image mirrored across the chart's diagonal
+/// (a seam's two sides exchanged, as its uses are turned), and the wires
+/// turned so the face keeps its region; facing as `leg` faced turned over.
+fn untransposed(
+    model: &mut Model,
+    leg: &Shape,
+    host: &SurfaceGeometry,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let Some(transposed) = model
+        .node(leg)
+        .and_then(|n| n.data().as_face())
+        .map(|d| d.surface)
+    else {
+        ogeom_bail!(Construction, "a leg holds no face data");
+    };
+    let mirror = ogeom_math::Transform2::line_mirror(
+        Point2::new(0.0, 0.0),
+        ogeom_math::Direction2::new(ogeom_math::Vector2::new(1.0, -1.0), tol)?,
+    );
+    let surface = model.geometry_mut().add_surface(host.clone());
+    for edge in ogeom_topo::explore_unique(model, leg, ShapeType::Edge)? {
+        let Some(repr) = model
+            .node(&edge)
+            .and_then(|n| n.data().as_edge())
+            .and_then(|d| d.pcurve_on(transposed))
+            .cloned()
+        else {
+            ogeom_bail!(Construction, "a leg's edge has no image on its chart");
+        };
+        let image = |model: &Model, id| -> OgeomResult<PlanarCurve> {
+            let Some(curve) = model.geometry().pcurve(id) else {
+                ogeom_bail!(Dangling, "a leg's edge image is not in this model");
+            };
+            curve.transformed(&mirror, tol)
+        };
+        match repr {
+            ogeom_topo::EdgeRepr::PCurve {
+                curve,
+                location,
+                range,
+                ..
+            } => {
+                let mirrored = image(model, curve)?;
+                ogeom_algo::attach_pcurve(model, &edge, mirrored, surface, location, range)?;
+            }
+            ogeom_topo::EdgeRepr::Seam {
+                forward,
+                reversed,
+                location,
+                range,
+                ..
+            } => {
+                let (f, r) = (image(model, forward)?, image(model, reversed)?);
+                ogeom_algo::attach_seam(model, &edge, r, f, surface, location, range)?;
+            }
+            _ => ogeom_bail!(Construction, "a leg's edge image is not a pcurve"),
+        }
+    }
+    let mut wires = Vec::new();
+    for wire in explore(model, leg, Filter::OfType(ShapeType::Wire))? {
+        let edges = model.ordered_children_of(&wire.reversed())?;
+        wires.push(ogeom_algo::make_wire(model, &edges, tol)?.shape);
+    }
+    Ok(ogeom_algo::make_face_on(model, surface, &wires, tol)?.shape)
 }
 
 /// The closed rail's chart image on its host, and how far the host's point

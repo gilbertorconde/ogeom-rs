@@ -917,6 +917,17 @@ not rewritten; the engine takes it as the strip builder for these seats.
   trim the faces a rim's band sits on.
 - **Still the current path's:** a band the boolean refuses where no strip
   is taken off whole (its refusal follows the current path's retries).
+- **A leg on a fitted band.** A face beside the crease may be an earlier
+  marched blend, such as a bevel round a bore's rim. Its surface closes
+  round `v` alone and is not periodic. The leg on it is built the way every
+  leg is built: its chart is transposed so its loops wind in `u`, and the
+  face is then rebuilt on the patch's own chart. The loop's first station
+  stands on that patch's seam, so the leg's chart stays within the
+  patch's domain, where the boolean finds the solid's face it lies on.
+  Where the ball fits beside such a bevel, the round rolls between the
+  bevel and the face beyond it, and the bevel stays narrowed. This is what
+  mainstream applications build. The bevel comes off whole only where the
+  ball does not fit beside it (`consumed_marched.rs`).
 
 ### Amendment: mixed rolling corners (#902)
 

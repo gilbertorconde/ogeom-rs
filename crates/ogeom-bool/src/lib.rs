@@ -9595,6 +9595,61 @@ impl<'a> FineRings<'a> {
         Some(Self { rings: lines, tol })
     }
 
+    /// A curved face's rings resampled finely in its chart, as [`Self::of`]
+    /// resamples a plane's, every strand drawn in full: for a piece lying on
+    /// a partner's surface, where a probe standing outside the piece reads
+    /// the other solid's side of the partner, not the piece's. `None` where
+    /// a strand cannot be resampled or a ring does not close in the chart
+    /// (one winding the chart's period, which the count does not hold).
+    fn of_curved(
+        face: &'a GFace,
+        rings: &[Vec<Traversal<Tag>>],
+        sections: &'a [SectionRec],
+        from_a: bool,
+        tol: Tolerances,
+    ) -> Option<Self> {
+        use ogeom_geom::Surface as _;
+        // A periodic chart's strands may run a whole period (a rim's
+        // circle), which no chord between its ends draws.
+        if face.surface.is_periodic_u() || face.surface.is_periodic_v() {
+            return None;
+        }
+        let mut lines: Vec<Vec<FinePart<'a>>> = Vec::with_capacity(rings.len());
+        for ring in rings {
+            let mut line: Vec<FinePart<'a>> = Vec::new();
+            let mut drawn: Vec<Point2> = Vec::new();
+            for traversal in ring {
+                let (curve, a, b, wrap) = fine_strand(face, sections, from_a, &traversal.tag)?;
+                let count = if matches!(curve, PlanarCurve::Line(_)) {
+                    1
+                } else {
+                    FINE
+                };
+                let mut points: Vec<Point2> = Vec::with_capacity(count + 1);
+                for i in 0..=count {
+                    #[allow(clippy::cast_precision_loss)]
+                    let t = a + (b - a) * (i as f64 / count as f64);
+                    let t = wrap.map_or(t, |domain| fold(t, domain));
+                    points.push(curve.point_at(t, tol).ok()?);
+                }
+                if traversal.reversed {
+                    points.reverse();
+                }
+                drawn.extend_from_slice(&points);
+                line.push(FinePart::Points(points));
+            }
+            let (Some(first), Some(last)) = (drawn.first(), drawn.last()) else {
+                return None;
+            };
+            let span = drawn.iter().fold(0.0_f64, |m, p| m.max(p.distance(*first)));
+            if last.distance(*first) > span * 1e-6 + tol.parametric() {
+                return None;
+            }
+            lines.push(line);
+        }
+        Some(Self { rings: lines, tol })
+    }
+
     /// Even-odd containment of `p` in the rings, counted as
     /// [`inside_rings`] counts it over the rings drawn in full.
     fn inside(&self, p: Point2) -> bool {
@@ -10820,6 +10875,14 @@ fn inside_beside_edge(face: &GFace, p: Point, tol: Tolerances) -> OgeomResult<Op
     let walked = if forward { tangent } else { -tangent };
     let left = outward_normal(face, at, tol)?.cross(walked);
     Ok(Some((p - e.curve.point_at(t, tol)?).dot(left) > 0.0))
+}
+
+/// Whether the point of `face`'s chart at `uv` lies on the face, read as a
+/// partner's probe is read on it: a probe a piece's coarse outline puts
+/// outside its face (beyond the chords' bow) is not the piece's.
+fn on_own_face(face: &GFace, uv: Point2, tol: Tolerances) -> OgeomResult<bool> {
+    let at = face.surface.point_at(uv.x, uv.y, tol)?;
+    Ok(chart_point_within(face, at, partner_reach(face, face, tol), tol).is_some())
 }
 
 /// What the strands bounding a piece say of it, where its probes cannot.
@@ -13570,6 +13633,20 @@ fn general_fuse_as(
                                 every.inside_beside(piece.first, &reached)
                             })
                     }
+                    // On a curved face, a piece on a partner's surface has
+                    // its roomiest probe held to its rings drawn finely: a
+                    // thin piece's outline chords bow past the piece, and a
+                    // probe beyond them reads the other solid off the
+                    // partner, as if the piece lay there.
+                    // Where the rings cannot be drawn finely (a contact
+                    // strand among them), a probe off the face itself is
+                    // not the piece's either.
+                    _ if !partners.is_empty() => {
+                        match FineRings::of_curved(face, &piece.rings, &sections, from_a, tol) {
+                            Some(every) => Some(every.inside(piece.first)),
+                            None => Some(on_own_face(face, piece.first, tol)?),
+                        }
+                    }
                     _ => Some(true),
                 };
                 if first_kept == Some(true)
@@ -13588,12 +13665,47 @@ fn general_fuse_as(
                     let mut interiors: Vec<Point2> = piece.interiors().to_vec();
                     let reached = rings_near(&piece.outlines, &interiors);
                     fine =
-                        FineRings::of(face, &piece.rings, &sections, from_a, Some(&reached), tol);
+                        FineRings::of(face, &piece.rings, &sections, from_a, Some(&reached), tol)
+                            .or_else(|| {
+                                (!partners.is_empty())
+                                    .then(|| {
+                                        FineRings::of_curved(
+                                            face,
+                                            &piece.rings,
+                                            &sections,
+                                            from_a,
+                                            tol,
+                                        )
+                                    })
+                                    .flatten()
+                            });
+                    if fine.is_none() && !partners.is_empty() {
+                        let mut kept = Vec::with_capacity(interiors.len());
+                        for p in &interiors {
+                            if on_own_face(face, *p, tol)? {
+                                kept.push(*p);
+                            }
+                        }
+                        // Where none stands on the face as read, the reading
+                        // is not trusted over the piece's own outline.
+                        if !kept.is_empty() {
+                            interiors = kept;
+                        }
+                    }
                     if let Some(fine) = &fine {
                         interiors.retain(|p| fine.inside(*p));
                         if interiors.is_empty()
                             && let Some(every) =
                                 FineRings::of(face, &piece.rings, &sections, from_a, None, tol)
+                                    .or_else(|| {
+                                        FineRings::of_curved(
+                                            face,
+                                            &piece.rings,
+                                            &sections,
+                                            from_a,
+                                            tol,
+                                        )
+                                    })
                         {
                             interiors =
                                 arrange::interior_points_of(&every.points(), tol.parametric());
