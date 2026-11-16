@@ -1267,6 +1267,77 @@ around its end.
   to its fit) is handed back, not refused. One found standing past the
   material is still refused.
 
+### Amendment: corners where a round's rail misses (#902)
+
+Two vertex classes the earlier amendments left open, settled by survey
+(2026-11-15). The SOLIDWORKS, Fusion, Onshape and NX documents describe
+the options at a corner (setbacks, rounded or smoothed corners, rolling
+ball or setback corner types, overflow handling), not what a round does
+where its rail misses the edge it should meet. The SMLib manual's
+fillet corners do, classing each vertex by how many of its edges are
+rounded and by the convexity of all its edges:
+
+- one rounded edge of three, all of one convexity: "the end face will be
+  trimmed back to the fillet surface";
+- two rounded of three, of one convexity, the third of the other: "the
+  rail curves that are in the same face must be extended and/or blended
+  to meet", and a corner patch is created.
+
+Sources: SMLib, *Fillets* (docs.nvidia.com/smlib/manual/smlib/fillets);
+SOLIDWORKS, *Constant Size Fillets*; Onshape, *Fillet*; Autodesk Fusion,
+*Create a fillet*; Siemens NX Open, `EdgeBlendBuilder`. One request
+rounds its edges as one operation, so the order its edges are asked in
+changes nothing (as in every application, where only separate fillet
+features depend on their order).
+
+- **Two rounds at an inside corner whose rails meet past the face.** Two
+  rounds of one sense meeting where the edge left sharp at their vertex
+  is of the other sense (an inside corner): their rails on the face both
+  share are extended to meet. Where they meet within that face, the
+  bands meet along their own intersection, as amendment "M5e" (#1062)
+  builds them. Where the extended rails meet only past the face (a crease
+  turning back nearly on itself, its notch narrower than the bands), the
+  rails are blended to meet on that face and the corner closed by the
+  ball rolling round the sharp edge (section 13, question 8: the ball
+  rests on the edge):
+  - each band ends in the plane through the sharp edge square to its own
+    crease, where its ball touches that edge;
+  - between the two, the ball rolls round the sharp edge on the
+    material's side, touching it and the shared face: the corner is the
+    bands' section turned about the edge through the angle between the
+    two end planes behind the vertex, G1 to both bands (all three sweep
+    one section square to its plane where they meet);
+  - the blended rail is the circle of the radius about the vertex on the
+    shared face, tangent to both rails.
+  Built for rounds of one radius whose sharp edge stands square to the
+  shared face, the turned section's surface exact (a horn torus about the
+  edge); other such corners are handed back. The bands are not carried on
+  into one another there: carried on, their overlap past the corner and
+  the notch meet on the corner's line, which pinches the solid.
+- **One round whose rail crosses the adjacent edge away from the vertex.**
+  One rounded edge at a vertex of three edges of one convexity (a boss's
+  rim where a rib's wall leaves it, turned towards the material). SMLib's
+  case has the end face trimmed back to the fillet surface where the
+  rails meet the edges beside them at the vertex. Here the rail on the
+  cap meets the edge it shares with the end face only well back from the
+  vertex, and the boss's circle carried on can run back into the rib
+  before it does (where the rib holds the boss's centre), so the case is
+  extended:
+  - the round's surface runs on past the vertex along its own spine (a
+    rim's torus about its axis) only while the end face trims it: while
+    its contact on the cap stands in the solid and its contact on the
+    wall's surface carried on stands outside it;
+  - it stops at the first station where that trim reaches either
+    contact (the cap's contact leaving the solid, or the wall's contact
+    entering it), and where it stops inside the material it ends in the
+    plane through the axis there;
+  - over the stretch it runs on, it takes what of its section the solid
+    holds, and the end face is trimmed back to it.
+  It is not capped in the plane through the vertex, which leaves material
+  the ball takes standing, nor run on into the material past where the
+  wall's contact enters it, which would cut a groove with a cliff on the
+  wall's surface carried on.
+
 ## 12. Acceptance corpus
 
 From #902:
