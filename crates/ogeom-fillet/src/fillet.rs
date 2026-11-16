@@ -782,8 +782,8 @@ pub enum FilletCorner {
 /// # Errors
 ///
 /// As [`fillet_edges`] for `Setback`. For `Rolling`,
-/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction),
-/// naming the vertex, where the ball's sweep does not close it: a vertex
+/// [`OgeomError::Construction`], naming the vertex, where the ball's
+/// sweep does not close it: a vertex
 /// where rounds meet touching a curved face or joining other than three
 /// edges, a convex and a concave round meeting beside an edge left sharp,
 /// or the lone round's edge not square to the face across it (the sweep
