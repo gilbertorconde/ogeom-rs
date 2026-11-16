@@ -268,6 +268,13 @@ enum Support {
     Edge { at: Point, along: Vector },
     /// A plane: a point of it and its outward unit normal.
     Plane { at: Point, normal: Vector },
+    /// A vertex the far edge ends at: the ball rolls round it.
+    Point { at: Point },
+    /// A far edge's line read round it: the centre on the cylinder about
+    /// it where it meets the plane a radius over `F1`, `s` a radius times
+    /// the angle round the line, for an edge steep enough that the centre
+    /// runs back along the seam.
+    Around { at: Point, along: Vector },
 }
 
 /// One seam's run: the seam, the touched face `F1` and the face `F2` whose
@@ -347,14 +354,47 @@ impl Run {
                 }
                 Some(o + self.into1 * ((self.radius - (o - at).dot(normal)) / den))
             }
+            // A radius from the vertex: the sphere about it.
+            Support::Around { at, along: d } => {
+                let den = self.n1.dot(d);
+                if den.abs() <= f64::EPSILON {
+                    return None;
+                }
+                let u = Direction::new(d, Tolerances::default())
+                    .ok()?
+                    .any_perpendicular()
+                    .vector();
+                let w = d.cross(u);
+                let turn = s / self.radius;
+                let out = (u * turn.cos() + w * turn.sin()) * self.radius;
+                let level = (self.start + self.n1 * self.radius - at).dot(self.n1);
+                let l = (level - self.n1.dot(out)) / den;
+                Some(at + d * l + out)
+            }
+            // A radius from the vertex and a radius over `F1`: the circle
+            // about the vertex's foot, `s` its arc length from `along`.
+            Support::Point { at } => {
+                let lift = (self.start + self.n1 * self.radius - at).dot(self.n1);
+                let rho2 = self.radius * self.radius - lift * lift;
+                if rho2 <= 0.0 {
+                    return None;
+                }
+                let rho = rho2.sqrt();
+                let middle = at + self.n1 * lift;
+                let turn = s / rho;
+                Some(middle + (self.along * turn.cos() + self.into1 * turn.sin()) * rho)
+            }
         }
     }
 
     /// The ball's touch on `F1` and on its support, for centre `c`.
     fn feet(&self, c: Point) -> (Point, Point) {
         let other = match self.support {
-            Support::Edge { at, along } => at + along * (c - at).dot(along),
+            Support::Edge { at, along } | Support::Around { at, along } => {
+                at + along * (c - at).dot(along)
+            }
             Support::Plane { normal, .. } => c - normal * self.radius,
+            Support::Point { at } => at,
         };
         (c - self.n1 * self.radius, other)
     }
@@ -453,6 +493,10 @@ enum Held {
     },
     Face {
         face: usize,
+    },
+    /// The vertex the ball rolls round, touching every face there at it.
+    Vertex {
+        vertex: Id,
     },
 }
 
@@ -562,7 +606,10 @@ fn run_of(
                 return Ok(None);
             }
             let q = match support {
-                Support::Edge { at, .. } | Support::Plane { at, .. } => at,
+                Support::Edge { at, .. }
+                | Support::Plane { at, .. }
+                | Support::Point { at }
+                | Support::Around { at, .. } => at,
             };
             let start = a + into1 * ((q - a).dot(nf) / den);
             let run = Run {
@@ -667,6 +714,21 @@ fn run_of(
                 };
                 if let Some(run) = attempt(face, support, held, &taken)? {
                     return Ok(Some(vec![run]));
+                }
+                // The far edge ending at a vertex short of the seam's end:
+                // the ball rests on the edge up to where its touch reaches
+                // the vertex, and rolls round the vertex past it.
+                if taken.is_empty()
+                    && let Some(runs) = round_the_vertex(
+                        model,
+                        curved,
+                        (edge, [f1, face], radius),
+                        (a, along, length, n1, into1),
+                        (caps, &end_faces),
+                        tol,
+                    )?
+                {
+                    return Ok(Some(runs));
                 }
             }
             taken.push(face);
@@ -859,6 +921,554 @@ fn carried(
     ]))
 }
 
+/// The two pieces of a run whose far edge ends at a vertex between the
+/// seam's ends: resting on the edge where the ball's touch on it stands
+/// within it, rolling round the vertex past the station where the touch
+/// reaches it (the ball's centre on the sphere a radius about the vertex,
+/// its arc ending on the vertex, the pieces' centres' paths tangent there).
+/// Each piece is capped at that station on the plane square to their
+/// shared path. `None` where neither of the edge's ends is met so, or
+/// either piece is not proved.
+#[allow(clippy::too_many_arguments, reason = "the run's whole reading")]
+fn round_the_vertex(
+    model: &Model,
+    curved: &Curved,
+    (edge, faces, radius): (Id, [usize; 2], f64),
+    (a, along, length, n1, into1): (Point, Vector, f64, Vector, Vector),
+    (caps, end_faces): ([(Vector, f64); 2], &[usize]),
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<Run>>> {
+    let eps = tol.confusion();
+    let narrow = faces[1];
+    let piece = |support: Support| Run {
+        edge,
+        faces,
+        radius,
+        start: a,
+        along,
+        length,
+        n1,
+        into1,
+        support,
+        taken: Vec::new(),
+        caps,
+        end_faces: end_faces.to_vec(),
+        span: (0.0, 0.0),
+        joint: [None, None],
+        reaches: Vec::new(),
+    };
+    // Each straight edge of the narrow face but the seam, convex, may hold
+    // the ball up to one of its ends.
+    for (far, _) in curved.faces[narrow].loops.iter().flatten() {
+        let far = *far;
+        if far == edge {
+            continue;
+        }
+        let g = &curved.edges[&far];
+        if !matches!(g.curve, Curve::Line(_)) || g.ends.0 == g.ends.1 {
+            continue;
+        }
+        let (gp, gq) = (curved.points[&g.ends.0], curved.points[&g.ends.1]);
+        let far_along = (gq - gp) / gp.distance(gq);
+        let [ga, gb] = faces_of(curved, far)[..] else {
+            continue;
+        };
+        let beyond = if ga == narrow { gb } else { ga };
+        let (Some(nf), Some(ng)) = (outward(curved, narrow, gp), outward(curved, beyond, gp))
+        else {
+            continue;
+        };
+        let Some(into_g) = into_face(
+            model,
+            curved,
+            beyond,
+            (gp.midpoint(gq), far_along, gp.distance(gq)),
+            tol,
+        )?
+        else {
+            continue;
+        };
+        // Convex: the face beyond falls behind the narrow face's plane.
+        if into_g.dot(nf) >= -tol.angular() {
+            continue;
+        }
+        let held = Held::Edge {
+            far,
+            faces: [narrow, beyond],
+            normals: [nf, ng],
+        };
+        let on_edge = piece(Support::Around {
+            at: gp,
+            along: far_along,
+        });
+        for v in [g.ends.0, g.ends.1] {
+            let vertex = curved.points[&v];
+            let other = if v == g.ends.0 { g.ends.1 } else { g.ends.0 };
+            let toward_other = (curved.points[&other] - vertex).dot(far_along);
+            // How far past the vertex, away from the edge, the touch stands.
+            let past = |s: f64| -> Option<f64> {
+                let c = on_edge.centre(s)?;
+                Some(-(on_edge.feet(c).1 - vertex).dot(far_along) * toward_other.signum())
+            };
+            // Searched once round the edge.
+            let (s_lo, s_hi) = (0.0, core::f64::consts::TAU * radius);
+            let count = 400_u32;
+            let mut brackets = Vec::new();
+            let mut prev: Option<(f64, f64)> = None;
+            for i in 0..=count {
+                let s = s_lo + (s_hi - s_lo) * f64::from(i) / f64::from(count);
+                let Some(p) = past(s) else {
+                    prev = None;
+                    continue;
+                };
+                if let Some((sp, pp)) = prev
+                    && (pp > 0.0) != (p > 0.0)
+                {
+                    brackets.push((sp, s, pp));
+                }
+                prev = Some((s, p));
+            }
+            for (mut lo, mut hi, p0) in brackets {
+                for _ in 0..200 {
+                    let mid = f64::midpoint(lo, hi);
+                    if past(mid).is_some_and(|p| (p > 0.0) == (p0 > 0.0)) {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                let switch = f64::midpoint(lo, hi);
+                // The switch's arc plane crosses the seam within it.
+                let Some(x) = on_edge.crossing(switch) else {
+                    continue;
+                };
+                let across = (x - a).dot(along);
+                if across <= eps || across >= length - eps {
+                    continue;
+                }
+                let round = piece(Support::Point { at: vertex });
+                // The ball there rests on the edge's end: its centre a radius
+                // from the vertex, where the vertex's piece starts.
+                let Some(cv) = on_edge.centre(switch) else {
+                    continue;
+                };
+                if (cv.distance(vertex) - radius).abs() > eps * 1e3 {
+                    continue;
+                }
+                // The edge's piece runs from the switch the way its touch stays
+                // within the edge; the vertex's piece the other way, its arc
+                // length read round its circle from the switch's centre.
+                let dir_e = if p0 > 0.0 { 1.0 } else { -1.0 };
+                let turn_at = {
+                    let lift = (a + n1 * radius - vertex).dot(n1);
+                    let middle = vertex + n1 * lift;
+                    let rho = (radius * radius - lift * lift).max(0.0).sqrt();
+                    let d = cv - middle;
+                    rho * d.dot(into1).atan2(d.dot(along))
+                };
+                let (Some(tv), Some(te)) = (round.tangent(turn_at), on_edge.tangent(switch)) else {
+                    continue;
+                };
+                let joint = te / te.magnitude();
+                let Some(edge_cap) = cap_toward(&on_edge, switch, dir_e, None, tol)? else {
+                    continue;
+                };
+                // The vertex's piece runs on to the other seam end: the way its
+                // arcs' planes cross the seam toward it.
+                let across = |run: &Run, s: f64| -> Option<f64> {
+                    Some((run.crossing(s)? - run.start).dot(run.along))
+                };
+                let (Some(x_switch), Some(x_cap)) =
+                    (across(&on_edge, switch), across(&on_edge, edge_cap))
+                else {
+                    continue;
+                };
+                let base_v = if x_cap > x_switch { 0.0 } else { length };
+                let h = radius * 1e-4;
+                let (Some(xp), Some(xm)) =
+                    (across(&round, turn_at + h), across(&round, turn_at - h))
+                else {
+                    continue;
+                };
+                let dir_v = if (xp - xm) * (base_v - x_switch) > 0.0 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                let _ = tv;
+                let Some(round_cap) = cap_toward(&round, turn_at, dir_v, Some(base_v), tol)? else {
+                    continue;
+                };
+                let span = |from: f64, to: f64| if from <= to { (from, to) } else { (to, from) };
+                // The joint at whichever end of each span the switch is.
+                let joint_at = |from_switch_low: bool| {
+                    if from_switch_low {
+                        [Some(joint), None]
+                    } else {
+                        [None, Some(joint)]
+                    }
+                };
+                let (edge_span, edge_joint) = (span(switch, edge_cap), joint_at(dir_e > 0.0));
+                let (round_span, round_joint) = (span(turn_at, round_cap), joint_at(dir_v > 0.0));
+                let resting = Run {
+                    span: edge_span,
+                    joint: edge_joint,
+                    ..piece(on_edge.support)
+                };
+                let rolling = Run {
+                    span: round_span,
+                    joint: round_joint,
+                    ..piece(round.support)
+                };
+                let (Some(edge_reaches), Some(round_reaches)) = (
+                    proved(model, curved, &resting, held, tol)?,
+                    proved(model, curved, &rolling, Held::Vertex { vertex: v }, tol)?,
+                ) else {
+                    continue;
+                };
+                return Ok(Some(vec![
+                    Run {
+                        reaches: edge_reaches,
+                        ..resting
+                    },
+                    Run {
+                        reaches: round_reaches,
+                        ..rolling
+                    },
+                ]));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The fill tool of a run rolling round a vertex or the edge out of it:
+/// a band between the caps `(x0, d0)` and `(x1, d1)` (each a point of the
+/// crease and the cap's normal), the arc about the vertex turned through
+/// the run or the arcs to the edge fitted; closed by its flap on the
+/// touched face's plane, the flap's triangle on the far face's plane from
+/// the crease to the support, and the two caps.
+fn vertex_tool(
+    model: &mut Model,
+    curved: &Curved,
+    run: &Run,
+    (x0, d0): (Point, Vector),
+    (x1, d1): (Point, Vector),
+    tol: Tolerances,
+) -> OgeomResult<Option<Tool>> {
+    use ogeom_geom::{BSpline2d, CircleCurve, PlaneSurface};
+    use ogeom_math::{Circle, KnotVector, Plane, Point2};
+    let round_vertex = match run.support {
+        Support::Point { at } => Some(at),
+        Support::Around { .. } => None,
+        _ => return Ok(None),
+    };
+    let eps = tol.confusion();
+    let r = run.radius;
+    let (lo, hi) = run.span;
+    // Each cap's arc lies in the cap's plane: the stations there.
+    // Rolling round a vertex, the balls' arcs all lie on the spindle torus
+    // their centres' circle sweeps about the vertex's axis: the band is that
+    // torus, turned from the first arc to the last. Resting on an edge, it
+    // is fitted to the arcs.
+    let mut n = FIRST;
+    let fitted = if round_vertex.is_some() {
+        None
+    } else {
+        Some(loop {
+            let mut rows = Vec::with_capacity(n);
+            let mut feet = Vec::with_capacity(n);
+            for i in 0..n {
+                #[expect(clippy::cast_precision_loss, reason = "a few stations")]
+                let s = lo + (hi - lo) * (i as f64) / ((n - 1) as f64);
+                let (Some(c), Some(mut arc)) = (run.centre(s), run.arc(s, tol)?) else {
+                    return Ok(None);
+                };
+                if let (Some(last), Some(vertex)) = (arc.last_mut(), round_vertex) {
+                    *last = vertex;
+                }
+                feet.push(run.feet(c).0);
+                rows.push(arc);
+            }
+            let surface = ogeom_geom::fit::fit_surface_grid_chordal(&rows, 3, FIT, tol)?;
+            let contact = ogeom_geom::fit::fit_points(&feet, 3, FIT, tol)?;
+            if surface.met && contact.met {
+                break (surface.curve, contact.curve);
+            }
+            if n >= MOST {
+                return Ok(None);
+            }
+            n = 2 * n - 1;
+        })
+    };
+    let (Some(c0), Some(c1)) = (run.centre(lo), run.centre(hi)) else {
+        return Ok(None);
+    };
+    let (f0, f1) = (run.feet(c0).0, run.feet(c1).0);
+    // The support's side: the vertex, or the edge's touches at the caps.
+    let (q0, q1) = (run.feet(c0).1, run.feet(c1).1);
+    let vertex_shape = ogeom_algo::make_vertex(model, q0).shape;
+    let far_shape = match round_vertex {
+        Some(_) => vertex_shape.clone(),
+        None => ogeom_algo::make_vertex(model, q1).shape,
+    };
+    let [v_f0, v_f1, v_x0, v_x1] =
+        [f0, f1, x0, x1].map(|p| ogeom_algo::make_vertex(model, p).shape);
+    let line = |model: &mut Model, (p, vp): (Point, &Shape), (q, vq): (Point, &Shape)| {
+        let curve: Curve = LineCurve::segment(p, q, tol)?.into();
+        let range = curve.domain();
+        Ok::<_, ogeom_core::OgeomError>(
+            ogeom_algo::make_edge_between(model, curve, range, vp, vq, tol)?.shape,
+        )
+    };
+    // Each cap's arc, from the foot to the support's touch about the ball's
+    // centre.
+    let arc_edge =
+        |model: &mut Model, c: Point, (f, vf): (Point, &Shape), (q, vq): (Point, &Shape)| {
+            let x = Direction::new(f - c, tol)?;
+            let z = Direction::new((f - c).cross(q - c), tol)?;
+            let turn = (f - c).cross(q - c).magnitude().atan2((f - c).dot(q - c));
+            let circle = Circle::new(Frame::new(c, z, x, tol)?, r, tol)?;
+            let curve = Curve::Circle(CircleCurve::new(circle));
+            Ok::<_, ogeom_core::OgeomError>(
+                ogeom_algo::make_edge_between(model, curve, (0.0, turn), vf, vq, tol)?.shape,
+            )
+        };
+    let a0 = arc_edge(model, c0, (f0, &v_f0), (q0, &vertex_shape))?;
+    let (a0, e_contact, a1, revolved) = match (&fitted, round_vertex) {
+        (Some((_, contact)), _) => {
+            let contact_curve = Curve::BSpline(contact.clone());
+            let contact_range = contact_curve.domain();
+            let e_contact = ogeom_algo::make_edge_between(
+                model,
+                contact_curve,
+                contact_range,
+                &v_f0,
+                &v_f1,
+                tol,
+            )?
+            .shape;
+            let a1 = arc_edge(model, c1, (f1, &v_f1), (q1, &far_shape))?;
+            (a0, e_contact, a1, None)
+        }
+        (None, Some(vertex)) => {
+            let Some(turned) = revolved_band(model, run, vertex, &a0, (f0, f1), tol)? else {
+                return Ok(None);
+            };
+            (
+                turned.a0.clone(),
+                turned.contact.clone(),
+                turned.a1.clone(),
+                Some(turned),
+            )
+        }
+        (None, None) => return Ok(None),
+    };
+    // The turned band's own corners, where it is one.
+    let (v_f0, v_f1, vertex_shape, far_shape) = match &revolved {
+        Some(turned) => (
+            turned.f0.clone(),
+            turned.f1.clone(),
+            turned.vertex.clone(),
+            turned.vertex.clone(),
+        ),
+        None => (v_f0, v_f1, vertex_shape, far_shape),
+    };
+    let foot0 = line(model, (f0, &v_f0), (x0, &v_x0))?;
+    let foot1 = line(model, (f1, &v_f1), (x1, &v_x1))?;
+    let crease = line(model, (x0, &v_x0), (x1, &v_x1))?;
+    let rise0 = line(model, (x0, &v_x0), (q0, &vertex_shape))?;
+    let rise1 = line(model, (x1, &v_x1), (q1, &far_shape))?;
+    // The support's contact along the edge, where the ball rests on one.
+    let support = match round_vertex {
+        Some(_) => None,
+        None => Some(line(model, (q0, &vertex_shape), (q1, &far_shape))?),
+    };
+    let band = if let Some(turned) = revolved {
+        turned.band
+    } else {
+        let Some((surface, _)) = fitted else {
+            return Ok(None);
+        };
+        // The band: `u` across each arc from the foot to the vertex, `v` along
+        // the stations; its side `u = 1` the vertex.
+        let id = model
+            .geometry_mut()
+            .add_surface(SurfaceGeometry::BSpline(surface));
+        let pcurve =
+            |model: &mut Model, edge: &Shape, from: Point2, to: Point2, range: (f64, f64)| {
+                let line = BSpline2d::new(
+                    KnotVector::new(vec![range.0, range.0, range.1, range.1], 1)?,
+                    vec![from, to],
+                    tol,
+                )?;
+                ogeom_algo::attach_pcurve(
+                    model,
+                    edge,
+                    line.into(),
+                    id,
+                    ogeom_topo::Location::identity(),
+                    range,
+                )
+            };
+        let range_of = |model: &Model, e: &Shape| -> OgeomResult<(f64, f64)> {
+            let Some((_, range)) = ogeom_algo::placed_edge_curve(model, e, tol)? else {
+                ogeom_core::ogeom_bail!(Construction, "an edge of a vertex fill has no curve");
+            };
+            Ok(range)
+        };
+        let (o, x, y, xy) = (
+            Point2::new(0.0, 0.0),
+            Point2::new(1.0, 0.0),
+            Point2::new(0.0, 1.0),
+            Point2::new(1.0, 1.0),
+        );
+        let rc = range_of(model, &e_contact)?;
+        pcurve(model, &e_contact, o, y, rc)?;
+        let r1 = range_of(model, &a1)?;
+        pcurve(model, &a1, y, xy, r1)?;
+        let r0 = range_of(model, &a0)?;
+        pcurve(model, &a0, o, x, r0)?;
+        let far_side = match &support {
+            Some(edge) => {
+                let range = range_of(model, edge)?;
+                pcurve(model, edge, x, xy, range)?;
+                edge.reversed()
+            }
+            None => {
+                let collapsed = {
+                    let mut data = ogeom_topo::EdgeData::new();
+                    data.degenerate = true;
+                    model.add_edge(data, &[vertex_shape.clone(), vertex_shape.clone()])?
+                };
+                pcurve(model, &collapsed, xy, x, (0.0, 1.0))?;
+                collapsed
+            }
+        };
+        let fit_gap = ogeom_core::Tolerance::new(FIT.max(eps) * 10.0)?;
+        for e in [&e_contact, &a0, &a1].into_iter().chain(support.as_ref()) {
+            model.widen(e, fit_gap)?;
+        }
+        // The ring winds about the band's own normal, as the planes' rings
+        // wind about theirs: listed the other way round where it does not.
+        let mut edges = vec![e_contact.clone(), a1.clone(), far_side, a0.reversed()];
+        let ring = ogeom_algo::make_wire(model, &edges, tol)?.shape;
+        let mut band = ogeom_algo::make_face_on(model, id, std::slice::from_ref(&ring), tol)?.shape;
+        let (_, n) = ogeom_algo::face_normal(model, &band, tol)?;
+        if wound(model, &edges, n, tol)?.dot(n) < 0.0 {
+            edges.reverse();
+            let edges: Vec<Shape> = edges.iter().map(Shape::reversed).collect();
+            let ring = ogeom_algo::make_wire(model, &edges, tol)?.shape;
+            band = ogeom_algo::make_face_on(model, id, std::slice::from_ref(&ring), tol)?.shape;
+        }
+        band
+    };
+    // The fill lies between the band and the crease, the balls outside it:
+    // its band faces the balls' centres.
+    let band = {
+        let mid = 0.5 * (lo + hi);
+        let Some(c) = run.centre(mid) else {
+            return Ok(None);
+        };
+        let (p, n) = ogeom_algo::face_normal(model, &band, tol)?;
+        if n.dot(c - p) < 0.0 {
+            band.reversed()
+        } else {
+            band
+        }
+    };
+    let plane_through = |p: Point, normal: Vector| -> OgeomResult<SurfaceGeometry> {
+        Ok(PlaneSurface::new(Plane::through(p, Direction::new(normal, tol)?)).into())
+    };
+    let [f_1, f_2] = run.faces;
+    let (Some(n_1), Some(n_2)) = (outward(curved, f_1, run.start), outward(curved, f_2, q0)) else {
+        return Ok(None);
+    };
+    // Every planar face facing out of the fill: into the faces the fill
+    // stands on, and away from the run past its caps.
+    let along_run = c1 - c0;
+    let out0 = if d0.dot(along_run) > 0.0 { -d0 } else { d0 };
+    let out1 = if d1.dot(along_run) > 0.0 { d1 } else { -d1 };
+    // A ring is walked as it is listed, so each plane faces the way its
+    // ring winds about it; which faces turn is settled after.
+    let planar = |model: &mut Model, at: Point, normal: Vector, ring: Vec<Shape>| {
+        let normal = wound(model, &ring, normal, tol)?;
+        crate::support::face_from_edges(model, plane_through(at, normal)?, &ring, tol)
+    };
+    let flap = planar(
+        model,
+        x0,
+        -n_1,
+        vec![
+            e_contact.reversed(),
+            foot0.clone(),
+            crease.clone(),
+            foot1.reversed(),
+        ],
+    )?;
+    let mut on_far: Vec<Shape> = vec![crease.reversed(), rise0.clone()];
+    if let Some(edge) = &support {
+        on_far.push(edge.clone());
+    }
+    on_far.push(rise1.reversed());
+    let triangle = planar(model, x0, -n_2, on_far)?;
+    let cap0 = planar(
+        model,
+        x0,
+        out0,
+        vec![a0.clone(), rise0.reversed(), foot0.reversed()],
+    )?;
+    let cap1 = planar(
+        model,
+        x1,
+        out1,
+        vec![a1.clone(), rise1.reversed(), foot1.reversed()],
+    )?;
+    // The faces share their edges already, so the topology says which of
+    // them to turn for every edge to be walked once each way; the band
+    // keeps its way, and the whole shell then faces out by its material.
+    let mut faces = vec![band.clone(), flap, triangle, cap0, cap1];
+    let Some(agreement) = ogeom_algo::agreeing_orientation(model, &faces)? else {
+        return Ok(None);
+    };
+    let band_turned = agreement.turn[0];
+    for (face, turn) in faces.iter_mut().zip(&agreement.turn) {
+        if *turn != band_turned {
+            *face = face.reversed();
+        }
+    }
+    let band = faces[0].clone();
+    // Built on shared edges the faces close as they are; sewn where the
+    // fitted band's edges only meet theirs within its fit.
+    let made = ogeom_algo::make_shell(model, &faces)?.shape;
+    let (shell, band_now) = if ogeom_algo::is_shell_closed(model, &made)? {
+        (made, vec![band])
+    } else {
+        let sewn = ogeom_algo::sew(model, &faces, tol)?;
+        let [shell] = sewn.shells.as_slice() else {
+            return Ok(None);
+        };
+        if !ogeom_algo::is_shell_closed(model, shell)? {
+            return Ok(None);
+        }
+        (shell.clone(), sewn.history.trace(&band).to_vec())
+    };
+    let solid = ogeom_algo::make_solid(model, std::slice::from_ref(&shell))?.shape;
+    let tool = Tool {
+        solid,
+        sense: Sense::Fuse,
+        faces: band_now
+            .into_iter()
+            .map(|f| (f, curved.shapes[&run.edge].clone()))
+            .collect(),
+    };
+    // Its caps are the arcs' planes through the seam's ends (or the switch),
+    // where the sections end: the fill is those sections whole, not cut
+    // flush to the end faces, which here meet at the vertex the balls
+    // roll round and pass under them.
+    Ok(Some(tool))
+}
+
 /// The far edge of the planar face `face`: the first of its straight edges
 /// met crossing it from `mid` on `edge`, along `into`; with where it is
 /// met and its unit direction. `None` where the first edge met is not
@@ -908,8 +1518,9 @@ pub(super) fn far_edge(
 /// within the far edge or on the face it comes down on (where the planes
 /// keep them); resting on a far edge, its centre within the edge's normal
 /// cone (on its side only where it comes down on a face); and no face of the
-/// solid but `F1` and the end faces (the fill is cut to their planes)
-/// nearer than the radius, every face but those it rests against and the
+/// solid but `F1` and the end faces (the fill is cut to their planes;
+/// round a vertex, where it is not, the end faces too) nearer than the
+/// radius, every face but those it rests against and the
 /// planar faces wholly behind a plane it touches by the distance's
 /// Lipschitz bound up to the next station, halving where it is close
 /// (ADR 0001, section 13, question 8); and the arcs' planes cross the
@@ -924,12 +1535,16 @@ fn proved(
 ) -> OgeomResult<Option<Vec<usize>>> {
     let eps = tol.confusion();
     let margin = run.radius * 1e-6;
+    // A run round a vertex or the edge out of it is not cut to the end
+    // faces' planes: all of it is asked, the end faces with the rest.
+    let uncut = matches!(run.support, Support::Point { .. } | Support::Around { .. });
+    let kept = |p: Point| uncut || run.inside(p, eps);
     // Within the far edge, and resting on it alone.
     let on_edge = |c: Point, on_far: Point| -> OgeomResult<bool> {
         let Held::Edge { far, normals, .. } = held else {
             return Ok(true);
         };
-        let Support::Edge { at, along } = run.support else {
+        let (Support::Edge { at, along } | Support::Around { at, along }) = run.support else {
             return Ok(false);
         };
         let g = &curved.edges[&far];
@@ -953,14 +1568,19 @@ fn proved(
         // Within the edge, its ends included: an end ball may touch it at
         // its end, on an end face's plane, where the fill is cut.
         Ok(
-            (!run.inside(on_far, eps) || (t >= x.min(y) - eps && t <= x.max(y) + eps))
+            (!kept(on_far) || (t >= x.min(y) - eps && t <= x.max(y) + eps))
                 && u >= -margin
                 && v >= -margin,
         )
     };
     // A quick look at three stations of the run along the seam before the
     // faces are read.
-    let (from, to) = (run.span.0.max(0.0), run.span.1.min(run.length));
+    // A run read round a line or a vertex has its own parameter, not the
+    // seam's stations.
+    let (from, to) = match run.support {
+        Support::Around { .. } | Support::Point { .. } => run.span,
+        _ => (run.span.0.max(0.0), run.span.1.min(run.length)),
+    };
     for share in [0.0, 0.5, 1.0] {
         let Some(c) = run.centre(from + (to - from) * share) else {
             return Ok(None);
@@ -972,9 +1592,17 @@ fn proved(
     let resting: Vec<usize> = match held {
         Held::Edge { faces, .. } => faces.to_vec(),
         Held::Face { face } => vec![face],
+        Held::Vertex { vertex } => (0..curved.faces.len())
+            .filter(|fi| {
+                curved.faces[*fi].loops.iter().flatten().any(|(x, _)| {
+                    let g = &curved.edges[x];
+                    g.ends.0 == vertex || g.ends.1 == vertex
+                })
+            })
+            .collect(),
     };
     let others: Vec<(usize, PointDistance)> = (0..curved.faces.len())
-        .filter(|fi| *fi != run.faces[0] && !run.end_faces.contains(fi))
+        .filter(|fi| *fi != run.faces[0] && (uncut || !run.end_faces.contains(fi)))
         .map(|fi| Ok((fi, PointDistance::of(model, &curved.faces[fi].shape, tol)?)))
         .collect::<OgeomResult<_>>()?;
     // A planar face wholly behind a plane the ball touches stands a radius
@@ -1031,6 +1659,7 @@ fn proved(
                 .any(|(e, _)| outlines.contains(e))
     };
     let mut last: Option<f64> = None;
+    let mut order: Option<f64> = None;
     for i in 0..=PROOF {
         #[expect(clippy::cast_precision_loss, reason = "a few stations")]
         let s = lo + step * (i as f64);
@@ -1038,14 +1667,19 @@ fn proved(
         else {
             return Ok(None);
         };
-        // The arcs' planes cross the crease's line in order.
+        // The arcs' planes cross the crease's line in order, one way or
+        // the other along the run.
         let at = (x - run.start).dot(run.along);
-        if last.is_some_and(|l| at <= l) {
-            return Ok(None);
+        if let Some(l) = last {
+            let step = at - l;
+            if step == 0.0 || order.is_some_and(|o: f64| o * step <= 0.0) {
+                return Ok(None);
+            }
+            order = Some(step.signum());
         }
         last = Some(at);
         // Only what the end faces' planes keep is built.
-        if !arc.iter().any(|p| run.inside(*p, eps)) {
+        if !arc.iter().any(|p| kept(*p)) {
             continue;
         }
         let (foot, other) = run.feet(c);
@@ -1053,7 +1687,7 @@ fn proved(
             return Ok(None);
         }
         let on = |face: usize, p: Point| -> OgeomResult<bool> {
-            Ok(!run.inside(p, eps)
+            Ok(!kept(p)
                 || ogeom_algo::classify_on_face(
                     model,
                     &curved.faces[face].shape,
@@ -1137,14 +1771,236 @@ fn clear_between(
         && clear_between(run, faces, (m, s1), dm, depth - 1, tol)?)
 }
 
+/// The station that caps `run` stepping from `from` the way `dir` says:
+/// the first, half a radius at a time, whose arc and seam crossing stand
+/// wholly outside either end face's plane; else, and for a run read round
+/// a line or a vertex, where its arc's plane crosses a seam end (the balls
+/// run out round a vertex, or a short seam's arcs never clear its end
+/// face).
+/// Where `only` names a seam end, only that one caps. `None` where neither
+/// is met within twenty radii.
+fn cap_toward(
+    run: &Run,
+    from: f64,
+    dir: f64,
+    only: Option<f64>,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let eps = tol.confusion();
+    let r = run.radius;
+    let outside = |s: f64| -> OgeomResult<bool> {
+        let (Some(arc), Some(x)) = (run.arc(s, tol)?, run.crossing(s)) else {
+            return Ok(false);
+        };
+        Ok(run.caps.iter().any(|(n, d)| {
+            arc.iter()
+                .chain(core::iter::once(&x))
+                .all(|p| n.dot(*p - Point::ORIGIN) > d + eps)
+        }))
+    };
+    if !matches!(run.support, Support::Point { .. } | Support::Around { .. }) {
+        for step in 1..=40 {
+            let s = (r * 0.5 * f64::from(step)).mul_add(dir, from);
+            if outside(s)? {
+                return Ok(Some(s));
+            }
+        }
+    }
+    let across = |s: f64| -> Option<f64> { Some((run.crossing(s)? - run.start).dot(run.along)) };
+    let Some(x0) = across(from) else {
+        return Ok(None);
+    };
+    let count = 800_u32;
+    let mut prev = (from, x0);
+    for i in 1..=count {
+        let s = (20.0 * r * f64::from(i) / f64::from(count)).mul_add(dir, from);
+        let Some(x) = across(s) else {
+            return Ok(None);
+        };
+        for base in [0.0, run.length] {
+            if only.is_some_and(|o| o != base) {
+                continue;
+            }
+            if (prev.1 - base > 0.0) != (x - base > 0.0) {
+                let (mut lo, mut hi) = (prev.0, s);
+                let low = prev.1 - base > 0.0;
+                for _ in 0..200 {
+                    let mid = f64::midpoint(lo, hi);
+                    if across(mid).is_some_and(|m| (m - base > 0.0) == low) {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                return Ok(Some(f64::midpoint(lo, hi)));
+            }
+        }
+        prev = (s, x);
+    }
+    Ok(None)
+}
+
+/// A band turned about a vertex, with its edges and corners.
+struct Turned {
+    band: Shape,
+    /// The first arc, the last, and the contact circle on the touched face.
+    a0: Shape,
+    a1: Shape,
+    contact: Shape,
+    /// The arcs' feet and the vertex they all end on.
+    f0: Shape,
+    f1: Shape,
+    vertex: Shape,
+}
+
+/// The band of `run` rolling round `vertex`: the arc `arc` from the
+/// touched face to the vertex, turned about the line through the vertex
+/// square to that face through the run's span of its centres' circle, a
+/// patch of the spindle torus the balls sweep. `None` where it does not
+/// come round from the foot `feet.0` to `feet.1`, or its edges are not the
+/// two arcs and the contact circle.
+fn revolved_band(
+    model: &mut Model,
+    run: &Run,
+    vertex: Point,
+    arc: &Shape,
+    feet: (Point, Point),
+    tol: Tolerances,
+) -> OgeomResult<Option<Turned>> {
+    use ogeom_topo::ShapeType;
+    let near = tol.confusion();
+    let (lo, hi) = run.span;
+    let lift = (run.start + run.n1 * run.radius - vertex).dot(run.n1);
+    let rho2 = run.radius * run.radius - lift * lift;
+    if rho2 <= 0.0 {
+        return Ok(None);
+    }
+    let turn = (hi - lo) / rho2.sqrt();
+    if turn <= tol.angular() || turn >= std::f64::consts::TAU {
+        return Ok(None);
+    }
+    // The centres turn from `along` toward `into1`.
+    let axis = ogeom_math::Axis {
+        location: vertex,
+        direction: Direction::new(run.along.cross(run.into1), tol)?,
+    };
+    let swept = ogeom_algo::make_revolution(model, arc, axis, turn, tol)?.shape;
+    let [band] = &ogeom_topo::explore_unique(model, &swept, ShapeType::Face)?[..] else {
+        return Ok(None);
+    };
+    let band = band.clone();
+    let (mut a0, mut a1, mut contact) = (None, None, None);
+    let (mut f0, mut f1, mut at_vertex) = (None, None, None);
+    for edge in ogeom_topo::explore_unique(model, &band, ShapeType::Edge)? {
+        if model
+            .node(&edge)
+            .and_then(|n| n.data().as_edge())
+            .is_some_and(|d| d.degenerate)
+        {
+            continue;
+        }
+        let Some((s, t)) = ogeom_algo::edge_vertices(model, &edge)? else {
+            return Ok(None);
+        };
+        let (ps, pt) = (
+            crate::setback::point_of(model, &s)?,
+            crate::setback::point_of(model, &t)?,
+        );
+        // Each arc walked from its foot to the vertex, the contact from
+        // the first foot to the last.
+        let (tip, foot, p, edge) = if ps.distance(vertex) <= near {
+            (Some(s), t, pt, edge.reversed())
+        } else if pt.distance(vertex) <= near {
+            (Some(t), s, ps, edge)
+        } else if ps.distance(feet.0) <= near {
+            (None, s, ps, edge)
+        } else {
+            (None, t, pt, edge.reversed())
+        };
+        match tip {
+            Some(tip) if p.distance(feet.0) <= near => {
+                (a0, f0, at_vertex) = (Some(edge), Some(foot), Some(tip));
+            }
+            Some(_) if p.distance(feet.1) <= near => (a1, f1) = (Some(edge), Some(foot)),
+            None if [ps, pt]
+                .iter()
+                .all(|q| q.distance(feet.0) <= near || q.distance(feet.1) <= near) =>
+            {
+                contact = Some(edge);
+            }
+            _ => return Ok(None),
+        }
+    }
+    let (Some(a0), Some(a1), Some(contact), Some(f0), Some(f1), Some(vertex)) =
+        (a0, a1, contact, f0, f1, at_vertex)
+    else {
+        return Ok(None);
+    };
+    Ok(Some(Turned {
+        band,
+        a0,
+        a1,
+        contact,
+        f0,
+        f1,
+        vertex,
+    }))
+}
+
+/// `normal` or its opposite, whichever `ring` winds about by the right
+/// hand: Newell's sum over points along its edges as they are walked.
+fn wound(model: &Model, ring: &[Shape], normal: Vector, tol: Tolerances) -> OgeomResult<Vector> {
+    const STEPS: usize = 8;
+    let mut points = Vec::with_capacity(ring.len() * STEPS);
+    for edge in ring {
+        let Some((curve, (a, b))) = ogeom_algo::placed_edge_curve(model, edge, tol)? else {
+            continue;
+        };
+        let forward = edge.orientation() == ogeom_topo::Orientation::Forward;
+        for k in 0..STEPS {
+            #[expect(clippy::cast_precision_loss, reason = "a few points an edge")]
+            let share = k as f64 / STEPS as f64;
+            let t = if forward {
+                a + (b - a) * share
+            } else {
+                b - (b - a) * share
+            };
+            points.push(curve.point_at(t, tol)?);
+        }
+    }
+    let mut sum = Vector::ZERO;
+    for (k, &p) in points.iter().enumerate() {
+        let q = points[(k + 1) % points.len()];
+        sum += (p - Point::ORIGIN).cross(q - Point::ORIGIN);
+    }
+    Ok(if sum.dot(normal) < 0.0 {
+        -normal
+    } else {
+        normal
+    })
+}
+
 /// The stations whose arcs' planes cap the tool of `run`: at each end, the
 /// first, stepping out from the seam's end half a radius at a time, whose
 /// arc and seam crossing stand wholly outside that end face's plane.
 /// `None` where none does within twenty radii.
 fn capped_span(run: &Run, tol: Tolerances) -> OgeomResult<Option<(f64, f64)>> {
+    let (Some(s0), Some(s1)) = (capped_end(run, 0, tol)?, capped_end(run, 1, tol)?) else {
+        return Ok(None);
+    };
+    Ok(Some((s0, s1)))
+}
+
+/// The station whose arc's plane caps the tool of `run` at its end `k`
+/// (0 at the seam's start, 1 at its end): the first, stepping out from the
+/// seam's end half a radius at a time, whose arc and seam crossing stand
+/// wholly outside that end face's plane. `None` where none does within
+/// twenty radii.
+fn capped_end(run: &Run, k: usize, tol: Tolerances) -> OgeomResult<Option<f64>> {
     let eps = tol.confusion();
     let r = run.radius;
-    let outside = |s: f64, (n, d): (Vector, f64)| -> OgeomResult<bool> {
+    let (n, d) = run.caps[k];
+    let outside = |s: f64| -> OgeomResult<bool> {
         let (Some(arc), Some(x)) = (run.arc(s, tol)?, run.crossing(s)) else {
             return Ok(false);
         };
@@ -1153,23 +2009,50 @@ fn capped_span(run: &Run, tol: Tolerances) -> OgeomResult<Option<(f64, f64)>> {
             .chain(core::iter::once(&x))
             .all(|p| n.dot(*p - Point::ORIGIN) > d + eps))
     };
-    let mut stations = [0.0; 2];
-    for (k, sign) in [(0, -1.0), (1, 1.0)] {
-        let base = if k == 0 { 0.0 } else { run.length };
-        let mut found = None;
-        for step in 1..=40 {
-            let s = base + sign * r * 0.5 * f64::from(step);
-            if outside(s, run.caps[k])? {
-                found = Some(s);
-                break;
-            }
+    let (base, sign) = if k == 0 {
+        (0.0, -1.0)
+    } else {
+        (run.length, 1.0)
+    };
+    for step in 1..=40 {
+        let s = base + sign * r * 0.5 * f64::from(step);
+        if outside(s)? {
+            return Ok(Some(s));
         }
-        let Some(s) = found else {
-            return Ok(None);
-        };
-        stations[k] = s;
     }
-    Ok(Some((stations[0], stations[1])))
+    // Rolling round a vertex the balls run out before their arcs clear the
+    // end face's plane: the run ends where its arc's plane crosses the
+    // seam's end.
+    if let Support::Point { .. } = run.support {
+        let across =
+            |s: f64| -> Option<f64> { Some((run.crossing(s)? - run.start).dot(run.along) - base) };
+        let count = 400_u32;
+        let reach = 20.0 * r;
+        let mut prev: Option<(f64, f64)> = None;
+        for i in 0..=count {
+            let s = (2.0 * reach * f64::from(i) / f64::from(count) - reach).mul_add(sign, base);
+            let Some(x) = across(s) else {
+                prev = None;
+                continue;
+            };
+            if let Some((sp, xp)) = prev
+                && (xp > 0.0) != (x > 0.0)
+            {
+                let (mut lo, mut hi) = (sp, s);
+                for _ in 0..200 {
+                    let mid = f64::midpoint(lo, hi);
+                    if across(mid).is_some_and(|m| (m > 0.0) == (xp > 0.0)) {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                return Ok(Some(f64::midpoint(lo, hi)));
+            }
+            prev = Some((s, x));
+        }
+    }
+    Ok(None)
 }
 
 /// The fill tool of `run`: the strip's closed tool between the arcs'
@@ -1202,6 +2085,10 @@ fn tool_of(
     let (Some((x0, d0)), Some((x1, d1))) = (cap(lo, run.joint[0]), cap(hi, run.joint[1])) else {
         return Ok(None);
     };
+    // Read round a line or a vertex: built face by face from its stations.
+    if matches!(run.support, Support::Point { .. } | Support::Around { .. }) {
+        return vertex_tool(model, curved, run, (x0, d0), (x1, d1), tol);
+    }
     // The stations run a little past the caps, for the tool to find each
     // curve's crossing there.
     let past = 0.05 * (hi - lo);
@@ -1222,6 +2109,7 @@ fn tool_of(
     let straight = match run.support {
         Support::Plane { .. } => true,
         Support::Edge { along, .. } => along.cross(run.along).magnitude() <= tol.angular(),
+        Support::Point { .. } | Support::Around { .. } => false,
     };
     let (surface, spine, contact): (SurfaceGeometry, Curve, Curve) = if straight {
         let u = (c1 - c0) / c0.distance(c1);
