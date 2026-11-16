@@ -1789,8 +1789,14 @@ fn extruded_crease(
         }
         polynomial = fitted.curve;
         &polynomial
-    } else {
+    } else if crease.knots().is_clamped() {
         crease
+    } else {
+        // A periodic crease's knots run on past its domain: the wall's
+        // contact takes its knots, which must end where the cap's fit
+        // does to share them.
+        polynomial = clamped_over(crease, e.range, tol)?;
+        &polynomial
     };
     // The crease in the cap's plane, and which way into the cap and down
     // the wall: toward the faces' other points.
@@ -1908,6 +1914,48 @@ fn extruded_crease(
         surface: bevel,
         section: Section::Line,
     }))
+}
+
+/// The piece of `curve` over `range`, exactly, its knots clamped at both
+/// ends: each end raised to the degree's multiplicity by knot insertion,
+/// and the knots and control points past it dropped.
+///
+/// # Errors
+///
+/// As knot insertion, and building the piece.
+fn clamped_over(
+    curve: &ogeom_geom::BSplineCurve,
+    range: (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<ogeom_geom::BSplineCurve> {
+    let p = curve.degree();
+    let mut raised = curve.clone();
+    for t in [range.0, range.1] {
+        let have = raised.knots().multiplicity_of(t);
+        if have < p {
+            raised = raised.with_knot_inserted(t, p - have, tol)?;
+        }
+    }
+    let k = raised.knots().knots();
+    // The last `p` copies of the start and the first `p` of the end; the
+    // control point before the start's copies is the curve's point there.
+    let first = k.partition_point(|x| *x <= range.0) - p;
+    let last = k.partition_point(|x| *x < range.1) + p;
+    let Some(start) = first.checked_sub(1) else {
+        ogeom_core::ogeom_bail!(
+            Construction,
+            "a crease's start has no control point before it"
+        );
+    };
+    let mut knots = Vec::with_capacity(last - first + 2);
+    knots.push(range.0);
+    knots.extend_from_slice(&k[first..last]);
+    knots.push(range.1);
+    let control: Vec<Point> = raised.control_points()[start..start + last - first + 1 - p]
+        .iter()
+        .map(|w| w.point())
+        .collect();
+    ogeom_geom::BSplineCurve::new(ogeom_math::KnotVector::new(knots, p)?, control, tol)
 }
 
 /// The ruled bevel between two contacts over one parameter range, each
