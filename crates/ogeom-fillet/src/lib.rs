@@ -64,8 +64,8 @@ pub use chamfer::{
     chamfer_edges_with, largest_chamfer_distance,
 };
 pub use chamfer_corner::{ChamferCorner, chamfer_edges_cornered};
-pub use corner::round_vertex;
 pub use corner2d::{chamfer_corner_2d, fillet_corner_2d};
+pub use engine::vertex::round_vertex;
 pub use facepair::blend_faces;
 pub use fill_n::{FillBoundary, FillSide, Filled, make_filling_n};
 pub use fillet::{
