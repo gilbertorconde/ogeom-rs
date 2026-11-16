@@ -33,6 +33,7 @@ mod consumed;
     )
 )]
 mod curved;
+mod cusp_sides;
 mod defeatured;
 mod fallback;
 mod far_edge;
@@ -68,6 +69,7 @@ mod vertices;
 
 pub(crate) use alone::rounds as alone_rounds;
 pub(crate) use conic_tools::{asymmetric as asymmetric_rounds, distances as distances_rounds};
+pub(crate) use cusp_sides::rounds as cusp_side_rounds;
 pub(crate) use defeatured::tools as defeatured_tools;
 pub(crate) use fallback::{Sense, Tool, applied as apply_tools, straight_non_local};
 pub(crate) use far_edge::rounds as far_edge_rounds;
