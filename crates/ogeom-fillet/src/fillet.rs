@@ -747,6 +747,64 @@ pub fn fillet_edges(
     })
 }
 
+/// How [`fillet_edges_corner`] closes a vertex where rounds meet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FilletCorner {
+    /// Today's behaviour: bands set back, one G1 patch between them.
+    #[default]
+    Setback,
+    /// The ball rolls through the corner: no setback, the bands meet along
+    /// the curves where they intersect, and any opening left is closed by
+    /// the piece of the ball's sweep (sphere or torus) that rolls round it.
+    Rolling,
+}
+
+/// [`fillet_edges`], each vertex where rounds meet closed as `corner` says.
+///
+/// [`FilletCorner::Setback`] is [`fillet_edges`] itself.
+/// [`FilletCorner::Rolling`] closes every vertex where two or more of the
+/// rounds meet by the ball rolling through it, every new face a plane, a
+/// cylinder, a torus or a sphere, every contact G1:
+///
+/// - three convex rounds, or three concave: the ball's sphere where it
+///   touches all three faces;
+/// - two convex and one concave (a step's inside corner), or two concave
+///   and one convex (a boss's foot at its upright edge): the lone round
+///   runs to the vertex unbroken, to where its ball touches the face across
+///   from it, and the other two run on round its end as the torus their
+///   ball sweeps rolling round it, meeting it, that face and each other's
+///   straight bands along circles;
+/// - two rounds of one sense beside an edge left sharp: the bands meet
+///   along the curve where they cross, as [`fillet_edges`] builds them.
+///
+/// The result does not depend on the order of `edges`.
+///
+/// # Errors
+///
+/// As [`fillet_edges`] for `Setback`. For `Rolling`,
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction),
+/// naming the vertex, where the ball's sweep does not close it: a vertex
+/// where rounds meet touching a curved face or joining other than three
+/// edges, a convex and a concave round meeting beside an edge left sharp,
+/// or the lone round's edge not square to the face across it (the sweep
+/// round its end then no torus). A request the engine's rounds between
+/// planes do not build is refused, never closed by setbacks instead.
+pub fn fillet_edges_corner(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    radius: f64,
+    corner: FilletCorner,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("fillet_edges_corner");
+    match corner {
+        FilletCorner::Setback => fillet_edges(model, solid, edges, radius, tol),
+        FilletCorner::Rolling => crate::engine::rolling_rounds(model, solid, edges, radius, tol),
+    }
+}
+
 /// [`fillet_edges`] with a radius per edge.
 ///
 /// With every radius the same, exactly [`fillet_edges`] at that radius. A

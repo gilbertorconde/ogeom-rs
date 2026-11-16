@@ -82,6 +82,54 @@ pub fn fillet_edges_checked(
     Err(first_failing_prefix(model, solid, edges, error, build))
 }
 
+/// [`fillet_edges_corner`](crate::fillet_edges_corner), its refusal naming
+/// the edges of `edges` it concerns, by their indices there, read as
+/// [`fillet_edges_checked`] reads them, each prefix of the request built
+/// with the same corners.
+///
+/// # Errors
+///
+/// As [`fillet_edges_corner`](crate::fillet_edges_corner), in a
+/// [`BlendRefusal`].
+pub fn fillet_edges_corner_checked(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    radius: f64,
+    corner: crate::FilletCorner,
+    tol: Tolerances,
+) -> Result<Built, BlendRefusal> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("fillet_edges_corner_checked");
+    if corner == crate::FilletCorner::Setback {
+        return fillet_edges_checked(model, solid, edges, radius, tol);
+    }
+    let error = match crate::fillet_edges_corner(model, solid, edges, radius, corner, tol) {
+        Ok(built) => return Ok(built),
+        Err(error) => error,
+    };
+    if matches!(error, OgeomError::Cancelled) || edges.is_empty() {
+        return Err(BlendRefusal {
+            edges: Vec::new(),
+            error,
+        });
+    }
+    if let Err(Blamed { edges: named, .. }) =
+        crate::engine::request_fits(model, solid, edges, &vec![radius; edges.len()], tol)
+        && !named.is_empty()
+    {
+        return Err(BlendRefusal {
+            edges: named,
+            error,
+        });
+    }
+    let build = |model: &mut Model, set: &[usize]| {
+        let picked: Vec<Shape> = set.iter().map(|&i| edges[i].clone()).collect();
+        crate::fillet_edges_corner(model, solid, &picked, radius, corner, tol)
+    };
+    Err(first_failing_prefix(model, solid, edges, error, build))
+}
+
 /// [`chamfer_edges_with`](crate::chamfer_edges_with), its refusal naming
 /// the specs it concerns, by their indices in `specs`: a wedge refused
 /// names its spec, and a wedge that does not apply names its spec, then

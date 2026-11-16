@@ -51,6 +51,7 @@ pub(crate) mod point_corner;
 mod request;
 mod rim_runs_on;
 mod rims;
+mod rolling;
 mod round_strips;
 mod rounds;
 mod seams;
@@ -92,6 +93,7 @@ pub(crate) use planar_tools::{linear_round, varying_distances};
 pub(crate) use request::{Request, Section};
 pub(crate) use rim_runs_on::rounds as rim_runs_on_rounds;
 pub(crate) use rims::{RimSection, assemble as round_rims, assemble_with as round_rims_with};
+pub(crate) use rolling::rounds as rolling_rounds;
 pub(crate) use round_strips::{
     far_faces as round_far_faces, non_local_tools as round_non_local_tools, round as round_curved,
 };
@@ -329,6 +331,11 @@ pub(crate) fn run(
     {
         return Ok(None);
     }
+    // Rolling corners are the rings' own: a round reaching a face beyond
+    // its ends is no corner the ball closes.
+    if non_local && request.rolling {
+        return Ok(None);
+    }
     if non_local {
         if let Some(built) = fallback::rounds_one_boolean(
             model, solid, &planar, &seats, &by_edge, &blended, &corners, &steps, tol,
@@ -410,9 +417,10 @@ pub(crate) fn run(
             &corners,
             &steps,
             &setback_at,
+            request.rolling,
             tol,
         )?;
-        if built.is_some() || !request.corners.is_empty() || !steps.is_empty() {
+        if built.is_some() || !request.corners.is_empty() || !steps.is_empty() || request.rolling {
             return Ok(built);
         }
         return fallback::cut_off_rounds(model, solid, &planar, &seats, &by_edge, &corners, tol);

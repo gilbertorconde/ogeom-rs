@@ -45,6 +45,7 @@ pub(crate) fn assemble(
     corners: &FastMap<(usize, Id), Point>,
     steps: &FastMap<(usize, Id), [Point; 2]>,
     setback_at: &[super::setbacks::SetbackCorner],
+    rolling: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     let mut keys: Vec<(Id, Id)> = seats.keys().copied().collect();
@@ -237,6 +238,9 @@ pub(crate) fn assemble(
     // For a vertex of four faces where one strip ends cut by the two
     // beyond its own.
     let mut splits: FastMap<Id, SplitEnd> = FastMap::default();
+    // For a vertex the ball rolls through, a convex and a concave round
+    // meeting there.
+    let mut elbows: FastMap<Id, Elbow> = FastMap::default();
     for &v in &vertices {
         // A setback corner closes on the patch over its opening.
         if setbacks.contains_key(&v) {
@@ -409,6 +413,19 @@ pub(crate) fn assemble(
             (n, k) if n >= 3 && k == n => {
                 let radius = sections[&blended[0].edge].1;
                 let convex = blended[0].convex;
+                // Rolling, a convex and a concave round with the third edge
+                // rounded too close on the ball's sweep round the lone
+                // band's end.
+                if rolling && n == 3 && blended.iter().any(|s| s.convex != convex) {
+                    let elbow =
+                        elbow_at(planar, &sections, &blended, &round, corners, v, reach, tol)?;
+                    elbows.insert(v, elbow);
+                    if round.iter().any(|f| consumed[*f]) {
+                        return Ok(None);
+                    }
+                    method.insert(v, RoundVertex::Elbow);
+                    continue;
+                }
                 // A conic round's section is no ball's: its corner is the
                 // patch's.
                 let conics = blended.iter().any(|s| conic.contains(&s.edge));
@@ -534,6 +551,36 @@ pub(crate) fn assemble(
         }
         method.insert(v, chosen);
     }
+    // Rolling, no vertex closes on a patch: refused by name where one
+    // would.
+    if rolling {
+        for &v in &vertices {
+            if !matches!(method[&v], RoundVertex::Patch | RoundVertex::Signed) {
+                continue;
+            }
+            let here = seats_at(&keys, seats, v);
+            let sharp = here.iter().any(|s| !sections.contains_key(&s.edge));
+            let mixed = here
+                .iter()
+                .filter(|s| sections.contains_key(&s.edge))
+                .any(|s| s.convex != here[0].convex);
+            let p = planar.points[&v];
+            ogeom_core::ogeom_bail!(
+                Construction,
+                "a rolling corner does not close the vertex at ({:.6}, {:.6}, {:.6}): {}",
+                p.x,
+                p.y,
+                p.z,
+                if sharp && mixed {
+                    "a convex and a concave round meet there beside an edge left sharp, \
+                     and no sphere or torus the ball sweeps closes the opening"
+                } else {
+                    "the rounds meeting there leave an opening no sphere or torus the ball \
+                     sweeps closes"
+                }
+            );
+        }
+    }
 
     // The sheet's points, shared by index.
     let mut points: Vec<Point> = Vec::new();
@@ -556,6 +603,15 @@ pub(crate) fn assemble(
             for (face, p) in end.rails {
                 rails.insert((c.vertex, end.edge, face), point(p));
             }
+        }
+    }
+    // Each elbow's bands' feet on its cap, by vertex and band.
+    let mut elbow_list: Vec<(Id, &Elbow)> = elbows.iter().map(|(v, e)| (*v, e)).collect();
+    elbow_list.sort_unstable_by_key(|(v, _)| *v);
+    let mut elbow_feet: FastMap<(Id, Id), usize> = FastMap::default();
+    for &(v, elbow) in &elbow_list {
+        for band in &elbow.bands {
+            elbow_feet.insert((v, band.edge), point(band.foot));
         }
     }
     // Each ridge's balls' feet, by vertex, face and ball.
@@ -596,6 +652,18 @@ pub(crate) fn assemble(
     // setback corner, or at a ridge's faces either side the two balls'
     // feet, the one of the ball the arriving edge's strip ends on first.
     let passes = |fi: usize, prev: Id, v: Id| -> Option<Vec<usize>> {
+        if let Some(elbow) = elbows.get(&v)
+            && elbow.cap == fi
+        {
+            // Round the sweep's foot on the cap, from the arriving band's
+            // foot to the leaving one's.
+            let arriving = seats.get(&(prev.min(v), prev.max(v)))?;
+            let leaving = elbow.bands.iter().find(|b| b.edge != arriving.edge)?;
+            return Some(vec![
+                *elbow_feet.get(&(v, arriving.edge))?,
+                *elbow_feet.get(&(v, leaving.edge))?,
+            ]);
+        }
         if setbacks.contains_key(&v) {
             // From the arriving strip's rail on this face to the leaving
             // one's.
@@ -811,6 +879,23 @@ pub(crate) fn assemble(
                 arcs.insert((*edge, v), (edges.len() - 1, from_face == 0));
                 continue;
             }
+            // At an elbow each band carried round ends square at the station
+            // of its corner on its other face, from its foot on the cap.
+            if let Some(band) = elbows.get(&v).and_then(|e| e.band(*edge)) {
+                let foot = elbow_feet[&(v, *edge)];
+                let (q0, q1) = if seat.faces[0] == elbows[&v].cap {
+                    (foot, p1)
+                } else {
+                    (p0, foot)
+                };
+                let (curve, range) = section.arc_at(band.station, tol)?;
+                edges.push(SheetEdge {
+                    ends: if from_face == 0 { (q0, q1) } else { (q1, q0) },
+                    curve: Some((curve, range)),
+                });
+                arcs.insert((*edge, v), (edges.len() - 1, from_face == 0));
+                continue;
+            }
             // At a step the stepped face's strips end level where their
             // other faces' corners stand.
             if let Some(&(q, s)) = step_points.get(&(v, *edge)) {
@@ -956,6 +1041,24 @@ pub(crate) fn assemble(
     for (&(v, edge, face), &q) in &rails {
         strip_corner.insert((edge, face, v), q);
     }
+    // At an elbow each band carried round ends on the cap at its foot, and
+    // the cap runs between the two feet along the sweep's contact circle.
+    let mut elbow_arcs: FastMap<Id, usize> = FastMap::default();
+    for &(v, elbow) in &elbow_list {
+        for band in &elbow.bands {
+            strip_corner.insert((band.edge, elbow.cap, v), elbow_feet[&(v, band.edge)]);
+        }
+        let (from, to) = (
+            elbow_feet[&(v, elbow.bands[0].edge)],
+            elbow_feet[&(v, elbow.bands[1].edge)],
+        );
+        let (curve, range) = elbow.cap_arc(tol)?;
+        edges.push(SheetEdge {
+            ends: (from, to),
+            curve: Some((curve, range)),
+        });
+        elbow_arcs.insert(v, edges.len() - 1);
+    }
     // Each setback corner's face trims, as sheet edges by vertex and face.
     let mut trim_edges: FastMap<(Id, usize), usize> = FastMap::default();
     for c in setback_at {
@@ -1011,6 +1114,18 @@ pub(crate) fn assemble(
             let mut at_corner: Vec<Corner> = Vec::with_capacity(n);
             for k in 0..n {
                 let (prev, v, next) = (walk[(k + n - 1) % n], walk[k], walk[(k + 1) % n]);
+                if elbows.get(&v).is_some_and(|e| e.cap == fi) {
+                    let Some(pts) = passes(fi, prev, v) else {
+                        return Ok(None);
+                    };
+                    let arc = elbow_arcs[&v];
+                    let forward = edges[arc].ends == (pts[0], pts[1]);
+                    if !forward && edges[arc].ends != (pts[1], pts[0]) {
+                        return Ok(None);
+                    }
+                    at_corner.push((pts, vec![(arc, forward)]));
+                    continue;
+                }
                 if setbacks.contains_key(&v) {
                     // Along the face's trim from the arriving strip's rail to
                     // the leaving one's.
@@ -1210,6 +1325,9 @@ pub(crate) fn assemble(
             if let Some(&(_, s)) = step_points.get(&(w, *edge)) {
                 return [s, s];
             }
+            if let Some(band) = elbows.get(&w).and_then(|e| e.band(*edge)) {
+                return [band.station, band.station];
+            }
             ridges
                 .get(&w)
                 .and_then(|r| r.ball_of(seat))
@@ -1305,6 +1423,50 @@ pub(crate) fn assemble(
                 holes: Vec::new(),
             },
             seat.convex,
+        ));
+        origins.push(Err(v));
+    }
+
+    // Each elbow: the piece of the torus the ball sweeps rolling round the
+    // lone band's end, bounded by the three bands' ends and its contact
+    // circle on the cap, each walked against the face beyond it.
+    for &(v, elbow) in &elbow_list {
+        let mut sides: Vec<(usize, usize)> = Vec::with_capacity(4);
+        for edge in [elbow.bands[0].edge, elbow.through, elbow.bands[1].edge] {
+            let (Some(&(arc, _)), Some(&face)) = (arcs.get(&(edge, v)), strip_face.get(&edge))
+            else {
+                return Ok(None);
+            };
+            sides.push((arc, face));
+        }
+        let Some(cap) = face_at[elbow.cap] else {
+            return Ok(None);
+        };
+        sides.push((elbow_arcs[&v], cap));
+        let mut walked: Vec<(usize, bool)> = Vec::with_capacity(4);
+        for (edge, face) in sides {
+            // On the cap the circle may lie on a hole's ring (a boss's foot).
+            let sheet = &faces[face].0;
+            let Some(&(_, walk)) = sheet
+                .ring
+                .iter()
+                .chain(sheet.holes.iter().flatten())
+                .find(|(e, _)| *e == edge)
+            else {
+                return Ok(None);
+            };
+            walked.push((edge, !walk));
+        }
+        let Some(ring) = chained(&edges, &walked) else {
+            return Ok(None);
+        };
+        faces.push((
+            SheetFace {
+                surface: Some(elbow.surface(tol)?),
+                ring,
+                holes: Vec::new(),
+            },
+            elbow.convex,
         ));
         origins.push(Err(v));
     }
@@ -2955,6 +3117,210 @@ fn mitre(
         return Ok(None);
     }
     Ok(Some(([a.edge, b.edge], normal)))
+}
+
+/// One of an elbow's two bands carried round the corner: its edge, its
+/// station along that edge where it ends (square, at its corner on its
+/// other face), and its foot on the cap there.
+#[derive(Debug, Clone, Copy)]
+struct ElbowBand {
+    edge: Id,
+    station: f64,
+    foot: Point,
+}
+
+/// A vertex of three planes the ball rolls through ([`RoundVertex::Elbow`]):
+/// the round of the lone sense (`through`), the face across from it
+/// (`cap`), the two bands of the other sense, which run on round the lone
+/// band's end, and the torus they sweep doing so: its centre on the lone
+/// band's axis where that band's ball touches the cap, its axis the cap's
+/// normal, its circle of centres twice the radius out, its tube the ball.
+#[derive(Debug, Clone)]
+struct Elbow {
+    through: Id,
+    cap: usize,
+    bands: [ElbowBand; 2],
+    centre: Point,
+    axis: Vector,
+    radius: f64,
+    /// The bands' sense: convex, their balls inside the material.
+    convex: bool,
+}
+
+impl Elbow {
+    fn band(&self, edge: Id) -> Option<&ElbowBand> {
+        self.bands.iter().find(|b| b.edge == edge)
+    }
+
+    /// The torus the ball sweeps round the lone band's end.
+    fn surface(&self, tol: Tolerances) -> OgeomResult<SurfaceGeometry> {
+        let x = self.bands[0].foot - self.foot_centre();
+        let frame = ogeom_math::Frame::new(
+            self.centre,
+            ogeom_math::Direction::new(self.axis, tol)?,
+            ogeom_math::Direction::new(x, tol)?,
+            tol,
+        )?;
+        Ok(ogeom_geom::TorusSurface::new(ogeom_math::Torus::new(
+            frame,
+            2.0 * self.radius,
+            self.radius,
+            tol,
+        )?)
+        .into())
+    }
+
+    /// Where the torus's axis meets the cap: the centre of its contact
+    /// circle there.
+    fn foot_centre(&self) -> Point {
+        let rise = if self.convex { -1.0 } else { 1.0 };
+        self.centre - self.axis * (rise * self.radius)
+    }
+
+    /// The torus's contact on the cap, from the first band's foot to the
+    /// second's, the shorter way round.
+    fn cap_arc(&self, tol: Tolerances) -> OgeomResult<(Curve, (f64, f64))> {
+        let o = self.foot_centre();
+        let (x, w) = (self.bands[0].foot - o, self.bands[1].foot - o);
+        let normal = x.cross(w);
+        let frame = ogeom_math::Frame::new(
+            o,
+            ogeom_math::Direction::new(normal, tol)?,
+            ogeom_math::Direction::new(x, tol)?,
+            tol,
+        )?;
+        let y = normal.cross(x);
+        let angle = w.dot(y).atan2(w.dot(x) * normal.magnitude());
+        let circle =
+            ogeom_geom::CircleCurve::new(ogeom_math::Circle::new(frame, 2.0 * self.radius, tol)?);
+        Ok((circle.into(), (0.0, angle)))
+    }
+}
+
+/// The [`Elbow`] at `v`, whose three edges `here` are all rounded and of
+/// mixed sense, the faces `round` it. Refused by name where the ball's
+/// sweep is no torus: radii differing, or the lone round's edge not square
+/// to the face across it.
+///
+/// # Errors
+///
+/// As above, and where the bands do not meet the sweep where it runs (a
+/// construction fault, refused rather than built).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the phases' products a vertex is read from"
+)]
+fn elbow_at(
+    planar: &Planar,
+    sections: &FastMap<Id, (PlanarSection, f64)>,
+    here: &[&Seat],
+    round: &[usize],
+    corners: &FastMap<(usize, Id), Point>,
+    v: Id,
+    reach: f64,
+    tol: Tolerances,
+) -> OgeomResult<Elbow> {
+    let p = planar.points[&v];
+    let named = |why: &str| {
+        ogeom_core::ogeom_err!(
+            Construction,
+            "a rolling corner does not close the vertex at ({:.6}, {:.6}, {:.6}): {why}",
+            p.x,
+            p.y,
+            p.z
+        )
+    };
+    let radius = sections[&here[0].edge].1;
+    if here
+        .iter()
+        .any(|s| (sections[&s.edge].1 - radius).abs() > tol.confusion())
+    {
+        return Err(named(
+            "its rounds' radii differ, and no one ball rolls round them all",
+        ));
+    }
+    let convex = here.iter().filter(|s| s.convex).count();
+    let Some(through) = here.iter().copied().find(|s| s.convex == (convex == 1)) else {
+        return Err(named("its rounds are all of one sense"));
+    };
+    let Some(cap) = round.iter().copied().find(|f| !through.faces.contains(f)) else {
+        return Err(named("its faces do not close round it"));
+    };
+    let axis = planar.faces[cap].normal;
+    if axis.cross(through.along).magnitude() > tol.angular() {
+        return Err(named(if through.convex {
+            "the convex round's edge does not stand square to the face across it, \
+             and the concave balls' sweep round its end is no torus"
+        } else {
+            "the concave round's edge does not stand square to the face across it, \
+             and the convex balls' sweep round its end is no torus"
+        }));
+    }
+    // The lone band's ball where it reaches the cap: off its corner on its
+    // first face by the radius, to the side its ball stands.
+    let out = if through.convex { -1.0 } else { 1.0 };
+    let side = through.faces[0];
+    let centre = corners[&(side, v)] + planar.faces[side].normal * (out * radius);
+    let mut bands = Vec::with_capacity(2);
+    for seat in here.iter().filter(|s| s.edge != through.edge) {
+        let (section, _) = &sections[&seat.edge];
+        let Some(k) = seat.faces.iter().position(|f| *f == cap) else {
+            return Err(named("a band carried round does not lie on the cap"));
+        };
+        let station = (corners[&(seat.faces[1 - k], v)] - section.crease(0.0)).dot(seat.along);
+        bands.push(ElbowBand {
+            edge: seat.edge,
+            station,
+            foot: section.contact(k, station),
+        });
+    }
+    bands.sort_unstable_by_key(|b| b.edge);
+    let [first, second] = bands[..] else {
+        return Err(named("it is not a vertex of three edges"));
+    };
+    let elbow = Elbow {
+        through: through.edge,
+        cap,
+        bands: [first, second],
+        centre,
+        axis,
+        radius,
+        convex: !through.convex,
+    };
+    // Each band's foot on the sweep's contact circle, and the ball's centre
+    // as far off the lone band's other face.
+    let o = elbow.foot_centre();
+    let other = through.faces[1];
+    let off = corners[&(other, v)] + planar.faces[other].normal * (out * radius);
+    if off.distance(centre) > reach
+        || ((o - p).dot(axis)).abs() > reach
+        || elbow
+            .bands
+            .iter()
+            .any(|b| (b.foot.distance(o) - 2.0 * radius).abs() > reach)
+    {
+        return Err(named(
+            "its bands do not meet the ball's sweep round the corner",
+        ));
+    }
+    Ok(elbow)
+}
+
+/// The edges `walked`, each its way, put in turn end to end from the first
+/// into one ring; `None` where they do not chain so.
+fn chained(edges: &[SheetEdge], walked: &[(usize, bool)]) -> Option<Vec<(usize, bool)>> {
+    let ends = |(e, w): (usize, bool)| {
+        let (a, b) = edges[e].ends;
+        if w { (a, b) } else { (b, a) }
+    };
+    let mut left: Vec<(usize, bool)> = walked.to_vec();
+    let mut ring = vec![left.remove(0)];
+    while !left.is_empty() {
+        let tip = ends(*ring.last()?).1;
+        let k = left.iter().position(|m| ends(*m).0 == tip)?;
+        ring.push(left.remove(k));
+    }
+    (ends(*ring.last()?).1 == ends(ring[0]).0).then_some(ring)
 }
 
 /// The points read along a strip's end for the stations it reaches.
