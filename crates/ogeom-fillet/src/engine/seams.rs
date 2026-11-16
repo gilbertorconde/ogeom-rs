@@ -8,6 +8,12 @@
 //! seams with them dissolved, by the unification
 //! [`ogeom_heal::unify_same_domain`] applies, its history carried back to
 //! the solid as given.
+//!
+//! An edge split into pieces on one curve between the same two faces (a
+//! vertex no third edge meets) is read joined too, whether or not a
+//! seam ran into it: the pieces are one edge of the part's form, and a
+//! round of any piece is a round of the whole edge, as tangent propagation
+//! carries a pick along its smooth continuations.
 
 use ogeom_algo::History;
 use ogeom_core::{FastMap, OgeomError, OgeomResult, Tolerances};
@@ -49,6 +55,11 @@ pub(crate) fn is_seam(
     }
     ogeom_heal::same_domain(model, a, b, tol)
 }
+
+/// Faces joined across seams and runs of edges on one curve joined: an
+/// edge split by a vertex only its two pieces meet at reads as one edge
+/// though no face merged.
+const JOINED: ogeom_heal::UnifyOptions = ogeom_heal::UnifyOptions { edges: true };
 
 /// A solid read for the engine with respect to its seams.
 pub(crate) enum Dissolved {
@@ -96,13 +107,8 @@ pub(crate) fn dissolve(
     let Some(input) = read_planar(model, solid, tol)? else {
         return Ok(Dissolved::Plain);
     };
-    let unified = match ogeom_heal::unify_same_domain(model, solid, tol) {
+    let joined = match ogeom_heal::unify_same_domain_with(model, solid, JOINED, tol) {
         Ok((_, 0)) => return Ok(Dissolved::Plain),
-        Ok((unified, _)) => unified,
-        Err(e @ OgeomError::Cancelled) => return Err(e),
-        Err(_) => return Ok(Dissolved::Outside),
-    };
-    let joined = match ogeom_heal::merge_edges(model, &unified.shape, tol) {
         Ok((joined, _)) => joined.shape,
         Err(e @ OgeomError::Cancelled) => return Err(e),
         Err(_) => return Ok(Dissolved::Outside),
@@ -132,13 +138,8 @@ pub(crate) fn dissolve_curved(
     let Some(input) = super::curved::read(model, solid, tol)? else {
         return Ok(None);
     };
-    let unified = match ogeom_heal::unify_same_domain(model, solid, tol) {
+    let joined = match ogeom_heal::unify_same_domain_with(model, solid, JOINED, tol) {
         Ok((_, 0)) => return Ok(None),
-        Ok((unified, _)) => unified,
-        Err(e @ OgeomError::Cancelled) => return Err(e),
-        Err(_) => return Ok(None),
-    };
-    let joined = match ogeom_heal::merge_edges(model, &unified.shape, tol) {
         Ok((joined, _)) => joined.shape,
         Err(e @ OgeomError::Cancelled) => return Err(e),
         Err(_) => return Ok(None),

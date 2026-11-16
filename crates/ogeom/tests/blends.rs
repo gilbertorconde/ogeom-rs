@@ -5596,3 +5596,207 @@ fn a_face_blend_refuses_a_wedge_on_the_foot_s_edges_its_ball_crosses() {
         "{why}"
     );
 }
+
+/// A block spanning y −7..7 over `x` and `z`.
+fn stair_block(model: &mut Model, x: (f64, f64), z: (f64, f64)) -> Shape {
+    let at = Frame::new(Point::new(x.0, -7.0, z.0), Direction::Z, Direction::X, T).unwrap();
+    ogeom::algo::make_box(model, at, (x.1 - x.0, 14.0, z.1 - z.0), T)
+        .unwrap()
+        .shape
+}
+
+/// Three blocks stepping up to x = 15, fused and unified with `options`:
+/// a prism over the profile (−15, 0) (15, 0) (15, 21) (7, 21) (7, 14)
+/// (0, 14) (0, 7) (−15, 7), 14 deep. With the edges left split, each
+/// edge at x = 15, y = ±7 is three collinear pieces, split at z = 7 and
+/// z = 14 where the blocks met.
+fn stairs(model: &mut Model, options: ogeom::heal::UnifyOptions) -> Shape {
+    let a = stair_block(model, (-15.0, 15.0), (0.0, 7.0));
+    let b = stair_block(model, (0.0, 15.0), (7.0, 14.0));
+    let c = stair_block(model, (7.0, 15.0), (14.0, 21.0));
+    let ab = ogeom::boolean::fuse(model, &a, &b, T).unwrap().shape;
+    let abc = ogeom::boolean::fuse(model, &ab, &c, T).unwrap().shape;
+    ogeom::heal::unify_same_domain_with(model, &abc, options, T)
+        .unwrap()
+        .0
+        .shape
+}
+
+/// Every edge of `s` but a face's own seam.
+fn blendable_edges(model: &Model, s: &Shape) -> Vec<Shape> {
+    explore_unique(model, s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let faces = ogeom::topo::ancestors_of(model, s, e, ShapeType::Face).unwrap();
+            !matches!(faces.as_slice(), [a, b] if a.node() == b.node())
+        })
+        .collect()
+}
+
+/// Two faces of `s` sharing an edge and one carrier facing one way, with
+/// the edge between them standing as a seam: what a rounded part shows as
+/// a stray line across one surface.
+fn split_carriers(model: &Model, s: &Shape) -> Vec<(Point, Point)> {
+    let mut found = Vec::new();
+    for e in explore_unique(model, s, ShapeType::Edge).unwrap() {
+        let faces = ogeom::topo::ancestors_of(model, s, &e, ShapeType::Face).unwrap();
+        let [a, b] = faces.as_slice() else { continue };
+        if a.node() != b.node() && ogeom::heal::same_domain(model, a, b, T).unwrap() {
+            let (u, v) = ogeom::algo::edge_vertices(model, &e).unwrap().unwrap();
+            let p = |w: &Shape| model.node(w).unwrap().data().as_vertex().unwrap().point;
+            found.push((p(&u), p(&v)));
+        }
+    }
+    found
+}
+
+/// The faces of `s` by surface kind: planes, cylinders, spheres, others.
+fn face_kinds(model: &Model, s: &Shape) -> [usize; 4] {
+    use ogeom::geom::SurfaceGeometry as G;
+    let mut kinds = [0; 4];
+    for f in explore_unique(model, s, ShapeType::Face).unwrap() {
+        let data = model.node(&f).unwrap().data().as_face().unwrap();
+        let k = match model.geometry().surface(data.surface).unwrap() {
+            G::Plane(_) => 0,
+            G::Cylinder(_) => 1,
+            G::Sphere(_) => 2,
+            _ => 3,
+        };
+        kinds[k] += 1;
+    }
+    kinds
+}
+
+/// Every vertex of `s` as bits, sorted, and its volume's bits.
+fn shape_bits(model: &Model, s: &Shape) -> (u64, Vec<[u64; 3]>) {
+    let mut out: Vec<[u64; 3]> = explore_unique(model, s, ShapeType::Vertex)
+        .unwrap()
+        .iter()
+        .map(|v| {
+            let p = model.node(v).unwrap().data().as_vertex().unwrap().point;
+            [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]
+        })
+        .collect();
+    out.sort_unstable();
+    (exact_volume(model, s).to_bits(), out)
+}
+
+/// Every edge of the stairs rounded at r = 1, the edges at x = 15 split
+/// or joined: one cylinder per straight edge, one sphere per convex
+/// corner, one patch per inside corner (one concave edge between two
+/// convex ones), and every original face one face still. No piece of a
+/// face is left beside its parent, and no strip stands in pieces.
+#[test]
+fn stairs_rounded_on_every_edge_leave_one_face_per_surface() {
+    use ogeom::heal::UnifyOptions;
+    let r = 1.0_f64;
+    for options in [UnifyOptions { edges: false }, UnifyOptions::default()] {
+        let mut model = Model::new();
+        let solid = stairs(&mut model, options);
+        let edges = blendable_edges(&model, &solid);
+        assert_eq!(edges.len(), if options.edges { 24 } else { 28 });
+        let built = ogeom::fillet::fillet_edges_checked(&mut model, &solid, &edges, r, T)
+            .unwrap_or_else(|e| panic!("{:?}: {}", e.edges, e.error))
+            .shape;
+        let found = ogeom::algo::check(&model, &built, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        // 10 planes; 16 profile edges and 8 along y, each one cylinder;
+        // 12 convex corners, each a sphere; 4 inside corners, each a patch.
+        assert_eq!(face_kinds(&model, &built), [10, 24, 12, 4], "{options:?}");
+        assert_eq!(split_carriers(&model, &built), Vec::new(), "{options:?}");
+
+        // The prism less a spandrel (1 − π/4) r² per length of convex
+        // edge, plus one per length of concave edge, each counted the full
+        // length of its edge; each convex corner adds back (2 − 7π/12) r³,
+        // the term a box rounded whole shows. The four inside corners'
+        // patches have no closed form (a G1 patch, ADR 0001 §13 question
+        // 7); each stands within the cube of side r the three bands' ends
+        // leave open at its vertex, so its term is within ±r³.
+        let spandrel = 1.0 - core::f64::consts::FRAC_PI_4;
+        let convex = 2.0 * 102.0 + 6.0 * 14.0;
+        let concave = 2.0 * 14.0;
+        let corner = 2.0 - 7.0 * core::f64::consts::PI / 12.0;
+        let prism = 371.0 * 14.0;
+        let known = prism - spandrel * r * r * (convex - concave) + 12.0 * corner * r.powi(3);
+        let volume = exact_volume(&model, &built);
+        assert!(
+            (volume - known).abs() <= 4.0 * r.powi(3),
+            "{options:?}: {volume} against {known} ± 4"
+        );
+    }
+}
+
+/// The stairs with the edges at x = 15 left split round to the solid the
+/// joined edges give: the same vertices to the bit, the same volume to
+/// its integration's rounding. Every order of the request gives the same
+/// solid to the bit.
+#[test]
+fn stairs_rounded_alike_whether_their_edges_were_split_and_in_any_order() {
+    use ogeom::heal::UnifyOptions;
+    let joined = {
+        let mut model = Model::new();
+        let solid = stairs(&mut model, UnifyOptions::default());
+        let edges = blendable_edges(&model, &solid);
+        let built = ogeom::fillet::fillet_edges(&mut model, &solid, &edges, 1.0, T)
+            .unwrap()
+            .shape;
+        shape_bits(&model, &built)
+    };
+    let mut model = Model::new();
+    let solid = stairs(&mut model, UnifyOptions { edges: false });
+    let edges = blendable_edges(&model, &solid);
+    let n = edges.len();
+    let orders: Vec<Vec<usize>> = vec![
+        (0..n).collect(),
+        (0..n).rev().collect(),
+        (0..n).map(|k| (k * 11 + 5) % n).collect(),
+    ];
+    let mut first = None;
+    for order in orders {
+        let mut copy = model.clone();
+        let asked: Vec<Shape> = order.iter().map(|&k| edges[k].clone()).collect();
+        let built = ogeom::fillet::fillet_edges(&mut copy, &solid, &asked, 1.0, T)
+            .unwrap()
+            .shape;
+        let got = shape_bits(&copy, &built);
+        assert_eq!(got.1, joined.1, "order {order:?}");
+        let (a, b) = (f64::from_bits(got.0), f64::from_bits(joined.0));
+        assert!((a - b).abs() < 1e-6, "order {order:?}: {a} against {b}");
+        match &first {
+            None => first = Some(got),
+            Some(seen) => assert!(*seen == got, "order {order:?}"),
+        }
+    }
+}
+
+/// A round of one piece of a split edge is a round of the whole edge,
+/// and the history tells each piece of the one strip.
+#[test]
+fn a_round_of_one_piece_of_a_split_edge_rounds_the_whole_edge() {
+    let mut model = Model::new();
+    let solid = stairs(&mut model, ogeom::heal::UnifyOptions { edges: false });
+    let pieces: Vec<Shape> = [7.0 / 2.0, 21.0 / 2.0, 35.0 / 2.0]
+        .iter()
+        .map(|&z| edge_near(&model, &solid, Point::new(15.0, -7.0, z)))
+        .collect();
+    let built = ogeom::fillet::fillet_edges(&mut model, &solid, &pieces[1..2], 1.0, T).unwrap();
+    let found = ogeom::algo::check(&model, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    assert_eq!(face_kinds(&model, &built.shape), [10, 1, 0, 0]);
+    let spandrel = 1.0 - core::f64::consts::FRAC_PI_4;
+    let volume = exact_volume(&model, &built.shape);
+    assert!(
+        (volume - (371.0 * 14.0 - spandrel * 21.0)).abs() < 1e-6,
+        "{volume}"
+    );
+    let strip: Vec<Shape> = pieces
+        .iter()
+        .map(|p| {
+            let made = built.history.generated(p);
+            assert_eq!(made.len(), 1, "each piece generates the strip");
+            made[0].clone()
+        })
+        .collect();
+    assert!(strip.iter().all(|s| s.is_same(&strip[0])));
+}
