@@ -1373,7 +1373,16 @@ and capping there left the corner standing.
 - **A convex turn.** In a request holding an inside corner, two creases
   meeting at a corner convex in plan each run out past the vertex as they
   do alone. A request of convex turns alone is left to the routes that
-  close it, in one piece where they can.
+  close it, in one piece where they can. Where none does, each crease
+  meeting the others only at vertices of three edges, across a convex
+  turn on the face they share with the third edge left sharp, is rounded
+  as it is alone, and the cuts take their union (`engine/alone.rs`).
+  The bands then meet along their own intersection: the mitre of two
+  equal straight rounds, and the general form of it where their sections
+  differ (a D-shaped block's arc and chord). This is SOLIDWORKS' default
+  for fillets meeting at a corner, which extends the fillet faces until
+  they intersect. A rim's round alone runs on as amendment "corners where
+  a round's rail misses" sets out.
 - **A free end into the material.** Where a crease end met by no other
   asked crease runs on into the material, the band ends flush on the one
   plane the crease meets there, cut to the crease's side of it; past the

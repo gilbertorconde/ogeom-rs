@@ -923,13 +923,23 @@ fn crease_of(
         return Ok(None);
     };
     // Convex: each face's points away from the edge stand behind the
-    // other's plane (the material between them).
+    // other's plane (the material between them), read at its edges' ends
+    // and middles: a D-shaped block's top has no vertex off its chord, its
+    // arc's middle standing behind the chord's wall.
     let behind = |f: usize, n: Vector| {
         curved.faces[f].loops.iter().flatten().any(|(x, _)| {
             let g = &curved.edges[x];
+            let middle = {
+                use ogeom_geom::Curve3d as _;
+                g.curve
+                    .point_at(f64::midpoint(g.range.0, g.range.1), tol)
+                    .ok()
+            };
             [g.ends.0, g.ends.1]
                 .iter()
-                .any(|v| (curved.points[v] - mid).dot(n) < -tol.confusion())
+                .map(|v| curved.points[v])
+                .chain(middle)
+                .any(|p| (p - mid).dot(n) < -tol.confusion())
         })
     };
     if !behind(fb, na) || !behind(fa, nb) || na.cross(nb).magnitude() <= tol.angular() {
