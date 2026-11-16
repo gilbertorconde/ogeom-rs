@@ -1,5 +1,7 @@
 //! A round of a bore's rim on a drum taking a narrow bevel beside it off
-//! whole: the marched counterpart of a rim's round over a chamfer.
+//! whole: the marched counterpart of a rim's round over a chamfer. Where
+//! the bevel is wider than the round's setback on it, the round rolls
+//! between the bevel and the face beside it instead.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;
@@ -70,6 +72,9 @@ fn faces_at(m: &Model, s: &Shape, e: &Shape) -> Vec<Shape> {
 /// The bore's rim at y > 0 rounded at `radius` on the plain drum, and on
 /// the drum with that rim first bevelled 0.5, rounded from the strip's
 /// edge nearest `from`: both volumes, the second checked, the bevel gone.
+/// The radius sets the ball back past the bevel (a ball of 2 sets back
+/// 0.83 on it at the top, the bevel 0.71 wide), so no ball touches both of
+/// the edge's faces.
 fn rounded(radius: f64, from: [f64; 3]) -> (f64, f64) {
     let mut m = Model::new();
     let s = holed_drum(&mut m);
@@ -111,28 +116,177 @@ fn close(v: f64, expected: f64) {
 
 #[test]
 fn a_bevelled_bore_rim_rounds_from_the_drum_edge_as_the_plain_rim() {
-    // The drum / bevel edge, half a millimetre down the drum from the rim.
-    let (plain, consumed) = rounded(1.0, [0.0, 9.9, 18.6]);
+    // The drum / bevel edge, half a millimetre down the drum from the rim,
+    // rounded at 2: the ball sets back past the bevel, which comes off.
+    let (plain, consumed) = rounded(2.0, [0.0, 9.9, 18.6]);
     close(consumed, plain);
 }
 
 #[test]
 fn a_bevelled_bore_rim_rounds_from_the_bore_edge_as_the_plain_rim() {
-    // The bevel / bore edge, half a millimetre into the bore from the rim.
-    let (plain, consumed) = rounded(1.0, [0.0, 9.0, 18.0]);
+    // The bevel / bore edge, half a millimetre into the bore from the rim,
+    // rounded at 2: the ball sets back past the bevel, which comes off.
+    let (plain, consumed) = rounded(2.0, [0.0, 9.0, 18.0]);
     close(consumed, plain);
 }
 
 #[test]
-fn a_bevel_wider_than_the_round_s_setback_is_still_refused() {
-    // A bevel of 1.5 each way against a ball of 1: the ball touching the
-    // drum and the bore stands within the bevel, off both faces.
+fn a_bevelled_bore_rim_rounded_within_the_bevel_from_the_drum_edge_rolls_beside_it() {
+    // The same bevel and edge rounded at 1: the ball sets back 0.41 on the
+    // bevel at the top, the bevel 0.71 wide, so it fits between the drum
+    // and the bevel and the bevel stays.
+    assert!(rolled_beside_a_bevel(1.0, 0.5, [0.0, 9.9, 18.6], drum_height) > 0.0);
+}
+
+#[test]
+fn a_bevelled_bore_rim_rounded_within_the_bevel_from_the_bore_edge_rolls_beside_it() {
+    // The same bevel and edge rounded at 1: the ball fits between the bore
+    // and the bevel, and the bevel stays.
+    assert!(rolled_beside_a_bevel(1.0, 0.5, [0.0, 9.0, 18.0], bore_height) > 0.0);
+}
+
+/// How far a point stands inside the drum's wall.
+fn drum_height(c: Point) -> f64 {
+    10.0 - c.x.hypot(c.y)
+}
+
+/// How far a point stands outside the bore's wall.
+fn bore_height(c: Point) -> f64 {
+    c.x.hypot(c.z - 15.0) - 3.0
+}
+
+/// The holed drum with its bore's rim at y > 0 bevelled `width` each way,
+/// and the bevel's edge nearest `from` rounded at `radius`, the bevel
+/// wider than the round's setback on it: the ball fits between the bevel
+/// and the face beside it, so the round rolls between them and the bevel
+/// stays, narrowed. Valid, the bevel's face still there, and every point of the
+/// round's fine mesh a radius from a centre standing a radius off both the
+/// bevel's surface and `beside`'s height of the centre (its distance off
+/// the face beside the bevel, read in closed form). Returns how much it
+/// takes off.
+fn rolled_beside_a_bevel(
+    radius: f64,
+    width: f64,
+    from: [f64; 3],
+    beside: impl Fn(Point) -> f64,
+) -> f64 {
     let mut m = Model::new();
     let s = holed_drum(&mut m);
     let rim = edge_near(&m, &s, [0.0, 9.5, 18.0]);
-    let bevelled = chamfer_edges(&mut m, &s, &[rim], 1.5, T).unwrap().shape;
-    let edge = edge_near(&m, &bevelled, [0.0, 9.9, 19.5]);
-    assert!(fillet_edges(&mut m, &bevelled, &[edge], 1.0, T).is_err());
+    let bevelled = chamfer_edges(&mut m, &s, &[rim], width, T).unwrap().shape;
+    let edge = edge_near(&m, &bevelled, from);
+    let strip = faces_at(&m, &bevelled, &edge)
+        .into_iter()
+        .find(|f| {
+            matches!(
+                m.node(f)
+                    .and_then(|n| n.data().as_face())
+                    .and_then(|d| m.geometry().surface(d.surface)),
+                Some(ogeom_geom::SurfaceGeometry::BSpline(_))
+            )
+        })
+        .expect("the bevel beside the edge");
+    let bevel = m
+        .node(&strip)
+        .and_then(|n| n.data().as_face())
+        .and_then(|d| m.geometry().surface(d.surface))
+        .cloned()
+        .unwrap();
+    let built = fillet_edges(&mut m, &bevelled, std::slice::from_ref(&edge), radius, T).unwrap();
+    let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let faces = explore_unique(&m, &built.shape, ShapeType::Face).unwrap();
+    let rounds: Vec<Shape> = built
+        .history
+        .generated(&edge)
+        .iter()
+        .filter(|f| faces.iter().any(|g| g.is_same(f)))
+        .cloned()
+        .collect();
+    assert!(!rounds.is_empty(), "the edge's round");
+    assert!(
+        built
+            .history
+            .modified(&strip)
+            .iter()
+            .any(|f| faces.iter().any(|g| g.is_same(f)))
+            || faces.iter().any(|g| g.is_same(&strip)),
+        "the bevel stays"
+    );
+    let fine = ogeom_mesh::Deflection {
+        chord: 1e-3,
+        ..ogeom_mesh::Deflection::default()
+    };
+    let mut worst = 0.0_f64;
+    for round in &rounds {
+        let mesh = ogeom_mesh::triangulate_face(&m, round, fine, T).unwrap();
+        for (p, n) in mesh.positions.iter().zip(&mesh.normals) {
+            let n = *n / n.magnitude();
+            // The ball through `p`: its centre on the spine (a radius off
+            // both faces' surfaces), found from the point a radius in
+            // along either side of the mesh's normal by Gauss-Newton steps
+            // on the two distances, then read a radius off `p`.
+            let off = |mut c: Point| -> f64 {
+                for _ in 0..30 {
+                    let foot = ogeom_geom::project_on_surface(&bevel, c, 16, T).unwrap();
+                    let f = [beside(c) - radius, foot.distance - radius];
+                    let h = 1e-7;
+                    let grad = |g: &dyn Fn(Point) -> f64| {
+                        Vector::new(
+                            (g(c + Vector::new(h, 0.0, 0.0)) - g(c - Vector::new(h, 0.0, 0.0)))
+                                / (2.0 * h),
+                            (g(c + Vector::new(0.0, h, 0.0)) - g(c - Vector::new(0.0, h, 0.0)))
+                                / (2.0 * h),
+                            (g(c + Vector::new(0.0, 0.0, h)) - g(c - Vector::new(0.0, 0.0, h)))
+                                / (2.0 * h),
+                        )
+                    };
+                    let a = grad(&beside);
+                    let b = (c - ogeom_geom::Surface::point_at(
+                        &bevel,
+                        foot.parameters.0,
+                        foot.parameters.1,
+                        T,
+                    )
+                    .unwrap())
+                        / foot.distance;
+                    // The least step meeting both: (J J^T) l = f, step J^T l.
+                    let (aa, ab, bb) = (a.dot(a), a.dot(b), b.dot(b));
+                    let det = aa * bb - ab * ab;
+                    let l0 = (f[0] * bb - ab * f[1]) / det;
+                    let l1 = (aa * f[1] - ab * f[0]) / det;
+                    c -= a * l0 + b * l1;
+                    if f[0].abs().max(f[1].abs()) < 1e-12 {
+                        break;
+                    }
+                }
+                (c.distance(*p) - radius).abs()
+            };
+            worst = worst.max(off(*p + n * radius).min(off(*p - n * radius)));
+        }
+    }
+    eprintln!("{radius} from {from:?}: the round's mesh stands {worst} off its balls");
+    assert!(
+        worst < 2e-4,
+        "the round stands {worst} off its rolling balls"
+    );
+    vol(&m, &bevelled) - vol(&m, &built.shape)
+}
+
+#[test]
+fn a_round_between_the_drum_and_a_bevel_wider_than_its_setback_rolls_on_both() {
+    // The drum / bevel edge, 1.5 up the drum from the rim: the ball's
+    // centre stands a radius inside the drum.
+    let wide = rolled_beside_a_bevel(1.0, 1.5, [0.0, 9.9, 19.5], drum_height);
+    let narrow = rolled_beside_a_bevel(0.3, 1.5, [0.0, 9.9, 19.5], drum_height);
+    assert!(0.0 < narrow && narrow < wide, "{narrow} < {wide}");
+}
+
+#[test]
+fn a_round_between_the_bore_and_a_bevel_wider_than_its_setback_rolls_on_both() {
+    // The bevel / bore edge, 1.5 into the bore from the rim: the ball's
+    // centre stands a radius off the bore, outside it.
+    assert!(rolled_beside_a_bevel(1.0, 1.5, [0.0, 8.5, 18.0], bore_height) > 0.0);
 }
 
 /// The S-shaped crease's profile in `y = 0`: from the origin along `x`,
