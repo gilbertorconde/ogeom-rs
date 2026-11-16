@@ -889,6 +889,11 @@ extended to meet it. Hence:
 - a concave round's fill is added whole, roofing a pocket's mouth where it
   reaches over it (the neighbouring surfaces extended), the pocket below
   kept.
+- a contact crossing a hole in its face (a cross drill coming up into a
+  rim's band) runs on across it: the hole's faces are the far feature,
+  taken off the copy and put back, so the hole cuts the round's surface.
+  A contact leaving its face across the face's outer boundary is the
+  roll-over of §13, question 8, and is handed back as before.
 
 Retaining the cliff edge instead (the ball resting on the boss's
 underside edge) needs the ball to pass the vertex where that edge meets
