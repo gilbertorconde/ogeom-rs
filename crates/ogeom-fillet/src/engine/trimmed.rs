@@ -2997,6 +2997,25 @@ fn assemble_widened(
     // bevel's end there, the segment between its two faces' corners.
     // Each cusp's corners on the side and the wall moved to its lobes'.
     let cusps = cusps_of(curved, bevels, corners, tol)?;
+    // A cusp's sharp edges on the side or the wall (the edge the two share
+    // below a top ending there, the wall's seam) run on to the vertex: the
+    // S's feet meet them there.
+    for c in &cusps {
+        let [_, side, wall] = c.faces;
+        for (e, edge) in &curved.edges {
+            let faces = faces_of(curved, *e);
+            if (edge.ends.0 == c.v || edge.ends.1 == c.v)
+                && !blended.contains(e)
+                && !faces.is_empty()
+                && faces.iter().all(|f| *f == side || *f == wall)
+            {
+                sharp_end.insert((*e, c.v), curved.points[&c.v]);
+                if let Some(t) = tails.get_mut(&c.v) {
+                    t.retain(|(te, _, _)| te != e);
+                }
+            }
+        }
+    }
     let reset;
     let corners = if cusps.is_empty() {
         corners
@@ -3723,10 +3742,13 @@ fn assemble_widened(
     // short of the patch.
     let mut bounds: FastMap<Id, Vec<(Point, Point, usize)>> = FastMap::default();
     let mut holes: Vec<(usize, Vec<HoleSpec>)> = Vec::with_capacity(cusps.len());
+    // Each S's foot's edge, with how far its fitted curve stands off its
+    // face, measured finely: it bends faster near the vertex than the
+    // edges' common sampling reads.
+    let mut feet_widths: Vec<(usize, f64)> = Vec::new();
     for (ci, c) in cusps.iter().enumerate() {
         let [_, side, wall] = c.faces;
         let mut lobes = Vec::with_capacity(2);
-        let mut ring_at = Point::ORIGIN;
         for lobe in &c.lobes {
             let rim = &bevels[lobe.rim];
             let SurfaceGeometry::Torus(torus) = &rim.surface else {
@@ -3734,10 +3756,9 @@ fn assemble_widened(
             };
             let torus = torus.torus();
             let (o, z) = (torus.frame().origin(), torus.frame().z().vector());
-            let Curve::Circle(ring) = &rim.contacts[usize::from(rim.faces[1] == wall)] else {
+            let Curve::Circle(_) = &rim.contacts[usize::from(rim.faces[1] == wall)] else {
                 return Ok(None);
             };
-            ring_at = ring.circle().frame().origin();
             let line = &bevels[lobe.line];
             let Section::Arc { spine } = &line.section else {
                 return Ok(None);
@@ -3774,67 +3795,88 @@ fn assemble_widened(
                 ],
             });
         }
-        let [a, b] = [&c.lobes[0], &c.lobes[1]];
-        let straight: Curve = LineCurve::segment(b.side, a.side, tol)?.into();
-        let range = straight.domain();
-        edges.push(SheetCurve {
-            ends: (points.index(b.side), points.index(a.side)),
-            curve: straight.clone(),
-            range,
-        });
-        bounds
-            .entry(c.v)
-            .or_default()
-            .push((b.side, a.side, edges.len() - 1));
-        let along_side = HoleSpec {
-            curve: straight,
-            range,
-            forward: true,
-            pieces: vec![(edges.len() - 1, range, curved.faces[side].surface.clone())],
-        };
-        let (arc, _) = rational_quadratics(&[arc_control(ring_at, a.wall, b.wall, tol)?], tol)?;
-        let mut stops = vec![(a.wall, 0.0)];
-        if let Some(f) = c.foot {
-            stops.push((f, param_on(&arc, (0.0, 1.0), f, tol)?));
+        // Each lobe's hole: the lobe, its foot on the wall down to the
+        // vertex, and its foot on the side back to the lobe.
+        let at = curved.points[&c.v];
+        for (spec, (lobe, (wall_foot, side_foot))) in
+            lobes.into_iter().zip(c.lobes.iter().zip(&c.feet))
+        {
+            let mut hole = vec![spec];
+            for (curve, p, q, face) in [
+                (wall_foot, lobe.wall, at, wall),
+                (side_foot, at, lobe.side, side),
+            ] {
+                let range = curve.domain();
+                let surface = &curved.faces[face].surface;
+                let mut off: f64 = 0.0;
+                for i in 0..=256 {
+                    let t = (range.1 - range.0).mul_add(f64::from(i) / 256.0, range.0);
+                    let at = curve.point_at(t, tol)?;
+                    off = off.max(
+                        ogeom_geom::project::project_on_surface(surface, at, 16, tol)?.distance,
+                    );
+                }
+                edges.push(SheetCurve {
+                    ends: (points.index(p), points.index(q)),
+                    curve: curve.clone(),
+                    range,
+                });
+                feet_widths.push((edges.len() - 1, 1.25 * off + tol.confusion()));
+                bounds.entry(c.v).or_default().push((p, q, edges.len() - 1));
+                hole.push(HoleSpec {
+                    curve: curve.clone(),
+                    range,
+                    forward: true,
+                    pieces: vec![(edges.len() - 1, range, curved.faces[face].surface.clone())],
+                });
+            }
+            holes.push((ci, hole));
         }
-        stops.push((b.wall, 1.0));
-        let mut pieces = Vec::with_capacity(2);
-        for w in stops.windows(2) {
-            let ((p, t0), (q, t1)) = (w[0], w[1]);
-            edges.push(SheetCurve {
-                ends: (points.index(p), points.index(q)),
-                curve: arc.clone(),
-                range: (t0, t1),
-            });
-            bounds.entry(c.v).or_default().push((p, q, edges.len() - 1));
-            pieces.push((
-                edges.len() - 1,
-                (t0, t1),
-                curved.faces[wall].surface.clone(),
-            ));
-        }
-        let along_wall = HoleSpec {
-            curve: arc,
-            range: (0.0, 1.0),
-            forward: true,
-            pieces,
-        };
-        let [first, second] = <[HoleSpec; 2]>::try_from(lobes).map_err(|_| {
-            ogeom_core::OgeomError::Construction("a cusp of other than two lobes".into())
-        })?;
-        holes.push((ci, vec![first, along_wall, second.back(), along_side]));
     }
-    // A piece of a face's boundary a cusp's patch meets, joining `p` to `q`
-    // at `v`: its edge, and whether it runs from `p`.
-    let bound_between = |v: Id, p: Point, q: Point| -> Option<(usize, bool)> {
-        bounds.get(&v).and_then(|b| {
-            b.iter()
-                .find(|(x, y, _)| {
-                    (x.distance(p) <= tol.confusion() && y.distance(q) <= tol.confusion())
-                        || (y.distance(p) <= tol.confusion() && x.distance(q) <= tol.confusion())
-                })
-                .map(|(x, _, k)| (*k, x.distance(p) <= tol.confusion()))
-        })
+    // The pieces of a face's boundary a cusp's patch meets, joining `p` to
+    // `q` at `v`: one piece, or two meeting at a point between (a wall's
+    // ring arc and the tangent line down to the side's contact), each its
+    // edge and whether it runs from the end nearer `p`.
+    let bound_between = |v: Id, p: Point, q: Point| -> Option<Vec<(usize, bool)>> {
+        let near = |a: Point, b: Point| a.distance(b) <= tol.confusion();
+        let b = bounds.get(&v)?;
+        // The pieces from `p` to `q`, each taken once: searched depth first,
+        // the shortest found first since a direct piece is tried first.
+        let mut stack: Vec<(Point, Vec<usize>)> = vec![(p, Vec::new())];
+        let mut best: Option<Vec<usize>> = None;
+        while let Some((at, path)) = stack.pop() {
+            if near(at, q) && !path.is_empty() {
+                if best.as_ref().is_none_or(|b| path.len() < b.len()) {
+                    best = Some(path);
+                }
+                continue;
+            }
+            for (i, (x, y, _)) in b.iter().enumerate() {
+                if path.contains(&i) {
+                    continue;
+                }
+                let next = if near(*x, at) {
+                    *y
+                } else if near(*y, at) {
+                    *x
+                } else {
+                    continue;
+                };
+                let mut longer = path.clone();
+                longer.push(i);
+                stack.push((next, longer));
+            }
+        }
+        let path = best?;
+        let mut at = p;
+        let mut walk = Vec::with_capacity(path.len());
+        for i in path {
+            let (x, y, k) = b[i];
+            let from_at = near(x, at);
+            walk.push((k, from_at));
+            at = if from_at { y } else { x };
+        }
+        Some(walk)
     };
     // The faces a rolled round cut a piece from, their rings rejoined, and
     // the faces it split off them, each with the face it split from.
@@ -3914,9 +3956,9 @@ fn assemble_widened(
                 // A piece of the face's boundary a cusp's patch meets.
                 if let Some(p) = last
                     && p.distance(start.0) > tol.confusion()
-                    && let Some(piece) = bound_between(vs, p, start.0)
+                    && let Some(pieces) = bound_between(vs, p, start.0)
                 {
-                    ring.push(piece);
+                    ring.extend(pieces);
                     last = Some(start.0);
                 }
                 if let Some(p) = last
@@ -4065,9 +4107,9 @@ fn assemble_widened(
             }
             if let (Some(p), Some(q)) = (last, first)
                 && p.distance(q) > tol.confusion()
-                && let Some(piece) = bound_between(loop_start_vertex(curved, face, walk), p, q)
+                && let Some(pieces) = bound_between(loop_start_vertex(curved, face, walk), p, q)
             {
-                ring.push(piece);
+                ring.extend(pieces);
                 last = Some(q);
             }
             if let (Some(p), Some(q)) = (last, first)
@@ -4629,10 +4671,14 @@ fn assemble_widened(
                 } else {
                     p
                 };
+                // A face passing the vertex twice (a wall's seam leaving it)
+                // keeps its second corner there under the pinched key.
                 let face = (0..curved.faces.len()).find(|fi| {
-                    corners
-                        .get(&(*fi, *v))
-                        .is_some_and(|c| c.point.distance(corner) <= points.merge)
+                    [*v, pinched(*v)].iter().any(|w| {
+                        corners
+                            .get(&(*fi, *w))
+                            .is_some_and(|c| c.point.distance(corner) <= points.merge)
+                    })
                 });
                 let (Some(fi), Some(plane)) = (face, facet_planes.get(v)) else {
                     return Ok(None);
@@ -4829,6 +4875,11 @@ fn assemble_widened(
     let mut edge_widths = vec![0.0; edges.len()];
     for (k, w) in marched_widths.borrow().iter() {
         edge_widths[*k] = *w;
+    }
+    for (k, w) in &feet_widths {
+        if *w > tol.confusion() {
+            edge_widths[*k] = edge_widths[*k].max(*w);
+        }
     }
     // A bevel's end meeting a fitted contact or ridge stands on it within
     // its width: so is its edge built.
@@ -5106,6 +5157,11 @@ fn assemble_widened(
         if newell.dot(n0 + n1) < 0.0 {
             sides.reverse();
             sides = sides.into_iter().map(HoleSpec::back).collect();
+            // A lobe's hole keeps its lobe first, so its feet's corner, the
+            // cusp, is the patch's pole.
+            if sides.len() == 3 {
+                sides.rotate_right(1);
+            }
         }
         let hole: Vec<crate::round::transfinite::HoleSide> =
             sides.iter().map(|spec| spec.side(&sheet.edges)).collect();
@@ -5465,11 +5521,13 @@ struct Cusp {
     v: Id,
     /// The top, the side and the wall.
     faces: [usize; 3],
-    /// Each straight strip's side of the vertex.
-    lobes: [Lobe; 2],
-    /// Where the wall's own seam leaves the rim's contact, where it has one
-    /// there.
-    foot: Option<Point>,
+    /// Each straight strip's side of the vertex: two, or one where the top
+    /// ends at the vertex.
+    lobes: Vec<Lobe>,
+    /// Each lobe's S's feet: on the wall from the lobe's end there down to
+    /// the vertex, and on the side from the vertex to the lobe's end there.
+    /// Each lobe's hole is the lobe and its two feet.
+    feet: Vec<(Curve, Curve)>,
 }
 
 /// A side of a cusp's hole: its curve over `range`, whether the walk runs
@@ -5595,11 +5653,8 @@ fn cusps_of(
     let mut keyed: Vec<&Id> = curved.points.keys().collect();
     keyed.sort_unstable();
     for v in keyed {
-        let Some(top) =
-            (0..curved.faces.len()).find(|fi| corners.contains_key(&(*fi, pinched(*v))))
-        else {
-            continue;
-        };
+        let pinched_top =
+            (0..curved.faces.len()).find(|fi| corners.contains_key(&(*fi, pinched(*v))));
         let ends_at = |bi: &usize| {
             let e = &curved.edges[&bevels[*bi].edge];
             e.ends.0 == *v || e.ends.1 == *v
@@ -5618,33 +5673,84 @@ fn cusps_of(
                     && matches!(bevels[*bi].surface, SurfaceGeometry::Cylinder(_))
             })
             .collect();
-        let [l0, l1] = lines.as_slice() else {
-            continue;
-        };
         let closed = |bi: &usize| {
             let e = &curved.edges[&bevels[*bi].edge];
             e.ends.0 == e.ends.1
         };
-        let one = matches!(rims.as_slice(), [r] if closed(r));
-        let two = matches!(rims.as_slice(), [a, b] if !closed(a) && !closed(b));
-        if !(one || two) || at.len() != 2 + rims.len() {
-            continue;
-        }
+        // Two lobes where the top passes the vertex twice; one where it
+        // ends there, a straight strip and an arc of the rim leaving it on
+        // the one side.
+        let (top, strips): (usize, Vec<usize>) = match (pinched_top, lines.as_slice()) {
+            (Some(top), [l0, l1]) => {
+                let one = matches!(rims.as_slice(), [r] if closed(r));
+                let two = matches!(rims.as_slice(), [a, b] if !closed(a) && !closed(b));
+                if !(one || two) || at.len() != 2 + rims.len() {
+                    continue;
+                }
+                (top, vec![*l0, *l1])
+            }
+            (None, [l0]) => {
+                let ([r], 2) = (rims.as_slice(), at.len()) else {
+                    continue;
+                };
+                if closed(r) {
+                    continue;
+                }
+                let (fl, fr) = (bevels[*l0].faces, bevels[*r].faces);
+                let Some(top) = fl.iter().copied().find(|f| fr.contains(f)) else {
+                    continue;
+                };
+                // The top's loop passes the vertex once, between these two.
+                let at_v = curved
+                    .edges
+                    .iter()
+                    .filter(|(e, c)| {
+                        (c.ends.0 == *v || c.ends.1 == *v) && faces_of(curved, **e).contains(&top)
+                    })
+                    .count();
+                if at_v != 2 || !corners.contains_key(&(top, *v)) {
+                    continue;
+                }
+                // A cusp: the top narrows to nothing, the two edges leaving
+                // the vertex the same way. Leaving it opposite ways they
+                // only continue each other (a stadium's side into its end).
+                let leaving = |bi: usize| -> OgeomResult<Option<Vector>> {
+                    let e = &curved.edges[&bevels[bi].edge];
+                    let (t, sign) = if e.ends.0 == *v {
+                        (e.range.0, 1.0)
+                    } else {
+                        (e.range.1, -1.0)
+                    };
+                    let d = e.curve.d1_at(t, tol)? * sign;
+                    let m = d.magnitude();
+                    Ok((m > tol.confusion()).then(|| d / m))
+                };
+                let (Some(dl), Some(dr)) = (leaving(*l0)?, leaving(*r)?) else {
+                    continue;
+                };
+                if dl.dot(dr) < 1.0 - tol.angular() {
+                    continue;
+                }
+                (top, vec![*l0])
+            }
+            _ => continue,
+        };
         let other = |bi: usize| {
             let f = bevels[bi].faces;
             f.contains(&top)
                 .then(|| if f[0] == top { f[1] } else { f[0] })
         };
-        let (Some(wall), Some(side), Some(side_too)) = (other(rims[0]), other(*l0), other(*l1))
-        else {
+        let (Some(wall), Some(side)) = (other(rims[0]), other(strips[0])) else {
             continue;
         };
-        if side != side_too || rims.iter().any(|r| other(*r) != Some(wall)) {
+        if strips.iter().any(|l| other(*l) != Some(side))
+            || rims.iter().any(|r| other(*r) != Some(wall))
+        {
             continue;
         }
         let crossings = [corners.get(&(top, *v)), corners.get(&(top, pinched(*v)))];
         let mut lobes = Vec::with_capacity(2);
-        for bi in [*l0, *l1] {
+        for bi in strips.iter().copied() {
             let e = bevels[bi].edge;
             let Some(crossing) = crossings.iter().flatten().find(|c| c.on(e).is_some()) else {
                 break;
@@ -5695,20 +5801,113 @@ fn cusps_of(
                 plane: PlaneSurface::new(Plane::new(frame)).into(),
             });
         }
-        let Ok(lobes) = <[Lobe; 2]>::try_from(lobes) else {
+        if lobes.len() != strips.len() {
+            continue;
+        }
+        // Each lobe's S, section by section square to the straight edge: at
+        // `s` from the vertex the top is `w` wide between the side and the
+        // wall's foot, and the S is a convex arc off the side turning `t`
+        // and a concave one onto the wall, point symmetric, `cos t = 1 - u`,
+        // `u` the top's width there over its width at the lobe's end on
+        // that face: its foot on the side `sin t` of the lobe's depth there
+        // below the top, on the wall `sin t` of its height there above. At
+        // the vertex both feet stand on the top's edge; at the lobe each
+        // runs into its strip's contact tangentially.
+        let at = curved.points[v];
+        let (Some(n_side), Some(n_wall), Some(n_top)) = (
+            outward(curved, side, at),
+            outward(curved, wall, at),
+            outward(curved, top, at),
+        ) else {
             continue;
         };
-        let foot = curved
-            .edges
-            .iter()
-            .find(|(e, c)| (c.ends.0 == *v || c.ends.1 == *v) && faces_of(curved, **e) == [wall])
-            .and_then(|(e, _)| corners.get(&(wall, *v)).filter(|c| c.on(*e).is_some()))
-            .map(|c| c.point);
+        if n_side.dot(n_wall) < 1.0 - tol.angular() {
+            continue;
+        }
+        let mut feet = Vec::with_capacity(lobes.len());
+        for lobe in &lobes {
+            let r = &bevels[lobe.rim];
+            let Curve::Circle(rim_circle) = &curved.edges[&r.edge].curve else {
+                break;
+            };
+            let (c, big) = (
+                rim_circle.circle().frame().origin(),
+                rim_circle.circle().radius(),
+            );
+            let along = {
+                let d = lobe.side - at;
+                (d - n_top * d.dot(n_top) - n_side * d.dot(n_side)).normalized(tol)?
+            };
+            // The top's width at `s`, from the side in along the top to the
+            // wall's foot.
+            let width = |s: f64| -> Option<f64> {
+                let e = at + along * s;
+                let d = e - c;
+                let (b, k) = (-d.dot(n_side), d.dot(d) - big * big);
+                let disc = b * b - k;
+                (disc >= -tol.confusion()).then(|| {
+                    let root = disc.max(0.0).sqrt();
+                    let t = -b - root;
+                    if t >= -tol.confusion() {
+                        t.max(0.0)
+                    } else {
+                        -b + root
+                    }
+                })
+            };
+            let s_side = (lobe.side - at).dot(along);
+            let on_top = lobe.wall - n_top * (lobe.wall - at).dot(n_top);
+            let s_wall = (on_top - at).dot(along);
+            let (Some(w_side), Some(w_wall)) = (width(s_side), width(s_wall)) else {
+                break;
+            };
+            if s_side <= tol.confusion()
+                || s_wall <= tol.confusion()
+                || w_side <= tol.confusion()
+                || w_wall <= tol.confusion()
+            {
+                break;
+            }
+            let side_off = lobe.side - (at + along * s_side);
+            let wall_up = n_top * (lobe.wall - on_top).dot(n_top);
+            let lift = |s: f64, full: f64| -> f64 {
+                let u = (width(s).unwrap_or(0.0) / full).clamp(0.0, 1.0);
+                (1.0 - u).acos().sin()
+            };
+            let count = 128_u32;
+            let mut on_wall = Vec::with_capacity(count as usize + 1);
+            let mut on_side = Vec::with_capacity(count as usize + 1);
+            for k in 0..=count {
+                let f = f64::from(k) / f64::from(count);
+                // From the lobe to the vertex on the wall, from the vertex to
+                // the lobe on the side.
+                let sw = s_wall * (1.0 - f);
+                let foot = at + along * sw - n_side * width(sw).unwrap_or(0.0);
+                on_wall.push(foot + wall_up * lift(sw, w_wall));
+                let ss = s_side * f;
+                on_side.push(at + along * ss + side_off * lift(ss, w_side));
+            }
+            let n = on_wall.len() - 1;
+            on_wall[0] = lobe.wall;
+            on_wall[n] = at;
+            on_side[0] = at;
+            on_side[n] = lobe.side;
+            let fit = crate::marched::band_fit_target(tol);
+            let wall_foot = ogeom_geom::fit::fit_points(&on_wall, 3, 0.1 * fit, tol)?;
+            let side_foot = ogeom_geom::fit::fit_points(&on_side, 3, 0.1 * fit, tol)?;
+            feet.push((
+                Curve::BSpline(wall_foot.curve),
+                Curve::BSpline(side_foot.curve),
+            ));
+        }
+        if feet.len() != lobes.len() {
+            continue;
+        }
         found.push(Cusp {
             v: *v,
             faces: [top, side, wall],
             lobes,
-            foot,
+            feet,
         });
     }
     Ok(found)

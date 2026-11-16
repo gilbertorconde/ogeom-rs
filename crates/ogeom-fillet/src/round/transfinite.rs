@@ -948,10 +948,17 @@ pub(crate) fn corner_patch(
     sides: &[HoleSide],
     tol: Tolerances,
 ) -> OgeomResult<CornerPatch> {
-    if sides.len() != 4 && sides.iter().any(|s| !s.pieces.is_empty()) {
+    // Among three, the first side alone, away from the pole the second and
+    // third close on (a cusp's lobe, its two feet meeting at the cusp).
+    let pieced = |s: &HoleSide| !s.pieces.is_empty();
+    if sides.len() != 4
+        && !(sides.len() == 3 && !sides[1..].iter().any(pieced))
+        && sides.iter().any(pieced)
+    {
         ogeom_bail!(
             Construction,
-            "a vertex patch takes a side of several edges only among four"
+            "a vertex patch takes a side of several edges only among four, or \
+             first among three"
         );
     }
     // Sides running from one surface onto another second and fourth,
@@ -998,6 +1005,17 @@ pub(crate) fn corner_patch(
         && let Some(at) = split_at(sides)
     {
         return split_patch(model, sides, &exact, at, tol);
+    }
+    // Three sides, the first running from one surface onto another that
+    // bends the other way (a cusp's lobe: a convex round's end on into a
+    // concave one's): one face, fitted on each side of the line from that
+    // join to the pole and joined there, so the join falls on a knot line.
+    if fans == 0
+        && sides.len() == 3
+        && sides[0].bends()
+        && let [first, _] = sides[0].pieces.as_slice()
+    {
+        return knotted_patch(model, sides, &exact, first.along.1, tol);
     }
     if exact.ribbons.len() >= 5 {
         return sector_patch(model, sides, &exact, tol);
@@ -1827,6 +1845,134 @@ impl Data for Part<'_> {
     }
 }
 
+/// The exact patch over `lo..hi` of the square's `u`, taken onto a square
+/// of its own.
+struct AcrossU<'a> {
+    across: &'a Across<'a>,
+    lo: f64,
+    hi: f64,
+}
+
+impl AcrossU<'_> {
+    fn at(&self, w: f64) -> f64 {
+        (self.hi - self.lo).mul_add(w, self.lo)
+    }
+
+    /// The exact patch's derivative in `u` at `(u, v)`: the sides' own at
+    /// the square's left and right, by differences a millionth apart
+    /// between.
+    fn rate(&self, u: f64, v: f64) -> OgeomResult<Vector> {
+        if u <= 0.0 {
+            return self.across.du_left(v);
+        }
+        if u >= 1.0 {
+            return self.across.du_right(v);
+        }
+        let h = 1e-6;
+        let (a, b) = (self.across.point(u - h, v)?, self.across.point(u + h, v)?);
+        Ok((b - a) / (2.0 * h))
+    }
+}
+
+impl Data for AcrossU<'_> {
+    fn point(&self, w: f64, v: f64) -> OgeomResult<Point> {
+        self.across.point(self.at(w), v)
+    }
+
+    fn dv_bottom(&self, w: f64) -> OgeomResult<Vector> {
+        self.across.dv_bottom(self.at(w))
+    }
+
+    fn dv_top(&self, w: f64) -> OgeomResult<Vector> {
+        self.across.dv_top(self.at(w))
+    }
+
+    fn du_left(&self, v: f64) -> OgeomResult<Vector> {
+        Ok(self.rate(self.lo, v)? * (self.hi - self.lo))
+    }
+
+    fn du_right(&self, v: f64) -> OgeomResult<Vector> {
+        Ok(self.rate(self.hi, v)? * (self.hi - self.lo))
+    }
+}
+
+/// The patch of three sides fitted on each side of the line `u = at` (from
+/// its first side's join to the pole), the two joined there into one
+/// surface with a knot line: each part's derivative across the line is
+/// the exact patch's, so the two meet C1. One face, and what it achieved.
+fn knotted_patch(
+    model: &mut Model,
+    sides: &[HoleSide],
+    exact: &Transfinite,
+    at: f64,
+    tol: Tolerances,
+) -> OgeomResult<CornerPatch> {
+    let across = Across { exact, tol };
+    let mut parts = Vec::with_capacity(2);
+    for (lo, hi) in [(0.0, at), (at, 1.0)] {
+        parts.push(interpolated_on(
+            &AcrossU {
+                across: &across,
+                lo,
+                hi,
+            },
+            SPLIT_NET,
+            tol,
+        )?);
+    }
+    let [left, right] = [&parts[0], &parts[1]];
+    let (lu, ru) = (left.u_knots().knots(), right.u_knots().knots());
+    let mut knots: Vec<f64> = vec![0.0; 4];
+    knots.extend(lu[4..lu.len() - 4].iter().map(|k| k * at));
+    knots.extend([at; 3]);
+    knots.extend(
+        ru[4..ru.len() - 4]
+            .iter()
+            .map(|k| (1.0 - at).mul_add(*k, at)),
+    );
+    knots.extend([1.0; 4]);
+    let (lg, rg) = (left.grid(), right.grid());
+    let (nl, nr, nv) = (lg.u_count(), rg.u_count(), lg.v_count());
+    if rg.v_count() != nv {
+        ogeom_core::ogeom_bail!(Construction, "a knotted patch's parts differ across");
+    }
+    let mut control = Vec::with_capacity((nl + nr - 1) * nv);
+    for i in 0..nl {
+        for j in 0..nv {
+            control.push(lg.points()[i * nv + j].point());
+        }
+    }
+    for i in 1..nr {
+        for j in 0..nv {
+            control.push(rg.points()[i * nv + j].point());
+        }
+    }
+    let surface = BSplineSurface::new(
+        KnotVector::new(knots, 3)?,
+        left.v_knots().clone(),
+        &ControlGrid::new(control, nl + nr - 1, nv)?,
+        tol,
+    )?;
+    let (gap, angle) = measured(exact, &surface, SPLIT_NET, tol)?;
+    let mut off = 0.0f64;
+    #[expect(clippy::cast_precision_loss, reason = "a net of thirty-three")]
+    let step = 1.0 / (NET - 1) as f64;
+    for i in 0..NET - 1 {
+        for j in 0..NET - 1 {
+            #[expect(clippy::cast_precision_loss, reason = "a net of thirty-three")]
+            let (u, v) = ((i as f64 + 0.5) * step, (j as f64 + 0.5) * step);
+            off = off.max(surface.point_at(u, v, tol)?.distance(across.point(u, v)?));
+        }
+    }
+    let face = face_on(model, sides, surface, gap, tol)?;
+    Ok(CornerPatch {
+        faces: vec![face],
+        gap,
+        angle,
+        off,
+    })
+}
+
 /// The patch of four sides split at `at` across the square: a face on each
 /// part, below and above, each fitted on its own, so the join its second
 /// and fourth sides run through falls on the line between them; and what
@@ -2055,6 +2201,8 @@ fn face_on(
     };
     let widened = Tolerance::new(gap + tol.confusion())?;
     let mut walked = Vec::with_capacity(4);
+    // How many edges the walk holds after each side.
+    let mut after = Vec::with_capacity(sides.len());
     for (side, &(from, to)) in sides.iter().zip(corners) {
         let at = |x: f64| Point2::new(from.x + (to.x - from.x) * x, from.y + (to.y - from.y) * x);
         for (edge, (a, b), forward, (s0, s1)) in side.edges() {
@@ -2073,13 +2221,14 @@ fn face_on(
             }
             walked.push(if forward { edge } else { edge.reversed() });
         }
+        after.push(walked.len());
     }
     if sides.len() == 4 {
         let wire = ogeom_algo::make_wire(model, &walked, tol)?.shape;
         return Ok(ogeom_algo::make_face_on(model, id, std::slice::from_ref(&wire), tol)?.shape);
     }
     // The pole: the walk's third corner, where the second side ends.
-    let Some((_, pole)) = ogeom_algo::edge_vertices(model, &walked[1])? else {
+    let Some((_, pole)) = ogeom_algo::edge_vertices(model, &walked[after[1] - 1])? else {
         ogeom_bail!(Construction, "a vertex patch's side has no vertices");
     };
     let collapsed = {
@@ -2100,7 +2249,7 @@ fn face_on(
         Location::identity(),
         (0.0, 1.0),
     )?;
-    walked.insert(2, collapsed);
+    walked.insert(after[1], collapsed);
     let wire = ogeom_algo::make_wire(model, &walked, tol)?.shape;
     Ok(ogeom_algo::make_face_on(model, id, std::slice::from_ref(&wire), tol)?.shape)
 }
