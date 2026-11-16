@@ -1568,6 +1568,33 @@ and capping there left the corner standing.
   plane the crease meets there, cut to the crease's side of it; past the
   crease's middle the clip does not reach, so the band carried on past
   the other end stays that end's.
+  - **The same for a rim, and on a curved end face** (2026-11-16, by
+    survey). SMLib's corner of one rounded edge of three, mixed in
+    convexity, says "the end face will be extended out to the fillet
+    surface". Where the rounded edge shares its convexity with one
+    neighbour, that edge is extended to meet the rail too. Either way the
+    band ends flush on the end face's surface, carried on past the face.
+    The one face a crease or a rim's arc runs into at such an end is that
+    end face, whatever its surface: a plane, a cylinder, a cone or a torus
+    (`engine/flush.rs`), an earlier round's band among them. A rim's arc
+    also ends on a band it runs tangent to; a straight crease ends only on
+    a face standing across its way, and runs out past a band it merely
+    touches (a block's corner rounded one edge at a time). Near the end, the band loses what lies on the far side
+    of that surface from the crease. A lone straight crease with such an
+    end goes through the carried-out route, carried only a few radii past
+    that end. A rim goes through the run-on rims' route.
+  - **A rim's band takes nothing past its wall.** The rim's tool stands
+    off its faces' surfaces, so that no tool face lies on the solid's own.
+    Where the solid holds material just past the wall near an end of the
+    arc (a block leaning against the drum, at an inside corner), the tool
+    loses that material: its standoff takes nothing the solid holds beyond
+    the wall.
+  - **Figures that change.** The current path capped a rim's band in the
+    plane through the axis at such an end, so the keyhole's rounds lost
+    the whole corner over their arcs (`chain.rs`). Rounded one edge at a
+    time, the drafted drum on a leaning block takes a corner in each order
+    by that order's own rule. Separate rounds depend on their order, as in
+    every application.
 - **Not built.** Two bands carried on that would pinch the solid where they
   meet (a crease turning back on itself, its notch and the bands' overlap
   past the corner meeting on the corner's line) fail the solid's guard and

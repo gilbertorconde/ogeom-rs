@@ -31,8 +31,15 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 use super::curved::{Curved, read};
 use super::defeatured::Rounder;
 use super::fallback::{Sense, Tool};
+use super::flush::{EndSurface, cut_far, cut_material_far};
 use super::trimmed::{faces_of, outward};
 use super::{Id, id};
+
+/// A point a band ends at and the surface it ends flush on there.
+type EndCut = (Point, EndSurface);
+
+/// A rim to build, with its span and its end cuts on planes and past walls.
+type Planned = (Rim, (f64, f64), Vec<EndCut>, Vec<EndCut>);
 
 /// A rim asked: its edge, its circle's arc, the cap and the wall, and its
 /// radius.
@@ -75,7 +82,7 @@ pub(crate) fn rounds(
     let Some(curved) = read(model, solid, tol)? else {
         return Ok(None);
     };
-    let mut rims: Vec<(Rim, (f64, f64))> = Vec::new();
+    let mut rims: Vec<Planned> = Vec::new();
     let mut others: Vec<(Shape, f64)> = Vec::new();
     for (edge, radius) in asked {
         let Some(rim) = rim_of(model, solid, &curved, id(edge), edge, *radius, tol)? else {
@@ -88,14 +95,25 @@ pub(crate) fn rounds(
         let Some((span, longer)) = span(model, solid, &curved, &rim, tol)? else {
             return Ok(None);
         };
-        // A band that runs on nowhere ends at its vertices, in the plane
-        // through the axis, only where each is a corner convex in plan or
-        // the cap or wall carried on: at an inside corner a free end is
-        // amendment "M5e"'s, flush on the plane the crease meets there.
-        if !longer && !ends_closed(&curved, &rim, tol)? {
+        // Where it does not run on, the band ends at its vertex in the
+        // plane through the axis at a corner convex in plan or where the
+        // cap or wall runs on; at an inside corner it ends flush on the
+        // plane of the face it meets there, as amendment "M5e" ends a free
+        // end (SMLib's mixed 3x1 corner: "the end face will be extended out
+        // to the fillet surface").
+        let Some(planes) = end_cuts(&curved, &rim, tol)? else {
+            return Ok(None);
+        };
+        // Another asked crease leaving that inside corner is no end face:
+        // the two rounds meet there, each carried on past the other
+        // (amendment "M5e"), which this route does not build.
+        if !longer && meets_asked(&curved, edge, asked, &planes, tol) {
             return Ok(None);
         }
-        rims.push((rim, span));
+        let Some(clips) = wall_clips(model, solid, &curved, &rim, tol)? else {
+            return Ok(None);
+        };
+        rims.push((rim, span, planes, clips));
     }
     if rims.is_empty() {
         return Ok(None);
@@ -107,8 +125,17 @@ pub(crate) fn rounds(
         && let Some(wedges) = super::marched_seats::wedges(&mut scratch, solid, &others, tol)?
     {
         let mut tools = Vec::with_capacity(rims.len() + wedges.len());
-        for (rim, span) in &rims {
-            let Some(made) = rim_tool(&mut scratch, &curved, rim, *span, tol)? else {
+        for (rim, span, planes, clips) in &rims {
+            let Some(made) = rim_tool(
+                &mut scratch,
+                &curved,
+                rim,
+                *span,
+                (planes, clips),
+                solid,
+                tol,
+            )?
+            else {
                 return Ok(None);
             };
             tools.extend(made);
@@ -163,8 +190,17 @@ pub(crate) fn rounds(
         built
     };
     let mut tools = Vec::with_capacity(rims.len());
-    for (rim, span) in &rims {
-        let Some(made) = rim_tool(&mut scratch, &curved, rim, *span, tol)? else {
+    for (rim, span, planes, clips) in &rims {
+        let Some(made) = rim_tool(
+            &mut scratch,
+            &curved,
+            rim,
+            *span,
+            (planes, clips),
+            solid,
+            tol,
+        )?
+        else {
             return Ok(None);
         };
         tools.extend(made);
@@ -173,7 +209,7 @@ pub(crate) fn rounds(
         return Ok(None);
     };
     let mut history = base.history.then(&cut.history);
-    for (rim, _) in &rims {
+    for (rim, _, _, _) in &rims {
         if cut.history.generated(&rim.shape).is_empty() {
             return Ok(None);
         }
@@ -197,6 +233,28 @@ pub(crate) fn rounds(
     }
 }
 
+/// Whether another of the `asked` creases leaves `edge` at a vertex where
+/// its band ends flush, at one of `ends`.
+fn meets_asked(
+    curved: &Curved,
+    edge: &Shape,
+    asked: &[(Shape, f64)],
+    ends: &[EndCut],
+    tol: Tolerances,
+) -> bool {
+    asked.iter().any(|(other, _)| {
+        id(other) != id(edge)
+            && curved.edges.get(&id(other)).is_some_and(|g| {
+                [g.ends.0, g.ends.1].iter().any(|v| {
+                    curved.points.get(v).is_some_and(|p| {
+                        ends.iter()
+                            .any(|(at, _)| p.distance(*at) <= tol.confusion())
+                    })
+                })
+            })
+    })
+}
+
 /// The rim's band over `span` as tools, its band's faces named for the
 /// rim: over its own arc the section standing off the wall (no tool face
 /// on the solid's own wall), past each end the section bounded by the
@@ -208,6 +266,8 @@ fn rim_tool(
     curved: &Curved,
     rim: &Rim,
     span: (f64, f64),
+    (planes, clips): (&[EndCut], &[EndCut]),
+    solid: &Shape,
     tol: Tolerances,
 ) -> OgeomResult<Option<Vec<Tool>>> {
     let pieces = [
@@ -223,9 +283,31 @@ fn rim_tool(
         if t1 - t0 <= least.max(tol.angular()) {
             continue;
         }
-        let Some((made, band)) = tool(model, curved, rim, (t0, t1), standoff, tol)? else {
+        let Some((mut made, mut band)) = tool(model, curved, rim, (t0, t1), standoff, tol)? else {
             return Ok(None);
         };
+        // Cut flush on each inside corner's end plane, the crease's side
+        // kept, the band's faces traced through the cut.
+        for (at, end) in planes {
+            let reach = 3.0 * rim.radius;
+            let Some((kept, traced)) = cut_far(model, &made, &band, end, *at, reach, tol)? else {
+                return Ok(None);
+            };
+            made = kept;
+            band = traced;
+        }
+        // Where the solid holds material past the wall near an end, the
+        // band's standoff past the wall takes none of it.
+        for (at, wall) in clips {
+            let reach = 3.0 * rim.radius;
+            let Some((kept, traced)) =
+                cut_material_far(model, &made, &band, wall, *at, reach, solid, tol)?
+            else {
+                return Ok(None);
+            };
+            made = kept;
+            band = traced;
+        }
         out.push(Tool {
             solid: made,
             sense: Sense::Cut,
@@ -374,7 +456,12 @@ fn ends_apart(curved: &Curved, rim: &Rim, edge: Id, tol: Tolerances) -> bool {
             let Some(n) = outward(curved, f, at) else {
                 return false;
             };
-            if n.cross(nt).magnitude() <= tol.angular() || n.cross(nw).magnitude() <= tol.angular()
+            // A curved face tangent to the cap or wall there (an earlier
+            // round's band) is the end face the band ends flush on.
+            let curved_face = !matches!(face.surface, SurfaceGeometry::Plane(_));
+            if !curved_face
+                && (n.cross(nt).magnitude() <= tol.angular()
+                    || n.cross(nw).magnitude() <= tol.angular())
             {
                 return false;
             }
@@ -383,31 +470,124 @@ fn ends_apart(curved: &Curved, rim: &Rim, edge: Id, tol: Tolerances) -> bool {
     true
 }
 
-/// Whether each end of the rim's arc is a corner convex in plan (the arc
-/// carried on leaving through every face at its vertex but its own and
-/// those carrying them on) or the cap and wall carried on alone (a seam
-/// the rim's circle runs on through, unasked).
-fn ends_closed(curved: &Curved, rim: &Rim, tol: Tolerances) -> OgeomResult<bool> {
+/// The surfaces the rim's band ends flush on, one per end at an inside
+/// corner, each with its vertex: the surface of the one face at the vertex,
+/// past the cap and the wall and the faces carrying them on, that the arc
+/// carried on runs into or runs tangent to (the end face; an earlier
+/// round's band among them). An end where the arc carried on leaves
+/// through every such face (a corner convex in plan, or a seam the circle
+/// runs on through) has none. `None` where an end meets more than one such
+/// face, or one [`EndSurface`] does not read.
+fn end_cuts(curved: &Curved, rim: &Rim, tol: Tolerances) -> OgeomResult<Option<Vec<EndCut>>> {
+    let mut cuts = Vec::new();
     for (k, sign) in [(0, -1.0), (1, 1.0)] {
         let v = if k == 0 { rim.ends.0 } else { rim.ends.1 };
         let from = if k == 0 { rim.range.0 } else { rim.range.1 };
         let at = curved.points[&v];
-        let ahead = CircleCurve::new(rim.circle).d1_at(from, tol)? * sign;
-        let closed = curved.faces.iter().enumerate().all(|(f, face)| {
-            f == rim.top
+        let arc = CircleCurve::new(rim.circle);
+        let ahead = arc.d1_at(from, tol)? * sign;
+        let ahead = ahead / ahead.magnitude();
+        let mut blocking = Vec::new();
+        for (f, face) in curved.faces.iter().enumerate() {
+            if f == rim.top
                 || f == rim.wall
                 || !face.loops.iter().flatten().any(|(x, _)| {
                     let g = &curved.edges[x];
                     g.ends.0 == v || g.ends.1 == v
                 })
                 || continues(curved, rim, f, tol)
-                || outward(curved, f, at).is_some_and(|n| n.dot(ahead) > tol.angular())
-        });
-        if !closed {
-            return Ok(false);
+            {
+                continue;
+            }
+            let Some(n) = outward(curved, f, at) else {
+                return Ok(None);
+            };
+            // A curved face the arc carried on runs tangent to (an earlier
+            // round's band beside the cap) is an end face too: its band
+            // trims this one.
+            let tangent = !matches!(curved.faces[f].surface, SurfaceGeometry::Plane(_))
+                && n.dot(ahead).abs() <= 1e-6;
+            if n.dot(ahead) > tol.angular() && !tangent {
+                continue;
+            }
+            blocking.push((f, n));
+        }
+        // The crease's side: where the arc stands just back from its end.
+        let back = from - sign * 1e-3 * (rim.range.1 - rim.range.0);
+        let q = arc.point_at(back, tol)?;
+        match blocking.as_slice() {
+            [] => {}
+            [(f, n)] => {
+                let Some(end) = EndSurface::of(&curved.faces[*f].surface, at, *n, q) else {
+                    return Ok(None);
+                };
+                cuts.push((at, end));
+            }
+            _ => return Ok(None),
         }
     }
-    Ok(true)
+    Ok(Some(cuts))
+}
+
+/// The rim's wall surface, its outside the far side, at each end of its
+/// arc where the solid holds material just past the wall within the arc
+/// (a block fused against the drum, at an inside corner), with that end's
+/// vertex. `None` where the wall's surface is not one [`EndSurface`] reads.
+fn wall_clips(
+    model: &Model,
+    solid: &Shape,
+    curved: &Curved,
+    rim: &Rim,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<EndCut>>> {
+    let mut clips = Vec::new();
+    let arc = CircleCurve::new(rim.circle);
+    for (k, sign) in [(0, 1.0), (1, -1.0)] {
+        let from = if k == 0 { rim.range.0 } else { rim.range.1 };
+        let v = if k == 0 { rim.ends.0 } else { rim.ends.1 };
+        let at = curved.points[&v];
+        // Stations into the arc from the end, the nearest a few
+        // thousandths of the radius on, each the wall's contact carried a
+        // hundredth of the radius out past the wall: the material a block
+        // leaning against the drum holds there is a thin wedge at the end.
+        let mut held = false;
+        for step in [0.002, 0.01, 0.05, 0.25] {
+            let t = from + sign * step * rim.radius / rim.circle.radius();
+            if (t - rim.range.0) * (rim.range.1 - t) < 0.0 {
+                break;
+            }
+            let Some([_, _, _, on_wall]) = ball(curved, rim, t, tol)? else {
+                return Ok(None);
+            };
+            let Some(nw) = outward(curved, rim.wall, arc.point_at(t, tol)?) else {
+                return Ok(None);
+            };
+            let probe = on_wall + nw * (0.01 * rim.radius);
+            if ogeom_algo::classify_in_solid_exact(model, solid, probe, tol)?
+                == ogeom_algo::Containment::In
+            {
+                held = true;
+                break;
+            }
+        }
+        if !held {
+            continue;
+        }
+        let Some(nw) = outward(curved, rim.wall, at) else {
+            return Ok(None);
+        };
+        // The drum's side: a point just inside the wall at the end.
+        let Some(wall) = EndSurface::of(
+            &curved.faces[rim.wall].surface,
+            at,
+            nw,
+            at - nw * (0.1 * rim.radius),
+        ) else {
+            return Ok(None);
+        };
+        clips.push((at, wall));
+    }
+    Ok(Some(clips))
 }
 
 /// Whether face `f` carries on the rim's cap or wall: a plane the cap's
@@ -418,6 +598,17 @@ fn continues(curved: &Curved, rim: &Rim, f: usize, tol: Tolerances) -> bool {
             let (p, q) = (p.plane(), q.plane());
             p.normal().vector().cross(q.normal().vector()).magnitude() <= tol.angular()
                 && p.distance_to(q.origin()) <= tol.confusion()
+        }
+        (SurfaceGeometry::Cone(p), SurfaceGeometry::Cone(q)) => {
+            let (p, q) = (p.cone(), q.cone());
+            (p.half_angle() - q.half_angle()).abs() <= tol.angular()
+                && p.apex().distance(q.apex()) <= tol.confusion()
+                && p.axis()
+                    .direction
+                    .vector()
+                    .cross(q.axis().direction.vector())
+                    .magnitude()
+                    <= tol.angular()
         }
         (SurfaceGeometry::Cylinder(p), SurfaceGeometry::Cylinder(q)) => {
             let (p, q) = (p.cylinder(), q.cylinder());
