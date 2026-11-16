@@ -97,7 +97,7 @@ pub fn fillet_edge(
 /// it is checked before any band of it is built: its corners of both
 /// kinds and of mixed radii read, then each ball seated on both faces of
 /// its edge and no two bands overlapping across a face they share
-/// ([`request_fits`]), a concave band past its face's side kept for the
+/// ([`crate::engine::request_fits`]), a concave band past its face's side kept for the
 /// cut-off as there. One failing is refused here, by name, in the words
 /// the current path refuses it in, for it refuses there before it builds
 /// anything (ADR 0001, amendment "what M6 refuses by name"); one passing
@@ -133,14 +133,15 @@ fn refused_as_checked(
     // As the current path checks them, within its cut-offs: a concave band
     // running past its face's side there is cut off at that side after it
     // is built ([`cut_off_bands`]), not refused.
-    let (fits, _) =
-        crate::support::with_cut_offs(|| request_fits(model, solid, &edges, &radii, tol));
+    let (fits, _) = crate::support::with_cut_offs(|| {
+        crate::engine::request_fits(model, solid, &edges, &radii, tol)
+    });
     fits.map_err(|b| b.error)?;
     Ok(())
 }
 
 /// Which of the current path's first checks a request of one edge meets:
-/// [`request_fits`] (a request through [`fillet_edges`]), or the ball on
+/// [`crate::engine::request_fits`] (a request through [`fillet_edges`]), or the ball on
 /// its two faces alone ([`fillet_edge`]).
 #[derive(Clone, Copy)]
 enum Check {
@@ -169,9 +170,11 @@ fn refused_alone(
         return Ok(());
     }
     let (checked, _) = crate::support::with_cut_offs(|| match check {
-        Check::Request => request_fits(model, solid, std::slice::from_ref(edge), &[radius], tol)
-            .map(|_| ())
-            .map_err(|b| b.error),
+        Check::Request => {
+            crate::engine::request_fits(model, solid, std::slice::from_ref(edge), &[radius], tol)
+                .map(|_| ())
+                .map_err(|b| b.error)
+        }
         Check::Ball => {
             crate::support::ball_fits(model, solid, edge, radius, false, tol).map(|_| ())
         }
@@ -732,7 +735,7 @@ pub(crate) fn marched_wedges(
     let radii: Vec<f64> = once.iter().map(|(_, r)| *r).collect();
     // A ball that does not fit beside its edge (a strip it takes off whole)
     // or rests on a far edge is the current path's reading.
-    match request_fits(model, solid, &edges, &radii, tol) {
+    match crate::engine::request_fits(model, solid, &edges, &radii, tol) {
         Ok(rolled) if !rolled.iter().any(|r| *r) => {}
         Err(crate::support::Blamed {
             error: e @ OgeomError::Cancelled,
@@ -1948,130 +1951,6 @@ fn fillet_edges_meeting_with(
     fillet_edges_own(model, solid, edges, radii, None, rims, None, tol)
 }
 
-/// The checks a request's bands pass before any is built: each ball sits
-/// on both faces of its edge, and no band overlaps another across a face
-/// they share. Which edges, sharing nothing with the rest of the request,
-/// had their ball rest on the far edge of a narrow face beside them, to
-/// be rounded as alone, comes back.
-///
-/// # Errors
-///
-/// [`OgeomError::Construction`] where a ball does not sit on its faces or
-/// two bands overlap, naming the edges refused.
-pub(crate) fn request_fits(
-    model: &Model,
-    solid: &Shape,
-    edges: &[Shape],
-    radii: &[f64],
-    tol: Tolerances,
-) -> Result<Vec<bool>, crate::support::Blamed> {
-    use crate::support::Blamed;
-    let blame = |i: usize| {
-        move |error: OgeomError| Blamed {
-            edges: vec![i],
-            error,
-        }
-    };
-    // The ball touches each face a setback back from the edge; set back
-    // past a face's far side, the band would cut through the face, and set
-    // back into another edge's band, the two balls overlap.
-    let mut contacts = Vec::with_capacity(edges.len());
-    // An edge sharing no face and no vertex with another of the request
-    // stands alone: no corner or junction takes its ends, and its band
-    // is built as it is alone.
-    let mut touched: Vec<(Vec<ogeom_topo::TShapeId>, Vec<ogeom_topo::TShapeId>)> =
-        Vec::with_capacity(edges.len());
-    for edge in edges {
-        let faces = ogeom_topo::ancestors_of(model, solid, edge, ShapeType::Face)?
-            .iter()
-            .map(Shape::node)
-            .collect();
-        let ends = ogeom_algo::edge_vertices(model, edge)?
-            .map(|(a, b)| vec![a.node(), b.node()])
-            .unwrap_or_default();
-        touched.push((faces, ends));
-    }
-    let alone = |i: usize| {
-        let (faces, ends) = &touched[i];
-        touched.iter().enumerate().all(|(j, (f, e))| {
-            j == i || (!f.iter().any(|x| faces.contains(x)) && !e.iter().any(|x| ends.contains(x)))
-        })
-    };
-    // Edges sharing nothing with the rest of the request whose ball rests
-    // on the far edge of a narrow face beside them, rounded as alone.
-    let mut rolled = vec![false; edges.len()];
-    crate::support::keeping_face_meshes(|| -> Result<(), Blamed> {
-        // A band checked against no other is held to what one edge alone
-        // is.
-        for (i, edge) in edges.iter().enumerate() {
-            if let Some(run) =
-                crate::shelf::run(model, solid, edge, radii[i], tol).map_err(blame(i))?
-            {
-                contacts.push(run.contacts(tol).map_err(blame(i))?);
-                rolled[i] = true;
-                continue;
-            }
-            if let Some(run) =
-                crate::rolled_rim::rim_run(model, solid, edge, radii[i], tol).map_err(blame(i))?
-            {
-                contacts.push(run.contacts());
-                rolled[i] = true;
-                continue;
-            }
-            match crate::support::ball_fits(model, solid, edge, radii[i], !alone(i), tol) {
-                Ok(found) => contacts.push(found),
-                Err(refusal @ OgeomError::Construction(_)) if edges.len() > 1 && alone(i) => {
-                    if crate::rolled::rolled_run(model, solid, edge, radii[i], tol)
-                        .map_err(blame(i))?
-                        .is_none()
-                    {
-                        return Err(blame(i)(refusal));
-                    }
-                    rolled[i] = true;
-                    contacts.push(Vec::new());
-                }
-                Err(other) => return Err(blame(i)(other)),
-            }
-        }
-        // A band lies within its setback of its edge, its contacts its
-        // farthest points. A band standing alone whose ball runs off a face
-        // is cut off on the face across that face's side, which may be one
-        // another band stands on; where the two edges stand within their
-        // setbacks' sum, it is checked against the others as a neighbour's
-        // is.
-        let reach =
-            |found: &[crate::support::Contact]| found.iter().map(|c| c.setback).reduce(f64::max);
-        let mut boxes = Vec::with_capacity(edges.len());
-        for edge in edges {
-            boxes.push(ogeom_algo::shape_bounds(model, edge, tol)?);
-        }
-        let reaches: Vec<Option<f64>> = contacts.iter().map(|found| reach(found)).collect();
-        for (i, edge) in edges.iter().enumerate() {
-            // A carried run already supplied its contacts on every support,
-            // including the face across the narrow strip. Asking the ordinary
-            // two-face ball again would discard that transfer. The same
-            // bands_clear check below still compares all its contacts.
-            if rolled[i] {
-                continue;
-            }
-            let Some(own) = reaches[i].filter(|_| alone(i)) else {
-                continue;
-            };
-            let near = reaches.iter().enumerate().any(|(j, other)| {
-                j != i
-                    && other.is_some_and(|other| boxes[i].distance_to_box(&boxes[j]) < own + other)
-            });
-            if near {
-                contacts[i] = crate::support::ball_fits(model, solid, edge, radii[i], true, tol)
-                    .map_err(blame(i))?;
-            }
-        }
-        Ok(())
-    })?;
-    crate::support::bands_clear(model, edges, &contacts, tol)?;
-    Ok(rolled)
-}
-
 /// What a rounding with junctions may take and took: whether crossed
 /// junctions may be taken, whether any junction and any crossed one was,
 /// and the solid's face surfaces as they stood before it built a band.
@@ -2099,7 +1978,7 @@ fn fillet_edges_own(
     if edges.is_empty() {
         ogeom_bail!(Construction, "a chain of no edges rounds nothing");
     }
-    let rolled = match request_fits(model, solid, edges, radii, tol) {
+    let rolled = match crate::engine::request_fits(model, solid, edges, radii, tol) {
         Ok(rolled) => rolled,
         Err(crate::support::Blamed { error: refusal, .. }) if laws.is_some() => {
             return Err(refusal);
@@ -4575,7 +4454,8 @@ fn chain_law(
             edges.push(chain[k].clone());
             radii.push(own.largest());
         }
-        let rests = request_fits(model, solid, &edges, &radii, tol).map_err(|b| b.error)?;
+        let rests =
+            crate::engine::request_fits(model, solid, &edges, &radii, tol).map_err(|b| b.error)?;
         if rests.iter().any(|&r| r) {
             ogeom_bail!(
                 Construction,

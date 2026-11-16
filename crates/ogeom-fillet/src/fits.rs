@@ -505,7 +505,7 @@ pub fn largest_fillet_radius_all(
         }
         // The answer passes the request's own check, or it is not one.
         if let Err(refusal) =
-            crate::fillet::request_fits(model, solid, edges, &vec![largest; edges.len()], tol)
+            crate::engine::request_fits(model, solid, edges, &vec![largest; edges.len()], tol)
         {
             ogeom_bail!(
                 NotDone,

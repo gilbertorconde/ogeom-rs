@@ -35,6 +35,7 @@ mod curved;
 mod defeatured;
 mod fallback;
 mod far_edge;
+mod fits;
 mod guards;
 mod marched_seats;
 mod meeting;
@@ -57,6 +58,7 @@ pub(crate) use collected::{
 pub(crate) use defeatured::tools as defeatured_tools;
 pub(crate) use fallback::{Sense, Tool, applied as apply_tools, straight_non_local};
 pub(crate) use far_edge::rounds as far_edge_rounds;
+pub(crate) use fits::request_fits;
 pub(crate) use marched_seats::rounds as marched_rounds;
 pub(crate) use meeting::{
     Spec as MeetingSpec, carried_out as carried_out_rounds, rounds as meeting_rounds,
