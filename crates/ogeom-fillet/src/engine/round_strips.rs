@@ -1456,8 +1456,34 @@ pub(crate) fn far_faces(
     let Some(corners) = curved_corners(&curved, &contacts, tol)? else {
         return Ok(None);
     };
-    if rolls_over(&roll_overs(&curved, &contacts, &corners, tol)?) {
-        return Ok(None);
+    // A contact crossing a hole in its face (an edge on a loop of the face
+    // other than the one holding the rounded edge): the hole's faces are a
+    // far feature, taken off the copy the rounds are built on and put back
+    // after, so the round runs on across the hole and the hole cuts it, as
+    // a hole drilled after the round would. Any other roll-over is handed
+    // back.
+    for roll in roll_overs(&curved, &contacts, &corners, tol)? {
+        let face = &curved.faces[roll.face];
+        let Some(ring) = face
+            .loops
+            .iter()
+            .find(|l| l.iter().any(|(x, _)| *x == roll.over))
+        else {
+            return Ok(None);
+        };
+        if ring.iter().any(|(x, _)| *x == roll.edge) {
+            return Ok(None);
+        }
+        for (x, _) in ring {
+            let beyond: Vec<usize> = faces_of(&curved, *x)
+                .into_iter()
+                .filter(|f| *f != roll.face)
+                .collect();
+            if beyond.iter().any(|f| near.contains(f)) {
+                return Ok(None);
+            }
+            far.extend(beyond);
+        }
     }
     let fit = crate::marched::band_fit_target(tol);
     for clear in boxes.iter().flatten() {
