@@ -612,6 +612,14 @@ replaced #1003's refusal):
 - **A compound holding anything but solids** (a shell, a face, a nested
   compound, or nothing) is refused by name: a chamfer cuts solids. A
   compound of solids is chamfered solid by solid (#960).
+- **A rim's round as wide as its cap, or wider** (a drum's rim rounded at
+  its own radius or more: the ball would touch the cap at or past the axis)
+  is refused by name. SOLIDWORKS diagnoses a fillet whose radius is too
+  large for the face it rounds onto [help.solidworks.com, Fillets
+  diagnostics, "fillet radius too large"]; Onshape refuses a fillet larger
+  than the face it lies on, reporting "radius of fillet on face too large"
+  [forum.onshape.com]. No application documents a round that consumes its
+  cap past the axis.
 - **Rounds that no ball fits** (a ball set back past its face's far side
   along an edge that shares a face or a vertex with another of the
   request, two bands overlapping across a face they share, a plate rounded
