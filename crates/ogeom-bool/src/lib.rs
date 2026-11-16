@@ -5128,7 +5128,10 @@ fn middle_of<'a>(lines: impl IntoIterator<Item = &'a [Point2]>) -> Point2 {
 /// A patch whose seam was cut elsewhere (a band opened along the widest gap
 /// its mesh left, running diagonally round) covers a period starting at the
 /// seam, and a point just short of it belongs a period on. The fold is kept
-/// where it lands inside the trim, or where no shift does.
+/// where it lands inside the trim, or where no shift does. Inside is read
+/// along the leaning ray: a contact's middle runs level with the face's own
+/// edge, where the level ray grazes the edge's ends and counts them at
+/// random.
 fn fold_inside(
     p: Point2,
     surface: &SurfaceGeometry,
@@ -5143,7 +5146,7 @@ fn fold_inside(
     shifts_toward(surface, folded, middle_of(trim.iter().copied()), tol)
         .into_iter()
         .map(|(du, dv)| Point2::new(folded.x + du, folded.y + dv))
-        .find(|q| inside_many(trim, *q))
+        .find(|q| arrange::inside_many_slanted(trim, *q))
         .unwrap_or(folded)
 }
 
