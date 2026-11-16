@@ -203,3 +203,202 @@ fn vertex_entries_do_not_reach_legacy_constructors() {
         }
     }
 }
+
+fn volume(model: &Model, shape: &ogeom_topo::Shape) -> f64 {
+    ogeom_algo::volume_properties(model, shape, ogeom_mesh::Deflection::default(), T)
+        .unwrap()
+        .mass
+}
+
+fn vertex_at(model: &Model, shape: &ogeom_topo::Shape, at: Point) -> ogeom_topo::Shape {
+    explore_unique(model, shape, ShapeType::Vertex)
+        .unwrap()
+        .into_iter()
+        .find(|v| {
+            let p = model.node(v).unwrap().data().as_vertex().unwrap().point;
+            p.distance(at) < 1e-9
+        })
+        .unwrap()
+}
+
+/// Each corner of a box rounded alone generates its own sphere, centred a
+/// radius in from every face at that corner, and its three planar caps:
+/// the vertex's ancestry names its patch, not the whole solid. Composed
+/// with all twelve bands, each vertex still generates exactly one face of
+/// the result: composing histories keeps each corner's own patch.
+#[test]
+fn generated_corner_faces_belong_to_their_own_vertices() {
+    let mut model = Model::new();
+    let solid = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let vertices = explore_unique(&model, &solid, ShapeType::Vertex).unwrap();
+    for vertex in &vertices {
+        let single = ogeom_fillet::round_vertex(&mut model, &solid, vertex, 1.0, T).unwrap();
+        let point = model
+            .node(vertex)
+            .unwrap()
+            .data()
+            .as_vertex()
+            .unwrap()
+            .point;
+        let inward = |x: f64| if x < 5.0 { 1.0 } else { 9.0 };
+        let centre = Point::new(inward(point.x), inward(point.y), inward(point.z));
+        assert_eq!(single.history.generated(vertex).len(), 4);
+        let mut spheres = 0;
+        for patch in single.history.generated(vertex) {
+            assert_eq!(model.kind_of(patch).unwrap(), ShapeType::Face);
+            let surface = model.node(patch).unwrap().data().as_face().unwrap().surface;
+            match model.geometry().surface(surface) {
+                Some(SurfaceGeometry::Sphere(sphere)) => {
+                    spheres += 1;
+                    assert!(sphere.sphere().centre().distance(centre) < T.confusion());
+                    assert!((sphere.sphere().radius() - 1.0).abs() < T.confusion());
+                }
+                Some(SurfaceGeometry::Plane(_)) => {}
+                _ => panic!("a box corner has only its sphere and caps"),
+            }
+        }
+        assert_eq!(spheres, 1);
+    }
+    let edges = explore_unique(&model, &solid, ShapeType::Edge).unwrap();
+    let fillet = ogeom_fillet::fillet_edges(&mut model, &solid, &edges, 1.0, T).unwrap();
+    let faces = explore_unique(&model, &fillet.shape, ShapeType::Face).unwrap();
+    for vertex in &vertices {
+        let patches = fillet
+            .history
+            .generated(vertex)
+            .iter()
+            .filter(|image| faces.iter().any(|f| f.is_same(image)))
+            .count();
+        assert_eq!(patches, 1, "composed history lost a corner patch");
+    }
+}
+
+/// A box's eight corners rounded one after another, each corner's block
+/// and ball clear of the others, take off exactly eight corner blocks less
+/// their ball octants, `r^3 (1 - pi / 6)` each, at every radius up to balls
+/// a fifth of a millimetre apart.
+#[test]
+fn a_box_s_corners_rounded_in_turn_take_off_their_corner_blocks_exactly() {
+    for radius in [1.0_f64, 2.0, 4.9] {
+        let mut model = Model::new();
+        let solid = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let vertices = explore_unique(&model, &solid, ShapeType::Vertex).unwrap();
+        let mut rounded = solid.clone();
+        for vertex in &vertices {
+            rounded = ogeom_fillet::round_vertex(&mut model, &rounded, vertex, radius, T)
+                .unwrap()
+                .shape;
+        }
+        let diagnosis = ogeom_algo::check(&model, &rounded, T).unwrap();
+        assert!(diagnosis.is_valid(), "r {radius}: {:?}", diagnosis.problems);
+        let want = 1000.0 - 8.0 * radius.powi(3) * (1.0 - core::f64::consts::PI / 6.0);
+        let got = volume(&model, &rounded);
+        assert!(
+            (got - want).abs() <= want * 1e-9,
+            "r {radius}: {got} against {want}"
+        );
+    }
+}
+
+/// The rounded corners of every labelling agree to within a part in a
+/// billion of the solid.
+fn labellings_agree(rounded: &[f64]) {
+    for (index, v) in rounded.iter().enumerate() {
+        assert!(
+            (v - rounded[0]).abs() < 1e-9 * rounded[0],
+            "labelling {index} builds {v}, labelling 0 {}",
+            rounded[0]
+        );
+    }
+}
+
+/// An oblique corner of a sheared block, the block built from its three
+/// sides in every order: the same corner, labelled six ways, rounds to the
+/// same solid.
+#[test]
+fn an_oblique_corner_rounds_the_same_under_every_labelling() {
+    use ogeom_math::Vector;
+    let sides = [
+        Vector::new(20.0, 0.0, 0.0),
+        Vector::new(6.0, 20.0, 0.0),
+        Vector::new(3.6, 6.0, 20.0),
+    ];
+    let orders = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
+    let mut rounded = Vec::new();
+    for order in orders {
+        let mut model = Model::new();
+        let block =
+            ogeom_algo::make_parallelepiped(&mut model, Point::ORIGIN, order.map(|k| sides[k]), T)
+                .unwrap()
+                .shape;
+        let vertex = vertex_at(&model, &block, Point::ORIGIN);
+        let built = ogeom_fillet::round_vertex(&mut model, &block, &vertex, 2.0, T)
+            .unwrap_or_else(|e| panic!("order {order:?}: {e}"));
+        let diagnosis = ogeom_algo::check(&model, &built.shape, T).unwrap();
+        assert!(
+            diagnosis.is_valid(),
+            "order {order:?}: {:?}",
+            diagnosis.problems
+        );
+        rounded.push(volume(&model, &built.shape));
+    }
+    labellings_agree(&rounded);
+}
+
+/// A square pyramid's apex, its faces listed starting from each slope and in
+/// both orders, each ring starting at another corner: the same apex,
+/// labelled eight ways, rounds to the same solid.
+#[test]
+fn a_square_pyramid_apex_rounds_the_same_under_every_labelling() {
+    let apex = Point::new(0.0, 0.0, 15.0);
+    let points = [
+        Point::new(-10.0, -10.0, 0.0),
+        Point::new(10.0, -10.0, 0.0),
+        Point::new(10.0, 10.0, 0.0),
+        Point::new(-10.0, 10.0, 0.0),
+        apex,
+    ];
+    let mut rounded = Vec::new();
+    for start in 0..4 {
+        for backwards in [false, true] {
+            let mut rings: Vec<Vec<usize>> = (0..4)
+                .map(|step| {
+                    let k = (start + step) % 4;
+                    let ring = [k, (k + 1) % 4, 4];
+                    // Each ring starting at another of its corners.
+                    (0..3).map(|i| ring[(i + start) % 3]).collect()
+                })
+                .collect();
+            rings.push((0..4).map(|i| [0, 3, 2, 1][(i + start) % 4]).collect());
+            if backwards {
+                rings.reverse();
+            }
+            let mut model = Model::new();
+            let pyramid = ogeom_algo::make_polyhedron(&mut model, &points, &rings, T)
+                .unwrap()
+                .shape;
+            let vertex = vertex_at(&model, &pyramid, apex);
+            let built = ogeom_fillet::round_vertex(&mut model, &pyramid, &vertex, 2.0, T)
+                .unwrap_or_else(|e| panic!("start {start}, backwards {backwards}: {e}"));
+            let diagnosis = ogeom_algo::check(&model, &built.shape, T).unwrap();
+            assert!(
+                diagnosis.is_valid(),
+                "start {start}, backwards {backwards}: {:?}",
+                diagnosis.problems
+            );
+            rounded.push(volume(&model, &built.shape));
+        }
+    }
+    labellings_agree(&rounded);
+}
