@@ -6,7 +6,7 @@ use ogeom_geom::{
     CircleCurve, Curve, Curve3d as _, PlaneSurface, RevolutionSurface, Surface as _,
     SurfaceGeometry,
 };
-use ogeom_math::{Axis, Circle, Direction, Plane, Transform};
+use ogeom_math::{Axis, Circle, Direction, Frame, Plane, Transform};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
 use super::curved::{SheetEdge, SheetFace, build_faces};
@@ -65,6 +65,7 @@ pub(crate) fn asymmetric(
     let mut asked = asked.to_vec();
     asked.sort_by_key(|a| a.edge.node());
     let mut count = std::collections::BTreeMap::new();
+    let mut joints = Vec::new();
     for (i, a) in asked.iter().enumerate() {
         let Some((a0, a1)) = ogeom_algo::edge_vertices(model, &a.edge)? else {
             continue;
@@ -73,19 +74,21 @@ pub(crate) fn asymmetric(
         if !a0.is_same(&a1) {
             *count.entry(a1.node()).or_insert(0) += 1;
         }
-        for b in &asked[i + 1..] {
+        for (j, b) in asked.iter().enumerate().skip(i + 1) {
             let Some((b0, b1)) = ogeom_algo::edge_vertices(model, &b.edge)? else {
                 continue;
             };
             for v in [&a0, &a1] {
-                if (v.is_same(&b0) || v.is_same(&b1))
-                    && !crate::asym::continues(model, a, b, v, tol)?
-                {
+                if !v.is_same(&b0) && !v.is_same(&b1) {
+                    continue;
+                }
+                if !crate::asym::continues(model, a, b, v, tol)? {
                     ogeom_bail!(
                         Construction,
                         "two asymmetric rounds meet at a vertex other than as one tangent chain naming one face with the same distances and section, and the corner where they meet is not closed yet; see docs/CAPABILITIES.md, fillet.asymmetric-rounds"
                     );
                 }
+                joints.push((i, j));
             }
         }
     }
@@ -98,17 +101,27 @@ pub(crate) fn asymmetric(
     let mut scratch = model.clone();
     let tools: Vec<_> = asked
         .iter()
-        .map(|a| tool(&mut scratch, solid, a, true, tol))
+        .enumerate()
+        .map(|(i, a)| {
+            tool(
+                &mut scratch,
+                solid,
+                a,
+                joints.iter().any(|(x, y, ..)| *x == i || *y == i),
+                tol,
+            )
+        })
         .collect::<OgeomResult<_>>()?;
     let edges: Vec<_> = asked.iter().map(|a| a.edge.clone()).collect();
-    let Some(built) = super::fallback::applied(&mut scratch, solid, &edges, &tools, tol)? else {
+    let Some(built) = super::planar_tools::applied(&mut scratch, solid, &edges, &tools, tol)?
+    else {
         return Ok(None);
     };
     *model = scratch;
     Ok(Some(built))
 }
 
-fn tool(
+pub(super) fn tool(
     model: &mut Model,
     solid: &Shape,
     a: &Asymmetric,
@@ -305,14 +318,20 @@ fn revolved(model: &mut Model, edge: &Shape, rim: &RimConic, tol: Tolerances) ->
         rotate(b).apply(rim.points[2]),
     ];
     let contact = rim.contacts(seat);
+    // Anchor periodic charts at the arc's start, clear of the circle's seam.
     let circle = |radius, height| -> OgeomResult<(Curve, (f64, f64))> {
         Ok((
             Curve::Circle(CircleCurve::new(Circle::new(
-                seat.frame_at(seat.centre + seat.up * height, tol)?,
+                Frame::new(
+                    seat.centre + seat.up * height,
+                    Direction::new(seat.up, tol)?,
+                    Direction::new(rotate(a).apply_vector(seat.x_ref.vector()), tol)?,
+                    tol,
+                )?,
                 radius,
                 tol,
             )?)),
-            (a, b),
+            (0.0, b - a),
         ))
     };
     let mut edges = vec![SheetEdge {
@@ -344,10 +363,12 @@ fn revolved(model: &mut Model, edge: &Shape, rim: &RimConic, tol: Tolerances) ->
     ]);
     let band: SurfaceGeometry =
         RevolutionSurface::over(rim.meridian(seat, a, tol)?, axis, (0.0, b - a))?.into();
+    // Contact levels trim the wall, not its artificial chart boundary.
+    let reach = rim.size() + 1.0;
     let wall = seat.wall_surface(
+        (-reach, reach),
         (contact.wall_height.min(0.0), contact.wall_height.max(0.0)),
-        (contact.wall_height.min(0.0), contact.wall_height.max(0.0)),
-        seat.x_ref,
+        Direction::new(rotate(a).apply_vector(seat.x_ref.vector()), tol)?,
         tol,
     )?;
     let cap: SurfaceGeometry =
