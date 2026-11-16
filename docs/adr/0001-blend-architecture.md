@@ -946,6 +946,38 @@ not rewritten; the engine takes it as the strip builder for these seats.
   mainstream applications build. The bevel comes off whole only where the
   ball does not fit beside it (`consumed_marched.rs`).
 
+### Amendment: the marched seats' tools are the engine's own (#902)
+
+The amendment above took the marched seats' wedges from the current
+path's edge-by-edge dispatch, which built each wedge and applied it unless
+a caller was collecting. M6 deletes that dispatch, so the engine builds
+these tools itself. What is accepted, refused and built does not change;
+only who builds it does.
+
+- **Seats.** The engine reads each edge's seat: a straight crease between
+  planes or a ruled pair, a rim on a planar cap and its coaxial wall, or
+  the march's. The fit and overlap guards (`request_fits`) are the
+  engine's, and blame and the largest-fit searches ask them there.
+- **Strip builders.** The march's band (`marched.rs`, `pinched.rs`) and a
+  rim arc's exact torus band (`rim_arc.rs`) hand their wedge to a sink the
+  engine passes them; nothing is intercepted. Junctions are fitted and
+  joined by the engine (`engine/marched_junctions.rs`) with the junction
+  geometry (`junction.rs`).
+- **A strip or ring taken off whole** is built as its rule says: the plain
+  crease's round. The strip comes off a copy of the solid
+  (`remove_faces`, its two neighbours grown back to meet along the crease
+  the strip cut), the engine rounds that crease at the asked radius, and
+  the copy rounded is the result where every point of the strip lies on or
+  past it on the round's side (the strip wholly in what the round takes).
+  Elsewhere the round is not this one, and the one-edge refusal stands by
+  name. One construction serves a bevel beside a marched seat and a ring
+  beside a rim, and needs no seated booleans.
+- **Checked.** While the engine's marched seats run, reaching an old
+  edge constructor (one that builds and applies its own wedge, or reads a
+  strip off whole for the one-edge entries) is logged for the old-path
+  count and panics in a debug build, so every marched test fails if the
+  engine goes back to old code.
+
 ### Amendment: mixed rolling corners (#902)
 
 Chamfers rolling over their faces (amendment "M5b") that meet at one

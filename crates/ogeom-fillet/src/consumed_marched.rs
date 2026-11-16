@@ -52,6 +52,7 @@ pub(crate) fn consumed_marched(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
+    crate::engine::old_marched_constructor("consumed_marched");
     let beside = faces_at(model, solid, edge)?;
     let [one, two] = beside.as_slice() else {
         return Ok(None);
@@ -202,7 +203,8 @@ fn round_over(
     if other_edge_within(model, solid, strip, &guide, reach, &within, tol)? {
         return Ok(None);
     }
-    let mut built = crate::pair_marched::apply_to_solid(model, solid, seat, radius, true, tol)?;
+    let mut built =
+        crate::pair_marched::apply_to_solid(model, solid, seat, radius, true, None, tol)?;
     if !ogeom_algo::check(model, &built.shape, tol)?.is_valid() {
         return Ok(None);
     }

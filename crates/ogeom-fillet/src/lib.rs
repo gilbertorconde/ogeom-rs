@@ -32,6 +32,7 @@ pub mod march;
 mod marched;
 mod pair_marched;
 mod pinched;
+mod rim_arc;
 mod rolled;
 mod rolled_rim;
 #[allow(

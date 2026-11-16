@@ -493,13 +493,14 @@ fn fillet_edge_distances_own(
         } else {
             rim_fits(model, solid, edge, &rim, tol)?;
             let size = rim.size();
-            crate::fillet::revolved_arc_fillet(
+            crate::rim_arc::revolved_arc_fillet(
                 model,
                 solid,
                 edge,
                 &rim.circle,
                 size,
                 Some(&rim),
+                None,
                 None,
                 tol,
             )?

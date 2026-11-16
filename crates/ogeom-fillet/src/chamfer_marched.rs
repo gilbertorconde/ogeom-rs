@@ -451,6 +451,7 @@ pub(crate) fn marched_bevel_with(
         [(&first, sign_first), (&second, sign_second)],
         Ball::Ruled(&ruled, chord),
         convex,
+        None,
         tol,
     )
 }

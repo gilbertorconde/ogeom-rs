@@ -750,7 +750,7 @@ fn apply(
             Ok(built)
         }
         Corner::Marched(seat) => {
-            crate::pair_marched::apply_to_solid(model, solid, *seat, radius, behind, tol)
+            crate::pair_marched::apply_to_solid(model, solid, *seat, radius, behind, None, tol)
         }
     }
 }
