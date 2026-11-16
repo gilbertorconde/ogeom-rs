@@ -69,6 +69,8 @@ pub fn chamfer_edges_cornered(
     corner: ChamferCorner,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("chamfer_edges_cornered");
     if specs.is_empty() {
         ogeom_bail!(Construction, "a chain of no edges bevels nothing");
     }
@@ -83,7 +85,8 @@ pub fn chamfer_edges_cornered(
         if let Some(built) = crate::chamfer::engine_chamfer_mitred(model, solid, specs, tol)? {
             return Ok(built);
         }
-        crate::fillet::to_current_path("chamfer_edges_cornered");
+        #[cfg(feature = "old-path-log")]
+        let _old_path_entry = crate::fillet::to_current_path("chamfer_edges_cornered");
         return crate::chamfer::chamfer_edges_mitred(model, solid, specs, tol);
     }
     // A solid bounded by planes is chamfered by the blend engine in one
@@ -92,7 +95,8 @@ pub fn chamfer_edges_cornered(
         return Ok(built);
     }
     let cuts = facets(model, solid, specs, tol)?;
-    crate::fillet::to_current_path("chamfer_edges_cornered");
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = crate::fillet::to_current_path("chamfer_edges_cornered");
     let mut built = crate::chamfer::chamfer_edges_mitred(model, solid, specs, tol)?;
     for cut in cuts {
         let faces = match cut {
@@ -131,7 +135,8 @@ fn facets(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> OgeomResult<Vec<Cut>> {
-    crate::fillet::to_current_path("chamfer:facets");
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = crate::fillet::to_current_path("chamfer:facets");
     let conf = tol.confusion();
     let mut ends: Vec<[ogeom_topo::TShapeId; 2]> = Vec::with_capacity(specs.len());
     let mut points: Vec<(ogeom_topo::TShapeId, Point)> = Vec::new();

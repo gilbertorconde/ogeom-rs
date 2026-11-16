@@ -58,6 +58,8 @@ pub fn chamfer_edge(
     distance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("chamfer_edge");
     ogeom_algo::on_own_nodes(
         model,
         solid,
@@ -81,7 +83,8 @@ fn chamfer_edge_own(
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
     }
-    crate::fillet::to_current_path("chamfer_edge");
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = crate::fillet::to_current_path("chamfer_edge");
     wedge_for(model, solid, edge, &specs[0].1, tol)?.apply(model, solid, edge, tol)
 }
 
@@ -107,6 +110,8 @@ pub fn chamfer_edge_distances(
     on_other: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("chamfer_edge_distances");
     ogeom_algo::on_own_nodes(
         model,
         solid,
@@ -139,7 +144,8 @@ fn chamfer_edge_distances_own(
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
     }
-    crate::fillet::to_current_path("chamfer_edge_distances");
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = crate::fillet::to_current_path("chamfer_edge_distances");
     wedge_for(model, solid, edge, &specs[0].1, tol)?.apply(model, solid, edge, tol)
 }
 
@@ -166,6 +172,8 @@ pub fn chamfer_edge_angle(
     angle: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("chamfer_edge_angle");
     ogeom_algo::on_own_nodes(
         model,
         solid,
@@ -198,7 +206,8 @@ fn chamfer_edge_angle_own(
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
     }
-    crate::fillet::to_current_path("chamfer_edge_angle");
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = crate::fillet::to_current_path("chamfer_edge_angle");
     wedge_for(model, solid, edge, &specs[0].1, tol)?.apply(model, solid, edge, tol)
 }
 
@@ -294,6 +303,8 @@ pub fn chamfer_edges(
     distance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("chamfer_edges");
     let specs: Vec<(Shape, Chamfer)> = edges
         .iter()
         .map(|e| (e.clone(), Chamfer::Symmetric(distance)))
@@ -357,6 +368,8 @@ pub fn chamfer_edges_with(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("chamfer_edges_with");
     chamfer_edges_blamed(model, solid, specs, tol).map_err(|blamed| blamed.error)
 }
 
@@ -397,7 +410,8 @@ pub(crate) fn chamfer_edges_blamed(
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
     }
-    crate::fillet::to_current_path("chamfer_edges_with");
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = crate::fillet::to_current_path("chamfer_edges_with");
     chamfer_edges_mitred_blamed(model, solid, &specs, tol).map_err(|mut blamed| {
         for i in &mut blamed.edges {
             *i = index[*i];
@@ -1285,7 +1299,8 @@ fn chamfer_edges_mitred_blamed(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> Result<Built, Blamed> {
-    crate::fillet::to_current_path("chamfer:chamfer_edges_mitred_blamed");
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = crate::fillet::to_current_path("chamfer:chamfer_edges_mitred_blamed");
     let mut blame = Vec::new();
     ogeom_algo::on_own_nodes(
         model,
@@ -1569,6 +1584,8 @@ pub fn largest_chamfer_distance(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("largest_chamfer_distance");
     let conf = tol.confusion();
     if !up_to.is_finite() || up_to <= conf {
         ogeom_bail!(

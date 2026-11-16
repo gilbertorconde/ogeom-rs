@@ -52,6 +52,8 @@ pub fn fillet_edges_checked(
     radius: f64,
     tol: Tolerances,
 ) -> Result<Built, BlendRefusal> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("fillet_edges_checked");
     // What a failed request leaves in the model is beside the given
     // solid, whose nodes the request copies before it works on them.
     let error = match crate::fillet_edges(model, solid, edges, radius, tol) {
@@ -95,6 +97,8 @@ pub fn chamfer_edges_checked(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> Result<Built, BlendRefusal> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("chamfer_edges_checked");
     crate::chamfer::chamfer_edges_blamed(model, solid, specs, tol).map_err(|blamed| BlendRefusal {
         edges: blamed.edges,
         error: blamed.error,
@@ -127,6 +131,8 @@ pub fn fillet_edges_partial(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<(Built, Vec<BlendRefusal>)> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("fillet_edges_partial");
     let pick = |set: &[usize]| -> Vec<Shape> { set.iter().map(|&i| edges[i].clone()).collect() };
     partial(
         model,
@@ -170,6 +176,8 @@ pub fn chamfer_edges_partial(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> OgeomResult<(Built, Vec<BlendRefusal>)> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("chamfer_edges_partial");
     let edges: Vec<Shape> = specs.iter().map(|(edge, _)| edge.clone()).collect();
     partial(
         model,

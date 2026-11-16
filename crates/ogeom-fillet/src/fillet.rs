@@ -84,11 +84,15 @@ pub fn fillet_edge(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("fillet_edge");
     // One edge is a request of one: the engine first, as for many.
     if let Some(built) = rounds_by_engine(model, solid, &[(edge.clone(), radius)], tol)? {
         return Ok(built);
     }
     refused_alone(model, solid, edge, radius, Check::Ball, tol)?;
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = to_current_path("fillet_edge");
     fillet_edge_wedge(model, solid, edge, radius, tol)
 }
 
@@ -189,31 +193,8 @@ fn refused_alone(
     taken.map(|_| ())
 }
 
-/// Records old-path entry attempts with their asking test and executable
-/// in `OGEOM_OLD_PATH_LOG`, only with the `old-path-log` feature enabled.
-#[inline]
-pub(crate) fn to_current_path(entry: &str) {
-    #[cfg(feature = "old-path-log")]
-    {
-        use std::io::Write as _;
-        if let Some(path) = std::env::var_os("OGEOM_OLD_PATH_LOG") {
-            let mut file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .unwrap_or_else(|error| panic!("cannot open old-path log: {error}"));
-            let test = std::thread::current().name().unwrap_or("?").to_owned();
-            let executable = std::env::current_exe()
-                .unwrap_or_else(|error| panic!("cannot identify old-path caller: {error}"));
-            // One append keeps concurrent test names on separate lines.
-            let line = format!("{entry}\t{test}\t{}\n", executable.display());
-            file.write_all(line.as_bytes())
-                .unwrap_or_else(|error| panic!("cannot write old-path log: {error}"));
-        }
-    }
-    #[cfg(not(feature = "old-path-log"))]
-    let _ = entry;
-}
+#[cfg(feature = "old-path-log")]
+pub(crate) use crate::old_path::entry as to_current_path;
 
 /// [`fillet_edge`] on the current path alone: the band and its wedge, as
 /// built before the blend engine took the edge.
@@ -228,7 +209,8 @@ pub(crate) fn fillet_edge_wedge(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    to_current_path("round:fillet_edge_wedge");
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = to_current_path("round:fillet_edge_wedge");
     ogeom_algo::on_own_nodes(
         model,
         solid,
@@ -311,7 +293,8 @@ fn fillet_edge_own(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    to_current_path("fillet_edge");
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = to_current_path("fillet_edge");
     if !radius.is_finite() || radius <= tol.confusion() {
         ogeom_bail!(Construction, "a fillet of radius {radius} rounds nothing");
     }
@@ -744,13 +727,16 @@ pub fn fillet_edges(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("fillet_edges");
     let asked: Vec<(Shape, f64)> = edges.iter().map(|e| (e.clone(), radius)).collect();
     if let Some(built) = rounds_by_engine(model, solid, &asked, tol)? {
         return Ok(built);
     }
     let radii = vec![radius; edges.len()];
     refused_as_checked(model, solid, edges, &radii, tol)?;
-    to_current_path("fillet_edges");
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = to_current_path("fillet_edges");
     ogeom_algo::on_own_nodes(model, solid, edges, |model, solid, parts| {
         cut_off_bands(
             model,
@@ -792,6 +778,8 @@ pub fn fillet_edges_with(
     edges: &[(Shape, f64)],
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("fillet_edges_with");
     let shapes: Vec<Shape> = edges.iter().map(|(edge, _)| edge.clone()).collect();
     let radii: Vec<f64> = edges.iter().map(|&(_, radius)| radius).collect();
     for (i, (edge, radius)) in edges.iter().enumerate() {
@@ -812,7 +800,8 @@ pub fn fillet_edges_with(
         return Ok(built);
     }
     refused_as_checked(model, solid, &shapes, &radii, tol)?;
-    to_current_path("fillet_edges_with");
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = to_current_path("fillet_edges_with");
     ogeom_algo::on_own_nodes(model, solid, &shapes, |model, solid, parts| {
         cut_off_bands(
             model,
@@ -1361,7 +1350,8 @@ fn fillet_edges_meeting(
     radii: &[f64],
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    to_current_path("round:fillet_edges_meeting");
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = to_current_path("round:fillet_edges_meeting");
     // Where a convex and a concave band meet at a vertex, the bands are
     // built in one order whatever the request's, and the corner closed
     // after.
@@ -2066,7 +2056,8 @@ pub(crate) fn apply_set_aside(
     set_aside: Vec<(Shape, crate::support::Wedge)>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    to_current_path("marched-backedge:apply_set_aside");
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = to_current_path("marched-backedge:apply_set_aside");
     if set_aside.is_empty() {
         return Ok(built);
     }
@@ -2226,6 +2217,8 @@ pub fn fillet_edge_variable(
     end_radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("fillet_edge_variable");
     ogeom_algo::on_own_nodes(
         model,
         solid,
@@ -2350,6 +2343,8 @@ pub fn fillet_edges_variable(
     law: &RadiusLaw,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("fillet_edges_variable");
     if chain.is_empty() {
         ogeom_bail!(
             Construction,

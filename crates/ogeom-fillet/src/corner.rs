@@ -24,7 +24,8 @@ pub(crate) fn round_vertex_with(
     forced: Option<usize>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    crate::fillet::to_current_path("vertex:round_vertex_with");
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = crate::fillet::to_current_path("vertex:round_vertex_with");
     let mut built = match corner_at(model, solid, vertex, radius, tol)? {
         Corner::Curved(corner) => {
             crate::corner_curved::curved_corner(model, solid, vertex, corner, radius, tol)
@@ -211,7 +212,8 @@ pub(crate) fn round_vertices_together(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
-    crate::fillet::to_current_path("vertex:round_vertices_together");
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = crate::fillet::to_current_path("vertex:round_vertices_together");
     let mark = model.note_widened();
     match vertices_together(model, solid, vertices, radius, tol) {
         Ok(Some(built)) => {

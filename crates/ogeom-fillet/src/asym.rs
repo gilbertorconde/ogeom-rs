@@ -371,6 +371,8 @@ pub fn fillet_edge_distances(
     profile: RoundProfile,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("fillet_edge_distances");
     for d in [on_face, on_other] {
         if !d.is_finite() || d <= tol.confusion() {
             ogeom_bail!(
@@ -441,6 +443,8 @@ pub fn fillet_edge_distances(
     {
         return Ok(built);
     }
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = crate::fillet::to_current_path("fillet_edge_distances");
     ogeom_algo::on_own_nodes(
         model,
         solid,
@@ -465,7 +469,8 @@ fn fillet_edge_distances_own(
     profile: RoundProfile,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    crate::fillet::to_current_path("round:fillet_edge_distances_own");
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = crate::fillet::to_current_path("round:fillet_edge_distances_own");
     if let Some(rim) = rim_conic(model, solid, edge, face, on_face, on_other, profile, tol)? {
         let mut built = if rim.whole {
             rim_round(model, solid, edge, &rim, tol)?
@@ -692,7 +697,8 @@ pub(crate) fn after_symmetric(
     symmetric: impl FnOnce(&mut Model) -> OgeomResult<Built>,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    crate::fillet::to_current_path("blend_edges");
+    #[cfg(feature = "old-path-log")]
+    let _old_path_entry = crate::fillet::to_current_path("blend_edges");
     asymmetric.sort_by_key(|a| a.edge.node());
     let ends = |model: &Model, edge: &Shape| -> OgeomResult<Vec<Shape>> {
         Ok(match ogeom_algo::edge_vertices(model, edge)? {
@@ -1648,6 +1654,8 @@ pub fn largest_fillet_distances(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
+    #[cfg(feature = "old-path-log")]
+    let _old_path_request = crate::old_path::public_request("largest_fillet_distances");
     let conf = tol.confusion();
     if !up_to.is_finite() || up_to <= conf {
         ogeom_bail!(
