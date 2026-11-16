@@ -3748,8 +3748,9 @@ fn an_open_seat_runs_out_through_the_wall() {
 /// two bands against each other. Each wedge removes (1 − π/4) r² per unit
 /// length. The corner cell where both wedges reach is counted once, and
 /// what both remove there is the cell outside both cylinders,
-/// r³ (5/3 − π/2). One edge at a time stops flush instead, and keeps a
-/// cap at the corner, the state the corner tool is built for.
+/// r³ (5/3 − π/2). One edge at a time comes to the same solid: the later
+/// band runs on into the earlier, which trims it (ADR 0001, amendment "a
+/// later round reaching an earlier band at its end").
 #[test]
 fn two_blends_meeting_at_a_corner_trim_each_other() {
     let (l, r) = (20.0_f64, 2.0_f64);
@@ -3790,27 +3791,28 @@ fn two_blends_meeting_at_a_corner_trim_each_other() {
         previous = error;
     }
 
-    // One edge at a time: the second stops flush at the first band, and
-    // the corner cell keeps the material the meeting would have rounded.
+    // One edge at a time: the second runs on into the first band, which
+    // trims it, so the corner is the same as both edges in one call.
     let first = ogeom::fillet::fillet_edge(&mut model, &block, &a, r, T).unwrap();
     let b_again = edge_near(&model, &first.shape, Point::new(20.0, 10.0, 10.0));
-    let flush = ogeom::fillet::fillet_edge(&mut model, &first.shape, &b_again, r, T)
+    let later = ogeom::fillet::fillet_edge(&mut model, &first.shape, &b_again, r, T)
         .unwrap()
         .shape;
+    assert!(ogeom::algo::check(&model, &later, T).unwrap().is_valid());
     assert_eq!(
-        explore_unique(&model, &flush, ShapeType::Face)
+        explore_unique(&model, &later, ShapeType::Face)
             .unwrap()
             .len(),
-        9,
-        "flush: the second wedge's cap stands at the first band"
+        8,
+        "one at a time: six walls and two bands, no cap between them"
     );
-    let fine = ogeom::mesh::Deflection::with_chord(1e-3).unwrap();
-    let flush_volume = ogeom::algo::volume_properties(&model, &flush, fine, T)
+    let fine = ogeom::mesh::Deflection::with_chord(1e-4).unwrap();
+    let later_volume = ogeom::algo::volume_properties(&model, &later, fine, T)
         .unwrap()
         .mass;
     assert!(
-        flush_volume > want + 0.5,
-        "the flush corner keeps material the meeting removes"
+        (later_volume - want).abs() / want < 2e-4,
+        "one at a time against the closed form: {later_volume} vs {want}"
     );
 }
 

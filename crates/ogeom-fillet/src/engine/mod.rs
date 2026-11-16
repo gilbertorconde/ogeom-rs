@@ -78,8 +78,8 @@ pub(crate) use marched_junctions::{
 };
 pub(crate) use marched_seats::{old_marched_constructor, rounds as marched_rounds};
 pub(crate) use meeting::{
-    Spec as MeetingSpec, carried_out as carried_out_rounds, rounds as meeting_rounds,
-    rounds_with as meeting_rounds_with,
+    Spec as MeetingSpec, carried_out as carried_out_rounds, reaches_earlier_band,
+    rounds as meeting_rounds, rounds_with as meeting_rounds_with,
 };
 pub(crate) use planar_tools::{linear_round, varying_distances};
 pub(crate) use request::{Request, Section};

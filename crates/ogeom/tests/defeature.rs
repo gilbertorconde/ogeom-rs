@@ -358,13 +358,13 @@ fn two_meeting_fillets_remove_in_one_call() {
     assert!((volume(&model, &restored) - 4000.0).abs() < 1e-6);
 }
 
-/// The same corner blended one edge at a time: the second wedge's cap
-/// stands flush against the first band, and the feature is the two bands
-/// *and* that cap. The cap borders one wall and two removed faces. It
-/// joins its band's crease, whose end is then where the crease pierces the
-/// other band's side wall: the shared corner.
+/// The same corner blended one edge at a time: the second band runs on
+/// into the first, which trims it (ADR 0001, amendment "a later round
+/// reaching an earlier band at its end"), so the two bands meet as they
+/// do in one call, with no cap between them, and the feature is the two
+/// bands.
 #[test]
-fn two_flush_fillets_and_their_cap_remove_in_one_call() {
+fn two_fillets_one_at_a_time_remove_in_one_call() {
     let mut model = Model::new();
     let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
         .unwrap()
@@ -374,11 +374,11 @@ fn two_flush_fillets_and_their_cap_remove_in_one_call() {
         .unwrap()
         .shape;
     let b = edge_near(&model, &first, Point::new(20.0, 10.0, 10.0));
-    let flush = ogeom::fillet::fillet_edge(&mut model, &first, &b, 2.0, T)
+    let later = ogeom::fillet::fillet_edge(&mut model, &first, &b, 2.0, T)
         .unwrap()
         .shape;
-    let faces = explore_unique(&model, &flush, ShapeType::Face).unwrap();
-    assert_eq!(faces.len(), 9, "six walls, two bands, one cap");
+    let faces = explore_unique(&model, &later, ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 8, "six walls and two bands, no cap");
     let feature: Vec<Shape> = faces
         .into_iter()
         .filter(|f| {
@@ -386,11 +386,11 @@ fn two_flush_fillets_and_their_cap_remove_in_one_call() {
             matches!(
                 model.geometry().surface(data.surface),
                 Some(SurfaceGeometry::Cylinder(_))
-            ) || explore_unique(&model, f, ShapeType::Edge).unwrap().len() == 3
+            )
         })
         .collect();
-    assert_eq!(feature.len(), 3);
-    let restored = ogeom::boolean::remove_faces(&mut model, &flush, &feature, T)
+    assert_eq!(feature.len(), 2);
+    let restored = ogeom::boolean::remove_faces(&mut model, &later, &feature, T)
         .unwrap()
         .shape;
     assert!(ogeom::algo::check(&model, &restored, T).unwrap().is_valid());
