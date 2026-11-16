@@ -1009,6 +1009,7 @@ fn round_tool(
         mitre: false,
         splits: Vec::new(),
         corners: Vec::new(),
+        rolling: false,
     };
     let Ok(Some(rounded)) = super::run(model, &wedge, &request, tol) else {
         return Ok(None);

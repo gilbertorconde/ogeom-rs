@@ -22,6 +22,11 @@ pub(crate) struct Request {
     /// with the distance along each of its edges at which that edge's strip
     /// stops: only where asked, never by default.
     pub corners: Vec<(Shape, crate::Setbacks)>,
+    /// Whether rounds meeting at a vertex close by the ball rolling through
+    /// it ([`FilletCorner::Rolling`](crate::FilletCorner::Rolling)): no
+    /// patch, every corner face the ball's own sweep, refused by name where
+    /// that is not one.
+    pub rolling: bool,
 }
 
 /// One edge of the solid read as the pieces another reading of the part
@@ -133,6 +138,7 @@ impl Request {
             mitre: false,
             splits: Vec::new(),
             corners: Vec::new(),
+            rolling: false,
         }))
     }
 
@@ -171,6 +177,7 @@ impl Request {
             mitre: false,
             splits: Vec::new(),
             corners: Vec::new(),
+            rolling: false,
         }))
     }
 
@@ -226,6 +233,7 @@ impl Request {
             mitre: false,
             splits: Vec::new(),
             corners: Vec::new(),
+            rolling: false,
         }))
     }
 
@@ -254,6 +262,7 @@ impl Request {
             mitre: false,
             splits: Vec::new(),
             corners: Vec::new(),
+            rolling: false,
         })
     }
 }

@@ -433,6 +433,7 @@ pub(crate) fn sharp(
         &corners,
         &steps,
         &[corner],
+        false,
         tol,
     )?
     .ok_or_else(|| {
