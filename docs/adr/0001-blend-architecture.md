@@ -1290,6 +1290,55 @@ request to the current path.
   a round reaches a void. These corners are built (§13 question 7: no
   class of mixed convexity is refused), and the void comes through
   whole.
+### Amendment: a later round reaching an earlier band at its end (#902)
+
+Rounds asked one call after another are separate operations, each built
+on what the one before it left (amendment "M5e", one request is one
+operation). A later round's edge can end where an earlier round's band now
+stands: the band ran on past the vertex, or ends flush in the later edge's
+face. Where the band crosses the later edge's faces at an angle, the
+engine already carries the later band out past that end until its section
+has left the solid (amendment "M5f", "a crease carried out at both
+ends"). Where the band is **tangent** to one of the later edge's faces
+(it rounds the crease that face shares with the earlier edge), #1069 left
+the end to the current path. That path stops the later band flush at its
+own end section and keeps the corner's vertex for the corner tool
+(`round_vertex`), so one edge at a time followed by the corner tool comes
+out as the corner rounded in one call.
+
+- **Survey.**
+  - SOLIDWORKS' default corner solve extends the fillet faces to their
+    intersection at the corner
+    (https://blogs.solidworks.com/tech/2021/01/solidworks-advanced-part-modeling-partial-fillet-option-through-partial-edge.html).
+    Stopping a fillet short of a face is an explicit option (Partial
+    Edge, with a distance or reference offset end), not the default.
+  - Onshape's default lets a fillet change the edges it meets to stay
+    smooth (Allow edge overflow); keeping them is an option
+    (https://cad.onshape.com/help/Content/PartStudio/fillet.htm).
+  - SMLib's 3x1 corner trims the end face back to the fillet surface
+    (amendment "corners where a round's rail misses").
+  - No source found stops a round at its own end section so that a later
+    corner tool can close the vertex.
+- **The rule.** A later round reaching an earlier band at its end runs on
+  past that end, as at an oblique end face, and the earlier band's surface
+  trims it. The material it takes is its spandrel carried on, in the solid
+  as it stands. Two convex rounds of one radius meeting so close in the
+  mitre the two cylinders cut, the solid one call with both edges builds
+  (§4.3). The bands are tangent to the face they share where their
+  contacts cross, and the booleans meet that point tangentially; the
+  intersector's tangent-contact fixes (#1054, #1080) make it build. Where
+  a boolean still refuses, the request is handed back, not refused.
+- **Domain.** Built where the earlier band is a cylinder seated on planes
+  (every face it is tangent to is a plane). A band seated on a curved face
+  (a drum's ruling rounded first on a cube the drum shaves) stays with the
+  current path for now. Run on there, the rim's arc rounded after it no
+  longer seats a ball at its start on the current path.
+- **The corner tool afterwards.** `round_vertex` still closes such a
+  corner. The current path's own corner tool already carries a band that
+  ran out past the vertex back to the corner, so "one at a time, then the
+  corner tool, is the corner in one call" still holds on every sheared
+  block and placement in `crates/ogeom/tests/blends.rs`. Its port (the
+  vertex agent, #902 tracker) inherits that contract unchanged.
 
 ### Amendment: M5d, a round resting on a far edge (#902)
 
