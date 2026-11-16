@@ -1814,7 +1814,30 @@ fn axis_relation(
         ogeom_intersect::CurveCurveOptions::default(),
         tol,
     )?;
-    if !hits.overlaps.is_empty() {
+    // A stretch within tolerance of the axis that runs into an end of the
+    // edge and is no longer than a curve of the edge's own length grazes a
+    // tangent line within tolerance is the edge meeting the axis tangent at
+    // that end (a ball's arc touching the axis it is turned about): a pole,
+    // as a contact at an end is.
+    let length = start
+        .distance(end)
+        .max(points.windows(2).map(|w| w[0].distance(w[1])).sum::<f64>());
+    let graze = (2.0 * tol.confusion() * length).sqrt();
+    let at_end = |o: &ogeom_intersect::Overlap| -> OgeomResult<bool> {
+        let (a, b) = (
+            trimmed.point_at(o.on_a.0, tol)?,
+            trimmed.point_at(o.on_a.1, tol)?,
+        );
+        let touches = [start, end]
+            .iter()
+            .any(|e| e.distance(a) <= tol.confusion() || e.distance(b) <= tol.confusion());
+        Ok(touches && a.distance(b) <= graze)
+    };
+    let mut lying = false;
+    for o in &hits.overlaps {
+        lying |= !at_end(o)?;
+    }
+    if lying {
         // Lying along the axis in part but not whole: the part that veers off
         // still meets the axis away from the ends. Whole-edge overlap was the
         // all-samples case above.
@@ -1842,10 +1865,13 @@ fn axis_relation(
         ogeom_intersect::ExtremaOptions::default(),
         tol,
     )?;
+    // The nearest approach to an axis an end meets tangentially lands
+    // within that graze's length of the end, not on it.
+    let grazed_end = |p: ogeom_math::Point| p.distance(start) <= graze || p.distance(end) <= graze;
     if near
         .approaches
         .iter()
-        .any(|a| a.distance <= tol.confusion() && interior(a.point_a))
+        .any(|a| a.distance <= tol.confusion() && interior(a.point_a) && !grazed_end(a.point_a))
     {
         ogeom_bail!(
             Construction,
@@ -3439,6 +3465,102 @@ mod tests {
             err.to_string().contains("touches the axis"),
             "unexpected message: {err}"
         );
+    }
+
+    #[test]
+    fn a_profile_meeting_the_axis_tangentially_at_an_end_revolves_to_a_point() {
+        // A quarter disc whose arc leaves the axis along it, as a ball's arc
+        // does where the ball touches the edge it is rolled round: the arc
+        // meets the axis at its end only, so the turn closes there to a point,
+        // and the solid is what Pappus gives, the quarter disc's area times
+        // the way its centroid travels.
+        let mut model = Model::new();
+        let frame = |at: Point| {
+            Frame::new(at, -ogeom_math::Direction::Y, ogeom_math::Direction::X, T).unwrap()
+        };
+        let surface = model.geometry_mut().add_surface(
+            ogeom_geom::PlaneSurface::new(ogeom_math::Plane::new(frame(Point::ORIGIN))).into(),
+        );
+        let flat = |p: Point| Point2::new(p.x, p.z);
+        let corners = [
+            Point::new(1.0, 0.0, 1.0),
+            Point::ORIGIN,
+            Point::new(1.0, 0.0, 0.0),
+        ];
+        let vertices: Vec<Shape> = corners
+            .iter()
+            .map(|p| model.add_vertex(ogeom_topo::VertexData::new(*p)))
+            .collect();
+        let quarter = (std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
+        let circle = ogeom_math::Circle::new(frame(corners[2]), 1.0, T).unwrap();
+        let arc = crate::build::make_edge_between(
+            &mut model,
+            ogeom_geom::CircleCurve::new(circle).into(),
+            quarter,
+            &vertices[0],
+            &vertices[1],
+            T,
+        )
+        .unwrap()
+        .shape;
+        crate::attach_pcurve(
+            &mut model,
+            &arc,
+            ogeom_geom::Circle2d::new(
+                ogeom_math::Circle2::new(
+                    ogeom_math::Frame2::new(flat(corners[2]), ogeom_math::Direction2::X),
+                    1.0,
+                    T,
+                )
+                .unwrap(),
+            )
+            .into(),
+            surface,
+            ogeom_topo::Location::identity(),
+            quarter,
+        )
+        .unwrap();
+        let mut edges = vec![arc];
+        for i in 1..3 {
+            let (a, b) = (corners[i], corners[(i + 1) % 3]);
+            let edge = crate::build::make_edge_between(
+                &mut model,
+                ogeom_geom::LineCurve::segment(a, b, T).unwrap().into(),
+                (0.0, a.distance(b)),
+                &vertices[i],
+                &vertices[(i + 1) % 3],
+                T,
+            )
+            .unwrap()
+            .shape;
+            crate::attach_pcurve(
+                &mut model,
+                &edge,
+                Line2d::segment(flat(a), flat(b), T).unwrap().into(),
+                surface,
+                ogeom_topo::Location::identity(),
+                (0.0, a.distance(b)),
+            )
+            .unwrap();
+            edges.push(edge);
+        }
+        let wire = crate::build::make_wire(&mut model, &edges, T)
+            .unwrap()
+            .shape;
+        let profile = crate::build::make_face_on(&mut model, surface, &[wire], T)
+            .unwrap()
+            .shape;
+
+        let turn = std::f64::consts::FRAC_PI_2;
+        let built = make_revolution(&mut model, &profile, Axis::Z, turn, T).unwrap();
+        let shell = explore_unique(&model, &built.shape, ShapeType::Shell).unwrap()[0].clone();
+        assert!(is_shell_closed(&model, &shell).unwrap());
+        let pi = std::f64::consts::PI;
+        let exact = turn * (1.0 - 4.0 / (3.0 * pi)) * pi / 4.0;
+        let measured = volume_properties(&model, &built.shape, deflection(1e-3), T)
+            .unwrap()
+            .mass;
+        assert_relative_eq!(measured, exact, max_relative = 1e-9);
     }
 
     #[test]
