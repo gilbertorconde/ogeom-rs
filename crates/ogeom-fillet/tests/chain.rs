@@ -2898,20 +2898,20 @@ fn rounds_at_a_drum_drafted_foot_out_meeting_a_wall_take_all_above_both() {
 ///   "M5e", a free end into the material), its section kept outside it;
 /// - the rim alone ends flush on the block's leaning wall there, its band
 ///   kept on the wall's open side near the corner;
-/// - the rim after the crease runs on past the corner round its circle
-///   while the crease's cut leaves its contact on the top in the solid and
-///   its contact on the cone carried on outside it, and ends in the plane
-///   through the axis there (amendment "corners where a round's rail
-///   misses");
 /// - the crease after the rim runs on along the top and the piece of the
 ///   wall the rim's flush end left, one edge, until the rim's band trims
 ///   it (amendments "M5e" and "a later round reaching an earlier band at
-///   its end"), its section kept short of the band's tube.
+///   its end"), its section kept short of the band's tube;
+/// - the rim after the crease is refused by name: the block's wall leans
+///   as the drum is drafted (0.1 each), so the crease's band and the rim's
+///   meet their walls at one depth, and the rim's band run on past the
+///   corner leaves the block's sliver and the drum touching along an edge
+///   there, the gap between them closing to it (zero thickness, which
+///   SOLIDWORKS does not allow either; amendment "M5e", bullet "not
+///   built").
 ///
-/// The two orders differ only within the box. The current path took one
-/// corner in either order, its own figure. The crease after the rim was
-/// built by the current path, its own figure, while the rim's flush end
-/// left the crease's line split at the old corner.
+/// The current path took one corner in either order, its own figure, and
+/// built the rim after the crease touching itself.
 #[test]
 fn a_cone_rim_that_meets_unresolved_is_rounded_fitted() {
     let r = 0.5;
@@ -2941,13 +2941,10 @@ fn a_cone_rim_that_meets_unresolved_is_rounded_fitted() {
     };
     let mut scratch = model.clone();
     let before = within(&mut scratch, &solid);
-    let total_before = volume(&model, &solid, 1e-4);
     let want = |rule: ConeRimCorner| cone_rim_corner_removed((at.x, at.y), half, r, rule);
     let close = |what: &str, got: f64, want: f64| {
         assert!((got - want).abs() < 1e-6, "{what}: {got} against {want}");
     };
-    let mut totals = Vec::new();
-    let mut windows = Vec::new();
     for order in [[1, 0], [0, 1]] {
         let mut model = model.clone();
         let once = ogeom_fillet::fillet_edge(&mut model, &solid, &edges[order[0]], r, T).unwrap();
@@ -2961,35 +2958,28 @@ fn a_cone_rim_that_meets_unresolved_is_rounded_fitted() {
             panic!("the later crease is not one edge after the first round");
         };
         let later = later.clone();
-        let rounded = ogeom_fillet::fillet_edge(&mut model, &once.shape, &later, r, T).unwrap();
+        let rounded = ogeom_fillet::fillet_edge(&mut model, &once.shape, &later, r, T);
+        if order[0] == 1 {
+            let refused = rounded.expect_err("the rim after the crease touches itself");
+            assert!(
+                refused.to_string().contains("zero thickness"),
+                "refused by name: {refused}"
+            );
+            continue;
+        }
+        let rounded = rounded.unwrap();
         assert!(
             ogeom_algo::check(&model, &rounded.shape, T)
                 .unwrap()
                 .is_valid()
         );
         let both = before - within(&mut model, &rounded.shape);
-        if order[0] == 1 {
-            close(
-                "the rim after the crease",
-                both,
-                want(ConeRimCorner::RimAfterCrease),
-            );
-        } else {
-            close(
-                "the crease after the rim",
-                both,
-                want(ConeRimCorner::CreaseAfterRim),
-            );
-        }
-        windows.push(both);
-        totals.push(total_before - volume(&model, &rounded.shape, 1e-4));
+        close(
+            "the crease after the rim",
+            both,
+            want(ConeRimCorner::CreaseAfterRim),
+        );
     }
-    // Past the box the two orders take the same.
-    let outside = (totals[0] - windows[0]) - (totals[1] - windows[1]);
-    assert!(
-        outside.abs() < 1e-6,
-        "the orders differ past the corner by {outside}"
-    );
 }
 
 /// Which step of [`a_cone_rim_that_meets_unresolved_is_rounded_fitted`]
@@ -2998,7 +2988,6 @@ fn a_cone_rim_that_meets_unresolved_is_rounded_fitted() {
 enum ConeRimCorner {
     CreaseAlone,
     RimAlone,
-    RimAfterCrease,
     CreaseAfterRim,
 }
 
@@ -3010,8 +2999,7 @@ enum ConeRimCorner {
 /// outside the drum (where its column stands above `2 - 10 (rho - 3)`);
 /// the rim's is its torus band's, over the arc from the corner round the
 /// drum (polar angle at most the corner's), kept on the wall's open side
-/// when the rim is rounded alone, and run on past the corner after the
-/// crease to where it stops. After the rim, the crease runs on along the
+/// when the rim is rounded alone. After the rim, the crease runs on along the
 /// top and the wall's piece the rim left, to the rim's torus band, and
 /// ends flush on it: a point of its section is taken while the line
 /// through it along the crease has not yet reached the band's tube (the
@@ -3024,56 +3012,6 @@ fn cone_rim_corner_removed(at: (f64, f64), half: f64, r: f64, rule: ConeRimCorne
     let crease = Section::new(2.0, (ny, nz), r);
     let rim = Section::new(0.0, (1.0, k), r);
     let corner = at.1.atan2(at.0);
-    // After the crease, the rim's band runs on past the corner round its
-    // circle while its contact on the top stands in the solid and its
-    // contact on the cone carried on stands outside it (amendment "corners
-    // where a round's rail misses"), to the angle `stop`.
-    let stop = match rule {
-        ConeRimCorner::RimAfterCrease => {
-            let eps = 1e-9;
-            let in_crease = |x: f64, y: f64, z: f64| {
-                let rho = x.hypot(y);
-                rho > 3.0 + eps
-                    && z > 2.0 - (rho - 3.0) / k + eps
-                    && crease
-                        .column(y)
-                        .iter()
-                        .any(|&(lo, hi)| z > lo + eps && z < hi - eps)
-            };
-            let in_solid = |x: f64, y: f64, z: f64| {
-                let in_height = (-eps..=2.0 + eps).contains(&z);
-                let drum = x.hypot(y) <= 3.0 + k * (2.0 - z) + eps;
-                let block = x <= eps && ny.mul_add(y - 2.0, nz * (z - 2.0)) <= eps;
-                in_height && (drum || block) && !in_crease(x, y, z)
-            };
-            let m: (f64, f64) = (1.0, k);
-            let m = (m.0 / m.0.hypot(m.1), m.1 / m.0.hypot(m.1));
-            let cap = (rim.centre.0, 2.0);
-            let wall = (rim.centre.0 + m.0 * r, rim.centre.1 + m.1 * r);
-            let trims = |theta: f64| {
-                let at = |(u, z): (f64, f64)| ((3.0 + u) * theta.cos(), (3.0 + u) * theta.sin(), z);
-                let (cx, cy, cz) = at(cap);
-                let (wx, wy, wz) = at(wall);
-                in_solid(cx, cy, cz) && !in_solid(wx, wy, wz)
-            };
-            let step = 0.25 * r / 3.0;
-            let (mut good, mut bad) = (corner, corner + step);
-            while trims(bad) {
-                good = bad;
-                bad += step;
-            }
-            for _ in 0..60 {
-                let mid = f64::midpoint(good, bad);
-                if trims(mid) {
-                    good = mid;
-                } else {
-                    bad = mid;
-                }
-            }
-            good
-        }
-        _ => corner,
-    };
     integral(
         (at.0 - half, at.0 + half),
         (at.1 - half, at.1 + half),
@@ -3086,7 +3024,7 @@ fn cone_rim_corner_removed(at: (f64, f64), half: f64, r: f64, rule: ConeRimCorne
                 Vec::new()
             };
             let crease_runs = meet(&crease.column(y), &outside_drum);
-            let on_arc = y.atan2(x) <= stop;
+            let on_arc = y.atan2(x) <= corner;
             let rim_runs: Vec<(f64, f64)> = if on_arc {
                 rim.column(rho - 3.0).to_vec()
             } else {
@@ -3098,9 +3036,6 @@ fn cone_rim_corner_removed(at: (f64, f64), half: f64, r: f64, rule: ConeRimCorne
                     // Behind the wall's plane: z at most 2 - (ny / nz)(y - 2).
                     let open = [(2.0 - ny / nz * (y - 2.0), f64::INFINITY)];
                     span(&meet(&rim_runs, &open))
-                }
-                ConeRimCorner::RimAfterCrease => {
-                    span(&crease_runs) + span(&rim_runs) - overlap(&crease_runs, &rim_runs)
                 }
                 ConeRimCorner::CreaseAfterRim => {
                     let open = [(2.0 - ny / nz * (y - 2.0), f64::INFINITY)];

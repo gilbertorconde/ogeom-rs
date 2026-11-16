@@ -258,6 +258,19 @@ pub(crate) fn rounds(
             Ok(Some(Built::new(unified.shape, history)))
         }
         Err(e @ ogeom_core::OgeomError::Cancelled) => Err(e),
+        // Where the rule's own figure touches itself along an edge (two
+        // bands' wall contacts at one depth, the gap between them closing
+        // to the edge), it is zero thickness: refused by name, as
+        // SOLIDWORKS refuses it (ADR 0001, amendment "M5e", bullet "not
+        // built").
+        Err(_) if super::guards::touches_itself(&scratch, &unified.shape, tol)? => {
+            ogeom_core::ogeom_bail!(
+                Construction,
+                "a rim's round would leave the solid touching itself along an edge \
+                 (zero thickness): its band and an earlier round's meet their walls \
+                 at one depth there; see docs/CAPABILITIES.md, fillet.edge-blends"
+            )
+        }
         Err(_) => Ok(None),
     }
 }
