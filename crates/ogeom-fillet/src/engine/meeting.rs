@@ -617,26 +617,26 @@ pub(crate) fn carried_out(
                 return Ok(None);
             }
         }
-        // Each end on the solid's own faces, each meeting the crease's at an
-        // angle: one running on tangent from them (a band an earlier round
-        // left) is that round's to meet, not a face the band runs out across.
+        // Each end on the solid's own faces. One running on tangent from
+        // the crease's faces is a band an earlier round left there: the band
+        // runs on into it and is trimmed by it (ADR 0001, amendment "a later
+        // round reaching an earlier band at its end"), built where that band
+        // is seated on planes; one seated on a curved face is not built here
+        // yet.
         for v in [crease.ends.0, crease.ends.1] {
             let at = curved.points[&v];
             let [(na, _), (nb, _)] = crease.planes;
             for (f, face) in curved.faces.iter().enumerate() {
-                if crease.faces.contains(&f)
-                    || !face.loops.iter().flatten().any(|(x, _)| {
-                        let g = &curved.edges[x];
-                        g.ends.0 == v || g.ends.1 == v
-                    })
-                {
+                if crease.faces.contains(&f) || !touches(&curved, f, v) {
                     continue;
                 }
                 let Some(n) = outward(&curved, f, at) else {
                     return Ok(None);
                 };
-                if n.cross(na).magnitude() <= tol.angular()
-                    || n.cross(nb).magnitude() <= tol.angular()
+                if (n.cross(na).magnitude() <= tol.angular()
+                    || n.cross(nb).magnitude() <= tol.angular())
+                    && !(matches!(face.surface, SurfaceGeometry::Cylinder(_))
+                        && seated_on_planes(&curved, f, tol)?)
                 {
                     return Ok(None);
                 }
@@ -884,6 +884,88 @@ fn rolled_corner(
         Err(e @ ogeom_core::OgeomError::Cancelled) => Err(e),
         Err(_) => Ok(None),
     }
+}
+
+/// Whether some edge of `asked` is a straight crease between planes ending
+/// at a band an earlier round left there, tangent to one of its faces and
+/// seated on planes: [`carried_out`] runs its band on into that band
+/// (ADR 0001, amendment "a later round reaching an earlier band at its
+/// end"), before any route that would stop it at the band.
+///
+/// # Errors
+///
+/// As reading the solid.
+pub(crate) fn reaches_earlier_band(
+    model: &Model,
+    solid: &Shape,
+    asked: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let Some(curved) = read(model, solid, tol)? else {
+        return Ok(false);
+    };
+    for (edge, radius) in asked {
+        let Some(crease) = crease_of(model, &curved, id(edge), edge, *radius, tol)? else {
+            continue;
+        };
+        if !matches!(crease.kind, Kind::Straight) {
+            continue;
+        }
+        let [(na, _), (nb, _)] = crease.planes;
+        for v in [crease.ends.0, crease.ends.1] {
+            let at = curved.points[&v];
+            for (f, face) in curved.faces.iter().enumerate() {
+                if crease.faces.contains(&f)
+                    || !touches(&curved, f, v)
+                    || !matches!(face.surface, SurfaceGeometry::Cylinder(_))
+                {
+                    continue;
+                }
+                let Some(n) = outward(&curved, f, at) else {
+                    continue;
+                };
+                if (n.cross(na).magnitude() <= tol.angular()
+                    || n.cross(nb).magnitude() <= tol.angular())
+                    && seated_on_planes(&curved, f, tol)?
+                {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Whether face `f` has an edge ending at vertex `v`.
+fn touches(curved: &Curved, f: usize, v: Id) -> bool {
+    curved.faces[f].loops.iter().flatten().any(|(x, _)| {
+        let g = &curved.edges[x];
+        g.ends.0 == v || g.ends.1 == v
+    })
+}
+
+/// Whether every face that face `f` meets tangentially along an edge is a
+/// plane: a band an earlier round left on a crease between planes.
+fn seated_on_planes(curved: &Curved, f: usize, tol: Tolerances) -> OgeomResult<bool> {
+    for (x, _) in curved.faces[f].loops.iter().flatten() {
+        let edge = &curved.edges[x];
+        let mid = edge
+            .curve
+            .point_at(0.5 * (edge.range.0 + edge.range.1), tol)?;
+        for (g, other) in curved.faces.iter().enumerate() {
+            if g == f || !other.loops.iter().flatten().any(|(y, _)| y == x) {
+                continue;
+            }
+            let (Some(nf), Some(ng)) = (outward(curved, f, mid), outward(curved, g, mid)) else {
+                return Ok(false);
+            };
+            let tangent = nf.cross(ng).magnitude() <= tol.angular() * 100.0 && nf.dot(ng) > 0.0;
+            if tangent && !matches!(other.surface, SurfaceGeometry::Plane(_)) {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
 }
 
 /// `edge` as a crease: straight, open, between two planar faces, convex;

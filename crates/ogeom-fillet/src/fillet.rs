@@ -1182,6 +1182,15 @@ fn rounds_by_engine_routes(
     if let Some(built) = crate::engine::meeting_rounds(model, solid, &once, tol)? {
         return Ok(Some(built));
     }
+    // A straight crease ending at a band an earlier round left, seated on
+    // planes: its band runs on into that band, which trims it (amendment
+    // "a later round reaching an earlier band at its end"), before the
+    // curved routes would stop it there.
+    if crate::engine::reaches_earlier_band(model, solid, &once, tol)?
+        && let Some(built) = crate::engine::carried_out_rounds(model, solid, &once, tol)?
+    {
+        return Ok(Some(built));
+    }
     // A solid with curved faces, read with its seams dissolved where it
     // holds any: rims between a planar cap and a coaxial cylinder or cone,
     // each the torus its ball sweeps; else straight edges along planes and
