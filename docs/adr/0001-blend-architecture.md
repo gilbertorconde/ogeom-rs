@@ -1054,6 +1054,45 @@ top loop of a pad whose sides are planes and whose corners are drums.
   - a law's ball running off a narrow face (the cut-off family);
   - a law refused by name.
 
+### Amendment: round distances on curved seats (#902)
+
+A round set back its own distance on each face, with an elliptical or
+conic section (`fillet_edge_distances`), over a seat the planar engine
+and the rims' revolved conic do not read: a bore's rim on a drum, a rim
+arc that stops, an open spline crease, a slanted edge whose dihedral
+changes along it, a round running up under a roof or out along its wall
+onto a ramp.
+
+- **Survey.** Mainstream applications build asymmetric and conic rounds
+  on any edge, curved ones included. The SOLIDWORKS tutorial's
+  asymmetric fillet is on a cylindrical edge, with Distance 1 and
+  Distance 2 and an optional Conic Rho profile
+  (https://help.solidworks.com/2025/English/swconntutorial/t_tut_fillets_create_asymmetric.htm).
+  NX's edge blend takes a conic section with two offsets and a rho
+  (https://docs.plm.automation.siemens.com/data_services/resources/nx/12/nx_api/custom/en_US/nxopen_python_ref/NXOpen.GeometricUtilities.ConicCrossSection.html).
+  Onshape's conic fillet is not symmetrical either
+  (https://cad.onshape.com/help/Content/PartStudio/fillet.htm).
+  The section is the current path's, unchanged: in the plane square to
+  the crease, each contact its distance along its own face, the conic
+  between them.
+- **The band.** Each band is built as the current path builds it (the
+  seated conic, marched where no closed form reads it, its ends as the
+  constant round's), on the solid as given, closed into its wedge and
+  collected rather than applied.
+- **Application.** The wedges are the one-boolean fallback's tools, as
+  in amendment "varying rounds on curved seats"; a result that does not
+  check valid is handed back.
+- **Tangent chains.** A `blend_edges` request of asymmetric rounds alone,
+  meeting nothing but each other along tangent chains (the top loop of a
+  pad, a pocket's floor), closes each chain as the current path does:
+  its bands capped in their shared end sections, all set aside on the
+  solid as given and applied together.
+- **Still the current path's:**
+  - asymmetric rounds in `blend_edges` beside rounds or bevels, or at
+    their corners;
+  - the largest-pair search;
+  - refusals by name.
+
 ### Amendment: M5d, a round resting on a far edge (#902)
 
 The current path's rolling rounds (`rolled.rs`, `stepped.rs`,

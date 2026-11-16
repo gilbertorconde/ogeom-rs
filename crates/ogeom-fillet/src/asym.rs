@@ -434,6 +434,13 @@ pub fn fillet_edge_distances(
             return Ok(built);
         }
     }
+    // Any other seat: the band the current path builds, applied by the
+    // engine as a one-boolean tool.
+    if let Some(built) =
+        crate::engine::distances_rounds(model, solid, edge, face, on_face, on_other, profile, tol)?
+    {
+        return Ok(built);
+    }
     crate::fillet::to_current_path("fillet_edge_distances");
     ogeom_algo::on_own_nodes(
         model,
@@ -445,6 +452,27 @@ pub fn fillet_edge_distances(
             )
         },
     )
+}
+
+/// The band of [`fillet_edge_distances`] as the current path builds it,
+/// for the engine to collect as wedges (see
+/// [`crate::engine::distances_rounds`]).
+///
+/// # Errors
+///
+/// As the current path's round of the edge.
+#[allow(clippy::too_many_arguments, reason = "fillet_edge_distances' own")]
+pub(crate) fn distances_bands(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    face: &Shape,
+    on_face: f64,
+    on_other: f64,
+    profile: RoundProfile,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    fillet_edge_distances_own(model, solid, edge, face, on_face, on_other, profile, tol)
 }
 
 /// [`fillet_edge_distances`] on a shape every node below which is its own.
@@ -657,6 +685,7 @@ fn contacts_fit(
 }
 
 /// One asymmetric round of a [`blend_edges`](crate::blend_edges) request.
+#[derive(Clone)]
 pub(crate) struct Asymmetric {
     /// The edge.
     pub edge: Shape,
@@ -755,6 +784,24 @@ pub(crate) fn after_symmetric(
         let mut traced = Vec::with_capacity(members.len());
         for &i in &members {
             traced.push(trace_request(model, &built, &asymmetric[i], tol)?);
+        }
+        // Where the engine collects the bands of a request of asymmetric
+        // rounds alone, each is set aside on the solid as given.
+        if crate::support::collecting() {
+            for (&i, (edge, face)) in members.iter().zip(&traced) {
+                let a = &asymmetric[i];
+                fillet_edge_distances_own(
+                    model,
+                    &built.shape,
+                    edge,
+                    face,
+                    a.on_face,
+                    a.on_other,
+                    a.profile,
+                    tol,
+                )?;
+            }
+            continue;
         }
         if let [(edge, face)] = traced.as_slice() {
             let a = &asymmetric[members[0]];

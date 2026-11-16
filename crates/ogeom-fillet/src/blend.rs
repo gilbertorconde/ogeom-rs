@@ -98,6 +98,17 @@ pub fn blend_edges(
     {
         return Ok(built);
     }
+    // Asymmetric rounds alone, meeting nothing but each other along tangent
+    // chains: their bands, applied by the engine as one-boolean tools.
+    if !asymmetric.is_empty()
+        && rounds.is_empty()
+        && bevels.is_empty()
+        && crate::asym::asymmetric_corners(model, solid, &rounds, &bevels, &asymmetric, tol)
+            .is_ok_and(|corners| corners.edges.is_empty())
+        && let Some(built) = crate::engine::asymmetric_rounds(model, solid, &asymmetric, tol)?
+    {
+        return Ok(built);
+    }
     if !asymmetric.is_empty() {
         crate::fillet::to_current_path("blend_edges");
         // The corners where an asymmetric round meets the request's other
