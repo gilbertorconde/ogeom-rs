@@ -1717,6 +1717,16 @@ pub(crate) fn assemble(
             }
         };
         if let Err(out) = ogeom_algo::certify_face_within(model, face, &region, fit, tol)? {
+            // A corner's patch over a convex corner not proved within it
+            // (interpolated, it can lean past a face it is tangent to along
+            // its side): its net held within the corner's planes, the
+            // surface within them by the hull of its net, then proved again.
+            if edge_seat.get(element).is_none()
+                && held_within(model, face, &region, fit)?
+                && ogeom_algo::certify_face_within(model, face, &region, fit, tol)?.is_ok()
+            {
+                continue;
+            }
             // Not proved either way (a patch tangent to a face only to its
             // fit, its bound stalling there): the current path's to take.
             if !out.found {
@@ -3056,6 +3066,47 @@ pub(super) fn within_face(planar: &Planar, fi: usize, p: Point, reach: f64) -> b
             .iter()
             .all(|hole| wound(hole).is_none_or(|inside| !inside)),
     }
+}
+
+/// The corner patch `face` held within the convex `region` (every one of
+/// its half-spaces a plane's) by its net ([`ogeom_algo::net_held_within`]):
+/// the net's two outermost rows each way kept, as they carry the patch's
+/// sides and its tangency across them, every other point past a plane
+/// moved to the region's nearest point. `Ok(true)` where the net is held,
+/// the surface written back; `Ok(false)` where the region is not planes
+/// alone, the surface not a B-spline, or a kept point stands past a plane
+/// by more than `fit`.
+fn held_within(
+    model: &mut Model,
+    face: &ogeom_topo::Shape,
+    region: &ogeom_algo::HalfSpaces,
+    fit: f64,
+) -> OgeomResult<bool> {
+    use ogeom_algo::HalfSpaces;
+    let HalfSpaces::Every(pieces) = region else {
+        return Ok(false);
+    };
+    let mut planes = Vec::with_capacity(pieces.len());
+    for piece in pieces {
+        let HalfSpaces::Below { normal, at } = piece else {
+            return Ok(false);
+        };
+        planes.push((*normal, *at));
+    }
+    let Some(data) = model.node(face).and_then(|n| n.data().as_face()) else {
+        return Ok(false);
+    };
+    let id = data.surface;
+    let Some(ogeom_geom::SurfaceGeometry::BSpline(surface)) = model.geometry().surface(id) else {
+        return Ok(false);
+    };
+    let Ok(held) = ogeom_algo::net_held_within(surface, &planes, 2, fit)? else {
+        return Ok(false);
+    };
+    if let Some(slot) = model.geometry_mut().surface_mut(id) {
+        *slot = held.into();
+    }
+    Ok(true)
 }
 
 #[cfg(test)]

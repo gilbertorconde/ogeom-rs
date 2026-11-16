@@ -280,7 +280,13 @@ fn pyramid(m: &mut Model) -> Shape {
 /// past where the others reach its section plane, not only past where its
 /// own section clears them, so a wide band beside a narrow one does not
 /// cross the narrow one's section inside the cell. Closed, valid, tangent,
-/// the same in either order, between the rounds at either radius alone.
+/// the same in either order (the patch's net to the bit), between the
+/// rounds at either radius alone, and the corner's patch proved within the
+/// pyramid by the hull of its stored net, under the four slants and within
+/// the box's walls and floor. Built by the engine's assembly with no
+/// boolean: interpolated, the patch leaned 4.7e-3 past a face it is
+/// tangent to along its side, and unproved within the material it went to
+/// the current path.
 #[test]
 fn a_pyramid_apex_at_alternating_radii_closes_with_one_patch() {
     for (small, large) in [(0.5, 1.5)] {
@@ -313,9 +319,13 @@ fn a_pyramid_apex_at_alternating_radii_closes_with_one_patch() {
         };
         let asked: Vec<(Shape, f64)> = at_apex.iter().map(|e| (e.clone(), radius(e))).collect();
         let mut volumes = Vec::new();
+        let mut nets = Vec::new();
         for order in [[0, 1, 2, 3], [3, 1, 0, 2]] {
             let request: Vec<(Shape, f64)> = order.iter().map(|&i| asked[i].clone()).collect();
-            let rounded = fillet_edges_with(&mut m, &solid, &request, T).unwrap();
+            let (rounded, work) = ogeom_bool::work::counted(|| {
+                fillet_edges_with(&mut m, &solid, &request, T).unwrap()
+            });
+            assert_eq!(work.face_pairs, 0, "built by the engine's assembly");
             let found = ogeom_algo::check(&m, &rounded.shape, T).unwrap();
             assert!(found.is_valid(), "{small}/{large}: {:?}", found.problems);
             let patch = explore_unique(&m, &rounded.shape, ShapeType::Face)
@@ -326,9 +336,64 @@ fn a_pyramid_apex_at_alternating_radii_closes_with_one_patch() {
                         .and_then(|n| n.data().as_face())
                         .and_then(|d| m.geometry().surface(d.surface))
                         .is_some_and(|s| matches!(s, ogeom_geom::SurfaceGeometry::BSpline(_)))
-                        && explore_unique(&m, f, ShapeType::Edge).unwrap().len() == 8
                 })
                 .expect("the corner patch");
+            // Within the pyramid, proved on the stored surface by the hull
+            // of its net (subdivided where the whole net does not show it):
+            // under the four slants through the apex, within the box's
+            // walls and over its floor.
+            let slant = |nx: f64, ny: f64| ogeom_algo::HalfSpaces::Below {
+                normal: Vector::new(nx, ny, 1.0) / 2.0_f64.sqrt(),
+                at: apex,
+            };
+            let wall = |nx: f64, ny: f64, nz: f64| ogeom_algo::HalfSpaces::Below {
+                normal: Vector::new(nx, ny, nz),
+                at: Point::new(nx * 10.0, ny * 10.0, nz * 10.0),
+            };
+            let pyramid_region = ogeom_algo::HalfSpaces::Every(vec![
+                slant(1.0, 0.0),
+                slant(-1.0, 0.0),
+                slant(0.0, 1.0),
+                slant(0.0, -1.0),
+                wall(1.0, 0.0, 0.0),
+                wall(-1.0, 0.0, 0.0),
+                wall(0.0, 1.0, 0.0),
+                wall(0.0, -1.0, 0.0),
+                wall(0.0, 0.0, -1.0),
+            ]);
+            let proved =
+                ogeom_algo::certify_face_within(&m, &patch, &pyramid_region, 1e-6, T).unwrap();
+            assert!(
+                proved.is_ok(),
+                "{small}/{large}: not proved within: {proved:?}"
+            );
+            if let Some(ogeom_geom::SurfaceGeometry::BSpline(s)) = m
+                .node(&patch)
+                .and_then(|n| n.data().as_face())
+                .and_then(|d| m.geometry().surface(d.surface))
+            {
+                nets.push(s.grid().points().to_vec());
+            }
+            // A counterexample finder beside the proof: the fine mesh.
+            let fine = ogeom_mesh::Deflection {
+                chord: 1e-5,
+                ..ogeom_mesh::Deflection::default()
+            };
+            let mesh = ogeom_mesh::triangulate_face(&m, &patch, fine, T).unwrap();
+            let past = mesh
+                .positions
+                .iter()
+                .map(|q| {
+                    [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)]
+                        .iter()
+                        .map(|(nx, ny)| (nx * q.x + ny * q.y + q.z - 10.0) / 2.0_f64.sqrt())
+                        .fold(f64::NEG_INFINITY, f64::max)
+                })
+                .fold(f64::NEG_INFINITY, f64::max);
+            assert!(
+                past <= 1e-6,
+                "{small}/{large}: the patch stands {past} past a face"
+            );
             for c in ogeom_fillet::analyse_blend(&m, &rounded.shape, &patch, 17, T).unwrap() {
                 assert!(c.tangency_error < 1e-3, "a crease across the patch: {c:?}");
             }
@@ -337,6 +402,11 @@ fn a_pyramid_apex_at_alternating_radii_closes_with_one_patch() {
         assert!(
             (volumes[0] - volumes[1]).abs() <= volumes[0] * 1e-9,
             "{volumes:?}"
+        );
+        assert_eq!(nets.len(), 2);
+        assert!(
+            nets[0] == nets[1],
+            "the patch's net is the same in either order"
         );
         let mut at = |r: f64| {
             let request: Vec<(Shape, f64)> = at_apex.iter().cloned().map(|e| (e, r)).collect();
