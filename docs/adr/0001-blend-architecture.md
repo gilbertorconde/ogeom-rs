@@ -1375,6 +1375,33 @@ features depend on their order).
   wall's contact enters it, which would cut a groove with a cliff on the
   wall's surface carried on.
 
+### Amendment: a corner patch held within a convex corner (#902)
+
+A corner's transfinite patch is interpolated on a net and held to the
+bands' fit target against its sides. Between the sides it can lean past a
+face it is tangent to along its side: a pyramid's apex at alternating radii
+stood 4.7e-3 past the face, against a fit of 2e-4. P5 does not prove such a
+patch, and declines it.
+
+Over a convex corner, whose material is the half-spaces of its faces'
+planes, a patch P5 did not prove has its net held within those planes
+(`ogeom_algo::net_held_within`; docs/research/vertex-patches.md, §B):
+- **Kept rows.** The net's two outermost rows each way are kept as they are.
+  They carry the patch's sides and its derivatives across them, so its
+  tangency to the bands holds by construction.
+- **Moved points.** Every other point standing past a plane moves to the
+  corner's nearest point. That point is the one minimum of the squared
+  distance under the planes' inequalities, found by trying the planes'
+  active sets in a fixed order over the planes sorted. The held net is the
+  same to the bit whatever order the corner's edges are asked in.
+- **Proof.** A B-spline with positive weights lies in the hull of its net,
+  so the patch lies within the corner. P5 proves it again on the stored
+  surface, as the independent guard. A bound it cannot settle is not read as
+  inside.
+- **Infeasible.** Where a kept point stands past a plane by more than the
+  fit, no such net exists. The patch is not held and is declined as before;
+  scaling the cross-derivative rows is not tried.
+
 ## 12. Acceptance corpus
 
 From #902:
