@@ -2500,3 +2500,175 @@ fn the_largest_pair_is_where_the_first_contact_leaves_its_face() {
         assert!(built.is_ok(), "{:?}", built.err());
     }
 }
+
+/// An asymmetric round beside a round or a bevel it does not meet: the
+/// volume is the box less each section, a square less a quarter-disc or the
+/// bevel's triangle and the conic corner, over the box's full width. The
+/// same solid in either order, and every edge generates its band.
+#[test]
+fn an_asymmetric_round_beside_a_disjoint_round_or_bevel_keeps_its_history() {
+    let profile = RoundProfile::Conic(0.4);
+    for (other, area) in [
+        (Blend::Round(2.0), 4.0 - core::f64::consts::PI),
+        (Blend::Chamfer(ogeom_fillet::Chamfer::Symmetric(2.0)), 2.0),
+    ] {
+        let mut volumes = Vec::new();
+        for reverse in [false, true] {
+            let mut m = Model::new();
+            let (s, edge, top, _) = block(&mut m);
+            let back = edge_where(&m, &s, |p| (p.y - 20.0).abs() < 1e-9 && p.z.abs() < 1e-9);
+            let asked = Blend::RoundDistances {
+                face: top,
+                on_face: 3.0,
+                on_other: 1.5,
+                profile,
+            };
+            let mut request = vec![(back, other.clone()), (edge, asked)];
+            if reverse {
+                request.reverse();
+            }
+            let both =
+                ogeom_fillet::blend_edges(&mut m, &s, &request, ChamferCorner::Point, T).unwrap();
+            let exact = 4000.0 - 20.0 * area - 20.0 * corner_area(3.0, 1.5, FRAC_PI_2, conic(0.4));
+            let diagnosis = ogeom_algo::check(&m, &both.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+            let v = volume(&m, &both.shape);
+            assert!((v - exact).abs() <= 1e-8, "volume {v} against {exact}");
+            for (edge, _) in &request {
+                assert!(both.history.is_deleted(edge));
+                assert!(!both.history.generated(edge).is_empty());
+            }
+            volumes.push(v.to_bits());
+        }
+        assert_eq!(
+            volumes[0], volumes[1],
+            "the request's order carries no meaning"
+        );
+    }
+}
+
+/// A box corner closed by an asymmetric round, a round and a bevel: each of
+/// the three edges is deleted and generates its band. A round on an edge
+/// away from the corner takes its own section over its whole length and
+/// leaves the corner as it was.
+#[test]
+fn a_box_corner_of_mixed_blends_keeps_each_edge_s_history() {
+    let mut m = Model::new();
+    let (s, edges, faces) = box_corner(&mut m);
+    let back = edge_where(&m, &s, |p| (p.y - 20.0).abs() < 1e-9 && p.z.abs() < 1e-9);
+    let mut request = vec![
+        (
+            edges[0].clone(),
+            Blend::RoundDistances {
+                face: faces[0].clone(),
+                on_face: 2.0,
+                on_other: 1.0,
+                profile: RoundProfile::Conic(0.45),
+            },
+        ),
+        (edges[1].clone(), Blend::Round(1.2)),
+        (
+            edges[2].clone(),
+            Blend::Chamfer(ogeom_fillet::Chamfer::Symmetric(1.0)),
+        ),
+    ];
+    let built = ogeom_fillet::blend_edges(&mut m, &s, &request, ChamferCorner::Point, T).unwrap();
+    for edge in &edges {
+        assert!(built.history.is_deleted(edge));
+        assert!(!built.history.generated(edge).is_empty());
+    }
+    let corner_only = volume(&m, &built.shape);
+    request.push((back.clone(), Blend::Round(2.0)));
+    let with_back =
+        ogeom_fillet::blend_edges(&mut m, &s, &request, ChamferCorner::Point, T).unwrap();
+    let diagnosis = ogeom_algo::check(&m, &with_back.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    for edge in edges.iter().chain([&back]) {
+        assert!(with_back.history.is_deleted(edge));
+        assert!(!with_back.history.generated(edge).is_empty());
+    }
+    let exact = corner_only - 20.0 * (4.0 - core::f64::consts::PI);
+    let v = volume(&m, &with_back.shape);
+    assert!((v - exact).abs() <= 1e-6, "volume {v} against {exact}");
+}
+
+/// A mixed request whose asymmetric distance is not a positive finite
+/// length is refused by name, whichever distance it is.
+#[test]
+fn a_mixed_request_with_a_distance_of_nothing_is_refused_by_name() {
+    let mut m = Model::new();
+    let drum = ogeom_algo::make_cylinder(&mut m, Frame::WORLD, 5.0, 4.0, T)
+        .unwrap()
+        .shape;
+    let top = ring_edge(&m, &drum, (0.0, 0.0, 4.0), 5.0);
+    let bottom = ring_edge(&m, &drum, (0.0, 0.0, 0.0), 5.0);
+    let cap = face_at(&m, &drum, Point::new(0.0, 0.0, 4.0));
+    for distance in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        for on_cap in [false, true] {
+            let why = ogeom_fillet::blend_edges(
+                &mut m,
+                &drum,
+                &[
+                    (bottom.clone(), Blend::Round(1.0)),
+                    (
+                        top.clone(),
+                        Blend::RoundDistances {
+                            face: cap.clone(),
+                            on_face: if on_cap { distance } else { 1.5 },
+                            on_other: if on_cap { 0.8 } else { distance },
+                            profile: RoundProfile::Conic(0.45),
+                        },
+                    ),
+                ],
+                ChamferCorner::Point,
+                T,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(
+                why.contains("round set back") && why.contains("rounds nothing"),
+                "{why}"
+            );
+        }
+    }
+}
+
+/// The mixed requests' accepted solids and named refusals reach no old
+/// constructor.
+#[cfg(feature = "old-path-log")]
+#[test]
+#[ignore = "heavy"]
+fn mixed_asymmetric_requests_do_not_enter_old_builders() {
+    let path = std::env::temp_dir().join(format!("ogeom-mixed-tools-{}.log", std::process::id()));
+    for name in [
+        "blend_edges_takes_an_asymmetric_round_beside_others_and_refuses_one_at_their_corner",
+        "blend_edges_takes_an_asymmetric_rim_beside_a_round_rim",
+        "asymmetric_rounds_close_a_box_corner_with_rounds_and_bevels",
+        "a_tangent_loop_of_asymmetric_rounds_closes_round_a_pad",
+        "a_tangent_loop_of_asymmetric_rounds_fills_round_a_pocket_s_floor",
+        "asymmetric_rounds_meeting_other_than_as_a_tangent_chain_are_refused",
+        "an_asymmetric_round_beside_a_disjoint_round_or_bevel_keeps_its_history",
+        "a_mixed_request_with_a_distance_of_nothing_is_refused_by_name",
+        "a_box_corner_of_mixed_blends_keeps_each_edge_s_history",
+    ] {
+        std::fs::File::create(&path).unwrap();
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--include-ignored", "--nocapture"])
+            .env("OGEOM_OLD_PATH_LOG", &path)
+            .output()
+            .unwrap();
+        let log = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            out.status.success(),
+            "{name}: {}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("test result: ok. 1 passed;"),
+            "the selected geometric test must run: {name}"
+        );
+        assert!(log.is_empty(), "{name}: old constructors reached:\n{log}");
+    }
+}

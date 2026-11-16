@@ -1254,6 +1254,64 @@ closed laws, endpoint holding and each edge's law window are unchanged.
   all three law APIs and curved conic entry points, requiring no old
   constructor event; result validity alone cannot distinguish the builders.
 
+### Amendment: engine-owned mixed asymmetric requests
+
+A request mixing asymmetric rounds with rounds and bevels is built by the
+engine, not by a sequence of asymmetric API constructors. It follows the
+section, tangent-chain and corner rules above, plus what a short survey of
+user documentation not cited elsewhere in this record shows:
+
+- **All edges blended means the vertex is blended.** T-FLEX CAD rounds the
+  vertex when every edge meeting there is rounded in one operation, and
+  recommends one operation over several
+  (https://www.tflex.com/help/eng/T-FLEX%20CAD/16/blending_edges.htm). A
+  convex corner of three planes whose three edges are all in the request
+  closes on one setback patch whatever mix of circular, conic and bevel
+  sections meets there, and the request's order carries no meaning.
+- **Each edge has its own setback; the default is the least that fits.**
+  Inventor sets a setback per edge at a vertex and computes the minimum
+  allowable one on request
+  (https://help.autodesk.com/cloudhelp/2014/ENU/Inventor/files/GUID-55B9D5C0-3859-4146-8866-B4E4AE89469E.htm,
+  https://help.autodesk.com/cloudhelp/2014/ENU/Inventor/files/GUID-0C3675D8-7CE5-4664-AAE9-360EB324F363.htm).
+  Each band's setback is the least the corner's widths admit, read from
+  each band's width on each face, so an asymmetric band sets back by its
+  own two distances.
+- **Two of three blended edges of one convexity meet by intersection.**
+  T-FLEX CAD leaves such a vertex unblended, with the two blend surfaces
+  meeting along a new edge
+  (https://www.tflex.com/help/eng/T-FLEX%20CAD/17/14_edgeblend_theory_2of3.htm).
+  The engine does not build that intersection for an asymmetric band yet:
+  an asymmetric round meeting another blended edge at a vertex where not
+  every edge is blended stays refused by name, as before.
+- **A bevel meets the corner in position only.** T-FLEX CAD cuts a chamfer's
+  vertex with a plane offset from it; no source asks for tangency there.
+  The patch is tangent to each round's band and meets a bevel's end in
+  position.
+
+- **Tools and provenance.** Circular, conic and bevel tools are built from
+  the original seats in source-edge order. The convex planar corners that
+  need setback patches are read before any boolean. Their independent tools
+  remove the bands' union; section planes bound the cell replaced by the
+  existing constrained G1 patch. Tool faces retain their source edges, also
+  when an earlier step of the request rebuilt those edges, and the patch
+  retains its source vertex through cutting and sewing.
+- **Disjoint features.** Away from those corners, bevels precede circular
+  rounds and asymmetric groups, with each edge and named face traced through
+  the earlier engine result. Compatible tangent conics use separate capped
+  tools with seated booleans, not calls back into the asymmetric constructor.
+- **Periodic charts.** A partial revolved tool anchors its circle and wall
+  charts at the arc's start. Its wall chart reaches past both contact levels,
+  so the trim does not coincide with the chart's artificial boundary. This
+  preserves the analytic pad and pocket loop volumes without asking the
+  boolean to resolve a periodic seam as a material boundary.
+- **Evidence.** Existing asymmetric tests are unchanged and keep their
+  volume, tangency, validity, face-swapping and order oracles. New tests
+  cover a bevel beside an asymmetric round, source-edge history at a mixed
+  corner, a round away from that corner (which takes exactly its own
+  section's volume) and the refusal of a distance of nothing. A subprocess guard reruns
+  accepted corners, tangent loops, disjoint rims and named refusals with zero
+  old constructor events.
+
 ### Amendment: rounds on a solid bounded by planes holding seams (#902)
 
 A solid bounded by planes that a boolean built from boxes (an L-bracket

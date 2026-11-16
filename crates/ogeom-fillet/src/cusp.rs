@@ -470,7 +470,7 @@ pub(crate) fn close_cusp(
                 "the cusp corner's stopping planes do not meet on the top"
             );
         };
-        let top = crate::setback::filler_inside(
+        let top = crate::engine::mixed_corner::filler_inside(
             model,
             vec![trim.clone()],
             apex,
