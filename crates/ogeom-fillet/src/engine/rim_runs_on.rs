@@ -31,7 +31,7 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 use super::curved::{Curved, read};
 use super::defeatured::Rounder;
 use super::fallback::{Sense, Tool};
-use super::flush::{EndSurface, cut_far, cut_material_far};
+use super::flush::{EndSurface, cut_far, cut_material_far, rejoined};
 use super::trimmed::{faces_of, outward};
 use super::{Id, id};
 
@@ -208,13 +208,42 @@ pub(crate) fn rounds(
     let Some(cut) = super::fallback::apply(&mut scratch, &base.shape, &tools, tol)? else {
         return Ok(None);
     };
-    let mut history = base.history.then(&cut.history);
+    // A band ending flush on a plane leaves a face on that plane beside
+    // the face it ended on: one face again, so a crease running on along
+    // both stays one edge to its real end.
+    let kept: Vec<Shape> = explore_unique(&scratch, &base.shape, ShapeType::Face)?
+        .iter()
+        .flat_map(|f| cut.history.trace(f).to_vec())
+        .collect();
+    let around: Vec<Shape> = explore_unique(&scratch, &cut.shape, ShapeType::Face)?
+        .into_iter()
+        .filter(|f| {
+            !kept.iter().any(|k| k.is_same(f))
+                && rims
+                    .iter()
+                    .flat_map(|(_, _, planes, _)| planes)
+                    .any(|(_, end)| on_end_plane(&scratch, f, end, tol))
+        })
+        .collect();
+    let unified = rejoined(
+        &mut scratch,
+        Built::from_nothing(cut.shape.clone()),
+        &around,
+        tol,
+    )?;
+    let mut history = base.history.then(&cut.history).then(&unified.history);
     for (rim, _, _, _) in &rims {
-        if cut.history.generated(&rim.shape).is_empty() {
+        let made: Vec<Shape> = cut
+            .history
+            .generated(&rim.shape)
+            .iter()
+            .flat_map(|f| unified.history.trace(f).to_vec())
+            .collect();
+        if made.is_empty() {
             return Ok(None);
         }
-        for f in cut.history.generated(&rim.shape) {
-            history.generate(&rim.shape, f.clone());
+        for f in made {
+            history.generate(&rim.shape, f);
         }
         history.delete(&rim.shape);
     }
@@ -223,14 +252,33 @@ pub(crate) fn rounds(
             return Ok(None);
         }
     }
-    match super::guards::solid_fits(&scratch, &cut.shape, tol) {
+    match super::guards::solid_fits(&scratch, &unified.shape, tol) {
         Ok(()) => {
             *model = scratch;
-            Ok(Some(Built::new(cut.shape, history)))
+            Ok(Some(Built::new(unified.shape, history)))
         }
         Err(e @ ogeom_core::OgeomError::Cancelled) => Err(e),
         Err(_) => Ok(None),
     }
+}
+
+/// Whether `face` lies on the plane `end` a band ends flush on.
+fn on_end_plane(model: &Model, face: &Shape, end: &EndSurface, tol: Tolerances) -> bool {
+    let EndSurface::Plane { at, keep } = end else {
+        return false;
+    };
+    model
+        .node(face)
+        .and_then(|n| n.data().as_face())
+        .and_then(|d| model.geometry().surface(d.surface))
+        .is_some_and(|s| match s {
+            SurfaceGeometry::Plane(p) => {
+                let plane = p.plane();
+                plane.normal().vector().cross(*keep).magnitude() <= tol.angular()
+                    && keep.dot(plane.origin() - *at).abs() <= tol.confusion()
+            }
+            _ => false,
+        })
 }
 
 /// Whether another of the `asked` creases leaves `edge` at a vertex where
@@ -290,7 +338,8 @@ fn rim_tool(
         // kept, the band's faces traced through the cut.
         for (at, end) in planes {
             let reach = 3.0 * rim.radius;
-            let Some((kept, traced)) = cut_far(model, &made, &band, end, *at, reach, tol)? else {
+            let Some((kept, traced)) = cut_far(model, &made, &band, end, *at, reach, None, tol)?
+            else {
                 return Ok(None);
             };
             made = kept;
