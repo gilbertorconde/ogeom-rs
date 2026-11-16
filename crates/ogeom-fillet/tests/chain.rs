@@ -3537,8 +3537,10 @@ fn rim_removed(tube: f64, r: f64, outward: bool) -> f64 {
 /// cavity, and a drum as tall as the rounding (its wall's ring on the far
 /// rim; the closed-form volume holds). Where a hole in the wall comes up
 /// into the band the round takes, or a cavity into the box it can take up,
-/// the engine hands the request back and the general fuse cuts it. No case
-/// is cut by trimming any more.
+/// the engine builds it with booleans: the cross hole is the far feature,
+/// taken off a copy and put back so it cuts the band (ADR 0001, amendment
+/// "M5c, non-local rounds keep their surfaces"). No case is cut by
+/// trimming any more.
 #[test]
 fn rims_are_cut_by_trimming_to_the_general_fuse_s_solid() {
     use core::f64::consts::PI;
