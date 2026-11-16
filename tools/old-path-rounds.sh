@@ -12,9 +12,17 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 log="$(mktemp)"
-trap 'rm -f "$log"' EXIT
-OGEOM_OLD_PATH_LOG="$log" cargo test -p ogeom-fillet --features old-path-log \
-    --no-fail-fast "$@" > /dev/null 2>&1 || true
+output="$(mktemp)"
+trap 'rm -f "$log" "$output"' EXIT
+if OGEOM_OLD_PATH_LOG="$log" cargo test -p ogeom-fillet --features old-path-log \
+    --no-fail-fast "$@" > "$output" 2>&1; then
+    :
+else
+    status=$?
+    cat "$output" >&2
+    echo "round count failed: cargo test exited with status $status" >&2
+    exit "$status"
+fi
 requests=$(wc -l < "$log")
 tests=$(awk '{print $2}' "$log" | sort -u)
 count=$(printf '%s\n' "$tests" | grep -c . || true)

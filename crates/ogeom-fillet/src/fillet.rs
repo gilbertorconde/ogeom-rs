@@ -205,7 +205,9 @@ pub(crate) fn to_current_path(entry: &str) {
                 .open(path)
         {
             let test = std::thread::current().name().unwrap_or("?").to_owned();
-            let _ = writeln!(file, "{entry} {test}");
+            // One append keeps concurrent test names on separate lines.
+            let line = format!("{entry} {test}\n");
+            let _ = file.write_all(line.as_bytes());
         }
     }
     #[cfg(not(feature = "old-path-log"))]
@@ -1535,6 +1537,12 @@ fn rounds_by_engine_routes(
     {
         return Ok(None);
     }
+    // A ball resting on a far edge changes its seat. Read that before a
+    // cylindrical strip can extend across the narrow face (ADR 0001, M5d).
+    if let Some(built) = crate::engine::far_edge_rounds(model, solid, &once, rounds_by_engine, tol)?
+    {
+        return Ok(Some(built));
+    }
     let request = crate::engine::Request::from_rounds(&once, tol)?;
     if let Some(built) = crate::engine::run(model, solid, &request, tol)? {
         return Ok(Some(built));
@@ -1561,12 +1569,6 @@ fn rounds_by_engine_routes(
                 seamless.carry(&built.history),
             )));
         }
-    }
-    // A concave seam whose ball rests on the far edge of the narrow face
-    // beside it all along: its fill, fused (ADR 0001, amendment "M5d").
-    if let Some(built) = crate::engine::far_edge_rounds(model, solid, &once, rounds_by_engine, tol)?
-    {
-        return Ok(Some(built));
     }
     // A round wider than a narrow face beside its edge: the face taken off
     // whole, the crease its neighbours close in rounded (amendment "M5d").

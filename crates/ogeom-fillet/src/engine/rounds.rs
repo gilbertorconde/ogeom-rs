@@ -318,12 +318,11 @@ pub(crate) fn assemble(
                         s.abs() <= reach || (s - section_length(planar, seat)).abs() <= reach;
                     at_end && stands_level(seat.edge, v)
                 } else {
-                    // Leaning, the strip's contacts end at different
-                    // stations, each corner in the third face's plane and
-                    // within its own face, and the end within the third
-                    // face; a face nearly holding the edge's direction cuts
-                    // no end. A strip whose contact runs off a face narrower
-                    // than its setback is left to the current path.
+                    // Each contact ends in the third face's plane and on
+                    // its own face. The third face can extend to meet the
+                    // strip: a roof over a rib ends it on the roof's plane,
+                    // even where the roof's outline lies beyond the rib.
+                    // A plane nearly parallel to the edge cuts no end.
                     let on = |k: usize| {
                         let corner = corners[&(seat.faces[k], v)];
                         (corner - planar.points[&v]).dot(normal).abs() <= reach
@@ -351,8 +350,9 @@ pub(crate) fn assemble(
                             section.plane_end(order, [s[order[0]], s[order[1]]], normal, tol)?;
                         (0..=16).all(|k| {
                             let t = a + (b - a) * f64::from(k) / 16.0;
-                            ogeom_geom::Curve3d::point_at(&end, t, tol)
-                                .is_ok_and(|p| within_face(planar, third, p, reach) || under(p))
+                            ogeom_geom::Curve3d::point_at(&end, t, tol).is_ok_and(|p| {
+                                !seat.convex || within_face(planar, third, p, reach) || under(p)
+                            })
                         })
                     }
                 };
@@ -379,6 +379,14 @@ pub(crate) fn assemble(
                         } else if let Some(corner) =
                             signed_at(&sections, &here, &round, corners, v, planar, reach)
                         {
+                            let sharp = here.iter().find(|s| s.edge == corner.sharp);
+                            if sharp.is_some_and(|s| !s.convex) {
+                                ogeom_core::ogeom_bail!(
+                                    Construction,
+                                    "a convex and a concave round beside a sharp edge close only where \
+                                     an edge the request leaves sharp is convex"
+                                );
+                            }
                             signed.insert(v, corner);
                             if round.iter().any(|f| consumed[*f]) {
                                 return Ok(None);
@@ -2784,9 +2792,9 @@ fn crease_edges(
     let (arc, _) = sec_l.plane_end(order, [stations[order[0]], stations[order[1]]], normal, tol)?;
     let t_b = if order[0] == k_near { 0.0 } else { 1.0 };
     let t_q = ogeom_algo::project_on_curve(&arc, q, 64, tol)?.parameter;
-    if ogeom_geom::Curve3d::point_at(&arc, t_q, tol)?.distance(q) > 1e3 * tol.confusion()
-        || !within_face(planar, crease.far, q, 1e3 * tol.confusion())
-    {
+    // The far face may extend to the crease, as at a flush strip end.
+    // Its section must still meet the independently fitted crossing.
+    if ogeom_geom::Curve3d::point_at(&arc, t_q, tol)?.distance(q) > 1e3 * tol.confusion() {
         return Ok(None);
     }
     Ok(Some(CreaseEdges {
