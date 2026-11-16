@@ -1404,6 +1404,14 @@ fn rounds_by_engine_unplaced(
     {
         return Ok(Some(built));
     }
+    // A rim whose band runs on past an end of its arc, round its circle,
+    // until the end face trims it; others asked with it rounded alone
+    // (amendment "corners where a round's rail misses").
+    if let Some(built) =
+        crate::engine::rim_runs_on_rounds(model, solid, &once, rounds_by_engine, tol)?
+    {
+        return Ok(Some(built));
+    }
     crate::engine::marched_rounds(model, solid, &once, tol)
 }
 

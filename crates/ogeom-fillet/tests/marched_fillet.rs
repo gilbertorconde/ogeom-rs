@@ -961,8 +961,12 @@ fn adaptive(
 /// runs out past the vertex along the crease continued as itself to second
 /// order (the spline's end point, tangent and curvature carried on as a
 /// parabola), its columns standing where the profile holds them: within the
-/// boss's drum past the drum's first radial plane. The arc's round alone is
-/// capped in the radial planes at its ends. Taken in the spline's own
+/// boss's drum past the drum's first radial plane. The arc's round alone
+/// ends on the boss's far radial wall, and past the vertex runs on round its
+/// circle until the rib no longer holds any of its section (ADR 0001,
+/// amendment "corners where a round's rail misses": the rib's wall trimmed
+/// back to the round, not the round capped in the radial plane), its
+/// columns a radius in from the drum. Taken in the spline's own
 /// coordinates (along it, and in from it), a column's area is the speed
 /// times `1 - kappa u`. The union is the two less the columns both take, each
 /// the lower of its two heights.
@@ -1021,6 +1025,63 @@ fn rib_rounds_removed(turn: f64, radius: f64) -> (f64, f64, f64) {
         }
         a
     };
+    // Whether a point of the profile past the drum's first radial plane
+    // stands above the spline (the rib's material), the spline read at the
+    // point's own x.
+    let above_spline = |x: f64, z: f64| {
+        if !(0.0..=10.0).contains(&x) {
+            return false;
+        }
+        let (mut lo, mut hi) = (0.0, 1.0);
+        for _ in 0..80 {
+            let mid = f64::midpoint(lo, hi);
+            if bezier(mid)[0].0 < x {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        z > bezier(f64::midpoint(lo, hi))[0].1
+    };
+    // Whether the profile holds the point a depth `u` in from the drum at
+    // `a` round it: within the drum's own sector, or past its first radial
+    // plane over the rib.
+    let polar = |a: f64, u: f64| {
+        let (c, s) = (start + a).sin_cos();
+        (centre.0 + (big - u) * s, centre.1 + (big - u) * c)
+    };
+    let rim_held = |a: f64, u: f64| {
+        if (0.0..=FRAC_PI_2).contains(&a) {
+            return true;
+        }
+        let (x, z) = polar(a, u);
+        a < 0.0 && above_spline(x, z)
+    };
+    // Back past the vertex the arc's round runs on round its circle while
+    // the rib's wall trims it, its contact on the cap a radius in from the
+    // drum held and its contact on the drum's surface carried on not: the
+    // angle where that first fails, found by halving.
+    let trims = |a: f64| rim_held(a, r) && !rim_held(a, 0.0);
+    let a_stop = {
+        let mut good = 0.0;
+        let mut bad = loop {
+            let next = good - 0.01;
+            if !trims(next) {
+                break next;
+            }
+            good = next;
+        };
+        for _ in 0..60 {
+            let mid = f64::midpoint(good, bad);
+            if trims(mid) {
+                good = mid;
+            } else {
+                bad = mid;
+            }
+        }
+        let _ = &mut bad;
+        good
+    };
     // Per column at (t, u) in the spline's coordinates: whether the profile
     // holds it, its area, and the depth in from the drum where the arc's
     // round stands over it.
@@ -1033,7 +1094,7 @@ fn rib_rounds_removed(turn: f64, radius: f64) -> (f64, f64, f64) {
         let a = round(x, z);
         let depth = big - (x - centre.0).hypot(z - centre.1);
         let held = a < 0.0 || depth >= 0.0;
-        let arc = (0.0..=FRAC_PI_2).contains(&a) && (0.0..=r).contains(&depth);
+        let arc = (a_stop..=FRAC_PI_2).contains(&a) && (0.0..=r).contains(&depth);
         (held, speed * (1.0 - kappa * u), arc.then_some(depth))
     };
     // A column's height under the spline's round alone, and under both.
@@ -1131,27 +1192,70 @@ fn rib_rounds_removed(turn: f64, radius: f64) -> (f64, f64, f64) {
         last += 0.01;
     }
     let spline = along(&alone, 0.0, 1.0, 400) + along(&alone, 1.0, last, 2000);
-    let section = (1.0 - core::f64::consts::FRAC_PI_4) * r * r;
-    let moment = (5.0 / 6.0 - core::f64::consts::FRAC_PI_4) * r.powi(3);
-    let arc = section.mul_add(big * FRAC_PI_2, -moment * FRAC_PI_2);
-    let shared = along(
-        &both,
-        1.0 - 2.0 * r / leaving.0.hypot(leaving.1),
-        last,
-        4000,
-    );
+    // The arc's round alone, a column a radius in from the drum at a time
+    // round it from `a_stop` to its far radial wall: each column's area
+    // the drum's radius less its depth, times the angle's step, and across
+    // the depth line split where the profile stops holding it.
+    let ring = |a: f64| -> f64 {
+        let depth_at = |phi: f64| r * (1.0 - phi.sin());
+        let f = |phi: f64| {
+            let u = depth_at(phi);
+            if rim_held(a, u) {
+                (big - u) * h(u) * r * phi.cos()
+            } else {
+                0.0
+            }
+        };
+        let quarter = FRAC_PI_2;
+        let steps = 64;
+        let piece = |lo: f64, hi: f64| {
+            if hi > lo {
+                adaptive(&gauss, &f, (lo, hi), gauss(&f, lo, hi), 24)
+            } else {
+                0.0
+            }
+        };
+        let (mut total, mut from) = (0.0, 0.0);
+        for k in 1..=steps {
+            let (mut lo, mut hi) = (
+                quarter * f64::from(k - 1) / f64::from(steps),
+                quarter * f64::from(k) / f64::from(steps),
+            );
+            let was = rim_held(a, depth_at(lo));
+            if was != rim_held(a, depth_at(hi)) {
+                for _ in 0..60 {
+                    let mid = f64::midpoint(lo, hi);
+                    if rim_held(a, depth_at(mid)) == was {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                total += piece(from, lo);
+                from = lo;
+            }
+        }
+        total + piece(from, quarter)
+    };
+    let arc = (0..2000)
+        .map(|k| {
+            let lo = (FRAC_PI_2 - a_stop).mul_add(f64::from(k) / 2000.0, a_stop);
+            let hi = (FRAC_PI_2 - a_stop).mul_add(f64::from(k + 1) / 2000.0, a_stop);
+            gauss(&ring, lo, hi)
+        })
+        .sum::<f64>();
+    let shared = along(&both, 0.0, 1.0, 2000) + along(&both, 1.0, last, 2000);
     (spline, arc, spline + arc - shared)
 }
 
-/// A rib's spline wall running into a boss's rim, turned 10° to 30°
-/// towards the material: past where the two bands meet flush, each round
-/// runs out as it does alone (the spline's past the vertex until its
-/// section has left the drum, the rim's capped in the radial plane through
-/// the vertex) and the request takes the union of the two cuts, in either
-/// order, against the column-integrated union. At 4° the bands still meet
-/// flush in the bisecting plane, which leaves the union no more than the
-/// march's fit. The rounds' rails cross on the top face, where the second
-/// cut's section ends with its two surfaces tangent.
+/// A rib's spline wall running into a boss's rim, turned 4° to 30°
+/// towards the material: each round runs out as it does alone (the
+/// spline's past the vertex until its section has left the drum, the rim's
+/// round its circle past the vertex until the rib no longer holds its
+/// section, the rib's wall trimmed back to it: ADR 0001, amendment "corners
+/// where a round's rail misses"), and the request takes the union of the
+/// two cuts, the same to the bit in either order, against the
+/// column-integrated union. The rounds' rails cross on the top face.
 #[test]
 fn rounds_of_a_rib_into_a_boss_take_the_union_of_each_alone() {
     let radius = 0.85;
@@ -1171,6 +1275,7 @@ fn rounds_of_a_rib_into_a_boss_take_the_union_of_each_alone() {
                 "both, the rim's first",
             ),
         ];
+        let mut unions = Vec::new();
         for (named, want, what) in asked {
             let mut model = model.clone();
             let rounded = ogeom_fillet::fillet_edges(&mut model, &solid, &named, radius, T)
@@ -1183,10 +1288,19 @@ fn rounds_of_a_rib_into_a_boss_take_the_union_of_each_alone() {
                 diagnosis.problems
             );
             let removed = before - volume(&model, &rounded, 1e-4);
+            eprintln!("RIB {degrees} {what}: {removed} against {want}");
             assert!(
                 (removed - want).abs() < want * 1e-4,
                 "{degrees} degrees, {what}: {removed} against {want}"
             );
+            if what.starts_with("both") {
+                unions.push(removed);
+            }
         }
+        assert_eq!(
+            unions[0].to_bits(),
+            unions[1].to_bits(),
+            "{degrees} degrees: {unions:?}"
+        );
     }
 }

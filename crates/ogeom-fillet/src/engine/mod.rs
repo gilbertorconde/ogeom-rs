@@ -39,6 +39,7 @@ mod guards;
 mod marched_seats;
 mod meeting;
 mod request;
+mod rim_runs_on;
 mod rims;
 mod round_strips;
 mod rounds;
@@ -62,6 +63,7 @@ pub(crate) use meeting::{
     rounds_with as meeting_rounds_with,
 };
 pub(crate) use request::{Request, Section};
+pub(crate) use rim_runs_on::rounds as rim_runs_on_rounds;
 pub(crate) use rims::{RimSection, assemble as round_rims, assemble_with as round_rims_with};
 pub(crate) use round_strips::{
     far_faces as round_far_faces, non_local_tools as round_non_local_tools, round as round_curved,
