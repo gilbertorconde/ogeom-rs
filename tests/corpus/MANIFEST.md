@@ -323,6 +323,22 @@ capped at its vertex rather than where its line meets the wall: the cap
 cut the other round, or the corner of the wall it left, 0.24 µm deep, a
 sliver the boolean's arrangement could not place.
 
+## inner_corner_off_wall_second_cut.ogeom
+
+Two solids in this kernel's native format, derived from
+`inner_corner_vertex_off_the_wall.ogeom` by this kernel: the part after
+its first round's band was cut away at the inside corner, and the second
+round's band carried on past the corner. Both bands carry the same two
+cylinders, so the cut meets the first band's cylinder face to face, and
+the contact along the corner's wall runs level with that face's edge in
+its chart. The reproducer for a contact's chart image folded a period
+away from the face it bounds, which left the face unclosed.
+
+## inner_corner_overrun_second_cut.ogeom
+
+The same pair derived from `inner_corner_edge_past_its_vertex.ogeom`,
+the part's top read with its seam dissolved before the first cut.
+
 ## floor_edge_ending_at_a_ramp.ogeom
 
 A box cropped, in this kernel's native format, from a community printer
