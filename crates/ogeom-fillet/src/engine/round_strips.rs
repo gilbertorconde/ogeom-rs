@@ -71,7 +71,7 @@ pub(crate) fn round(
     // Whether a round reaches a face it does not end at (ADR 0001, §4.5).
     let mut non_local = false;
     for (edge, _, radius) in &asked {
-        let Some((strip, clear, under)) = strip_of(&curved, *edge, *radius, tol)? else {
+        let Some((strip, clear, under)) = strip_of(model, &curved, *edge, *radius, tol)? else {
             return Ok(None);
         };
         non_local |= !under.is_empty();
@@ -321,6 +321,7 @@ type Seated = (Strip, Option<ogeom_algo::HalfSpaces>, Vec<Id>);
 /// the box its round can take up; `None` where its seat is not one built
 /// here.
 fn strip_of(
+    model: &Model,
     curved: &Curved,
     edge: Id,
     radius: f64,
@@ -339,11 +340,45 @@ fn strip_of(
         Curve::Line(_) => {
             Ok(straight(curved, edge, e, [f0, f1], radius, tol)?.map(|(s, c)| (s, c, Vec::new())))
         }
-        Curve::Circle(circle) => {
-            Ok(rim(curved, edge, circle, [f0, f1], radius, tol)?.map(|(s, c, u)| (s, Some(c), u)))
-        }
+        Curve::Circle(circle) => Ok(rim(model, curved, edge, circle, [f0, f1], radius, tol)?
+            .map(|(s, c, u)| (s, Some(c), u))),
         _ => Ok(None),
     }
+}
+
+/// Which way along `up` the cylinder face `fi` leaves the rim `edge` at the
+/// arc's middle: `+1` or `-1` where its face holds the wall a little above
+/// the rim there and not below, or below and not above; `None` where it
+/// reads both or neither.
+fn wall_way(
+    model: &Model,
+    curved: &Curved,
+    edge: Id,
+    fi: usize,
+    up: Vector,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let e = &curved.edges[&edge];
+    let middle = e.curve.point_at(0.5 * (e.range.0 + e.range.1), tol)?;
+    let step = (radius * 1e-2).max(tol.confusion() * 100.0);
+    let fine = ogeom_mesh::Deflection {
+        chord: tol.confusion(),
+        ..Default::default()
+    };
+    let holds = |p: Point| -> OgeomResult<bool> {
+        Ok(!matches!(
+            ogeom_algo::classify_on_face(model, &curved.faces[fi].shape, p, fine, tol)?,
+            ogeom_algo::Containment::Out
+        ))
+    };
+    Ok(
+        match (holds(middle + up * step)?, holds(middle - up * step)?) {
+            (true, false) => Some(1.0),
+            (false, true) => Some(-1.0),
+            _ => None,
+        },
+    )
 }
 
 /// A straight edge's strip between two planes, a plane and a cylinder
@@ -657,6 +692,7 @@ const RING_SAMPLES: u32 = 32;
 /// stands a radius in from both (out of the material at a concave rim), and
 /// its feet on them are the strip's contact rings.
 fn rim(
+    model: &Model,
     curved: &Curved,
     edge: Id,
     circle: &CircleCurve,
@@ -748,6 +784,15 @@ fn rim(
             };
             let length = way.0.hypot(way.1);
             ways[k] = (way.0 / length, way.1 / length);
+            // A wall the rim leaves both ways somewhere along its circle (a
+            // drum's wall running down beside an arm's side and up above
+            // its top, the two meeting at a cusp) is read beside the arc
+            // itself: the side of the rim its face holds there.
+            if let SurfaceGeometry::Cylinder(_) = face.surface
+                && let Some(read) = wall_way(model, curved, edge, *fi, up, radius, tol)?
+            {
+                ways[k] = (0.0, read);
+            }
         }
     }
     let dot = |a: (f64, f64), b: (f64, f64)| a.0 * b.0 + a.1 * b.1;
@@ -1260,7 +1305,7 @@ pub(crate) fn non_local_tools(
     let mut non_local = false;
     let mut boxes = Vec::new();
     for (edge, radius) in &asked {
-        let Some((strip, clear, under)) = strip_of(&curved, *edge, *radius, tol)? else {
+        let Some((strip, clear, under)) = strip_of(model, &curved, *edge, *radius, tol)? else {
             return Ok(None);
         };
         non_local |= !under.is_empty();
@@ -1377,7 +1422,7 @@ pub(crate) fn far_faces(
         if faces_of(&curved, e).len() == 1 {
             continue;
         }
-        let Some((strip, clear, under)) = strip_of(&curved, e, *radius, tol)? else {
+        let Some((strip, clear, under)) = strip_of(model, &curved, e, *radius, tol)? else {
             return Ok(None);
         };
         for u in under {
