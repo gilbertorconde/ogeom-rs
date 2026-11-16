@@ -2316,27 +2316,10 @@ fn variable_laws_and_conic_tools_do_not_enter_old_builders() {
         let face =
             ogeom_topo::ancestors_of(&model, &block, &edge, ShapeType::Face).unwrap()[0].clone();
         if std::env::var_os(CHILD).is_some_and(|mode| mode == "control") {
-            let other = edge_near(&model, &block, [10.0, 10.0, 5.0]);
-            let built = blend_edges(
-                &mut model,
-                &block,
-                &[
-                    (
-                        edge.clone(),
-                        Blend::RoundDistances {
-                            face,
-                            on_face: 1.0,
-                            on_other: 2.0,
-                            profile: RoundProfile::Elliptical,
-                        },
-                    ),
-                    (other, Blend::Chamfer(ogeom_fillet::Chamfer::Symmetric(1.0))),
-                ],
-                ogeom_fillet::ChamferCorner::Point,
-                T,
-            )
-            .unwrap();
-            valid(&model, &built.shape);
+            let why = ogeom_fillet::fillet_edges(&mut model, &block, &[], 1.0, T)
+                .unwrap_err()
+                .to_string();
+            assert!(why.contains("a chain of no edges rounds nothing"), "{why}");
             return;
         }
         for (start, end) in [(1.0, 2.0), (2.0, 2.0)] {
@@ -2442,7 +2425,8 @@ fn variable_laws_and_conic_tools_do_not_enter_old_builders() {
         );
         if mode == "control" {
             assert!(
-                log.lines().any(|line| line.starts_with("blend_edges ")),
+                log.lines()
+                    .any(|line| line.split_whitespace().next() == Some("fillet_edges")),
                 "the old-constructor control was not observed: {log}"
             );
         } else {
