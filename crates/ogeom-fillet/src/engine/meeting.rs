@@ -908,7 +908,24 @@ fn crease_of(
     if !matches!(c.curve, Curve::Line(_)) {
         return Ok(None);
     }
-    let (a, b) = (curved.points[&c.ends.0], curved.points[&c.ends.1]);
+    // The crease's ends are its vertices brought onto its curve's line: a
+    // vertex standing off its edge's line within its tolerance (a corner
+    // the wall's plane does not quite reach) would carry the crease's seat
+    // off its faces' planes.
+    let (a, b) = {
+        let Curve::Line(line) = &c.curve else {
+            return Ok(None);
+        };
+        let axis = line.axis();
+        let onto = |v: Point| {
+            let along = axis.direction.vector();
+            axis.location + along * along.dot(v - axis.location)
+        };
+        (
+            onto(curved.points[&c.ends.0]),
+            onto(curved.points[&c.ends.1]),
+        )
+    };
     let [fa, fb] = faces_of(curved, edge)[..] else {
         return Ok(None);
     };
