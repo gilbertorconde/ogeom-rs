@@ -118,6 +118,25 @@ pub(crate) fn rounds(
     if rims.is_empty() {
         return Ok(None);
     }
+    // A rim's vertex of three edges or more, every one asked, is a corner
+    // of rounds, the corner patch's (one call rounds a cube's corner with
+    // one ball); this route rounds the rim on past a vertex holding an edge
+    // left sharp (amendment "corners where a round's rail misses"), or
+    // through a vertex where two asked arcs continue one another.
+    let asked_ids: Vec<Id> = asked.iter().map(|(e, _)| id(e)).collect();
+    for (rim, ..) in &rims {
+        for v in [rim.ends.0, rim.ends.1] {
+            let at: Vec<Id> = curved
+                .edges
+                .iter()
+                .filter(|(_, g)| g.ends.0 == v || g.ends.1 == v)
+                .map(|(x, _)| *x)
+                .collect();
+            if at.len() >= 3 && at.iter().all(|x| asked_ids.contains(x)) {
+                return Ok(None);
+            }
+        }
+    }
     let mut scratch = model.clone();
     // The other edges on marched seats: their wedges as each builds alone,
     // applied with the rims' tools, the rims' first.
@@ -538,11 +557,12 @@ fn ends_apart(curved: &Curved, rim: &Rim, edge: Id, tol: Tolerances) -> bool {
 /// The surfaces the rim's band ends flush on, one per end at an inside
 /// corner, each with its vertex: the surface of the one face at the vertex,
 /// past the cap and the wall and the faces carrying them on, that the arc
-/// carried on runs into or runs tangent to (the end face; an earlier
-/// round's band among them). An end where the arc carried on leaves
+/// carried on runs into (the end face; an earlier round's band among them).
+/// An end where the arc carried on leaves
 /// through every such face (a corner convex in plan, or a seam the circle
 /// runs on through) has none. `None` where an end meets more than one such
-/// face, or one [`EndSurface`] does not read.
+/// face, one [`EndSurface`] does not read, or the arc runs tangent into an
+/// earlier round's band.
 fn end_cuts(curved: &Curved, rim: &Rim, tol: Tolerances) -> OgeomResult<Option<Vec<EndCut>>> {
     let mut cuts = Vec::new();
     for (k, sign) in [(0, -1.0), (1, 1.0)] {
@@ -568,11 +588,16 @@ fn end_cuts(curved: &Curved, rim: &Rim, tol: Tolerances) -> OgeomResult<Option<V
                 return Ok(None);
             };
             // A curved face the arc carried on runs tangent to (an earlier
-            // round's band beside the cap) is an end face too: its band
-            // trims this one.
-            let tangent = !matches!(curved.faces[f].surface, SurfaceGeometry::Plane(_))
-                && n.dot(ahead).abs() <= 1e-6;
-            if n.dot(ahead) > tol.angular() && !tangent {
+            // round's band beside the cap) is no end face: by amendment "a
+            // later round reaching an earlier band at its end" the band runs
+            // on into it and is trimmed by it, which this route does not
+            // build for a rim yet. Handed back.
+            if !matches!(curved.faces[f].surface, SurfaceGeometry::Plane(_))
+                && n.dot(ahead).abs() <= tol.angular()
+            {
+                return Ok(None);
+            }
+            if n.dot(ahead) > tol.angular() {
                 continue;
             }
             blocking.push((f, n));
@@ -699,9 +724,11 @@ fn continues(curved: &Curved, rim: &Rim, f: usize, tol: Tolerances) -> bool {
 /// arc on round its circle while the end face trims the band, its contact
 /// on the cap standing in the solid and its contact on the wall's surface
 /// carried on standing outside it, to the first station where that trim
-/// reaches either contact, found by halving to rounding; and whether
-/// either lies past its end of the arc. `None` where the band runs on half
-/// a turn.
+/// reaches either contact, found by halving to rounding, and never past
+/// where the cap's contact first meets the cap's boundary, crossing or
+/// touching it (amendment "a band's run past its end"); and whether either
+/// lies past its end of the arc. `None` where the band runs on half a
+/// turn.
 fn span(
     model: &Model,
     solid: &Shape,
@@ -775,11 +802,21 @@ fn span(
         if !leaves {
             continue;
         }
+        // The first point past the end where the contact on the cap meets
+        // the cap's boundary, crossing it or touching it: past there the
+        // section holds no material connected to the arc's (ADR 0001,
+        // amendment "a band's run past its end").
+        let limit = cap_boundary(curved, rim, from, sign, tol)?;
+        let within = |t: f64| limit.is_none_or(|l| sign * (l - t) > 0.0);
         let mut good = from;
         let mut bad = None;
         let mut i = 1.0;
         while i <= steps {
             let t = from + sign * step * i;
+            if !within(t) {
+                bad = limit;
+                break;
+            }
             match trims(t)? {
                 None => return Ok(None),
                 Some(true) => good = t,
@@ -795,6 +832,10 @@ fn span(
         };
         for _ in 0..60 {
             let mid = f64::midpoint(good, bad);
+            if !within(mid) {
+                bad = mid;
+                continue;
+            }
             match trims(mid)? {
                 None => return Ok(None),
                 Some(true) => good = mid,
@@ -819,6 +860,65 @@ fn span(
         };
     }
     Ok(Some(((ends[0], ends[1]), longer)))
+}
+
+/// Where the rim's contact on its cap, run on from `from` the way `sign`
+/// takes it round the circle, first meets an edge of the cap other than
+/// the rim's own, crossing it or touching it: a parameter on the rim's
+/// circle, or `None` where it meets none within a turn.
+///
+/// # Errors
+///
+/// As intersecting the curves.
+fn cap_boundary(
+    curved: &Curved,
+    rim: &Rim,
+    from: f64,
+    sign: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let Some([_, _, on_top, _]) = ball(curved, rim, from, tol)? else {
+        return Ok(None);
+    };
+    let frame = rim.circle.frame();
+    let axis = frame.z().vector();
+    let off = on_top - frame.origin();
+    let radius = (off - axis * axis.dot(off)).magnitude();
+    let height = axis.dot(off);
+    let at = Frame::new(frame.origin() + axis * height, frame.z(), frame.x(), tol)?;
+    let contact: Curve = CircleCurve::new(ogeom_math::Circle::new(at, radius, tol)?).into();
+    let period = core::f64::consts::TAU;
+    let mut nearest: Option<f64> = None;
+    for (x, _) in curved.faces[rim.top].loops.iter().flatten() {
+        if *x == id(&rim.shape) {
+            continue;
+        }
+        let e = &curved.edges[x];
+        let (dlo, dhi) = e.curve.domain();
+        let boundary: Curve = if (e.range.0 - dlo).abs() <= tol.parametric()
+            && (e.range.1 - dhi).abs() <= tol.parametric()
+        {
+            e.curve.clone()
+        } else {
+            ogeom_geom::TrimmedCurve::new(e.curve.clone(), e.range.0, e.range.1, tol)?.into()
+        };
+        let found = ogeom_intersect::curves::intersect_curves(
+            &contact,
+            &boundary,
+            ogeom_intersect::curves::CurveCurveOptions {
+                gap: tol.confusion(),
+                ..ogeom_intersect::curves::CurveCurveOptions::default()
+            },
+            tol,
+        )?;
+        for c in found.crossings {
+            let ahead = (sign * (c.on_a - from)).rem_euclid(period);
+            if ahead > tol.parametric() && nearest.is_none_or(|n| ahead < n) {
+                nearest = Some(ahead);
+            }
+        }
+    }
+    Ok(nearest.map(|d| from + sign * d))
 }
 
 /// The rim's band over `span` of its circle: its section at the span's
