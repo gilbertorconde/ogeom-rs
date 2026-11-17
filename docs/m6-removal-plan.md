@@ -492,7 +492,7 @@ additional unlogged old-constructor requests.
 | `crates/ogeom/tests/blends.rs:2659` — `round_vertex_carries_two_bands_stopped_by_one_run_out` | 2 | fillet_edge × 2 |
 | `crates/ogeom/tests/blends.rs:2752` — `round_vertex_after_one_edge_at_a_time_is_the_corner_rounded_in_one_call` | 149 | fillet_edge × 149 |
 | `crates/ogeom/tests/blends.rs:3154` — `round_vertex_rounds_flat_and_oblique_apexes_no_ball_touches` | 10 | fillet_edge × 10 |
-| `crates/ogeom/tests/blends.rs:3361` — `a_curved_corner_closes_the_same_way_round_either_order` | 3 | fillet_edge × 2, fillet_edges × 1 |
+| `crates/ogeom/tests/blends.rs:3361` — `a_curved_corner_in_one_call_has_one_ball_and_one_round_at_a_time_takes_the_union` | 3 | fillet_edge × 2, fillet_edges × 1 |
 | `crates/ogeom/tests/blends.rs:3408` — `a_curved_corner_closes_with_the_rim_s_band_first` | 5 | fillet_edge × 5 |
 | `crates/ogeom/tests/blends.rs:3507` — `a_curved_corner_s_straight_band_first_runs_out_across_the_drum` | 4 | fillet_edge × 4 |
 | `crates/ogeom/tests/blends.rs:3843` — `a_rim_blend_rolls_over_the_bracket_s_concave_blend` | 1 | fillet_edges × 1 |

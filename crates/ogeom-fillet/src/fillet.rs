@@ -1165,11 +1165,6 @@ fn rounds_by_engine_unplaced(
     {
         return Ok(Some(built));
     }
-    // A ruling ending at an earlier band runs on into it, trimmed by it
-    // (amendment "a later round reaching a band seated on a curved face").
-    if let Some(built) = crate::engine::ruling_out_rounds(model, solid, &once, tol)? {
-        return Ok(Some(built));
-    }
     // Creases meeting only across convex turns, each built as it is alone,
     // the cuts taking their union (amendment "M5e").
     if let Some(built) = crate::engine::alone_rounds(model, solid, &once, rounds_by_engine, tol)? {
@@ -1299,6 +1294,12 @@ fn rounds_by_engine_routes(
     if crate::engine::reaches_earlier_band(model, solid, &once, tol)?
         && let Some(built) = crate::engine::carried_out_rounds(model, solid, &once, tol)?
     {
+        return Ok(Some(built));
+    }
+    // A drum's ruling ending at an earlier band runs on into it, trimmed by
+    // it (amendment "a later round reaching a band seated on a curved
+    // face"), before the curved routes would stop it at that band.
+    if let Some(built) = crate::engine::ruling_out_rounds(model, solid, &once, tol)? {
         return Ok(Some(built));
     }
     // A solid with curved faces, read with its seams dissolved where it

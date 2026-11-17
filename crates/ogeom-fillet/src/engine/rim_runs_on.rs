@@ -588,14 +588,14 @@ fn end_cuts(curved: &Curved, rim: &Rim, tol: Tolerances) -> OgeomResult<Option<V
                 return Ok(None);
             };
             // A curved face the arc carried on runs tangent to (an earlier
-            // round's band beside the cap) is no end face: by amendment "a
-            // later round reaching an earlier band at its end" the band runs
-            // on into it and is trimmed by it, which this route does not
-            // build for a rim yet. Handed back.
+            // round's band beside the cap) is no end face: the band runs on
+            // into it and is trimmed by it (amendments "a later round
+            // reaching an earlier band at its end" and "a later round
+            // reaching a band seated on a curved face").
             if !matches!(curved.faces[f].surface, SurfaceGeometry::Plane(_))
-                && n.dot(ahead).abs() <= tol.angular()
+                && n.dot(ahead).abs() <= 1e-6
             {
-                return Ok(None);
+                continue;
             }
             if n.dot(ahead) > tol.angular() {
                 continue;
@@ -738,15 +738,35 @@ fn span(
 ) -> OgeomResult<Option<((f64, f64), bool)>> {
     let step = 0.25 * rim.radius / rim.circle.radius();
     let steps = (core::f64::consts::PI / step).ceil();
-    let trims = |t: f64| -> OgeomResult<Option<bool>> {
+    let trims = |t: f64, at_band: bool| -> OgeomResult<Option<bool>> {
         let Some([_, _, on_top, on_wall]) = ball(curved, rim, t, tol)? else {
             return Ok(None);
         };
         let on = ogeom_algo::classify_in_solid_exact(model, solid, on_top, tol)?;
         let off = ogeom_algo::classify_in_solid_exact(model, solid, on_wall, tol)?;
-        Ok(Some(
-            on != ogeom_algo::Containment::Out && off == ogeom_algo::Containment::Out,
-        ))
+        if !at_band {
+            return Ok(Some(
+                on != ogeom_algo::Containment::Out && off == ogeom_algo::Containment::Out,
+            ));
+        }
+        // Past an end where an earlier round's band took the edge, not its
+        // faces (amendment "a later round reaching a band seated on a curved
+        // face"), the ball runs on seated on its own faces, its contact on
+        // the cap in air only where that band cut the cap back, until a
+        // contact is in the material.
+        let on_cap = on != ogeom_algo::Containment::Out
+            || outward(curved, rim.top, on_top).is_some_and(|n| {
+                super::ruling_out::cut_back(
+                    model,
+                    solid,
+                    curved,
+                    (on_top, n),
+                    4.0 * rim.radius,
+                    tol,
+                )
+                .unwrap_or(false)
+            });
+        Ok(Some(on_cap && off != ogeom_algo::Containment::In))
     };
     // Whether the contact on the cap at `t` stands in the solid, and
     // whether the section there holds any of it, read at points across the
@@ -790,6 +810,17 @@ fn span(
         let v = if k == 0 { rim.ends.0 } else { rim.ends.1 };
         let at = curved.points[&v];
         let ahead = CircleCurve::new(rim.circle).d1_at(from, tol)? * sign;
+        let at_band = curved.faces.iter().enumerate().any(|(f, face)| {
+            f != rim.top
+                && f != rim.wall
+                && !matches!(face.surface, SurfaceGeometry::Plane(_))
+                && face.loops.iter().flatten().any(|(x, _)| {
+                    let g = &curved.edges[x];
+                    g.ends.0 == v || g.ends.1 == v
+                })
+                && outward(curved, f, at)
+                    .is_some_and(|n| n.dot(ahead / ahead.magnitude()).abs() <= 1e-6)
+        });
         let leaves = curved.faces.iter().enumerate().all(|(f, face)| {
             f == rim.top
                 || f == rim.wall
@@ -798,6 +829,11 @@ fn span(
                     g.ends.0 == v || g.ends.1 == v
                 })
                 || outward(curved, f, at).is_some_and(|n| n.dot(ahead) > tol.angular())
+                // An earlier round's band the arc runs tangent into: the
+                // band runs on past, trimmed by it.
+                || (!matches!(face.surface, SurfaceGeometry::Plane(_))
+                    && outward(curved, f, at)
+                        .is_some_and(|n| n.dot(ahead / ahead.magnitude()).abs() <= 1e-6))
         });
         if !leaves {
             continue;
@@ -817,7 +853,7 @@ fn span(
                 bad = limit;
                 break;
             }
-            match trims(t)? {
+            match trims(t, at_band)? {
                 None => return Ok(None),
                 Some(true) => good = t,
                 Some(false) => {
@@ -836,7 +872,7 @@ fn span(
                 bad = mid;
                 continue;
             }
-            match trims(mid)? {
+            match trims(mid, at_band)? {
                 None => return Ok(None),
                 Some(true) => good = mid,
                 Some(false) => bad = mid,
@@ -886,11 +922,27 @@ fn cap_boundary(
     let radius = (off - axis * axis.dot(off)).magnitude();
     let height = axis.dot(off);
     let at = Frame::new(frame.origin() + axis * height, frame.z(), frame.x(), tol)?;
-    let contact: Curve = CircleCurve::new(ogeom_math::Circle::new(at, radius, tol)?).into();
+    let contact_circle = ogeom_math::Circle::new(at, radius, tol)?;
+    let contact: Curve = CircleCurve::new(contact_circle).into();
     let period = core::f64::consts::TAU;
     let mut nearest: Option<f64> = None;
     for (x, _) in curved.faces[rim.top].loops.iter().flatten() {
         if *x == id(&rim.shape) {
+            continue;
+        }
+        // Where the cap runs on tangent into an earlier round's band, the
+        // band is no boundary: the cap's contact runs on past it to where
+        // it meets the band's other seat, a plane, as it would have met
+        // that face's edge with the cap had the band not been there.
+        if let Some(seats) = band_seats(curved, rim, *x, tol)? {
+            for plane in seats {
+                for t in circle_meets_plane(&contact_circle, plane, tol) {
+                    let ahead = (sign * (t - from)).rem_euclid(core::f64::consts::TAU);
+                    if ahead > tol.parametric() && nearest.is_none_or(|n| ahead < n) {
+                        nearest = Some(ahead);
+                    }
+                }
+            }
             continue;
         }
         let e = &curved.edges[x];
@@ -919,6 +971,86 @@ fn cap_boundary(
         }
     }
     Ok(nearest.map(|d| from + sign * d))
+}
+
+/// Where the cap meets an earlier round's band tangentially along edge
+/// `x`: that band's other seats that are planes, each by a point and its
+/// unit normal; `None` where `x` is no such edge.
+fn band_seats(
+    curved: &Curved,
+    rim: &Rim,
+    x: Id,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<(Point, ogeom_math::Vector)>>> {
+    let e = &curved.edges[&x];
+    let mid = e.curve.point_at(0.5 * (e.range.0 + e.range.1), tol)?;
+    let Some(nt) = outward(curved, rim.top, mid) else {
+        return Ok(None);
+    };
+    let tangent =
+        |f: usize, g: usize, at: Point| match (outward(curved, f, at), outward(curved, g, at)) {
+            (Some(a), Some(b)) => a.cross(b).magnitude() <= 1e-6 && a.dot(b) > 0.0,
+            _ => false,
+        };
+    let Some(band) = faces_of(curved, x).into_iter().find(|g| {
+        *g != rim.top
+            && !matches!(curved.faces[*g].surface, SurfaceGeometry::Plane(_))
+            && outward(curved, *g, mid)
+                .is_some_and(|n| n.cross(nt).magnitude() <= 1e-6 && n.dot(nt) > 0.0)
+    }) else {
+        return Ok(None);
+    };
+    let mut seats = Vec::new();
+    for (y, _) in curved.faces[band].loops.iter().flatten() {
+        let edge = &curved.edges[y];
+        let at = edge
+            .curve
+            .point_at(0.5 * (edge.range.0 + edge.range.1), tol)?;
+        for g in faces_of(curved, *y) {
+            if g == band || g == rim.top || !tangent(band, g, at) {
+                continue;
+            }
+            if let SurfaceGeometry::Plane(p) = &curved.faces[g].surface {
+                let plane = p.plane();
+                let seat = (plane.origin(), plane.normal().vector());
+                if !seats.iter().any(|(o, n): &(Point, ogeom_math::Vector)| {
+                    n.cross(seat.1).magnitude() <= 1e-9
+                        && (seat.0 - *o).dot(*n).abs() <= tol.confusion()
+                }) {
+                    seats.push(seat);
+                }
+            }
+        }
+    }
+    Ok(Some(seats))
+}
+
+/// The parameters at which `circle` meets the plane through `plane.0` with
+/// normal `plane.1`, a touch counted once.
+fn circle_meets_plane(
+    circle: &ogeom_math::Circle,
+    (on, n): (Point, ogeom_math::Vector),
+    tol: Tolerances,
+) -> Vec<f64> {
+    let frame = circle.frame();
+    let (e1, e2) = (frame.x().vector(), frame.y().vector());
+    let r = circle.radius();
+    let (a, b, d) = (r * n.dot(e1), r * n.dot(e2), n.dot(frame.origin() - on));
+    let m = a.hypot(b);
+    if m <= tol.confusion() {
+        return Vec::new();
+    }
+    let c = -d / m;
+    if c.abs() > 1.0 + tol.confusion() / r {
+        return Vec::new();
+    }
+    let base = b.atan2(a);
+    let spread = c.clamp(-1.0, 1.0).acos();
+    if spread <= 1e-9 {
+        vec![base]
+    } else {
+        vec![base + spread, base - spread]
+    }
 }
 
 /// The rim's band over `span` of its circle: its section at the span's
