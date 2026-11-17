@@ -660,7 +660,9 @@ fn seated_along(
                     // band at its end"): the band runs on into that blend.
                     // Past a planar end face at one of the crease's own
                     // ends, where a band carried out runs on across it.
-                    Containment::Out if past_ends && past_end_face(curved, crease, p, tol)? => {}
+                    Containment::Out
+                        if past_ends
+                            && past_end_face(model, solid, curved, crease, (p, n), tol)? => {}
                     Containment::Out
                         if cut_back_by_blend(
                             model,
@@ -1278,35 +1280,74 @@ fn ends_at_blend(curved: &Curved, crease: &Crease, k: usize, tol: Tolerances) ->
     Ok(false)
 }
 
-/// Whether `p` stands on the outer side of a face, other than the crease's
-/// own, at one of the crease's end vertices: past that end, where a band
-/// carried out runs on across the face. Past a plane, on its outer side;
-/// past a curved face (a drum the crease runs out across, which may stand
-/// over the crease's faces before its end, cutting them back), outside its
-/// surface at the surface's point nearest `p`, within the band's reach of
-/// the end.
-fn past_end_face(curved: &Curved, crease: &Crease, p: Point, tol: Tolerances) -> OgeomResult<bool> {
+/// Whether `p`, a point of a crease face's plane (outward normal `n`) in
+/// air, stands past a face other than the crease's own at one of the
+/// crease's end vertices: past that end, where a band carried out runs on
+/// across the face. Past a plane, on its outer side. Past a curved face (a
+/// drum the crease runs out across, which may stand over the crease's
+/// faces before its end, cutting them back): straight in from the plane,
+/// the first surface met is that face's own cylinder or sphere, the point
+/// met on the solid's boundary and the way to it in air, as
+/// [`cut_back_by_blend`] reads an earlier blend. A groove's floor or wall
+/// is met first over a groove, and is not the end face.
+fn past_end_face(
+    model: &Model,
+    solid: &Shape,
+    curved: &Curved,
+    crease: &Crease,
+    (p, n): (Point, Vector),
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    use ogeom_algo::Containment;
     for v in [crease.ends.0, crease.ends.1] {
         let at = curved.points[&v];
         for f in 0..curved.faces.len() {
             if crease.faces.contains(&f) || !touches(curved, f, v) {
                 continue;
             }
-            let past = match &curved.faces[f].surface {
+            let (centre, axis, radius) = match &curved.faces[f].surface {
                 SurfaceGeometry::Plane(_) => {
-                    outward(curved, f, at).is_some_and(|m| (p - at).dot(m) > tol.confusion())
-                }
-                surface => {
-                    if p.distance(at) > 3.0 * crease.radius {
-                        continue;
+                    if outward(curved, f, at).is_some_and(|m| (p - at).dot(m) > tol.confusion()) {
+                        return Ok(true);
                     }
-                    let foot = ogeom_algo::project_on_surface(surface, p, 16, tol)?;
-                    foot.distance > tol.confusion()
-                        && outward(curved, f, foot.point)
-                            .is_some_and(|m| (p - foot.point).dot(m) > tol.confusion())
+                    continue;
                 }
+                SurfaceGeometry::Cylinder(c) => {
+                    let cyl = c.cylinder();
+                    (
+                        cyl.frame().origin(),
+                        Some(cyl.frame().z().vector()),
+                        cyl.radius(),
+                    )
+                }
+                SurfaceGeometry::Sphere(s) => {
+                    let sphere = s.sphere();
+                    (sphere.frame().origin(), None, sphere.radius())
+                }
+                _ => continue,
             };
-            if past {
+            // The line p - n t against the face's own surface: its nearest
+            // root past p.
+            let flat = |w: Vector| axis.map_or(w, |z| w - z * w.dot(z));
+            let (w, d) = (flat(p - centre), flat(-n));
+            let (qa, qb, qc) = (d.dot(d), 2.0 * w.dot(d), w.dot(w) - radius * radius);
+            let disc = qb.mul_add(qb, -4.0 * qa * qc);
+            if qa <= tol.angular() || disc < 0.0 {
+                continue;
+            }
+            let root = disc.sqrt();
+            let Some(t) = [(-qb - root) / (2.0 * qa), (-qb + root) / (2.0 * qa)]
+                .into_iter()
+                .filter(|t| *t > tol.confusion())
+                .reduce(f64::min)
+            else {
+                continue;
+            };
+            let met = p - n * t;
+            if ogeom_algo::classify_in_solid_exact(model, solid, met, tol)? == Containment::On
+                && ogeom_algo::classify_in_solid_exact(model, solid, p - n * (0.5 * t), tol)?
+                    == Containment::Out
+            {
                 return Ok(true);
             }
         }

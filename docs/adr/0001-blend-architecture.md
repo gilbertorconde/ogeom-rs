@@ -2312,8 +2312,12 @@ the edge's end.
 - **Rule.** Per section 13, question 8, the contact that runs off its
   face onto the curved face the crease ends at ends there: the band runs
   on straight and the curved face trims it. The seat check excuses a
-  contact in air past such a face (outside its surface, within three
-  radii of the crease's end) as it excuses one past a planar end face.
+  contact in air past such a face as it excuses one past a planar end
+  face, by the test amendment "a crease's seat past an earlier blend"
+  makes: straight in from the crease face's plane, the first surface met
+  is the end face's own cylinder or sphere, the point met on the solid's
+  boundary and the way to it in air. A groove beside the crease is met
+  first over a groove, and is not excused.
 - **Past the gap.** Carried on across the gap the curved face leaves (a
   groove), the band can meet the solid again farther along its line.
   That piece is no ball's of this crease, which ended in the gap. The
