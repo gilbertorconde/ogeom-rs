@@ -59,8 +59,11 @@ fn seat(
 
 /// What the march's bands came to.
 enum Bands {
-    /// The wedges, each set aside on the solid as given.
-    Wedges(Vec<Wedge>),
+    /// The wedges, each set aside on the solid as given, or, for a lone
+    /// edge whose leg lies on a sphere charted with its pole turned away,
+    /// on the solid rebuilt on that chart: that solid, with its history
+    /// from the solid as given.
+    Wedges(Vec<Wedge>, Option<Box<Built>>),
     /// One edge's ball or band refused: a one-edge request may take the
     /// strip beside it off whole.
     Refused,
@@ -171,8 +174,10 @@ pub(crate) fn wedges(
         return Ok(None);
     }
     Ok(match bands(model, solid, once, &seats, tol)? {
-        Bands::Wedges(wedges) => Some(wedges),
-        Bands::Refused | Bands::Declined => None,
+        // Wedges set aside against a rebuilt solid are not the solid as
+        // given's to apply.
+        Bands::Wedges(wedges, None) => Some(wedges),
+        Bands::Wedges(_, Some(_)) | Bands::Refused | Bands::Declined => None,
     })
 }
 
@@ -204,10 +209,14 @@ fn seated(
     }
     let mut scratch = model.clone();
     match bands(&mut scratch, solid, once, &seats, tol)? {
-        Bands::Wedges(wedges) => {
-            if let Some(built) = applied(&mut scratch, solid, once, &wedges, tol)? {
+        Bands::Wedges(wedges, turned) => {
+            let on = turned.as_ref().map_or(solid, |t| &t.shape);
+            if let Some(built) = applied(&mut scratch, on, once, &wedges, tol)? {
                 *model = scratch;
-                return Ok(Some(built));
+                return Ok(Some(match turned {
+                    Some(turned) => Built::new(built.shape, turned.history.then(&built.history)),
+                    None => built,
+                }));
             }
             let Some((edge, radius)) = alone else {
                 return Ok(None);
@@ -278,6 +287,7 @@ fn bands(
         Ok(None) | Err(_) => return Ok(Bands::Declined),
     };
     let mut set_aside: Vec<(usize, Wedge)> = Vec::new();
+    let mut turned = None;
     for (index, ((edge, radius), seat)) in once.iter().zip(seats).enumerate() {
         let aside = RefCell::new(Vec::new());
         let built = match seat {
@@ -303,6 +313,18 @@ fn bands(
         let wedges = aside.into_inner();
         match built {
             Ok(built) if built.shape.is_same(solid) && !wedges.is_empty() => {}
+            // A lone edge's leg on a sphere charted with its pole turned
+            // away: the march hands back the solid rebuilt on that chart,
+            // its faces on the sphere replaced and every edge kept, for
+            // the wedge to melt against. The history it hands back ends in
+            // the edge's own deletion, which the wedge's application
+            // records again with the faces it generates.
+            Ok(built) if once.len() == 1 && !wedges.is_empty() => {
+                turned = Some(Box::new(Built::new(
+                    built.shape,
+                    without(&built.history, edge),
+                )));
+            }
             Err(e @ OgeomError::Cancelled) => return Err(e),
             Err(OgeomError::Construction(_) | OgeomError::NotDone(_)) if once.len() == 1 => {
                 return Ok(Bands::Refused);
@@ -314,10 +336,34 @@ fn bands(
         }
     }
     match super::marched_junctions::joined(model, solid, once, &met, set_aside, tol) {
-        Ok(joined) => Ok(Bands::Wedges(joined)),
+        Ok(joined) => Ok(Bands::Wedges(joined, turned)),
         Err(e @ OgeomError::Cancelled) => Err(e),
         Err(_) => Ok(Bands::Declined),
     }
+}
+
+/// `history` with nothing recorded of `input`.
+fn without(history: &ogeom_algo::History, input: &Shape) -> ogeom_algo::History {
+    let mut kept = ogeom_algo::History::new();
+    for shape in history.inputs() {
+        if shape.is_same(input) {
+            continue;
+        }
+        if history.is_deleted(&shape) {
+            kept.delete(&shape);
+        }
+        if let Some(copy) = history.copy_of(&shape) {
+            kept.copy(&shape, copy.clone());
+        } else {
+            for image in history.modified(&shape) {
+                kept.modify(&shape, image.clone());
+            }
+        }
+        for made in history.generated(&shape) {
+            kept.generate(&shape, made.clone());
+        }
+    }
+    kept
 }
 
 /// `wedges` applied to `solid` as the one-boolean fallback's tools, each
