@@ -977,7 +977,7 @@ fn rounds_by_engine_compound(
 ///
 /// # Errors
 ///
-/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction),
+/// [`OgeomError::Construction`],
 /// refused by name, where a round reaches into a void: what a shell's
 /// rounds leave of it touches another shell, or a void then stands outside
 /// the outer shell (in what a round took off).

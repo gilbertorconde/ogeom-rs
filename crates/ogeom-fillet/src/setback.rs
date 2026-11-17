@@ -526,8 +526,9 @@ pub(crate) fn in_cell(walls: &[(Vector, Point)], p: Point, tol: Tolerances) -> b
         .all(|(normal, at)| normal.dot(p - *at) >= -tol.confusion() * 100.0)
 }
 
-/// As [`least_setbacks`], each band taking `widths[k]` off the two faces of
-/// its edge, in the order of the corner's ring: the first on the plane
+/// Each band's least setback from the corner along its edge, each band
+/// taking `widths[k]` off the two faces of its edge, in the order of the
+/// corner's ring: the first on the plane
 /// `ring[k]`, the second on `ring[k + 1]`. Everything a band takes away
 /// lies within the larger of its two widths of its edge's line.
 pub(crate) fn least_setbacks_widths(
@@ -628,13 +629,13 @@ pub(crate) fn least_setbacks_widths(
 type Kinded = (Shape, f64, bool);
 
 /// The vertices of `solid` where the request's bands of both kinds meet,
-/// each read as a [`SignedCorner`]; refused by name where such a vertex is
+/// each read by [`signed_corner`]; refused by name where such a vertex is
 /// not one this closes.
 ///
 /// An edge of such a vertex the request leaves sharp is read as a band of
 /// no width: the opening between the bands' ends crosses it, and is closed
 /// through a point on it where a patch turns its normal from one of its
-/// faces to the other's ([`crate::sharp::close_through_q`]). Such an edge
+/// faces to the other's ([`crate::engine::point_corner::close_through_q`]). Such an edge
 /// is to be convex.
 pub(crate) fn signed_corners(
     model: &Model,
