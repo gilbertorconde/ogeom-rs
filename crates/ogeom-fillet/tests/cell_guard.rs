@@ -295,9 +295,7 @@ fn a_setback_corner_with_an_edge_left_sharp_and_a_void_in_its_cell_is_refused_by
 /// it. No round reaches the void, so the corner closes as it does on the
 /// bracket without one (ADR 0001, §13 question 7: no corner of mixed
 /// convexity is refused; a voided solid's rounds are refused by name only
-/// where one reaches a void). The current path refused it because the box
-/// it rebuilds the corner in held the void. The void stays whole, its own
-/// shell: the result holds exactly the void's volume less than the bracket
+/// where one reaches a void). The void stays whole, its own shell: the result holds exactly the void's volume less than the bracket
 /// rounded alike without it, whichever edges are asked and in either order.
 #[test]
 fn a_convex_and_a_concave_round_beside_a_void_they_do_not_reach_close_the_corner() {
