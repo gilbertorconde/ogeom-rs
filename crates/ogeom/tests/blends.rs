@@ -3362,8 +3362,13 @@ fn a_curved_corner_closes_the_same_way_round_either_order() {
     // Two routes to one rounded corner: all three edges in one call (the
     // corner first, the bands stopping flush against its ball), and the
     // bands one at a time with the corner tool after. The drum's ruling
-    // goes first on the second route. Its band and the top's two meet
-    // at the corner only through the ball.
+    // goes first on the second route and takes its own spandrel over the
+    // height, exactly. Its band and the top's two meet at the corner only
+    // through the ball. The straight band and the rim's after the ruling's
+    // are still the current path's, which stops each flush at its end and
+    // keeps the corner for the corner tool; built by the rule (amendment "a
+    // later round reaching a band seated on a curved face") the straight
+    // band runs on across the corner and no corner is left.
     let mut model = Model::new();
     let (part, corner, mids) = shaved_cube(&mut model);
     let edges: Vec<Shape> = mids.iter().map(|m| edge_near(&model, &part, *m)).collect();
@@ -3378,9 +3383,30 @@ fn a_curved_corner_closes_the_same_way_round_either_order() {
     let mut current = part.clone();
     for i in [2, 0, 1] {
         let live = edge_near(&model, &current, mids[i]);
-        current = ogeom::fillet::fillet_edge(&mut model, &current, &live, 1.0, T)
+        let rounded = ogeom::fillet::fillet_edge(&mut model, &current, &live, 1.0, T)
             .unwrap()
             .shape;
+        if i == 2 {
+            let measure = |shape: &Shape| {
+                ogeom::algo::volume_properties(
+                    &model,
+                    shape,
+                    ogeom::mesh::Deflection::with_chord(1e-3).unwrap(),
+                    T,
+                )
+                .unwrap()
+                .mass
+            };
+            let (taken, want) = (
+                measure(&current) - measure(&rounded),
+                shaved_ruling_band_removed(),
+            );
+            assert!(
+                (taken - want).abs() < want * 1e-6,
+                "the ruling's band took {taken}, its spandrel over the height {want}"
+            );
+        }
+        current = rounded;
     }
     let apart = ogeom::fillet::round_vertex(&mut model, &current, &v, 1.0, T).unwrap();
     let diagnosis = ogeom::algo::check(&model, &apart.shape, T).unwrap();
@@ -3402,7 +3428,10 @@ fn a_curved_corner_closes_the_same_way_round_either_order() {
 /// boss does, until its section has left the solid. It takes off exactly
 /// the ball's corner over the turn from the side `x = 0` round to `y = 0`
 /// within the block, integrated, and the corner's vertex goes with it. The
-/// straight band and the ruling's then round in either order to one solid.
+/// ruling's band next runs on into the rim's, the two taking their union
+/// (each alone, less what both take: the rim band's height over the
+/// ruling's spandrel). The straight band and the ruling's then round in
+/// either order to one solid.
 #[test]
 #[ignore = "heavy"]
 fn a_curved_corner_closes_with_the_rim_s_band_first() {
@@ -3426,28 +3455,7 @@ fn a_curved_corner_closes_with_the_rim_s_band_first() {
     // turn the meridian square beyond the ball's arc, from rho = 5 out to
     // where the turn's ray leaves the block. Its height over the arc is
     // 1 - cos t at rho = 5 + sin t.
-    let want = {
-        let turns = 80_000_u32;
-        let step = core::f64::consts::FRAC_PI_2 / f64::from(turns);
-        let mut total = 0.0;
-        for k in 0..turns {
-            let phi = core::f64::consts::PI + (f64::from(k) + 0.5) * step;
-            let out = (5.0 / phi.cos().abs()).min(5.0 / phi.sin().abs()).min(6.0);
-            if out <= 5.0 {
-                continue;
-            }
-            let t_max = (out - 5.0).min(1.0).asin();
-            let n = 2000_u32;
-            let dt = t_max / f64::from(n);
-            let f = |t: f64| (5.0 + t.sin()) * (1.0 - t.cos()) * t.cos();
-            let mut sum = f(0.0) + f(t_max);
-            for i in 1..n {
-                sum += f(dt * f64::from(i)) * if i % 2 == 1 { 4.0 } else { 2.0 };
-            }
-            total += sum * dt / 3.0 * step;
-        }
-        total
-    };
+    let want = shaved_rim_band_removed();
     let removed = before - volume(&model, &banded);
     assert!(
         (removed - want).abs() < want * 1e-5,
@@ -3460,15 +3468,29 @@ fn a_curved_corner_closes_with_the_rim_s_band_first() {
     // What is left of the straight edge, past where the rim's band ran on
     // to, and of the ruling.
     let straight = Point::new(0.0, 7.5, 10.0);
+    // The ruling's band after the rim's runs on into it, trimmed by it
+    // (ADR 0001, amendment "a later round reaching a band seated on a
+    // curved face"): the two take their union, each alone less what both
+    // take. The straight band after both is still the current path's,
+    // held to the two orders agreeing.
+    let both =
+        shaved_rim_band_removed() + shaved_ruling_band_removed() - shaved_ruling_and_rim_overlap();
     let mut measured = Vec::new();
     for order in [[straight, mids[2]], [mids[2], straight]] {
         let mut copy = model.clone();
         let mut current = banded.clone();
-        for near in order {
+        for (k, near) in order.into_iter().enumerate() {
             let live = edge_near(&copy, &current, near);
             current = ogeom::fillet::fillet_edge(&mut copy, &current, &live, 1.0, T)
                 .unwrap_or_else(|e| panic!("{order:?} at {near:?}: {e}"))
                 .shape;
+            if k == 0 && near == mids[2] {
+                let taken = before - volume(&copy, &current);
+                assert!(
+                    (taken - both).abs() < both * 1e-6,
+                    "the rim's band and the ruling's took {taken}, their union {both}"
+                );
+            }
         }
         let diagnosis = ogeom::algo::check(&copy, &current, T).unwrap();
         assert!(diagnosis.is_valid(), "{order:?}: {:?}", diagnosis.problems);
@@ -3500,8 +3522,11 @@ fn shaved_top_band_removed(r: f64) -> f64 {
 /// The straight band first: alone it runs out across the drum at both ends
 /// until its whole section has left it, as a band across a boss does, and
 /// takes off exactly its column-integrated volume. The corner's vertex goes
-/// with it, so no corner is left for the corner tool. The ruling's band and
-/// what is left of the rim arc's then round in either order to one solid.
+/// with it, so no corner is left for the corner tool. The ruling's band
+/// next runs on into the straight band's, the two taking their union (each
+/// alone, less what both take: the straight band's height over the ruling's
+/// spandrel). The ruling's band and what is left of the rim arc's then
+/// round in either order to one solid.
 #[test]
 #[ignore = "heavy"]
 fn a_curved_corner_s_straight_band_first_runs_out_across_the_drum() {
@@ -3536,15 +3561,29 @@ fn a_curved_corner_s_straight_band_first_runs_out_across_the_drum() {
         let a = (-5.0_f64).atan2(y - 5.0) - 0.03;
         Point::new(5.0 + 6.0 * a.cos(), 5.0 + 6.0 * a.sin(), 10.0)
     };
+    // The ruling's band after the straight band's runs on into it,
+    // trimmed by it (ADR 0001, amendment "a later round reaching a band
+    // seated on a curved face"): the two take their union, each alone less
+    // what both take. The rim arc's band after either is still held to the
+    // two orders agreeing.
+    let both = shaved_top_band_removed(1.0) + shaved_ruling_band_removed()
+        - shaved_ruling_and_straight_overlap();
     let mut measured = Vec::new();
     for order in [[mids[2], rim], [rim, mids[2]]] {
         let mut copy = model.clone();
         let mut current = banded.clone();
-        for near in order {
+        for (k, near) in order.into_iter().enumerate() {
             let live = edge_near(&copy, &current, near);
             current = ogeom::fillet::fillet_edge(&mut copy, &current, &live, 1.0, T)
                 .unwrap_or_else(|e| panic!("{order:?} at {near:?}: {e}"))
                 .shape;
+            if k == 0 && near == mids[2] {
+                let taken = before - volume(&copy, &current);
+                assert!(
+                    (taken - both).abs() < both * 1e-6,
+                    "the straight band and the ruling's took {taken}, their union {both}"
+                );
+            }
         }
         let diagnosis = ogeom::algo::check(&copy, &current, T).unwrap();
         assert!(diagnosis.is_valid(), "{order:?}: {:?}", diagnosis.problems);
@@ -5887,4 +5926,100 @@ fn a_concave_band_s_end_joins_the_end_face_and_its_rim_still_rolls_over() {
     let want = 2.0 * (1.0 - pi / 4.0) * r * r * (1.0 - r)
         + (pi / 2.0) * (11.0 / 6.0 - pi / 2.0) * r * r * r;
     assert!((removed - want).abs() < want * 2e-3, "{removed} vs {want}");
+}
+
+/// The rim arc's band alone on the shaved cube: the ball's corner over the
+/// quarter turn facing the block's corner, within the block.
+fn shaved_rim_band_removed() -> f64 {
+    let turns = 80_000_u32;
+    let step = core::f64::consts::FRAC_PI_2 / f64::from(turns);
+    let mut total = 0.0;
+    for k in 0..turns {
+        let phi = core::f64::consts::PI + (f64::from(k) + 0.5) * step;
+        let out = (5.0 / phi.cos().abs()).min(5.0 / phi.sin().abs()).min(6.0);
+        if out <= 5.0 {
+            continue;
+        }
+        let t_max = (out - 5.0).min(1.0).asin();
+        let n = 2000_u32;
+        let dt = t_max / f64::from(n);
+        let f = |t: f64| (5.0 + t.sin()) * (1.0 - t.cos()) * t.cos();
+        let mut sum = f(0.0) + f(t_max);
+        for i in 1..n {
+            sum += f(dt * f64::from(i)) * if i % 2 == 1 { 4.0 } else { 2.0 };
+        }
+        total += sum * dt / 3.0 * step;
+    }
+    total
+}
+
+/// The ruling's band alone on the shaved cube: its spandrel in plan (the
+/// polygon of the corner, the contacts and the ball's centre `(1, 2)`, less
+/// the ball's sector, plus the drum's segment) over the height.
+fn shaved_ruling_band_removed() -> f64 {
+    let yc = 5.0 - 11.0_f64.sqrt();
+    let poly = [(0.0, yc), (0.0, 2.0), (1.0, 2.0), (0.2, 1.4)];
+    let mut twice = 0.0;
+    for k in 0..4 {
+        let (a, b) = (poly[k], poly[(k + 1) % 4]);
+        twice += a.0 * b.1 - b.0 * a.1;
+    }
+    let sector = 0.8_f64.acos() / 2.0;
+    let (u, v) = ((-0.8_f64, -0.6_f64), (-5.0 / 6.0, -(11.0_f64.sqrt()) / 6.0));
+    let alpha = (u.0 * v.1 - u.1 * v.0).atan2(u.0 * v.0 + u.1 * v.1).abs();
+    let segment = 18.0 * (alpha - alpha.sin());
+    (twice.abs() / 2.0 - sector + segment) * 10.0
+}
+
+/// What the ruling's band and the straight top edge's band of the shaved
+/// cube both take: the straight band's height over the ruling's spandrel
+/// in plan, which the ruling's band takes over the whole height. In plan
+/// the spandrel runs from `x = 0` to the drum's contact at `x = 0.2`,
+/// between the drum and the ball's arc about `(1, 2)`; the straight band
+/// stands `1 - sqrt(1 - (1 - x)^2)` below the top there. Simpson's rule in
+/// `x = 0.2 u^2`, which takes the square root's end at `x = 0` out.
+fn shaved_ruling_and_straight_overlap() -> f64 {
+    let n = 4000_u32;
+    let f = |u: f64| {
+        let x = 0.2 * u * u;
+        let below = 5.0 - (36.0 - (x - 5.0).powi(2)).sqrt();
+        let above = 2.0 - (1.0 - (x - 1.0).powi(2)).max(0.0).sqrt();
+        let height = 1.0 - (1.0 - (1.0 - x).powi(2)).max(0.0).sqrt();
+        (above - below) * height * 0.4 * u
+    };
+    simpson(f, 0.0, 1.0, n)
+}
+
+/// What the ruling's band and the rim arc's band of the shaved cube both
+/// take: the rim band's height `1 - sqrt(1 - (rho - 5)^2)` over the
+/// ruling's spandrel in plan (all of it within the quarter turn the rim's
+/// band takes), by Simpson's rule in `x = 0.2 u^2` and, across, from the
+/// drum in `s^2`, which takes the square roots' ends out.
+fn shaved_ruling_and_rim_overlap() -> f64 {
+    let n = 800_u32;
+    let across = |x: f64| {
+        let below = 5.0 - (36.0 - (x - 5.0).powi(2)).sqrt();
+        let above = 2.0 - (1.0 - (x - 1.0).powi(2)).max(0.0).sqrt();
+        simpson(
+            |s: f64| {
+                let y = below + (above - below) * s * s;
+                let rho = (x - 5.0).hypot(y - 5.0);
+                (1.0 - (1.0 - (rho - 5.0).powi(2)).max(0.0).sqrt()) * 2.0 * (above - below) * s
+            },
+            0.0,
+            1.0,
+            n,
+        )
+    };
+    simpson(|u: f64| across(0.2 * u * u) * 0.4 * u, 0.0, 1.0, n)
+}
+
+/// Simpson's rule for `f` over `[a, b]` in `n` (even) steps.
+fn simpson(f: impl Fn(f64) -> f64, a: f64, b: f64, n: u32) -> f64 {
+    let h = (b - a) / f64::from(n);
+    let mut sum = f(a) + f(b);
+    for i in 1..n {
+        sum += f(h.mul_add(f64::from(i), a)) * if i % 2 == 1 { 4.0 } else { 2.0 };
+    }
+    sum * h / 3.0
 }
