@@ -3878,10 +3878,10 @@ fn concave_rims_are_filled_by_trimming_to_the_general_fuse_s_solid() {
 /// calculated spandrel volumes in one request. A boss's top rim with the
 /// plate's top loop, with its bottom loop or with one bottom edge, and a
 /// tube boss's two top rims with the plate's bottom loop, go through the
-/// engine's trimmed assembly whole, with no boolean. For a union, a boss's
-/// base fused on with a rib's concave base edges, the rim's wedge is
-/// trimmed out first and the rest cut from what is left, the trim keeping
-/// only the faces that cut sets aside.
+/// engine's trimmed assembly whole, with no boolean. A boss's base fused on
+/// with a rib's concave base edges, whose fills stand apart, is each group
+/// of edges rounded alone, the fills fused on together (ADR 0001,
+/// amendment "rounds standing apart"), and nothing is trimmed.
 #[test]
 fn rims_grouped_with_other_wedges_are_trimmed_before_the_rest_is_cut() {
     use core::f64::consts::{FRAC_PI_4, PI};
@@ -4021,25 +4021,24 @@ fn rims_grouped_with_other_wedges_are_trimmed_before_the_rest_is_cut() {
         ),
         ("a boss's base and a rib's base edges", &ribbed, true),
     ];
-    for (name, case, fill) in cases {
+    for (name, case, apart) in cases {
         let mut model = ogeom_topo::Model::new();
         let (solid, edges, radius, want) = case(&mut model);
         let (seated, work) = ogeom_bool::work::counted(|| {
             ogeom_fillet::fillet_edges(&mut model, &solid, &edges, radius, T).unwrap()
         });
-        let trimmed = if fill {
-            work.seated_fills
-        } else {
-            work.seated_cuts
-        };
-        // One bottom edge beside the boss's top rim: both rounds go through
-        // the engine's trimmed assembly, with no boolean.
-        if !fill {
-            assert_eq!(work.face_pairs, 0, "{name}: built with no boolean");
-            assert_eq!(trimmed, 0, "{name}: nothing trimmed");
-        } else {
-            assert!(trimmed > 0, "{name}: the rims are trimmed");
-        }
+        assert_eq!(
+            work.seated_fills + work.seated_cuts,
+            0,
+            "{name}: nothing trimmed"
+        );
+        // The rims beside straight edges go through the engine's trimmed
+        // assembly, with no boolean; groups standing apart are fused on.
+        assert_eq!(
+            work.face_pairs == 0,
+            !apart,
+            "{name}: built with no boolean"
+        );
         assert!(
             ogeom_algo::check(&model, &seated.shape, T)
                 .unwrap()
