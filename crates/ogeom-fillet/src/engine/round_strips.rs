@@ -866,6 +866,28 @@ fn rim(
     // runs off) is left to the current path.
     let on_rim =
         |p: (f64, f64)| (p.0 - r0).abs() <= tol.confusion() && p.1.abs() <= tol.confusion();
+    // An arc of less than a half turn rounds only between the planes
+    // through the axis at its ends, as a straight strip rounds between its
+    // ends: each plane's normal toward the arc's side. Past them the
+    // neighbouring strips round, or the band ends.
+    let e = &curved.edges[&edge];
+    let mut sides: Vec<Vector> = Vec::new();
+    if e.range.1 - e.range.0 < core::f64::consts::PI - tol.angular() {
+        let across = |p: Point| {
+            let off = p - centre;
+            let off = off - up * off.dot(up);
+            off / off.magnitude()
+        };
+        let (d0, d1) = (
+            across(curved.points[&e.ends.0]),
+            across(curved.points[&e.ends.1]),
+        );
+        for (d, other) in [(d0, d1), (d1, d0)] {
+            let n = up.cross(d);
+            sides.push(if n.dot(other) < 0.0 { -n } else { n });
+        }
+    }
+    let in_arc = |p: Point| sides.iter().all(|n| (p - centre).dot(*n) > tol.confusion());
     for (k, fi) in faces.iter().enumerate() {
         let plane = matches!(curved.faces[*fi].surface, SurfaceGeometry::Plane(_));
         let foot = feet[k];
@@ -886,18 +908,19 @@ fn rim(
                 meridian(curved.points[&c.ends.0]),
                 meridian(curved.points[&c.ends.1]),
             );
-            let samples: Vec<(f64, f64)> =
+            let points: Vec<Point> =
                 if matches!(c.curve, Curve::Line(_)) && (on_rim(ends.0) || on_rim(ends.1)) {
-                    vec![if on_rim(ends.0) { ends.1 } else { ends.0 }]
+                    vec![curved.points[if on_rim(ends.0) { &c.ends.1 } else { &c.ends.0 }]]
                 } else {
                     let (t0, t1) = c.range;
                     (0..=RING_SAMPLES)
                         .map(|j| {
                             let t = t0 + (t1 - t0) * f64::from(j) / f64::from(RING_SAMPLES);
-                            ogeom_geom::Curve3d::point_at(&c.curve, t, tol).map(meridian)
+                            ogeom_geom::Curve3d::point_at(&c.curve, t, tol)
                         })
                         .collect::<OgeomResult<_>>()?
                 };
+            let samples: Vec<(f64, f64)> = points.iter().copied().map(meridian).collect();
             // One crossing the ring too is where the contact leaves its
             // face, the roll-over P2 labels; one standing wholly inside it
             // is under the round, which is not built here.
@@ -909,7 +932,11 @@ fn rim(
                 };
                 (x - b) * (b - a) > tol.confusion() * (b - a).abs()
             };
-            if samples.iter().copied().any(between) && !samples.iter().any(beyond) {
+            let inside = points
+                .iter()
+                .zip(&samples)
+                .any(|(p, m)| in_arc(*p) && between(*m));
+            if inside && !samples.iter().any(beyond) {
                 under.push(*e);
             }
         }
@@ -938,7 +965,7 @@ fn rim(
         slope: 0.0,
         inside,
     };
-    let clear = ogeom_algo::HalfSpaces::Any(vec![
+    let mut outside = vec![
         ogeom_algo::HalfSpaces::Below {
             normal: -up,
             at: centre + up * h_hi,
@@ -949,7 +976,14 @@ fn rim(
         },
         off_axis(r_lo, true),
         off_axis(r_hi, false),
-    ]);
+    ];
+    for n in &sides {
+        outside.push(ogeom_algo::HalfSpaces::Below {
+            normal: *n,
+            at: centre,
+        });
+    }
+    let clear = ogeom_algo::HalfSpaces::Any(outside);
     Ok(Some((
         Strip {
             edge,
