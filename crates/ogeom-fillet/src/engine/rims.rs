@@ -84,8 +84,8 @@ struct Placed {
 }
 
 /// The rounded solid of `rounds` (each a rim's arc and its radius) on
-/// `solid`, or `None` where `solid` is not one [`read`] takes or the edges
-/// asked are not whole rims, each between a planar cap and a coaxial wall,
+/// `solid`, or `None` where nothing is asked, `solid` is not one [`read`]
+/// takes or the edges asked are not whole rims, each between a planar cap and a coaxial wall,
 /// asked at one radius, each of its vertices meeting nothing but its two
 /// arcs and one straight edge of the wall, with a ball that fits between
 /// its cap and wall.
@@ -124,6 +124,11 @@ pub(crate) fn assemble_with(
     let Some(rims) = rims(model, solid, &read, rounds, tol)? else {
         return Ok(None);
     };
+    // No rim, nothing rounded: the sheet would only rebuild the solid as
+    // given, which is not a round of anything asked.
+    if rims.is_empty() {
+        return Ok(None);
+    }
     // A round reaching a face it does not blend (a cavity's wall under a
     // thin cap) is not built here: every face but the rim's caps and walls
     // proved outside the box the round can take up, to the bands' fit
@@ -926,6 +931,35 @@ mod tests {
         let want = PI * 4.0 * 3.0 - area * 2.0 * PI * (2.0 - x);
         let v = volume(&m, &built.shape);
         assert!((v - want).abs() < 1e-6, "{v} against {want}");
+    }
+
+    /// A round reported built changes the solid: the drum's rim takes off
+    /// its torus's spandrel, and a request of nothing rounds nothing and is
+    /// not built (the sheet rebuilt the drum as given, reported as the
+    /// round). Each request through the rims alone and through the
+    /// engine's whole dispatch.
+    #[test]
+    fn a_round_reported_built_changes_the_solid() {
+        let mut m = Model::new();
+        let drum = ogeom_algo::make_cylinder(&mut m, up_at(0.0, 0.0, 0.0), 2.0, 3.0, T)
+            .unwrap()
+            .shape;
+        let rim = rims_at(&m, &drum, 3.0);
+        let before = volume(&m, &drum);
+        let requests: [Vec<(Shape, f64)>; 2] = [Vec::new(), vec![(rim[0].clone(), 0.5)]];
+        for asked in &requests {
+            let by_rims = assemble(&mut m, &drum, asked, T).unwrap();
+            let by_engine = crate::fillet::rounds_by_engine(&mut m, &drum, asked, T).unwrap();
+            for built in [by_rims, by_engine].into_iter().flatten() {
+                let after = volume(&m, &built.shape);
+                assert!(
+                    (before - after).abs() > 1e-6 * before,
+                    "{} edges asked: reported built, yet {after} against {before}",
+                    asked.len()
+                );
+            }
+        }
+        assert!(assemble(&mut m, &drum, &requests[1], T).unwrap().is_some());
     }
 
     /// The drum's wall and the rim's torus each walk their seam twice: each
