@@ -1056,11 +1056,14 @@ mod tests {
     }
 
     /// A cone 4 tall narrowing from radius 3 to 1, its top rim rounded at
-    /// 0.4: the cap and wall meet at the cone's angle, not square. Held to
-    /// the current path's own exact torus for one edge, built by its wedge
-    /// and boolean rather than as a sheet.
+    /// 0.4: the cap and wall meet at the cone's angle, not square. The
+    /// round takes the corner's section in the meridian (the kite from the
+    /// corner to the ball's two contacts and its centre, less the ball's
+    /// sector between the contacts) turned about the axis: Pappus' volume
+    /// from the section's area and its centroid's radius, each in closed
+    /// form.
     #[test]
-    fn a_cone_s_rim_is_the_torus_the_current_path_cuts() {
+    fn a_cone_s_rim_is_its_torus_by_pappus() {
         let mut m = Model::new();
         let cone = ogeom_algo::make_cone(&mut m, up_at(0.0, 0.0, 0.0), 3.0, 1.0, 4.0, T)
             .unwrap()
@@ -1069,8 +1072,36 @@ mod tests {
         let asked: Vec<(Shape, f64)> = rim.iter().map(|e| (e.clone(), 0.4)).collect();
         let built = assemble(&mut m, &cone, &asked, T).unwrap().unwrap();
         valid(&m, &built.shape);
-        let current = crate::fillet_edge(&mut m, &cone, &rim[0], 0.4, T).unwrap();
-        let (v, want) = (volume(&m, &built.shape), volume(&m, &current.shape));
+        // In the meridian (radius, height): the corner, and the unit ways
+        // into the material along the cap and down the wall.
+        let r = 0.4;
+        let corner = (1.0_f64, 4.0_f64);
+        let along_cap = (-1.0_f64, 0.0_f64);
+        let down_wall = (2.0 / 20.0_f64.sqrt(), -4.0 / 20.0_f64.sqrt());
+        let angle = (along_cap.0 * down_wall.0 + along_cap.1 * down_wall.1).acos();
+        let half = 0.5 * angle;
+        let reach = r / half.tan();
+        let bisector = {
+            let (x, y) = (along_cap.0 + down_wall.0, along_cap.1 + down_wall.1);
+            let n = x.hypot(y);
+            (x / n, y / n)
+        };
+        let at = |(x, y): (f64, f64), k: f64| (corner.0 + x * k, corner.1 + y * k);
+        let (cap_touch, wall_touch) = (at(along_cap, reach), at(down_wall, reach));
+        let centre = at(bisector, r / half.sin());
+        // Each right triangle corner-touch-centre, and the sector the ball
+        // spans between its touches, its centroid toward the corner.
+        let triangle = 0.5 * reach * r;
+        let rho = |p: (f64, f64), q: (f64, f64)| (corner.0 + p.0 + q.0) / 3.0;
+        let sweep = PI - angle;
+        let sector = 0.5 * r * r * sweep;
+        let sector_rho = centre.0 - bisector.0 * (4.0 * r * (0.5 * sweep).sin() / (3.0 * sweep));
+        let area = 2.0 * triangle - sector;
+        let centroid = (triangle * rho(cap_touch, centre) + triangle * rho(wall_touch, centre)
+            - sector * sector_rho)
+            / area;
+        let want = volume(&m, &cone) - 2.0 * PI * centroid * area;
+        let v = volume(&m, &built.shape);
         assert!((v - want).abs() < 1e-6, "{v} against {want}");
     }
 

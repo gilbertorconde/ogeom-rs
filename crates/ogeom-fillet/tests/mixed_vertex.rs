@@ -288,10 +288,8 @@ fn three_rounds_of_both_kinds_at_a_vertex_close_one_corner_whatever_the_order() 
 }
 
 /// Bands of radius 3 on an upright 5 thick, with all three edges rounded or
-/// the upright's front edge left sharp. The current path refused this
-/// corner by name: the box it rebuilds the corner in, twice the widest band
-/// behind the vertex, reached through the upright's far face. The rounds
-/// themselves stay clear of that face, so the corner closes as it does at
+/// the upright's front edge left sharp. The rounds stay clear of the
+/// upright's far face, so the corner closes as it does at
 /// smaller radii (ADR 0001, §13 question 7: no corner of mixed convexity is
 /// refused). In either order the solid is the same to the bit and valid,
 /// it lies within the bracket and the concave round's fill, and every
