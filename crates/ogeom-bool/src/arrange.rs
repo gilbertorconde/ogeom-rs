@@ -1316,21 +1316,6 @@ impl<'a> Boxed<'a> {
     }
 }
 
-/// [`inside_many`] along the leaning ray: a point level with a boundary
-/// running along a chart axis (a band's rim, a contact along a face's
-/// edge) is counted by crossings the level ray would graze.
-pub(crate) fn inside_many_slanted(lines: &[&[Point2]], p: Point2) -> bool {
-    let mut inside = false;
-    for line in lines {
-        for w in line.windows(2) {
-            if slanted_ray_crosses_segment::<Exact>(w[0], w[1], p) {
-                inside = !inside;
-            }
-        }
-    }
-    inside
-}
-
 /// Even-odd containment against open polylines that jointly close.
 ///
 /// The strands are pieces of closed rings, so counting crossings segment by
