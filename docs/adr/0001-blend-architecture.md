@@ -1469,14 +1469,25 @@ ball at its start on the current path.
   surfaces. A crease's or a rim's seat near such a band, cut back by it,
   stands in air there and is no groove (amendment "a crease's seat past an
   earlier blend").
-- **Built so far.** A straight edge between a plane and a cylinder along
-  its ruling (`engine/ruling_out.rs`): its spandrel is a prism, carried on
-  past both ends and cut from the solid as it stands, its seat read on the
-  cylinder's surface and in air where the band cut the face back. Still
-  with the current path: a straight crease between planes reaching a
-  torus band (the boolean refuses where the band, the crease's band and
-  the top touch at one point), a rim reaching an earlier band (its run-on
-  still stops at that band), and a ruling after two such bands.
+- **Built so far.**
+  - A straight edge between a plane and a cylinder along its ruling
+    (`engine/ruling_out.rs`): its spandrel is a prism, carried on past
+    both ends and cut from the solid as it stands, its seat read on the
+    cylinder's surface and in air where the band cut the face back. It is
+    tried before the curved routes, which would stop it at the band.
+  - A straight crease between planes reaching a cylinder or sphere band,
+    whatever that band is seated on (amendment "a later round reaching an
+    earlier band at its end"'s route, its blends read so).
+  - A rim reaching an earlier band it runs tangent into: the band is no end
+    face. Past that end the ball runs on seated on the rim's own faces, its
+    contact on the cap in air only where the band cut the cap back, until a
+    contact is in the material. The run stops where the cap's contact first
+    meets the band's other seat, a plane, as it would have met that face's
+    edge with the cap had the band not been there (amendment "a band's run
+    past its end").
+  - Still with the current path: a straight crease reaching a rim's torus
+    band, where the band, the crease's band and the top touch at one point
+    and the boolean refuses (reproducer `repro/triple-tangency`).
 - **Order.** Rounds asked one call after another are separate operations
   and may depend on their order (amendment "M5e"; in every application).
   Convex rounds taking their spandrels carried on take the union of their

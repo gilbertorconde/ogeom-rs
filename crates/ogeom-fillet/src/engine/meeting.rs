@@ -1083,7 +1083,9 @@ pub(crate) fn reaches_earlier_band(
                     || !touches(&curved, f, v)
                     || !matches!(
                         face.surface,
-                        SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Sphere(_)
+                        SurfaceGeometry::Cylinder(_)
+                            | SurfaceGeometry::Sphere(_)
+                            | SurfaceGeometry::Torus(_)
                     )
                 {
                     continue;
@@ -1111,13 +1113,14 @@ fn touches(curved: &Curved, f: usize, v: Id) -> bool {
     })
 }
 
-/// Whether face `f` is a blend of planes: a cylinder or a sphere (a
+/// Whether face `f` is an earlier round's band: a cylinder or a sphere (a
 /// rolling ball's band or corner) tangent along its edges to at least two
-/// faces, each a plane or, two levels down, itself a blend of planes (a
-/// corner's sphere beside the bands and ridges it meets). A face tangent to
-/// fewer than two is no ball's seat (a drum a band runs along).
+/// faces, whatever their surfaces (amendment "a later round reaching a band
+/// seated on a curved face"). A face tangent to fewer than two is no ball's
+/// seat (a drum a band runs along). A rim's torus is not read so yet: a
+/// straight band reaching one meets the boolean's triple tangency.
 fn seated_on_planes(curved: &Curved, f: usize, tol: Tolerances) -> OgeomResult<bool> {
-    blend_of_planes(curved, f, None, 2, tol)
+    blend_of_planes(curved, f, tol)
 }
 
 /// The faces `f` meets along an edge, each with whether it meets it
@@ -1148,35 +1151,18 @@ fn neighbours_of(curved: &Curved, f: usize, tol: Tolerances) -> OgeomResult<Vec<
     Ok(out)
 }
 
-fn blend_of_planes(
-    curved: &Curved,
-    f: usize,
-    parent: Option<usize>,
-    depth: u32,
-    tol: Tolerances,
-) -> OgeomResult<bool> {
+fn blend_of_planes(curved: &Curved, f: usize, tol: Tolerances) -> OgeomResult<bool> {
     if !matches!(
         curved.faces[f].surface,
         SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Sphere(_)
     ) {
         return Ok(false);
     }
-    let tangent: Vec<usize> = neighbours_of(curved, f, tol)?
+    let tangent = neighbours_of(curved, f, tol)?
         .into_iter()
-        .filter_map(|(g, t)| t.then_some(g))
-        .collect();
-    if tangent.len() < 2 {
-        return Ok(false);
-    }
-    for g in tangent {
-        if Some(g) == parent || matches!(curved.faces[g].surface, SurfaceGeometry::Plane(_)) {
-            continue;
-        }
-        if depth == 0 || !blend_of_planes(curved, g, Some(f), depth - 1, tol)? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
+        .filter(|(_, t)| *t)
+        .count();
+    Ok(tangent >= 2)
 }
 
 /// Whether `crease`'s end `k` (0 its start) meets a blend of planes an
