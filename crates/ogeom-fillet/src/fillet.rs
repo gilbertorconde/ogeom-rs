@@ -1310,6 +1310,10 @@ fn rounds_by_engine_routes(
         return Ok(None);
     }
     let on_curved = |model: &mut Model, solid: &Shape, once: &[(Shape, f64)]| {
+        // Every edge asked a seam of the dissolved solid: nothing to round.
+        if once.is_empty() {
+            return Ok(None);
+        }
         let once = whole_rims(model, solid, once, tol)?;
         if let Some(built) = crate::engine::round_rims(model, solid, &once, tol)? {
             return Ok(Some(built));
