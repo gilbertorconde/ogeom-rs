@@ -1152,7 +1152,7 @@ fn rounds_by_engine_unplaced(
     if once
         .iter()
         .all(|(_, r)| r.is_finite() && *r > tol.confusion())
-        && let Some(built) = crate::engine::carried_out_rounds(model, solid, &once, tol)?
+        && let Some(built) = crate::engine::carried_out_rounds(model, solid, &once, false, tol)?
     {
         return Ok(Some(built));
     }
@@ -1299,8 +1299,17 @@ fn rounds_by_engine_routes(
     // planes: its band runs on into that band, which trims it (amendment
     // "a later round reaching an earlier band at its end"), before the
     // curved routes would stop it there.
-    if crate::engine::reaches_earlier_band(model, solid, &once, tol)?
-        && let Some(built) = crate::engine::carried_out_rounds(model, solid, &once, tol)?
+    if crate::engine::reaches_earlier_band(model, solid, &once, false, tol)?
+        && let Some(built) = crate::engine::carried_out_rounds(model, solid, &once, false, tol)?
+    {
+        return Ok(Some(built));
+    }
+    // The same where the earlier band is a rim's torus, read as a band
+    // only here: where the crease's ball does not seat along its faces up
+    // to the torus, the torus stays the face it ends flush on, as a free
+    // end (the straight creases carried out, below).
+    if crate::engine::reaches_earlier_band(model, solid, &once, true, tol)?
+        && let Some(built) = crate::engine::carried_out_rounds(model, solid, &once, true, tol)?
     {
         return Ok(Some(built));
     }

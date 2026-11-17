@@ -691,7 +691,9 @@ const ACROSS_STATIONS: u32 = 8;
 /// band ends flush on the faces it meets past each end, as a free end at an
 /// inside corner does (ADR 0001, amendment "M5e"). Each tool is the
 /// crease's spandrel carried on, which must meet the solid in one piece:
-/// the band alone, nothing it reaches farther along its line. `None`
+/// the band alone, nothing it reaches farther along its line. With
+/// `rims`, an end at a rim's torus band is read as at a band, run on into
+/// it; without, the torus is a face the band ends flush on. `None`
 /// otherwise, or where a tool or the boolean will not build.
 ///
 /// # Errors
@@ -702,6 +704,7 @@ pub(crate) fn carried_out(
     model: &mut Model,
     solid: &Shape,
     asked: &[(Shape, f64)],
+    rims: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     if asked.is_empty() {
@@ -736,7 +739,8 @@ pub(crate) fn carried_out(
         // meets there (a free end).
         let mut into: [Option<(Point, EndSurface)>; 2] = [None, None];
         for (k, slot) in into.iter_mut().enumerate() {
-            if runs_out(model, solid, &crease, k, tol)? || ends_at_blend(&curved, &crease, k, tol)?
+            if runs_out(model, solid, &crease, k, tol)?
+                || ends_at_blend(&curved, &crease, k, rims, tol)?
             {
                 continue;
             }
@@ -766,7 +770,7 @@ pub(crate) fn carried_out(
                 };
                 if (n.cross(na).magnitude() <= tol.angular()
                     || n.cross(nb).magnitude() <= tol.angular())
-                    && !seated_on_planes(&curved, f, tol)?
+                    && !seated_on_planes(&curved, f, rims, tol)?
                 {
                     return Ok(None);
                 }
@@ -1145,7 +1149,8 @@ fn rolled_corner(
 /// at a band an earlier round left there, tangent to one of its faces and
 /// seated on planes: [`carried_out`] runs its band on into that band
 /// (ADR 0001, amendment "a later round reaching an earlier band at its
-/// end"), before any route that would stop it at the band.
+/// end"), before any route that would stop it at the band. A rim's torus
+/// counts only with `rims`.
 ///
 /// # Errors
 ///
@@ -1154,6 +1159,7 @@ pub(crate) fn reaches_earlier_band(
     model: &Model,
     solid: &Shape,
     asked: &[(Shape, f64)],
+    rims: bool,
     tol: Tolerances,
 ) -> OgeomResult<bool> {
     let Some(curved) = read(model, solid, tol)? else {
@@ -1186,7 +1192,7 @@ pub(crate) fn reaches_earlier_band(
                 };
                 if (n.cross(na).magnitude() <= tol.angular()
                     || n.cross(nb).magnitude() <= tol.angular())
-                    && seated_on_planes(&curved, f, tol)?
+                    && seated_on_planes(&curved, f, rims, tol)?
                 {
                     return Ok(true);
                 }
@@ -1204,14 +1210,14 @@ fn touches(curved: &Curved, f: usize, v: Id) -> bool {
     })
 }
 
-/// Whether face `f` is an earlier round's band: a cylinder or a sphere (a
-/// rolling ball's band or corner) tangent along its edges to at least two
-/// faces, whatever their surfaces (amendment "a later round reaching a band
-/// seated on a curved face"). A face tangent to fewer than two is no ball's
-/// seat (a drum a band runs along). A rim's torus is not read so yet: a
-/// straight band reaching one meets the boolean's triple tangency.
-fn seated_on_planes(curved: &Curved, f: usize, tol: Tolerances) -> OgeomResult<bool> {
-    blend_of_planes(curved, f, tol)
+/// Whether face `f` is an earlier round's band: a cylinder, a sphere or a
+/// torus (a rolling ball's band, corner or rim band) tangent along its
+/// edges to at least two faces, whatever their surfaces (amendment "a later
+/// round reaching a band seated on a curved face"). A face tangent to fewer
+/// than two is no ball's seat (a drum a band runs along). A torus is read
+/// so only with `rims`; without, it is a face a band ends flush on.
+fn seated_on_planes(curved: &Curved, f: usize, rims: bool, tol: Tolerances) -> OgeomResult<bool> {
+    blend_of_planes(curved, f, rims, tol)
 }
 
 /// The faces `f` meets along an edge, each with whether it meets it
@@ -1242,12 +1248,11 @@ fn neighbours_of(curved: &Curved, f: usize, tol: Tolerances) -> OgeomResult<Vec<
     Ok(out)
 }
 
-fn blend_of_planes(curved: &Curved, f: usize, tol: Tolerances) -> OgeomResult<bool> {
-    if !matches!(
-        curved.faces[f].surface,
-        SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Sphere(_)
-    ) {
-        return Ok(false);
+fn blend_of_planes(curved: &Curved, f: usize, rims: bool, tol: Tolerances) -> OgeomResult<bool> {
+    match curved.faces[f].surface {
+        SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Sphere(_) => {}
+        SurfaceGeometry::Torus(_) if rims => {}
+        _ => return Ok(false),
     }
     let tangent = neighbours_of(curved, f, tol)?
         .into_iter()
@@ -1260,7 +1265,13 @@ fn blend_of_planes(curved: &Curved, f: usize, tol: Tolerances) -> OgeomResult<bo
 /// earlier round left there, tangent at that vertex to one of the crease's
 /// faces (ADR 0001, amendment "a later round reaching an earlier band at
 /// its end").
-fn ends_at_blend(curved: &Curved, crease: &Crease, k: usize, tol: Tolerances) -> OgeomResult<bool> {
+fn ends_at_blend(
+    curved: &Curved,
+    crease: &Crease,
+    k: usize,
+    rims: bool,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
     let v = if k == 0 { crease.ends.0 } else { crease.ends.1 };
     let at = curved.points[&v];
     let [(na, _), (nb, _)] = crease.planes;
@@ -1272,7 +1283,7 @@ fn ends_at_blend(curved: &Curved, crease: &Crease, k: usize, tol: Tolerances) ->
             continue;
         };
         if (n.cross(na).magnitude() <= tol.angular() || n.cross(nb).magnitude() <= tol.angular())
-            && seated_on_planes(curved, f, tol)?
+            && seated_on_planes(curved, f, rims, tol)?
         {
             return Ok(true);
         }
@@ -1373,7 +1384,7 @@ fn cut_back_by_blend(
 ) -> OgeomResult<bool> {
     use ogeom_algo::Containment;
     for (b, _) in neighbours_of(curved, face, tol)? {
-        if !seated_on_planes(curved, b, tol)? {
+        if !seated_on_planes(curved, b, false, tol)? {
             continue;
         }
         // The line p - n t against the blend's own surface: the nearest
