@@ -471,8 +471,8 @@ fn on_a_box_the_setback_chamfer_agrees_with_the_wedge_chamfer_below_three_bevels
 }
 
 /// A distance past what the part holds (the bracket's plate is 6 thick, so
-/// its two bevels meet at 3) is refused by name, not built: it lies
-/// outside the engine's setback domain, and the facet path refuses it.
+/// its two bevels meet at 3) is refused by name, not built: the bevels'
+/// setbacks cross on the plate's faces.
 #[test]
 fn a_chamfer_past_what_the_part_holds_is_refused_by_name() {
     let (_, profile, length) = corpus().pop().unwrap();
@@ -484,7 +484,8 @@ fn a_chamfer_past_what_the_part_holds_is_refused_by_name() {
         panic!("built");
     };
     assert!(
-        matches!(why, ogeom_core::OgeomError::Construction(_)),
+        matches!(why, ogeom_core::OgeomError::Construction(_))
+            && why.to_string().contains("more than the part holds"),
         "{why}"
     );
 }
