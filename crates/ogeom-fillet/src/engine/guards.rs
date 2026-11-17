@@ -281,6 +281,93 @@ pub(crate) fn strictly_inside(pts: &[(f64, f64)], p: (f64, f64), eps: f64) -> bo
     inside
 }
 
+/// Whether `solid` touches itself along an edge: two faces meeting there
+/// back to back (opposite normals at the edge's middle) that part away
+/// from it with void between them, a crack closing to the edge with
+/// material on both sides. Zero thickness, which SOLIDWORKS does not allow
+/// ("zero-thickness geometry", non-manifold), and which the rounds refuse
+/// by name.
+///
+/// # Errors
+///
+/// As reading the faces and classifying points on them.
+pub(crate) fn touches_itself(model: &Model, solid: &Shape, tol: Tolerances) -> OgeomResult<bool> {
+    for e in explore_unique(model, solid, ShapeType::Edge)? {
+        let faces = ogeom_topo::ancestors_of(model, solid, &e, ShapeType::Face)?;
+        let [a, b] = faces.as_slice() else {
+            continue;
+        };
+        let Some((curve, (lo, hi))) = ogeom_algo::placed_edge_curve(model, &e, tol)? else {
+            continue;
+        };
+        let mid = f64::midpoint(lo, hi);
+        let at = curve.point_at(mid, tol)?;
+        let (na, nb) = (
+            normal_near(model, a, at, tol)?,
+            normal_near(model, b, at, tol)?,
+        );
+        if na.dot(nb) < -1.0 + tol.angular()
+            && void_between(model, (a, b), at, curve.d1_at(mid, tol)?, tol)?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Whether faces `faces`, meeting at `at` back to back, part away from it
+/// with void between them: a point a little into the first face, square to
+/// the edge's tangent `along`, stands off the second's surface on the
+/// first's outward side.
+fn void_between(
+    model: &Model,
+    (a, b): (&Shape, &Shape),
+    at: Point,
+    along: Vector,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let surface = |face: &Shape| {
+        model
+            .node(face)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| model.geometry().surface(d.surface))
+    };
+    let (Some(sa), Some(sb)) = (surface(a), surface(b)) else {
+        return Ok(false);
+    };
+    if !a.location().is_identity() || !b.location().is_identity() {
+        return Ok(false);
+    }
+    let across = normal_near(model, a, at, tol)?.cross(along);
+    let m = across.magnitude();
+    if m <= tol.confusion() {
+        return Ok(false);
+    }
+    let across = across / m;
+    let deflection = ogeom_mesh::Deflection::default();
+    for step in [1e-1, 1e-2, 1e-3] {
+        for side in [1.0, -1.0] {
+            let Ok(foot) =
+                ogeom_geom::project::project_on_surface(sa, at + across * (side * step), 16, tol)
+            else {
+                continue;
+            };
+            if ogeom_algo::classify_on_face(model, a, foot.point, deflection, tol)?
+                == ogeom_algo::Containment::Out
+            {
+                continue;
+            }
+            let Ok(off) = ogeom_geom::project::project_on_surface(sb, foot.point, 16, tol) else {
+                return Ok(false);
+            };
+            let outward = normal_near(model, a, foot.point, tol)?;
+            return Ok(off.distance > 100.0 * tol.confusion()
+                && (off.point - foot.point).dot(outward) > 0.0);
+        }
+    }
+    Ok(false)
+}
+
 /// `face`'s unit outward normal at the foot of `at` on its surface, where
 /// it has one there; else its normal at its own middle.
 fn normal_near(model: &Model, face: &Shape, at: Point, tol: Tolerances) -> OgeomResult<Vector> {

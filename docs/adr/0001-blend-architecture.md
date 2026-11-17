@@ -1614,6 +1614,16 @@ and capping there left the corner standing.
   meet (a crease turning back on itself, its notch and the bands' overlap
   past the corner meeting on the corner's line) fail the solid's guard and
   are handed back.
+- **Refused by name: zero thickness.** A rim's band run on past its
+  corner whose own figure leaves the solid touching itself along an edge
+  (an earlier band and this one meeting their walls at one depth, the gap
+  between them closing to the edge, material on both sides) is refused by
+  name. SOLIDWORKS does not allow such zero-thickness geometry either
+  ("Zero Thickness Geometry": edges or vertices that do not join the
+  adjacent geometry, non-manifold; help.solidworks.com, Error Message -
+  Zero Thickness Geometry). `guards::touches_itself` reads it: two faces
+  back to back at an edge that part away from it with void between them.
+  Faces folded flat on one another (no gap) are still handed back.
 
 ### Amendment: M5f, a strip's end cut by its end faces' planes (#902)
 
