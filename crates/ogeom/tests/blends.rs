@@ -3390,6 +3390,21 @@ fn a_curved_corner_in_one_call_has_one_ball_and_one_round_at_a_time_takes_the_un
             .mass
     };
     let before = volume(&model, &part);
+    // The one call takes the three bands each alone and the corner's cell
+    // beyond the ball (ADR 0001, amendment "a corner one ball rounds, from
+    // its bands alone"): their union, closed form, and the cell outside
+    // it, by rays, held to its change from half as many.
+    let (cell, coarse) = (shaved_corner_cell(64), shaved_corner_cell(32));
+    let one_call = shaved_corner_union() + cell;
+    let taken = before - volume(&model, &together.shape);
+    let within = one_call * 1e-6 + (cell - coarse).abs();
+    eprintln!(
+        "one call takes {taken}, the bands alone and the cell {one_call} (cell {cell}, coarse {coarse}), within {within}"
+    );
+    assert!(
+        (taken - one_call).abs() <= within,
+        "one call took {taken}, the bands alone and the corner's cell {one_call}, within {within}"
+    );
     // What is left of the rim arc near the side y = 0, as the straight
     // band's run across the corner leaves it.
     let y = 5.0 - 11.0_f64.sqrt();
@@ -6366,4 +6381,134 @@ fn rounded_corner_removal(n: u32) -> (f64, f64) {
         hi += w * h;
     }
     (lo, hi)
+}
+
+/// What the shaved cube's corner takes in one call beyond its three bands
+/// each alone, at radius 1: the corner's cell, the points whose nearest
+/// centre of a ball within the part is the corner ball's, at (1, 2, 9),
+/// farther than a radius from it, less the three bands' spandrels (the
+/// straight band's and the ruling's prisms, and the rim arc's torus over
+/// its turn, run straight on along its tangent past each end). By rays
+/// from the ball's centre over the cone of the three faces' normals there
+/// (the top's, the side's and the drum's), `n` parts to each side of the
+/// cone's triangle: along a ray the part holds from the centre to where
+/// the ray leaves it (it is convex), as each band's reach does to where
+/// the ray enters its spandrel, each crossing found by bisection, so the
+/// cell along the ray runs from the ball out to the first of them.
+fn shaved_corner_cell(n: u32) -> f64 {
+    let r = 1.0_f64;
+    let centre = Point::new(1.0, 2.0, 9.0);
+    let normals = [
+        Vector::new(0.0, 0.0, 1.0),
+        Vector::new(-1.0, 0.0, 0.0),
+        Vector::new(-0.8, -0.6, 0.0),
+    ];
+    let rho = |p: Point| (p.x - 5.0).hypot(p.y - 5.0);
+    let in_part = |p: Point| {
+        [
+            p.x,
+            p.y,
+            p.z,
+            10.0 - p.x,
+            10.0 - p.y,
+            10.0 - p.z,
+            6.0 - rho(p),
+        ]
+        .iter()
+        .all(|d| *d >= 0.0)
+    };
+    // Each band alone takes what its two faces' balls do not reach.
+    let straight = |p: Point| (p.z - 9.0).max(0.0).hypot((1.0 - p.x).max(0.0)) > r;
+    let ruling = |p: Point| {
+        let (x, y) = (p.x, p.y);
+        let off = (x - 5.0).hypot(y - 5.0);
+        if x >= 1.0 && off <= 5.0 {
+            return false;
+        }
+        let mut best = (x - 1.0).hypot(y - 2.0).min((x - 1.0).hypot(y - 8.0));
+        if (1.0_f64 - 5.0).hypot(y - 5.0) <= 5.0 && x < 1.0 {
+            best = best.min(1.0 - x);
+        }
+        if off > 5.0 && 5.0 + (x - 5.0) * 5.0 / off >= 1.0 {
+            best = best.min(off - 5.0);
+        }
+        best > r
+    };
+    let y0 = 5.0 - 11.0_f64.sqrt();
+    let (from, to) = ((y0 - 5.0).atan2(-5.0), (-5.0_f64).atan2(y0 - 5.0));
+    let rim = |p: Point| {
+        let angle = (p.y - 5.0).atan2(p.x - 5.0);
+        let (w, z) = if angle >= from && angle <= to {
+            (rho(p), p.z)
+        } else {
+            // Past an end, the section at that end run straight on.
+            let end = if angle < from { from } else { to };
+            let out = Vector::new(end.cos(), end.sin(), 0.0);
+            ((p - Point::new(5.0, 5.0, p.z)).dot(out), p.z)
+        };
+        w > 5.0 && z > 9.0 && (w - 5.0).hypot(z - 9.0) > r
+    };
+    let [n1, n2, n3] = normals;
+    let across = (n1 - n3).cross(n2 - n3);
+    let mut total = 0.0;
+    for i in 0..n {
+        for j in 0..n - i {
+            // The small triangles of the barycentric grid, upright and
+            // inverted, each at its centroid.
+            let mut centroids = vec![(f64::from(i) + 1.0 / 3.0, f64::from(j) + 1.0 / 3.0)];
+            if i + j + 1 < n {
+                centroids.push((f64::from(i) + 2.0 / 3.0, f64::from(j) + 2.0 / 3.0));
+            }
+            for (a, b) in centroids {
+                let (a, b) = (a / f64::from(n), b / f64::from(n));
+                let w = n1 * a + n2 * b + n3 * (1.0 - a - b);
+                let len = w.magnitude();
+                let ray = w / len;
+                let solid_angle = w.dot(across).abs() / len.powi(3) * 0.5 / f64::from(n * n);
+                let at = |t: f64| centre + ray * t;
+                // Where the ray leaves the part, which is convex.
+                let (mut lo, mut hi) = (0.0, 20.0);
+                for _ in 0..80 {
+                    let m = 0.5 * (lo + hi);
+                    if in_part(at(m)) {
+                        lo = m;
+                    } else {
+                        hi = m;
+                    }
+                }
+                let exit = lo;
+                if exit <= r {
+                    continue;
+                }
+                // Each band's reach holds from the centre out to where the
+                // ray leaves it, as the part does: its alone round's
+                // complement along a ray from a centre within it.
+                let leaves = |holds: &dyn Fn(Point) -> bool| {
+                    let (mut lo, mut hi) = (0.0, exit);
+                    if holds(at(hi)) {
+                        return hi;
+                    }
+                    for _ in 0..80 {
+                        let m = 0.5 * (lo + hi);
+                        if holds(at(m)) {
+                            lo = m;
+                        } else {
+                            hi = m;
+                        }
+                    }
+                    lo
+                };
+                let end = leaves(&|p| !straight(p))
+                    .min(leaves(&|p| !ruling(p)))
+                    .min(leaves(&|p| !rim(p)));
+                let sum = if end > r {
+                    (end.powi(3) - r.powi(3)) / 3.0
+                } else {
+                    0.0
+                };
+                total += sum * solid_angle;
+            }
+        }
+    }
+    total
 }
