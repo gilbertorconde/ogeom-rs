@@ -206,7 +206,15 @@ fn taken(
         return Ok(None);
     }
     let removed = ogeom_bool::remove_faces(model, solid, std::slice::from_ref(strip), tol)?;
-    let creases = shared_edges(model, &images(&removed, outer), &images(&removed, &across))?;
+    // The crease the strip cut, restored: the edges the two faces share in
+    // the copy that the solid did not hold (they may share others, such as
+    // a bore's far rim).
+    let before = explore_unique(model, solid, ShapeType::Edge)?;
+    let creases: Vec<Shape> =
+        shared_edges(model, &images(&removed, outer), &images(&removed, &across))?
+            .into_iter()
+            .filter(|e| !before.iter().any(|b| b.is_same(e)))
+            .collect();
     if creases.is_empty() {
         return Ok(None);
     }
@@ -242,4 +250,155 @@ fn taken(
     let mut built = Built::new(rounded.shape, history);
     crate::support::credit_new_faces(model, solid, edge, &mut built)?;
     Ok(Some(built))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+    use ogeom_math::{Direction, Frame, Point};
+
+    use super::*;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// A drum of radius 10 and 30 tall, bored across at z = 15 by a bore of
+    /// radius 3 along y.
+    fn holed_drum(m: &mut Model) -> Shape {
+        let drum = ogeom_algo::make_cylinder(m, Frame::WORLD, 10.0, 30.0, T)
+            .unwrap()
+            .shape;
+        let at = Frame::new(Point::new(0.0, -20.0, 15.0), Direction::Y, Direction::X, T).unwrap();
+        let bore = ogeom_algo::make_cylinder(m, at, 3.0, 40.0, T)
+            .unwrap()
+            .shape;
+        ogeom_bool::cut(m, &drum, &bore, T).unwrap().shape
+    }
+
+    /// The edge of `s` passing nearest `q`.
+    fn edge_near(m: &Model, s: &Shape, q: Point) -> Shape {
+        let off = |e: &Shape| {
+            let Some((c, (a, b))) = ogeom_algo::placed_edge_curve(m, e, T).unwrap() else {
+                return f64::INFINITY;
+            };
+            (0..=64)
+                .map(|i| {
+                    c.point_at(a + (b - a) * f64::from(i) / 64.0, T)
+                        .unwrap()
+                        .distance(q)
+                })
+                .fold(f64::INFINITY, f64::min)
+        };
+        explore_unique(m, s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .min_by(|a, b| off(a).total_cmp(&off(b)))
+            .unwrap()
+    }
+
+    fn volume(m: &Model, s: &Shape) -> f64 {
+        ogeom_algo::volume_properties(m, s, ogeom_mesh::Deflection::with_chord(1e-3).unwrap(), T)
+            .unwrap()
+            .mass
+    }
+
+    /// The holed drum with its bore's rim at y > 0 bevelled 0.5, the
+    /// bevel's face, and the bevel's edge on the bore.
+    fn bevelled(m: &mut Model) -> (Shape, Shape, Shape) {
+        let plain = holed_drum(m);
+        let rim = edge_near(m, &plain, Point::new(0.0, 9.5, 18.0));
+        let bevelled = crate::chamfer::chamfer_edges(m, &plain, &[rim], 0.5, T)
+            .unwrap()
+            .shape;
+        let edge = edge_near(m, &bevelled, Point::new(0.0, 9.0, 18.0));
+        let bevel = faces_at(m, &bevelled, &edge)
+            .unwrap()
+            .into_iter()
+            .find(|f| {
+                matches!(
+                    m.node(f)
+                        .and_then(|n| n.data().as_face())
+                        .and_then(|d| m.geometry().surface(d.surface)),
+                    Some(ogeom_geom::SurfaceGeometry::BSpline(_))
+                )
+            })
+            .expect("the bevel beside the edge");
+        (bevelled, bevel, edge)
+    }
+
+    /// The bevel taken off: the copy is valid, the plain holed drum's
+    /// volume, and its drum and bore meet along the restored rim (a closed
+    /// clamped spline, cut where the faces' seams reach it) and along the
+    /// bore's far rim, which the solid already held.
+    #[test]
+    fn a_bevel_taken_off_a_bore_rim_restores_the_plain_drum() {
+        let mut m = Model::new();
+        let plain = holed_drum(&mut m);
+        let (bevelled, bevel, _) = bevelled(&mut m);
+        let copy = ogeom_bool::remove_faces(&mut m, &bevelled, &[bevel], T).unwrap();
+        assert!(ogeom_algo::check(&m, &copy.shape, T).unwrap().is_valid());
+        let (got, want) = (volume(&m, &copy.shape), volume(&m, &plain));
+        assert!((got - want).abs() < want * 1e-6, "{got} against {want}");
+    }
+
+    /// The bevelled rim rounded at 2 (the ball sets back past the bevel)
+    /// with the bevel taken off whole: the plain rim's round. Fails today:
+    /// the restored rim's marched band does not melt into the copy (see
+    /// the next test).
+    #[test]
+    fn a_bevelled_bore_rim_rounded_past_its_bevel_is_the_plain_rim_s_round() {
+        let mut m = Model::new();
+        let plain = holed_drum(&mut m);
+        let rim = edge_near(&m, &plain, Point::new(0.0, 9.5, 18.0));
+        let round = crate::fillet::fillet_edges(&mut m, &plain, &[rim], 2.0, T)
+            .unwrap()
+            .shape;
+        let want = volume(&m, &round);
+        let (bevelled, _, edge) = bevelled(&mut m);
+        let built = rounds(&mut m, &bevelled, &edge, 2.0, T)
+            .unwrap()
+            .expect("the bevel taken off and the restored rim rounded");
+        assert!(ogeom_algo::check(&m, &built.shape, T).unwrap().is_valid());
+        let got = volume(&m, &built.shape);
+        assert!((got - want).abs() < want * 1e-6, "{got} against {want}");
+    }
+
+    /// The boolean alone: the restored rim's marched band at 2, as the
+    /// engine's seats build it from either of the rim's two edges, cut
+    /// from the copy the bevel left. Fails today in `ogeom_bool::cut`: "a
+    /// face boundary strand dangles; the boundary does not close in
+    /// parameter space". The same band cuts the plain holed drum.
+    #[test]
+    fn the_restored_rim_s_band_cuts_the_copy_the_bevel_left() {
+        let mut m = Model::new();
+        let (bevelled, bevel, _) = bevelled(&mut m);
+        let before = explore_unique(&m, &bevelled, ShapeType::Edge).unwrap();
+        let copy = ogeom_bool::remove_faces(&mut m, &bevelled, &[bevel], T)
+            .unwrap()
+            .shape;
+        // The restored rim: the copy's spline edges the bevelled solid did
+        // not hold (a regrown face's seam is a line).
+        let restored: Vec<Shape> = explore_unique(&m, &copy, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .filter(|e| !before.iter().any(|b| b.is_same(e)))
+            .filter(|e| {
+                matches!(
+                    ogeom_algo::placed_edge_curve(&m, e, T).unwrap(),
+                    Some((ogeom_geom::Curve::BSpline(_), _))
+                )
+            })
+            .collect();
+        assert_eq!(restored.len(), 2, "the rim in two edges");
+        for start in &restored {
+            let wedges =
+                super::super::marched_seats::wedges(&mut m, &copy, &[(start.clone(), 2.0)], T)
+                    .unwrap()
+                    .expect("the march's band");
+            for wedge in wedges {
+                let cut = ogeom_bool::cut(&mut m, &copy, &wedge.solid, T)
+                    .unwrap_or_else(|e| panic!("the band's cut: {e}"));
+                assert!(ogeom_algo::check(&m, &cut.shape, T).unwrap().is_valid());
+            }
+        }
+    }
 }
