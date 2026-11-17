@@ -3970,10 +3970,23 @@ fn a_rim_blend_rolls_over_the_bracket_s_concave_blend() {
 /// corners, and the two orders land on the same solid. The wall's bottom
 /// edge is two pieces either side of the scoop, on one line. Only the left
 /// is asked for, and only the left is blended whichever goes first.
+///
+/// What the two rounds take is the rolling ball's (`rounded_corner_removal`):
+/// the groove band's opening of the floor less the drum, and the wall band's
+/// spandrel carried on until the drum trims it, the edge's contact on the
+/// wall running off onto the drum before the edge ends (ADR 0001, section
+/// 13, question 8). Measured as the boolean's solid through a mesh of chord
+/// 1e-4, it lies within the oracle's half-width, the quadrature's change
+/// from half as many sections, and the band's fit target plus that chord
+/// over the change's surface.
 #[test]
 #[ignore = "heavy"]
 fn a_marched_blend_meets_a_straight_blend_at_its_corners() {
     let fine = ogeom::mesh::Deflection::with_chord(2e-3).unwrap();
+    let (lo, hi) = rounded_corner_removal(32);
+    let coarse = rounded_corner_removal(16);
+    let oracle = 0.5 * (lo + hi);
+    let quadrature = (oracle - 0.5 * (coarse.0 + coarse.1)).abs();
     let mut volumes = Vec::new();
     for straight_first in [true, false] {
         let mut model = Model::new();
@@ -4021,6 +4034,35 @@ fn a_marched_blend_meets_a_straight_blend_at_its_corners() {
             .unwrap()
             .mass;
         assert!(after < before && after > before * 0.9);
+        let taken = ogeom::boolean::cut(&mut model, &grooved, &met, T)
+            .unwrap()
+            .shape;
+        let added = ogeom::boolean::cut(&mut model, &met, &grooved, T)
+            .unwrap()
+            .shape;
+        assert!(
+            explore_unique(&model, &added, ShapeType::Solid)
+                .unwrap()
+                .is_empty(),
+            "two convex rounds add nothing"
+        );
+        let chord = 1e-4;
+        let mesh = ogeom::mesh::Deflection::with_chord(chord).unwrap();
+        let got = ogeom::algo::volume_properties(&model, &taken, mesh, T)
+            .unwrap()
+            .mass;
+        let area = ogeom::algo::surface_properties(&model, &taken, mesh, T)
+            .unwrap()
+            .mass;
+        // The march's band fit target is 2e-4 at millimetre tolerances.
+        let within = 0.5 * (hi - lo) + quadrature + (2e-4 + chord) * area;
+        eprintln!(
+            "straight first {straight_first}: takes {got}, the rolling ball {oracle} in [{lo}, {hi}], quadrature {quadrature}, within {within}"
+        );
+        assert!(
+            (got - oracle).abs() <= within,
+            "straight first {straight_first}: takes {got}, the rolling ball {oracle}, within {within}"
+        );
         volumes.push(after);
     }
     // The marched band is fitted and its volume is measured from a mesh,
@@ -6128,4 +6170,200 @@ fn shaved_corner_union() -> f64 {
         - shaved_ruling_and_rim_overlap()
         - shaved_straight_and_rim_overlap()
         + shaved_triple_overlap()
+}
+
+/// The grooved block's drum: a point on its axis, its unit axis and its
+/// radius, as `grooved_block` cuts it.
+fn groove_drum() -> (Point, Vector, f64) {
+    let tilt = 0.35_f64;
+    (
+        Point::new(10.0, -5.0, 11.5),
+        Vector::new(0.0, tilt.cos(), -tilt.sin()),
+        4.0,
+    )
+}
+
+/// The distance of `p` from the line through `at` along the unit `along`.
+fn off_axis(at: Point, along: Vector, p: Point) -> f64 {
+    let d = p - at;
+    (d - along * d.dot(along)).magnitude()
+}
+
+/// How far inside the grooved block `p` stands, to within its distance to
+/// the block's boundary: 1-Lipschitz, positive inside.
+fn in_grooved_block(p: Point) -> f64 {
+    let (at, along, radius) = groove_drum();
+    p.x.min(20.0 - p.x)
+        .min(p.y)
+        .min(20.0 - p.y)
+        .min(p.z)
+        .min(10.0 - p.z)
+        .min(off_axis(at, along, p) - radius)
+}
+
+/// The groove crease's round of radius `r` alone, as the rolling ball's
+/// opening of the floor's half-space less the drum (the ball's centres
+/// above `z = r` and `r` off the drum, the crease's own geometry taken
+/// whole), kept to the block: positive where the round takes `p`, and
+/// 1-Lipschitz. A point's distance to the centres' region is exact: the
+/// floor's offset plane's foot, the drum's offset cylinder's radial foot
+/// (each where it lies within the other), else the nearest point of the
+/// ellipse where the two cross, searched by golden section within half a
+/// radian of `p`'s own angle about the axis (the ellipse farther off
+/// stands more than three radii from the band).
+fn groove_taken(p: Point, r: f64) -> f64 {
+    let (at, along, radius) = groove_drum();
+    let (e1, e2) = (
+        Vector::new(0.0, -along.z, along.y),
+        Vector::new(1.0, 0.0, 0.0),
+    );
+    let wide = radius + r;
+    let above = |c: Point| c.z - r;
+    let outside = |c: Point| off_axis(at, along, c) - wide;
+    let distance = if above(p) >= 0.0 && outside(p) >= 0.0 {
+        0.0
+    } else {
+        let mut best = f64::INFINITY;
+        let floor = Point::new(p.x, p.y, r);
+        if outside(floor) >= -1e-12 {
+            best = best.min(p.distance(floor));
+        }
+        let d = p - at;
+        let radial = d - along * d.dot(along);
+        let wall = p + radial * (wide / radial.magnitude() - 1.0);
+        if above(wall) >= -1e-12 {
+            best = best.min(p.distance(wall));
+        }
+        let ellipse = |t: f64| {
+            let out = e1 * t.cos() + e2 * t.sin();
+            let s = -along.z;
+            at + along * ((at.z + wide * out.z - r) / s) + out * wide
+        };
+        let guess = d.dot(e2).atan2(d.dot(e1));
+        let off = |t: f64| ellipse(t).distance(p);
+        let (mut a, mut b) = (guess - 0.5, guess + 0.5);
+        let k = 0.5 * (5.0_f64.sqrt() - 1.0);
+        let (mut c, mut e) = (b - k * (b - a), a + k * (b - a));
+        let (mut fc, mut fe) = (off(c), off(e));
+        while b - a > 1e-13 {
+            if fc < fe {
+                (b, e, fe) = (e, c, fc);
+                c = b - k * (b - a);
+                fc = off(c);
+            } else {
+                (a, c, fc) = (c, e, fe);
+                e = a + k * (b - a);
+                fe = off(e);
+            }
+        }
+        best.min(fc.min(fe))
+    };
+    in_grooved_block(p).min(distance - r)
+}
+
+/// The wall's bottom edge's round of radius `r` alone, carried on along x
+/// past the groove's drum, which trims it: the quarter round's spandrel
+/// about the line `y = 20 - r`, `z = r`, kept to the block and to the near
+/// side of the groove (the spandrel meets the block again past it, no ball
+/// of this crease's). Positive where the round takes `p`, and 1-Lipschitz.
+fn wall_taken(p: Point, r: f64) -> f64 {
+    let ball = (p.y - (20.0 - r)).hypot(p.z - r) - r;
+    in_grooved_block(p)
+        .min(p.y - (20.0 - r))
+        .min(r - p.z)
+        .min(ball)
+        .min(10.0 - p.x)
+}
+
+/// The lower and upper bounds of `∫∫ w` over the part of the box `u0..u1`,
+/// `v0..v1` of a plane where `inside` is positive, `inside` 1-Lipschitz in
+/// the plane's own lengths and `w(a, b, c, d)` a cell's weight: a cell whose
+/// centre's value exceeds its half-diagonal lies wholly on that side; cells
+/// are halved until decided or `least` wide, the undecided counting toward
+/// the upper bound alone.
+fn bounded_section(
+    inside: &dyn Fn(f64, f64) -> f64,
+    (u0, u1): (f64, f64),
+    (v0, v1): (f64, f64),
+    least: f64,
+    weight: &dyn Fn(f64, f64, f64, f64) -> f64,
+) -> (f64, f64) {
+    let (mut lo, mut hi) = (0.0, 0.0);
+    let mut cells = vec![(u0, u1, v0, v1)];
+    while let Some((a, b, c, d)) = cells.pop() {
+        let half = 0.5 * (b - a).hypot(d - c);
+        let value = inside(0.5 * (a + b), 0.5 * (c + d));
+        let w = weight(a, b, c, d);
+        if value > half + 1e-9 {
+            lo += w;
+            hi += w;
+        } else if value < -half - 1e-9 {
+        } else if b - a <= least {
+            hi += w;
+        } else {
+            let (m, n) = (0.5 * (a + b), 0.5 * (c + d));
+            cells.extend([(a, m, c, n), (m, b, c, n), (a, m, n, d), (m, b, n, d)]);
+        }
+    }
+    (lo, hi)
+}
+
+/// What the two rounds of radius 1 take together, the wall's bottom edge
+/// and the groove crease each as it is alone (their cuts' union): the
+/// groove band's volume by its sections in the half-planes about the drum's
+/// axis, `n` of them over the run's half (it is symmetric across x = 10),
+/// plus the wall band's outside the groove band by its sections square to
+/// x, `2 n` of them. Each section is bounded rigorously by the cells it
+/// decides (no wider than 1e-4); the sections are summed by the midpoint
+/// rule. Gives the lower and upper bounds of that sum.
+fn rounded_corner_removal(n: u32) -> (f64, f64) {
+    let r = 1.0;
+    let (at, along, radius) = groove_drum();
+    let (e1, e2) = (
+        Vector::new(0.0, -along.z, along.y),
+        Vector::new(1.0, 0.0, 0.0),
+    );
+    let least = 1e-4;
+    let (mut lo, mut hi) = (0.0, 0.0);
+    // The groove band: in the half-plane at angle t about the axis, `u`
+    // off the axis and `v` along it, the volume element u du dv dt; the
+    // run lies within 1.6 of the lowest line (t = pi), where the crease
+    // stands at the floor.
+    let half = 1.6;
+    for k in 0..n {
+        let w = half / f64::from(n);
+        let t = core::f64::consts::PI + w * (f64::from(k) + 0.5);
+        let out = e1 * t.cos() + e2 * t.sin();
+        let corner = (at.z + radius * out.z) / -along.z;
+        let inside = |u: f64, v: f64| groove_taken(at + along * v + out * u, r);
+        let (l, h) = bounded_section(
+            &inside,
+            (radius, radius + 4.0 * r),
+            (corner - 12.0 * r, corner + 4.0 * r),
+            least,
+            &|a, b, c, d| 0.5 * (b * b - a * a) * (d - c),
+        );
+        lo += 2.0 * w * l;
+        hi += 2.0 * w * h;
+    }
+    // The wall band less the groove band: in the plane at x, y and z, the
+    // area element; the band stands within 10 of the block's side.
+    for k in 0..2 * n {
+        let w = 10.0 / f64::from(2 * n);
+        let x = w * (f64::from(k) + 0.5);
+        let inside = |y: f64, z: f64| {
+            let p = Point::new(x, y, z);
+            wall_taken(p, r).min(-groove_taken(p, r))
+        };
+        let (l, h) = bounded_section(
+            &inside,
+            (20.0 - 2.0 * r, 20.0),
+            (0.0, 2.0 * r),
+            least,
+            &|a, b, c, d| (b - a) * (d - c),
+        );
+        lo += w * l;
+        hi += w * h;
+    }
+    (lo, hi)
 }

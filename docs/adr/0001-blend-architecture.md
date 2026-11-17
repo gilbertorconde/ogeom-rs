@@ -2299,6 +2299,33 @@ fill's end section, while the rounds asked alone are built.
   meet and the meeting is the routes' to close), a group the engine does
   not round alone, or a request of one group.
 
+### Amendment: a straight crease run out across a curved face (#902)
+
+Amendment "M5e" carries a straight crease's band out past an end that
+runs out of the solid, the band ending flush on the faces it meets there.
+Its seat check excused a contact in air only past a planar end face. A
+curved end face can stand over the crease's faces before the crease
+ends: a drum cut across a block's bottom edge overhangs the back wall, so
+the edge's contact on the wall runs off the wall onto the drum short of
+the edge's end.
+
+- **Rule.** Per section 13, question 8, the contact that runs off its
+  face onto the curved face the crease ends at ends there: the band runs
+  on straight and the curved face trims it. The seat check excuses a
+  contact in air past such a face (outside its surface, within three
+  radii of the crease's end) as it excuses one past a planar end face.
+- **Past the gap.** Carried on across the gap the curved face leaves (a
+  groove), the band can meet the solid again farther along its line.
+  That piece is no ball's of this crease, which ended in the gap. The
+  tool is kept to a box about the piece holding the crease's own
+  spandrel, a radius past it and clear of every other piece's box;
+  where the boxes meet, the route declines as before.
+- **Oracle.** The grooved block's bottom edge and groove crease rounded
+  together (`blends.rs`) are held to the rolling ball: the groove band's
+  opening of the floor less the drum and the wall band's spandrel
+  carried on until the drum trims it, each section bounded by
+  1-Lipschitz cells.
+
 ## 12. Acceptance corpus
 
 From #902:

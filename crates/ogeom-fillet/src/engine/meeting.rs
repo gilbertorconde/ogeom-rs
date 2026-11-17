@@ -660,7 +660,7 @@ fn seated_along(
                     // band at its end"): the band runs on into that blend.
                     // Past a planar end face at one of the crease's own
                     // ends, where a band carried out runs on across it.
-                    Containment::Out if past_ends && past_end_face(curved, crease, p, tol) => {}
+                    Containment::Out if past_ends && past_end_face(curved, crease, p, tol)? => {}
                     Containment::Out
                         if cut_back_by_blend(
                             model,
@@ -830,8 +830,20 @@ pub(crate) fn carried_out(
         let Ok(taken) = ogeom_bool::common(&mut scratch, &tool, solid, tol) else {
             return Ok(None);
         };
-        if explore_unique(&scratch, &taken.shape, ShapeType::Solid)?.len() != 1 {
-            return Ok(None);
+        let pieces = explore_unique(&scratch, &taken.shape, ShapeType::Solid)?;
+        if pieces.len() != 1 {
+            // Carried out across a gap (a groove the crease runs out
+            // across), the spandrel meets the solid again farther along its
+            // line: that piece is no ball's of this crease, which ended in
+            // the gap. The tool is kept to a box about the piece holding the
+            // crease's own spandrel, clear of every other piece's box.
+            let Some((kept, traced)) =
+                near_piece(&mut scratch, &tool, &named, &pieces, within, c.radius, tol)?
+            else {
+                return Ok(None);
+            };
+            tool = kept;
+            named = traced;
         }
         tools.push(Tool {
             solid: tool,
@@ -851,6 +863,83 @@ pub(crate) fn carried_out(
         Err(e @ ogeom_core::OgeomError::Cancelled) => Err(e),
         Err(_) => Ok(None),
     }
+}
+
+/// `tool` kept to a box about the one of `pieces` (what it takes of the
+/// solid) holding `within`, the box `margin` past that piece and clear of
+/// every other piece's box, with `named` (its faces carrying the band)
+/// traced into what is kept. `None` where no piece or two hold `within`,
+/// the box reaches another piece's, or the boolean will not build.
+fn near_piece(
+    model: &mut Model,
+    tool: &Shape,
+    named: &[Shape],
+    pieces: &[Shape],
+    within: Point,
+    margin: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Shape, Vec<Shape>)>> {
+    use ogeom_algo::Containment;
+    let mut near = None;
+    for (i, piece) in pieces.iter().enumerate() {
+        if ogeom_algo::classify_in_solid_exact(model, piece, within, tol)? == Containment::In
+            && near.replace(i).is_some()
+        {
+            return Ok(None);
+        }
+    }
+    let Some(near) = near else {
+        return Ok(None);
+    };
+    let bounds = ogeom_algo::shape_bounds(model, &pieces[near], tol)?;
+    let (Some(lo), Some(hi)) = (bounds.low(), bounds.high()) else {
+        return Ok(None);
+    };
+    let (lo, hi) = (
+        Point::new(lo.x - margin, lo.y - margin, lo.z - margin),
+        Point::new(hi.x + margin, hi.y + margin, hi.z + margin),
+    );
+    for (i, piece) in pieces.iter().enumerate() {
+        if i == near {
+            continue;
+        }
+        let other = ogeom_algo::shape_bounds(model, piece, tol)?;
+        let (Some(a), Some(b)) = (other.low(), other.high()) else {
+            return Ok(None);
+        };
+        if a.x <= hi.x && b.x >= lo.x && a.y <= hi.y && b.y >= lo.y && a.z <= hi.z && b.z >= lo.z {
+            return Ok(None);
+        }
+    }
+    let planes = [
+        (Vector::X, hi.x),
+        (-Vector::X, -lo.x),
+        (Vector::Y, hi.y),
+        (-Vector::Y, -lo.y),
+        (Vector::Z, hi.z),
+        (-Vector::Z, -lo.z),
+    ];
+    let Some(slab) = super::fallback::polytope(model, &planes, tol)? else {
+        return Ok(None);
+    };
+    let Ok(kept) = ogeom_bool::common(model, tool, &slab, tol) else {
+        return Ok(None);
+    };
+    let faces = explore_unique(model, &kept.shape, ShapeType::Face)?;
+    let mut traced = Vec::new();
+    for face in named {
+        for made in kept.history.trace(face) {
+            if faces.iter().any(|f| f.is_same(made))
+                && !traced.iter().any(|t: &Shape| t.is_same(made))
+            {
+                traced.push(made.clone());
+            }
+        }
+    }
+    if traced.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((kept.shape, traced)))
 }
 
 /// Whether two creases meeting at the inside corner `v` take a junction
@@ -1189,19 +1278,40 @@ fn ends_at_blend(curved: &Curved, crease: &Crease, k: usize, tol: Tolerances) ->
     Ok(false)
 }
 
-/// Whether `p` stands on the outer side of the plane of a planar face, other
-/// than the crease's own, at one of the crease's end vertices: past that
-/// end, where a band carried out runs on across the face.
-fn past_end_face(curved: &Curved, crease: &Crease, p: Point, tol: Tolerances) -> bool {
-    [crease.ends.0, crease.ends.1].into_iter().any(|v| {
+/// Whether `p` stands on the outer side of a face, other than the crease's
+/// own, at one of the crease's end vertices: past that end, where a band
+/// carried out runs on across the face. Past a plane, on its outer side;
+/// past a curved face (a drum the crease runs out across, which may stand
+/// over the crease's faces before its end, cutting them back), outside its
+/// surface at the surface's point nearest `p`, within the band's reach of
+/// the end.
+fn past_end_face(curved: &Curved, crease: &Crease, p: Point, tol: Tolerances) -> OgeomResult<bool> {
+    for v in [crease.ends.0, crease.ends.1] {
         let at = curved.points[&v];
-        (0..curved.faces.len()).any(|f| {
-            !crease.faces.contains(&f)
-                && touches(curved, f, v)
-                && matches!(curved.faces[f].surface, SurfaceGeometry::Plane(_))
-                && outward(curved, f, at).is_some_and(|m| (p - at).dot(m) > tol.confusion())
-        })
-    })
+        for f in 0..curved.faces.len() {
+            if crease.faces.contains(&f) || !touches(curved, f, v) {
+                continue;
+            }
+            let past = match &curved.faces[f].surface {
+                SurfaceGeometry::Plane(_) => {
+                    outward(curved, f, at).is_some_and(|m| (p - at).dot(m) > tol.confusion())
+                }
+                surface => {
+                    if p.distance(at) > 3.0 * crease.radius {
+                        continue;
+                    }
+                    let foot = ogeom_algo::project_on_surface(surface, p, 16, tol)?;
+                    foot.distance > tol.confusion()
+                        && outward(curved, f, foot.point)
+                            .is_some_and(|m| (p - foot.point).dot(m) > tol.confusion())
+                }
+            };
+            if past {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Whether `p`, a point of face `face`'s plane (outward normal `n`) in air
