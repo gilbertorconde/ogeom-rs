@@ -213,16 +213,6 @@ impl PairSeat {
         &self.probes
     }
 
-    /// The stations of each run.
-    pub(crate) fn runs(&self) -> &[MarchedBlend] {
-        &self.runs
-    }
-
-    /// The crossing the ball was marched along.
-    pub(crate) const fn guide(&self) -> &Curve {
-        &self.guide
-    }
-
     /// Whether the round runs all the way round a closed seat.
     pub(crate) const fn closed(&self) -> bool {
         matches!(self.run, Run::Closed)
