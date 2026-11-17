@@ -4317,11 +4317,16 @@ fn touch_spread(
 /// rejoin. So consecutive paves whose gap along the edge in space is within
 /// the edge's honesty or either pave's own are one cluster, its first pave
 /// speaking for it, and so are the two ends of a graze (see [`grazed`]),
-/// the graze's nearest approach speaking for them.
+/// the graze's nearest approach speaking for them. A pave known to within
+/// the edge's own floor (a crossing found in closed form) speaks for its
+/// cluster over looser ones: where a marched section ends a few microns off
+/// a point two edges cross at, the edges split at that crossing, not at the
+/// march's end. A looser pave never takes over from the first.
 #[derive(Debug, Clone, Copy)]
 struct PaveCluster {
-    /// The representative parameter: the cluster's first pave, or the
-    /// nearest approach of a graze it holds.
+    /// The representative parameter: the cluster's first pave, or its most
+    /// honest one known to within the edge's floor, or the nearest approach
+    /// of a graze it holds.
     t: f64,
     /// Where it sits.
     at: Point,
@@ -4368,6 +4373,9 @@ fn cluster_paves(
     let mut prev: Option<(Point, Pave)> = None;
     // Where the current cluster's members stand.
     let mut held_at: Vec<Point> = Vec::new();
+    // The current cluster's representative: the honesty it was chosen for,
+    // or none once a graze's nearest approach speaks for the cluster.
+    let mut speaking: Option<f64> = None;
     for pave in ts {
         let at = curve.point_at(pave.t, tol)?;
         if ends
@@ -4409,6 +4417,11 @@ fn cluster_paves(
             if let Some((t, point)) = touch {
                 cluster.t = t;
                 cluster.at = point;
+                speaking = None;
+            } else if pave.honesty <= floor && speaking.is_some_and(|best| pave.honesty < best) {
+                cluster.t = pave.t;
+                cluster.at = at;
+                speaking = Some(pave.honesty);
             }
             cluster.span = held_at
                 .iter()
@@ -4419,6 +4432,7 @@ fn cluster_paves(
         } else {
             held_at.clear();
             held_at.push(at);
+            speaking = Some(pave.honesty);
             clusters.push(PaveCluster {
                 t: pave.t,
                 at,
