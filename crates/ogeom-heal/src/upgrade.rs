@@ -892,7 +892,8 @@ fn chart_line(
 /// Within each wire, consecutive edges continuing one curve (the same
 /// stored curve over contiguous ranges, or two collinear lines meeting end
 /// to end) become one edge over the joined range, and the vertex between
-/// them dissolves. Every pcurve the pair carried is joined with it and then
+/// them dissolves, where no other edge of the shape ends at it. Every
+/// pcurve the pair carried is joined with it and then
 /// *measured* against the joined curve: a pair whose parameterizations do
 /// not join cleanly is left split rather than merged into a face that could
 /// no longer be triangulated.
@@ -952,6 +953,19 @@ fn merge_pass(
         }
     }
 
+    // The edges meeting at each vertex, over the whole shape: a wire sees
+    // only its own, and a vertex between two of them may be where a third
+    // edge of another face ends.
+    let mut meeting: FastMap<TShapeId, FastSet<TShapeId>> = FastMap::default();
+    for edge in explore_unique(model, shape, ShapeType::Edge)? {
+        for vertex in explore_unique(model, &edge, ShapeType::Vertex)? {
+            meeting
+                .entry(vertex.node())
+                .or_default()
+                .insert(edge.node());
+        }
+    }
+
     let wires = explore_unique(model, shape, ShapeType::Wire)?;
     let mut reshape = Reshape::new();
     let mut merged_nodes: FastSet<TShapeId> = FastSet::default();
@@ -992,6 +1006,23 @@ fn merge_pass(
                 i += 1;
                 continue;
             };
+            // The vertex the join dissolves must be the pair's alone: where
+            // another edge ends there, it would be left at a point inside
+            // the joined edge.
+            let mut dissolved = explore_unique(model, &a, ShapeType::Vertex)?;
+            dissolved.extend(explore_unique(model, &b, ShapeType::Vertex)?);
+            if dissolved
+                .iter()
+                .filter(|v| v.node() != from.node() && v.node() != to.node())
+                .any(|v| {
+                    meeting
+                        .get(&v.node())
+                        .is_some_and(|edges| edges.iter().any(|e| *e != a.node() && *e != b.node()))
+                })
+            {
+                i += 1;
+                continue;
+            }
             let Ok(joined) =
                 ogeom_algo::make_edge_between(model, join.curve, join.range, &from, &to, tol)
             else {
