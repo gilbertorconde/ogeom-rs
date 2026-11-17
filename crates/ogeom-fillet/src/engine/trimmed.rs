@@ -1,7 +1,7 @@
 //! Chamfers of solids with curved faces: P1's contacts on curved seats, P3's
 //! vertex cases there, and P4's trimmed-face assembly, over the solid
 //! [`curved`](super::curved) reads and the corners curved P2
-//! ([`curved_corners`](super::setbacks::curved_corners)) finds.
+//! ([`curved_corners`]) finds.
 //!
 //! The seats:
 //!
