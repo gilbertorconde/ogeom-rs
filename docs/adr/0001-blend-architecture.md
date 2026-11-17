@@ -2083,6 +2083,79 @@ and the history is told of the solid as given. Nothing else changes:
 where the solid holds no seam, or the dissolved solid does not close the
 corner either, the request goes on as before.
 
+### Amendment: edges split into collinear pieces (#902)
+
+Three blocks stepping up, fused and unified, keep each straight side
+edge of the step face as three collinear pieces: the unification merged
+the faces, not the edges. The engine read such a solid as given only
+where a seam ran into it, so with no seam left it declined, and the
+current path rounded each piece as its own band and closed each inside
+corner with its signed-corner box. Each side edge became three
+cylinders with seams between them, and each inside corner kept the
+parts of three faces inside its box as faces of their own, their
+outline standing as edges.
+
+- **The rule.** The engine reads a solid bounded by planes with its
+  seams dissolved **and** its runs of edges on one curve joined, whether
+  or not any face merged: a vertex only two pieces of one straight edge
+  between the same two faces meet at is no vertex of the part's form.
+  A round or chamfer of any piece is one of the whole edge, as tangent
+  propagation carries a pick along its smooth continuations by default
+  (SOLIDWORKS in the M6 refusals amendment's survey, Onshape in the
+  amendment on varying rounds on curved seats). Pieces asked at
+  different radii are declined there, as for pieces a seam split.
+- **What it fixes.** The stepped block's every-edge round goes through
+  the engine: one cylinder per straight edge, one sphere per convex
+  corner, one G1 patch per inside corner (§13 question 7), and every
+  original face one face. The setback assembly leaves no same-carrier
+  pieces beside their parent faces on this class. The signed-corner box
+  of the current path is not reached.
+- **Unification joins edges by default.** `ogeom_heal::unify_same_domain`
+  now joins each run of edges on one curve after merging faces, as
+  `merge_edges` does, and counts both; its history modifies each face
+  of a merged set into the merged face. Public documentation of
+  mainstream refinement does the same: in CadQuery's `clean`, "adjacent
+  faces and edges lying on the same underlying geometry are merged", and
+  it runs after every boolean unless `clean=False` [P46]; build123d's
+  `clean` returns the shape "with extraneous internal edges removed"
+  [P47]. `unify_same_domain_with` and `UnifyOptions { edges: false }`
+  keep the edges split; `unify_same_domain_around` merges faces only,
+  since an edge it joined is another face's boundary too.
+- **Pieces on one carrier merged after any route.** Other routes do
+  leave them: strips applied by a boolean, rolling bevels meeting in
+  corner pieces, a slab rounded at half its thickness whose top and
+  bottom bands are one half cylinder. Every round and chamfer the engine
+  builds is followed by one merge (`engine::merged`): the faces the
+  blend made, unified with their neighbours on one carrier
+  (`unify_same_domain_around`), the result checked, and the merge's
+  history composed after the blend's. A face taken into another is
+  modified into the merged face, so an edge still names the face its
+  blend became. A cluster the unification leaves split (a band closing
+  round its axis with no seam) stays split; splits between faces the
+  blend left alone stay as the input held them.
+- **A cusp is a pinch, not a smooth turn.** A concave band's end lies on
+  the face it ends on, so the merge joins the two: an L-bracket's end
+  face then holds the band's arc between the leg's top edge and the
+  wall's edge, each tangent to the arc where they meet. The route for
+  rounds either side of a cusp read those tangent points as cusps (a
+  flat side tangent to a drum's wall) and built the rim's round as its
+  separate tools, cut off at the "cusp". A cusp is where the top narrows
+  to nothing: the straight edge and the rim's arc leave the tangent point
+  the same way. Where they leave it opposite ways, the top runs on
+  straight across it, the chain turns smoothly, and the route does not
+  apply.
+- **A cusp edge is not a fold.** P5 refused two faces meeting along an
+  edge facing opposite ways as folded flat. Two elementary surfaces of
+  different kinds (a rim's torus and a drum's cone) cannot lie on one
+  another; meeting so, they are tangent along the edge and the material
+  narrows to it, as a rim's band carried round past a crease's flush end
+  leaves it (the crease's cone piece beside the torus). The fold guard
+  holds where the two can coincide: one surface kind, or a B-spline or
+  other non-elementary surface. The merge above joins the drum's cone
+  that the crease's end split, and the rim's round carried past the
+  corner, refused before for that edge and built by the current path,
+  goes through the engine's exact route to the same volume.
+
 ## 12. Acceptance corpus
 
 From #902:
@@ -2495,5 +2568,10 @@ a ball holding an edge on both sides at once).
 - [P30] SOLIDWORKS 2022, Example: Overflow Type:
   https://help.solidworks.com/2022/english/SolidWorks/sldworks/c_example_overflow_type.htm
 - [P31] SMLib manual, Fillets: https://docs.nvidia.com/smlib/manual/smlib/fillets
+- [P46] CadQuery, class reference (`Workplane.clean`, the `clean`
+  parameter of `union` and `cut`, and `occ_impl.shapes.clean`):
+  https://cadquery.readthedocs.io/en/latest/classreference.html
+- [P47] build123d, direct API reference (`Shape.clean`):
+  https://build123d.readthedocs.io/en/latest/direct_api_reference.html
 
 No implementation source of any other kernel was read for this record.

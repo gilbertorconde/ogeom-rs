@@ -128,8 +128,8 @@ fn cusps_of(
         let Some((a, b)) = ogeom_algo::edge_vertices(model, &e)? else {
             continue;
         };
-        for v in [a, b] {
-            let p = point_of(model, &v)?;
+        for v in [&a, &b] {
+            let p = point_of(model, v)?;
             let d = p - seat.centre;
             let radial = d - seat.up * d.dot(seat.up);
             if (radial.magnitude() - seat.radius).abs() > tol.confusion() * 10.0
@@ -138,7 +138,10 @@ fn cusps_of(
                 continue;
             }
             let wall_out = radial / radial.magnitude() * seat.sigma;
+            let other = if v.is_same(&a) { &b } else { &a };
+            let along = point_of(model, other)? - p;
             if wall_out.dot(out) >= 1.0 - 1e-9
+                && pinched(model, &seat.cap_face, p, along, tol)?
                 && !found
                     .iter()
                     .any(|c: &Cusp| c.at.distance(p) <= tol.confusion())
@@ -152,6 +155,36 @@ fn cusps_of(
         }
     }
     Ok(found)
+}
+
+/// Whether `cap` narrows to nothing at `p`: an arc of its boundary ending
+/// at `p` leaves it the way its straight edge does, `along`. Where the arc
+/// leaves the other way, the two edges continue each other through `p`
+/// and the cap runs on straight across it (a concave band's end face
+/// joined to the face it ends on): a smooth turn of the boundary, no cusp.
+/// No arc ending at `p` reads as pinched.
+fn pinched(
+    model: &Model,
+    cap: &Shape,
+    p: Point,
+    along: Vector,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let near = tol.confusion() * 10.0;
+    for e in explore_unique(model, cap, ShapeType::Edge)? {
+        let (curve, (t0, t1)) = crate::support::edge_curve(model, &e, tol)?;
+        if !matches!(curve, Curve::Circle(_)) {
+            continue;
+        }
+        let step = (t1 - t0) * 1e-3;
+        for (end, inward) in [(t0, t0 + step), (t1, t1 - step)] {
+            if curve.point_at(end, tol)?.distance(p) <= near {
+                let leaves = curve.point_at(inward, tol)? - p;
+                return Ok(leaves.dot(along) > 0.0);
+            }
+        }
+    }
+    Ok(true)
 }
 
 /// The section of a round: the corner `c`, its contacts `a` and `b`, and

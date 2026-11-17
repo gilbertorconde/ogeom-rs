@@ -875,8 +875,23 @@ pub fn fillet_edges_with(
 /// where every edge asked is a rim between a planar cap and a coaxial wall,
 /// or a straight edge along planes and cylinders or such a rim beside them;
 /// `None` leaves the request to the current path. An edge asked twice at
-/// one radius is asked once.
+/// one radius is asked once. Faces a route leaves in pieces on one carrier
+/// are merged after ([`crate::engine::merged`]).
 pub(crate) fn rounds_by_engine(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    match rounds_by_engine_pieces(model, solid, edges, tol)? {
+        Some(built) => crate::engine::merged(model, solid, built, tol).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// [`rounds_by_engine`] before the faces a route left in pieces on one
+/// carrier are merged.
+fn rounds_by_engine_pieces(
     model: &mut Model,
     solid: &Shape,
     edges: &[(Shape, f64)],

@@ -453,8 +453,23 @@ pub(crate) fn unchanged(solid: &Shape) -> Built {
 /// The chamfer of `specs` by the blend engine, or `None` where the solid
 /// or a spec lies outside its classes. A solid holding seams is chamfered
 /// with them dissolved, as [`ogeom_heal::unify_same_domain`] merges them;
-/// no spec may name a seam.
+/// no spec may name a seam. Faces a route leaves in pieces on one carrier
+/// are merged after ([`crate::engine::merged`]).
 pub(crate) fn engine_chamfer(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    match engine_chamfer_pieces(model, solid, specs, tol)? {
+        Some(built) => crate::engine::merged(model, solid, built, tol).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// [`engine_chamfer`] before the faces a route left in pieces on one
+/// carrier are merged.
+fn engine_chamfer_pieces(
     model: &mut Model,
     solid: &Shape,
     specs: &[(Shape, Chamfer)],

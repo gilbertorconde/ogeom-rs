@@ -4,8 +4,9 @@
 //! inside out, no two rings cross, and every ring is planar (a vertex
 //! facet that is not is refused by name: its corner closes with a patch).
 //! After: the kernel's `check`, and no two faces folded flat along an
-//! edge (one plane, facing opposite ways), which neither a volume nor a
-//! check of each face alone would see. A guard that fails is a refusal,
+//! edge (one surface, facing opposite ways), which neither a volume nor a
+//! check of each face alone would see; two elementary surfaces of
+//! different kinds meeting so form a cusp edge, not a fold. A guard that fails is a refusal,
 //! never a search for another construction.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -143,6 +144,35 @@ pub(crate) fn rings_fit_holed(
     Ok(true)
 }
 
+/// Whether faces `a` and `b` can lie on one another over an area: their
+/// surfaces are of one kind, or either is not an elementary surface. Two
+/// elementary surfaces of different kinds (a torus and a cone) meet
+/// facing opposite ways only along a line they are tangent on, the
+/// material between them narrowing to that line: a cusp edge, as a round
+/// carried past a corner leaves where its band runs tangent onto a wall,
+/// not a fold.
+fn may_coincide(model: &Model, a: &Shape, b: &Shape) -> bool {
+    use ogeom_geom::SurfaceGeometry as G;
+    let kind = |face: &Shape| {
+        let surface = model
+            .node(face)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| model.geometry().surface(d.surface));
+        match surface {
+            Some(G::Plane(_)) => Some(0),
+            Some(G::Cylinder(_)) => Some(1),
+            Some(G::Cone(_)) => Some(2),
+            Some(G::Sphere(_)) => Some(3),
+            Some(G::Torus(_)) => Some(4),
+            _ => None,
+        }
+    };
+    match (kind(a), kind(b)) {
+        (Some(x), Some(y)) => x == y,
+        _ => true,
+    }
+}
+
 /// The built solid's own guards: the kernel's check, and no two faces folded
 /// flat along an edge.
 ///
@@ -173,7 +203,7 @@ pub(crate) fn solid_fits(model: &Model, solid: &Shape, tol: Tolerances) -> Ogeom
                 normal_near(model, a, at, tol)?,
                 normal_near(model, b, at, tol)?,
             );
-            if na.dot(nb) < -1.0 + tol.angular() {
+            if na.dot(nb) < -1.0 + tol.angular() && may_coincide(model, a, b) {
                 ogeom_bail!(
                     Construction,
                     "two faces of the blended solid lie folded flat on one another"
