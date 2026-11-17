@@ -584,3 +584,17 @@ same two vertices. The reproducer for a section strand lying on a face's
 own boundary strand: walked with it, it closed a cycle of no area, the
 face's outline went unwalked, and the common was refused (the arrangement
 left no piece of the face). This repository's own licence (LGPL-2.1-only).
+
+## straight_band_past_a_rim_band.ogeom
+
+Two solids in this kernel's native format, as rounding a cube a drum
+shaves one edge at a time makes them (`blends.rs`'s shaved cube: a 10-cube
+less what lies outside a drum of radius 6 about `(5, 5)`): the cube with
+its top's rim arc rounded at radius 1 (a torus band tangent to the top
+along the circle of radius 5), and the tool of the straight top edge's band
+along `x = 0`, carried on past the vertex into the rim's band (a cylinder
+tangent to the top along `x = 1`). The two contact curves cross on the top
+at `(1, 2, 10)`, where the torus, the cylinder and the top plane touch one
+another. The reproducer for a triple tangency: the common of the two was
+refused (the kept pieces did not close into a shell). This repository's
+own licence (LGPL-2.1-only).
