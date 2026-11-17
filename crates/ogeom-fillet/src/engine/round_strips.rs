@@ -398,7 +398,16 @@ fn straight(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<(Strip, Option<ogeom_algo::HalfSpaces>)>> {
-    let (a, b) = (curved.points[&e.ends.0], curved.points[&e.ends.1]);
+    // Read on the edge's own line: a vertex a boolean left within its
+    // tolerance off the line (an earlier band's end meeting the edge) tilts
+    // the edge read through its vertices.
+    let (a, b) = match &e.curve {
+        Curve::Line(_) => (
+            e.curve.point_at(e.range.0, tol)?,
+            e.curve.point_at(e.range.1, tol)?,
+        ),
+        _ => (curved.points[&e.ends.0], curved.points[&e.ends.1]),
+    };
     let length = a.distance(b);
     if length <= tol.confusion() {
         return Ok(None);
