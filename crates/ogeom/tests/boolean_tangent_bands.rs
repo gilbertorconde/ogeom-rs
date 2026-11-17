@@ -2,9 +2,9 @@
 //! cube a drum shaves: the rim's torus and the crease's cylinder are both
 //! tangent to the cube's top, and their contact curves on it cross, so the
 //! two bands touch each other tangentially there, and the top with them.
-//!
-//! A known failure, pushed as the reproducer for the boolean fix
-//! (`repro/triple-tangency`): the common is refused today.
+//! The section between the bands is marched up to that point and stops a
+//! few microns off it, while the two bands' edges on the top cross there in
+//! closed form; each edge splits at that crossing.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
