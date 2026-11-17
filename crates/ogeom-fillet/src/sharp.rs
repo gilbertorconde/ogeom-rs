@@ -109,8 +109,6 @@ fn sharp_own(
     setbacks: &Setbacks,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_entry = crate::fillet::to_current_path("vertex:sharp_own");
     if !radius.is_finite() || radius <= tol.confusion() {
         ogeom_bail!(Construction, "a blend radius must be a positive distance");
     }

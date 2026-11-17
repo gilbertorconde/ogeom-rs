@@ -213,8 +213,6 @@ fn setback_own(
     setbacks: &Setbacks,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_entry = crate::fillet::to_current_path("vertex:setback_own");
     let corner = read_corner(model, solid, vertex, radius, setbacks, tol)?;
 
     cornered_by_engine(
