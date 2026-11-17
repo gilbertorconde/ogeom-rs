@@ -5128,10 +5128,15 @@ fn middle_of<'a>(lines: impl IntoIterator<Item = &'a [Point2]>) -> Point2 {
 /// A patch whose seam was cut elsewhere (a band opened along the widest gap
 /// its mesh left, running diagonally round) covers a period starting at the
 /// seam, and a point just short of it belongs a period on. The fold is kept
-/// where it lands inside the trim, or where no shift does. Inside is read
-/// along the leaning ray: a contact's middle runs level with the face's own
-/// edge, where the level ray grazes the edge's ends and counts them at
-/// random.
+/// where it lands inside the trim, or where no shift does.
+///
+/// The trim is the face's strands, which close only with the pieces still
+/// being placed, so their even-odd count can name a copy that lies wholly
+/// outside the box round them (a contact's middle level with the end of
+/// the strand it continues, the ray running through that end). No copy
+/// outside that box is inside. Where none inside is found and the fold
+/// itself lies outside the box, the copy nearest the trim is taken: a
+/// point on the face's boundary is in the column the boundary is in.
 fn fold_inside(
     p: Point2,
     surface: &SurfaceGeometry,
@@ -5143,11 +5148,60 @@ fn fold_inside(
     if trim.is_empty() || chart_spans(surface, tol).iter().all(Option::is_none) {
         return folded;
     }
-    shifts_toward(surface, folded, middle_of(trim.iter().copied()), tol)
+    let (low, high) = trim.iter().flat_map(|line| line.iter()).fold(
+        (
+            Point2::new(f64::INFINITY, f64::INFINITY),
+            Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
+        ),
+        |(low, high), q| {
+            (
+                Point2::new(low.x.min(q.x), low.y.min(q.y)),
+                Point2::new(high.x.max(q.x), high.y.max(q.y)),
+            )
+        },
+    );
+    let boxed = |q: &Point2| {
+        q.x >= low.x - PARAM_SNAP
+            && q.x <= high.x + PARAM_SNAP
+            && q.y >= low.y - PARAM_SNAP
+            && q.y <= high.y + PARAM_SNAP
+    };
+    let copies: Vec<Point2> = shifts_toward(surface, folded, middle_of(trim.iter().copied()), tol)
         .into_iter()
         .map(|(du, dv)| Point2::new(folded.x + du, folded.y + dv))
-        .find(|q| arrange::inside_many_slanted(trim, *q))
-        .unwrap_or(folded)
+        .collect();
+    if let Some(q) = copies.iter().find(|q| boxed(q) && inside_many(trim, **q)) {
+        return *q;
+    }
+    if boxed(&folded) {
+        return folded;
+    }
+    copies
+        .into_iter()
+        .map(|q| (distance_to_lines(trim, q), q))
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map_or(folded, |(_, q)| q)
+}
+
+/// The distance in the chart from `p` to the nearest of `lines`.
+fn distance_to_lines(lines: &[&[Point2]], p: Point2) -> f64 {
+    let mut best = f64::INFINITY;
+    for line in lines {
+        if let [only] = line {
+            best = best.min(p.distance(*only));
+        }
+        for w in line.windows(2) {
+            let (a, ab) = (w[0], w[1] - w[0]);
+            let length = ab.dot(ab);
+            let t = if length > 0.0 {
+                ((p - a).dot(ab) / length).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            best = best.min(p.distance(a + ab * t));
+        }
+    }
+    best
 }
 
 /// A strand folded into the chart as a whole, to the side of the face's
