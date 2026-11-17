@@ -2341,6 +2341,41 @@ the edge's end.
   carried on until the drum trims it, each section bounded by
   1-Lipschitz cells.
 
+### Amendment: a corner one ball rounds, from its bands alone (#902)
+
+A corner of three convex creases asked together, where one ball a radius
+in from all three faces fits, closes on that ball (the corner sphere, the
+default of section 13, question 2). On a solid with a curved face the
+trimmed assembly can build the corner but not every band's far end (a
+straight band running out across a drum at its other end), and the
+request went to the current path.
+
+- **Rule.** No new behaviour: the corner is the rolling ball's. Where the
+  three faces are planes or walls holding the material inside them, the
+  solid is locally convex there, and the round is what no ball within the
+  solid reaches. A point of a crease's spandrel is reached by no ball
+  within that crease's two faces, so by none within the solid: each
+  crease's round alone, carried past its ends as it is alone, is part of
+  the corner's round. What is left of the round is the corner's cell: the
+  points whose nearest centre of a ball within the solid is the corner
+  ball's centre (the cone of the three faces' normals there), farther than
+  a radius from it.
+- **Build** (`engine/ball_corner.rs`). The ball's centre is solved a radius
+  in from the three faces (Newton's method on their signed distances). It
+  is proved to touch each face within its trim and to stand at least a
+  radius from every face of the solid. Each crease's round alone is a
+  tool. So is the cell: the normal cone, held within the three faces'
+  tangent planes at the ball's touches moved a radius out (the solid stands
+  within them there), less the ball. They are applied as the one-boolean
+  fallback's.
+- **Oracle.** The shaved cube's corner (`blends.rs`) takes the union of its
+  three bands alone, in closed form, plus the cell outside it, integrated
+  by rays from the ball's centre over the normal cone.
+- **Not this route:** a face of another kind or a wall holding the
+  material outside it, a vertex with a fourth edge, radii that differ, a
+  crease whose round alone the engine does not build, or a ball that does
+  not fit.
+
 ## 12. Acceptance corpus
 
 From #902:
