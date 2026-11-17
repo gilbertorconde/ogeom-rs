@@ -2040,37 +2040,47 @@ as rounding the complement turns it.
   https://help.solidworks.com/2019/english/SolidWorks/sldworks/r_constant_size_fillets.htm
 - [S1] NVIDIA, SMLib Fillets: https://docs.nvidia.com/smlib/manual/smlib/fillets/
 
-### Amendment: a cusp's S, one rule for one side or two (#902)
+### Amendment: a cusp's S, one side or two (#902)
 
 Where a flat side runs tangent into a drum's wall, the top between them
 narrows to a cusp at the tangent point T. A round of the top's edge with the
 side (convex) and of its rim on the wall (concave), leaving T on one side,
 cannot stand side by side within two radii of T: the round there is an S,
-off the side in a convex arc and onto the wall in a concave one, closing to
-nothing at T. Both sides of T may be asked (a plate's side tangent to a
-boss: two S's) or one, where the top ends at T (an arm's side running into
-a hub: one S).
+off the side in a convex arc and onto the wall in a concave one. Both sides
+of T may be asked (a plate's side tangent to a boss: two S's) or one, where
+the top ends at T (an arm's side running into a hub: one S).
 
-- **Rule.** Each side of T asked with both rounds is one lobe, built alike
-  whether the other side is asked or not. The two bands end in the
-  meridian plane through the point where their contacts cross on the top,
-  each cut by it, so the lobe turns smoothly from the one band into the
-  other. Below the lobe the S is read section by section square to the
+- **Lobes.** Each side of T asked with both rounds is one lobe. The two
+  bands end in the meridian plane through the point where their contacts
+  cross on the top, each cut by it, so the lobe turns smoothly from the one
+  band into the other.
+- **Two sides: one patch over T.** The hole is the two lobes and, between
+  them, the rim's contact on the wall and the straight strip's contact on
+  the side; one patch closes it, standing clear of T, where the side and
+  the wall are tangent. On a plate's side tangent to a boss the rounded
+  solid is tangent within 3e-5 at every radius from a twenty-fourth of the
+  wall's to a quarter, against the 2e-4 target. A patch per lobe
+  over the S's feet (below) has its pole at T, where at small radii the two
+  feet leave T almost parallel: there it held 1e-4 and missed the target at
+  a twenty-fourth (2.2e-4), finer nets diverging. The two-sided cusp keeps
+  the patch over T (user, 2026-11-17).
+- **One side: the S's feet.** Where the top ends at T there is no second
+  lobe to close against, and the hole is the lobe and the S's feet down to
+  T. Below the lobe the S is read section by section square to the
   straight edge: where the top stands open `u` of what it does at the
   lobe's end on a face (open: from the side's line out to the wall's foot
   along the radius, which reads at every station, also where the lobe's
   end on the side lies past the foot's reach along the top, as it does
   for the wider rounds), the S turns `t` off each face, `cos t = 1 - u`,
   its foot on the side `sin t` of the lobe's depth below the top and on
-  the wall `sin t` of its height above. Both feet run from the lobe to T, each meeting its
-  band's contact tangentially at the lobe.
-- **Built** as one patch per lobe over the hole of the lobe and its two
-  feet, the feet meeting at the patch's pole, T. The lobe runs from a
-  convex band into a concave one, which one polynomial patch cannot follow:
-  the patch is fitted on each side of the line from that join to the pole
-  and joined there C1 on a knot line, one face. Edges the S meets at T (the
-  side's edge with the wall below a top ending there, the wall's seam) run
-  on to T. Held to the bands' fit target, gap and tangency.
+  the wall `sin t` of its height above. Both feet run from the lobe to T,
+  each meeting its band's contact tangentially at the lobe. The patch over
+  the lobe and its feet has its pole at T; the lobe runs from a convex band
+  into a concave one, which one polynomial patch cannot follow, so the
+  patch is fitted on each side of the line from that join to the pole and
+  joined there C1 on a knot line, one face. Edges the S meets at T (the
+  side's edge with the wall below the top, the wall's seam) run on to T.
+- **Held** to the bands' fit target, gap and tangency, either way.
 - **Refused by name:** one lobe asked while the top runs on past T with its
   edges left sharp (amendment "rounds either side of a cusp").
 
