@@ -43,5 +43,6 @@ pub use small::{SmallFaces, fix_small_faces, remove_small_solids};
 pub use solid::solids_from_shells;
 pub use split::{Projection, split_face};
 pub use upgrade::{
-    merge_edges, reduce_tolerances, same_domain, unify_same_domain, unify_same_domain_around,
+    UnifyOptions, merge_edges, reduce_tolerances, same_domain, unify_same_domain,
+    unify_same_domain_around, unify_same_domain_with,
 };

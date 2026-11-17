@@ -45,6 +45,7 @@ mod law_tools;
 mod marched_junctions;
 mod marched_seats;
 mod meeting;
+mod merged;
 pub(crate) mod mixed_corner;
 mod mixed_tools;
 mod planar_tools;
@@ -89,6 +90,7 @@ pub(crate) use meeting::{
     Spec as MeetingSpec, carried_out as carried_out_rounds, reaches_earlier_band,
     rounds as meeting_rounds, rounds_with as meeting_rounds_with,
 };
+pub(crate) use merged::merged;
 pub(crate) use mixed_tools::blend as mixed_asymmetric;
 pub(crate) use planar_tools::{linear_round, varying_distances};
 pub(crate) use request::{Request, Section};
