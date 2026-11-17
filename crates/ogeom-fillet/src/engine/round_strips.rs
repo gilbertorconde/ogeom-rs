@@ -635,14 +635,15 @@ fn straight(
 /// sine, to tell which side of the edge its face lies.
 const LEAVING: f64 = 1e-3;
 
-/// Into `face` from the straight `edge` along `u`, square to it: the
-/// face's other edge leaving one of the edge's ends, its tangent there with
-/// its part along `u` taken off; where every one runs on along `u` (an arc
-/// leaving tangent, a rim continuing a straight edge), on the left of the
-/// edge as the face walks it, about the face's outward normal at the edge's
-/// middle (every loop, a hole's too, walks with the face on its left: a
-/// neighbour's chord would point into a hole beside it). `None` where
-/// neither reads.
+/// Into `face` from the straight `edge` along `u`, square to it: on the
+/// left of the edge as the face walks it, about the face's outward normal
+/// at the edge's middle (every loop, a hole's too, walks with the face on
+/// its left, under the face's sense); where that reads nothing, the face's
+/// other edge leaving one of the edge's ends, its tangent there with its
+/// part along `u` taken off. The walk comes first: a neighbour leaving a
+/// reflex corner of the face (a plate's top round a rib standing on it)
+/// runs along the face's boundary, not into it, and a neighbour's chord
+/// would point into a hole beside it. `None` where neither reads.
 ///
 /// # Errors
 ///
@@ -655,8 +656,23 @@ fn into_face(
     tol: Tolerances,
 ) -> OgeomResult<Option<Vector>> {
     use ogeom_geom::Curve3d as _;
+    let f = &curved.faces[face];
+    if let Some(&(_, w)) = f.loops.iter().flatten().find(|(e, _)| *e == edge) {
+        let c = &curved.edges[&edge];
+        let mid = c.curve.point_at(0.5 * (c.range.0 + c.range.1), tol)?;
+        if let Some(n) = outward(curved, face, mid) {
+            // The walk already carries the face's sense: a reversed face's
+            // wires and edges come back reversed beneath it.
+            let along = if w { u } else { -u };
+            let into = n.cross(along);
+            let square = into - u * into.dot(u);
+            if square.magnitude() > LEAVING * into.magnitude().max(f64::MIN_POSITIVE) {
+                return Ok(Some(square));
+            }
+        }
+    }
     let ends = curved.edges[&edge].ends;
-    for (e, _) in curved.faces[face].loops.iter().flatten() {
+    for (e, _) in f.loops.iter().flatten() {
         if *e == edge {
             continue;
         }
@@ -672,22 +688,7 @@ fn into_face(
             }
         }
     }
-    let f = &curved.faces[face];
-    let Some(&(_, w)) = f.loops.iter().flatten().find(|(e, _)| *e == edge) else {
-        return Ok(None);
-    };
-    let c = &curved.edges[&edge];
-    let mid = c.curve.point_at(0.5 * (c.range.0 + c.range.1), tol)?;
-    let Some(n) = outward(curved, face, mid) else {
-        return Ok(None);
-    };
-    let along = if w == f.reversed { -u } else { u };
-    let into = n.cross(along);
-    let square = into - u * into.dot(u);
-    if square.magnitude() <= LEAVING * into.magnitude().max(f64::MIN_POSITIVE) {
-        return Ok(None);
-    }
-    Ok(Some(square))
+    Ok(None)
 }
 
 /// The points each other edge of a rim's face is read at, to keep the
@@ -850,7 +851,12 @@ fn rim(
         }
         feet[k] = foot;
     }
-    if ball.0 <= radius + tol.confusion() {
+    // Nearer the axis than its radius, the ball's centre folds the torus
+    // over itself (a spindle). As far as its radius, the torus closes on
+    // the axis at one point (a horn), which the band between the contacts,
+    // on the far side of the centre from the axis, stays clear of: a turn
+    // as tight as the round (a corner's wall of twice its radius).
+    if ball.0 < radius - tol.confusion() {
         return Ok(None);
     }
     // Each face holds its contact ring: nothing else of a plane face stands
