@@ -97,8 +97,8 @@ pub(crate) fn rim_run(
         return Ok(None);
     }
     let (Some((first, first_sign)), Some((second, second_sign))) = (
-        crate::rolled::host(model, &seat.wall_face, tol)?,
-        crate::rolled::host(model, &seat.cap_face, tol)?,
+        crate::engine::rolled::host(model, &seat.wall_face, tol)?,
+        crate::engine::rolled::host(model, &seat.cap_face, tol)?,
     ) else {
         ogeom_bail!(Dangling, "a rim's support surface is unavailable");
     };
@@ -107,7 +107,7 @@ pub(crate) fn rim_run(
         Ok(seat.centre + radial * (seat.radius + radius))
     };
     for side in explore_unique(model, &seat.cap_face, ShapeType::Edge)? {
-        let Some([a, b]) = crate::consumed::segment(model, &side, tol)? else {
+        let Some([a, b]) = crate::engine::consumed_seat::segment(model, &side, tol)? else {
             continue;
         };
         let along = (b - a) / a.distance(b);
@@ -131,7 +131,7 @@ pub(crate) fn rim_run(
         let [across] = others.as_slice() else {
             continue;
         };
-        let Some(flat) = crate::rolled::flat(model, across, tol)? else {
+        let Some(flat) = crate::engine::rolled::flat(model, across, tol)? else {
             continue;
         };
         if flat.normal.dot(outward) < 1.0 - tol.angular() {

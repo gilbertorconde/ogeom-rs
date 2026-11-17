@@ -22,7 +22,7 @@ pub(crate) fn close(
     solid: &Shape,
     banded: Built,
     vertex: &Shape,
-    frame: &crate::corner::CornerFrame,
+    frame: &crate::engine::vertex_read::CornerFrame,
     setback: &[f64],
     ends: &[CornerEnd],
     continuity: Continuity,
@@ -39,7 +39,7 @@ pub(crate) fn close(
         })
         .collect();
     walls.extend(sections.iter().copied());
-    let cell = crate::corner::convex_block(model, &walls, tol)?;
+    let cell = crate::engine::vertex_geometry::convex_block(model, &walls, tol)?;
     let cut = ogeom_bool::cut(model, &banded.shape, &cell, tol)?;
     let planes: Vec<(Vector, Point)> = frame.m.iter().map(|mk| (*mk, frame.corner)).collect();
     guard_cell(
@@ -123,7 +123,9 @@ pub(crate) fn close(
         let plane = host(next);
         let (v0, p0) = end_on(model, &arcs[k].0, plane)?;
         let (v1, p1) = end_on(model, &arcs[next].0, plane)?;
-        let Some(q) = crate::corner::planes_meet(&plane, &sections[k], &sections[next]) else {
+        let Some(q) =
+            crate::engine::vertex_geometry::planes_meet(&plane, &sections[k], &sections[next])
+        else {
             ogeom_bail!(
                 Construction,
                 "two section planes do not meet on the face between them"
@@ -313,7 +315,7 @@ pub(crate) fn round_end(
 pub(crate) fn bevel_end(
     model: &Model,
     kept: &[Shape],
-    frame: &crate::corner::CornerFrame,
+    frame: &crate::engine::vertex_read::CornerFrame,
     section: (Vector, Point),
     walls: &[(Vector, Point)],
     tol: Tolerances,

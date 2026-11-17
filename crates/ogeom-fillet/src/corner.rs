@@ -53,6 +53,3 @@ fn corner_faces(model: &Model, solid: &Shape, built: &Built) -> OgeomResult<Vec<
 }
 
 use crate::engine::vertex_read::{Corner, corner_at};
-pub(crate) use crate::engine::vertex_read::{CornerFrame, corner_frame};
-
-pub(crate) use crate::engine::vertex_geometry::{convex_block, planes_meet};

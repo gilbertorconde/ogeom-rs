@@ -15,8 +15,8 @@ use ogeom_geom::Curve;
 use ogeom_math::{Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
+use crate::engine::junction::Junction;
 use crate::fillet::Mate;
-use crate::junction::Junction;
 use crate::support::{Wedge, edge_curve};
 
 /// A request's edges as their bands meet: each edge's mates by its ends,
@@ -60,11 +60,12 @@ pub(crate) fn met(
         .iter()
         .map(|e| host_faces.get(&e.node()).cloned().unwrap_or_default())
         .collect();
-    let found = match crate::junction::junctions(model, solid, edges, &hosts, &mates, radii, tol) {
-        Ok(found) => found,
-        Err(e @ OgeomError::Cancelled) => return Err(e),
-        Err(_) => Vec::new(),
-    };
+    let found =
+        match crate::engine::junction::junctions(model, solid, edges, &hosts, &mates, radii, tol) {
+            Ok(found) => found,
+            Err(e @ OgeomError::Cancelled) => return Err(e),
+            Err(_) => Vec::new(),
+        };
     let junctions = joinable(model, edges, found)?;
     for m in 0..edges.len() {
         for n in m + 1..edges.len() {
@@ -248,7 +249,7 @@ pub(crate) fn fit_to_junctions(
         // vertex across the plane: a band of its own edge coming back that
         // close would leave no room for its ball.
         if junction.reentrant {
-            let Some(cap) = crate::junction::cap_at(
+            let Some(cap) = crate::engine::junction::cap_at(
                 model,
                 &wedge.solid,
                 junction.at,
@@ -262,7 +263,7 @@ pub(crate) fn fit_to_junctions(
                      no cap at the vertex to carry on from"
                 );
             };
-            wedge.solid = crate::junction::carried_into(
+            wedge.solid = crate::engine::junction::carried_into(
                 model,
                 &wedge.solid,
                 &cap,
@@ -374,7 +375,7 @@ pub(crate) fn joinable(
 /// corners' wedges are joined again across that plane, where both hold the
 /// band's one section. Returns those planes, each with the band's index.
 /// `law` says the bands are under a radius law, their sections changing up
-/// to the vertex, as [`crate::junction::corner`] takes them.
+/// to the vertex, as [`crate::engine::junction::corner`] takes them.
 pub(crate) fn with_corners(
     model: &mut Model,
     set_aside: &mut Vec<(Vec<usize>, Shape, Wedge)>,
@@ -445,7 +446,7 @@ pub(crate) fn with_corners(
                 .filter(|&k| set_aside[k].0.len() == 1);
             let mut here = Vec::new();
             for k in held {
-                if crate::junction::cap_at(
+                if crate::engine::junction::cap_at(
                     model,
                     &set_aside[k].2.solid,
                     junction.at,
@@ -481,7 +482,7 @@ pub(crate) fn with_corners(
         if !set_aside[a].2.credit.is_empty() || !set_aside[b].2.credit.is_empty() {
             ogeom_bail!(Construction, "a crossed junction's band is already joined");
         }
-        let (taken, of_second) = crate::junction::corner(
+        let (taken, of_second) = crate::engine::junction::corner(
             model,
             [&set_aside[a].2.solid, &set_aside[b].2.solid],
             junction,
@@ -558,7 +559,14 @@ pub(crate) fn join_flush(
                     continue;
                 }
                 let gap = crate::marched::band_fit_target(tol) * 2.0;
-                if crate::junction::ends_in(model, &wedge.solid, (on, normal), at, gap, tol)? {
+                if crate::engine::junction::ends_in(
+                    model,
+                    &wedge.solid,
+                    (on, normal),
+                    at,
+                    gap,
+                    tol,
+                )? {
                     sides[slot] = Some(k);
                     if slot == 0 {
                         break;
@@ -575,7 +583,7 @@ pub(crate) fn join_flush(
             let Some((indices, edge, ring)) = held[a].take() else {
                 continue;
             };
-            let (solid, traced) = crate::junction::joined(
+            let (solid, traced) = crate::engine::junction::joined(
                 model,
                 [&ring.solid, &ring.solid],
                 (on, normal),
@@ -608,7 +616,7 @@ pub(crate) fn join_flush(
         else {
             continue;
         };
-        let (solid, traced) = crate::junction::joined(
+        let (solid, traced) = crate::engine::junction::joined(
             model,
             [&first.solid, &second.solid],
             (on, normal),
