@@ -1170,6 +1170,14 @@ fn rounds_by_engine_unplaced(
     if let Some(built) = crate::engine::alone_rounds(model, solid, &once, rounds_by_engine, tol)? {
         return Ok(Some(built));
     }
+    // Three convex creases at a vertex one ball rounds, each built as it is
+    // alone, the corner's cell beyond the ball taken off too (amendment "a
+    // corner one ball rounds, from its bands alone").
+    if let Some(built) =
+        crate::engine::ball_corner_rounds(model, solid, &once, rounds_by_engine, tol)?
+    {
+        return Ok(Some(built));
+    }
     if let Some(built) = crate::engine::marched_rounds(model, solid, &once, false, tol)? {
         return Ok(Some(built));
     }
