@@ -54,19 +54,29 @@ pub(crate) fn rounds(
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     let [(edge, radius)] = asked else {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     };
     let Some(curved) = read(model, solid, tol)? else {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     };
     let Some(ruling) = ruling_of(&curved, edge, *radius, tol)? else {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     };
     if !at_earlier_band(&curved, &ruling, tol)? {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     }
     if !seated(model, solid, &curved, &ruling, tol)? {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     }
     // Carried on along the ruling past both ends as far as the solid
     // reaches: the cut takes only what the solid holds.
@@ -82,13 +92,19 @@ pub(crate) fn rounds(
     let reach = (hi - lo).magnitude() + 4.0 * ruling.radius;
     let mut scratch = model.clone();
     let Some((tool, band)) = prism(&mut scratch, &curved, &ruling, reach, tol)? else {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     };
     let Ok(taken) = ogeom_bool::common(&mut scratch, &tool, solid, tol) else {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     };
     if explore_unique(&scratch, &taken.shape, ShapeType::Solid)?.len() != 1 {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     }
     let tools = [Tool {
         solid: tool,
@@ -103,7 +119,9 @@ pub(crate) fn rounds(
         tol,
     )?
     else {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     };
     match super::guards::solid_fits(&scratch, &built.shape, tol) {
         Ok(()) => {
@@ -124,13 +142,19 @@ fn ruling_of(
     tol: Tolerances,
 ) -> OgeomResult<Option<Ruling>> {
     let Some(c) = curved.edges.get(&id(edge)) else {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     };
     if c.ends.0 == c.ends.1 || !matches!(c.curve, Curve::Line(_)) {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     }
     if !(radius.is_finite() && radius > tol.confusion()) {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     }
     let (a, b) = (
         c.curve.point_at(c.range.0, tol)?,
@@ -138,11 +162,15 @@ fn ruling_of(
     );
     let length = a.distance(b);
     if length <= tol.confusion() {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     }
     let u = (b - a) / length;
     let [fa, fb] = faces_of(curved, id(edge))[..] else {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     };
     let (plane, wall) = match (&curved.faces[fa].surface, &curved.faces[fb].surface) {
         (SurfaceGeometry::Plane(_), SurfaceGeometry::Cylinder(_)) => (fa, fb),
@@ -150,7 +178,9 @@ fn ruling_of(
         _ => return Ok(None),
     };
     let SurfaceGeometry::Cylinder(cyl) = &curved.faces[wall].surface else {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     };
     if cyl
         .cylinder()
@@ -161,7 +191,9 @@ fn ruling_of(
         .magnitude()
         > tol.angular()
     {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     }
     let ruling = Ruling {
         shape: edge.clone(),
@@ -177,7 +209,9 @@ fn ruling_of(
     // sits there, a radius off each.
     let mid = a + u * (length * 0.5);
     let Some([_, _, _, _]) = ball(curved, &ruling, mid, tol)? else {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     };
     Ok(Some(ruling))
 }
@@ -316,7 +350,9 @@ fn seated(
     for i in 1..ALONG {
         let at = ruling.a + ruling.u * (ruling.length * f64::from(i) / f64::from(ALONG));
         let Some([p, _, on_plane, on_wall]) = ball(curved, ruling, at, tol)? else {
-            return Ok(false);
+            {
+                return Ok(false);
+            }
         };
         for (contact, face) in [(on_plane, ruling.plane), (on_wall, ruling.wall)] {
             for j in 1..=ACROSS {
@@ -341,7 +377,9 @@ fn seated(
                 {
                     continue;
                 }
-                return Ok(false);
+                {
+                    return Ok(false);
+                }
             }
         }
     }
@@ -353,7 +391,7 @@ fn seated(
 /// straight in from it the solid is first met on such a band (a face
 /// meeting two others or more tangentially), within `reach`, not over a
 /// groove.
-fn cut_back(
+pub(crate) fn cut_back(
     model: &Model,
     solid: &Shape,
     curved: &Curved,
@@ -366,7 +404,10 @@ fn cut_back(
     let mut air = 0.0;
     for k in 1..=steps {
         let t = reach * f64::from(k) / f64::from(steps);
-        if ogeom_algo::classify_in_solid_exact(model, solid, p - n * t, tol)? != Containment::Out {
+        let Ok(at) = ogeom_algo::classify_in_solid_exact(model, solid, p - n * t, tol) else {
+            return Ok(false);
+        };
+        if at != Containment::Out {
             break;
         }
         air = t;
@@ -378,8 +419,10 @@ fn cut_back(
     let (mut lo, mut hi) = (air, air + reach / f64::from(steps));
     for _ in 0..50 {
         let mid = f64::midpoint(lo, hi);
-        if ogeom_algo::classify_in_solid_exact(model, solid, p - n * mid, tol)? == Containment::Out
-        {
+        let Ok(at) = ogeom_algo::classify_in_solid_exact(model, solid, p - n * mid, tol) else {
+            return Ok(false);
+        };
+        if at == Containment::Out {
             lo = mid;
         } else {
             hi = mid;
@@ -395,8 +438,8 @@ fn cut_back(
         {
             continue;
         }
-        if ogeom_algo::classify_on_face(model, &face.shape, met, deflection, tol)?
-            != Containment::Out
+        if ogeom_algo::classify_on_face(model, &face.shape, met, deflection, tol)
+            .is_ok_and(|c| c != Containment::Out)
         {
             return Ok(true);
         }
@@ -417,10 +460,14 @@ fn prism(
 ) -> OgeomResult<Option<(Shape, Shape)>> {
     let start = ruling.a - ruling.u * reach;
     let Some([p, centre, on_plane, on_wall]) = ball(curved, ruling, start, tol)? else {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     };
     let Some(nc) = outward(curved, ruling.wall, ruling.a) else {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     };
     let r = ruling.radius;
     let off = r * 0.25;
@@ -445,7 +492,9 @@ fn prism(
     let (x, y) = (on_plane - centre, on_wall - centre);
     let normal = x.cross(y);
     if normal.magnitude() <= tol.confusion() * r {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     }
     let frame = Frame::new(
         centre,
@@ -466,11 +515,15 @@ fn prism(
     let swept =
         ogeom_algo::make_prism(model, &face, ruling.u * (ruling.length + 2.0 * reach), tol)?;
     let Some(band) = swept.history.generated(&arc).first().cloned() else {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     };
     let solids = explore_unique(model, &swept.shape, ShapeType::Solid)?;
     let [solid] = solids.as_slice() else {
-        return Ok(None);
+        {
+            return Ok(None);
+        }
     };
     Ok(Some((solid.clone(), band)))
 }

@@ -3356,21 +3356,25 @@ fn a_corner_with_a_curved_face_rounds_with_one_ball() {
     );
 }
 
+/// The shaved cube's corner rounded two ways. In one call the corner goes
+/// first, the one ball touching the top, the side and the drum, and the
+/// bands stop flush against it. One round at a time, each a separate
+/// operation (ADR 0001, amendment "a later round reaching a band seated on
+/// a curved face"), each later band runs on into the earlier ones, trimmed
+/// by them, and the rounds take the union of the three taken alone: the
+/// straight band then runs on across the corner and leaves no corner for
+/// the corner tool, so one at a time does not equal the one call. The
+/// ruling's band first takes its spandrel over the height; the straight
+/// band and then what is left of the rim arc's take the union at each step
+/// (each alone, less what two take, plus what three take). The rim's band
+/// right after the ruling's takes their union too; the straight band after
+/// those two still meets the boolean's triple tangency (the rim's torus, its
+/// band and the top touching at one point) and is not asked.
 #[test]
 #[ignore = "heavy"]
-fn a_curved_corner_closes_the_same_way_round_either_order() {
-    // Two routes to one rounded corner: all three edges in one call (the
-    // corner first, the bands stopping flush against its ball), and the
-    // bands one at a time with the corner tool after. The drum's ruling
-    // goes first on the second route and takes its own spandrel over the
-    // height, exactly. Its band and the top's two meet at the corner only
-    // through the ball. The straight band and the rim's after the ruling's
-    // are still the current path's, which stops each flush at its end and
-    // keeps the corner for the corner tool; built by the rule (amendment "a
-    // later round reaching a band seated on a curved face") the straight
-    // band runs on across the corner and no corner is left.
+fn a_curved_corner_in_one_call_has_one_ball_and_one_round_at_a_time_takes_the_union() {
     let mut model = Model::new();
-    let (part, corner, mids) = shaved_cube(&mut model);
+    let (part, _corner, mids) = shaved_cube(&mut model);
     let edges: Vec<Shape> = mids.iter().map(|m| edge_near(&model, &part, *m)).collect();
     let together = ogeom::fillet::fillet_edges(&mut model, &part, &edges, 1.0, T).unwrap();
     let diagnosis = ogeom::algo::check(&model, &together.shape, T).unwrap();
@@ -3379,48 +3383,60 @@ fn a_curved_corner_closes_the_same_way_round_either_order() {
     assert_eq!(balls.len(), 1, "one ball rounds the corner");
     assert_corner_ball(balls[0].0, 1.0);
 
-    let v = vertex_near(&model, &part, corner);
-    let mut current = part.clone();
-    for i in [2, 0, 1] {
-        let live = edge_near(&model, &current, mids[i]);
-        let rounded = ogeom::fillet::fillet_edge(&mut model, &current, &live, 1.0, T)
-            .unwrap()
-            .shape;
-        if i == 2 {
-            let measure = |shape: &Shape| {
-                ogeom::algo::volume_properties(
-                    &model,
-                    shape,
-                    ogeom::mesh::Deflection::with_chord(1e-3).unwrap(),
-                    T,
-                )
-                .unwrap()
-                .mass
-            };
-            let (taken, want) = (
-                measure(&current) - measure(&rounded),
-                shaved_ruling_band_removed(),
-            );
-            assert!(
-                (taken - want).abs() < want * 1e-6,
-                "the ruling's band took {taken}, its spandrel over the height {want}"
-            );
-        }
-        current = rounded;
-    }
-    let apart = ogeom::fillet::round_vertex(&mut model, &current, &v, 1.0, T).unwrap();
-    let diagnosis = ogeom::algo::check(&model, &apart.shape, T).unwrap();
-    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
-
-    // Every face of both is analytic, so the volumes integrate exactly and
-    // agree to rounding.
-    let volume = |shape: &Shape| {
-        ogeom::algo::volume_properties(&model, shape, ogeom::mesh::Deflection::default(), T)
+    let fine = ogeom::mesh::Deflection::with_chord(1e-3).unwrap();
+    let volume = |model: &Model, shape: &Shape| {
+        ogeom::algo::volume_properties(model, shape, fine, T)
             .unwrap()
             .mass
     };
-    let (a, b) = (volume(&together.shape), volume(&apart.shape));
-    assert!((a - b).abs() < 1e-9 * a, "{a} one call, {b} one at a time");
+    let before = volume(&model, &part);
+    // What is left of the rim arc near the side y = 0, as the straight
+    // band's run across the corner leaves it.
+    let y = 5.0 - 11.0_f64.sqrt();
+    let rim = {
+        let a = (-5.0_f64).atan2(y - 5.0) - 0.03;
+        Point::new(5.0 + 6.0 * a.cos(), 5.0 + 6.0 * a.sin(), 10.0)
+    };
+    let (ruling, straight) = (mids[2], mids[0]);
+    let (r_alone, rs, rq) = (
+        shaved_ruling_band_removed(),
+        shaved_ruling_and_straight_overlap(),
+        shaved_ruling_and_rim_overlap(),
+    );
+    let after_straight = r_alone + shaved_top_band_removed(1.0) - rs;
+    let after_rim = r_alone + shaved_rim_band_removed() - rq;
+    let all = shaved_corner_union();
+    // The straight band after the ruling's and the rim's meets the
+    // boolean's triple tangency (the rim's torus, its band and the top
+    // touching at one point) and is not built yet: that order stops at the
+    // rim.
+    for (order, wants) in [
+        (
+            &[ruling, straight, rim][..],
+            &[r_alone, after_straight, all][..],
+        ),
+        (&[ruling, rim][..], &[r_alone, after_rim][..]),
+    ] {
+        let mut copy = model.clone();
+        let mut current = part.clone();
+        for (&near, &want) in order.iter().zip(wants) {
+            let live = edge_near(&copy, &current, near);
+            current = ogeom::fillet::fillet_edge(&mut copy, &current, &live, 1.0, T)
+                .unwrap_or_else(|e| panic!("{order:?} at {near:?}: {e}"))
+                .shape;
+            let diagnosis = ogeom::algo::check(&copy, &current, T).unwrap();
+            assert!(
+                diagnosis.is_valid(),
+                "{order:?} at {near:?}: {:?}",
+                diagnosis.problems
+            );
+            let taken = before - volume(&copy, &current);
+            assert!(
+                (taken - want).abs() < want * 1e-6,
+                "{order:?} at {near:?}: took {taken}, the union {want}"
+            );
+        }
+    }
 }
 
 /// The rim arc's band first: alone it meets the side `x = 0` and the side
@@ -3526,7 +3542,7 @@ fn shaved_top_band_removed(r: f64) -> f64 {
 /// next runs on into the straight band's, the two taking their union (each
 /// alone, less what both take: the straight band's height over the ruling's
 /// spandrel). The ruling's band and what is left of the rim arc's then
-/// round in either order to one solid.
+/// round in either order to one solid, the union of the three taken alone.
 #[test]
 #[ignore = "heavy"]
 fn a_curved_corner_s_straight_band_first_runs_out_across_the_drum() {
@@ -3587,6 +3603,12 @@ fn a_curved_corner_s_straight_band_first_runs_out_across_the_drum() {
         }
         let diagnosis = ogeom::algo::check(&copy, &current, T).unwrap();
         assert!(diagnosis.is_valid(), "{order:?}: {:?}", diagnosis.problems);
+        // All three take the union of the three alone, in either order.
+        let (taken, all) = (before - volume(&copy, &current), shaved_corner_union());
+        assert!(
+            (taken - all).abs() < all * 1e-6,
+            "{order:?}: took {taken}, the union {all}"
+        );
         measured.push(volume(&copy, &current));
     }
     assert!(
@@ -6022,4 +6044,88 @@ fn simpson(f: impl Fn(f64) -> f64, a: f64, b: f64, n: u32) -> f64 {
         sum += f(h.mul_add(f64::from(i), a)) * if i % 2 == 1 { 4.0 } else { 2.0 };
     }
     sum * h / 3.0
+}
+
+/// What the straight band and the rim arc's band of the shaved cube both
+/// take: on each column both hold, the shallower of the two, `h(min(1 -
+/// x, rho - 5))` with `h(a) = 1 - sqrt(1 - a^2)` the band's height a
+/// distance `a` in from its contact. Read about the drum's axis over `rho`
+/// from 5 to 6 (in `6 - v^2`) and the turn `pi + alpha` from the side `x =
+/// 0` to `x = 1` (in `u^2` from each piece's start), split where the two
+/// heights meet, by Simpson's rule.
+fn shaved_straight_and_rim_overlap() -> f64 {
+    let n = 600_u32;
+    let height = |a: f64| 1.0 - (1.0 - a * a).max(0.0).sqrt();
+    let per_rho = |rho: f64| {
+        let a0 = (5.0 / rho).min(1.0).acos();
+        let a1 = (4.0 / rho).acos();
+        let at = |alpha: f64| {
+            let x = 5.0 - rho * alpha.cos();
+            height((1.0 - x).min(rho - 5.0)) * rho
+        };
+        let kink = (rho - 1.0) / rho;
+        let mut cuts = vec![a0];
+        if kink < 1.0 {
+            let ak = kink.acos();
+            if a0 < ak && ak < a1 {
+                cuts.push(ak);
+            }
+        }
+        cuts.push(a1);
+        cuts.windows(2)
+            .map(|w| {
+                let (p, q) = (w[0], w[1]);
+                simpson(
+                    |u: f64| at((q - p).mul_add(u * u, p)) * 2.0 * (q - p) * u,
+                    0.0,
+                    1.0,
+                    n,
+                )
+            })
+            .sum::<f64>()
+    };
+    simpson(|v: f64| per_rho(v.mul_add(-v, 6.0)) * 2.0 * v, 0.0, 1.0, n)
+}
+
+/// What all three bands of the shaved cube take: over the ruling's
+/// spandrel in plan, the shallower of the straight band and the rim's,
+/// split where their heights meet (`y = 5 - sqrt(11 - 2x)`), by Simpson's
+/// rule.
+fn shaved_triple_overlap() -> f64 {
+    let n = 600_u32;
+    let height = |a: f64| 1.0 - (1.0 - a * a).max(0.0).sqrt();
+    let across = |x: f64| {
+        let below = 5.0 - (36.0 - (x - 5.0).powi(2)).sqrt();
+        let above = 2.0 - (1.0 - (x - 1.0).powi(2)).max(0.0).sqrt();
+        let at = |y: f64| height((1.0 - x).min((x - 5.0).hypot(y - 5.0) - 5.0));
+        let kink = 5.0 - (11.0 - 2.0 * x).sqrt();
+        let mut cuts = vec![below];
+        if below < kink && kink < above {
+            cuts.push(kink);
+        }
+        cuts.push(above);
+        cuts.windows(2)
+            .map(|w| {
+                let (p, q) = (w[0], w[1]);
+                simpson(
+                    |s: f64| at((q - p).mul_add(s * s, p)) * 2.0 * (q - p) * s,
+                    0.0,
+                    1.0,
+                    n,
+                )
+            })
+            .sum::<f64>()
+    };
+    simpson(|u: f64| across(0.2 * u * u) * 0.4 * u, 0.0, 1.0, n)
+}
+
+/// What the shaved cube's three bands take together, each its spandrel
+/// carried on (ADR 0001, amendment "a later round reaching a band seated on
+/// a curved face"): the union of the three taken alone.
+fn shaved_corner_union() -> f64 {
+    shaved_ruling_band_removed() + shaved_top_band_removed(1.0) + shaved_rim_band_removed()
+        - shaved_ruling_and_straight_overlap()
+        - shaved_ruling_and_rim_overlap()
+        - shaved_straight_and_rim_overlap()
+        + shaved_triple_overlap()
 }
