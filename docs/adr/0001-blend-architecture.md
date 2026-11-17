@@ -637,6 +637,17 @@ replaced #1003's refusal):
   `fillet_edge`), and where that fails, the strip or ring beside it is
   read as taken off whole, as the current path reads it; only where that
   reads nothing either is it refused, in the same words.
+- **Chamfers past what the part holds** (bevels whose setbacks on one face
+  cross, taking it past one of its own sides: a plate 6 thick bevelled 4.9
+  on every edge) are refused by name where no route builds them, the
+  setbacks read as the engine reads them. A face only taken to a line or a
+  point, or a bevel rolling over a narrow face that the notch builds, is not
+  refused. SOLIDWORKS's chamfer diagnostics hold that chamfer faces cannot
+  eliminate adjacent faces [help.solidworks.com, FeatureWorks diagnostics,
+  "Chamfer"]; Fusion reports "Chamfer could not be created at the requested
+  size" where a distance runs past the faces it bevels
+  [forums.autodesk.com]. Before, the old facet path refused the request
+  for an unrelated reason (a facet closing a concave corner).
 
 ### Amendment: M5a, the one-boolean fallback (#902, M5a)
 
