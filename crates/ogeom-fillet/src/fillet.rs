@@ -259,7 +259,7 @@ fn cut_off_bands(
             (Vector::new(0.0, -1.0, 0.0), hi),
             (Vector::new(0.0, 0.0, -1.0), hi),
         ];
-        let tool = crate::corner::convex_block(model, &walls, tol)?;
+        let tool = crate::engine::vertex_geometry::convex_block(model, &walls, tol)?;
         // The solid itself stands behind the plane there: the cut takes the
         // band's overhang and nothing it was given.
         let shared = ogeom_bool::common(model, solid, &tool, tol)?.shape;
@@ -326,7 +326,7 @@ fn fillet_edge_own(
 }
 
 /// The round of `edge` that takes a narrow strip beside it off whole, where
-/// [`crate::consumed::consumed_seat`] finds one, and `refusal` otherwise.
+/// [`crate::engine::consumed_seat::consumed_seat`] finds one, and `refusal` otherwise.
 fn consuming(
     model: &mut Model,
     solid: &Shape,
@@ -339,7 +339,8 @@ fn consuming(
     if !matches!(refusal, OgeomError::Construction(_)) {
         return Err(refusal);
     }
-    let Some(seat) = crate::consumed::consumed_seat(model, solid, edge, radius, tol)? else {
+    let Some(seat) = crate::engine::consumed_seat::consumed_seat(model, solid, edge, radius, tol)?
+    else {
         let rolled = match crate::rolled::rolled_fillet(model, solid, edge, radius, tol)? {
             Some(built) => Some(built),
             None => crate::consumed::consumed_slanted(model, solid, edge, radius, tol)?,
@@ -567,7 +568,7 @@ enum Route {
     /// A straight edge between two planes.
     Planar,
     /// A straight edge between planes or drums parallel to it.
-    Ruled(crate::ruled::RuledSeat),
+    Ruled(crate::engine::ruled_seat::RuledSeat),
     /// A circle between a planar cap and its coaxial wall, a cylinder or
     /// a cone, with the edge's range on it.
     Revolved(CircleCurve, (f64, f64), crate::support::RevolvedSeat),
@@ -589,7 +590,7 @@ fn route(
     let (curve, crange) = edge_curve(model, edge, tol)?;
     Ok(match curve {
         Curve::Line(_) if crate::support::hosts_planar(model, solid, edge, tol)? => Route::Planar,
-        Curve::Line(_) => match crate::ruled::ruled_seat(model, solid, edge, tol)? {
+        Curve::Line(_) => match crate::engine::ruled_seat::ruled_seat(model, solid, edge, tol)? {
             Some(seat) => Route::Ruled(seat),
             None => Route::Marched,
         },
@@ -1780,8 +1781,9 @@ fn fillet_edges_own(
             .iter()
             .map(|e| host_faces.get(&e.node()).cloned().unwrap_or_default())
             .collect();
-        let mut found = crate::junction::junctions(model, solid, edges, &given, &mates, radii, tol)
-            .unwrap_or_default();
+        let mut found =
+            crate::engine::junction::junctions(model, solid, edges, &given, &mates, radii, tol)
+                .unwrap_or_default();
         if meeting.as_ref().is_some_and(|taken| !taken.crossed) {
             found.retain(|junction| !junction.crossed);
         }

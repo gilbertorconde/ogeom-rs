@@ -118,7 +118,7 @@ fn sharp_own(
             setbacks.continuity
         );
     }
-    let frame = crate::corner::corner_frame(model, solid, vertex, radius, tol)?;
+    let frame = crate::engine::vertex_read::corner_frame(model, solid, vertex, radius, tol)?;
     let n = frame.d.len();
     let (edges, reach) = corner_edges(model, solid, vertex, &frame, tol)?;
     let Some(ks) = edges.iter().position(|e| e.is_same(sharp)) else {

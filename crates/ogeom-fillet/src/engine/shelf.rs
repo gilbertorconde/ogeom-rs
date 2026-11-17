@@ -88,7 +88,7 @@ pub(crate) fn run(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<Run>> {
-    let Some(seat) = crate::consumed::seat_of(model, solid, edge, tol)? else {
+    let Some(seat) = crate::engine::consumed_seat::seat_of(model, solid, edge, tol)? else {
         return Ok(None);
     };
     if !seat.convex || seat.normals[0].dot(seat.normals[1]).abs() > tol.angular() {
@@ -143,10 +143,11 @@ pub(crate) fn run(
             if radius * bend >= 1.0 {
                 ogeom_bail!(Construction, "a carried shelf's sections may cross");
             }
-            let Some(first) = crate::rolled::host(model, &seat.faces[1 - narrow], tol)? else {
+            let Some(first) = crate::engine::rolled::host(model, &seat.faces[1 - narrow], tol)?
+            else {
                 continue;
             };
-            let Some(second) = crate::rolled::host(model, cap, tol)? else {
+            let Some(second) = crate::engine::rolled::host(model, cap, tol)? else {
                 continue;
             };
             let parameter = |y| range.0 + (range.1 - range.0) * (y - y0) / (y1 - y0);
@@ -173,7 +174,8 @@ pub(crate) fn run(
                 FaceTrim::of(model, &run.faces[0], detail, tol)?,
                 FaceTrim::of(model, &run.faces[1], detail, tol)?,
             ];
-            let Some((beyond_surface, _)) = crate::rolled::host(model, &run.beyond, tol)? else {
+            let Some((beyond_surface, _)) = crate::engine::rolled::host(model, &run.beyond, tol)?
+            else {
                 continue;
             };
             let beyond_trim = FaceTrim::of(model, &run.beyond, detail, tol)?;

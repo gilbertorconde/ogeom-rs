@@ -153,7 +153,7 @@ fn read_corner(
             setbacks.continuity
         );
     }
-    let frame = crate::corner::corner_frame(model, solid, vertex, radius, tol)?;
+    let frame = crate::engine::vertex_read::corner_frame(model, solid, vertex, radius, tol)?;
     let n = frame.d.len();
 
     let (edges, reach) = corner_edges(model, solid, vertex, &frame, tol)?;
@@ -408,7 +408,7 @@ pub(crate) fn corner_edges(
     model: &Model,
     solid: &Shape,
     vertex: &Shape,
-    frame: &crate::corner::CornerFrame,
+    frame: &crate::engine::vertex_read::CornerFrame,
     tol: Tolerances,
 ) -> OgeomResult<(Vec<Shape>, Vec<f64>)> {
     let n = frame.d.len();
@@ -531,7 +531,7 @@ pub(crate) fn in_cell(walls: &[(Vector, Point)], p: Point, tol: Tolerances) -> b
 /// `ring[k]`, the second on `ring[k + 1]`. Everything a band takes away
 /// lies within the larger of its two widths of its edge's line.
 pub(crate) fn least_setbacks_widths(
-    frame: &crate::corner::CornerFrame,
+    frame: &crate::engine::vertex_read::CornerFrame,
     widths: &[(f64, f64)],
     tol: Tolerances,
 ) -> OgeomResult<Vec<f64>> {
@@ -776,7 +776,7 @@ fn runs_through(
         if explore_unique(model, &f, ShapeType::Vertex)?
             .iter()
             .any(|v| v.is_same(vertex))
-            && crate::rolled::flat(model, &f, tol)?.is_none()
+            && crate::engine::rolled::flat(model, &f, tol)?.is_none()
         {
             return Ok(true);
         }
@@ -794,7 +794,7 @@ fn edge_is_convex(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<bool>> {
-    if let Some(seat) = crate::consumed::seat_of(model, solid, edge, tol)? {
+    if let Some(seat) = crate::engine::consumed_seat::seat_of(model, solid, edge, tol)? {
         return Ok(Some(seat.convex));
     }
     let mut faces: Vec<Shape> = Vec::with_capacity(2);
@@ -810,8 +810,8 @@ fn edge_is_convex(
         return Ok(None);
     };
     let (Some(a), Some(b)) = (
-        crate::rolled::host(model, first, tol)?,
-        crate::rolled::host(model, second, tol)?,
+        crate::engine::rolled::host(model, first, tol)?,
+        crate::engine::rolled::host(model, second, tol)?,
     ) else {
         return Ok(None);
     };
@@ -850,7 +850,7 @@ fn signed_corner(
     let corner = point_of(model, vertex)?;
     // The faces at the vertex, coplanar neighbours (a fused solid's seam)
     // taken as one: each group's planar faces and its outward normal.
-    let mut groups: Vec<(Vec<Shape>, crate::rolled::Flat)> = Vec::new();
+    let mut groups: Vec<(Vec<Shape>, crate::engine::rolled::Flat)> = Vec::new();
     for f in explore_unique(model, solid, ShapeType::Face)? {
         if !explore_unique(model, &f, ShapeType::Vertex)?
             .iter()
@@ -858,7 +858,7 @@ fn signed_corner(
         {
             continue;
         }
-        let Some(flat) = crate::rolled::flat(model, &f, tol)? else {
+        let Some(flat) = crate::engine::rolled::flat(model, &f, tol)? else {
             return Err(signed_refusal("every face of the vertex is planar"));
         };
         let same = groups.iter_mut().find(|(_, g)| {
@@ -927,7 +927,7 @@ fn signed_corner(
                 ));
             }
         };
-        let Some([p, q]) = crate::consumed::segment(model, e, tol)? else {
+        let Some([p, q]) = crate::engine::consumed_seat::segment(model, e, tol)? else {
             return Err(signed_refusal("every edge of the vertex is straight"));
         };
         let far = if p.distance(corner) < q.distance(corner) {
@@ -941,7 +941,7 @@ fn signed_corner(
         radius_of.push(r);
     }
     // Each face's two edges at the vertex.
-    let flats: Vec<crate::rolled::Flat> = groups.iter().map(|(_, g)| g.clone()).collect();
+    let flats: Vec<crate::engine::rolled::Flat> = groups.iter().map(|(_, g)| g.clone()).collect();
     let mut pairs: Vec<[usize; 2]> = Vec::with_capacity(3);
     for gi in 0..3 {
         let own: Vec<usize> = (0..3).filter(|&k| edge_groups[k].contains(&gi)).collect();
@@ -980,10 +980,10 @@ fn signed_corner(
         let u = flat.normal.cross(dir[k]).normalized(tol)?;
         let base = corner + dir[k] * (reach[k] * 0.5);
         let step = reach[k] * 1e-3;
-        let frame = crate::rolled::basis(flat.normal);
+        let frame = crate::engine::rolled::basis(flat.normal);
         match (
-            crate::rolled::inside(&flat.sides, base + u * step, frame),
-            crate::rolled::inside(&flat.sides, base - u * step, frame),
+            crate::engine::rolled::inside(&flat.sides, base + u * step, frame),
+            crate::engine::rolled::inside(&flat.sides, base - u * step, frame),
         ) {
             (true, false) => Ok(u),
             (false, true) => Ok(-u),

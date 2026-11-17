@@ -43,7 +43,7 @@ fn seat(
     let (curve, _) = crate::support::edge_curve(model, edge, tol)?;
     Ok(match curve {
         Curve::Line(_) if crate::support::hosts_planar(model, solid, edge, tol)? => Seat::Straight,
-        Curve::Line(_) => match crate::ruled::ruled_seat(model, solid, edge, tol)? {
+        Curve::Line(_) => match crate::engine::ruled_seat::ruled_seat(model, solid, edge, tol)? {
             Some(_) => Seat::Straight,
             None => Seat::Marched,
         },
