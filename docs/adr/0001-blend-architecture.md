@@ -1500,9 +1500,12 @@ ball at its start on the current path.
     meets the band's other seat, a plane, as it would have met that face's
     edge with the cap had the band not been there (amendment "a band's run
     past its end").
-  - Still with the current path: a straight crease reaching a rim's torus
-    band, where the band, the crease's band and the top touch at one point
-    and the boolean refuses (reproducer `repro/triple-tangency`).
+  - A straight crease reaching a rim's torus band, read as a band like a
+    cylinder or a sphere. The band, the crease's band and the top touch at
+    one point; the boolean cuts that since #1139. Where the crease's ball
+    does not seat along its faces up to the torus (a drafted wall standing
+    in the way of its contact), the torus stays the face the band ends
+    flush on, as a free end (amendment "M5e"), as before.
 - **Order.** Rounds asked one call after another are separate operations
   and may depend on their order (amendment "M5e"; in every application).
   Convex rounds taking their spandrels carried on take the union of their

@@ -3459,10 +3459,9 @@ fn a_curved_corner_in_one_call_has_one_ball_and_one_round_at_a_time_takes_the_un
 /// boss does, until its section has left the solid. It takes off exactly
 /// the ball's corner over the turn from the side `x = 0` round to `y = 0`
 /// within the block, integrated, and the corner's vertex goes with it. The
-/// ruling's band next runs on into the rim's, the two taking their union
-/// (each alone, less what both take: the rim band's height over the
-/// ruling's spandrel). The straight band and the ruling's then round in
-/// either order to one solid.
+/// ruling's band or the straight band next runs on into the rim's, the two
+/// taking their union (each alone, less what both take), and the other
+/// after them takes the union of all three, in either order.
 #[test]
 #[ignore = "heavy"]
 fn a_curved_corner_closes_with_the_rim_s_band_first() {
@@ -3499,32 +3498,43 @@ fn a_curved_corner_closes_with_the_rim_s_band_first() {
     // What is left of the straight edge, past where the rim's band ran on
     // to, and of the ruling.
     let straight = Point::new(0.0, 7.5, 10.0);
-    // The ruling's band after the rim's runs on into it, trimmed by it
-    // (ADR 0001, amendment "a later round reaching a band seated on a
-    // curved face"): the two take their union, each alone less what both
-    // take. The straight band after both is still the current path's,
-    // held to the two orders agreeing.
-    let both =
-        shaved_rim_band_removed() + shaved_ruling_band_removed() - shaved_ruling_and_rim_overlap();
+    // Each later band runs on into the earlier ones, trimmed by them (ADR
+    // 0001, amendment "a later round reaching a band seated on a curved
+    // face"), the rim's torus read as a band like any other: each step takes
+    // the union of the bands so far, each alone less what two take plus
+    // what three take.
+    let (q, r, s) = (
+        shaved_rim_band_removed(),
+        shaved_ruling_band_removed(),
+        shaved_top_band_removed(1.0),
+    );
+    let with_ruling = q + r - shaved_ruling_and_rim_overlap();
+    let with_straight = q + s - shaved_straight_and_rim_overlap();
+    let all = shaved_corner_union();
     let mut measured = Vec::new();
-    for order in [[straight, mids[2]], [mids[2], straight]] {
+    for (order, wants) in [
+        ([straight, mids[2]], [with_straight, all]),
+        ([mids[2], straight], [with_ruling, all]),
+    ] {
         let mut copy = model.clone();
         let mut current = banded.clone();
-        for (k, near) in order.into_iter().enumerate() {
+        for (near, want) in order.into_iter().zip(wants) {
             let live = edge_near(&copy, &current, near);
             current = ogeom::fillet::fillet_edge(&mut copy, &current, &live, 1.0, T)
                 .unwrap_or_else(|e| panic!("{order:?} at {near:?}: {e}"))
                 .shape;
-            if k == 0 && near == mids[2] {
-                let taken = before - volume(&copy, &current);
-                assert!(
-                    (taken - both).abs() < both * 1e-6,
-                    "the rim's band and the ruling's took {taken}, their union {both}"
-                );
-            }
+            let diagnosis = ogeom::algo::check(&copy, &current, T).unwrap();
+            assert!(
+                diagnosis.is_valid(),
+                "{order:?} at {near:?}: {:?}",
+                diagnosis.problems
+            );
+            let taken = before - volume(&copy, &current);
+            assert!(
+                (taken - want).abs() < want * 1e-6,
+                "{order:?} at {near:?}: took {taken}, the union {want}"
+            );
         }
-        let diagnosis = ogeom::algo::check(&copy, &current, T).unwrap();
-        assert!(diagnosis.is_valid(), "{order:?}: {:?}", diagnosis.problems);
         measured.push(volume(&copy, &current));
     }
     assert!(
