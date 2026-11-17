@@ -2056,10 +2056,13 @@ a hub: one S).
   meridian plane through the point where their contacts cross on the top,
   each cut by it, so the lobe turns smoothly from the one band into the
   other. Below the lobe the S is read section by section square to the
-  straight edge: where the top is `u` of its width at the lobe's end on a
-  face, the S turns `t` off each face, `cos t = 1 - u`, its foot on the
-  side `sin t` of the lobe's depth below the top and on the wall `sin t` of
-  its height above. Both feet run from the lobe to T, each meeting its
+  straight edge: where the top stands open `u` of what it does at the
+  lobe's end on a face (open: from the side's line out to the wall's foot
+  along the radius, which reads at every station, also where the lobe's
+  end on the side lies past the foot's reach along the top, as it does
+  for the wider rounds), the S turns `t` off each face, `cos t = 1 - u`,
+  its foot on the side `sin t` of the lobe's depth below the top and on
+  the wall `sin t` of its height above. Both feet run from the lobe to T, each meeting its
   band's contact tangentially at the lobe.
 - **Built** as one patch per lobe over the hole of the lobe and its two
   feet, the feet meeting at the patch's pole, T. The lobe runs from a

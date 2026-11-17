@@ -5805,11 +5805,11 @@ fn cusps_of(
             continue;
         }
         // Each lobe's S, section by section square to the straight edge: at
-        // `s` from the vertex the top is `w` wide between the side and the
-        // wall's foot, and the S is a convex arc off the side turning `t`
-        // and a concave one onto the wall, point symmetric, `cos t = 1 - u`,
-        // `u` the top's width there over its width at the lobe's end on
-        // that face: its foot on the side `sin t` of the lobe's depth there
+        // `s` from the vertex the top stands open `w` from the side's line
+        // out to the wall's foot along the radius, and the S is a convex arc
+        // off the side turning `t` and a concave one onto the wall, point
+        // symmetric, `cos t = 1 - u`, `u` that opening there over the one at
+        // the lobe's end on that face: its foot on the side `sin t` of the lobe's depth there
         // below the top, on the wall `sin t` of its height there above. At
         // the vertex both feet stand on the top's edge; at the lobe each
         // runs into its strip's contact tangentially.
@@ -5858,10 +5858,14 @@ fn cusps_of(
             let s_side = (lobe.side - at).dot(along);
             let on_top = lobe.wall - n_top * (lobe.wall - at).dot(n_top);
             let s_wall = (on_top - at).dot(along);
-            let (Some(w_side), Some(w_wall)) = (width(s_side), width(s_wall)) else {
-                break;
-            };
-            if s_side <= tol.confusion()
+            // How far the top stands open at `s`: from the side's line
+            // there out to the wall's foot, along the radius. Nought at the
+            // vertex, growing as the square of `s` there, and read at every
+            // station, past the foot's reach along the top too.
+            let open = |s: f64| ((at + along * s) - c).magnitude() - big;
+            let (w_side, w_wall) = (open(s_side), open(s_wall));
+            if width(s_wall).is_none()
+                || s_side <= tol.confusion()
                 || s_wall <= tol.confusion()
                 || w_side <= tol.confusion()
                 || w_wall <= tol.confusion()
@@ -5871,7 +5875,7 @@ fn cusps_of(
             let side_off = lobe.side - (at + along * s_side);
             let wall_up = n_top * (lobe.wall - on_top).dot(n_top);
             let lift = |s: f64, full: f64| -> f64 {
-                let u = (width(s).unwrap_or(0.0) / full).clamp(0.0, 1.0);
+                let u = (open(s) / full).clamp(0.0, 1.0);
                 (1.0 - u).acos().sin()
             };
             let count = 128_u32;
