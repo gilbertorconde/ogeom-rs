@@ -9217,8 +9217,16 @@ pub(crate) fn open_tool_over(
                 ),
             };
             let middle = curve.point_at(0.5 * (range.0 + range.1), tol)?;
-            let foot = ogeom_algo::project_on_surface(&face.surface, middle, 16, tol)?;
-            if foot.distance > eps * 10.0 {
+            // On a plane, off its plane: a cap past the end faces stands
+            // beyond the face's own patch, on the same plane.
+            let off = match &face.surface {
+                SurfaceGeometry::Plane(plane) => {
+                    let plane = plane.plane();
+                    (middle - plane.origin()).dot(plane.normal().vector()).abs()
+                }
+                other => ogeom_algo::project_on_surface(other, middle, 16, tol)?.distance,
+            };
+            if off > eps * 10.0 {
                 return Ok(None);
             }
             curves.push(SheetCurve {
