@@ -58,6 +58,7 @@ mod rims;
 mod rolling;
 mod round_strips;
 mod rounds;
+mod ruling_out;
 mod seams;
 mod seats;
 mod sections;
@@ -104,6 +105,7 @@ pub(crate) use rolling::rounds as rolling_rounds;
 pub(crate) use round_strips::{
     far_faces as round_far_faces, non_local_tools as round_non_local_tools, round as round_curved,
 };
+pub(crate) use ruling_out::rounds as ruling_out_rounds;
 pub(crate) use seams::{Dissolved, Seamless, dissolve, dissolve_curved, is_seam};
 pub(crate) use taken_whole::rounds as taken_whole_rounds;
 pub(crate) use trimmed::{

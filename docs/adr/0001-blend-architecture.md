@@ -1399,7 +1399,8 @@ out as the corner rounded in one call.
   contacts cross, and the booleans meet that point tangentially; the
   intersector's tangent-contact fixes (#1054, #1080) make it build. Where
   a boolean still refuses, the request is handed back, not refused.
-- **Domain.** Built where the earlier band is a cylinder seated on planes
+- **Domain.** (Widened by amendment "a later round reaching a band seated
+  on a curved face".) Built where the earlier band is a cylinder seated on planes
   (every face it is tangent to is a plane). A band seated on a curved face
   (a drum's ruling rounded first on a cube the drum shaves) stays with the
   current path for now. Run on there, the rim's arc rounded after it no
@@ -1441,6 +1442,48 @@ contact stands in air there although no groove is near.
   tangent there to one of its faces needs no run-out past it: the band
   carried on takes what lies under that blend's surface, the two bands'
   mitre.
+
+### Amendment: a later round reaching a band seated on a curved face (#902)
+
+Widens amendment "a later round reaching an earlier band at its end"
+(#1098) and amendment "a crease's seat past an earlier blend" to an
+earlier band seated on a curved face: a drum's ruling rounded first on a
+cube the drum shaves, a drum's rim rounded first beside a straight edge of
+the cube's top. #1098 left these to the current path and named the cost:
+run on there, the rim's arc rounded after the ruling no longer seated a
+ball at its start on the current path.
+
+- **Survey.** #1098's own: SOLIDWORKS extends the fillet faces to their
+  intersection at the corner by default, Onshape lets a fillet change the
+  edges it meets, SMLib's corner of one rounded edge of three trims the end
+  face back to the fillet surface, and no source stops a round at its own
+  end section for a later corner tool. Nothing in it depends on what the
+  earlier band is seated on.
+- **The rule, unchanged.** A later round reaching an earlier band tangent
+  to one of its faces at its end runs on past that end, and the earlier
+  band trims it: it takes its spandrel carried on, in the solid as it
+  stands. A rim's band runs on so too, its run bounded as amendment "a
+  band's run past its end" bounds it.
+- **A band, read.** An earlier band is a cylinder, a sphere or a torus
+  meeting two faces or more tangentially along its edges, whatever their
+  surfaces. A crease's or a rim's seat near such a band, cut back by it,
+  stands in air there and is no groove (amendment "a crease's seat past an
+  earlier blend").
+- **Built so far.** A straight edge between a plane and a cylinder along
+  its ruling (`engine/ruling_out.rs`): its spandrel is a prism, carried on
+  past both ends and cut from the solid as it stands, its seat read on the
+  cylinder's surface and in air where the band cut the face back. Still
+  with the current path: a straight crease between planes reaching a
+  torus band (the boolean refuses where the band, the crease's band and
+  the top touch at one point), a rim reaching an earlier band (its run-on
+  still stops at that band), and a ruling after two such bands.
+- **Order.** Rounds asked one call after another are separate operations
+  and may depend on their order (amendment "M5e"; in every application).
+  Convex rounds taking their spandrels carried on take the union of their
+  cuts, which no order changes. One call rounds the corner with one ball
+  (§4.3); one round at a time leaves no corner for the corner tool where a
+  band run on takes the corner's vertex, and does not equal the one call
+  there.
 
 ### Amendment: M5d, a round resting on a far edge (#902)
 
