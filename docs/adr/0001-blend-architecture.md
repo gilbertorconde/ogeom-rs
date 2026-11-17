@@ -984,7 +984,11 @@ only who builds it does.
   past it on the round's side (the strip wholly in what the round takes).
   Elsewhere the round is not this one, and the one-edge refusal stands by
   name. One construction serves a bevel beside a marched seat and a ring
-  beside a rim, and needs no seated booleans.
+  beside a rim, and needs no seated booleans. A bevel round a bore's rim on
+  a drum comes off so: the drum and the bore grow back to meet along a
+  closed spline, cut where their seams reach it, each regrown face holding
+  both columns of its seam, and only the edges the removal made are
+  rounded (the bore's far rim is the two faces' too).
 - **Checked.** While the engine's marched seats run, reaching an old
   edge constructor (one that builds and applies its own wedge, or reads a
   strip off whole for the one-edge entries) is logged for the old-path

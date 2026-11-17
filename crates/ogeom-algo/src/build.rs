@@ -775,7 +775,10 @@ pub fn make_face_with_pcurves(
     let ((ua, ub), (va, vb)) = surface.domain();
     let u_period = surface.is_periodic_u().then_some(ub - ua);
     let v_period = surface.is_periodic_v().then_some(vb - va);
-    let mut done: Vec<Shape> = Vec::new();
+    // Each edge's image as its first walk reads it, and the second walk's
+    // where it stands a whole period over: an edge the face walks up one
+    // seam column and down the other.
+    let mut walked: Vec<Walked> = Vec::new();
     for edges in wires {
         let mut prev_end: Option<ogeom_math::Point2> = None;
         for edge in edges {
@@ -833,21 +836,67 @@ pub fn make_face_with_pcurves(
                 }
                 prev_end = Some(pcurve.point_at(t_end, tol)?);
             }
-            if done.iter().any(|e| e.is_same(edge)) {
+            if let Some(first) = walked.iter_mut().find(|w| w.edge.is_same(edge)) {
+                // Walked back over the same column, a slit, the edge keeps
+                // the one image.
+                if first.other.is_none()
+                    && first.edge.orientation() != edge.orientation()
+                    && pcurve
+                        .point_at(prange.0, tol)?
+                        .distance(first.pcurve.point_at(prange.0, tol)?)
+                        > tol.parametric()
+                {
+                    first.other = Some(pcurve);
+                }
                 continue;
             }
-            done.push(edge.clone());
-            attach_pcurve(
-                model,
-                edge,
+            walked.push(Walked {
+                edge: edge.clone(),
                 pcurve,
-                surface_id,
-                edge.location().clone(),
                 prange,
-            )?;
+                other: None,
+            });
+        }
+    }
+    for w in walked {
+        match w.other {
+            Some(other) => {
+                let (forward, reversed) =
+                    if w.edge.orientation() == ogeom_topo::Orientation::Reversed {
+                        (other, w.pcurve)
+                    } else {
+                        (w.pcurve, other)
+                    };
+                attach_seam(
+                    model,
+                    &w.edge,
+                    forward,
+                    reversed,
+                    surface_id,
+                    w.edge.location().clone(),
+                    w.prange,
+                )?;
+            }
+            None => attach_pcurve(
+                model,
+                &w.edge,
+                w.pcurve,
+                surface_id,
+                w.edge.location().clone(),
+                w.prange,
+            )?,
         }
     }
     Ok(built)
+}
+
+/// An edge of a face [`make_face_with_pcurves`] builds, as its walks read it.
+struct Walked {
+    edge: Shape,
+    pcurve: ogeom_geom::PlanarCurve,
+    prange: (f64, f64),
+    /// The other seam column, where a second walk reads the edge on it.
+    other: Option<ogeom_geom::PlanarCurve>,
 }
 
 /// Put a face's wires on one branch of a periodic chart.
@@ -4676,6 +4725,60 @@ mod band_tests {
             })
             .sum::<f64>()
             / 2.0
+    }
+
+    /// A drum's wall walked round its bottom rim, up its seam, back round
+    /// its top rim and down the seam: the seam's two walks stand on the
+    /// chart's two columns, a turn apart, and the edge carries both.
+    #[test]
+    fn a_wall_walked_up_and_down_its_seam_carries_both_columns() {
+        use ogeom_geom::Curve2d as _;
+        let mut model = Model::new();
+        let cylinder = ogeom_math::Cylinder::new(Frame::WORLD, 2.0, T).unwrap();
+        let surface: SurfaceGeometry = ogeom_geom::CylinderSurface::new(cylinder, (-1.0, 3.0))
+            .unwrap()
+            .into();
+        let low = ring(&mut model, Frame::WORLD, 2.0);
+        let high = ring(
+            &mut model,
+            Frame::WORLD.with_origin(Point::new(0.0, 0.0, 2.0)),
+            2.0,
+        );
+        let (from, _) = edge_vertices(&model, &low).unwrap().unwrap();
+        let (to, _) = edge_vertices(&model, &high).unwrap().unwrap();
+        let line =
+            ogeom_geom::LineCurve::segment(Point::new(2.0, 0.0, 0.0), Point::new(2.0, 0.0, 2.0), T)
+                .unwrap();
+        let seam = make_edge_between(&mut model, line.into(), (0.0, 2.0), &from, &to, T)
+            .unwrap()
+            .shape;
+        let face = make_face_with_pcurves(
+            &mut model,
+            surface,
+            &[vec![low, seam.clone(), high.reversed(), seam.reversed()]],
+            T,
+        )
+        .unwrap()
+        .shape;
+        let surface = model.node(&face).unwrap().data().as_face().unwrap().surface;
+        let data = model.node(&seam).unwrap().data().as_edge().unwrap();
+        let Some(EdgeRepr::Seam {
+            forward, reversed, ..
+        }) = data.pcurve_on(surface)
+        else {
+            panic!("the seam holds one column: {:?}", data.pcurve_on(surface));
+        };
+        let column = |id| {
+            model
+                .geometry()
+                .pcurve(id)
+                .unwrap()
+                .point_at(1.0, T)
+                .unwrap()
+        };
+        let (up, down) = (column(*forward), column(*reversed));
+        assert_relative_eq!(up.x - down.x, TAU, epsilon = 1e-9);
+        assert_relative_eq!(up.y, down.y, epsilon = 1e-9);
     }
 
     /// A band keeps its face on the left of its ring in the surface's
