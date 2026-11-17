@@ -218,7 +218,6 @@ pub(crate) fn pinched_fillet(
         None,
         convex,
         pinched,
-        None,
         [None, None],
         aside,
         tol,

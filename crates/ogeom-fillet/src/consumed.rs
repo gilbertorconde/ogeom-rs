@@ -46,21 +46,16 @@ pub(crate) fn consumed_slanted(
         return Ok(None);
     }
     for narrow in 0..2 {
-        if let Some(cut) = slanted_corner(model, solid, edge, &seat, narrow, radius, tol)? {
-            return cut_corner(model, solid, edge, &cut, radius, tol).map(Some);
+        if slanted_corner(model, solid, edge, &seat, narrow, radius, tol)?.is_some() {
+            return Err(crate::fillet::declined());
         }
     }
     Ok(None)
 }
 
-/// The corner a slanted-ended strip's round takes off: its section through
-/// the edge's start, the edge's direction, and each end's plane as a point
-/// on it and its outward normal.
+/// The corner a slanted-ended strip's round takes off: the edge's
+/// direction, and each end's plane as a point on it and its outward normal.
 struct SlantedCorner {
-    v: Point,
-    t1: Point,
-    t3: Point,
-    centre: Point,
     along: Vector,
     planes: [(Point, Vector); 2],
 }
@@ -188,14 +183,7 @@ fn slanted_corner(
     {
         return Ok(None);
     }
-    let corner = SlantedCorner {
-        v,
-        t1,
-        t3,
-        centre,
-        along,
-        planes,
-    };
+    let corner = SlantedCorner { along, planes };
     // `E` and `E'` run from plane to plane.
     let on = |i: usize, p: Point| {
         let (o, m) = corner.planes[i];
@@ -250,86 +238,4 @@ fn slanted_corner(
         }
     }
     Ok(Some(corner))
-}
-
-/// Take the corner off: the prism of its section, from the line to each
-/// contact and the ball's arc between them, run from the section's least
-/// reach along the edge to its greatest and cut back to the end planes.
-fn cut_corner(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    corner: &SlantedCorner,
-    radius: f64,
-    tol: Tolerances,
-) -> OgeomResult<ogeom_algo::Built> {
-    use ogeom_geom::{CircleCurve, PlaneSurface, SurfaceGeometry};
-    use ogeom_math::{Circle, Direction, Frame, Plane};
-    use ogeom_topo::{Filter, explore};
-    let along = corner.along;
-    // The arc lies in the triangle from the line to the contacts, so the
-    // triangle's corners bound the reach.
-    let reach = |i: usize, p: Point| (corner.meets(i, p) - p).dot(along);
-    let section = [corner.v, corner.t1, corner.t3];
-    let lo = section
-        .iter()
-        .map(|p| reach(0, *p))
-        .fold(f64::INFINITY, f64::min);
-    let hi = section
-        .iter()
-        .map(|p| reach(1, *p))
-        .fold(f64::NEG_INFINITY, f64::max);
-    let lift = along * lo;
-    let [v, t1, t3] = section.map(|p| p + lift);
-    let centre = corner.centre + lift;
-    let vertices = [v, t1, t3].map(|p| ogeom_algo::make_vertex(model, p).shape);
-    let leg1 = crate::support::segment_between(model, (&vertices[0], v), (&vertices[1], t1), tol)?;
-    let leg3 = crate::support::segment_between(model, (&vertices[2], t3), (&vertices[0], v), tol)?;
-    // The ball's arc from `T1` to `T3` the short way round, toward the line.
-    let x = (t1 - centre) / radius;
-    let y = along.cross(x);
-    let to = t3 - centre;
-    let angle = to.dot(y).atan2(to.dot(x));
-    let normal = if angle >= 0.0 { along } else { -along };
-    let frame = Frame::new(
-        centre,
-        Direction::new(normal, tol)?,
-        Direction::new(x, tol)?,
-        tol,
-    )?;
-    let circle = CircleCurve::new(Circle::new(frame, radius, tol)?).into();
-    let arc = ogeom_algo::make_edge_between(
-        model,
-        circle,
-        (0.0, angle.abs()),
-        &vertices[1],
-        &vertices[2],
-        tol,
-    )?
-    .shape;
-    let turn = (t1 - v).cross(t3 - v).dot(along);
-    let face_normal = if turn >= 0.0 { along } else { -along };
-    let size = (v.distance(t1) + v.distance(t3) + radius) * 4.0;
-    let plane: SurfaceGeometry = PlaneSurface::over(
-        Plane::through(v, Direction::new(face_normal, tol)?),
-        (-size, size),
-        (-size, size),
-    )?
-    .into();
-    let ring = if turn >= 0.0 {
-        vec![leg1, arc, leg3]
-    } else {
-        vec![leg3.reversed(), arc.reversed(), leg1.reversed()]
-    };
-    let face = ogeom_algo::make_face_with_pcurves(model, plane, &[ring], tol)?.shape;
-    let prism = ogeom_algo::make_prism(model, &face, along * (hi - lo), tol)?.shape;
-    let mut wedge = explore(model, &prism, Filter::OfType(ShapeType::Solid))?
-        .into_iter()
-        .next()
-        .unwrap_or(prism);
-    let span = (hi - lo) + size;
-    for (origin, outward) in corner.planes {
-        wedge = crate::support::trimmed_wedge(model, &wedge, (origin, -outward), span, tol)?;
-    }
-    crate::support::apply_wedge_solid(model, solid, Some(edge), &wedge, false, tol)
 }

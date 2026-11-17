@@ -23,8 +23,6 @@
 
 use crate::engine::carried::trig_max;
 use crate::engine::consumed_seat::{seat_of, segment};
-use crate::march::{BlendStop, MarchedBlend, Sides};
-use crate::marched::Rail;
 use crate::support::{Seat, edge_curve, same_occurrence};
 use ogeom_core::{OgeomError, OgeomResult, Tolerances};
 use ogeom_geom::Curve3d as _;
@@ -201,27 +199,6 @@ impl Path {
                 (a.min(x), b.max(x))
             })
     }
-}
-
-/// The run of the ball rolling on the far edge, from the edge's start to
-/// its end, with what the band is built from.
-pub(crate) struct Rolled {
-    /// The ball's stations, ordered along the crease.
-    pub(crate) blend: MarchedBlend,
-    /// The crease's curve, placed.
-    pub(crate) guide: ogeom_geom::Curve,
-    /// The touched face's plane and the narrow face's, placed, each with
-    /// its outward sign.
-    pub(crate) hosts: [(SurfaceGeometry, f64); 2],
-    /// The touched face's plane and the far edge's line.
-    pub(crate) rails: [Rail; 2],
-    /// The centre's path and the run's span of its parameter.
-    pub(crate) path: Path,
-    pub(crate) span: (f64, f64),
-    /// The strips the fill reaches over, where the far edge the ball rests
-    /// on is a strip's beyond the narrow face; empty where it is the
-    /// narrow face's own.
-    pub(crate) strips: Vec<crate::marched::StripPiece>,
 }
 
 /// A far edge the ball may rest on beyond the narrow face: the edge, the
@@ -443,7 +420,7 @@ pub(crate) fn enters(ring: &[Point], normal: Vector, [p, q]: [Point; 2], margin:
 pub(crate) enum Run {
     Shelf,
     Rim,
-    Rolled(Box<Rolled>),
+    Rolled,
     Carried,
     Stepped,
 }
@@ -483,8 +460,8 @@ pub(crate) fn rolled_run(
     let mut named: Option<OgeomError> = None;
     for narrow in 0..2 {
         match across(model, solid, edge, &seat, narrow, radius, tol) {
-            Ok(Some(run)) => return Ok(Some(Run::Rolled(Box::new(run)))),
-            Ok(None) => {}
+            Ok(true) => return Ok(Some(Run::Rolled)),
+            Ok(false) => {}
             Err(e @ OgeomError::Construction(_)) => {
                 named.get_or_insert(e);
             }
@@ -508,9 +485,9 @@ pub(crate) fn rolled_run(
         stepped_rolled(model, solid, edge, &seat, radius, tol)?,
         named,
     ) {
-        (Some(run), _) => Ok(Some(Run::Rolled(Box::new(run)))),
-        (None, Some(named)) => Err(named),
-        (None, None) => Ok(None),
+        (true, _) => Ok(Some(Run::Rolled)),
+        (false, Some(named)) => Err(named),
+        (false, None) => Ok(None),
     }
 }
 
@@ -532,7 +509,7 @@ fn stepped_rolled(
     seat: &Seat,
     radius: f64,
     tol: Tolerances,
-) -> OgeomResult<Option<Rolled>> {
+) -> OgeomResult<bool> {
     let faces = explore_unique(model, solid, ShapeType::Face)?.len();
     for narrow in 0..2 {
         let mut face = seat.faces[narrow].clone();
@@ -569,8 +546,8 @@ fn stepped_rolled(
                     floor: true,
                 };
                 match across_to(model, solid, edge, seat, narrow, Some(&held), radius, tol) {
-                    Ok(Some(run)) => return Ok(Some(run)),
-                    Ok(None) | Err(OgeomError::Construction(_)) => {}
+                    Ok(true) => return Ok(true),
+                    Ok(false) | Err(OgeomError::Construction(_)) => {}
                     Err(e) => return Err(e),
                 }
             }
@@ -582,8 +559,8 @@ fn stepped_rolled(
                     floor: false,
                 };
                 match across_to(model, solid, edge, seat, narrow, Some(&held), radius, tol) {
-                    Ok(Some(run)) => return Ok(Some(run)),
-                    Ok(None) | Err(OgeomError::Construction(_)) => {}
+                    Ok(true) => return Ok(true),
+                    Ok(false) | Err(OgeomError::Construction(_)) => {}
                     Err(e) => return Err(e),
                 }
             }
@@ -592,7 +569,7 @@ fn stepped_rolled(
             face = far_seat.faces[k].clone();
         }
     }
-    Ok(None)
+    Ok(false)
 }
 
 /// The first edge met crossing the planar `face` from the middle of its
@@ -720,7 +697,7 @@ fn across(
     narrow: usize,
     radius: f64,
     tol: Tolerances,
-) -> OgeomResult<Option<Rolled>> {
+) -> OgeomResult<bool> {
     across_to(model, solid, edge, seat, narrow, None, radius, tol)
 }
 
@@ -738,7 +715,7 @@ pub(crate) fn across_to(
     held: Option<&Held>,
     radius: f64,
     tol: Tolerances,
-) -> OgeomResult<Option<Rolled>> {
+) -> OgeomResult<bool> {
     let conf = tol.confusion();
     let (n1, n2) = (seat.normals[1 - narrow], seat.normals[narrow]);
     let (f1, f2) = (&seat.faces[1 - narrow], &seat.faces[narrow]);
@@ -748,7 +725,7 @@ pub(crate) fn across_to(
             let turn = n1.dot(n2).clamp(-1.0, 1.0).acos();
             let setback = radius * (turn * 0.5).tan();
             let Some(far) = far_edge(model, edge, seat, narrow, setback, tol)? else {
-                return Ok(None);
+                return Ok(false);
             };
             far
         }
@@ -758,20 +735,20 @@ pub(crate) fn across_to(
     let fk = match held {
         Some(held) => match held.strips.last() {
             Some(last) => last.clone(),
-            None => return Ok(None),
+            None => return Ok(false),
         },
         None => f2.clone(),
     };
     let fk = &fk;
     let floor = held.is_some_and(|h| h.floor);
     let Some(far_seat) = seat_of(model, solid, &far, tol)? else {
-        return Ok(None);
+        return Ok(false);
     };
     let Some(k3) = far_seat.faces.iter().position(|f| !f.is_same(fk)) else {
-        return Ok(None);
+        return Ok(false);
     };
     if far_seat.convex == floor || far_seat.faces.iter().all(|f| !f.is_same(fk)) {
-        return Ok(None);
+        return Ok(false);
     }
     // On a floor, the face the ball comes down on: the far edge's face
     // that is the last strip, its normal, and the plane a radius off it.
@@ -781,7 +758,7 @@ pub(crate) fn across_to(
     };
     let f3 = if floor { fk } else { &far_seat.faces[k3] };
     if f3.is_same(f1) {
-        return Ok(None);
+        return Ok(false);
     }
     let n3 = far_seat.normals[k3];
     let (curve, (lo, hi)) = edge_curve(model, edge, tol)?;
@@ -807,12 +784,12 @@ pub(crate) fn across_to(
         // and the floor, along the crease; the contact on the floor runs a
         // radius below it.
         let Some(plane) = flat(model, fk, tol)? else {
-            return Ok(None);
+            return Ok(false);
         };
         let line = n1.cross(nk);
         let size = line.magnitude();
         if size <= tol.angular() || line.cross(t).magnitude() > tol.angular() * size {
-            return Ok(None);
+            return Ok(false);
         }
         let along = if line.dot(t) > 0.0 {
             line / size
@@ -828,7 +805,7 @@ pub(crate) fn across_to(
         ];
         let Some(c0) = crate::engine::vertex_geometry::planes_meet(&walls[0], &walls[1], &walls[2])
         else {
-            return Ok(None);
+            return Ok(false);
         };
         (c0 - nk * radius, along, f64::INFINITY)
     } else {
@@ -1020,7 +997,7 @@ pub(crate) fn across_to(
         Some(held) => {
             for between in &held.between {
                 let Some([p, q]) = segment(model, between, tol)? else {
-                    return Ok(None);
+                    return Ok(false);
                 };
                 lines.push((between.clone(), (p, (q - p) / p.distance(q))));
             }
@@ -1029,7 +1006,7 @@ pub(crate) fn across_to(
             // where edges are skipped.
             lines.push((far.clone(), (base, along)));
             if lines.len() != held.strips.len() + 1 {
-                return Ok(None);
+                return Ok(false);
             }
             // Each strip holds its stretch between its two lines and the
             // run's end sections.
@@ -1042,10 +1019,10 @@ pub(crate) fn across_to(
                     at_section(far_line.1, sa),
                 ];
                 let [Some(a), Some(b), Some(c), Some(d)] = corners else {
-                    return Ok(None);
+                    return Ok(false);
                 };
                 let Some(plane) = flat(model, strip, tol)? else {
-                    return Ok(None);
+                    return Ok(false);
                 };
                 legs.push((
                     strip.clone(),
@@ -1062,7 +1039,7 @@ pub(crate) fn across_to(
             let mut normals = vec![Some(n1), None];
             for strip in held.strips.iter().rev() {
                 let Some(plane) = flat(model, strip, tol)? else {
-                    return Ok(None);
+                    return Ok(false);
                 };
                 normals.push(Some(plane.normal));
             }
@@ -1070,17 +1047,17 @@ pub(crate) fn across_to(
                 let d = path.d1(s);
                 let unit = d / d.magnitude();
                 let Some(x) = x_of(s) else {
-                    return Ok(None);
+                    return Ok(false);
                 };
                 let mut ring = vec![x, path.centre(s) - n1 * radius, path.foot(s)];
                 for line in lines[1..lines.len() - 1].iter().rev() {
                     let Some(p) = at_section(line.1, s) else {
-                        return Ok(None);
+                        return Ok(false);
                     };
                     ring.push(p);
                 }
                 if !crate::engine::stepped::fills_outside(&ring, &normals, unit, tol) {
-                    return Ok(None);
+                    return Ok(false);
                 }
             }
         }
@@ -1210,81 +1187,32 @@ pub(crate) fn across_to(
     }
 
     // The stations, ordered along the crease.
-    let Some((first_host, first_sign)) = host(model, f1, tol)? else {
-        return Ok(None);
+    let Some((first_host, _)) = host(model, f1, tol)? else {
+        return Ok(false);
     };
-    let Some((second_host, second_sign)) = host(model, fk, tol)? else {
-        return Ok(None);
+    let Some((second_host, _)) = host(model, fk, tol)? else {
+        return Ok(false);
     };
-    let mut strips = Vec::new();
+    // Every strip the fill reaches over is planar.
     if let Some(held) = held {
-        for (j, strip) in held.strips.iter().enumerate() {
-            let Some(plane) = flat(model, strip, tol)? else {
-                return Ok(None);
-            };
-            let reach = (lines[j].1.0.distance(lines[j + 1].1.0) + length + radius) * 4.0;
-            let surface = ogeom_geom::PlaneSurface::over(
-                ogeom_math::Plane::through(
-                    plane.origin,
-                    ogeom_math::Direction::new(plane.normal, tol)?,
-                ),
-                (-reach, reach),
-                (-reach, reach),
-            )?;
-            strips.push(crate::marched::StripPiece {
-                plane: surface.into(),
-                far: (j + 1 < held.strips.len()).then(|| lines[j + 1].1),
-            });
+        for strip in &held.strips {
+            if flat(model, strip, tol)?.is_none() {
+                return Ok(false);
+            }
         }
     }
-    let mut blend = MarchedBlend {
-        spine: Vec::with_capacity(STATIONS + 1),
-        on_first: Vec::with_capacity(STATIONS + 1),
-        on_second: Vec::with_capacity(STATIONS + 1),
-        touch_first: Vec::with_capacity(STATIONS + 1),
-        touch_second: Vec::with_capacity(STATIONS + 1),
-        along: Vec::with_capacity(STATIONS + 1),
-        sides: Sides {
-            first: 1,
-            second: 1,
-        },
-        stopped: BlendStop::RanPastTheGuide,
-    };
+    // Every station's section crosses the crease, and its touches project
+    // onto their faces.
     for i in 0..=STATIONS {
         let s = station(i);
-        let Some(x) = crossing(s) else {
+        if crossing(s).is_none() {
             return Err(refuse("the ball's sections cross"));
-        };
+        }
         let c = path.centre(s);
-        let touch = c - n1 * radius;
-        let foot = path.foot(s);
-        blend.along.push(lo + (hi - lo) * x / length);
-        blend.spine.push(c);
-        blend.touch_first.push(touch);
-        blend.touch_second.push(foot);
-        blend
-            .on_first
-            .push(ogeom_algo::project_on_surface(&first_host, touch, 16, tol)?.parameters);
-        blend
-            .on_second
-            .push(ogeom_algo::project_on_surface(&second_host, foot, 16, tol)?.parameters);
+        ogeom_algo::project_on_surface(&first_host, c - n1 * radius, 16, tol)?;
+        ogeom_algo::project_on_surface(&second_host, path.foot(s), 16, tol)?;
     }
-    Ok(Some(Rolled {
-        blend,
-        guide: curve,
-        hosts: [(first_host, first_sign), (second_host, second_sign)],
-        rails: [
-            Rail::Plane(e0, n1),
-            if floor {
-                Rail::Plane(base, nk)
-            } else {
-                Rail::Line(base, along)
-            },
-        ],
-        path,
-        span,
-        strips,
-    }))
+    Ok(true)
 }
 
 /// The span of the ellipse's angle, within `[0, phi3]` where the ball
