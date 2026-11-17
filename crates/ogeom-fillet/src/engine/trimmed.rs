@@ -2997,10 +2997,11 @@ fn assemble_widened(
     // bevel's end there, the segment between its two faces' corners.
     // Each cusp's corners on the side and the wall moved to its lobes'.
     let cusps = cusps_of(curved, bevels, corners, tol)?;
-    // A cusp's sharp edges on the side or the wall (the edge the two share
-    // below a top ending there, the wall's seam) run on to the vertex: the
-    // S's feet meet them there.
-    for c in &cusps {
+    // A one-sided cusp's sharp edges on the side or the wall (the edge the
+    // two share below a top ending there, the wall's seam) run on to the
+    // vertex: the S's feet meet them there. Two-sided, the patch spans the
+    // vertex and they end on its sides.
+    for c in cusps.iter().filter(|c| c.lobes.len() == 1) {
         let [_, side, wall] = c.faces;
         for (e, edge) in &curved.edges {
             let faces = faces_of(curved, *e);
@@ -3749,6 +3750,7 @@ fn assemble_widened(
     for (ci, c) in cusps.iter().enumerate() {
         let [_, side, wall] = c.faces;
         let mut lobes = Vec::with_capacity(2);
+        let mut ring_at = Point::ORIGIN;
         for lobe in &c.lobes {
             let rim = &bevels[lobe.rim];
             let SurfaceGeometry::Torus(torus) = &rim.surface else {
@@ -3756,9 +3758,10 @@ fn assemble_widened(
             };
             let torus = torus.torus();
             let (o, z) = (torus.frame().origin(), torus.frame().z().vector());
-            let Curve::Circle(_) = &rim.contacts[usize::from(rim.faces[1] == wall)] else {
+            let Curve::Circle(ring) = &rim.contacts[usize::from(rim.faces[1] == wall)] else {
                 return Ok(None);
             };
+            ring_at = ring.circle().frame().origin();
             let line = &bevels[lobe.line];
             let Section::Arc { spine } = &line.section else {
                 return Ok(None);
@@ -3795,7 +3798,62 @@ fn assemble_widened(
                 ],
             });
         }
-        // Each lobe's hole: the lobe, its foot on the wall down to the
+        // Two lobes: one hole over the vertex, the lobes and, between them,
+        // the rim's contact on the wall and the straight strip's on the
+        // side, so the patch stands clear of the vertex, where the side and
+        // the wall are tangent.
+        if let [a, b] = c.lobes.as_slice() {
+            let straight: Curve = LineCurve::segment(b.side, a.side, tol)?.into();
+            let range = straight.domain();
+            edges.push(SheetCurve {
+                ends: (points.index(b.side), points.index(a.side)),
+                curve: straight.clone(),
+                range,
+            });
+            bounds
+                .entry(c.v)
+                .or_default()
+                .push((b.side, a.side, edges.len() - 1));
+            let along_side = HoleSpec {
+                curve: straight,
+                range,
+                forward: true,
+                pieces: vec![(edges.len() - 1, range, curved.faces[side].surface.clone())],
+            };
+            let (arc, _) = rational_quadratics(&[arc_control(ring_at, a.wall, b.wall, tol)?], tol)?;
+            let mut stops = vec![(a.wall, 0.0)];
+            if let Some(f) = c.foot {
+                stops.push((f, param_on(&arc, (0.0, 1.0), f, tol)?));
+            }
+            stops.push((b.wall, 1.0));
+            let mut pieces = Vec::with_capacity(2);
+            for w in stops.windows(2) {
+                let ((p, t0), (q, t1)) = (w[0], w[1]);
+                edges.push(SheetCurve {
+                    ends: (points.index(p), points.index(q)),
+                    curve: arc.clone(),
+                    range: (t0, t1),
+                });
+                bounds.entry(c.v).or_default().push((p, q, edges.len() - 1));
+                pieces.push((
+                    edges.len() - 1,
+                    (t0, t1),
+                    curved.faces[wall].surface.clone(),
+                ));
+            }
+            let along_wall = HoleSpec {
+                curve: arc,
+                range: (0.0, 1.0),
+                forward: true,
+                pieces,
+            };
+            let [first, second] = <[HoleSpec; 2]>::try_from(lobes).map_err(|_| {
+                ogeom_core::OgeomError::Construction("a cusp of other than two lobes".into())
+            })?;
+            holes.push((ci, vec![first, along_wall, second.back(), along_side]));
+            continue;
+        }
+        // One lobe: its hole is the lobe, its foot on the wall down to the
         // vertex, and its foot on the side back to the lobe.
         let at = curved.points[&c.v];
         for (spec, (lobe, (wall_foot, side_foot))) in
@@ -5524,10 +5582,14 @@ struct Cusp {
     /// Each straight strip's side of the vertex: two, or one where the top
     /// ends at the vertex.
     lobes: Vec<Lobe>,
-    /// Each lobe's S's feet: on the wall from the lobe's end there down to
-    /// the vertex, and on the side from the vertex to the lobe's end there.
-    /// Each lobe's hole is the lobe and its two feet.
+    /// One lobe's S's feet: on the wall from the lobe's end there down to
+    /// the vertex, and on the side from the vertex to the lobe's end there;
+    /// its hole is the lobe and its two feet. Empty for two lobes, whose
+    /// hole is the two and the strips' contacts between them.
     feet: Vec<(Curve, Curve)>,
+    /// Two lobes: where the wall's own seam leaves the rim's contact
+    /// between them, where it has one there.
+    foot: Option<Point>,
 }
 
 /// A side of a cusp's hole: its curve over `range`, whether the walk runs
@@ -5824,8 +5886,10 @@ fn cusps_of(
         if n_side.dot(n_wall) < 1.0 - tol.angular() {
             continue;
         }
-        let mut feet = Vec::with_capacity(lobes.len());
-        for lobe in &lobes {
+        // Only a one-sided cusp's lobe takes its S's feet.
+        let one_sided: &[Lobe] = if lobes.len() == 1 { &lobes } else { &[] };
+        let mut feet = Vec::with_capacity(one_sided.len());
+        for lobe in one_sided {
             let r = &bevels[lobe.rim];
             let Curve::Circle(rim_circle) = &curved.edges[&r.edge].curve else {
                 break;
@@ -5904,14 +5968,27 @@ fn cusps_of(
                 Curve::BSpline(side_foot.curve),
             ));
         }
-        if feet.len() != lobes.len() {
+        if feet.len() != one_sided.len() {
             continue;
         }
+        let foot = (lobes.len() == 2)
+            .then(|| {
+                curved
+                    .edges
+                    .iter()
+                    .find(|(e, c)| {
+                        (c.ends.0 == *v || c.ends.1 == *v) && faces_of(curved, **e) == [wall]
+                    })
+                    .and_then(|(e, _)| corners.get(&(wall, *v)).filter(|c| c.on(*e).is_some()))
+                    .map(|c| c.point)
+            })
+            .flatten();
         found.push(Cusp {
             v: *v,
             faces: [top, side, wall],
             lobes,
             feet,
+            foot,
         });
     }
     Ok(found)
