@@ -4956,3 +4956,98 @@ fn rims_pieces_in_a_tangent_chain_are_trimmed_to_the_general_fuse_s_solid() {
         );
     }
 }
+
+/// A cube of ten shaved by a drum of radius 6 about `(5, 5)`: its side
+/// `x = 0` meets the drum along the ruling `y = 5 - sqrt(11)`. That
+/// ruling, its top vertex moved `off` along `y` within a tolerance
+/// widened to cover it (a vertex a boolean left off the line), is rounded
+/// alone at radius 1, ending flush in the top and the bottom. The band takes
+/// its spandrel over the height: in plan, the polygon of the corner, the
+/// contact on the side `(0, 2)`, the ball's centre `(1, 2)` and its contact
+/// on the drum `(0.2, 1.4)`, less the ball's sector between the contacts,
+/// plus the drum's segment between its contact and the corner, built by the
+/// trimmed assembly with no boolean. A strip read through its vertices
+/// tilted with the moved one and was handed back to the booleans.
+#[test]
+fn a_ruling_whose_vertex_stands_off_its_line_rounds_on_its_line() {
+    let r = 1.0;
+    let yc = 5.0 - 11.0_f64.sqrt();
+    let want = {
+        let poly = [(0.0, yc), (0.0, 2.0), (1.0, 2.0), (0.2, 1.4)];
+        let mut twice = 0.0;
+        for k in 0..4 {
+            let (a, b) = (poly[k], poly[(k + 1) % 4]);
+            twice += a.0 * b.1 - b.0 * a.1;
+        }
+        let sector = 0.8_f64.acos() / 2.0 * r * r;
+        let alpha = {
+            let (u, v) = ((-0.8_f64, -0.6_f64), (-5.0 / 6.0, -(11.0_f64.sqrt()) / 6.0));
+            (u.0 * v.1 - u.1 * v.0).atan2(u.0 * v.0 + u.1 * v.1).abs()
+        };
+        let segment = 36.0 / 2.0 * (alpha - alpha.sin());
+        (twice.abs() / 2.0 - sector + segment) * 10.0
+    };
+    for off in [0.0, 4e-7] {
+        let mut model = ogeom_topo::Model::new();
+        let cube = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let drum = ogeom_algo::make_cylinder(
+            &mut model,
+            Frame::new(Point::new(5.0, 5.0, -1.0), Direction::Z, Direction::X, T).unwrap(),
+            6.0,
+            12.0,
+            T,
+        )
+        .unwrap()
+        .shape;
+        let part = ogeom_bool::common(&mut model, &cube, &drum, T)
+            .unwrap()
+            .shape;
+        let part = explore_unique(&model, &part, ShapeType::Solid).unwrap()[0].clone();
+        let ruling = edge_through(&model, &part, Point::new(0.0, yc, 5.0));
+        let top = Point::new(0.0, yc, 10.0);
+        let vertex = explore_unique(&model, &ruling, ShapeType::Vertex)
+            .unwrap()
+            .into_iter()
+            .find(|v| {
+                model
+                    .node(v)
+                    .unwrap()
+                    .data()
+                    .as_vertex()
+                    .unwrap()
+                    .point
+                    .distance(top)
+                    < 1e-9
+            })
+            .expect("the ruling's top vertex");
+        if off > 0.0 {
+            model
+                .widen(&vertex, ogeom_core::Tolerance::new(off * 2.5).unwrap())
+                .unwrap();
+            let ogeom_topo::NodeData::Vertex(data) = model.node_mut(&vertex).unwrap().data_mut()
+            else {
+                panic!("a vertex node holds vertex data");
+            };
+            data.point = Point::new(0.0, yc + off, 10.0);
+        }
+        let before = volume(&model, &part, 1e-4);
+        let (rounded, work) = ogeom_bool::work::counted(|| {
+            ogeom_fillet::fillet_edge(&mut model, &part, &ruling, r, T).unwrap()
+        });
+        // The trimmed assembly builds the band with no boolean; handed
+        // back, the request is built by booleans.
+        assert_eq!(work.face_pairs, 0, "off {off}: built with no boolean");
+        assert!(
+            ogeom_algo::check(&model, &rounded.shape, T)
+                .unwrap()
+                .is_valid()
+        );
+        let removed = before - volume(&model, &rounded.shape, 1e-4);
+        assert!(
+            (removed - want).abs() < want * 1e-6,
+            "off {off}: {removed} against {want}"
+        );
+    }
+}
