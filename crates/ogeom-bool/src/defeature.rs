@@ -753,7 +753,13 @@ fn wrap_round(
     tol: Tolerances,
 ) -> OgeomResult<(Vec<Shape>, Vec<Shape>)> {
     let (lo, hi) = curve.domain();
-    if !curve.is_periodic() {
+    // A closed curve that is not periodic (a clamped spline through its own
+    // start, as the intersection of two cylinders is fitted) wraps as well:
+    // it is cut at its chart's start below, so every edge stands inside
+    // its domain and the last ends where the first begins.
+    if !curve.is_periodic()
+        && curve.point_at(lo, tol)?.distance(curve.point_at(hi, tol)?) > tol.confusion()
+    {
         ogeom_bail!(
             Construction,
             "a wrapping band recovered an open curve; the closure is \
