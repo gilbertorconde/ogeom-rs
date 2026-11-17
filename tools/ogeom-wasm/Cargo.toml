@@ -11,7 +11,8 @@ repository.workspace = true
 # audience is this repository.
 publish = false
 
-[dependencies]
+# Only the tests reach the kernel.
+[dev-dependencies]
 ogeom = { path = "../../crates/ogeom", version = "0.18.1" }
 
 # The tests run natively under the std harness and on wasm32 under

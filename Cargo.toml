@@ -96,7 +96,6 @@ hashbrown = "0.16"
 # The hasher behind `ogeom_core::FastMap`, used with a fixed seed so map
 # iteration order is the same in every process.
 foldhash = { version = "0.2", default-features = false }
-indexmap = "2"
 smallvec = { version = "1", features = ["union", "const_generics"] }
 
 # --- images ---
