@@ -542,7 +542,7 @@ fn a_foot_and_an_edge_through_the_cusp_where_a_boss_runs_tangent_into_a_plate_tu
 /// printCAD's chain at other radii: each order either builds a solid that
 /// passes every check of `assert_cusp_round`, or is refused by name; the
 /// two orders agree. Every radius from a twenty-fourth of the boss's to a
-/// quarter now builds, on one patch through the cusp.
+/// quarter builds, on one patch over the cusp.
 #[test]
 fn printcad_s_chain_at_other_radii_closes_soundly_or_is_refused_by_name() {
     for r in [0.25, 0.5, 0.75, 1.25, 1.5] {
