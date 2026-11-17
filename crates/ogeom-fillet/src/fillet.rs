@@ -1186,6 +1186,11 @@ fn rounds_by_engine_unplaced(
     {
         return Ok(Some(built));
     }
+    // Arcs of one closed crease asked together: one round over the loop,
+    // the march's band from the first arc.
+    if let Some(built) = crate::engine::crease_loop_rounds(model, solid, &once, tol)? {
+        return Ok(Some(built));
+    }
     // Last, a contour on a planar host beside swept or circular walls that
     // no route above closes, its bands joined at their junctions (amendment
     // "contour chains on swept walls").
