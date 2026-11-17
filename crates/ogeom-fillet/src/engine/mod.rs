@@ -21,6 +21,7 @@
 //! The polyhedral classes (a solid bounded by planes) go through here.
 
 mod alone;
+mod apart;
 mod assemble;
 mod classify;
 mod conic_tools;
@@ -75,6 +76,7 @@ mod vertex_tools;
 mod vertices;
 
 pub(crate) use alone::rounds as alone_rounds;
+pub(crate) use apart::rounds as apart_rounds;
 pub(crate) use conic_tools::distances as distances_rounds;
 pub(crate) use contours::rounds as contour_rounds;
 pub(crate) use crease_loop::rounds as crease_loop_rounds;

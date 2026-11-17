@@ -2156,6 +2156,33 @@ outline standing as edges.
   corner, refused before for that edge and built by the current path,
   goes through the engine's exact route to the same volume.
 
+### Amendment: rounds standing apart (#902)
+
+A request can hold edges that no route closes together, though each group
+of them closes alone: a boss's base rim and a rib's base creases on one
+plate. The rib's creases end flush in its end faces' planes, beyond the
+plate's top, and the curved assembly does not carry an end face over a
+fill's end section, while the rounds asked alone are built.
+
+- **Rule.** The edges fall into groups, two edges in one group where a
+  chain of edges sharing vertices joins them. Where no route closes the
+  request whole, each group is rounded as it is alone on the solid as
+  given. What its rounds take off and what they add are its tools. Where
+  every tool stands clear of every other group's (a gap wider than the
+  confusion tolerance), the tools are applied as the one-boolean
+  fallback's (`engine/apart.rs`).
+- **Why it is the rounding asked.** A band built alone meets only the
+  faces within its tool's reach. Where no other group's tool comes within
+  that reach, no band of one group meets a band of another or a face
+  another group changes, so the rounds asked together are the rounds
+  alone. This is amendment "M5e"'s convex-turn rule (each crease rounded
+  as it is alone, the cuts taking their union) for groups that do not
+  meet at all, with fills as well as cuts. No new behaviour is defined:
+  each group's result is the one the engine already builds for it.
+- **Not this route:** groups whose tools touch or overlap (their bands
+  meet and the meeting is the routes' to close), a group the engine does
+  not round alone, or a request of one group.
+
 ## 12. Acceptance corpus
 
 From #902:

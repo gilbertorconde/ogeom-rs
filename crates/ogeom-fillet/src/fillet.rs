@@ -1191,10 +1191,15 @@ fn rounds_by_engine_unplaced(
     if let Some(built) = crate::engine::crease_loop_rounds(model, solid, &once, tol)? {
         return Ok(Some(built));
     }
-    // Last, a contour on a planar host beside swept or circular walls that
-    // no route above closes, its bands joined at their junctions (amendment
+    // A contour on a planar host beside swept or circular walls that no
+    // route above closes, its bands joined at their junctions (amendment
     // "contour chains on swept walls").
-    crate::engine::contour_rounds(model, solid, &once, tol)
+    if let Some(built) = crate::engine::contour_rounds(model, solid, &once, tol)? {
+        return Ok(Some(built));
+    }
+    // Last, groups of edges whose rounds stand apart, each built as it is
+    // alone (amendment "rounds standing apart").
+    crate::engine::apart_rounds(model, solid, &once, rounds_by_engine, tol)
 }
 
 /// The engine's routes for [`rounds_by_engine_unplaced`], in turn, but the
