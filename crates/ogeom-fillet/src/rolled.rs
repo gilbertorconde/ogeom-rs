@@ -442,11 +442,11 @@ pub(crate) fn enters(ring: &[Point], normal: Vector, [p, q]: [Point; 2], margin:
 /// beside it: along the whole crease, or carried across changes of what
 /// the ball holds.
 pub(crate) enum Run {
-    Shelf(crate::shelf::Run),
-    Rim(crate::rolled_rim::Run),
-    Rolled(Rolled),
-    Carried(crate::carried::Carried),
-    Stepped(crate::stepped::Stepped),
+    Shelf,
+    Rim,
+    Rolled(Box<Rolled>),
+    Carried,
+    Stepped,
 }
 
 /// The run of a ball of `radius` rounding the concave straight `edge`
@@ -469,11 +469,11 @@ pub(crate) fn rolled_run(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<Run>> {
-    if let Some(run) = crate::shelf::run(model, solid, edge, radius, tol)? {
-        return Ok(Some(Run::Shelf(run)));
+    if crate::shelf::run(model, solid, edge, radius, tol)?.is_some() {
+        return Ok(Some(Run::Shelf));
     }
-    if let Some(run) = crate::rolled_rim::rim_run(model, solid, edge, radius, tol)? {
-        return Ok(Some(Run::Rim(run)));
+    if crate::rolled_rim::rim_run(model, solid, edge, radius, tol)?.is_some() {
+        return Ok(Some(Run::Rim));
     }
     let Some(seat) = seat_of(model, solid, edge, tol)? else {
         return Ok(None);
@@ -484,7 +484,7 @@ pub(crate) fn rolled_run(
     let mut named: Option<OgeomError> = None;
     for narrow in 0..2 {
         match across(model, solid, edge, &seat, narrow, radius, tol) {
-            Ok(Some(run)) => return Ok(Some(Run::Rolled(run))),
+            Ok(Some(run)) => return Ok(Some(Run::Rolled(Box::new(run)))),
             Ok(None) => {}
             Err(e @ OgeomError::Construction(_)) => {
                 named.get_or_insert(e);
@@ -492,16 +492,14 @@ pub(crate) fn rolled_run(
             Err(e) => return Err(e),
         }
     }
-    if named.is_some()
-        && let Some(run) = crate::carried::carried_run(model, solid, edge, &seat, radius, tol)?
-    {
-        return Ok(Some(Run::Carried(run)));
+    if named.is_some() && crate::carried::carried_run(model, solid, edge, &seat, radius, tol)? {
+        return Ok(Some(Run::Carried));
     }
     // Clear of the narrow face's far edge, or past a concave one, the ball
     // may rest on the far edge of a strip beyond it or touch the face the
     // strips run into.
-    if let Some(run) = crate::stepped::stepped_run(model, solid, edge, &seat, radius, tol)? {
-        return Ok(Some(Run::Stepped(run)));
+    if crate::stepped::stepped_run(model, solid, edge, &seat, radius, tol)? {
+        return Ok(Some(Run::Stepped));
     }
     // Over strips whose far edges are not parallel to the crease, the ball
     // may rest on a further strip's far edge, its centre on the ellipse.
@@ -509,7 +507,7 @@ pub(crate) fn rolled_run(
         stepped_rolled(model, solid, edge, &seat, radius, tol)?,
         named,
     ) {
-        (Some(run), _) => Ok(Some(Run::Rolled(run))),
+        (Some(run), _) => Ok(Some(Run::Rolled(Box::new(run)))),
         (None, Some(named)) => Err(named),
         (None, None) => Ok(None),
     }
@@ -1369,15 +1367,10 @@ pub(crate) fn rolled_fillet(
 ) -> OgeomResult<Option<Built>> {
     match rolled_run(model, solid, edge, radius, tol)? {
         None => Ok(None),
-        Some(Run::Shelf(run)) => crate::shelf::build(model, solid, edge, &run, tol).map(Some),
-        Some(Run::Rim(run)) => crate::rolled_rim::build(model, solid, edge, &run, tol).map(Some),
         Some(Run::Rolled(run)) => rolled_band(model, solid, edge, &run, radius, tol).map(Some),
-        Some(Run::Carried(run)) => {
-            crate::carried::carried_band(model, solid, edge, &run, radius, tol).map(Some)
-        }
-        Some(Run::Stepped(run)) => {
-            crate::stepped::stepped_band(model, solid, edge, &run, radius, tol).map(Some)
-        }
+        // A ball on a shelf, a rim, carried across a change of support or
+        // down a staircase is the engine's or refused by name.
+        Some(Run::Shelf | Run::Rim | Run::Carried | Run::Stepped) => Err(crate::fillet::declined()),
     }
 }
 

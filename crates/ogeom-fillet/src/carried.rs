@@ -47,14 +47,10 @@
 //! both sides at once.
 
 use crate::consumed::{seat_of, segment};
-use crate::march::{BlendStop, MarchedBlend, Sides};
-use crate::marched::{ExactBand, Rail};
 use crate::rolled::{Flat, basis, enters, face_distance, flat, host, inside};
 use crate::support::{Seat, edge_curve, same_occurrence};
-use ogeom_algo::Built;
 use ogeom_core::{OgeomError, OgeomResult, Tolerances};
 use ogeom_geom::Curve3d as _;
-use ogeom_geom::SurfaceGeometry;
 use ogeom_math::{Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
@@ -240,19 +236,6 @@ struct Piece {
     holds: [Hold; 2],
     track: Track,
     span: (f64, f64),
-}
-
-/// The run of a ball carried across changes of what it holds, from the
-/// crease's start to its end, with what its bands are built from.
-pub(crate) struct Carried {
-    pieces: Vec<Piece>,
-    sides: [Side; 2],
-    guide: ogeom_geom::Curve,
-    range: (f64, f64),
-    e0: Point,
-    t: Vector,
-    length: f64,
-    hosts: [(SurfaceGeometry, f64); 2],
 }
 
 /// The pieces' crease geometry and what they read, shared by the walk and
@@ -645,13 +628,13 @@ pub(crate) fn carried_run(
     seat: &Seat,
     radius: f64,
     tol: Tolerances,
-) -> OgeomResult<Option<Carried>> {
+) -> OgeomResult<bool> {
     let conf = tol.confusion();
     let mut sides = Vec::with_capacity(2);
     for i in 0..2 {
         let face = seat.faces[i].clone();
         if flat(model, &face, tol)?.is_none() {
-            return Ok(None);
+            return Ok(false);
         }
         let mut edges = Vec::new();
         for e in explore_unique(model, &face, ShapeType::Edge)? {
@@ -659,7 +642,7 @@ pub(crate) fn carried_run(
                 continue;
             }
             let Some(ends) = segment(model, &e, tol)? else {
-                return Ok(None);
+                return Ok(false);
             };
             if ends[0].distance(ends[1]) <= conf {
                 continue;
@@ -720,7 +703,7 @@ pub(crate) fn carried_run(
         });
     }
     let Some((holds, from)) = start(&crease, &reach, length * 0.5) else {
-        return Ok(None);
+        return Ok(false);
     };
 
     // Walk the crease from there to each end, piece by piece, and join the
@@ -754,25 +737,10 @@ pub(crate) fn carried_run(
     }
     if pieces.len() < 2 {
         // One piece is the rolled round's own run, refused there.
-        return Ok(None);
+        return Ok(false);
     }
     prove(model, solid, edge, &crease, &pieces, &refuse)?;
-    let Some(first) = host(model, &sides[0].face, tol)? else {
-        return Ok(None);
-    };
-    let Some(second) = host(model, &sides[1].face, tol)? else {
-        return Ok(None);
-    };
-    Ok(Some(Carried {
-        pieces,
-        sides,
-        guide: curve,
-        range,
-        e0,
-        t,
-        length,
-        hosts: [first, second],
-    }))
+    Ok(host(model, &sides[0].face, tol)?.is_some() && host(model, &sides[1].face, tol)?.is_some())
 }
 
 /// The pieces from the ball holding `holds` at its track's parameter
@@ -1326,147 +1294,4 @@ fn behind(crease: &Crease<'_>, piece: &Piece, vertices: &[Point]) -> bool {
             })
         }
     })
-}
-
-/// Round `edge` with the ball carried across its changes of hold, where
-/// [`carried_run`] finds that run.
-///
-/// # Errors
-///
-/// As [`carried_run`], and [`OgeomError::NotDone`] where a band's fit
-/// stands further off its balls' envelope than its target.
-pub(crate) fn carried_band(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    run: &Carried,
-    radius: f64,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    let crease = Crease {
-        sides: &run.sides,
-        e0: run.e0,
-        t: run.t,
-        length: run.length,
-        radius,
-        tol,
-    };
-    let (lo, hi) = run.range;
-    let mut blends = Vec::with_capacity(run.pieces.len());
-    for piece in &run.pieces {
-        let (sa, sb) = piece.span;
-        let mut blend = MarchedBlend {
-            spine: Vec::with_capacity(STATIONS + 1),
-            on_first: Vec::with_capacity(STATIONS + 1),
-            on_second: Vec::with_capacity(STATIONS + 1),
-            touch_first: Vec::with_capacity(STATIONS + 1),
-            touch_second: Vec::with_capacity(STATIONS + 1),
-            along: Vec::with_capacity(STATIONS + 1),
-            sides: Sides {
-                first: 1,
-                second: 1,
-            },
-            stopped: BlendStop::RanPastTheGuide,
-        };
-        for i in 0..=STATIONS {
-            #[allow(clippy::cast_precision_loss)]
-            let s = sa + (sb - sa) * (i as f64) / (STATIONS as f64);
-            let Some((x, _)) = crease.crossing(&piece.track, s) else {
-                ogeom_core::ogeom_bail!(Construction, "a carried round's sections cross");
-            };
-            let c = piece.track.centre(s);
-            let first = crease.contact(0, piece.holds[0], c);
-            let second = crease.contact(1, piece.holds[1], c);
-            blend.along.push(lo + (hi - lo) * x / run.length);
-            blend.spine.push(c);
-            blend.touch_first.push(first);
-            blend.touch_second.push(second);
-            blend
-                .on_first
-                .push(ogeom_algo::project_on_surface(&run.hosts[0].0, first, 16, tol)?.parameters);
-            blend
-                .on_second
-                .push(ogeom_algo::project_on_surface(&run.hosts[1].0, second, 16, tol)?.parameters);
-        }
-        blends.push(blend);
-    }
-    let rails: Vec<[Rail; 2]> = run
-        .pieces
-        .iter()
-        .map(|piece| {
-            let rail = |i: usize| match piece.holds[i] {
-                Hold::Face => Rail::Plane(run.e0, run.sides[i].normal),
-                Hold::Edge(j) => {
-                    let [p, q] = run.sides[i].edges[j].ends;
-                    Rail::Line(p, (q - p) / p.distance(q))
-                }
-                Hold::Corner(w) => Rail::Point(w),
-            };
-            [rail(0), rail(1)]
-        })
-        .collect();
-    // The distance from a point to a piece's envelope: from its nearest
-    // centre on the piece, found by golden section about the nearest
-    // station.
-    let offs: Vec<Box<dyn Fn(Point) -> f64 + '_>> = run
-        .pieces
-        .iter()
-        .zip(&blends)
-        .map(|(piece, blend)| {
-            let piece = *piece;
-            let spine = blend.spine.clone();
-            Box::new(move |p: Point| -> f64 {
-                let n = spine.len();
-                let nearest = (0..n)
-                    .min_by(|&i, &j| p.distance(spine[i]).total_cmp(&p.distance(spine[j])))
-                    .unwrap_or(0);
-                let (sa, sb) = piece.span;
-                #[allow(clippy::cast_precision_loss)]
-                let at = |i: f64| sa + (sb - sa) * i / ((n - 1) as f64);
-                #[allow(clippy::cast_precision_loss)]
-                let (mut a, mut b) = (at(nearest as f64 - 1.0), at(nearest as f64 + 1.0));
-                let f = |s: f64| p.distance(piece.track.centre(s));
-                let g = 0.5 * (5.0_f64.sqrt() - 1.0);
-                let (mut x1, mut x2) = (b - g * (b - a), a + g * (b - a));
-                let (mut f1, mut f2) = (f(x1), f(x2));
-                for _ in 0..80 {
-                    if f1 < f2 {
-                        b = x2;
-                        x2 = x1;
-                        f2 = f1;
-                        x1 = b - g * (b - a);
-                        f1 = f(x1);
-                    } else {
-                        a = x1;
-                        x1 = x2;
-                        f1 = f2;
-                        x2 = a + g * (b - a);
-                        f2 = f(x2);
-                    }
-                }
-                (f1.min(f2) - radius).abs()
-            }) as Box<dyn Fn(Point) -> f64 + '_>
-        })
-        .collect();
-    let exact: Vec<ExactBand<'_>> = rails
-        .iter()
-        .zip(&offs)
-        .map(|(rails, off)| ExactBand {
-            rails: *rails,
-            off: off.as_ref(),
-            strips: &[],
-        })
-        .collect();
-    let [(first, first_sign), (second, second_sign)] = &run.hosts;
-    crate::marched::build_chain_band(
-        model,
-        solid,
-        Some(edge),
-        &blends,
-        &exact,
-        &run.guide,
-        [(first, *first_sign), (second, *second_sign)],
-        radius,
-        tol,
-    )
 }
