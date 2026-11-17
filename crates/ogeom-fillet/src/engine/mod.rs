@@ -23,6 +23,7 @@
 mod alone;
 mod apart;
 mod assemble;
+mod ball_corner;
 mod classify;
 mod conic_tools;
 mod consumed;
@@ -78,6 +79,7 @@ mod vertices;
 
 pub(crate) use alone::rounds as alone_rounds;
 pub(crate) use apart::rounds as apart_rounds;
+pub(crate) use ball_corner::rounds as ball_corner_rounds;
 pub(crate) use conic_tools::distances as distances_rounds;
 pub(crate) use contours::rounds as contour_rounds;
 pub(crate) use crease_loop::rounds as crease_loop_rounds;
