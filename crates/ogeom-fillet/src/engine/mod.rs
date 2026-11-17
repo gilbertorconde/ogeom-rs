@@ -236,6 +236,69 @@ pub(crate) enum Origin {
     Vertex(Id),
 }
 
+/// Whether the request's setbacks take a face of `solid` past one of its
+/// own sides, read as [`run`] reads them (P1 and P2): along some side the
+/// face's corners stand reversed, the setback lines from its two ends
+/// having crossed over. A side taken to a point is not past it (a face so
+/// consumed is built). `false` where the solid or the request lies outside
+/// that reading.
+///
+/// # Errors
+///
+/// As reading the solid and its setbacks.
+pub(crate) fn set_back_past_a_side(
+    model: &Model,
+    solid: &Shape,
+    request: &Request,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    if !request.splits.is_empty() {
+        return Ok(false);
+    }
+    let Some(planar) = classify::read_planar(model, solid, tol)? else {
+        return Ok(false);
+    };
+    let Some(seats) = planar.seats() else {
+        return Ok(false);
+    };
+    let mut by_edge: FastMap<Id, &Section> = FastMap::default();
+    for blend in &request.blends {
+        by_edge.insert(id(&blend.edge), &blend.section);
+    }
+    let mut setback: FastMap<(Id, Id), f64> = FastMap::default();
+    for seat in seats.values() {
+        let Some(section) = by_edge.get(&seat.edge) else {
+            continue;
+        };
+        let d = sections::law(section).setbacks(seat, &planar)?;
+        for (k, face) in seat.faces.iter().enumerate() {
+            setback.insert((id(&planar.faces[*face].shape), seat.edge), d[k]);
+        }
+    }
+    let mut steps = FastMap::default();
+    let Some(corners) = setbacks::setback_corners(&planar, &setback, &mut steps, tol)? else {
+        return Ok(false);
+    };
+    let reach = tol.confusion() * 100.0;
+    for (fi, face) in planar.faces.iter().enumerate() {
+        for walk in face.loops() {
+            let n = walk.len();
+            for k in 0..n {
+                let (v, w) = (walk[k], walk[(k + 1) % n]);
+                let (Some(a), Some(b)) = (corners.get(&(fi, v)), corners.get(&(fi, w))) else {
+                    continue;
+                };
+                let side = planar.points[&w] - planar.points[&v];
+                let kept = *b - *a;
+                if kept.magnitude() > reach && kept.dot(side) < -reach * side.magnitude() {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// The blend of `request` on `solid`, or `None` where the solid or the
 /// request lies outside the engine's classes (for now: a solid bounded by
 /// planes, each face one ring of straight edges and a ring per hole (rounds:

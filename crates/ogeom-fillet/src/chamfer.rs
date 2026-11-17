@@ -889,7 +889,23 @@ fn engine_chamfer_unplaced(
     if !matches!(built, Ok(Some(_))) {
         *model = before;
     }
+    // Bevels setting a face back past one of its own sides that no route
+    // builds are refused by name: the part does not hold them.
+    if matches!(built, Ok(None))
+        && let Some(request) = crate::engine::Request::from_chamfers(model, solid, specs, tol)?
+        && crate::engine::set_back_past_a_side(model, solid, &request, tol)?
+    {
+        return Err(past_the_part());
+    }
     built
+}
+
+fn past_the_part() -> ogeom_core::OgeomError {
+    ogeom_core::ogeom_err!(
+        Construction,
+        "the chamfers take a face past one of its own sides (their setbacks on it cross), \
+         more than the part holds; ask smaller distances"
+    )
 }
 
 /// [`engine_chamfer_unplaced`]'s attempt, on the live model.
