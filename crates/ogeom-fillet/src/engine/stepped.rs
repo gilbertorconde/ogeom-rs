@@ -41,9 +41,9 @@
 //! the centre's segment, read in closed form, so a face the balls touch
 //! (an end face where the touch line meets it) is cleared exactly.
 
-use crate::carried::trig_max;
-use crate::consumed::{seat_of, segment};
-use crate::rolled::{Flat, basis, enters, face_distance, flat, inside};
+use crate::engine::carried::trig_max;
+use crate::engine::consumed_seat::{seat_of, segment};
+use crate::engine::rolled::{Flat, basis, enters, face_distance, flat, inside};
 use crate::support::{Seat, edge_curve, same_occurrence};
 use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_geom::{Curve, Curve3d as _};

@@ -65,7 +65,7 @@ pub(crate) fn linear_round(
         match crate::support::ball_fits(model, solid, edge, radius, false, tol) {
             Ok(_) => Ok(None),
             Err(ogeom_core::OgeomError::Construction(_)) => {
-                crate::consumed::consumed_seat(model, solid, edge, radius, tol)
+                crate::engine::consumed_seat::consumed_seat(model, solid, edge, radius, tol)
             }
             Err(e) => Err(e),
         }

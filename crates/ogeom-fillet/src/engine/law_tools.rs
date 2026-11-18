@@ -145,7 +145,7 @@ fn build(
         };
         before += lengths[k];
     }
-    let tangent = crate::junction::tangent_junctions(chain, &mates, tol);
+    let tangent = crate::engine::junction::tangent_junctions(chain, &mates, tol);
     let planar: Vec<_> = chain
         .iter()
         .map(|e| crate::support::planar_seat(model, solid, e, tol).is_ok())
@@ -177,7 +177,7 @@ fn build(
     for (k, edge) in chain.iter().enumerate() {
         if let Ok(mut seat) = crate::support::planar_seat(model, solid, edge, tol) {
             let mut law = laws[k].scaled_by(1.0, edge.orientation() == Orientation::Reversed);
-            let tangent = crate::junction::tangent_junctions(chain, &mates, tol);
+            let tangent = crate::engine::junction::tangent_junctions(chain, &mates, tol);
             let sharp = |p: Point| {
                 (0..chain.len()).any(|j| j != k && mates[j].ends.iter().any(|(q, _)| near(p, *q)))
                     && !tangent.iter().any(|t| t.pair.contains(&k) && near(t.at, p))
@@ -216,7 +216,7 @@ fn build(
     // tools so their overlapping cuts take the union of the removals.
     let mut groups: Vec<usize> = (0..chain.len()).collect();
     let gap = crate::marched::band_fit_target(tol) * 2.0;
-    let tangent = crate::junction::tangent_junctions(chain, &mates, tol);
+    let tangent = crate::engine::junction::tangent_junctions(chain, &mates, tol);
     let mut sharp = Vec::new();
     for i in 0..chain.len() {
         for j in i + 1..chain.len() {
@@ -239,7 +239,7 @@ fn build(
             continue;
         }
         if i == j {
-            let joined = crate::junction::joined(
+            let joined = crate::engine::junction::joined(
                 model,
                 [&tools[i].solid, &tools[i].solid],
                 joint.flush,
@@ -249,7 +249,7 @@ fn build(
             )?;
             tools[i].solid = joined.0;
         } else {
-            let joined = crate::junction::joined(
+            let joined = crate::engine::junction::joined(
                 model,
                 [&tools[i].solid, &tools[j].solid],
                 joint.flush,

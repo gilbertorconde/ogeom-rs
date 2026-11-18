@@ -2087,7 +2087,7 @@ pub(crate) fn ball_fits(
     carry: bool,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Contact>> {
-    if let Some(contacts) = crate::ruled::contacts(model, solid, edge, radius, tol)? {
+    if let Some(contacts) = crate::engine::ruled_seat::contacts(model, solid, edge, radius, tol)? {
         return Ok(contacts);
     }
     ball_fits_by(
@@ -2448,16 +2448,16 @@ fn carried_contacts(
         radius,
         convex,
     } = station;
-    if crate::rolled::flat(model, face, tol)?.is_none() {
+    if crate::engine::rolled::flat(model, face, tol)?.is_none() {
         return Ok(None);
     }
     // The first side of the face the step from the edge crosses.
-    let (e1, e2) = crate::rolled::basis(n_face);
+    let (e1, e2) = crate::engine::rolled::basis(n_face);
     let flat2 = |v: Vector| (v.dot(e1), v.dot(e2));
     let (dx, dy) = flat2(step);
     let mut first: Option<(f64, Shape)> = None;
     for side in ogeom_topo::explore_unique(model, face, ShapeType::Edge)? {
-        let Some([a, b]) = crate::consumed::segment(model, &side, tol)? else {
+        let Some([a, b]) = crate::engine::consumed_seat::segment(model, &side, tol)? else {
             return Ok(None);
         };
         let ((ax, ay), (bx, by)) = (flat2(a - p), flat2(b - p));
@@ -2503,7 +2503,7 @@ fn carried_contacts(
     if !convex {
         return Ok(Some(carried));
     }
-    let Some(flat) = crate::rolled::flat(model, across, tol)? else {
+    let Some(flat) = crate::engine::rolled::flat(model, across, tol)? else {
         return Ok(None);
     };
     // The ball's arc in the plane square to the edge, from the run-off
@@ -2539,7 +2539,7 @@ fn carried_contacts(
         return Ok(None);
     };
     let c = centre + (n_face * theta.cos() + towards * theta.sin()) * radius;
-    if crate::rolled::face_distance(&flat, c) > conf {
+    if crate::engine::rolled::face_distance(&flat, c) > conf {
         return Ok(None);
     }
     carried.push(contact(across, c));

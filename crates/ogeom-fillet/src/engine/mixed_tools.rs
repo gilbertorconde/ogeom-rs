@@ -315,7 +315,7 @@ struct Corners {
     /// Each corner: its vertex, frame, setbacks and band ends.
     corners: Vec<(
         Shape,
-        crate::corner::CornerFrame,
+        crate::engine::vertex_read::CornerFrame,
         Vec<f64>,
         Vec<crate::setback::CornerEnd>,
     )>,
@@ -415,7 +415,9 @@ fn read_corners(
             })
             .fold(0.0, f64::max)
             .max(tol.confusion() * 10.0);
-        let Ok(frame) = crate::corner::corner_frame(model, solid, &vertex, largest, tol) else {
+        let Ok(frame) =
+            crate::engine::vertex_read::corner_frame(model, solid, &vertex, largest, tol)
+        else {
             ogeom_bail!(
                 Construction,
                 "an asymmetric round meets other blended edges at a vertex that is not a \
