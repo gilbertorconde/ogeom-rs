@@ -421,3 +421,115 @@ fn outside_bracket(m: &Model, shape: &Shape, r: f64) -> f64 {
     }
     worst
 }
+
+/// What the bracket and its concave round hold near (5, 0, 5), as the
+/// region the engine proves a corner patch within: the front face's half
+/// space, met with the base's top joined to the upright's front (the
+/// re-entrant edge is concave), joined with the concave round's fill there
+/// between its two faces, off its ball (the cylinder of radius `r` about
+/// (5 + r, y, 5 + r)), short of the chord between the ball's contacts and
+/// along the edge from the vertex. A convex round only takes material off.
+/// Every piece's height is raised by `shift`: the region shrunk by it.
+fn held_near_corner(r: f64, shift: f64) -> ogeom_algo::HalfSpaces {
+    use ogeom_algo::HalfSpaces::{Any, Below, Every, Revolved};
+    use ogeom_math::Vector;
+    let corner = Point::new(5.0, 0.0, 5.0);
+    let below = |normal: Vector, at: Point| Below {
+        normal,
+        at: at - normal * shift,
+    };
+    let (x, y, z) = (Vector::X, Vector::Y, Vector::Z);
+    let solid = Every(vec![
+        below(-y, corner),
+        Any(vec![below(z, corner), below(x, corner)]),
+    ]);
+    let towards = (x + z) * (1.0 / 2.0_f64.sqrt());
+    let fill = Every(vec![
+        below(-z, corner),
+        below(-x, corner),
+        Revolved {
+            at: Point::new(5.0 + r, 0.0, 5.0 + r),
+            axis: y,
+            radius: r + shift,
+            slope: 0.0,
+            inside: false,
+        },
+        below(towards, Point::new(5.0 + r, 0.0, 5.0)),
+        below(-y, corner),
+    ]);
+    Any(vec![solid, fill])
+}
+
+/// The engine's corner patch at the bracket's signed corner, with and
+/// without the upright's edge rounded, proved within what the solid and its
+/// concave round hold, the proof cross-checked by a fine mesh: both clear
+/// every patch at the bands' fit target; asked to keep the patch a tenth of
+/// that target inside the region (the region shrunk by the target and a
+/// tenth, the proof then held to the target), which its sides on the faces
+/// cannot, the mesh finds a point past it and the proof clears nothing the
+/// mesh does not.
+#[test]
+fn the_signed_corner_s_patch_is_proved_within_what_the_solid_holds_as_a_fine_mesh_finds() {
+    let fit = 2e-4;
+    let r = 2.0;
+    for three in [false, true] {
+        let mut m = Model::new();
+        let l = bracket(&mut m);
+        let [front, inner, upright] = corner_edges(&m, &l);
+        let mut edges = vec![front, inner];
+        if three {
+            edges.push(upright);
+        }
+        let rounded = ogeom_fillet::fillet_edges(&mut m, &l, &edges, r, T)
+            .unwrap()
+            .shape;
+        let patches: Vec<Shape> = explore_unique(&m, &rounded, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .filter(|f| {
+                let data = m.node(f).unwrap().data().as_face().unwrap();
+                matches!(
+                    m.geometry().surface(data.surface),
+                    Some(ogeom_geom::SurfaceGeometry::BSpline(_))
+                ) && ogeom_algo::shape_bounds(&m, f, T)
+                    .unwrap()
+                    .distance_to(Point::new(5.0, 0.0, 5.0))
+                    < 2.0 * r
+            })
+            .collect();
+        assert!(!patches.is_empty(), "three {three}: the corner's patches");
+        let region = held_near_corner(r, 0.0);
+        let shrunk = held_near_corner(r, 1.1 * fit);
+        let fine = ogeom_mesh::Deflection {
+            chord: fit * 0.25,
+            ..ogeom_mesh::Deflection::default()
+        };
+        for patch in &patches {
+            let mesh = ogeom_mesh::triangulate_face(&m, patch, fine, T).unwrap();
+            let sampled = mesh
+                .positions
+                .iter()
+                .map(|p| region.height(*p).0)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let proved = ogeom_algo::certify_face_within(&m, patch, &region, fit, T).unwrap();
+            assert!(
+                sampled <= fit,
+                "three {three}: the mesh finds {sampled} outside"
+            );
+            assert!(
+                proved.is_ok(),
+                "three {three}: the proof refuses {proved:?}"
+            );
+            let strict = -0.1 * fit;
+            let proved = ogeom_algo::certify_face_within(&m, patch, &shrunk, fit, T).unwrap();
+            assert!(
+                sampled > strict,
+                "three {three}: the mesh finds every point well inside"
+            );
+            assert!(
+                proved.is_err(),
+                "three {three}: the proof clears what the mesh does not"
+            );
+        }
+    }
+}

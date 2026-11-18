@@ -6,7 +6,6 @@
 //! `r` about that straight edge. Their intersection gives its height exactly.
 //! The face/edge transitions have the same centre and section on both runs.
 
-use ogeom_algo::Built;
 use ogeom_algo::classify::FaceTrim;
 use ogeom_core::{OgeomError, OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, Curve3d as _, SurfaceGeometry};
@@ -14,14 +13,11 @@ use ogeom_math::{Point, Vector};
 use ogeom_mesh::Deflection;
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
-use crate::march::{BlendStop, MarchedBlend, Sides};
-use crate::marched::{ExactBand, Rail};
 use crate::support::{Contact, edge_curve, revolved_seat};
 
 const STATIONS: u32 = 96;
 
 pub(crate) struct Run {
-    guide: Curve,
     range: (f64, f64),
     switches: [f64; 2],
     origin: Point,
@@ -155,7 +151,6 @@ pub(crate) fn rim_run(
         };
         let switches = [root(range.0, middle)?, root(middle, range.1)?];
         let run = Run {
-            guide: guide.clone(),
             range,
             switches,
             origin: seat.centre,
@@ -217,140 +212,4 @@ pub(crate) fn rim_run(
         return Ok(Some(run));
     }
     Ok(None)
-}
-
-pub(crate) fn build(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    run: &Run,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    let spans = [
-        (run.range.0, run.switches[0]),
-        (run.switches[0], run.switches[1]),
-        (run.switches[1], run.range.1),
-    ];
-    let centre_at = |t| run.station(t)[0];
-    let centre = |t| Ok(centre_at(t));
-    let rolling = crate::between::Rolling {
-        radius: run.radius,
-        stations: spans
-            .iter()
-            .flat_map(|&span| (0..STATIONS).map(move |i| station(span, i)))
-            .chain(std::iter::once(run.range.1))
-            .collect(),
-        centre: &centre,
-        lines: vec![],
-        ends: [run.range.0, run.range.1]
-            .into_iter()
-            .flat_map(|t| {
-                let [_, a, b] = run.station(t);
-                [a, b]
-            })
-            .collect(),
-        lunes: None,
-    };
-    if let Some(at) = crate::between::face_inside_balls(
-        model,
-        solid,
-        [&run.faces[0], &run.faces[1]],
-        &rolling,
-        tol,
-    )? {
-        ogeom_bail!(
-            Construction,
-            "a face at {at:?} stands inside a rolled rim's ball"
-        );
-    }
-    let mut blends = Vec::new();
-    for span in spans {
-        let mut blend = MarchedBlend {
-            spine: vec![],
-            on_first: vec![],
-            on_second: vec![],
-            touch_first: vec![],
-            touch_second: vec![],
-            along: vec![],
-            sides: Sides {
-                first: 1,
-                second: 1,
-            },
-            stopped: BlendStop::RanPastTheGuide,
-        };
-        for i in 0..=STATIONS {
-            let t = station(span, i);
-            let [c, wall, cap] = run.station(t);
-            blend.spine.push(c);
-            blend.touch_first.push(wall);
-            blend.touch_second.push(cap);
-            blend
-                .on_first
-                .push(ogeom_algo::project_on_surface(&run.hosts[0].0, wall, 32, tol)?.parameters);
-            blend
-                .on_second
-                .push(ogeom_algo::project_on_surface(&run.hosts[1].0, cap, 32, tol)?.parameters);
-            blend.along.push(t);
-        }
-        blends.push(blend);
-    }
-    let offs: Vec<Box<dyn Fn(Point) -> f64 + '_>> = spans
-        .iter()
-        .map(|&(lo, hi)| {
-            Box::new(move |p: Point| {
-                let mut best = 0;
-                let mut distance = f64::INFINITY;
-                for i in 0..=STATIONS {
-                    let d = p.distance(centre_at(station((lo, hi), i)));
-                    if d < distance {
-                        distance = d;
-                        best = i;
-                    }
-                }
-                let mut a = station((lo, hi), best.saturating_sub(1));
-                let mut b = station((lo, hi), (best + 1).min(STATIONS));
-                for _ in 0..64 {
-                    let x = a + (b - a) / 3.0;
-                    let y = b - (b - a) / 3.0;
-                    if p.distance(centre_at(x)) < p.distance(centre_at(y)) {
-                        b = y;
-                    } else {
-                        a = x;
-                    }
-                }
-                (p.distance(centre_at(f64::midpoint(a, b))) - run.radius).abs()
-            }) as Box<dyn Fn(Point) -> f64>
-        })
-        .collect();
-    let exact: Vec<_> = offs
-        .iter()
-        .enumerate()
-        .map(|(i, off)| ExactBand {
-            rails: [
-                Rail::Fitted,
-                if i == 1 {
-                    Rail::Line(run.far.0, run.far.1)
-                } else {
-                    Rail::Plane(run.origin, run.up)
-                },
-            ],
-            off: off.as_ref(),
-            strips: &[],
-        })
-        .collect();
-    crate::marched::build_chain_band_at(
-        model,
-        solid,
-        Some(edge),
-        &blends,
-        &exact,
-        &run.guide,
-        [
-            (&run.hosts[0].0, run.hosts[0].1),
-            (&run.hosts[1].0, run.hosts[1].1),
-        ],
-        run.radius,
-        tol.confusion() * 20.0,
-        tol,
-    )
 }

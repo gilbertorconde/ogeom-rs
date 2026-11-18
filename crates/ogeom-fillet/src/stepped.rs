@@ -45,11 +45,10 @@ use crate::carried::trig_max;
 use crate::consumed::{seat_of, segment};
 use crate::rolled::{Flat, basis, enters, face_distance, flat, inside};
 use crate::support::{Seat, edge_curve, same_occurrence};
-use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances};
-use ogeom_geom::{CircleCurve, Curve, Curve3d as _, PlaneSurface, SurfaceGeometry};
-use ogeom_math::{Circle, Direction, Frame, Plane, Point, Vector};
-use ogeom_topo::{Filter, Model, Shape, ShapeType, explore, explore_unique};
+use ogeom_geom::{Curve, Curve3d as _};
+use ogeom_math::{Point, Vector};
+use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
 /// How many equal stretches of the run a curved face's box is read over.
 const STATIONS: usize = 64;
@@ -86,28 +85,6 @@ impl Ends {
     }
 }
 
-/// A stepped run: the ball's section in the plane square to the crease
-/// through its start, the run's ends, and the span of the crease's
-/// parameter the section's lines reach between the end planes.
-pub(crate) struct Stepped {
-    /// The crease's start.
-    crease: Point,
-    /// The touch on `F1` at the crease's start.
-    touch: Point,
-    /// The ball's centre at the crease's start.
-    centre: Point,
-    /// The section's corners on the solid from the contact on the held
-    /// far edge back to the crease, exclusive of both ends' own points:
-    /// the far edges in between, nearest the held edge first.
-    between: Vec<Point>,
-    /// The contact on the held far edge at the crease's start.
-    contact: Point,
-    ends: Ends,
-    /// The least and greatest `s` at which the section's lines and arc
-    /// meet the end planes.
-    span: (f64, f64),
-}
-
 /// The run of a ball of `radius` rounding the concave straight `edge`
 /// while it rests on the far edge of a strip beyond the narrow face beside
 /// it; `None` where the edge is not of that kind or no such ball is in
@@ -127,20 +104,20 @@ pub(crate) fn stepped_run(
     seat: &Seat,
     radius: f64,
     tol: Tolerances,
-) -> OgeomResult<Option<Stepped>> {
+) -> OgeomResult<bool> {
     let conf = tol.confusion();
     if seat.convex {
-        return Ok(None);
+        return Ok(false);
     }
     let (curve, range) = edge_curve(model, edge, tol)?;
     if !matches!(curve, Curve::Line(_)) {
-        return Ok(None);
+        return Ok(false);
     }
     let e0 = curve.point_at(range.0, tol)?;
     let e1 = curve.point_at(range.1, tol)?;
     let length = e0.distance(e1);
     if length <= conf {
-        return Ok(None);
+        return Ok(false);
     }
     let t = (e1 - e0) / length;
 
@@ -164,16 +141,16 @@ pub(crate) fn stepped_run(
                 continue;
             }
             match found {
-                Some(m) if m.cross(plane.normal).magnitude() > tol.angular() => return Ok(None),
+                Some(m) if m.cross(plane.normal).magnitude() > tol.angular() => return Ok(false),
                 _ => found = Some(plane.normal),
             }
         }
         let Some(m) = found else {
-            return Ok(None);
+            return Ok(false);
         };
         let facing = if i == 0 { -m.dot(t) } else { m.dot(t) };
         if facing <= tol.angular() {
-            return Ok(None);
+            return Ok(false);
         }
         planes[i] = (end, m);
     }
@@ -248,7 +225,7 @@ pub(crate) fn stepped_run(
             }
             if far_seat.convex
                 && step >= 1
-                && let Some(run) = held(
+                && held(
                     &flats,
                     &ends,
                     (f1, &f1_flat, n1, into),
@@ -260,7 +237,7 @@ pub(crate) fn stepped_run(
                     tol,
                 )?
             {
-                return Ok(Some(run));
+                return Ok(true);
             }
             corners.push(foot);
             near = far_edge;
@@ -268,7 +245,7 @@ pub(crate) fn stepped_run(
             // Past a concave far edge, the ball may touch the face beyond
             // as well as `F1`: the face the strips run into.
             if !far_seat.convex
-                && let Some(run) = face_held(
+                && face_held(
                     &flats,
                     &ends,
                     (f1, &f1_flat, n1, into),
@@ -280,11 +257,11 @@ pub(crate) fn stepped_run(
                     tol,
                 )?
             {
-                return Ok(Some(run));
+                return Ok(true);
             }
         }
     }
-    Ok(None)
+    Ok(false)
 }
 
 /// The run where the ball touching `F1` rests on the convex far edge
@@ -303,7 +280,7 @@ fn held(
     edge: &Shape,
     radius: f64,
     tol: Tolerances,
-) -> OgeomResult<Option<Stepped>> {
+) -> OgeomResult<bool> {
     let conf = tol.confusion();
     let (e0, t) = (ends.e0, ends.t);
     // In the section through the crease's start: the centre is
@@ -313,7 +290,7 @@ fn held(
     let half = d.dot(b);
     let disc = half * half - (d.dot(d) - radius * radius);
     if disc < 0.0 {
-        return Ok(None);
+        return Ok(false);
     }
     let [na, nb] = far_seat.normals;
     let between = |u: Vector| {
@@ -345,7 +322,7 @@ fn held(
                 continue;
             }
             let Some(side) = segment(model, &g, tol)? else {
-                return Ok(None);
+                return Ok(false);
             };
             if enters(&leg, f1_flat.normal, side, conf) {
                 off_face = true;
@@ -373,17 +350,9 @@ fn held(
         )? {
             continue;
         }
-        return Ok(Some(Stepped {
-            crease: e0,
-            touch,
-            centre,
-            between: corners.iter().rev().copied().collect(),
-            contact: foot,
-            ends: *ends,
-            span,
-        }));
+        return Ok(true);
     }
-    Ok(None)
+    Ok(false)
 }
 
 /// The run where the ball touching `F1` touches the plane face beyond the
@@ -401,11 +370,11 @@ fn face_held(
     edge: &Shape,
     radius: f64,
     tol: Tolerances,
-) -> OgeomResult<Option<Stepped>> {
+) -> OgeomResult<bool> {
     let conf = tol.confusion();
     let beyond = &far_seat.faces[k];
     let Some(beyond_flat) = flat(model, beyond, tol)? else {
-        return Ok(None);
+        return Ok(false);
     };
     let n3 = far_seat.normals[k];
     let (e0, t) = (ends.e0, ends.t);
@@ -414,12 +383,12 @@ fn face_held(
     let b = t.cross(n1);
     let rate = n3.dot(b);
     if rate.abs() <= tol.angular() {
-        return Ok(None);
+        return Ok(false);
     }
     let x = (radius - n3.dot(e0 + n1 * radius - foot)) / rate;
     let centre = e0 + n1 * radius + b * x;
     if (centre - e0).dot(into) <= 0.0 {
-        return Ok(None);
+        return Ok(false);
     }
     let touch = centre - n1 * radius;
     let contact = centre - n3 * radius;
@@ -428,7 +397,7 @@ fn face_held(
     // line of contact.
     let into3 = -far_seat.leg(k, tol)?;
     if (contact - foot).dot(into3) <= conf {
-        return Ok(None);
+        return Ok(false);
     }
     let far_edge = {
         let mut found = None;
@@ -456,10 +425,10 @@ fn face_held(
                 continue;
             }
             let Some(side) = segment(model, &g, tol)? else {
-                return Ok(None);
+                return Ok(false);
             };
             if enters(&leg, plane.normal, side, conf) {
-                return Ok(None);
+                return Ok(false);
             }
         }
     }
@@ -467,10 +436,10 @@ fn face_held(
     normals.extend(strips.iter().rev().map(|n| Some(*n)));
     let section = ring(e0, touch, contact, corners);
     if !fills_outside(&section, &normals, t, tol) {
-        return Ok(None);
+        return Ok(false);
     }
     let span = run_span(ends, &section, centre, radius);
-    if !clear(
+    clear(
         model,
         flats,
         (ends, centre, span),
@@ -478,18 +447,7 @@ fn face_held(
         (contact, n3 * radius),
         radius,
         tol,
-    )? {
-        return Ok(None);
-    }
-    Ok(Some(Stepped {
-        crease: e0,
-        touch,
-        centre,
-        between: corners.iter().rev().copied().collect(),
-        contact,
-        ends: *ends,
-        span,
-    }))
+    )
 }
 
 /// The section's ring at the crease's start: the crease, the touch on
@@ -735,105 +693,4 @@ fn arc_frame(
     } else {
         (-angle, x, -y)
     }
-}
-
-/// Round `edge` with the stepped run's fill: the prism of its section,
-/// fused on.
-///
-/// # Errors
-///
-/// As the boolean that fuses it on reports.
-pub(crate) fn stepped_band(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    run: &Stepped,
-    radius: f64,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    let along = run.ends.t;
-    // The section where the run starts: the plane square to the crease at
-    // the least `s` its lines reach, so the prism covers both end planes.
-    let lift = along * run.span.0;
-    let mut ring: Vec<Point> = vec![run.crease, run.touch, run.contact];
-    ring.extend(run.between.iter().copied());
-    let ring: Vec<Point> = ring.into_iter().map(|p| p + lift).collect();
-    let (crease, touch, contact, centre) = (ring[0], ring[1], ring[2], run.centre + lift);
-    let vertices: Vec<Shape> = ring
-        .iter()
-        .map(|p| ogeom_algo::make_vertex(model, *p).shape)
-        .collect();
-    let line = |model: &mut Model, i: usize, j: usize| -> OgeomResult<Shape> {
-        crate::support::segment_between(
-            model,
-            (&vertices[i], ring[i]),
-            (&vertices[j], ring[j]),
-            tol,
-        )
-    };
-    // The ball's arc from the touch to the contact, the short way round,
-    // which faces the crease.
-    let x_dir = (touch - centre) / radius;
-    let y_dir = along.cross(x_dir);
-    let to = contact - centre;
-    let angle = to.dot(y_dir).atan2(to.dot(x_dir));
-    let normal = if angle >= 0.0 { along } else { -along };
-    let frame = Frame::new(
-        centre,
-        Direction::new(normal, tol)?,
-        Direction::new(x_dir, tol)?,
-        tol,
-    )?;
-    let circle: Curve = CircleCurve::new(Circle::new(frame, radius, tol)?).into();
-    let arc = ogeom_algo::make_edge_between(
-        model,
-        circle,
-        (0.0, angle.abs()),
-        &vertices[1],
-        &vertices[2],
-        tol,
-    )?
-    .shape;
-    let mut edges = vec![line(model, 0, 1)?, arc];
-    for i in 2..ring.len() {
-        edges.push(line(model, i, (i + 1) % ring.len())?);
-    }
-    // Wound counter-clockwise about the section plane's normal.
-    let turn = (0..ring.len()).fold(Vector::ZERO, |sum, i| {
-        let (p, q) = (ring[i], ring[(i + 1) % ring.len()]);
-        sum + (p - ring[0]).cross(q - ring[0])
-    });
-    let normal = if turn.dot(along) >= 0.0 {
-        along
-    } else {
-        -along
-    };
-    let reach = ring.iter().fold(radius, |m, p| m.max(p.distance(crease))) * 4.0;
-    let plane: SurfaceGeometry = PlaneSurface::over(
-        Plane::through(crease, Direction::new(normal, tol)?),
-        (-reach, reach),
-        (-reach, reach),
-    )?
-    .into();
-    let loop_edges = if turn.dot(along) >= 0.0 {
-        edges
-    } else {
-        edges.iter().rev().map(Shape::reversed).collect()
-    };
-    let section = ogeom_algo::make_face_with_pcurves(model, plane, &[loop_edges], tol)?.shape;
-    let travel = along * (run.span.1 - run.span.0);
-    let wedge = ogeom_algo::make_prism(model, &section, travel, tol)?.shape;
-    let mut wedge = explore(model, &wedge, Filter::OfType(ShapeType::Solid))?
-        .into_iter()
-        .next()
-        .unwrap_or(wedge);
-    // On slanted ends the prism runs past them; what lies beyond each end
-    // plane goes.
-    if !run.ends.square {
-        let span = (run.span.1 - run.span.0) + reach;
-        for (origin, outward) in run.ends.planes {
-            wedge = crate::support::trimmed_wedge(model, &wedge, (origin, -outward), span, tol)?;
-        }
-    }
-    crate::support::apply_wedge_solid(model, solid, Some(edge), &wedge, true, tol)
 }

@@ -20,12 +20,12 @@
 //! overhanging its corner, the wedge cut or fused) is the circular round's
 //! own, with the section's corners and middle standing for the ball's.
 
-use crate::support::{Seat, face_from_edges, planar_face, segment_between};
-use ogeom_algo::{Built, make_edge_between, make_vertex};
+use crate::support::Seat;
+use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
-use ogeom_geom::{BSplineCurve, Curve, ExtrusionSurface, PlaneSurface};
+use ogeom_geom::{BSplineCurve, Curve};
 use ogeom_math::bspline::Weighted;
-use ogeom_math::{Direction, KnotVector, Plane, Point, Vector};
+use ogeom_math::{Direction, KnotVector, Point, Vector};
 use ogeom_topo::{Model, Shape};
 
 /// The shape of an asymmetric round's section, between its two contacts.
@@ -133,135 +133,6 @@ impl Section {
 pub(crate) fn legs(seat: &Seat, tol: Tolerances) -> OgeomResult<[Vector; 2]> {
     let sign = if seat.convex { 1.0 } else { -1.0 };
     Ok([seat.leg(0, tol)? * sign, seat.leg(1, tol)? * sign])
-}
-
-/// The conic band of a straight seat: the wedge between the faces' legs
-/// and the swept arc, cut from the solid on a convex crease and fused on a
-/// concave one, trimmed first by each of `trims` as the circular round's.
-pub(crate) fn seated_conic(
-    model: &mut Model,
-    solid: &Shape,
-    seat: &Seat,
-    section: Section,
-    edge: Option<&Shape>,
-    trims: &[(Point, Vector)],
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    let Section::Conic { d, w } = section else {
-        ogeom_bail!(Construction, "a conic band asked of a ball's section");
-    };
-    // The faces in the order that turns positively about the crease, as
-    // the circular round orders them, so the arc and the extrusion's chart
-    // run from the first face's contact to the second's.
-    let (first, second) = if seat
-        .along
-        .dot(seat.normals[0].cross(seat.normals[1]))
-        .is_sign_positive()
-    {
-        (0, 1)
-    } else {
-        (1, 0)
-    };
-    let n1 = seat.normals[first];
-    let n2 = seat.normals[second];
-    let sweep = seat.along.dot(n1.cross(n2)).atan2(n1.dot(n2));
-    if sweep <= tol.angular() {
-        ogeom_bail!(Construction, "the faces are parallel; there is no corner");
-    }
-    let sign = if seat.convex { 1.0 } else { -1.0 };
-    let f = legs(seat, tol)?;
-    let (fa, fb) = (f[first], f[second]);
-    let (da, db) = (d[first], d[second]);
-
-    let travel = seat.end - seat.start;
-    let length = travel.magnitude();
-    let apex0 = seat.start;
-    let apex1 = seat.end;
-    let contact_a0 = apex0 + fa * da;
-    let contact_b0 = apex0 + fb * db;
-    let contact_a1 = contact_a0 + travel;
-    let contact_b1 = contact_b0 + travel;
-    let along_dir = Direction::new(seat.along, tol)?;
-
-    // The section's arc at height `h` along the crease, from the first
-    // face's contact to the second's.
-    let arc_curve = |h: f64| -> OgeomResult<Curve> {
-        let lift = seat.along * h;
-        conic_arc([contact_a0 + lift, apex0 + lift, contact_b0 + lift], w, tol)
-    };
-    let arc = |model: &mut Model, h: f64, from: &Shape, to: &Shape| -> OgeomResult<Shape> {
-        Ok(make_edge_between(model, arc_curve(h)?, (0.0, 1.0), from, to, tol)?.shape)
-    };
-
-    // The legs, in the solid's own faces' planes.
-    let leg_a = planar_face(
-        model,
-        &[apex0, contact_a0, contact_a1, apex1],
-        n1 * sign,
-        tol,
-    )?;
-    let leg_b = planar_face(
-        model,
-        &[apex0, contact_b0, contact_b1, apex1],
-        n2 * sign,
-        tol,
-    )?;
-
-    let reach = da.max(db);
-    let cap = |model: &mut Model,
-               apex: Point,
-               ca: Point,
-               cb: Point,
-               h: f64,
-               outward: Vector|
-     -> OgeomResult<Shape> {
-        let plane = Plane::through(apex, Direction::new(outward, tol)?);
-        let span = (apex.distance(ca).max(apex.distance(cb)) + reach).max(1.0) * 2.0;
-        let surface = PlaneSurface::over(plane, (-span, span), (-span, span))?;
-        let apex_v = make_vertex(model, apex).shape;
-        let ca_v = make_vertex(model, ca).shape;
-        let cb_v = make_vertex(model, cb).shape;
-        let edges = vec![
-            segment_between(model, (&apex_v, apex), (&ca_v, ca), tol)?,
-            arc(model, h, &ca_v, &cb_v)?,
-            segment_between(model, (&cb_v, cb), (&apex_v, apex), tol)?,
-        ];
-        let edges: Vec<Shape> = if (ca - apex).cross(cb - apex).dot(outward) < 0.0 {
-            edges.iter().rev().map(Shape::reversed).collect()
-        } else {
-            edges
-        };
-        face_from_edges(model, surface.into(), &edges, tol)
-    };
-    let cap0 = cap(model, apex0, contact_a0, contact_b0, 0.0, -seat.along)?;
-    let cap1 = cap(model, apex1, contact_a1, contact_b1, length, seat.along)?;
-
-    // The band: the arc swept along the crease. Its chart's normal, the
-    // arc's tangent across the sweep, faces the crease as a cylinder's
-    // faces away from its axis, so the face enters the wedge reversed as
-    // the circular round's does.
-    let band = {
-        let surface = ExtrusionSurface::new(arc_curve(0.0)?, along_dir, length)?;
-        let a0_v = make_vertex(model, contact_a0).shape;
-        let b0_v = make_vertex(model, contact_b0).shape;
-        let a1_v = make_vertex(model, contact_a1).shape;
-        let b1_v = make_vertex(model, contact_b1).shape;
-        let edges = vec![
-            arc(model, 0.0, &a0_v, &b0_v)?,
-            segment_between(model, (&b0_v, contact_b0), (&b1_v, contact_b1), tol)?,
-            arc(model, length, &a1_v, &b1_v)?.reversed(),
-            segment_between(model, (&a0_v, contact_a0), (&a1_v, contact_a1), tol)?.reversed(),
-        ];
-        face_from_edges(model, surface.into(), &edges, tol)?
-    };
-
-    let faces = [leg_a, leg_b, cap0, cap1, band.reversed()];
-    let mut wedge = crate::support::wedge_solid(model, &faces, false, tol)?;
-    let span = length + (reach * 2.0) * 4.0;
-    for &plane in trims {
-        wedge = crate::support::trimmed_wedge(model, &wedge, plane, span, tol)?;
-    }
-    crate::support::apply_wedge_solid(model, solid, edge, &wedge, !seat.convex, tol)
 }
 
 /// How far from 1 a piece of a conic arc's weight may stand before the arc
@@ -443,89 +314,7 @@ pub fn fillet_edge_distances(
     {
         return Ok(built);
     }
-    #[cfg(feature = "old-path-log")]
-    let _old_path_entry = crate::fillet::to_current_path("fillet_edge_distances");
-    ogeom_algo::on_own_nodes(
-        model,
-        solid,
-        &[edge.clone(), face.clone()],
-        |model, solid, parts| {
-            fillet_edge_distances_own(
-                model, solid, &parts[0], &parts[1], on_face, on_other, profile, tol,
-            )
-        },
-    )
-}
-
-/// [`fillet_edge_distances`] on a shape every node below which is its own.
-#[allow(clippy::too_many_arguments, reason = "fillet_edge_distances' own")]
-fn fillet_edge_distances_own(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    face: &Shape,
-    on_face: f64,
-    on_other: f64,
-    profile: RoundProfile,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_entry = crate::fillet::to_current_path("round:fillet_edge_distances_own");
-    if let Some(rim) = rim_conic(model, solid, edge, face, on_face, on_other, profile, tol)? {
-        let mut built = if rim.whole {
-            rim_round(model, solid, edge, &rim, tol)?
-        } else {
-            rim_fits(model, solid, edge, &rim, tol)?;
-            let size = rim.size();
-            crate::rim_arc::revolved_arc_fillet(
-                model,
-                solid,
-                edge,
-                &rim.circle,
-                size,
-                Some(&rim),
-                None,
-                None,
-                tol,
-            )?
-        };
-        crate::support::credit_new_faces(model, solid, edge, &mut built)?;
-        return Ok(built);
-    }
-    if !straight_between_planes(model, solid, edge, tol)? {
-        // Any other crease: the marched band through the conic sections,
-        // each leg walked along its face's section.
-        let weight = match profile {
-            RoundProfile::Elliptical => crate::marched::ConicWeight::Elliptical,
-            RoundProfile::Conic(_) => crate::marched::ConicWeight::Fixed(profile.weight(0.0)?),
-        };
-        let spec = crate::Chamfer::Distances {
-            face: face.clone(),
-            on_face,
-            on_other,
-        };
-        return crate::chamfer_marched::marched_bevel_with(
-            model,
-            solid,
-            edge,
-            &spec,
-            &[],
-            crate::marched::Chord::Conic(weight),
-            tol,
-        );
-    }
-    let Some(section) =
-        straight_section(model, solid, edge, face, on_face, on_other, profile, tol)?
-    else {
-        ogeom_bail!(
-            Construction,
-            "the circular round asked as an asymmetric one"
-        );
-    };
-    contacts_fit(model, solid, edge, section, tol)?;
-    let mut built = crate::fillet::planar_fillet(model, solid, edge, section, None, tol)?;
-    crate::support::credit_new_faces(model, solid, edge, &mut built)?;
-    Ok(built)
+    Err(crate::fillet::declined())
 }
 
 /// The conic section of a straight edge between planes asked as `face`,
@@ -937,47 +726,6 @@ pub(crate) fn rim_conic(
         points,
         w,
     }))
-}
-
-/// The rim's band: the section revolved a whole turn about the axis,
-/// exact, between the wall's band and the cap's annulus down to its
-/// contacts, cut from the solid at a convex rim and fused at a concave one.
-fn rim_round(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    rim: &RimConic,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    use ogeom_geom::{Curve3d as _, Surface as _};
-    let seat = &rim.seat;
-    rim_fits(model, solid, edge, rim, tol)?;
-    let flanks = crate::support::revolved_flanks(model, seat, rim.wall_depth, rim.cap_rho, tol)?;
-    let profile = conic_arc(rim.points, rim.w, tol)?;
-    let middle = profile.point_at(0.5, tol)?;
-    let axis = ogeom_math::Axis {
-        location: seat.centre,
-        direction: Direction::new(seat.up, tol)?,
-    };
-    let surface: ogeom_geom::SurfaceGeometry =
-        ogeom_geom::RevolutionSurface::new(profile, axis, core::f64::consts::TAU)?.into();
-    let band = ogeom_algo::make_profile_revolution_band(
-        model,
-        &surface,
-        &flanks.wall_ring,
-        &flanks.cap_ring,
-        tol,
-    )?;
-    // The wedge's material lies between the section and the rim: the band
-    // faces away from the rim.
-    let (du, dv) = surface.d1_at(0.0, 0.5, tol)?;
-    let band = if du.cross(dv).dot(middle - rim.points[1]) < 0.0 {
-        band.reversed()
-    } else {
-        band
-    };
-    let faces = [flanks.wall_band, flanks.annulus, band];
-    crate::support::apply_wedge(model, solid, Some(edge), &faces, seat.additive(), tol)
 }
 
 /// Whether `edge` is straight between two planes.
