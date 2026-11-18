@@ -32,8 +32,6 @@ pub fn round_vertex(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("round_vertex");
     ogeom_algo::on_own_nodes(
         model,
         solid,

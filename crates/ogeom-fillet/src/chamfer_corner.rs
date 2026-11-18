@@ -49,8 +49,6 @@ pub fn chamfer_edges_cornered(
     corner: ChamferCorner,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("chamfer_edges_cornered");
     if specs.is_empty() {
         ogeom_bail!(Construction, "a chain of no edges bevels nothing");
     }

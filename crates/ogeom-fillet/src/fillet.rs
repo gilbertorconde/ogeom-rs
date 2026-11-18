@@ -81,8 +81,6 @@ pub fn fillet_edge(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("fillet_edge");
     if !radius.is_finite() || radius <= tol.confusion() {
         ogeom_bail!(Construction, "a fillet of radius {radius} rounds nothing");
     }
@@ -190,9 +188,6 @@ fn refused_alone(
         _ => Ok(()),
     }
 }
-
-#[cfg(feature = "old-path-log")]
-pub(crate) use crate::old_path::entry as to_current_path;
 
 /// An edge of a multi-edge request, by its ends: where each end stands and
 /// which way the edge leaves it, so a later edge can tell a chain mate from
@@ -410,8 +405,6 @@ pub fn fillet_edges(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("fillet_edges");
     if edges.is_empty() {
         ogeom_bail!(Construction, "a chain of no edges rounds nothing");
     }
@@ -477,8 +470,6 @@ pub fn fillet_edges_corner(
     corner: FilletCorner,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("fillet_edges_corner");
     match corner {
         FilletCorner::Setback => fillet_edges(model, solid, edges, radius, tol),
         FilletCorner::Rolling => crate::engine::rolling_rounds(model, solid, edges, radius, tol),
@@ -516,8 +507,6 @@ pub fn fillet_edges_with(
     edges: &[(Shape, f64)],
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("fillet_edges_with");
     if edges.is_empty() {
         ogeom_bail!(Construction, "a chain of no edges rounds nothing");
     }
@@ -1228,8 +1217,6 @@ pub fn fillet_edge_variable(
     end_radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("fillet_edge_variable");
     ogeom_algo::on_own_nodes(
         model,
         solid,
@@ -1354,8 +1341,6 @@ pub fn fillet_edges_variable(
     law: &RadiusLaw,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("fillet_edges_variable");
     if chain.is_empty() {
         ogeom_bail!(
             Construction,

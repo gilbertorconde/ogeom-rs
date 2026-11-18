@@ -112,8 +112,6 @@ pub fn fillet_sheet_edges(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("fillet_sheet_edges");
     usable_radius(radius, tol)?;
     if edges.is_empty() {
         ogeom_bail!(Construction, "no edges were named to round");
@@ -266,8 +264,6 @@ pub fn fillet_faces(
     trim: bool,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("fillet_faces");
     usable_radius(radius, tol)?;
     let mut planar = true;
     for (name, face) in [("first", a), ("second", b)] {
