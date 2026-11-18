@@ -2,7 +2,7 @@
 //! of points onto another, onto a mesh, or a part onto its own mirror image.
 //!
 //! - [`absolute_orientation`] is the closed form for paired points.
-//! - [`icp`] registers points onto a mesh through its [`Bvh`], pairing each
+//! - [`icp`](fn@icp) registers points onto a mesh through its [`Bvh`], pairing each
 //!   point with its nearest point on the mesh and solving again until the
 //!   pairs stop moving.
 //! - [`symmetry_plane`] finds the plane a part is the mirror image of
@@ -68,7 +68,7 @@ use crate::Cutoff;
 pub use icp::icp;
 pub use symmetry::symmetry_plane;
 
-/// Where [`icp`] starts from.
+/// Where [`icp`](fn@icp) starts from.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum Starts {
     /// The points as they are.
@@ -89,7 +89,7 @@ pub enum Starts {
     Given(Vec<Transform>),
 }
 
-/// How [`icp`] and [`symmetry_plane`] register.
+/// How [`icp`](fn@icp) and [`symmetry_plane`] register.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Icp {
     /// Whether a step minimises the distances to the planes through the
@@ -181,7 +181,7 @@ fn is_rigid(t: &Transform) -> bool {
     t.scale_factor() == 1.0 && t.preserves_handedness()
 }
 
-/// What [`icp`] found.
+/// What [`icp`](fn@icp) found.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Registration {
     /// The rigid transform carrying the points onto the mesh.

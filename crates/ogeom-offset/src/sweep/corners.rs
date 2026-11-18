@@ -15,7 +15,7 @@
 //!   rational form, and the later takes the earlier's end loop mirrored;
 //!   where the fuse of the trimmed runs cannot reconcile their cuts of the
 //!   plane, the runs are glued on it instead, the plane's faces built from
-//!   both cuts (see [`meeting`](super::meeting));
+//!   both cuts (see [`meeting`]);
 //! - extended, each run is run on straight past the corner until its
 //!   section clears the other run's far side;
 //! - round, the half of the section outside the corner is turned about the

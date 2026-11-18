@@ -1,7 +1,7 @@
 //! Pipe shells whose section scales and twists along the spine.
 //!
 //! The section is the profile placed in the law's frame at each point of
-//! the spine, as for [`make_pipe_shell_with`](super::make_pipe_shell_with),
+//! the spine, as for [`make_pipe_shell_with`],
 //! and before that scaled about the spine and turned about it, each by its
 //! own law of the share of the spine's length run there: linear, a
 //! monotone cubic through given values, or a function the caller gives.

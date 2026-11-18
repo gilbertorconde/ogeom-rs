@@ -342,7 +342,7 @@ impl Readings {
 }
 
 /// Note every pair of consecutive edges that runs out and back along one
-/// path ([`out_and_back`](crate::out_and_back)): the face's region is the
+/// path ([`out_and_back`](fn@crate::out_and_back)): the face's region is the
 /// same without that stretch of its boundary, but its tip is a vertex that
 /// bounds no corner, which every boolean through the face meets as a
 /// strand and a mesher has to strip.

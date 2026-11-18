@@ -19,9 +19,9 @@
 //! The sheet is thickened by the offset to each side with
 //! [`thicken`](ogeom_mesh::thicken()), which refuses layers that run into
 //! each other, built into a solid with
-//! [`solid_from_mesh`](ogeom_algo::solid_from_mesh) and cut from the shape.
+//! [`solid_from_mesh`] and cut from the shape.
 //! The offset layers' rim vertices stand within
-//! [`OFFSET_FARTHEST`](ogeom_mesh::OFFSET_FARTHEST) times the offset of the
+//! [`OFFSET_FARTHEST`] times the offset of the
 //! rectangle, which stands off the shape's box by the box's diagonal and
 //! that reach, so the slab's walls meet nothing of the shape: the shape's
 //! faces are cut only by the break and its extension, and each face the
@@ -73,7 +73,7 @@ use spade::{ConstrainedDelaunayTriangulation, Triangulation as _};
 /// away from that normal, its rims cross or touch seen along it, or the
 /// region does not separate the shape (no piece lies on one side of it,
 /// the side kept included); and as [`thicken`](ogeom_mesh::thicken()),
-/// [`solid_from_mesh`](ogeom_algo::solid_from_mesh) and [`cut`](crate::cut)
+/// [`solid_from_mesh`] and [`cut`](crate::cut)
 /// fail.
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if the
 /// thickened sheet does not build into one closed solid.

@@ -60,7 +60,7 @@ impl Bins {
         self.near_into(p, radius, &mut out).then_some(out)
     }
 
-    /// [`Bins::near`] into `out`, cleared first, for a caller asking many
+    /// `Bins::near` into `out`, cleared first, for a caller asking many
     /// times: `false` where the grid cannot answer.
     pub(crate) fn near_into(&self, p: Point, radius: f64, out: &mut Vec<usize>) -> bool {
         out.clear();
