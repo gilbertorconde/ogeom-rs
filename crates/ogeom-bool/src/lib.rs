@@ -17609,7 +17609,7 @@ fn past_a_pole(
 ///
 /// Either argument may instead be a face, a shell or a compound of faces
 /// with no solid behind it, when the other is a half space bounded by a
-/// plane: the section is then [`section_face`]'s, the curves where its
+/// plane: the section is then [`section_face`](fn@section_face)'s, the curves where its
 /// faces cross the plane.
 ///
 /// # Errors

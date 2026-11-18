@@ -3,7 +3,7 @@
 //!
 //! Two mends, each for a face whose boundary crosses itself exactly once,
 //! within one wire, in one copy of the chart
-//! ([`chart_crossings`](ogeom_algo::chart_crossings)):
+//! ([`chart_crossings`]):
 //!
 //! - Two consecutive edges that cross just short of the vertex they meet
 //!   at enclose a loop from the crossing to the vertex and back, wound

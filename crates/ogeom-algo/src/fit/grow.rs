@@ -463,14 +463,14 @@ const NONE: u32 = u32::MAX;
 ///
 /// # Errors
 ///
-/// [`OgeomError::Domain`](ogeom_core::OgeomError::Domain) with no seeds, a
+/// [`OgeomError::Domain`] with no seeds, a
 /// seed that is not finite, a normal limit or a crease limit out of range,
 /// a cutoff whose number is not positive, peeling with [`Cutoff::All`] or
 /// for a curve, a triangle cap of zero, or a triangle naming a vertex the
 /// mesh lacks;
-/// [`OgeomError::Dimension`](ogeom_core::OgeomError::Dimension) where the
+/// [`OgeomError::Dimension`] where the
 /// hierarchy holds a different number of triangles from the mesh;
-/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
+/// [`OgeomError::Construction`] where
 /// the mesh has no triangle to be near a seed, or for a curve where no
 /// crease within reach of the first seed holds twice the vertices the kind
 /// needs and turns past the limit by more than the noise, or none about a

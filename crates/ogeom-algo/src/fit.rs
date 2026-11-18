@@ -51,7 +51,7 @@
 //! # Regions
 //!
 //! On a mesh, which points belong to the surface is itself the question:
-//! [`grow`] takes clicks on a surface, grows the region of the mesh a kind
+//! [`grow`](fn@grow) takes clicks on a surface, grows the region of the mesh a kind
 //! of surface covers around them, and fits it. For a circle or a line it
 //! traces the crease nearest the click instead, along edges where the
 //! surface turns sharply: a bore's rim, a box's edge.

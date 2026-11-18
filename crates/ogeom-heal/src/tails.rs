@@ -1,6 +1,6 @@
 //! Tails and notches stripped from wires: a boundary that runs out along
 //! an edge and straight back along the same path
-//! ([`out_and_back`](ogeom_algo::out_and_back) says which pairs of edges
+//! ([`out_and_back`](mod@ogeom_algo::out_and_back) says which pairs of edges
 //! do, and why each bounds nothing).
 //!
 //! A tail runs out and back whole: the pair goes. Pairs collapse as they

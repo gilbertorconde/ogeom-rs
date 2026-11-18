@@ -3970,7 +3970,7 @@ enum Upto {
     Crossing,
 }
 
-/// [`triangulate_region`], stopping where `upto` says.
+/// `triangulate_region`, stopping where `upto` says.
 fn region_mesh(
     rings: &[Vec<Point2>],
     surface: &SurfaceGeometry,

@@ -43,7 +43,7 @@ pub struct ScatteredOptions {
     /// The most knot spans refinement may reach, `u` then `v`.
     pub most: (usize, usize),
     /// The thin-plate fairing weight, as in
-    /// [`fit_surface_scattered_at`](super::fit_surface_scattered_at), over
+    /// [`fit_surface_scattered_at`], over
     /// the unit square the fit's parameters run over.
     ///
     /// The energy pulls the fit towards a plane in those parameters, so it
@@ -141,7 +141,7 @@ impl Round {
 /// where longitude still tells points apart.
 ///
 /// The net is fitted at those parameters by
-/// [`fit_surface_scattered_at`](super::fit_surface_scattered_at), faired as
+/// [`fit_surface_scattered_at`], faired as
 /// it fairs. Every distance reported is from a point to its nearest point
 /// on the fit, found from its parameters.
 ///
@@ -167,13 +167,13 @@ impl Round {
 ///
 /// # Errors
 ///
-/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+/// [`OgeomError::Construction`] if
 /// there are fewer than eight points, a point is not finite, the degree is
 /// nought, a span count is nought or its bound below it, the fairing is not
 /// finite and non-negative, the tolerance is not a distance, a point has no
 /// nearest point on the seed (on a cylinder's axis, at a sphere's centre),
 /// or the points' parameters do not spread over both directions;
-/// [`OgeomError::Numeric`](ogeom_core::OgeomError::Numeric) if the whole
+/// [`OgeomError::Numeric`] if the whole
 /// cloud cannot settle the net (raise the fairing).
 pub fn fit_surface_scattered_over(
     points: &[Point],
