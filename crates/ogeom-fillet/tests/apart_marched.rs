@@ -189,3 +189,47 @@ fn a_bore_rim_a_box_edge_and_a_bore_seam_round_as_each_alone() {
         "took off {got}, the ring, the prism and the seam's round alone {want}"
     );
 }
+
+/// A rim of the `x` bore, a box edge and the piece of the bores' seam
+/// that ends on the line the `x` bore's wall is split along. The rim's
+/// round trims that line back; the line kept on the bore's wall, the
+/// seam's round and the rim's stand apart. The rim rounds whole, the ring
+/// Pappus gives about the `x` bore's axis.
+#[test]
+fn an_x_bore_rim_a_box_edge_and_a_seam_on_its_split_line_round_as_each_alone() {
+    let mut m = Model::new();
+    let solid = cross_bores(&mut m);
+    let r = 1.791_896_645_077_57;
+    let rim = edge(
+        &m,
+        &solid,
+        Point::new(20.0, 10.0, 14.0),
+        Point::new(20.0, 14.0, 10.0),
+        Point::new(20.0, 7.171_573, 7.171_573),
+    );
+    let top = edge(
+        &m,
+        &solid,
+        Point::new(0.0, 0.0, 20.0),
+        Point::new(20.0, 0.0, 20.0),
+        Point::new(10.0, 0.0, 20.0),
+    );
+    let seam = edge(
+        &m,
+        &solid,
+        Point::new(7.162_783, 13.866_384, 11.025_218),
+        Point::new(12.236_068, 14.0, 10.0),
+        Point::new(10.495_290, 6.116_619, 9.041_167),
+    );
+    let before = volume(&m, &solid);
+    let seam_alone = before - rounded(&mut m.clone(), &solid, core::slice::from_ref(&seam), r);
+    let got = before - rounded(&mut m, &solid, &[rim, top, seam], r);
+    let pi = core::f64::consts::PI;
+    let centroid = 4.0 + r * (10.0 - 3.0 * pi) / (12.0 - 3.0 * pi);
+    let ring = spandrel(r) * 2.0 * pi * centroid;
+    let want = ring + spandrel(r) * 20.0 + seam_alone;
+    assert!(
+        (got - want).abs() <= 1e-7 * before,
+        "took off {got}, the ring, the prism and the seam's round alone {want}"
+    );
+}
