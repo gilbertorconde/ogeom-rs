@@ -100,6 +100,28 @@ bump may break the API and a patch bump may not.
   `unify_same_domain_around` still merges faces only. (ADR 0001, amendment
   "edges split into collinear pieces")
 
+### Removed
+
+- **Breaking: the old round path is gone; every round goes through the
+  blend engine or is refused by name.** (#902, M6; ADR 0001, amendment
+  "what M6 refuses by name")
+  - `fillet_edge`, `fillet_edges`, `fillet_edges_with` and
+    `fillet_edge_distances` build only what an engine route builds. A
+    request no route builds is refused by name, with the engine's reason
+    where it has one, where the old construction used to try it. Across
+    the `ogeom-fillet` and `ogeom` suites, ignored tests included, no
+    request reached that construction before it was removed.
+  - A vertex where a convex and a concave band meet, a cusp, or three
+    bands of different radii, which only the old corner closures built,
+    is refused up front. So is a ball rolled onto a shelf, a rim, across
+    a change of support or down a staircase, outside the engine's runs.
+  - The public module `ogeom_fillet::corner` (`ogeom::fillet::corner`) is
+    removed. Nothing in it was public.
+  - The old internal constructions (`fillet_edge_wedge`,
+    `fillet_edges_meeting`, `round_vertex_with`, `ruled_fillet` and the
+    consumed, rolled and corner strip builders) go with it. They were not
+    public API.
+
 ### Fixed
 
 - **Rounds of a solid with straight edges split into collinear pieces** go
