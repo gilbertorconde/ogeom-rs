@@ -385,8 +385,8 @@ pub(crate) fn mitred_non_local(
 
 /// Whether every blend holds to what the rings hold it to: each contact
 /// line within its face's far side, each setback corner on its own face. A
-/// blend past either is past what the part holds, refused by name on the
-/// current path, not built.
+/// blend past either is past what the part holds, refused by name, not
+/// built.
 fn held(
     planar: &Planar,
     seats: &FastMap<(Id, Id), Seat>,
@@ -545,7 +545,7 @@ pub(crate) fn non_local_faces(
 /// named for its edge or vertex.
 /// `None` where a bevel runs past its face, a setback corner stands off
 /// its face, a bevel is left nothing of, or a piece will not build or
-/// apply: each refused by name on the current path.
+/// apply: each refused by name.
 ///
 /// # Errors
 ///

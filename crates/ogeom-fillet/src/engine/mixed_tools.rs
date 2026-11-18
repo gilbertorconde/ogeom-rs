@@ -480,10 +480,9 @@ fn read_corners(
                     }
                     _ => {
                         let a = &asymmetric[all[j].2];
-                        let Some(crate::asym::Section::Conic { d, .. }) =
-                            crate::asym::straight_section(
-                                model, solid, edge, &a.face, a.on_face, a.on_other, a.profile, tol,
-                            )?
+                        let Some(crate::asym::Section { d }) = crate::asym::straight_section(
+                            model, solid, edge, &a.face, a.on_face, a.on_other, a.profile, tol,
+                        )?
                         else {
                             ogeom_bail!(Construction, "an asymmetric round asked as a round");
                         };

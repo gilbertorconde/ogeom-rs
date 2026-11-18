@@ -11,17 +11,16 @@
 //! solid's own faces by same-domain resolution, and the envelope stays as
 //! the blend.
 
-use crate::asym::Section;
 use crate::law::{Profile, RadiusLaw};
 use crate::support::{
-    Seat, apply_wedge_solid, edge_curve, face_from_edges, planar_face, planar_seat, revolved_seat,
+    Seat, apply_wedge_solid, edge_curve, face_from_edges, planar_face, revolved_seat,
     segment_between, trimmed_wedge, wedge_solid,
 };
 use ogeom_algo::{Built, make_edge_between, make_vertex};
 use ogeom_core::{OgeomError, OgeomResult, Tolerances, ogeom_bail};
-use ogeom_geom::{CircleCurve, Curve, CylinderSurface, PlaneSurface, SurfaceGeometry};
+use ogeom_geom::{CircleCurve, Curve, CylinderSurface, PlaneSurface};
 use ogeom_math::{Circle, Cylinder, Direction, Frame, Plane, Point, Vector};
-use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
+use ogeom_topo::{Model, Shape, ShapeType};
 
 /// Round a convex edge of a solid with a constant-radius blend tangent to
 /// both of its faces.
@@ -62,8 +61,8 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 /// What `solid` shares with other shapes is copied before it is
 /// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
 ///
-/// The blend engine takes the edge first, as a request of one, as it takes
-/// many in [`fillet_edges`]; what it hands back is built as above.
+/// The blend engine builds the edge, as a request of one, as it takes many
+/// in [`fillet_edges`]; a request it does not build is refused by name.
 ///
 /// # Errors
 ///
@@ -84,14 +83,15 @@ pub fn fillet_edge(
 ) -> OgeomResult<Built> {
     #[cfg(feature = "old-path-log")]
     let _old_path_request = crate::old_path::public_request("fillet_edge");
+    if !radius.is_finite() || radius <= tol.confusion() {
+        ogeom_bail!(Construction, "a fillet of radius {radius} rounds nothing");
+    }
     // One edge is a request of one: the engine first, as for many.
     if let Some(built) = rounds_by_engine(model, solid, &[(edge.clone(), radius)], tol)? {
         return Ok(built);
     }
     refused_alone(model, solid, edge, radius, Check::Ball, tol)?;
-    #[cfg(feature = "old-path-log")]
-    let _old_path_entry = to_current_path("fillet_edge");
-    fillet_edge_wedge(model, solid, edge, radius, tol)
+    Err(declined())
 }
 
 /// A request of two edges or more that no engine route builds, checked as
@@ -99,15 +99,13 @@ pub fn fillet_edge(
 /// kinds and of mixed radii read, then each ball seated on both faces of
 /// its edge and no two bands overlapping across a face they share
 /// ([`crate::engine::request_fits`]), a concave band past its face's side kept for the
-/// cut-off as there. One failing is refused here, by name, in the words
-/// the current path refuses it in, for it refuses there before it builds
-/// anything (ADR 0001, amendment "what M6 refuses by name"); one passing
-/// goes on. A request of one edge is [`refused_alone`]'s: a strip beside
-/// it may be taken off whole.
+/// cut-off as there. One failing is refused here, by name, in that
+/// check's words (ADR 0001, amendment "what M6 refuses by name"). A request
+/// of one edge is [`refused_alone`]'s.
 ///
 /// # Errors
 ///
-/// The refusal, as the current path would raise it.
+/// The refusal.
 fn refused_as_checked(
     model: &Model,
     solid: &Shape,
@@ -118,8 +116,8 @@ fn refused_as_checked(
     if let [edge] = edges {
         return refused_alone(model, solid, edge, radii[0], Check::Request, tol);
     }
-    // In the current path's order: its corners first, then the bands, in
-    // node order where a corner of both kinds or a cusp is met.
+    // The corners first, then the bands, in node order where a corner of
+    // both kinds or a cusp is met.
     let request: Vec<(Shape, f64)> = edges.iter().cloned().zip(radii.iter().copied()).collect();
     let signed = crate::setback::signed_corners(model, solid, &request, tol)?;
     let cusps = crate::setback::cusp_corners(model, solid, &request, tol)?;
@@ -131,9 +129,8 @@ fn refused_as_checked(
         sorted.into_iter().unzip()
     };
     mixed_corners(model, &edges, &radii)?;
-    // As the current path checks them, within its cut-offs: a concave band
-    // running past its face's side there is cut off at that side after it
-    // is built ([`cut_off_bands`]), not refused.
+    // Within the cut-offs: a concave band running past its face's side is
+    // read as cut off at that side, not refused for it.
     let (fits, _) = crate::support::with_cut_offs(|| {
         crate::engine::request_fits(model, solid, &edges, &radii, tol)
     });
@@ -141,7 +138,7 @@ fn refused_as_checked(
     Ok(())
 }
 
-/// Which of the current path's first checks a request of one edge meets:
+/// Which check a request of one edge the engine does not build meets:
 /// [`crate::engine::request_fits`] (a request through [`fillet_edges`]), or the ball on
 /// its two faces alone ([`fillet_edge`]).
 #[derive(Clone, Copy)]
@@ -150,15 +147,15 @@ enum Check {
     Ball,
 }
 
-/// [`refused_as_checked`] for one edge: checked as the current path checks
-/// it, and where that refuses, the strip or ring beside it read as taken
-/// off whole as there ([`consuming`], on a copy of the model). Refused, in
-/// the current path's words, only where that reads nothing either: the
-/// current path then refuses before it builds anything.
+/// [`refused_as_checked`] for one edge the engine does not build: its ball
+/// checked on its two faces, or its request as [`crate::engine::request_fits`]
+/// reads it, and where that fails the refusal raised in those words, or in
+/// the words of the engine's reading of a ball on a narrow face's far edge
+/// where that names why its run does not hold.
 ///
 /// # Errors
 ///
-/// The refusal, as the current path would raise it.
+/// The refusal.
 fn refused_alone(
     model: &Model,
     solid: &Shape,
@@ -180,229 +177,22 @@ fn refused_alone(
             crate::support::ball_fits(model, solid, edge, radius, false, tol).map(|_| ())
         }
     });
-    let refusal = match checked {
-        Err(refusal @ OgeomError::Construction(_)) => refusal,
-        _ => return Ok(()),
-    };
-    let mut scratch = model.clone();
-    let (taken, _) = crate::support::with_cut_offs(|| {
-        consuming(&mut scratch, solid, edge, radius, refusal, tol)
-    });
-    taken.map(|_| ())
+    match checked {
+        // A ball resting on a narrow face's far edge names why its run does
+        // not hold, where the engine's reading of it says.
+        Err(refusal @ OgeomError::Construction(_)) => {
+            match crate::engine::rolled::rolled_run(model, solid, edge, radius, tol) {
+                Err(named @ OgeomError::Construction(_)) => Err(named),
+                Err(other) => Err(other),
+                Ok(_) => Err(refusal),
+            }
+        }
+        _ => Ok(()),
+    }
 }
 
 #[cfg(feature = "old-path-log")]
 pub(crate) use crate::old_path::entry as to_current_path;
-
-/// [`fillet_edge`] on the current path alone: the band and its wedge, as
-/// built before the blend engine took the edge.
-///
-/// # Errors
-///
-/// As [`fillet_edge`].
-pub(crate) fn fillet_edge_wedge(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    radius: f64,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_entry = to_current_path("round:fillet_edge_wedge");
-    ogeom_algo::on_own_nodes(
-        model,
-        solid,
-        std::slice::from_ref(edge),
-        |model, solid, parts| {
-            cut_off_bands(
-                model,
-                solid,
-                |model| fillet_edge_own(model, solid, &parts[0], radius, tol),
-                tol,
-            )
-        },
-    )
-}
-
-/// Build with `build`, and cut each concave band on a curved edge that ran
-/// past the side of the face it rolls on off at that side's plane: what
-/// stands in front of the plane, within twice the band's radius of where
-/// it ran past, goes, so the band's fill ends flush with the face's side.
-/// Refused by name where `solid` itself holds anything there.
-fn cut_off_bands(
-    model: &mut Model,
-    solid: &Shape,
-    build: impl FnOnce(&mut Model) -> OgeomResult<Built>,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    let (built, cuts) = crate::support::with_cut_offs(|| build(model));
-    let mut built = built?;
-    for cut in cuts {
-        let reach = 2.0 * cut.radius;
-        let (mut lo, mut hi) = (cut.points[0], cut.points[0]);
-        for p in &cut.points {
-            lo = Point::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
-            hi = Point::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
-        }
-        let (lo, hi) = (
-            lo - Vector::new(reach, reach, reach),
-            hi + Vector::new(reach, reach, reach),
-        );
-        let walls = [
-            (cut.normal, cut.origin),
-            (Vector::new(1.0, 0.0, 0.0), lo),
-            (Vector::new(0.0, 1.0, 0.0), lo),
-            (Vector::new(0.0, 0.0, 1.0), lo),
-            (Vector::new(-1.0, 0.0, 0.0), hi),
-            (Vector::new(0.0, -1.0, 0.0), hi),
-            (Vector::new(0.0, 0.0, -1.0), hi),
-        ];
-        let tool = crate::engine::vertex_geometry::convex_block(model, &walls, tol)?;
-        // The solid itself stands behind the plane there: the cut takes the
-        // band's overhang and nothing it was given.
-        let shared = ogeom_bool::common(model, solid, &tool, tol)?.shape;
-        let held = if explore_unique(model, &shared, ShapeType::Face)?.is_empty() {
-            0.0
-        } else {
-            ogeom_algo::volume_properties(model, &shared, ogeom_mesh::Deflection::default(), tol)?
-                .mass
-                .abs()
-        };
-        if held > tol.confusion() {
-            ogeom_bail!(
-                Construction,
-                "a concave blend of radius {} runs past the side of the face it rolls on \
-                 where the solid stands beyond that side, so its fill cannot be cut off \
-                 there; see docs/CAPABILITIES.md, fillet.edge-blends",
-                cut.radius
-            );
-        }
-        let trimmed = ogeom_bool::cut(model, &built.shape, &tool, tol)?;
-        built = Built::new(trimmed.shape, built.history.then(&trimmed.history));
-    }
-    Ok(built)
-}
-
-/// [`fillet_edge`] on a shape every node below which is its own.
-fn fillet_edge_own(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    radius: f64,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_entry = to_current_path("fillet_edge");
-    if !radius.is_finite() || radius <= tol.confusion() {
-        ogeom_bail!(Construction, "a fillet of radius {radius} rounds nothing");
-    }
-    // The ball touches each face a setback back from the edge; set back
-    // past a face's far side into the material, or all along the edge,
-    // the band would cut through the face. Past a strip's far side all
-    // along, the ball may roll between the faces either side of the strip
-    // and take it off whole.
-    if let Err(refusal) = crate::support::ball_fits(model, solid, edge, radius, false, tol) {
-        return consuming(model, solid, edge, radius, refusal, tol);
-    }
-    let edges = std::slice::from_ref(edge);
-    or_rim_consumed(
-        model,
-        solid,
-        edge,
-        radius,
-        |model| {
-            with_fitted_rims(
-                model,
-                solid,
-                edges,
-                |model, rims| fillet_edge_meeting(model, solid, edge, radius, None, rims, tol),
-                tol,
-            )
-        },
-        tol,
-    )
-}
-
-/// The round of `edge` that takes a narrow strip beside it off whole, where
-/// [`crate::engine::consumed_seat::consumed_seat`] finds one, and `refusal` otherwise.
-fn consuming(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    radius: f64,
-    refusal: OgeomError,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    crate::engine::old_marched_constructor("consuming");
-    if !matches!(refusal, OgeomError::Construction(_)) {
-        return Err(refusal);
-    }
-    let Some(seat) = crate::engine::consumed_seat::consumed_seat(model, solid, edge, radius, tol)?
-    else {
-        let rolled = match crate::rolled::rolled_fillet(model, solid, edge, radius, tol)? {
-            Some(built) => Some(built),
-            None => crate::consumed::consumed_slanted(model, solid, edge, radius, tol)?,
-        };
-        let Some(mut built) = rolled else {
-            return match crate::consumed_rim::consumed_rim(model, solid, edge, radius, tol)? {
-                Some(_) => Err(declined()),
-                None => crate::consumed_marched::consumed_marched(model, solid, edge, radius, tol)?
-                    .ok_or(refusal),
-            };
-        };
-        crate::support::credit_new_faces(model, solid, edge, &mut built)?;
-        return Ok(built);
-    };
-    let mut built = seated_fillet(model, solid, &seat, radius, Some(edge), &[], tol)?;
-    crate::support::credit_new_faces(model, solid, edge, &mut built)?;
-    Ok(built)
-}
-
-/// `round`, the rounding of the one `edge`, and where it refuses, the round
-/// that takes a ring beside a rim off whole, where
-/// [`crate::consumed_rim::consumed_rim`] finds one: a rim beside a small
-/// round meets it tangentially, so no seat of the rim's own builds. What
-/// the refused attempt widened is put back first; elsewhere the attempt
-/// stands as it is.
-fn or_rim_consumed(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    radius: f64,
-    round: impl FnOnce(&mut Model) -> OgeomResult<Built>,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    crate::engine::old_marched_constructor("or_rim_consumed");
-    let mark = model.note_widened();
-    match round(model) {
-        Err(refusal @ OgeomError::Construction(_)) => {
-            match crate::consumed_rim::consumed_rim(model, solid, edge, radius, tol)? {
-                Some(_) => {
-                    model.undo_widened(mark);
-                    Err(declined())
-                }
-                None => {
-                    // The tolerances the refused attempt widened stand, as
-                    // they do where the refusal stands.
-                    model.keep_widened(mark);
-                    crate::consumed_marched::consumed_marched(model, solid, edge, radius, tol)?
-                        .ok_or(refusal)
-                }
-            }
-        }
-        // A strip beside a marched seat can leave the edge's own round
-        // nothing to stand on short of a construction refusal.
-        Err(refusal @ OgeomError::NotDone(_)) => {
-            model.keep_widened(mark);
-            crate::consumed_marched::consumed_marched(model, solid, edge, radius, tol)?
-                .ok_or(refusal)
-        }
-        other => {
-            model.keep_widened(mark);
-            other
-        }
-    }
-}
 
 /// An edge of a multi-edge request, by its ends: where each end stands and
 /// which way the edge leaves it, so a later edge can tell a chain mate from
@@ -449,24 +239,6 @@ impl Mate {
         other || own
     }
 
-    /// Whether the band of edge `index` runs out at its end nearest `at`
-    /// as it does alone: no other edge of the request ends there, or a
-    /// crossed junction across a convex turn stands there.
-    pub(crate) fn alone_at(mates: &[Self], index: usize, at: Point, tol: Tolerances) -> bool {
-        let near = |p: &Point| p.distance(at) <= tol.confusion() * 1e3;
-        let shared = mates
-            .iter()
-            .enumerate()
-            .any(|(i, mate)| i != index && mate.ends.iter().any(|(p, _)| near(p)));
-        let crossed = mates.get(index).is_some_and(|mate| {
-            mate.ends
-                .iter()
-                .zip(mate.alone)
-                .any(|((p, _), alone)| alone && near(p))
-        });
-        !shared || crossed
-    }
-
     /// Whether a junction of the request meets edge `index` at its end
     /// nearest `at`.
     pub(crate) fn meets_at(mates: &[Self], index: usize, at: Point, tol: Tolerances) -> bool {
@@ -476,76 +248,6 @@ impl Mate {
                 .zip(mate.meets)
                 .any(|((p, _), meets)| meets && p.distance(at) <= tol.confusion() * 1e3)
         })
-    }
-}
-
-/// [`fillet_edge`], with the straight seat told what else was asked for.
-///
-/// One edge at a time stops flush against a neighbouring blend it ends on:
-/// that is the state the corner tool (`round_vertex`) is built for, three
-/// flush blends and a vertex. Where no blend follows, the seat is the same
-/// alone and in a request, and runs out the same way onto a face cutting
-/// its corner away. Edges asked for together meet: where one of them ends at
-/// a vertex another leaves *tangentially*, the two are a chain and their
-/// caps stand flush in one plane; where it ends against the band of one
-/// that left the vertex some other way, the later seat runs on through
-/// that band and the cut trims the two against each other: two fillets
-/// meeting at a corner.
-fn fillet_edge_meeting(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    radius: f64,
-    mates: Option<(usize, &[Mate])>,
-    rims: Rims,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    crate::engine::old_marched_constructor("fillet_edge_meeting");
-    let mut built = fillet_edge_seat(model, solid, edge, radius, mates, rims, tol)?;
-    crate::support::credit_new_faces(model, solid, edge, &mut built)?;
-    Ok(built)
-}
-
-/// [`fillet_edge_meeting`] by seat, before the blend is credited to the
-/// edge.
-fn fillet_edge_seat(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    radius: f64,
-    mates: Option<(usize, &[Mate])>,
-    rims: Rims,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    if !radius.is_finite() || radius <= tol.confusion() {
-        ogeom_bail!(Construction, "a fillet of radius {radius} rounds nothing");
-    }
-    match route(model, solid, edge, rims, tol)? {
-        Route::Planar => planar_fillet(model, solid, edge, Section::Ball(radius), mates, tol),
-        Route::Ruled(seat) => {
-            crate::ruled::ruled_fillet(model, solid, edge, radius, mates, seat, tol)
-        }
-        // A cone's ball whose tube would reach its own axis is marched by
-        // the engine.
-        Route::Revolved(_, _, seat)
-            if seat.slope != 0.0 && seat.ball(radius).rho - radius <= tol.confusion() =>
-        {
-            Err(declined())
-        }
-        Route::Revolved(c, crange, seat) => {
-            let closed =
-                ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
-            // A whole rim's torus band is the engine's.
-            if closed || crate::support::runs_whole_turn(model, &seat, &c, crange, tol)? {
-                Err(declined())
-            } else {
-                crate::rim_arc::revolved_arc_fillet(
-                    model, solid, edge, &c, radius, None, mates, None, tol,
-                )
-            }
-        }
-        // A seat with no closed form is marched by the engine.
-        Route::Marched => Err(declined()),
     }
 }
 
@@ -564,10 +266,10 @@ enum Route {
     /// A straight edge between two planes.
     Planar,
     /// A straight edge between planes or drums parallel to it.
-    Ruled(crate::engine::ruled_seat::RuledSeat),
+    Ruled,
     /// A circle between a planar cap and its coaxial wall, a cylinder or
-    /// a cone, with the edge's range on it.
-    Revolved(CircleCurve, (f64, f64), crate::support::RevolvedSeat),
+    /// a cone.
+    Revolved(Box<crate::support::RevolvedSeat>),
     /// Any other seat: the march.
     Marched,
 }
@@ -583,16 +285,16 @@ fn route(
     rims: Rims,
     tol: Tolerances,
 ) -> OgeomResult<Route> {
-    let (curve, crange) = edge_curve(model, edge, tol)?;
+    let (curve, _) = edge_curve(model, edge, tol)?;
     Ok(match curve {
         Curve::Line(_) if crate::support::hosts_planar(model, solid, edge, tol)? => Route::Planar,
         Curve::Line(_) => match crate::engine::ruled_seat::ruled_seat(model, solid, edge, tol)? {
-            Some(seat) => Route::Ruled(seat),
+            Some(_) => Route::Ruled,
             None => Route::Marched,
         },
         Curve::Circle(c) => match revolved_seat(model, solid, edge, &c, tol) {
             Ok(seat) if seat.slope != 0.0 && rims == Rims::Fitted => Route::Marched,
-            Ok(seat) => Route::Revolved(c, crange, seat),
+            Ok(seat) => Route::Revolved(Box::new(seat)),
             Err(OgeomError::Construction(_)) => Route::Marched,
             Err(e) => return Err(e),
         },
@@ -710,22 +412,19 @@ pub fn fillet_edges(
 ) -> OgeomResult<Built> {
     #[cfg(feature = "old-path-log")]
     let _old_path_request = crate::old_path::public_request("fillet_edges");
+    if edges.is_empty() {
+        ogeom_bail!(Construction, "a chain of no edges rounds nothing");
+    }
+    if !radius.is_finite() || radius <= tol.confusion() {
+        ogeom_bail!(Construction, "a fillet of radius {radius} rounds nothing");
+    }
     let asked: Vec<(Shape, f64)> = edges.iter().map(|e| (e.clone(), radius)).collect();
     if let Some(built) = rounds_by_engine(model, solid, &asked, tol)? {
         return Ok(built);
     }
     let radii = vec![radius; edges.len()];
     refused_as_checked(model, solid, edges, &radii, tol)?;
-    #[cfg(feature = "old-path-log")]
-    let _old_path_entry = to_current_path("fillet_edges");
-    ogeom_algo::on_own_nodes(model, solid, edges, |model, solid, parts| {
-        cut_off_bands(
-            model,
-            solid,
-            |model| fillet_edges_meeting(model, solid, parts, &radii, tol),
-            tol,
-        )
-    })
+    Err(declined())
 }
 
 /// How [`fillet_edges_corner`] closes a vertex where rounds meet.
@@ -819,6 +518,9 @@ pub fn fillet_edges_with(
 ) -> OgeomResult<Built> {
     #[cfg(feature = "old-path-log")]
     let _old_path_request = crate::old_path::public_request("fillet_edges_with");
+    if edges.is_empty() {
+        ogeom_bail!(Construction, "a chain of no edges rounds nothing");
+    }
     let shapes: Vec<Shape> = edges.iter().map(|(edge, _)| edge.clone()).collect();
     let radii: Vec<f64> = edges.iter().map(|&(_, radius)| radius).collect();
     for (i, (edge, radius)) in edges.iter().enumerate() {
@@ -857,7 +559,7 @@ pub(crate) fn declined() -> OgeomError {
 /// solid is bounded by planes and every vertex is one the engine closes, or
 /// where every edge asked is a rim between a planar cap and a coaxial wall,
 /// or a straight edge along planes and cylinders or such a rim beside them;
-/// `None` leaves the request to the current path. An edge asked twice at
+/// `None` where no route builds it. An edge asked twice at
 /// one radius is asked once. Faces a route leaves in pieces on one carrier
 /// are merged after ([`crate::engine::merged`]).
 pub(crate) fn rounds_by_engine(
@@ -915,7 +617,7 @@ fn rounds_by_engine_pieces(
 /// [`rounds_by_engine`] on a compound of solids: each solid with the edges
 /// it holds, the rest kept as they are, the results gathered into a
 /// compound again. `None` where the compound holds anything but solids (a
-/// sheet's rounds are the current path's), an edge lies in no solid or in
+/// sheet's rounds are not the engine's), an edge lies in no solid or in
 /// two, or any solid's rounds are handed back.
 fn rounds_by_engine_compound(
     model: &mut Model,
@@ -1165,8 +867,8 @@ fn rounds_by_engine_unplaced(
         return Ok(Some(built));
     }
     // A cone rim asked alone whose exact torus band nothing above closes,
-    // its band fitted through the ball's arcs as the march builds it, as
-    // the current path retries it: the boolean resolves some meetings of
+    // its band fitted through the ball's arcs as the march builds it: the
+    // boolean resolves some meetings of
     // the fitted band it does not of the exact one. With other edges the
     // rim's band meets theirs at their corners, which the march's
     // junctions do not read as the exact rounds do.
@@ -1207,8 +909,8 @@ fn rounds_by_engine_routes(
             once.push((edge.clone(), *radius));
         }
     }
-    // Nothing asked, or a radius that rounds nothing, is refused by the
-    // current path, in its words.
+    // Nothing asked, or a radius that rounds nothing, is the entry's to
+    // refuse by name.
     if once.is_empty()
         || once
             .iter()
@@ -1336,8 +1038,8 @@ fn rounds_by_engine_routes(
     }
     let once = kept;
     // The seams dissolved on a copy of the model: dissolving builds over
-    // the solid's own nodes, and a request the engine hands back must
-    // reach the current path as it came.
+    // the solid's own nodes, and a request the engine hands back leaves
+    // the model as it came.
     let mut scratch = model.clone();
     match crate::engine::dissolve_curved(&mut scratch, solid, tol)? {
         Some(seamless) => {
@@ -1461,44 +1163,6 @@ fn rounds_defeatured(
     crate::engine::apply_tools(model, solid, &edges, &tools, tol)
 }
 
-/// [`fillet_edges_with`] on a shape every node below which is its own, its
-/// cone rims rounded exactly where that builds and fitted where it does
-/// not, as [`with_fitted_rims`] says.
-fn fillet_edges_meeting(
-    model: &mut Model,
-    solid: &Shape,
-    edges: &[Shape],
-    radii: &[f64],
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_entry = to_current_path("round:fillet_edges_meeting");
-    // A corner where a convex and a concave band meet, a cusp, or three
-    // bands of different radii is the engine's or refused by name.
-    let request: Vec<(Shape, f64)> = edges.iter().cloned().zip(radii.iter().copied()).collect();
-    if !crate::setback::signed_corners(model, solid, &request, tol)?.is_empty()
-        || !crate::setback::cusp_corners(model, solid, &request, tol)?.is_empty()
-        || !mixed_corners(model, edges, radii)?.is_empty()
-    {
-        return Err(declined());
-    }
-    let round = |model: &mut Model| {
-        with_fitted_rims(
-            model,
-            solid,
-            edges,
-            |model, rims| fillet_edges_meeting_with(model, solid, edges, radii, rims, tol),
-            tol,
-        )
-    };
-    // A request of one edge is that edge alone, a ring beside a rim taken
-    // off whole as there.
-    match (edges, radii) {
-        ([edge], [radius]) => or_rim_consumed(model, solid, edge, *radius, round, tol),
-        _ => round(model),
-    }
-}
-
 /// A vertex of the request and the request's edges there with their radii.
 type Corner = (Shape, Vec<(Shape, f64)>);
 
@@ -1522,33 +1186,6 @@ fn mixed_corners(model: &Model, edges: &[Shape], radii: &[f64]) -> OgeomResult<V
     Ok(corners)
 }
 
-/// Round with every cone rim's band an exact torus band, and where that
-/// refuses, again from the solid as it was given (its tolerances put back)
-/// with those bands fitted through the ball's arcs, as the march builds
-/// them. The fitted band stands within its fit of the torus, and the
-/// boolean resolves some meetings of it that it does not of the exact one,
-/// so an exact rim never turns a rounding into a refusal.
-fn with_fitted_rims(
-    model: &mut Model,
-    solid: &Shape,
-    edges: &[Shape],
-    mut round: impl FnMut(&mut Model, Rims) -> OgeomResult<Built>,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    let mark = model.note_widened();
-    let exact = round(model, Rims::Exact);
-    if matches!(
-        exact,
-        Ok(_) | Err(OgeomError::Cancelled | OgeomError::Dangling(_))
-    ) || !has_cone_rim(model, solid, edges, tol)?
-    {
-        model.keep_widened(mark);
-        return exact;
-    }
-    model.undo_widened(mark);
-    round(model, Rims::Fitted)
-}
-
 /// Whether any of `edges` is a rim of `solid` on a planar cap and a
 /// coaxial cone.
 fn has_cone_rim(
@@ -1558,722 +1195,13 @@ fn has_cone_rim(
     tol: Tolerances,
 ) -> OgeomResult<bool> {
     for edge in edges {
-        if let Route::Revolved(_, _, seat) = route(model, solid, edge, Rims::Exact, tol)?
+        if let Route::Revolved(seat) = route(model, solid, edge, Rims::Exact, tol)?
             && seat.slope != 0.0
         {
             return Ok(true);
         }
     }
     Ok(false)
-}
-
-/// [`fillet_edges_meeting`] with cone rims rounded as `rims` says, its
-/// bands meeting at the junctions where two of its creases turn. Where
-/// that meeting refuses, the request is rounded again from the solid as it
-/// was given (its tolerances and surfaces put back), every band capped or
-/// run on at its ends as it is without junctions: a junction never turns a
-/// rounding into a refusal.
-fn fillet_edges_meeting_with(
-    model: &mut Model,
-    solid: &Shape,
-    edges: &[Shape],
-    radii: &[f64],
-    rims: Rims,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    let mut ends: Vec<Shape> = Vec::new();
-    let mut shared = false;
-    for edge in edges {
-        if let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? {
-            for v in [a, b] {
-                if ends.iter().any(|w| w.is_same(&v)) {
-                    shared = true;
-                }
-                ends.push(v);
-            }
-        }
-    }
-    if !shared {
-        return fillet_edges_own(model, solid, edges, radii, None, rims, tol);
-    }
-    // What an attempt changes of the given solid where it stands: the
-    // tolerances it widens, which the model's journal notes, and, once a
-    // junction is taken, the surfaces a marched seat continues past its
-    // faces and writes back, which the attempt notes before it builds.
-    let mark = model.note_widened();
-    // Crossed junctions first; where one does not close, the request is
-    // rounded again with the flush junctions alone, and where that does
-    // not close either, with none.
-    for crossed in [true, false] {
-        let mut taken = Taken {
-            crossed,
-            ..Taken::default()
-        };
-        match fillet_edges_own(model, solid, edges, radii, Some(&mut taken), rims, tol) {
-            Ok(built) => {
-                model.keep_widened(mark);
-                return Ok(built);
-            }
-            // A cancelled request stops, and a key that does not resolve
-            // says the caller's model is not the one the shapes are in:
-            // neither is the junctions' to answer for.
-            Err(e @ (OgeomError::Cancelled | OgeomError::Dangling(_))) => {
-                model.keep_widened(mark);
-                return Err(e);
-            }
-            // With no junction taken the attempt was the rounding without
-            // one.
-            Err(e) if !taken.any => {
-                model.keep_widened(mark);
-                return Err(e);
-            }
-            Err(_) => {
-                model.undo_widened(mark);
-                for (id, surface) in taken.surfaces {
-                    if let Some(held) = model.geometry_mut().surface_mut(id) {
-                        *held = surface;
-                    }
-                }
-                // Without a crossed junction taken, the next attempt would
-                // take the same flush ones again.
-                if !taken.any_crossed {
-                    break;
-                }
-            }
-        }
-    }
-    fillet_edges_own(model, solid, edges, radii, None, rims, tol)
-}
-
-/// What a rounding with junctions may take and took: whether crossed
-/// junctions may be taken, whether any junction and any crossed one was,
-/// and the solid's face surfaces as they stood before it built a band.
-#[derive(Default)]
-struct Taken {
-    crossed: bool,
-    any: bool,
-    any_crossed: bool,
-    surfaces: Vec<(ogeom_topo::SurfaceId, SurfaceGeometry)>,
-}
-
-/// [`fillet_edges`] on a shape every node below which is its own, with
-/// junctions where `meeting` asks, which notes there what it took.
-#[allow(clippy::too_many_arguments, reason = "one request's settings")]
-fn fillet_edges_own(
-    model: &mut Model,
-    solid: &Shape,
-    edges: &[Shape],
-    radii: &[f64],
-    meeting: Option<&mut Taken>,
-    cones: Rims,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    if edges.is_empty() {
-        ogeom_bail!(Construction, "a chain of no edges rounds nothing");
-    }
-    let rolled = match crate::engine::request_fits(model, solid, edges, radii, tol) {
-        Ok(rolled) => rolled,
-        // A request of one edge is that edge alone, a strip beside it taken
-        // off whole as there.
-        Err(crate::support::Blamed { error: refusal, .. }) => {
-            return match edges {
-                [edge] if meeting.is_none() => {
-                    consuming(model, solid, edge, radii[0], refusal, tol)
-                }
-                _ => Err(refusal),
-            };
-        }
-    };
-    // The vertices three or more of the chain's edges meet at: the corners
-    // the ball rolls round, closed by the corner tool.
-    // Each holds the radii of the edges ending there.
-    let mut corners: Vec<(Shape, Vec<f64>)> = Vec::new();
-    for (edge, &radius) in edges.iter().zip(radii) {
-        let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
-            continue;
-        };
-        for v in [a, b] {
-            if let Some(slot) = corners.iter_mut().find(|(held, _)| held.is_same(&v)) {
-                slot.1.push(radius);
-            } else {
-                corners.push((v, vec![radius]));
-            }
-        }
-    }
-    corners.retain(|(_, at)| at.len() >= 3);
-    // No ball rolls round a corner whose bands differ in radius: the
-    // corner tool's ball would touch a band of another radius nowhere
-    // along its rim. Such a corner is left to the bands here and closed by
-    // the setback patch once they stand ([`mixed_corners`]).
-    corners.retain(|(_, at)| at.iter().all(|&r| r == at[0]));
-    // A corner the tool rounds, or the solid unchanged where it does not
-    // speak the corner, which keeps the bands' caps; a corner of planes is
-    // the engine's, refused here by name.
-    let round =
-        |model: &mut Model, built: Built, vertex: &Shape, radius: f64| -> OgeomResult<Built> {
-            match crate::corner::round_vertex_with(model, &built.shape, vertex, radius, tol) {
-                Ok(Some(rounded)) => Ok(Built {
-                    shape: rounded.shape,
-                    history: built.history.then(&rounded.history),
-                }),
-                Ok(None) => Err(declined()),
-                Err(OgeomError::Construction(_)) => Ok(built),
-                Err(other) => Err(other),
-            }
-        };
-    // The corner first, the bands after it: bands built first crash into
-    // each other at an apex, and the corner tool wants the sharp vertex's
-    // planes, not the bands' mitre. Corners are cut one after another.
-    let mut built: Option<Built> = None;
-    let mut rounded: Vec<Point> = Vec::new();
-    for (vertex, at) in &corners {
-        let start = built
-            .take()
-            .unwrap_or_else(|| Built::from_nothing(solid.clone()));
-        let before = start.shape.clone();
-        let after = round(model, start, vertex, at[0])?;
-        if !after.shape.is_same(&before)
-            && let Some(point) = model
-                .node(vertex)
-                .and_then(|n| n.data().as_vertex())
-                .map(|d| d.point)
-        {
-            rounded.push(vertex.transform(model.datums())?.apply(point));
-        }
-        built = Some(after);
-    }
-    let mut mates = crate::engine::request_mates(model, edges, &rounded, tol)?;
-    // The circles this chain has rounded the whole turn round. A piece of
-    // a rim that closes on the solid in parts is blended the whole turn
-    // round, so the rim's other pieces, asked for later or split off by the
-    // boolean, are rounded already: done, not consumed. A piece of a rim
-    // that stops is rounded over its own arc only, and the other pieces
-    // still want theirs.
-    let mut round_rims: Vec<ogeom_math::Circle> = Vec::new();
-    let on_round_rim = |model: &Model, edge: &Shape, rims: &[ogeom_math::Circle]| {
-        rim_circle(model, edge, tol).is_some_and(|c| rims.iter().any(|r| same_circle(r, &c, tol)))
-    };
-    // The two faces each edge of the chain lies between on the solid as
-    // given. A blend along a crease runs the whole of it where the crease
-    // closes on itself (a junction loop the march follows round), so a
-    // later edge of the same crease that the blend consumed is rounded
-    // already, not interfered with.
-    let mut host_faces: ogeom_core::FastMap<ogeom_topo::TShapeId, Vec<Shape>> =
-        ogeom_core::FastMap::default();
-    for face in explore_unique(model, solid, ShapeType::Face)? {
-        for e in explore_unique(model, &face, ShapeType::Edge)? {
-            let held = host_faces.entry(e.node()).or_default();
-            if !held.iter().any(|f| f.is_same(&face)) {
-                held.push(face.clone());
-            }
-        }
-    }
-    // Where two of the request's creases turn at a shared vertex, their
-    // bands meet there: built from the solid as it stands, each stops in
-    // the plane the two meet in (carried on to it past its cap across a
-    // re-entrant turn), and the two are joined across it into one wedge.
-    let junctions = if meeting.is_some() {
-        let given: Vec<Vec<Shape>> = edges
-            .iter()
-            .map(|e| host_faces.get(&e.node()).cloned().unwrap_or_default())
-            .collect();
-        let mut found =
-            crate::engine::junction::junctions(model, solid, edges, &given, &mates, radii, tol)
-                .unwrap_or_default();
-        if meeting.as_ref().is_some_and(|taken| !taken.crossed) {
-            found.retain(|junction| !junction.crossed);
-        }
-        crate::engine::joinable(model, edges, found)?
-    } else {
-        Vec::new()
-    };
-    if let Some(taken) = meeting
-        && !junctions.is_empty()
-    {
-        taken.any = true;
-        taken.any_crossed = junctions.iter().any(|junction| junction.crossed);
-        for face in explore_unique(model, solid, ShapeType::Face)? {
-            let Some(data) = model.node(&face).and_then(|n| n.data().as_face()) else {
-                continue;
-            };
-            if taken.surfaces.iter().any(|(id, _)| *id == data.surface) {
-                continue;
-            }
-            if let Some(surface) = model.geometry().surface(data.surface) {
-                taken.surfaces.push((data.surface, surface.clone()));
-            }
-        }
-    }
-    // A band stops at the vertex where a junction closes the corner; across
-    // a crossed convex turn each runs out as it does alone.
-    for junction in &junctions {
-        for &index in &junction.pair {
-            let mate = &mut mates[index];
-            let end = usize::from(
-                mate.ends[1].0.distance(junction.at) < mate.ends[0].0.distance(junction.at),
-            );
-            if junction.reentrant || !junction.crossed {
-                mate.meets[end] = true;
-            } else {
-                mate.alone[end] = true;
-            }
-        }
-    }
-    let hosts_of = |edge: &Shape| -> Vec<ogeom_topo::TShapeId> {
-        let mut out: Vec<_> = host_faces
-            .get(&edge.node())
-            .map(|faces| faces.iter().map(Shape::node).collect())
-            .unwrap_or_default();
-        out.sort_unstable();
-        out
-    };
-    // The edges of the solid a round's blends are built on, by occurrence:
-    // until a round is applied that solid is unchanged, and an edge of it
-    // is found there by name rather than re-found by its geometry.
-    let mut occurrences: Option<(Shape, ogeom_core::FastMap<ogeom_topo::SameKey, Shape>)> = None;
-    let mut refind =
-        |model: &Model, on: &Shape, edge: &Shape, hosts: &[Shape]| -> OgeomResult<Vec<Shape>> {
-            if !occurrences
-                .as_ref()
-                .is_some_and(|(held, _)| held.is_same(on))
-            {
-                let mut by_name = ogeom_core::FastMap::default();
-                for e in explore_unique(model, on, ShapeType::Edge)? {
-                    by_name.entry(ogeom_topo::SameKey(e.clone())).or_insert(e);
-                }
-                occurrences = Some((on.clone(), by_name));
-            }
-            let named = occurrences
-                .as_ref()
-                .and_then(|(_, by_name)| by_name.get(&ogeom_topo::SameKey(edge.clone())));
-            match named {
-                Some(own) => Ok(vec![own.clone()]),
-                None => refind_edges(model, on, edge, hosts, tol),
-            }
-        };
-    let mut blended_creases: Vec<Vec<ogeom_topo::TShapeId>> = Vec::new();
-    // Edges that share no vertex round without meeting: each blend is built
-    // from the faces as they stand, and theirs can be applied together.
-    // Edges that do share one are rounded in turn, the later built against
-    // what the earlier left. So the chain is taken in rounds, no two edges
-    // of a round sharing a vertex (pieces of one circle are built from the
-    // same faces: the first rounds the whole turn where the rim closes, and
-    // where it stops each piece is capped at its ends, flush with its
-    // neighbour's cap), each round's wedges set
-    // aside and applied together, one boolean each way.
-    let rims: Vec<Option<Circle>> = edges.iter().map(|e| rim_circle(model, e, tol)).collect();
-    let mut ends_of: Vec<Vec<Shape>> = Vec::with_capacity(edges.len());
-    for edge in edges {
-        let mut ends: Vec<Shape> = Vec::new();
-        if let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? {
-            for v in [a, b] {
-                if !ends.iter().any(|held| held.is_same(&v)) {
-                    ends.push(v);
-                }
-            }
-        }
-        ends_of.push(ends);
-    }
-    let meet = |i: usize, j: usize| {
-        ends_of[i]
-            .iter()
-            .any(|v| ends_of[j].iter().any(|w| w.is_same(v)))
-            && !matches!((&rims[i], &rims[j]), (Some(a), Some(b)) if same_circle(a, b, tol))
-            // Two bands meeting in a junction's plane are built from the
-            // solid as it stands and joined into one wedge.
-            && !junctions
-                .iter()
-                .any(|junction| junction.slot(i).is_some() && junction.slot(j).is_some())
-    };
-    // Where a marched band and an analytic one meet at a vertex, the
-    // marched band is built first, against the faces as they stand: its
-    // run-out then melts with untouched hosts, and the analytic band built
-    // after it runs on through it, which the melt resolves. Built the other
-    // way round, the marched band's run-out lands on the analytic band's
-    // rail along a stretch, a contact the melt does not resolve. Each edge
-    // is routed on the solid as given: earlier rounds trim an edge's hosts
-    // but leave their surfaces, which are what the route reads. The order
-    // the edges were asked in decides everything else.
-    let mut marched: Vec<Option<bool>> = vec![None; edges.len()];
-    for i in 0..edges.len() {
-        if (0..edges.len()).any(|j| j != i && meet(i, j)) {
-            marched[i] = Some(matches!(
-                route(model, solid, &edges[i], cones, tol)?,
-                Route::Marched
-            ));
-        }
-    }
-    let first: Vec<bool> = (0..edges.len())
-        .map(|i| {
-            marched[i] == Some(true)
-                && (0..edges.len()).any(|j| meet(i, j) && marched[j] == Some(false))
-        })
-        .collect();
-    let mut taken: Vec<usize> = (0..edges.len()).collect();
-    taken.sort_by_key(|&i| (!first[i], i));
-    // Bands joined across a junction's plane are built in one round: each
-    // joined group takes the first round in which none of its members
-    // meets an edge already placed there.
-    let mut group: Vec<usize> = (0..edges.len()).collect();
-    for junction in &junctions {
-        let [a, b] = junction.pair;
-        let (from, to) = (group[a], group[b]);
-        for g in &mut group {
-            if *g == from {
-                *g = to;
-            }
-        }
-    }
-    let mut round_of: Vec<Option<usize>> = vec![None; edges.len()];
-    for &i in &taken {
-        if round_of[i].is_some() {
-            continue;
-        }
-        let members: Vec<usize> = (0..edges.len()).filter(|&m| group[m] == group[i]).collect();
-        let mut round = 0;
-        while members
-            .iter()
-            .any(|&m| (0..edges.len()).any(|j| round_of[j] == Some(round) && meet(m, j)))
-        {
-            round += 1;
-        }
-        for m in members {
-            round_of[m] = Some(round);
-        }
-    }
-    let round_of: Vec<usize> = round_of.into_iter().map(|r| r.unwrap_or(0)).collect();
-    let rank: Vec<usize> = {
-        let mut rank = vec![0; edges.len()];
-        for (k, &i) in taken.iter().enumerate() {
-            rank[i] = k;
-        }
-        rank
-    };
-    let mut order: Vec<usize> = (0..edges.len()).collect();
-    order.sort_by_key(|&i| (round_of[i], rank[i]));
-    let mut set_aside: Vec<(Vec<usize>, Shape, crate::support::Wedge)> = Vec::new();
-    let mut this_round = 0;
-    for index in order {
-        let edge = &edges[index];
-        // A round's wedges are applied before the next round is built.
-        if round_of[index] != this_round {
-            this_round = round_of[index];
-            if let Some(b) = built.take() {
-                let halves = crate::engine::with_corners(
-                    model,
-                    &mut set_aside,
-                    &junctions,
-                    &b.shape,
-                    false,
-                    tol,
-                )?;
-                let joined = crate::engine::join_flush(
-                    model,
-                    core::mem::take(&mut set_aside),
-                    &junctions,
-                    &halves,
-                    tol,
-                )?;
-                built = Some(apply_set_aside(model, b, joined, tol)?);
-            }
-        }
-        // A piece of a circle whose whole turn another piece's blend rounds.
-        if on_round_rim(model, edge, &round_rims) {
-            if let Some(b) = built.as_mut() {
-                b.history.delete(edge);
-            }
-            continue;
-        }
-        // The faces the edge lies between on the solid as given: what a
-        // piece of it re-found later still lies between.
-        let hosts: Vec<Shape> = host_faces.get(&edge.node()).cloned().unwrap_or_default();
-        // The edge as it stands on the current solid: itself on the first
-        // step, and afterwards whatever the earlier blends left of it: one
-        // re-found stand-in, or the pieces a blend running out across it
-        // split it into, each of which is a seat of its own ending against
-        // that blend's band, which is exactly the corner it then meets.
-        // The pieces are re-found from the edge itself, between its hosts:
-        // the history also traces it to stubs along its line where an
-        // earlier blend's cap meets a host tangentially, no corner to round.
-        let (current, targets): (Shape, Vec<Shape>) = match &built {
-            None => (solid.clone(), vec![edge.clone()]),
-            Some(b) => {
-                let gone = b.history.trace(edge).is_empty();
-                // An edge both of whose ends this chain's corners rounded,
-                // and which they left nothing of, ran its whole length
-                // inside their balls: the corners are its blend.
-                let on_blended_crease = blended_creases.contains(&hosts_of(edge))
-                    || mates[index].settled == [true, true];
-                let rounded = on_blended_crease || on_round_rim(model, edge, &round_rims);
-                if gone && rounded {
-                    continue;
-                }
-                if gone {
-                    ogeom_bail!(
-                        Construction,
-                        "an earlier blend in the chain consumed this edge; \
-                         the chain's members interfere"
-                    );
-                }
-                let found = match refind(model, &b.shape, edge, &hosts) {
-                    Ok(live) => live,
-                    Err(_) if rounded => Vec::new(),
-                    Err(e) => return Err(e),
-                };
-                (b.shape.clone(), found)
-            }
-        };
-        // Nothing left of it: the crease it lies on is rounded, and the
-        // edge with it.
-        if targets.is_empty() {
-            if let Some(b) = built.as_mut() {
-                b.history.delete(edge);
-            }
-            continue;
-        }
-        let mut current = current;
-        for target in &targets {
-            // Each piece's blend replaces the solid; the next piece is
-            // re-found on what that blend left.
-            let live = match refind(model, &current, target, &hosts) {
-                Ok(live) => live,
-                Err(_) if on_round_rim(model, target, &round_rims) => continue,
-                Err(e) => return Err(e),
-            };
-            let [target] = live.as_slice() else {
-                ogeom_bail!(
-                    Construction,
-                    "a blend in the chain split a piece of a later edge again; \
-                     the chain's members interfere"
-                );
-            };
-            let whole_rim = match rim_circle(model, target, tol) {
-                Some(rim) if rounds_whole_turn(model, &current, target, tol)? => Some(rim),
-                _ => None,
-            };
-            let mut step = {
-                let (step, wedges) = crate::support::collecting_wedges(|| {
-                    if rolled[index] {
-                        let Some(mut built) = crate::rolled::rolled_fillet(
-                            model,
-                            &current,
-                            target,
-                            radii[index],
-                            tol,
-                        )?
-                        else {
-                            ogeom_bail!(
-                                Construction,
-                                "the ball no longer rests on the far edge beside an edge \
-                                 of the chain"
-                            );
-                        };
-                        crate::support::credit_new_faces(model, &current, target, &mut built)?;
-                        return Ok(built);
-                    }
-                    fillet_edge_meeting(
-                        model,
-                        &current,
-                        target,
-                        radii[index],
-                        Some((index, &mates)),
-                        cones,
-                        tol,
-                    )
-                });
-                let step = step?;
-                for mut wedge in wedges {
-                    crate::engine::fit_to_junctions(
-                        model,
-                        &mut wedge,
-                        (index, edge, &hosts),
-                        &junctions,
-                        radii[index],
-                        tol,
-                    )?;
-                    set_aside.push((vec![index], edge.clone(), wedge));
-                }
-                step
-            };
-            if let Some(rim) = whole_rim {
-                round_rims.push(rim);
-            }
-            let hosts = hosts_of(edge);
-            if hosts.len() == 2 && !blended_creases.contains(&hosts) {
-                blended_creases.push(hosts);
-            }
-            // The blend consumed the re-found stand-in; the caller's edge is
-            // the same fact under its original name.
-            if !target.is_same(edge) {
-                step.history.delete(edge);
-            }
-            current = step.shape.clone();
-            built = Some(match built {
-                None => step,
-                Some(prev) => Built {
-                    shape: step.shape.clone(),
-                    history: prev.history.then(&step.history),
-                },
-            });
-        }
-    }
-    let built = built.unwrap_or_else(|| unreachable!());
-    let halves =
-        crate::engine::with_corners(model, &mut set_aside, &junctions, &built.shape, false, tol)?;
-    let joined = crate::engine::join_flush(model, set_aside, &junctions, &halves, tol)?;
-    apply_set_aside(model, built, joined, tol)
-}
-
-/// Apply the wedges a chain set aside: the cut ones together and the
-/// fused ones together, each blend's faces credited to its edge through
-/// the boolean's history. Wedges whose boxes meet go in different
-/// booleans, as a compound of lumps that overlap would count their overlap
-/// twice. A cut is [`ogeom_bool::cut_seated`] and a fill
-/// [`ogeom_bool::fuse_seated`], which trim the faces straight bands, rims
-/// and the pieces of rims a tangent chain's arcs round sit on, where nothing
-/// else reaches into them, and straight bands running at a block's corner
-/// into a band an earlier group rounded.
-pub(crate) fn apply_set_aside(
-    model: &mut Model,
-    mut built: Built,
-    set_aside: Vec<(Shape, crate::support::Wedge)>,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_entry = to_current_path("marched-backedge:apply_set_aside");
-    if set_aside.is_empty() {
-        return Ok(built);
-    }
-    let mut boxes = Vec::with_capacity(set_aside.len());
-    for (_, wedge) in &set_aside {
-        boxes.push(ogeom_algo::shape_bounds(model, &wedge.solid, tol)?);
-    }
-    let (fused, cut): (Vec<usize>, Vec<usize>) =
-        (0..set_aside.len()).partition(|&i| set_aside[i].1.additive);
-    // A cut and a fill whose boxes meet are applied in the order they were
-    // built, one by one: which goes first decides what the corner keeps.
-    let crossed = cut
-        .iter()
-        .any(|&i| fused.iter().any(|&j| boxes[i].intersects(&boxes[j])));
-    let groups: Vec<Vec<usize>> = if crossed {
-        (0..set_aside.len()).map(|i| vec![i]).collect()
-    } else {
-        // Each side's wedges in as few groups as keep every group's boxes
-        // apart, each group one boolean: blends close side by side (rims on
-        // a tight grid) take a handful of booleans, not one each.
-        let mut groups: Vec<Vec<usize>> = Vec::new();
-        for side in [cut, fused] {
-            let first = groups.len();
-            for i in side {
-                let slot = groups[first..]
-                    .iter()
-                    .position(|g| g.iter().all(|&j| !boxes[i].intersects(&boxes[j])));
-                match slot {
-                    Some(k) => groups[first + k].push(i),
-                    None => groups.push(vec![i]),
-                }
-            }
-        }
-        groups
-    };
-    let given = built.clone();
-    let mut groups: std::collections::VecDeque<Vec<usize>> = groups.into();
-    while let Some(group) = groups.pop_front() {
-        let additive = set_aside[group[0]].1.additive;
-        let lumps: Vec<Shape> = group
-            .iter()
-            .map(|&i| set_aside[i].1.solid.clone())
-            .collect();
-        let tool = if let [one] = lumps.as_slice() {
-            one.clone()
-        } else {
-            model.add_compound(&lumps)?
-        };
-        let applied = if additive {
-            ogeom_bool::fuse_seated(model, &built.shape, &tool, tol)
-        } else {
-            ogeom_bool::cut_seated(model, &built.shape, &tool, tol)
-        };
-        // A group the boolean does not resolve at once is no refusal: the
-        // wedges are then applied one at a time, in the order they were
-        // built, to the solid as it was given.
-        if matches!(applied, Err(OgeomError::NotDone(_))) && group.len() > 1 {
-            built = given.clone();
-            groups = (0..set_aside.len()).map(|i| vec![i]).collect();
-            continue;
-        }
-        let refusal = group.iter().find_map(|&i| set_aside[i].1.melt_refusal);
-        let step = match (applied, refusal) {
-            (Err(OgeomError::NotDone(cause)), Some(refusal)) => {
-                ogeom_bail!(NotDone, "{refusal} ({cause})")
-            }
-            (applied, _) => applied?,
-        };
-        // A concave ruled wedge adds planar end patches beside the cap it
-        // extends. Dissolve only these same-domain seams before assigning
-        // provenance: the cap remains the cap, and its outer boundary is
-        // the new circular rim, not several ambiguous cap/patch edges.
-        let mut planar_images = Vec::new();
-        for &i in &group {
-            for face in explore_unique(model, &set_aside[i].1.solid, ShapeType::Face)? {
-                for image in step.history.trace(&face) {
-                    let planar = model
-                        .node(image)
-                        .and_then(|n| n.data().as_face())
-                        .and_then(|d| model.geometry().surface(d.surface))
-                        .is_some_and(|s| matches!(s, SurfaceGeometry::Plane(_)));
-                    if planar {
-                        planar_images.push(image.clone());
-                    }
-                }
-            }
-        }
-        let (unified, _) =
-            ogeom_heal::unify_same_domain_around(model, &step.shape, &planar_images, tol)?;
-        let step = Built {
-            shape: unified.shape,
-            history: step.history.then(&unified.history),
-        };
-        // The chain's history already says each edge is gone; the blends
-        // it generated are recorded on the composed history, where an edge
-        // consumed before this step still answers for them.
-        let mut history = built.history.then(&step.history);
-        let result = ogeom_topo::explore_unique(model, &step.shape, ShapeType::Face)?;
-        // A wedge's legs and caps can melt into the solid's existing cap.
-        // That cap is an image of its original face, not a new blend: giving
-        // it the blend's name too makes their common circular rim disappear
-        // from a consumer's disjoint-face edge names (a following Face fillet).
-        let inherited: Vec<_> = explore_unique(model, &built.shape, ShapeType::Face)?
-            .iter()
-            .flat_map(|face| step.history.trace(face).to_vec())
-            .collect();
-        for &i in &group {
-            let (edge, wedge) = &set_aside[i];
-            for face in ogeom_topo::explore_unique(model, &wedge.solid, ShapeType::Face)? {
-                let owner = wedge
-                    .credit
-                    .iter()
-                    .find(|(f, _)| f.is_same(&face))
-                    .map_or(edge, |(_, e)| e);
-                for image in step.history.trace(&face) {
-                    if result.iter().any(|f| f.is_same(image))
-                        && !inherited.iter().any(|f| f.is_same(image))
-                    {
-                        history.generate(owner, image.clone());
-                    }
-                }
-            }
-            for rounded in &wedge.edges {
-                history.delete(rounded);
-            }
-            history.delete(edge);
-        }
-        built = Built {
-            shape: step.shape.clone(),
-            history,
-        };
-    }
-    Ok(built)
 }
 
 /// Round a straight convex edge with a blend whose radius runs linearly from
@@ -2898,234 +1826,6 @@ pub(crate) fn chain_mates(
         .collect()
 }
 
-/// The straight-edge fillet: the rolling ball's envelope is a cylinder.
-pub(crate) fn planar_fillet(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    section: Section,
-    mates: Option<(usize, &[Mate])>,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    let radius = section.size();
-    let mut seat = planar_seat(model, solid, edge, tol)?;
-    // Where a convex crease runs into a face overhanging its corner (a rib
-    // running up under a slanted roof), the band is trimmed by that face's
-    // plane: carried on until the plane has passed its whole section, and
-    // what lies behind the plane cut off it, so the band stops on the face
-    // rather than cutting into what it bounds. A face square to the crease
-    // meets the band's cap in the cap's own plane, and the cap stands.
-    let mut trims: Vec<(Point, Vector)> = Vec::new();
-    let mut trimmed = [false; 2];
-    for (slot, end) in [true, false].into_iter().enumerate() {
-        if !seat.convex {
-            break;
-        }
-        let at = if end { seat.start } else { seat.end };
-        // A junction of the request closes the corner at this end.
-        if mates.is_some_and(|(index, mates)| Mate::meets_at(mates, index, at, tol)) {
-            continue;
-        }
-        let outward = if end { -seat.along } else { seat.along };
-        let hosts = [&seat.faces[0], &seat.faces[1]];
-        let Some((origin, normal)) =
-            crate::support::overhang_at(model, solid, edge, hosts, at, outward, tol)?
-        else {
-            continue;
-        };
-        let Some(inward) = section.centre(&seat, tol)? else {
-            continue;
-        };
-        // Where each point of the section crosses the plane, carried along
-        // `outward`: a plane passes a section last at one of its corners.
-        let rate = -outward.dot(normal);
-        let crossings = section
-            .points(&seat, at, inward, tol)?
-            .map(|p| (origin - p).dot(normal) / rate);
-        if crossings.iter().all(|c| c.abs() <= tol.confusion() * 1e3) {
-            continue;
-        }
-        let reach = crossings.iter().fold(0.0_f64, |m, c| m.max(-*c)) + radius * 0.25;
-        if end {
-            seat.start -= seat.along * reach;
-        } else {
-            seat.end += seat.along * reach;
-        }
-        trims.push((at - normal * (at - origin).dot(normal), normal));
-        trimmed[slot] = true;
-    }
-    // A straight seat runs out. Where a convex edge ends at a face that
-    // cuts the corner away obliquely (a floor giving way to a ramp under a
-    // wall that carries on), the seat runs on along the host it stays
-    // tangent to until that face has cut its whole section away, and the
-    // cut trims it there. At a plain wall the cap already stands in the
-    // wall's own plane and stays; at a step the seat stops where the edge
-    // does. Where a seat asked to meet ends against a neighbouring blend
-    // (a band tangent to one of the hosts at the end vertex), the material
-    // past the end is that blend's own rounding, and the seat carries on
-    // through it until the ball has left the solid; the cut then trims the
-    // two bands against each other along their own intersection, which is
-    // what two fillets meeting at a corner are.
-    let mut probes = crate::support::LazyProbe::default();
-    for (slot, end) in [true, false].into_iter().enumerate() {
-        // A band trimmed by a face it runs into stops on that face.
-        if trimmed[slot] {
-            continue;
-        }
-        let at = if end { seat.start } else { seat.end };
-        let outward = if end { -seat.along } else { seat.along };
-        if let Some((index, mates)) = mates {
-            // A mate leaving this vertex the way this edge arrives is a
-            // chain mate: the caps stand flush and the melt joins the
-            // blends.
-            let chain = mates.iter().enumerate().any(|(i, mate)| {
-                i != index
-                    && mate.ends.iter().any(|(p, leaving)| {
-                        p.distance(at) <= tol.confusion() * 1e3
-                            && leaving.cross(outward).magnitude() <= 1e-2
-                            && leaving.dot(outward) > 0.0
-                    })
-            });
-            if chain {
-                continue;
-            }
-            // A corner the corner tool closed, or a junction of the request
-            // that meets the band here.
-            if Mate::settled_at(mates, index, at, tol) || Mate::meets_at(mates, index, at, tol) {
-                continue;
-            }
-        }
-        let hosts = [&seat.faces[0], &seat.faces[1]];
-        if !crate::marched::crease_terminates_at(model, solid, edge, hosts, at, tol)? {
-            continue;
-        }
-        let through_blend =
-            crate::marched::neighbour_blend_at(model, solid, hosts, at, seat.convex, radius, tol)?;
-        // One edge at a time stops flush against a neighbouring blend: the
-        // state the corner tool closes. A fill runs on only through one.
-        if through_blend && mates.is_none() || !through_blend && !seat.convex {
-            continue;
-        }
-        // The ball's centre line, a radius in from both hosts.
-        let Some(inward) = section.centre(&seat, tol)? else {
-            continue;
-        };
-        let centre_at = |s: f64| at + outward * s + inward;
-        let step = radius / 8.0;
-        let mut reach: Option<f64> = None;
-        if through_blend {
-            let Some(probe) = probes.get(model, solid, tol)? else {
-                continue;
-            };
-            for k in 1..=32 {
-                let s = step * f64::from(k);
-                let inside = probe.holds(model, centre_at(s), tol)? == ogeom_algo::Containment::In;
-                if inside != seat.convex {
-                    reach = Some(s + radius * 0.25);
-                    break;
-                }
-            }
-        } else {
-            // No blend follows: the band runs out across whatever face cuts
-            // the corner away past the end, probed over its section there,
-            // the crease, the two contacts, each leg's middle and the arc's.
-            // A boss's cylinder is run out across only where the band runs
-            // out as it does alone: where another band of the request ends
-            // at the vertex with no junction there, the two meet as before,
-            // the later running on through the earlier.
-            let points = section.points(&seat, at, inward, tol)?;
-            let boss = mates.is_none_or(|(index, mates)| Mate::alone_at(mates, index, at, tol));
-            reach = crate::support::run_out_reach(
-                model,
-                solid,
-                edge,
-                hosts,
-                (at, outward),
-                &points,
-                (radius, boss),
-                &mut probes,
-                tol,
-            )?;
-        }
-        if std::env::var_os("OGEOM_DEBUG_RUNOUT").is_some() {
-            eprintln!("RUNOUT straight seat end {end}: reach {reach:?}");
-        }
-        let Some(mut reach) = reach else {
-            continue;
-        };
-        // The edge as asked for ends at its own vertex, where its blend
-        // alone caps flush. Where the ball's centre is still in the material
-        // a step past that vertex, the solid runs on there (a curved face
-        // leaving the vertex obliquely), and a seat carried further would
-        // round material no ball on this edge touches: it stops at the
-        // vertex, as rounding this edge before the neighbour does.
-        if let Some(mate) = mates.and_then(|(index, mates)| mates.get(index)) {
-            let own = mate
-                .ends
-                .iter()
-                .map(|(p, _)| *p)
-                .min_by(|p, q| p.distance(at).total_cmp(&q.distance(at)));
-            let to_own = own.map(|own| (own - at).dot(outward));
-            if let Some(to_own) = to_own.filter(|&t| t > tol.confusion() && t < reach)
-                && let Some(probe) = probes.get(model, solid, tol)?
-                && probe.holds(model, centre_at(to_own + step), tol)? == ogeom_algo::Containment::In
-            {
-                reach = to_own;
-            }
-        }
-        if end {
-            seat.start -= seat.along * reach;
-        } else {
-            seat.end += seat.along * reach;
-        }
-    }
-    match section {
-        Section::Ball(radius) => {
-            seated_fillet(model, solid, &seat, radius, Some(edge), &trims, tol)
-        }
-        Section::Conic { .. } => Err(declined()),
-    }
-}
-
-/// From a point of a straight seat's crease to the ball's centre in the
-/// section square to the crease there; `None` where the faces meet too
-/// sharply or too flat to seat a ball.
-pub(crate) fn seat_centre(
-    seat: &Seat,
-    radius: f64,
-    tol: Tolerances,
-) -> OgeomResult<Option<Vector>> {
-    let sign = if seat.convex { 1.0 } else { -1.0 };
-    let bisector = seat.leg(0, tol)? * sign + seat.leg(1, tol)? * sign;
-    let m = bisector.magnitude();
-    if m <= tol.angular() {
-        return Ok(None);
-    }
-    let depth = seat.normals[0].dot(bisector / m).abs();
-    if depth <= tol.angular() {
-        return Ok(None);
-    }
-    Ok(Some(bisector / m * (radius / depth)))
-}
-
-/// Points of a straight seat's band section square to the crease at `at`,
-/// the ball's centre `inward` of it: the section's corners (the crease and
-/// the two contacts) first, then each leg's middle and the arc's.
-pub(crate) fn section_at(seat: &Seat, at: Point, inward: Vector, radius: f64) -> [Point; 6] {
-    let centre = at + inward;
-    let sign = if seat.convex { 1.0 } else { -1.0 };
-    let touch = [0, 1].map(|i| centre + seat.normals[i] * (radius * sign));
-    let arc = centre - inward * (radius / inward.magnitude());
-    [
-        at,
-        touch[0],
-        touch[1],
-        at.midpoint(touch[0]),
-        at.midpoint(touch[1]),
-        arc,
-    ]
-}
-
 /// Where the rolling ball of `radius` seats between a straight seat's two
 /// planes: the faces in the order that turns positively about the crease,
 /// so the ball's arc and the cylinder's chart run from the first face's
@@ -3330,29 +2030,6 @@ pub(crate) fn seated_fillet(
     apply_wedge_solid(model, solid, edge, &wedge, !seat.convex, tol)
 }
 
-/// Whether the blend along `edge` of `solid`, a circle, runs the circle's
-/// whole turn: the edge is closed, or it is a piece of a rim the solid
-/// holds whole on its revolved seat, or of a crease that closes on itself
-/// on any other pair of hosts.
-fn rounds_whole_turn(
-    model: &Model,
-    solid: &Shape,
-    edge: &Shape,
-    tol: Tolerances,
-) -> OgeomResult<bool> {
-    let (Curve::Circle(c), range) = edge_curve(model, edge, tol)? else {
-        return Ok(false);
-    };
-    if ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b)) {
-        return Ok(true);
-    }
-    match revolved_seat(model, solid, edge, &c, tol) {
-        Ok(seat) => crate::support::runs_whole_turn(model, &seat, &c, range, tol),
-        Err(OgeomError::Construction(_)) => crate::marched::crease_closes(model, solid, edge, tol),
-        Err(e) => Err(e),
-    }
-}
-
 /// The circle an edge runs on, where it runs on one.
 fn rim_circle(model: &Model, edge: &Shape, tol: Tolerances) -> Option<ogeom_math::Circle> {
     match edge_curve(model, edge, tol).ok()?.0 {
@@ -3364,8 +2041,8 @@ fn rim_circle(model: &Model, edge: &Shape, tol: Tolerances) -> Option<ogeom_math
 /// `asked` with each rim closed: where the pieces of a circle asked all
 /// take one radius and the solid's arcs of that circle run the whole turn,
 /// the arcs not asked join at that radius. One value rounds a tangent chain
-/// (ADR 0001, "what M6 refuses by name"), and the current path rounds the
-/// whole turn where a rim closes; a rim that stops, or pieces asked at
+/// (ADR 0001, "what M6 refuses by name"), and a rim that closes is rounded
+/// the whole turn; a rim that stops, or pieces asked at
 /// different radii, are as asked.
 ///
 /// # Errors

@@ -137,7 +137,7 @@ pub(crate) fn round(
                     why @ (super::seats::NotSeated::PastAVertex
                     | super::seats::NotSeated::OffTheEdge),
                 ) => ogeom_core::ogeom_bail!(Construction, "{}", why.name()),
-                // A seat change not built yet goes to the current path.
+                // A seat change not built here is handed back.
                 Err(_) => return Ok(None),
             };
             // Nothing else of the solid in the box the run's piece can take
@@ -863,7 +863,7 @@ fn rim(
     // between the rim and the ring, and nothing else of a wall between the
     // rim and the ring's height; a straight edge leaving the rim's circle is
     // read at its far end. A face narrower than the round (a cap the ring
-    // runs off) is left to the current path.
+    // runs off) is handed back.
     let on_rim =
         |p: (f64, f64)| (p.0 - r0).abs() <= tol.confusion() && p.1.abs() <= tol.confusion();
     // An arc of less than a half turn rounds only between the planes

@@ -16,13 +16,12 @@ use crate::march::{Sides, seat_section};
 use crate::support::{edge_curve, same_occurrence};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, Curve3d as _, SurfaceGeometry};
-use ogeom_math::{Point, Vector};
 use ogeom_topo::{Filter, Model, Orientation, Shape, ShapeType, explore};
 
 /// A host's trace in the section plane: a line or a circle about a point.
 pub(crate) enum Trace {
     Line,
-    Circle { centre_on_axis: Point, radius: f64 },
+    Circle,
 }
 
 /// A straight crease between two planes or drums parallel to it, at least
@@ -30,10 +29,6 @@ pub(crate) enum Trace {
 pub(crate) struct RuledSeat {
     pub(crate) guide: Curve,
     pub(crate) range: (f64, f64),
-    pub(crate) start: Point,
-    pub(crate) end: Point,
-    pub(crate) length: f64,
-    pub(crate) along: Vector,
     pub(crate) faces: Vec<Shape>,
     pub(crate) hosts: Vec<(SurfaceGeometry, f64, Trace)>,
 }
@@ -87,12 +82,7 @@ pub(crate) fn ruled_seat(
                 if axis.cross(along).magnitude() > tol.angular() {
                     return Ok(None);
                 }
-                // The axis's crossing with the section plane at the start.
-                let o = cylinder.frame().origin();
-                Trace::Circle {
-                    centre_on_axis: o + axis * (start - o).dot(axis),
-                    radius: cylinder.radius(),
-                }
+                Trace::Circle
             }
             _ => return Ok(None),
         };
@@ -113,10 +103,6 @@ pub(crate) fn ruled_seat(
     Ok(Some(RuledSeat {
         guide,
         range,
-        start,
-        end,
-        length,
-        along,
         faces,
         hosts,
     }))

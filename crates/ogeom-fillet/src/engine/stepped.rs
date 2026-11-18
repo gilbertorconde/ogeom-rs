@@ -22,7 +22,7 @@
 //!
 //! An edge is held only where it bounds no face of the seam (`k` of three
 //! or more; a ball on `F2`'s own far edge is the rolled round of
-//! [`crate::rolled`]), and a face only where the touch on it stands on it.
+//! [`crate::engine::rolled`]), and a face only where the touch on it stands on it.
 //! The walk stops at a face it has met, `F1` among them. The section must
 //! be a simple polygon lying outside the solid: every side of it on a face
 //! has that face's outward normal pointing into it, so the fill adds only
