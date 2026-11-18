@@ -49,22 +49,10 @@ pub(crate) const HOST_REACH: f64 = 6.0;
 /// length.
 const WALL_REACH: f64 = 2.0 * CREASE_REACH;
 
-/// Round an edge whose seat only the marching machinery can speak: the
-/// intersection curve of two analytic faces, closed on itself.
-pub(crate) fn marched_fillet(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    radius: f64,
-    mates: Option<(usize, &[crate::fillet::Mate])>,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    marched_fillet_by(model, solid, edge, radius, None, None, mates, None, tol)
-}
-
-/// [`marched_fillet`] with the wedge set `aside` unapplied, the solid as
-/// given handed back, where the solid stands as given; a seat whose leg
-/// needs the solid rebuilt on a turned chart hands that solid back.
+/// [`marched_fillet_by`] at a constant radius, with the wedge set `aside`
+/// unapplied, the solid as given handed back, where the solid stands as
+/// given; a seat whose leg needs the solid rebuilt on a turned chart hands
+/// that solid back.
 pub(crate) fn marched_wedge(
     model: &mut Model,
     solid: &Shape,
@@ -87,10 +75,11 @@ pub(crate) fn marched_wedge(
     )
 }
 
-/// Round an edge as [`marched_fillet`] does, the ball's radius following
-/// `law` along the edge from its start. `mates`, where given, are the
-/// request's edges by their ends, the edge's own at `index`: a mate
-/// continuing the crease at an end stops the band flush there.
+/// Round an edge whose seat only the marching machinery can speak, the
+/// ball's radius following `law` along the edge from its start. `mates`,
+/// where given, are the request's edges by their ends, the edge's own at
+/// `index`: a mate continuing the crease at an end stops the band flush
+/// there.
 pub(crate) fn marched_fillet_law(
     model: &mut Model,
     solid: &Shape,
@@ -113,11 +102,12 @@ pub(crate) fn marched_fillet_law(
     )
 }
 
-/// [`marched_fillet`] with a constant radius, or with `law` where one is
-/// given; `radius` is then the law's largest, the scale every reach past
-/// the crease is taken at. `span`, where given, is the window of `edge`'s
-/// own curve an open chain of arcs of that curve covers, which the seat
-/// is rounded over in place of the edge's own.
+/// Round an edge whose seat only the marching machinery can speak (the
+/// intersection curve of two analytic faces) with a constant radius, or
+/// with `law` where one is given; `radius` is then the law's largest, the
+/// scale every reach past the crease is taken at. `span`, where given, is
+/// the window of `edge`'s own curve an open chain of arcs of that curve
+/// covers, which the seat is rounded over in place of the edge's own.
 #[allow(clippy::too_many_arguments, reason = "one seat's settings")]
 #[allow(clippy::too_many_lines, reason = "one seat, read end to end")]
 fn marched_fillet_by(
@@ -2222,7 +2212,6 @@ fn open_runout_wedge(
         ruled.map(|(_, chord)| chord),
         convex,
         [false, false],
-        None,
         walls,
         aside,
         tol,
@@ -2313,97 +2302,14 @@ pub(crate) fn build_open_band(
         None,
         convex,
         pinched,
-        None,
         [None, None],
         aside,
         tol,
     )
 }
 
-/// Where a closed-form seat's band lies exactly: the line or plane each
-/// rail stands on, and how far a point stands off the ball's envelope.
-pub(crate) struct ExactBand<'a> {
-    /// The first rail's, then the second's.
-    pub rails: [Rail; 2],
-    /// The distance from a point to the envelope of the run's balls.
-    pub off: &'a dyn Fn(Point) -> f64,
-    /// Where the second side is no one host but planar strips the fill
-    /// reaches over, from the crease out: each strip's plane, and for all
-    /// but the last the line of its far edge; the last strip's far edge is
-    /// the second rail's. Empty for a band on its two hosts.
-    pub strips: &'a [StripPiece],
-}
-
-/// One planar strip the fill of a band reaches over, beside its crease.
-#[derive(Debug, Clone)]
-pub(crate) struct StripPiece {
-    /// The strip's plane, as a surface whose normal is the strip's outward
-    /// one.
-    pub plane: SurfaceGeometry,
-    /// The line of its far edge, a point on it and its unit direction;
-    /// `None` for the last strip, whose far edge holds the second rail.
-    pub far: Option<(Point, Vector)>,
-}
-
-/// How a band's contact rail is held to its support.
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum Rail {
-    /// A plane through a point, with its unit normal.
-    Plane(Point, Vector),
-    /// A line through a point, with its unit direction.
-    Line(Point, Vector),
-}
-
-impl Rail {
-    /// The foot of `p` on the rail's plane or line.
-    fn foot(self, p: Point) -> Point {
-        match self {
-            Self::Plane(origin, normal) => p - normal * (p - origin).dot(normal),
-            Self::Line(origin, along) => origin + along * (p - origin).dot(along),
-        }
-    }
-}
-
-/// [`build_open_band`], with the band held to what `exact` knows of it
-/// where a caller knows it: each border row of the fitted band set on its
-/// rail's plane or line, so the rail is exactly the contact curve there,
-/// and the band refused where it then stands further off the envelope
-/// than the fit's target.
-#[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
-#[allow(clippy::too_many_lines, reason = "one wedge, assembled end to end")]
-pub(crate) fn build_held_band(
-    model: &mut Model,
-    solid: &Shape,
-    edge: Option<&Shape>,
-    blend: &crate::march::MarchedBlend,
-    guide: &Curve,
-    hosts: [(&SurfaceGeometry, f64); 2],
-    radius: f64,
-    convex: bool,
-    pinched: [bool; 2],
-    exact: Option<&ExactBand<'_>>,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    build_held_band_by(
-        model,
-        solid,
-        edge,
-        blend,
-        guide,
-        hosts,
-        radius,
-        false,
-        None,
-        convex,
-        pinched,
-        exact,
-        [None, None],
-        None,
-        tol,
-    )
-}
-
-/// [`build_held_band`], with `varies` where the ball's radius follows a law
+/// The band through each station's ball arc, fitted along the crease and
+/// held to its hosts, with `varies` where the ball's radius follows a law
 /// station by station: each station's arcs are then fitted, and its end
 /// arcs measured, at its own radius, and `radius` is only the largest, the
 /// scale every reach is taken at.
@@ -2421,7 +2327,6 @@ pub(crate) fn build_held_band_by(
     ruled: Option<Chord>,
     convex: bool,
     pinched: [bool; 2],
-    exact: Option<&ExactBand<'_>>,
     walls: [Option<(Point, Vector)>; 2],
     aside: crate::support::Aside<'_>,
     tol: Tolerances,
@@ -2535,15 +2440,6 @@ pub(crate) fn build_held_band_by(
         let net: Vec<Point> = grid.points().iter().map(|w| (*w).point()).collect();
         (grid.u_count(), grid.v_count(), net)
     };
-    // A border control row on a plane or a line makes its clamped border
-    // curve lie on it: the rail is the contact curve, not a fit of it.
-    if let Some(exact) = exact {
-        for (i, rail) in [(0, exact.rails[0]), (k_count - 1, exact.rails[1])] {
-            for j in 0..l_count {
-                net[i * l_count + j] = rail.foot(net[i * l_count + j]);
-            }
-        }
-    }
     // The fit holds each end row within its target of the end section but
     // not in the cap's plane, and where the cap stands flush with a face of
     // the solid (a crease running off the solid square to its side) a band
@@ -2567,29 +2463,6 @@ pub(crate) fn build_held_band_by(
         &ogeom_math::ControlGrid::new(net.clone(), k_count, l_count)?,
         tol,
     )?;
-    if let Some(exact) = exact {
-        // Read between the stations and across the arcs, where the fit and
-        // the rows set on their rails stand furthest off.
-        use ogeom_geom::Surface as _;
-        let ((u0, u1), (v0, v1)) = surface.domain();
-        let along = (n * 4).max(16);
-        let mut worst: f64 = 0.0;
-        for b in 0..=along {
-            #[allow(clippy::cast_precision_loss)]
-            let v = v0 + (v1 - v0) * (b as f64) / (along as f64);
-            for a in 0..=32 {
-                let u = u0 + (u1 - u0) * f64::from(a) / 32.0;
-                worst = worst.max((exact.off)(surface.point_at(u, v, tol)?));
-            }
-        }
-        if worst > fit_target {
-            ogeom_bail!(
-                NotDone,
-                "the blend surface stands {worst} off the ball's envelope against a target \
-                 of {fit_target}"
-            );
-        }
-    }
     let point_at = |i: usize, j: usize| -> Point { net[i * l_count + j] };
     let blend_geo: SurfaceGeometry = surface.into();
     let (u_dom, v_dom) = blend_geo.domain();
@@ -2770,74 +2643,20 @@ pub(crate) fn build_held_band_by(
         (&va1, apex1),
         (&vc01, corner(0, l_count - 1)),
     )?;
-    // Over strips the second side's connectors are polylines in the caps'
-    // planes, from the crease's end across each strip to the rail's, their
-    // corners where the strips' far edges cross the planes; each strip's
-    // far edge between the planes is a line both its pieces share.
-    let strips: &[StripPiece] = exact.map_or(&[], |e| e.strips);
-    let mut strip_lines: Vec<Shape> = Vec::new();
-    let mut strip_conns: [Vec<Shape>; 2] = [Vec::new(), Vec::new()];
-    let mut strip_corners: [Vec<Point>; 2] = [vec![apex0], vec![apex1]];
-    let (conn_second_0, conn_second_1) = if strips.is_empty() {
-        (
-            connector(
-                model,
-                second,
-                plane0,
-                (&va0, apex0),
-                (&vc10, corner(k_count - 1, 0)),
-            )?,
-            connector(
-                model,
-                second,
-                plane1,
-                (&va1, apex1),
-                (&vc11, corner(k_count - 1, l_count - 1)),
-            )?,
-        )
-    } else {
-        let (Some(cap0), Some(cap1)) = (plane0, plane1) else {
-            ogeom_bail!(Construction, "a band over strips is capped at both ends");
-        };
-        let meet = |plane: &ogeom_math::Plane, (o, d): (Point, Vector)| -> OgeomResult<Point> {
-            let rate = plane.normal().vector().dot(d);
-            if rate.abs() <= tol.angular() {
-                ogeom_bail!(Construction, "a strip's far edge runs along a cap's plane");
-            }
-            Ok(o - d * (plane.signed_distance_to(o) / rate))
-        };
-        let mut inner = [(va0.clone(), apex0), (va1.clone(), apex1)];
-        for piece in strips {
-            let outer = match piece.far {
-                Some(line) => {
-                    let q = [meet(&cap0, line)?, meet(&cap1, line)?];
-                    let w = q.map(|p| ogeom_algo::make_vertex(model, p).shape);
-                    strip_lines.push(crate::support::segment_between(
-                        model,
-                        (&w[0], q[0]),
-                        (&w[1], q[1]),
-                        tol,
-                    )?);
-                    [(w[0].clone(), q[0]), (w[1].clone(), q[1])]
-                }
-                None => [
-                    (vc10.clone(), corner(k_count - 1, 0)),
-                    (vc11.clone(), corner(k_count - 1, l_count - 1)),
-                ],
-            };
-            for c in 0..2 {
-                strip_conns[c].push(crate::support::segment_between(
-                    model,
-                    (&inner[c].0, inner[c].1),
-                    (&outer[c].0, outer[c].1),
-                    tol,
-                )?);
-                strip_corners[c].push(outer[c].1);
-            }
-            inner = outer;
-        }
-        (None, None)
-    };
+    let conn_second_0 = connector(
+        model,
+        second,
+        plane0,
+        (&va0, apex0),
+        (&vc10, corner(k_count - 1, 0)),
+    )?;
+    let conn_second_1 = connector(
+        model,
+        second,
+        plane1,
+        (&va1, apex1),
+        (&vc11, corner(k_count - 1, l_count - 1)),
+    )?;
 
     // The band face: same-parameter iso pcurves on its own chart, no seam.
     let row_line = |v: f64| -> OgeomResult<PlanarCurve> {
@@ -2958,56 +2777,13 @@ pub(crate) fn build_held_band_by(
         [&conn_first_0, &conn_first_1],
         (blend.touch_first[mid], blend.on_first[mid]),
     )?;
-    let leg_second = if strips.is_empty() {
-        Some(leg(
-            model,
-            second,
-            &rail_second,
-            [&conn_second_0, &conn_second_1],
-            (blend.touch_second[mid], blend.on_second[mid]),
-        )?)
-    } else {
-        None
-    };
-    // Over strips, each strip's piece between the caps: its near line (the
-    // crease, or the strip before's far edge), the connectors' stretches
-    // across it at the two ends, and its far line (the next far edge, or
-    // the rail), on its own plane, wound about the strip's outward normal.
-    let mut strip_faces = Vec::with_capacity(strips.len());
-    for (j, piece) in strips.iter().enumerate() {
-        let near = if j == 0 {
-            apex_edge.clone()
-        } else {
-            strip_lines[j - 1].clone()
-        };
-        let far = if j + 1 == strips.len() {
-            rail_second.clone()
-        } else {
-            strip_lines[j].clone()
-        };
-        let mut edges = vec![
-            near,
-            strip_conns[1][j].clone(),
-            far.reversed(),
-            strip_conns[0][j].reversed(),
-        ];
-        let [p, q, r] = [
-            strip_corners[0][j],
-            strip_corners[1][j],
-            strip_corners[1][j + 1],
-        ];
-        let normal = {
-            let ((u0, u1), (v0, v1)) = piece.plane.domain();
-            let (du, dv) = piece
-                .plane
-                .d1_at(f64::midpoint(u0, u1), f64::midpoint(v0, v1), tol)?;
-            du.cross(dv)
-        };
-        if (q - p).cross(r - p).dot(normal) < 0.0 {
-            edges = edges.iter().rev().map(Shape::reversed).collect();
-        }
-        strip_faces.push(face_from_edges(model, piece.plane.clone(), &edges, tol)?);
-    }
+    let leg_second = leg(
+        model,
+        second,
+        &rail_second,
+        [&conn_second_0, &conn_second_1],
+        (blend.touch_second[mid], blend.on_second[mid]),
+    )?;
 
     // The caps: the section planes, bounded by connector, arc, connector.
     // Outward is out of the marched window: against the guide at the
@@ -3037,17 +2813,10 @@ pub(crate) fn build_held_band_by(
             Ok(face.reversed())
         }
     };
-    // The second side's connector back from the rail to the crease: the
-    // host's, or over strips the polyline walked back.
-    let back = |host: &Option<Shape>, c: usize| -> Option<Vec<Shape>> {
-        if strips.is_empty() {
-            host.as_ref().map(|h| vec![h.reversed()])
-        } else {
-            Some(strip_conns[c].iter().rev().map(Shape::reversed).collect())
-        }
-    };
+    // The second side's connector back from the rail to the crease.
+    let back = |host: &Option<Shape>| host.as_ref().map(|h| vec![h.reversed()]);
     let mut caps = Vec::new();
-    if let (Some(plane), Some(c1), Some(c2)) = (plane0, &conn_first_0, back(&conn_second_0, 0)) {
+    if let (Some(plane), Some(c1), Some(c2)) = (plane0, &conn_first_0, back(&conn_second_0)) {
         let mut edges = vec![c1.clone(), arc_start.clone()];
         edges.extend(c2);
         caps.push(cap(
@@ -3058,7 +2827,7 @@ pub(crate) fn build_held_band_by(
             -guide.d1_at(t0, tol)?,
         )?);
     }
-    if let (Some(plane), Some(c1), Some(c2)) = (plane1, &conn_first_1, back(&conn_second_1, 1)) {
+    if let (Some(plane), Some(c1), Some(c2)) = (plane1, &conn_first_1, back(&conn_second_1)) {
         let mut edges = vec![c1.clone(), arc_end.clone()];
         edges.extend(c2);
         caps.push(cap(
@@ -3078,11 +2847,10 @@ pub(crate) fn build_held_band_by(
         let aligned = if additive { -host_sign } else { host_sign };
         if aligned > 0.0 { face } else { face.reversed() }
     };
-    let mut faces = vec![orient(leg_first, sign_first)];
-    if let Some(leg_second) = leg_second {
-        faces.push(orient(leg_second, sign_second));
-    }
-    faces.extend(strip_faces.into_iter().map(|f| orient(f, 1.0)));
+    let mut faces = vec![
+        orient(leg_first, sign_first),
+        orient(leg_second, sign_second),
+    ];
     faces.push(blend_face);
     faces.extend(caps);
     crate::support::finish_wedge(model, solid, edge, &faces, additive, aside, tol)

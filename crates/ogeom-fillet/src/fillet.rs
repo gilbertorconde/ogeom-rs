@@ -14,15 +14,13 @@
 use crate::asym::Section;
 use crate::law::{Profile, RadiusLaw};
 use crate::support::{
-    Seat, apply_wedge, apply_wedge_solid, edge_curve, face_from_edges, planar_face, planar_seat,
-    revolved_flanks, revolved_seat, segment_between, trimmed_wedge, wedge_solid,
+    Seat, apply_wedge_solid, edge_curve, face_from_edges, planar_face, planar_seat, revolved_seat,
+    segment_between, trimmed_wedge, wedge_solid,
 };
-use ogeom_algo::{Built, make_edge_between, make_revolution_band, make_vertex};
+use ogeom_algo::{Built, make_edge_between, make_vertex};
 use ogeom_core::{OgeomError, OgeomResult, Tolerances, ogeom_bail};
-use ogeom_geom::{
-    CircleCurve, Curve, CylinderSurface, PlaneSurface, SurfaceGeometry, TorusSurface,
-};
-use ogeom_math::{Circle, Cylinder, Direction, Frame, Plane, Point, Torus, Vector};
+use ogeom_geom::{CircleCurve, Curve, CylinderSurface, PlaneSurface, SurfaceGeometry};
+use ogeom_math::{Circle, Cylinder, Direction, Frame, Plane, Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
 /// Round a convex edge of a solid with a constant-radius blend tangent to
@@ -527,29 +525,27 @@ fn fillet_edge_seat(
         Route::Ruled(seat) => {
             crate::ruled::ruled_fillet(model, solid, edge, radius, mates, seat, tol)
         }
-        // A cone's ball whose tube would reach its own axis takes the march:
-        // the torus would cross the axis.
+        // A cone's ball whose tube would reach its own axis is marched by
+        // the engine.
         Route::Revolved(_, _, seat)
             if seat.slope != 0.0 && seat.ball(radius).rho - radius <= tol.confusion() =>
         {
-            crate::marched::marched_fillet(model, solid, edge, radius, mates, tol)
+            Err(declined())
         }
         Route::Revolved(c, crange, seat) => {
             let closed =
                 ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
-            if closed {
-                return revolved_fillet(model, solid, edge, &c, radius, tol);
-            }
-            let whole_turn = crate::support::runs_whole_turn(model, &seat, &c, crange, tol)?;
-            if whole_turn {
-                revolved_fillet(model, solid, edge, &c, radius, tol)
+            // A whole rim's torus band is the engine's.
+            if closed || crate::support::runs_whole_turn(model, &seat, &c, crange, tol)? {
+                Err(declined())
             } else {
                 crate::rim_arc::revolved_arc_fillet(
                     model, solid, edge, &c, radius, None, mates, None, tol,
                 )
             }
         }
-        Route::Marched => crate::marched::marched_fillet(model, solid, edge, radius, mates, tol),
+        // A seat with no closed form is marched by the engine.
+        Route::Marched => Err(declined()),
     }
 }
 
@@ -3332,75 +3328,6 @@ pub(crate) fn seated_fillet(
         wedge = trimmed_wedge(model, &wedge, plane, span, tol)?;
     }
     apply_wedge_solid(model, solid, edge, &wedge, !seat.convex, tol)
-}
-
-/// The circular-rim fillet: a ball rolling around a rim where a cylindrical
-/// or conical wall meets a perpendicular planar cap traces a torus.
-///
-/// Four seats, one parameterization. With `sigma` the wall's outward radial
-/// sign and `tau` telling whether the wall extends away from the cap's
-/// outward side, the tube's centre circle sits at radius `R − sigma tau r`
-/// beside a cylinder (where a cone's wall leans, as
-/// [`RevolvedSeat::ball`](crate::support::RevolvedSeat::ball) derives),
-/// lifted `tau r` against the cap's normal, and `tau` alone decides whether
-/// the wedge subtracts (the external rim and the hole's rim, both convex) or
-/// fuses (the boss base and the blind hole's floor, both concave). The wedge
-/// is always the same three revolved faces: a band of the wall, an annulus
-/// of the cap, and the stretch of tube between them, a quarter beside a
-/// cylinder.
-fn revolved_fillet(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    rim: &CircleCurve,
-    radius: f64,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    let seat = revolved_seat(model, solid, edge, rim, tol)?;
-    revolved_fillet_on(model, solid, edge, seat, radius, tol)
-}
-
-/// [`revolved_fillet`] on `seat`, read from `edge` or from the faces either
-/// side of a ring beside it.
-fn revolved_fillet_on(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    seat: crate::support::RevolvedSeat,
-    radius: f64,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    let ball = seat.ball(radius);
-    let tube_rho = ball.rho;
-    if tube_rho <= tol.confusion() {
-        ogeom_bail!(
-            Construction,
-            "a fillet of radius {radius} swallows the axis of a rim of \
-             radius {}",
-            seat.radius
-        );
-    }
-    let tube_level = seat.centre + seat.up * ball.height;
-    let flanks = revolved_flanks(model, &seat, -seat.tau * ball.wall_height, tube_rho, tol)?;
-
-    // The blend: the tube between the tangencies, its natural normal away
-    // from the tube's centre (into the wedge), so always reversed.
-    let blend_band = {
-        let surface: SurfaceGeometry = TorusSurface::new(Torus::new(
-            seat.frame_at(tube_level, tol)?,
-            tube_rho,
-            radius,
-            tol,
-        )?)
-        .into();
-        if seat.slope != 0.0 {
-            return Err(declined());
-        }
-        make_revolution_band(model, &surface, &flanks.wall_ring, &flanks.cap_ring, tol)?.reversed()
-    };
-
-    let faces = [flanks.wall_band, flanks.annulus, blend_band];
-    apply_wedge(model, solid, Some(edge), &faces, seat.additive(), tol)
 }
 
 /// Whether the blend along `edge` of `solid`, a circle, runs the circle's
