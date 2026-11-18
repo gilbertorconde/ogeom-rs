@@ -1869,6 +1869,11 @@ features depend on their order).
   the ball takes standing, nor run on into the material past where the
   wall's contact enters it, which would cut a groove with a cliff on the
   wall's surface carried on.
+- **Not a rim that stops.** An arc whose circle's arcs on the solid run
+  the whole turn (a rim a boolean's seams split) has no end: one radius
+  rounds the tangent chain ("what M6 refuses by name"), so the rim is
+  rounded whole, as the curved routes round it with its seams dissolved,
+  and not by this rule, which would leave the arcs not asked sharp.
 
 ### Amendment: a band's run past its end (#902)
 
@@ -2309,6 +2314,18 @@ fill's end section, while the rounds asked alone are built.
   as it is alone, the cuts taking their union) for groups that do not
   meet at all, with fills as well as cuts. No new behaviour is defined:
   each group's result is the one the engine already builds for it.
+- **In turn.** A group's tools are read by booleans between the solid
+  and its rounded copy, which share every face but the round's; on a part
+  whose faces the booleans cannot match (two bores crossing), they refuse.
+  The groups are then rounded in turn, each on the result of those
+  before, those holding a marched seat first (the march reads the solid
+  as given more surely than a rebuilt one), and a group the engine does
+  not round there is moved first, once. The rounds are those standing
+  apart only where each later group's edges come through the earlier
+  rounds as one edge on the same ends, and each face an earlier round
+  made comes through the later ones with its edges as they were (a band
+  that met it would cut a new edge into it); otherwise the route
+  declines.
 - **Not this route:** groups whose tools touch or overlap (their bands
   meet and the meeting is the routes' to close), a group the engine does
   not round alone, or a request of one group.

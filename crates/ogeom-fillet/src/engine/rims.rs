@@ -217,9 +217,27 @@ pub(crate) fn assemble_with(
         };
         let moved = contact.contains_key(&edge.ends.0) || contact.contains_key(&edge.ends.1);
         let (curve, range) = if moved {
-            let line = LineCurve::segment(points[a], points[b], tol)?;
-            widened.push(None);
-            (Curve::Line(line), (0.0, points[a].distance(points[b])))
+            let ends_moved = (
+                contact.contains_key(&edge.ends.0),
+                contact.contains_key(&edge.ends.1),
+            );
+            let within = model.tolerance_of(&edge.shape)?;
+            match own_line(&edge.curve, (points[a], points[b]), ends_moved, within, tol) {
+                // A straight edge keeps its own line, run between its ends
+                // as they now stand, and the tolerance it stood within: a
+                // segment through an end that stood off the line (within
+                // that end's tolerance) would leave the faces the line
+                // lies on.
+                Some((line, range, within)) => {
+                    widened.push(within);
+                    (Curve::Line(line), range)
+                }
+                None => {
+                    let line = LineCurve::segment(points[a], points[b], tol)?;
+                    widened.push(None);
+                    (Curve::Line(line), (0.0, points[a].distance(points[b])))
+                }
+            }
         } else {
             widened.push(model.tolerance_of(&edge.shape)?);
             (edge.curve.clone(), edge.range)
@@ -849,6 +867,37 @@ fn meridian_at(
             ))
         }
     }
+}
+
+/// `curve`, where it is a line, run from `a` to `b`: the line, its range,
+/// and the tolerance `within` carried over. An end the route moved must
+/// stand on the line, within that tolerance or the confusion distance; an
+/// end it kept is the edge's own vertex, which its own tolerance places.
+/// `None` otherwise, or where the ends do not stand apart along the line.
+fn own_line(
+    curve: &Curve,
+    (a, b): (Point, Point),
+    (moved_a, moved_b): (bool, bool),
+    within: Option<ogeom_core::Tolerance>,
+    tol: Tolerances,
+) -> Option<(LineCurve, (f64, f64), Option<ogeom_core::Tolerance>)> {
+    let Curve::Line(line) = curve else {
+        return None;
+    };
+    let reach = within.map_or(0.0, |w| w.get()).max(tol.confusion());
+    let axis = line.axis();
+    let off = |p: Point| axis.project(p).distance(p) > reach;
+    if (moved_a && off(a)) || (moved_b && off(b)) {
+        return None;
+    }
+    let axis = if axis.parameter_of(b) < axis.parameter_of(a) {
+        axis.reversed()
+    } else {
+        axis
+    };
+    let (ta, tb) = (axis.parameter_of(a), axis.parameter_of(b));
+    let line = LineCurve::over(axis, ta, tb).ok()?;
+    Some((line, (ta, tb), within))
 }
 
 #[cfg(test)]

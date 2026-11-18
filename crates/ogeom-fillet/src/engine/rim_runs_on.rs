@@ -422,6 +422,39 @@ fn rim_of(
         return Ok(None);
     }
     let circle = circle.circle();
+    // Arcs of its circle running the whole turn, each a rim between a
+    // planar cap and a curved wall, the rim only split (by a boolean's
+    // seams): a whole rim, rounded whole by the routes before this one, not
+    // a rim that stops. An arc between two faces of one plane is a seam,
+    // no rim.
+    let rim_like = |id: Id| match faces_of(curved, id)[..] {
+        [fa, fb] => matches!(
+            (&curved.faces[fa].surface, &curved.faces[fb].surface),
+            (
+                SurfaceGeometry::Plane(_),
+                SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_)
+            ) | (
+                SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_),
+                SurfaceGeometry::Plane(_)
+            )
+        ),
+        _ => false,
+    };
+    let turn: f64 = curved
+        .edges
+        .iter()
+        .filter_map(|(id, e)| match &e.curve {
+            Curve::Circle(other)
+                if crate::fillet::same_circle(&other.circle(), &circle, tol) && rim_like(*id) =>
+            {
+                Some((e.range.1 - e.range.0).abs())
+            }
+            _ => None,
+        })
+        .sum();
+    if (turn - core::f64::consts::TAU).abs() <= tol.angular() {
+        return Ok(None);
+    }
     let axis = circle.frame().z().vector();
     let [fa, fb] = faces_of(curved, edge)[..] else {
         return Ok(None);

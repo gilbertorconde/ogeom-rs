@@ -11,8 +11,16 @@
 //! passes the overlap guards: no two bands overlap across a face they
 //! share (amendment "convex bands crossing apart"). The tools are applied
 //! as the one-boolean fallback's.
+//!
+//! What a group's round changes is read by booleans between the solid and
+//! its rounded copy, which share every face but the round's. Where such a
+//! boolean refuses, the groups are rounded in turn instead, each on the
+//! result of those before. Each later group's edges must come through the
+//! earlier rounds unchanged, and the faces the earlier rounds made must
+//! come through the later ones untouched; then no group's band met another
+//! group's, and the rounds in turn are the rounds alone.
 
-use ogeom_algo::Built;
+use ogeom_algo::{Built, History};
 use ogeom_core::{OgeomError, OgeomResult, Tolerances};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
@@ -24,7 +32,8 @@ use super::fallback::{Sense, Tool};
 /// each group's round takes off or adds stands clear of every other
 /// group's, or meets it only where both take material off and no two
 /// bands overlap across a face they share; `None` otherwise, or where a
-/// boolean refuses or the result is not valid.
+/// boolean refuses or the result is not valid. Where the booleans reading
+/// a group's changes refuse, the groups are rounded in turn ([`in_turn`]).
 ///
 /// # Errors
 ///
@@ -55,7 +64,7 @@ pub(crate) fn rounds(
             ogeom_bool::cut(&mut scratch, solid, &alone.shape, tol),
             ogeom_bool::cut(&mut scratch, &alone.shape, solid, tol),
         ) else {
-            return Ok(None);
+            return in_turn(model, solid, once, &groups, round, tol);
         };
         let mut any = false;
         for (sense, change) in [(Sense::Cut, &taken), (Sense::Fuse, &added)] {
@@ -138,10 +147,188 @@ pub(crate) fn rounds(
     Ok(Some(built))
 }
 
+/// `once` rounded group by group, each group as the engine rounds it alone
+/// on the result of the groups before; `None` where a group is not rounded,
+/// a later group's edge does not come through the earlier rounds as one
+/// edge on the same ends, a face an earlier round made does not come
+/// through a later one untouched (the bands met), or the result is not
+/// valid. Groups holding an edge on a marched seat go first, and a group
+/// the engine does not round on the earlier rounds' result is rounded
+/// first instead, once: the rounds standing apart, their order does not
+/// change what each takes off or adds.
+fn in_turn(
+    model: &mut Model,
+    solid: &Shape,
+    once: &[(Shape, f64)],
+    groups: &[Vec<usize>],
+    round: Rounder,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    // Groups on marched seats first: the march reads the solid as given
+    // more surely than one an earlier round rebuilt.
+    let mut marched = Vec::with_capacity(groups.len());
+    for group in groups {
+        let mut on = false;
+        for &i in group {
+            on |= super::marched_seats::on_marched_seat(model, solid, &once[i].0, tol)?;
+        }
+        marched.push(on);
+    }
+    let mut order: Vec<&[usize]> = Vec::with_capacity(groups.len());
+    for want in [true, false] {
+        order.extend(
+            groups
+                .iter()
+                .zip(&marched)
+                .filter(|(_, m)| **m == want)
+                .map(|(g, _)| g.as_slice()),
+        );
+    }
+    let mut first: Vec<&[usize]> = Vec::new();
+    loop {
+        let mut scratch = model.clone();
+        match turned(&mut scratch, solid, once, &order, round, tol)? {
+            Turn::Built(built) => {
+                *model = scratch;
+                return Ok(Some(*built));
+            }
+            Turn::Declined(k) if k > 0 && !first.contains(&order[k]) => {
+                let group = order.remove(k);
+                first.push(group);
+                order.insert(0, group);
+            }
+            Turn::Declined(_) | Turn::Met => return Ok(None),
+        }
+    }
+}
+
+/// How rounding groups in turn went.
+enum Turn {
+    Built(Box<Built>),
+    /// The engine did not round the group at this place in the order.
+    Declined(usize),
+    /// Two groups' rounds met, or the result is not valid.
+    Met,
+}
+
+/// The groups rounded in `order` on `model`, for [`in_turn`].
+fn turned(
+    model: &mut Model,
+    solid: &Shape,
+    once: &[(Shape, f64)],
+    order: &[&[usize]],
+    round: Rounder,
+    tol: Tolerances,
+) -> OgeomResult<Turn> {
+    let mut shape = solid.clone();
+    let mut history = History::identity();
+    // The faces the rounds so far made, as they stand now.
+    let mut made: Vec<Shape> = Vec::new();
+    for (k, group) in order.iter().enumerate() {
+        let mut asked: Vec<(Shape, f64)> = Vec::with_capacity(group.len());
+        for &i in *group {
+            let (edge, radius) = &once[i];
+            let [image] = history.trace(edge) else {
+                return Ok(Turn::Met);
+            };
+            if !same_ends(model, edge, image, tol)? {
+                return Ok(Turn::Met);
+            }
+            asked.push((image.clone(), *radius));
+        }
+        let step = match round(model, &shape, &asked, tol) {
+            Ok(Some(step)) => step,
+            Err(e @ OgeomError::Cancelled) => return Err(e),
+            _ => return Ok(Turn::Declined(k)),
+        };
+        let mut now = Vec::with_capacity(made.len());
+        for face in &made {
+            match step.history.trace(face) {
+                [image] if untouched(model, face, image, tol)? => now.push(image.clone()),
+                _ => return Ok(Turn::Met),
+            }
+        }
+        let mut next = history.then(&step.history);
+        for (&i, (image, _)) in group.iter().zip(&asked) {
+            let edge = &once[i].0;
+            for band in step.history.generated(image) {
+                if !next.generated(edge).iter().any(|f| f.is_same(band)) {
+                    next.generate(edge, band.clone());
+                }
+                if model.kind_of(band)? == ShapeType::Face {
+                    now.push(band.clone());
+                }
+            }
+            next.delete(edge);
+        }
+        made = now;
+        history = next;
+        shape = step.shape;
+    }
+    if !ogeom_algo::check(model, &shape, tol)?.is_valid() {
+        return Ok(Turn::Met);
+    }
+    Ok(Turn::Built(Box::new(Built::new(shape, history))))
+}
+
+/// Whether `image` is `face` as it stood: its edges as many, each running
+/// between the points one of the face's did. A band that met the face
+/// would have cut a new edge into it.
+pub(super) fn untouched(
+    model: &Model,
+    face: &Shape,
+    image: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let (was, is) = (
+        explore_unique(model, face, ShapeType::Edge)?,
+        explore_unique(model, image, ShapeType::Edge)?,
+    );
+    if was.len() != is.len() {
+        return Ok(false);
+    }
+    for edge in &is {
+        let mut found = false;
+        for old in &was {
+            if same_ends(model, old, edge, tol)? {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether `image` runs between the points `edge` does, either way round.
+pub(super) fn same_ends(
+    model: &Model,
+    edge: &Shape,
+    image: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let ends = |e: &Shape| -> OgeomResult<Option<[ogeom_math::Point; 2]>> {
+        let Some((a, b)) = ogeom_algo::edge_vertices(model, e)? else {
+            return Ok(None);
+        };
+        Ok(Some([
+            crate::setback::point_of(model, &a)?,
+            crate::setback::point_of(model, &b)?,
+        ]))
+    };
+    let (Some([a, b]), Some([c, d])) = (ends(edge)?, ends(image)?) else {
+        return Ok(false);
+    };
+    let near = |p: ogeom_math::Point, q: ogeom_math::Point| p.distance(q) <= tol.confusion();
+    Ok((near(a, c) && near(b, d)) || (near(a, d) && near(b, c)))
+}
+
 /// The edges of `once` gathered into groups, two edges in one group where a
 /// chain of edges sharing vertices joins them, each group's indices in
 /// request order. Empty where an edge has no vertices.
-fn joined(model: &Model, once: &[(Shape, f64)]) -> OgeomResult<Vec<Vec<usize>>> {
+pub(super) fn joined(model: &Model, once: &[(Shape, f64)]) -> OgeomResult<Vec<Vec<usize>>> {
     let mut ends = Vec::with_capacity(once.len());
     for (edge, _) in once {
         let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
