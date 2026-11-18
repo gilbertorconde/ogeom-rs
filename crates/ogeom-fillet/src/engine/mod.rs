@@ -97,9 +97,6 @@ pub(crate) use fallback::{Sense, Tool, applied as apply_tools, straight_non_loca
 pub(crate) use far_edge::rounds as far_edge_rounds;
 pub(crate) use fits::request_fits;
 pub(crate) use law_tools::rounds as varying_rounds;
-pub(crate) use marched_junctions::{
-    fit_to_junctions, join_flush, joinable, request_mates, with_corners,
-};
 pub(crate) use marched_seats::{old_marched_constructor, rounds as marched_rounds};
 pub(crate) use meeting::{
     Spec as MeetingSpec, carried_out as carried_out_rounds, reaches_earlier_band,

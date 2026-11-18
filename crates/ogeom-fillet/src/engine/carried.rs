@@ -1,7 +1,7 @@
 //! A concave edge's round whose ball changes what it rests on along the
 //! edge.
 //!
-//! [`crate::rolled`] rounds a concave seam `E` whose ball touches one face
+//! [`crate::engine::rolled`] rounds a concave seam `E` whose ball touches one face
 //! and rests on the far edge of the narrow face beside it all along. Where
 //! the narrow face widens past the setback, narrows the other way, or ends
 //! in a corner, the ball's contact on a side of `E` changes kind partway:
@@ -13,7 +13,7 @@
 //!   cylinder between them;
 //! - a face and an edge of the other face: the ellipse where the plane a
 //!   radius off the face meets the cylinder a radius about the edge, the
-//!   rolled round of [`crate::rolled`];
+//!   rolled round of [`crate::engine::rolled`];
 //! - a face and a corner of the other face: the circle where that plane
 //!   meets the sphere a radius about the corner, a spindle torus's patch
 //!   whose arcs all end on the corner.

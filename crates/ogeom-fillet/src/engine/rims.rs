@@ -606,7 +606,7 @@ fn rims(
         // The cap's ring stands on every cap face, nothing else of the cap
         // between it and the rim: every other edge of the cap, read along
         // its length, stays farther from the rim than the ring. A cap
-        // narrower than the setback is left to the current path.
+        // narrower than the setback is handed back.
         let inward = ball.rho < seat.radius;
         for a in &solved_arcs {
             for (x, _) in read.faces[a.cap].loops.iter().flatten() {

@@ -8,8 +8,7 @@
 //! station along the edge, its arc runs between them. Each vertex closes by
 //! its [`RoundVertex`]: a sphere through the three strips' arcs, or a flush
 //! end, where a strip's arc lies in the vertex's third face and becomes
-//! that face's corner. A vertex no method closes yet leaves the request to
-//! the current path.
+//! that face's corner. A vertex no method closes hands the request back.
 
 use ogeom_algo::{Built, HalfSpaces, History};
 use ogeom_core::{FastMap, OgeomResult, Tolerances};
@@ -118,8 +117,8 @@ pub(crate) fn assemble(
         let solved = PlanarSection::new(&support, &spec, tol)?;
         sections.insert(seat.edge, (solved, radius));
     }
-    // An edge asked that is not one of the solid's is the current path's to
-    // refuse.
+    // An edge asked that is not one of the solid's is handed back, to be
+    // refused.
     if sections.len() != by_edge.len() {
         return Ok(None);
     }
@@ -1945,7 +1944,7 @@ pub(crate) fn assemble(
                 continue;
             }
             // Not proved either way (a patch tangent to a face only to its
-            // fit, its bound stalling there): the current path's to take.
+            // fit, its bound stalling there): handed back.
             if !out.found {
                 return Ok(None);
             }

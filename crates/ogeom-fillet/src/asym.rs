@@ -62,70 +62,12 @@ impl RoundProfile {
     }
 }
 
-/// What a straight seat's band sweeps along its crease.
+/// The conic arc a straight seat's band sweeps along its crease, tangent
+/// to each face of the seat at its distance from the crease.
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum Section {
-    /// The rolling ball's arc, of this radius.
-    Ball(f64),
-    /// A conic arc tangent to each face of the seat at its distance from
-    /// the crease, in the seat's face order, of weight `w` on the crease.
-    Conic {
-        /// The distance along each face of the seat.
-        d: [f64; 2],
-        /// The weight of the crease's control point.
-        w: f64,
-    },
-}
-
-impl Section {
-    /// The section's reach from the crease: the ball's radius, or the
-    /// farther distance, which scales the steps an end's run-out takes.
-    pub(crate) fn size(self) -> f64 {
-        match self {
-            Self::Ball(radius) => radius,
-            Self::Conic { d, .. } => d[0].max(d[1]),
-        }
-    }
-
-    /// From a point of the seat's crease to a point well inside the band's
-    /// section: the ball's centre, or the conic arc's middle. `None` where
-    /// the faces meet too sharply or too flat to seat a ball.
-    pub(crate) fn centre(self, seat: &Seat, tol: Tolerances) -> OgeomResult<Option<Vector>> {
-        match self {
-            Self::Ball(radius) => crate::fillet::seat_centre(seat, radius, tol),
-            Self::Conic { d, w } => {
-                let f = legs(seat, tol)?;
-                Ok(Some((f[0] * d[0] + f[1] * d[1]) / (2.0 * (1.0 + w))))
-            }
-        }
-    }
-
-    /// Points of the band's section square to the crease at `at`, with
-    /// `inward` from [`Section::centre`]: the crease and the two contacts
-    /// first, then each leg's middle and the arc's.
-    pub(crate) fn points(
-        self,
-        seat: &Seat,
-        at: Point,
-        inward: Vector,
-        tol: Tolerances,
-    ) -> OgeomResult<[Point; 6]> {
-        match self {
-            Self::Ball(radius) => Ok(crate::fillet::section_at(seat, at, inward, radius)),
-            Self::Conic { d, .. } => {
-                let f = legs(seat, tol)?;
-                let touch = [at + f[0] * d[0], at + f[1] * d[1]];
-                Ok([
-                    at,
-                    touch[0],
-                    touch[1],
-                    at.midpoint(touch[0]),
-                    at.midpoint(touch[1]),
-                    at + inward,
-                ])
-            }
-        }
-    }
+pub(crate) struct Section {
+    /// The distance along each face of the seat, in the seat's face order.
+    pub(crate) d: [f64; 2],
 }
 
 /// On each face of the seat, the unit direction square to the crease that
@@ -307,8 +249,7 @@ pub fn fillet_edge_distances(
             return Ok(built);
         }
     }
-    // Any other seat: the band the current path builds, applied by the
-    // engine as a one-boolean tool.
+    // Any other seat: the band applied by the engine as a one-boolean tool.
     if let Some(built) =
         crate::engine::distances_rounds(model, solid, edge, face, on_face, on_other, profile, tol)?
     {
@@ -340,8 +281,9 @@ pub(crate) fn straight_section(
     d[named] = on_face;
     d[1 - named] = on_other;
     let f = legs(&seat, tol)?;
-    let w = profile.weight(f[0].dot(f[1]).clamp(-1.0, 1.0))?;
-    Ok(Some(Section::Conic { d, w }))
+    // The conic's weight reads at the seat's opening, or the round is refused.
+    profile.weight(f[0].dot(f[1]).clamp(-1.0, 1.0))?;
+    Ok(Some(Section { d }))
 }
 
 /// The straight seat of an asymmetric round, and which of its faces is
@@ -435,9 +377,7 @@ pub(crate) fn contacts_fit(
     section: Section,
     tol: Tolerances,
 ) -> OgeomResult<()> {
-    let Section::Conic { d, .. } = section else {
-        return Ok(());
-    };
+    let Section { d } = section;
     let seat = crate::support::planar_seat(model, solid, edge, tol)?;
     let f = legs(&seat, tol)?;
     for fraction in [0.25, 0.5, 0.75] {
@@ -890,8 +830,8 @@ pub fn largest_fillet_distances(
                 d[named] = a;
                 d[1 - named] = b;
                 let f = legs(&seat, tol)?;
-                let w = profile.weight(f[0].dot(f[1]).clamp(-1.0, 1.0))?;
-                contacts_fit(model, solid, edge, Section::Conic { d, w }, tol)
+                profile.weight(f[0].dot(f[1]).clamp(-1.0, 1.0))?;
+                contacts_fit(model, solid, edge, Section { d }, tol)
             }
         }
     });

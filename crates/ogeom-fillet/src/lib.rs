@@ -12,12 +12,7 @@ pub mod chamfer;
 mod chamfer_corner;
 mod chamfer_marched;
 mod chamfer_sphere;
-mod consumed;
-mod consumed_marched;
-mod consumed_rim;
-pub mod corner;
 pub mod corner2d;
-mod corner_curved;
 mod cusp;
 mod engine;
 pub mod facepair;
@@ -33,13 +28,11 @@ mod old_path;
 mod pair_marched;
 mod pinched;
 mod rim_arc;
-mod rolled;
 #[allow(
     dead_code,
     reason = "the blend engine's sections and vertex blends, which its phases call"
 )]
 mod round;
-mod ruled;
 mod setback;
 mod sharp;
 pub mod sheet;
