@@ -3605,7 +3605,7 @@ fn whole_rims(
 }
 
 /// Whether two circles are one: the same centre, radius and plane.
-fn same_circle(a: &ogeom_math::Circle, b: &ogeom_math::Circle, tol: Tolerances) -> bool {
+pub(crate) fn same_circle(a: &ogeom_math::Circle, b: &ogeom_math::Circle, tol: Tolerances) -> bool {
     let reach = tol.confusion() * 100.0;
     a.centre().distance(b.centre()) <= reach
         && (a.radius() - b.radius()).abs() <= reach

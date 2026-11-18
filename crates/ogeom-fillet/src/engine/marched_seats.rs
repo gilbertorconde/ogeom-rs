@@ -57,6 +57,21 @@ fn seat(
     })
 }
 
+/// Whether `edge` of `solid` is a crease only the march seats: no
+/// closed-form section reads it.
+///
+/// # Errors
+///
+/// As reading the edge and its faces.
+pub(super) fn on_marched_seat(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    Ok(seat(model, solid, edge, false, tol)? == Seat::Marched)
+}
+
 /// What the march's bands came to.
 enum Bands {
     /// The wedges, each set aside on the solid as given, or, for a lone
