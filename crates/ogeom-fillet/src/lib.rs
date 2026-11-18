@@ -8,7 +8,6 @@ mod between;
 mod blame;
 mod blend;
 pub mod bridge;
-mod carried;
 pub mod chamfer;
 mod chamfer_corner;
 mod chamfer_marched;
@@ -26,7 +25,6 @@ mod fill_n;
 mod fill_patch;
 pub mod fillet;
 mod fits;
-mod junction;
 mod law;
 pub mod march;
 mod marched;
@@ -36,7 +34,6 @@ mod pair_marched;
 mod pinched;
 mod rim_arc;
 mod rolled;
-mod rolled_rim;
 #[allow(
     dead_code,
     reason = "the blend engine's sections and vertex blends, which its phases call"
@@ -47,8 +44,6 @@ mod setback;
 mod sharp;
 pub mod sheet;
 mod sheet_curved;
-mod shelf;
-mod stepped;
 mod support;
 mod turned_pole;
 

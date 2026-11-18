@@ -14,7 +14,7 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
 /// The rim fillet over an arc of the rim rather than its whole turn.
 ///
-/// The same four-seat torus geometry as [`revolved_fillet`], restricted to
+/// The same four-seat torus geometry as the whole rim's `revolved_fillet`, restricted to
 /// the arc's angular window and closed by two planar end caps in the
 /// meridian half-planes at its ends. Every face is a chart rectangle or a
 /// planar triangle, every edge an arc or a segment, every pcurve exact,

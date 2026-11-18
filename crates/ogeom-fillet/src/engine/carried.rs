@@ -46,8 +46,8 @@
 //! That is refused by name, as is a ball holding an edge or a corner on
 //! both sides at once.
 
-use crate::consumed::{seat_of, segment};
-use crate::rolled::{Flat, basis, enters, face_distance, flat, host, inside};
+use crate::engine::consumed_seat::{seat_of, segment};
+use crate::engine::rolled::{Flat, basis, enters, face_distance, flat, host, inside};
 use crate::support::{Seat, edge_curve, same_occurrence};
 use ogeom_core::{OgeomError, OgeomResult, Tolerances};
 use ogeom_geom::Curve3d as _;
@@ -889,7 +889,7 @@ fn start(crease: &Crease<'_>, faces: &[Reach], x: f64) -> Option<([Hold; 2], f64
             && inside(&sides, p, basis(side.normal))
             && sides
                 .iter()
-                .all(|[a, b]| crate::rolled::segment_distance(p, [*a, *b]) > conf)
+                .all(|[a, b]| crate::engine::rolled::segment_distance(p, [*a, *b]) > conf)
     };
     // A ball clear of every face of the solid.
     let free = |c: Point| -> bool {

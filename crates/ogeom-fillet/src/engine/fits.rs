@@ -64,14 +64,14 @@ pub(crate) fn request_fits(
         // is.
         for (i, edge) in edges.iter().enumerate() {
             if let Some(run) =
-                crate::shelf::run(model, solid, edge, radii[i], tol).map_err(blame(i))?
+                crate::engine::shelf::run(model, solid, edge, radii[i], tol).map_err(blame(i))?
             {
                 contacts.push(run.contacts(tol).map_err(blame(i))?);
                 rolled[i] = true;
                 continue;
             }
-            if let Some(run) =
-                crate::rolled_rim::rim_run(model, solid, edge, radii[i], tol).map_err(blame(i))?
+            if let Some(run) = crate::engine::rolled_rim::rim_run(model, solid, edge, radii[i], tol)
+                .map_err(blame(i))?
             {
                 contacts.push(run.contacts());
                 rolled[i] = true;
@@ -80,7 +80,7 @@ pub(crate) fn request_fits(
             match crate::support::ball_fits(model, solid, edge, radii[i], !alone(i), tol) {
                 Ok(found) => contacts.push(found),
                 Err(refusal @ OgeomError::Construction(_)) if edges.len() > 1 && alone(i) => {
-                    if crate::rolled::rolled_run(model, solid, edge, radii[i], tol)
+                    if crate::engine::rolled::rolled_run(model, solid, edge, radii[i], tol)
                         .map_err(blame(i))?
                         .is_none()
                     {
