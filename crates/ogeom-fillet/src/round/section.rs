@@ -10,7 +10,7 @@
 //! which may run past the edge's ends ("way long", §4.2), its true ends
 //! being P2's.
 //!
-//! Three sections, their maths the current path's, moved over unchanged:
+//! Three sections:
 //!
 //! - the rolling ball of radius `r`: [`crate::fillet::ball_seat`], the
 //!   arithmetic `seated_fillet` builds its cylinder with, so the two paths'
