@@ -57,8 +57,6 @@ pub fn chamfer_edge(
     distance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("chamfer_edge");
     ogeom_algo::on_own_nodes(
         model,
         solid,
@@ -107,8 +105,6 @@ pub fn chamfer_edge_distances(
     on_other: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("chamfer_edge_distances");
     ogeom_algo::on_own_nodes(
         model,
         solid,
@@ -167,8 +163,6 @@ pub fn chamfer_edge_angle(
     angle: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("chamfer_edge_angle");
     ogeom_algo::on_own_nodes(
         model,
         solid,
@@ -245,8 +239,6 @@ pub fn chamfer_edges(
     distance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("chamfer_edges");
     let specs: Vec<(Shape, Chamfer)> = edges
         .iter()
         .map(|e| (e.clone(), Chamfer::Symmetric(distance)))
@@ -310,8 +302,6 @@ pub fn chamfer_edges_with(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("chamfer_edges_with");
     chamfer_edges_blamed(model, solid, specs, tol).map_err(|blamed| blamed.error)
 }
 
@@ -1353,8 +1343,6 @@ pub fn largest_chamfer_distance(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("largest_chamfer_distance");
     let conf = tol.confusion();
     if !up_to.is_finite() || up_to <= conf {
         ogeom_bail!(

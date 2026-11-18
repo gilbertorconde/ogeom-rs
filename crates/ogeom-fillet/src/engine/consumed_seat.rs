@@ -6,9 +6,8 @@
 //! edge then touches the two faces either side of the strip, and where the
 //! strip lies wholly in the corner that ball takes off, the round is the
 //! blend of those two faces, seated on the line their planes meet on, and
-//! the strip goes with the corner. With the strip's ends square to the
-//! line the round is that seat's; with them slanted the old path cuts the
-//! section's prism back to the end planes (`consumed_slanted`).
+//! the strip goes with the corner. The seat is read only where the strip's
+//! ends are square to that line; with them slanted it reads none.
 
 use ogeom_core::{OgeomError, OgeomResult, Tolerances};
 use ogeom_geom::Curve;

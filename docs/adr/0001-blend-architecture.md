@@ -998,11 +998,9 @@ only who builds it does.
   closed spline, cut where their seams reach it, each regrown face holding
   both columns of its seam, and only the edges the removal made are
   rounded (the bore's far rim is the two faces' too).
-- **Checked.** While the engine's marched seats run, reaching an old
-  edge constructor (one that builds and applies its own wedge, or reads a
-  strip off whole for the one-edge entries) is logged for the old-path
-  count and panics in a debug build, so every marched test fails if the
-  engine goes back to old code.
+- **Checked.** The old edge constructors (those that built and applied
+  their own wedge, or read a strip off whole for the one-edge entries) are
+  removed, so the marched seats have no old code to go back to.
 
 - **A cone rim fitted.** Where no route closes a rim on a planar cap and
   a coaxial cone asked alone, its exact torus band is taken by the march
