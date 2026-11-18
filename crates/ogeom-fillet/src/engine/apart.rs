@@ -5,8 +5,12 @@
 //! are its tools, the faces its bands leave named for their edges. Where
 //! every tool stands clear of every other group's, no band meets another
 //! group's band or the faces it changes, so the rounds asked together are
-//! the rounds alone, and the tools are applied as the one-boolean
-//! fallback's.
+//! the rounds alone. Where two groups' cuts meet (convex bands crossing
+//! though their edges share no vertex), the cuts take their union, as
+//! convex creases meeting across a convex turn do, provided the request
+//! passes the overlap guards: no two bands overlap across a face they
+//! share (amendment "convex bands crossing apart"). The tools are applied
+//! as the one-boolean fallback's.
 
 use ogeom_algo::Built;
 use ogeom_core::{OgeomError, OgeomResult, Tolerances};
@@ -18,8 +22,9 @@ use super::fallback::{Sense, Tool};
 /// `once` rounded on `solid` where its edges fall into at least two groups
 /// joined at shared vertices, the engine rounds each group alone, and what
 /// each group's round takes off or adds stands clear of every other
-/// group's; `None` otherwise, or where a boolean refuses or the result is
-/// not valid.
+/// group's, or meets it only where both take material off and no two
+/// bands overlap across a face they share; `None` otherwise, or where a
+/// boolean refuses or the result is not valid.
 ///
 /// # Errors
 ///
@@ -87,7 +92,10 @@ pub(crate) fn rounds(
         }
     }
     // Every tool clear of every other group's: no band meets another
-    // group's, nor a face another group's round changes.
+    // group's, nor a face another group's round changes. Two cuts may
+    // meet: convex bands crossing take their cuts' union, where no two
+    // bands overlap across a face they share.
+    let mut cuts_meet = false;
     for (i, (gi, ti)) in tools.iter().enumerate() {
         for (gj, tj) in &tools[..i] {
             if gi == gj {
@@ -101,12 +109,25 @@ pub(crate) fn rounds(
                 tol,
             )?;
             if gap.distance <= tol.confusion() {
-                return Ok(None);
+                if ti.sense != Sense::Cut || tj.sense != Sense::Cut {
+                    return Ok(None);
+                }
+                cuts_meet = true;
             }
         }
     }
-    let tools: Vec<Tool> = tools.into_iter().map(|(_, t)| t).collect();
     let edges: Vec<Shape> = once.iter().map(|(e, _)| e.clone()).collect();
+    if cuts_meet {
+        let radii: Vec<f64> = once.iter().map(|(_, r)| *r).collect();
+        match super::fits::request_fits(model, solid, &edges, &radii, tol) {
+            Ok(_) => {}
+            Err(blamed) if matches!(blamed.error, OgeomError::Cancelled) => {
+                return Err(blamed.error);
+            }
+            Err(_) => return Ok(None),
+        }
+    }
+    let tools: Vec<Tool> = tools.into_iter().map(|(_, t)| t).collect();
     let Some(built) = super::fallback::applied(&mut scratch, solid, &edges, &tools, tol)? else {
         return Ok(None);
     };
