@@ -287,59 +287,6 @@ fn edges_at(m: &Model, s: &Shape, p: Point) -> Vec<Shape> {
 }
 
 #[test]
-fn a_vertex_of_four_edges_is_refused_by_name() {
-    let mut m = Model::new();
-    let points = [
-        Point::new(-5.0, -5.0, 0.0),
-        Point::new(5.0, -5.0, 0.0),
-        Point::new(5.0, 5.0, 0.0),
-        Point::new(-5.0, 5.0, 0.0),
-        Point::new(0.0, 0.0, 6.0),
-    ];
-    let rings = vec![
-        vec![0, 3, 2, 1],
-        vec![0, 1, 4],
-        vec![1, 2, 4],
-        vec![2, 3, 4],
-        vec![3, 0, 4],
-    ];
-    let (built, _) =
-        ogeom_algo::make_faceted_solid(&mut m, &points, &rings, &[None; 5], T).unwrap();
-    let solid = explore_unique(&m, &built.shape, ShapeType::Solid).unwrap()[0].clone();
-    let edges = edges_of(&m, &solid);
-    let why = refusal(&mut m, &solid, &edges);
-    assert!(
-        why.contains("(0.000000, 0.000000, 6.000000)") && why.contains("joins 4 edges"),
-        "{why}"
-    );
-}
-
-#[test]
-fn a_vertex_on_a_curved_face_is_refused_by_name() {
-    let mut m = Model::new();
-    let body = block(&mut m, (0.0, 0.0, 0.0), (10.0, 10.0, 10.0));
-    let drill = ogeom_algo::make_cylinder(
-        &mut m,
-        Frame::new(Point::new(10.0, 10.0, -1.0), Direction::Z, Direction::X, T).unwrap(),
-        4.0,
-        12.0,
-        T,
-    )
-    .unwrap()
-    .shape;
-    let notched = ogeom_bool::cut(&mut m, &body, &drill, T).unwrap().shape;
-    let solid = explore_unique(&m, &notched, ShapeType::Solid).unwrap()[0].clone();
-    let at = Point::new(6.0, 10.0, 10.0);
-    let edges = edges_at(&m, &solid, at);
-    assert_eq!(edges.len(), 3);
-    let why = refusal(&mut m, &solid, &edges);
-    assert!(
-        why.contains("(6.000000, 10.000000, 10.000000)") && why.contains("curved"),
-        "{why}"
-    );
-}
-
-#[test]
 fn a_concave_edge_leaning_to_the_face_across_it_is_refused_by_name() {
     let mut m = Model::new();
     let solid = step(&mut m);

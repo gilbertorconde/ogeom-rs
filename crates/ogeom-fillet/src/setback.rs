@@ -784,7 +784,7 @@ fn runs_through(
 /// Whether `edge` of `solid` is convex: from its planar seat, else read on
 /// its two faces at its middle as a marched seat reads it; `None` where it
 /// does not part two faces.
-fn edge_is_convex(
+pub(crate) fn edge_is_convex(
     model: &Model,
     solid: &Shape,
     edge: &Shape,

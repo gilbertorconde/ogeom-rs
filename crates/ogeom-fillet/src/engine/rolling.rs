@@ -16,11 +16,13 @@ use super::Request;
 ///
 /// # Errors
 ///
+/// As [`crate::fillet_edges`] where the rounds at every vertex are of one
+/// sense. Elsewhere
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction),
-/// naming the vertex, where one where rounds meet touches a curved face or
-/// joins other than three edges, or where the engine's rounds close it on
-/// no sphere or torus; and where the request lies outside the engine's
-/// rounds between planes.
+/// naming the vertex, where one mixing convex and concave rounds touches a
+/// curved face or joins other than three edges, or where the engine's
+/// rounds close it on no sphere or torus; and where the request lies
+/// outside the engine's rounds between planes.
 pub(crate) fn rounds(
     model: &mut Model,
     solid: &Shape,
@@ -60,7 +62,42 @@ pub(crate) fn rounds(
     if meetings.is_empty() {
         return crate::fillet_edges(model, solid, edges, radius, tol);
     }
-    for (p, vertex) in &meetings {
+    // Where the rounds meeting at a vertex are all of one sense, the
+    // default's corner is already the ball's: the band running on through
+    // a tangent junction, the sphere where one ball touches every face,
+    // the bands crossing beside an edge left sharp, the apex's envelope of
+    // balls. Only a vertex mixing convex and concave rounds needs the
+    // ball's sweep round the lone band's end, built here between planes.
+    let mut mixed: Vec<&(Point, Shape)> = Vec::new();
+    for meeting in &meetings {
+        let (mut convex, mut concave) = (false, false);
+        for edge in &traced {
+            let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
+                continue;
+            };
+            if !(a.is_same(&meeting.1) || b.is_same(&meeting.1)) {
+                continue;
+            }
+            match crate::setback::edge_is_convex(model, &work, edge, radius, tol)? {
+                Some(true) => convex = true,
+                Some(false) => concave = true,
+                None => (convex, concave) = (true, true),
+            }
+        }
+        if convex && concave {
+            mixed.push(meeting);
+        }
+    }
+    let between_planes = meetings
+        .iter()
+        .map(|(_, vertex)| between_planes(model, &work, vertex))
+        .collect::<OgeomResult<Vec<bool>>>()?
+        .into_iter()
+        .all(|planar| planar);
+    if mixed.is_empty() && !between_planes {
+        return crate::fillet_edges(model, solid, edges, radius, tol);
+    }
+    for (p, vertex) in mixed {
         let named = |why: String| -> ogeom_core::OgeomError {
             ogeom_core::ogeom_err!(
                 Construction,
@@ -117,6 +154,32 @@ pub(crate) fn rounds(
     } else {
         built
     })
+}
+
+/// Whether every face at `vertex` of `solid` is a plane and the vertex
+/// joins three edges: the corners the planar rounds close.
+fn between_planes(model: &Model, solid: &Shape, vertex: &Shape) -> OgeomResult<bool> {
+    for face in ancestors_of(model, solid, vertex, ShapeType::Face)? {
+        let planar = model
+            .node(&face)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| model.geometry().surface(d.surface))
+            .is_some_and(|s| matches!(s, SurfaceGeometry::Plane(_)));
+        if !planar {
+            return Ok(false);
+        }
+    }
+    let mut around: Vec<Shape> = Vec::new();
+    for e in ancestors_of(model, solid, vertex, ShapeType::Edge)? {
+        let degenerate = model
+            .node(&e)
+            .and_then(|n| n.data().as_edge())
+            .is_some_and(|d| d.degenerate);
+        if !degenerate && !around.iter().any(|a| a.is_same(&e)) {
+            around.push(e);
+        }
+    }
+    Ok(around.len() == 3)
 }
 
 /// The vertices where two or more of `edges` meet, with their
