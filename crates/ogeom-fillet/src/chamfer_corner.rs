@@ -61,6 +61,9 @@ pub fn chamfer_edges_cornered(
         return Ok(crate::chamfer::unchanged(solid));
     }
     let specs = &specs[..];
+    if crate::chamfer::below_a_floor(model, solid, specs, tol)?.is_some() {
+        return Err(crate::chamfer::below_a_floor_refused());
+    }
     if corner == ChamferCorner::Point {
         // The blend engine mitres in one pass, on planes or on curved
         // faces; what it hands back, the wedges do.
