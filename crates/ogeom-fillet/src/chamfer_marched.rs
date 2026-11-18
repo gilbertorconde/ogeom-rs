@@ -135,32 +135,8 @@ impl Walk<'_, '_> {
     }
 }
 
-/// Bevel `edge` of `solid` on its marched seat by `spec`, the wedge built
-/// and applied, its contacts read against its faces as the request named
-/// them (`given`) as well as against the faces as they stand.
-///
-/// # Errors
-///
-/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
-/// the seat is not a crease between two faces, a named face does not meet
-/// the edge, a leg's walk leaves its face or the plane anywhere along the
-/// edge, a contact stands off its face over the edge's own stretch, the
-/// angle's line never meets the other face, or an open seat's run-out is
-/// refused as the marched fillet's is; [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone)
-/// where the band through the chords does not meet its fit target.
-pub(crate) fn marched_bevel(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    spec: &Chamfer,
-    given: &[Shape],
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    marched_bevel_with(model, solid, edge, spec, given, Chord::Straight, tol)
-}
-
-/// [`marched_bevel`], the band crossing each station by `chord`: the
-/// straight segment of a bevel, or an asymmetric round's conic.
+/// The band of `spec`'s legs on a marched seat, crossing each station by
+/// `chord`: an asymmetric round's conic.
 pub(crate) fn marched_bevel_with(
     model: &mut Model,
     solid: &Shape,
@@ -171,10 +147,7 @@ pub(crate) fn marched_bevel_with(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     // What the refusals name: the bevel, or the round its chord stands for.
-    let what = match chord {
-        Chord::Straight => "a chamfer",
-        Chord::Conic(_) => "an asymmetric round",
-    };
+    let what = "an asymmetric round";
     let reach = match spec {
         Chamfer::Symmetric(d) => *d,
         Chamfer::Distances {
@@ -359,8 +332,6 @@ pub(crate) fn marched_bevel_with(
             ogeom_bail!(Construction, "{what}'s sections do not seat along the edge");
         }
         let met = match chord {
-            Chord::Straight if loops => crate::marched::fit_closed_ruled(&blend, aim, tol)?.0.met,
-            Chord::Straight => crate::marched::fit_open_ruled(&blend, tol).is_ok(),
             Chord::Conic(weight) => crate::marched::conic_fit_met(
                 &blend,
                 [&first, &second],
@@ -473,7 +444,7 @@ pub(crate) struct CreaseContacts {
 
 /// [`CreaseContacts`] of `spec` on `edge` of `solid` at `count + 1`
 /// stations evenly over the edge's stretch of its crease, the legs walked
-/// as [`marched_bevel`] walks them; with `whole`, once round the whole loop
+/// as [`marched_bevel_with`] walks them; with `whole`, once round the whole loop
 /// of a crease that comes back to its start, from its point nearest
 /// `whole`, read as closed (the pieces of one loop the boolean left, taken
 /// as one edge), the stations' parameters run on past the crease's own join
@@ -482,7 +453,7 @@ pub(crate) struct CreaseContacts {
 ///
 /// # Errors
 ///
-/// As [`marched_bevel`] reading the seat and the law.
+/// As [`marched_bevel_with`] reading the seat and the law.
 pub(crate) fn crease_contacts(
     model: &mut Model,
     solid: &Shape,

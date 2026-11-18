@@ -20,8 +20,7 @@
 
 use crate::chamfer_sphere::{SphereSeat, sphere_bevel, sphere_seat};
 use crate::support::{
-    Blamed, RevolvedSeat, Seat, apply_wedge, edge_curve, planar_face, planar_seat, revolved_flanks,
-    revolved_seat,
+    Blamed, RevolvedSeat, Seat, edge_curve, planar_seat, revolved_flanks, revolved_seat,
 };
 use ogeom_algo::{Built, make_revolution_band};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -58,8 +57,6 @@ pub fn chamfer_edge(
     distance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("chamfer_edge");
     ogeom_algo::on_own_nodes(
         model,
         solid,
@@ -83,9 +80,7 @@ fn chamfer_edge_own(
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
     }
-    #[cfg(feature = "old-path-log")]
-    let _old_path_entry = crate::fillet::to_current_path("chamfer_edge");
-    wedge_for(model, solid, edge, &specs[0].1, tol)?.apply(model, solid, edge, tol)
+    Err(declined())
 }
 
 /// Bevel a straight edge, cutting `on_face` back along `face` and `on_other`
@@ -110,8 +105,6 @@ pub fn chamfer_edge_distances(
     on_other: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("chamfer_edge_distances");
     ogeom_algo::on_own_nodes(
         model,
         solid,
@@ -144,9 +137,7 @@ fn chamfer_edge_distances_own(
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
     }
-    #[cfg(feature = "old-path-log")]
-    let _old_path_entry = crate::fillet::to_current_path("chamfer_edge_distances");
-    wedge_for(model, solid, edge, &specs[0].1, tol)?.apply(model, solid, edge, tol)
+    Err(declined())
 }
 
 /// Bevel a straight edge, cutting `distance` back along `face` and leaving it
@@ -172,8 +163,6 @@ pub fn chamfer_edge_angle(
     angle: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("chamfer_edge_angle");
     ogeom_algo::on_own_nodes(
         model,
         solid,
@@ -206,60 +195,7 @@ fn chamfer_edge_angle_own(
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
     }
-    #[cfg(feature = "old-path-log")]
-    let _old_path_entry = crate::fillet::to_current_path("chamfer_edge_angle");
-    wedge_for(model, solid, edge, &specs[0].1, tol)?.apply(model, solid, edge, tol)
-}
-
-/// The shapes chamfer specs name: each edge, then the face its chamfer
-/// runs along where it names one.
-fn chamfer_parts(specs: &[(Shape, Chamfer)]) -> Vec<Shape> {
-    let mut parts = Vec::with_capacity(specs.len() * 2);
-    for (edge, spec) in specs {
-        parts.push(edge.clone());
-        match spec {
-            Chamfer::Symmetric(_) => {}
-            Chamfer::Distances { face, .. } | Chamfer::Angle { face, .. } => {
-                parts.push(face.clone());
-            }
-        }
-    }
-    parts
-}
-
-/// The specs again, naming `parts` in the order [`chamfer_parts`] lists
-/// them.
-fn chamfer_specs(specs: &[(Shape, Chamfer)], parts: &[Shape]) -> Vec<(Shape, Chamfer)> {
-    let mut parts = parts.iter().cloned();
-    let mut next = |was: &Shape| parts.next().unwrap_or_else(|| was.clone());
-    specs
-        .iter()
-        .map(|(edge, spec)| {
-            let edge = next(edge);
-            let spec = match spec {
-                Chamfer::Symmetric(d) => Chamfer::Symmetric(*d),
-                Chamfer::Distances {
-                    face,
-                    on_face,
-                    on_other,
-                } => Chamfer::Distances {
-                    face: next(face),
-                    on_face: *on_face,
-                    on_other: *on_other,
-                },
-                Chamfer::Angle {
-                    face,
-                    distance,
-                    angle,
-                } => Chamfer::Angle {
-                    face: next(face),
-                    distance: *distance,
-                    angle: *angle,
-                },
-            };
-            (edge, spec)
-        })
-        .collect()
+    Err(declined())
 }
 
 /// One edge's chamfer, in any of the three spellings.
@@ -303,8 +239,6 @@ pub fn chamfer_edges(
     distance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("chamfer_edges");
     let specs: Vec<(Shape, Chamfer)> = edges
         .iter()
         .map(|e| (e.clone(), Chamfer::Symmetric(distance)))
@@ -332,10 +266,10 @@ pub fn chamfer_edges(
 /// a plate bevelled all round past half its thickness), the face keeps what
 /// lies inside every bevel, or goes, and its bevels meet along the ridges
 /// their planes share: round such a face, and at a convex corner of two
-/// bevels, what is left is the solid cut by the planes there. A request
-/// past that (a consumed face with a reflex corner or a concave edge beside
-/// it), and any other solid, are chamfered by wedges built on the solid as
-/// given and applied together, mitred where bevels meet.
+/// bevels, what is left is the solid cut by the planes there. Past that,
+/// and on curved faces, the engine's other routes build the request (the
+/// curved read and its strips, the one-boolean tools); a request none of
+/// them builds is refused by name.
 ///
 /// A seam is no edge of the part's form: an edge between two faces of one
 /// shell lying on one surface facing one way
@@ -368,16 +302,13 @@ pub fn chamfer_edges_with(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("chamfer_edges_with");
     chamfer_edges_blamed(model, solid, specs, tol).map_err(|blamed| blamed.error)
 }
 
 /// [`chamfer_edges_with`], its refusal naming the specs it concerns.
 ///
-/// A solid bounded by planes goes through the blend engine
-/// ([`crate::engine`]): one pass by setbacks, each vertex of three bevels
-/// closed by a facet. Any other solid is chamfered by wedges, mitred.
+/// The blend engine ([`crate::engine`]) builds the request or it is
+/// refused by name, the whole request blamed.
 pub(crate) fn chamfer_edges_blamed(
     model: &mut Model,
     solid: &Shape,
@@ -410,13 +341,9 @@ pub(crate) fn chamfer_edges_blamed(
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
     }
-    #[cfg(feature = "old-path-log")]
-    let _old_path_entry = crate::fillet::to_current_path("chamfer_edges_with");
-    chamfer_edges_mitred_blamed(model, solid, &specs, tol).map_err(|mut blamed| {
-        for i in &mut blamed.edges {
-            *i = index[*i];
-        }
-        blamed
+    Err(Blamed {
+        edges: index,
+        error: declined(),
     })
 }
 
@@ -1311,139 +1238,6 @@ fn rims_one_boolean(
     crate::engine::apply_tools(model, solid, &edges, &tools, tol)
 }
 
-/// The chamfer of `specs` by wedges built on the solid as given and
-/// applied together, mitred where bevels meet: three bevels at a convex
-/// vertex meet at the point their planes share.
-pub(crate) fn chamfer_edges_mitred(
-    model: &mut Model,
-    solid: &Shape,
-    specs: &[(Shape, Chamfer)],
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    chamfer_edges_mitred_blamed(model, solid, specs, tol).map_err(|blamed| blamed.error)
-}
-
-/// [`chamfer_edges_mitred`], its refusal naming the specs it concerns.
-fn chamfer_edges_mitred_blamed(
-    model: &mut Model,
-    solid: &Shape,
-    specs: &[(Shape, Chamfer)],
-    tol: Tolerances,
-) -> Result<Built, Blamed> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_entry = crate::fillet::to_current_path("chamfer:chamfer_edges_mitred_blamed");
-    let mut blame = Vec::new();
-    ogeom_algo::on_own_nodes(
-        model,
-        solid,
-        &chamfer_parts(specs),
-        |model, solid, parts| {
-            chamfer_edges_with_own(model, solid, &chamfer_specs(specs, parts), tol).map_err(
-                |blamed| {
-                    blame = blamed.edges;
-                    blamed.error
-                },
-            )
-        },
-    )
-    .map_err(|error| Blamed {
-        edges: blame,
-        error,
-    })
-}
-
-/// [`chamfer_edges_with`] on a shape every node below which is its own.
-///
-/// A wedge refused names its spec; one that does not apply names its
-/// spec, then the specs before it whose edges share a vertex with its
-/// edge, whose bevels it was applied after.
-fn chamfer_edges_with_own(
-    model: &mut Model,
-    solid: &Shape,
-    specs: &[(Shape, Chamfer)],
-    tol: Tolerances,
-) -> Result<Built, Blamed> {
-    if specs.is_empty() {
-        return Err(
-            ogeom_core::ogeom_err!(Construction, "a chain of no edges bevels nothing").into(),
-        );
-    }
-    let mut wedges = Vec::with_capacity(specs.len());
-    for (i, (edge, spec)) in specs.iter().enumerate() {
-        wedges.push(
-            wedge_for(model, solid, edge, spec, tol).map_err(|error| Blamed {
-                edges: vec![i],
-                error,
-            })?,
-        );
-    }
-    // A bevel on a marched seat is built against the solid as it stands
-    // when its turn comes: its edge is found again there, between the faces
-    // it lay between as asked.
-    let marched = specs
-        .iter()
-        .any(|(edge, _)| matches!(seat_kind(model, edge, tol), Ok(SeatKind::Marched)));
-    let given = if marched {
-        let mut given = Vec::with_capacity(specs.len());
-        for (edge, _) in specs {
-            given.push(faces_holding(model, solid, edge)?);
-        }
-        given
-    } else {
-        Vec::new()
-    };
-    let mut built = Built::from_nothing(solid.clone());
-    let mut rings: Vec<(usize, WholeRing)> = Vec::new();
-    for (i, ((edge, _), wedge)) in specs.iter().zip(wedges).enumerate() {
-        // The arcs a boolean split one sphere rim into each chamfer the
-        // whole ring: the first cuts it, the others asking the same legs
-        // are taken with it, and others asking other legs contradict it.
-        if let Some(ring) = wedge.whole_ring {
-            if let Some((j, first)) = rings.iter().find(|(_, r)| r.same_circle(&ring, tol)) {
-                if first.same_legs(&ring, tol) {
-                    continue;
-                }
-                return Err(Blamed {
-                    edges: vec![i, *j],
-                    error: ogeom_core::ogeom_err!(
-                        Construction,
-                        "two arcs of one sphere rim ask for different chamfers \
-                         of its whole ring"
-                    ),
-                });
-            }
-            rings.push((i, ring));
-        }
-        let applied = match &wedge.marched {
-            Some(spec) => marched_step(model, &built, edge, spec, &given[i], &specs[..i], tol),
-            None => wedge.apply(model, &built.shape, edge, tol),
-        };
-        let step = match applied {
-            Ok(step) => step,
-            Err(error) => {
-                let mut edges = vec![i];
-                let ends = |e: &Shape| -> OgeomResult<Vec<ogeom_topo::TShapeId>> {
-                    Ok(ogeom_algo::edge_vertices(model, e)?
-                        .map(|(a, b)| vec![a.node(), b.node()])
-                        .unwrap_or_default())
-                };
-                let own = ends(edge)?;
-                for (j, (other, _)) in specs[..i].iter().enumerate() {
-                    if ends(other)?.iter().any(|v| own.contains(v)) {
-                        edges.push(j);
-                    }
-                }
-                return Err(Blamed { edges, error });
-            }
-        };
-        built = Built {
-            shape: step.shape.clone(),
-            history: built.history.then(&step.history),
-        };
-    }
-    Ok(built)
-}
-
 /// The seat of a rim's bevel: a revolved seat, its wall a cylinder or a
 /// cone, or a sphere centred on the rim's axis.
 enum RimSeat {
@@ -1487,70 +1281,6 @@ fn rim_corner(seat: &RevolvedSeat) -> f64 {
     (seat.sigma * seat.slope / seat.slope.hypot(1.0)).acos()
 }
 
-/// The wedge one chamfer cuts, built on `solid` as it stands.
-fn wedge_for(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    spec: &Chamfer,
-    tol: Tolerances,
-) -> OgeomResult<Wedge> {
-    match legs(model, solid, edge, spec, tol)? {
-        Legs::Straight(seat, distances) => bevel(model, &seat, distances, tol),
-        Legs::Rim(seat, on_wall, on_cap) => {
-            revolved_bevel(model, solid, edge, &seat, on_wall, on_cap, tol)
-        }
-        Legs::Marched => Ok(Wedge {
-            faces: Vec::new(),
-            solid: None,
-            additive: false,
-            whole_ring: None,
-            marched: Some(spec.clone()),
-        }),
-        Legs::Sphere(seat, on_wall, on_cap) => {
-            // Each contact stays on its face at every station the walk
-            // reads, or the wedge would cut past the face.
-            let per = |face: &Shape| sphere_leg(&seat, face, on_wall, on_cap);
-            if crate::fits::legs_largest(model, solid, edge, 1.0, per, tol)? < 1.0 {
-                ogeom_bail!(
-                    Construction,
-                    "a chamfer on the rim between a plane and a sphere runs past \
-                     one of its faces"
-                );
-            }
-            let closed =
-                ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
-            let Curve::Circle(rim) = edge_curve(model, edge, tol)?.0 else {
-                ogeom_bail!(Construction, "a sphere's rim is not a circle");
-            };
-            let whole = closed
-                || crate::chamfer_sphere::rim_closes(model, solid, &seat, &rim.circle(), tol)?;
-            // An arc that stops short of its circle is the section turned
-            // through the arc's own sweep.
-            let span = if whole {
-                None
-            } else {
-                let frame =
-                    Frame::new(seat.centre, Direction::new(seat.up, tol)?, seat.x_ref, tol)?;
-                Some(arc_window(model, edge, &frame, tol)?)
-            };
-            Ok(Wedge {
-                faces: sphere_bevel(model, &seat, on_wall, on_cap, span, tol)?,
-                solid: None,
-                additive: seat.tau < 0.0,
-                whole_ring: whole.then_some(WholeRing {
-                    centre: seat.centre,
-                    radius: seat.radius,
-                    up: seat.up,
-                    on_wall,
-                    on_cap,
-                }),
-                marched: None,
-            })
-        }
-    }
-}
-
 /// A sphere rim's tool for the one boolean: its bevel's section turned
 /// about the axis over `span` (the whole turn for `None`), its legs free
 /// to run past their faces (ADR 0001, amendment "M5b").
@@ -1565,8 +1295,6 @@ fn sphere_tool(
         faces: sphere_bevel(model, seat, on_wall, on_cap, span, tol)?,
         solid: None,
         additive: seat.tau < 0.0,
-        whole_ring: None,
-        marched: None,
     })
 }
 
@@ -1615,8 +1343,6 @@ pub fn largest_chamfer_distance(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("largest_chamfer_distance");
     let conf = tol.confusion();
     if !up_to.is_finite() || up_to <= conf {
         ogeom_bail!(
@@ -1881,62 +1607,6 @@ struct Wedge {
     /// The wedge already closed into a solid, where it was built as one.
     solid: Option<Shape>,
     additive: bool,
-    /// The whole ring a sphere's rim chamfers from any of the arcs a
-    /// boolean split it into.
-    whole_ring: Option<WholeRing>,
-    /// The spelling of a bevel on a marched seat, built against the solid
-    /// as it stands when its turn in the request comes.
-    marched: Option<Chamfer>,
-}
-
-/// A sphere rim's whole ring and the legs its bevel runs.
-#[derive(Debug, Clone, Copy)]
-struct WholeRing {
-    centre: ogeom_math::Point,
-    radius: f64,
-    up: ogeom_math::Vector,
-    on_wall: f64,
-    on_cap: f64,
-}
-
-impl WholeRing {
-    /// Whether `other` is a ring on the same circle and the same cap.
-    fn same_circle(&self, other: &Self, tol: Tolerances) -> bool {
-        self.centre.distance(other.centre) <= tol.confusion()
-            && (self.radius - other.radius).abs() <= tol.confusion()
-            && self.up.dot(other.up) >= 1.0 - tol.angular()
-    }
-
-    /// Whether `other`'s legs are this ring's.
-    fn same_legs(&self, other: &Self, tol: Tolerances) -> bool {
-        (self.on_wall - other.on_wall).abs() <= tol.confusion()
-            && (self.on_cap - other.on_cap).abs() <= tol.confusion()
-    }
-}
-
-impl Wedge {
-    fn apply(
-        self,
-        model: &mut Model,
-        solid: &Shape,
-        edge: &Shape,
-        tol: Tolerances,
-    ) -> OgeomResult<Built> {
-        let mut built = match self.solid {
-            Some(wedge) => {
-                let mut result = if self.additive {
-                    ogeom_bool::fuse(model, solid, &wedge, tol)?
-                } else {
-                    ogeom_bool::cut(model, solid, &wedge, tol)?
-                };
-                result.history.delete(edge);
-                result
-            }
-            None => apply_wedge(model, solid, Some(edge), &self.faces, self.additive, tol)?,
-        };
-        crate::support::credit_new_faces(model, solid, edge, &mut built)?;
-        Ok(built)
-    }
 }
 
 /// Which seat a chamfer is standing on, read from the edge's curve.
@@ -2024,24 +1694,10 @@ pub(crate) fn rim_bevel_surface(
     Ok(surface)
 }
 
-/// The revolved wedge with the quarter-tube exchanged for a slant: legs
-/// `on_wall` down the wall along its ruling and `on_cap` radially along the
-/// cap, and the cone between the two tangency rings as the bevel.
-fn revolved_bevel(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    seat: &RevolvedSeat,
-    on_wall: f64,
-    on_cap: f64,
-    tol: Tolerances,
-) -> OgeomResult<Wedge> {
-    revolved_bevel_over(model, solid, edge, seat, (on_wall, on_cap), None, tol)
-}
-
-/// [`revolved_bevel`], turned over `span` where it is given (`Some(None)`
-/// the whole turn, `Some(Some((start, sweep)))` that arc, however far the
-/// wall runs on round the turn): the one boolean's tools.
+/// A rim's conical bevel on its revolved `seat`, the legs `on_wall` and
+/// `on_cap`, turned over `span` where it is given (`Some(None)` the whole
+/// turn, `Some(Some((start, sweep)))` that arc, however far the wall runs
+/// on round the turn): the one boolean's tools.
 fn revolved_bevel_over(
     model: &mut Model,
     solid: &Shape,
@@ -2106,8 +1762,6 @@ fn revolved_bevel_over(
         faces: vec![flanks.wall_band, flanks.annulus, bevel_band],
         solid: None,
         additive: seat.additive(),
-        whole_ring: None,
-        marched: None,
     })
 }
 
@@ -2249,8 +1903,6 @@ fn sector_bevel(
         faces: Vec::new(),
         solid: Some(wedge),
         additive: seat.additive(),
-        whole_ring: None,
-        marched: None,
     })
 }
 
@@ -2266,201 +1918,6 @@ fn seat_side(seat: &Seat, face: &Shape) -> OgeomResult<usize> {
             "the named face does not meet the edge being chamfered"
         )
     }
-}
-
-/// The one construction under all three spellings: the wedge with legs
-/// `distances[i]` along face `i`, subtracted.
-fn bevel(
-    model: &mut Model,
-    seat: &Seat,
-    distances: [f64; 2],
-    tol: Tolerances,
-) -> OgeomResult<Wedge> {
-    for distance in distances {
-        if !distance.is_finite() || distance <= tol.confusion() {
-            ogeom_bail!(Construction, "a chamfer of {distance} cuts nothing");
-        }
-    }
-    // On a concave edge every leg mirrors: the wedge sits in the open
-    // dihedral, its legs walk the faces' planes into it, and its strips face
-    // the material they will melt against with *opposed* orientation, which
-    // is exactly what a fuse cancels.
-    let sign = if seat.convex { 1.0 } else { -1.0 };
-    let a = seat.leg(0, tol)? * sign;
-    let b = seat.leg(1, tol)? * sign;
-    // A setback runs back across each face; past the face's far side it
-    // would cut through the face and on into whatever lies beyond it.
-    if seat.convex {
-        for (i, leg) in [a, b].into_iter().enumerate() {
-            let reach = crate::support::face_reach(model, &seat.faces[i], seat.start, leg, tol)?;
-            if distances[i] > reach + tol.confusion() {
-                ogeom_bail!(
-                    Construction,
-                    "a chamfer of {} on the edge from {:?} to {:?} runs past its face, \
-                     which reaches {reach} back from the edge",
-                    distances[i],
-                    seat.start,
-                    seat.end
-                );
-            }
-        }
-    }
-
-    let travel = seat.end - seat.start;
-    let apex0 = seat.start;
-    let apex1 = seat.end;
-    let a0 = apex0 + a * distances[0];
-    let b0 = apex0 + b * distances[1];
-    let a1 = a0 + travel;
-    let b1 = b0 + travel;
-
-    // The bevel's outward normal: perpendicular to the cut line and the edge,
-    // pointing from the apex toward the cut. For equal distances this is the
-    // leg bisector exactly.
-    let bevel_out = {
-        let across = b0 - a0;
-        let mut n = seat.along.cross(across);
-        let m = n.magnitude();
-        if m <= tol.confusion() {
-            ogeom_bail!(Construction, "the chamfer's cut line has no direction");
-        }
-        n /= m;
-        if n.dot(a0 - apex0) < 0.0 {
-            n = -n;
-        }
-        n
-    };
-
-    // The wedge: a triangular prism whose apex line is the edge and whose
-    // legs run the distances along each face. Built from five explicit planar
-    // faces rather than swept, because a sweep's walls are extrusion
-    // surfaces even when they are geometrically planes, and the boolean's
-    // same-domain resolution (which is what makes the coplanar legs melt
-    // into the solid's own faces) recognises coincidence between *planes*.
-    let faces = [
-        planar_face(model, &[apex0, a0, b0], -seat.along, tol)?,
-        planar_face(model, &[apex1, a1, b1], seat.along, tol)?,
-        planar_face(model, &[apex0, a0, a1, apex1], seat.normals[0] * sign, tol)?,
-        planar_face(model, &[apex0, b0, b1, apex1], seat.normals[1] * sign, tol)?,
-        planar_face(model, &[a0, b0, b1, a1], bevel_out, tol)?,
-    ];
-    Ok(Wedge {
-        faces: faces.to_vec(),
-        solid: None,
-        additive: !seat.convex,
-        whole_ring: None,
-        marched: None,
-    })
-}
-
-/// The faces of `solid` holding `edge`.
-fn faces_holding(model: &Model, solid: &Shape, edge: &Shape) -> Result<Vec<Shape>, Blamed> {
-    let mut found = Vec::new();
-    for face in ogeom_topo::explore_unique(model, solid, ogeom_topo::ShapeType::Face)? {
-        if ogeom_topo::explore_unique(model, &face, ogeom_topo::ShapeType::Edge)?
-            .iter()
-            .any(|e| e.is_same(edge))
-        {
-            found.push(face);
-        }
-    }
-    Ok(found)
-}
-
-/// A bevel on a marched seat, applied to the solid the request's earlier
-/// bevels (`earlier`) left (`so_far`, with their history): the edge found
-/// again there between the faces `given` it lay between as asked, a face
-/// the spelling names followed to what those bevels made of it, each piece
-/// of the edge bevelled in turn.
-///
-/// A bevel runs on through a vertex where the crease carries on (an open
-/// marched bevel runs out as the marched fillet does), so an edge an
-/// earlier bevel of the same spelling meeting it at a vertex has taken
-/// away is bevelled already; one an earlier bevel of another spelling has
-/// taken is refused.
-fn marched_step(
-    model: &mut Model,
-    so_far: &Built,
-    edge: &Shape,
-    spec: &Chamfer,
-    given: &[Shape],
-    earlier: &[(Shape, Chamfer)],
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    let solid = &so_far.shape;
-    let faces_now = ogeom_topo::explore_unique(model, solid, ogeom_topo::ShapeType::Face)?;
-    let now = |named: &Shape| -> Shape {
-        if faces_now.iter().any(|f| f.is_same(named)) {
-            return named.clone();
-        }
-        so_far
-            .history
-            .modified(named)
-            .iter()
-            .find(|f| faces_now.iter().any(|g| g.is_same(f)))
-            .cloned()
-            .unwrap_or_else(|| named.clone())
-    };
-    let asked = spec;
-    let spec = &match spec {
-        Chamfer::Symmetric(d) => Chamfer::Symmetric(*d),
-        Chamfer::Distances {
-            face,
-            on_face,
-            on_other,
-        } => Chamfer::Distances {
-            face: now(face),
-            on_face: *on_face,
-            on_other: *on_other,
-        },
-        Chamfer::Angle {
-            face,
-            distance,
-            angle,
-        } => Chamfer::Angle {
-            face: now(face),
-            distance: *distance,
-            angle: *angle,
-        },
-    };
-    // An edge nothing of which is left is reported consumed.
-    let pieces = match crate::fillet::refind_edges(model, solid, edge, given, tol) {
-        Ok(pieces) => pieces,
-        Err(ogeom_core::OgeomError::Construction(_)) => Vec::new(),
-        Err(e) => return Err(e),
-    };
-    if pieces.is_empty() {
-        let ends = |e: &Shape| -> OgeomResult<Vec<ogeom_topo::TShapeId>> {
-            Ok(ogeom_algo::edge_vertices(model, e)?
-                .map(|(a, b)| vec![a.node(), b.node()])
-                .unwrap_or_default())
-        };
-        let own = ends(edge)?;
-        for (other, theirs) in earlier {
-            if same_spelling(theirs, asked, tol) && ends(other)?.iter().any(|v| own.contains(v)) {
-                let mut done = Built::from_nothing(solid.clone());
-                done.history.delete(edge);
-                return Ok(done);
-            }
-        }
-        ogeom_bail!(
-            Construction,
-            "a bevel on a marched seat whose edge an earlier bevel of the request, \
-             of another spelling, took away is not built"
-        );
-    }
-    let mut built = Built::from_nothing(solid.clone());
-    for piece in pieces {
-        let mut step =
-            crate::chamfer_marched::marched_bevel(model, &built.shape, &piece, spec, given, tol)?;
-        crate::support::credit_new_faces(model, &built.shape, &piece, &mut step)?;
-        step.history.delete(edge);
-        built = Built {
-            shape: step.shape.clone(),
-            history: built.history.then(&step.history),
-        };
-    }
-    Ok(built)
 }
 
 /// Whether two spellings bevel alike: the same kind, the same measures, the
@@ -2495,6 +1952,17 @@ pub(crate) fn same_spelling(a: &Chamfer, b: &Chamfer, tol: Tolerances) -> bool {
         ) => fa.is_same(fb) && near(*da, *db) && (aa - ab).abs() <= tol.angular(),
         _ => false,
     }
+}
+
+/// The refusal of a chamfer the blend engine does not build: by name, not
+/// handed to another construction.
+pub(crate) fn declined() -> ogeom_core::OgeomError {
+    ogeom_core::ogeom_err!(
+        Construction,
+        "the blend engine builds no chamfer of this kind here: the edge's \
+         faces, its seat or the request lie outside what it chamfers; see \
+         docs/CAPABILITIES.md"
+    )
 }
 
 /// The refusal of two pieces of one curved edge (split by seams) asked

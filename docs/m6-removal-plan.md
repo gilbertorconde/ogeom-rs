@@ -1,5 +1,15 @@
 # M6: remove the old blend paths without losing regressions
 
+## Status
+
+Complete. On the final layer, with `RUST_TEST_THREADS=1` and both Cargo
+invocations exiting 0, the counters recorded zero round and zero chamfer
+requests over every `ogeom-fillet` and `ogeom` test, ignored ones included.
+A workspace search found no caller of the old constructors. The old round and
+chamfer construction, the `old-path-log` feature, `to_current_path` and the
+`tools/old-path-*.sh` scripts are removed; the inventory below is kept as the
+record of what was retired and is pinned to its own revision.
+
 ## Decision and baseline
 
 **Do not delete the old round implementation yet.** Retire construction, not

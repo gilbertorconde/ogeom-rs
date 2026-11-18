@@ -147,8 +147,7 @@ fn setback_corners_through_fillet_edges_with_a_void_in_a_cell_are_refused_by_nam
 }
 
 /// The void of the three-radii corner: a cube of 0.4 at (1.7, 1.7, 8.0),
-/// inside the old path's smaller cell, clear of the bands and of the balls'
-/// centres.
+/// near the corner but clear of the bands and of the balls' centres.
 const SPOT: [f64; 4] = [1.7, 1.7, 8.0, 0.4];
 
 /// The three-radii corner closes on the engine's patch, which cuts no cell:

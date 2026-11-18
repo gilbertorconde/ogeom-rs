@@ -67,8 +67,6 @@ pub fn round_vertex_setback(
     setbacks: &Setbacks,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("round_vertex_setback");
     let mut own: Vec<Shape> = vec![vertex.clone()];
     own.extend(setbacks.per_edge.iter().map(|(e, _)| e.clone()));
     ogeom_algo::on_own_nodes(model, solid, &own, |model, solid, parts| {
@@ -258,8 +256,6 @@ pub fn fillet_edges_cornered(
     corners: &[(Shape, Setbacks)],
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("fillet_edges_cornered");
     let mut own: Vec<Shape> = edges.to_vec();
     own.extend(corners.iter().map(|(v, _)| v.clone()));
     for (_, setbacks) in corners {
