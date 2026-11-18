@@ -669,7 +669,7 @@ pub(crate) fn roll_overs(
 
 /// Whether any of `found` stands where the engine builds no roll-over
 /// yet: the one place a request whose contact leaves its face is handed
-/// back from, to the current path, which builds or refuses it as before.
+/// back from, refused by name if no other route builds it.
 #[must_use]
 pub(crate) fn rolls_over(found: &[RollOver]) -> bool {
     !found.is_empty()
@@ -815,8 +815,7 @@ pub(crate) struct SetbackCorner {
 /// meeting it a convex round, each strip stopped square to its edge at
 /// `distance` of it from the vertex, measured along the edge, and each face
 /// between two strips trimmed on the conic from one rail end to the next,
-/// tangent to both rails (as the current path's `round_vertex_setback`
-/// builds it). Refused by name where an edge at the vertex is not a convex
+/// tangent to both rails (as `round_vertex_setback` builds it). Refused by name where an edge at the vertex is not a convex
 /// round, a setback is shorter than the ball's own along its edge (the
 /// corner the strips meet in unasked) or reaches past the edge's far end,
 /// or two rails on a face do not run towards each other.

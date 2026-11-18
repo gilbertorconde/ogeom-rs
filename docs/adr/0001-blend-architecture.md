@@ -624,19 +624,17 @@ replaced #1003's refusal):
   along an edge that shares a face or a vertex with another of the
   request, two bands overlapping across a face they share, a plate rounded
   past half its thickness) are refused by name, as every mainstream
-  application refuses a fillet whose faces cannot hold it. A request of two
-  edges or more that no route builds is checked as the current path checks
-  it before building any band (its corners read, each ball seated, no two
-  bands overlapping), within the current path's cut-offs, so a concave
-  band running past its face's side is kept for the cut-off at that side
-  as there; one failing is refused there in the same words, without
-  entering the current path. The check refuses nothing the current path
-  builds, since that path refuses on it before building anything. A
-  request of one edge is checked as its entry checks it (`request_fits`
-  through `fillet_edges`, the ball on its two faces through
-  `fillet_edge`), and where that fails, the strip or ring beside it is
-  read as taken off whole, as the current path reads it; only where that
-  reads nothing either is it refused, in the same words.
+  application refuses a fillet whose faces cannot hold it. A request no
+  engine route builds is checked before it is refused: a request of two
+  edges or more as a whole (its corners read, each ball seated, no two
+  bands overlapping, a concave band running past its face's side kept for
+  the cut-off at that side), a request of one edge as its entry reads it
+  (`request_fits` through `fillet_edges`, the ball on its two faces through
+  `fillet_edge`). One failing is refused in that check's own words, or,
+  where the ball rests on a narrow face's far edge, in the words the
+  engine's reading of that run gives for why it does not hold; one passing
+  is refused as a round the engine does not build. With M6 there is no
+  other construction to hand it to.
 - **Chamfers past what the part holds** (bevels whose setbacks on one face
   cross, taking it past one of its own sides: a plate 6 thick bevelled 4.9
   on every edge) are refused by name where no route builds them, the

@@ -151,7 +151,7 @@ fn chamfer_with(
         return Ok(None);
     }
     // An edge not of the solid is no request of the curved path's: handed
-    // back, refused by name on the current path.
+    // back, refused by name.
     if asked.iter().any(|(e, _, _)| !curved.edges.contains_key(e)) {
         return Ok(None);
     }

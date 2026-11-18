@@ -63,14 +63,7 @@ pub(crate) struct Hosts {
     loose: bool,
 }
 
-impl Hosts {
-    /// These hosts, a line of contact on them taken at the round's own fit
-    /// where the tighter fit misses (see [`contact_cut`]).
-    pub(crate) fn loosened(mut self) -> Self {
-        self.loose = true;
-        self
-    }
-}
+impl Hosts {}
 
 /// The two faces' surfaces, carried on past the faces once for every seat
 /// read between them.
