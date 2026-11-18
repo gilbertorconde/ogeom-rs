@@ -129,22 +129,6 @@ thread_local! {
     static IN_SEATS: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
 }
 
-/// Where an old marched constructor named `entry` (one that builds and
-/// applies its own wedge, or reads a strip off whole for the one-edge
-/// entries) is reached: a record for the old-path count, and in a debug
-/// build a panic, where the engine's marched seats are at work. Their
-/// tools are the engine's own; reaching one of these from there is a
-/// regression.
-pub(crate) fn old_marched_constructor(entry: &str) {
-    if IN_SEATS.with(core::cell::Cell::get) {
-        #[cfg(feature = "old-path-log")]
-        let _old_path_entry = crate::fillet::to_current_path(entry);
-        if cfg!(debug_assertions) {
-            panic!("the engine's marched seats reached the old constructor {entry}");
-        }
-    }
-}
-
 /// `f` run as the engine's other routes run, outside the marched seats:
 /// a crease restored under a strip taken off is rounded by the whole
 /// engine, whose other routes are not the seats'.

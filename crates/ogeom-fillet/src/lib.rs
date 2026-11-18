@@ -23,8 +23,6 @@ mod fits;
 mod law;
 pub mod march;
 mod marched;
-#[cfg(feature = "old-path-log")]
-mod old_path;
 mod pair_marched;
 mod pinched;
 mod rim_arc;

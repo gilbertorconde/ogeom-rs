@@ -62,8 +62,6 @@ pub fn fillet_edge_distances_variable(
     profile: RoundProfile,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("fillet_edge_distances_variable");
     let laws = [
         Profile::new(on_face, false, tol)?,
         Profile::new(on_other, false, tol)?,

@@ -1316,7 +1316,6 @@ thread_local! {
 /// Run `f` with every wedge [`apply_wedge`] builds set aside rather than
 /// applied, and hand the wedges back with its result.
 pub(crate) fn collecting_wedges<T>(f: impl FnOnce() -> T) -> (T, Vec<Wedge>) {
-    crate::engine::old_marched_constructor("collecting_wedges");
     struct Restore(Option<Vec<Wedge>>);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -1408,7 +1407,6 @@ pub(crate) fn apply_wedge(
     additive: bool,
     tol: Tolerances,
 ) -> OgeomResult<ogeom_algo::Built> {
-    crate::engine::old_marched_constructor("apply_wedge");
     let wedge = wedge_solid(model, faces, true, tol)?;
     apply_wedge_solid(model, solid, edge, &wedge, additive, tol)
 }
@@ -1485,7 +1483,6 @@ pub(crate) fn apply_wedge_solid(
     additive: bool,
     tol: Tolerances,
 ) -> OgeomResult<ogeom_algo::Built> {
-    crate::engine::old_marched_constructor("apply_wedge_solid");
     let wedge = wedge.clone();
     let set_aside = WEDGES.with(|held| {
         held.borrow_mut().as_mut().map(|wedges| {

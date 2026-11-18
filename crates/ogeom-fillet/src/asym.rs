@@ -184,8 +184,6 @@ pub fn fillet_edge_distances(
     profile: RoundProfile,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("fillet_edge_distances");
     for d in [on_face, on_other] {
         if !d.is_finite() || d <= tol.confusion() {
             ogeom_bail!(
@@ -774,8 +772,6 @@ pub fn largest_fillet_distances(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("largest_fillet_distances");
     let conf = tol.confusion();
     if !up_to.is_finite() || up_to <= conf {
         ogeom_bail!(

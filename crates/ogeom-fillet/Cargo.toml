@@ -23,10 +23,6 @@ ogeom-heal.workspace = true
 ogeom-mesh.workspace = true
 
 [features]
-# Logs each round request the blend engine hands to the current path, with
-# the asking test's name, to the file `OGEOM_OLD_PATH_LOG` names
-# (`tools/old-path-rounds.sh`).
-old-path-log = []
 
 [dev-dependencies]
 approx.workspace = true

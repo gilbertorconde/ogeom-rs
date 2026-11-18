@@ -55,8 +55,6 @@ pub fn blend_edges(
     corner: ChamferCorner,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    #[cfg(feature = "old-path-log")]
-    let _old_path_request = crate::old_path::public_request("blend_edges");
     let mut rounds: Vec<(Shape, f64)> = Vec::new();
     let mut bevels: Vec<(Shape, Chamfer)> = Vec::new();
     let mut asymmetric: Vec<crate::asym::Asymmetric> = Vec::new();

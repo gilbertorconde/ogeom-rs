@@ -121,6 +121,19 @@ bump may break the API and a patch bump may not.
     `fillet_edges_meeting`, `round_vertex_with`, `ruled_fillet` and the
     consumed, rolled and corner strip builders) go with it. They were not
     public API.
+- **Breaking: the old chamfer path is gone; every chamfer goes through the
+  blend engine or is refused by name.** (#902, M6)
+  - `chamfer_edge`, `chamfer_edge_distances`, `chamfer_edge_angle`,
+    `chamfer_edges_with` and `chamfer_edges_cornered` (with
+    `ChamferCorner::Point` and `ChamferCorner::Facet`) refuse by name,
+    the whole request blamed, where the engine declines, instead of
+    building wedges on the solid as given. No request in either suite
+    reached the old construction before it was removed.
+  - The old construction (`chamfer_edges_mitred` and the wedge, bevel and
+    marched-step tools only it used) goes. It was not public API.
+- **Breaking: the `old-path-log` feature of `ogeom-fillet` is removed.**
+  It logged each request the engine handed to the old path, which no
+  longer exists. `tools/old-path-{all,rounds,chamfers}.sh` go with it.
 
 ### Fixed
 
