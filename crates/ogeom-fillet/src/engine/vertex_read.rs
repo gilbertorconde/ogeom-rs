@@ -29,29 +29,9 @@ pub(crate) struct OneBall {
     /// Edge `k`, from the vertex into the solid, where plane `ring[k]` and
     /// plane `ring[k + 1]` meet.
     pub(crate) d: Vec<Direction>,
-    /// The points whose containment in the solid told the corner convex.
-    pub(crate) probes: Vec<Point>,
 }
 
-impl OneBall {
-    /// The box round the corner's block: the vertex, the foot of each edge
-    /// on its plane through the ball's centre, the point where the ball
-    /// touches each plane, and the centre.
-    pub(crate) fn block_bounds(&self, radius: f64) -> ogeom_math::Aabb {
-        let mut points = vec![self.corner, self.far];
-        for (dk, mk) in self.d.iter().zip(&self.m) {
-            points.push(self.foot(dk.vector()));
-            points.push(self.far - *mk * radius);
-        }
-        ogeom_math::Aabb::of_points(&points)
-    }
-
-    /// Where the plane through the ball's centre square to `along` meets
-    /// the edge leaving the vertex along it.
-    pub(crate) fn foot(&self, along: Vector) -> Point {
-        self.corner + along * (self.far - self.corner).dot(along)
-    }
-}
+impl OneBall {}
 
 /// The corner `vertex` of `solid` is to a ball of `radius`, and every check
 /// that the tool speaks it.
@@ -191,7 +171,6 @@ pub(crate) fn corner_at(
     // there adds material instead of shedding it, and a tool built from a
     // cut cannot say so.
     let boundary = ogeom_algo::SolidBoundary::of(model, solid, tol.confusion() * 1e4, tol)?;
-    let mut probes = vec![far];
     if boundary.holds(model, far, tol)? != ogeom_algo::Containment::In {
         ogeom_bail!(
             Construction,
@@ -244,7 +223,6 @@ pub(crate) fn corner_at(
         for &(i, j, d) in &edges {
             for (k, other) in [(i, j), (j, i)] {
                 let off = corner + (d.vector() - m[k] + m[other]) * step;
-                probes.push(off);
                 if boundary.holds(model, off, tol)? == ogeom_algo::Containment::In {
                     ogeom_bail!(
                         Construction,
@@ -313,7 +291,6 @@ pub(crate) fn corner_at(
         m,
         ring,
         d,
-        probes,
     }))
 }
 

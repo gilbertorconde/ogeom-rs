@@ -2,10 +2,7 @@
 //! concave rim. The ball keeps the outer wall and rests on the rim where
 //! its ordinary contact would be inside the cylinder above the cap.
 
-use crate::march::{BlendStop, MarchedBlend, Sides};
-use crate::marched::{ExactBand, Rail};
 use crate::support::{Contact, edge_curve};
-use ogeom_algo::Built;
 use ogeom_algo::classify::FaceTrim;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, Curve3d as _, SurfaceGeometry};
@@ -27,7 +24,6 @@ pub(crate) struct Run {
     radius: f64,
     faces: [Shape; 2],
     beyond: Shape,
-    rim: (Curve, (f64, f64)),
     hosts: [(SurfaceGeometry, f64); 2],
 }
 
@@ -104,7 +100,7 @@ pub(crate) fn run(
         let out = seat.normals[1 - narrow];
         let cap = &seat.faces[narrow];
         for far in explore_unique(model, cap, ShapeType::Edge)? {
-            let (rim_curve, rim_range) = edge_curve(model, &far, tol)?;
+            let (rim_curve, _) = edge_curve(model, &far, tol)?;
             let Curve::Circle(circle) = &rim_curve else {
                 continue;
             };
@@ -167,7 +163,6 @@ pub(crate) fn run(
                 radius,
                 faces: [seat.faces[1 - narrow].clone(), cap.clone()],
                 beyond: rim.wall_face,
-                rim: (rim_curve, rim_range),
                 hosts: [first, second],
             };
             let detail = ogeom_mesh::Deflection {
@@ -217,159 +212,4 @@ pub(crate) fn run(
         }
     }
     Ok(None)
-}
-
-/// Build the carried wedge on the line and supports validated by `run`.
-///
-/// # Panics
-///
-/// If a validated line guide cannot be evaluated within its own run.
-#[allow(
-    clippy::expect_used,
-    reason = "recognition validates the line guide over the entire run"
-)]
-pub(crate) fn build(
-    model: &mut Model,
-    solid: &Shape,
-    edge: &Shape,
-    run: &Run,
-    tol: Tolerances,
-) -> OgeomResult<Built> {
-    let spans = run.spans();
-    let stations: Vec<_> = spans
-        .iter()
-        .flat_map(|&span| (0..STATIONS).map(move |i| at(span, i)))
-        .chain(std::iter::once(run.range.1))
-        .collect();
-    let section = |t| run.station(t, tol);
-    let lunes = crate::between::TurningLunes {
-        radius: run.radius,
-        stations: &stations,
-        section: &section,
-    };
-    let search = |_: &Model, _: &Shape, measure: &ogeom_algo::PointDistance, _: Option<Point>| {
-        lunes.face_inside(measure, tol)
-    };
-    let centre = |t| Ok(run.station(t, tol)?[0]);
-    let rolling = crate::between::Rolling {
-        radius: run.radius,
-        stations: stations.clone(),
-        centre: &centre,
-        lines: vec![(run.guide.clone(), run.range), run.rim.clone()],
-        ends: [run.range.0, run.range.1]
-            .into_iter()
-            .flat_map(|t| {
-                let [_, a, b] = run.station(t, tol).expect("validated shelf station");
-                [a, b]
-            })
-            .collect(),
-        lunes: Some(&search),
-    };
-    if let Some(at) = crate::between::face_inside_balls(
-        model,
-        solid,
-        [&run.faces[0], &run.faces[1]],
-        &rolling,
-        tol,
-    )? {
-        ogeom_bail!(
-            Construction,
-            "a face at {at:?} enters a carried shelf's ball"
-        );
-    }
-    let mut blends = Vec::new();
-    for span in spans {
-        let mut blend = MarchedBlend {
-            spine: vec![],
-            on_first: vec![],
-            on_second: vec![],
-            touch_first: vec![],
-            touch_second: vec![],
-            along: vec![],
-            sides: Sides {
-                first: -1,
-                second: -1,
-            },
-            stopped: BlendStop::RanPastTheGuide,
-        };
-        for i in 0..=STATIONS {
-            let t = at(span, i);
-            let [c, wall, cap] = run.station(t, tol)?;
-            blend.spine.push(c);
-            blend.touch_first.push(wall);
-            blend.touch_second.push(cap);
-            blend
-                .on_first
-                .push(ogeom_algo::project_on_surface(&run.hosts[0].0, wall, 32, tol)?.parameters);
-            blend
-                .on_second
-                .push(ogeom_algo::project_on_surface(&run.hosts[1].0, cap, 32, tol)?.parameters);
-            blend.along.push(t);
-        }
-        blends.push(blend);
-    }
-    let offs: Vec<Box<dyn Fn(Point) -> f64 + '_>> = spans
-        .into_iter()
-        .map(|span| {
-            Box::new(move |p: Point| {
-                let mut best = 0;
-                let mut distance = f64::INFINITY;
-                for i in 0..=STATIONS {
-                    let d = p.distance(
-                        run.station(at(span, i), tol)
-                            .expect("validated shelf station")[0],
-                    );
-                    if d < distance {
-                        best = i;
-                        distance = d;
-                    }
-                }
-                let mut lo = at(span, best.saturating_sub(1));
-                let mut hi = at(span, (best + 1).min(STATIONS));
-                for _ in 0..64 {
-                    let a = lo + (hi - lo) / 3.0;
-                    let b = hi - (hi - lo) / 3.0;
-                    if p.distance(run.station(a, tol).expect("validated shelf station")[0])
-                        < p.distance(run.station(b, tol).expect("validated shelf station")[0])
-                    {
-                        hi = b;
-                    } else {
-                        lo = a;
-                    }
-                }
-                (p.distance(
-                    run.station(f64::midpoint(lo, hi), tol)
-                        .expect("validated shelf station")[0],
-                ) - run.radius)
-                    .abs()
-            }) as Box<dyn Fn(Point) -> f64>
-        })
-        .collect();
-    let exact: Vec<_> = offs
-        .iter()
-        .map(|off| ExactBand {
-            rails: [
-                Rail::Plane(run.origin + run.out * run.wall, run.out),
-                Rail::Plane(run.origin, run.up),
-            ],
-            off: off.as_ref(),
-            strips: &[],
-        })
-        .collect();
-    crate::marched::build_chain_band_signed(
-        model,
-        solid,
-        Some(edge),
-        &blends,
-        &exact,
-        &run.guide,
-        [
-            (&run.hosts[0].0, run.hosts[0].1),
-            (&run.hosts[1].0, run.hosts[1].1),
-        ],
-        run.radius,
-        tol.confusion() * 20.0,
-        true,
-        tol,
-    )
 }
