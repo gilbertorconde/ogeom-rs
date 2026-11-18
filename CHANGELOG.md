@@ -11,6 +11,36 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-18
+
+A minor release that breaks the API: every round and chamfer now goes through
+the blend engine, and what it does not build is refused by name.
+
+- **Breaking: one engine for blends.** The blend engine (ADR 0001) builds
+  every round and chamfer, in fixed phases from the solid as given and the
+  whole request, so the result does not depend on the order the edges are
+  asked in. The old fillet and chamfer construction paths are gone.
+- **Breaking: refused by name.** A round or chamfer the engine does not
+  build is refused with the engine's reason ("the blend engine builds no
+  round of this kind here"), instead of being tried by an older route.
+- **Breaking: removed items.** The empty public module
+  `ogeom_fillet::corner` (`ogeom::fillet::corner`) and the `old-path-log`
+  feature of `ogeom-fillet` are removed.
+- **Changed defaults.** A corner where three bevels meet now takes a facet;
+  the mitre is still `chamfer_edges_cornered` with `ChamferCorner::Point`.
+  `unify_same_domain` now also joins collinear edges after merging faces;
+  `UnifyOptions { edges: false }` keeps the old behaviour.
+- **New rounds.** Rolling-ball corners (`fillet_edges_corner` with
+  `FilletCorner::Rolling`), asymmetric rounds with elliptical or conic
+  sections (`fillet_edge_distances`, `Blend::RoundDistances`), and
+  `largest_fillet_distances` for the largest such round that fits.
+- **Fewer wrong solids.** Bevels and rounds that met badly at corners,
+  reflex corners and collinear edge pieces now build correctly, and blends
+  leave no surface in pieces.
+- **Stricter input.** Malformed STEP files (a missing or extra comma, an
+  instance number defined twice) and 3MF packages with overlapping entries
+  or past 4096 entries or 4 GiB are refused before anything is read.
+
 ### Added
 
 - **Rolling-ball corners for rounds: `fillet_edges_corner` and
@@ -14719,7 +14749,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.18.1...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.17.1...v0.18.0
 [0.17.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.17.0...v0.17.1
