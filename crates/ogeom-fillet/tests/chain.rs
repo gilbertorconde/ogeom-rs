@@ -545,9 +545,7 @@ fn rims_that_meet_nothing_round_together() {
 /// alone, and with the long arc, each round removes the corner between
 /// the top and the wall turned about the axis, a column at radius `rho`
 /// taken over the turn where it stands on the crease's side of the neck's
-/// walls `y = -1` and `y = 1` ([`keyhole_removed`]). The current path
-/// capped the band in the plane through the axis at the wall, the whole
-/// corner over 20 and 300 degrees by Pappus; that figure was its own.
+/// walls `y = -1` and `y = 1` ([`keyhole_removed`]).
 #[test]
 fn a_short_arc_of_a_rim_that_stops_rounds_over_its_own_arc() {
     let pi = core::f64::consts::PI;
@@ -2909,9 +2907,6 @@ fn rounds_at_a_drum_drafted_foot_out_meeting_a_wall_take_all_above_both() {
 ///   there, the gap between them closing to it (zero thickness, which
 ///   SOLIDWORKS does not allow either; amendment "M5e", bullet "not
 ///   built").
-///
-/// The current path took one corner in either order, its own figure, and
-/// built the rim after the crease touching itself.
 #[test]
 fn a_cone_rim_that_meets_unresolved_is_rounded_fitted() {
     let r = 0.5;

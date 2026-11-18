@@ -284,9 +284,9 @@ fn pyramid(m: &mut Model) -> Shape {
 /// rounds at either radius alone, and the corner's patch proved within the
 /// pyramid by the hull of its stored net, under the four slants and within
 /// the box's walls and floor. Built by the engine's assembly with no
-/// boolean: interpolated, the patch leaned 4.7e-3 past a face it is
-/// tangent to along its side, and unproved within the material it went to
-/// the current path.
+/// boolean: interpolated, the patch leans 4.7e-3 past a face it is tangent
+/// to along its side, and is proved within the material only once its net
+/// is held within the corner's planes.
 #[test]
 fn a_pyramid_apex_at_alternating_radii_closes_with_one_patch() {
     for (small, large) in [(0.5, 1.5)] {
