@@ -769,7 +769,15 @@ pub(crate) fn rounds_one_boolean(
             let Some(super::Section::Round { radius }) = by_edge.get(&seat.edge) else {
                 return Ok(None);
             };
-            round_tool(model, planar, seat, *radius, corners, tol)?
+            round_tool(
+                model,
+                planar,
+                seat,
+                [planar.points[&seat.ends.0], planar.points[&seat.ends.1]],
+                *radius,
+                corners,
+                tol,
+            )?
         } else {
             group_tool(model, planar, seats, by_edge, &members, corners, tol)?
         };
@@ -782,7 +790,11 @@ pub(crate) fn rounds_one_boolean(
 }
 
 /// Independent circular strips whose contacts leave their faces over part
-/// of the edge. Each tool ends square at the edge's vertices. A convex
+/// of the edge. Each tool ends square at the edge's vertices, or, at a
+/// vertex of three convex edges whose end face the band runs on past (ADR
+/// 0001, amendment "corners where a round's rail misses"), square where
+/// the band's last contact crosses the end face's plane: the cut takes the
+/// run-on the end face trims and nothing of the solid beyond it. A convex
 /// strip takes only material the original solid holds, and a concave one
 /// extends the neighbouring faces to its fill. Strips sharing a vertex
 /// need the sheet's common vertex blend.
@@ -878,12 +890,21 @@ pub(crate) fn cut_off_rounds(
             tol,
         )?;
         let mut square = FastMap::default();
-        for (v, s) in [(seat.ends.0, 0.0), (seat.ends.1, section.length())] {
+        let mut ends = [planar.points[&seat.ends.0], planar.points[&seat.ends.1]];
+        for (j, (v, s, out)) in [
+            (seat.ends.0, 0.0, -seat.along),
+            (seat.ends.1, section.length(), seat.along),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let run = run_on(planar, seats, corners, seat, v, out);
+            ends[j] += out * run;
             for (k, face) in seat.faces.iter().enumerate() {
-                square.insert((*face, v), section.contact(k, s));
+                square.insert((*face, v), section.contact(k, s) + out * run);
             }
         }
-        let Some(tool) = round_tool(model, planar, seat, *radius, &square, tol)? else {
+        let Some(tool) = round_tool(model, planar, seat, ends, *radius, &square, tol)? else {
             return Ok(None);
         };
         tools.push(tool);
@@ -900,6 +921,33 @@ pub(crate) fn cut_off_rounds(
         );
     }
     Ok(Some(built))
+}
+
+/// How far a convex round's band runs on past its end `v`, `out` pointing
+/// away from the edge there: at a vertex of three convex edges, as far as
+/// the farthest of its setback corners there stands past `v` (where a
+/// contact line crosses the end face's plane); elsewhere, or where no
+/// corner stands past `v`, nothing.
+fn run_on(
+    planar: &Planar,
+    seats: &FastMap<(Id, Id), Seat>,
+    corners: &FastMap<(usize, Id), Point>,
+    seat: &Seat,
+    v: Id,
+    out: Vector,
+) -> f64 {
+    let mut at_v = seats
+        .iter()
+        .filter(|((a, b), _)| *a == v || *b == v)
+        .map(|(_, s)| s);
+    if !seat.convex || at_v.clone().count() != 3 || !at_v.all(|s| s.convex) {
+        return 0.0;
+    }
+    seat.faces
+        .iter()
+        .filter_map(|fi| corners.get(&(*fi, v)))
+        .map(|c| (*c - planar.points[&v]).dot(out))
+        .fold(0.0, f64::max)
 }
 
 /// Whether the segment `p` to `q` lies on face `fi`: its middle within the
@@ -938,12 +986,14 @@ fn contact_on_face(planar: &Planar, fi: usize, p: Point, q: Point, eps: f64) -> 
     true
 }
 
-/// One round's tool ([`rounds_one_boolean`]), its strip named for its edge;
-/// `None` where it will not build.
+/// One round's tool ([`rounds_one_boolean`]), its strip named for its edge
+/// and running between `ends` on the edge's line; `None` where it will not
+/// build.
 fn round_tool(
     model: &mut Model,
     planar: &Planar,
     seat: &Seat,
+    [pa, pb]: [Point; 2],
     radius: f64,
     corners: &FastMap<(usize, Id), Point>,
     tol: Tolerances,
@@ -952,7 +1002,6 @@ fn round_tool(
     use ogeom_math::{Direction, Plane};
     let eps = tol.confusion();
     let (a, b) = seat.ends;
-    let (pa, pb) = (planar.points[&a], planar.points[&b]);
     let [Some(c0a), Some(c0b), Some(c1a), Some(c1b)] = [
         corners.get(&(seat.faces[0], a)),
         corners.get(&(seat.faces[0], b)),

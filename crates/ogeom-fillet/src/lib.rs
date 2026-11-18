@@ -36,6 +36,7 @@ mod sharp;
 pub mod sheet;
 mod sheet_curved;
 mod support;
+mod tangent_chain;
 mod turned_pole;
 
 pub use analyse::{BlendContact, analyse_blend, face_curvature_samples};
@@ -68,3 +69,4 @@ pub use march::{
 pub use setback::{Setbacks, fillet_edges_cornered, round_vertex_setback};
 pub use sharp::round_vertex_setback_sharp;
 pub use sheet::{fillet_faces, fillet_sheet_edges};
+pub use tangent_chain::{TANGENT_CHAIN_ANGLE, tangent_chain};
