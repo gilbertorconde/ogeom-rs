@@ -227,7 +227,8 @@ pub enum Chamfer {
 
 /// Bevel several edges of a solid as one operation, each by `distance`.
 ///
-/// As [`chamfer_edges_with`] with the symmetric chamfer on every edge.
+/// As [`chamfer_edges_with`] with the symmetric chamfer on every edge,
+/// so a vertex of three bevels takes the facet, not the mitre.
 ///
 /// # Errors
 ///
@@ -258,6 +259,16 @@ pub fn chamfer_edges(
 /// ([`ChamferCorner::Facet`](crate::ChamferCorner::Facet)); the mitre of
 /// their planes is [`chamfer_edges_cornered`](crate::chamfer_edges_cornered)
 /// with [`ChamferCorner::Point`](crate::ChamferCorner::Point).
+///
+/// **The default corner is the facet** (ADR 0001, section 13, question 1),
+/// so the volume differs from the mitre's. At a box's corner of three
+/// bevels `d` the facet takes `d³/12` more than the mitre. A box
+/// `a × b × c` with every edge bevelled `d` loses:
+///
+/// - `2d²(a + b + c) − 16d³/3` with the facet (this call);
+/// - `2d²(a + b + c) − 6d³` with the mitre ([`ChamferCorner::Point`](crate::ChamferCorner::Point)).
+///
+/// For 20 × 20 × 10 at `d = 1` that is `94 + 2/3` against `94`.
 ///
 /// A solid bounded by planes is chamfered by the blend engine in one pass:
 /// every face set back from its bevelled edges, every bevel the plane

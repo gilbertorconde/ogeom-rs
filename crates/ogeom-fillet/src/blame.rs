@@ -131,6 +131,12 @@ pub fn fillet_edges_corner_checked(
 /// names its spec, and a wedge that does not apply names its spec, then
 /// the specs before it whose edges share a vertex with its edge.
 ///
+/// A vertex of three bevels or more takes the facet
+/// ([`ChamferCorner::Facet`](crate::ChamferCorner::Facet)), as
+/// [`chamfer_edges_with`](crate::chamfer_edges_with) does; the mitre is
+/// [`chamfer_edges_cornered`](crate::chamfer_edges_cornered) with
+/// [`ChamferCorner::Point`](crate::ChamferCorner::Point).
+///
 /// # Errors
 ///
 /// As [`chamfer_edges_with`](crate::chamfer_edges_with), in a
