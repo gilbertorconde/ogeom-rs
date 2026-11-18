@@ -3560,6 +3560,67 @@ fn shaved_top_band_removed(r: f64) -> f64 {
         * h
 }
 
+/// Where the two top edges along the sides `x = 0` and `y = 0` take at
+/// radius `r` both: at height `z` above `10 - r` each band reaches in from
+/// its side to the depth `w = r - sqrt(r^2 - (z - 10 + r)^2)`, and the two
+/// overlap on the square `[0, w]^2` within the drum (radius 6 about
+/// `x = y = 5`), integrated over its columns and then over `z`.
+fn shaved_top_bands_overlap(r: f64) -> f64 {
+    let steps = 2_000;
+    let dz = r / f64::from(steps);
+    let mut total = 0.0;
+    for i in 0..steps {
+        let s = (f64::from(i) + 0.5) * dz;
+        let w = r - r.mul_add(r, -(s - r).powi(2)).max(0.0).sqrt();
+        let dx = w / f64::from(steps);
+        let mut area = 0.0;
+        for j in 0..steps {
+            let x = (f64::from(j) + 0.5) * dx;
+            let half = (36.0 - (x - 5.0).powi(2)).max(0.0).sqrt();
+            let (lo, hi) = ((5.0 - half).max(0.0), (5.0 + half).min(w));
+            area += (hi - lo).max(0.0) * dx;
+        }
+        total += area * dz;
+    }
+    total
+}
+
+/// The shaved cube's top edges along the sides `x = 0` and `y = 0` asked
+/// in one call: they share no vertex (the rim arc between them is left
+/// sharp), and each band alone runs out across the drum at both ends. Near
+/// the shaved corner between them the two cut into each other: the cuts
+/// take their union (ADR 0001, amendment "convex bands crossing apart"),
+/// each band alone less what both take.
+#[test]
+fn the_shaved_cube_s_two_top_edges_round_to_the_union_of_their_bands() {
+    let r = 1.029_422_898_843_744_6;
+    let mut model = Model::new();
+    let (part, _, mids) = shaved_cube(&mut model);
+    let edges = [
+        edge_near(&model, &part, mids[0]),
+        edge_near(&model, &part, Point::new(5.0, 0.0, 10.0)),
+    ];
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &part, &edges, r, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &rounded, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let fine = ogeom::mesh::Deflection::with_chord(1e-3).unwrap();
+    let volume = |model: &Model, shape: &Shape| {
+        ogeom::algo::volume_properties(model, shape, fine, T)
+            .unwrap()
+            .mass
+    };
+    let overlap = shaved_top_bands_overlap(r);
+    assert!(overlap > 0.0, "the two bands meet");
+    let want = 2.0 * shaved_top_band_removed(r) - overlap;
+    let taken = volume(&model, &part) - volume(&model, &rounded);
+    assert!(
+        (taken - want).abs() < want * 1e-6,
+        "took {taken}, the two bands' union {want}"
+    );
+}
+
 /// The straight band first: alone it runs out across the drum at both ends
 /// until its whole section has left it, as a band across a boss does, and
 /// takes off exactly its column-integrated volume. The corner's vertex goes
@@ -6521,4 +6582,249 @@ fn shaved_corner_cell(n: u32) -> f64 {
         }
     }
     total
+}
+
+/// A box placed obliquely: its origin, its `z` and `x` axes, and its size.
+type ObliqueBox = (Point, Vector, Vector, (f64, f64, f64));
+
+/// The boxes of the stress case `blend/boxes/48` fused.
+fn oblique_boxes() -> [ObliqueBox; 2] {
+    [
+        (
+            Point::new(
+                -0.647_545_538_814_069_4,
+                0.854_039_906_318_717_6,
+                0.871_652_022_435_163_6,
+            ),
+            Vector::new(
+                0.660_705_665_783_704_9,
+                -0.652_684_847_750_964_7,
+                0.370_770_161_579_395_5,
+            ),
+            Vector::new(
+                -0.750_645_071_389_475_8,
+                -0.574_482_659_403_874_6,
+                0.326_345_906_735_385_2,
+            ),
+            (
+                5.158_470_543_800_455,
+                3.176_796_884_243_888_5,
+                4.173_826_520_333_584,
+            ),
+        ),
+        (
+            Point::new(
+                -1.578_815_690_056_037_7,
+                -0.608_565_240_368_919,
+                -0.799_509_356_063_028,
+            ),
+            Vector::new(
+                0.508_128_995_600_578_1,
+                0.835_447_087_531_827_1,
+                -0.209_363_530_168_306_56,
+            ),
+            Vector::new(
+                -0.861_280_978_444_286_6,
+                0.492_887_803_271_549_85,
+                -0.123_517_972_603_982_87,
+            ),
+            (
+                5.200_050_720_241_003,
+                5.681_252_521_305_293,
+                3.079_655_281_501_106_7,
+            ),
+        ),
+    ]
+}
+
+/// The point where three planes, each a point on it and its normal, meet.
+fn three_planes(planes: [(Point, Vector); 3]) -> Point {
+    let [(p0, n0), (p1, n1), (p2, n2)] = planes;
+    let d = |p: Point, n: Vector| n.dot(p - Point::ORIGIN);
+    let det = n0.dot(n1.cross(n2));
+    Point::ORIGIN
+        + (n1.cross(n2) * d(p0, n0) + n2.cross(n0) * d(p1, n1) + n0.cross(n1) * d(p2, n2)) / det
+}
+
+/// The fill a ball of radius `r` leaves in the crease from `p` to `q`
+/// between the plane `(o_f, n_f)` (its outward normal, into the air) and a
+/// strip narrower than the ball's setback, whose far edge, the line
+/// through `o_l` along the unit `d_l`, the ball rests on. The ball's centre
+/// stands `r` over the plane and `r` from the line, in the plane square to
+/// the crease at each of the crease's stations `s`. Its section in the
+/// plane square to the centre's path is the region bounded by the crease,
+/// the strip's line, the ball's arc and the plane's line, kept on the inner
+/// side of each half-space of `keep` (a point and its inward normal). The
+/// fill runs from where its kept section is empty before `p` to the
+/// station whose section's plane passes through `q`. Its volume sums the
+/// sections moved along the path, a point at `y` from the centre moving at
+/// `|c'| - y . T'` (`T` the path's unit tangent), by Simpson's rule.
+fn rolled_fill(
+    (p, q): (Point, Point),
+    (o_f, n_f): (Point, Vector),
+    (o_l, d_l): (Point, Vector),
+    keep: &[(Point, Vector)],
+    r: f64,
+) -> f64 {
+    let length = p.distance(q);
+    let along = (q - p) / length;
+    assert!((p - o_f).dot(n_f).abs() < 1e-9 && (q - o_f).dot(n_f).abs() < 1e-9);
+    // Into the plane's face, square to the crease: toward the strip's far
+    // edge as it stands over the plane.
+    let mut into = n_f.cross(along);
+    let foot = o_l + d_l * (p - o_l).dot(d_l);
+    if into.dot(foot - p) < 0.0 {
+        into = -into;
+    }
+    let centre = |s: f64| -> Option<Point> {
+        let o = p + along * s + n_f * r;
+        let g = o - o_l;
+        let (gp, hp) = (g - d_l * g.dot(d_l), into - d_l * into.dot(d_l));
+        let (a, b, c) = (hp.dot(hp), gp.dot(hp), gp.dot(gp) - r * r);
+        let disc = b * b - a * c;
+        (disc >= 0.0).then(|| o + into * ((-b + disc.sqrt()) / a))
+    };
+    let h = 1e-5;
+    let velocity = |s: f64| Some((centre(s + h)? - centre(s - h)?) / (2.0 * h));
+    let tangent = |s: f64| velocity(s).map(|v| v / v.magnitude());
+    let bend = |s: f64| Some((tangent(s + h)? - tangent(s - h)?) / (2.0 * h));
+    // The kept section at `s`: its area and the integral of `y` over it.
+    let section = |s: f64| -> (f64, Vector) {
+        let (c, t) = (centre(s).unwrap(), tangent(s).unwrap());
+        let crossing = p + along * ((c - p).dot(t) / along.dot(t));
+        let on_plane = c - n_f * r;
+        let on_line = o_l + d_l * (c - o_l).dot(d_l);
+        assert!((on_line - c).dot(t).abs() < 1e-6 && (on_plane - c).dot(t).abs() < 1e-6);
+        let (u, w) = ((on_line - c) / r, (on_plane - c) / r);
+        let angle = u.dot(w).clamp(-1.0, 1.0).acos();
+        let v = (w - u * u.dot(w)) / (w - u * u.dot(w)).magnitude();
+        let bow = c + (u + w) / (u + w).magnitude() * r;
+        assert!(
+            bow.distance(crossing) < c.distance(crossing),
+            "the arc faces the crease"
+        );
+        let n = 4_000;
+        let mut poly = vec![crossing, on_line];
+        for i in 1..n {
+            let a = angle * f64::from(i) / f64::from(n);
+            poly.push(c + (u * a.cos() + v * a.sin()) * r);
+        }
+        poly.push(on_plane);
+        for &(at, inward) in keep {
+            let side = |y: Point| (y - at).dot(inward);
+            let mut out = Vec::with_capacity(poly.len() + 2);
+            for i in 0..poly.len() {
+                let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+                let (sa, sb) = (side(a), side(b));
+                if sa >= 0.0 {
+                    out.push(a);
+                }
+                if (sa >= 0.0) != (sb >= 0.0) {
+                    out.push(a + (b - a) * (sa / (sa - sb)));
+                }
+            }
+            poly = out;
+        }
+        let (mut area, mut moment) = (0.0, Vector::ZERO);
+        for i in 1..poly.len().saturating_sub(1) {
+            let (a, b, d) = (poly[0], poly[i], poly[i + 1]);
+            let piece = (b - a).cross(d - a).dot(t) * 0.5;
+            area += piece;
+            moment += ((a - c) + (b - c) + (d - c)) * (piece / 3.0);
+        }
+        (area.abs(), moment * area.signum())
+    };
+    let rate = |s: f64| {
+        let (area, moment) = section(s);
+        velocity(s).unwrap().magnitude() * area - moment.dot(bend(s).unwrap())
+    };
+    // The start: stepping back from `p` to the first empty section.
+    let mut lo = 0.0;
+    while section(lo).0 > 0.0 {
+        lo -= r / 8.0;
+    }
+    // The end: the station whose section's plane holds `q`.
+    let ahead = |s: f64| (q - centre(s).unwrap()).dot(tangent(s).unwrap());
+    let (mut a, mut b) = (0.0, length);
+    while ahead(b) > 0.0 {
+        b += r / 8.0;
+    }
+    for _ in 0..200 {
+        let m = f64::midpoint(a, b);
+        if ahead(m) > 0.0 {
+            a = m;
+        } else {
+            b = m;
+        }
+    }
+    let hi = f64::midpoint(a, b);
+    let steps = 2_000;
+    let ds = (hi - lo) / f64::from(steps);
+    let mut total = rate(lo) + rate(hi);
+    for i in 1..steps {
+        total += rate(ds.mul_add(f64::from(i), lo)) * if i % 2 == 1 { 4.0 } else { 2.0 };
+    }
+    total * ds / 3.0
+}
+
+/// The stress case `blend/boxes/48`: two oblique boxes fused, and two of
+/// their edges asked at `r = 0.2504`. One is a whole edge of the first box,
+/// a plain round between square faces. The other is a short concave crease
+/// where the first box's bottom meets the second's side in a 20 degree
+/// wedge; the bottom's strip there is narrower than the ball's setback, so
+/// the ball rests on the strip's far edge. Past the crease's end on the
+/// second box's bottom that edge leaves the side faster than the ball can
+/// follow, and the round ends where its arc's plane crosses the crease's
+/// end (ADR 0001, amendment "a far edge leaving the seam"); at the other
+/// end it is cut back to the first box's end face. The result holds the
+/// fused solid with the fill added and the plain round taken.
+#[test]
+fn a_ball_resting_on_a_far_edge_ends_where_its_arc_crosses_the_seam_s_end() {
+    let r = 0.250_361_211_245_513_36;
+    let mut model = Model::new();
+    let mut solids = Vec::new();
+    let mut frames = Vec::new();
+    for (at, z, x, size) in oblique_boxes() {
+        let (zd, xd) = (Direction::new(z, T).unwrap(), Direction::new(x, T).unwrap());
+        let (z, x) = (zd.vector(), xd.vector());
+        let frame = Frame::new(at, zd, xd, T).unwrap();
+        solids.push(
+            ogeom::algo::make_box(&mut model, frame, size, T)
+                .unwrap()
+                .shape,
+        );
+        frames.push((at, x, z.cross(x), z, size));
+    }
+    let fused = ogeom::boolean::fuse(&mut model, &solids[0], &solids[1], T)
+        .unwrap()
+        .shape;
+    let ((o1, x1, y1, z1, s1), (o2, x2, _, z2, _)) = (frames[0], frames[1]);
+    // The crease: the first box's bottom against the second's side `x = 0`,
+    // from the first box's end `y = 0` to the second box's bottom.
+    let p = three_planes([(o1, z1), (o2, x2), (o1, y1)]);
+    let q = three_planes([(o1, z1), (o2, x2), (o2, z2)]);
+    let plain = o1 + x1 * s1.0 + z1 * (0.5 * s1.2);
+    let edges = [
+        edge_near(&model, &fused, p.midpoint(q)),
+        edge_near(&model, &fused, plain),
+    ];
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &fused, &edges, r, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &rounded, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let fine = ogeom::mesh::Deflection::with_chord(1e-3).unwrap();
+    let volume = |model: &Model, shape: &Shape| {
+        ogeom::algo::volume_properties(model, shape, fine, T)
+            .unwrap()
+            .mass
+    };
+    let fill = rolled_fill((p, q), (o2, -x2), (o1, y1), &[(o1, y1), (o2, z2)], r);
+    let taken = (1.0 - core::f64::consts::FRAC_PI_4) * r * r * s1.2;
+    let want = fill - taken;
+    let change = volume(&model, &rounded) - volume(&model, &fused);
+    assert!(
+        (change - want).abs() < fill * 1e-6,
+        "changed by {change}, the fill {fill} less the plain round's {taken}: {want}"
+    );
 }

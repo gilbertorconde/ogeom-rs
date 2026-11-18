@@ -2014,16 +2014,26 @@ fn capped_end(run: &Run, k: usize, tol: Tolerances) -> OgeomResult<Option<f64>> 
     } else {
         (run.length, 1.0)
     };
+    let mut ran_out = false;
     for step in 1..=40 {
         let s = base + sign * r * 0.5 * f64::from(step);
         if outside(s)? {
             return Ok(Some(s));
         }
+        // The line of centres at a station draws away from the edge's line
+        // linearly: once the ball cannot reach the edge, no later one can.
+        if matches!(run.support, Support::Edge { .. }) && run.centre(s).is_none() {
+            ran_out = true;
+            break;
+        }
     }
-    // Rolling round a vertex the balls run out before their arcs clear the
+    // Rolling round a vertex, or resting on a far edge that leaves `F1`
+    // past the seam's end, the balls run out before their arcs clear the
     // end face's plane: the run ends where its arc's plane crosses the
-    // seam's end.
-    if let Support::Point { .. } = run.support {
+    // seam's end (ADR 0001, amendment "a far edge leaving the seam").
+    if matches!(run.support, Support::Point { .. })
+        || (ran_out && matches!(run.support, Support::Edge { .. }))
+    {
         let across =
             |s: f64| -> Option<f64> { Some((run.crossing(s)? - run.start).dot(run.along) - base) };
         let count = 400_u32;

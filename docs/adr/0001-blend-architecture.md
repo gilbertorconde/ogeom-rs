@@ -2379,6 +2379,66 @@ request went to the current path.
   crease whose round alone the engine does not build, or a ball that does
   not fit.
 
+### Amendment: convex bands crossing apart (#902)
+
+Amendment "rounds standing apart" rounds each group of a request alone
+and applies the tools where every tool stands clear of every other
+group's. Two convex edges that share no vertex can still cut into each
+other: the shaved cube's top edges along two sides, with the rim arc
+between them left sharp, each run out across the drum at both ends, and
+near the shaved corner the two bands' cuts overlap.
+
+- **Rule.** Two groups' cuts may touch or overlap; the cuts take their
+  union, where the request passes the overlap guards every request of
+  two edges or more is held to (no two bands overlap across a face they
+  share, as section 11's rounds that no ball fits). A request failing
+  them leaves this route and is refused there by name: two edges of a
+  face narrower than their two setbacks still are. A fill must still
+  stand clear of every other group's tool, cut or fill.
+- **Why it is the rounding asked.** Where two convex rounds meet across
+  material both take off, each band removes what no ball within its two
+  faces reaches, and a point that one band removes is reached by no ball
+  of the solid there. This is amendment "M5e"'s convex-turn rule (each
+  crease rounded as it is alone, the cuts taking their union), applied to
+  groups whose cuts meet away from any shared vertex. A fill meeting
+  another group's tool would change material that tool's round was
+  proved on, so that case still declines.
+- **Oracle.** The shaved cube's two top edges in one call (`blends.rs`)
+  take twice one band alone, in closed form, less the square where the
+  two overlap within the drum, integrated column by column.
+- **Not this route:** a fill touching another group's tool, or two bands
+  overlapping across a face they share.
+
+### Amendment: a far edge leaving the seam (#902)
+
+Amendment "M5d"'s run caps its fill on the arcs' planes past the seam's
+ends, stepping out until an arc clears the end face's plane, and cuts the
+fill back to that plane. Where the far edge the ball rests on leaves the
+touched face's plane past the seam's end, faster than the ball can follow
+(beyond some station no ball a radius over the touched face reaches the
+edge's line), the balls run out before any arc clears the end face's
+plane: the stress case `blend/boxes/48`, a short concave crease in a 20
+degree wedge between two oblique boxes, where the first box's bottom
+strip is narrower than the setback and its far edge runs off at 23
+degrees to the crease.
+
+- **Rule.** No new kind of end. At an end where the ball runs out before
+  its arc clears the end face's plane, the run ends where its arc's plane
+  crosses the seam's end, as a run rolling round a vertex does (amendment
+  "a round rolling round a vertex"). The other end is capped and cut back
+  as before. The current path ends the same band on the same plane at
+  that end.
+- **What is left.** Between that arc's plane and the end face's plane the
+  wedge stays sharp, as the current path leaves it.
+- **Proof** as M5d's, over the stations the fill spans.
+- **Oracle.** `blend/boxes/48`'s two edges in one call (`blends.rs`): the
+  fill is the ball's sections square to its path (bounded by the crease,
+  the strip, the arc and the touched face, clipped to the end faces'
+  half-spaces) moved along the path from where they leave the first end
+  face's plane to the arc's plane through the seam's other end, by
+  Simpson's rule; the other edge is a plain round between square faces.
+- **Not this route:** a ball that runs out within the seam.
+
 ## 12. Acceptance corpus
 
 From #902:
