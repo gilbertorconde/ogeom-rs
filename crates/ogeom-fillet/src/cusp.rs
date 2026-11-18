@@ -163,8 +163,5 @@ pub(crate) fn cusp_corner(
         paired[i] = true;
         sides.push(t);
     }
-    if sides.is_empty() || paired.iter().any(|p| !p) {
-        return Ok(false);
-    }
-    Ok(true)
+    Ok(!sides.is_empty() && paired.iter().all(|p| *p))
 }

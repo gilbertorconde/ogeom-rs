@@ -439,7 +439,7 @@ fn face_held(
         return Ok(false);
     }
     let span = run_span(ends, &section, centre, radius);
-    if !clear(
+    clear(
         model,
         flats,
         (ends, centre, span),
@@ -447,10 +447,7 @@ fn face_held(
         (contact, n3 * radius),
         radius,
         tol,
-    )? {
-        return Ok(false);
-    }
-    Ok(true)
+    )
 }
 
 /// The section's ring at the crease's start: the crease, the touch on
