@@ -719,6 +719,11 @@ fn triangulate_reporting_from(
             }
         }
     }
+    // Measured above with each corner at the parameters it has in its own
+    // triangle: a joined apex keeps one `u`, and a triangle on the far side
+    // of the seam averaged with it would look half a turn round for its
+    // middle.
+    join_collapsed_sides(&mut mesh, tol);
     Ok((
         mesh,
         if crossed {
@@ -1708,6 +1713,81 @@ fn face_chords(
         lower(&mut finer, chord);
     }
     Ok(finer)
+}
+
+/// Join the two corners of every side that lifts to one point in space,
+/// and drop each triangle that is left with two corners the same.
+///
+/// A side of the chart that runs along a row where the surface collapses
+/// to a point (a cone's apex, a sphere's pole, a patch's collapsed side)
+/// has two corners a stretch apart in the chart and one point in space. The
+/// triangle on that side has no area, and its two corners are two
+/// vertices at the apex. Joined into one, the fan round the apex shares
+/// that one vertex and the triangle goes. Its other two sides become one,
+/// so the neighbours on either side of it meet across that side and the
+/// face's outline in space is what it was. Corners within the confusion
+/// distance count as one point: a pole lifted at two `u` differs in its
+/// last bits. The joined vertex keeps the position smallest by its bits,
+/// so two faces joining the same pair of boundary points keep the same one.
+fn join_collapsed_sides(mesh: &mut Triangulation, tol: Tolerances) {
+    let n = mesh.positions.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    let bits = |p: Point| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+    let mut joined = false;
+    for t in &mesh.triangles {
+        for k in 0..3 {
+            let (a, b) = (t[k] as usize, t[(k + 1) % 3] as usize);
+            if a == b || mesh.positions[a].distance(mesh.positions[b]) > tol.confusion() {
+                continue;
+            }
+            let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));
+            if ra == rb {
+                continue;
+            }
+            // The root is the vertex the group keeps: the smaller position
+            // by its bits, the lower index between equal positions.
+            let keep_a = (bits(mesh.positions[ra]), ra) < (bits(mesh.positions[rb]), rb);
+            let (kept, gone) = if keep_a { (ra, rb) } else { (rb, ra) };
+            parent[gone] = kept;
+            joined = true;
+        }
+    }
+    if !joined {
+        return;
+    }
+    let mut index = vec![u32::MAX; n];
+    let mut kept = Triangulation::new();
+    kept.deflection_met = mesh.deflection_met;
+    for i in 0..n {
+        let r = root(&mut parent, i);
+        if r == i {
+            index[i] = u32::try_from(kept.positions.len()).unwrap_or(u32::MAX);
+            kept.positions.push(mesh.positions[i]);
+            if let Some(normal) = mesh.normals.get(i) {
+                kept.normals.push(*normal);
+            }
+            if let Some(uv) = mesh.parameters.get(i) {
+                kept.parameters.push(*uv);
+            }
+        }
+    }
+    for i in 0..n {
+        index[i] = index[root(&mut parent, i)];
+    }
+    kept.triangles = mesh
+        .triangles
+        .iter()
+        .map(|t| t.map(|v| index[v as usize]))
+        .filter(|[a, b, c]| a != b && b != c && c != a)
+        .collect();
+    *mesh = kept;
 }
 
 /// How many times [`split_flat_triangles`] goes round a face: one per flat
