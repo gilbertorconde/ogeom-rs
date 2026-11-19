@@ -28,6 +28,37 @@ bump may break the API and a patch bump may not.
     change a face other than its edges' own and those at their ends is
     refused by name.
 
+- **Changed: the largest-size readings answer what builds** (#1173).
+  - `largest_fillet_radius`, `largest_fillet_radius_all`,
+    `largest_fillet_distances` and `largest_chamfer_distance` keep their
+    signatures. Each now answers the largest size up to the bound at which
+    its blend call builds. The size builds, and one a relative 1e-4
+    (`LIMIT_TOLERANCE`) above it is refused, whatever the refusal: a
+    contact leaving its face, two bands overlapping, a corner that does not
+    close, a bevel reaching a concave floor, setbacks crossing, an overflow
+    the engine does not build, a result failing its check. Before, each
+    promised only that a contact stays on its face.
+  - The seat reading starts the search. The call is then built on a copy
+    of the model at sizes bracketing the boundary, and bisected, at most
+    64 builds (`LIMIT_PROBES`). Where the seat is the limit that is 8
+    builds of the request; about 14 more where it is bisected.
+  - Answers that change: a 2 mm plate's edge bevels as a notch past its
+    thickness, so `largest_chamfer_distance` answers 22 there, not the
+    seat's 2. A chamfer on a marched crease, which was refused with
+    `NotDone`, is now searched from the bound. A seat answer that failed
+    the request's check is no longer refused with `NotDone`; the search
+    moves below it.
+  - Added `blend_limit`, which takes a `BlendSizing` (rounds with their
+    `FilletCorner`, an asymmetric round with its `RoundProfile`, a chamfer
+    with its `ChamferCorner`) and returns a `BlendLimit`: the size, the
+    smallest size refused, the seat reading, the probe count, and a size
+    found building again above a refusal. When one is found, the answer is
+    where the sizes that build first break.
+  - Fixed: three rounds at a thin plate's corner, at a radius equal to the
+    plate's thickness, overflowed the stack. The one-boolean fallback
+    handed the polytope it rounds back to itself. They now build.
+  - ADR 0001, amendment "largest-size readings confirmed by the build".
+
 - **Fixed: a blend on a compound blends each solid on its own** (#924).
   - `chamfer_edges_cornered` (`ChamferCorner::Point`), `fillet_edges_corner`
     (`FilletCorner::Rolling`), `fillet_edge_variable`,

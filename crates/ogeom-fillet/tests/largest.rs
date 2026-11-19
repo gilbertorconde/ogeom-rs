@@ -1,6 +1,6 @@
-//! The largest radius a round, and distance a chamfer, seats at, read from
-//! the seat without building: every answer builds, and 5 % past it is
-//! refused.
+//! The largest radius a round, and distance a chamfer, builds at, read
+//! from the seat and confirmed by the build: every answer builds, and 5 %
+//! past it is refused.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;
@@ -71,24 +71,30 @@ fn a_plate_s_edge_rounds_at_most_its_thickness() {
     builds_at_and_refused_past(&m, &plate, &[edge], r);
 }
 
-/// The plate's edge stays seated at most at its 2 mm thickness, and is
-/// built there; past it (2.1) the bevel rolls over the side's foot onto
-/// the floor as a notch (ADR 0001, amendment "M5b"): the plate less the
-/// region past the bevel's plane, its section 2 x 0.1 + 2 x 2 / 2 along
-/// the 20.
+/// Past the plate's 2 mm thickness (2.1) the bevel rolls over the side's
+/// foot onto the floor as a notch (ADR 0001, amendment "M5b"): the plate
+/// less the region past the bevel's plane, its section 2 x 0.1 + 2 x 2 / 2
+/// along the 20. So the largest distance is not the seat's 2 but where the
+/// notch's setbacks cross on the end faces, the bevel's plane through the
+/// plate's far bottom edge: 20 + 2.
 #[test]
-fn a_plate_s_edge_chamfers_seated_at_most_its_thickness_and_notches_past() {
+fn a_plate_s_edge_chamfers_past_its_thickness_as_a_notch() {
     let mut m = Model::new();
     let plate = plate(&mut m);
     let edge = edge_near(&m, &plate, [10.0, 0.0, 2.0]);
     let side = |r: f64| vec![(edge.clone(), Chamfer::Symmetric(r))];
-    let d = largest_chamfer_distance(&m, &plate, &edge, &Chamfer::Symmetric(0.5), 10.0, T)
+    let d = largest_chamfer_distance(&m, &plate, &edge, &Chamfer::Symmetric(0.5), 30.0, T)
         .unwrap()
         .unwrap();
-    assert!((2.0 - 1e-6..=2.0).contains(&d), "largest distance {d}");
+    assert!(
+        (22.0 * (1.0 - 1e-4)..=22.0).contains(&d),
+        "largest distance {d}"
+    );
     let mut at = m.clone();
     let built = chamfer_edges_with(&mut at, &plate, &side(d), T).unwrap();
     assert!(ogeom_algo::check(&at, &built.shape, T).unwrap().is_valid());
+    let mut past = m.clone();
+    assert!(chamfer_edges_with(&mut past, &plate, &side(1.05 * d), T).is_err());
     let mut past = m.clone();
     let notched = chamfer_edges_with(&mut past, &plate, &side(2.1), T).unwrap();
     assert!(
@@ -105,9 +111,11 @@ fn a_plate_s_edge_chamfers_seated_at_most_its_thickness_and_notches_past() {
 }
 
 #[test]
-fn a_chamfer_s_distances_scale_to_the_thickness_on_their_own_face() {
+fn a_chamfer_s_distances_scale_until_the_bevel_passes_the_far_bottom_edge() {
     // Three along the top and one down the 2 mm side: the side's leg
-    // reaches the bottom at a scale of 2.
+    // reaches the bottom at a scale of 2, and the bevel notches on past
+    // it until its plane passes the plate's far bottom edge, 20 across
+    // and 2 down, at 20 / 3 + 2.
     let mut m = Model::new();
     let plate = plate(&mut m);
     let edge = edge_near(&m, &plate, [10.0, 0.0, 2.0]);
@@ -124,7 +132,11 @@ fn a_chamfer_s_distances_scale_to_the_thickness_on_their_own_face() {
     let s = largest_chamfer_distance(&m, &plate, &edge, &spec, 10.0, T)
         .unwrap()
         .unwrap();
-    assert!((2.0 - 1e-6..=2.0).contains(&s), "largest scale {s}");
+    let exact = 20.0 / 3.0 + 2.0;
+    assert!(
+        (exact * (1.0 - 1e-4)..=exact).contains(&s),
+        "largest scale {s} against {exact}"
+    );
 }
 
 #[test]
@@ -194,16 +206,13 @@ fn a_cone_rim_rounds_at_most_where_its_wall_ends() {
         .unwrap()
         .unwrap();
     let exact = 5.0_f64.sqrt() / ((1.0 / 5.0_f64.sqrt()).acos() / 2.0).tan();
+    // The band's build fails within a few ten-thousandths of the base rim,
+    // short of the exact limit; the answer is what builds.
     assert!(
-        (exact - 1e-6..=exact).contains(&r),
+        (exact * (1.0 - 1e-4)..=exact).contains(&r),
         "largest radius {r} against {exact}"
     );
-    // Within about a micron of the base rim the band's build itself fails
-    // ("v parameter 2.0000001 outside [0, 2]"), at and past the exact limit
-    // alike: a defect of that build, outside this answer's promise.
-    builds_at_and_refused_past(&m, &cone, std::slice::from_ref(&rim), r * (1.0 - 1e-5));
-    let mut past = m.clone();
-    assert!(fillet_edges(&mut past, &cone, &[rim], 1.05 * r, T).is_err());
+    builds_at_and_refused_past(&m, &cone, std::slice::from_ref(&rim), r);
 }
 
 #[test]

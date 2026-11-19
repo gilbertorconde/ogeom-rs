@@ -158,6 +158,8 @@ fn benchmarks() -> Vec<Bench> {
         ("fillet_block", Box::new(fillet_block)),
         ("fillet_box_all", Box::new(fillet_box_all)),
         ("fillet_marched", Box::new(fillet_marched)),
+        ("limit_box_all", Box::new(limit_box_all)),
+        ("limit_drum_rim", Box::new(limit_drum_rim)),
         ("tessellate_part", Box::new(tessellate_part)),
         ("tessellate_part_stored", Box::new(tessellate_part_stored)),
         ("tessellate_open_sheet", Box::new(tessellate_open_sheet)),
@@ -506,6 +508,45 @@ fn fillet_box_all() -> Option<Stats> {
             std::hint::black_box(&rolled.shape);
         },
     ))
+}
+
+/// The largest radius all twelve edges of a box round at, confirmed by
+/// the build: the seat brackets the limit, so two builds of the request
+/// and the samples either side.
+fn limit_box_all() -> Option<Stats> {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
+    Some(time(|| {
+        let r = ogeom::fillet::largest_fillet_radius_all(&model, &block, &edges, 20.0, T).unwrap();
+        std::hint::black_box(r);
+    }))
+}
+
+/// The largest radius a drum's rim rounds at, confirmed by the build: the
+/// round meets the cap's axis below the seat reading, so the limit is
+/// bisected from it.
+fn limit_drum_rim() -> Option<Stats> {
+    let mut model = Model::new();
+    let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 2.5, 3.0, T)
+        .unwrap()
+        .shape;
+    let rim = explore_unique(&model, &drum, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            ogeom::algo::edge_vertices(&model, e)
+                .ok()
+                .flatten()
+                .is_some_and(|(a, b)| a.is_same(&b))
+        })
+        .unwrap();
+    Some(time(|| {
+        let r = ogeom::fillet::largest_fillet_radius(&model, &drum, &rim, 10.0, T).unwrap();
+        std::hint::black_box(r);
+    }))
 }
 
 /// A fillet no closed form speaks: the elliptical seat of a post leaning

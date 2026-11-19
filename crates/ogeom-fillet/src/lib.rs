@@ -22,6 +22,7 @@ mod fill_patch;
 pub mod fillet;
 mod fits;
 mod law;
+mod limit;
 pub mod march;
 mod marched;
 mod pair_marched;
@@ -64,6 +65,9 @@ pub use fillet::{
 };
 pub use fits::{largest_fillet_radius, largest_fillet_radius_all};
 pub use law::RadiusLaw;
+pub use limit::{
+    BlendLimit, BlendSizing, LIMIT_PROBES, LIMIT_SAMPLES, LIMIT_TOLERANCE, blend_limit,
+};
 pub use march::{
     BlendStop, MarchedBlend, Sides, march_blend, march_blend_seeded, march_blend_sided,
 };
