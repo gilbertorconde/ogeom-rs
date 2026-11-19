@@ -16,8 +16,12 @@ pub enum ChamferCorner {
     Point,
     /// Each bevel stops at the plane through the points where two bevels'
     /// contact lines cross on the face they share, and the corner is the
-    /// polygon there: a triangle at a corner of three bevels. What
-    /// [`chamfer_edges_with`](crate::chamfer_edges_with) builds.
+    /// polygon there: a triangle at a corner of three bevels. The
+    /// default: what [`chamfer_edges`](crate::chamfer_edges),
+    /// [`chamfer_edges_with`](crate::chamfer_edges_with) and
+    /// [`chamfer_edges_checked`](crate::chamfer_edges_checked) build. At a
+    /// box's corner of bevels `d` it takes `d³/12` more than
+    /// [`ChamferCorner::Point`].
     Facet,
 }
 
