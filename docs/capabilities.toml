@@ -1677,6 +1677,47 @@ tests = [
 ]
 
 [[capability]]
+id = "fillet.overflow"
+title = "Overflow handling: a round reaching geometry other than its own two faces"
+crate = "ogeom-fillet"
+verdict = "partial"
+restriction = """fillet_edges_overflow takes an Overflow option set whose \
+behaviours are tried in order, all on by default (fillet_edges is the \
+default): blend into round, hold edge (with hold edge at the end), then \
+trim through. Blend into round is built for a boss's foot: the closed rim \
+between a planar floor and a cylindrical wall standing square on it, whose \
+round's contact circle crosses a straight edge of the floor along which a \
+convex cylindrical round meets the floor tangentially. The round is the \
+torus over the floor and, past the tangent line, the ball resting on the \
+wall and the existing round, fitted through its exact sections within a \
+confusion, the two pieces meeting G1 where the ball touches the tangent \
+line; the fill is one tool fused into the solid, built only where nothing \
+else of the solid stands within the box it can take up. A foot reaching \
+two rounds, a round not tangent to the floor, a concave round, a wall not \
+square to the floor, a curved floor, and an open arc of a foot are not \
+blended into the round: they go on to trim through. Hold edge and hold \
+edge at the end are not built: they never apply, and a request they \
+would take goes on to trim through. Trim through is the engine's own \
+construction (the round keeps its surface, the faces it reaches are \
+trimmed or extended), and where it does not build a request the request \
+is refused by name as before. With trim through off, a result that \
+changes any face other than the edges' own and those at their ends is \
+refused by name, and so is a foot blend into round would take while it is \
+off. Narrow passages (a concave zone tighter than the radius) are not \
+handled by this option set yet."""
+symbols = [
+    "ogeom_fillet::Overflow",
+    "ogeom_fillet::fillet_edges_overflow",
+    "ogeom_fillet::fillet_edges",
+]
+tests = [
+    "crates/ogeom-fillet/tests/overflow.rs",
+    "crates/ogeom-fillet/tests/overflow.rs::a_boss_s_foot_round_blends_into_the_edge_round_it_reaches",
+    "crates/ogeom-fillet/tests/overflow.rs::blend_into_round_off_falls_to_trim_through_or_is_refused",
+    "crates/ogeom-fillet/tests/overflow.rs::trim_through_off_refuses_a_round_reaching_another_face",
+]
+
+[[capability]]
 id = "fillet.corners-2d"
 title = "Filleting and chamfering the corners of planar wires"
 crate = "ogeom-fillet"
