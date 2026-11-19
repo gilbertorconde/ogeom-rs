@@ -40,6 +40,32 @@ bump may break the API and a patch bump may not.
   - printCAD's chain rounded on both sides is now checked to build at
     every radius from 0.25 to 1.5 in both orders.
   - ADR 0001, amendment "a cusp's S on one side while the top runs on".
+- **Added: asymmetric rounds #877 left refused by name** (#907).
+  - Where two of a vertex's three edges are asymmetric rounds or rounds,
+    both convex or both concave, and the third edge is left sharp, the
+    bands now build and meet by intersection. Before, `blend_edges`
+    refused them with "all three are blended".
+  - A straight edge where a flat or a drum meets a drum along its ruling
+    now rounds with `fillet_edge_distances`: the shoulder conic extruded
+    along the edge, exact, convex or concave. Before: "sections do not
+    seat all along the edge".
+  - `fillet_edge_distances_variable` now builds round a rim and along any
+    curved crease the march seats, the laws laid by arc length from the
+    edge's start. A closed edge takes closed laws. On a straight convex
+    edge, an end not square to the edge now takes the constant band's
+    ends, the laws held level past it. Before: "capped square". A
+    concave edge is still capped square only at ends square to it.
+  - `largest_fillet_distances` now answers on curved creases and along a
+    drum's ruling. Each leg is walked along its face's section at
+    stations over the edge, and the answer is checked by building the
+    elliptical round there.
+  - Asymmetric rounds at concave and mixed corners of three planes, every
+    edge blended, already built on one patch. They now have tests of
+    their own.
+  - Still refused by name: bands of opposite convexity, or on a curved
+    edge or a bevel, meeting where the third edge is left sharp; and a law
+    over a chain of asymmetric rounds, which no request takes.
+  - ADR 0001, amendment "what #877 left of asymmetric rounds".
 - **Fixed: chamfers refused since 0.19.0** (#1161).
   - `chamfer_edges_cornered` with `ChamferCorner::Point` now builds every
     request that has no vertex where three or more bevels meet, exactly as

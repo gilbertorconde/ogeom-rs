@@ -33,7 +33,10 @@ use ogeom_topo::{Model, Shape};
 /// plane along a contact curve. Naming the other face with the laws
 /// swapped builds the same solid, to the bit, and two laws holding one
 /// distance each are [`fillet_edge_distances`](crate::fillet_edge_distances)
-/// by the same call. The band's ends are square caps: each end of the edge
+/// by the same call. The band's ends are the constant round's, the laws
+/// held level past them: square caps at a wall, run on past an end face
+/// leaning back from a convex corner until that face cuts it, cut off by
+/// one overhanging it. A concave edge's ends are square caps, and each end
 /// must meet only faces square to it.
 ///
 /// What `solid` shares with other shapes is copied before it is worked on
@@ -44,8 +47,8 @@ use ogeom_topo::{Model, Shape};
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
 /// where a law states no usable distance, `face` is not one of the edge's
 /// two faces, a conic's `rho` is not strictly between 0 and 1, the edge is
-/// not straight between two planes, an end of the edge meets a face not
-/// square to it, or a contact sets back past its face's side; and as
+/// not straight between two planes, an end of a concave edge meets a face
+/// not square to it, or a contact sets back past its face's side; and as
 /// [`fillet_edge_distances`](crate::fillet_edge_distances) where both laws
 /// hold one distance.
 #[allow(
@@ -73,13 +76,42 @@ pub fn fillet_edge_distances_variable(
     )? {
         return Ok(built);
     }
+    // A closed edge (a whole rim, a closed crease) carries a closed law.
+    let closed = ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
     let laws = [
-        Profile::new(on_face, false, tol)?,
-        Profile::new(on_other, false, tol)?,
+        Profile::new(on_face, closed, tol)?,
+        Profile::new(on_other, closed, tol)?,
     ];
     if laws.iter().all(|law| law.level(tol)) {
         let [a, b] = [laws[0].at(0.0).0, laws[1].at(0.0).0];
         return crate::fillet_edge_distances(model, solid, edge, face, a, b, profile, tol);
+    }
+    if let RoundProfile::Conic(_) = profile {
+        profile.weight(0.0)?;
+    }
+    if crate::asym::straight_seat(model, solid, edge, face, tol).is_err() {
+        // Any other seat: the band marched under the laws.
+        let along = ogeom_topo::ancestors_of(model, solid, edge, ogeom_topo::ShapeType::Face)?;
+        if !along.iter().any(|f| f.is_same(face)) {
+            ogeom_core::ogeom_bail!(
+                Construction,
+                "the face an asymmetric round's first distance runs along is not one of \
+                 the edge's two faces"
+            );
+        }
+        return ogeom_algo::on_own_nodes(
+            model,
+            solid,
+            &[edge.clone(), face.clone()],
+            |model, solid, parts| {
+                let mut built = crate::engine::varying_distances_marched(
+                    model, solid, &parts[0], &parts[1], &laws, profile, tol,
+                )?
+                .ok_or_else(crate::fillet::declined)?;
+                crate::support::credit_new_faces(model, solid, &parts[0], &mut built)?;
+                Ok(built)
+            },
+        );
     }
     ogeom_algo::on_own_nodes(
         model,

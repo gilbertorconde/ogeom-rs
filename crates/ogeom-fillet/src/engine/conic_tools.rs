@@ -135,7 +135,7 @@ pub(super) fn tool(
         return revolved(model, &a.edge, &rim, tol);
     }
     if crate::support::planar_seat(model, solid, &a.edge, tol).is_ok() {
-        let (mut seat, first) = crate::asym::straight_seat(model, solid, &a.edge, &a.face, tol)?;
+        let (seat, first) = crate::asym::straight_seat(model, solid, &a.edge, &a.face, tol)?;
         let d = if first == 0 {
             [a.on_face, a.on_other]
         } else {
@@ -151,71 +151,39 @@ pub(super) fn tool(
             );
         };
         crate::asym::contacts_fit(model, solid, &a.edge, spec, tol)?;
-        let mut trims = Vec::new();
-        if seat.convex && !grouped {
-            let original = seat.clone();
-            let section = PlanarSection::new(
-                &original,
-                &RoundSpec::Conic {
-                    d,
-                    profile: a.profile,
-                },
-                tol,
-            )?;
-            for (end, outward, at) in [(0, -seat.along, seat.start), (1, seat.along, seat.end)] {
-                let hosts = [&original.faces[0], &original.faces[1]];
-                let Some(planes) =
-                    crate::support::following_planes(model, solid, &a.edge, hosts, at)?
-                else {
-                    continue;
-                };
-                let mut reach = 0.0_f64;
-                let mut hull = section
-                    .conic_net_at(if end == 0 { 0.0 } else { section.length() })
-                    .map_or_else(Vec::new, |(points, _, _)| points);
-                hull.push(at);
-                for (_, origin, normal) in planes {
-                    let rate = normal.dot(outward);
-                    if rate.abs() <= tol.angular() {
-                        continue;
-                    }
-                    for p in &hull {
-                        reach = reach.max((origin - *p).dot(normal) / rate);
-                    }
-                    if rate < -tol.angular() {
-                        trims.push((origin, normal));
-                    }
-                }
-                if reach > tol.confusion() {
-                    reach += a.on_face.max(a.on_other) * 0.25;
-                }
-                if end == 0 {
-                    seat.start += outward * reach;
-                } else {
-                    seat.end += outward * reach;
-                }
-            }
-        }
-        let section = PlanarSection::new(
+        return extended_sweep(
+            model,
+            solid,
+            &a.edge,
             &seat,
             &RoundSpec::Conic {
                 d,
                 profile: a.profile,
             },
+            !grouped,
             tol,
-        )?;
-        let mut tool = super::planar_tools::sweep(model, &a.edge, &section, tol)?;
-        for plane in trims {
-            let span = ogeom_algo::shape_bounds(model, &tool.solid, tol)?.diagonal() * 2.0;
-            let solid = crate::support::trimmed_wedge(model, &tool.solid, plane, span, tol)?;
-            tool = named(model, solid, &a.edge, tool.sense)?;
-        }
-        return Ok(tool);
+        );
     }
     let weight = match a.profile {
         RoundProfile::Elliptical => crate::marched::ConicWeight::Elliptical,
         RoundProfile::Conic(_) => crate::marched::ConicWeight::Fixed(a.profile.weight(0.0)?),
     };
+    if let Some(tool) = ruled(model, solid, a, weight, tol)? {
+        return Ok(tool);
+    }
+    marched(model, solid, a, None, weight, tol)
+}
+
+/// The tool of `a`'s band on a seat only the march speaks, its legs `a`'s
+/// distances or, with `laws`, a law for the named face and for the other.
+fn marched(
+    model: &mut Model,
+    solid: &Shape,
+    a: &Asymmetric,
+    laws: Option<&[crate::law::Profile; 2]>,
+    weight: crate::marched::ConicWeight,
+    tol: Tolerances,
+) -> OgeomResult<Tool> {
     let spec = crate::Chamfer::Distances {
         face: a.face.clone(),
         on_face: a.on_face,
@@ -227,6 +195,7 @@ pub(super) fn tool(
             solid,
             &a.edge,
             &spec,
+            laws,
             &[],
             crate::marched::Chord::Conic(weight),
             tol,
@@ -249,6 +218,408 @@ pub(super) fn tool(
             Sense::Cut
         },
     )
+}
+
+/// An asymmetric round whose distances follow `laws` (the named face's
+/// and the other's) on a seat only the march speaks: a rim, a curved
+/// crease, open or closed. The band is marched under the laws and applied
+/// as a one-boolean tool; `None` where the tool does not close on the
+/// solid.
+///
+/// # Errors
+///
+/// As the marched band, and where a contact runs off its face.
+pub(crate) fn varying_marched(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    face: &Shape,
+    laws: &[crate::law::Profile; 2],
+    profile: RoundProfile,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let weight = match profile {
+        RoundProfile::Elliptical => crate::marched::ConicWeight::Elliptical,
+        RoundProfile::Conic(_) => crate::marched::ConicWeight::Fixed(profile.weight(0.0)?),
+    };
+    let asked = Asymmetric {
+        edge: edge.clone(),
+        face: face.clone(),
+        on_face: laws[0].largest(),
+        on_other: laws[1].largest(),
+        profile,
+    };
+    let mut scratch = model.clone();
+    let tool = marched(&mut scratch, solid, &asked, Some(laws), weight, tol)?;
+    let Some(built) = super::planar_tools::applied(
+        &mut scratch,
+        solid,
+        std::slice::from_ref(edge),
+        &[tool],
+        tol,
+    )?
+    else {
+        return Ok(None);
+    };
+    *model = scratch;
+    Ok(Some(built))
+}
+
+/// The tool of `spec` swept over the straight `seat` of `edge`; with
+/// `extend`, a convex seat's run past each end where planes following
+/// the crease there lean back from it, far enough to clear them, and
+/// trimmed by those overhanging it: the circular round's own ends. A
+/// varying law is held level over the run past an end.
+pub(super) fn extended_sweep(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    seat: &crate::support::Seat,
+    spec: &RoundSpec,
+    extend: bool,
+    tol: Tolerances,
+) -> OgeomResult<Tool> {
+    let mut seat = seat.clone();
+    let mut trims = Vec::new();
+    let mut past = [0.0_f64; 2];
+    if seat.convex && extend {
+        let original = seat.clone();
+        let section = PlanarSection::new(&original, spec, tol)?;
+        for (end, outward, at) in [(0, -seat.along, seat.start), (1, seat.along, seat.end)] {
+            let hosts = [&original.faces[0], &original.faces[1]];
+            let Some(planes) = crate::support::following_planes(model, solid, edge, hosts, at)?
+            else {
+                continue;
+            };
+            let mut reach = 0.0_f64;
+            let s = if end == 0 { 0.0 } else { section.length() };
+            let mut hull = section.conic_net_at(s).map_or_else(
+                || vec![section.contact(0, s), section.contact(1, s)],
+                |(points, _, _)| points,
+            );
+            hull.push(at);
+            for (_, origin, normal) in planes {
+                let rate = normal.dot(outward);
+                if rate.abs() <= tol.angular() {
+                    continue;
+                }
+                for p in &hull {
+                    reach = reach.max((origin - *p).dot(normal) / rate);
+                }
+                if rate < -tol.angular() {
+                    trims.push((origin, normal));
+                }
+            }
+            if reach > tol.confusion() {
+                let [d0, d1] = section.distances(s);
+                reach += d0.max(d1) * 0.25;
+            }
+            past[end] = reach;
+            if end == 0 {
+                seat.start += outward * reach;
+            } else {
+                seat.end += outward * reach;
+            }
+        }
+    }
+    let spec = match spec {
+        RoundSpec::Varying { laws, profile } if past.iter().any(|r| *r > 0.0) => {
+            let length = (seat.end - seat.start).magnitude() - past[0] - past[1];
+            RoundSpec::Varying {
+                laws: laws
+                    .clone()
+                    .map(|law| law.stretched(past[0] / length, past[1] / length)),
+                profile: *profile,
+            }
+        }
+        other => other.clone(),
+    };
+    let section = PlanarSection::new(&seat, &spec, tol)?;
+    let mut tool = super::planar_tools::sweep(model, edge, &section, tol)?;
+    for plane in trims {
+        let span = ogeom_algo::shape_bounds(model, &tool.solid, tol)?.diagonal() * 2.0;
+        let solid = crate::support::trimmed_wedge(model, &tool.solid, plane, span, tol)?;
+        tool = named(model, solid, edge, tool.sense)?;
+    }
+    Ok(tool)
+}
+
+/// How a host of a ruled seat meets the plane square to its edge: a line,
+/// or a circle about the foot of its cylinder's axis.
+#[derive(Clone, Copy)]
+enum Ruled {
+    /// A plane, of this normal.
+    Line(ogeom_math::Vector),
+    /// A cylinder of this axis and radius.
+    Circle(Axis, f64),
+}
+
+impl Ruled {
+    /// The point `distance` along the host's section from the crease
+    /// point `at`, leaving it along `into`, and the host's normal there.
+    fn walk(
+        self,
+        at: ogeom_math::Point,
+        into: ogeom_math::Vector,
+        distance: f64,
+    ) -> (ogeom_math::Point, ogeom_math::Vector) {
+        match self {
+            Self::Line(normal) => (at + into * distance, normal),
+            Self::Circle(axis, radius) => {
+                let up = axis.direction.vector();
+                let foot = axis.location + up * (at - axis.location).dot(up);
+                let turn = distance / radius;
+                let p = foot + (at - foot) * turn.cos() + into * (radius * turn.sin());
+                (p, (p - foot) / radius)
+            }
+        }
+    }
+}
+
+/// The tool of an asymmetric round on a straight edge where two faces, a
+/// plane or a cylinder each and at least one a cylinder, meet along the
+/// cylinders' ruling: the section is the same at every station, so the
+/// band is the shoulder conic extruded along the edge, exact. Each leg
+/// runs its distance along its face's section, the arc on a cylinder, as
+/// the marched band walks it. `None` for any other seat, or where an end
+/// of the edge meets a face not square to it.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+/// where a contact sets back past its face's side, or the faces' sections
+/// leave the contacts along tangents that do not meet in front of the
+/// crease.
+fn ruled(
+    model: &mut Model,
+    solid: &Shape,
+    a: &Asymmetric,
+    weight: crate::marched::ConicWeight,
+    tol: Tolerances,
+) -> OgeomResult<Option<Tool>> {
+    use ogeom_geom::Transformable as _;
+    use ogeom_topo::{Filter, explore};
+    let conf = tol.confusion();
+    let (Curve::Line(_), _) = crate::support::edge_curve(model, &a.edge, tol)? else {
+        return Ok(None);
+    };
+    let Some((v0, v1)) = ogeom_algo::edge_vertices(model, &a.edge)? else {
+        return Ok(None);
+    };
+    let point = |v: &Shape| crate::setback::point_of(model, v);
+    let (start, end) = (point(&v0)?, point(&v1)?);
+    let length = start.distance(end);
+    if length <= conf {
+        return Ok(None);
+    }
+    let along = (end - start) / length;
+    let mut hosts: Vec<(Shape, Ruled)> = Vec::new();
+    let mut outward: Vec<ogeom_math::Vector> = Vec::new();
+    for face in explore(model, solid, Filter::OfType(ShapeType::Face))? {
+        let holds = explore(model, &face, Filter::OfType(ShapeType::Edge))?
+            .iter()
+            .any(|e| crate::support::same_occurrence(model, e, &a.edge, tol));
+        if !holds {
+            continue;
+        }
+        let Some(data) = model.node(&face).and_then(|n| n.data().as_face()) else {
+            return Ok(None);
+        };
+        let Some(surface) = model.geometry().surface(data.surface) else {
+            return Ok(None);
+        };
+        let placed = surface
+            .clone()
+            .transformed(&face.transform(model.datums())?, tol)?;
+        let section = match placed {
+            SurfaceGeometry::Plane(p) => Ruled::Line(p.plane().normal().vector()),
+            SurfaceGeometry::Cylinder(c) => {
+                let axis = c.cylinder().axis();
+                let up = axis.direction.vector();
+                let off = start - axis.location;
+                let radial = off - up * off.dot(up);
+                if up.cross(along).magnitude() > tol.angular()
+                    || (radial.magnitude() - c.cylinder().radius()).abs() > conf
+                {
+                    return Ok(None);
+                }
+                Ruled::Circle(axis, c.cylinder().radius())
+            }
+            _ => return Ok(None),
+        };
+        // The face's outward normal at the edge's start.
+        let sign = if face.orientation() == ogeom_topo::Orientation::Reversed {
+            -1.0
+        } else {
+            1.0
+        };
+        outward.push(section.walk(start, along, 0.0).1 * sign);
+        hosts.push((face, section));
+    }
+    let Ok([(f0, s0), (f1, s1)]) = <[(Shape, Ruled); 2]>::try_from(hosts) else {
+        return Ok(None);
+    };
+    if matches!((s0, s1), (Ruled::Line(_), Ruled::Line(_))) {
+        return Ok(None);
+    }
+    // Each end square: the band is capped in the end faces' planes.
+    for v in [&v0, &v1] {
+        for face in explore_unique(model, solid, ShapeType::Face)? {
+            if face.is_same(&f0) || face.is_same(&f1) {
+                continue;
+            }
+            let meets = explore_unique(model, &face, ShapeType::Vertex)?
+                .iter()
+                .any(|w| crate::support::same_occurrence(model, w, v, tol));
+            if !meets {
+                continue;
+            }
+            let Some(data) = model.node(&face).and_then(|n| n.data().as_face()) else {
+                return Ok(None);
+            };
+            let square = match model
+                .geometry()
+                .surface(data.surface)
+                .map(|s| s.clone().transformed(&face.transform(model.datums())?, tol))
+            {
+                Some(Ok(SurfaceGeometry::Plane(p))) => {
+                    p.plane().normal().vector().cross(along).magnitude() <= tol.angular()
+                }
+                _ => false,
+            };
+            if !square {
+                return Ok(None);
+            }
+        }
+    }
+    let faces = [f0, f1];
+    let sections = [s0, s1];
+    let d = if faces[0].is_same(&a.face) {
+        [a.on_face, a.on_other]
+    } else if faces[1].is_same(&a.face) {
+        [a.on_other, a.on_face]
+    } else {
+        ogeom_bail!(
+            Construction,
+            "the face an asymmetric round's first distance runs along is not one of the \
+             edge's two faces"
+        );
+    };
+    // Into each face from the middle of the edge: square to the edge on
+    // the face, the side a short step lands on it.
+    let middle = start + along * (length * 0.5);
+    let mut into = [ogeom_math::Vector::ZERO; 2];
+    for i in 0..2 {
+        let normal = sections[i].walk(middle, along, 0.0).1;
+        let heading = along.cross(normal);
+        let heading = heading / heading.magnitude();
+        let step = (d[i] * 1e-2).max(conf * 100.0);
+        let mut found = None;
+        for sign in [1.0, -1.0] {
+            let (p, _) = sections[i].walk(middle, heading * sign, step);
+            if crate::support::on_face_or_boundary(model, solid, &faces[i], p, tol)? {
+                if found.is_some() {
+                    return Ok(None);
+                }
+                found = Some(heading * sign);
+            }
+        }
+        let Some(found) = found else {
+            return Ok(None);
+        };
+        into[i] = found;
+    }
+    // The legs' turn on a cylinder stays short of half way round.
+    for i in 0..2 {
+        if let Ruled::Circle(_, radius) = sections[i]
+            && d[i] >= radius * core::f64::consts::PI * 0.5
+        {
+            return Ok(None);
+        }
+    }
+    let walked = [
+        sections[0].walk(start, into[0], d[0]),
+        sections[1].walk(start, into[1], d[1]),
+    ];
+    for (i, (p, _)) in walked.iter().enumerate() {
+        for fraction in [0.25, 0.5, 0.75] {
+            let q = *p + along * (length * fraction);
+            if !crate::support::on_face_or_boundary(model, solid, &faces[i], q, tol)? {
+                ogeom_bail!(
+                    Construction,
+                    "an asymmetric round sets back {} along a face of the edge through \
+                     {q:?}, past that face's side; see docs/CAPABILITIES.md, \
+                     fillet.asymmetric-rounds",
+                    d[i]
+                );
+            }
+        }
+    }
+    let Some((control, w)) = crate::marched::conic_section(
+        [walked[0].0, walked[1].0],
+        [walked[0].1, walked[1].1],
+        start,
+        weight,
+        tol,
+    ) else {
+        ogeom_bail!(
+            Construction,
+            "an asymmetric round's faces leave their contacts at {start:?} along tangents \
+             that do not meet in front of the crease; see docs/CAPABILITIES.md, \
+             fillet.asymmetric-rounds"
+        );
+    };
+    // The material side: at a convex crease a leg leaves its face's
+    // crease under the other face's tangent plane.
+    let convex = into[0].dot(outward[1]) < 0.0;
+    let vertex = |model: &mut Model, p| ogeom_algo::make_vertex(model, p).shape;
+    let (vc, va, vb) = (
+        vertex(model, start),
+        vertex(model, walked[0].0),
+        vertex(model, walked[1].0),
+    );
+    let leg = |model: &mut Model, i: usize, to: &Shape| -> OgeomResult<Shape> {
+        let (curve, range): (Curve, (f64, f64)) = match sections[i] {
+            Ruled::Line(_) => (
+                ogeom_geom::LineCurve::new(Axis::new(start, Direction::new(into[i], tol)?)).into(),
+                (0.0, d[i]),
+            ),
+            Ruled::Circle(axis, radius) => {
+                let up = axis.direction.vector();
+                let foot = axis.location + up * (start - axis.location).dot(up);
+                let x = (start - foot) / radius;
+                (
+                    Curve::Circle(CircleCurve::new(Circle::new(
+                        Frame::new(
+                            foot,
+                            Direction::new(x.cross(into[i]), tol)?,
+                            Direction::new(x, tol)?,
+                            tol,
+                        )?,
+                        radius,
+                        tol,
+                    )?)),
+                    (0.0, d[i] / radius),
+                )
+            }
+        };
+        Ok(ogeom_algo::make_edge_between(model, curve, range, &vc, to, tol)?.shape)
+    };
+    let first = leg(model, 0, &va)?;
+    let second = leg(model, 1, &vb)?;
+    let arc = crate::asym::conic_arc(control, w, tol)?;
+    let arc = ogeom_algo::make_edge_between(model, arc, (0.0, 1.0), &va, &vb, tol)?.shape;
+    let wire = ogeom_algo::make_wire(model, &[first, arc, second.reversed()], tol)?.shape;
+    let plane: SurfaceGeometry =
+        PlaneSurface::new(Plane::through(start, Direction::new(along, tol)?)).into();
+    let profile = ogeom_algo::make_face(model, plane, &[wire], tol)?.shape;
+    let prism = ogeom_algo::make_prism(model, &profile, along * length, tol)?.shape;
+    Ok(Some(named(
+        model,
+        prism,
+        &a.edge,
+        if convex { Sense::Cut } else { Sense::Fuse },
+    )?))
 }
 
 fn named(model: &Model, solid: Shape, edge: &Shape, sense: Sense) -> OgeomResult<Tool> {

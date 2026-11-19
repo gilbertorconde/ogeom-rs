@@ -136,12 +136,21 @@ impl Walk<'_, '_> {
 }
 
 /// The band of `spec`'s legs on a marched seat, crossing each station by
-/// `chord`: an asymmetric round's conic.
+/// `chord`: an asymmetric round's conic. With `laws`, a distance law for
+/// `spec`'s named face and for the other, each leg runs its law's distance
+/// at its station, the law laid along the crease by arc length from the
+/// edge's start as a variable radius is: held level past an open edge's
+/// ends, round a closed one.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the seat, the legs and their laws"
+)]
 pub(crate) fn marched_bevel_with(
     model: &mut Model,
     solid: &Shape,
     edge: &Shape,
     spec: &Chamfer,
+    laws: Option<&[crate::law::Profile; 2]>,
     given: &[Shape],
     chord: Chord,
     tol: Tolerances,
@@ -244,7 +253,36 @@ pub(crate) fn marched_bevel_with(
             sign: sign_second,
         },
     ];
+    // Each law in the seat's face order, laid along the crease.
+    let along = match laws {
+        Some(laws) => {
+            let named = match spec {
+                Chamfer::Distances { face, .. } => side(face)?,
+                _ => 0,
+            };
+            let ordered = if named == 0 {
+                [&laws[0], &laws[1]]
+            } else {
+                [&laws[1], &laws[0]]
+            };
+            Some(laid_along(
+                model,
+                edge,
+                &guide,
+                guide_range,
+                edge_range,
+                loops,
+                ordered,
+                tol,
+            )?)
+        }
+        None => None,
+    };
     let station = |w: f64, near: Option<[f64; 4]>| -> Option<[f64; 5]> {
+        let law = match &along {
+            Some([a, b]) => Law::Distances(a.at(w, tol).ok()?.0, b.at(w, tol).ok()?.0),
+            None => law,
+        };
         station_at(&hosts, &guide, law, convex, w, near, tol)
     };
 
@@ -425,6 +463,57 @@ pub(crate) fn marched_bevel_with(
         None,
         tol,
     )
+}
+
+/// `laws` laid along a marched seat's crease `guide` by arc length from
+/// `edge`'s start, the way the edge runs: over the edge's own window of the
+/// crease on an open seat, held level past it, or round the whole loop the
+/// crease closes, from the edge's start.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+/// where an open law is laid over one arc of a crease that closes through
+/// other edges, and as reading the edge and measuring the crease.
+#[allow(clippy::too_many_arguments, reason = "the seat's crease and the laws")]
+fn laid_along(
+    model: &Model,
+    edge: &Shape,
+    guide: &Curve,
+    guide_range: (f64, f64),
+    edge_range: (f64, f64),
+    loops: bool,
+    laws: [&crate::law::Profile; 2],
+    tol: Tolerances,
+) -> OgeomResult<[crate::law::RadiusAlong; 2]> {
+    use crate::law::{RadiusAlong, Ruler};
+    use ogeom_topo::Orientation;
+    if laws.iter().any(|law| loops && !law.closed()) {
+        ogeom_bail!(
+            Construction,
+            "an asymmetric round whose distances vary over one arc of a crease that \
+             closes through other edges is still owed; see docs/CAPABILITIES.md, \
+             fillet.asymmetric-rounds"
+        );
+    }
+    let reversed = edge.orientation() == Orientation::Reversed;
+    let (ruler, origin, reversed) = if loops {
+        let ruler = Ruler::new(guide.clone(), guide_range, true, tol)?;
+        let (stored, (lo, hi)) = crate::support::edge_curve(model, edge, tol)?;
+        let (start, heading) = if reversed {
+            (stored.point_at(hi, tol)?, -stored.d1_at(hi, tol)?)
+        } else {
+            (stored.point_at(lo, tol)?, stored.d1_at(lo, tol)?)
+        };
+        let at = ogeom_algo::project_on_curve(guide, start, 256, tol)?.parameter;
+        let against = guide.d1_at(at, tol)?.dot(heading) < 0.0;
+        let origin = ruler.fraction(at, tol)?.0;
+        (ruler, origin, against)
+    } else {
+        let ruler = Ruler::new(guide.clone(), edge_range, false, tol)?;
+        (ruler, if reversed { 1.0 } else { 0.0 }, reversed)
+    };
+    Ok(laws.map(|law| RadiusAlong::new(law.clone(), ruler.clone(), origin, reversed)))
 }
 
 /// A chamfer's contacts on a marched seat at stations over the edge's own

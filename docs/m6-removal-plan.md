@@ -405,7 +405,7 @@ changes. These are also the test callers for the round entry-point table.
 | `src/setback.rs:2943` — `setback::tests::the_certified_check_agrees_with_the_fine_mesh` | 2 | fillet_edges × 2 |
 | `tests/asymmetric.rs:264` — `a_slanted_edge_takes_the_ellipse_of_its_own_dihedral` | 2 | fillet_edge_distances × 2 |
 | `tests/asymmetric.rs:456` — `what_is_not_built_is_refused_by_name` | 3 | fillet_edge_distances × 3 |
-| `tests/asymmetric.rs:548` — `blend_edges_takes_an_asymmetric_round_beside_others_and_refuses_one_at_their_corner` | 1 | blend_edges × 1 |
+| `tests/asymmetric.rs:548` — `blend_edges_takes_an_asymmetric_round_beside_others_and_refuses_one_meeting_a_round_of_the_other_convexity` | 1 | blend_edges × 1 |
 | `tests/asymmetric.rs:747` — `an_asymmetric_round_runs_out_along_its_wall_onto_a_ramp` | 8 | fillet_edge_distances × 8 |
 | `tests/asymmetric.rs:795` — `an_asymmetric_round_running_up_under_a_roof_stops_on_it` | 8 | fillet_edge_distances × 8 |
 | `tests/asymmetric.rs:991` — `a_bore_s_rim_takes_its_conic_corner_round_the_axis` | 4 | fillet_edge_distances × 4 |

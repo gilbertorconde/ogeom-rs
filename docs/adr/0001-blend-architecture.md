@@ -2716,6 +2716,81 @@ enters its hole.
 - **Still refused by name** (`engine::cusp_sides`): the same request
   wherever the trimmed assembly declines it.
 
+### Amendment: what #877 left of asymmetric rounds (#907)
+
+#907 listed five asymmetric-round cases still refused by name. The rules
+below come from surveys this record already holds; none is new
+behaviour.
+
+- **Concave and mixed corners.** Amendment "engine-owned mixed asymmetric
+  requests" holds that a vertex whose edges are all blended is blended. The
+  engine's planar request already closes these corners on one patch,
+  tangent to each round's band: a pocket's inside corner, and the mixed
+  corner where a concave upright meets two convex top edges. They now have
+  tests of their own.
+- **Two of three blended, the third left sharp.** The same amendment's
+  survey: two blended edges of one convexity meet by intersection, and the
+  vertex is not rounded. That amendment refused this for an asymmetric
+  band. It is now built:
+  - each band's tool comes from its original seat and runs to its end
+    faces, the circular round's ends;
+  - the tools are applied together, so the solid loses (or gains) their
+    union and the two band surfaces meet along their intersection.
+  - Still refused by name: bands of opposite convexity, and a curved edge
+    or a bevel at such a vertex.
+- **Varying distances.** Amendment "varying rounds on curved seats" lays a
+  law by arc length from the edge's start, held level past an open edge's
+  ends and closed round a closed one. Amendment "engine-owned variable-law
+  and conic tools" holds that every cross-section type takes variable
+  values. So:
+  - Round a rim and along any crease the march seats, the asymmetric band
+    is marched under its two laws, each leg walked its station's distance.
+  - On a straight convex edge an end not square to the edge takes the
+    constant band's ends (M5f), the laws held level past it: run on to an
+    end face leaning back, trimmed by one overhanging.
+  - A concave edge stays capped square, and an end not square to it is
+    refused.
+  - No request takes a law over a chain of asymmetric rounds, so a chain
+    stays out of reach.
+- **Along a drum's ruling.** The section follows amendment "round
+  distances on curved seats": each leg runs its distance along its face's
+  section square to the crease (round the drum's arc), and the conic is
+  tangent to both sections at the contacts. Along a ruling, with a flat or
+  a second drum of a parallel axis, that section is the same at every
+  station. The band is therefore the shoulder conic extruded along the
+  edge, exact, capped square at end faces square to the edge. A ruling
+  ending at a face not square to it is left to the march.
+- **The largest pair on other seats.** On a seat that is neither a
+  straight edge between planes nor a rim, each leg is walked as the band
+  walks it, at stations over the edge. The scale is stepped up until a
+  contact first leaves its face, then bisected, and the answer stands back
+  by the reach the faces are read within. Building the band is the only
+  check on such a seat, so the answer is the elliptical round built on a
+  copy of the model; a refusal there is `NotDone`.
+
+**Oracles** (`tests/asymmetric.rs`):
+
+- the ruling, convex and concave: the drum less (or plus) the drum's
+  height times the shoulder conic's corner, less (or plus) the sliver
+  between the tangents and the arc, `r² (tan β − β) / 2`; to 1e-8;
+- two of three: the box less each band's corner along its edge, plus once
+  what both take. That is the column of the conic's depth times the
+  round's width, integrated over the left face, or the shallower depth
+  over the top. Sampled independently, to 1e-7 and 1e-5;
+- the pocket's two fills: the same, with the shallower fill;
+- the concave and mixed corners: the bands' own sections past the corner's
+  cube, the remainder within the cube, and the patch tangent within
+  2e-4;
+- varying laws: the integral of the conic corner over the edge, plus a
+  quarter of the end section's first moment where the end leans back by a
+  quarter, or the part of each section under the overhang, to 1e-6. Round
+  a rim, Pappus station by station; along the spline crease, the corner
+  less the crease's curvature times its first moment. Both within 1e-4
+  of what the band takes, the march's fit;
+- the largest pair: 10 along the half drum's ruling (the flat is 10
+  wide) and 2/0.7 on the slab's spline crease (the wall is 2 deep), each
+  to 1e-4. The answer builds valid, and 1.01 times it is refused.
+
 ## 12. Acceptance corpus
 
 From #902:
