@@ -171,6 +171,19 @@ pub(super) fn tool(
     if let Some(tool) = ruled(model, solid, a, weight, tol)? {
         return Ok(tool);
     }
+    marched(model, solid, a, None, weight, tol)
+}
+
+/// The tool of `a`'s band on a seat only the march speaks, its legs `a`'s
+/// distances or, with `laws`, a law for the named face and for the other.
+fn marched(
+    model: &mut Model,
+    solid: &Shape,
+    a: &Asymmetric,
+    laws: Option<&[crate::law::Profile; 2]>,
+    weight: crate::marched::ConicWeight,
+    tol: Tolerances,
+) -> OgeomResult<Tool> {
     let spec = crate::Chamfer::Distances {
         face: a.face.clone(),
         on_face: a.on_face,
@@ -182,6 +195,7 @@ pub(super) fn tool(
             solid,
             &a.edge,
             &spec,
+            laws,
             &[],
             crate::marched::Chord::Conic(weight),
             tol,
@@ -204,6 +218,51 @@ pub(super) fn tool(
             Sense::Cut
         },
     )
+}
+
+/// An asymmetric round whose distances follow `laws` (the named face's
+/// and the other's) on a seat only the march speaks: a rim, a curved
+/// crease, open or closed. The band is marched under the laws and applied
+/// as a one-boolean tool; `None` where the tool does not close on the
+/// solid.
+///
+/// # Errors
+///
+/// As the marched band, and where a contact runs off its face.
+pub(crate) fn varying_marched(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    face: &Shape,
+    laws: &[crate::law::Profile; 2],
+    profile: RoundProfile,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let weight = match profile {
+        RoundProfile::Elliptical => crate::marched::ConicWeight::Elliptical,
+        RoundProfile::Conic(_) => crate::marched::ConicWeight::Fixed(profile.weight(0.0)?),
+    };
+    let asked = Asymmetric {
+        edge: edge.clone(),
+        face: face.clone(),
+        on_face: laws[0].largest(),
+        on_other: laws[1].largest(),
+        profile,
+    };
+    let mut scratch = model.clone();
+    let tool = marched(&mut scratch, solid, &asked, Some(laws), weight, tol)?;
+    let Some(built) = super::planar_tools::applied(
+        &mut scratch,
+        solid,
+        std::slice::from_ref(edge),
+        &[tool],
+        tol,
+    )?
+    else {
+        return Ok(None);
+    };
+    *model = scratch;
+    Ok(Some(built))
 }
 
 /// The tool of `spec` swept over the straight `seat` of `edge`; with

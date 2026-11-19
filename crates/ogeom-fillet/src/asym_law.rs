@@ -76,13 +76,42 @@ pub fn fillet_edge_distances_variable(
     )? {
         return Ok(built);
     }
+    // A closed edge (a whole rim, a closed crease) carries a closed law.
+    let closed = ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
     let laws = [
-        Profile::new(on_face, false, tol)?,
-        Profile::new(on_other, false, tol)?,
+        Profile::new(on_face, closed, tol)?,
+        Profile::new(on_other, closed, tol)?,
     ];
     if laws.iter().all(|law| law.level(tol)) {
         let [a, b] = [laws[0].at(0.0).0, laws[1].at(0.0).0];
         return crate::fillet_edge_distances(model, solid, edge, face, a, b, profile, tol);
+    }
+    if let RoundProfile::Conic(_) = profile {
+        profile.weight(0.0)?;
+    }
+    if crate::asym::straight_seat(model, solid, edge, face, tol).is_err() {
+        // Any other seat: the band marched under the laws.
+        let along = ogeom_topo::ancestors_of(model, solid, edge, ogeom_topo::ShapeType::Face)?;
+        if !along.iter().any(|f| f.is_same(face)) {
+            ogeom_core::ogeom_bail!(
+                Construction,
+                "the face an asymmetric round's first distance runs along is not one of \
+                 the edge's two faces"
+            );
+        }
+        return ogeom_algo::on_own_nodes(
+            model,
+            solid,
+            &[edge.clone(), face.clone()],
+            |model, solid, parts| {
+                let mut built = crate::engine::varying_distances_marched(
+                    model, solid, &parts[0], &parts[1], &laws, profile, tol,
+                )?
+                .ok_or_else(crate::fillet::declined)?;
+                crate::support::credit_new_faces(model, solid, &parts[0], &mut built)?;
+                Ok(built)
+            },
+        );
     }
     ogeom_algo::on_own_nodes(
         model,

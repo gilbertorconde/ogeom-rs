@@ -3195,3 +3195,187 @@ fn asymmetric_rounds_close_concave_and_mixed_corners_on_one_patch() {
         "{near} at the corner, past the cube {cube}"
     );
 }
+/// A drum's top rim asked with distances following closed laws through
+/// two points each, 1 on the cap and 0.5 on the wall at the rim's start,
+/// 1.5 and 0.8 half way round. With two points a closed law is level at
+/// both, each half between them the cubic `a + (b - a)(3 t^2 - 2 t^3)`.
+/// Every section of the band stands in a plane through the axis, so the
+/// band takes `int A(s) (R - c(s)) 2 pi ds` over the turn, `A` the conic
+/// corner of the station's distances and `c` its centroid's depth into
+/// the cap, whichever station the rim starts at.
+#[test]
+fn distances_varying_round_a_rim_take_the_integral_of_their_corners() {
+    use core::f64::consts::{PI, TAU};
+    use ogeom_fillet::RadiusLaw;
+    let (radius, height) = (5.0, 4.0);
+    let on_cap = RadiusLaw::Points(vec![(0.0, 1.0), (0.5, 1.5)]);
+    let on_wall = RadiusLaw::Points(vec![(0.0, 0.5), (0.5, 0.8)]);
+    let smooth = |a: f64, b: f64, s: f64| {
+        let t = if s <= 0.5 { s / 0.5 } else { (1.0 - s) / 0.5 };
+        (b - a).mul_add(t * t * (3.0 - 2.0 * t), a)
+    };
+    for profile in PROFILES {
+        let w = weight_of(profile);
+        let taken = 2.0
+            * integrate(0.5, |s| {
+                let (d_cap, d_wall) = (smooth(1.0, 1.5, s), smooth(0.5, 0.8, s));
+                let (area, centroid) = square_corner(d_cap, d_wall, w);
+                area * (radius - centroid[0]) * TAU
+            });
+        let mut m = Model::new();
+        let drum = ogeom_algo::make_cylinder(&mut m, Frame::WORLD, radius, height, T)
+            .unwrap()
+            .shape;
+        let rim = ring_edge(&m, &drum, (0.0, 0.0, height), radius);
+        let cap = face_at(&m, &drum, Point::new(0.0, 0.0, height));
+        let wall = face_at(&m, &drum, Point::new(0.0, radius, 1.0));
+        let exact = PI * radius * radius * height - taken;
+        let mut volumes = Vec::new();
+        for (face, a, b) in [(&cap, &on_cap, &on_wall), (&wall, &on_wall, &on_cap)] {
+            let built = ogeom_fillet::fillet_edge_distances_variable(
+                &mut m, &drum, &rim, face, a, b, profile, T,
+            )
+            .unwrap();
+            let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
+            assert!(
+                diagnosis.is_valid(),
+                "{profile:?}: {:?}",
+                diagnosis.problems
+            );
+            assert!(built.history.is_deleted(&rim));
+            let v = volume(&m, &built.shape);
+            assert!(
+                (v - exact).abs() <= 1e-4 * taken,
+                "{profile:?}: volume {v} against {exact}"
+            );
+            volumes.push(v);
+        }
+        assert!(
+            (volumes[0] - volumes[1]).abs() <= 1e-9 * volumes[0],
+            "naming the other face first"
+        );
+    }
+}
+
+/// The slab's spline crease asked with distances rising linearly along its
+/// length, 0.3 to 0.6 on the flat side and 0.5 to 0.9 on the swept wall,
+/// square to each other all along. Each station's section is the square
+/// conic corner of its distances, standing in the plane square to the
+/// crease, and the band takes `int (A - k M) d sigma` over the crease's
+/// arc length: `A` the corner's area, `M` its first moment about the
+/// crease along the flat side's leg, and `k` the crease's curvature
+/// toward that leg.
+#[test]
+fn distances_varying_along_a_spline_crease_take_the_integral_of_their_corners() {
+    use ogeom_fillet::RadiusLaw;
+    let flat_law = RadiusLaw::Linear {
+        start: 0.3,
+        end: 0.6,
+    };
+    let wall_law = RadiusLaw::Linear {
+        start: 0.5,
+        end: 0.9,
+    };
+    // The spline's Bezier points in (x, z), its derivatives, and its
+    // arc length by Gauss-Legendre.
+    let p = [(0.0, 0.0), (3.0, 0.0), (7.0, -1.0), (10.0, -1.0)];
+    let d1 = |t: f64| {
+        let u = 1.0 - t;
+        let c = [3.0 * u * u, 6.0 * u * t, 3.0 * t * t];
+        let x = c[0] * (p[1].0 - p[0].0) + c[1] * (p[2].0 - p[1].0) + c[2] * (p[3].0 - p[2].0);
+        let z = c[0] * (p[1].1 - p[0].1) + c[1] * (p[2].1 - p[1].1) + c[2] * (p[3].1 - p[2].1);
+        (x, z)
+    };
+    let d2 = |t: f64| {
+        let c = [6.0 * (1.0 - t), 6.0 * t];
+        let x = c[0] * (p[2].0 - 2.0 * p[1].0 + p[0].0) + c[1] * (p[3].0 - 2.0 * p[2].0 + p[1].0);
+        let z = c[0] * (p[2].1 - 2.0 * p[1].1 + p[0].1) + c[1] * (p[3].1 - 2.0 * p[2].1 + p[1].1);
+        (x, z)
+    };
+    let speed = |t: f64| {
+        let (x, z) = d1(t);
+        x.hypot(z)
+    };
+    let gauss = |a: f64, b: f64, f: &dyn Fn(f64) -> f64| {
+        let nodes = [
+            (-0.861_136_311_594_052_6, 0.347_854_845_137_453_9),
+            (-0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+            (0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+            (0.861_136_311_594_052_6, 0.347_854_845_137_453_9),
+        ];
+        nodes
+            .iter()
+            .map(|(x, wt)| wt * (b - a) * 0.5 * f((b - a).mul_add(*x, a + b) * 0.5))
+            .sum::<f64>()
+    };
+    let pieces = 512;
+    let mut start = vec![0.0];
+    for k in 0..pieces {
+        let (a, b) = (
+            f64::from(k) / f64::from(pieces),
+            f64::from(k + 1) / f64::from(pieces),
+        );
+        start.push(start[k as usize] + gauss(a, b, &speed));
+    }
+    let length = start[pieces as usize];
+    for profile in PROFILES {
+        let w = weight_of(profile);
+        let mut m = Model::new();
+        let (solid, crease, flat, wall) = slab(&mut m);
+        // The law runs from the edge's start.
+        let (a, _) = ogeom_algo::edge_vertices(&m, &crease).unwrap().unwrap();
+        let from_left = point_of(&m, &a).x < 5.0;
+        let mut taken = 0.0;
+        for k in 0..pieces {
+            let (a, b) = (
+                f64::from(k) / f64::from(pieces),
+                f64::from(k + 1) / f64::from(pieces),
+            );
+            taken += gauss(a, b, &|t| {
+                let sigma = start[k as usize] + gauss(a, t, &speed);
+                let s = if from_left {
+                    sigma / length
+                } else {
+                    1.0 - sigma / length
+                };
+                let (d_flat, d_wall) = (0.3 + 0.3 * s, 0.5 + 0.4 * s);
+                let (area, centroid) = square_corner(d_flat, d_wall, w);
+                // The unit tangent, the flat's leg down from the crease,
+                // and the crease's turn toward it per unit length.
+                let v = speed(t);
+                let (tx, tz) = (d1(t).0 / v, d1(t).1 / v);
+                let (ax, az) = d2(t);
+                let along = ax * tx + az * tz;
+                let (nx, nz) = ((ax - along * tx) / (v * v), (az - along * tz) / (v * v));
+                let toward = nx * tz - nz * tx;
+                (area - toward * area * centroid[0]) * v
+            });
+        }
+        let before = volume(&m, &solid);
+        let exact = before - taken;
+        let mut volumes = Vec::new();
+        for (face, a, b) in [(&flat, &flat_law, &wall_law), (&wall, &wall_law, &flat_law)] {
+            let built = ogeom_fillet::fillet_edge_distances_variable(
+                &mut m, &solid, &crease, face, a, b, profile, T,
+            )
+            .unwrap();
+            let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
+            assert!(
+                diagnosis.is_valid(),
+                "{profile:?}: {:?}",
+                diagnosis.problems
+            );
+            assert!(built.history.is_deleted(&crease));
+            let v = volume(&m, &built.shape);
+            assert!(
+                (v - exact).abs() <= 1e-4 * taken,
+                "{profile:?}: volume {v} against {exact}, taking {taken}"
+            );
+            volumes.push(v);
+        }
+        assert!(
+            (volumes[0] - volumes[1]).abs() <= 1e-9 * volumes[0],
+            "naming the other face first"
+        );
+    }
+}
