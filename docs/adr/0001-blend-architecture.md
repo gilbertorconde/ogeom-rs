@@ -2086,8 +2086,10 @@ does not depend on the request's order.
   along the curve where they cross, as by default.
 - **Refused by name, naming the vertex**, never closed by setbacks
   instead:
-  - a vertex where rounds meet that touches a curved face;
-  - a vertex that joins other than three edges;
+  - a vertex where convex and concave rounds meet that touches a curved
+    face, or joins other than three edges (where the rounds are of one
+    sense the default's corner is taken: amendment "rolling corners on
+    curved faces");
   - radii that differ;
   - a convex and a concave round beside an edge left sharp;
   - a lone round's edge not square to the cap;
@@ -2557,6 +2559,61 @@ far = 40) that is `4.977542`, against the report's `4.292037`.
   record on the tangency check's lower limit.
 - [P51] Vendor help pages on tangent propagation and tangent chain
   selection.
+
+### Amendment: rolling corners on curved faces (#1145)
+
+Amendment "rolling corners" refused every vertex where rounds meet that
+touches a curved face or joins other than three edges. `Setback` builds
+many of those: pocket floors and rims whose outlines have arcs, tangent
+chains of lines and arcs, a pyramid's apex of four rounds, a round on an
+edge already rounded (rounds meeting on its cylinder or torus), a kidney
+pocket's floor of arcs alone.
+
+**What the default builds there.** At each of those vertices the rounds
+are all of one sense, and the default's corner is already the rolling
+ball's (section 13, question 2):
+
+- rounds meeting tangentially: the band runs on, with no corner;
+- three rounds of one sense where one ball touches every face, on planes
+  or a curved face: the ball's sphere (the corner tool of the curved
+  route);
+- an apex of four rounds or more: the envelope of the ball, its sphere
+  where one ball touches every face, spheres and cylinders where none
+  does;
+- two rounds of one sense beside an edge left sharp: the bands cross.
+
+None is a patch. The patch, and the setback, come only where convex and
+concave rounds meet.
+
+**Rule.**
+
+- Where the rounds at every vertex of the request are of one sense, a
+  rolling corner is the default's corner, built by `fillet_edges`.
+- Where a vertex mixes convex and concave rounds, amendment "rolling
+  corners" stands: between planes at a vertex of three edges, the torus
+  round the lone band's end; elsewhere refused by name, naming the
+  vertex.
+- Mixed rounds on a curved face are refused by `Setback` as well ("a
+  convex and a concave round meeting at one vertex close as one corner
+  only where every face of the vertex is planar"), so every request
+  `Setback` builds, `Rolling` builds too.
+- The order of the edges changes nothing, as for the default.
+
+Making `Rolling` the default corner is a separate decision and is not
+taken here.
+
+**Oracle** (`tests/rolling_curved.rs`), each with `Rolling` in three
+orders, sound and with no patch face:
+
+- the obround pocket's floor and rim, the kidney pocket's floor, the
+  square pocket's floor, a rounded rectangle's top loop and a rounded
+  block's top loop: the section swept round the loop by Pappus, within
+  1e-6;
+- a pyramid's apex of four rounds, a notched corner of three convex
+  rounds on a concave cylinder, uprights rounded into an earlier rounded
+  top: as `Setback`;
+- a D-shaped boss's foot with its uprights (mixed, on its cylinder):
+  refused by name by both.
 
 ## 12. Acceptance corpus
 

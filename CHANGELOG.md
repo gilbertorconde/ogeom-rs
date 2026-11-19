@@ -33,6 +33,15 @@ bump may break the API and a patch bump may not.
   also where the part's far end comes first. Before, that case ended the
   band square at the vertex, so the result depended on the face's length
   (#1145).
+- **Rolling corners on curved faces.** `fillet_edges_corner` with
+  `FilletCorner::Rolling` now builds every request whose rounds meet only
+  in one sense at each vertex, on planes or curved faces, as the default
+  builds it: pocket outlines with arcs, tangent chains of lines and arcs,
+  a pyramid's apex of four rounds, rounds on rounded edges, a kidney
+  pocket. Before, it refused any such vertex touching a curved face or
+  joining other than three edges. A vertex mixing convex and concave
+  rounds on a curved face is still refused by name, as `Setback` refuses
+  it (ADR 0001, amendment "rolling corners on curved faces", #1145).
 
 ## [0.19.0] - 2026-11-18
 
