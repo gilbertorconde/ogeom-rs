@@ -2602,7 +2602,8 @@ concave rounds meet.
 - Mixed rounds on a curved face are refused by `Setback` as well ("a
   convex and a concave round meeting at one vertex close as one corner
   only where every face of the vertex is planar"), so every request
-  `Setback` builds, `Rolling` builds too.
+  `Setback` builds, `Rolling` builds too. `Rolling` now closes some of
+  them (amendment "mixed rolling corners on curved faces").
 - The order of the edges changes nothing, as for the default.
 
 Making `Rolling` the default corner is a separate decision and is not
@@ -2619,7 +2620,8 @@ orders, sound and with no patch face:
   rounds on a concave cylinder, uprights rounded into an earlier rounded
   top: as `Setback`;
 - a D-shaped boss's foot with its uprights (mixed, on its cylinder):
-  refused by name by both.
+  refused by name by both at the time; `Rolling` now builds it (amendment
+  "mixed rolling corners on curved faces").
 
 ### Amendment: chamfers the engine refused on 0.19.0 (#1161)
 
@@ -3015,6 +3017,91 @@ case per refusal:
 
 The test profile is optimised less. There the cases above take 20 to
 400 ms on planes and 0.1 to 4 s on curved faces.
+
+### Amendment: mixed rolling corners on curved faces (#1145)
+
+Amendment "rolling corners on curved faces" left a vertex mixing convex
+and concave rounds refused by name wherever a face there is curved: a
+D-shaped boss's foot with its uprights, a D-shaped pocket's rim with its
+uprights. Mainstream CAD closes these corners with the ball, as it does
+between planes.
+
+**What the ball does there.** Take the D-shaped boss: at a foot corner
+the upright's round is convex, the foot's two rounds (along the chord's
+plane and round the boss's cylinder) concave, all of radius `r`. The
+upright's edge is a line square to the plate, and its faces (the chord's
+plane and the cylinder) are ruled along it, so its band is a cylinder of
+radius `r` about an axis square to the plate.
+
+- The ball touching the plate and that band has its centre `r` above
+  the plate and `2 r` from the band's axis: the torus of amendment
+  "rolling corners", major radius `2 r`, minor `r`.
+- It meets the chord's foot band where the centre circle touches that
+  band's centre line, on the meridian square to the chord's plane.
+- It meets the cylinder's foot band (a torus about the boss's axis) where
+  the two centre circles touch. The band's axis stands `R - r` from the
+  boss's (`R` the boss's radius), so the circle of radius `2 r` about it
+  touches the circle of radius `R + r` about the boss's axis from inside,
+  on the meridian through both axes. Where centre curves touch, the two
+  sweeps share the ball's circle there, so the joint is G1.
+- The corner face thus spans more than a quarter turn of the torus
+  (`π/2 + asin(r / (R - r))` on the half disc), but it is still the ball's
+  sweep, and every new face is a plane, a cylinder or a torus.
+
+**How it is built.** That torus is exactly the round of the upright
+band's foot on the plate: a concave edge between the band (a convex
+cylinder of radius `r`) and the plate, rounded `r`. And the foot's other
+two rounds run on tangent into it: the band's foot arc is tangent to
+each of their edges where the band touches the face beside it. So the
+lone bands are built first, then the rest of the request as tangent
+chains through each lone band's foot. Between planes the same order
+gives the torus of amendment "rolling corners", which the engine still
+builds there directly.
+
+**Rule.** With `FilletCorner::Rolling`, where a vertex mixing convex and
+concave rounds touches a curved face:
+
+- it must join three edges, all three in the request (the lone round
+  and the two of the other sense);
+- the face across from the lone round (the cap) is a plane;
+- the lone round's edge is a line square to the cap;
+- each face beside it is a plane containing its direction or a cylinder
+  whose axis is parallel to it.
+
+Then the lone bands go first, with every round reached from them
+through vertices of one sense (whose corners are the default's: a D
+boss's top loop with its uprights closes on spheres), and the rest
+after, each lone band's foot on its cap added to the second pass. Any
+other mixed vertex on a curved face is refused by name, naming the
+vertex and the condition that fails, as is a round meeting a lone round
+that is itself reached from another lone band first. The order of the
+edges changes nothing: both passes are order independent. `Setback`
+still refuses these corners.
+
+Not built: a lone round whose edge is an arc or a line not square to the
+cap (the sweep round its end is then a canal surface on an ellipse, not
+analytic), and a lone round beside a cone.
+
+**Oracle** (`tests/rolling_curved.rs`), sound in three orders, no patch
+face, every edge between two curved faces G1 within 1e-6 rad, volume
+within 1e-6:
+
+- At `t` from the plate within the foot round, the boss's section is the
+  rounded D (the D with each corner rounded `r` in plan) grown by the
+  round's offset `w = r - sqrt(r² - (r - t)²)`, since the torus's section
+  there is the circle of radius `r + w` about the band's axis. The rounded
+  D is convex, so by Steiner's formula its area grows by `P w + π w²`.
+  With `∫w dt = r²(1 - π/4)` and `∫w² dt = r³(5/3 - π/2)`, the D boss
+  (radius 4, 6 high, on a 20 × 20 × 4 plate, `r = 1`) comes to
+  `1600 + 6 A + P r²(1 - π/4) + π r³(5/3 - π/2)`, with `A` and `P` the
+  rounded D's area and perimeter in closed form.
+- With the top loop too, the top's sphere corners shrink the section the
+  same way: less `P r²(1 - π/4) - π r³(5/3 - π/2)`.
+- The D pocket (radius 5, 5 deep in a 30 × 30 × 10 block) with its rim
+  and uprights: the void's section grows the same way within the rim
+  round, `9000 - 5 A - P r²(1 - π/4) - π r³(5/3 - π/2)`.
+- The foot line and one upright without the foot arc: refused by name,
+  naming the vertex ("beside an edge left sharp").
 
 ### Amendment: a rim's bevel stops at a concave floor (#1145)
 

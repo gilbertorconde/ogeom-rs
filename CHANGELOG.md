@@ -59,6 +59,15 @@ bump may break the API and a patch bump may not.
     handed the polytope it rounds back to itself. They now build.
   - ADR 0001, amendment "largest-size readings confirmed by the build".
 
+- **Added: rolling corners close mixed vertices on curved faces** (#1145).
+  - `fillet_edges_corner` with `FilletCorner::Rolling` now closes a vertex
+    where convex and concave rounds meet on a curved face, such as a
+    D-shaped boss's foot with its uprights or a D-shaped pocket's rim
+    with its uprights. The corner is the torus the ball sweeps round the
+    lone band's end. It needs the lone edge to be a line square to the
+    plane across from it, with planes or cylinders beside it. Other mixed
+    vertices on curved faces are still refused by name, naming the
+    vertex. `Setback` still refuses all of them.
 - **Fixed: a rim's chamfer that would cut below a concave floor is
   refused by name** (#1145).
   - A rim bevel on a cylinder, cone or sphere wall whose leg runs past a
