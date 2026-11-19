@@ -29,8 +29,8 @@ const WALK_STATIONS: u32 = 256;
 /// edge's point `from`, along the unit `step` square to the edge into
 /// `face`, `factor` (the tangent of half the faces' turn) per unit of
 /// radius, the point found on `surface` (the face's, placed).
-struct Walk {
-    face: Shape,
+pub(crate) struct Walk {
+    pub(crate) face: Shape,
     surface: SurfaceGeometry,
     from: Point,
     step: Vector,
@@ -50,7 +50,7 @@ impl Walk {
 /// How far a walk stays on its face: the setback where it first leaves
 /// the face's region, at most the `up` it was followed to, and how fast
 /// its contact moves per unit of setback.
-struct Reach {
+pub(crate) struct Reach {
     setback: f64,
     speed: f64,
 }
@@ -364,6 +364,102 @@ pub(crate) fn legs_largest(
     })
 }
 
+/// The contacts of each of `edges`' blends, with their reach: the seats
+/// [`held_apart`] reads, each contact standing `per` of the measure back
+/// from its edge.
+pub(crate) fn seats(
+    model: &Model,
+    solid: &Shape,
+    edges: &[Shape],
+    up_to: f64,
+    per: impl Fn(usize, &Shape) -> f64,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Vec<(Walk, Reach)>>> {
+    let mut found = Vec::with_capacity(edges.len());
+    for (i, edge) in edges.iter().enumerate() {
+        found.push(edge_largest(model, solid, edge, up_to, |w| per(i, &w.face), tol)?.1);
+    }
+    Ok(found)
+}
+
+/// The largest measure up to `largest` at which no blend's contact of
+/// `edges` comes within another's setback of its edge across a face they
+/// share, where `seats` holds each edge's contacts and `per` how far the
+/// `i`th edge's contact stands back from it per unit of measure. Edges
+/// meeting at a vertex are corner mates and are not held apart.
+///
+/// A contact's distance to another edge changes no faster than the
+/// contact walks, and the edge's setback grows linearly, so the measure
+/// where the two first meet is approached from below in steps that cannot
+/// pass it; the answer keeps them `keep` apart.
+pub(crate) fn held_apart(
+    model: &Model,
+    edges: &[Shape],
+    seats: &[Vec<(Walk, Reach)>],
+    per: impl Fn(usize, &Walk) -> f64,
+    keep: f64,
+    mut largest: f64,
+    tol: Tolerances,
+) -> OgeomResult<f64> {
+    let ends = |edge: &Shape| -> OgeomResult<Vec<Shape>> {
+        Ok(ogeom_algo::edge_vertices(model, edge)?
+            .map(|(a, b)| vec![a, b])
+            .unwrap_or_default())
+    };
+    for (i, first) in edges.iter().enumerate() {
+        for (j, second) in edges.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            let (own, other) = (ends(first)?, ends(second)?);
+            if own.iter().any(|v| other.iter().any(|o| o.is_same(v))) {
+                continue;
+            }
+            let Ok((curve, range)) = edge_curve(model, second, tol) else {
+                continue;
+            };
+            for (walk, reached) in &seats[i] {
+                // The other edge's widest setback per unit of measure on
+                // this face, if it has a contact there.
+                let Some(strip) = seats[j]
+                    .iter()
+                    .filter(|(w, _)| w.face.is_same(&walk.face))
+                    .map(|(w, _)| per(j, w))
+                    .reduce(f64::max)
+                else {
+                    continue;
+                };
+                let own = per(i, walk);
+                // The gap between the contact and the other edge's strip,
+                // shrinking at most this fast per unit of measure.
+                let rate = own * reached.speed + strip;
+                if rate <= 0.0 {
+                    continue;
+                }
+                let gap = |r: f64| -> OgeomResult<f64> {
+                    let (at, _) = walk.contact(r * own, tol)?;
+                    Ok(distance_to_edge(&curve, range, at, tol)? - strip * r)
+                };
+                let mut r = 0.0_f64;
+                for _ in 0..100_000 {
+                    if r >= largest {
+                        break;
+                    }
+                    let g = gap(r)?;
+                    // Where the gap closes to `keep`, that much short.
+                    if g <= keep {
+                        largest = (r - keep / rate).max(0.0);
+                        break;
+                    }
+                    r += g / rate;
+                }
+                largest = largest.min(r);
+            }
+        }
+    }
+    Ok(largest)
+}
+
 /// The largest radius up to `up_to` at which [`fillet_edges`](crate::fillet_edges)
 /// on `edge` of `solid` alone builds: every radius probed below it builds
 /// and a radius [`LIMIT_TOLERANCE`](crate::LIMIT_TOLERANCE) above it is
@@ -465,59 +561,7 @@ pub(crate) fn seat_fillet_radius(
         if largest <= conf {
             return Ok(None);
         }
-        let ends = |edge: &Shape| -> OgeomResult<Vec<Shape>> {
-            Ok(ogeom_algo::edge_vertices(model, edge)?
-                .map(|(a, b)| vec![a, b])
-                .unwrap_or_default())
-        };
-        for (i, first) in edges.iter().enumerate() {
-            for (j, second) in edges.iter().enumerate() {
-                if i == j {
-                    continue;
-                }
-                let (own, other) = (ends(first)?, ends(second)?);
-                if own.iter().any(|v| other.iter().any(|o| o.is_same(v))) {
-                    continue;
-                }
-                let Ok((curve, range)) = edge_curve(model, second, tol) else {
-                    continue;
-                };
-                for (walk, reached) in &seats[i] {
-                    // The other edge's widest setback per unit radius on
-                    // this face, if it has a contact there.
-                    let Some(strip) = seats[j]
-                        .iter()
-                        .filter(|(w, _)| w.face.is_same(&walk.face))
-                        .map(|(w, _)| w.factor)
-                        .reduce(f64::max)
-                    else {
-                        continue;
-                    };
-                    // The gap between the contact and the other edge's
-                    // strip, shrinking at most this fast per unit radius.
-                    let rate = walk.factor * reached.speed + strip;
-                    let gap = |r: f64| -> OgeomResult<f64> {
-                        let (at, _) = walk.contact(r * walk.factor, tol)?;
-                        Ok(distance_to_edge(&curve, range, at, tol)? - strip * r)
-                    };
-                    let mut r = 0.0_f64;
-                    for _ in 0..100_000 {
-                        if r >= largest {
-                            break;
-                        }
-                        let g = gap(r)?;
-                        // Where the gap closes to a confusion distance, a
-                        // confusion distance short.
-                        if g <= conf {
-                            largest = (r - conf / rate).max(0.0);
-                            break;
-                        }
-                        r += g / rate;
-                    }
-                    largest = largest.min(r);
-                }
-            }
-        }
+        largest = held_apart(model, edges, &seats, |_, w| w.factor, conf, largest, tol)?;
         Ok((largest > conf).then_some(largest))
     })
 }

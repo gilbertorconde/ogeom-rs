@@ -141,6 +141,18 @@ bump may break the API and a patch bump may not.
   refused by name, naming its edge, instead of cutting a groove below the
   floor. A chamfer running past a convex edge still rolls over as a notch
   (ADR 0001, amendment "a bevel stops at a concave floor", #1145).
+- **Added: `largest_chamfer_distance_all`** (#1174).
+  - `ogeom_fillet::largest_chamfer_distance_all` is the counterpart of
+    `largest_fillet_radius_all` for chamfers. It takes the specs as
+    `chamfer_edges_with` does and returns the largest measure every spec
+    takes at once, in every spelling (symmetric, two distances, angle).
+  - At that measure every bevel stays seated, as `largest_chamfer_distance`
+    reads each, and no bevel's contact comes within another's leg across a
+    face they share. Edges meeting at a vertex are corner mates and are not
+    held apart, under both chamfer corners.
+  - The promise is setback and overlap only, as for one edge. Past the
+    answer, two convex bevels across a narrow face meet along a ridge and
+    the face is gone; concave bevels across a floor are refused.
 - **Added: `tangent_chain`.** `ogeom_fillet::tangent_chain` returns the
   picked edges and every edge reached through vertices where two edges run
   on within an angle; `TANGENT_CHAIN_ANGLE` (1 degree) is the default, the
