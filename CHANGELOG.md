@@ -23,6 +23,16 @@ bump may break the API and a patch bump may not.
   refused by name, naming its edge, instead of cutting a groove below the
   floor. A chamfer running past a convex edge still rolls over as a notch
   (ADR 0001, amendment "a bevel stops at a concave floor", #1145).
+- **Added: `tangent_chain`.** `ogeom_fillet::tangent_chain` returns the
+  picked edges and every edge reached through vertices where two edges run
+  on within an angle; `TANGENT_CHAIN_ANGLE` (1 degree) is the default, the
+  widest documented in mainstream CAD. A 4 degree kink stops the chain
+  (ADR 0001, amendment "tangent chains stop at a kink", #1145).
+- **Fixed: a round ending at a slight kink.** One round ending at a vertex
+  of three convex edges runs on past it until the turned face trims it,
+  also where the part's far end comes first. Before, that case ended the
+  band square at the vertex, so the result depended on the face's length
+  (#1145).
 
 ## [0.19.0] - 2026-11-18
 
