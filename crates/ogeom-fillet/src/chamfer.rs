@@ -581,11 +581,31 @@ fn engine_chamfer_mitred_attempt(
     if let Some(what) = crate::engine::degenerate_planar(model, &solid)? {
         return Err(degenerate_refused(&what));
     }
-    if !matches!(
-        crate::engine::dissolve(model, &solid, tol)?,
-        crate::engine::Dissolved::Plain
-    ) {
-        return Ok(None);
+    match crate::engine::dissolve(model, &solid, tol)? {
+        crate::engine::Dissolved::Plain => {}
+        crate::engine::Dissolved::Outside => return Ok(None),
+        // Seams dissolved, as the facet's path reads them.
+        crate::engine::Dissolved::Into(seamless) => {
+            if seamless.asked_apart(&specs) {
+                return Ok(None);
+            }
+            let Some(asked) = seamless.specs(&specs) else {
+                return Ok(None);
+            };
+            let Some(mut request) =
+                crate::engine::Request::from_chamfers(model, &seamless.solid, &asked, tol)?
+            else {
+                return Ok(None);
+            };
+            request.mitre = true;
+            let Some(built) = crate::engine::run(model, &seamless.solid, &request, tol)? else {
+                return Ok(None);
+            };
+            return Ok(Some(Built::new(
+                built.shape,
+                baked.history.then(&seamless.carry(&built.history)),
+            )));
+        }
     }
     if let Some(mut request) = crate::engine::Request::from_chamfers(model, &solid, &specs, tol)? {
         request.mitre = true;
