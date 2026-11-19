@@ -2489,6 +2489,75 @@ bevel would pass under, a change to a face the request does not name.
 **Oracle.** The step: at 1.5 the request of three edges is refused naming
 the step's spec alone; at 1 the step's bevel alone takes `20 · 1²/2`.
 
+### Amendment: tangent chains stop at a kink (#1145)
+
+A downstream report: a fillet picked on one edge with tangent
+propagation "runs past a 4 degree kink instead of stopping there". Two
+questions: which edges a tangent chain takes, and what a round that
+stops at a kink does at its end.
+
+**Which edges a chain takes.** The default tangency tolerance, from
+public documentation:
+
+| Source | Default |
+|---|---|
+| Surface modeler A [P48] | The document's angle tolerance, 1 degree by default, decides when two curves or surfaces are tangent. |
+| Parametric system B [P49] | The modeling angle tolerance, the largest angle allowed between tangents at matching points: 0.5 degree by default (a user forum gives the value; the vendor's API reference defines the setting). |
+| Parametric system C [P50] | Tangency propagation runs "up to the first edge that is not continuous in tangency". No angle given. Its tangency check works down to 0.5 degree. |
+| Parametric systems D, E and F [P51] | Tangent propagation or tangent chain is on by default. No angle given. |
+| Parametric systems G and H | Not found. |
+
+No source takes a turn of more than 1 degree as tangent. A 4 degree
+kink stops tangent propagation in every documented system.
+
+**Rule.**
+
+- `tangent_chain` takes the picked edges and every edge reached through
+  vertices where the way one edge leaves is the way the next arrives,
+  within an angle. `TANGENT_CHAIN_ANGLE` is 1 degree, the widest
+  documented default. Edges meeting back to back (a cusp) are not a
+  chain.
+- The angle chooses edges only. The engine runs bands on into each other
+  with no corner only where the edges are tangent (`setbacks::TANGENT`,
+  a millionth of a radian). It closes every other vertex of a chain as a
+  corner, as it would if the edges had been picked one by one.
+
+**A round that stops at a kink.** The reported part is a block whose
+front turns 4 degrees into the material at x = 20, its first top edge
+rounded alone. That is one rounded edge at a vertex of three convex
+edges. Under amendment "corners where a round's rail misses" the band
+runs on past the vertex while the turned front trims it, until the trim
+reaches its contact on the top, `r cot(kink)` past the vertex. The
+report's figure, `20 r²(1 − π/4)`, caps the band square at the vertex,
+which leaves a cliff the ball does not leave.
+
+The engine built that run-on only where it ended before the part's far
+end. Where the far end came first, it treated the band as reaching a
+face beyond its ends, and the cut-off route ended its tool square at the
+vertex. So a 0.9 degree kink on a 20 mm face was capped and a 4 degree
+one was not. Now the cut-off route's tool runs on too: at a vertex of
+three convex edges it ends square where the band's last contact crosses
+the end face's plane (the farthest setback corner past the vertex), and
+the cut takes only what of that the solid holds.
+
+**Oracle.** At `x` past the vertex the band takes what of its spandrel
+lies at `x tan(kink)` or more from the front. With `A(s)` that area over
+`y ≥ s` for the unit round, the round takes
+
+`20 (1 − π/4) + cot(kink) ∫₀^m A(s) ds`, `m = min(1, (far − 20) tan(kink))`,
+
+and `∫₀^1 A(s) ds = 5/6 − π/4`. For the reported part (4 degrees,
+far = 40) that is `4.977542`, against the report's `4.292037`.
+
+- [P48] Vendor help page, units and tolerances, and the vendor's
+  tolerance FAQ.
+- [P49] Vendor API reference, part modeling angle tolerance; the default
+  from a user forum thread on modeling preferences.
+- [P50] Vendor user guide, edge fillet propagation modes; vendor support
+  record on the tangency check's lower limit.
+- [P51] Vendor help pages on tangent propagation and tangent chain
+  selection.
+
 ## 12. Acceptance corpus
 
 From #902:
