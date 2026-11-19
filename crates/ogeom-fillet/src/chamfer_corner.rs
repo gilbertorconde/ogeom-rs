@@ -41,6 +41,9 @@ pub enum ChamferCorner {
 /// on to the point their planes share, or at a convex vertex of four or
 /// more sharing none until the others cut them; on curved faces to the
 /// point their surfaces share, meeting along their sections from there.
+/// The two differ only at a vertex where three or more bevels meet: a
+/// request with no such vertex builds with either exactly what
+/// [`chamfer_edges_with`](crate::chamfer_edges_with) builds.
 ///
 /// # Errors
 ///
@@ -64,16 +67,37 @@ pub fn chamfer_edges_cornered(
     if crate::chamfer::below_a_floor(model, solid, specs, tol)?.is_some() {
         return Err(crate::chamfer::below_a_floor_refused());
     }
-    if corner == ChamferCorner::Point {
+    if corner == ChamferCorner::Point && three_meet(model, specs)? {
         // The blend engine mitres in one pass, on planes or on curved
-        // faces; what it hands back, the wedges do.
+        // faces.
         return crate::chamfer::engine_chamfer_mitred(model, solid, specs, tol)?
             .ok_or_else(crate::chamfer::declined);
     }
-    // A solid bounded by planes is chamfered by the blend engine in one
-    // pass: every face set back, every vertex its facet.
+    // Every vertex its facet. Where no three bevels meet, the mitre and
+    // the facet are one corner, and `Point` builds what the default does.
     if let Some(built) = crate::chamfer::engine_chamfer(model, solid, specs, tol)? {
         return Ok(built);
     }
     Err(crate::chamfer::declined())
+}
+
+/// Whether three or more of `specs`' edges meet at one vertex: the only
+/// place [`ChamferCorner::Point`] and [`ChamferCorner::Facet`] differ.
+fn three_meet(model: &Model, specs: &[(Shape, Chamfer)]) -> OgeomResult<bool> {
+    let mut count: ogeom_core::FastMap<ogeom_topo::TShapeId, usize> =
+        ogeom_core::FastMap::default();
+    for (edge, _) in specs {
+        let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
+            continue;
+        };
+        let ends = if a.node() == b.node() {
+            vec![a.node()]
+        } else {
+            vec![a.node(), b.node()]
+        };
+        for v in ends {
+            *count.entry(v).or_default() += 1;
+        }
+    }
+    Ok(count.values().any(|&n| n >= 3))
 }

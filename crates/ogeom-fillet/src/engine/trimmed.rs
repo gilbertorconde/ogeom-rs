@@ -179,7 +179,7 @@ fn chamfer_with(
     // widened to.
     let mut widths: FastMap<(usize, Id), f64> = FastMap::default();
     for (edge, shape, spec) in &asked {
-        if let Some(bevel) = bevel_of(model, solid, &curved, *edge, shape, spec, tol)? {
+        if let Some(bevel) = bevel_of(model, solid, &curved, *edge, shape, spec, false, tol)? {
             bevels.push(bevel);
             continue;
         }
@@ -1043,7 +1043,9 @@ fn distances(curved: &Curved, faces: [usize; 2], spec: &Chamfer) -> Option<[f64;
 }
 
 /// The contacts and bevel of `spec` on `edge`, `None` past the seats built
-/// here.
+/// here. A straight edge between planes or a rim may be concave only where
+/// `concave` says so; the rings build convex bevels alone.
+#[allow(clippy::too_many_arguments, reason = "the seat and the request")]
 fn bevel_of(
     model: &mut Model,
     solid: &Shape,
@@ -1051,6 +1053,7 @@ fn bevel_of(
     edge: Id,
     shape: &Shape,
     spec: &Chamfer,
+    concave: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Strip>> {
     let Some(e) = curved.edges.get(&edge) else {
@@ -1102,11 +1105,11 @@ fn bevel_of(
             if d.iter().any(|x| !(x.is_finite() && *x > tol.confusion())) {
                 return Ok(None);
             }
-            straight(curved, edge, e, (faces, into), d, tol)
+            straight(curved, edge, e, (faces, into), d, concave, tol)
         }
         Curve::Circle(circle) => match legs(model, solid, shape, spec, tol) {
             Ok(Legs::Rim(seat, on_wall, on_cap)) => {
-                rim(curved, edge, faces, &seat, on_wall, on_cap, tol)
+                rim(curved, edge, faces, &seat, on_wall, on_cap, concave, tol)
             }
             Ok(Legs::Sphere(seat, on_wall, on_cap)) => {
                 sphere_rim(curved, edge, faces, &seat, on_wall, on_cap, tol)
@@ -1237,12 +1240,14 @@ fn angled(
 /// A straight edge between two planes, or a plane and a cylinder it runs
 /// along: each contact a segment the length of the edge and half again past
 /// each end, so the corners at its ends lie on it.
+#[allow(clippy::too_many_arguments, reason = "the seat's whole section")]
 fn straight(
     curved: &Curved,
     edge: Id,
     e: &CurvedEdge,
     (faces, into): ([usize; 2], [Option<Vector>; 2]),
     d: [f64; 2],
+    concave: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Strip>> {
     let (mut a, mut b) = (curved.points[&e.ends.0], curved.points[&e.ends.1]);
@@ -1286,8 +1291,9 @@ fn straight(
                     },
                 };
                 let m = if towards.dot(m) < 0.0 { -m } else { m };
-                // A convex edge only: into the face goes under the other.
-                if m.dot(other) >= 0.0 {
+                // A convex edge only, unless a concave one is asked for:
+                // into the face goes under the other.
+                if !concave && m.dot(other) >= 0.0 {
                     return Ok(None);
                 }
                 m / m.magnitude() * d[k]
@@ -1387,6 +1393,7 @@ fn planes_line(
 /// A rim between a planar cap and a coaxial cylinder or cone, as the wedge
 /// path reads it ([`legs`]): the ring along the cap and the ring down the
 /// wall, and the cone through both.
+#[allow(clippy::too_many_arguments, reason = "the seat's whole section")]
 fn rim(
     curved: &Curved,
     edge: Id,
@@ -1394,9 +1401,10 @@ fn rim(
     seat: &RevolvedSeat,
     on_wall: f64,
     on_cap: f64,
+    concave: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Strip>> {
-    if seat.additive() {
+    if seat.additive() && !concave {
         return Ok(None);
     }
     let cap = faces
@@ -6883,6 +6891,10 @@ pub(crate) fn creases_one_boolean(
     // else its own end. Asked edges meeting any other way decline.
     let asked: Vec<Id> = specs.iter().map(|(e, _)| id(e)).collect();
     let mut caps: Vec<[EndCap; 2]> = Vec::with_capacity(specs.len());
+    // Whether asked edges run on into each other tangentially across
+    // different faces (a pocket floor's loop of lines and arcs): there a
+    // bevel may be concave, its tool fused in.
+    let mut either_sense = false;
     for e in &asked {
         let Some(c) = curved.edges.get(e) else {
             return Ok(None);
@@ -6935,8 +6947,11 @@ pub(crate) fn creases_one_boolean(
                             break;
                         }
                     }
-                    if !same || !seams_only {
-                        return Ok(None);
+                    if !(same && seams_only) {
+                        if !tangent_joint(model, &curved, (*e, o), v, tol)? {
+                            return Ok(None);
+                        }
+                        either_sense = true;
                     }
                     let t = if k == 0 { c.range.0 } else { c.range.1 };
                     let h = (c.range.1 - c.range.0) * 1e-6;
@@ -6955,7 +6970,7 @@ pub(crate) fn creases_one_boolean(
     let mut tools = Vec::with_capacity(specs.len());
     for (edge, spec) in specs {
         let e = id(edge);
-        let strip = match bevel_of(model, solid, &curved, e, edge, spec, tol)? {
+        let strip = match bevel_of(model, solid, &curved, e, edge, spec, either_sense, tol)? {
             Some(strip) => strip,
             None => {
                 let [f0, f1] = faces_of(&curved, e)[..] else {
@@ -6976,6 +6991,77 @@ pub(crate) fn creases_one_boolean(
     }
     let edges: Vec<Shape> = specs.iter().map(|(e, _)| e.clone()).collect();
     super::fallback::applied(model, solid, &edges, &tools, tol)
+}
+
+/// Whether asked edges `a` and `b` run on into each other at `v` as one
+/// tangent chain across different faces: their curves leave `v` back to
+/// back (within [`super::setbacks::TANGENT`]), they share one face (or two
+/// on one carrier facing one way), their other faces stand tangent at `v`,
+/// and every other edge at `v` is a seam or the smooth edge between those
+/// two. The bevels' sections then meet on the plane square to the chain
+/// there, and each tool is capped on it.
+fn tangent_joint(
+    model: &Model,
+    curved: &Curved,
+    (a, b): (Id, Id),
+    v: Id,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let leaving = |e: Id| -> OgeomResult<Vector> {
+        let c = &curved.edges[&e];
+        let (t, sign) = if c.ends.0 == v {
+            (c.range.0, 1.0)
+        } else {
+            (c.range.1, -1.0)
+        };
+        let d = c.curve.d1_at(t, tol)? * sign;
+        Ok(d / d.magnitude())
+    };
+    let (ta, tb) = (leaving(a)?, leaving(b)?);
+    if ta.dot(tb) >= 0.0 || ta.cross(tb).magnitude() > super::setbacks::TANGENT {
+        return Ok(false);
+    }
+    let one = |x: usize, y: usize| -> OgeomResult<bool> {
+        Ok(x == y
+            || ogeom_heal::same_domain(model, &curved.faces[x].shape, &curved.faces[y].shape, tol)?)
+    };
+    let (&[a0, a1], &[b0, b1]) = (&faces_of(curved, a)[..], &faces_of(curved, b)[..]) else {
+        return Ok(false);
+    };
+    // The faces the two edges do not share, one each side.
+    let mut others = None;
+    for (x, xo) in [(a0, a1), (a1, a0)] {
+        for (y, yo) in [(b0, b1), (b1, b0)] {
+            if others.is_none() && one(x, y)? && !one(xo, yo)? {
+                others = Some((xo, yo));
+            }
+        }
+    }
+    let Some((fa, fb)) = others else {
+        return Ok(false);
+    };
+    let p = curved.points[&v];
+    let (Some(na), Some(nb)) = (outward(curved, fa, p), outward(curved, fb, p)) else {
+        return Ok(false);
+    };
+    if na.dot(nb) <= 0.0
+        || na.cross(nb).magnitude() > super::setbacks::TANGENT * na.magnitude() * nb.magnitude()
+    {
+        return Ok(false);
+    }
+    for (x, c) in &curved.edges {
+        if *x == a || *x == b || !(c.ends.0 == v || c.ends.1 == v) {
+            continue;
+        }
+        let [f, g] = faces_of(curved, *x)[..] else {
+            return Ok(false);
+        };
+        let between = (f == fa && g == fb) || (f == fb && g == fa);
+        if !between && !one(f, g)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Rim chamfers between two surfaces of revolution about the rim's own
@@ -7032,7 +7118,7 @@ pub(crate) fn rims_revolved(
         let Curve::Circle(circle) = &c.curve else {
             return Ok(None);
         };
-        let Some(strip) = bevel_of(model, solid, &curved, e, edge, spec, tol)? else {
+        let Some(strip) = bevel_of(model, solid, &curved, e, edge, spec, false, tol)? else {
             return Ok(None);
         };
         let circle = circle.circle();
@@ -7199,7 +7285,7 @@ pub(crate) fn convex_one_boolean(
     let mut sides: Vec<(Shape, Vec<Shape>, Shape)> = Vec::with_capacity(specs.len());
     for (edge, spec) in specs {
         let e = id(edge);
-        let Some(strip) = bevel_of(model, solid, &curved, e, edge, spec, tol)? else {
+        let Some(strip) = bevel_of(model, solid, &curved, e, edge, spec, false, tol)? else {
             return Ok(None);
         };
         let c = &curved.edges[&e];
@@ -7503,7 +7589,7 @@ pub(crate) fn rolling_tools(
         if !curved.edges.contains_key(&e) {
             return Ok(None);
         }
-        let strip = match bevel_of(model, solid, &curved, e, edge, spec, tol)? {
+        let strip = match bevel_of(model, solid, &curved, e, edge, spec, false, tol)? {
             Some(strip) => strip,
             None => match concave_straight(model, &curved, e, spec, tol)? {
                 Some(strip) => strip,

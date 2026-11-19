@@ -11,6 +11,21 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+- **Fixed: chamfers refused since 0.19.0** (#1161).
+  - `chamfer_edges_cornered` with `ChamferCorner::Point` now builds every
+    request that has no vertex where three or more bevels meet, exactly as
+    `chamfer_edges_checked` does. Before, it refused concave rims on a
+    plate (a cone's foot, a boss's foot) and edges of a solid holding seams.
+    Where three bevels do meet, the mitre now reads such a solid with its
+    seams dissolved.
+  - Concave chamfers on a part whose faces a fuse left flush now build: a
+    bar fused between two flanges, chamfered where it meets them. Before,
+    a piece of a face left with only seams round it put the whole solid
+    out of the engine's reach.
+  - A concave chamfer round a pocket floor's tangent loop of lines and
+    arcs (an obround or kidney pocket) now builds. Each bevel's tool is
+    swept along its edge and capped where the chain runs on, then fused.
+  - ADR 0001, amendment "chamfers the engine refused on 0.19.0".
 - **Docs: the default chamfer corner.** `chamfer_edges`,
   `chamfer_edges_with` and `chamfer_edges_checked` now say plainly that a
   vertex of three bevels takes the facet, and give the volume each corner

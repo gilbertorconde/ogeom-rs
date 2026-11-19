@@ -2615,6 +2615,67 @@ orders, sound and with no patch face:
 - a D-shaped boss's foot with its uprights (mixed, on its cylinder):
   refused by name by both.
 
+### Amendment: chamfers the engine refused on 0.19.0 (#1161)
+
+A downstream report: chamfers that built before M6 were refused with
+"the blend engine builds no chamfer of this kind here". Three causes.
+
+**`Point` where no three bevels meet.** `ChamferCorner::Point` and the
+default facet differ only at a vertex where three or more bevels meet
+(section 13, question 1). The `Point` call took the mitre's own route for
+every request, and that route lacked the default's routes for rims and
+for solids holding seams. So a cone's or a boss's foot rim on a plate,
+or an edge of a block holding seams, was refused with `Point` and built
+by default.
+
+- A `Point` request with no vertex of three bevels takes the default's
+  route and builds exactly what the default builds.
+- Where three or more do meet, the mitre now reads a solid holding seams
+  with the seams dissolved, as the facet does.
+
+**Faces a boolean imprinted inside a flat.** Where a fuse joins two parts
+whose sides are coplanar (a bar fused between flanges, faces flush in
+front), it can leave a piece of one face whose every side is a seam.
+Dissolving the seams of a solid bounded by planes now matches such a
+piece to the face that holds its neighbour across a seam, as the curved
+reading already did. Before, the whole solid was read as one the engine
+cannot chamfer. A concave edge where the bar meets a flange was then
+refused, though the same part built as one prism chamfers.
+
+**Concave bevels round a tangent loop.** In mainstream CAD, a chamfer
+picked on a pocket's floor edge with tangent propagation takes the whole
+loop of lines and arcs and builds one continuous bevel, as a fillet on
+the same loop does. The engine's curved rings build convex bevels only,
+and the one-boolean route for creases joined only pieces of one curve
+between the same two faces.
+
+- **Joints.** Asked edges meeting at a vertex are a joint when their
+  curves leave it back to back within `setbacks::TANGENT`, they share one
+  face (the floor), and their other faces stand tangent there. Every other
+  edge at the vertex must be a seam or the smooth edge between those two
+  faces.
+- **Tools.** Each bevel's tool is its section swept along its edge (a
+  prism along a line, the triangle turned about a wall's axis along an
+  arc). It is capped on the plane square to the chain at each joint, cut
+  where the edge is convex and fused where it is concave. Both sides of a
+  joint share the plane and the section, so the tools meet face to face.
+- **Unchanged.** A kink is no joint: amendment "tangent chains stop at a
+  kink" stands, and such a request is handled as before. Amendment "a
+  bevel stops at a concave floor" concerns convex bevels and is not
+  touched.
+
+**Oracle** (`tests/chamfer_point_and_pockets.rs`), sound, within 1e-6:
+
+- the obround and kidney pocket floors at 1: the pocket plus `d²/2` along
+  the lines and, by Pappus, round each arc, its centroid `d/3` from each
+  face;
+- the slanted bar's four concave edges at 1: `base + 20 cos(a)`, with
+  `a = atan(13/36)`;
+- the cone and boss rims, and edges of a block holding seams: `Point`
+  equal to the default to the bit, both to Pappus or the prism's section;
+- a corner of three bevels on the seamed block: `Point` the mitre, and the
+  default `d³/12` less.
+
 ## 12. Acceptance corpus
 
 From #902:

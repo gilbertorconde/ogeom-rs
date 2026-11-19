@@ -195,26 +195,76 @@ impl Seamless {
             }
         }
         let pair_of: FastMap<Id, (Id, Id)> = unified.edges.iter().map(|(k, e)| (*e, *k)).collect();
-        let mut faces: Vec<(Shape, Shape)> = Vec::with_capacity(input.faces.len());
-        for face in &input.faces {
-            let sides: Vec<(Id, Id)> = face
-                .loops()
-                .flat_map(|ring| (0..ring.len()).map(|k| (ring[k], ring[(k + 1) % ring.len()])))
-                .collect();
-            let image = sides.iter().find_map(|&(a, b)| {
-                let e = input.edges.get(&(a.min(b), a.max(b)))?;
-                let f = (*edges.get(e)?)?;
-                walking
-                    .get(pair_of.get(&f)?)?
-                    .iter()
-                    .copied()
-                    .max_by(|x, y| {
-                        let dx = unified.faces[*x].normal.dot(face.normal);
-                        let dy = unified.faces[*y].normal.dot(face.normal);
-                        dx.total_cmp(&dy)
+        let sides_of = |face: &super::classify::Face| -> Vec<(Id, Id)> {
+            face.loops()
+                .flat_map(|ring| {
+                    (0..ring.len()).map(|k| {
+                        let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+                        (a.min(b), a.max(b))
                     })
-            })?;
-            faces.push((face.shape.clone(), unified.faces[image].shape.clone()));
+                })
+                .collect()
+        };
+        let mut images: Vec<Option<usize>> = input
+            .faces
+            .iter()
+            .map(|face| {
+                sides_of(face).iter().find_map(|side| {
+                    let e = input.edges.get(side)?;
+                    let f = (*edges.get(e)?)?;
+                    walking
+                        .get(pair_of.get(&f)?)?
+                        .iter()
+                        .copied()
+                        .max_by(|x, y| {
+                            let dx = unified.faces[*x].normal.dot(face.normal);
+                            let dy = unified.faces[*y].normal.dot(face.normal);
+                            dx.total_cmp(&dy)
+                        })
+                })
+            })
+            .collect();
+        // A face every side of which dissolved (a piece a boolean imprinted
+        // inside one flat, such as where two coplanar sides overlapped) is
+        // held by what holds a neighbour across a seam: a face sharing one
+        // of its sides and facing its way, so lying on its plane.
+        let mut by_side: FastMap<(Id, Id), Vec<usize>> = FastMap::default();
+        for (fi, face) in input.faces.iter().enumerate() {
+            for side in sides_of(face) {
+                by_side.entry(side).or_default().push(fi);
+            }
+        }
+        loop {
+            let mut found = false;
+            for fi in 0..input.faces.len() {
+                if images[fi].is_some() {
+                    continue;
+                }
+                let face = &input.faces[fi];
+                let held = sides_of(face).iter().find_map(|side| {
+                    by_side[side].iter().find_map(|&gi| {
+                        let across = &input.faces[gi];
+                        (gi != fi
+                            && across.normal.dot(face.normal) >= 1.0 - tol.angular()
+                            && edges
+                                .get(input.edges.get(side)?)
+                                .is_some_and(Option::is_none))
+                        .then_some(images[gi])
+                        .flatten()
+                    })
+                });
+                if held.is_some() {
+                    images[fi] = held;
+                    found = true;
+                }
+            }
+            if !found {
+                break;
+            }
+        }
+        let mut faces: Vec<(Shape, Shape)> = Vec::with_capacity(input.faces.len());
+        for (face, image) in input.faces.iter().zip(images) {
+            faces.push((face.shape.clone(), unified.faces[image?].shape.clone()));
         }
         Some(Self {
             solid,
