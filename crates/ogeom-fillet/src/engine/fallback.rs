@@ -18,6 +18,12 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 use super::Id;
 use super::classify::{Planar, Seat, faces_round};
 
+thread_local! {
+    /// Whether [`group_tool`] is rounding its polytope, which must not
+    /// hand a round of it to a polytope in turn.
+    static ROUNDING_POLYTOPE: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
 /// One convex piece: its corners, and the corners of the face it carries
 /// (the bevel's or the facet's), by which its result faces are found.
 struct Piece {
@@ -1202,6 +1208,11 @@ fn group_tool(
     corners: &FastMap<(usize, Id), Point>,
     tol: Tolerances,
 ) -> OgeomResult<Option<Tool>> {
+    // Rounding the polytope: where a round there again reaches a face
+    // beyond its ends, the polytope it would be handed is the same one.
+    if ROUNDING_POLYTOPE.with(core::cell::Cell::get) {
+        return Ok(None);
+    }
     let eps = tol.confusion();
     let mut vertices: Vec<Id> = members.iter().flat_map(|s| [s.ends.0, s.ends.1]).collect();
     vertices.sort_unstable();
@@ -1326,7 +1337,18 @@ fn group_tool(
         }
     }
     let request = super::Request::from_rounds(&asked, tol)?;
-    let Ok(Some(rounded)) = super::run(model, &helper, &request, tol) else {
+    let rounded = {
+        struct Leave;
+        impl Drop for Leave {
+            fn drop(&mut self) {
+                ROUNDING_POLYTOPE.with(|r| r.set(false));
+            }
+        }
+        ROUNDING_POLYTOPE.with(|r| r.set(true));
+        let _leave = Leave;
+        super::run(model, &helper, &request, tol)
+    };
+    let Ok(Some(rounded)) = rounded else {
         return Ok(None);
     };
     let Ok(spandrel) = ogeom_bool::cut(model, &helper, &rounded.shape, tol) else {
