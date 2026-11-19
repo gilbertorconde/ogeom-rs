@@ -8,7 +8,7 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
 use super::fallback::{Sense, Tool};
 use crate::asym::Asymmetric;
-use crate::round::section::{PlanarSection, RoundSpec};
+use crate::round::section::RoundSpec;
 
 pub(crate) fn blend(
     model: &mut Model,
@@ -93,14 +93,33 @@ pub(crate) fn blend(
             })?;
         built = Built::new(step.shape, built.history.then(&step.history));
     }
+    // An edge with an end at a patched corner stops at its section there;
+    // one only at vertices left sharp runs to its end faces.
+    let patched = |model: &Model, e: &Shape| -> OgeomResult<bool> {
+        let Some((a, b)) = ogeom_algo::edge_vertices(model, e)? else {
+            return Ok(false);
+        };
+        Ok(corners
+            .corners
+            .iter()
+            .any(|(v, ..)| v.is_same(&a) || v.is_same(&b)))
+    };
     let mut tools = Vec::new();
     for (e, radius) in rounds.iter().filter(|(e, _)| at_corner(e)) {
         crate::support::ball_fits(&scratch, solid, e, *radius, false, tol)?;
         let seat = crate::support::planar_seat(&scratch, solid, e, tol)?;
-        let section = PlanarSection::new(&seat, &RoundSpec::Circular(*radius), tol)?;
+        let extend = !patched(&scratch, e)?;
         tools.push((
             e.clone(),
-            super::planar_tools::sweep(&mut scratch, e, &section, tol)?,
+            super::conic_tools::extended_sweep(
+                &mut scratch,
+                solid,
+                e,
+                &seat,
+                &RoundSpec::Circular(*radius),
+                extend,
+                tol,
+            )?,
         ));
     }
     for (e, spec) in bevels.iter().filter(|(e, _)| at_corner(e)) {
@@ -108,9 +127,10 @@ pub(crate) fn blend(
         tools.push((e.clone(), tool));
     }
     for a in asymmetric.iter().filter(|a| at_corner(&a.edge)) {
+        let grouped = patched(&scratch, &a.edge)?;
         tools.push((
             a.edge.clone(),
-            super::conic_tools::tool(&mut scratch, solid, a, true, tol)?,
+            super::conic_tools::tool(&mut scratch, solid, a, grouped, tol)?,
         ));
     }
     tools.sort_by_key(|(e, _)| e.node());
@@ -319,15 +339,18 @@ struct Corners {
         Vec<f64>,
         Vec<crate::setback::CornerEnd>,
     )>,
-    /// The request's edges at the corners.
+    /// The request's edges at the corners, and at vertices where two of
+    /// three edges are blended and their bands meet by intersection.
     edges: Vec<Shape>,
 }
 
 /// The corners of `asymmetric`: each vertex where an asymmetric round meets
 /// another edge of the request other than as one tangent chain. Refused by
 /// name unless it is a convex corner of three planes whose three edges are
-/// all in the request, each straight, and no edge at a corner meets an
-/// edge of the request elsewhere other than at another such corner.
+/// all in the request, each straight, or a vertex of three edges two of
+/// which are rounds on straight edges between planes of one convexity, the
+/// third left sharp; and no edge at either meets an edge of the request
+/// elsewhere other than at another such vertex.
 fn read_corners(
     model: &Model,
     solid: &Shape,
@@ -377,6 +400,7 @@ fn read_corners(
     }
     let solid_edges = ogeom_topo::explore_unique(model, solid, ogeom_topo::ShapeType::Edge)?;
     let mut corners = Vec::new();
+    let mut sharp: Vec<Shape> = Vec::new();
     let mut edges: Vec<Shape> = Vec::new();
     for (vertex, here) in at.into_values() {
         let asym_here: Vec<usize> = here.iter().copied().filter(|&k| all[k].1 == 2).collect();
@@ -395,6 +419,37 @@ fn read_corners(
             if ends(e)?.iter().any(|v| v.is_same(&vertex)) {
                 meeting += 1;
             }
+        }
+        // Two of three edges blended, the third left sharp: the two bands
+        // meet by intersection, each its own tool run to its end faces,
+        // where both are rounds on straight edges between planes and both
+        // cut or both fill.
+        if meeting == 3 && here.len() == 2 {
+            let mut convex = Vec::with_capacity(2);
+            for &k in &here {
+                let seat = (all[k].1 != 1)
+                    .then(|| crate::support::planar_seat(model, solid, &all[k].0, tol).ok())
+                    .flatten();
+                convex.push(seat.map(|s| s.convex));
+            }
+            if let [Some(a), Some(b)] = convex[..]
+                && a == b
+            {
+                for &k in &here {
+                    if !edges.iter().any(|e| e.is_same(&all[k].0)) {
+                        edges.push(all[k].0.clone());
+                    }
+                }
+                sharp.push(vertex);
+                continue;
+            }
+            ogeom_bail!(
+                Construction,
+                "an asymmetric round meets another blended edge at a vertex whose third \
+                 edge is left sharp, and the two bands meet there only where both are \
+                 rounds on straight edges between planes that both cut or both fill; see \
+                 docs/CAPABILITIES.md, fillet.asymmetric-rounds"
+            );
         }
         if meeting != 3 || here.len() != 3 {
             ogeom_bail!(
@@ -512,7 +567,8 @@ fn read_corners(
     // A corner's edge meets the rest of the request only at corners.
     for e in &edges {
         for v in ends(e)? {
-            let corner_here = corners.iter().any(|(c, ..)| c.is_same(&v));
+            let corner_here =
+                corners.iter().any(|(c, ..)| c.is_same(&v)) || sharp.iter().any(|c| c.is_same(&v));
             let others_here = all.iter().any(|(o, _, _)| {
                 !o.is_same(e) && ends(o).is_ok_and(|w| w.iter().any(|x| x.is_same(&v)))
             });

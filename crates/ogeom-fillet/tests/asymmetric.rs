@@ -535,7 +535,7 @@ fn what_is_not_built_is_refused_by_name() {
 }
 
 #[test]
-fn blend_edges_takes_an_asymmetric_round_beside_others_and_refuses_one_at_their_corner() {
+fn blend_edges_takes_an_asymmetric_round_beside_others_and_refuses_one_meeting_a_round_of_the_other_convexity() {
     let profile = RoundProfile::Conic(0.4);
     let asked = |face: &Shape| Blend::RoundDistances {
         face: face.clone(),
@@ -585,20 +585,23 @@ fn blend_edges_takes_an_asymmetric_round_beside_others_and_refuses_one_at_their_
     let v = volume(&m, &both.shape);
     assert!((v - exact).abs() <= 1e-8, "volume {v} against {exact}");
 
-    // Meeting a round at the box's corner: refused by name.
+    // Meeting a round of the other convexity at a vertex whose third edge
+    // is left sharp: the L's re-entrant edge and the plate's front edge.
     let mut m = Model::new();
-    let (s, edge, top, _) = block(&mut m);
-    let side = edge_where(&m, &s, |p| p.x.abs() < 1e-9 && p.y.abs() < 1e-9);
+    let (s, edge, floor, _) = l_bracket(&mut m);
+    let plate = edge_where(&m, &s, |p| {
+        p.y.abs() < 1e-9 && (p.z - 8.0).abs() < 1e-9 && p.x >= 8.0 - 1e-9
+    });
     let message = ogeom_fillet::blend_edges(
         &mut m,
         &s,
-        &[(side, Blend::Round(1.0)), (edge, asked(&top))],
+        &[(plate, Blend::Round(1.0)), (edge, asked(&floor))],
         ChamferCorner::Point,
         T,
     )
     .expect_err("refused")
     .to_string();
-    assert!(message.contains("all three are blended"), "{message}");
+    assert!(message.contains("both cut or both fill"), "{message}");
 }
 
 #[test]
@@ -1826,31 +1829,6 @@ fn a_tangent_loop_of_asymmetric_rounds_fills_round_a_pocket_s_floor() {
 
 #[test]
 fn asymmetric_rounds_meeting_other_than_as_a_tangent_chain_are_refused() {
-    let mut m = Model::new();
-    let (s, edge, top, _) = block(&mut m);
-    // The top's left edge meets the front edge square at the corner.
-    let left = edge_where(&m, &s, |p| p.x.abs() < 1e-9 && (p.z - 10.0).abs() < 1e-9);
-    let asked = |on_face: f64| Blend::RoundDistances {
-        face: top.clone(),
-        on_face,
-        on_other: 1.0,
-        profile: RoundProfile::Conic(0.4),
-    };
-    let message = ogeom_fillet::blend_edges(
-        &mut m,
-        &s,
-        &[(edge.clone(), asked(2.0)), (left.clone(), asked(2.0))],
-        ChamferCorner::Point,
-        T,
-    )
-    .expect_err("refused")
-    .to_string();
-    assert!(
-        message.contains("all three are blended")
-            || message.contains("other than as one tangent chain"),
-        "{message}"
-    );
-
     // A pad's tangent loop asked with two distances on the top.
     let mut m = Model::new();
     let block = ogeom_algo::make_box(&mut m, Frame::WORLD, (20.0, 12.0, 4.0), T)
@@ -1889,8 +1867,7 @@ fn asymmetric_rounds_meeting_other_than_as_a_tangent_chain_are_refused() {
         .expect_err("refused")
         .to_string();
     assert!(
-        message.contains("all three are blended")
-            || message.contains("other than as one tangent chain"),
+        message.contains("left sharp") || message.contains("other than as one tangent chain"),
         "{message}"
     );
 }
@@ -2828,4 +2805,293 @@ fn the_largest_pair_on_a_ruling_or_a_spline_crease_is_where_a_leg_leaves_its_fac
         );
         assert!(past.is_err(), "a scale past the largest is not refused");
     }
+}
+/// How far a square corner's conic section of legs `a` along one face and
+/// `b` along the other, of weight `w`, stands off the first face at `u`
+/// along it from the crease: the corner's depth there, 0 past `a`. Read
+/// off the rational arc from the first face's contact to the second's,
+/// bisected on its parameter, along which `u` falls.
+fn conic_depth(a: f64, b: f64, w: f64, u: f64) -> f64 {
+    if u >= a {
+        return 0.0;
+    }
+    if u <= 0.0 {
+        return b;
+    }
+    let at = |t: f64| {
+        let (p, q, r) = ((1.0 - t) * (1.0 - t), 2.0 * t * (1.0 - t) * w, t * t);
+        let sum = p + q + r;
+        (p * a / sum, r * b / sum)
+    };
+    let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+    for _ in 0..80 {
+        let mid = 0.5 * (lo + hi);
+        if at(mid).0 > u {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    at(0.5 * (lo + hi)).1
+}
+
+/// Gauss-Legendre over `[0, top]` in 400 pieces, the variable laid as
+/// `top s^2` so the square-root ends of a conic's depth integrate smooth.
+fn integrate(top: f64, f: impl Fn(f64) -> f64) -> f64 {
+    let nodes = [
+        (-0.861_136_311_594_052_6, 0.347_854_845_137_453_9),
+        (-0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+        (0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+        (0.861_136_311_594_052_6, 0.347_854_845_137_453_9),
+    ];
+    let mut sum = 0.0;
+    for k in 0..400 {
+        let (a, b) = (f64::from(k) / 400.0, f64::from(k + 1) / 400.0);
+        for (x, wt) in nodes {
+            let s = (b - a).mul_add(x, a + b) * 0.5;
+            sum += wt * (b - a) * 0.5 * f(top * s * s) * 2.0 * top * s;
+        }
+    }
+    sum
+}
+
+/// Builds `request` on `s` in its order and reversed: each valid, every
+/// edge generating its band, the same solid either way; its volume.
+fn either_order(m: &mut Model, s: &Shape, request: &[(Shape, Blend)]) -> f64 {
+    let mut volumes = Vec::new();
+    let mut reversed = request.to_vec();
+    reversed.reverse();
+    for asked in [request.to_vec(), reversed] {
+        let built = ogeom_fillet::blend_edges(m, s, &asked, ChamferCorner::Point, T).unwrap();
+        let found = ogeom_algo::check(m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        for (e, _) in &asked {
+            assert!(!built.history.generated(e).is_empty(), "each band");
+        }
+        volumes.push(volume(m, &built.shape));
+    }
+    assert!(
+        (volumes[0] - volumes[1]).abs() <= 1e-9 * volumes[0],
+        "either order: {volumes:?}"
+    );
+    volumes[0]
+}
+
+/// Two of a box corner's three edges blended, the third left sharp: the
+/// two bands run to their end faces and meet by intersection, so the box
+/// loses each band's corner along its whole edge and gets back once what
+/// both take near the corner. Beside a round of the upright edge, that is
+/// a column over each station of the top's left face: the asymmetric
+/// band's depth there times the round's width. Beside an asymmetric round
+/// of the top's left edge, each point of the top under both takes the
+/// shallower band's depth.
+#[test]
+fn bands_where_the_third_edge_is_left_sharp_meet_by_intersection() {
+    let w = conic(0.4);
+    let asym = |face: &Shape, a: f64, b: f64| Blend::RoundDistances {
+        face: face.clone(),
+        on_face: a,
+        on_other: b,
+        profile: RoundProfile::Conic(0.4),
+    };
+    let circle = FRAC_1_SQRT_2;
+    let (a_top, b_front, r) = (3.0, 1.5, 1.0);
+    let x_corner = corner_area(a_top, b_front, FRAC_PI_2, w);
+
+    // With a round of the upright edge, the top's left edge sharp.
+    let mut m = Model::new();
+    let (s, [x, _, z], [top, ..]) = box_corner(&mut m);
+    let both = integrate(r, |y| {
+        conic_depth(a_top, b_front, w, y) * conic_depth(r, r, circle, y)
+    });
+    let exact =
+        4000.0 - 20.0 * x_corner - 10.0 * r * r * (1.0 - core::f64::consts::FRAC_PI_4) + both;
+    let v = either_order(
+        &mut m,
+        &s,
+        &[(x, asym(&top, a_top, b_front)), (z, Blend::Round(r))],
+    );
+    assert!((v - exact).abs() <= 1e-7, "volume {v} against {exact}");
+
+    // With an asymmetric round of the top's left edge, the upright sharp:
+    // 1 along the top, 2 down the left face.
+    let mut m = Model::new();
+    let (s, [x, y, _], [top, _, left]) = box_corner(&mut m);
+    let (a_left, b_top) = (2.0, 1.0);
+    let both = integrate(b_top, |u| {
+        let k = conic_depth(b_top, a_left, w, u);
+        integrate(a_top, |t| conic_depth(a_top, b_front, w, t).min(k))
+    });
+    let exact = 4000.0 - 20.0 * x_corner - 20.0 * corner_area(a_left, b_top, FRAC_PI_2, w) + both;
+    let v = either_order(
+        &mut m,
+        &s,
+        &[
+            (x, asym(&top, a_top, b_front)),
+            (y, asym(&left, a_left, b_top)),
+        ],
+    );
+    assert!((v - exact).abs() <= 1e-5, "volume {v} against {exact}");
+}
+
+/// A 20 x 20 x 10 block with the quarter above z = 5 past x = 10 and
+/// y = 10 taken out: the pocket's inside corner at (10, 10, 5), its three
+/// concave edges along x, y and z, the floor and the walls x = 10 and
+/// y = 10.
+fn pocket(m: &mut Model) -> (Shape, [Shape; 3], [Shape; 3]) {
+    let block = ogeom_algo::make_box(m, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let at = Frame::new(Point::new(10.0, 10.0, 5.0), Direction::Z, Direction::X, T).unwrap();
+    let notch = ogeom_algo::make_box(m, at, (20.0, 20.0, 20.0), T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::cut(m, &block, &notch, T).unwrap().shape;
+    let ex = edge_where(m, &s, |p| {
+        (p.y - 10.0).abs() < 1e-9 && (p.z - 5.0).abs() < 1e-9 && p.x >= 10.0 - 1e-9
+    });
+    let ey = edge_where(m, &s, |p| {
+        (p.x - 10.0).abs() < 1e-9 && (p.z - 5.0).abs() < 1e-9 && p.y >= 10.0 - 1e-9
+    });
+    let ez = edge_where(m, &s, |p| {
+        (p.x - 10.0).abs() < 1e-9 && (p.y - 10.0).abs() < 1e-9 && p.z >= 5.0 - 1e-9
+    });
+    let floor = face_at(m, &s, Point::new(15.0, 15.0, 5.0));
+    let wall_x = face_at(m, &s, Point::new(10.0, 15.0, 7.5));
+    let wall_y = face_at(m, &s, Point::new(15.0, 10.0, 7.5));
+    (s, [ex, ey, ez], [floor, wall_x, wall_y])
+}
+
+/// Two of a pocket's inside corner's three concave edges filled, the
+/// upright left sharp: each fill runs to its end faces and the two meet by
+/// intersection, so the block gains each fill's corner along its edge less
+/// once what both fill near the corner, the shallower fill's depth over
+/// each point of the floor under both.
+#[test]
+fn fills_where_the_third_edge_is_left_sharp_meet_by_intersection() {
+    let w = conic(0.4);
+    let mut m = Model::new();
+    let (s, [ex, ey, _], [floor, ..]) = pocket(&mut m);
+    let (a_floor, b_wall, r) = (1.5, 1.0, 1.0);
+    let request = [
+        (
+            ex,
+            Blend::RoundDistances {
+                face: floor,
+                on_face: a_floor,
+                on_other: b_wall,
+                profile: RoundProfile::Conic(0.4),
+            },
+        ),
+        (ey, Blend::Round(r)),
+    ];
+    let both = integrate(r, |u| {
+        let k = conic_depth(r, r, FRAC_1_SQRT_2, u);
+        integrate(a_floor, |t| conic_depth(a_floor, b_wall, w, t).min(k))
+    });
+    let exact = 3500.0
+        + 10.0 * corner_area(a_floor, b_wall, FRAC_PI_2, w)
+        + 10.0 * r * r * (1.0 - core::f64::consts::FRAC_PI_4)
+        - both;
+    let v = either_order(&mut m, &s, &request);
+    assert!((v - exact).abs() <= 1e-5, "volume {v} against {exact}");
+}
+
+/// Every edge at a pocket's inside corner blended, an asymmetric round
+/// among them, or at a mixed corner where the concave upright meets two
+/// convex top edges: each band stops at its setback and one patch closes
+/// the corner, tangent to every band it meets. Past the largest distance
+/// `m` from the corner the bands are apart and each takes or adds its own
+/// section along its edge; the volume less those is what the corner's cube
+/// of side `m` holds, no more than the cube and, where every band fills,
+/// no less than the largest band's share of it. The same solid in either
+/// order, and naming the other face.
+#[test]
+fn asymmetric_rounds_close_concave_and_mixed_corners_on_one_patch() {
+    let w = conic(0.4);
+    let asym = |face: &Shape, a: f64, b: f64| Blend::RoundDistances {
+        face: face.clone(),
+        on_face: a,
+        on_other: b,
+        profile: RoundProfile::Conic(0.4),
+    };
+    let spandrel = 1.0 - core::f64::consts::FRAC_PI_4;
+    let ring = corner_area(1.5, 1.0, FRAC_PI_2, w);
+    let side = 1.5_f64;
+    let cube = side.powi(3);
+    let checks = |m: &mut Model, s: &Shape, request: &[(Shape, Blend)]| -> f64 {
+        let v = either_order(m, s, request);
+        let built = ogeom_fillet::blend_edges(m, s, request, ChamferCorner::Point, T).unwrap();
+        let tangency = patch_tangency(m, &built.shape);
+        assert!(tangency <= 2e-4, "the patch meets a band at {tangency} rad");
+        v
+    };
+
+    // The inside corner: an asymmetric round and two rounds, then three
+    // asymmetric rounds; each fills.
+    let mut m = Model::new();
+    let (s, [ex, ey, ez], [floor, wall_x, wall_y]) = pocket(&mut m);
+    let v = checks(
+        &mut m,
+        &s,
+        &[
+            (ex.clone(), asym(&floor, 1.5, 1.0)),
+            (ey.clone(), Blend::Round(1.0)),
+            (ez.clone(), Blend::Round(1.0)),
+        ],
+    );
+    let near = v - 3500.0 - (ring * 8.5 + spandrel * 8.5 + spandrel * 3.5);
+    assert!(
+        ring * side <= near && near <= cube,
+        "{near} at the corner against [{}, {cube}]",
+        ring * side
+    );
+    let ez_corner = corner_area(1.2, 0.8, FRAC_PI_2, w);
+    let three = [
+        (ex.clone(), asym(&floor, 1.5, 1.0)),
+        (ey.clone(), asym(&floor, 1.5, 1.0)),
+        (ez.clone(), asym(&wall_x, 1.2, 0.8)),
+    ];
+    let v = checks(&mut m, &s, &three);
+    let near = v - 3500.0 - (2.0 * ring * 8.5 + ez_corner * 3.5);
+    assert!(
+        ring * side <= near && near <= cube,
+        "{near} at the corner against [{}, {cube}]",
+        ring * side
+    );
+    // Naming the upright's other wall, the distances swapped.
+    let swapped = [
+        three[0].clone(),
+        three[1].clone(),
+        (ez.clone(), asym(&wall_y, 0.8, 1.2)),
+    ];
+    let again = ogeom_fillet::blend_edges(&mut m, &s, &swapped, ChamferCorner::Point, T).unwrap();
+    assert_eq!(
+        volume(&m, &again.shape).to_bits(),
+        v.to_bits(),
+        "naming the other face"
+    );
+
+    // The mixed corner on top: the concave upright filled by an
+    // asymmetric round, the two convex top edges cut by rounds.
+    let tx = edge_where(&m, &s, |p| {
+        (p.y - 10.0).abs() < 1e-9 && (p.z - 10.0).abs() < 1e-9 && p.x >= 10.0 - 1e-9
+    });
+    let ty = edge_where(&m, &s, |p| {
+        (p.x - 10.0).abs() < 1e-9 && (p.z - 10.0).abs() < 1e-9 && p.y >= 10.0 - 1e-9
+    });
+    let v = checks(
+        &mut m,
+        &s,
+        &[
+            (ez, asym(&wall_x, 1.5, 1.0)),
+            (tx, Blend::Round(1.0)),
+            (ty, Blend::Round(1.0)),
+        ],
+    );
+    let near = v - 3500.0 - (ring * 3.5 - 2.0 * spandrel * 8.5);
+    assert!(
+        near.abs() <= cube,
+        "{near} at the corner, past the cube {cube}"
+    );
 }

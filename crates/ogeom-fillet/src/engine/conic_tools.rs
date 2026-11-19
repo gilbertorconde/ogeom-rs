@@ -135,7 +135,7 @@ pub(super) fn tool(
         return revolved(model, &a.edge, &rim, tol);
     }
     if crate::support::planar_seat(model, solid, &a.edge, tol).is_ok() {
-        let (mut seat, first) = crate::asym::straight_seat(model, solid, &a.edge, &a.face, tol)?;
+        let (seat, first) = crate::asym::straight_seat(model, solid, &a.edge, &a.face, tol)?;
         let d = if first == 0 {
             [a.on_face, a.on_other]
         } else {
@@ -151,66 +151,18 @@ pub(super) fn tool(
             );
         };
         crate::asym::contacts_fit(model, solid, &a.edge, spec, tol)?;
-        let mut trims = Vec::new();
-        if seat.convex && !grouped {
-            let original = seat.clone();
-            let section = PlanarSection::new(
-                &original,
-                &RoundSpec::Conic {
-                    d,
-                    profile: a.profile,
-                },
-                tol,
-            )?;
-            for (end, outward, at) in [(0, -seat.along, seat.start), (1, seat.along, seat.end)] {
-                let hosts = [&original.faces[0], &original.faces[1]];
-                let Some(planes) =
-                    crate::support::following_planes(model, solid, &a.edge, hosts, at)?
-                else {
-                    continue;
-                };
-                let mut reach = 0.0_f64;
-                let mut hull = section
-                    .conic_net_at(if end == 0 { 0.0 } else { section.length() })
-                    .map_or_else(Vec::new, |(points, _, _)| points);
-                hull.push(at);
-                for (_, origin, normal) in planes {
-                    let rate = normal.dot(outward);
-                    if rate.abs() <= tol.angular() {
-                        continue;
-                    }
-                    for p in &hull {
-                        reach = reach.max((origin - *p).dot(normal) / rate);
-                    }
-                    if rate < -tol.angular() {
-                        trims.push((origin, normal));
-                    }
-                }
-                if reach > tol.confusion() {
-                    reach += a.on_face.max(a.on_other) * 0.25;
-                }
-                if end == 0 {
-                    seat.start += outward * reach;
-                } else {
-                    seat.end += outward * reach;
-                }
-            }
-        }
-        let section = PlanarSection::new(
+        return extended_sweep(
+            model,
+            solid,
+            &a.edge,
             &seat,
             &RoundSpec::Conic {
                 d,
                 profile: a.profile,
             },
+            !grouped,
             tol,
-        )?;
-        let mut tool = super::planar_tools::sweep(model, &a.edge, &section, tol)?;
-        for plane in trims {
-            let span = ogeom_algo::shape_bounds(model, &tool.solid, tol)?.diagonal() * 2.0;
-            let solid = crate::support::trimmed_wedge(model, &tool.solid, plane, span, tol)?;
-            tool = named(model, solid, &a.edge, tool.sense)?;
-        }
-        return Ok(tool);
+        );
     }
     let weight = match a.profile {
         RoundProfile::Elliptical => crate::marched::ConicWeight::Elliptical,
@@ -252,6 +204,70 @@ pub(super) fn tool(
             Sense::Cut
         },
     )
+}
+
+/// The tool of `spec` swept over the straight `seat` of `edge`; with
+/// `extend`, a convex seat's run past each end where planes following
+/// the crease there lean back from it, far enough to clear them, and
+/// trimmed by those overhanging it: the circular round's own ends.
+pub(super) fn extended_sweep(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    seat: &crate::support::Seat,
+    spec: &RoundSpec,
+    extend: bool,
+    tol: Tolerances,
+) -> OgeomResult<Tool> {
+    let mut seat = seat.clone();
+    let mut trims = Vec::new();
+    if seat.convex && extend {
+        let original = seat.clone();
+        let section = PlanarSection::new(&original, spec, tol)?;
+        let [d0, d1] = section.distances(0.0);
+        for (end, outward, at) in [(0, -seat.along, seat.start), (1, seat.along, seat.end)] {
+            let hosts = [&original.faces[0], &original.faces[1]];
+            let Some(planes) = crate::support::following_planes(model, solid, edge, hosts, at)?
+            else {
+                continue;
+            };
+            let mut reach = 0.0_f64;
+            let s = if end == 0 { 0.0 } else { section.length() };
+            let mut hull = section.conic_net_at(s).map_or_else(
+                || vec![section.contact(0, s), section.contact(1, s)],
+                |(points, _, _)| points,
+            );
+            hull.push(at);
+            for (_, origin, normal) in planes {
+                let rate = normal.dot(outward);
+                if rate.abs() <= tol.angular() {
+                    continue;
+                }
+                for p in &hull {
+                    reach = reach.max((origin - *p).dot(normal) / rate);
+                }
+                if rate < -tol.angular() {
+                    trims.push((origin, normal));
+                }
+            }
+            if reach > tol.confusion() {
+                reach += d0.max(d1) * 0.25;
+            }
+            if end == 0 {
+                seat.start += outward * reach;
+            } else {
+                seat.end += outward * reach;
+            }
+        }
+    }
+    let section = PlanarSection::new(&seat, spec, tol)?;
+    let mut tool = super::planar_tools::sweep(model, edge, &section, tol)?;
+    for plane in trims {
+        let span = ogeom_algo::shape_bounds(model, &tool.solid, tol)?.diagonal() * 2.0;
+        let solid = crate::support::trimmed_wedge(model, &tool.solid, plane, span, tol)?;
+        tool = named(model, solid, edge, tool.sense)?;
+    }
+    Ok(tool)
 }
 
 /// How a host of a ruled seat meets the plane square to its edge: a line,
