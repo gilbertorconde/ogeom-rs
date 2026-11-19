@@ -43,6 +43,18 @@ bump may break the API and a patch bump may not.
   rounds on a curved face is still refused by name, as `Setback` refuses
   it (ADR 0001, amendment "rolling corners on curved faces", #1145).
 
+### Changed
+
+- **A sampled surface fit keeps only its samples, with the same result.**
+  `fit_surface_sampled` kept every point it read, the climbs and dense
+  readings of its miss among them, in a map that grew many times larger
+  than the samples it serves. It now keeps the samples and the points that
+  may become samples, and reads the rest afresh if they are asked for
+  again. A guided pipe shell (the `pipe_guided` bench) takes about 11%
+  less time; the 3,018 fits that the geometry, offset and sweep tests make
+  return the same surfaces, error and verdict to the bit. `point` may now
+  be asked for the same parameters more than once.
+
 ## [0.19.0] - 2026-11-18
 
 A minor release that breaks the API: every round and chamfer now goes through
