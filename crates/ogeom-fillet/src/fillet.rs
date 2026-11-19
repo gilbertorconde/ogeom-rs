@@ -450,18 +450,26 @@ pub enum FilletCorner {
 /// - two rounds of one sense beside an edge left sharp: the bands meet
 ///   along the curve where they cross, as [`fillet_edges`] builds them.
 ///
+/// Where the rounds meeting at a vertex are all of one sense, on planes or
+/// curved faces, the corner [`fillet_edges`] builds is already the ball's
+/// and is taken: bands running on through a tangent junction with no
+/// corner, the sphere where one ball touches every face (a pyramid's apex
+/// of four rounds too), bands crossing beside an edge left sharp. The
+/// torus round a lone band's end is built between planes only.
+///
 /// The result does not depend on the order of `edges`.
 ///
 /// # Errors
 ///
-/// As [`fillet_edges`] for `Setback`. For `Rolling`,
-/// [`OgeomError::Construction`], naming the vertex, where the ball's
-/// sweep does not close it: a vertex
-/// where rounds meet touching a curved face or joining other than three
-/// edges, a convex and a concave round meeting beside an edge left sharp,
-/// or the lone round's edge not square to the face across it (the sweep
-/// round its end then no torus). A request the engine's rounds between
-/// planes do not build is refused, never closed by setbacks instead.
+/// As [`fillet_edges`] for `Setback`, and for `Rolling` where every vertex
+/// is of one sense. For `Rolling`, [`OgeomError::Construction`], naming
+/// the vertex, where the ball's sweep does not close it: a vertex mixing
+/// convex and concave rounds that touches a curved face or joins other
+/// than three edges, a convex and a concave round meeting beside an edge
+/// left sharp, or the lone round's edge not square to the face across it
+/// (the sweep round its end then no torus). A request mixing senses that
+/// the engine's rounds between planes do not build is refused, never
+/// closed by setbacks instead.
 pub fn fillet_edges_corner(
     model: &mut Model,
     solid: &Shape,
