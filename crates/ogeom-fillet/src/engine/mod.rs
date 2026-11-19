@@ -54,6 +54,7 @@ mod meeting;
 mod merged;
 pub(crate) mod mixed_corner;
 mod mixed_tools;
+mod overflow;
 mod planar_tools;
 pub(crate) mod point_corner;
 mod request;
@@ -105,6 +106,10 @@ pub(crate) use meeting::{
 };
 pub(crate) use merged::merged;
 pub(crate) use mixed_tools::blend as mixed_asymmetric;
+pub(crate) use overflow::{
+    changes_others as overflow_changes_others, reach_found as overflow_reach,
+    rounds as overflow_rounds,
+};
 pub(crate) use planar_tools::{linear_round, varying_distances};
 pub(crate) use request::{Request, Section};
 pub(crate) use rim_runs_on::rounds as rim_runs_on_rounds;

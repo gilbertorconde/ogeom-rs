@@ -403,11 +403,98 @@ fn route(
 /// request, since each band's contacts are checked against the others'
 /// and a contact off its face holds none to check. An edge sharing
 /// neither is held to what [`fillet_edge`] holds it to.
+///
+/// Where a round reaches geometry other than its own two faces, the
+/// behaviours of [`Overflow`] are tried in its order, every one on:
+/// [`fillet_edges_overflow`] chooses among them.
 pub fn fillet_edges(
     model: &mut Model,
     solid: &Shape,
     edges: &[Shape],
     radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    fillet_edges_overflow(model, solid, edges, radius, Overflow::default(), tol)
+}
+
+/// What a round does where it reaches geometry other than its own two
+/// faces (ADR 0001, amendment "overflow handling"). The behaviours are
+/// tried in the order of the fields, and the first that builds wins; all
+/// are on by default.
+///
+/// - `blend_into_round`: where the round reaches an existing round of the
+///   body, its surface bends to meet that round tangentially, with no step
+///   and no crease. Built for a boss's foot: the closed rim between a
+///   planar floor and a cylindrical wall standing square on it, whose
+///   round reaches a straight convex round tangent to the floor.
+/// - `hold_edge`: where the ball would roll over a sharp edge of the body,
+///   the edge is kept and the ball rests on it. `hold_edge_at_end` applies
+///   the same rule where only a band's end runs over such an edge. Neither
+///   is built yet: they never apply, and a request they would take goes on
+///   to `trim_through`.
+/// - `trim_through`: the round keeps its own surface, and the faces it
+///   reaches are trimmed or extended to meet it.
+///
+/// A behaviour switched off passes the request to the next. Where none
+/// that is on builds a round reaching other geometry, the request is
+/// refused by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Overflow {
+    /// Bend the round into an existing round it reaches.
+    pub blend_into_round: bool,
+    /// Keep a sharp edge the ball would roll over.
+    pub hold_edge: bool,
+    /// Keep a sharp edge where only a band's end runs over it.
+    pub hold_edge_at_end: bool,
+    /// Keep the round's surface and trim or extend what it reaches.
+    pub trim_through: bool,
+}
+
+impl Default for Overflow {
+    fn default() -> Self {
+        Self {
+            blend_into_round: true,
+            hold_edge: true,
+            hold_edge_at_end: true,
+            trim_through: true,
+        }
+    }
+}
+
+impl Overflow {
+    /// Every behaviour off: a round reaching other geometry is refused.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            blend_into_round: false,
+            hold_edge: false,
+            hold_edge_at_end: false,
+            trim_through: false,
+        }
+    }
+}
+
+/// [`fillet_edges`], a round reaching geometry other than its own two
+/// faces handled as `overflow` says.
+///
+/// With [`Overflow::default`] this is [`fillet_edges`]. Blend into round
+/// is tried first where it is on. A request it does not build goes on to
+/// the engine's own construction, which trims through where a round reaches
+/// another face. With `trim_through` off, a result that changes any face
+/// other than the edges' own and those at their ends is refused by name,
+/// as is a request that blend into round would take while it is off.
+///
+/// # Errors
+///
+/// As [`fillet_edges`], and [`OgeomError::Construction`], by name, where a
+/// round reaches other geometry and no behaviour that is on builds it.
+pub fn fillet_edges_overflow(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    radius: f64,
+    overflow: Overflow,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     if edges.is_empty() {
@@ -416,6 +503,68 @@ pub fn fillet_edges(
     if !radius.is_finite() || radius <= tol.confusion() {
         ogeom_bail!(Construction, "a fillet of radius {radius} rounds nothing");
     }
+    if overflow.blend_into_round {
+        if let Some(built) = blended_into_round(model, solid, edges, radius, tol)? {
+            return Ok(built);
+        }
+    } else if !overflow.trim_through
+        && crate::engine::overflow_reach(model, solid, edges, radius, tol)?
+    {
+        ogeom_bail!(
+            Construction,
+            "the round reaches an existing round of the body, and both blend into \
+             round and trim through are off; see docs/CAPABILITIES.md, \
+             fillet.overflow"
+        );
+    }
+    if overflow.trim_through {
+        return rounded_as_today(model, solid, edges, radius, tol);
+    }
+    let built = rounded_as_today(model, solid, edges, radius, tol)?;
+    if crate::engine::overflow_changes_others(model, solid, edges, &built, tol)? {
+        ogeom_bail!(
+            Construction,
+            "the round reaches a face it is not seated on, which only trim \
+             through builds here (hold edge is not built yet), and trim \
+             through is off; see docs/CAPABILITIES.md, fillet.overflow"
+        );
+    }
+    Ok(built)
+}
+
+/// The foot round of [`Overflow::blend_into_round`], on a solid or on
+/// each solid of a compound; `None` where it does not take the request.
+fn blended_into_round(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    if let Some(built) = crate::compound::per_solid(
+        model,
+        solid,
+        edges,
+        |edge| edge,
+        |model, part, own| crate::engine::overflow_rounds(model, part, own, radius, tol),
+    )? {
+        return Ok(Some(built));
+    }
+    if model.kind_of(solid)? != ShapeType::Solid {
+        return Ok(None);
+    }
+    crate::engine::overflow_rounds(model, solid, edges, radius, tol)
+}
+
+/// The engine's rounds of `edges`, trimming through where they reach
+/// another face, or the refusal by name of what it does not build.
+fn rounded_as_today(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     let asked: Vec<(Shape, f64)> = edges.iter().map(|e| (e.clone(), radius)).collect();
     if let Some(built) = rounds_by_engine(model, solid, &asked, tol)? {
         return Ok(built);

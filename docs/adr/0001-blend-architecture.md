@@ -2791,6 +2791,115 @@ behaviour.
   wide) and 2/0.7 on the slab's spline crease (the wall is 2 deep), each
   to 1e-4. The answer builds valid, and 1.01 times it is refused.
 
+### Amendment: overflow handling
+
+A round often runs into geometry that is not one of its own two faces: an
+existing round, a sharp edge, another feature. Amendment "M5c, non-local
+rounds keep their surfaces" settled one behaviour for all of it: the round
+keeps its own surface and the feature it reaches is trimmed or extended.
+§13, question 8 records the other behaviour practice offers there, the ball
+resting on what it meets. This amendment makes the choice a request
+option, as mainstream CAD does.
+
+**The survey.** The public user documentation of mainstream CAD, read in
+general terms:
+
+- Every system with an overflow option offers more than one behaviour and
+  resolves them in a fixed order, with every behaviour on by default.
+- The first is a **smooth** overflow: where a round reaches a face joined
+  tangentially to its own (most often an earlier round), the ball rolls on
+  across the tangent edge onto that face, and the new round's surface
+  bends to meet it with no step and no crease.
+- The second keeps a **sharp edge** the ball meets: the round there is
+  swept by a ball touching one of its original faces and resting on the
+  edge, which is kept on its curve. Several systems also apply the rule at
+  a band's end alone, as a separate switch.
+- The last keeps the round's own surface and **trims or extends** the
+  faces it reaches (the notch, or "keep surface").
+- A system that offers no option builds the last, or refuses.
+- A tight concave zone, narrower than the ball (a narrow passage), is a
+  separate setting in the same option set where it exists: a choice of how
+  general (and how slow) the solver may be.
+
+**Rule.** A fillet request carries `Overflow { blend_into_round,
+hold_edge, hold_edge_at_end, trim_through }`, every field on by default.
+Where a round reaches geometry other than its own two faces, the
+behaviours are tried in that order and the first that builds wins:
+
+1. **Blend into round**: the round reaches an existing round of the body.
+   In the transition zone the ball rests on the existing round instead of
+   on the face it left, so the new round meets it G1. This is §13
+   question 8's smooth overflow, the seat moving across the tangent edge.
+2. **Hold edge**: the ball would roll over a sharp edge of the body. The
+   edge is kept, and the round there is swept by a ball touching one
+   original face and resting on the edge (§13 question 8's edge seat).
+   **Hold edge at the end** applies the rule where only a band's end runs
+   over such an edge, and matters only with hold edge on.
+3. **Trim through**: amendment "M5c"'s rule, today's construction.
+
+A behaviour switched off passes the request to the next. Where every
+behaviour that is on fails to build a round that reaches other geometry,
+the request is refused by name; trim through stays the construction where
+it is on, so the default request builds what it built before.
+
+**What is built in this step.**
+
+- **Blend into round**, for a boss's foot: the closed rim between a
+  planar floor and a cylindrical wall standing square on it, whose round's
+  contact circle crosses one straight edge of the floor along which a
+  convex cylindrical round meets the floor tangentially.
+  - Over the floor the round is the torus its ball sweeps.
+  - Past the tangent line the ball rests on the wall and on the existing
+    round. Its centre runs where their offsets meet: the cylinder about
+    the wall's axis and the cylinder about the round's axis. The sections
+    are exact at every station, and the piece is fitted through them
+    within a confusion.
+  - The two pieces meet where the ball touches the tangent line. The
+    spine's tangent is level there, so the section lies in the plane
+    through the wall's axis on both sides: one quarter circle, G1.
+  - The fill between the round, the wall, the floor and the existing round
+    is one closed tool, fused into the solid by amendment "M5a"'s boolean.
+    It is built only where nothing of the solid but those three faces
+    stands within the box the fill can take up, which proves the fill
+    touches nothing else. The fuse must add the tool's whole volume, and
+    the result must check valid.
+  - Any other round reaching a round (two rounds at once, one not tangent
+    to the floor, a concave one, a wall not square to the floor, an open
+    arc of a foot) is not blended in this step and goes on to the next
+    behaviour.
+- **Hold edge** and **hold edge at the end** are not built. They need the
+  vertex seat that §13 question 8 refuses, so a request they would take
+  goes on to trim through. With trim through off, such a request is
+  refused by name, saying that hold edge is not built.
+- **Trim through** is the engine's construction unchanged. With it off,
+  a result that changes any face other than the edges' own and those at
+  their ends is refused by name. A face counts as unchanged where the
+  result holds a face of its area and bounds on its surface. A foot that
+  blend into round would take is refused by name when both are off.
+- **Narrow passages** are not part of this step. The same option set will
+  carry them: blend-made zones only, a whole wall face, or part of a wall.
+
+**Oracle** (`tests/overflow.rs`). The case is a block 40 × 30 × 15 whose
+long top edge is rounded r 5, with a boss r 6, 15 tall, standing at
+`y = 12`. Its foot round, r 3, reaches 2 past the edge round's tangent
+line.
+
+- The result is valid and closed, and every edge of the fitted piece
+  meets its neighbours within 1e-5 rad of tangent.
+- The reference volume is the morphological closing, computed without
+  the construction. A point above the floor is in the fill where its
+  distance from the centres clear of the solid exceeds the radius. That
+  distance comes from projections onto the two offset boundaries and a
+  search along the spine. The columns are integrated by Gauss–Legendre
+  quadrature, split where the seat changes. The reference reproduces
+  Pappus for a boss clear of the edge round to 1e-6. Its own error bound
+  is the change from 48 to 96 points per range, 6e-6. The fill the round
+  adds matches the reference within that bound plus 1e-6.
+- Blend into round off: trim through's refusal, as before. All off: a
+  refusal naming blend into round. Trim through off on a rim trimming
+  through a pocket's walls: a refusal by name. A local round with every
+  behaviour off builds the same closed-form solid as the default.
+
 ## 12. Acceptance corpus
 
 From #902:

@@ -11,6 +11,23 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+- **Added: overflow handling for fillets** (#1171).
+  - `Overflow { blend_into_round, hold_edge, hold_edge_at_end,
+    trim_through }`, every behaviour on by default, and
+    `fillet_edges_overflow`, which takes it. `fillet_edges` is the default
+    set. The behaviours are tried in that order and the first that builds
+    wins (ADR 0001, amendment "overflow handling").
+  - Blend into round: a boss's foot round that reaches a straight edge
+    round tangent to the floor now rolls on over that round and meets it
+    G1, instead of being refused. Over the floor the round is the torus;
+    past the tangent line it is the ball resting on the boss and the edge
+    round, fitted through its exact sections.
+  - Hold edge and hold edge at the end are not built yet, so a request they
+    would take goes on to trim through. Trim through is the engine's
+    existing construction. With trim through off, a round that would
+    change a face other than its edges' own and those at their ends is
+    refused by name.
+
 - **Fixed: a blend on a compound blends each solid on its own** (#924).
   - `chamfer_edges_cornered` (`ChamferCorner::Point`), `fillet_edges_corner`
     (`FilletCorner::Rolling`), `fillet_edge_variable`,
