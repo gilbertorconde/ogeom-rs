@@ -456,9 +456,9 @@ fn ruled(
         outward.push(section.walk(start, along, 0.0).1 * sign);
         hosts.push((face, section));
     }
-    let [(f0, s0), (f1, s1)] = <[(Shape, Ruled); 2]>::try_from(hosts).map_err(|_| {
-        ogeom_core::ogeom_err!(Construction, "an asymmetric round's edge has not two faces")
-    })?;
+    let Ok([(f0, s0), (f1, s1)]) = <[(Shape, Ruled); 2]>::try_from(hosts) else {
+        return Ok(None);
+    };
     if matches!((s0, s1), (Ruled::Line(_), Ruled::Line(_))) {
         return Ok(None);
     }
