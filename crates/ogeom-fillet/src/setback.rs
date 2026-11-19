@@ -67,6 +67,15 @@ pub fn round_vertex_setback(
     setbacks: &Setbacks,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    if let Some(built) = crate::compound::each_solid(
+        model,
+        solid,
+        std::slice::from_ref(vertex),
+        |vertex| vertex,
+        |model, part, _| round_vertex_setback(model, part, vertex, radius, setbacks, tol),
+    )? {
+        return Ok(built);
+    }
     let mut own: Vec<Shape> = vec![vertex.clone()];
     own.extend(setbacks.per_edge.iter().map(|(e, _)| e.clone()));
     ogeom_algo::on_own_nodes(model, solid, &own, |model, solid, parts| {
@@ -256,6 +265,40 @@ pub fn fillet_edges_cornered(
     corners: &[(Shape, Setbacks)],
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    /// One thing asked: an edge, or a corner at its vertex.
+    #[derive(Clone)]
+    enum Asked {
+        Edge(Shape),
+        Corner(Shape, Setbacks),
+    }
+    let asked: Vec<Asked> = edges
+        .iter()
+        .cloned()
+        .map(Asked::Edge)
+        .chain(corners.iter().cloned().map(|(v, s)| Asked::Corner(v, s)))
+        .collect();
+    if let Some(built) = crate::compound::each_solid(
+        model,
+        solid,
+        &asked,
+        |asked| match asked {
+            Asked::Edge(shape) | Asked::Corner(shape, _) => shape,
+        },
+        |model, part, mine| {
+            let (mut edges, mut corners) = (Vec::new(), Vec::new());
+            for asked in mine {
+                match asked {
+                    Asked::Edge(edge) => edges.push(edge.clone()),
+                    Asked::Corner(vertex, setbacks) => {
+                        corners.push((vertex.clone(), setbacks.clone()));
+                    }
+                }
+            }
+            fillet_edges_cornered(model, part, &edges, radius, &corners, tol)
+        },
+    )? {
+        return Ok(built);
+    }
     let mut own: Vec<Shape> = edges.to_vec();
     own.extend(corners.iter().map(|(v, _)| v.clone()));
     for (_, setbacks) in corners {

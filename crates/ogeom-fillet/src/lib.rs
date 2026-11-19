@@ -12,6 +12,7 @@ pub mod chamfer;
 mod chamfer_corner;
 mod chamfer_marched;
 mod chamfer_sphere;
+mod compound;
 pub mod corner2d;
 mod cusp;
 mod engine;

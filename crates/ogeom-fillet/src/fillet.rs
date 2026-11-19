@@ -380,6 +380,11 @@ fn route(
 /// its section clears the others, and one patch G1 to every band end and
 /// face, the same solid in any order.
 ///
+/// A compound of solids is blended solid by solid, as mainstream CAD
+/// blends each body on its own: each solid with the edges it holds, a
+/// solid with none handed back as it was, the results gathered into a
+/// compound again. An edge two of its solids share is refused by name.
+///
 /// What `solid` shares with other shapes is copied before it is
 /// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
 ///
@@ -480,7 +485,18 @@ pub fn fillet_edges_corner(
 ) -> OgeomResult<Built> {
     match corner {
         FilletCorner::Setback => fillet_edges(model, solid, edges, radius, tol),
-        FilletCorner::Rolling => crate::engine::rolling_rounds(model, solid, edges, radius, tol),
+        FilletCorner::Rolling => {
+            if let Some(built) = crate::compound::each_solid(
+                model,
+                solid,
+                edges,
+                |edge| edge,
+                |model, part, own| crate::engine::rolling_rounds(model, part, own, radius, tol),
+            )? {
+                return Ok(built);
+            }
+            crate::engine::rolling_rounds(model, solid, edges, radius, tol)
+        }
     }
 }
 
@@ -614,53 +630,26 @@ fn rounds_by_engine_pieces(
 /// [`rounds_by_engine`] on a compound of solids: each solid with the edges
 /// it holds, the rest kept as they are, the results gathered into a
 /// compound again. `None` where the compound holds anything but solids (a
-/// sheet's rounds are not the engine's), an edge lies in no solid or in
-/// two, or any solid's rounds are handed back.
+/// sheet's rounds are not the engine's), an edge lies in no solid, or any
+/// solid's rounds are handed back.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`] where an edge lies in two of its solids
+/// ([`crate::compound::per_solid`]).
 fn rounds_by_engine_compound(
     model: &mut Model,
     compound: &Shape,
     edges: &[(Shape, f64)],
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
-    use ogeom_topo::ShapeType;
-    let parts = model.children_of(compound)?;
-    if parts.is_empty()
-        || parts
-            .iter()
-            .any(|p| !matches!(model.kind_of(p), Ok(ShapeType::Solid)))
-    {
-        return Ok(None);
-    }
-    let held: Vec<Vec<Shape>> = parts
-        .iter()
-        .map(|p| ogeom_topo::explore_unique(model, p, ShapeType::Edge))
-        .collect::<OgeomResult<_>>()?;
-    let mut asked: Vec<Vec<(Shape, f64)>> = vec![Vec::new(); parts.len()];
-    for (edge, radius) in edges {
-        let holders: Vec<usize> = (0..parts.len())
-            .filter(|k| held[*k].iter().any(|e| e.is_same(edge)))
-            .collect();
-        let [k] = holders[..] else {
-            return Ok(None);
-        };
-        asked[k].push((edge.clone(), *radius));
-    }
-    let mut out = Vec::with_capacity(parts.len());
-    let mut history = ogeom_algo::History::new();
-    for (part, own) in parts.iter().zip(&asked) {
-        if own.is_empty() {
-            out.push(part.clone());
-            continue;
-        }
-        let Some(built) = rounds_by_engine(model, part, own, tol)? else {
-            return Ok(None);
-        };
-        history = history.then(&built.history);
-        out.push(built.shape);
-    }
-    let gathered = ogeom_algo::make_compound(model, &out)?.shape;
-    history.modify(compound, gathered.clone());
-    Ok(Some(Built::new(gathered, history)))
+    crate::compound::per_solid(
+        model,
+        compound,
+        edges,
+        |(edge, _)| edge,
+        |model, part, own| rounds_by_engine(model, part, own, tol),
+    )
 }
 
 /// [`rounds_by_engine`] on a solid with voids: the outer shell rounded as a
@@ -1225,6 +1214,15 @@ pub fn fillet_edge_variable(
     end_radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    if let Some(built) = crate::compound::each_solid(
+        model,
+        solid,
+        std::slice::from_ref(edge),
+        |edge| edge,
+        |model, part, _| fillet_edge_variable(model, part, edge, start_radius, end_radius, tol),
+    )? {
+        return Ok(built);
+    }
     ogeom_algo::on_own_nodes(
         model,
         solid,
@@ -1354,6 +1352,27 @@ pub fn fillet_edges_variable(
             Construction,
             "a variable radius over no edges rounds nothing"
         );
+    }
+    // A chain runs on one solid: on a compound, the solid holding it.
+    let mut solids = 0;
+    if let Some(built) = crate::compound::each_solid(
+        model,
+        solid,
+        chain,
+        |edge| edge,
+        |model, part, own| {
+            solids += 1;
+            if solids > 1 {
+                ogeom_bail!(
+                    Construction,
+                    "a variable radius runs along one chain on one solid; these edges \
+                     lie on two solids of the compound"
+                );
+            }
+            fillet_edges_variable(model, part, own, law, tol)
+        },
+    )? {
+        return Ok(built);
     }
     // One straight edge between planes: the blend engine first.
     if let [edge] = chain
