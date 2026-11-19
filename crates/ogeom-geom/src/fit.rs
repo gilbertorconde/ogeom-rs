@@ -2448,6 +2448,9 @@ impl Sampling {
 /// read so, its error the worst measured and `met` whether that is within
 /// `tolerance`.
 ///
+/// `point` may be asked for the same parameters more than once, and is
+/// expected to give the same point each time.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the
@@ -2475,21 +2478,26 @@ pub fn fit_surface_sampled(
     let (mut us, mut vs) = (sampling.us.clone(), sampling.vs.clone());
     // The best fit so far, and whether it was read densely.
     let mut best: Option<(Fitted<crate::BSplineSurface>, bool)> = None;
-    // Every point evaluated, by parameters: a split span's new sample is
-    // the midpoint already checked.
+    // The samples and the points that may become samples (a split span's
+    // new sample is the midpoint already checked), by parameters. A point
+    // read only to measure the miss (`keep` false: a climb, a dense
+    // reading) is looked up but not kept; those outnumber the samples many
+    // times over, and one asked for again is read afresh.
     let mut seen: ogeom_core::FastMap<(u64, u64), Point> = ogeom_core::FastMap::default();
-    let mut at = |u: f64, v: f64| -> OgeomResult<Point> {
+    let mut at = |u: f64, v: f64, keep: bool| -> OgeomResult<Point> {
         if let Some(p) = seen.get(&(u.to_bits(), v.to_bits())) {
             return Ok(*p);
         }
         let p = point(u, v)?;
-        seen.insert((u.to_bits(), v.to_bits()), p);
+        if keep {
+            seen.insert((u.to_bits(), v.to_bits()), p);
+        }
         Ok(p)
     };
     loop {
         let mut rows = vs
             .iter()
-            .map(|v| us.iter().map(|u| at(*u, *v)).collect())
+            .map(|v| us.iter().map(|u| at(*u, *v, true)).collect())
             .collect::<OgeomResult<Vec<Vec<Point>>>>()?;
         if sampling.closed_v {
             let first = rows[0].clone();
@@ -2805,7 +2813,7 @@ fn span_of(knots: &[f64], x: f64) -> usize {
     reason = "the sampling, its directions, the spans to split and the miss so far"
 )]
 fn measured_along_lines(
-    point: &mut impl FnMut(f64, f64) -> OgeomResult<Point>,
+    point: &mut impl FnMut(f64, f64, bool) -> OgeomResult<Point>,
     surface: &crate::BSplineSurface,
     (us, vs): (&[f64], &[f64]),
     between: (bool, bool),
@@ -2825,7 +2833,7 @@ fn measured_along_lines(
     const CLIMB_MARGIN: f64 = 0.01;
     // A point the geometry will not give is no reading.
     let mut off = |u: f64, v: f64| -> OgeomResult<f64> {
-        Ok(match point(u, v) {
+        Ok(match point(u, v, false) {
             Ok(p) => p.distance(surface.point_at(u, v, tol)?),
             Err(_) => 0.0,
         })
@@ -2949,7 +2957,7 @@ fn measured_along_lines(
 /// samples along them.
 #[allow(clippy::type_complexity, reason = "the error and the spans to split")]
 fn measured_between(
-    point: &mut impl FnMut(f64, f64) -> OgeomResult<Point>,
+    point: &mut impl FnMut(f64, f64, bool) -> OgeomResult<Point>,
     surface: &crate::BSplineSurface,
     (us, vs): (&[f64], &[f64]),
     between: (bool, bool),
@@ -2990,7 +2998,7 @@ fn measured_between(
             if u_span.is_none() && v_span.is_none() {
                 continue;
             }
-            let off = point(u, v)?.distance(surface.point_at(u, v, tol)?);
+            let off = point(u, v, true)?.distance(surface.point_at(u, v, tol)?);
             readings[row][column] = Some(off);
             error = error.max(off);
             if off > tolerance {
@@ -3046,7 +3054,7 @@ fn measured_between(
     // passed over: it is no reading.
     let ratio = (5.0_f64.sqrt() - 1.0) / 2.0;
     let mut off_at = |u: f64, v: f64| -> f64 {
-        match (point(u, v), surface.point_at(u, v, tol)) {
+        match (point(u, v, false), surface.point_at(u, v, tol)) {
             (Ok(p), Ok(q)) => p.distance(q),
             _ => 0.0,
         }
