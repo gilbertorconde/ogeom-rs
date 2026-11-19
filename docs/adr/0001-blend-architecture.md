@@ -2489,8 +2489,10 @@ bevel would pass under, a change to a face the request does not name.
   the face, such as a block on the top) is non-local, as amendment "M5a"
   builds it, and not this.
 - A leg that reaches the concave edge exactly builds.
-- Curved seats (a rim's wall, a crease) are not read by this rule yet;
-  they keep M5b's tools.
+- A rim's seat (a cylinder, a cone or a sphere under a planar cap) is
+  read the same way (amendment "a rim's bevel stops at a concave
+  floor"). A crease on a marched seat is not read yet; it keeps M5b's
+  tools.
 
 **Oracle.** The step: at 1.5 the request of three edges is refused naming
 the step's spec alone; at 1 the step's bevel alone takes `20 · 1²/2`.
@@ -3013,6 +3015,42 @@ case per refusal:
 
 The test profile is optimised less. There the cases above take 20 to
 400 ms on planes and 0.1 to 4 s on curved faces.
+
+### Amendment: a rim's bevel stops at a concave floor (#1145)
+
+Amendment "a bevel stops at a concave floor" read straight edges between
+planes only. A rim's bevel running down a curved wall past a concave
+foot still went to M5b's tools and cut a groove into the floor: a boss
+on a plate, its top rim chamfered farther down the wall than the wall is
+high.
+
+**Rule.** The same rule, on a rim's seat. A convex rim bevel (a planar
+cap and a coaxial cylinder, cone or sphere wall) is refused by name,
+naming its spec, where a concave edge bounding its wall or its cap has a
+point strictly inside that leg's strip, within the rim's turn:
+
+- on a cylinder or cone wall, the strip between the rim's plane and the
+  contact's depth along the axis (the leg read along the wall's ruling);
+- on a sphere wall, between the rim's latitude and the contact's (the
+  leg read along the great circle);
+- on the cap, between the rim's circle and the contact's.
+
+The wall's outer ring is read, and on a wall in one piece round its axis
+any ring of circles about the axis (its foot has a ring of its own). A
+ring standing within a face is a feature the bevel reaches under, the
+non-local case of amendment "M5a", as before. A leg that reaches the
+concave edge exactly builds. A convex far side still rolls over (M5b): a
+drum's rim chamfered past its short wall is a notch.
+
+**Oracle** (`tests/curved_chamfer.rs`): a boss of radius 6, 1 high, on a
+plate, its top rim chamfered 1.5 is refused by name; at 0.8 it builds
+the boss less the bevel's triangle turned about the axis by Pappus,
+within 1e-6; with 1 on the wall exactly it builds to its Pappus volume.
+A dome (a ball of radius 5 standing out of a block, cut flat at 4.5)
+chamfered 0.5 across the top and 4 down the sphere, past its foot on the
+block, is refused by name; symmetric at 1 it builds, sound. The
+quarter-disc block on a slab now refuses its rim alone as well as its
+side.
 
 ## 12. Acceptance corpus
 

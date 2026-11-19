@@ -3890,6 +3890,25 @@ fn a_rolling_bevel_ending_at_a_rising_wall_leaves_the_wall() {
     assert_eq!(built.history.generated(&edge).len(), 1, "the bevel");
 }
 
+/// A block 20 × 20 × 10, its top front edge chamfered 12: past the 10 mm
+/// front, whose foot is the block's convex bottom edge, so the bevel rolls
+/// over it as a notch (ADR 0001, amendments "M5b" and "a bevel stops at a
+/// concave floor"), not a refusal. What goes is the bevel's triangle, 12
+/// along the top and 12 down, less the part of it below the bottom (2 by
+/// 2), along 20: `20 (72 - 2) = 1400`.
+#[test]
+fn a_chamfer_wider_than_the_block_s_front_rolls_over_its_foot_as_a_notch() {
+    let mut m = Model::new();
+    let s = block(&mut m, (0.0, 0.0, 0.0), (20.0, 20.0, 10.0));
+    let (edge, _) = front_top(&m, &s, 10.0, (0.0, 20.0));
+    let specs = [(edge, Chamfer::Symmetric(12.0))];
+    let built = ogeom_fillet::chamfer_edges_checked(&mut m, &s, &specs, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let got = 4000.0 - volume(&m, &built.shape);
+    assert!((got - 1400.0).abs() <= 1e-9 * 1400.0, "took {got}");
+}
+
 /// A slab 10 × 18 × 1 (y from -8) with a block 10 × 10 × 2 on it at y in
 /// [0, 10]: the block's top front edge chamfered 1 along its top and 4
 /// down its 2 mm front runs past the front's foot, a concave edge on the
