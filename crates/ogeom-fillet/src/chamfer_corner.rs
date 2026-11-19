@@ -59,6 +59,15 @@ pub fn chamfer_edges_cornered(
     if specs.is_empty() {
         ogeom_bail!(Construction, "a chain of no edges bevels nothing");
     }
+    if let Some(built) = crate::compound::each_solid(
+        model,
+        solid,
+        specs,
+        |(edge, _)| edge,
+        |model, part, own| chamfer_edges_cornered(model, part, own, corner, tol),
+    )? {
+        return Ok(built);
+    }
     let (specs, _) = crate::chamfer::without_seams(model, solid, specs, tol)?;
     if specs.is_empty() {
         return Ok(crate::chamfer::unchanged(solid));

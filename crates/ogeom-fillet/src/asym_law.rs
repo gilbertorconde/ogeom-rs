@@ -62,6 +62,17 @@ pub fn fillet_edge_distances_variable(
     profile: RoundProfile,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    if let Some(built) = crate::compound::each_solid(
+        model,
+        solid,
+        std::slice::from_ref(edge),
+        |edge| edge,
+        |model, part, _| {
+            fillet_edge_distances_variable(model, part, edge, face, on_face, on_other, profile, tol)
+        },
+    )? {
+        return Ok(built);
+    }
     let laws = [
         Profile::new(on_face, false, tol)?,
         Profile::new(on_other, false, tol)?,

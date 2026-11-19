@@ -307,6 +307,11 @@ pub fn chamfer_edges(
 /// facing opposite ways, the material changing side across the edge
 /// between them, meet at a real edge.
 ///
+/// A compound of solids is blended solid by solid, as mainstream CAD
+/// blends each body on its own: each solid with the edges it holds, a
+/// solid with none handed back as it was, the results gathered into a
+/// compound again. An edge two of its solids share is refused by name.
+///
 /// What `solid` shares with other shapes is copied before it is
 /// worked on ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
 ///
@@ -648,13 +653,14 @@ fn engine_chamfer_mitred_attempt(
 
 /// [`engine_chamfer`] on a compound of solids: each solid with the specs
 /// whose edges it holds, the rest kept as they are, the results gathered
-/// into a compound again. `None` where an edge lies in no solid or in two,
-/// or any solid with specs is handed back.
+/// into a compound again. `None` where an edge lies in no solid, or any
+/// solid with specs is handed back.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
-/// the compound holds anything but solids, or nothing.
+/// the compound holds anything but solids, or nothing, or an edge lies in
+/// two of its solids ([`crate::compound::per_solid`]).
 fn engine_chamfer_compound(
     model: &mut Model,
     compound: &Shape,
@@ -676,36 +682,13 @@ fn engine_chamfer_compound(
             "a chamfer cuts solids; this compound holds something other than solids"
         );
     }
-    let mut asked: Vec<Vec<(Shape, Chamfer)>> = vec![Vec::new(); parts.len()];
-    let edges: Vec<Vec<Shape>> = parts
-        .iter()
-        .map(|p| ogeom_topo::explore_unique(model, p, ShapeType::Edge))
-        .collect::<OgeomResult<_>>()?;
-    for (edge, spec) in specs {
-        let holders: Vec<usize> = (0..parts.len())
-            .filter(|k| edges[*k].iter().any(|e| e.is_same(edge)))
-            .collect();
-        let [k] = holders[..] else {
-            return Ok(None);
-        };
-        asked[k].push((edge.clone(), spec.clone()));
-    }
-    let mut out = Vec::with_capacity(parts.len());
-    let mut history = ogeom_algo::History::new();
-    for (part, own) in parts.iter().zip(&asked) {
-        if own.is_empty() {
-            out.push(part.clone());
-            continue;
-        }
-        let Some(built) = engine_chamfer(model, part, own, tol)? else {
-            return Ok(None);
-        };
-        history = history.then(&built.history);
-        out.push(built.shape);
-    }
-    let gathered = ogeom_algo::make_compound(model, &out)?.shape;
-    history.modify(compound, gathered.clone());
-    Ok(Some(Built::new(gathered, history)))
+    crate::compound::per_solid(
+        model,
+        compound,
+        specs,
+        |(edge, _)| edge,
+        |model, part, own| engine_chamfer(model, part, own, tol),
+    )
 }
 
 /// [`engine_chamfer`] on a solid with voids: the outer shell chamfered as a

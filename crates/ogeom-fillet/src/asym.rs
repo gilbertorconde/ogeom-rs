@@ -195,6 +195,17 @@ pub fn fillet_edge_distances(
     if let RoundProfile::Conic(_) = profile {
         profile.weight(0.0)?;
     }
+    if let Some(built) = crate::compound::each_solid(
+        model,
+        solid,
+        std::slice::from_ref(edge),
+        |edge| edge,
+        |model, part, _| {
+            fillet_edge_distances(model, part, edge, face, on_face, on_other, profile, tol)
+        },
+    )? {
+        return Ok(built);
+    }
     if profile == RoundProfile::Elliptical
         && on_face == on_other
         && constant_dihedral(model, solid, edge, tol)?

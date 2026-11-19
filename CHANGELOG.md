@@ -11,6 +11,20 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+- **Fixed: a blend on a compound blends each solid on its own** (#924).
+  - `chamfer_edges_cornered` (`ChamferCorner::Point`), `fillet_edges_corner`
+    (`FilletCorner::Rolling`), `fillet_edge_variable`,
+    `fillet_edges_variable`, `fillet_edges_cornered`, `round_vertex_setback`,
+    `fillet_edge_distances` and `fillet_edge_distances_variable` now take a
+    compound of solids, as `chamfer_edges_with` and `fillet_edges` already
+    did. Each solid is blended with the edges it holds, a solid with none
+    comes back as it was, and the compound is kept. Before, these read the
+    compound as one shape and refused it, so two touching solids could not
+    be blended one at a time.
+  - An edge or vertex that two solids of a compound share is refused by
+    name for every blend entry, since mainstream CAD blends each body on
+    its own. Before, it was refused with the engine's generic message.
+
 - **Fixed: chamfers refused since 0.19.0** (#1161).
   - `chamfer_edges_cornered` with `ChamferCorner::Point` now builds every
     request that has no vertex where three or more bevels meet, exactly as
