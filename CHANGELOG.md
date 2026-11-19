@@ -11,6 +11,13 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+- **Docs: the default chamfer corner.** `chamfer_edges`,
+  `chamfer_edges_with` and `chamfer_edges_checked` now say plainly that a
+  vertex of three bevels takes the facet, and give the volume each corner
+  removes: on a box `a × b × c` with every edge bevelled `d`, the facet
+  removes `2d²(a + b + c) − 16d³/3` and the mitre (`ChamferCorner::Point`)
+  `2d²(a + b + c) − 6d³` (#1145).
+
 ## [0.19.0] - 2026-11-18
 
 A minor release that breaks the API: every round and chamfer now goes through
