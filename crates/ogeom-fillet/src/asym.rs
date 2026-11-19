@@ -762,6 +762,15 @@ pub(crate) fn rim_fits(
 /// leaves its face, a confusion distance short. On a rim the cap's contact
 /// stops short of the axis. The answer passes the round's own check.
 ///
+/// On any other seat (a curved crease, an edge along a drum's ruling) each
+/// leg walks its face's section in the plane square to the crease, as the
+/// band's own legs walk it, at stations over the edge; the scale is
+/// stepped up until a contact first leaves its face and that step is
+/// bisected, the answer standing back from it by the reach the faces are
+/// read within. A sliver of a face's outside narrower than the stations'
+/// spacing can pass between two. The check there is the elliptical round
+/// built at the answer, on a copy of the model.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
@@ -800,8 +809,8 @@ pub fn largest_fillet_distances(
     }
     let profile = RoundProfile::Elliptical;
     let rim = rim_conic(model, solid, edge, face, on_face, on_other, profile, tol)?;
-    if rim.is_none() {
-        straight_seat(model, solid, edge, face, tol)?;
+    if rim.is_none() && straight_seat(model, solid, edge, face, tol).is_err() {
+        return largest_marched(model, solid, edge, face, [on_face, on_other], up_to, tol);
     }
     let mut largest = crate::fits::legs_largest(
         model,
@@ -850,6 +859,109 @@ pub fn largest_fillet_distances(
         );
     }
     Ok(Some(largest))
+}
+
+/// How many steps [`largest_marched`] walks the scale up in before it
+/// bisects the first that does not fit.
+const SCALE_STEPS: u32 = 64;
+
+/// How many pieces [`largest_marched`] splits the edge into for its
+/// stations.
+const STATIONS: u32 = 32;
+
+/// [`largest_fillet_distances`] on a seat neither a straight edge between
+/// planes nor a rim: each leg walked along its face's section square to
+/// the crease, as the marched band walks it, at stations over the edge,
+/// the scale stepped up until a contact first leaves its face and that
+/// step bisected; then the round built at the answer, on a copy of the
+/// model, as its own check.
+fn largest_marched(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    face: &Shape,
+    [on_face, on_other]: [f64; 2],
+    up_to: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let conf = tol.confusion();
+    let mut scratch = model.clone();
+    let mut fits = |scale: f64| -> OgeomResult<bool> {
+        let spec = crate::Chamfer::Distances {
+            face: face.clone(),
+            on_face: scale * on_face,
+            on_other: scale * on_other,
+        };
+        let Some(found) = crate::chamfer_marched::crease_contacts(
+            &mut scratch,
+            solid,
+            edge,
+            &spec,
+            STATIONS,
+            None,
+            tol,
+        )?
+        else {
+            return Ok(false);
+        };
+        for (points, f) in found.points.iter().zip(&found.faces) {
+            for p in points {
+                if !crate::support::on_face_or_boundary(&scratch, solid, f, *p, tol)? {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    };
+    let least = conf / on_face.min(on_other);
+    let lo = crate::support::keeping_face_meshes(|| -> OgeomResult<f64> {
+        let mut lo = 0.0;
+        let mut hi = None;
+        for k in 1..=SCALE_STEPS {
+            let scale = up_to * f64::from(k) / f64::from(SCALE_STEPS);
+            if scale > least && !fits(scale)? {
+                hi = Some(scale);
+                break;
+            }
+            lo = scale;
+        }
+        if let Some(mut hi) = hi {
+            for _ in 0..48 {
+                let mid = f64::midpoint(lo, hi);
+                if fits(mid)? {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            // The contacts are read on their faces within the reach the
+            // check reads them by, a hundred confusion distances: back off
+            // twice that, so the limiting contact stands on its face.
+            lo -= 200.0 * conf / on_face.min(on_other);
+        }
+        Ok(lo)
+    })?;
+    if lo * on_face.min(on_other) <= conf {
+        return Ok(None);
+    }
+    let mut check = model.clone();
+    if let Err(refusal) = fillet_edge_distances(
+        &mut check,
+        solid,
+        edge,
+        face,
+        lo * on_face,
+        lo * on_other,
+        RoundProfile::Elliptical,
+        tol,
+    ) {
+        ogeom_bail!(
+            NotDone,
+            "the largest scale read from the seat, {lo}, does not pass the round's \
+             check: {refusal}"
+        );
+    }
+    Ok(Some(lo))
 }
 
 /// The edges of `solid` on `edge`'s circle (the arcs of one rim), `edge`

@@ -517,30 +517,20 @@ fn what_is_not_built_is_refused_by_name() {
         "past that face's side",
     );
 
-    // The straight edge where a half drum's flat side meets its cylinder:
-    // its sections run off the drum's ends.
-    let drum = ogeom_algo::make_cylinder(&mut m, Frame::WORLD, 5.0, 4.0, T)
-        .unwrap()
-        .shape;
-    let at = Frame::new(Point::new(-6.0, -6.0, -1.0), Direction::Z, Direction::X, T).unwrap();
-    let half = ogeom_algo::make_box(&mut m, at, (6.0, 12.0, 6.0), T)
-        .unwrap()
-        .shape;
-    let d = ogeom_bool::cut(&mut m, &drum, &half, T).unwrap().shape;
-    let side = edge_where(&m, &d, |p| p.x.abs() < 1e-9 && (p.y - 5.0).abs() < 1e-9);
-    let flat = face_at(&m, &d, Point::new(0.0, 0.0, 2.0));
+    // Along a half drum's ruling, a leg longer than the flat is wide.
+    let (mut m, d, side, flat, _) = half_drum();
     refused(
         e(
             &mut m,
             &d,
             &side,
             &flat,
-            1.0,
+            10.5,
             0.5,
             RoundProfile::Elliptical,
             T,
         ),
-        "sections do not seat all along the edge",
+        "past that face's side",
     );
 }
 
@@ -2630,5 +2620,212 @@ fn a_mixed_request_with_a_distance_of_nothing_is_refused_by_name() {
                 "{why}"
             );
         }
+    }
+}
+
+/// Half a drum of radius 5 and height 4, its flat side the plane x = 0
+/// through the axis: the straight edge where the flat meets the drum at
+/// (0, 5, z), along the drum's ruling, the flat and the drum.
+fn half_drum() -> (Model, Shape, Shape, Shape, Shape) {
+    let mut m = Model::new();
+    let drum = ogeom_algo::make_cylinder(&mut m, Frame::WORLD, 5.0, 4.0, T)
+        .unwrap()
+        .shape;
+    let at = Frame::new(Point::new(-6.0, -6.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let half = ogeom_algo::make_box(&mut m, at, (6.0, 12.0, 6.0), T)
+        .unwrap()
+        .shape;
+    let d = ogeom_bool::cut(&mut m, &drum, &half, T).unwrap().shape;
+    let side = edge_where(&m, &d, |p| p.x.abs() < 1e-9 && (p.y - 5.0).abs() < 1e-9);
+    let flat = face_at(&m, &d, Point::new(0.0, 0.0, 2.0));
+    let wall = face_at(&m, &d, Point::new(5.0, 0.0, 2.0));
+    (m, d, side, flat, wall)
+}
+
+/// The area an asymmetric round takes off, or adds to, the section of an
+/// edge where a flat meets a drum of radius `r` along its ruling, the flat
+/// square to the drum there: the flat's contact `d_flat` from the crease,
+/// the drum's `d_drum` round its arc, a turn `beta = d_drum / r`. The
+/// drum's tangent at its contact meets the flat's line `r / cos(beta)`
+/// from the axis, `r (1 / cos(beta) - 1)` past the crease, at the angle
+/// `pi / 2 - beta` where the crease is convex (the shoulder beyond the
+/// crease, away from the flat's contact) and `pi / 2 + beta` where it is
+/// concave (the shoulder between them). The conic's corner between those
+/// tangents, less (convex) or with (concave) the sliver between them and
+/// the drum's arc: the triangle from the axis to the shoulder and the
+/// contact less the sector, `r^2 (tan(beta) - beta) / 2`.
+fn ruling_section(r: f64, d_flat: f64, d_drum: f64, profile: RoundProfile, convex: bool) -> f64 {
+    let beta = d_drum / r;
+    let past = r / beta.cos() - r;
+    let sliver = 0.5 * r * r * (beta.tan() - beta);
+    let (leg, alpha) = if convex {
+        (d_flat + past, FRAC_PI_2 - beta)
+    } else {
+        (d_flat - past, FRAC_PI_2 + beta)
+    };
+    let w = match profile {
+        RoundProfile::Elliptical => elliptical(alpha),
+        RoundProfile::Conic(rho) => conic(rho),
+    };
+    let corner = corner_area(leg, r * beta.tan(), alpha, w);
+    if convex {
+        corner - sliver
+    } else {
+        corner + sliver
+    }
+}
+
+/// Builds `edge` of `s` naming `first` with `a` and then `second` with
+/// `b`, the distances swapped; checks each valid, of `exact` volume within
+/// 1e-8, its band tangent to both faces along its two straight contacts,
+/// the edge consumed, and both the same solid to the bit.
+fn ruled_both_ways(
+    m: &mut Model,
+    s: &Shape,
+    edge: &Shape,
+    (first, a): (&Shape, f64),
+    (second, b): (&Shape, f64),
+    profile: RoundProfile,
+    exact: f64,
+) {
+    let one = ogeom_fillet::fillet_edge_distances(m, s, edge, first, a, b, profile, T).unwrap();
+    let two = ogeom_fillet::fillet_edge_distances(m, s, edge, second, b, a, profile, T).unwrap();
+    for built in [&one, &two] {
+        let diagnosis = ogeom_algo::check(m, &built.shape, T).unwrap();
+        assert!(
+            diagnosis.is_valid(),
+            "{profile:?}: {:?}",
+            diagnosis.problems
+        );
+        let v = volume(m, &built.shape);
+        assert!(
+            (v - exact).abs() <= 1e-8,
+            "{profile:?}: volume {v} against the exact {exact}"
+        );
+        assert!(built.history.is_deleted(edge));
+        let found = contacts(m, &built.shape);
+        assert_eq!(found.len(), 2, "the band meets two faces along lines");
+        for (_, tangency) in &found {
+            assert!(
+                tangency.abs() <= 1e-7,
+                "{profile:?}: the band meets a face at {tangency} rad"
+            );
+        }
+    }
+    assert_eq!(
+        volume(m, &one.shape).to_bits(),
+        volume(m, &two.shape).to_bits(),
+        "naming the other face first"
+    );
+    assert_eq!(vertex_bits(m, &one.shape), vertex_bits(m, &two.shape));
+}
+
+/// The straight edge where a half drum's flat side meets its cylinder
+/// runs along the drum's ruling, so every section square to it is the
+/// same: the band is the shoulder conic extruded the drum's height, and
+/// takes exactly its section's area over that height.
+#[test]
+fn an_edge_along_a_drum_s_ruling_takes_its_shoulder_conic_over_its_length() {
+    let (d_flat, d_drum) = (1.0, 0.5);
+    for profile in PROFILES {
+        let (mut m, s, side, flat, wall) = half_drum();
+        let exact =
+            50.0 * core::f64::consts::PI - 4.0 * ruling_section(5.0, d_flat, d_drum, profile, true);
+        ruled_both_ways(
+            &mut m,
+            &s,
+            &side,
+            (&flat, d_flat),
+            (&wall, d_drum),
+            profile,
+            exact,
+        );
+    }
+}
+
+/// A drum of radius 5 standing in the corner of a slab that reaches its
+/// axis, the slab's side y = 0 meeting the drum along its ruling at
+/// (5, 0, z) in a concave crease: the band fills the shoulder conic's
+/// section along the drum's height.
+#[test]
+fn a_concave_edge_along_a_drum_s_ruling_fills_its_shoulder_conic() {
+    let (d_flat, d_drum) = (1.0, 0.5);
+    let pi = core::f64::consts::PI;
+    for profile in PROFILES {
+        let mut m = Model::new();
+        let drum = ogeom_algo::make_cylinder(&mut m, Frame::WORLD, 5.0, 4.0, T)
+            .unwrap()
+            .shape;
+        let at = Frame::new(Point::new(0.0, -10.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+        let slab = ogeom_algo::make_box(&mut m, at, (10.0, 10.0, 4.0), T)
+            .unwrap()
+            .shape;
+        let s = ogeom_bool::fuse(&mut m, &drum, &slab, T).unwrap().shape;
+        let before = 75.0 * pi + 400.0;
+        assert!((volume(&m, &s) - before).abs() <= 1e-8);
+        let crease = edge_where(&m, &s, |p| (p.x - 5.0).abs() < 1e-9 && p.y.abs() < 1e-9);
+        let side = face_at(&m, &s, Point::new(8.0, 0.0, 2.0));
+        let wall = face_at(&m, &s, Point::new(0.0, 5.0, 2.0));
+        let exact = before + 4.0 * ruling_section(5.0, d_flat, d_drum, profile, false);
+        ruled_both_ways(
+            &mut m,
+            &s,
+            &crease,
+            (&side, d_flat),
+            (&wall, d_drum),
+            profile,
+            exact,
+        );
+    }
+}
+
+/// The largest pair on seats whose legs walk along their faces: along a
+/// half drum's ruling the flat's contact runs off the flat's far side, 10
+/// across, at a scale of 10 over its distance; on the slab's spline
+/// crease the swept wall's contact runs straight back across the wall, 2
+/// deep, at 2 over its distance. The answer builds valid, and a scale a
+/// hundredth past it is refused.
+#[test]
+fn the_largest_pair_on_a_ruling_or_a_spline_crease_is_where_a_leg_leaves_its_face() {
+    let profile = RoundProfile::Elliptical;
+    let (mut m, s, side, flat, _) = half_drum();
+    let mut slab_m = Model::new();
+    let (slab_s, crease, top, _) = slab(&mut slab_m);
+    for (m, s, edge, face, (on_face, on_other), want) in [
+        (&mut m, &s, &side, &flat, (1.0, 0.5), 10.0),
+        (&mut slab_m, &slab_s, &crease, &top, (0.4, 0.7), 2.0 / 0.7),
+    ] {
+        let largest =
+            ogeom_fillet::largest_fillet_distances(m, s, edge, face, on_face, on_other, 100.0, T)
+                .unwrap()
+                .expect("a pair fits");
+        assert!(
+            (largest - want).abs() <= 1e-4,
+            "the largest scale {largest}, not {want}"
+        );
+        let built = ogeom_fillet::fillet_edge_distances(
+            m,
+            s,
+            edge,
+            face,
+            largest * on_face,
+            largest * on_other,
+            profile,
+            T,
+        )
+        .unwrap();
+        let diagnosis = ogeom_algo::check(m, &built.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        let past = ogeom_fillet::fillet_edge_distances(
+            m,
+            s,
+            edge,
+            face,
+            largest * on_face * 1.01,
+            largest * on_other * 1.01,
+            profile,
+            T,
+        );
+        assert!(past.is_err(), "a scale past the largest is not refused");
     }
 }
