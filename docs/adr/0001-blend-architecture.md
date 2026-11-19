@@ -1974,7 +1974,9 @@ trim it by the adjacent face. So:
   on one side of it while the top runs on past the cusp with its edges
   there left sharp. The S has nothing to close against on the cusp's other
   side, and the request is refused with a request to round the chain on
-  both sides (the trimmed assembly's S), as before.
+  both sides (the trimmed assembly's S), as before. Superseded where the
+  trimmed assembly builds it: amendment "a cusp's S on one side while the
+  top runs on".
 - **Not this route:** a rim and a straight edge leaving a cusp the same way
   where the top ends at the cusp (the one-sided S); a rim on a cone; any
   other edge in the request.
@@ -2158,7 +2160,9 @@ the top ends at T (an arm's side running into a hub: one S).
   side's edge with the wall below the top, the wall's seam) run on to T.
 - **Held** to the bands' fit target, gap and tangency, either way.
 - **Refused by name:** one lobe asked while the top runs on past T with its
-  edges left sharp (amendment "rounds either side of a cusp").
+  edges left sharp (amendment "rounds either side of a cusp"). Superseded:
+  that case is built, see amendment "a cusp's S on one side while the top
+  runs on".
 
 ### Amendment: a round rolling round a vertex (#902)
 
@@ -2675,6 +2679,42 @@ between the same two faces.
   equal to the default to the bit, both to Pappus or the prism's section;
 - a corner of three bevels on the seamed block: `Point` the mitre, and the
   default `d³/12` less.
+
+### Amendment: a cusp's S on one side while the top runs on (#900)
+
+Amendments "rounds either side of a cusp" and "a cusp's S, one side or two"
+refused one case by name: a plate's top edge and the boss's foot arc asked
+on one side of the tangent point T, the top running on past T with its
+edges there left sharp. They held that the S had nothing to close against
+on T's other side. It does not need anything there. The one-sided S of an
+arm running into a hub closes down to T on its own feet, and nothing past T
+enters its hole.
+
+- **Rule.** The lobe and its two feet close on one patch with its pole at
+  T, as the one-sided S does where the top ends at T. The top's edges past
+  T, with the side and with the wall, stay sharp and run on to T, where the
+  S's feet meet them. The rim's arc past T is not asked and stays sharp.
+  The asked arc's band ends at its far end in the meridian plane there,
+  capped where it runs on into the rest of the circle.
+- **The arc as asked.** A closed rim asked in part is rounded the whole
+  turn where that builds (the curved routes' `whole_rims`). Here the whole
+  turn is a different request: the foot's band past T would run beyond the
+  plate's side next to the S. Where the whole turn does not build and the
+  request as asked makes a cusp corner, the trimmed assembly takes the arc
+  as asked.
+- **A cap at a concave band's end.** Where a rim's arc runs on into the
+  rest of its circle left sharp, the only faces at the vertex are the cap
+  and the wall, both square to the cap, so their outward normals do not
+  say which way the cap faces. The cap faces into the band where the edge
+  is convex and out of it where the edge is concave. The cord between the
+  band's contacts tells which: it lies behind the faces' outward normals
+  at a convex edge and in front of them at a concave one.
+- **Held** as the one-sided S is: the bands' fit target, G1 within 2e-4.
+  On printCAD's plate it is G1 within 6.6e-5 at every radius from 0.25 to
+  1.5, and its volume is within the patch's own distance of the S oracle
+  (0.029 at r 1).
+- **Still refused by name** (`engine::cusp_sides`): the same request
+  wherever the trimmed assembly declines it.
 
 ## 12. Acceptance corpus
 
