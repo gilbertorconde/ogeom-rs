@@ -209,7 +209,8 @@ pub(super) fn tool(
 /// The tool of `spec` swept over the straight `seat` of `edge`; with
 /// `extend`, a convex seat's run past each end where planes following
 /// the crease there lean back from it, far enough to clear them, and
-/// trimmed by those overhanging it: the circular round's own ends.
+/// trimmed by those overhanging it: the circular round's own ends. A
+/// varying law is held level over the run past an end.
 pub(super) fn extended_sweep(
     model: &mut Model,
     solid: &Shape,
@@ -221,10 +222,10 @@ pub(super) fn extended_sweep(
 ) -> OgeomResult<Tool> {
     let mut seat = seat.clone();
     let mut trims = Vec::new();
+    let mut past = [0.0_f64; 2];
     if seat.convex && extend {
         let original = seat.clone();
         let section = PlanarSection::new(&original, spec, tol)?;
-        let [d0, d1] = section.distances(0.0);
         for (end, outward, at) in [(0, -seat.along, seat.start), (1, seat.along, seat.end)] {
             let hosts = [&original.faces[0], &original.faces[1]];
             let Some(planes) = crate::support::following_planes(model, solid, edge, hosts, at)?
@@ -251,8 +252,10 @@ pub(super) fn extended_sweep(
                 }
             }
             if reach > tol.confusion() {
+                let [d0, d1] = section.distances(s);
                 reach += d0.max(d1) * 0.25;
             }
+            past[end] = reach;
             if end == 0 {
                 seat.start += outward * reach;
             } else {
@@ -260,7 +263,19 @@ pub(super) fn extended_sweep(
             }
         }
     }
-    let section = PlanarSection::new(&seat, spec, tol)?;
+    let spec = match spec {
+        RoundSpec::Varying { laws, profile } if past.iter().any(|r| *r > 0.0) => {
+            let length = (seat.end - seat.start).magnitude() - past[0] - past[1];
+            RoundSpec::Varying {
+                laws: laws
+                    .clone()
+                    .map(|law| law.stretched(past[0] / length, past[1] / length)),
+                profile: *profile,
+            }
+        }
+        other => other.clone(),
+    };
+    let section = PlanarSection::new(&seat, &spec, tol)?;
     let mut tool = super::planar_tools::sweep(model, edge, &section, tol)?;
     for plane in trims {
         let span = ogeom_algo::shape_bounds(model, &tool.solid, tol)?.diagonal() * 2.0;

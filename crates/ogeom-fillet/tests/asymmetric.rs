@@ -1514,7 +1514,7 @@ fn a_law_of_points_passes_its_contact_through_each_point() {
 }
 
 #[test]
-fn level_laws_are_the_constant_asymmetric_round_and_oblique_ends_are_refused() {
+fn level_laws_are_the_constant_asymmetric_round_and_concave_oblique_ends_are_refused() {
     use ogeom_fillet::RadiusLaw;
     let mut m = Model::new();
     let (s, edge, top, front) = block(&mut m);
@@ -1572,16 +1572,49 @@ fn level_laws_are_the_constant_asymmetric_round_and_oblique_ends_are_refused() {
         ),
         "past that face's side",
     );
-    // A block whose end at x = 20 leans: its top front edge ends at a face
-    // not square to it.
+    // A concave edge whose end meets a face not square to it: a slab on a
+    // block whose end at x = 20 leans, its front y = 5 standing on the top.
     let mut m = Model::new();
+    let leaning = leaning_block(&mut m, 5.0);
+    let slab = ogeom_algo::make_box(
+        &mut m,
+        Frame::new(Point::new(-5.0, 5.0, 10.0), Direction::Z, Direction::X, T).unwrap(),
+        (40.0, 20.0, 5.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let s = ogeom_bool::fuse(&mut m, &leaning, &slab, T).unwrap().shape;
+    let edge = edge_where(&m, &s, |p| {
+        (p.y - 5.0).abs() < 1e-9 && (p.z - 10.0).abs() < 1e-9
+    });
+    let top = face_at(&m, &s, Point::new(10.0, 2.5, 10.0));
+    refused(
+        ogeom_fillet::fillet_edge_distances_variable(
+            &mut m,
+            &s,
+            &edge,
+            &top,
+            &up,
+            &up,
+            RoundProfile::Elliptical,
+            T,
+        ),
+        "concave edge is capped square",
+    );
+}
+
+/// A 10 high block on the quadrilateral (0, 0), (20, 0), (20 + lean, 20),
+/// (0, 20): its end through (20, 0) leans back from the front edge by
+/// `lean` over 20, or overhangs it where `lean` is negative.
+fn leaning_block(m: &mut Model, lean: f64) -> Shape {
     let points = [
         Point::new(0.0, 0.0, 0.0),
         Point::new(20.0, 0.0, 0.0),
-        Point::new(25.0, 20.0, 0.0),
+        Point::new(20.0 + lean, 20.0, 0.0),
         Point::new(0.0, 20.0, 0.0),
     ];
-    let wire = ogeom_algo::make_polygon(&mut m, &points, true, T)
+    let wire = ogeom_algo::make_polygon(m, &points, true, T)
         .unwrap()
         .shape;
     let plane = ogeom_geom::PlaneSurface::over(
@@ -1590,29 +1623,96 @@ fn level_laws_are_the_constant_asymmetric_round_and_oblique_ends_are_refused() {
         (-100.0, 100.0),
     )
     .unwrap();
-    let face = ogeom_algo::make_face(&mut m, plane.into(), &[wire], T)
+    let face = ogeom_algo::make_face(m, plane.into(), &[wire], T)
         .unwrap()
         .shape;
-    let leaning = ogeom_algo::make_prism(&mut m, &face, Vector::new(0.0, 0.0, 10.0), T)
+    ogeom_algo::make_prism(m, &face, Vector::new(0.0, 0.0, 10.0), T)
         .unwrap()
-        .shape;
-    let edge = edge_where(&m, &leaning, |p| {
-        p.y.abs() < 1e-9 && (p.z - 10.0).abs() < 1e-9
-    });
-    let top = face_at(&m, &leaning, Point::new(10.0, 10.0, 10.0));
-    refused(
-        ogeom_fillet::fillet_edge_distances_variable(
-            &mut m,
-            &leaning,
-            &edge,
-            &top,
-            &up,
-            &up,
-            RoundProfile::Elliptical,
-            T,
-        ),
-        "capped square",
-    );
+        .shape
+}
+
+/// The top front edge of a block whose end at x = 20 leans, asked with
+/// distances rising linearly along it, 1 to 2 on the top and 0.5 to 1.5 on
+/// the front: the band's section at each station is the square conic
+/// corner of that station's distances, so over the edge it takes the
+/// integral of their product, `20 (1 - share) / 2 * int (1 + s)(0.5 + s)`.
+/// Past the end the laws hold level. Where the end leans back the band
+/// runs on until the end face cuts it, each point of its end section a
+/// quarter of its depth into the top further: the end corner's area times
+/// a quarter of its centroid's depth. Where the end overhangs it, the
+/// band stops on it: at each station only the part of the section within
+/// four times the station's distance from the end is under material.
+#[test]
+fn distances_varying_past_an_end_not_square_run_on_level_to_it() {
+    use ogeom_fillet::RadiusLaw;
+    let rho = 0.4;
+    let w = conic(rho);
+    let on_top = RadiusLaw::Linear {
+        start: 1.0,
+        end: 2.0,
+    };
+    let on_front = RadiusLaw::Linear {
+        start: 0.5,
+        end: 1.5,
+    };
+    // The share of its legs' triangle the square conic corner keeps, and
+    // 20 int_0^t (1 + s)(0.5 + s) ds.
+    let kept = corner_area(1.0, 1.0, FRAC_PI_2, w) / 0.5;
+    let product = |t: f64| 20.0 * t * (0.5 + t * (0.75 + t / 3.0));
+    let along = 0.5 * kept * product(1.0);
+    for lean in [5.0, -5.0] {
+        let mut m = Model::new();
+        let s = leaning_block(&mut m, lean);
+        let block = 10.0 * 20.0 * (40.0 + lean) * 0.5;
+        let edge = edge_where(&m, &s, |p| p.y.abs() < 1e-9 && (p.z - 10.0).abs() < 1e-9);
+        let top = face_at(&m, &s, Point::new(10.0, 10.0, 10.0));
+        let front = face_at(&m, &s, Point::new(10.0, 0.0, 5.0));
+        let taken = if lean > 0.0 {
+            let (area, centroid) = square_corner(2.0, 1.5, w);
+            along + area * centroid[0] * lean / 20.0
+        } else {
+            // Up the top a distance y from the front, the end stands
+            // -lean / 20 y short of x = 20: whole sections up to where the
+            // end reaches the top's contact, then only what is under it,
+            // integrated back from the end.
+            let k = -lean / 20.0;
+            let whole = (20.0 - k) / (1.0 + k / 20.0);
+            0.5 * kept * product(whole / 20.0)
+                + integrate(20.0 - whole, |back| {
+                    let s = 1.0 - back / 20.0;
+                    let (d_top, d_front) = (1.0 + s, 0.5 + s);
+                    integrate(back / k, |y| conic_depth(d_top, d_front, w, y))
+                })
+        };
+        let exact = block - taken;
+        let mut volumes = Vec::new();
+        for (face, a, b) in [(&top, &on_top, &on_front), (&front, &on_front, &on_top)] {
+            let built = ogeom_fillet::fillet_edge_distances_variable(
+                &mut m,
+                &s,
+                &edge,
+                face,
+                a,
+                b,
+                RoundProfile::Conic(rho),
+                T,
+            )
+            .unwrap();
+            let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{lean}: {:?}", diagnosis.problems);
+            let v = volume(&m, &built.shape);
+            assert!(
+                (v - exact).abs() <= 1e-6,
+                "{lean}: volume {v} against {exact}"
+            );
+            volumes.push(v);
+        }
+        assert_eq!(
+            volumes[0].to_bits(),
+            volumes[1].to_bits(),
+            "naming the other face first"
+        );
+    }
 }
 
 /// Half a drum, its flat side through the axis: an arc of its top rim

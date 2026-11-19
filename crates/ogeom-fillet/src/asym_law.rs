@@ -33,7 +33,10 @@ use ogeom_topo::{Model, Shape};
 /// plane along a contact curve. Naming the other face with the laws
 /// swapped builds the same solid, to the bit, and two laws holding one
 /// distance each are [`fillet_edge_distances`](crate::fillet_edge_distances)
-/// by the same call. The band's ends are square caps: each end of the edge
+/// by the same call. The band's ends are the constant round's, the laws
+/// held level past them: square caps at a wall, run on past an end face
+/// leaning back from a convex corner until that face cuts it, cut off by
+/// one overhanging it. A concave edge's ends are square caps, and each end
 /// must meet only faces square to it.
 ///
 /// What `solid` shares with other shapes is copied before it is worked on
@@ -44,8 +47,8 @@ use ogeom_topo::{Model, Shape};
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
 /// where a law states no usable distance, `face` is not one of the edge's
 /// two faces, a conic's `rho` is not strictly between 0 and 1, the edge is
-/// not straight between two planes, an end of the edge meets a face not
-/// square to it, or a contact sets back past its face's side; and as
+/// not straight between two planes, an end of a concave edge meets a face
+/// not square to it, or a contact sets back past its face's side; and as
 /// [`fillet_edge_distances`](crate::fillet_edge_distances) where both laws
 /// hold one distance.
 #[allow(
