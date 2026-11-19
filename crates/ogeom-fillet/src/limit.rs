@@ -12,7 +12,8 @@
 //! bracketing the boundary between the last size that built and the first
 //! that was refused, bisected to [`LIMIT_TOLERANCE`].
 
-use crate::{Chamfer, ChamferCorner, FilletCorner, RoundProfile};
+use crate::law::Profile;
+use crate::{Chamfer, ChamferCorner, FilletCorner, RadiusLaw, RoundProfile};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_topo::{Model, Shape};
 
@@ -99,6 +100,82 @@ pub enum BlendSizing<'a> {
         /// How a vertex where three or more bevels meet is closed.
         corner: ChamferCorner,
     },
+    /// [`fillet_edges_variable`](crate::fillet_edges_variable) on `chain`
+    /// under `law`; the size is the law's value `size` frees, the rest of
+    /// the law held as given.
+    RoundLaw {
+        /// The chain rounded, as the call takes it.
+        chain: &'a [Shape],
+        /// The law, its freed value as given ignored.
+        law: &'a RadiusLaw,
+        /// Which value of the law the size is.
+        size: LawSize,
+    },
+    /// [`fillet_edge_variable`](crate::fillet_edge_variable) on `edge`
+    /// from `start` to `end`, a linear law whose points are its start (0)
+    /// and end (1); the size is the value `size` frees.
+    RoundLinear {
+        /// The edge rounded.
+        edge: &'a Shape,
+        /// The radius at the edge's start.
+        start: f64,
+        /// The radius at its end.
+        end: f64,
+        /// Which value of the law the size is.
+        size: LawSize,
+    },
+    /// [`fillet_edge_distances_variable`](crate::fillet_edge_distances_variable)
+    /// on `edge`, meeting `face` at the distances `on_face` gives and the
+    /// other face at those `on_other` gives, its section `profile`; the size
+    /// is the value `size` frees.
+    DistanceLaws {
+        /// The edge rounded.
+        edge: &'a Shape,
+        /// The face the first law's distance runs along.
+        face: &'a Shape,
+        /// The distances along `face`.
+        on_face: &'a RadiusLaw,
+        /// The distances along the other face.
+        on_other: &'a RadiusLaw,
+        /// The section between the contacts.
+        profile: RoundProfile,
+        /// Which value of the laws the size is.
+        size: DistanceLawSize,
+    },
+}
+
+/// One value of a law: its first point, its last, or the point at an
+/// index. A linear law's points are its start (0) and end (1). On a closed
+/// chain a law with a point at the chain's start and one at its end gives
+/// one point twice, and freeing either frees both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LawStation {
+    /// The law's first point.
+    Start,
+    /// The law's last point.
+    End,
+    /// The law's point at this index, from 0.
+    Point(usize),
+}
+
+/// Which size of a radius law a reading frees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LawSize {
+    /// One value, the rest held as given.
+    At(LawStation),
+    /// The scale of every radius of the law, as given at a scale of one.
+    Scale,
+}
+
+/// Which size of a pair of distance laws a reading frees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DistanceLawSize {
+    /// One value of the law along the named face, the rest held as given.
+    OnFace(LawStation),
+    /// One value of the law along the other face, the rest held as given.
+    OnOther(LawStation),
+    /// The scale of every distance of both laws, as given at a scale of one.
+    Scale,
 }
 
 /// The largest size up to `up_to` at which `sizing`'s blend call builds on
@@ -124,6 +201,15 @@ pub enum BlendSizing<'a> {
 /// [`LIMIT_SAMPLES`] builds of the request; one bisected from a factor of
 /// two costs about 14 more.
 ///
+/// Under a law ([`BlendSizing::RoundLaw`], [`BlendSizing::RoundLinear`],
+/// [`BlendSizing::DistanceLaws`]) the size is one value of the law, or the
+/// scale of all of them, and each probe asks the call under the whole law
+/// so set, over the whole chain. The seat is read at both ends of the edge
+/// and every sixteenth between: the largest size at which the law's
+/// measure at each station stays within that station's contact's reach.
+/// On a chain of several edges it is the constant round's seat held at
+/// every sixteenth of the chain.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
@@ -144,6 +230,9 @@ pub fn blend_limit(
         );
     }
     let (seat, floor) = match *sizing {
+        BlendSizing::RoundLaw { .. }
+        | BlendSizing::RoundLinear { .. }
+        | BlendSizing::DistanceLaws { .. } => return law_limit(model, solid, sizing, up_to, tol),
         BlendSizing::Rounds { edges, .. } => {
             if edges.is_empty() {
                 ogeom_bail!(Construction, "a request of no edges has no largest radius");
@@ -199,6 +288,17 @@ pub fn blend_limit(
         }
     };
     let builds = |size: f64| probe(model, solid, sizing, size, tol);
+    settle(seat, up_to, floor, builds)
+}
+
+/// The confirmed reading from `seat`: searched from the bound where the
+/// seat was refused, that refusal returned where no size builds.
+fn settle(
+    seat: OgeomResult<Option<f64>>,
+    up_to: f64,
+    floor: f64,
+    builds: impl FnMut(f64) -> bool,
+) -> OgeomResult<BlendLimit> {
     match seat {
         Ok(seat) => Ok(confirm(Some(seat), up_to, floor, builds)),
         Err(refusal) => {
@@ -209,6 +309,96 @@ pub fn blend_limit(
             Ok(found)
         }
     }
+}
+
+/// The largest value up to `up_to` that the point `at` of `law` can take,
+/// the rest of the law held, at which
+/// [`fillet_edges_variable`](crate::fillet_edges_variable) on `chain` of
+/// `solid` builds: [`blend_limit`] with [`BlendSizing::RoundLaw`]. Every
+/// value probed below it builds and one [`LIMIT_TOLERANCE`] above it is
+/// refused, the law checked over the whole chain by the build itself.
+/// None where no value above the confusion distance builds.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+/// `up_to` is not a usable length, `chain` is empty, `at` names no point
+/// of the law, or the law at `up_to` states no usable radius.
+pub fn largest_law_radius(
+    model: &Model,
+    solid: &Shape,
+    chain: &[Shape],
+    law: &RadiusLaw,
+    at: LawStation,
+    up_to: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let sizing = BlendSizing::RoundLaw {
+        chain,
+        law,
+        size: LawSize::At(at),
+    };
+    Ok(blend_limit(model, solid, &sizing, up_to, tol)?.size)
+}
+
+/// The largest scale `k` up to `up_to` at which
+/// [`fillet_edges_variable`](crate::fillet_edges_variable) on `chain` of
+/// `solid` under `law` with every radius times `k` builds, as
+/// [`largest_law_radius`] reads a value. A law holding one radius `r`
+/// answers the constant round's largest radius over `r`.
+///
+/// # Errors
+///
+/// As [`largest_law_radius`].
+pub fn largest_law_scale(
+    model: &Model,
+    solid: &Shape,
+    chain: &[Shape],
+    law: &RadiusLaw,
+    up_to: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let sizing = BlendSizing::RoundLaw {
+        chain,
+        law,
+        size: LawSize::Scale,
+    };
+    Ok(blend_limit(model, solid, &sizing, up_to, tol)?.size)
+}
+
+/// The largest value up to `up_to` of the distance `size` frees (one
+/// point of either law, or the scale of both) at which
+/// [`fillet_edge_distances_variable`](crate::fillet_edge_distances_variable)
+/// builds with these laws, as [`largest_law_radius`] reads a radius.
+///
+/// # Errors
+///
+/// As [`largest_law_radius`], for a point of either law.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "fillet_edge_distances_variable's own, with the size freed and its bound"
+)]
+pub fn largest_law_distances(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    face: &Shape,
+    on_face: &RadiusLaw,
+    on_other: &RadiusLaw,
+    profile: RoundProfile,
+    size: DistanceLawSize,
+    up_to: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let sizing = BlendSizing::DistanceLaws {
+        edge,
+        face,
+        on_face,
+        on_other,
+        profile,
+        size,
+    };
+    Ok(blend_limit(model, solid, &sizing, up_to, tol)?.size)
 }
 
 /// Whether `sizing`'s blend call builds at `size`, asked on a copy of the
@@ -246,6 +436,10 @@ fn probe(
             let specs = [(edge.clone(), scaled(spec, size))];
             crate::chamfer_edges_cornered(&mut scratch, solid, &specs, corner, tol).is_ok()
         }
+        // Read by `law_limit`, which probes them itself.
+        BlendSizing::RoundLaw { .. }
+        | BlendSizing::RoundLinear { .. }
+        | BlendSizing::DistanceLaws { .. } => false,
     }
 }
 
@@ -271,6 +465,362 @@ pub(crate) fn scaled(spec: &Chamfer, size: f64) -> Chamfer {
             angle: *angle,
         },
     }
+}
+
+/// The fractions of a chain a law's seat is read at: both ends and every
+/// sixteenth between.
+const LAW_STATIONS: u32 = 16;
+
+/// What a law reading frees in one law: a value by its index, or the
+/// scale of all of them.
+#[derive(Debug, Clone, Copy)]
+enum Free {
+    Index(usize),
+    Scale,
+}
+
+/// The value `at` names in `law`, by its index among the law's points.
+fn free_point(law: &RadiusLaw, at: LawStation) -> OgeomResult<Free> {
+    let n = match law {
+        RadiusLaw::Linear { .. } => 2,
+        RadiusLaw::Points(points) => points.len(),
+    };
+    if n == 0 {
+        ogeom_bail!(Construction, "a radius law of no points states no radius");
+    }
+    let index = match at {
+        LawStation::Start => 0,
+        LawStation::End => n - 1,
+        LawStation::Point(i) => i,
+    };
+    if index >= n {
+        ogeom_bail!(
+            Construction,
+            "a law of {n} points has no point {index} to free"
+        );
+    }
+    Ok(Free::Index(index))
+}
+
+/// `law` with the value `free` names set to `value`, or every value times
+/// `value`; on a `closed` chain a point at the start and one at the end
+/// are one point, set together.
+fn law_at(
+    law: &RadiusLaw,
+    free: Option<Free>,
+    value: f64,
+    closed: bool,
+    tol: Tolerances,
+) -> RadiusLaw {
+    let set = |points: &mut [(f64, f64)]| match free {
+        None => {}
+        Some(Free::Scale) => points.iter_mut().for_each(|p| p.1 *= value),
+        Some(Free::Index(i)) => {
+            let n = points.len();
+            points[i].1 = value;
+            let joined = closed
+                && n > 1
+                && points[0].0 <= tol.parametric()
+                && points[n - 1].0 >= 1.0 - tol.parametric();
+            if joined && (i == 0 || i == n - 1) {
+                points[0].1 = value;
+                points[n - 1].1 = value;
+            }
+        }
+    };
+    match law {
+        RadiusLaw::Linear { start, end } => {
+            let mut points = [(0.0, *start), (1.0, *end)];
+            set(&mut points);
+            RadiusLaw::Linear {
+                start: points[0].1,
+                end: points[1].1,
+            }
+        }
+        RadiusLaw::Points(points) => {
+            let mut points = points.clone();
+            set(&mut points);
+            RadiusLaw::Points(points)
+        }
+    }
+}
+
+/// The values a law states.
+fn law_values(law: &RadiusLaw) -> Vec<f64> {
+    match law {
+        RadiusLaw::Linear { start, end } => vec![*start, *end],
+        RadiusLaw::Points(points) => points.iter().map(|p| p.1).collect(),
+    }
+}
+
+/// Whether `chain` closes: every vertex of its edges is shared by two
+/// of them, a closed edge's one vertex by itself.
+fn chain_closes(model: &Model, chain: &[Shape]) -> OgeomResult<bool> {
+    let mut open: Vec<Shape> = Vec::new();
+    for edge in chain {
+        let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
+            return Ok(false);
+        };
+        for v in [a, b] {
+            if let Some(k) = open.iter().position(|o| o.is_same(&v)) {
+                open.swap_remove(k);
+            } else {
+                open.push(v);
+            }
+        }
+    }
+    Ok(!chain.is_empty() && open.is_empty())
+}
+
+/// The largest measure up to `up_to`, above `floor`, at which `fits`
+/// holds, bisected to [`LIMIT_TOLERANCE`]; None where it holds at none.
+fn seat_by(fits: impl Fn(f64) -> bool, up_to: f64, floor: f64) -> Option<f64> {
+    if fits(up_to) {
+        return Some(up_to);
+    }
+    let (mut lo, mut hi) = (floor * 2.0, up_to);
+    if lo >= hi || !fits(lo) {
+        return None;
+    }
+    while !close(lo, hi) {
+        let mid = f64::midpoint(lo, hi);
+        if fits(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    Some(lo)
+}
+
+/// A law's seat: the largest size at which, at every station read, the
+/// law's measure there stays within its contact's reach. Each station is
+/// its fraction of the chain, the law it reads (an index into the laws
+/// `laws` gives for a size) and its reach.
+fn law_seat(
+    stations: &[(f64, usize, f64)],
+    laws: impl Fn(f64) -> Option<Vec<Profile>>,
+    up_to: f64,
+    floor: f64,
+) -> Option<f64> {
+    let fits = |size: f64| {
+        laws(size).is_some_and(|laws| {
+            stations
+                .iter()
+                .all(|&(s, k, reach)| laws[k].at(s).0 <= reach)
+        })
+    };
+    seat_by(fits, up_to, floor)
+}
+
+/// The fractions [`LAW_STATIONS`] names.
+fn law_fractions() -> Vec<f64> {
+    (0..=LAW_STATIONS)
+        .map(|k| f64::from(k) / f64::from(LAW_STATIONS))
+        .collect()
+}
+
+/// The largest measure any value of `laws` takes up to the bound: `up_to`
+/// for a freed value, the largest value times `up_to` for a scale.
+fn measure_bound(laws: &[(&RadiusLaw, Option<Free>)], up_to: f64) -> f64 {
+    laws.iter()
+        .flat_map(|(law, free)| {
+            let k = if matches!(free, Some(Free::Scale)) {
+                up_to
+            } else {
+                1.0
+            };
+            law_values(law).into_iter().map(move |v| v * k)
+        })
+        .fold(up_to, f64::max)
+}
+
+/// The smallest size worth asking: a confusion distance, or for a scale
+/// the scale at which the least value is one.
+fn law_floor(laws: &[(&RadiusLaw, Option<Free>)], conf: f64) -> f64 {
+    let least = laws
+        .iter()
+        .filter(|(_, free)| matches!(free, Some(Free::Scale)))
+        .flat_map(|(law, _)| law_values(law))
+        .fold(f64::INFINITY, f64::min);
+    if least.is_finite() && least > conf {
+        conf / least
+    } else {
+        conf
+    }
+}
+
+/// [`blend_limit`] for a request under a law: the seat read at
+/// [`LAW_STATIONS`] along the chain under the law at each size, then
+/// confirmed by the call under the law at each size probed.
+fn law_limit(
+    model: &Model,
+    solid: &Shape,
+    sizing: &BlendSizing<'_>,
+    up_to: f64,
+    tol: Tolerances,
+) -> OgeomResult<BlendLimit> {
+    let conf = tol.confusion();
+    match *sizing {
+        BlendSizing::RoundLaw { chain, law, size } => {
+            if chain.is_empty() {
+                ogeom_bail!(
+                    Construction,
+                    "a variable radius over no edges has no largest size"
+                );
+            }
+            let closed = chain_closes(model, chain)?;
+            let free = Some(match size {
+                LawSize::At(at) => free_point(law, at)?,
+                LawSize::Scale => Free::Scale,
+            });
+            let at = |v: f64| law_at(law, free, v, closed, tol);
+            Profile::new(&at(up_to), closed, tol)?;
+            let laws = [(law, free)];
+            let seat = round_law_seat(model, solid, chain, closed, &laws, &at, up_to, tol);
+            let builds = |v: f64| {
+                let mut scratch = model.clone();
+                crate::fillet_edges_variable(&mut scratch, solid, chain, &at(v), tol).is_ok()
+            };
+            settle(seat, up_to, law_floor(&laws, conf), builds)
+        }
+        BlendSizing::RoundLinear {
+            edge,
+            start,
+            end,
+            size,
+        } => {
+            // One edge, read as an open law even where it closes.
+            let law = RadiusLaw::Linear { start, end };
+            let chain = std::slice::from_ref(edge);
+            let free = Some(match size {
+                LawSize::At(at) => free_point(&law, at)?,
+                LawSize::Scale => Free::Scale,
+            });
+            let at = |v: f64| law_at(&law, free, v, false, tol);
+            Profile::new(&at(up_to), false, tol)?;
+            let laws = [(&law, free)];
+            let seat = round_law_seat(model, solid, chain, false, &laws, &at, up_to, tol);
+            let builds = |v: f64| {
+                let RadiusLaw::Linear { start, end } = at(v) else {
+                    return false;
+                };
+                let mut scratch = model.clone();
+                crate::fillet_edge_variable(&mut scratch, solid, edge, start, end, tol).is_ok()
+            };
+            settle(seat, up_to, law_floor(&laws, conf), builds)
+        }
+        BlendSizing::DistanceLaws {
+            edge,
+            face,
+            on_face,
+            on_other,
+            profile,
+            size,
+        } => {
+            let closed = chain_closes(model, std::slice::from_ref(edge))?;
+            let (free_face, free_other) = match size {
+                DistanceLawSize::OnFace(at) => (Some(free_point(on_face, at)?), None),
+                DistanceLawSize::OnOther(at) => (None, Some(free_point(on_other, at)?)),
+                DistanceLawSize::Scale => (Some(Free::Scale), Some(Free::Scale)),
+            };
+            let at = |v: f64| {
+                [
+                    law_at(on_face, free_face, v, closed, tol),
+                    law_at(on_other, free_other, v, closed, tol),
+                ]
+            };
+            for law in at(up_to) {
+                Profile::new(&law, closed, tol)?;
+            }
+            let laws = [(on_face, free_face), (on_other, free_other)];
+            let seat = (|| -> OgeomResult<Option<f64>> {
+                let reaches = crate::fits::station_reaches(
+                    model,
+                    solid,
+                    edge,
+                    &law_fractions(),
+                    measure_bound(&laws, up_to),
+                    |_, _| 1.0,
+                    tol,
+                )?;
+                let stations: Vec<(f64, usize, f64)> = reaches
+                    .into_iter()
+                    .map(|r| (r.fraction, usize::from(!r.face.is_same(face)), r.largest))
+                    .collect();
+                let profiles = |v: f64| {
+                    at(v)
+                        .iter()
+                        .map(|law| Profile::new(law, closed, tol).ok())
+                        .collect::<Option<Vec<_>>>()
+                };
+                Ok(law_seat(&stations, profiles, up_to, law_floor(&laws, conf)))
+            })();
+            let builds = |v: f64| {
+                let [a, b] = at(v);
+                let mut scratch = model.clone();
+                crate::fillet_edge_distances_variable(
+                    &mut scratch,
+                    solid,
+                    edge,
+                    face,
+                    &a,
+                    &b,
+                    profile,
+                    tol,
+                )
+                .is_ok()
+            };
+            settle(seat, up_to, law_floor(&laws, conf), builds)
+        }
+        _ => ogeom_bail!(Construction, "not a request under a law"),
+    }
+}
+
+/// A round's seat under a law: on one edge its contacts' reach at each
+/// station; on a chain of several, where the stations' places along the
+/// chain are not read, the constant round's seat held at every fraction.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the request's parts, as law_limit has them"
+)]
+fn round_law_seat(
+    model: &Model,
+    solid: &Shape,
+    chain: &[Shape],
+    closed: bool,
+    laws: &[(&RadiusLaw, Option<Free>)],
+    at: &impl Fn(f64) -> RadiusLaw,
+    up_to: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let bound = measure_bound(laws, up_to);
+    let stations: Vec<(f64, usize, f64)> = if let [edge] = chain {
+        crate::fits::station_reaches(
+            model,
+            solid,
+            edge,
+            &law_fractions(),
+            bound,
+            |_, factor| factor,
+            tol,
+        )?
+        .into_iter()
+        .map(|r| (r.fraction, 0, r.largest))
+        .collect()
+    } else {
+        let Some(seat) = crate::fits::seat_fillet_radius(model, solid, chain, bound, tol)? else {
+            return Ok(None);
+        };
+        law_fractions().into_iter().map(|s| (s, 0, seat)).collect()
+    };
+    let profiles = |v: f64| Profile::new(&at(v), closed, tol).ok().map(|p| vec![p]);
+    Ok(law_seat(
+        &stations,
+        profiles,
+        up_to,
+        law_floor(laws, tol.confusion()),
+    ))
 }
 
 /// The probes one reading has asked, each size once.
@@ -453,6 +1003,43 @@ mod tests {
 
     fn run(seat: Option<Option<f64>>, up_to: f64, builds: impl Fn(f64) -> bool) -> BlendLimit {
         confirm(seat, up_to, 1e-7, builds)
+    }
+
+    #[test]
+    fn a_closed_chain_s_end_points_move_together_and_an_open_one_s_do_not() {
+        let tol = Tolerances::millimetres();
+        let law = RadiusLaw::Points(vec![(0.0, 1.0), (0.5, 2.0), (1.0, 1.0)]);
+        let end = Some(Free::Index(2));
+        assert_eq!(
+            law_at(&law, end, 3.0, true, tol),
+            RadiusLaw::Points(vec![(0.0, 3.0), (0.5, 2.0), (1.0, 3.0)])
+        );
+        assert_eq!(
+            law_at(&law, end, 3.0, false, tol),
+            RadiusLaw::Points(vec![(0.0, 1.0), (0.5, 2.0), (1.0, 3.0)])
+        );
+        // A law short of the chain's end has no point there to join.
+        let short = RadiusLaw::Points(vec![(0.0, 1.0), (0.5, 2.0)]);
+        assert_eq!(
+            law_at(&short, Some(Free::Index(1)), 3.0, true, tol),
+            RadiusLaw::Points(vec![(0.0, 1.0), (0.5, 3.0)])
+        );
+        assert_eq!(
+            law_at(
+                &RadiusLaw::Linear {
+                    start: 1.0,
+                    end: 2.0
+                },
+                Some(Free::Scale),
+                3.0,
+                false,
+                tol
+            ),
+            RadiusLaw::Linear {
+                start: 3.0,
+                end: 6.0
+            }
+        );
     }
 
     #[test]
