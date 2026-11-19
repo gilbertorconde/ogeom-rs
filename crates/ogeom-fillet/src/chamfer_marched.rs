@@ -141,7 +141,10 @@ impl Walk<'_, '_> {
 /// at its station, the law laid along the crease by arc length from the
 /// edge's start as a variable radius is: held level past an open edge's
 /// ends, round a closed one.
-#[allow(clippy::too_many_arguments, reason = "the seat, the legs and their laws")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the seat, the legs and their laws"
+)]
 pub(crate) fn marched_bevel_with(
     model: &mut Model,
     solid: &Shape,
@@ -262,7 +265,16 @@ pub(crate) fn marched_bevel_with(
             } else {
                 [&laws[1], &laws[0]]
             };
-            Some(laid_along(model, edge, &guide, guide_range, edge_range, loops, ordered, tol)?)
+            Some(laid_along(
+                model,
+                edge,
+                &guide,
+                guide_range,
+                edge_range,
+                loops,
+                ordered,
+                tol,
+            )?)
         }
         None => None,
     };

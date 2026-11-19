@@ -535,7 +535,8 @@ fn what_is_not_built_is_refused_by_name() {
 }
 
 #[test]
-fn blend_edges_takes_an_asymmetric_round_beside_others_and_refuses_one_meeting_a_round_of_the_other_convexity() {
+fn blend_edges_takes_an_asymmetric_round_beside_others_and_refuses_one_meeting_a_round_of_the_other_convexity()
+ {
     let profile = RoundProfile::Conic(0.4);
     let asked = |face: &Shape| Blend::RoundDistances {
         face: face.clone(),
@@ -1614,9 +1615,7 @@ fn leaning_block(m: &mut Model, lean: f64) -> Shape {
         Point::new(20.0 + lean, 20.0, 0.0),
         Point::new(0.0, 20.0, 0.0),
     ];
-    let wire = ogeom_algo::make_polygon(m, &points, true, T)
-        .unwrap()
-        .shape;
+    let wire = ogeom_algo::make_polygon(m, &points, true, T).unwrap().shape;
     let plane = ogeom_geom::PlaneSurface::over(
         Plane::through(Point::ORIGIN, Direction::Z),
         (-100.0, 100.0),
