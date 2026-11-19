@@ -26,7 +26,7 @@ use ogeom_algo::{Built, make_revolution_band};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{ConeSurface, Curve, SurfaceGeometry};
 use ogeom_math::{Cone, Direction, Frame};
-use ogeom_topo::{Model, Shape};
+use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
 /// Bevel a straight edge of a solid, cutting `distance` back along each of
 /// its two faces.
@@ -77,6 +77,9 @@ fn chamfer_edge_own(
         return Ok(unchanged(solid));
     }
     let specs = [(edge.clone(), Chamfer::Symmetric(distance))];
+    if below_a_floor(model, solid, &specs, tol)?.is_some() {
+        return Err(below_a_floor_refused());
+    }
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
     }
@@ -134,6 +137,9 @@ fn chamfer_edge_distances_own(
         return Ok(unchanged(solid));
     }
     let specs = [(edge.clone(), spec)];
+    if below_a_floor(model, solid, &specs, tol)?.is_some() {
+        return Err(below_a_floor_refused());
+    }
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
     }
@@ -192,6 +198,9 @@ fn chamfer_edge_angle_own(
         return Ok(unchanged(solid));
     }
     let specs = [(edge.clone(), spec)];
+    if below_a_floor(model, solid, &specs, tol)?.is_some() {
+        return Err(below_a_floor_refused());
+    }
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
     }
@@ -349,6 +358,12 @@ pub(crate) fn chamfer_edges_blamed(
             ),
         });
     }
+    if let Some(i) = below_a_floor(model, solid, &specs, tol)? {
+        return Err(Blamed {
+            edges: vec![index[i]],
+            error: below_a_floor_refused(),
+        });
+    }
     if let Some(built) = engine_chamfer(model, solid, &specs, tol)? {
         return Ok(built);
     }
@@ -356,6 +371,88 @@ pub(crate) fn chamfer_edges_blamed(
         edges: index,
         error: declined(),
     })
+}
+
+/// The first of `specs` whose bevel would cut below a floor: a convex
+/// bevel on a straight edge between planes whose leg on a face crosses a
+/// concave edge of that face's outer ring between the edge's ends, where
+/// the face ends on a floor or a ledge (ADR 0001, amendment "a bevel stops
+/// at a concave floor"). Rolling over a convex far side is a notch, and a
+/// bevel reaching under a feature standing within its face (a hole of the
+/// face) is non-local; neither is this. `None` where no spec does; a spec whose seat is not
+/// read here (a curved edge or face) is passed over.
+///
+/// # Errors
+///
+/// As reading the seats, other than a spec's own refusal, which the build
+/// reports.
+pub(crate) fn below_a_floor(
+    model: &Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<usize>> {
+    let eps = tol.confusion() * 100.0;
+    for (i, (edge, spec)) in specs.iter().enumerate() {
+        let Ok(Legs::Straight(seat, per)) = legs(model, solid, edge, spec, tol) else {
+            continue;
+        };
+        if !seat.convex {
+            continue;
+        }
+        let length = seat.start.distance(seat.end);
+        for (k, leg) in per.into_iter().enumerate() {
+            if leg <= eps {
+                continue;
+            }
+            let inward = seat.leg(k, tol)?;
+            let Some(outer) = model.children_of(&seat.faces[k])?.into_iter().next() else {
+                continue;
+            };
+            for side in explore_unique(model, &outer, ShapeType::Edge)? {
+                if crate::support::same_occurrence(model, &side, edge, tol) {
+                    continue;
+                }
+                let Ok(other) = planar_seat(model, solid, &side, tol) else {
+                    continue;
+                };
+                if other.convex {
+                    continue;
+                }
+                // The side's piece strictly inside the strip between the
+                // edge's ends and the leg's reach: each bound a linear
+                // condition on the segment's parameter.
+                let (a, d) = (other.start - seat.start, other.end - other.start);
+                let mut range = (0.0_f64, 1.0_f64);
+                for (at, rate, low, high) in [
+                    (a.dot(seat.along), d.dot(seat.along), eps, length - eps),
+                    (a.dot(inward), d.dot(inward), eps, leg - eps),
+                ] {
+                    if rate.abs() <= f64::EPSILON {
+                        if at <= low || at >= high {
+                            range = (1.0, 0.0);
+                        }
+                        continue;
+                    }
+                    let (t0, t1) = ((low - at) / rate, (high - at) / rate);
+                    range = (range.0.max(t0.min(t1)), range.1.min(t0.max(t1)));
+                }
+                if range.0 < range.1 {
+                    return Ok(Some(i));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The refusal of a bevel that would cut below a floor ([`below_a_floor`]).
+pub(crate) fn below_a_floor_refused() -> ogeom_core::OgeomError {
+    ogeom_core::ogeom_err!(
+        Construction,
+        "the chamfer runs past its face's far side where that side is a concave edge: \
+         its bevel would cut below the floor beyond; ask a distance no longer than the face"
+    )
 }
 
 /// Chamfer specs, each edge with its chamfer.
@@ -1333,8 +1430,9 @@ fn sphere_leg(seat: &SphereSeat, face: &Shape, on_wall: f64, on_cap: f64) -> f64
 /// between planes, a convex bevel's leg runs at most as far as its face
 /// reaches back from the edge, and the answer is exact against it; past
 /// it [`chamfer_edges_with`] rolls the bevel over its face's far side as a
-/// notch (ADR 0001, amendment "M5b"); a concave one fuses and runs past no
-/// face. On a rim, the cap's leg stops short of the axis, and
+/// notch (ADR 0001, amendment "M5b"), or refuses it where that side is a
+/// concave edge (amendment "a bevel stops at a concave floor"); a concave
+/// bevel fuses and runs past no face. On a rim, the cap's leg stops short of the axis, and
 /// each leg's contact stays on its face at the stations
 /// [`largest_fillet_radius`](crate::largest_fillet_radius) reads, a
 /// confusion distance short.

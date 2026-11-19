@@ -17,6 +17,12 @@ bump may break the API and a patch bump may not.
   removes: on a box `a × b × c` with every edge bevelled `d`, the facet
   removes `2d²(a + b + c) − 16d³/3` and the mitre (`ChamferCorner::Point`)
   `2d²(a + b + c) − 6d³` (#1145).
+- **Changed: a chamfer past a concave floor is refused.** A convex chamfer
+  whose distance on a face runs past a concave edge of that face's outline
+  (a step's wall shorter than the chamfer, standing on a floor) is now
+  refused by name, naming its edge, instead of cutting a groove below the
+  floor. A chamfer running past a convex edge still rolls over as a notch
+  (ADR 0001, amendment "a bevel stops at a concave floor", #1145).
 
 ## [0.19.0] - 2026-11-18
 

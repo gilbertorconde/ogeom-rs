@@ -819,8 +819,9 @@ own plane, so not at all), and a far wall only where a tool reaches it.
   bevel's plane cuts the rings of its cluster, which is the same material
   as its tool where the rings build (a plate's edge rolling over, a plate's
   edge ending at a rising wall, a reflex corner mitred without a notch).
-  Where the rings decline (a bevel rolling down a front whose foot meets
-  the floor at a concave edge), the union of the tools is applied.
+  Where the rings decline, the union of the tools is applied. A bevel
+  rolling down a front whose foot meets a floor at a concave edge is
+  refused instead (amendment "a bevel stops at a concave floor").
 - **Curved solids.** Where the rim and crease tools decline because the
   asked edges meet, and the solid is not convex, the union of the tools:
   a rim's tool is its section turned over its own arc, any other strip's
@@ -2451,6 +2452,42 @@ degrees to the crease.
   face's plane to the arc's plane through the seam's other end, by
   Simpson's rule; the other edge is a plain round between square faces.
 - **Not this route:** a ball that runs out within the seam.
+
+### Amendment: a bevel stops at a concave floor (#1145)
+
+A downstream report: "a chamfer wider than the face or wall beside it
+builds instead of being refused". Two shapes of it:
+
+- **A bevel past a convex far side.** A 12 mm chamfer on the top edge of
+  a block 10 high runs past the front's foot, a convex edge. That is the
+  notch of amendment "M5b", deliberate: the bevel carries on and trims
+  what it reaches (`1400` mm³ off a 20 × 20 × 10 block, the bevel's
+  triangle less the part below the bottom).
+- **A bevel past a concave far side.** A 2 mm chamfer on a step's back
+  edge, the wall under it 1 high and meeting the block's top at a concave
+  edge. M5b built it by its tools, cutting a groove 1 deep into the floor
+  beyond the wall.
+
+**Rule.** A convex bevel on a straight edge between planes whose leg on a
+face crosses a concave edge of that face's outer ring, between the
+edge's ends, is refused by name, naming its spec: its bevel would cut
+below the floor or ledge the face ends on. The maintainer decided this in
+#1145. It matches the rounds: a round whose ball would come down on the
+floor beyond its wall does not seat and is refused (section 13, question
+4: what does not fit fails, naming the edges). A notch trims the element
+a blend overflows onto; a floor beyond a concave foot is material the
+bevel would pass under, a change to a face the request does not name.
+
+- A convex far side still rolls over (M5b).
+- A bevel reaching under a feature standing within its face (a hole of
+  the face, such as a block on the top) is non-local, as amendment "M5a"
+  builds it, and not this.
+- A leg that reaches the concave edge exactly builds.
+- Curved seats (a rim's wall, a crease) are not read by this rule yet;
+  they keep M5b's tools.
+
+**Oracle.** The step: at 1.5 the request of three edges is refused naming
+the step's spec alone; at 1 the step's bevel alone takes `20 · 1²/2`.
 
 ## 12. Acceptance corpus
 

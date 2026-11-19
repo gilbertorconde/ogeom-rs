@@ -3890,38 +3890,82 @@ fn a_rolling_bevel_ending_at_a_rising_wall_leaves_the_wall() {
     assert_eq!(built.history.generated(&edge).len(), 1, "the bevel");
 }
 
-/// Guard, a far wall along the floor: a slab 10 × 18 × 1 (y from -8), a
-/// block 10 × 10 × 2 on it at y in [0, 10], and a wall 10 × 2 × 3 standing
-/// on the slab at y in [-8, -6]. The block's top front edge chamfered 1
-/// along its top and 4 down its 2 mm front rolls over its foot (ADR 0001,
-/// amendment "M5b"): its tool, bounded by the bevel, the top's plane z = 3
-/// and the front's y = 0, takes the block's and the slab's material in
-/// front of the bevel behind y = 0, the section's y < (z + 1) / 4 for z in
-/// [0, 3], 1.875 along 10, and never reaches the far wall.
+/// A slab 10 × 18 × 1 (y from -8) with a block 10 × 10 × 2 on it at y in
+/// [0, 10]: the block's top front edge chamfered 1 along its top and 4
+/// down its 2 mm front runs past the front's foot, a concave edge on the
+/// slab, and its bevel would cut below the slab's top. That is refused by
+/// name, naming the edge (ADR 0001, amendment "a bevel stops at a concave
+/// floor"), where a front ending on a convex edge rolls over as a notch.
 #[test]
-fn a_rolling_bevel_leaves_a_far_wall_along_the_floor() {
+fn a_bevel_running_down_its_front_past_a_floor_is_refused_by_name() {
     let mut m = Model::new();
     let slab = block(&mut m, (0.0, -8.0, 0.0), (10.0, 18.0, 1.0));
     let step = block(&mut m, (0.0, 0.0, 1.0), (10.0, 10.0, 2.0));
-    let far = block(&mut m, (0.0, -8.0, 1.0), (10.0, 2.0, 3.0));
     let s = ogeom_bool::fuse(&mut m, &slab, &step, T).unwrap().shape;
-    let s = ogeom_bool::fuse(&mut m, &s, &far, T).unwrap().shape;
     let (edge, top) = front_top(&m, &s, 3.0, (0.0, 10.0));
     let spec = Chamfer::Distances {
         face: top,
         on_face: 1.0,
         on_other: 4.0,
     };
-    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &[(edge.clone(), spec)], T).unwrap();
+    let refused = ogeom_fillet::chamfer_edges_checked(&mut m, &s, &[(edge, spec)], T).unwrap_err();
+    assert_eq!(refused.edges, vec![0]);
+    assert!(
+        refused.error.to_string().contains("below the floor"),
+        "{}",
+        refused.error
+    );
+}
+
+/// A block 20 × 20 × 10 with a step 20 × 5 × 1 on its top at its front:
+/// the block's top back edge, the step's top back edge and an upright
+/// chamfered 1.5 together. The step's back wall is 1 high and meets the
+/// block's top at a concave edge, so its bevel would cut below that floor:
+/// refused, naming that spec alone. At 1, the step's bevel reaches the
+/// floor exactly and builds, taking `20 · 1²/2` alone.
+#[test]
+fn a_chamfer_wider_than_the_wall_under_it_is_refused_naming_its_edge() {
+    let mut m = Model::new();
+    let base = block(&mut m, (0.0, 0.0, 0.0), (20.0, 20.0, 10.0));
+    let step = block(&mut m, (0.0, 0.0, 10.0), (20.0, 5.0, 1.0));
+    let s = ogeom_bool::fuse(&mut m, &base, &step, T).unwrap().shape;
+    let s = ogeom_heal::unify_same_domain(&mut m, &s, T)
+        .unwrap()
+        .0
+        .shape;
+    let s = ogeom_heal::merge_edges(&mut m, &s, T).unwrap().0.shape;
+    let s = explore_unique(&m, &s, ShapeType::Solid).unwrap()[0].clone();
+    let edges = explore_unique(&m, &s, ShapeType::Edge).unwrap();
+    let find = |want: &dyn Fn(Point, Point) -> bool| {
+        edges
+            .iter()
+            .find(|e| {
+                let bb = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+                want(bb.low().unwrap(), bb.high().unwrap())
+            })
+            .unwrap()
+            .clone()
+    };
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    let back = find(&|l, h| near(l.y, 20.0) && near(h.z, 10.0) && near(l.z, 10.0));
+    let wall = find(&|l, h| near(l.y, 5.0) && near(h.y, 5.0) && near(l.z, 11.0));
+    let upright = find(&|l, h| near(l.x, 20.0) && near(l.y, 20.0) && h.z - l.z > 9.0);
+    let specs = |d: f64| {
+        [&back, &wall, &upright]
+            .iter()
+            .map(|e| ((*e).clone(), Chamfer::Symmetric(d)))
+            .collect::<Vec<_>>()
+    };
+    let refused =
+        ogeom_fillet::chamfer_edges_checked(&mut m.clone(), &s, &specs(1.5), T).unwrap_err();
+    assert_eq!(refused.edges, vec![1], "{}", refused.error);
+    let before = volume(&m, &s);
+    let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &[(wall, Chamfer::Symmetric(1.0))], T)
+        .unwrap();
     let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
     assert!(found.is_valid(), "{:?}", found.problems);
-    let want = 180.0 + 200.0 + 60.0 - 18.75;
-    let got = volume(&m, &built.shape);
-    assert!(
-        (got - want).abs() <= 1e-9 * want,
-        "volume {got} against {want}"
-    );
-    assert_eq!(built.history.generated(&edge).len(), 1, "the bevel");
+    let got = before - volume(&m, &built.shape);
+    assert!((got - 10.0).abs() <= 1e-9 * 10.0, "took {got}");
 }
 
 /// An L-shaped plate 1 thick (the union of 10 × 4 and 4 × 10), the two top
@@ -3985,14 +4029,12 @@ fn three_bevels_at_a_vertex_one_rolling_close_with_their_facet() {
 
 /// The same corner with a ledge 13 × 5 × 3 under the short part of the
 /// prism and 3 out in front of it (x in [-3, 10], y in [5, 10], z in
-/// [0, 3]): the rolling bevel's foot is a concave edge, which the rings
-/// decline, and the corner goes to the union of the tools and the facet's
-/// piece in one boolean. The front's tool reaches into the ledge under the
-/// prism, behind the front's plane, and takes it there; the ledge out in
-/// front, which no tool reaches, stays whole. Exactly, as before, with the
-/// ledge a third box.
+/// [0, 3]): the front's bevel runs past the short part's foot, a concave
+/// edge on the ledge, and would cut below the ledge's top. Refused by name,
+/// naming the front's spec (ADR 0001, amendment "a bevel stops at a
+/// concave floor").
 #[test]
-fn three_bevels_at_a_vertex_rolling_onto_a_ledge_close_with_their_facet() {
+fn three_bevels_at_a_vertex_rolling_onto_a_ledge_are_refused_by_name() {
     three_bevels_one_rolling(true, false);
 }
 
@@ -4007,7 +4049,8 @@ fn three_bevels_at_a_vertex_rolling_on_a_curved_solid_close_with_their_facet() {
 }
 
 /// [`three_bevels_at_a_vertex_one_rolling_close_with_their_facet`], with
-/// a ledge under its short part or a boss on its top, or neither.
+/// a ledge under its short part (refused) or a boss on its top, or
+/// neither.
 fn three_bevels_one_rolling(ledge: bool, boss: bool) {
     use ogeom_math::Vector;
     let mut m = Model::new();
@@ -4072,6 +4115,11 @@ fn three_bevels_one_rolling(ledge: bool, boss: bool) {
         (left.clone(), Chamfer::Symmetric(1.0)),
         (upright.clone(), Chamfer::Symmetric(1.0)),
     ];
+    if ledge {
+        let refused = ogeom_fillet::chamfer_edges_checked(&mut m, &s, &specs, T).unwrap_err();
+        assert_eq!(refused.edges, vec![0], "{}", refused.error);
+        return;
+    }
     let built = ogeom_fillet::chamfer_edges_with(&mut m, &s, &specs, T).unwrap();
     let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
     assert!(found.is_valid(), "{:?}", found.problems);
@@ -4141,20 +4189,7 @@ fn three_bevels_one_rolling(ledge: bool, boss: bool) {
         } else {
             -1.0
         };
-        let shelf = vec![
-            p(-1.0, 0.0, 0.0, 3.0),
-            p(1.0, 0.0, 0.0, 10.0),
-            p(0.0, -1.0, 0.0, -5.0),
-            p(0.0, 1.0, 0.0, 10.0),
-            p(0.0, 0.0, -1.0, 0.0),
-            p(0.0, 0.0, 1.0, 3.0),
-        ];
-        let solids: Vec<&Vec<(Vector, f64)>> = if ledge {
-            vec![&near, &far, &shelf]
-        } else {
-            vec![&near, &far]
-        };
-        for solid in solids {
+        for solid in [&near, &far] {
             let mut all = planes.clone();
             all.extend(solid.iter().copied());
             // Each plane once: the polytope counts a face per plane.
@@ -4171,7 +4206,7 @@ fn three_bevels_one_rolling(ledge: bool, boss: bool) {
         }
     }
     let post = if boss { std::f64::consts::PI } else { 0.0 };
-    let want = 250.0 + if ledge { 195.0 } else { 0.0 } + post - taken;
+    let want = 250.0 + post - taken;
     let got = ogeom_algo::volume_properties(
         &m,
         &built.shape,
