@@ -3006,17 +3006,18 @@ fn assemble_widened(
     // Each cusp's corners on the side and the wall moved to its lobes'.
     let cusps = cusps_of(curved, bevels, corners, tol)?;
     // A one-sided cusp's sharp edges on the side or the wall (the edge the
-    // two share below a top ending there, the wall's seam) run on to the
-    // vertex: the S's feet meet them there. Two-sided, the patch spans the
-    // vertex and they end on its sides.
+    // two share below a top ending there, the wall's seam, the top's edges
+    // with them where it runs on past the vertex) run on to the vertex: the
+    // S's feet meet them there. Two-sided, the patch spans the vertex and
+    // they end on its sides.
     for c in cusps.iter().filter(|c| c.lobes.len() == 1) {
-        let [_, side, wall] = c.faces;
+        let [top, side, wall] = c.faces;
         for (e, edge) in &curved.edges {
             let faces = faces_of(curved, *e);
             if (edge.ends.0 == c.v || edge.ends.1 == c.v)
                 && !blended.contains(e)
-                && !faces.is_empty()
-                && faces.iter().all(|f| *f == side || *f == wall)
+                && faces.iter().any(|f| *f == side || *f == wall)
+                && faces.iter().all(|f| *f == top || *f == side || *f == wall)
             {
                 sharp_end.insert((*e, c.v), curved.points[&c.v]);
                 if let Some(t) = tails.get_mut(&c.v) {
@@ -3079,6 +3080,10 @@ fn assemble_widened(
         }
     }
     let mut facets: Vec<(Id, Vec<Point>)> = Vec::new();
+    // A capped bevel's end: the way its cap faces, where the faces at the
+    // vertex all stand square to it (a rim's arc running on into the rest
+    // of its circle left sharp).
+    let mut facing: FastMap<Id, Vector> = FastMap::default();
     // Each mitred vertex's point, where every bevel there passes.
     let mut mitred: FastMap<Id, Point> = FastMap::default();
     // Each vertex where rounds meet on one ball: its corners in turn, the
@@ -3129,9 +3134,27 @@ fn assemble_widened(
                 let Some(ends) = sections.get(v) else {
                     continue;
                 };
-                let [(p, q, _)] = ends[..] else {
+                let [(p, q, bi)] = ends[..] else {
                     continue;
                 };
+                // The cap faces into the bevel at a convex edge, the corner
+                // left past it standing behind the cap; out of it at a
+                // concave one, closing the fill's end.
+                let leaving = if blended_edge.ends.0 == *v { ta } else { -ta };
+                let across: Vector = bevels[bi]
+                    .faces
+                    .iter()
+                    .map(|fi| outward_at(curved, *fi, at))
+                    .fold(Vector::ZERO, |sum, n| sum + n);
+                let chord = p.midpoint(q) - at;
+                facing.insert(
+                    *v,
+                    if chord.dot(across) < 0.0 {
+                        leaving
+                    } else {
+                        -leaving
+                    },
+                );
                 // From the bevel's end on along the tails to the vertex,
                 // the cap's last side back to the bevel's end.
                 let close = |a: Point, b: Point| a.distance(b) <= tol.confusion();
@@ -3287,6 +3310,11 @@ fn assemble_widened(
         let m = newell.magnitude();
         if m <= tol.confusion() * tol.confusion() {
             return Ok(None);
+        }
+        if let Some(cap) = facing.get(v)
+            && newell.dot(out).abs() <= tol.angular() * m * out.magnitude()
+        {
+            out = *cap;
         }
         let mut cycle = cycle.clone();
         if newell.dot(out) < 0.0 {
@@ -5759,7 +5787,7 @@ fn cusps_of(
                 }
                 (top, vec![*l0, *l1])
             }
-            (None, [l0]) => {
+            (pinched_top, [l0]) => {
                 let ([r], 2) = (rims.as_slice(), at.len()) else {
                     continue;
                 };
@@ -5770,7 +5798,9 @@ fn cusps_of(
                 let Some(top) = fl.iter().copied().find(|f| fr.contains(f)) else {
                     continue;
                 };
-                // The top's loop passes the vertex once, between these two.
+                // The top's loop passes the vertex once, between these two;
+                // or twice, a pass there with its edges left sharp, the top
+                // running on past the vertex.
                 let at_v = curved
                     .edges
                     .iter()
@@ -5778,7 +5808,11 @@ fn cusps_of(
                         (c.ends.0 == *v || c.ends.1 == *v) && faces_of(curved, **e).contains(&top)
                     })
                     .count();
-                if at_v != 2 || !corners.contains_key(&(top, *v)) {
+                let passes = if pinched_top.is_some() { 2 } else { 1 };
+                if pinched_top.is_some_and(|p| p != top)
+                    || at_v != 2 * passes
+                    || !corners.contains_key(&(top, *v))
+                {
                     continue;
                 }
                 // A cusp: the top narrows to nothing, the two edges leaving

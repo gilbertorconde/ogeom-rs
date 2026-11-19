@@ -1002,11 +1002,22 @@ fn rounds_by_engine_routes(
         if once.is_empty() {
             return Ok(None);
         }
-        let once = whole_rims(model, solid, once, tol)?;
-        if let Some(built) = crate::engine::round_rims(model, solid, &once, tol)? {
+        let whole = whole_rims(model, solid, once, tol)?;
+        if let Some(built) = crate::engine::round_rims(model, solid, &whole, tol)? {
             return Ok(Some(built));
         }
-        crate::engine::round_curved(model, solid, &once, tol)
+        if let Some(built) = crate::engine::round_curved(model, solid, &whole, tol)? {
+            return Ok(Some(built));
+        }
+        // A cusp's S asked on one side of the tangent point, the rim's arc
+        // past it left sharp: the arc as asked (amendment "a cusp's S, one
+        // side or two").
+        if whole.len() > once.len()
+            && !crate::setback::cusp_corners(model, solid, once, tol)?.is_empty()
+        {
+            return crate::engine::round_curved(model, solid, once, tol);
+        }
+        Ok(None)
     };
     // A seam (an edge between faces of one carrier a boolean split) names
     // nothing, as for chamfers.

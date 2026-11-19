@@ -25,6 +25,21 @@ bump may break the API and a patch bump may not.
     name for every blend entry, since mainstream CAD blends each body on
     its own. Before, it was refused with the engine's generic message.
 
+- **Fixed: a cusp's S asked on one side of the tangent point** (#900).
+  - printCAD's plate with the boss's foot arc and the plate's top edge
+    rounded on one side of the tangent point only, the edges past it left
+    sharp, now builds at every radius from 0.25 to 1.5 (a quarter of the
+    boss's radius). It closes on one patch down to the tangent point, as an
+    arm's side edge into a hub does, G1 within 6.6e-5. Before, it was
+    refused with "a round turning through an S on one side of a cusp did
+    not close".
+  - Where a rim's arc runs on into the rest of its circle left sharp, the
+    concave band's end cap now faces out of the fill. Before, its two
+    faces at the vertex left the way it faced undecided, and the cap could
+    come out reversed.
+  - printCAD's chain rounded on both sides is now checked to build at
+    every radius from 0.25 to 1.5 in both orders.
+  - ADR 0001, amendment "a cusp's S on one side while the top runs on".
 - **Fixed: chamfers refused since 0.19.0** (#1161).
   - `chamfer_edges_cornered` with `ChamferCorner::Point` now builds every
     request that has no vertex where three or more bevels meet, exactly as

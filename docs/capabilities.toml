@@ -1040,12 +1040,14 @@ confusions. Other support changes retain their named refusals. \
 Where the request also rounds the \
 plate's top edge along that side, one tangent chain through the tangent \
 point, the edge's convex round turns into the foot's concave one through \
-an S on each side of that point: two patches G1 to the bands, the top, \
-the side and the wall, held inside the solid and the foot's fill. A cusp \
-rounded on one side of the tangent point only (an arm's side edge and its \
-arc into a hub) closes the same way with one patch. It builds at radius 1 \
-on a wall of radius 6 (printCAD's case, and the arm and hub); other radii \
-are refused by name. Also in this restriction: \
+an S on each side of that point, closed by one patch over the tangent \
+point, G1 to the bands, the top, the side and the wall, held inside the \
+solid and the foot's fill. A cusp rounded on one side of the tangent point \
+only closes on one patch down to the tangent point: an arm's side edge and \
+its arc into a hub, or a plate's edge and the boss's foot arc on one side \
+with the edges past the tangent point left sharp. On printCAD's plate (a \
+wall of radius 6) both build at every radius from 0.25 to 1.5. Also in \
+this restriction: \
 a rim where a flat cap meets a coaxial cylinder or cone (a drum's top, a \
 frustum's foot, a tapered bore) rounds to its exact torus band, where the \
 tube stands clear of its axis, and to the fitted band where that is what \
