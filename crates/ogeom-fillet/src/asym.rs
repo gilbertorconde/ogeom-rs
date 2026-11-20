@@ -764,9 +764,13 @@ pub(crate) fn rim_fits(
 /// stops short of the axis. On any other seat (a curved crease, an edge
 /// along a drum's ruling) each leg walks its face's section in the plane
 /// square to the crease, as the band's own legs walk it, at stations over
-/// the edge. That reading only starts the search: the answer is
-/// [`blend_limit`](crate::blend_limit)'s for
-/// [`BlendSizing::RoundDistances`](crate::BlendSizing::RoundDistances)
+/// the edge, and the reading also stops where the faces' tangents at a
+/// station's contacts no longer meet in front of the crease: the shoulder
+/// the conic stands on, gone to infinity where a leg turns a quarter round
+/// a drum, and on a concave crease past the other face's contact once the
+/// drum's tangent crosses that face's line beyond it. That reading only
+/// starts the search: the answer is [`blend_limit`](crate::blend_limit)'s
+/// for [`BlendSizing::RoundDistances`](crate::BlendSizing::RoundDistances)
 /// with the elliptical section, confirmed by building the round on a copy
 /// of the model at scales bracketing it; another section is read there.
 ///
@@ -861,8 +865,9 @@ const STATIONS: u32 = 32;
 /// [`seat_fillet_distances`] on a seat neither a straight edge between
 /// planes nor a rim: each leg walked along its face's section square to
 /// the crease, as the marched band walks it, at stations over the edge,
-/// the scale stepped up until a contact first leaves its face and that
-/// step bisected.
+/// the scale stepped up until a contact first leaves its face or a
+/// station's shoulder leaves the front of its crease, and that step
+/// bisected.
 fn largest_marched(
     model: &Model,
     solid: &Shape,
@@ -892,6 +897,12 @@ fn largest_marched(
         else {
             return Ok(false);
         };
+        // Each section's conic stands on the shoulder its faces' tangents
+        // meet on in front of the crease: a leg turned a quarter round a
+        // drum leaves it no corner.
+        if found.shouldered.iter().any(|s| !s) {
+            return Ok(false);
+        }
         for (points, f) in found.points.iter().zip(&found.faces) {
             for p in points {
                 if !crate::support::on_face_or_boundary(&scratch, solid, f, *p, tol)? {

@@ -160,7 +160,7 @@ pub(super) fn tool(
                 d,
                 profile: a.profile,
             },
-            !grouped,
+            [!grouped; 2],
             tol,
         );
     }
@@ -171,16 +171,18 @@ pub(super) fn tool(
     if let Some(tool) = ruled(model, solid, a, weight, tol)? {
         return Ok(tool);
     }
-    marched(model, solid, a, None, weight, tol)
+    marched(model, solid, a, None, None, weight, tol)
 }
 
 /// The tool of `a`'s band on a seat only the march speaks, its legs `a`'s
-/// distances or, with `laws`, a law for the named face and for the other.
-fn marched(
+/// distances or, with `laws`, a law for the named face and for the other;
+/// stopped flush where `mates` continue its crease.
+pub(super) fn marched(
     model: &mut Model,
     solid: &Shape,
     a: &Asymmetric,
     laws: Option<&[crate::law::Profile; 2]>,
+    mates: Option<(usize, &[crate::fillet::Mate])>,
     weight: crate::marched::ConicWeight,
     tol: Tolerances,
 ) -> OgeomResult<Tool> {
@@ -197,6 +199,7 @@ fn marched(
             &spec,
             laws,
             &[],
+            mates,
             crate::marched::Chord::Conic(weight),
             tol,
         )
@@ -250,7 +253,7 @@ pub(crate) fn varying_marched(
         profile,
     };
     let mut scratch = model.clone();
-    let tool = marched(&mut scratch, solid, &asked, Some(laws), weight, tol)?;
+    let tool = marched(&mut scratch, solid, &asked, Some(laws), None, weight, tol)?;
     let Some(built) = super::planar_tools::applied(
         &mut scratch,
         solid,
@@ -265,32 +268,48 @@ pub(crate) fn varying_marched(
     Ok(Some(built))
 }
 
-/// The tool of `spec` swept over the straight `seat` of `edge`; with
-/// `extend`, a convex seat's run past each end where planes following
-/// the crease there lean back from it, far enough to clear them, and
-/// trimmed by those overhanging it: the circular round's own ends. A
-/// varying law is held level over the run past an end.
+/// The tool of `spec` swept over the straight `seat` of `edge`. With
+/// `extend` at an end (the seat's start, then its end), a convex seat's
+/// band runs past it where planes following the crease there lean back
+/// from it, far enough to clear them, and is trimmed by those overhanging
+/// it: the circular round's own ends. A concave seat's fill ends in the
+/// planes following its crease there: where one is not square to the
+/// crease the fill runs on until it clears them all and is trimmed by
+/// each, kept on the side of the material its face bounds. A varying law
+/// is held level over the run past an end.
 pub(super) fn extended_sweep(
     model: &mut Model,
     solid: &Shape,
     edge: &Shape,
     seat: &crate::support::Seat,
     spec: &RoundSpec,
-    extend: bool,
+    extend: [bool; 2],
     tol: Tolerances,
 ) -> OgeomResult<Tool> {
     let mut seat = seat.clone();
     let mut trims = Vec::new();
     let mut past = [0.0_f64; 2];
-    if seat.convex && extend {
+    if extend.contains(&true) {
         let original = seat.clone();
         let section = PlanarSection::new(&original, spec, tol)?;
         for (end, outward, at) in [(0, -seat.along, seat.start), (1, seat.along, seat.end)] {
+            if !extend[end] {
+                continue;
+            }
             let hosts = [&original.faces[0], &original.faces[1]];
             let Some(planes) = crate::support::following_planes(model, solid, edge, hosts, at)?
             else {
                 continue;
             };
+            // A fill capped square already ends in planes square to it or
+            // running along it.
+            let square = |normal: ogeom_math::Vector| {
+                let rate = normal.dot(outward).abs();
+                rate <= tol.angular() || rate >= 1.0 - tol.angular()
+            };
+            if !original.convex && planes.iter().all(|(_, _, normal)| square(*normal)) {
+                continue;
+            }
             let mut reach = 0.0_f64;
             let s = if end == 0 { 0.0 } else { section.length() };
             let mut hull = section.conic_net_at(s).map_or_else(
@@ -306,7 +325,11 @@ pub(super) fn extended_sweep(
                 for p in &hull {
                     reach = reach.max((origin - *p).dot(normal) / rate);
                 }
-                if rate < -tol.angular() {
+                if !original.convex {
+                    // The fill stands only behind the face, in front of
+                    // which there is no material for it to fill against.
+                    trims.push((origin, -normal));
+                } else if rate < -tol.angular() {
                     trims.push((origin, normal));
                 }
             }

@@ -127,6 +127,110 @@ pub fn fillet_edge_distances_variable(
     )
 }
 
+/// Round a tangent chain of edges with one band whose distance onto `face`
+/// follows `on_face` and onto the chain's other faces `on_other`, each a
+/// law read by the fraction of the chain's length from its start, its
+/// section `profile` between the two contacts: the chain form of
+/// [`fillet_edge_distances_variable`], as
+/// [`fillet_edges_variable`](crate::fillet_edges_variable) is of a
+/// variable radius.
+///
+/// `chain` lists edges running end to end, open or closed, each continuing
+/// the last tangent at their shared vertex, in any order; `face` lies
+/// beside every one of them (a pad's top round its loop of sides and
+/// corner arcs). The laws are laid by arc length along the walk from the
+/// first edge's start the way it runs, carried on back past that start
+/// where the chain is asked from its middle; round a closed chain each law
+/// closes on itself. Each straight edge between planes takes the exact
+/// band of [`fillet_edge_distances_variable`] under its stretch of the
+/// laws, any other edge the band the march builds; the bands meet in their
+/// end sections at each junction, where both stand the laws' same
+/// distances, and are joined across it into one tool. The chain's open
+/// ends are the single edge's own: square caps at a wall, run on past an
+/// end face leaning back from a convex crease, trimmed by one overhanging
+/// it, a concave fill ending in the planes there.
+///
+/// One edge is [`fillet_edge_distances_variable`]'s call, and laws holding
+/// one distance each are the constant round of
+/// [`Blend::RoundDistances`](crate::Blend::RoundDistances) on every edge of
+/// the chain through [`blend_edges`](crate::blend_edges).
+///
+/// What `solid` shares with other shapes is copied before it is worked on
+/// ([`ogeom_algo::on_own_nodes`]), which leaves them as they are.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+/// where `chain` is empty or lies on two solids of a compound, `face` is
+/// not beside every edge, the edges do not run end to end or two meet
+/// other than tangent, a law states no usable distance (an open law round
+/// a closed chain among them), a conic's `rho` is not strictly between 0
+/// and 1, or a contact sets back past its face's side; and as the bands
+/// themselves.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "fillet_edge_distances_variable's own, over a chain"
+)]
+pub fn fillet_edges_distances_variable(
+    model: &mut Model,
+    solid: &Shape,
+    chain: &[Shape],
+    face: &Shape,
+    on_face: &RadiusLaw,
+    on_other: &RadiusLaw,
+    profile: RoundProfile,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    if chain.is_empty() {
+        ogeom_core::ogeom_bail!(
+            Construction,
+            "an asymmetric round over no edges rounds nothing"
+        );
+    }
+    let mut solids = 0;
+    if let Some(built) = crate::compound::each_solid(
+        model,
+        solid,
+        chain,
+        |edge| edge,
+        |model, part, own| {
+            solids += 1;
+            if solids > 1 {
+                ogeom_core::ogeom_bail!(
+                    Construction,
+                    "an asymmetric round's laws run along one chain on one solid; these \
+                     edges lie on two solids of the compound"
+                );
+            }
+            fillet_edges_distances_variable(model, part, own, face, on_face, on_other, profile, tol)
+        },
+    )? {
+        return Ok(built);
+    }
+    if let [edge] = chain {
+        return fillet_edge_distances_variable(
+            model, solid, edge, face, on_face, on_other, profile, tol,
+        );
+    }
+    if let RoundProfile::Conic(_) = profile {
+        profile.weight(0.0)?;
+    }
+    let mut parts = chain.to_vec();
+    parts.push(face.clone());
+    ogeom_algo::on_own_nodes(model, solid, &parts, |model, solid, parts| {
+        let (chain, face) = parts.split_at(parts.len() - 1);
+        crate::engine::varying_distance_chain(
+            model,
+            solid,
+            chain,
+            &face[0],
+            [on_face, on_other],
+            profile,
+            tol,
+        )
+    })
+}
+
 /// The band of a varying asymmetric round on a straight seat between two
 /// planes: the faces in the order the section runs, the net's rows (one
 /// per control value along the edge, each the section's pieces across),

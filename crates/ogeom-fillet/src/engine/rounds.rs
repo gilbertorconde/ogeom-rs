@@ -369,9 +369,25 @@ pub(crate) fn assemble(
                 RoundVertex::Flush
             }
             // A conic round beside an edge left sharp: no mitre or crease is
-            // read from its section, and its strip and the other's cross
-            // where their setbacks differ; not built here yet.
-            (3, 2) if blended.iter().any(|s| conic.contains(&s.edge)) => return Ok(None),
+            // read from its section. A convex and a concave band close on
+            // the signed patch, which reads only the strips' end sections
+            // and their faces' setback corners; two of one sense are left
+            // to the tools that meet them by intersection.
+            (3, 2) if blended.iter().any(|s| conic.contains(&s.edge)) => {
+                let Some(corner) = signed_at(&sections, &here, &round, corners, v, planar, reach)
+                else {
+                    return Ok(None);
+                };
+                if here.iter().any(|s| s.edge == corner.sharp && !s.convex)
+                    || blended.iter().any(|s| varying.contains(&s.edge))
+                    || round.iter().any(|f| consumed[*f])
+                {
+                    return Ok(None);
+                }
+                signed.insert(v, corner);
+                method.insert(v, RoundVertex::Signed);
+                continue;
+            }
             (3, 2) => {
                 match mitre(planar, &sections, &here, &round, corners, v, reach, tol)? {
                     Some((pair, normal)) => {
@@ -528,9 +544,9 @@ pub(crate) fn assemble(
         {
             return Ok(None);
         }
-        // A conic round closes flush in its third face alone, or on the
-        // patch with others at a vertex rounded on every edge; its other
-        // corners are not built here yet.
+        // A conic round closes flush in its third face alone, on the signed
+        // patch (taken above), or on the patch with others at a vertex
+        // rounded on every edge; its other corners are not built here yet.
         let ends_conic = seats
             .values()
             .any(|s| conic.contains(&s.edge) && (s.ends.0 == v || s.ends.1 == v));

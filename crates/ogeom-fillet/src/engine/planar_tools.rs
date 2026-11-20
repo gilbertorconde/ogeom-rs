@@ -111,7 +111,7 @@ pub(crate) fn linear_round(
 }
 
 /// A straight round whose two distances vary, with its contacts checked
-/// on the original faces; a concave one capped square on its end faces.
+/// on the original faces; a concave one ending in the planes at its ends.
 #[allow(clippy::too_many_arguments, reason = "one edge's two distance laws")]
 pub(crate) fn varying_distances(
     model: &mut Model,
@@ -123,10 +123,11 @@ pub(crate) fn varying_distances(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let (seat, named) = crate::asym::straight_seat(model, solid, edge, face, tol)?;
-    // A convex band runs on past an end not square to it, its laws held
-    // level, as the constant band does; a concave one is capped square.
+    // Past an end not square to it the band runs on, its laws held level,
+    // as the constant band does: a convex one until the faces there cut
+    // it, a concave one trimmed by their planes.
     if !seat.convex {
-        square_ends(model, solid, edge, &seat, tol)?;
+        planar_ends(model, solid, edge, &seat, tol)?;
     }
     let laws = if named == 0 {
         laws.clone()
@@ -151,7 +152,8 @@ pub(crate) fn varying_distances(
             }
         }
     }
-    let tool = super::conic_tools::extended_sweep(model, solid, edge, &seat, &spec, true, tol)?;
+    let tool =
+        super::conic_tools::extended_sweep(model, solid, edge, &seat, &spec, [true; 2], tol)?;
     applied(model, solid, std::slice::from_ref(edge), &[tool], tol)?.ok_or_else(|| {
         ogeom_core::ogeom_err!(
             Construction,
@@ -259,10 +261,9 @@ pub(super) fn sweep(
 }
 
 /// Refuses by name where an end of the straight seat's edge meets a face
-/// of `solid`, other than the edge's own two, whose plane is not square to
-/// the edge: a band capped square there would leave or cut what that face
-/// bounds.
-fn square_ends(
+/// of `solid`, other than the edge's own two, that is not a plane: a fill
+/// ends in the planes at its ends.
+fn planar_ends(
     model: &Model,
     solid: &Shape,
     edge: &Shape,
@@ -284,16 +285,12 @@ fn square_ends(
         if !meets {
             continue;
         }
-        let square = match face_normal(model, &face, tol)? {
-            Some(normal) => normal.cross(seat.along).magnitude() <= tol.angular(),
-            None => false,
-        };
-        if !square {
+        if face_normal(model, &face, tol)?.is_none() {
             ogeom_bail!(
                 Construction,
-                "an asymmetric round whose distances vary on a concave edge is capped \
-                 square at its edge's ends, and an end of this edge meets a face not \
-                 square to it; see docs/CAPABILITIES.md, fillet.asymmetric-rounds"
+                "an asymmetric round whose distances vary on a concave edge ends in the \
+                 planes at its edge's ends, and an end of this edge meets a face that is \
+                 not a plane; see docs/CAPABILITIES.md, fillet.asymmetric-rounds"
             );
         }
     }

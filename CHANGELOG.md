@@ -26,6 +26,31 @@ bump may break the API and a patch bump may not.
   - Trim through is the engine's existing construction. With both off, a
     bevel reaching other geometry is refused by name.
 
+- **Added: more asymmetric rounds #877 left refused by name** (#907).
+  - `fillet_edges_distances_variable` takes a tangent chain, open or
+    closed, with a law for each distance laid by arc length along the
+    whole chain. Straight edges between planes get exact bands, other
+    edges the marched band, joined at each junction. Where both laws vary
+    at a junction between a straight edge and an arc, the bands' tangent
+    planes there differ by up to a few hundredths of a radian, as the
+    circular law's chain does.
+  - A concave edge whose end meets a face not square to it: the fill now
+    runs on and is trimmed by that face's plane, for constant and varying
+    distances alike. Before, the constant fill was capped square (or
+    failed with folded faces) and the varying one was refused.
+  - Two bands at a vertex whose third edge is left sharp: a convex and a
+    concave band, asymmetric or circular, now close on the signed patch
+    in a request of rounds alone. A bevel beside an asymmetric round of
+    the same sense now meets it by intersection.
+  - `largest_fillet_distances` on a curved seat now also stops where the
+    faces' tangents at the contacts stop meeting in front of the crease.
+    On a concave drum ruling that reading is where the build stops. On a
+    convex ruling whose leg nears a quarter turn the band's boolean
+    refuses well before it, and the answer is where the boolean stops.
+  - Still refused by name: a curved edge at a vertex left sharp, a
+    convex-and-concave pair beside a bevel, and a varying concave end
+    meeting a face that is not a plane.
+
 - **Added: overflow handling for fillets** (#1171).
   - `Overflow { blend_into_round, hold_edge, hold_edge_at_end,
     trim_through }`, every behaviour on by default, and
