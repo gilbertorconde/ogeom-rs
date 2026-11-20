@@ -11,6 +11,18 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+- **Fixed: the centre and inertia of a solid with a face only its mesh can
+  measure** (#1191).
+  - The volume path integrates most faces in closed form and leaves the
+    rest (a face on a trimmed surface, for one) to their own meshes. The
+    meshed faces were summed as cones from the reference point, which give
+    the right volume face by face but not the right first and second
+    moments. They are now integrated as the same boundary fluxes the closed
+    forms use, exactly on each triangle.
+  - A 40 x 30 x 10 block with a radius-3 bore on a trimmed cylinder had its
+    centre 0.57 off its symmetry plane; it now agrees with the closed form
+    to 1e-7, its inertia to 3e-5. The volume is unchanged.
+
 - **Added: overflow handling for chamfers** (#1172).
   - `chamfer_edges_overflow` takes the fillet's `Overflow` options with a
     `ChamferCorner`. Blend into round and trim through apply to a bevel,
