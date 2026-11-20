@@ -70,12 +70,14 @@ use ogeom_topo::Triangulation;
 pub mod cut;
 pub mod fill;
 pub mod offset;
+pub mod remesh;
 pub mod simplify;
 pub mod smooth;
 
 pub use cut::{Cap, CutReport, Side};
 pub use fill::{Fairing, Fill, FillReport, OPTIMAL_UP_TO};
 pub use offset::{OFFSET_EDGE_ANGLE, OFFSET_FARTHEST, OffsetReport};
+pub use remesh::{RIM_CORNER, Remesh, RemeshReport, SubdivideReport, Subdivision};
 pub use simplify::SimplifyReport;
 pub use smooth::{PASSES, Smooth, SmoothReport};
 
