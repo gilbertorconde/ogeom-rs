@@ -77,6 +77,7 @@ echo "== capabilities =="
 # still exists (symbols against the rustdoc just built, tests against the
 # tree), and docs/CAPABILITIES.md matches the ledger.
 python3 tools/capabilities.py check
+python3 tools/changelog.py check
 
 passing=$(grep -E '^test result:' "$log" \
     | awk -F'ok\\. ' '{split($2,a," "); s+=a[1]} END {print s}')

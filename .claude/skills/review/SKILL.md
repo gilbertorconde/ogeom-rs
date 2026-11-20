@@ -79,7 +79,7 @@ the errors returned. Then check every item for every file:
 - errors: a failure turned into an empty shape or a flag; a refusal without
   a name, or without a test that pins its text;
 - superseded code, aliases and dual paths removed; the capability row and
-  `CHANGELOG.md` updated when behaviour changes.
+  changelog fragment (`changelog.d/`) added when behaviour changes.
 
 Trace each critical scenario from input through the algorithm to the
 measured result. Read unchanged code only to prove an affected path. Build a
