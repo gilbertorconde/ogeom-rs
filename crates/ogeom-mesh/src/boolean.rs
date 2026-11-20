@@ -78,6 +78,7 @@ mod classify;
 mod exact;
 mod pairs;
 mod points;
+mod selfcross;
 mod split;
 
 use ogeom_core::{
@@ -89,6 +90,8 @@ use ogeom_topo::{Model, Shape, Triangulation};
 use self::pairs::{Key, Side, Touch, Tri};
 use self::points::{Def, Mid, P3, Pt, by_weight, normal_approx, normal_sign, orient2d};
 use crate::{Bvh, Deflection};
+
+pub use self::selfcross::{Resolved, resolve_self_intersections, self_intersections};
 
 /// A boolean operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -377,14 +380,7 @@ impl<'a> Operand<'a> {
         let mut edges: FastMap<(u32, u32), u32> = FastMap::default();
         edges.reserve(3 * mesh.triangles.len());
         for (t, &v) in mesh.triangles.iter().enumerate() {
-            let p = v.map(|k| coords(mesh.positions[k as usize]));
-            let flat = (0..3).all(|k| normal_sign(&p, k).is_zero());
-            if flat {
-                ogeom_bail!(
-                    Construction,
-                    "triangle {t} of the {name} mesh is degenerate: its corners are collinear"
-                );
-            }
+            let tri = Self::tri(mesh, t, side, name)?;
             for k in 0..3 {
                 if edges.insert((v[k], v[(k + 1) % 3]), id(t)).is_some() {
                     ogeom_bail!(
@@ -395,12 +391,7 @@ impl<'a> Operand<'a> {
                     );
                 }
             }
-            tris.push(Tri {
-                side,
-                id: id(t),
-                v,
-                p,
-            });
+            tris.push(tri);
         }
         let chunks: Vec<std::ops::Range<usize>> = (0..tris.len())
             .step_by(CHUNK)
@@ -449,6 +440,25 @@ impl<'a> Operand<'a> {
         };
         operand.check_fans()?;
         Ok(operand)
+    }
+
+    /// Triangle `t` of `mesh`, refused where its corners are collinear.
+    /// The mesh's vertex numbers must have been checked.
+    fn tri(mesh: &Triangulation, t: usize, side: Side, name: &str) -> OgeomResult<Tri> {
+        let v = mesh.triangles[t];
+        let p = v.map(|k| coords(mesh.positions[k as usize]));
+        if (0..3).all(|k| normal_sign(&p, k).is_zero()) {
+            ogeom_bail!(
+                Construction,
+                "triangle {t} of the {name} mesh is degenerate: its corners are collinear"
+            );
+        }
+        Ok(Tri {
+            side,
+            id: id(t),
+            v,
+            p,
+        })
     }
 
     /// Every vertex's triangles form one fan.
@@ -506,13 +516,7 @@ impl<'a> Operand<'a> {
 
     /// The triangles of this operand whose boxes touch the box `lo..hi`.
     fn near(&self, lo: P3, hi: P3) -> Vec<u32> {
-        self.bvh.triangles_where(|b: &Aabb| {
-            let (Some(bl), Some(bh)) = (b.low(), b.high()) else {
-                return false;
-            };
-            let (bl, bh) = (coords(bl), coords(bh));
-            (0..3).all(|k| bl[k] <= hi[k] && lo[k] <= bh[k])
-        })
+        near(&self.bvh, lo, hi)
     }
 
     /// No two triangles meet but where they share corners: along their
@@ -579,9 +583,9 @@ impl<'a> Operand<'a> {
             let corner = tri.p.map(|q| Pt::new(Def::Vertex(q)));
             let mid = Mid([&corner[0], &corner[1], &corner[2]]);
             let out = normal_sign(&tri.p, axis);
-            let mut w = classify::winding(&self.tris, &self.bvh, &mid, axis, out, Some(id(t)))?;
+            let mut w = classify::winding(&self.tris, &self.bvh, &mid, axis, out, &[id(t)])?;
             if let Some(o) = also {
-                w += classify::winding(&o.tris, &o.bvh, &mid, axis, out, None)?;
+                w += classify::winding(&o.tris, &o.bvh, &mid, axis, out, &[])?;
             }
             if w != 0 {
                 ogeom_bail!(
@@ -742,6 +746,17 @@ fn flat_apart(a: &Tri, b: &Tri, shared: &[u32]) -> bool {
     }
 }
 
+/// The triangles under `bvh` whose boxes touch the box `lo..hi`.
+fn near(bvh: &Bvh, lo: P3, hi: P3) -> Vec<u32> {
+    bvh.triangles_where(|b: &Aabb| {
+        let (Some(bl), Some(bh)) = (b.low(), b.high()) else {
+            return false;
+        };
+        let (bl, bh) = (coords(bl), coords(bh));
+        (0..3).all(|k| bl[k] <= hi[k] && lo[k] <= bh[k])
+    })
+}
+
 /// How many triangles a parallel task takes.
 const CHUNK: usize = 256;
 
@@ -814,8 +829,10 @@ struct Table {
 }
 
 impl Table {
-    fn new(ops: &[Operand<'_>; 2]) -> Self {
-        let mut pts = Vec::with_capacity(ops[0].mesh.positions.len() + ops[1].mesh.positions.len());
+    /// Over the vertices of one operand, or of two.
+    fn new(ops: &[Operand<'_>]) -> Self {
+        let count = |k: usize| ops.get(k).map_or(0, |o| o.mesh.positions.len());
+        let mut pts = Vec::with_capacity(count(0) + count(1));
         for o in ops {
             pts.extend(
                 o.mesh
@@ -828,7 +845,7 @@ impl Table {
             pts,
             names: FastMap::default(),
             keys: Vec::new(),
-            counts: [ops[0].mesh.positions.len(), ops[1].mesh.positions.len()],
+            counts: [count(0), count(1)],
             rep: Vec::new(),
         }
     }
@@ -868,7 +885,7 @@ impl Table {
     }
 
     /// Merge every point with the lowest-indexed point equal to it.
-    fn merge(&mut self, ops: &[Operand<'_>; 2]) {
+    fn merge(&mut self, ops: &[Operand<'_>]) {
         let n = self.pts.len();
         let mut parent: Vec<u32> = (0..id(n)).collect();
         let explicit = self.counts[0] + self.counts[1];
@@ -1174,7 +1191,7 @@ impl Table {
                     Label::OnOpposite
                 });
             }
-            let w = classify::winding(&other.tris, &other.bvh, &mid, drop, Sign::Positive, None)?;
+            let w = classify::winding(&other.tris, &other.bvh, &mid, drop, Sign::Positive, &[])?;
             match w {
                 0 => Ok(Label::Out),
                 1 => Ok(Label::In),
@@ -1333,6 +1350,21 @@ fn assemble(
         }
     }
     kept.sort_unstable_by_key(|k| k.2);
+    let kept: Vec<([u32; 3], bool)> = kept.into_iter().map(|k| (k.0, k.1)).collect();
+    finish(table, cuts, &kept, deflection_met, "the operands")
+}
+
+/// The mesh of the pieces `kept`, each as its corners and whether it is a
+/// piece of a cut triangle, its vertices rounded, checked closed and
+/// 2-manifold where it could fail to be, messages naming `who` as what
+/// touched.
+fn finish(
+    table: &Table,
+    cuts: &[Cut],
+    kept: &[([u32; 3], bool)],
+    deflection_met: bool,
+    who: &str,
+) -> OgeomResult<MeshBoolean> {
     // Where the result could fail to be 2-manifold: at the points of cut
     // triangles, and where the operands share a point. Elsewhere it is an
     // operand's own surface, kept or dropped a whole region at a time.
@@ -1352,7 +1384,7 @@ fn assemble(
         }
     }
     let mut slot = vec![u32::MAX; table.pts.len()];
-    for k in &kept {
+    for k in kept {
         for &v in &k.0 {
             slot[v as usize] = 0;
         }
@@ -1377,7 +1409,7 @@ fn assemble(
     }
     mesh.triangles = kept.iter().map(|k| k.0.map(|v| slot[v as usize])).collect();
     mesh.deflection_met = deflection_met;
-    check_result(&mesh, &near)?;
+    check_result(&mesh, &near, who)?;
     Ok(MeshBoolean {
         cut: kept.iter().map(|k| k.1).collect(),
         mesh,
@@ -1388,7 +1420,7 @@ fn assemble(
 
 /// The result is closed and 2-manifold about the vertices in `focus`: each
 /// edge at one of them run once each way, one fan about each.
-fn check_result(mesh: &Triangulation, focus: &[bool]) -> OgeomResult<()> {
+fn check_result(mesh: &Triangulation, focus: &[bool], who: &str) -> OgeomResult<()> {
     let at = |v: u32| focus[v as usize];
     let near: Vec<usize> = (0..mesh.triangles.len())
         .filter(|&t| mesh.triangles[t].iter().any(|&v| at(v)))
@@ -1400,7 +1432,7 @@ fn check_result(mesh: &Triangulation, focus: &[bool]) -> OgeomResult<()> {
             if edges.insert((v[k], v[(k + 1) % 3]), id(t)).is_some() {
                 ogeom_bail!(
                     Construction,
-                    "the result would not be 2-manifold: the operands touch along an edge without overlapping there"
+                    "the result would not be 2-manifold: {who} touch along an edge without overlapping there"
                 );
             }
         }
@@ -1437,7 +1469,7 @@ fn check_result(mesh: &Triangulation, focus: &[bool]) -> OgeomResult<()> {
             if count != corners[v as usize] {
                 ogeom_bail!(
                     Construction,
-                    "the result would not be 2-manifold: the operands touch at a point without overlapping there"
+                    "the result would not be 2-manifold: {who} touch at a point without overlapping there"
                 );
             }
         }

@@ -32,7 +32,10 @@ pub mod thicken;
 pub mod triangulate;
 
 pub use attach::{Tessellated, polyline_of, tessellate, triangulation_of};
-pub use boolean::{BoolKind, MeshBoolean, boolean, boolean_with_shape};
+pub use boolean::{
+    BoolKind, MeshBoolean, Resolved, boolean, boolean_with_shape, resolve_self_intersections,
+    self_intersections,
+};
 pub use bvh::{Bvh, Hit};
 pub use curvature::{Curvature, NEIGHBOURS, curvature};
 pub use discretize::{

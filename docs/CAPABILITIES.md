@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 100 |
+| `covered` | 101 |
 | `partial` | 16 |
 | `divergent` | 6 |
 
-122 capabilities. Ratchet: `unreviewed_max = 0`.
+123 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -308,6 +308,7 @@ than a plane or a B-spline over its patch's parameters.
 - **mesh.offset**: Offsetting an editable mesh by a distance with sharp edges and corners kept by least squares over corner-angle-weighted face normals, moves capped, folds repaired by pushing overshooting vertices onto the offset planes and collapsing folded faces while staying a manifold, and a region stepped behind a closed wall · `covered`
 - **mesh.plane-cut**: Cutting an editable mesh by a plane with the section's exact side test, and capping the cut flat and watertight: discs, rings and nested caps, rim gaps bridged within a distance, the rest reported open · `covered`
 - **mesh.section**: Sections of a triangle mesh by a plane or a stack of planes: polylines welded through shared edges, carrying the material side, with exact side tests and non-manifold edges reported · `covered`
+- **mesh.self_intersections**: Finding the triangles where a mesh crosses itself, decided exactly, and resolving a closed mesh into the embedded boundary of what it winds about · `covered`
 - **mesh.shadow**: The shadow of a triangle mesh on a plane, holes kept, and the regions of weighted planar chains, traced with exact integer tests and snap rounding · `covered`
 - **mesh.smoothing-curvature**: Feature-preserving smoothing of an editable mesh onto local least-squares quadrics, creases kept by normal angle, moves capped and blended into a region; mean, Gaussian and principal curvatures with their directions at each vertex of a mesh · `covered`
 - **mesh.spatial-index**: Spatial indexes over meshes and point clouds: nearest point, ball and ray queries, batched in parallel, equal to brute force · `covered`
@@ -337,4 +338,4 @@ than a plane or a B-spline over its patch's parameters.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 8b1f8e725e425cbc -->
+<!-- ledger-checksum: c0b2ee08156fae97 -->

@@ -656,6 +656,22 @@ tests = [
     "crates/ogeom-mesh/src/boolean/tests.rs::random_rigid_motions_balance_their_volumes",
 ]
 
+[[capability]]
+id = "mesh.self_intersections"
+title = "Finding the triangles where a mesh crosses itself, decided exactly, and resolving a closed mesh into the embedded boundary of what it winds about"
+crate = "ogeom-mesh"
+verdict = "covered"
+symbols = [
+    "ogeom_mesh::self_intersections", "ogeom_mesh::resolve_self_intersections",
+    "ogeom_mesh::Resolved",
+]
+tests = [
+    "crates/ogeom-mesh/src/boolean/selfcross/tests.rs",
+    "crates/ogeom-mesh/src/boolean/selfcross/tests.rs::two_overlapping_cubes_cross_one_from_each_and_resolve_to_their_union",
+    "crates/ogeom-mesh/src/boolean/selfcross/tests.rs::grid_aligned_cubes_resolve_to_the_cells_they_wind_about",
+    "crates/ogeom-mesh/src/boolean/selfcross/tests.rs::spheres_resolve_to_the_volume_the_two_operand_union_gives",
+]
+
 # --- ogeom-hlr ------------------------------------------------------------
 
 [[capability]]
