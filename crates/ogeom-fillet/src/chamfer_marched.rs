@@ -537,6 +537,8 @@ pub(crate) struct CreaseContacts {
     /// their contacts along tangents that meet in front of the crease: the
     /// corner a conic section between the contacts stands in.
     pub shouldered: Vec<bool>,
+    /// Each station's point on the crease.
+    pub crease: Vec<Point>,
 }
 
 /// [`CreaseContacts`] of `spec` on `edge` of `solid` at `count + 1`
@@ -662,6 +664,7 @@ pub(crate) fn crease_contacts(
     let mut along = Vec::with_capacity(count as usize + 1);
     let mut points = [Vec::new(), Vec::new()];
     let mut shouldered = Vec::with_capacity(count as usize + 1);
+    let mut crease = Vec::with_capacity(count as usize + 1);
     let mut near = None;
     for k in 0..=count {
         let w = (hi - lo).mul_add(f64::from(k) / f64::from(count), lo);
@@ -679,14 +682,15 @@ pub(crate) fn crease_contacts(
             hosts[0].normal(x[0], x[1], tol),
             hosts[1].normal(x[2], x[3], tol),
         ];
-        let crease = guide.point_at(wrapped(w), tol)?;
+        let on_crease = guide.point_at(wrapped(w), tol)?;
         let tangent = guide.d1_at(wrapped(w), tol)?;
         shouldered.push(match n {
-            [Some(n0), Some(n1)] => shoulder_in_front(p, [n0, n1], crease, tangent, tol),
+            [Some(n0), Some(n1)] => shoulder_in_front(p, [n0, n1], on_crease, tangent, tol),
             _ => false,
         });
         points[0].push(p[0]);
         points[1].push(p[1]);
+        crease.push(on_crease);
     }
     Ok(Some(CreaseContacts {
         faces,
@@ -694,6 +698,7 @@ pub(crate) fn crease_contacts(
         along,
         points,
         shouldered,
+        crease,
     }))
 }
 
