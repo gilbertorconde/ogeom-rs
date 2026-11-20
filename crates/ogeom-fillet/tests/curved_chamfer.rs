@@ -1582,9 +1582,11 @@ fn rolling_bevels_meeting_on_a_plate_against_a_wall_leave_the_wall() {
 
 /// A slab 10 × 14 × 1 with a quarter-disc block 1 high on it (z in
 /// [1, 2]): the block's top rim and top side edge y = 0 chamfered 1.5 run
-/// past its 1 mm walls, whose feet are concave edges on the slab. The
-/// side's bevel would cut below the slab's top: refused by name, naming
-/// the side (ADR 0001, amendment "a bevel stops at a concave floor").
+/// past its 1 mm walls, whose feet are concave edges on the slab. Each
+/// bevel would cut below the slab's top: refused by name, naming the
+/// first in the request, and each alone refused naming itself (ADR 0001,
+/// amendment "a bevel stops at a concave floor", on planes and on a
+/// rim's wall).
 #[test]
 fn rolling_bevels_on_a_block_past_its_feet_are_refused_by_name() {
     let mut m = Model::new();
@@ -1600,16 +1602,144 @@ fn rolling_bevels_on_a_block_past_its_feet_are_refused_by_name() {
         .map(|e| (e.clone(), ogeom_fillet::Chamfer::Symmetric(1.5)))
         .collect();
     let refused = ogeom_fillet::chamfer_edges_checked(&mut m, &s, &specs, T).unwrap_err();
-    let side = asked
-        .iter()
-        .position(|e| {
-            matches!(
-                ogeom_algo::placed_edge_curve(&m, e, T).unwrap(),
-                Some((ogeom_geom::Curve::Line(_), _))
-            )
+    assert_eq!(refused.edges, vec![0], "{}", refused.error);
+    for spec in &specs {
+        let alone = std::slice::from_ref(spec);
+        let refused = ogeom_fillet::chamfer_edges_checked(&mut m, &s, alone, T).unwrap_err();
+        assert_eq!(refused.edges, vec![0], "{}", refused.error);
+        assert!(
+            refused.error.to_string().contains("below the floor"),
+            "{}",
+            refused.error
+        );
+    }
+}
+
+/// A plate 20 × 20 × 2 under a boss of radius 6, 1 high: the boss's top
+/// rim chamfered 1.5 runs down past its 1 mm wall to the foot, a concave
+/// edge on the plate, and would cut below the plate's top: refused by
+/// name (ADR 0001, amendment "a bevel stops at a concave floor", on a
+/// rim's wall). Chamfered 0.8 it builds, the boss less the bevel's
+/// triangle turned about the axis by Pappus, its centroid `0.8 / 3` in
+/// from the wall; and 1 on the wall exactly, reaching the foot, builds.
+#[test]
+fn a_boss_s_rim_bevel_past_its_wall_s_foot_is_refused_by_name() {
+    use core::f64::consts::PI;
+    let mut m = Model::new();
+    let plate = ogeom_algo::make_box(&mut m, up_at(-10.0, -10.0, 0.0), (20.0, 20.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let boss = ogeom_algo::make_cylinder(&mut m, up_at(0.0, 0.0, 2.0), 6.0, 1.0, T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &plate, &boss, T).unwrap().shape;
+    let rim: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| ogeom_algo::shape_bounds(&m, e, T).unwrap().low().unwrap().z > 2.5)
+        .collect();
+    assert!(!rim.is_empty());
+    let at = |d: f64| -> Vec<(Shape, ogeom_fillet::Chamfer)> {
+        rim.iter()
+            .map(|e| (e.clone(), ogeom_fillet::Chamfer::Symmetric(d)))
+            .collect()
+    };
+    let refused = ogeom_fillet::chamfer_edges_checked(&mut m.clone(), &s, &at(1.5), T).unwrap_err();
+    assert!(
+        refused.error.to_string().contains("below the floor"),
+        "{}",
+        refused.error
+    );
+    let why = ogeom_fillet::chamfer_edges(&mut m.clone(), &s, &rim, 1.5, T)
+        .unwrap_err()
+        .to_string();
+    assert!(why.contains("below the floor"), "{why}");
+    let d = 0.8;
+    let mut o = m.clone();
+    let built = ogeom_fillet::chamfer_edges_checked(&mut o, &s, &at(d), T).unwrap();
+    let found = ogeom_algo::check(&o, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let want = 800.0 + 36.0 * PI - 2.0 * PI * (6.0 - d / 3.0) * d * d / 2.0;
+    let got = volume(&o, &built.shape);
+    assert!((got - want).abs() <= 1e-6 * want, "{got} against {want}");
+    let top = explore_unique(&m, &s, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let (p, n) = ogeom_algo::face_normal(&m, f, T).unwrap();
+            n.z > 0.5 && p.z > 2.5
         })
         .unwrap();
-    assert_eq!(refused.edges, vec![side], "{}", refused.error);
+    let reaching: Vec<(Shape, ogeom_fillet::Chamfer)> = rim
+        .iter()
+        .map(|e| {
+            let spec = ogeom_fillet::Chamfer::Distances {
+                face: top.clone(),
+                on_face: 0.5,
+                on_other: 1.0,
+            };
+            (e.clone(), spec)
+        })
+        .collect();
+    let built = ogeom_fillet::chamfer_edges_checked(&mut m, &s, &reaching, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let want = 800.0 + 36.0 * PI - 2.0 * PI * (6.0 - 0.5 / 3.0) * 0.25;
+    let got = volume(&m, &built.shape);
+    assert!((got - want).abs() <= 1e-6 * want, "{got} against {want}");
+}
+
+/// A block 20 × 20 × 8 (z in [-6, 2]) with a ball of radius 5 about the
+/// origin standing out of its top, cut flat at z = 4.5: the dome's top
+/// rim, its wall the sphere down to its foot on the block, a concave
+/// circle at z = 2 about 3.54 along the sphere from the rim. A bevel 0.5
+/// across the top and 4 down the sphere would cut below the block's top:
+/// refused by name. Symmetric at 1 it builds, sound.
+#[test]
+fn a_dome_s_rim_bevel_past_its_sphere_s_foot_is_refused_by_name() {
+    let mut m = Model::new();
+    let block = ogeom_algo::make_box(&mut m, up_at(-10.0, -10.0, -6.0), (20.0, 20.0, 8.0), T)
+        .unwrap()
+        .shape;
+    let ball = ogeom_algo::make_sphere(&mut m, up_at(0.0, 0.0, 0.0), 5.0, T)
+        .unwrap()
+        .shape;
+    let lid = ogeom_algo::make_box(&mut m, up_at(-10.0, -10.0, 4.5), (20.0, 20.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &block, &ball, T).unwrap().shape;
+    let s = ogeom_bool::cut(&mut m, &s, &lid, T).unwrap().shape;
+    let rim: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| ogeom_algo::shape_bounds(&m, e, T).unwrap().low().unwrap().z > 4.0)
+        .collect();
+    assert!(!rim.is_empty());
+    let top = explore_unique(&m, &s, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| ogeom_algo::face_normal(&m, f, T).unwrap().0.z > 4.0)
+        .unwrap();
+    let specs: Vec<(Shape, ogeom_fillet::Chamfer)> = rim
+        .iter()
+        .map(|e| {
+            let spec = ogeom_fillet::Chamfer::Distances {
+                face: top.clone(),
+                on_face: 0.5,
+                on_other: 4.0,
+            };
+            (e.clone(), spec)
+        })
+        .collect();
+    let refused = ogeom_fillet::chamfer_edges_checked(&mut m.clone(), &s, &specs, T).unwrap_err();
+    assert!(
+        refused.error.to_string().contains("below the floor"),
+        "{}",
+        refused.error
+    );
+    let built = ogeom_fillet::chamfer_edges(&mut m, &s, &rim, 1.0, T).unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
 }
 
 /// Reflex corners where a rim's cone meets a plane bevel, rolling (ADR

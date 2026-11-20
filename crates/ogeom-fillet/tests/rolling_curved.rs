@@ -252,6 +252,103 @@ fn rolls(name: &str, m: &Model, s: &Shape, edges: &[Shape], r: f64, want: Want) 
     }
 }
 
+/// `edges` of `s` rounded `r` with `Rolling` in three orders, where
+/// `Setback` refuses: each builds, sound, to `want` within a millionth,
+/// the orders agree, every new face is the ball's (no patch), and every
+/// edge the rounds leave between two of their own faces is smooth.
+fn rolls_alone(name: &str, m: &Model, s: &Shape, edges: &[Shape], r: f64, want: f64) {
+    let mut first: Option<f64> = None;
+    for seed in 0..3 {
+        let mut rolled = m.clone();
+        let order = shuffled(edges, seed);
+        let built = fillet_edges_corner(&mut rolled, s, &order, r, FilletCorner::Rolling, T)
+            .unwrap_or_else(|e| panic!("{name}, order {seed}: Rolling refused: {e}"));
+        let found = ogeom_algo::check(&rolled, &built.shape, T).unwrap();
+        assert!(
+            found.is_valid(),
+            "{name}, order {seed}: {:?}",
+            found.problems
+        );
+        let got = volume(&rolled, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-6 * want.abs(),
+            "{name}, order {seed}: volume {got} against {want}"
+        );
+        match first {
+            None => first = Some(got),
+            Some(v) => assert!(
+                (got - v).abs() <= 1e-9 * v.abs(),
+                "{name}: order {seed} gives {got} against {v}"
+            ),
+        }
+        for face in explore_unique(&rolled, &built.shape, ShapeType::Face).unwrap() {
+            let surface = rolled
+                .node(&face)
+                .and_then(|n| n.data().as_face())
+                .and_then(|d| rolled.geometry().surface(d.surface))
+                .unwrap();
+            assert!(
+                !matches!(surface, ogeom_geom::SurfaceGeometry::BSpline(_)),
+                "{name}, order {seed}: a corner patch"
+            );
+        }
+        smooth_between_rounds(name, &rolled, &built.shape);
+    }
+}
+
+/// Every edge of `s` between two faces neither of them a plane is G1:
+/// the faces' normals agree at its middle within a millionth of a radian.
+/// A plane meets a round only along the round's contact, G1 by its
+/// construction; two curved faces meet where the rounds join.
+fn smooth_between_rounds(name: &str, m: &Model, s: &Shape) {
+    let faces = explore_unique(m, s, ShapeType::Face).unwrap();
+    let curved = |f: &Shape| {
+        let surface = m
+            .node(f)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| m.geometry().surface(d.surface))
+            .unwrap();
+        !matches!(surface, ogeom_geom::SurfaceGeometry::Plane(_))
+    };
+    for edge in explore_unique(m, s, ShapeType::Edge).unwrap() {
+        let on: Vec<&Shape> = faces
+            .iter()
+            .filter(|f| {
+                explore_unique(m, f, ShapeType::Edge)
+                    .unwrap()
+                    .iter()
+                    .any(|e| e.is_same(&edge))
+            })
+            .collect();
+        let [a, b] = on.as_slice() else { continue };
+        if !(curved(a) && curved(b)) {
+            continue;
+        }
+        let Some((c, (t0, t1))) = ogeom_algo::placed_edge_curve(m, &edge, T).unwrap() else {
+            continue;
+        };
+        let mid = c.point_at(0.5 * (t0 + t1), T).unwrap();
+        let normal = |f: &Shape| {
+            use ogeom_geom::{Surface as _, Transformable as _};
+            let surface = m
+                .node(f)
+                .and_then(|n| n.data().as_face())
+                .and_then(|d| m.geometry().surface(d.surface))
+                .unwrap()
+                .clone()
+                .transformed(&f.transform(m.datums()).unwrap(), T)
+                .unwrap();
+            let (u, v) = ogeom_algo::project_on_surface(&surface, mid, 16, T)
+                .unwrap()
+                .parameters;
+            surface.normal_at(u, v, T).unwrap().vector()
+        };
+        // Up to the faces' senses: a crease is a turn, not a flip.
+        let turn = normal(a).dot(normal(b)).abs().clamp(0.0, 1.0).acos();
+        assert!(turn <= 1e-6, "{name}: a crease of {turn} rad at {mid:?}");
+    }
+}
+
 /// The obround pocket's floor loop: two lines and two half circles of
 /// radius 3, tangent all round, rounded 1 (concave). The bands run on
 /// through every junction: the pocket plus the section swept round the
@@ -398,18 +495,38 @@ fn uprights_rounded_after_the_top_roll_into_its_rounds() {
     );
 }
 
-/// A plate 20 × 20 × 4 under a D-shaped boss (a half disc of radius 4 on
-/// its chord, 6 high): its foot loop and the two uprights at the chord's
-/// ends rounded 1. At each foot corner two concave rounds and a convex one
-/// meet with the boss's cylinder there; the ball's sweep round the
-/// upright's end is no torus on a curved face, and `Setback` refuses the
-/// corner too. Rolling refuses it by name, naming the vertex.
-#[test]
-fn a_mixed_corner_on_a_curved_face_is_refused_by_name() {
-    let mut m = Model::new();
-    let plate = prism(&mut m, &rect(0.0, 0.0, 20.0, 20.0), 0.0, 4.0);
+/// The D of radius `big` on its chord with its two corners rounded `r`
+/// (each round tangent to the chord and to the arc): its area and its
+/// perimeter.
+fn rounded_d(big: f64, r: f64) -> (f64, f64) {
+    let x = ((big - r).powi(2) - r * r).sqrt();
+    let phi = (r / x).atan();
+    let corner = big * big * phi / 2.0 - x * r / 2.0 - r * r * (PI / 2.0 + phi) / 2.0;
+    let area = PI * big * big / 2.0 - 2.0 * corner;
+    let perimeter = 2.0 * x + 2.0 * r * (PI / 2.0 + phi) + big * (PI - 2.0 * phi);
+    (area, perimeter)
+}
+
+/// What a round of radius `r` adds round (or takes within) a convex
+/// outline of perimeter `p`: at `t` from the round's flat face its section
+/// is the outline grown (or shrunk) by `w = r - sqrt(r² - (r - t)²)`, so
+/// over the round's height the area changes by `p ∫w ± π ∫w²`, with
+/// `∫w = r²(1 - π/4)` and `∫w² = r³(5/3 - π/2)`.
+fn grown(p: f64, r: f64, outward: bool) -> f64 {
+    let (w, w2) = (r * r * (1.0 - PI / 4.0), r.powi(3) * (5.0 / 3.0 - PI / 2.0));
+    if outward {
+        p * w + PI * w2
+    } else {
+        p * w - PI * w2
+    }
+}
+
+/// A plate 20 × 20 × 4 under a D-shaped boss: a half disc of radius 4 on
+/// its chord, 6 high.
+fn d_boss(m: &mut Model) -> Shape {
+    let plate = prism(m, &rect(0.0, 0.0, 20.0, 20.0), 0.0, 4.0);
     let boss = prism(
-        &mut m,
+        m,
         &[
             Seg::Line([6.0, 10.0], [14.0, 10.0]),
             Seg::Arc([14.0, 10.0], [10.0, 14.0], [6.0, 10.0]),
@@ -417,23 +534,105 @@ fn a_mixed_corner_on_a_curved_face_is_refused_by_name() {
         4.0,
         6.0,
     );
-    let s = ogeom_bool::fuse(&mut m, &plate, &boss, T).unwrap().shape;
-    let s = solid_of(&m, &s);
-    let edges: Vec<Shape> = [
+    let s = ogeom_bool::fuse(m, &plate, &boss, T).unwrap().shape;
+    solid_of(m, &s)
+}
+
+/// The D boss's foot loop and its two uprights.
+fn d_boss_foot_and_uprights(m: &Model, s: &Shape) -> Vec<Shape> {
+    [
         Point::new(10.0, 10.0, 4.0),
         Point::new(10.0, 14.0, 4.0),
         Point::new(6.0, 10.0, 7.0),
         Point::new(14.0, 10.0, 7.0),
     ]
     .iter()
+    .map(|&p| edge_near(m, s, p))
+    .collect()
+}
+
+/// The D boss's foot loop and its two uprights rounded 1. At each foot
+/// corner the two concave rounds and the convex upright meet with the
+/// boss's cylinder there; the ball rolls round the upright band's end on
+/// the torus about its axis, major radius 2, so every section of the boss
+/// at `t` above the plate within the round is the rounded D grown by the
+/// round's offset there (ADR 0001, amendment "mixed rolling corners on
+/// curved faces"). `Setback` refuses the corner.
+#[test]
+fn a_d_boss_s_mixed_foot_corners_roll_round_the_uprights() {
+    let mut m = Model::new();
+    let s = d_boss(&mut m);
+    let edges = d_boss_foot_and_uprights(&m, &s);
+    assert!(fillet_edges(&mut m.clone(), &s, &edges, 1.0, T).is_err());
+    let (area, perimeter) = rounded_d(4.0, 1.0);
+    let want = 1600.0 + area * 6.0 + grown(perimeter, 1.0, true);
+    rolls_alone("D boss foot", &m, &s, &edges, 1.0, want);
+}
+
+/// The same with the boss's top loop too: the top corners are of one
+/// sense and close on the ball's sphere, the sections there the rounded D
+/// shrunk by the top round's offset.
+#[test]
+fn a_d_boss_rounded_all_round_rolls_at_its_foot_and_top() {
+    let mut m = Model::new();
+    let s = d_boss(&mut m);
+    let mut edges = d_boss_foot_and_uprights(&m, &s);
+    edges.extend(edges_of_face_at(&m, &s, Point::new(10.0, 12.0, 10.0)));
+    assert_eq!(edges.len(), 6);
+    let (area, perimeter) = rounded_d(4.0, 1.0);
+    let want = 1600.0 + area * 6.0 + grown(perimeter, 1.0, true) - grown(perimeter, 1.0, false);
+    rolls_alone("D boss all round", &m, &s, &edges, 1.0, want);
+}
+
+/// A D pocket (a half disc of radius 5 on its chord, 5 deep): its rim
+/// and the two uprights at the chord's ends rounded 1. At each rim corner
+/// two convex rounds and the concave upright meet with the pocket's
+/// cylinder: the void's section at `t` below the top within the round is
+/// the rounded D grown by the round's offset there.
+#[test]
+fn a_d_pocket_s_mixed_rim_corners_roll_round_the_uprights() {
+    let mut m = Model::new();
+    let s = pocketed(
+        &mut m,
+        &[
+            Seg::Line([10.0, 12.0], [20.0, 12.0]),
+            Seg::Arc([20.0, 12.0], [15.0, 17.0], [10.0, 12.0]),
+        ],
+    );
+    // The boolean leaves the rim's arc in two pieces.
+    let h = 5.0 * core::f64::consts::FRAC_1_SQRT_2;
+    let edges: Vec<Shape> = [
+        Point::new(15.0, 12.0, 10.0),
+        Point::new(15.0 + h, 12.0 + h, 10.0),
+        Point::new(15.0 - h, 12.0 + h, 10.0),
+        Point::new(10.0, 12.0, 7.0),
+        Point::new(20.0, 12.0, 7.0),
+    ]
+    .iter()
     .map(|&p| edge_near(&m, &s, p))
     .collect();
-    assert!(fillet_edges(&mut m.clone(), &s, &edges, 1.0, T).is_err());
+    let (area, perimeter) = rounded_d(5.0, 1.0);
+    let want = 9000.0 - area * 5.0 - grown(perimeter, 1.0, true);
+    rolls_alone("D pocket rim", &m, &s, &edges, 1.0, want);
+}
+
+/// The D boss's foot line and one upright rounded without the foot arc:
+/// a convex and a concave round meet beside an edge left sharp, which the
+/// ball's sweep does not close. Refused by name, naming the vertex.
+#[test]
+fn a_mixed_corner_beside_an_edge_left_sharp_on_a_curved_face_is_refused_by_name() {
+    let mut m = Model::new();
+    let s = d_boss(&mut m);
+    let edges = vec![
+        edge_near(&m, &s, Point::new(10.0, 10.0, 4.0)),
+        edge_near(&m, &s, Point::new(14.0, 10.0, 7.0)),
+    ];
     let why = fillet_edges_corner(&mut m, &s, &edges, 1.0, FilletCorner::Rolling, T)
         .unwrap_err()
         .to_string();
     assert!(
-        why.contains("does not close the vertex at") && why.contains("curved"),
+        why.contains("does not close the vertex at (14.000000, 10.000000, 4.000000)")
+            && why.contains("left sharp"),
         "{why}"
     );
 }

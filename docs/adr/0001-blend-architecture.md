@@ -2489,8 +2489,10 @@ bevel would pass under, a change to a face the request does not name.
   the face, such as a block on the top) is non-local, as amendment "M5a"
   builds it, and not this.
 - A leg that reaches the concave edge exactly builds.
-- Curved seats (a rim's wall, a crease) are not read by this rule yet;
-  they keep M5b's tools.
+- A rim's seat (a cylinder, a cone or a sphere under a planar cap) is
+  read the same way (amendment "a rim's bevel stops at a concave
+  floor"). A crease on a marched seat is not read yet; it keeps M5b's
+  tools.
 
 **Oracle.** The step: at 1.5 the request of three edges is refused naming
 the step's spec alone; at 1 the step's bevel alone takes `20 · 1²/2`.
@@ -2600,7 +2602,8 @@ concave rounds meet.
 - Mixed rounds on a curved face are refused by `Setback` as well ("a
   convex and a concave round meeting at one vertex close as one corner
   only where every face of the vertex is planar"), so every request
-  `Setback` builds, `Rolling` builds too.
+  `Setback` builds, `Rolling` builds too. `Rolling` now closes some of
+  them (amendment "mixed rolling corners on curved faces").
 - The order of the edges changes nothing, as for the default.
 
 Making `Rolling` the default corner is a separate decision and is not
@@ -2617,7 +2620,8 @@ orders, sound and with no patch face:
   rounds on a concave cylinder, uprights rounded into an earlier rounded
   top: as `Setback`;
 - a D-shaped boss's foot with its uprights (mixed, on its cylinder):
-  refused by name by both.
+  refused by name by both at the time; `Rolling` now builds it (amendment
+  "mixed rolling corners on curved faces").
 
 ### Amendment: chamfers the engine refused on 0.19.0 (#1161)
 
@@ -3013,6 +3017,127 @@ case per refusal:
 
 The test profile is optimised less. There the cases above take 20 to
 400 ms on planes and 0.1 to 4 s on curved faces.
+
+### Amendment: mixed rolling corners on curved faces (#1145)
+
+Amendment "rolling corners on curved faces" left a vertex mixing convex
+and concave rounds refused by name wherever a face there is curved: a
+D-shaped boss's foot with its uprights, a D-shaped pocket's rim with its
+uprights. Mainstream CAD closes these corners with the ball, as it does
+between planes.
+
+**What the ball does there.** Take the D-shaped boss: at a foot corner
+the upright's round is convex, the foot's two rounds (along the chord's
+plane and round the boss's cylinder) concave, all of radius `r`. The
+upright's edge is a line square to the plate, and its faces (the chord's
+plane and the cylinder) are ruled along it, so its band is a cylinder of
+radius `r` about an axis square to the plate.
+
+- The ball touching the plate and that band has its centre `r` above
+  the plate and `2 r` from the band's axis: the torus of amendment
+  "rolling corners", major radius `2 r`, minor `r`.
+- It meets the chord's foot band where the centre circle touches that
+  band's centre line, on the meridian square to the chord's plane.
+- It meets the cylinder's foot band (a torus about the boss's axis) where
+  the two centre circles touch. The band's axis stands `R - r` from the
+  boss's (`R` the boss's radius), so the circle of radius `2 r` about it
+  touches the circle of radius `R + r` about the boss's axis from inside,
+  on the meridian through both axes. Where centre curves touch, the two
+  sweeps share the ball's circle there, so the joint is G1.
+- The corner face thus spans more than a quarter turn of the torus
+  (`π/2 + asin(r / (R - r))` on the half disc), but it is still the ball's
+  sweep, and every new face is a plane, a cylinder or a torus.
+
+**How it is built.** That torus is exactly the round of the upright
+band's foot on the plate: a concave edge between the band (a convex
+cylinder of radius `r`) and the plate, rounded `r`. And the foot's other
+two rounds run on tangent into it: the band's foot arc is tangent to
+each of their edges where the band touches the face beside it. So the
+lone bands are built first, then the rest of the request as tangent
+chains through each lone band's foot. Between planes the same order
+gives the torus of amendment "rolling corners", which the engine still
+builds there directly.
+
+**Rule.** With `FilletCorner::Rolling`, where a vertex mixing convex and
+concave rounds touches a curved face:
+
+- it must join three edges, all three in the request (the lone round
+  and the two of the other sense);
+- the face across from the lone round (the cap) is a plane;
+- the lone round's edge is a line square to the cap;
+- each face beside it is a plane containing its direction or a cylinder
+  whose axis is parallel to it.
+
+Then the lone bands go first, with every round reached from them
+through vertices of one sense (whose corners are the default's: a D
+boss's top loop with its uprights closes on spheres), and the rest
+after, each lone band's foot on its cap added to the second pass. Any
+other mixed vertex on a curved face is refused by name, naming the
+vertex and the condition that fails, as is a round meeting a lone round
+that is itself reached from another lone band first. The order of the
+edges changes nothing: both passes are order independent. `Setback`
+still refuses these corners.
+
+Not built: a lone round whose edge is an arc or a line not square to the
+cap (the sweep round its end is then a canal surface on an ellipse, not
+analytic), and a lone round beside a cone.
+
+**Oracle** (`tests/rolling_curved.rs`), sound in three orders, no patch
+face, every edge between two curved faces G1 within 1e-6 rad, volume
+within 1e-6:
+
+- At `t` from the plate within the foot round, the boss's section is the
+  rounded D (the D with each corner rounded `r` in plan) grown by the
+  round's offset `w = r - sqrt(r² - (r - t)²)`, since the torus's section
+  there is the circle of radius `r + w` about the band's axis. The rounded
+  D is convex, so by Steiner's formula its area grows by `P w + π w²`.
+  With `∫w dt = r²(1 - π/4)` and `∫w² dt = r³(5/3 - π/2)`, the D boss
+  (radius 4, 6 high, on a 20 × 20 × 4 plate, `r = 1`) comes to
+  `1600 + 6 A + P r²(1 - π/4) + π r³(5/3 - π/2)`, with `A` and `P` the
+  rounded D's area and perimeter in closed form.
+- With the top loop too, the top's sphere corners shrink the section the
+  same way: less `P r²(1 - π/4) - π r³(5/3 - π/2)`.
+- The D pocket (radius 5, 5 deep in a 30 × 30 × 10 block) with its rim
+  and uprights: the void's section grows the same way within the rim
+  round, `9000 - 5 A - P r²(1 - π/4) - π r³(5/3 - π/2)`.
+- The foot line and one upright without the foot arc: refused by name,
+  naming the vertex ("beside an edge left sharp").
+
+### Amendment: a rim's bevel stops at a concave floor (#1145)
+
+Amendment "a bevel stops at a concave floor" read straight edges between
+planes only. A rim's bevel running down a curved wall past a concave
+foot still went to M5b's tools and cut a groove into the floor: a boss
+on a plate, its top rim chamfered farther down the wall than the wall is
+high.
+
+**Rule.** The same rule, on a rim's seat. A convex rim bevel (a planar
+cap and a coaxial cylinder, cone or sphere wall) is refused by name,
+naming its spec, where a concave edge bounding its wall or its cap has a
+point strictly inside that leg's strip, within the rim's turn:
+
+- on a cylinder or cone wall, the strip between the rim's plane and the
+  contact's depth along the axis (the leg read along the wall's ruling);
+- on a sphere wall, between the rim's latitude and the contact's (the
+  leg read along the great circle);
+- on the cap, between the rim's circle and the contact's.
+
+The wall's outer ring is read, and on a wall in one piece round its axis
+any ring of circles about the axis (its foot has a ring of its own). A
+ring standing within a face is a feature the bevel reaches under, the
+non-local case of amendment "M5a", as before. A leg that reaches the
+concave edge exactly builds. A convex far side still rolls over (M5b): a
+drum's rim chamfered past its short wall is a notch.
+
+**Oracle** (`tests/curved_chamfer.rs`): a boss of radius 6, 1 high, on a
+plate, its top rim chamfered 1.5 is refused by name; at 0.8 it builds
+the boss less the bevel's triangle turned about the axis by Pappus,
+within 1e-6; with 1 on the wall exactly it builds to its Pappus volume.
+A dome (a ball of radius 5 standing out of a block, cut flat at 4.5)
+chamfered 0.5 across the top and 4 down the sphere, past its foot on the
+block, is refused by name; symmetric at 1 it builds, sound. The
+quarter-disc block on a slab now refuses its rim alone as well as its
+side.
 
 ## 12. Acceptance corpus
 

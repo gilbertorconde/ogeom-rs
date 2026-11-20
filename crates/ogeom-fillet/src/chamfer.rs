@@ -384,8 +384,11 @@ pub(crate) fn chamfer_edges_blamed(
 /// the face ends on a floor or a ledge (ADR 0001, amendment "a bevel stops
 /// at a concave floor"). Rolling over a convex far side is a notch, and a
 /// bevel reaching under a feature standing within its face (a hole of the
-/// face) is non-local; neither is this. `None` where no spec does; a spec whose seat is not
-/// read here (a curved edge or face) is passed over.
+/// face) is non-local; neither is this. On a rim the same holds of each
+/// leg's strip: down the wall between the rim and its contact, or across
+/// the cap between the rim's circle and the contact's. `None` where no
+/// spec does; a spec whose seat is not read here (a crease on a marched
+/// seat) is passed over.
 ///
 /// # Errors
 ///
@@ -399,7 +402,24 @@ pub(crate) fn below_a_floor(
 ) -> OgeomResult<Option<usize>> {
     let eps = tol.confusion() * 100.0;
     for (i, (edge, spec)) in specs.iter().enumerate() {
-        let Ok(Legs::Straight(seat, per)) = legs(model, solid, edge, spec, tol) else {
+        let read = legs(model, solid, edge, spec, tol);
+        if let Ok(Legs::Rim(seat, on_wall, on_cap)) = &read {
+            if !seat.additive()
+                && rim_below_a_floor(model, solid, edge, seat, (*on_wall, *on_cap), tol)?
+            {
+                return Ok(Some(i));
+            }
+            continue;
+        }
+        if let Ok(Legs::Sphere(seat, on_wall, on_cap)) = &read {
+            if seat.tau > 0.0
+                && sphere_below_a_floor(model, solid, edge, seat, (*on_wall, *on_cap), tol)?
+            {
+                return Ok(Some(i));
+            }
+            continue;
+        }
+        let Ok(Legs::Straight(seat, per)) = read else {
             continue;
         };
         if !seat.convex {
@@ -449,6 +469,238 @@ pub(crate) fn below_a_floor(
         }
     }
     Ok(None)
+}
+
+/// Whether a convex rim bevel on `seat` with legs `(on_wall, on_cap)`
+/// would cut below a floor: a concave edge bounding its wall or its cap
+/// crosses the leg's strip there, strictly between the rim and the
+/// contact and within the rim's turn ([`below_a_floor`]).
+fn rim_below_a_floor(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    seat: &RevolvedSeat,
+    (on_wall, on_cap): (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let eps = tol.confusion() * 100.0;
+    let up = seat.up;
+    let reach = wall_depth(seat, on_wall);
+    let down_the_wall = |q: ogeom_math::Point| {
+        let depth = -seat.tau * (q - seat.centre).dot(up);
+        depth > eps && depth < reach - eps
+    };
+    let across = cap_strip(
+        seat.centre,
+        up,
+        seat.radius,
+        seat.sigma * seat.tau,
+        on_cap,
+        eps,
+    );
+    let wall = strip_crosses_a_floor(
+        model,
+        solid,
+        edge,
+        &seat.wall_face,
+        seat.centre,
+        up,
+        on_wall,
+        &down_the_wall,
+        true,
+        tol,
+    )?;
+    Ok(wall
+        || strip_crosses_a_floor(
+            model,
+            solid,
+            edge,
+            &seat.cap_face,
+            seat.centre,
+            up,
+            on_cap,
+            &across,
+            false,
+            tol,
+        )?)
+}
+
+/// As [`rim_below_a_floor`] for a rim on a sphere, the wall's strip
+/// between the rim's latitude and the contact's.
+fn sphere_below_a_floor(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    seat: &SphereSeat,
+    (on_wall, on_cap): (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let eps = tol.confusion() * 100.0;
+    let up = seat.up;
+    let rim = seat.wall_latitude(0.0);
+    let reach = seat.wall_latitude(on_wall);
+    let (low, high) = (rim.min(reach), rim.max(reach));
+    let margin = eps / seat.sphere_radius;
+    let down_the_wall = |q: ogeom_math::Point| {
+        let rel = q - seat.centre;
+        let h = rel.dot(up);
+        let rho = (rel - up * h).magnitude();
+        let latitude = (h - seat.height).atan2(rho);
+        latitude > low + margin && latitude < high - margin
+    };
+    let across = cap_strip(
+        seat.centre,
+        up,
+        seat.radius,
+        seat.sigma * seat.tau,
+        on_cap,
+        eps,
+    );
+    let wall = strip_crosses_a_floor(
+        model,
+        solid,
+        edge,
+        &seat.wall_face,
+        seat.centre,
+        up,
+        on_wall,
+        &down_the_wall,
+        true,
+        tol,
+    )?;
+    Ok(wall
+        || strip_crosses_a_floor(
+            model,
+            solid,
+            edge,
+            &seat.cap_face,
+            seat.centre,
+            up,
+            on_cap,
+            &across,
+            false,
+            tol,
+        )?)
+}
+
+/// The cap's strip of a rim of `radius` about `centre` and `up`: the
+/// points whose distance off the axis lies strictly between the rim's and
+/// the contact's, a leg of `on_cap` in where `inward` is positive and out
+/// where it is negative.
+fn cap_strip(
+    centre: ogeom_math::Point,
+    up: ogeom_math::Vector,
+    radius: f64,
+    inward: f64,
+    on_cap: f64,
+    eps: f64,
+) -> impl Fn(ogeom_math::Point) -> bool {
+    let reach = inward.mul_add(-on_cap, radius);
+    let (low, high) = (radius.min(reach), radius.max(reach));
+    move |q: ogeom_math::Point| {
+        let rel = q - centre;
+        let rho = (rel - up * rel.dot(up)).magnitude();
+        rho > low + eps && rho < high - eps
+    }
+}
+
+/// Whether a concave edge bounding `face` has a point in `strip` within
+/// the turn of the rim `edge` (about `centre` and `up`), its leg `leg`
+/// along the face. The face's outer ring is read, and with `wall` any
+/// ring of circles about the axis too (a wall in one piece round its axis
+/// has its foot in a ring of its own); a ring standing within the face is
+/// a feature the bevel reaches under, the non-local case.
+#[allow(clippy::too_many_arguments, reason = "one strip, read on one face")]
+fn strip_crosses_a_floor(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    face: &Shape,
+    centre: ogeom_math::Point,
+    up: ogeom_math::Vector,
+    leg: f64,
+    strip: &dyn Fn(ogeom_math::Point) -> bool,
+    wall: bool,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    use ogeom_geom::Curve3d as _;
+    const SAMPLES: u32 = 32;
+    let conf = tol.confusion();
+    if leg <= conf * 100.0 {
+        return Ok(false);
+    }
+    let (rim, (r0, r1)) = edge_curve(model, edge, tol)?;
+    let closed = ogeom_algo::edge_vertices(model, edge)?.is_some_and(|(a, b)| a.is_same(&b));
+    let radius = rim.point_at(r0, tol)?.distance(centre);
+    let within_turn = |q: ogeom_math::Point| -> OgeomResult<bool> {
+        if closed {
+            return Ok(true);
+        }
+        let rel = q - centre;
+        let off = rel - up * rel.dot(up);
+        let m = off.magnitude();
+        if m <= conf {
+            return Ok(false);
+        }
+        let on_rim = centre + off * (radius / m);
+        let found = ogeom_algo::project_on_curve(&rim, on_rim, 256, tol)?;
+        let margin = (r1 - r0).abs() * 1e-6;
+        Ok(found.point.distance(on_rim) <= conf * 100.0
+            && found.parameter > r0.min(r1) + margin
+            && found.parameter < r0.max(r1) - margin)
+    };
+    let about_the_axis = |e: &Shape| -> OgeomResult<bool> {
+        let (curve, _) = edge_curve(model, e, tol)?;
+        Ok(match curve {
+            Curve::Circle(c) => {
+                let circle = c.circle();
+                let axis = circle.frame().z().vector();
+                axis.cross(up).magnitude() <= tol.angular()
+                    && (circle.frame().origin() - centre).cross(up).magnitude() <= conf
+            }
+            _ => false,
+        })
+    };
+    let wires = model.children_of(face)?;
+    for (k, wire) in wires.iter().enumerate() {
+        let sides = explore_unique(model, wire, ShapeType::Edge)?;
+        if k > 0 {
+            if !wall {
+                continue;
+            }
+            let mut ring = !sides.is_empty();
+            for side in &sides {
+                ring &= about_the_axis(side)?;
+            }
+            if !ring {
+                continue;
+            }
+        }
+        for side in sides {
+            if crate::support::same_occurrence(model, &side, edge, tol) {
+                continue;
+            }
+            // A side whose faces meet tangent, or that parts no two
+            // faces, is no concave edge.
+            let concave = crate::setback::edge_is_convex(model, solid, &side, leg, tol)
+                .ok()
+                .flatten()
+                == Some(false);
+            if !concave {
+                continue;
+            }
+            let Ok((curve, (a, b))) = edge_curve(model, &side, tol) else {
+                continue;
+            };
+            for n in 1..SAMPLES {
+                let q = curve.point_at(a + (b - a) * f64::from(n) / f64::from(SAMPLES), tol)?;
+                if strip(q) && within_turn(q)? {
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// The refusal of a bevel that would cut below a floor ([`below_a_floor`]).
