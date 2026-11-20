@@ -88,6 +88,7 @@ pub(crate) mod vertex_read;
 pub(crate) mod vertex_setbacks;
 mod vertex_tools;
 mod vertices;
+mod void_side;
 
 pub(crate) use alone::rounds as alone_rounds;
 pub(crate) use apart::rounds as apart_rounds;
@@ -131,6 +132,7 @@ pub(crate) use trimmed::{
     chamfer as chamfer_curved, chamfer_mitred as chamfer_curved_mitred, chamfer_patched,
     convex_one_boolean, creases_one_boolean, rims_revolved, rolling_tools,
 };
+pub(crate) use void_side::rounds as void_side_rounds;
 
 /// Whether `solid` is one the polyhedral classes read: one solid bounded by
 /// planes, each face its rings of straight edges.

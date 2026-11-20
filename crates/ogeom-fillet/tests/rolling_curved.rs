@@ -844,3 +844,648 @@ fn a_d_pocket_s_floor_loop_rolls_as_its_line_and_arc_bands_cross() {
         Want::Volume(want),
     );
 }
+
+/// A piece of a plan outline for the oracle: a line, or an arc about a
+/// centre with its radius, anticlockwise where `ccw`.
+#[derive(Clone, Copy)]
+enum Piece {
+    Line([f64; 2], [f64; 2]),
+    Arc([f64; 2], f64, bool),
+}
+
+/// A piece's carrier offset in plan: a line (a point, a unit direction) or
+/// a circle (a centre, a radius).
+type Carrier = Result<([f64; 2], [f64; 2]), ([f64; 2], f64)>;
+
+/// The pieces of `segs`, an anticlockwise outline.
+fn pieces(segs: &[Seg]) -> Vec<Piece> {
+    segs.iter()
+        .map(|s| match *s {
+            Seg::Line(a, b) => Piece::Line(a, b),
+            Seg::Arc(a, b, c) => {
+                let (o, r) = circle_through(a, b, c);
+                let turn = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+                Piece::Arc(o, r, turn > 0.0)
+            }
+        })
+        .collect()
+}
+
+/// The area and perimeter of the anticlockwise outline `segs` with each
+/// corner rounded `|r|` in plan: each corner's circle centred where the
+/// two pieces' carriers offset `r` inwards meet nearest the corner (a
+/// negative `r` offsets them outwards, rounding reflex corners), its arc
+/// between its feet on them. By Green's theorem piece by piece.
+fn rounded_outline(segs: &[Seg], r: f64) -> (f64, f64) {
+    let ps = pieces(segs);
+    let n = ps.len();
+    let sub = |a: [f64; 2], b: [f64; 2]| [a[0] - b[0], a[1] - b[1]];
+    let len = |a: [f64; 2]| a[0].hypot(a[1]);
+    // The offset carrier of a piece: a line (point, unit direction) or a
+    // circle (centre, radius).
+    let offset = |p: Piece| -> Carrier {
+        match p {
+            Piece::Line(a, b) => {
+                let d = sub(b, a);
+                let l = len(d);
+                let u = [d[0] / l, d[1] / l];
+                Ok(([a[0] - u[1] * r, a[1] + u[0] * r], u))
+            }
+            Piece::Arc(o, rad, ccw) => Err((o, if ccw { rad - r } else { rad + r })),
+        }
+    };
+    let foot = |p: Piece, f: [f64; 2]| -> [f64; 2] {
+        match p {
+            Piece::Line(a, b) => {
+                let d = sub(b, a);
+                let t = (sub(f, a)[0] * d[0] + sub(f, a)[1] * d[1]) / (d[0] * d[0] + d[1] * d[1]);
+                [a[0] + t * d[0], a[1] + t * d[1]]
+            }
+            Piece::Arc(o, rad, _) => {
+                let v = sub(f, o);
+                let l = len(v);
+                [o[0] + v[0] / l * rad, o[1] + v[1] / l * rad]
+            }
+        }
+    };
+    let meet = |a: Carrier, b: Carrier, near: [f64; 2]| -> [f64; 2] {
+        let line_circle = |(p, u): ([f64; 2], [f64; 2]), (o, rho): ([f64; 2], f64)| {
+            let w = sub(p, o);
+            let bq = w[0] * u[0] + w[1] * u[1];
+            let c = w[0] * w[0] + w[1] * w[1] - rho * rho;
+            let s = (bq * bq - c).sqrt();
+            [-bq - s, -bq + s].map(|t| [p[0] + t * u[0], p[1] + t * u[1]])
+        };
+        let cands: Vec<[f64; 2]> = match (a, b) {
+            (Ok((p, u)), Ok((q, v))) => {
+                let den = u[0] * v[1] - u[1] * v[0];
+                let w = sub(q, p);
+                let t = (w[0] * v[1] - w[1] * v[0]) / den;
+                vec![[p[0] + t * u[0], p[1] + t * u[1]]]
+            }
+            (Ok(l), Err(c)) | (Err(c), Ok(l)) => line_circle(l, c).to_vec(),
+            (Err((o1, r1)), Err((o2, r2))) => {
+                let d = sub(o2, o1);
+                let dl = len(d);
+                let a = (r1 * r1 - r2 * r2 + dl * dl) / (2.0 * dl);
+                let h = (r1 * r1 - a * a).sqrt();
+                let m = [o1[0] + a * d[0] / dl, o1[1] + a * d[1] / dl];
+                vec![
+                    [m[0] - h * d[1] / dl, m[1] + h * d[0] / dl],
+                    [m[0] + h * d[1] / dl, m[1] - h * d[0] / dl],
+                ]
+            }
+        };
+        cands
+            .into_iter()
+            .min_by(|x, y| len(sub(*x, near)).total_cmp(&len(sub(*y, near))))
+            .unwrap()
+    };
+    // Each corner k sits at the start of piece k: its centre and its feet
+    // on piece k - 1 and piece k.
+    let corners: Vec<([f64; 2], [f64; 2], [f64; 2])> = (0..n)
+        .map(|k| {
+            let (prev, next) = (ps[(k + n - 1) % n], ps[k]);
+            let f = meet(offset(prev), offset(next), segs[k].start());
+            (f, foot(prev, f), foot(next, f))
+        })
+        .collect();
+    let ang = |o: [f64; 2], p: [f64; 2]| (p[1] - o[1]).atan2(p[0] - o[0]);
+    let wrap = |mut d: f64, ccw: bool| {
+        if ccw {
+            while d < 0.0 {
+                d += 2.0 * PI;
+            }
+        } else {
+            while d > 0.0 {
+                d -= 2.0 * PI;
+            }
+        }
+        d
+    };
+    // ∫(x dy - y dx)/2 and the length of an arc about `o`, radius `rho`,
+    // from `a` to `b` turning the signed `sweep`.
+    let arc = |o: [f64; 2], rho: f64, a: [f64; 2], sweep: f64| {
+        let t0 = ang(o, a);
+        let t1 = t0 + sweep;
+        let twice = rho * o[0] * (t1.sin() - t0.sin()) - rho * o[1] * (t1.cos() - t0.cos())
+            + rho * rho * sweep;
+        (twice / 2.0, rho * sweep.abs())
+    };
+    let (mut area, mut perimeter) = (0.0, 0.0);
+    for k in 0..n {
+        let (_, _, from) = corners[k];
+        let (_, to, _) = corners[(k + 1) % n];
+        match ps[k] {
+            Piece::Line(..) => {
+                area += (from[0] * to[1] - to[0] * from[1]) / 2.0;
+                perimeter += len(sub(to, from));
+            }
+            Piece::Arc(o, rho, ccw) => {
+                let (a, l) = arc(o, rho, from, wrap(ang(o, to) - ang(o, from), ccw));
+                area += a;
+                perimeter += l;
+            }
+        }
+        // The corner round at the start of piece k + 1 turns anticlockwise.
+        let (gc, gfrom, gto) = corners[(k + 1) % n];
+        let (a, l) = arc(
+            gc,
+            r.abs(),
+            gfrom,
+            wrap(ang(gc, gto) - ang(gc, gfrom), r > 0.0),
+        );
+        area += a;
+        perimeter += l;
+    }
+    (area, perimeter)
+}
+
+/// The rounded D's area and perimeter agree with the closed form.
+#[test]
+fn the_plan_oracle_rounds_the_d_as_the_closed_form() {
+    let d = [
+        Seg::Line([-4.0, 0.0], [4.0, 0.0]),
+        Seg::Arc([4.0, 0.0], [0.0, 4.0], [-4.0, 0.0]),
+    ];
+    let (a, p) = rounded_outline(&d, 1.0);
+    let (wa, wp) = rounded_d(4.0, 1.0);
+    assert!(
+        (a - wa).abs() < 1e-12 && (p - wp).abs() < 1e-12,
+        "{a} {p} against {wa} {wp}"
+    );
+}
+
+/// A plate 20 × 20 × 4 under a boss 6 high of the anticlockwise outline
+/// `segs`.
+fn boss_on_plate(m: &mut Model, segs: &[Seg]) -> Shape {
+    let plate = prism(m, &rect(0.0, 0.0, 20.0, 20.0), 0.0, 4.0);
+    let boss = prism(m, segs, 4.0, 6.0);
+    let s = ogeom_bool::fuse(m, &plate, &boss, T).unwrap().shape;
+    solid_of(m, &s)
+}
+
+/// A point inside each piece of `segs` at height `z`.
+fn piece_points(segs: &[Seg], z: f64) -> Vec<Point> {
+    segs.iter()
+        .map(|s| match *s {
+            Seg::Line(a, b) => Point::new(0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1]), z),
+            Seg::Arc(_, b, _) => Point::new(b[0], b[1], z),
+        })
+        .collect()
+}
+
+/// The boss of `segs` on the plate, its foot loop and uprights rounded 1
+/// with `Rolling`: the section within the foot round is the rounded
+/// outline grown by the round's offset.
+fn boss_foot_rolls(name: &str, segs: &[Seg]) {
+    let mut m = Model::new();
+    let s = boss_on_plate(&mut m, segs);
+    let mut edges: Vec<Shape> = piece_points(segs, 4.0)
+        .into_iter()
+        .map(|p| edge_near(&m, &s, p))
+        .collect();
+    for seg in segs {
+        let a = seg.start();
+        edges.push(edge_near(&m, &s, Point::new(a[0], a[1], 7.0)));
+    }
+    let (area, perimeter) = rounded_outline(segs, 1.0);
+    let want = 1600.0 + area * 6.0 + grown(perimeter, 1.0, true);
+    rolls_alone(name, &m, &s, &edges, 1.0, want);
+}
+
+/// A lens boss: two arcs of radius 5 meeting at corners on y = 10.
+#[test]
+fn a_lens_boss_s_mixed_foot_corners_roll_round_the_uprights() {
+    boss_foot_rolls(
+        "lens boss foot",
+        &[
+            Seg::Arc([14.0, 10.0], [10.0, 12.0], [6.0, 10.0]),
+            Seg::Arc([6.0, 10.0], [10.0, 8.0], [14.0, 10.0]),
+        ],
+    );
+}
+
+/// A square boss whose top side bows inwards: an arc of radius 5 into the
+/// boss, meeting the uprights' lines at corners.
+#[test]
+fn a_boss_with_an_inward_arc_rolls_at_its_foot() {
+    let sag = 5.0 - 21.0_f64.sqrt();
+    boss_foot_rolls(
+        "inward arc boss foot",
+        &[
+            Seg::Line([6.0, 6.0], [14.0, 6.0]),
+            Seg::Line([14.0, 6.0], [14.0, 14.0]),
+            Seg::Arc([14.0, 14.0], [10.0, 14.0 - 2.0 * sag], [6.0, 14.0]),
+            Seg::Line([6.0, 14.0], [6.0, 6.0]),
+        ],
+    );
+}
+
+/// The block's pocket of `segs`, its rim and uprights rounded 1 with
+/// `Rolling`: the void's section within the rim round is the rounded
+/// outline grown by the round's offset.
+fn pocket_rim_rolls(name: &str, segs: &[Seg]) {
+    let mut m = Model::new();
+    let s = pocketed(&mut m, segs);
+    let mut edges: Vec<Shape> = Vec::new();
+    for e in explore_unique(&m, &s, ShapeType::Edge).unwrap() {
+        let Some((c, (a, b))) = ogeom_algo::placed_edge_curve(&m, &e, T).unwrap() else {
+            continue;
+        };
+        let (p, q) = (c.point_at(a, T).unwrap(), c.point_at(b, T).unwrap());
+        let mid = c.point_at(0.5 * (a + b), T).unwrap();
+        let rim =
+            (p.z - 10.0).abs() < 1e-9 && (q.z - 10.0).abs() < 1e-9 && (mid.z - 10.0).abs() < 1e-9;
+        let inner = mid.x > 0.5 && mid.x < 29.5 && mid.y > 0.5 && mid.y < 29.5;
+        let upright = (p.x - q.x).abs() < 1e-9 && (p.y - q.y).abs() < 1e-9 && mid.z > 5.0;
+        if inner && (rim || upright) {
+            edges.push(e);
+        }
+    }
+    let (area, perimeter) = rounded_outline(segs, 1.0);
+    let want = 9000.0 - area * 5.0 - grown(perimeter, 1.0, true);
+    rolls_alone(name, &m, &s, &edges, 1.0, want);
+}
+
+/// A lens pocket: two arcs of radius 6 meeting at corners on y = 15.
+#[test]
+fn a_lens_pocket_s_mixed_rim_corners_roll_round_the_uprights() {
+    let h = 6.0 - 20.0_f64.sqrt();
+    pocket_rim_rolls(
+        "lens pocket rim",
+        &[
+            Seg::Arc([19.0, 15.0], [15.0, 15.0 + 2.0 * h], [11.0, 15.0]),
+            Seg::Arc([11.0, 15.0], [15.0, 15.0 - 2.0 * h], [19.0, 15.0]),
+        ],
+    );
+}
+
+/// A square pocket whose far side bows into the void: an arc of radius 6.
+#[test]
+fn a_pocket_with_an_inward_arc_rolls_at_its_rim() {
+    let sag = 6.0 - 32.0_f64.sqrt();
+    pocket_rim_rolls(
+        "inward arc pocket rim",
+        &[
+            Seg::Line([11.0, 11.0], [19.0, 11.0]),
+            Seg::Line([19.0, 11.0], [19.0, 19.0]),
+            Seg::Arc([19.0, 19.0], [15.0, 19.0 - sag], [11.0, 19.0]),
+            Seg::Line([11.0, 19.0], [11.0, 11.0]),
+        ],
+    );
+}
+
+/// What a round of radius `r` takes within a convex-cornered outline of
+/// perimeter `p` where the section shrinks: `p ∫w - π ∫w²`, the outline
+/// smooth and every concave arc of it wider than `r`.
+fn shrunk(p: f64, r: f64) -> f64 {
+    grown(p, r, false)
+}
+
+/// Two discs of radius 5 about (7, 10) and (13, 10), fused: a figure
+/// eight whose waist corners are reflex, anticlockwise from the lower
+/// waist corner.
+fn figure_eight(dx: f64, dy: f64) -> Vec<Seg> {
+    let w = 4.0;
+    let p = |x: f64, y: f64| [x + dx, y + dy];
+    vec![
+        Seg::Arc(p(10.0, 10.0 - w), p(18.0, 10.0), p(10.0, 10.0 + w)),
+        Seg::Arc(p(10.0, 10.0 + w), p(2.0, 10.0), p(10.0, 10.0 - w)),
+    ]
+}
+
+/// The figure-eight boss's top loop and its two waist uprights rounded 1:
+/// at each top corner two convex rounds meet the concave upright on the
+/// boss's cylinders; the section within the top round is the rounded
+/// outline shrunk by the round's offset.
+#[test]
+fn a_figure_eight_boss_s_top_corners_roll_round_its_waist() {
+    let segs = figure_eight(0.0, 0.0);
+    let mut m = Model::new();
+    let s = boss_on_plate(&mut m, &segs);
+    let mut edges: Vec<Shape> = piece_points(&segs, 10.0)
+        .into_iter()
+        .map(|p| edge_near(&m, &s, p))
+        .collect();
+    edges.push(edge_near(&m, &s, Point::new(10.0, 6.0, 7.0)));
+    edges.push(edge_near(&m, &s, Point::new(10.0, 14.0, 7.0)));
+    let (area, perimeter) = rounded_outline(&segs, -1.0);
+    let want = 1600.0 + area * 6.0 - shrunk(perimeter, 1.0);
+    rolls_alone("figure-eight boss top", &m, &s, &edges, 1.0, want);
+}
+
+/// The figure-eight pocket's floor loop and its two waist uprights
+/// rounded 1: the void's section within the floor round is the rounded
+/// outline shrunk by the round's offset.
+#[test]
+fn a_figure_eight_pocket_s_floor_corners_roll_round_its_waist() {
+    let segs = figure_eight(5.0, 5.0);
+    let mut m = Model::new();
+    let s = pocketed(&mut m, &segs);
+    let mut edges: Vec<Shape> = piece_points(&segs, 5.0)
+        .into_iter()
+        .map(|p| edge_near(&m, &s, p))
+        .collect();
+    edges.push(edge_near(&m, &s, Point::new(15.0, 11.0, 7.0)));
+    edges.push(edge_near(&m, &s, Point::new(15.0, 19.0, 7.0)));
+    let (area, perimeter) = rounded_outline(&segs, -1.0);
+    let want = 9000.0 - area * 5.0 + shrunk(perimeter, 1.0);
+    rolls_alone("figure-eight pocket floor", &m, &s, &edges, 1.0, want);
+}
+
+/// The lens boss rounded all round: foot, uprights and top.
+#[test]
+fn a_lens_boss_rounded_all_round_rolls_at_its_foot_and_top() {
+    let segs = [
+        Seg::Arc([14.0, 10.0], [10.0, 12.0], [6.0, 10.0]),
+        Seg::Arc([6.0, 10.0], [10.0, 8.0], [14.0, 10.0]),
+    ];
+    let mut m = Model::new();
+    let s = boss_on_plate(&mut m, &segs);
+    let mut edges: Vec<Shape> = Vec::new();
+    for z in [4.0, 10.0] {
+        edges.extend(
+            piece_points(&segs, z)
+                .into_iter()
+                .map(|p| edge_near(&m, &s, p)),
+        );
+    }
+    for seg in &segs {
+        let a = seg.start();
+        edges.push(edge_near(&m, &s, Point::new(a[0], a[1], 7.0)));
+    }
+    let (area, perimeter) = rounded_outline(&segs, 1.0);
+    let want = 1600.0 + area * 6.0 + grown(perimeter, 1.0, true) - shrunk(perimeter, 1.0);
+    rolls_alone("lens boss all round", &m, &s, &edges, 1.0, want);
+}
+
+/// The D pocket rounded all over: floor loop, rim and uprights. The floor
+/// corners are of one sense and close on the ball's sphere; the void's
+/// section shrinks within the floor round and grows within the rim round.
+#[test]
+fn a_d_pocket_rounded_all_over_rolls_at_its_floor_and_rim() {
+    let segs = [
+        Seg::Line([10.0, 12.0], [20.0, 12.0]),
+        Seg::Arc([20.0, 12.0], [15.0, 17.0], [10.0, 12.0]),
+    ];
+    let mut m = Model::new();
+    let s = pocketed(&mut m, &segs);
+    let mut edges = edges_of_face_at(&m, &s, Point::new(15.0, 14.0, 5.0));
+    let h = 5.0 * core::f64::consts::FRAC_1_SQRT_2;
+    edges.extend(
+        [
+            Point::new(15.0, 12.0, 10.0),
+            Point::new(15.0 + h, 12.0 + h, 10.0),
+            Point::new(15.0 - h, 12.0 + h, 10.0),
+            Point::new(10.0, 12.0, 7.0),
+            Point::new(20.0, 12.0, 7.0),
+        ]
+        .iter()
+        .map(|&p| edge_near(&m, &s, p)),
+    );
+    let (area, perimeter) = rounded_outline(&segs, 1.0);
+    let want = 9000.0 - area * 5.0 - grown(perimeter, 1.0, true) + shrunk(perimeter, 1.0);
+    rolls_alone("D pocket all over", &m, &s, &edges, 1.0, want);
+}
+
+/// The D pocket's floor loop and uprights rounded 1: at each floor corner
+/// three concave rounds meet with the pocket's cylinder and close on the
+/// ball's sphere, built from the void's side (ADR 0001, amendment
+/// "rolling corners on arcs, and concave corners from the void's side").
+/// `Setback` and `Rolling` agree; the void's section within the floor
+/// round is the rounded D shrunk by the round's offset.
+#[test]
+fn a_d_pocket_s_floor_and_uprights_close_on_the_ball_at_the_floor() {
+    let mut m = Model::new();
+    let s = d_pocket(&mut m);
+    let mut edges = edges_of_face_at(&m, &s, Point::new(15.0, 14.0, 5.0));
+    edges.push(edge_near(&m, &s, Point::new(10.0, 12.0, 7.0)));
+    edges.push(edge_near(&m, &s, Point::new(20.0, 12.0, 7.0)));
+    let segs = [
+        Seg::Line([10.0, 12.0], [20.0, 12.0]),
+        Seg::Arc([20.0, 12.0], [15.0, 17.0], [10.0, 12.0]),
+    ];
+    let (area, perimeter) = rounded_outline(&segs, 1.0);
+    let want = 9000.0 - area * 5.0 + shrunk(perimeter, 1.0);
+    rolls(
+        "D pocket floor and uprights",
+        &m,
+        &s,
+        &edges,
+        1.0,
+        Want::Volume(want),
+    );
+    rolls_alone("D pocket floor and uprights", &m, &s, &edges, 1.0, want);
+}
+
+/// The lens pocket rounded all over: floor, rim and uprights.
+#[test]
+fn a_lens_pocket_rounded_all_over_rolls_at_its_floor_and_rim() {
+    let h = 6.0 - 20.0_f64.sqrt();
+    let segs = [
+        Seg::Arc([19.0, 15.0], [15.0, 15.0 + 2.0 * h], [11.0, 15.0]),
+        Seg::Arc([11.0, 15.0], [15.0, 15.0 - 2.0 * h], [19.0, 15.0]),
+    ];
+    let mut m = Model::new();
+    let s = pocketed(&mut m, &segs);
+    let mut edges = edges_of_face_at(&m, &s, Point::new(15.0, 15.0, 5.0));
+    for e in explore_unique(&m, &s, ShapeType::Edge).unwrap() {
+        let Some((c, (a, b))) = ogeom_algo::placed_edge_curve(&m, &e, T).unwrap() else {
+            continue;
+        };
+        let mid = c.point_at(0.5 * (a + b), T).unwrap();
+        let (p, q) = (c.point_at(a, T).unwrap(), c.point_at(b, T).unwrap());
+        let inner = mid.x > 0.5 && mid.x < 29.5 && mid.y > 0.5 && mid.y < 29.5;
+        let rim = (mid.z - 10.0).abs() < 1e-9 && (p.z - 10.0).abs() < 1e-9;
+        let upright = (p.x - q.x).abs() < 1e-9 && (p.y - q.y).abs() < 1e-9 && mid.z > 5.0;
+        if inner && (rim || upright) {
+            edges.push(e);
+        }
+    }
+    let (area, perimeter) = rounded_outline(&segs, 1.0);
+    let want = 9000.0 - area * 5.0 - grown(perimeter, 1.0, true) + shrunk(perimeter, 1.0);
+    rolls_alone("lens pocket all over", &m, &s, &edges, 1.0, want);
+}
+
+/// A frame at `p` about `z`.
+fn frame_at(p: Point, z: Direction) -> Frame {
+    let x = if z == Direction::Z {
+        Direction::X
+    } else {
+        Direction::Z
+    };
+    Frame::new(p, z, x, T).unwrap()
+}
+
+/// `edges` of `s` rounded `r` with `Rolling` and `Setback`: both refuse,
+/// `Rolling` naming the vertex at `at` and saying `why`.
+fn refused_at(m: &Model, s: &Shape, edges: &[Shape], r: f64, at: &str, why: &str) {
+    let got = fillet_edges_corner(&mut m.clone(), s, edges, r, FilletCorner::Rolling, T)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        got.contains(&format!("does not close the vertex at ({at})")) && got.contains(why),
+        "{got}"
+    );
+    assert!(fillet_edges(&mut m.clone(), s, edges, r, T).is_err());
+}
+
+/// A half cylinder of radius 4 lying on a plate, its axis on the plate's
+/// top: its two end arcs (convex) and its foot (concave) rounded 1. At
+/// each foot corner the lone round is the arc, whose band is a torus; the
+/// ball rolling round its end has its centre on a section of the torus
+/// offset by the radius, not a circle, so the sweep is no torus and the
+/// corner is refused by name.
+#[test]
+fn a_lone_round_on_an_arc_is_refused_by_name() {
+    let mut m = Model::new();
+    let plate = ogeom_algo::make_box(
+        &mut m,
+        frame_at(Point::new(0.0, 0.0, 0.0), Direction::Z),
+        (20.0, 20.0, 6.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let drum = ogeom_algo::make_cylinder(
+        &mut m,
+        frame_at(Point::new(5.0, 10.0, 6.0), Direction::X),
+        4.0,
+        10.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let fused = ogeom_bool::fuse(&mut m, &plate, &drum, T).unwrap().shape;
+    let s = solid_of(&m, &fused);
+    let edges: Vec<Shape> = [
+        Point::new(5.0, 10.0, 10.0),
+        Point::new(15.0, 10.0, 10.0),
+        Point::new(5.0, 10.0, 6.0),
+        Point::new(15.0, 10.0, 6.0),
+        Point::new(10.0, 6.0, 6.0),
+        Point::new(10.0, 14.0, 6.0),
+    ]
+    .iter()
+    .map(|&p| edge_near(&m, &s, p))
+    .collect();
+    refused_at(
+        &m,
+        &s,
+        &edges,
+        1.0,
+        "5.000000, 6.000000, 6.000000",
+        "the lone round's edge is curved",
+    );
+}
+
+/// A half frustum (radii 5 to 3, 6 high) on a plate, cut through its axis:
+/// its foot and the two uprights along the cone's rulings rounded 1. The
+/// uprights lean, so the ball's sweep round their bands' ends is no torus:
+/// refused by name.
+#[test]
+fn a_lone_round_on_a_cone_s_ruling_is_refused_by_name() {
+    let mut m = Model::new();
+    let plate = ogeom_algo::make_box(
+        &mut m,
+        frame_at(Point::new(0.0, 0.0, 0.0), Direction::Z),
+        (20.0, 20.0, 4.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let cone = ogeom_algo::make_cone(
+        &mut m,
+        frame_at(Point::new(10.0, 10.0, 4.0), Direction::Z),
+        5.0,
+        3.0,
+        6.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let cutter = ogeom_algo::make_box(
+        &mut m,
+        frame_at(Point::new(4.0, 4.0, 3.0), Direction::Z),
+        (12.0, 6.0, 8.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let half = ogeom_bool::cut(&mut m, &cone, &cutter, T).unwrap().shape;
+    let half = solid_of(&m, &half);
+    let fused = ogeom_bool::fuse(&mut m, &plate, &half, T).unwrap().shape;
+    let s = solid_of(&m, &fused);
+    let edges: Vec<Shape> = [
+        Point::new(10.0, 10.0, 4.0),
+        Point::new(10.0, 15.0, 4.0),
+        Point::new(6.0, 10.0, 7.0),
+        Point::new(14.0, 10.0, 7.0),
+    ]
+    .iter()
+    .map(|&p| edge_near(&m, &s, p))
+    .collect();
+    refused_at(
+        &m,
+        &s,
+        &edges,
+        1.0,
+        "5.000000, 10.000000, 4.000000",
+        "does not stand square",
+    );
+}
+
+/// A rib fused against a drum, lower than the drum: the rib's top edge
+/// (convex) and its two edges on the drum (concave) rounded 0.5. The face
+/// across from the lone round is the drum: refused by name.
+#[test]
+fn a_mixed_corner_on_a_curved_cap_is_refused_by_name() {
+    let mut m = Model::new();
+    let plate = ogeom_algo::make_box(
+        &mut m,
+        frame_at(Point::new(0.0, 0.0, 0.0), Direction::Z),
+        (30.0, 20.0, 4.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let drum = ogeom_algo::make_cylinder(
+        &mut m,
+        frame_at(Point::new(10.0, 10.0, 4.0), Direction::Z),
+        5.0,
+        8.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let rib = ogeom_algo::make_box(
+        &mut m,
+        frame_at(Point::new(12.0, 9.0, 4.0), Direction::Z),
+        (12.0, 2.0, 4.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let a = ogeom_bool::fuse(&mut m, &plate, &drum, T).unwrap().shape;
+    let a = solid_of(&m, &a);
+    let fused = ogeom_bool::fuse(&mut m, &a, &rib, T).unwrap().shape;
+    let s = solid_of(&m, &fused);
+    let x = 24.0_f64.sqrt() + 10.0;
+    let edges: Vec<Shape> = [
+        Point::new(18.0, 11.0, 8.0),
+        Point::new(x, 11.0, 6.0),
+        Point::new(x - 0.05, 10.5, 8.0),
+    ]
+    .iter()
+    .map(|&p| edge_near(&m, &s, p))
+    .collect();
+    refused_at(
+        &m,
+        &s,
+        &edges,
+        0.5,
+        "14.898979, 11.000000, 8.000000",
+        "the face across from the lone round is curved",
+    );
+}
