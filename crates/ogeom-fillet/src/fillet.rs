@@ -428,10 +428,13 @@ pub fn fillet_edges(
 ///   planar floor and a cylindrical wall standing square on it, whose
 ///   round reaches a straight convex round tangent to the floor.
 /// - `hold_edge`: where the ball would roll over a sharp edge of the body,
-///   the edge is kept and the ball rests on it. `hold_edge_at_end` applies
-///   the same rule where only a band's end runs over such an edge. Neither
-///   is built yet: they never apply, and a request they would take goes on
-///   to `trim_through`.
+///   the edge is kept and the ball rests on it: it touches the other face
+///   and the round there is the canal surface it sweeps, meeting the band
+///   G1. `hold_edge_at_end` applies the same rule where the stretch held
+///   reaches one end of the band and not the other. Built for a round of
+///   one straight edge between two planes, ending flush on end faces square
+///   to it, whose contact runs past a line or a circle bounding one of its
+///   faces; any other request goes on to `trim_through`.
 /// - `trim_through`: the round keeps its own surface, and the faces it
 ///   reaches are trimmed or extended to meet it.
 ///
@@ -485,11 +488,12 @@ impl Overflow {
 /// faces handled as `overflow` says.
 ///
 /// With [`Overflow::default`] this is [`fillet_edges`]. Blend into round
-/// is tried first where it is on. A request it does not build goes on to
-/// the engine's own construction, which trims through where a round reaches
-/// another face. With `trim_through` off, a result that changes any face
-/// other than the edges' own and those at their ends is refused by name,
-/// as is a request that blend into round would take while it is off.
+/// is tried first where it is on, then hold edge. A request neither builds
+/// goes on to the engine's own construction, which trims through where a
+/// round reaches another face. With `trim_through` off, a result that
+/// changes any face other than the edges' own and those at their ends is
+/// refused by name, as is a request that blend into round or hold edge
+/// would take while it is off.
 ///
 /// # Errors
 ///
@@ -529,6 +533,28 @@ pub fn fillet_edges_overflow(
              fillet.overflow"
         );
     }
+    if model.kind_of(solid)? == ShapeType::Solid
+        && let Some(hold) = crate::engine::hold_edge_reach(model, solid, edges, radius, tol)?
+    {
+        let wanted = overflow.hold_edge && (overflow.hold_edge_at_end || !hold.at_end);
+        if wanted {
+            if let Some(built) = crate::engine::hold_edge_held(model, solid, edges, &hold, tol)? {
+                return Ok(built);
+            }
+        } else if !overflow.trim_through {
+            let which = if overflow.hold_edge {
+                "hold edge at the end is off"
+            } else {
+                "hold edge is off"
+            };
+            ogeom_bail!(
+                Construction,
+                "the round's ball would roll over a sharp edge of the body, \
+                 {which} and trim through is off; see docs/CAPABILITIES.md, \
+                 fillet.overflow"
+            );
+        }
+    }
     if overflow.trim_through {
         return rounded_as_today(model, solid, edges, radius, tol);
     }
@@ -537,8 +563,8 @@ pub fn fillet_edges_overflow(
         ogeom_bail!(
             Construction,
             "the round reaches a face it is not seated on, which only trim \
-             through builds here (hold edge is not built yet), and trim \
-             through is off; see docs/CAPABILITIES.md, fillet.overflow"
+             through builds here, and trim through is off; see \
+             docs/CAPABILITIES.md, fillet.overflow"
         );
     }
     Ok(built)

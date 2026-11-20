@@ -37,6 +37,21 @@ bump may break the API and a patch bump may not.
     error; components outside `[0, 1]` are clamped.
   - Objects without colours are written byte for byte as before.
 
+- **Added: hold edge for fillets** (#1171).
+  - A straight round between two planes whose contact on one face would
+    run past a sharp convex edge of that face (a line or a circle) now
+    keeps that edge by default. Over that stretch the ball touches the
+    other face and rests on the edge, and the round is the canal surface
+    it sweeps, fitted through exact sections and meeting the band G1. The
+    edge stays on its original curve (ADR 0001, amendment "overflow
+    handling").
+  - A stretch reaching one end of the band and not the other also needs
+    `hold_edge_at_end`. With the option it needs off, the request goes on
+    to trim through, as before. With trim through off too, it is refused
+    by name.
+  - Default behaviour change: such rounds used to trim through the face
+    past the edge (a notch). They now hold the edge.
+
 - **Added: overflow handling for chamfers** (#1172).
   - `chamfer_edges_overflow` takes the fillet's `Overflow` options with a
     `ChamferCorner`. Blend into round and trim through apply to a bevel,

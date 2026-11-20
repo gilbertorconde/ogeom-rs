@@ -1739,9 +1739,23 @@ line; the fill is one tool fused into the solid, built only where nothing \
 else of the solid stands within the box it can take up. A foot reaching \
 two rounds, a round not tangent to the floor, a concave round, a wall not \
 square to the floor, a curved floor, and an open arc of a foot are not \
-blended into the round: they go on to trim through. Hold edge and hold \
-edge at the end are not built: they never apply, and a request they \
-would take goes on to trim through. Trim through is the engine's own \
+blended into the round: they go on to trim through. Hold edge is built \
+for a round of one straight edge between two planes meeting convexly, \
+ending flush on end faces square to it, whose contact on one face runs \
+past a sharp convex edge of that face (a line or a circle in its plane) \
+over one stretch short of the whole band: there the ball touches the other face and rests on the \
+edge, the canal it sweeps fitted through exact sections within a \
+confusion and meeting the band G1, and the edge is kept on its curve. A \
+stretch reaching one end of the band and not the other needs hold edge \
+at the end as well; past an end face the canal runs on and the end face \
+cuts it. The region between the edge and the round is one tool cut from \
+the solid, built only where nothing else of the solid stands within the \
+box it can take up, the cut taking its whole volume and the held edge \
+kept over the run. A chain, a curved face, a run needing the ball to rest \
+on a vertex, two runs, or an oblique end face are not held: they go on to \
+trim through. With hold edge (or hold edge at the end, for a run at the \
+end) off and trim through off, a request hold edge would take is refused \
+by name. Trim through is the engine's own \
 construction (the round keeps its surface, the faces it reaches are \
 trimmed or extended), and where it does not build a request the request \
 is refused by name as before. With trim through off, a result that \
@@ -1759,6 +1773,11 @@ tests = [
     "crates/ogeom-fillet/tests/overflow.rs::a_boss_s_foot_round_blends_into_the_edge_round_it_reaches",
     "crates/ogeom-fillet/tests/overflow.rs::blend_into_round_off_falls_to_trim_through_or_is_refused",
     "crates/ogeom-fillet/tests/overflow.rs::trim_through_off_refuses_a_round_reaching_another_face",
+    "crates/ogeom-fillet/tests/hold_edge.rs",
+    "crates/ogeom-fillet/tests/hold_edge.rs::hold_edge_keeps_a_pocket_rim_the_ball_would_roll_over",
+    "crates/ogeom-fillet/tests/hold_edge.rs::hold_edge_at_the_end_keeps_a_cliff_edge_the_band_s_end_runs_over",
+    "crates/ogeom-fillet/tests/hold_edge.rs::hold_edge_off_falls_to_trim_through_or_is_refused",
+    "crates/ogeom-fillet/tests/hold_edge.rs::hold_edge_at_end_off_falls_to_trim_through_or_is_refused",
 ]
 
 [[capability]]
