@@ -1765,8 +1765,23 @@ trimmed or extended), and where it does not build a request the request \
 is refused by name as before. With trim through off, a result that \
 changes any face other than the edges' own and those at their ends is \
 refused by name, and so is a foot blend into round would take while it is \
-off. Narrow passages (a concave zone tighter than the radius) are not \
-handled by this option set yet."""
+off. Narrow passages (a concave zone tighter than the radius) take three \
+more switches, on by default and each taking what the cheaper ones take: \
+blend-made only, whole face, partial face. Built for a planar floor's rim \
+with planar walls square to it, joined at square corners (sharp, or \
+through a cylindrical corner face tighter than the radius standing within \
+the radius of both walls) or across a half cylinder tangent to two facing \
+walls, with open ends flush on end faces square to the edge: each wall's \
+band keeps its constant section and runs on through the zone, its \
+spandrel prism fused into the solid, so the rounds meet where they cross \
+(a G0 crease) and meet their walls G1. Blend-made only takes corner faces \
+tangent to both walls and floors no wider than twice the radius (exactly \
+twice gives the half-circle trough); whole \
+face also takes a cylindrical corner face meeting its walls at kinks. A \
+zone covering part of a face, facing walls no farther apart than the \
+radius, walls lower than the radius, walls not square, a curved floor, or \
+another corner surface go on to the engine, which refuses them by name. \
+A passage whose strategies are off is refused by name."""
 symbols = [
     "ogeom_fillet::Overflow",
     "ogeom_fillet::fillet_edges_overflow",
@@ -1790,6 +1805,16 @@ tests = [
     "crates/ogeom-fillet/tests/hold_edge.rs::hold_edge_at_the_end_keeps_a_cliff_edge_the_band_s_end_runs_over",
     "crates/ogeom-fillet/tests/hold_edge.rs::hold_edge_off_falls_to_trim_through_or_is_refused",
     "crates/ogeom-fillet/tests/hold_edge.rs::hold_edge_at_end_off_falls_to_trim_through_or_is_refused",
+    "crates/ogeom-fillet/tests/narrow_passage.rs",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::a_through_slot_narrower_than_twice_the_radius",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::a_stadium_pocket_narrower_than_twice_the_radius",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::a_pocket_whose_corner_rounds_are_tighter_than_the_radius",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::a_pocket_whose_corners_are_kinked_arcs",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::each_strategy_off_passes_a_blend_made_passage_on",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::a_kinked_corner_needs_whole_face_or_partial_face",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::passages_the_union_does_not_round_are_refused_by_name",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::a_slot_exactly_twice_the_radius_wide_answers_in_time",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::one_round_of_a_slot_twice_the_radius_wide_answers_in_time",
 ]
 
 [[capability]]
