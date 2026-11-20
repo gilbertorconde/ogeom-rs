@@ -1748,7 +1748,21 @@ above it does. Three sizes below the answer and three spread to the bound \
 above its refusal are probed for that, and a break between them passes \
 unseen. The cost is that of the builds: two builds of the request and \
 the six samples where the seat brackets the limit, about 14 more where \
-it is bisected; no reading is kept from one call to the next."""
+it is bisected; no reading is kept from one call to the next. Under a \
+law (fillet_edges_variable, fillet_edge_variable, \
+fillet_edge_distances_variable) the size is one value of the law (its \
+start, its end or a point by index, the rest held) or the scale of the \
+whole law, read the same way: largest_law_radius, largest_law_scale and \
+largest_law_distances, or blend_limit with a law's sizing. Each probe \
+builds the call under the whole law so set, so the chain is checked \
+everywhere the build checks it; on a closed chain a point given at both \
+the start and the end is one point and moves as one. The seat is read \
+at both ends of the edge and every sixteenth between, the law's measure \
+at each held within its contact's reach; on a chain of several edges \
+the constant round's seat is held at every sixteenth. Not read past the \
+build: fillet_edge_distances_variable checks its contacts at the \
+interior sixteenths only, so a distance freed at an edge's end reads \
+what that check lets build, past the face's side at the end itself."""
 symbols = [
     "ogeom_fillet::largest_fillet_radius",
     "ogeom_fillet::largest_fillet_radius_all",
@@ -1760,8 +1774,15 @@ symbols = [
     "ogeom_fillet::LIMIT_TOLERANCE",
     "ogeom_fillet::LIMIT_PROBES",
     "ogeom_fillet::LIMIT_SAMPLES",
+    "ogeom_fillet::largest_law_radius",
+    "ogeom_fillet::largest_law_scale",
+    "ogeom_fillet::largest_law_distances",
+    "ogeom_fillet::LawStation",
+    "ogeom_fillet::LawSize",
+    "ogeom_fillet::DistanceLawSize",
 ]
 tests = [
+    "crates/ogeom-fillet/tests/law_limits.rs",
     "crates/ogeom-fillet/tests/exact_limits.rs::planar_limits_build_below_and_are_refused_above",
     "crates/ogeom-fillet/tests/exact_limits.rs::curved_and_corpus_limits_build_below_and_are_refused_above",
     "crates/ogeom-fillet/tests/exact_limits.rs::the_chopped_corner_s_edge_alone_rounds_past_the_corner",

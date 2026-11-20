@@ -30,6 +30,9 @@ const WALK_STATIONS: u32 = 256;
 /// `face`, `factor` (the tangent of half the faces' turn) per unit of
 /// radius, the point found on `surface` (the face's, placed).
 pub(crate) struct Walk {
+    /// The station's fraction of the edge's parameter range, from the
+    /// stored curve's start.
+    fraction: f64,
     pub(crate) face: Shape,
     surface: SurfaceGeometry,
     from: Point,
@@ -55,20 +58,29 @@ pub(crate) struct Reach {
     speed: f64,
 }
 
-/// The walks of `edge`'s ball, two at each station [`ball_fits`] reads
-/// (stations a quarter, half and three quarters along it), on each of the
-/// edge's two faces of `solid`. None for an edge not between two faces;
-/// stations where the faces meet tangent are left out, as the check leaves
-/// them.
+/// The stations [`ball_fits`] reads: a quarter, half and three quarters
+/// along the edge.
 ///
 /// [`ball_fits`]: crate::support::ball_fits
+const CHECK_STATIONS: [f64; 3] = [0.25, 0.5, 0.75];
+
+/// The walks of `edge`'s ball, two at each station at `fractions` of its
+/// parameter range, on each of the edge's two faces of `solid`. None for
+/// an edge not between two faces; stations where the faces meet tangent
+/// are left out, as the check leaves them.
 ///
 /// # Errors
 ///
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) where the side
 /// of the edge a face lies on reads differently at the hair's steps the
 /// check reads it at: that walk's direction depends on the radius.
-fn walks(model: &Model, solid: &Shape, edge: &Shape, tol: Tolerances) -> OgeomResult<Vec<Walk>> {
+fn walks(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    fractions: &[f64],
+    tol: Tolerances,
+) -> OgeomResult<Vec<Walk>> {
     let mut found = Vec::new();
     let Ok((curve, range)) = edge_curve(model, edge, tol) else {
         return Ok(found);
@@ -106,7 +118,7 @@ fn walks(model: &Model, solid: &Shape, edge: &Shape, tol: Tolerances) -> OgeomRe
         };
         Ok(Some((placed, n)))
     };
-    for fraction in [0.25, 0.5, 0.75] {
+    for &fraction in fractions {
         let t = range.0 + (range.1 - range.0) * fraction;
         let p = curve.point_at(t, tol)?;
         let d = curve.d1_at(t, tol)?;
@@ -166,6 +178,7 @@ fn walks(model: &Model, solid: &Shape, edge: &Shape, tol: Tolerances) -> OgeomRe
         };
         for (face, surface, step) in [(face0, s0, d0), (face1, s1, d1)] {
             found.push(Walk {
+                fraction,
                 face: face.clone(),
                 surface,
                 from: p,
@@ -331,7 +344,7 @@ fn edge_largest(
     let conf = tol.confusion();
     let mut largest = up_to;
     let mut found = Vec::new();
-    for walk in walks(model, solid, edge, tol)? {
+    for walk in walks(model, solid, edge, &CHECK_STATIONS, tol)? {
         let rate = per(&walk);
         if rate <= 0.0 {
             continue;
@@ -458,6 +471,65 @@ pub(crate) fn held_apart(
         }
     }
     Ok(largest)
+}
+
+/// How far one contact of an edge's ball can go at one station: the
+/// largest measure there before it leaves its face.
+pub(crate) struct StationReach {
+    /// The station's fraction of the edge, from its start the way the
+    /// edge runs (a reversed edge starts at its stored curve's far end).
+    pub(crate) fraction: f64,
+    /// The face the contact walks on.
+    pub(crate) face: Shape,
+    /// The largest measure, a confusion distance short of where the
+    /// contact leaves its face; infinite where it stays on it up to the
+    /// bound walked to.
+    pub(crate) largest: f64,
+}
+
+/// The reach of every contact of `edge`'s ball at `fractions` of the edge
+/// (from its start the way it runs), where a contact stands `per` of the
+/// measure back from the edge, each walked up to the measure `up_to`.
+/// `per` is given each walk's face and the tangent of half the faces'
+/// turn there.
+pub(crate) fn station_reaches(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    fractions: &[f64],
+    up_to: f64,
+    per: impl Fn(&Shape, f64) -> f64,
+    tol: Tolerances,
+) -> OgeomResult<Vec<StationReach>> {
+    let conf = tol.confusion();
+    let reversed = edge.orientation() == Orientation::Reversed;
+    crate::support::keeping_face_meshes(|| {
+        let mut found = Vec::new();
+        for walk in walks(model, solid, edge, fractions, tol)? {
+            let rate = per(&walk.face, walk.factor);
+            if rate <= 0.0 {
+                continue;
+            }
+            let bounds = ogeom_algo::shape_bounds(model, &walk.face, tol)?;
+            let up = (up_to * rate).min(bounds.diagonal() + conf);
+            let reached = reach(model, &walk, up, tol)?;
+            let largest = if reached.setback < up || up < up_to * rate {
+                (reached.setback - conf) / rate
+            } else {
+                f64::INFINITY
+            };
+            found.push(StationReach {
+                fraction: if reversed {
+                    1.0 - walk.fraction
+                } else {
+                    walk.fraction
+                },
+                face: walk.face,
+                largest,
+            });
+        }
+        Ok(found)
+    })
 }
 
 /// The largest radius up to `up_to` at which [`fillet_edges`](crate::fillet_edges)

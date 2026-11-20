@@ -3139,6 +3139,91 @@ block, is refused by name; symmetric at 1 it builds, sound. The
 quarter-disc block on a slab now refuses its rim alone as well as its
 side.
 
+### Amendment: largest-size readings for laws (#1175)
+
+An app editing a variable round's law (its start radius, its end radius,
+an interior point, or the whole law at once) needs the same limit a
+constant round gets: the largest value that builds. The amendment above
+gives that for one size. A law has several values, and only one is free
+at a time.
+
+**Rule.** The law reading is the constant reading with the free value as
+the size. Everything else in the amendment above holds: the contract
+(the size builds, a relative `LIMIT_TOLERANCE` above it is refused), the
+search, the cap, and the report of a range that is not one interval.
+
+1. **What is free.** One value of the law, the rest held as given: its
+   first point, its last, or the point at an index (a linear law's points
+   are its start and its end). Or the scale `k` of the whole law, every
+   value times `k`. A two-distance round frees one value of either law,
+   or the scale of both.
+2. **The probe is the whole call.** Each size is built under the whole
+   law so set: `fillet_edges_variable`, `fillet_edge_variable` or
+   `fillet_edge_distances_variable`. The law is interpolated smoothly
+   between its points, so the free value moves the radius along the whole
+   stretch either side of it, and on a curved seat the march checks the
+   chain everywhere. Building the whole call covers that; a reading of
+   the free station alone would not.
+3. **The seat is read along the chain.** The walks the constant seat
+   reads, at both ends of the edge and every sixteenth between, give each
+   station's reach: how far its contact can go before it leaves the face.
+   The seat is the largest size at which the law's measure at every
+   station stays within reach, bisected on the law itself without
+   building. The ends are read too, since a linear law's free end is
+   bound at the end. On a chain of several edges, where the stations'
+   places along the chain are not read, the constant round's seat is held
+   at every sixteenth of the chain.
+4. **A closed chain's start is its end.** On a closed chain a law with a
+   point at fraction 0 and one at fraction 1 states one point twice, and
+   the build refuses the two apart. Freeing either moves both.
+
+**API.** `BlendSizing` gains three variants, so `blend_limit` reads laws
+and returns the same `BlendLimit`: `RoundLaw` (a chain, a law and a
+`LawSize`), `RoundLinear` (one edge, start, end and a `LawSize`) and
+`DistanceLaws` (an edge, a face, two laws, the section and a
+`DistanceLawSize`). `LawSize` is `At(LawStation)` or `Scale`;
+`DistanceLawSize` is `OnFace(LawStation)`, `OnOther(LawStation)` or
+`Scale`; `LawStation` is `Start`, `End` or `Point(index)`. Three thin
+readings return the size alone: `largest_law_radius` (a point),
+`largest_law_scale` and `largest_law_distances`.
+
+- Variants rather than a second report function. `BlendSizing` is
+  `#[non_exhaustive]`, so the variants break no caller, and the search,
+  the report and the cap stay in one place.
+- One `LawStation` for every law, rather than start and end arguments:
+  a law of points has as many values as points, and a linear law is the
+  two-point case of it.
+- `fillet_edge_variable` has its own variant. It is its own call, which
+  falls back to the linear round, so a reading of it probes that call.
+- A station the law lacks is refused before any build, and so is a law
+  that states no usable radius at the bound.
+
+**What the search found.** `fillet_edge_distances_variable` checks its
+contacts at the interior sixteenths of the edge only, leaving the ends
+to a face that may overhang the corner. On a cap whose depth at the
+edge's end is 6, a distance law along the cap freed at that end builds,
+valid, up to 6.2: where the contact at the last interior station, 15/16
+of the way, leaves the cap. The reading answers 6.2, since that is what
+the call builds. The round radius law on the same edge is refused at 6.
+That check is the engine's; this amendment does not change it.
+
+**Oracles** (`tests/law_limits.rs`). Each answer builds valid a tolerance
+under it, is refused a tolerance over it, and stands at the closed form:
+
+- a linear law on a straight edge between planes, the end radius free,
+  on a cap whose depth runs from 4 to 6 along the edge: the depth at the
+  edge's end, through `fillet_edges_variable` and `fillet_edge_variable`;
+- a law of three points over a cap notched to a depth of 2 under its
+  middle, the middle point free: 2, and the same for a distance law
+  along the cap;
+- a drum's top rim, 3 high, under a closed law whose start and end are
+  one point, the start free: 3, the wall's height;
+- a law of 0.5 on a 2 mm plate's edge, scaled: 4, the constant round's
+  limit over 0.5; two constant distance laws of 3 and 1 scale to the
+  constant pair's limit.
+
+Every case's seat is the limit, so each reading takes 8 builds.
+
 ## 12. Acceptance corpus
 
 From #902:

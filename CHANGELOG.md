@@ -77,6 +77,25 @@ bump may break the API and a patch bump may not.
     stands on. Before, it cut a groove into the plate. A rim rolling over
     a convex far side (a drum's short wall) still builds as a notch.
 
+- **Added: largest-size readings for variable-radius laws** (#1175).
+  - `largest_law_radius` reads how far one value of a law can go (its
+    start, its end or a point by index, the rest held) before
+    `fillet_edges_variable` is refused. `largest_law_scale` reads the
+    largest scale of the whole law. `largest_law_distances` reads either
+    for `fillet_edge_distances_variable`.
+  - `blend_limit` takes them as new `BlendSizing` variants: `RoundLaw`,
+    `RoundLinear` (for `fillet_edge_variable`) and `DistanceLaws`, with
+    `LawSize`, `DistanceLawSize` and `LawStation` naming the free value.
+  - The contract is the constant readings': the value builds and one a
+    relative 1e-4 above it is refused. Each probe builds the call under the
+    whole law, so the whole chain is checked. The seat is read along the
+    edge at both ends and every sixteenth. On a closed chain, a point given
+    at both the start and the end moves as one.
+  - A distance freed at an edge's end reads what
+    `fillet_edge_distances_variable` builds there. That call checks its
+    contacts at the interior sixteenths only.
+  - ADR 0001, amendment "largest-size readings for laws".
+
 - **Fixed: a blend on a compound blends each solid on its own** (#924).
   - `chamfer_edges_cornered` (`ChamferCorner::Point`), `fillet_edges_corner`
     (`FilletCorner::Rolling`), `fillet_edge_variable`,
