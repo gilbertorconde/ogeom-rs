@@ -2491,8 +2491,8 @@ bevel would pass under, a change to a face the request does not name.
 - A leg that reaches the concave edge exactly builds.
 - A rim's seat (a cylinder, a cone or a sphere under a planar cap) is
   read the same way (amendment "a rim's bevel stops at a concave
-  floor"). A crease on a marched seat is not read yet; it keeps M5b's
-  tools.
+  floor"), and so is a crease on a marched seat (amendment "a marched
+  seat's bevel stops at a concave floor").
 
 **Oracle.** The step: at 1.5 the request of three edges is refused naming
 the step's spec alone; at 1 the step's bevel alone takes `20 · 1²/2`.
@@ -3377,6 +3377,92 @@ under it, is refused a tolerance over it, and stands at the closed form:
   constant pair's limit.
 
 Every case's seat is the limit, so each reading takes 8 builds.
+
+### Amendment: a concave band ends against its end face (#1145)
+
+A concave straight crease between planes whose ends meet a curved wall
+at a sharp corner was refused: a D pocket's floor line rounded alone,
+its band ending at each end against the pocket's cylinder. The arcs
+alone and every rim edge alone already built. Amendment "M5e" ends a
+convex crease's band flush on the face it meets at a free end, whatever
+that face's surface; nothing ended a concave one.
+
+**Survey.** The practice already recorded for free ends (amendment
+"M5e": the end face extended out to the fillet surface; section 13,
+question 8: a contact that runs off its face onto the face the crease
+ends at ends there) is the same for both senses in mainstream CAD's
+public documentation: a fillet whose end meets a face left unrounded at
+a sharp corner runs on along its spine and that face trims it. No source
+caps a concave fillet in a plane square to its edge, or stops it at its
+contact's end, where the wall is curved.
+
+**Rule.** Where every asked edge is a straight concave crease between
+planes, no two meeting or sharing a face, and each end meets exactly one
+face past the crease's own (a wall across its way, or the solid's side
+it runs out to), each fill runs on a few radii past both ends and the
+end face's surface, carried on past the face, trims it, the crease's
+side kept (`engine/meeting.rs`, `concave_ends`). The fill is the void's
+spandrel of the crease: the wedge of its faces' planes, turned to the
+void, less that wedge rounded. Its contacts must seat on both faces
+between the ends; a contact running off its face past the end face is
+the end face's to trim. The fill must meet the void in one piece. The
+band meets the end face along their intersection, a sharp edge, as it
+does where the wall is a plane.
+
+**Crossing bands.** Concave creases meeting at a vertex of three edges
+whose third is left sharp, across a turn convex in the void on the face
+they share (a pocket floor's corner, its upright not asked), are each
+rounded as they are alone, and the fills take their union
+(`engine/alone.rs`, which did this for convex creases). This is the
+crossing of amendment "rolling corners on curved faces" (a square
+pocket's floor) where a band is a torus: the D pocket's line band
+crosses its arc's torus band along their intersection. `Rolling` and
+`Setback` agree there, as the rounds at the vertex share their sense.
+
+**Oracle** (`tests/rolling_curved.rs`), sound, alike in three orders and
+under `Setback`, no patch face:
+
+- The D pocket (radius 5 on its chord, 5 deep in a 30 × 30 × 10 block),
+  its floor line rounded 1 alone: at `s` in from the chord the fill's
+  section is `h(s) = 1 - sqrt(2s - s²)` high and runs across the D,
+  `2 sqrt(25 - s²)` long, integrated after `s = u²` (2e-16 relative).
+- Its whole floor loop, the line and the arc: the line's fill, plus the
+  arc's half torus fill by Pappus (`π (5 - x̄) (1 - π/4)`, `x̄` the
+  section's centroid from the wall), less what both fill at each corner:
+  in `(s, t)`, `t` in from the cylinder, both fill up to `h(max(s, t))`
+  over the plan's area element `(5 - t) / sqrt((5 - t)² - s²)` (2e-16
+  relative).
+
+### Amendment: a marched seat's bevel stops at a concave floor (#1145)
+
+Amendments "a bevel stops at a concave floor" and "a rim's bevel stops
+at a concave floor" read straight edges between planes and rims. A
+crease on a marched seat (a straight edge between a plane and a
+cylinder along it, a spline's crease along its wall) still went to M5b's
+tools: a step whose riser is a cylinder, its top edge chamfered past the
+riser's foot, cut a groove into the ledge.
+
+**Rule.** The same rule, on a marched seat. A convex bevel there is
+refused by name, naming its spec, where a concave edge bounding either
+face's outer ring has a point strictly inside that face's strip: between
+the crease's ends, and in its section nearer the crease than the leg's
+contact. Each leg is walked as the marched bevel walks it, along the
+face's section square to the crease, read at 64 stations and along the
+chords between them. A leg that runs off its face's surface (a swept
+wall that ends at its face's edge) takes in the face's whole section:
+the longest leg that still seats is read, and the rest of the leg is
+added to its reach. A spec whose contacts do not read at all is passed
+to the build, which reports it.
+
+**Oracle** (`tests/curved_chamfer.rs`, `tests/chamfer_marched_open.rs`):
+the cylinder step (an arc about (9, 3) of radius `sqrt(10)` from the
+ledge at y = 4 up to the top at y = 6, 20 long) chamfered 3.5 is refused
+by name, the foot being `sqrt(10) acos(3/5)`, about 2.93, down the arc;
+at 2 it builds the section less the triangle to the riser's contact
+`2 / sqrt(10)` round the arc and the arc's segment beyond that chord,
+within 1e-6. The open spline slab with a block fused behind it, its wall
+ending 2 from the crease at a concave foot, chamfered 2.5 is refused by
+name; at 1.5 the rule passes it to the build.
 
 ## 12. Acceptance corpus
 

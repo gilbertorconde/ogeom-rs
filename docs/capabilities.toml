@@ -1354,7 +1354,12 @@ convex and concave on a curved face (a D-shaped boss's foot with its \
 uprights, a D-shaped pocket's rim with its uprights) closes on the torus \
 about the lone band's axis where the lone edge is a line square to the \
 plane across from it and its faces are planes or cylinders along it; \
-elsewhere such a vertex is refused by name."""
+elsewhere such a vertex is refused by name. \
+A straight concave crease between planes whose ends meet a wall at a \
+sharp corner, a plane or a curved face (a D pocket's floor line against \
+its cylinder), runs on past each end until the wall's surface trims it; \
+concave creases meeting across a pocket floor's corner, its upright left \
+sharp, cross, a line's cylinder band and an arc's torus band among them."""
 symbols = [
     "ogeom_fillet::fillet_edge", "ogeom_fillet::fillet_edges",
     "ogeom_fillet::fillet_edges_with",
@@ -1583,6 +1588,7 @@ tests = [
     "crates/ogeom-fillet/tests/chamfer_marched.rs",
     "crates/ogeom-fillet/tests/periodic_pad.rs",
     "crates/ogeom-fillet/tests/chamfer_marched_open.rs",
+    "crates/ogeom-fillet/tests/curved_chamfer.rs",
 ]
 
 [[capability]]

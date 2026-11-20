@@ -116,6 +116,23 @@ bump may break the API and a patch bump may not.
     farther down the wall than the wall is high, onto the plate it
     stands on. Before, it cut a groove into the plate. A rim rolling over
     a convex far side (a drum's short wall) still builds as a notch.
+- **Added: a concave round runs on until the wall at its end trims it**
+  (#1145).
+  - A straight concave crease between planes whose ends meet a wall at a
+    sharp corner now builds where the wall is curved, such as a D pocket's
+    floor line rounded alone against the pocket's cylinder. The fill runs
+    on past each end and the wall's surface trims it.
+  - Concave rounds meeting across a pocket floor's corner, its upright left
+    sharp, cross: a D pocket's whole floor loop now rounds, its line's band
+    crossing its arc's torus band. `Rolling` and `Setback` agree.
+  - ADR 0001, amendment "a concave band ends against its end face".
+- **Fixed: a chamfer on a marched seat that would cut below a concave floor
+  is refused by name** (#1145).
+  - A bevel on a straight edge between a plane and a cylinder, or on a
+    spline's crease, whose leg runs past a concave edge of its face is now
+    refused, as straight and rim bevels already were. Before, it cut a
+    groove into the floor.
+  - ADR 0001, amendment "a marched seat's bevel stops at a concave floor".
 
 - **Added: largest-size readings for variable-radius laws** (#1175).
   - `largest_law_radius` reads how far one value of a law can go (its
