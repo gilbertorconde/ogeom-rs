@@ -412,3 +412,54 @@ fn an_open_crease_and_a_straight_edge_mitre_at_their_corner_in_either_order() {
         volumes[0]
     );
 }
+
+/// The slab with a block 12 × 3 × 7 fused against its back (`x` in
+/// [-1, 11], `y` in [-3, 0], `z` in [-5, 2]), standing above the spline:
+/// the wall now ends 2 from the crease at a concave edge, its foot on the
+/// block's face. A bevel 2.5 down the wall would cut below that floor:
+/// refused by name (ADR 0001, amendment "a bevel stops at a concave
+/// floor", on a marched seat). At 1.5 the leg stops short of the foot and
+/// the rule passes it to the build.
+#[test]
+fn a_spline_crease_s_bevel_past_its_wall_s_foot_is_refused_by_name() {
+    let mut m = Model::new();
+    let (slab, _, _, _) = slab(&mut m);
+    let frame = ogeom_math::Frame::new(Point::new(-1.0, -3.0, -5.0), Direction::Z, Direction::X, T)
+        .unwrap();
+    let block = ogeom_algo::make_box(&mut m, frame, (12.0, 3.0, 7.0), T)
+        .unwrap()
+        .shape;
+    let fused = ogeom_bool::fuse(&mut m, &slab, &block, T).unwrap().shape;
+    let solid = explore_unique(&m, &fused, ShapeType::Solid).unwrap()[0].clone();
+    let crease = explore_unique(&m, &solid, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let b = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            let (lo, hi) = (b.low().unwrap(), b.high().unwrap());
+            (lo.y - 2.0).abs() < 1e-6 && (hi.y - 2.0).abs() < 1e-6 && hi.z - lo.z > 0.5
+        })
+        .unwrap();
+    let Err(refused) = ogeom_fillet::chamfer_edges_checked(
+        &mut m.clone(),
+        &solid,
+        &[(crease.clone(), Chamfer::Symmetric(2.5))],
+        T,
+    ) else {
+        panic!("a bevel past the wall's foot built");
+    };
+    assert!(
+        refused.error.to_string().contains("below the floor"),
+        "{}",
+        refused.error
+    );
+    if let Err(e) =
+        ogeom_fillet::chamfer_edges_checked(&mut m, &solid, &[(crease, Chamfer::Symmetric(1.5))], T)
+    {
+        assert!(
+            !e.error.to_string().contains("below the floor"),
+            "{}",
+            e.error
+        );
+    }
+}

@@ -5,6 +5,11 @@
 //! off is its tool, the faces its band leaves named for its edge, and the
 //! tools are applied as the one-boolean fallback's. The solid that comes
 //! out is what every round alone keeps.
+//!
+//! Concave creases meet the same way across a turn convex in the void (a
+//! pocket floor's corner, its upright left sharp): each fill runs on past
+//! the vertex as it does alone, and the fills take their union (amendment
+//! "a concave band ends against its end face").
 
 use ogeom_algo::Built;
 use ogeom_core::{OgeomError, OgeomResult, Tolerances};
@@ -15,9 +20,10 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 use super::defeatured::Rounder;
 use super::fallback::{Sense, Tool};
 
-/// `once` rounded on `solid` where every edge is a convex crease the
-/// engine rounds alone and the edges meet one another only at vertices of
-/// three edges, across a convex turn on the face they share; `None`
+/// `once` rounded on `solid` where every edge is a crease the engine
+/// rounds alone, all convex or all concave, and the edges meet one another
+/// only at vertices of three edges, across a turn on the face they share
+/// convex in the material (concave creases: in the void); `None`
 /// otherwise, or where a boolean refuses or the result is not valid.
 ///
 /// # Errors
@@ -31,7 +37,21 @@ pub(crate) fn rounds(
     round: Rounder,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
-    if once.len() < 2 || !meet_across_convex_turns(model, solid, once, tol)? {
+    if once.len() < 2 {
+        return Ok(None);
+    }
+    let mut convex = None;
+    for (edge, radius) in once {
+        let this = crate::setback::edge_is_convex(model, solid, edge, *radius, tol)?;
+        if this.is_none() || convex.is_some_and(|c| Some(c) != this) {
+            return Ok(None);
+        }
+        convex = this;
+    }
+    let Some(convex) = convex else {
+        return Ok(None);
+    };
+    if !meet_across_convex_turns(model, solid, once, convex, tol)? {
         return Ok(None);
     }
     let mut scratch = model.clone();
@@ -42,12 +62,18 @@ pub(crate) fn rounds(
             Err(e @ OgeomError::Cancelled) => return Err(e),
             _ => return Ok(None),
         };
-        // A convex crease's round takes material and adds none.
+        // A convex crease's round takes material and adds none; a concave
+        // one's adds and takes none.
         let (Ok(taken), Ok(added)) = (
             ogeom_bool::cut(&mut scratch, solid, &alone.shape, tol),
             ogeom_bool::cut(&mut scratch, &alone.shape, solid, tol),
         ) else {
             return Ok(None);
+        };
+        let (taken, added) = if convex {
+            (taken, added)
+        } else {
+            (added, taken)
         };
         if !explore_unique(&scratch, &added.shape, ShapeType::Solid)?.is_empty()
             || explore_unique(&scratch, &taken.shape, ShapeType::Solid)?.is_empty()
@@ -68,7 +94,7 @@ pub(crate) fn rounds(
         }
         tools.push(Tool {
             solid: taken.shape,
-            sense: Sense::Cut,
+            sense: if convex { Sense::Cut } else { Sense::Fuse },
             faces,
         });
     }
@@ -86,11 +112,13 @@ pub(crate) fn rounds(
 /// Whether the edges of `once` that share a vertex meet only there, at a
 /// vertex of three edges whose third is not asked, sharing one face, each
 /// leaving the vertex into the material behind the other's other face (a
-/// convex turn on the shared face), and at least one pair meets so.
+/// convex turn on the shared face), or for concave creases (not `convex`)
+/// into the void before it, and at least one pair meets so.
 fn meet_across_convex_turns(
     model: &Model,
     solid: &Shape,
     once: &[(Shape, f64)],
+    convex: bool,
     tol: Tolerances,
 ) -> OgeomResult<bool> {
     let asked = |e: &Shape| once.iter().any(|(o, _)| o.is_same(e));
@@ -118,7 +146,7 @@ fn meet_across_convex_turns(
                 if edges.len() != 3 || edges.iter().filter(|e| asked(e)).count() != 2 {
                     return Ok(false);
                 }
-                if !convex_turn(model, solid, [a, b], v, tol)? {
+                if !convex_turn(model, solid, [a, b], v, convex, tol)? {
                     return Ok(false);
                 }
                 met = true;
@@ -129,12 +157,14 @@ fn meet_across_convex_turns(
 }
 
 /// Whether `edges` meet at `v` across a convex turn: one face shared, and
-/// each leaving `v` into the material behind the other's other face.
+/// each leaving `v` into the material behind the other's other face, or
+/// where not `convex` into the void before it.
 fn convex_turn(
     model: &Model,
     solid: &Shape,
     edges: [&Shape; 2],
     v: &Shape,
+    convex: bool,
     tol: Tolerances,
 ) -> OgeomResult<bool> {
     let faces = |e: &Shape| -> OgeomResult<Vec<Shape>> {
@@ -179,7 +209,8 @@ fn convex_turn(
     ) else {
         return Ok(false);
     };
-    Ok(la.dot(nb) < -ang && lb.dot(na) < -ang)
+    let side = if convex { -1.0 } else { 1.0 };
+    Ok(side * la.dot(nb) > ang && side * lb.dot(na) > ang)
 }
 
 /// The unit tangent of `edge` leaving `at`, one of its ends.

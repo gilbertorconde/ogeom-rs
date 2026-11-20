@@ -391,9 +391,10 @@ pub(crate) fn chamfer_edges_blamed(
 /// bevel reaching under a feature standing within its face (a hole of the
 /// face) is non-local; neither is this. On a rim the same holds of each
 /// leg's strip: down the wall between the rim and its contact, or across
-/// the cap between the rim's circle and the contact's. `None` where no
-/// spec does; a spec whose seat is not read here (a crease on a marched
-/// seat) is passed over.
+/// the cap between the rim's circle and the contact's; and on a marched
+/// seat, of each leg's strip as the marched bevel walks it, section by
+/// section. `None` where no spec does; a spec whose seat or contacts do
+/// not read is passed over, for the build to report.
 ///
 /// # Errors
 ///
@@ -420,6 +421,14 @@ pub(crate) fn below_a_floor(
             if seat.tau > 0.0
                 && sphere_below_a_floor(model, solid, edge, seat, (*on_wall, *on_cap), tol)?
             {
+                return Ok(Some(i));
+            }
+            continue;
+        }
+        // A line whose faces are not both planes (a plane and a cylinder
+        // along it) reads no planar seat: a crease on a marched seat too.
+        if matches!(read, Ok(Legs::Marched) | Err(_)) {
+            if marched_below_a_floor(model, solid, edge, spec, tol)? {
                 return Ok(Some(i));
             }
             continue;
@@ -474,6 +483,204 @@ pub(crate) fn below_a_floor(
         }
     }
     Ok(None)
+}
+
+/// How many stations a marched crease's contacts are read at for
+/// [`marched_below_a_floor`].
+const FLOOR_STATIONS: u32 = 64;
+
+/// Whether a convex bevel `spec` on `edge`, a crease on a marched seat,
+/// would cut below a floor ([`below_a_floor`]): a concave edge bounding
+/// either face's outer ring has a point strictly inside that face's strip,
+/// between the crease's ends and nearer the crease, in its section, than
+/// the leg's contact. Each face's leg is walked as the marched bevel walks
+/// it, at [`FLOOR_STATIONS`] stations, and between stations taken along
+/// the chords joining them. A leg that runs off its face's surface (a
+/// swept wall ending at its face's edge) covers the face's whole section:
+/// the longest leg that still seats is read, and the rest of the leg
+/// added to its reach. `false` where the crease is not convex or no
+/// contacts read.
+fn marched_below_a_floor(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    spec: &Chamfer,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let eps = tol.confusion() * 100.0;
+    let reach = match spec {
+        Chamfer::Symmetric(d) => *d,
+        Chamfer::Distances {
+            on_face, on_other, ..
+        } => on_face.max(*on_other),
+        Chamfer::Angle { distance, .. } => *distance,
+    };
+    if !(reach.is_finite() && reach > eps)
+        || crate::setback::edge_is_convex(model, solid, edge, reach, tol)
+            .ok()
+            .flatten()
+            != Some(true)
+    {
+        return Ok(false);
+    }
+    let mut scratch = model.clone();
+    let mut contacts = |spec: &Chamfer| {
+        crate::chamfer_marched::crease_contacts(
+            &mut scratch,
+            solid,
+            edge,
+            spec,
+            FLOOR_STATIONS,
+            None,
+            tol,
+        )
+        .ok()
+        .flatten()
+    };
+    // The seat's two faces, from a sliver of a bevel.
+    let Some(probe) = contacts(&Chamfer::Symmetric(reach * 1e-2)) else {
+        return Ok(false);
+    };
+    let faces = probe.faces.clone();
+    let legs: [Option<f64>; 2] = match spec {
+        Chamfer::Symmetric(d) => [Some(*d), Some(*d)],
+        Chamfer::Distances {
+            face,
+            on_face,
+            on_other,
+        } => {
+            if face.is_same(&faces[0]) {
+                [Some(*on_face), Some(*on_other)]
+            } else {
+                [Some(*on_other), Some(*on_face)]
+            }
+        }
+        Chamfer::Angle { face, distance, .. } => {
+            if face.is_same(&faces[0]) {
+                [Some(*distance), None]
+            } else {
+                [None, Some(*distance)]
+            }
+        }
+    };
+    for k in 0..2 {
+        let Some(leg) = legs[k].filter(|l| *l > eps) else {
+            continue;
+        };
+        let walked = |scale: f64| Chamfer::Distances {
+            face: faces[k].clone(),
+            on_face: leg * scale,
+            on_other: leg * 1e-2,
+        };
+        let (read, slack) = match contacts(&walked(1.0)) {
+            Some(read) => (read, 0.0),
+            None => {
+                let (mut lo, mut hi, mut best) = (0.0, 1.0, None);
+                for _ in 0..16 {
+                    let mid = f64::midpoint(lo, hi);
+                    match contacts(&walked(mid)) {
+                        Some(read) => {
+                            lo = mid;
+                            best = Some(read);
+                        }
+                        None => hi = mid,
+                    }
+                }
+                let Some(read) = best else {
+                    continue;
+                };
+                (read, (1.0 - lo) * leg)
+            }
+        };
+        if strip_holds_a_floor(model, solid, edge, &read, k, reach, slack, tol)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Whether a concave edge bounding face `k` of `read`'s seat has a point
+/// strictly inside the strip `read`'s contacts on it bound, `slack`
+/// farther out ([`marched_below_a_floor`]).
+#[allow(clippy::too_many_arguments, reason = "one strip, read on one face")]
+fn strip_holds_a_floor(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    read: &crate::chamfer_marched::CreaseContacts,
+    k: usize,
+    reach: f64,
+    slack: f64,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    use ogeom_geom::Curve3d as _;
+    const SAMPLES: u32 = 32;
+    let eps = tol.confusion() * 100.0;
+    let crease = &read.crease;
+    let n = crease.len();
+    if n < 2 {
+        return Ok(false);
+    }
+    let mut from_start = Vec::with_capacity(n);
+    let mut length = 0.0;
+    for i in 0..n {
+        if i > 0 {
+            length += crease[i - 1].distance(crease[i]);
+        }
+        from_start.push(length);
+    }
+    // `q`'s foot on the crease's chords, how far along them it stands, and
+    // the contact there.
+    let section = |q: ogeom_math::Point| {
+        let mut best: Option<(f64, ogeom_math::Point, f64, ogeom_math::Point)> = None;
+        for i in 0..n - 1 {
+            let (a, b) = (crease[i], crease[i + 1]);
+            let d = b - a;
+            let span = d.dot(d);
+            if span <= f64::EPSILON {
+                continue;
+            }
+            let f = ((q - a).dot(d) / span).clamp(0.0, 1.0);
+            let foot = a + d * f;
+            let off = q.distance(foot);
+            if best.is_none_or(|(o, ..)| off < o) {
+                let (c0, c1) = (read.points[k][i], read.points[k][i + 1]);
+                let contact = c0 + (c1 - c0) * f;
+                best = Some((off, foot, f.mul_add(span.sqrt(), from_start[i]), contact));
+            }
+        }
+        best.map(|(_, foot, along, contact)| (foot, along, contact))
+    };
+    let Some(outer) = model.children_of(&read.faces[k])?.into_iter().next() else {
+        return Ok(false);
+    };
+    for side in explore_unique(model, &outer, ShapeType::Edge)? {
+        if crate::support::same_occurrence(model, &side, edge, tol) {
+            continue;
+        }
+        let concave = crate::setback::edge_is_convex(model, solid, &side, reach, tol)
+            .ok()
+            .flatten()
+            == Some(false);
+        if !concave {
+            continue;
+        }
+        let Ok((curve, (a, b))) = edge_curve(model, &side, tol) else {
+            continue;
+        };
+        for s in 1..SAMPLES {
+            let q = curve.point_at(a + (b - a) * f64::from(s) / f64::from(SAMPLES), tol)?;
+            let Some((foot, along, contact)) = section(q) else {
+                continue;
+            };
+            let between = read.closed || (along > eps && along < length - eps);
+            let off = q.distance(foot);
+            if between && off > eps && off < contact.distance(foot) + slack - eps {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Whether a convex rim bevel on `seat` with legs `(on_wall, on_cap)`

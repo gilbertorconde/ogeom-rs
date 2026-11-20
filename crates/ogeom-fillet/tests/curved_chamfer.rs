@@ -1799,3 +1799,135 @@ fn rolling_bevels_at_a_tab_s_reflex_feet_meet_in_their_corner_pieces() {
         assert!(!built.history.generated(e).is_empty(), "its bevel");
     }
 }
+
+/// A step 20 long whose riser is a cylinder: the section in z = 0 runs
+/// (0, 0), (30, 0), (30, 4), (12, 4), then up an arc about (9, 3) of
+/// radius √10 to (10, 6), (0, 6), extruded 20 along z. The riser's top
+/// edge parts the plane y = 6 and the cylinder, convex, a straight crease
+/// on a marched seat; its foot parts the cylinder and the ledge, concave,
+/// `√10 · acos(3/5)` (about 2.93) down the arc.
+fn cylinder_step(m: &mut Model) -> Shape {
+    use ogeom_geom::{CircleCurve, Curve, LineCurve};
+    use ogeom_math::{Axis, Circle, Plane};
+    let p = |x: f64, y: f64| Point::new(x, y, 0.0);
+    let corners = [
+        p(0.0, 0.0),
+        p(30.0, 0.0),
+        p(30.0, 4.0),
+        p(12.0, 4.0),
+        p(10.0, 6.0),
+        p(0.0, 6.0),
+    ];
+    let vertices: Vec<Shape> = corners
+        .iter()
+        .map(|&q| ogeom_algo::make_vertex(m, q).shape)
+        .collect();
+    let line = |m: &mut Model, i: usize, j: usize| {
+        let (a, b) = (corners[i], corners[j]);
+        let curve: Curve = LineCurve::new(Axis::new(a, Direction::new(b - a, T).unwrap())).into();
+        ogeom_algo::make_edge_between(
+            m,
+            curve,
+            (0.0, a.distance(b)),
+            &vertices[i],
+            &vertices[j],
+            T,
+        )
+        .unwrap()
+        .shape
+    };
+    let arc = {
+        let x = Direction::new(Vector::new(3.0, 1.0, 0.0), T).unwrap();
+        let frame = Frame::new(p(9.0, 3.0), Direction::Z, x, T).unwrap();
+        let curve: Curve = CircleCurve::new(Circle::new(frame, 10.0_f64.sqrt(), T).unwrap()).into();
+        ogeom_algo::make_edge_between(
+            m,
+            curve,
+            (0.0, 0.6_f64.acos()),
+            &vertices[3],
+            &vertices[4],
+            T,
+        )
+        .unwrap()
+        .shape
+    };
+    let edges = [
+        line(m, 0, 1),
+        line(m, 1, 2),
+        line(m, 2, 3),
+        arc,
+        line(m, 4, 5),
+        line(m, 5, 0),
+    ];
+    let wire = ogeom_algo::make_wire(m, &edges, T).unwrap().shape;
+    let plane = ogeom_geom::PlaneSurface::over(
+        Plane::through(Point::ORIGIN, Direction::Z),
+        (-100.0, 100.0),
+        (-100.0, 100.0),
+    )
+    .unwrap();
+    let face = ogeom_algo::make_face(m, plane.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    ogeom_algo::make_prism(m, &face, Vector::new(0.0, 0.0, 20.0), T)
+        .unwrap()
+        .shape
+}
+
+/// The cylinder step's top edge chamfered 3.5 runs down the riser past its
+/// foot, a concave edge on the ledge, and would cut below the ledge:
+/// refused by name (ADR 0001, amendment "a bevel stops at a concave
+/// floor", on a marched seat). Chamfered 2 it builds: each leg runs its
+/// distance along its face's section, so the section loses the triangle
+/// from (8, 6) to (10, 6) to the riser's contact `θ = 2 / √10` round the
+/// arc, and the arc's segment `5 (θ - sin θ)` beyond that chord.
+#[test]
+fn a_bevel_down_a_cylinder_riser_past_its_foot_is_refused_by_name() {
+    let mut m = Model::new();
+    let s = cylinder_step(&mut m);
+    let top = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let b = ogeom_algo::shape_bounds(&m, e, T).unwrap();
+            let (lo, hi) = (b.low().unwrap(), b.high().unwrap());
+            (lo.x - 10.0).abs() < 1e-6 && (hi.y - 6.0).abs() < 1e-6 && hi.z - lo.z > 19.0
+        })
+        .unwrap();
+    let Err(refused) = ogeom_fillet::chamfer_edges_checked(
+        &mut m.clone(),
+        &s,
+        &[(top.clone(), ogeom_fillet::Chamfer::Symmetric(3.5))],
+        T,
+    ) else {
+        panic!("a bevel past the riser's foot built");
+    };
+    assert!(
+        refused.error.to_string().contains("below the floor"),
+        "{}",
+        refused.error
+    );
+    let built = ogeom_fillet::chamfer_edges_checked(
+        &mut m,
+        &s,
+        &[(top, ogeom_fillet::Chamfer::Symmetric(2.0))],
+        T,
+    )
+    .unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let r = 10.0_f64.sqrt();
+    let phi = 0.6_f64.acos();
+    let section = 120.0 + 20.0 + 2.0 + 5.0 * (phi - phi.sin());
+    let theta = 2.0 / r;
+    let start = (3.0_f64).atan2(1.0);
+    let c = (
+        9.0 + r * (start - theta).cos(),
+        3.0 + r * (start - theta).sin(),
+    );
+    let triangle = 0.5 * ((10.0 - 8.0) * (c.1 - 6.0) - (6.0 - 6.0) * (c.0 - 8.0)).abs();
+    let taken = triangle + 5.0 * (theta - theta.sin());
+    let want = 20.0 * (section - taken);
+    let got = volume(&m, &built.shape);
+    assert!((got - want).abs() <= 1e-6 * want, "{got} against {want}");
+}
