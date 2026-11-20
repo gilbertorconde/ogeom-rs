@@ -767,28 +767,7 @@ fn exact_volume_properties(
             reference,
             tol,
             Moments::zero,
-            |sums, p, n_da, share| {
-                let n_da = n_da * share;
-                let q = p - reference;
-                sums.mass += q.dot(n_da) / 3.0;
-                sums.first += Vector::new(
-                    q.x * q.x * n_da.x / 2.0,
-                    q.y * q.y * n_da.y / 2.0,
-                    q.z * q.z * n_da.z / 2.0,
-                );
-                let d = [q.x, q.y, q.z];
-                let nd = [n_da.x, n_da.y, n_da.z];
-                for i in 0..3 {
-                    // Diagonal: int q_i^2 dV = surface int q_i^3 n_i / 3.
-                    sums.second.rows[i][i] += d[i] * d[i] * d[i] * nd[i] / 3.0;
-                    // Off-diagonal: int q_i q_j dV = surface int q_i^2 q_j n_i / 2.
-                    for j in 0..3 {
-                        if i != j {
-                            sums.second.rows[i][j] += d[i] * d[i] * d[j] * nd[i] / 2.0;
-                        }
-                    }
-                }
-            },
+            |sums, p, n_da, share| sums.add_flux(p - reference, n_da * share),
             Moments::add,
         );
         if let (Ok(found), Some(kept), Some(key)) = (&found, kept, &keys[i]) {
@@ -839,27 +818,26 @@ fn exact_volume_properties(
         else {
             return Ok(None);
         };
-        let mut acc = Accumulator::new();
+        // The same fluxes the closed forms sum, over the face's triangles.
+        // A cone from the reference to each triangle would give the same
+        // volume but not the same moments: a face's share of the first and
+        // second moments depends on which fields are integrated, and only
+        // the whole closed boundary's sum does not.
+        let mut sums = Moments::zero();
         for triangle in &mesh.triangles {
             let [a, b, c] = triangle.map(|i| mesh.positions[i as usize]);
-            let volume = (a - reference).dot((b - reference).cross(c - reference)) / 6.0;
-            acc.add(&[reference, a, b, c], volume);
+            sums.add_triangle_flux(a, b, c, reference);
         }
-        rim_slivers(model, &faces[at], &mesh, reference, &mut acc, tol)?;
+        rim_slivers(model, &faces[at], &mesh, tol, &mut |a, b, c| {
+            sums.add_triangle_flux(a, b, c, reference);
+        })?;
         let face = &faces[at];
         let face_sign = if turned.contains(&(face.node(), face.location().clone())) {
             -1.0
         } else {
             1.0
         };
-        total.add_signed(
-            &Moments {
-                mass: acc.mass,
-                first: acc.first,
-                second: acc.second,
-            },
-            face_sign,
-        );
+        total.add_signed(&sums, face_sign);
     }
     let Moments {
         mass,
@@ -976,6 +954,52 @@ impl Moments {
         self.add_signed(other, 1.0);
     }
 
+    /// Add one sample of the volume's boundary integral: the point `q`
+    /// about the reference and the outward `n dA` there. The divergence
+    /// theorem turns each volume integral into the flux of a field whose
+    /// divergence is its integrand.
+    fn add_flux(&mut self, q: Vector, n_da: Vector) {
+        self.mass += q.dot(n_da) / 3.0;
+        self.first += Vector::new(
+            q.x * q.x * n_da.x / 2.0,
+            q.y * q.y * n_da.y / 2.0,
+            q.z * q.z * n_da.z / 2.0,
+        );
+        let d = [q.x, q.y, q.z];
+        let nd = [n_da.x, n_da.y, n_da.z];
+        for i in 0..3 {
+            // Diagonal: int q_i^2 dV = surface int q_i^3 n_i / 3.
+            self.second.rows[i][i] += d[i] * d[i] * d[i] * nd[i] / 3.0;
+            // Off-diagonal: int q_i q_j dV = surface int q_i^2 q_j n_i / 2.
+            for j in 0..3 {
+                if i != j {
+                    self.second.rows[i][j] += d[i] * d[i] * d[j] * nd[i] / 2.0;
+                }
+            }
+        }
+    }
+
+    /// The fluxes of [`Moments::add_flux`] through the flat triangle `abc`,
+    /// wound outward. The fields are cubic in the point, and the rule
+    /// (corners, side midpoints and centroid, weighted 3, 8 and 27 over
+    /// 60) is exact for cubics on a triangle.
+    fn add_triangle_flux(&mut self, a: Point, b: Point, c: Point, reference: Point) {
+        let n_da = (b - a).cross(c - a) / 2.0;
+        let (a, b, c) = (a - reference, b - reference, c - reference);
+        let centroid = (a + b + c) / 3.0;
+        for (q, weight) in [
+            (a, 3.0),
+            (b, 3.0),
+            (c, 3.0),
+            ((a + b) / 2.0, 8.0),
+            ((b + c) / 2.0, 8.0),
+            ((c + a) / 2.0, 8.0),
+            (centroid, 27.0),
+        ] {
+            self.add_flux(q, n_da * (weight / 60.0));
+        }
+    }
+
     /// Add `other` times `sign`: `-1` for a face turned over.
     fn add_signed(&mut self, other: &Self, sign: f64) {
         self.mass += other.mass * sign;
@@ -1002,7 +1026,8 @@ fn or_mesh<T>(result: OgeomResult<T>, fallback: T) -> OgeomResult<T> {
 static DEBUG_MASS: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| std::env::var_os("OGEOM_DEBUG_MASS").is_some());
 
-/// The slivers between a face's mesh and its edges, added to `acc`.
+/// The slivers between a face's mesh and its edges, each triangle handed
+/// to `sliver` wound as the face's own triangles are.
 ///
 /// A face measured on its own mesh ends on its boundary's chords, and its
 /// neighbours, measured in closed form, end on the edges themselves: the
@@ -1014,9 +1039,8 @@ fn rim_slivers(
     model: &Model,
     face: &Shape,
     mesh: &ogeom_topo::Triangulation,
-    reference: Point,
-    acc: &mut Accumulator,
     tol: Tolerances,
+    sliver: &mut dyn FnMut(Point, Point, Point),
 ) -> OgeomResult<()> {
     let bits = |p: Point| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
     let mut sides: ogeom_core::FastSet<([u64; 3], [u64; 3])> = ogeom_core::FastSet::default();
@@ -1078,9 +1102,7 @@ fn rim_slivers(
                 continue;
             };
             for pair in arc.windows(2) {
-                let (p, q) = (pair[0], pair[1]);
-                let volume = (a - reference).dot((p - reference).cross(q - reference)) / 6.0;
-                acc.add(&[reference, a, p, q], volume);
+                sliver(a, pair[0], pair[1]);
             }
         }
     }
@@ -2536,6 +2558,44 @@ mod tests {
             chord: 1e-3,
             angular: 0.05,
             ..Deflection::default()
+        }
+    }
+
+    /// A face measured on its mesh is summed with faces measured in closed
+    /// form, so each face's moments must be the same fluxes whichever way
+    /// it is measured. A slanted flat quad, integrated by the Gauss rule
+    /// on its chart and as two triangles, must agree on every moment.
+    #[test]
+    fn a_meshed_face_carries_the_same_moments_as_its_closed_form() {
+        let reference = Point::new(-0.7, 0.4, 1.9);
+        let origin = Point::new(1.0, 2.0, 3.0);
+        let (du, dv) = (Vector::new(2.0, 0.5, -1.0), Vector::new(-0.5, 3.0, 0.8));
+        let mut closed = Moments::zero();
+        let n = du.cross(dv);
+        gauss2(0.0, 1.0, 0.0, 1.0, &mut |u, v, weight| {
+            closed.add_flux(origin + du * u + dv * v - reference, n * weight);
+        });
+        let [a, b, c, d] = [origin, origin + du, origin + du + dv, origin + dv];
+        let mut meshed = Moments::zero();
+        meshed.add_triangle_flux(a, b, c, reference);
+        meshed.add_triangle_flux(a, c, d, reference);
+
+        assert_relative_eq!(meshed.mass, closed.mass, epsilon = 1e-12);
+        for (x, y) in [
+            (meshed.first.x, closed.first.x),
+            (meshed.first.y, closed.first.y),
+            (meshed.first.z, closed.first.z),
+        ] {
+            assert_relative_eq!(x, y, epsilon = 1e-11);
+        }
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_relative_eq!(
+                    meshed.second.rows[i][j],
+                    closed.second.rows[i][j],
+                    epsilon = 1e-10
+                );
+            }
         }
     }
 

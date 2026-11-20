@@ -229,6 +229,7 @@ symbols = [
 ]
 tests = [
     "crates/ogeom/tests/built_by_hand.rs::a_hand_built_prism_closes_and_measures_its_closed_form",
+    "crates/ogeom/tests/trimmed_hole_mass.rs::a_trimmed_cylinder_bore_anywhere_gives_the_closed_form_moments",
 ]
 
 [[capability]]
