@@ -122,9 +122,10 @@ fn mangled_mesh_files_are_answered() {
     let binary = ogeom::io::write(&mesh, ogeom::io::Encoding::Binary).unwrap();
     let ascii = ogeom::io::write(&mesh, ogeom::io::Encoding::Ascii).unwrap();
     let package = ogeom::io::write_3mf(&[ogeom::io::threemf::Object {
-        mesh: &mesh,
         name: Some("part".into()),
-    }]);
+        ..ogeom::io::threemf::Object::new(&mesh)
+    }])
+    .unwrap();
     for seed in 0..ROUNDS {
         let _ = ogeom::io::read(&mangled(&binary, seed), T);
         let _ = ogeom::io::read(&mangled(&ascii, seed), T);

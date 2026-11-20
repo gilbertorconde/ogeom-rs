@@ -23,6 +23,20 @@ bump may break the API and a patch bump may not.
     centre 0.57 off its symmetry plane; it now agrees with the closed form
     to 1e-7, its inertia to 3e-5. The volume is unchanged.
 
+- **Added: 3MF writing carries colours** (#1184).
+  - `threemf::Object` gains `colour` and `colours` (sRGB RGBA in `[0, 1]`)
+    and an `Object::new(mesh)` constructor; build the rest with
+    `Object { colour: Some(c), ..Object::new(&mesh) }`.
+  - Each distinct object colour is one base material the object names;
+    an object with per-triangle colours gets one colour group, and each
+    triangle whose colour is not the object's names its own. Colours are
+    written as `#RRGGBB`, or `#RRGGBBAA` when not opaque. `read_3mf` reads
+    them back.
+  - **Breaking:** `write_3mf` returns `OgeomResult<Vec<u8>>`. Colours that
+    are not one per triangle, or a component that is not a number, are an
+    error; components outside `[0, 1]` are clamped.
+  - Objects without colours are written byte for byte as before.
+
 - **Added: overflow handling for chamfers** (#1172).
   - `chamfer_edges_overflow` takes the fillet's `Overflow` options with a
     `ChamferCorner`. Blend into round and trim through apply to a bevel,
