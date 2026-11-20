@@ -2795,6 +2795,95 @@ behaviour.
   wide) and 2/0.7 on the slab's spline crease (the wall is 2 deep), each
   to 1e-4. The answer builds valid, and 1.01 times it is refused.
 
+### Amendment: the rest of asymmetric rounds (#907)
+
+The amendment before this left four asymmetric-round cases refused by
+name. The public user documentation of mainstream CAD was surveyed on
+2026-11-20 for the two of them this record had no rule for:
+
+| Question | What mainstream CAD documents |
+|---|---|
+| A varying size along a chain of tangent edges | Tangent propagation carries a variable fillet across the tangent edges; sizes are set at vertices and control points along the edges, and the value at a shared vertex is one value for both edges. Asymmetric (two-distance) fillets take variable sizes too, with control points at vertices where filleted edges meet. |
+| A concave fillet whose edge ends at a face not square to it | Not documented. Forum answers describe the fillet stopping on that face, and split faces or lofts as workarounds where it does not. No source asks for a square cap past the face. |
+
+Rules:
+
+- **A chain of varying distances.** `fillet_edges_distances_variable`
+  takes a tangent chain, as `fillet_edges_variable` takes one for a
+  radius. Both laws are laid by arc length along the walk from the first
+  edge's start, closed round a closed chain, so a junction reads one
+  value for both edges. The named face lies beside every edge.
+  - Each straight edge between planes takes its exact band under its
+    stretch of the laws. Any other edge takes the marched band, which now
+    stops flush in its end section where a chain mate continues the
+    crease. The bands are joined across each junction into one tool.
+  - Measured limit: where both laws vary at a junction between a straight
+    edge and an arc, the two bands share the end section but their
+    tangent planes across it differ by up to a few hundredths of a
+    radian. The sections stand in planes square to the crease, and the
+    marched band's along-derivative at its trimmed end is held only to
+    the fit. The circular law's chain shows the same (about 0.016 rad on
+    the same block). Volume and contacts are within the march's fit.
+- **A concave edge ending at a face not square to it.** The fill ends in
+  the plane of each face at its end. Where one is not square to the
+  crease, the fill runs on with its laws held level and is trimmed by
+  each such plane, kept on the side of the material that face bounds. A
+  fill capped square stood past a face leaning in (the constant fill
+  failed there with folded faces) and left a notch beside one leaning
+  out. The constant fill and the varying one now end alike, so level laws
+  are still the constant round to the bit. An end meeting a face that is
+  not a plane stays refused by name.
+- **Two bands at a vertex whose third edge is left sharp.**
+  - One cuts and the other fills: question 6's rule. The bands end
+    through their faces' setback corners, and the signed patch closes
+    the corner. That patch reads only the strips' end sections and the
+    setback corners, so it now takes conic sections as it takes circular
+    ones. A request with a bevel, a concave sharp edge, or setback corners
+    that do not stand either side of the vertex stays refused by name.
+  - A bevel and a round of one sense: they meet by intersection, as two
+    rounds do. This is what question 3's "bevels first" gives here: the
+    round's edge, shortened by the bevel, runs on to the bevel's plane,
+    which leans back from it. The bevel's tool is its prism between its
+    ends, so each of its ends must meet only faces square to it or
+    running along it, or it is refused by name.
+  - A curved edge at such a vertex stays refused by name.
+- **The largest pair on curved seats.** The seat reading also stops where
+  a station's faces, read in its section plane, leave their contacts
+  along tangents that no longer meet in front of the crease: the shoulder
+  the conic stands on. On a convex ruling that is a leg a quarter round
+  its drum (the shoulder at infinity). On a concave one it is the drum's
+  tangent crossing the other face's line past that face's contact.
+  - The concave bound is where the build itself refuses, so the confirm
+    step brackets it at once.
+  - On a convex ruling the band's boolean refuses well short of the
+    quarter turn: with legs 0.1 and 1 on the half drum the seat reads
+    7.8536 (the quarter turn is 5π/2) and the confirm step settles at
+    1.9085, where the boolean stops. That answer is the boolean's limit,
+    not the geometry's.
+
+**Oracles** (`tests/asymmetric.rs`):
+
+- the chain round a block's rounded upright: each station's conic corner
+  integrated along the straight edges, and round the arc times
+  `(R - c) / R`; within 1e-4 of what the band takes, the march's fit.
+  Valid, each band tangent to its faces within 1e-3;
+- the concave fill on the slab on the leaning block, both leans: constant
+  distances `A (L - k c)` to 1e-8; varying laws, the corners' integral plus
+  the end's run-on moment, or each section under the overhang, to 1e-6.
+  The same solid whichever face is named, and tangent to both faces
+  within 1e-7;
+- the L-bracket's signed corner with an asymmetric round on either band
+  or both: the bracket less the convex corner along 12, plus the fill
+  along 20, the remainder within the cube of the widest leg. Every point
+  near the corner lies within the bracket or the fill (2e-4), and the
+  patch is tangent to the bands but along the sharp edge (2e-4);
+- a bevel beside an asymmetric round (box) or fill (pocket): each section
+  along its edge, less (or plus) once the shallower depth over the face
+  under both; to 1e-5;
+- the largest pair on the concave ruling: the root of
+  `r (1 / cos(b s / r) - 1) = a s`, to 1e-4 relative. The answer builds
+  valid, and 1.01 times it is refused.
+
 ### Amendment: overflow handling
 
 A round often runs into geometry that is not one of its own two faces: an

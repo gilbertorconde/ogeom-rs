@@ -1612,11 +1612,21 @@ sections, which the bands either side of a junction share. On a straight \
 edge between planes each distance may vary along the edge by a law \
 (linear, or through points), the band exact: the section's control \
 points carried along the laws' cubics, its ends the constant band's with \
-the laws held level past them; a concave edge is capped square at ends \
-square to it. Round a rim and along any other crease the march seats the \
-distances may vary too, the laws laid along the crease by arc length from \
-the edge's start, closed round a closed edge, and the band marched under \
-them. Any other crease the march seats (a spline's crease along a wall, \
+the laws held level past them; a concave edge's fill ends in the planes \
+at its ends, run on with its laws held level and trimmed by each plane \
+not square to it, as the constant fill now is. Round a rim and along any \
+other crease the march seats the distances may vary too, the laws laid \
+along the crease by arc length from the edge's start, closed round a \
+closed edge, and the band marched under them. \
+fillet_edges_distances_variable lays the two laws by arc length along a \
+tangent chain of such edges, open or closed, naming one face beside \
+every edge: each straight edge between planes takes its exact band under \
+its stretch of the laws, any other the marched band stopped in its end \
+sections, and the bands are joined across each junction into one tool; \
+there they meet in the same section, and their tangent planes across it \
+agree only to within a few hundredths of a radian where both laws vary \
+at a junction between a straight edge and an arc (the circular law's \
+chain shows the same). Any other crease the march seats (a spline's crease along a wall, \
 a bore's rim on a drum, open or closed) takes a band fitted to the \
 march's target through the conic sections station by station: each leg \
 walked its distance along its face's section in the plane square to the \
@@ -1638,24 +1648,38 @@ mixed, and at a convex one with bevels too: each band stopped at the \
 least setback where its section clears the others, and the opening \
 closed by one patch tangent to each round's band, the same solid \
 whichever face each names and in whichever order the request lists them. \
-Where two of a vertex's three edges are rounds on straight edges between \
-planes, both convex or both concave, and the third is left sharp, the \
-two bands run to their end faces and meet by intersection, their union \
-cut or filled. largest_fillet_distances answers the largest common scale \
-of a pair that builds (fillet.largest-size): its search started from the \
+Where two of a vertex's three edges are rounds or bevels on straight \
+edges between planes, both convex or both concave, and the third is left \
+sharp, the two bands run to their end faces and meet by intersection, \
+their union cut or filled (a bevel's ends square to it). Where one cuts \
+and the other fills, in a request of rounds alone, the bands end through \
+their faces' setback corners and one patch closes the corner between \
+them, tangent to both but along the sharp edge, which stays sharp up to \
+the vertex. largest_fillet_distances answers the largest common scale of \
+a pair that builds (fillet.largest-size): its search started from the \
 seat on a straight edge between planes or a rim, and on any other seat \
-from each leg walked along its face's section at stations over the edge. \
-Refused by name: two bands meeting where a third \
-edge is left sharp when one cuts and the other fills, or either is \
-curved or a bevel; a varying distance along a chain (no request takes a \
-law over a chain of asymmetric rounds) or at a concave edge's end not \
-square to it; asymmetric rounds meeting at a vertex other than as one \
+from each leg walked along its face's section at stations over the edge, \
+also stopping where the faces' tangents at a station's contacts no \
+longer meet in front of the crease (a leg turned a quarter round a drum; \
+a concave drum's tangent crossing the other face's line past its \
+contact). Refused by name: two bands meeting where a third edge is left \
+sharp when either is curved, or one cuts and the other fills where \
+either is a bevel, the sharp edge is concave, or the faces' setback \
+corners do not stand either side of the vertex along the sharp edge; a \
+varying distance at a concave edge's end meeting a face that is not a \
+plane; a chain of varying distances whose edges meet other than tangent \
+or whose named face is not beside every edge; asymmetric rounds meeting \
+at a vertex other than as one \
 tangent chain, as a corner of three planes all blended, or as two of \
 three; a contact set back past its face's side or a rim's contact \
-reaching its axis."""
+reaching its axis. Where a convex ruling's leg turns towards a quarter \
+round its drum the band's boolean refuses well short of the shoulder's \
+bound, so the largest pair there is where the boolean stops, not the \
+shoulder."""
 symbols = [
     "ogeom_fillet::fillet_edge_distances",
     "ogeom_fillet::fillet_edge_distances_variable",
+    "ogeom_fillet::fillet_edges_distances_variable",
     "ogeom_fillet::largest_fillet_distances",
     "ogeom_fillet::RoundProfile",
     "ogeom_fillet::Blend",
@@ -1681,6 +1705,12 @@ tests = [
     "crates/ogeom-fillet/tests/asymmetric.rs::distances_varying_past_an_end_not_square_run_on_level_to_it",
     "crates/ogeom-fillet/tests/asymmetric.rs::distances_varying_round_a_rim_take_the_integral_of_their_corners",
     "crates/ogeom-fillet/tests/asymmetric.rs::distances_varying_along_a_spline_crease_take_the_integral_of_their_corners",
+    "crates/ogeom-fillet/tests/asymmetric.rs::distances_varying_along_a_tangent_chain_take_the_integral_of_their_corners",
+    "crates/ogeom-fillet/tests/asymmetric.rs::a_concave_edge_ending_at_a_face_not_square_fills_up_to_its_plane",
+    "crates/ogeom-fillet/tests/asymmetric.rs::a_convex_and_a_concave_band_beside_an_edge_left_sharp_close_on_one_patch",
+    "crates/ogeom-fillet/tests/asymmetric.rs::a_bevel_and_an_asymmetric_round_beside_an_edge_left_sharp_meet_by_intersection",
+    "crates/ogeom-fillet/tests/asymmetric.rs::a_bevel_and_an_asymmetric_fill_beside_an_edge_left_sharp_meet_by_intersection",
+    "crates/ogeom-fillet/tests/asymmetric.rs::the_largest_pair_on_a_concave_ruling_stops_where_the_shoulder_reaches_a_contact",
 ]
 
 [[capability]]
