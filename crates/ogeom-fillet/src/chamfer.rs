@@ -1567,6 +1567,132 @@ pub(crate) fn seat_chamfer_distance(
     Ok((largest * shortest > conf).then_some(largest))
 }
 
+/// How far a bevel of `legs` runs along `face`, nothing where the face is
+/// not one of its seat's.
+fn leg_on(legs: &Legs, face: &Shape) -> f64 {
+    match legs {
+        Legs::Straight(seat, per) => seat
+            .faces
+            .iter()
+            .zip(per)
+            .find(|(f, _)| f.is_same(face))
+            .map_or(0.0, |(_, leg)| *leg),
+        Legs::Rim(seat, on_wall, on_cap) => {
+            if face.is_same(&seat.wall_face) {
+                *on_wall
+            } else if face.is_same(&seat.cap_face) {
+                *on_cap
+            } else {
+                0.0
+            }
+        }
+        Legs::Sphere(seat, on_wall, on_cap) => sphere_leg(seat, face, *on_wall, *on_cap),
+        Legs::Marched => 0.0,
+    }
+}
+
+/// How many confusion distances wide [`largest_chamfer_distance_all`]
+/// keeps the face between two bevels: a face of one such width between
+/// them is a sliver the engine does not build.
+const SLIVER: f64 = 4.0;
+
+/// The largest measure up to `up_to` at which the chamfers of `specs` all
+/// stay seated on their faces, as [`largest_chamfer_distance`] reads each,
+/// and no bevel's contact comes within another's leg of its edge across a
+/// face they share, the overlap [`chamfer_edges_with`] refuses where the
+/// face's setbacks cross. The measure is each spec's own, as
+/// [`largest_chamfer_distance`] reads it (the distance, the common scale
+/// of two distances, the distance along the named face at an angle), and
+/// one measure is asked of every spec; the measures `specs` name are not
+/// read. Edges meeting at a vertex are corner mates, whose bevels meet
+/// there by design, and are not held apart, under
+/// [`ChamferCorner::Facet`](crate::ChamferCorner::Facet) and
+/// [`ChamferCorner::Point`](crate::ChamferCorner::Point) alike; vertices
+/// and faces are told apart by placement as well as node. None where no
+/// measure leaving every leg longer than the confusion distance fits.
+///
+/// Read from the seats, without building, at the stations
+/// [`largest_fillet_radius`](crate::largest_fillet_radius) reads. A
+/// contact's distance to another edge changes no faster than the contact
+/// walks, and the edge's leg grows linearly, so the measure where the two
+/// first meet is approached from below in steps that cannot pass it, and
+/// the answer keeps them a few confusion distances apart. The
+/// promise is the single edge's, setback and overlap only: at the answer
+/// and below, the request is not refused for either. Past it, two convex
+/// bevels across a narrow face are not refused but meet along the ridge
+/// their planes share, the face between them gone, as
+/// [`chamfer_edges_with`] builds; the answer is the largest measure that
+/// keeps the face.
+///
+/// # Errors
+///
+/// As [`largest_chamfer_distance`] for each spec, and
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+/// `specs` is empty.
+pub fn largest_chamfer_distance_all(
+    model: &Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    up_to: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    if specs.is_empty() {
+        ogeom_bail!(
+            Construction,
+            "a request of no edges has no largest distance"
+        );
+    }
+    let mut largest = up_to;
+    for (edge, spec) in specs {
+        match largest_chamfer_distance(model, solid, edge, spec, up_to, tol)? {
+            Some(measure) => largest = largest.min(measure),
+            None => return Ok(None),
+        }
+    }
+    let mut seated = Vec::with_capacity(specs.len());
+    for (edge, spec) in specs {
+        seated.push(legs(
+            model,
+            solid,
+            edge,
+            &crate::limit::scaled(spec, 1.0),
+            tol,
+        )?);
+    }
+    let edges: Vec<Shape> = specs.iter().map(|(edge, _)| edge.clone()).collect();
+    largest = crate::support::keeping_face_meshes(|| -> OgeomResult<f64> {
+        let seats = crate::fits::seats(
+            model,
+            solid,
+            &edges,
+            largest,
+            |i, face| leg_on(&seated[i], face),
+            tol,
+        )?;
+        crate::fits::held_apart(
+            model,
+            &edges,
+            &seats,
+            |i, walk| leg_on(&seated[i], &walk.face),
+            SLIVER * tol.confusion(),
+            largest,
+            tol,
+        )
+    })?;
+    // Every leg longer than the confusion distance, as for one edge.
+    let shortest = seated
+        .iter()
+        .map(|legs| match legs {
+            Legs::Straight(_, per) => per[0].min(per[1]),
+            Legs::Rim(_, on_wall, on_cap) | Legs::Sphere(_, on_wall, on_cap) => {
+                on_wall.min(*on_cap)
+            }
+            Legs::Marched => 0.0,
+        })
+        .fold(f64::INFINITY, f64::min);
+    Ok((largest * shortest > tol.confusion()).then_some(largest))
+}
+
 /// The seat a chamfer stands on and how far its legs run along each face.
 pub(crate) enum Legs {
     /// A straight edge between planes, its legs along the seat's faces in

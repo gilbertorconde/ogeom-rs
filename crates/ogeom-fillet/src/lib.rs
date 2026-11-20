@@ -52,7 +52,7 @@ pub use blend::{Blend, blend_edges};
 pub use bridge::{End, make_blend_curve, make_blend_surface};
 pub use chamfer::{
     Chamfer, chamfer_edge, chamfer_edge_angle, chamfer_edge_distances, chamfer_edges,
-    chamfer_edges_with, largest_chamfer_distance,
+    chamfer_edges_with, largest_chamfer_distance, largest_chamfer_distance_all,
 };
 pub use chamfer_corner::{ChamferCorner, chamfer_edges_cornered};
 pub use corner2d::{chamfer_corner_2d, fillet_corner_2d};
