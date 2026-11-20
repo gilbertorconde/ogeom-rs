@@ -47,6 +47,7 @@ mod far_edge;
 mod fits;
 mod flush;
 mod guards;
+mod hold_edge;
 pub(crate) mod junction;
 mod law_tools;
 mod marched_junctions;
@@ -100,6 +101,7 @@ pub(crate) use defeatured::tools as defeatured_tools;
 pub(crate) use fallback::{Sense, Tool, applied as apply_tools, straight_non_local};
 pub(crate) use far_edge::rounds as far_edge_rounds;
 pub(crate) use fits::request_fits;
+pub(crate) use hold_edge::{held as hold_edge_held, reach as hold_edge_reach};
 pub(crate) use law_tools::rounds as varying_rounds;
 pub(crate) use marched_seats::rounds as marched_rounds;
 pub(crate) use meeting::{

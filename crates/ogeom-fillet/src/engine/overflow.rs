@@ -497,7 +497,7 @@ fn clear(model: &Model, reach: &Reach, tol: Tolerances) -> OgeomResult<bool> {
 
 /// The arc of `radius` about `centre` in the plane square to `z`, from the
 /// direction `x` through `sweep`.
-fn arc(
+pub(super) fn arc(
     centre: Point,
     z: Vector,
     x: Vector,
@@ -517,7 +517,7 @@ fn arc(
     ))
 }
 
-fn segment(a: Point, b: Point, tol: Tolerances) -> OgeomResult<(Curve, (f64, f64))> {
+pub(super) fn segment(a: Point, b: Point, tol: Tolerances) -> OgeomResult<(Curve, (f64, f64))> {
     Ok((
         Curve::Line(LineCurve::segment(a, b, tol)?),
         (0.0, a.distance(b)),
@@ -546,7 +546,7 @@ fn strip(reach: &Reach, tol: Tolerances) -> OgeomResult<Option<ogeom_geom::BSpli
 
 /// The boundary iso-curve of `surface` between `points[ends.0]` and
 /// `points[ends.1]`, as a sheet curve over those ends.
-fn boundary_from(
+pub(super) fn boundary_from(
     surface: &ogeom_geom::BSplineSurface,
     points: &[Point],
     ends: (usize, usize),
@@ -596,11 +596,11 @@ fn periods(surface: &SurfaceGeometry) -> (Option<f64>, Option<f64>) {
 
 /// One face of a tool: its surface, its loop by curve, and a point of it
 /// with the tool's outward direction there.
-struct ToolFace {
-    surface: SurfaceGeometry,
-    curves: Vec<usize>,
-    at: Point,
-    out: Vector,
+pub(super) struct ToolFace {
+    pub(super) surface: SurfaceGeometry,
+    pub(super) curves: Vec<usize>,
+    pub(super) at: Point,
+    pub(super) out: Vector,
 }
 
 /// The closed solid `faces` bound over `points` and `curves`, each loop
@@ -608,7 +608,7 @@ struct ToolFace {
 /// loop's signed area in the surface's parameters), each face turned so
 /// it faces `out`. `None` where a loop will not close, the shell is open,
 /// or the solid holds no volume.
-fn closed(
+pub(super) fn closed(
     model: &mut Model,
     points: &[Point],
     curves: &[SheetCurve],

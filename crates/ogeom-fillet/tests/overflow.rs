@@ -386,7 +386,7 @@ fn blend_into_round_off_falls_to_trim_through_or_is_refused() {
 /// A plate with a boss, its top rim rounded at 1 beside a pocket sunk into
 /// the boss: the round reaches the pocket's walls and trims through them
 /// (as `non_local_rims` measures). With trim through off it is refused by
-/// name, hold edge not being built; a local round with every behaviour off
+/// name, hold edge not taking a rim; a local round with every behaviour off
 /// builds as with all on.
 #[test]
 fn trim_through_off_refuses_a_round_reaching_another_face() {
