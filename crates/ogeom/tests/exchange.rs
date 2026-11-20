@@ -96,9 +96,10 @@ fn a_drawing_written_as_dxf_reads_back_layer_by_layer() {
 fn a_3mf_is_an_archive_this_crate_can_open_again() {
     let mesh = block_mesh();
     let bytes = ogeom::io::threemf::write_3mf(&[ogeom::io::threemf::Object {
-        mesh: &mesh,
         name: Some("block".into()),
-    }]);
+        ..ogeom::io::threemf::Object::new(&mesh)
+    }])
+    .unwrap();
     // It is a ZIP: the local header's own signature opens it.
     assert_eq!(&bytes[0..4], &[0x50, 0x4b, 0x03, 0x04]);
 
@@ -196,9 +197,10 @@ fn a_deflated_3mf_package_reads() {
 fn write_3mf_round_trips_through_read_3mf() {
     let mesh = block_mesh();
     let bytes = ogeom::io::write_3mf(&[ogeom::io::threemf::Object {
-        mesh: &mesh,
         name: Some("block".into()),
-    }]);
+        ..ogeom::io::threemf::Object::new(&mesh)
+    }])
+    .unwrap();
     let back = ogeom::io::read_3mf(&bytes, T).unwrap();
     assert_eq!(back.objects.len(), 1);
     assert_eq!(back.objects[0].name.as_deref(), Some("block"));

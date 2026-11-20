@@ -176,7 +176,7 @@ edge to grow to, and a gap the recovered edges do not bridge.
 
 ### ogeom-io
 
-- **io.3mf-colours-and-roles**: 3MF colours from colour groups, base materials and textures, and the roles of objects and volumes · `partial`
+- **io.3mf-colours-and-roles**: 3MF colours from colour groups, base materials and textures, and the roles of objects and volumes; object and triangle colours written · `partial`
   - *restriction:* Colour groups, base materials and texture groups read at
 each triangle's corners, textures (PNG or JPEG parts) sampled by the
 nearest texel and tiled as the texture says, `none` read as `clamp`.
@@ -186,7 +186,9 @@ or another as written) are read by name from objects' metadata and from
 the configuration parts under `Metadata/`, by triangle range or by
 component; a role kept in any other form is not seen, and the volume reads
 as a part. A volume's triangles stay in its object's mesh, the volumes
-saying which they are.
+saying which they are. Writing gives each object colour a base material
+and each object with triangle colours a colour group; textures and roles
+are not written.
 - **io.dxf**: DXF drawings, both directions: lines, arcs, circles, ellipses, bulged polylines, splines and text, with units and layers · `covered`
 - **io.iges**: IGES, both directions: solids as manifold B-rep, sheets as trimmed surfaces, surface files sewn, units converted · `partial`
   - *restriction:* The core entity set reads and writes, and eight round-trip cases hold it to measured volumes: planes, a periodic
@@ -335,4 +337,4 @@ than a plane or a B-spline over its patch's parameters.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: 22a8fa4a499dfed0 -->
+<!-- ledger-checksum: f35a7719b9244606 -->

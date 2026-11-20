@@ -25,21 +25,104 @@ use crate::image::{Image, Wrap};
 use crate::mesh_formats::MeshColours;
 use crate::xml;
 
-/// One mesh in the package, with the name the item carries.
+/// One mesh in the package, with the name and colours the object carries.
+///
+/// Colours are sRGB, RGBA in `[0, 1]`. A component past that range is
+/// clamped to it; one that is not a number is refused.
 #[derive(Debug, Clone)]
 pub struct Object<'a> {
     /// The tessellation.
     pub mesh: &'a Triangulation,
     /// The name the object is given, if any.
     pub name: Option<String>,
+    /// The object's colour: written as a base material, one per distinct
+    /// colour across the package, that the object names.
+    pub colour: Option<[f64; 4]>,
+    /// One colour per triangle of [`Object::mesh`]: written as a colour
+    /// group of the materials extension, with each triangle whose colour
+    /// is not the object's naming its own. An object with these and no
+    /// [`Object::colour`] takes its first triangle's colour as its own,
+    /// since the format gives every object with coloured triangles a
+    /// default.
+    pub colours: Option<Vec<[f64; 4]>>,
+}
+
+impl<'a> Object<'a> {
+    /// An object of `mesh`, with no name and no colour.
+    #[must_use]
+    pub fn new(mesh: &'a Triangulation) -> Self {
+        Self {
+            mesh,
+            name: None,
+            colour: None,
+            colours: None,
+        }
+    }
+}
+
+/// A colour as the format writes it: `#RRGGBB`, or `#RRGGBBAA` when it is
+/// not opaque. Components are clamped to `[0, 1]`.
+fn hex_colour(colour: [f64; 4]) -> OgeomResult<String> {
+    if colour.iter().any(|c| c.is_nan()) {
+        ogeom_bail!(
+            Domain,
+            "the colour {colour:?} has a component that is not a number"
+        );
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to [0, 255] before the cast"
+    )]
+    let [r, g, b, a] = colour.map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
+    Ok(if a == u8::MAX {
+        format!("#{r:02X}{g:02X}{b:02X}")
+    } else {
+        format!("#{r:02X}{g:02X}{b:02X}{a:02X}")
+    })
+}
+
+/// How one object is coloured in the package.
+struct Painted {
+    /// The property group and index the object names as its default.
+    default: Option<(usize, usize)>,
+    /// The object's colour group: its id and colours.
+    group: Option<(usize, Vec<String>)>,
+    /// Each triangle's index into the group, where its colour is not the
+    /// object's.
+    triangles: Vec<Option<usize>>,
+}
+
+/// Distinct colours in the order first met, each with its index.
+#[derive(Default)]
+struct Palette {
+    colours: Vec<String>,
+    index: FastMap<String, usize>,
+}
+
+impl Palette {
+    /// The index of `colour`, added at the end if it is not there yet.
+    fn index_of(&mut self, colour: &str) -> usize {
+        if let Some(&i) = self.index.get(colour) {
+            return i;
+        }
+        self.colours.push(colour.to_owned());
+        self.index.insert(colour.to_owned(), self.colours.len() - 1);
+        self.colours.len() - 1
+    }
 }
 
 /// Write meshes as a 3MF package.
 ///
 /// One object per mesh, one item per object, all in millimetres, the
-/// format's own default unit and this kernel's.
-#[must_use]
-pub fn write_3mf(objects: &[Object<'_>]) -> Vec<u8> {
+/// format's own default unit and this kernel's. Objects without colours
+/// are written with no material at all.
+///
+/// # Errors
+///
+/// An object whose [`Object::colours`] are not one per triangle, or a
+/// colour with a component that is not a number.
+pub fn write_3mf(objects: &[Object<'_>]) -> OgeomResult<Vec<u8>> {
     let content_types = r#"<?xml version="1.0" encoding="UTF-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -52,31 +135,96 @@ pub fn write_3mf(objects: &[Object<'_>]) -> Vec<u8> {
 </Relationships>
 "#;
 
+    // The materials first: every base material is in one group that the
+    // resources open with, and objects name it.
+    let base_id = objects.len() + 1;
+    let mut next_group = base_id + 1;
+    let mut bases = Palette::default();
+    let mut painted = Vec::with_capacity(objects.len());
+    for (i, object) in objects.iter().enumerate() {
+        let colour = object.colour.map(hex_colour).transpose()?;
+        let triangles = match &object.colours {
+            None => None,
+            Some(c) if c.len() != object.mesh.triangles.len() => ogeom_bail!(
+                Dimension,
+                "object {} has {} colours for {} triangles",
+                i + 1,
+                c.len(),
+                object.mesh.triangles.len()
+            ),
+            Some(c) => Some(
+                c.iter()
+                    .map(|&c| hex_colour(c))
+                    .collect::<OgeomResult<Vec<_>>>()?,
+            ),
+        };
+        if object.mesh.triangles.is_empty() {
+            painted.push(None);
+            continue;
+        }
+        let mut group = Palette::default();
+        let (default, own) = match (colour, &triangles) {
+            (Some(colour), _) => (Some((base_id, bases.index_of(&colour))), colour),
+            (None, Some(t)) => (Some((next_group, group.index_of(&t[0]))), t[0].clone()),
+            (None, None) => (None, String::new()),
+        };
+        let triangles = triangles.map_or_else(Vec::new, |t| {
+            t.iter()
+                .map(|c| (*c != own).then(|| group.index_of(c)))
+                .collect()
+        });
+        let group = (!group.colours.is_empty()).then(|| {
+            next_group += 1;
+            (next_group - 1, group.colours)
+        });
+        painted.push(Some(Painted {
+            default,
+            group,
+            triangles,
+        }));
+    }
+    let grouped = painted.iter().flatten().any(|p| p.group.is_some());
+
     let mut model = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" \
          xml:lang=\"en-US\" \
-         xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n  \
-         <resources>\n",
+         xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\"",
     );
+    if grouped {
+        let _ = write!(model, " xmlns:m=\"{MATERIAL}\"");
+    }
+    model.push_str(">\n  <resources>\n");
+    if !bases.colours.is_empty() {
+        let _ = writeln!(model, "    <basematerials id=\"{base_id}\">");
+        for colour in &bases.colours {
+            let _ = writeln!(
+                model,
+                "      <base name=\"{colour}\" displaycolor=\"{colour}\"/>"
+            );
+        }
+        model.push_str("    </basematerials>\n");
+    }
     let mut items = String::new();
-    for (i, object) in objects.iter().enumerate() {
-        if object.mesh.triangles.is_empty() {
+    for (i, (object, painted)) in objects.iter().zip(&painted).enumerate() {
+        let Some(painted) = painted else {
             continue;
-        }
+        };
         let id = i + 1;
-        match &object.name {
-            Some(name) => {
-                let _ = writeln!(
-                    model,
-                    "    <object id=\"{id}\" type=\"model\" name=\"{}\">",
-                    escaped(name)
-                );
+        if let Some((group_id, colours)) = &painted.group {
+            let _ = writeln!(model, "    <m:colorgroup id=\"{group_id}\">");
+            for colour in colours {
+                let _ = writeln!(model, "      <m:color color=\"{colour}\"/>");
             }
-            None => {
-                let _ = writeln!(model, "    <object id=\"{id}\" type=\"model\">");
-            }
+            model.push_str("    </m:colorgroup>\n");
         }
-        model.push_str("      <mesh>\n        <vertices>\n");
+        let _ = write!(model, "    <object id=\"{id}\" type=\"model\"");
+        if let Some(name) = &object.name {
+            let _ = write!(model, " name=\"{}\"", escaped(name));
+        }
+        if let Some((pid, pindex)) = painted.default {
+            let _ = write!(model, " pid=\"{pid}\" pindex=\"{pindex}\"");
+        }
+        model.push_str(">\n      <mesh>\n        <vertices>\n");
         for p in &object.mesh.positions {
             let _ = writeln!(
                 model,
@@ -85,11 +233,17 @@ pub fn write_3mf(objects: &[Object<'_>]) -> Vec<u8> {
             );
         }
         model.push_str("        </vertices>\n        <triangles>\n");
-        for [a, b, c] in &object.mesh.triangles {
-            let _ = writeln!(
+        for (t, [a, b, c]) in object.mesh.triangles.iter().enumerate() {
+            let _ = write!(
                 model,
-                "          <triangle v1=\"{a}\" v2=\"{b}\" v3=\"{c}\"/>"
+                "          <triangle v1=\"{a}\" v2=\"{b}\" v3=\"{c}\""
             );
+            if let (Some((group_id, _)), Some(Some(p1))) =
+                (&painted.group, painted.triangles.get(t))
+            {
+                let _ = write!(model, " pid=\"{group_id}\" p1=\"{p1}\"");
+            }
+            model.push_str("/>\n");
         }
         model.push_str("        </triangles>\n      </mesh>\n    </object>\n");
         let _ = writeln!(items, "    <item objectid=\"{id}\"/>");
@@ -98,11 +252,11 @@ pub fn write_3mf(objects: &[Object<'_>]) -> Vec<u8> {
     model.push_str(&items);
     model.push_str("  </build>\n</model>\n");
 
-    archive(&[
+    Ok(archive(&[
         ("[Content_Types].xml", content_types.as_bytes()),
         ("_rels/.rels", relationships.as_bytes()),
         ("3D/3dmodel.model", model.as_bytes()),
-    ])
+    ]))
 }
 
 /// The XML text escapes, which are the five the specification names.
@@ -2406,5 +2560,253 @@ mod tests {
         for garbage in [&b""[..], b"PK\x05\x06", b"\x89PNG\r\n\x1a\n"] {
             assert!(read_3mf(garbage, T).is_err());
         }
+    }
+
+    /// A unit cube at `x`: eight corners, twelve outward triangles.
+    fn cube_mesh(x: f64) -> Triangulation {
+        let mut mesh = Triangulation::new();
+        for k in 0..8_u32 {
+            let (dx, dy, dz) = (k & 1, (k >> 1) & 1, (k >> 2) & 1);
+            mesh.positions
+                .push(Point::new(x + f64::from(dx), f64::from(dy), f64::from(dz)));
+        }
+        for [a, b, c, d] in [
+            [0, 2, 3, 1],
+            [4, 5, 7, 6],
+            [0, 1, 5, 4],
+            [2, 6, 7, 3],
+            [0, 4, 6, 2],
+            [1, 3, 7, 5],
+        ] {
+            mesh.triangles.push([a, b, c]);
+            mesh.triangles.push([a, c, d]);
+        }
+        mesh
+    }
+
+    fn close(a: [f64; 4], b: [f64; 4]) -> bool {
+        a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1.0 / 255.0)
+    }
+
+    fn model_text(bytes: &[u8]) -> String {
+        let parts = read_package(bytes).unwrap();
+        let (_, model) = parts.iter().find(|(n, _)| n == "3D/3dmodel.model").unwrap();
+        String::from_utf8(model.clone()).unwrap()
+    }
+
+    /// Objects without colour are written exactly as the format was
+    /// written before colours existed: these bytes are pinned.
+    #[test]
+    fn uncoloured_objects_write_the_same_bytes() {
+        let mut one = Triangulation::new();
+        one.positions = vec![
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(1.5, 0.0, 0.0),
+            Point::new(0.0, 2.0, -0.25),
+        ];
+        one.triangles = vec![[0, 1, 2]];
+        let empty = Triangulation::new();
+        let objects = [
+            Object {
+                name: Some("a<b".into()),
+                ..Object::new(&one)
+            },
+            Object::new(&empty),
+            Object::new(&one),
+        ];
+        let expected = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">
+  <resources>
+    <object id=\"1\" type=\"model\" name=\"a&lt;b\">
+      <mesh>
+        <vertices>
+          <vertex x=\"0\" y=\"0\" z=\"0\"/>
+          <vertex x=\"1.5\" y=\"0\" z=\"0\"/>
+          <vertex x=\"0\" y=\"2\" z=\"-0.25\"/>
+        </vertices>
+        <triangles>
+          <triangle v1=\"0\" v2=\"1\" v3=\"2\"/>
+        </triangles>
+      </mesh>
+    </object>
+    <object id=\"3\" type=\"model\">
+      <mesh>
+        <vertices>
+          <vertex x=\"0\" y=\"0\" z=\"0\"/>
+          <vertex x=\"1.5\" y=\"0\" z=\"0\"/>
+          <vertex x=\"0\" y=\"2\" z=\"-0.25\"/>
+        </vertices>
+        <triangles>
+          <triangle v1=\"0\" v2=\"1\" v3=\"2\"/>
+        </triangles>
+      </mesh>
+    </object>
+  </resources>
+  <build>
+    <item objectid=\"1\"/>
+    <item objectid=\"3\"/>
+  </build>
+</model>
+";
+        let content_types = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/>
+</Types>
+"#;
+        let relationships = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>
+</Relationships>
+"#;
+        let bytes = write_3mf(&objects).unwrap();
+        assert_eq!(model_text(&bytes), expected);
+        assert_eq!(
+            bytes,
+            archive(&[
+                ("[Content_Types].xml", content_types.as_bytes()),
+                ("_rels/.rels", relationships.as_bytes()),
+                ("3D/3dmodel.model", expected.as_bytes()),
+            ])
+        );
+    }
+
+    /// Two objects, red and blue, read back with their colours, one base
+    /// material each; a third red object shares the first's.
+    #[test]
+    fn object_colours_round_trip_as_base_materials() {
+        let (a, b, c) = (cube_mesh(0.0), cube_mesh(3.0), cube_mesh(6.0));
+        let red = [1.0, 0.0, 0.0, 1.0];
+        let blue = [0.0, 0.0, 1.0, 1.0];
+        let objects = [
+            Object {
+                colour: Some(red),
+                ..Object::new(&a)
+            },
+            Object {
+                colour: Some(blue),
+                ..Object::new(&b)
+            },
+            Object {
+                colour: Some(red),
+                ..Object::new(&c)
+            },
+        ];
+        let bytes = write_3mf(&objects).unwrap();
+        let text = model_text(&bytes);
+        assert_eq!(text.matches("<base ").count(), 2, "{text}");
+        assert!(text.contains("displaycolor=\"#FF0000\""), "{text}");
+        assert!(!text.contains("colorgroup"), "{text}");
+        let import = read_3mf(&bytes, T).unwrap();
+        assert!(import.warnings.is_empty(), "{:?}", import.warnings);
+        let read: Vec<_> = import.objects.iter().map(|o| o.colour).collect();
+        assert_eq!(read, [Some(red), Some(blue), Some(red)]);
+    }
+
+    /// Per-triangle colours read back triangle by triangle, the object's
+    /// colour with them; a triangle whose colour is the object's carries
+    /// no property of its own.
+    #[test]
+    fn triangle_colours_round_trip_as_a_colour_group() {
+        let mesh = cube_mesh(0.0);
+        let grey = [0.5, 0.5, 0.5, 1.0];
+        let palette = [grey, [0.2, 0.4, 0.6, 1.0], [1.0, 0.8, 0.0, 1.0]];
+        let colours: Vec<_> = (0..12).map(|t| palette[t / 2 % 3]).collect();
+        let objects = [Object {
+            colour: Some(grey),
+            colours: Some(colours.clone()),
+            ..Object::new(&mesh)
+        }];
+        let bytes = write_3mf(&objects).unwrap();
+        let text = model_text(&bytes);
+        assert!(text.contains(&format!("xmlns:m=\"{MATERIAL}\"")), "{text}");
+        assert_eq!(text.matches("<m:colorgroup ").count(), 1, "{text}");
+        assert_eq!(text.matches(" p1=").count(), 8, "{text}");
+        let import = read_3mf(&bytes, T).unwrap();
+        assert!(import.warnings.is_empty(), "{:?}", import.warnings);
+        let back = &import.objects[0];
+        assert!(close(back.colour.unwrap(), grey));
+        let read = back.colours.as_ref().unwrap();
+        for (t, want) in colours.iter().enumerate() {
+            let got = read.at(&back.mesh, t, 0).unwrap();
+            assert!(close(got, *want), "triangle {t}: {got:?} for {want:?}");
+        }
+    }
+
+    /// Coloured and uncoloured objects side by side, one with triangle
+    /// colours and no object colour, one translucent.
+    #[test]
+    fn coloured_uncoloured_and_translucent_objects_mix() {
+        let (a, b, c, d) = (
+            cube_mesh(0.0),
+            cube_mesh(3.0),
+            cube_mesh(6.0),
+            cube_mesh(9.0),
+        );
+        let glass = [0.25, 0.75, 1.0, 0.5];
+        let colours: Vec<_> = (0..12)
+            .map(|t| if t < 6 { [0.0, 1.0, 0.0, 1.0] } else { glass })
+            .collect();
+        let objects = [
+            Object::new(&a),
+            Object {
+                colour: Some(glass),
+                ..Object::new(&b)
+            },
+            Object {
+                colours: Some(colours.clone()),
+                ..Object::new(&c)
+            },
+            Object {
+                name: Some("plain".into()),
+                ..Object::new(&d)
+            },
+        ];
+        let bytes = write_3mf(&objects).unwrap();
+        let text = model_text(&bytes);
+        assert!(text.contains("displaycolor=\"#40BFFF80\""), "{text}");
+        let import = read_3mf(&bytes, T).unwrap();
+        assert!(import.warnings.is_empty(), "{:?}", import.warnings);
+        let o = &import.objects;
+        assert_eq!(o.len(), 4);
+        assert!(o[0].colour.is_none() && o[0].colours.is_none());
+        assert!(close(o[1].colour.unwrap(), glass));
+        let read = o[2].colours.as_ref().unwrap();
+        for (t, want) in colours.iter().enumerate() {
+            assert!(close(read.at(&o[2].mesh, t, 0).unwrap(), *want));
+        }
+        assert!(o[3].colour.is_none() && o[3].colours.is_none());
+        assert_eq!(o[3].name.as_deref(), Some("plain"));
+    }
+
+    /// Colours the wrong length are refused; components past [0, 1] are
+    /// clamped, and a component that is not a number is refused.
+    #[test]
+    fn colours_are_checked() {
+        let mesh = cube_mesh(0.0);
+        let short = [Object {
+            colours: Some(vec![[1.0, 0.0, 0.0, 1.0]; 11]),
+            ..Object::new(&mesh)
+        }];
+        assert!(write_3mf(&short).is_err());
+        let long = [Object {
+            colours: Some(vec![[1.0, 0.0, 0.0, 1.0]; 13]),
+            ..Object::new(&mesh)
+        }];
+        assert!(write_3mf(&long).is_err());
+        let nan = [Object {
+            colour: Some([f64::NAN, 0.0, 0.0, 1.0]),
+            ..Object::new(&mesh)
+        }];
+        assert!(write_3mf(&nan).is_err());
+
+        let bright = [Object {
+            colour: Some([2.0, -1.0, 0.5, 7.0]),
+            ..Object::new(&mesh)
+        }];
+        let bytes = write_3mf(&bright).unwrap();
+        assert!(model_text(&bytes).contains("displaycolor=\"#FF0080\""));
+        let back = read_3mf(&bytes, T).unwrap().objects[0].colour.unwrap();
+        assert!(close(back, [1.0, 0.0, 0.5, 1.0]));
     }
 }

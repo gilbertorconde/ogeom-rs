@@ -2791,7 +2791,7 @@ tests = [
 
 [[capability]]
 id = "io.3mf-colours-and-roles"
-title = "3MF colours from colour groups, base materials and textures, and the roles of objects and volumes"
+title = "3MF colours from colour groups, base materials and textures, and the roles of objects and volumes; object and triangle colours written"
 crate = "ogeom-io"
 verdict = "partial"
 restriction = """Colour groups, base materials and texture groups read at
@@ -2803,9 +2803,16 @@ or another as written) are read by name from objects' metadata and from
 the configuration parts under `Metadata/`, by triangle range or by
 component; a role kept in any other form is not seen, and the volume reads
 as a part. A volume's triangles stay in its object's mesh, the volumes
-saying which they are."""
-symbols = ["ogeom_io::ThreeMfObject", "ogeom_io::ObjectRole", "ogeom_io::ThreeMfVolume"]
+saying which they are. Writing gives each object colour a base material
+and each object with triangle colours a colour group; textures and roles
+are not written."""
+symbols = [
+    "ogeom_io::ThreeMfObject", "ogeom_io::ObjectRole", "ogeom_io::ThreeMfVolume",
+    "ogeom_io::write_3mf",
+]
 tests = [
+    "crates/ogeom-io/src/threemf.rs::object_colours_round_trip_as_base_materials",
+    "crates/ogeom-io/src/threemf.rs::triangle_colours_round_trip_as_a_colour_group",
     "crates/ogeom-io/src/threemf.rs::a_modifier_volume_reports_its_role_by_triangle_range",
     "crates/ogeom-io/src/threemf.rs::component_and_object_roles_read_by_name",
     "crates/ogeom-io/src/threemf.rs::colour_groups_and_textures_read_as_mesh_colours",
