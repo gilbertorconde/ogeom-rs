@@ -425,8 +425,9 @@ pub fn fillet_edges(
 /// - `blend_into_round`: where the round reaches an existing round of the
 ///   body, its surface bends to meet that round tangentially, with no step
 ///   and no crease. Built for a boss's foot: the closed rim between a
-///   planar floor and a cylindrical wall standing square on it, whose
-///   round reaches a straight convex round tangent to the floor.
+///   planar floor and a wall about an axis square to it (a cylinder, or a
+///   cone narrowing away from the floor), whose round reaches straight
+///   rounds tangent to the floor, convex or concave, over arcs apart.
 /// - `hold_edge`: where the ball would roll over a sharp edge of the body,
 ///   the edge is kept and the ball rests on it: it touches the other face
 ///   and the round there is the canal surface it sweeps, meeting the band

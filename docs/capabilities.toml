@@ -1729,16 +1729,20 @@ restriction = """fillet_edges_overflow takes an Overflow option set whose \
 behaviours are tried in order, all on by default (fillet_edges is the \
 default): blend into round, hold edge (with hold edge at the end), then \
 trim through. Blend into round is built for a boss's foot: the closed rim \
-between a planar floor and a cylindrical wall standing square on it, whose \
-round's contact circle crosses a straight edge of the floor along which a \
-convex cylindrical round meets the floor tangentially. The round is the \
-torus over the floor and, past the tangent line, the ball resting on the \
-wall and the existing round, fitted through its exact sections within a \
-confusion, the two pieces meeting G1 where the ball touches the tangent \
-line; the fill is one tool fused into the solid, built only where nothing \
-else of the solid stands within the box it can take up. A foot reaching \
-two rounds, a round not tangent to the floor, a concave round, a wall not \
-square to the floor, a curved floor, and an open arc of a foot are not \
+between a planar floor and a wall about an axis square to it (a cylinder, \
+or a cone narrowing away from the floor by up to 45 degrees), whose \
+round's contact circle crosses straight edges of the floor along which \
+cylindrical rounds, convex or concave, meet the floor tangentially, over \
+arcs that stand apart. The round is the torus over the floor and, past \
+each tangent line, the ball resting on the wall and that round, fitted \
+through its exact sections within a confusion, the pieces meeting G1 \
+where the ball touches the tangent line; the fill is one tool fused into \
+the solid, built only where nothing else of the solid stands within the \
+boxes its sections take up and no other face comes within the radius of \
+a ball. A concave round is taken only where the ball stays inside its \
+cylinder. A bevel is blended only from a cylindrical wall into one \
+convex round. Crossings whose arcs meet, a round not tangent to the \
+floor, an undercut wall, a curved floor, and an open arc of a foot are not \
 blended into the round: they go on to trim through. Hold edge is built \
 for a round of one straight edge between two planes meeting convexly, \
 ending flush on end faces square to it, whose contact on one face runs \
@@ -1772,6 +1776,14 @@ tests = [
     "crates/ogeom-fillet/tests/overflow.rs",
     "crates/ogeom-fillet/tests/overflow.rs::a_boss_s_foot_round_blends_into_the_edge_round_it_reaches",
     "crates/ogeom-fillet/tests/overflow.rs::blend_into_round_off_falls_to_trim_through_or_is_refused",
+    "crates/ogeom-fillet/tests/blend_into_round.rs",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::a_foot_round_blends_into_two_rounds_at_a_corner",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::a_foot_round_into_two_rounds_fills_as_the_closing",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::a_conical_boss_s_foot_round_blends_into_the_edge_round",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::a_conical_boss_s_foot_round_fills_as_the_closing",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::a_foot_round_blends_into_a_concave_round",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::a_foot_round_into_a_concave_round_fills_as_the_closing",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_of_a_foot_is_not_blended",
     "crates/ogeom-fillet/tests/overflow.rs::trim_through_off_refuses_a_round_reaching_another_face",
     "crates/ogeom-fillet/tests/hold_edge.rs",
     "crates/ogeom-fillet/tests/hold_edge.rs::hold_edge_keeps_a_pocket_rim_the_ball_would_roll_over",
