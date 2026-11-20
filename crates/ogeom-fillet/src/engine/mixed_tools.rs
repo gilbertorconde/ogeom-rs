@@ -117,7 +117,7 @@ pub(crate) fn blend(
                 e,
                 &seat,
                 &RoundSpec::Circular(*radius),
-                extend,
+                [extend; 2],
                 tol,
             )?,
         ));
@@ -200,8 +200,11 @@ fn bevel_tool(
             "a corner with an asymmetric round takes bevels on straight edges between planes"
         );
     };
-    let a = seat.leg(0, tol)? * d[0];
-    let b = seat.leg(1, tol)? * d[1];
+    // `leg` runs off a convex crease; a concave one's faces run on the
+    // other way from it.
+    let sense = if seat.convex { 1.0 } else { -1.0 };
+    let a = seat.leg(0, tol)? * (d[0] * sense);
+    let b = seat.leg(1, tol)? * (d[1] * sense);
     let points = [
         seat.start,
         seat.end,
@@ -422,14 +425,23 @@ fn read_corners(
         }
         // Two of three edges blended, the third left sharp: the two bands
         // meet by intersection, each its own tool run to its end faces,
-        // where both are rounds on straight edges between planes and both
-        // cut or both fill.
+        // where both are rounds or bevels on straight edges between planes
+        // and both cut or both fill. A bevel's tool is its prism between
+        // its ends, so each end meets only faces square to it or along it.
         if meeting == 3 && here.len() == 2 {
             let mut convex = Vec::with_capacity(2);
             for &k in &here {
-                let seat = (all[k].1 != 1)
-                    .then(|| crate::support::planar_seat(model, solid, &all[k].0, tol).ok())
-                    .flatten();
+                let seat = if all[k].1 == 1 {
+                    match crate::chamfer::legs(model, solid, &all[k].0, &bevels[all[k].2].1, tol) {
+                        Ok(crate::chamfer::Legs::Straight(seat, _)) => {
+                            square_ended(model, solid, &all[k].0, &seat, tol)?;
+                            Some(seat)
+                        }
+                        _ => None,
+                    }
+                } else {
+                    crate::support::planar_seat(model, solid, &all[k].0, tol).ok()
+                };
                 convex.push(seat.map(|s| s.convex));
             }
             if let [Some(a), Some(b)] = convex[..]
@@ -447,8 +459,9 @@ fn read_corners(
                 Construction,
                 "an asymmetric round meets another blended edge at a vertex whose third \
                  edge is left sharp, and the two bands meet there only where both are \
-                 rounds on straight edges between planes that both cut or both fill; see \
-                 docs/CAPABILITIES.md, fillet.asymmetric-rounds"
+                 rounds or bevels on straight edges between planes that both cut or both \
+                 fill, or a convex and a concave round of a request of rounds alone close \
+                 on one patch; see docs/CAPABILITIES.md, fillet.asymmetric-rounds"
             );
         }
         if meeting != 3 || here.len() != 3 {
@@ -583,4 +596,35 @@ fn read_corners(
         }
     }
     Ok(Corners { corners, edges })
+}
+
+/// Refuses by name where an end of the straight bevel `edge` meets a face
+/// of `solid`, other than its seat's two, that is not a plane square to the
+/// edge or running along it: the bevel's tool stops square at its ends.
+fn square_ended(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    seat: &crate::support::Seat,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    for at in [seat.start, seat.end] {
+        let hosts = [&seat.faces[0], &seat.faces[1]];
+        let planes = crate::support::following_planes(model, solid, edge, hosts, at)?;
+        let square = planes.is_some_and(|planes| {
+            planes.iter().all(|(_, _, normal)| {
+                let rate = normal.dot(seat.along).abs();
+                rate <= tol.angular() || rate >= 1.0 - tol.angular()
+            })
+        });
+        if !square {
+            ogeom_bail!(
+                Construction,
+                "a bevel meeting an asymmetric round at a vertex whose third edge is left \
+                 sharp ends at a face not square to it, and its prism stops square there; \
+                 see docs/CAPABILITIES.md, fillet.asymmetric-rounds"
+            );
+        }
+    }
+    Ok(())
 }

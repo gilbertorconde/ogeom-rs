@@ -44,7 +44,7 @@ mod turned_pole;
 
 pub use analyse::{BlendContact, analyse_blend, face_curvature_samples};
 pub use asym::{RoundProfile, fillet_edge_distances, largest_fillet_distances};
-pub use asym_law::fillet_edge_distances_variable;
+pub use asym_law::{fillet_edge_distances_variable, fillet_edges_distances_variable};
 pub use blame::{
     BlendRefusal, chamfer_edges_checked, chamfer_edges_partial, fillet_edges_checked,
     fillet_edges_corner_checked, fillet_edges_partial,

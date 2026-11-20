@@ -140,7 +140,9 @@ impl Walk<'_, '_> {
 /// `spec`'s named face and for the other, each leg runs its law's distance
 /// at its station, the law laid along the crease by arc length from the
 /// edge's start as a variable radius is: held level past an open edge's
-/// ends, round a closed one.
+/// ends, round a closed one. `mates`, where given, are the request's
+/// edges by their ends, the edge's own at `index`: a mate continuing the
+/// crease at an end stops the band flush there.
 #[allow(
     clippy::too_many_arguments,
     reason = "the seat, the legs and their laws"
@@ -152,6 +154,7 @@ pub(crate) fn marched_bevel_with(
     spec: &Chamfer,
     laws: Option<&[crate::law::Profile; 2]>,
     given: &[Shape],
+    mates: Option<(usize, &[crate::fillet::Mate])>,
     chord: Chord,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
@@ -442,6 +445,7 @@ pub(crate) fn marched_bevel_with(
             edge_range,
             [(&first, sign_first), (&second, sign_second)],
             [&faces[0], &faces[1]],
+            mates,
             reach,
             &ruled,
             chord,
@@ -529,6 +533,10 @@ pub(crate) struct CreaseContacts {
     pub along: Vec<f64>,
     /// Each station's contact on the first face and on the second.
     pub points: [Vec<Point>; 2],
+    /// Whether each station's faces, read in its section plane, leave
+    /// their contacts along tangents that meet in front of the crease: the
+    /// corner a conic section between the contacts stands in.
+    pub shouldered: Vec<bool>,
 }
 
 /// [`CreaseContacts`] of `spec` on `edge` of `solid` at `count + 1`
@@ -653,6 +661,7 @@ pub(crate) fn crease_contacts(
     let (lo, hi) = edge_range;
     let mut along = Vec::with_capacity(count as usize + 1);
     let mut points = [Vec::new(), Vec::new()];
+    let mut shouldered = Vec::with_capacity(count as usize + 1);
     let mut near = None;
     for k in 0..=count {
         let w = (hi - lo).mul_add(f64::from(k) / f64::from(count), lo);
@@ -662,15 +671,73 @@ pub(crate) fn crease_contacts(
         };
         near = Some([x[0], x[1], x[2], x[3]]);
         along.push(w);
-        points[0].push(first.point_at(x[0], x[1], tol)?);
-        points[1].push(second.point_at(x[2], x[3], tol)?);
+        let p = [
+            first.point_at(x[0], x[1], tol)?,
+            second.point_at(x[2], x[3], tol)?,
+        ];
+        let n = [
+            hosts[0].normal(x[0], x[1], tol),
+            hosts[1].normal(x[2], x[3], tol),
+        ];
+        let crease = guide.point_at(wrapped(w), tol)?;
+        let tangent = guide.d1_at(wrapped(w), tol)?;
+        shouldered.push(match n {
+            [Some(n0), Some(n1)] => shoulder_in_front(p, [n0, n1], crease, tangent, tol),
+            _ => false,
+        });
+        points[0].push(p[0]);
+        points[1].push(p[1]);
     }
     Ok(Some(CreaseContacts {
         faces,
         closed,
         along,
         points,
+        shouldered,
     }))
+}
+
+/// Whether the lines leaving the contacts `p` square to the crease's
+/// `tangent` along their faces (of normals `n`), each back towards the
+/// `crease` point, meet in front of both contacts and are not parallel:
+/// the shoulder a conic section's middle control point stands on. A leg
+/// turning a quarter round a drum leaves along a line parallel to the
+/// other face's, its shoulder gone to infinity.
+fn shoulder_in_front(
+    p: [Point; 2],
+    n: [Vector; 2],
+    crease: Point,
+    tangent: Vector,
+    tol: Tolerances,
+) -> bool {
+    let length = tangent.magnitude();
+    if length <= tol.confusion() {
+        return false;
+    }
+    let t = tangent / length;
+    let mut d = [Vector::ZERO; 2];
+    for i in 0..2 {
+        let along = t.cross(n[i]);
+        let m = along.magnitude();
+        if m <= tol.angular() {
+            return false;
+        }
+        d[i] = if along.dot(crease - p[i]) < 0.0 {
+            -along / m
+        } else {
+            along / m
+        };
+    }
+    // p0 + a d0 = p1 + b d1, in the section plane.
+    let cross = d[0].cross(d[1]);
+    let sin = cross.magnitude();
+    if sin <= tol.angular() {
+        return false;
+    }
+    let gap = p[1] - p[0];
+    let a = gap.cross(d[1]).dot(cross) / (sin * sin);
+    let b = gap.cross(d[0]).dot(cross) / (sin * sin);
+    a > tol.confusion() && b > tol.confusion()
 }
 
 /// The station at guide parameter `w`: both contacts' parameters and `w`.

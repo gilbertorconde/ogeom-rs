@@ -2195,7 +2195,8 @@ fn open_runout_wedge(
 
 /// The open seat's wedge for a bevel: [`open_runout_wedge`] over the
 /// stations `station` reads, its chord in place of the ball's arc, its
-/// reach off the crease `reach`.
+/// reach off the crease `reach`, stopped flush where `mates` continue the
+/// crease.
 #[allow(clippy::too_many_arguments, reason = "one construction, all its data")]
 pub(crate) fn open_ruled_wedge(
     model: &mut Model,
@@ -2206,6 +2207,7 @@ pub(crate) fn open_ruled_wedge(
     edge_range: (f64, f64),
     hosts: [(&SurfaceGeometry, f64); 2],
     host_faces: [&Shape; 2],
+    mates: Option<(usize, &[crate::fillet::Mate])>,
     reach: f64,
     station: Station<'_>,
     chord: Chord,
@@ -2221,7 +2223,7 @@ pub(crate) fn open_ruled_wedge(
         edge_range,
         hosts,
         host_faces,
-        None,
+        mates,
         reach,
         None,
         Some((station, chord)),
