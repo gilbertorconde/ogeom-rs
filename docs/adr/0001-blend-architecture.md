@@ -2857,11 +2857,30 @@ Rules:
   tangent crossing the other face's line past that face's contact.
   - The concave bound is where the build itself refuses, so the confirm
     step brackets it at once.
-  - On a convex ruling the band's boolean refuses well short of the
-    quarter turn: with legs 0.1 and 1 on the half drum the seat reads
-    7.8536 (the quarter turn is 5π/2) and the confirm step settles at
-    1.9085, where the boolean stops. That answer is the boolean's limit,
-    not the geometry's.
+  - On a convex ruling the section gives out before the shoulder does.
+    As the drum's leg turns far past the flat's, the conic standing on
+    the shoulder bulges toward the drum, and from some scale it crosses
+    the drum between the contacts: no band of that section is tangent to
+    the drum there without leaving it. With legs 0.1 and 1 on the half
+    drum that is at 1.69143, well short of the quarter turn (5π/2 =
+    7.854). The ruled section is refused by name there ("crosses the
+    drum"), read exactly: the arc against the drum's circle is a quartic
+    in the arc's parameter, the contact's double root divided out, and
+    the rest a quadratic whose sign over the arc is read in closed form.
+    The seat reading on a ruled seat applies the same test, so seat and
+    build agree: the confirmed answer is 1.69140, refused at 1.69150.
+  - Past that scale the build used to go on: the boolean took the band
+    bulging out of the drum and returned a solid with material outside
+    the original, valid by `check`, up to about 1.9, and refused only
+    from there. So the old answer of 1.9085 was already past the
+    geometry's limit.
+  - Just below it, from about 1.675, the boolean refused bands that clear
+    the drum by under 1e-4. The band's tool shared the drum's end planes,
+    and in each the band's end conic, hugging the drum's rim circle, was
+    read as running along it. Where the solid lies wholly behind an end's
+    plane (read on its guaranteed bound) a cut's prism now runs on past
+    that end, so the end plane cuts the band in its own exact section.
+    A fill does not run on: past the solid it would add material.
 
 **Oracles** (`tests/asymmetric.rs`):
 

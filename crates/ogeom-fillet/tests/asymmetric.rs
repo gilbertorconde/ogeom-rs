@@ -2876,6 +2876,159 @@ fn the_largest_pair_on_a_ruling_or_a_spline_crease_is_where_a_leg_leaves_its_fac
         assert!(past.is_err(), "a scale past the largest is not refused");
     }
 }
+/// How far the elliptical section of the half drum's convex ruling stands
+/// out of the drum at its worst, asked 0.1 along the flat and 1 round the
+/// drum per unit of `scale`: the conic from the flat's contact to the
+/// drum's, about the shoulder `5 / cos(beta)` up the flat's line, of
+/// weight `sin(alpha / 2)` at the shoulder's angle `alpha = pi / 2 - beta`,
+/// sampled densely and measured from the axis against the radius. Its two
+/// contacts lie on the drum's circle or inside it, so a positive answer is
+/// the arc crossing the drum between them.
+fn ruling_section_outside(scale: f64) -> f64 {
+    let r = 5.0;
+    let beta = scale / r;
+    let p0 = (0.0, 0.1f64.mul_add(-scale, r));
+    let c = (0.0, r / beta.cos());
+    let p2 = (r * beta.sin(), r * beta.cos());
+    let w = elliptical(FRAC_PI_2 - beta);
+    let mut worst = f64::NEG_INFINITY;
+    for i in 1..20_000 {
+        let t = f64::from(i) / 20_000.0;
+        let (a, b, e) = ((1.0 - t) * (1.0 - t), 2.0 * t * (1.0 - t) * w, t * t);
+        let sum = a + b + e;
+        let x = (a * p0.0 + b * c.0 + e * p2.0) / sum;
+        let y = (a * p0.1 + b * c.1 + e * p2.1) / sum;
+        worst = worst.max(x.hypot(y) - r);
+    }
+    worst
+}
+
+/// The scale at which the section of [`ruling_section_outside`] first
+/// reaches the drum between its contacts, bisected.
+fn ruling_section_meets_drum() -> f64 {
+    let (mut lo, mut hi) = (1.0, 1.8);
+    assert!(ruling_section_outside(lo) <= 0.0 && ruling_section_outside(hi) > 0.0);
+    for _ in 0..60 {
+        let mid = f64::midpoint(lo, hi);
+        if ruling_section_outside(mid) > 0.0 {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    lo
+}
+
+/// The half drum's convex ruling asked 0.1 along the flat and 1 round
+/// the drum per unit of scale, the drum's leg turning toward a quarter
+/// turn. The conic standing on the shoulder bulges toward the drum as the
+/// turn grows, and from the scale [`ruling_section_meets_drum`] (about
+/// 1.6914) it crosses the drum between the contacts: no band of that
+/// section is tangent to the drum there without leaving it. Up to that
+/// scale the band builds valid, of the section's closed-form area over
+/// the drum's height; past it the round is refused by name, never built
+/// bulging out of the drum.
+#[test]
+fn a_convex_ruling_builds_until_its_section_reaches_the_drum() {
+    let meets = ruling_section_meets_drum();
+    let profile = RoundProfile::Elliptical;
+    for scale in [1.0, 1.5, 1.68, 1.69, meets * (1.0 - 2e-4)] {
+        let (mut m, s, side, flat, _) = half_drum();
+        let built = ogeom_fillet::fillet_edge_distances(
+            &mut m,
+            &s,
+            &side,
+            &flat,
+            0.1 * scale,
+            scale,
+            profile,
+            T,
+        )
+        .unwrap_or_else(|e| panic!("scale {scale}: {e}"));
+        let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(
+            diagnosis.is_valid(),
+            "scale {scale}: {:?}",
+            diagnosis.problems
+        );
+        let exact = 50.0 * core::f64::consts::PI
+            - 4.0 * ruling_section(5.0, 0.1 * scale, scale, profile, true);
+        let v = volume(&m, &built.shape);
+        assert!(
+            (v - exact).abs() <= 1e-8,
+            "scale {scale}: volume {v} against the exact {exact}"
+        );
+        for (_, tangency) in &contacts(&m, &built.shape) {
+            assert!(
+                tangency.abs() <= 1e-7,
+                "scale {scale}: meets at {tangency} rad"
+            );
+        }
+    }
+    for scale in [meets * 1.001, 1.8, 1.9085, 3.0, 5.0, 7.8] {
+        let (mut m, s, side, flat, _) = half_drum();
+        let message = ogeom_fillet::fillet_edge_distances(
+            &mut m,
+            &s,
+            &side,
+            &flat,
+            0.1 * scale,
+            scale,
+            profile,
+            T,
+        )
+        .expect_err("refused")
+        .to_string();
+        assert!(
+            message.contains("crosses the drum"),
+            "scale {scale}: {message}"
+        );
+    }
+}
+
+/// The largest pair on the half drum's convex ruling asked 0.1 along the
+/// flat and 1 round the drum: the scale at which the section reaches the
+/// drum ([`ruling_section_meets_drum`]), not the shoulder's quarter turn
+/// nor where a boolean gives up. The answer builds valid, and a scale a
+/// hundredth past it is refused.
+#[test]
+fn the_largest_pair_on_a_convex_ruling_stops_where_its_section_reaches_the_drum() {
+    let want = ruling_section_meets_drum();
+    let (mut m, s, side, flat, _) = half_drum();
+    let largest = ogeom_fillet::largest_fillet_distances(&m, &s, &side, &flat, 0.1, 1.0, 100.0, T)
+        .unwrap()
+        .expect("a pair fits");
+    assert!(
+        (largest - want).abs() <= 1e-4 * want,
+        "the largest scale {largest}, not {want}"
+    );
+    let profile = RoundProfile::Elliptical;
+    let built = ogeom_fillet::fillet_edge_distances(
+        &mut m,
+        &s,
+        &side,
+        &flat,
+        0.1 * largest,
+        largest,
+        profile,
+        T,
+    )
+    .unwrap();
+    let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let past = ogeom_fillet::fillet_edge_distances(
+        &mut m,
+        &s,
+        &side,
+        &flat,
+        0.1 * largest * 1.01,
+        largest * 1.01,
+        profile,
+        T,
+    );
+    assert!(past.is_err(), "a scale past the largest is not refused");
+}
+
 /// How far a square corner's conic section of legs `a` along one face and
 /// `b` along the other, of weight `w`, stands off the first face at `u`
 /// along it from the crease: the corner's depth there, 0 past `a`. Read
