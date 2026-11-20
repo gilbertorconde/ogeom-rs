@@ -2904,6 +2904,71 @@ line.
   through a pocket's walls: a refusal by name. A local round with every
   behaviour off builds the same closed-form solid as the default.
 
+**Chamfers.** A chamfer takes the same option set, limited to the
+behaviours that apply to a flat bevel. Mainstream CAD offers the same
+choice for chamfers where it offers one for rounds, without the edge seat.
+
+1. **Blend into round**: the bevel reaches an existing round of the body.
+   In the transition zone the bevel's surface is adjusted to meet the
+   round with no step: its leg on the face it left runs on over the round.
+2. **Trim through**: amendment "M5b"'s rule, today's construction. The
+   bevel keeps its own surface, and the faces it reaches are trimmed or
+   extended to meet it.
+
+**Hold edge** and **hold edge at the end** do not apply: a bevel has no
+ball to rest on an edge. They are ignored for chamfers. Both behaviours
+are on by default and tried in that order. With both off, a chamfer that
+reaches other geometry is refused by name; it never yields a wrong solid.
+
+**What is built for chamfers in this step.**
+
+- **Blend into round**, for the same boss's foot as the round's, every
+  edge of the rim asking the same legs (any of the three spellings),
+  whose leg on the floor crosses the tangent line of a straight convex
+  round meeting the floor tangentially, and stays on that round.
+  - Over the floor the bevel is the cone between its legs.
+  - Past the tangent line the legs are read as on any curved seat: the leg
+    on the round is where the wall's offset (the cylinder `out` from the
+    wall) meets the round, straight below the circle it draws on the
+    floor, and the leg on the wall stays where the floor's offset meets
+    the wall. Each section is the straight ruling between the legs in the
+    plane through the wall's axis. The piece is fitted through its exact
+    sections within a confusion.
+  - The two pieces share the ruling where the leg crosses the tangent
+    line. The round leaves the floor tangentially, so the leg's tangent
+    is the same on both sides there, and the bevel meets the cone G1.
+  - The fill is one closed tool fused into the solid, under the round's
+    proofs: nothing else of the solid within its box, the fuse adding its
+    whole volume, the result valid.
+- **Trim through** is the engine's construction unchanged. Before this
+  step the foot's bevel was built by it: the cone runs on, and the floor's
+  plane is carried on under it as a ledge over the round.
+- With trim through off, a result changing any face other than the edges'
+  own and those at their ends is refused by name, as for rounds. A foot
+  that blend into round would take is refused by name when both are off.
+- `chamfer_edges`, `chamfer_edges_with` and `chamfer_edges_cornered` are
+  the default set, so the foot bevel above now blends into the round
+  where it used to leave the ledge.
+
+**Oracle** (`tests/chamfer_overflow.rs`). The block and boss are the
+round's, the foot bevelled 3 along the top and 3, then 2, up the wall: its
+leg on the top reaches 2 past the tangent line.
+
+- The result is valid and closed. The bevel meets the round along edges
+  lying on it, with no ledge, and the two edges where the fitted piece
+  meets the cone are tangent within 1e-5 rad.
+- The reference volume integrates the bevel's definition without the
+  construction: at each angle the straight line from the wall's leg to the
+  floor below the leg on the floor, less the floor, by Gauss-Legendre
+  quadrature split where the leg leaves the top and where a column crosses
+  the tangent line. It reproduces Pappus for a boss clear of the round to
+  1e-9. Its bound is the change from 48 to 96 points per range. The fill
+  matches it within that bound plus 1e-6.
+- Blend into round off: the solid built before this step, face for face
+  and of the cone's whole fill. Both off: a refusal naming blend into
+  round. A notch with trim through off: a refusal by name, and with it on
+  the notch as before.
+
 ### Amendment: largest-size readings confirmed by the build (#1173)
 
 Apps clamp a size slider with `largest_fillet_radius`,
