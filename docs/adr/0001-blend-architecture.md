@@ -907,7 +907,9 @@ extended to meet it. Hence:
 
 Retaining the cliff edge instead (the ball resting on the boss's
 underside edge) needs the ball to pass the vertex where that edge meets
-the wall's cut, a vertex seat this milestone refuses (§13, question 8);
+the wall's cut, a vertex seat this milestone refuses (§13, question 8;
+amendment "overflow handling" holds an edge only where no vertex seat is
+needed);
 the notch, which every surveyed system with an overflow option builds, is
 built instead. The engine builds all three by the general route of
 amendment "M5a" (the far feature off a copy, the rounds built there, the
@@ -2960,10 +2962,8 @@ it is on, so the default request builds what it built before.
     to the floor, a concave one, a wall not square to the floor, an open
     arc of a foot) is not blended in this step and goes on to the next
     behaviour.
-- **Hold edge** and **hold edge at the end** are not built. They need the
-  vertex seat that §13 question 8 refuses, so a request they would take
-  goes on to trim through. With trim through off, such a request is
-  refused by name, saying that hold edge is not built.
+- **Hold edge** and **hold edge at the end** were not built in this
+  step; the amendment's "Hold edge" part below builds them.
 - **Trim through** is the engine's construction unchanged. With it off,
   a result that changes any face other than the edges' own and those at
   their ends is refused by name. A face counts as unchanged where the
@@ -2992,6 +2992,88 @@ line.
   refusal naming blend into round. Trim through off on a rim trimming
   through a pocket's walls: a refusal by name. A local round with every
   behaviour off builds the same closed-form solid as the default.
+
+**Hold edge.** The public documentation surveyed above defines the rule
+by the ball: it touches one original face and rests on the kept edge. It
+gives the end case as the one where only the ending part of the round
+overflows a sharp edge, as a sub-option of hold edge, and says that where
+hold edge and trim through could both apply, hold edge is applied. It
+describes no geometry past that, so the following is settled here.
+
+- **Where the ball rests.** Along the stretch (the *run*) where the band's
+  contact on face `a` would lie past a sharp convex edge of `a`, the ball
+  touches the other face `b` and rests on the edge: its centre stays on
+  `b`'s offset at the radius from the edge's curve, found from the band's
+  centre toward `a`'s plane. The round there is the canal surface those
+  balls sweep. Each ball's arc runs from its contact on `b` to its foot on
+  the edge; both lie on its characteristic circle, in the plane through
+  its centre square to the spine. The edge lies on the canal, so it is
+  kept on its curve as the edge between the round and the face past it.
+- **The seat change.** Where the contact crosses the edge, the ball
+  touches `a`, `b` and the edge at once: the offset of `a` and the pipe
+  about the edge are tangent there, the spine's tangent runs along the
+  edge, and the section is the band's own. The canal meets the band G1
+  on that section.
+- **At the end.** A run that reaches one end of the band and not the other
+  is *at the end*, and is held only with both hold edge and hold edge at
+  the end on. A run inside the band is held with hold edge on. A run over
+  the whole band is not held: the round would take face `a` whole, so it
+  is larger than its seat allows, and the largest-radius readings stand. With the option it needs off, the request goes on to
+  trim through, and with trim through off too it is refused by name,
+  naming the option.
+- **Past an end face.** The centres run on as they are past the band's
+  end, the held edge's curve carried on past its vertex there, and the end
+  face's plane cuts the round (amendment "M5f"), as it cuts a band. No
+  vertex seat is built: a run that would need the ball to rest on a
+  vertex of the held edge (one ending inside the band) is not held.
+
+**What is built for hold edge in this step.**
+
+- A round of one straight edge between two planes meeting convexly at any
+  angle, ending flush on an end face square to the edge at each end. The
+  held edge is a line or a circle (a whole one or an arc) in the plane of
+  `a`, convex, its face falling away from `a`. There is one run, with a
+  seat change at one end at least, and the balls' feet over it stay on
+  the held edge but within the radius of an end face the run reaches.
+- The canal is fitted through its sections by the planes square to the
+  edge, each point found exactly on a ball's arc, within a confusion. Its
+  ends lie in an end face's plane or on a band's section.
+- The region between the edge and the round (the bands, the canal, the
+  planes of `a`, `b` and the end faces) is one closed tool cut from the
+  solid by amendment "M5a"'s boolean. It is built only where nothing of
+  the solid but those faces and the face past the held edge stands within
+  the box the tool can take up. The cut must take the tool's whole volume,
+  the result must check valid, and its edges on the held edge's curve must
+  still hold every ball's foot over the run. Otherwise the request goes
+  on to trim through.
+- Anything else (a chain of edges, a curved face, a held edge that is
+  neither a line nor a circle, a run needing a vertex seat, two runs, an
+  oblique end face) is not held in this step and goes on to trim through.
+
+**Oracle** (`tests/hold_edge.rs`). The reference is the definition,
+sampled without the construction: the ball's centres in closed form (at
+the radius under the top while the contact lies on it, else at the radius
+from the held edge's curve), and a point of the corner cut away where it
+lies farther than the radius from every centre, on the corner's side of
+its nearest one. The cut is integrated by Gauss-Legendre quadrature in
+`x` and down the front in `s`, `z = -s^2`, split at the seat changes. It
+reproduces the band's closed form to 1e-9. Its bound is the change from
+24 to 48 points per range.
+
+- Hold edge: a block 30 × 20 × 15, its front top edge rounded r 4, a
+  pocket r 5 sunk 8 into its top about `(15, 7)`. The rim comes within 2
+  of the edge, so between `x = 11` and `x = 19` the ball rests on it.
+- Hold edge at the end: a block 20 long whose top narrows from 6 to 2
+  deep, a cliff 6 high falling from its back edge, the front top edge
+  rounded r 4. Past `x = 10` the ball rests on the cliff edge to the end.
+- Each result is valid and closed, the held edge is kept on its curve over
+  the run, the volume cut away matches the reference within its bound
+  plus 1e-6, and the canal meets the band and the front within 1e-5 rad of
+  tangent.
+- Hold edge off: trim through's notch, the rim cut away. Hold edge at the
+  end off: the same at the end, with no change to a run inside the band.
+  Either off with trim through off: a refusal naming it. Trim through off
+  alone: hold edge builds.
 
 **Chamfers.** A chamfer takes the same option set, limited to the
 behaviours that apply to a flat bevel. Mainstream CAD offers the same
