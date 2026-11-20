@@ -106,7 +106,7 @@ fn moved(mesh: &Triangulation, f: impl Fn(Point) -> Point) -> Triangulation {
 }
 
 fn closed(mesh: &Triangulation) {
-    check_result(mesh, &vec![true; mesh.positions.len()]).unwrap();
+    check_result(mesh, &vec![true; mesh.positions.len()], "the operands").unwrap();
 }
 
 fn run(a: &Triangulation, b: &Triangulation, op: BoolKind) -> MeshBoolean {

@@ -36,6 +36,9 @@ pub(super) enum Def {
         second: [P3; 2],
         drop: usize,
     },
+    /// Where the planes through three triangles meet, the planes meeting
+    /// in one point.
+    Tpi { planes: [[P3; 3]; 3] },
 }
 
 fn diff<N: Ring>(a: &[N; 3], b: &[N; 3]) -> [N; 3] {
@@ -92,6 +95,19 @@ impl Def {
                 let num = rp[i].mul(&b[j]).sub(&rp[j].mul(&b[i]));
                 let x = |k: usize| p[k].mul(&den).add(&a[k].mul(&num));
                 [x(0), x(1), x(2), den]
+            }
+            Self::Tpi { planes } => {
+                // Each plane is `n · x = d`; the point is Cramer's rule over
+                // the three, `Σ d_k (n_{k+1} × n_{k+2}) / n_0 · (n_1 × n_2)`.
+                let n = planes.map(|t| normal::<N>(&t));
+                let d = [0, 1, 2].map(|k| dot(&n[k], &lift::<N>(&planes[k][0])));
+                let c = [0, 1, 2].map(|k| cross(&n[(k + 1) % 3], &n[(k + 2) % 3]));
+                let x = |i: usize| {
+                    d[0].mul(&c[0][i])
+                        .add(&d[1].mul(&c[1][i]))
+                        .add(&d[2].mul(&c[2][i]))
+                };
+                [x(0), x(1), x(2), dot(&n[0], &c[0])]
             }
         }
     }
