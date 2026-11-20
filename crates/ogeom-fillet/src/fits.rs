@@ -1,6 +1,7 @@
 //! The largest radius a round, or distance a chamfer, seats at: read from
 //! where the ball's contacts walk across the faces as it grows, without
-//! building a band.
+//! building a band. The largest-size readings start from it and confirm
+//! it by the build ([`crate::limit`]).
 //!
 //! A ball of radius `r` on an edge whose faces turn by `φ` touches each
 //! face `r · tan(φ/2)` back from the edge, square to it, at the stations
@@ -363,32 +364,18 @@ pub(crate) fn legs_largest(
     })
 }
 
-/// The largest radius up to `up_to` at which a ball rolling along `edge`
-/// of `solid` sits with both contacts on their faces at every station the
-/// request check reads, so that [`fillet_edges`](crate::fillet_edges) on
-/// that edge alone is not refused for setback at it or at any radius
-/// below it. None where no radius above the confusion distance fits.
+/// The largest radius up to `up_to` at which [`fillet_edges`](crate::fillet_edges)
+/// on `edge` of `solid` alone builds: every radius probed below it builds
+/// and a radius [`LIMIT_TOLERANCE`](crate::LIMIT_TOLERANCE) above it is
+/// refused, whatever refuses it. None where no radius above the confusion
+/// distance builds.
 ///
-/// Read from the seat, without building a band: each contact walks square
-/// to the edge, `r · tan(φ/2)` into its face, and the answer is where the
-/// first walk leaves its face, a confusion distance short. On a plane,
-/// and along a ruling of a cylinder or a cone, that is exact against the
-/// region the check reads the face by; on other surfaces the walk is
-/// followed by stations, and a sliver of the face's outside narrower than
-/// their spacing can pass between two. A contact the check lets run off a
-/// face out of the solid, where another station holds the ball, bounds the
-/// answer here all the same, so the answer can lie under the largest
-/// radius the check lets through. Refusals other than for setback (a seat
-/// the round does not speak, a corner) are outside its promise.
+/// [`largest_fillet_radius_all`] on the one edge; see there for how it is
+/// read and what it costs.
 ///
 /// # Errors
 ///
-/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
-/// `up_to` is not a usable length;
-/// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) where which
-/// way a contact walks into its face depends on the radius, or the radius
-/// found does not pass the check (a station whose answer the walk does not
-/// predict).
+/// As [`largest_fillet_radius_all`].
 pub fn largest_fillet_radius(
     model: &Model,
     solid: &Shape,
@@ -399,26 +386,27 @@ pub fn largest_fillet_radius(
     largest_fillet_radius_all(model, solid, std::slice::from_ref(edge), up_to, tol)
 }
 
-/// The largest radius up to `up_to` at which the bands of `edges` all sit
-/// with their contacts on their faces, as [`largest_fillet_radius`] reads
-/// each, and no band's contact comes within another's setback of its edge
-/// across a face they share, the overlap
-/// [`fillet_edges`](crate::fillet_edges) refuses. Edges meeting at a
-/// vertex are corner mates, whose bands meet there by design, and are not
-/// held apart; vertices and faces are told apart by placement as well as
-/// node, as that refusal tells them. None where no radius above the
-/// confusion distance fits.
+/// The largest radius up to `up_to` at which [`fillet_edges`](crate::fillet_edges)
+/// on `edges` of `solid` builds: every radius probed below it builds and a
+/// radius [`LIMIT_TOLERANCE`](crate::LIMIT_TOLERANCE) above it is refused,
+/// whatever refuses it (a contact leaving its face, two bands overlapping,
+/// a corner that does not close, a result failing its check). None where no
+/// radius above the confusion distance builds.
 ///
-/// A contact's distance to another edge changes no faster than the
-/// contact walks, and the edge's setback grows linearly, so the radius
-/// where the two first meet is approached from below in steps that cannot
-/// pass it.
+/// The seat is read first, without building: where each ball's contacts
+/// first leave their faces and where two bands first come within each
+/// other's setback. That reading only starts the search: the answer is
+/// [`blend_limit`](crate::blend_limit)'s, confirmed by building the
+/// request on a copy of the model at sizes bracketing it, and where the
+/// radii that build are not one interval it is where they first break
+/// ([`BlendLimit::builds_again`](crate::BlendLimit::builds_again) reports
+/// the break). The cost is a few builds of the request where the seat
+/// reading is the limit, at most [`LIMIT_PROBES`](crate::LIMIT_PROBES).
 ///
 /// # Errors
 ///
-/// As [`largest_fillet_radius`], and
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
-/// `edges` is empty.
+/// `up_to` is not a usable length or `edges` is empty.
 pub fn largest_fillet_radius_all(
     model: &Model,
     solid: &Shape,
@@ -426,16 +414,46 @@ pub fn largest_fillet_radius_all(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
+    let sizing = crate::BlendSizing::Rounds {
+        edges,
+        corner: crate::FilletCorner::Setback,
+    };
+    Ok(crate::blend_limit(model, solid, &sizing, up_to, tol)?.size)
+}
+
+/// The largest radius up to `up_to` at which the bands of `edges` all sit
+/// with their contacts on their faces at every station the request check
+/// reads, and no band's contact comes within another's setback of its edge
+/// across a face they share, the overlap
+/// [`fillet_edges`](crate::fillet_edges) refuses: the seat reading
+/// [`largest_fillet_radius_all`] starts from. Edges meeting at a vertex are
+/// corner mates, whose bands meet there by design, and are not held apart;
+/// vertices and faces are told apart by placement as well as node, as that
+/// refusal tells them. None where no radius above the confusion distance
+/// fits.
+///
+/// Each contact walks square to the edge, `r · tan(φ/2)` into its face,
+/// and the seat is where the first walk leaves its face, a confusion
+/// distance short. On a plane, and along a ruling of a cylinder or a cone,
+/// that is exact against the region the check reads the face by; on other
+/// surfaces the walk is followed by stations, and a sliver of the face's
+/// outside narrower than their spacing can pass between two. A contact's
+/// distance to another edge changes no faster than the contact walks, and
+/// the edge's setback grows linearly, so the radius where the two first
+/// meet is approached from below in steps that cannot pass it.
+///
+/// # Errors
+///
+/// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) where which
+/// way a contact walks into its face depends on the radius.
+pub(crate) fn seat_fillet_radius(
+    model: &Model,
+    solid: &Shape,
+    edges: &[Shape],
+    up_to: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
     let conf = tol.confusion();
-    if !up_to.is_finite() || up_to <= conf {
-        ogeom_bail!(
-            Construction,
-            "a largest radius up to {up_to} asks for nothing"
-        );
-    }
-    if edges.is_empty() {
-        ogeom_bail!(Construction, "a request of no edges has no largest radius");
-    }
     crate::support::keeping_face_meshes(|| -> OgeomResult<Option<f64>> {
         let mut largest = up_to;
         let mut seats = Vec::with_capacity(edges.len());
@@ -500,20 +518,6 @@ pub fn largest_fillet_radius_all(
                 }
             }
         }
-        if largest <= conf {
-            return Ok(None);
-        }
-        // The answer passes the request's own check, or it is not one.
-        if let Err(refusal) =
-            crate::engine::request_fits(model, solid, edges, &vec![largest; edges.len()], tol)
-        {
-            ogeom_bail!(
-                NotDone,
-                "the largest radius read from the seats, {largest}, does not pass the \
-                 request's check: {}",
-                refusal.error
-            );
-        }
-        Ok(Some(largest))
+        Ok((largest > conf).then_some(largest))
     })
 }

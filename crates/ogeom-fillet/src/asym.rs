@@ -749,35 +749,32 @@ pub(crate) fn rim_fits(
 }
 
 /// The largest common scale up to `up_to` of an asymmetric round's two
-/// distances at which [`fillet_edge_distances`] on `edge` is not refused
-/// for a contact set back past its face's side: the round meeting `face`
-/// `s * on_face` from the edge and the other face `s * on_other` from it.
-/// None where no scale leaving both distances longer than the confusion
-/// distance fits.
+/// distances at which [`fillet_edge_distances`] on `edge` builds, the
+/// round meeting `face` `s * on_face` from the edge and the other face
+/// `s * on_other` from it, its section elliptical: every scale probed
+/// below it builds and a scale [`LIMIT_TOLERANCE`](crate::LIMIT_TOLERANCE)
+/// above it is refused, whatever refuses it. None where no scale leaving
+/// both distances longer than the confusion distance builds.
 ///
-/// Read from the seat, without building a band, as
+/// The seat is read first, without building a band, as
 /// [`largest_chamfer_distance`](crate::largest_chamfer_distance) reads a
 /// bevel's legs: each contact walks square to the edge, its own distance
-/// per unit of scale into its face, and the answer is where the first walk
-/// leaves its face, a confusion distance short. On a rim the cap's contact
-/// stops short of the axis. The answer passes the round's own check.
-///
-/// On any other seat (a curved crease, an edge along a drum's ruling) each
-/// leg walks its face's section in the plane square to the crease, as the
-/// band's own legs walk it, at stations over the edge; the scale is
-/// stepped up until a contact first leaves its face and that step is
-/// bisected, the answer standing back from it by the reach the faces are
-/// read within. A sliver of a face's outside narrower than the stations'
-/// spacing can pass between two. The check there is the elliptical round
-/// built at the answer, on a copy of the model.
+/// per unit of scale into its face, and the seat is where the first walk
+/// leaves its face, a confusion distance short; on a rim the cap's contact
+/// stops short of the axis. On any other seat (a curved crease, an edge
+/// along a drum's ruling) each leg walks its face's section in the plane
+/// square to the crease, as the band's own legs walk it, at stations over
+/// the edge. That reading only starts the search: the answer is
+/// [`blend_limit`](crate::blend_limit)'s for
+/// [`BlendSizing::RoundDistances`](crate::BlendSizing::RoundDistances)
+/// with the elliptical section, confirmed by building the round on a copy
+/// of the model at scales bracketing it; another section is read there.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
 /// `up_to` or a distance is not a usable length, and as
-/// [`fillet_edge_distances`] where the seat is refused at any scale;
-/// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) where the
-/// scale read from the seat does not pass the round's own check.
+/// [`fillet_edge_distances`] where the seat is refused and no scale builds.
 #[allow(
     clippy::too_many_arguments,
     reason = "fillet_edge_distances' own, and the bound"
@@ -792,21 +789,38 @@ pub fn largest_fillet_distances(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
+    let sizing = crate::BlendSizing::RoundDistances {
+        edge,
+        face,
+        on_face,
+        on_other,
+        profile: RoundProfile::Elliptical,
+    };
+    Ok(crate::blend_limit(model, solid, &sizing, up_to, tol)?.size)
+}
+
+/// The seat reading [`largest_fillet_distances`] starts from: the largest
+/// common scale up to `up_to` at which each contact of the round stays on
+/// its face, read without building a band.
+///
+/// # Errors
+///
+/// As [`fillet_edge_distances`] where the seat is refused at any scale.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "fillet_edge_distances' own, and the bound"
+)]
+pub(crate) fn seat_fillet_distances(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    face: &Shape,
+    on_face: f64,
+    on_other: f64,
+    up_to: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
     let conf = tol.confusion();
-    if !up_to.is_finite() || up_to <= conf {
-        ogeom_bail!(
-            Construction,
-            "a largest scale up to {up_to} asks for nothing"
-        );
-    }
-    for d in [on_face, on_other] {
-        if !d.is_finite() || d <= conf {
-            ogeom_bail!(
-                Construction,
-                "a round set back {d} from its edge rounds nothing"
-            );
-        }
-    }
     let profile = RoundProfile::Elliptical;
     let rim = rim_conic(model, solid, edge, face, on_face, on_other, profile, tol)?;
     if rim.is_none() && straight_seat(model, solid, edge, face, tol).is_err() {
@@ -833,32 +847,7 @@ pub fn largest_fillet_distances(
             largest = largest.min((seat.radius - conf) / on_cap);
         }
     }
-    if largest * on_face.min(on_other) <= conf {
-        return Ok(None);
-    }
-    let (a, b) = (largest * on_face, largest * on_other);
-    let checked = crate::support::keeping_face_meshes(|| -> OgeomResult<()> {
-        match rim_conic(model, solid, edge, face, a, b, profile, tol)? {
-            Some(rim) => rim_fits(model, solid, edge, &rim, tol),
-            None => {
-                let (seat, named) = straight_seat(model, solid, edge, face, tol)?;
-                let mut d = [0.0; 2];
-                d[named] = a;
-                d[1 - named] = b;
-                let f = legs(&seat, tol)?;
-                profile.weight(f[0].dot(f[1]).clamp(-1.0, 1.0))?;
-                contacts_fit(model, solid, edge, Section { d }, tol)
-            }
-        }
-    });
-    if let Err(refusal) = checked {
-        ogeom_bail!(
-            NotDone,
-            "the largest scale read from the seat, {largest}, does not pass the round's \
-             check: {refusal}"
-        );
-    }
-    Ok(Some(largest))
+    Ok((largest * on_face.min(on_other) > conf).then_some(largest))
 }
 
 /// How many steps [`largest_marched`] walks the scale up in before it
@@ -869,12 +858,11 @@ const SCALE_STEPS: u32 = 64;
 /// stations.
 const STATIONS: u32 = 32;
 
-/// [`largest_fillet_distances`] on a seat neither a straight edge between
+/// [`seat_fillet_distances`] on a seat neither a straight edge between
 /// planes nor a rim: each leg walked along its face's section square to
 /// the crease, as the marched band walks it, at stations over the edge,
 /// the scale stepped up until a contact first leaves its face and that
-/// step bisected; then the round built at the answer, on a copy of the
-/// model, as its own check.
+/// step bisected.
 fn largest_marched(
     model: &Model,
     solid: &Shape,
@@ -941,27 +929,7 @@ fn largest_marched(
         }
         Ok(lo)
     })?;
-    if lo * on_face.min(on_other) <= conf {
-        return Ok(None);
-    }
-    let mut check = model.clone();
-    if let Err(refusal) = fillet_edge_distances(
-        &mut check,
-        solid,
-        edge,
-        face,
-        lo * on_face,
-        lo * on_other,
-        RoundProfile::Elliptical,
-        tol,
-    ) {
-        ogeom_bail!(
-            NotDone,
-            "the largest scale read from the seat, {lo}, does not pass the round's \
-             check: {refusal}"
-        );
-    }
-    Ok(Some(lo))
+    Ok((lo * on_face.min(on_other) > conf).then_some(lo))
 }
 
 /// The edges of `solid` on `edge`'s circle (the arcs of one rim), `edge`

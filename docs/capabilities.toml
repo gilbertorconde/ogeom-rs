@@ -1635,10 +1635,10 @@ Where two of a vertex's three edges are rounds on straight edges between \
 planes, both convex or both concave, and the third is left sharp, the \
 two bands run to their end faces and meet by intersection, their union \
 cut or filled. largest_fillet_distances answers the largest common scale \
-of a pair that fits: read from the seat on a straight edge between \
-planes or a rim; on any other seat each leg walked along its face's \
-section at stations over the edge, the answer checked by building the \
-elliptical round there. Refused by name: two bands meeting where a third \
+of a pair that builds (fillet.largest-size): its search started from the \
+seat on a straight edge between planes or a rim, and on any other seat \
+from each leg walked along its face's section at stations over the edge. \
+Refused by name: two bands meeting where a third \
 edge is left sharp when one cuts and the other fills, or either is \
 curved or a bevel; a varying distance along a chain (no request takes a \
 law over a chain of asymmetric rounds) or at a concave edge's end not \
@@ -1715,6 +1715,51 @@ tests = [
     "crates/ogeom-fillet/tests/overflow.rs::a_boss_s_foot_round_blends_into_the_edge_round_it_reaches",
     "crates/ogeom-fillet/tests/overflow.rs::blend_into_round_off_falls_to_trim_through_or_is_refused",
     "crates/ogeom-fillet/tests/overflow.rs::trim_through_off_refuses_a_round_reaching_another_face",
+]
+
+[[capability]]
+id = "fillet.largest-size"
+title = "The largest radius or distance a blend builds at, confirmed by the build, for clamping a size before it is asked"
+crate = "ogeom-fillet"
+verdict = "partial"
+restriction = """largest_fillet_radius, largest_fillet_radius_all, \
+largest_fillet_distances and largest_chamfer_distance answer the largest \
+size up to a bound at which their blend call builds, whatever refuses the \
+next size up: a contact leaving its face, two bands overlapping, a corner \
+that does not close, a bevel reaching a concave floor, setbacks crossing, \
+an overflow the engine does not build, or a result failing its check. \
+The seat reading (where a contact first leaves its face) starts the \
+search; the request is then built on a copy of the model at sizes \
+bracketing the boundary and bisected to a relative 1e-4, at most 64 \
+builds, so the size builds and one 1e-4 above it is refused. blend_limit \
+answers the same with the options of the call (the rolling corner, the \
+asymmetric round's section, the chamfer corner) and reports how it was \
+confirmed: the seat, the refused size, and a size found building again \
+above a refusal, the answer then being where the sizes that build first \
+break. Not proven: that every size below the answer builds, or that none \
+above it does. Three sizes below the answer and three spread to the bound \
+above its refusal are probed for that, and a break between them passes \
+unseen. The cost is that of the builds: two builds of the request and \
+the six samples where the seat brackets the limit, about 14 more where \
+it is bisected; no reading is kept from one call to the next."""
+symbols = [
+    "ogeom_fillet::largest_fillet_radius",
+    "ogeom_fillet::largest_fillet_radius_all",
+    "ogeom_fillet::largest_fillet_distances",
+    "ogeom_fillet::largest_chamfer_distance",
+    "ogeom_fillet::blend_limit",
+    "ogeom_fillet::BlendLimit",
+    "ogeom_fillet::BlendSizing",
+    "ogeom_fillet::LIMIT_TOLERANCE",
+    "ogeom_fillet::LIMIT_PROBES",
+    "ogeom_fillet::LIMIT_SAMPLES",
+]
+tests = [
+    "crates/ogeom-fillet/tests/exact_limits.rs::planar_limits_build_below_and_are_refused_above",
+    "crates/ogeom-fillet/tests/exact_limits.rs::curved_and_corpus_limits_build_below_and_are_refused_above",
+    "crates/ogeom-fillet/tests/exact_limits.rs::the_chopped_corner_s_edge_alone_rounds_past_the_corner",
+    "crates/ogeom-fillet/tests/largest.rs",
+    "crates/ogeom-fillet/src/limit.rs",
 ]
 
 [[capability]]

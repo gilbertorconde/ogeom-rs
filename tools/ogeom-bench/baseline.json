@@ -10,6 +10,8 @@
   "fillet_block": 0.2974,
   "fillet_box_all": 13.1150,
   "fillet_marched": 2.6648,
+  "limit_box_all": 2.0789,
+  "limit_drum_rim": 0.8855,
   "tessellate_part": 0.2721,
   "mass_part": 18.0973,
   "check_part": 13.3861,

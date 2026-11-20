@@ -1421,32 +1421,34 @@ fn sphere_leg(seat: &SphereSeat, face: &Shape, on_wall: f64, on_cap: f64) -> f64
     }
 }
 
-/// The largest measure up to `up_to` at which a chamfer of `spec`'s
-/// spelling on `edge` of `solid` stays seated on its faces, its contacts
-/// short of their faces' far sides: for [`Chamfer::Symmetric`] the distance, for
-/// [`Chamfer::Distances`] the largest common scale of its two distances,
-/// and for [`Chamfer::Angle`] the distance along its face at its angle;
-/// the measure `spec` itself names is not read. None where no measure
-/// leaving both legs longer than the confusion distance fits.
+/// The largest measure up to `up_to` at which [`chamfer_edges_with`] of
+/// `spec`'s spelling on `edge` of `solid` builds: for
+/// [`Chamfer::Symmetric`] the distance, for [`Chamfer::Distances`] the
+/// largest common scale of its two distances, and for [`Chamfer::Angle`]
+/// the distance along its face at its angle; the measure `spec` itself
+/// names is not read. Every measure probed below it builds and a measure
+/// [`LIMIT_TOLERANCE`](crate::LIMIT_TOLERANCE) above it is refused,
+/// whatever refuses it. None where no measure above the confusion distance
+/// builds.
 ///
-/// Read from the seat, without building a wedge. On a straight edge
-/// between planes, a convex bevel's leg runs at most as far as its face
-/// reaches back from the edge, and the answer is exact against it; past
-/// it [`chamfer_edges_with`] rolls the bevel over its face's far side as a
-/// notch (ADR 0001, amendment "M5b"), or refuses it where that side is a
-/// concave edge (amendment "a bevel stops at a concave floor"); a concave
-/// bevel fuses and runs past no face. On a rim, the cap's leg stops short of the axis, and
-/// each leg's contact stays on its face at the stations
-/// [`largest_fillet_radius`](crate::largest_fillet_radius) reads, a
-/// confusion distance short.
+/// The seat is read first, without building a wedge: how far each leg
+/// runs before it leaves its face. On a straight edge between planes a
+/// convex bevel's leg runs at most as far as its face reaches back from
+/// the edge, but past it [`chamfer_edges_with`] rolls the bevel over its
+/// face's far side as a notch (ADR 0001, amendment "M5b"), or refuses it
+/// where that side is a concave edge (amendment "a bevel stops at a
+/// concave floor"); on a rim the cap's leg stops short of the axis. That
+/// reading only starts the search: the answer is
+/// [`blend_limit`](crate::blend_limit)'s, confirmed by building the bevel
+/// on a copy of the model at measures bracketing it, so a notch past the
+/// seat is part of the answer, and a seat the reading does not read (a
+/// marched crease) is searched from `up_to`.
 ///
 /// # Errors
 ///
-/// As [`chamfer_edges_with`] where the seat or spelling is refused at any
-/// measure, and [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
-/// if `up_to` is not a usable length; as
-/// [`largest_fillet_radius`](crate::largest_fillet_radius) where a
-/// contact's walk on a rim depends on the measure.
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+/// `up_to` or a distance is not a usable length; as [`chamfer_edges_with`]
+/// where the seat or spelling is refused and no measure builds.
 pub fn largest_chamfer_distance(
     model: &Model,
     solid: &Shape,
@@ -1455,31 +1457,39 @@ pub fn largest_chamfer_distance(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
-    let conf = tol.confusion();
-    if !up_to.is_finite() || up_to <= conf {
-        ogeom_bail!(
-            Construction,
-            "a largest distance up to {up_to} asks for nothing"
-        );
-    }
-    // The legs at a measure of one, which scale with it.
-    let unit = match spec {
-        Chamfer::Symmetric(_) => Chamfer::Symmetric(1.0),
-        Chamfer::Distances {
-            face,
-            on_face,
-            on_other,
-        } => Chamfer::Distances {
-            face: face.clone(),
-            on_face: *on_face,
-            on_other: *on_other,
-        },
-        Chamfer::Angle { face, angle, .. } => Chamfer::Angle {
-            face: face.clone(),
-            distance: 1.0,
-            angle: *angle,
-        },
+    let sizing = crate::BlendSizing::Chamfer {
+        edge,
+        spec,
+        corner: crate::ChamferCorner::Facet,
     };
+    Ok(crate::blend_limit(model, solid, &sizing, up_to, tol)?.size)
+}
+
+/// The seat reading [`largest_chamfer_distance`] starts from: the largest
+/// measure up to `up_to` at which the bevel stays seated on its faces, its
+/// contacts short of their faces' far sides, read without building. On a
+/// straight edge between planes it is exact against each face's reach; on
+/// a rim each leg's contact stays on its face at the stations
+/// [`largest_fillet_radius`](crate::largest_fillet_radius) reads, a
+/// confusion distance short.
+///
+/// # Errors
+///
+/// As [`chamfer_edges_with`] where the seat or spelling is refused at any
+/// measure; [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) on a
+/// seat not read here, or where a contact's walk on a rim depends on the
+/// measure.
+pub(crate) fn seat_chamfer_distance(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    spec: &Chamfer,
+    up_to: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let conf = tol.confusion();
+    // The legs at a measure of one, which scale with it.
+    let unit = crate::limit::scaled(spec, 1.0);
     let mut largest = up_to;
     let shortest = match legs(model, solid, edge, &unit, tol)? {
         Legs::Straight(seat, per) => {

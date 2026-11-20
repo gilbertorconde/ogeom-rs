@@ -2900,6 +2900,120 @@ line.
   through a pocket's walls: a refusal by name. A local round with every
   behaviour off builds the same closed-form solid as the default.
 
+### Amendment: largest-size readings confirmed by the build (#1173)
+
+Apps clamp a size slider with `largest_fillet_radius`,
+`largest_fillet_radius_all`, `largest_fillet_distances` and
+`largest_chamfer_distance`, and show the limit before the user tries a
+size. Until now each read only the seat: where a contact first leaves
+its face. §3.5 had them become the predicates' exact boundary, but the
+predicates are not all the refusals. Below the seat a request can be
+refused by a corner that does not close, a bevel reaching a concave
+floor, an overflow the engine does not build, or a result failing its
+check. Above it a request can build: a bevel rolls over a convex far
+side as a notch (amendment "M5b"), and a contact can run off a face
+between the stations the check reads. So the reading offered sizes the
+call refused, and hid sizes it built.
+
+**Rule.** A reading answers what its blend call does.
+
+1. **The seat starts the search.** The closed-form seat reading stays,
+   unchanged, and gives the first size probed. Where the seat is not read
+   (a marched chamfer's crease, a walk whose side depends on the size),
+   the search starts from the bound asked.
+2. **The build confirms it.** The call the request makes, with the same
+   options, is asked on a copy of the model: at the start, then a
+   relative `LIMIT_TOLERANCE` (1e-4) past it if that built, then doubling
+   up or halving down until one size builds and one is refused, then
+   bisecting between the largest size that built and the smallest refused
+   until they are within the tolerance. The answer is the size that
+   built. The probes are `fillet_edges_corner` with the corner asked,
+   `fillet_edge_distances` with the section asked, and
+   `chamfer_edges_cornered` with the corner asked: the public calls
+   themselves, so no refusal is left out.
+3. **A range that is not one interval is reported, not hidden.**
+   `LIMIT_SAMPLES` (3) sizes evenly below the answer, and as many spread
+   geometrically from its refusal to the bound, are probed too. A refusal
+   below moves the answer down to the boundary under that refusal. A
+   build above is reported. Either way the answer is where the sizes that
+   build first break, with the size that builds again beside it.
+4. **The cost has a cap.** At most `LIMIT_PROBES` (64) builds. A bracket
+   and bisection from any start in a range of a billion take about 45.
+   Where the seat is the limit the reading takes `2 + 2 · LIMIT_SAMPLES`
+   builds (8); where it is bisected from a factor of two, about 14 more.
+   The cap keeps a reading's cost bounded on a seat the bracket does not
+   find. If it stops the search, the answer is still a size that built,
+   and the report's refused size shows the wider gap.
+
+**API.** The four readings keep their signatures and change their
+contract: each answers the confirmed size, `None` where nothing above the
+confusion distance builds. Beside them, `blend_limit` takes a
+`BlendSizing` (rounds with their `FilletCorner`, an asymmetric round
+with its `RoundProfile`, a chamfer with its `ChamferCorner`) and returns
+a `BlendLimit`: the size, the smallest size refused, a size found
+building again, the seat reading and the probe count.
+
+- The readings change in place rather than gaining `_exact` twins. An app
+  clamping a slider needs the number that builds, and four seat-only
+  readings left beside exact ones would be the wrong call for every
+  caller.
+- The report is one function, not four `_report` variants. Its request
+  enum is `#[non_exhaustive]`, so a request of several bevels (a chamfer
+  reading over many edges) joins as a variant without breaking callers.
+  It is also the only place the call's options reach the probes.
+- Errors: a usable bound and distances are still checked first. A seat
+  the reading refuses (a seam, a seat no measure fits) no longer ends the
+  reading: the search runs from the bound, and the seat's refusal is
+  returned only where no size builds.
+
+No reading is kept from one call to the next. A `Model` carries no
+revision, so a kept answer cannot tell that its solid changed. An app
+reads once per selection.
+
+**What the search found.** Pinned in `tests/exact_limits.rs`:
+
+- A 2 mm plate's edge bevels as a notch until its setbacks cross on the
+  end faces. That happens where the bevel's plane passes the plate's far
+  bottom edge, at 22 for the symmetric bevel and 20/3 + 2 for a scale of
+  3 along the top and 1 down the side. `tests/largest.rs` pinned the
+  seat's 2 for both. Those tests now pin the new answers, since the notch
+  is what the call builds.
+- The cone rim's round fails to build within 2e-4 of the exact seat
+  (3.6178 against 3.6180). `tests/largest.rs` had stepped under it by
+  hand; the reading now answers it.
+- Three rounds at a 2 mm plate's corner, radius 2, made the one-boolean
+  fallback recurse without end. The polytope it rounds handed its own
+  rounds to a polytope again, the same one. A polytope's rounds are no
+  longer handed on. Those rounds now build up to the seat.
+
+**Oracles** (`tests/exact_limits.rs`). For every case the answer builds
+valid a tolerance under it and is refused a tolerance over it. The cases
+are boxes square and oblique (one edge, all edges, a chamfer), a drum's
+rims, a bore's rim, a cone's rim, the corpus's L and U channels and
+stepped block, a chopped cube's corner, and a boss's foot. At least one
+case per refusal:
+
+- setback: the plate's edge rounds to its 2 mm;
+- a corner: the plate's rolling corner, refused below the setback; and
+  the chopped cube's corner, stopped at 2.366, short of what any of its
+  edges rounds to alone;
+- a concave floor: the step's riser top bevels to its 10 mm height;
+- self-intersection: the plate's bevel at 22 and 20/3 + 2, as above;
+- validity: both rims of a drum 3 high, to 1.5, where the bands meet;
+- overflow: the foot of a boss of radius 2 standing 2 from the block's
+  edge rounds to 2, where its contact runs over that edge.
+
+**Cost** (`tools/ogeom-bench`, one thread, release):
+
+- `limit_box_all`: all twelve edges of a 10 mm box, where the seat is
+  the limit. 131 ms for 8 builds, against 17 ms for the one build of
+  `fillet_box_all`.
+- `limit_drum_rim`: a drum's rim. The round meets the cap's axis below
+  the seat, so the limit is bisected: 56 ms for 21 builds.
+
+The test profile is optimised less. There the cases above take 20 to
+400 ms on planes and 0.1 to 4 s on curved faces.
+
 ## 12. Acceptance corpus
 
 From #902:
