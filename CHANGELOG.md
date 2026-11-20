@@ -11,6 +11,21 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+- **Added: overflow handling for chamfers** (#1172).
+  - `chamfer_edges_overflow` takes the fillet's `Overflow` options with a
+    `ChamferCorner`. Blend into round and trim through apply to a bevel,
+    tried in that order, both on by default; `hold_edge` and
+    `hold_edge_at_end` are ignored for chamfers. `chamfer_edges`,
+    `chamfer_edges_with` and `chamfer_edges_cornered` are the default set
+    (ADR 0001, amendment "overflow handling").
+  - Blend into round: a boss's foot bevel whose leg on the floor reaches a
+    straight edge round tangent to the floor now runs on over that round
+    and meets the cone over the floor G1, instead of leaving a ledge over
+    the round. Past the tangent line the leg lies where the wall's offset
+    meets the round, the bevel fitted through its exact straight sections.
+  - Trim through is the engine's existing construction. With both off, a
+    bevel reaching other geometry is refused by name.
+
 - **Added: overflow handling for fillets** (#1171).
   - `Overflow { blend_into_round, hold_edge, hold_edge_at_end,
     trim_through }`, every behaviour on by default, and

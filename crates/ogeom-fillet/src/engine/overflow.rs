@@ -1,6 +1,7 @@
 //! Blend into round (ADR 0001, amendment "overflow handling"): a round
 //! whose ball, rolling on its floor, reaches an existing round of the
-//! body rolls on over that round instead of trimming it.
+//! body rolls on over that round instead of trimming it; and a bevel whose
+//! leg on the floor reaches such a round runs on over it.
 //!
 //! Built here for a boss's foot: the closed rim between a planar floor and
 //! a cylindrical wall standing square on it, where the foot round's contact
@@ -13,13 +14,22 @@
 //! section where the ball touches the tangent line. The fill between the
 //! round, the wall, the floor and the existing round is one closed tool,
 //! fused into the solid.
+//!
+//! A bevel of the same foot is the cone between its two legs over the
+//! floor. Past the tangent line its leg on the floor is where the wall's
+//! offset meets the existing round, and its leg on the wall where the
+//! floor's offset meets the wall, so each section is the straight ruling
+//! between them in the plane through the wall's axis; the two pieces share
+//! that ruling where the leg crosses the tangent line, and meet G1 there
+//! since the existing round leaves the floor tangentially.
 
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_geom::{
-    CircleCurve, Curve, Curve3d as _, LineCurve, Surface as _, SurfaceGeometry, TorusSurface,
+    CircleCurve, ConeSurface, Curve, Curve3d as _, LineCurve, Surface as _, SurfaceGeometry,
+    TorusSurface,
 };
-use ogeom_math::{Aabb, Circle, Direction, Frame, Point, Torus, Vector};
+use ogeom_math::{Aabb, Circle, Cone, Direction, Frame, Point, Torus, Vector};
 use ogeom_topo::{Model, Shape};
 
 use super::curved::{Curved, SheetCurve, SheetRings, read};
@@ -31,7 +41,40 @@ const STATIONS: usize = 128;
 /// Points across each of its sections.
 const ACROSS: usize = 65;
 
-/// A foot round reaching a straight round tangent to its floor.
+/// What the blend sweeps along the foot.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Size {
+    /// A round of this radius: the ball's arc between its contacts.
+    Round(f64),
+    /// A bevel, `out` along the floor and `rise` up the wall: the straight
+    /// ruling between its legs.
+    Bevel {
+        /// From the wall along the floor.
+        out: f64,
+        /// Up the wall from the floor.
+        rise: f64,
+    },
+}
+
+impl Size {
+    /// How far the blend reaches along the floor from the wall.
+    const fn out(self) -> f64 {
+        match self {
+            Self::Round(r) => r,
+            Self::Bevel { out, .. } => out,
+        }
+    }
+
+    /// How far it reaches up the wall over the floor.
+    const fn rise(self) -> f64 {
+        match self {
+            Self::Round(r) => r,
+            Self::Bevel { rise, .. } => rise,
+        }
+    }
+}
+
+/// A foot blend reaching a straight round tangent to its floor.
 #[derive(Debug, Clone)]
 pub(crate) struct Reach {
     curved: Curved,
@@ -54,7 +97,10 @@ pub(crate) struct Reach {
     gap: f64,
     /// The existing round's radius.
     round_radius: f64,
-    /// The foot round's radius.
+    /// The foot blend's size.
+    size: Size,
+    /// How far it reaches along the floor: the round's radius, or the
+    /// bevel's leg there.
     radius: f64,
 }
 
@@ -74,8 +120,12 @@ impl Reach {
         (self.wall_radius + self.radius).mul_add(theta.cos(), -self.gap)
     }
 
-    /// The ball centre's height above the floor at `theta`.
+    /// The ball centre's height above the floor at `theta`, or the height
+    /// of the bevel's leg on the wall.
     fn height(&self, theta: f64) -> f64 {
+        if let Size::Bevel { rise, .. } = self.size {
+            return rise;
+        }
         let s = self.past(theta);
         if s <= 0.0 {
             return self.radius;
@@ -94,8 +144,18 @@ impl Reach {
         self.base + self.radial(theta) * self.wall_radius + self.up * self.height(theta)
     }
 
-    /// Where the ball touches the floor or the existing round at `theta`.
+    /// Where the ball touches the floor or the existing round at `theta`,
+    /// or where the bevel's leg there lies: on the wall's offset, straight
+    /// below `on_line` on the floor or on the existing round.
     fn floor_touch(&self, theta: f64) -> Point {
+        if let Size::Bevel { .. } = self.size {
+            let s = self.past(theta);
+            if s <= 0.0 {
+                return self.on_line(theta);
+            }
+            let r = self.round_radius;
+            return self.on_line(theta) + self.up * ((r * r - s * s).sqrt() - r);
+        }
         let c = self.centre(theta);
         if self.past(theta) <= 0.0 {
             return c - self.up * self.radius;
@@ -115,6 +175,54 @@ impl Reach {
     fn on_line(&self, theta: f64) -> Point {
         self.base + self.radial(theta) * (self.wall_radius + self.radius)
     }
+
+    /// The section at `theta`, from the wall's touch to the floor's: the
+    /// ball's arc or the bevel's ruling, at `n` points.
+    fn section(&self, theta: f64, n: usize, tol: Tolerances) -> Option<Vec<Point>> {
+        let (w, f) = (self.wall_touch(theta), self.floor_touch(theta));
+        #[expect(clippy::cast_precision_loss, reason = "a few points")]
+        let at = |k: usize| k as f64 / (n - 1) as f64;
+        if let Size::Bevel { .. } = self.size {
+            return Some((0..n).map(|k| w + (f - w) * at(k)).collect());
+        }
+        let c = self.centre(theta);
+        let a = (w - c) / self.radius;
+        let b = (f - c) / self.radius;
+        let cross = a.cross(b);
+        let m = cross.magnitude();
+        if m <= tol.angular() {
+            return None;
+        }
+        let axis = cross / m;
+        let sweep = a.dot(b).clamp(-1.0, 1.0).acos();
+        Some(
+            (0..n)
+                .map(|k| {
+                    let t = sweep * at(k);
+                    c + (a * t.cos() + axis.cross(a) * t.sin()) * self.radius
+                })
+                .collect(),
+        )
+    }
+
+    /// A point inside the blend's face at `theta`, and the fill's outward
+    /// direction there: away from the corner the fill stands in.
+    fn blend_mid(&self, theta: f64) -> (Point, Vector) {
+        let (w, f) = (self.wall_touch(theta), self.floor_touch(theta));
+        if let Size::Bevel { .. } = self.size {
+            let d = f - w;
+            let radial = self.radial(theta);
+            let n = radial * -d.dot(self.up) + self.up * d.dot(radial);
+            let n = n / n.magnitude();
+            let mid = w + d * 0.5;
+            let away = mid - self.foot(theta);
+            return (mid, if n.dot(away) < 0.0 { -n } else { n });
+        }
+        let c = self.centre(theta);
+        let m = (w - c) + (f - c);
+        let m = m / m.magnitude();
+        (c + m * self.radius, -m)
+    }
 }
 
 /// The plane face and the cylindrical face `faces` holds, in that order.
@@ -129,9 +237,10 @@ fn plane_and_cylinder(curved: &Curved, faces: &[usize]) -> Option<(usize, usize)
     }
 }
 
-/// `edges` read as a boss's foot rim of `radius` whose round reaches one
-/// straight round tangent to the floor; `None` for any other request,
-/// or where anything else of the solid stands within reach of the fill.
+/// `edges` read as a boss's foot rim blended at `size` whose blend
+/// reaches one straight round tangent to the floor; `None` for any other
+/// request, or where anything else of the solid stands within reach of the
+/// fill.
 ///
 /// # Errors
 ///
@@ -140,12 +249,13 @@ pub(crate) fn reach(
     model: &Model,
     solid: &Shape,
     edges: &[Shape],
-    radius: f64,
+    size: Size,
     tol: Tolerances,
 ) -> OgeomResult<Option<Reach>> {
     let eps = tol.confusion();
     let ang = tol.angular();
-    if edges.is_empty() || !radius.is_finite() || radius <= eps {
+    let (radius, rise) = (size.out(), size.rise());
+    if edges.is_empty() || [radius, rise].iter().any(|d| !d.is_finite() || *d <= eps) {
         return Ok(None);
     }
     // A plane and a cylinder either side of the first edge, before the
@@ -245,7 +355,7 @@ pub(crate) fn reach(
         let c = &curved.edges[e];
         [c.ends.0, c.ends.1]
             .iter()
-            .any(|v| (curved.points[v] - base).dot(up) > radius)
+            .any(|v| (curved.points[v] - base).dot(up) > rise)
     });
     if !above {
         return Ok(None);
@@ -293,7 +403,13 @@ pub(crate) fn reach(
         if gap <= wall_radius + eps * 10.0 {
             continue;
         }
-        if gap < wall_radius + radius - eps * 10.0 {
+        // A bevel's leg stays on the existing round, short of where it
+        // turns down from the floor.
+        let on_round = match size {
+            Size::Round(_) => true,
+            Size::Bevel { .. } => wall_radius + radius - gap < round_radius - eps * 10.0,
+        };
+        if gap < wall_radius + radius - eps * 10.0 && on_round {
             let across = to / gap;
             crossed.push((*e, round, across, up.cross(across), gap, round_radius));
         }
@@ -315,6 +431,7 @@ pub(crate) fn reach(
         wall_radius,
         gap,
         round_radius,
+        size,
         radius,
     };
     if !clear(model, &reach, tol)? {
@@ -340,7 +457,7 @@ fn clear(model: &Model, reach: &Reach, tol: Tolerances) -> OgeomResult<bool> {
     }
     let margin = reach.radius * 1e-3 + eps * 10.0;
     let far = far + margin;
-    let (lo, hi) = (low - margin, reach.radius + margin);
+    let (lo, hi) = (low - margin, reach.size.rise().max(reach.radius) + margin);
     let mut corners = Vec::with_capacity(16);
     for h in [lo, hi] {
         for k in 0..8 {
@@ -407,7 +524,7 @@ fn segment(a: Point, b: Point, tol: Tolerances) -> OgeomResult<(Curve, (f64, f64
     ))
 }
 
-/// The piece of the round over the existing round: the ball's arc at each
+/// The piece of the blend over the existing round: its section at each
 /// station from its wall touch to its touch on the round, fitted.
 fn strip(reach: &Reach, tol: Tolerances) -> OgeomResult<Option<ogeom_geom::BSplineSurface>> {
     let half = reach.half_angle();
@@ -415,23 +532,9 @@ fn strip(reach: &Reach, tol: Tolerances) -> OgeomResult<Option<ogeom_geom::BSpli
     for i in 0..=STATIONS {
         #[expect(clippy::cast_precision_loss, reason = "a hundred stations")]
         let theta = half * (2.0 * i as f64 / STATIONS as f64 - 1.0);
-        let c = reach.centre(theta);
-        let a = (reach.wall_touch(theta) - c) / reach.radius;
-        let b = (reach.floor_touch(theta) - c) / reach.radius;
-        let cross = a.cross(b);
-        let m = cross.magnitude();
-        if m <= tol.angular() {
+        let Some(row) = reach.section(theta, ACROSS, tol) else {
             return Ok(None);
-        }
-        let axis = cross / m;
-        let sweep = a.dot(b).clamp(-1.0, 1.0).acos();
-        let row = (0..ACROSS)
-            .map(|k| {
-                #[expect(clippy::cast_precision_loss, reason = "a few points")]
-                let t = sweep * k as f64 / (ACROSS - 1) as f64;
-                c + (a * t.cos() + axis.cross(a) * t.sin()) * reach.radius
-            })
-            .collect();
+        };
         stations.push(row);
     }
     let target = tol.confusion() * 0.5;
@@ -602,13 +705,46 @@ fn closed(
     Ok(Some((solid, built.faces)))
 }
 
-/// The fill of `reach` as one closed tool, with its two round faces.
+/// The blend's face over the floor: the torus the ball sweeps, or the cone
+/// between the bevel's legs.
+fn over_floor(reach: &Reach, tol: Tolerances) -> OgeomResult<SurfaceGeometry> {
+    let (r, rr, up) = (reach.radius, reach.wall_radius, reach.up);
+    let Size::Bevel { rise, .. } = reach.size else {
+        return Ok(TorusSurface::new(Torus::new(
+            Frame::new(
+                reach.base + up * r,
+                Direction::new(up, tol)?,
+                Direction::new(reach.across, tol)?,
+                tol,
+            )?,
+            rr + r,
+            r,
+            tol,
+        )?)
+        .into());
+    };
+    // The cone's radius falls from `rr + r` on the floor to `rr` at the
+    // leg on the wall; its apex stands past that leg.
+    let frame = Frame::new(
+        reach.base,
+        Direction::new(up, tol)?,
+        Direction::new(reach.across, tol)?,
+        tol,
+    )?;
+    let apex = rise * (rr + r) / r;
+    let pad = (0.1 * rise).min(0.5 * (apex - rise));
+    let cone = Cone::new(frame, rr + r, (-r / rise).atan(), tol)?;
+    Ok(ConeSurface::new(cone, (-pad, rise + pad))?.into())
+}
+
+/// The fill of `reach` as one closed tool, with its two blend faces.
 fn tool(
     model: &mut Model,
     reach: &Reach,
     tol: Tolerances,
 ) -> OgeomResult<Option<(Shape, [Shape; 2])>> {
     let r = reach.radius;
+    let rise = reach.size.rise();
     let rr = reach.wall_radius;
     let half = reach.half_angle();
     let (t0, t1) = (-half, half);
@@ -636,7 +772,10 @@ fn tool(
     let x1 = reach.radial(t1);
     // Round the floor: the foot, the wall's touch and the floor's touch.
     let foot_a = push((f1, f0), arc(reach.base, up, x1, rr, around, tol)?);
-    let top_a = push((w1, w0), arc(reach.base + up * r, up, x1, rr, around, tol)?);
+    let top_a = push(
+        (w1, w0),
+        arc(reach.base + up * rise, up, x1, rr, around, tol)?,
+    );
     let out_a = push((p1, p0), arc(reach.base, up, x1, rr + r, around, tol)?);
     // Over the existing round.
     let x0 = reach.radial(t0);
@@ -651,7 +790,7 @@ fn tool(
     let round_b = push(round_side.ends, (round_side.curve, round_side.range));
     let line_b = push((p0, p1), segment(points[p0], points[p1], tol)?);
     // At each seat change: up the wall, out along the floor, and the
-    // ball's section between them.
+    // section between them.
     let mut ups = [0; 2];
     let mut rays = [0; 2];
     let mut quarters = [0; 2];
@@ -659,9 +798,8 @@ fn tool(
         let radial = reach.radial(theta);
         ups[k] = push((f, w), segment(points[f], points[w], tol)?);
         rays[k] = push((f, p), segment(points[f], points[p], tol)?);
-        quarters[k] = push(
-            (w, p),
-            arc(
+        let section = match reach.size {
+            Size::Round(_) => arc(
                 reach.centre(theta),
                 radial.cross(up),
                 -radial,
@@ -669,33 +807,19 @@ fn tool(
                 core::f64::consts::FRAC_PI_2,
                 tol,
             )?,
-        );
+            Size::Bevel { .. } => segment(points[w], points[p], tol)?,
+        };
+        quarters[k] = push((w, p), section);
     }
     let curved = &reach.curved;
     let wall = curved.faces[reach.wall].surface.clone();
     let floor = curved.faces[reach.floor].surface.clone();
     let round = curved.faces[reach.round].surface.clone();
     let opposite = core::f64::consts::PI;
-    let torus: SurfaceGeometry = TorusSurface::new(Torus::new(
-        Frame::new(
-            reach.base + up * r,
-            Direction::new(up, tol)?,
-            Direction::new(reach.across, tol)?,
-            tol,
-        )?,
-        rr + r,
-        r,
-        tol,
-    )?)
-    .into();
+    let blend = over_floor(reach, tol)?;
     // A point of each face and the tool's outward direction there.
-    let ball_mid = |theta: f64| -> Vector {
-        let c = reach.centre(theta);
-        let a = reach.wall_touch(theta) - c;
-        let b = reach.floor_touch(theta) - c;
-        let m = a + b;
-        m / m.magnitude()
-    };
+    let (blend_at, blend_out) = reach.blend_mid(opposite);
+    let (band_at, band_out) = reach.blend_mid(0.0);
     let line_at = reach.base + reach.across * reach.gap;
     let round_axis = line_at - up * reach.round_radius;
     let on_round = {
@@ -708,7 +832,7 @@ fn tool(
         ToolFace {
             surface: wall.clone(),
             curves: vec![foot_a, ups[0], top_a, ups[1]],
-            at: reach.foot(opposite) + up * (r * 0.5),
+            at: reach.foot(opposite) + up * (rise * 0.5),
             out: -reach.radial(opposite),
         },
         ToolFace {
@@ -718,10 +842,10 @@ fn tool(
             out: -up,
         },
         ToolFace {
-            surface: torus,
+            surface: blend,
             curves: vec![top_a, quarters[0], out_a, quarters[1]],
-            at: reach.centre(opposite) + ball_mid(opposite) * r,
-            out: -ball_mid(opposite),
+            at: blend_at,
+            out: blend_out,
         },
         ToolFace {
             surface: wall,
@@ -744,8 +868,8 @@ fn tool(
         ToolFace {
             surface: band.into(),
             curves: vec![wall_b, quarters[1], round_b, quarters[0]],
-            at: reach.centre(0.0) + ball_mid(0.0) * r,
-            out: -ball_mid(0.0),
+            at: band_at,
+            out: band_out,
         },
     ];
     let Some((solid, made)) = closed(model, &points, &curves, &faces, tol)? else {
@@ -754,24 +878,24 @@ fn tool(
     Ok(Some((solid, [made[2].clone(), made[6].clone()])))
 }
 
-/// The foot round of `edges` at `radius` blended into the round it
+/// The foot blend of `edges` at `size` blended into the round it
 /// reaches, fused into `solid` as one tool; `None` where `reach` does not
 /// hold the request or the tool will not build, apply, or prove.
 ///
 /// # Errors
 ///
 /// As reading the solid and the booleans, other than their refusals.
-pub(crate) fn rounds(
+pub(crate) fn blended(
     model: &mut Model,
     solid: &Shape,
     edges: &[Shape],
-    radius: f64,
+    size: Size,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
-    let Some(reach) = reach(model, solid, edges, radius, tol)? else {
+    let Some(reach) = reach(model, solid, edges, size, tol)? else {
         return Ok(None);
     };
-    let Some((fill, [torus, band])) = tool(model, &reach, tol)? else {
+    let Some((fill, [over, band])) = tool(model, &reach, tol)? else {
         return Ok(None);
     };
     let deflection = ogeom_mesh::Deflection::default();
@@ -779,7 +903,7 @@ pub(crate) fn rounds(
     let added = ogeom_algo::volume_properties(model, &fill, deflection, tol)?.mass;
     let mut named = Vec::with_capacity(2 * edges.len());
     for e in edges {
-        named.push((torus.clone(), e.clone()));
+        named.push((over.clone(), e.clone()));
         named.push((band.clone(), e.clone()));
     }
     let tools = [super::fallback::Tool {
@@ -803,7 +927,7 @@ pub(crate) fn rounds(
     Ok(Some(built))
 }
 
-/// Whether `edges` at `radius` are a foot round that blend into round
+/// Whether `edges` at `size` are a foot blend that blend into round
 /// takes ([`reach`]).
 ///
 /// # Errors
@@ -813,10 +937,48 @@ pub(crate) fn reach_found(
     model: &Model,
     solid: &Shape,
     edges: &[Shape],
-    radius: f64,
+    size: Size,
     tol: Tolerances,
 ) -> OgeomResult<bool> {
-    Ok(reach(model, solid, edges, radius, tol)?.is_some())
+    Ok(reach(model, solid, edges, size, tol)?.is_some())
+}
+
+/// The edges of `specs` and the one bevel they ask, where every spec asks
+/// the same legs on a rim between a cylinder's wall and a plane square to
+/// it; `None` for any other request.
+///
+/// # Errors
+///
+/// As reading the seats, other than a spec's own refusal, which the
+/// engine's construction reports.
+pub(crate) fn bevel_size(
+    model: &Model,
+    solid: &Shape,
+    specs: &[(Shape, crate::Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<(Vec<Shape>, Size)>> {
+    let eps = tol.confusion();
+    let mut legs: Option<(f64, f64)> = None;
+    for (edge, spec) in specs {
+        let Ok(crate::chamfer::Legs::Rim(seat, on_wall, on_cap)) =
+            crate::chamfer::legs(model, solid, edge, spec, tol)
+        else {
+            return Ok(None);
+        };
+        if seat.slope.abs() > tol.angular() {
+            return Ok(None);
+        }
+        match legs {
+            None => legs = Some((on_wall, on_cap)),
+            Some((w, c)) if (w - on_wall).abs() <= eps && (c - on_cap).abs() <= eps => {}
+            Some(_) => return Ok(None),
+        }
+    }
+    let Some((rise, out)) = legs else {
+        return Ok(None);
+    };
+    let edges = specs.iter().map(|(e, _)| e.clone()).collect();
+    Ok(Some((edges, Size::Bevel { out, rise })))
 }
 
 /// Whether `built`, the rounds of `edges` on `solid`, changed a face of

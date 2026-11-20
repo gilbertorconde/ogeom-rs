@@ -45,11 +45,33 @@ pub enum ChamferCorner {
 /// request with no such vertex builds with either exactly what
 /// [`chamfer_edges_with`](crate::chamfer_edges_with) builds.
 ///
+/// Where a bevel reaches geometry other than its own two faces, the
+/// behaviours of [`Overflow`](crate::Overflow) that apply to a bevel are
+/// tried in its order, every one on:
+/// [`chamfer_edges_overflow`](crate::chamfer_edges_overflow) chooses among
+/// them.
+///
 /// # Errors
 ///
 /// As [`chamfer_edges_with`](crate::chamfer_edges_with): a request the
 /// engine does not build is refused by name.
 pub fn chamfer_edges_cornered(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    corner: ChamferCorner,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    crate::chamfer_edges_overflow(model, solid, specs, corner, crate::Overflow::default(), tol)
+}
+
+/// [`chamfer_edges_cornered`] by the engine's own construction alone: a
+/// bevel reaching another face trims through it.
+///
+/// # Errors
+///
+/// As [`chamfer_edges_cornered`].
+pub(crate) fn cornered_as_today(
     model: &mut Model,
     solid: &Shape,
     specs: &[(Shape, Chamfer)],
@@ -64,7 +86,7 @@ pub fn chamfer_edges_cornered(
         solid,
         specs,
         |(edge, _)| edge,
-        |model, part, own| chamfer_edges_cornered(model, part, own, corner, tol),
+        |model, part, own| cornered_as_today(model, part, own, corner, tol),
     )? {
         return Ok(built);
     }

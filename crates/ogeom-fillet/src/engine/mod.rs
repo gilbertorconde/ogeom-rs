@@ -107,8 +107,8 @@ pub(crate) use meeting::{
 pub(crate) use merged::merged;
 pub(crate) use mixed_tools::blend as mixed_asymmetric;
 pub(crate) use overflow::{
+    Size as OverflowSize, bevel_size as overflow_bevel_size, blended as overflow_blended,
     changes_others as overflow_changes_others, reach_found as overflow_reach,
-    rounds as overflow_rounds,
 };
 pub(crate) use planar_tools::{linear_round, varying_distances};
 pub(crate) use request::{Request, Section};

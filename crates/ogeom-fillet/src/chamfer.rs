@@ -363,6 +363,11 @@ pub(crate) fn chamfer_edges_blamed(
             ),
         });
     }
+    // A boss's foot whose bevel reaches an existing round runs on over it
+    // (ADR 0001, amendment "overflow handling").
+    if let Some(built) = crate::chamfer_overflow::bevelled_into_round(model, solid, &specs, tol)? {
+        return Ok(built);
+    }
     if let Some(i) = below_a_floor(model, solid, &specs, tol)? {
         return Err(Blamed {
             edges: vec![index[i]],

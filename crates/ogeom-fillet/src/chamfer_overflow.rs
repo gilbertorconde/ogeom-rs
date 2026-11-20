@@ -1,0 +1,156 @@
+//! Overflow handling for chamfers: a bevel reaching geometry other than its
+//! own two faces (ADR 0001, amendment "overflow handling").
+
+use crate::{Chamfer, ChamferCorner, Overflow};
+use ogeom_algo::Built;
+use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
+use ogeom_topo::{Model, Shape, ShapeType};
+
+/// [`chamfer_edges_cornered`](crate::chamfer_edges_cornered), a bevel
+/// reaching geometry other than its own two faces handled as `overflow`
+/// says.
+///
+/// A flat bevel takes two of the behaviours of [`Overflow`], tried in this
+/// order:
+///
+/// - `blend_into_round`: where a bevel's leg reaches an existing round of
+///   the body, the bevel runs on over that round with no step. Built for a
+///   boss's foot: the closed rim between a planar floor and a cylindrical
+///   wall standing square on it, every edge of the rim asking the same
+///   legs, whose leg on the floor crosses a straight edge of the floor
+///   along which a convex cylindrical round meets the floor tangentially.
+///   Over the floor the bevel is the cone between its legs; past the
+///   tangent line its leg on the floor is where the wall's offset meets
+///   the round, and each section is the straight ruling between the legs,
+///   the two pieces meeting G1.
+/// - `trim_through`: the bevel keeps its own surface, and the faces it
+///   reaches are trimmed or extended to meet it: the engine's own
+///   construction, what the chamfer built before this option set.
+///
+/// `hold_edge` and `hold_edge_at_end` do not apply to a bevel, which has
+/// no ball to rest on an edge: they are ignored.
+///
+/// With [`Overflow::default`] this is
+/// [`chamfer_edges_cornered`](crate::chamfer_edges_cornered). A behaviour
+/// switched off passes the request to the next. With `trim_through` off, a
+/// result that changes any face other than the edges' own and those at
+/// their ends is refused by name, as is a request that blend into round
+/// would take while it is off.
+///
+/// # Errors
+///
+/// As [`chamfer_edges_cornered`](crate::chamfer_edges_cornered), and
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction), by
+/// name, where a bevel reaches other geometry and no behaviour that is on
+/// builds it.
+pub fn chamfer_edges_overflow(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    corner: ChamferCorner,
+    overflow: Overflow,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    if specs.is_empty() {
+        ogeom_bail!(Construction, "a chain of no edges bevels nothing");
+    }
+    if overflow.blend_into_round {
+        if let Some(built) = bevelled_into_round(model, solid, specs, tol)? {
+            return Ok(built);
+        }
+    } else if !overflow.trim_through && reaches_round(model, solid, specs, tol)? {
+        ogeom_bail!(
+            Construction,
+            "the chamfer reaches an existing round of the body, and both blend into \
+             round and trim through are off; see docs/CAPABILITIES.md, \
+             fillet.chamfer-overflow"
+        );
+    }
+    let built = crate::chamfer_corner::cornered_as_today(model, solid, specs, corner, tol)?;
+    if overflow.trim_through {
+        return Ok(built);
+    }
+    let edges: Vec<Shape> = specs.iter().map(|(e, _)| e.clone()).collect();
+    if crate::engine::overflow_changes_others(model, solid, &edges, &built, tol)? {
+        ogeom_bail!(
+            Construction,
+            "the chamfer reaches a face it is not seated on, which only trim \
+             through builds here, and trim through is off; see \
+             docs/CAPABILITIES.md, fillet.chamfer-overflow"
+        );
+    }
+    Ok(built)
+}
+
+/// The foot bevel of [`Overflow::blend_into_round`], on a solid or on each
+/// solid of a compound; `None` where it does not take the request.
+///
+/// # Errors
+///
+/// As reading the solid and the booleans, other than their refusals.
+pub(crate) fn bevelled_into_round(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    if let Some(built) = crate::compound::per_solid(
+        model,
+        solid,
+        specs,
+        |(edge, _)| edge,
+        |model, part, own| on_solid(model, part, own, tol),
+    )? {
+        return Ok(Some(built));
+    }
+    if model.kind_of(solid)? != ShapeType::Solid {
+        return Ok(None);
+    }
+    on_solid(model, solid, specs, tol)
+}
+
+fn on_solid(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    let Some((edges, size)) = crate::engine::overflow_bevel_size(model, solid, specs, tol)? else {
+        return Ok(None);
+    };
+    crate::engine::overflow_blended(model, solid, &edges, size, tol)
+}
+
+/// Whether blend into round would take `specs` on `solid`, or on the
+/// solid of a compound holding them.
+fn reaches_round(
+    model: &Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let parts = if model.kind_of(solid)? == ShapeType::Compound {
+        model.children_of(solid)?
+    } else {
+        vec![solid.clone()]
+    };
+    for part in &parts {
+        let edges = ogeom_topo::explore_unique(model, part, ShapeType::Edge)?;
+        let own: Vec<(Shape, Chamfer)> = specs
+            .iter()
+            .filter(|(e, _)| edges.iter().any(|o| o.is_same(e)))
+            .cloned()
+            .collect();
+        if own.is_empty() {
+            continue;
+        }
+        let Some((edges, size)) = crate::engine::overflow_bevel_size(model, part, &own, tol)?
+        else {
+            continue;
+        };
+        if crate::engine::overflow_reach(model, part, &edges, size, tol)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
