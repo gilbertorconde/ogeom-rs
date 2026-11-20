@@ -61,6 +61,12 @@ const PROOF: usize = 129;
 /// most, to show a face clear of the balls over it.
 const HALVINGS: u32 = 24;
 
+/// How many distances one interval's proof may measure. A face standing a
+/// radius from every centre (tangent to all the balls) leaves no margin
+/// anywhere, so without a budget the halving would walk its whole tree of
+/// depth [`HALVINGS`]; past the budget the face is not shown clear.
+const MEASURES: u32 = 1 << 17;
+
 /// The rounds of `asked` (edge and radius) on `solid` where each is a
 /// concave straight seam whose ball rests on the far edge of the narrow
 /// face beside it all along (or past it, or carried onto it); `None` where
@@ -1713,10 +1719,10 @@ fn proved(
             }
             let d = faces.nearest(c, tol)?.0;
             let clear = d >= run.radius - eps
-                && (resting.contains(fi)
-                    || behind[*fi]
-                    || i == PROOF
-                    || clear_between(run, faces, (s, s + step), d, HALVINGS, tol)?);
+                && (resting.contains(fi) || behind[*fi] || i == PROOF || {
+                    let mut budget = MEASURES;
+                    clear_between(run, faces, (s, s + step), d, (HALVINGS, &mut budget), tol)?
+                });
             if !clear {
                 // A face the run rests on, takes in or closes on must stand
                 // clear, and so must one joined to those or to the touched
@@ -1738,16 +1744,20 @@ fn proved(
 /// is checked at that station): the distance moves by no more than the
 /// centre does, so a margin of half the chord between them clears the
 /// interval; where it does not, the interval is halved, at most `depth`
-/// times.
+/// times and while `budget` distances are left to measure.
 fn clear_between(
     run: &Run,
     faces: &PointDistance,
     (s0, s1): (f64, f64),
     d0: f64,
-    depth: u32,
+    (depth, budget): (u32, &mut u32),
     tol: Tolerances,
 ) -> OgeomResult<bool> {
     let eps = tol.confusion();
+    if *budget == 0 {
+        return Ok(false);
+    }
+    *budget -= 1;
     let (Some(c0), Some(c1)) = (run.centre(s0), run.centre(s1)) else {
         return Ok(false);
     };
@@ -1767,8 +1777,10 @@ fn clear_between(
         return Ok(false);
     };
     let dm = faces.nearest(cm, tol)?.0;
-    Ok(clear_between(run, faces, (s0, m), d0, depth - 1, tol)?
-        && clear_between(run, faces, (m, s1), dm, depth - 1, tol)?)
+    Ok(
+        clear_between(run, faces, (s0, m), d0, (depth - 1, budget), tol)?
+            && clear_between(run, faces, (m, s1), dm, (depth - 1, budget), tol)?,
+    )
 }
 
 /// The station that caps `run` stepping from `from` the way `dir` says:

@@ -2970,8 +2970,8 @@ it is on, so the default request builds what it built before.
   their ends is refused by name. A face counts as unchanged where the
   result holds a face of its area and bounds on its surface. A foot that
   blend into round would take is refused by name when both are off.
-- **Narrow passages** are not part of this step. The same option set will
-  carry them: blend-made zones only, a whole wall face, or part of a wall.
+- **Narrow passages** were not part of this step. The part "Narrow
+  passages" below builds them under the same option set.
 
 **Oracle** (`tests/overflow.rs`). The case is a block 40 × 30 × 15 whose
 long top edge is rounded r 5, with a boss r 6, 15 tall, standing at
@@ -3211,6 +3211,129 @@ With blend into round off each foot gets trim through's refusal, as
 before, and with every behaviour off a refusal naming blend into round.
 An open arc of a foot reaching the edge round gets what trim through
 gives.
+
+**Narrow passages.** A concave zone is a narrow passage where it is
+tighter than the radius, so that the ball cannot roll through touching its
+seats on both sides: two walls of one floor closer than twice the radius,
+or a corner face whose curvature is tighter than the radius. The public
+documentation surveyed above says, in general terms:
+
+- The setting is a choice of how general the solver may be. The cheapest
+  assumes the tight zone is made only by constant-radius rounds and
+  refuses anything else; the next assumes the zone runs through one whole
+  face of a wall; the most general lets the zone cover part of a wall
+  face, the round being split to suit. Turning the general ones off keeps
+  rebuilds fast. Nothing there describes the resulting geometry.
+- Where two rounds of one operation intersect each other, the
+  intersection is computed and the rounds are trimmed to it, so that the
+  result is a valid solid [14].
+
+The rolling ball gives no answer here: no ball touches both seats. The
+rule settled here is the second statement's, carried across the zone:
+
+- **Every round keeps its own constant section.** Each wall's band runs on
+  past its edge's ends through the tight zone, to the plane of the next
+  wall (a square corner) or to the plane square to the edge through the far
+  side of the face closing the zone (a half cylinder between facing
+  walls). The fill is the union of the bands' fills, cut to the solid's
+  air: where two rounds cross they meet along their intersection, a G0
+  crease, and the faces of the tight zone (a floor narrower than twice the
+  radius, a corner face) are buried where the fill covers them. Each round
+  still meets its own wall G1.
+- At a square corner whose corner face is a cylinder tangent to both
+  walls and tighter than the radius, the ball at the bands' meeting stands
+  clear of that face, so the union is the rolling ball's own fill there,
+  the two bands mitred as at a sharp corner. Across a narrow floor no ball
+  is clear of the far wall, and the union is the trimmed intersection
+  above.
+- **The strategies** are the three switches `narrow_blend_made`,
+  `narrow_whole_face` and `narrow_partial_face`, on by default and tried
+  cheapest first. They say what the tight zone may be made of, and each
+  takes what the ones before it take:
+  - **blend-made only**: constant-radius rounds only. These are the
+    request's own rounds crossing over a narrow floor, and corner faces
+    that are cylinders tangent to both their walls (a pocket's corner
+    rounds, a stadium's ends);
+  - **whole face**: also one whole corner face that no constant-radius
+    round made, such as a cylinder meeting its walls at kinks;
+  - **partial face**: also a zone covering part of a face, the band split
+    where the zone starts and ends.
+
+  A passage that the strategies switched on do not take is refused by
+  name, naming them. These switches stand apart from blend into round,
+  hold edge and trim through, whose order and option-off behaviour they
+  leave unchanged.
+
+**What is built for narrow passages in this step.**
+
+- A planar floor's rim of concave edges, with planar walls square to the
+  floor. Each pair of neighbouring walls meets in one of these ways:
+  - at a square corner, sharp or through a cylindrical corner face square
+    to the floor and tighter than the radius, which stands within the
+    radius of both walls;
+  - across a half cylinder tangent to two facing walls.
+
+  Open ends must be flush on end faces square to the edge. There must be a
+  tight corner face, or two facing walls no farther apart than twice the
+  radius but farther apart than the radius. Exactly twice the radius
+  apart, the two contacts meet on one line of the floor and the two rounds
+  make one half circle, the trough's section.
+- Each band's fill is its spandrel swept along the band, one prism, and
+  the prisms are fused into the solid one boolean each. They are built
+  only where nothing of the solid but the floor, the walls, the corner
+  faces and the end faces stands within the prisms' boxes, and none of
+  those faces' edges but the request's and those between two of them.
+  The fuses must add material, no more than the prisms hold, and the
+  result must check valid. Otherwise the request goes on to the engine.
+- **Not built:**
+  - a zone covering part of a face. Nothing needs partial face alone
+    yet; such a request goes on to the engine, which refuses it by name;
+  - walls not square to the floor or to each other;
+  - a curved floor;
+  - a corner face that is not a cylinder;
+  - facing walls no farther apart than the radius (a band would cross the
+    wall it faces);
+  - walls lower than the radius.
+
+  These go on to the engine, which refuses them by name.
+
+**Oracle** (`tests/narrow_passage.rs`). The reference is the union's
+definition, sampled without the construction. Over a point of the floor
+at distance `s` from the nearest wall plane, the fill stands
+`H(s) = r - sqrt(r^2 - (r - s)^2)` tall. It is integrated over the air's
+plan in one variable: the strip `s` in from the walls of a rectangle is
+`2 (w + l) - 8 s` long, a stadium's chord at `s` is known in closed form,
+and each corner face's material is taken off by its own integral. That
+integral is checked against a direct integral over both halves of the
+corner. Gauss-Legendre throughout, with `s = t^2` where a square root
+starts. The bound is the change from 24 to 48 points, below 1e-15 in
+every case. A through slot has a closed form.
+
+| case (r 4, floor 7 deep) | fill built | reference | error | worst G1 (round to wall) |
+|---|---|---|---|---|
+| through slot 6 wide, 20 long | 135.662523995 | 135.662523995 | 1.1e-12 | 0 rad |
+| stadium pocket 20 by 6, ends r 3 | 119.916295109 | 119.916295109 | 1.5e-12 | 0 rad |
+| pocket 20 by 14, corner rounds r 2 | 198.927647132 | 198.927647132 | 6.1e-12 | 0 rad |
+| pocket 20 by 14, corners r 3 at kinks 2 in | 194.342573041 | 194.342573041 | 2.9e-12 | 0 rad |
+| through slot 8 wide (twice the radius), 20 long | 137.345175426 | 137.345175426 | below 1e-6 | 0 rad |
+
+- Each result is valid and closed. The narrow floor is taken whole.
+- With blend-made off, a blend-made passage gets the same solid from
+  whole face, and with whole face off too, from partial face. With all
+  three off it is refused by name. The kinked corners with whole face and
+  partial face off are refused by name.
+- A slot twice the radius wide or wider is no narrow passage: it builds as
+  before with every strategy off.
+- A slot no wider than the radius, and one shallower than the radius, go
+  on to the engine's refusal by name.
+- A slot exactly twice the radius wide answers within a time bound: the
+  two rounds give the half-circle trough, and one round alone gives its
+  own band. The ball of that one round stands tangent to the far wall all
+  along, so the far-edge proof that every face clears the balls has no
+  margin anywhere. That proof halves each interval between its stations,
+  and it now stops after 2^17 distance measures per interval, the face
+  then not shown clear, instead of walking the whole tree of 24 halvings.
+  The most a passing proof uses is about 46,000.
 
 ### Amendment: largest-size readings confirmed by the build (#1173)
 
