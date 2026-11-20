@@ -167,8 +167,10 @@ pub(crate) fn conic_pieces(p: [Point; 3], w: f64) -> (Vec<Point>, f64, Vec<f64>)
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
 /// where `face` is not one of the edge's two faces, a distance is not a
 /// usable length, a conic's `rho` is not strictly between 0 and 1, the
-/// edge is not straight between two planes, or a contact sets back past
-/// its face's side; with equal distances and the elliptical profile, as
+/// edge is not straight between two planes, a contact sets back past
+/// its face's side, or on a drum's ruling the section's conic crosses the
+/// drum between its contacts; with equal distances and the elliptical
+/// profile, as
 /// [`fillet_edge`](crate::fillet_edge).
 #[allow(
     clippy::too_many_arguments,
@@ -901,6 +903,19 @@ fn largest_marched(
         // meet on in front of the crease: a leg turned a quarter round a
         // drum leaves it no corner.
         if found.shouldered.iter().any(|s| !s) {
+            return Ok(false);
+        }
+        // On a ruled seat the section is read whole, and its conic must not
+        // cross a drum it is tangent to, which it does well short of the
+        // quarter turn where the drum's leg turns far past the flat's.
+        let asked = Asymmetric {
+            edge: edge.clone(),
+            face: face.clone(),
+            on_face: scale * on_face,
+            on_other: scale * on_other,
+            profile: RoundProfile::Elliptical,
+        };
+        if crate::engine::ruled_fits(&scratch, solid, &asked, tol)? == Some(false) {
             return Ok(false);
         }
         for (points, f) in found.points.iter().zip(&found.faces) {

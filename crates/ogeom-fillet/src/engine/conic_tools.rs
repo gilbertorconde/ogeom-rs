@@ -399,27 +399,42 @@ impl Ruled {
     }
 }
 
-/// The tool of an asymmetric round on a straight edge where two faces, a
-/// plane or a cylinder each and at least one a cylinder, meet along the
-/// cylinders' ruling: the section is the same at every station, so the
-/// band is the shoulder conic extruded along the edge, exact. Each leg
-/// runs its distance along its face's section, the arc on a cylinder, as
-/// the marched band walks it. `None` for any other seat, or where an end
-/// of the edge meets a face not square to it.
+/// The section of an asymmetric round on a ruled seat, as
+/// [`ruled_section`] reads it.
+struct RuledSection {
+    start: ogeom_math::Point,
+    along: ogeom_math::Vector,
+    length: f64,
+    sections: [Ruled; 2],
+    into: [ogeom_math::Vector; 2],
+    d: [f64; 2],
+    control: [ogeom_math::Point; 3],
+    w: f64,
+    convex: bool,
+}
+
+/// The section of an asymmetric round on a straight edge where two faces,
+/// a plane or a cylinder each and at least one a cylinder, meet along the
+/// cylinders' ruling: the same at every station. Each leg runs its
+/// distance along its face's section, the arc on a cylinder, as the
+/// marched band walks it, and the conic stands on the shoulder the faces'
+/// tangents meet on at the contacts. `None` for any other seat, or where
+/// an end of the edge meets a face not square to it.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
-/// where a contact sets back past its face's side, or the faces' sections
+/// where a contact sets back past its face's side, the faces' sections
 /// leave the contacts along tangents that do not meet in front of the
-/// crease.
-fn ruled(
-    model: &mut Model,
+/// crease, or the conic crosses a cylinder it is tangent to between the
+/// contacts.
+fn ruled_section(
+    model: &Model,
     solid: &Shape,
     a: &Asymmetric,
     weight: crate::marched::ConicWeight,
     tol: Tolerances,
-) -> OgeomResult<Option<Tool>> {
+) -> OgeomResult<Option<RuledSection>> {
     use ogeom_geom::Transformable as _;
     use ogeom_topo::{Filter, explore};
     let conf = tol.confusion();
@@ -592,14 +607,193 @@ fn ruled(
              fillet.asymmetric-rounds"
         );
     };
+    // Each cylinder's circle is touched at its contact; the conic must not
+    // cross it between the contacts, or the band leaves the face it is
+    // tangent to and no round of that section fits the seat.
+    for (i, section) in sections.iter().enumerate() {
+        if let Ruled::Circle(axis, radius) = *section
+            && !keeps_to_circle(control, w, axis, radius, i)
+        {
+            ogeom_bail!(
+                Construction,
+                "an asymmetric round's section crosses the drum it is tangent to between its \
+                 contacts at {start:?}: the conic standing on its faces' shoulder bulges past \
+                 the drum, so no band of that section fits there; see docs/CAPABILITIES.md, \
+                 fillet.asymmetric-rounds"
+            );
+        }
+    }
     // The material side: at a convex crease a leg leaves its face's
     // crease under the other face's tangent plane.
     let convex = into[0].dot(outward[1]) < 0.0;
+    Ok(Some(RuledSection {
+        start,
+        along,
+        length,
+        sections,
+        into,
+        d,
+        control,
+        w,
+        convex,
+    }))
+}
+
+/// Whether the rational quadratic arc about `p`, of middle weight `w`,
+/// keeps to one side of the circle a cylinder of `axis` and `radius` cuts
+/// in the arc's plane, square to the axis, touching it at its end `at`
+/// (0 for `p[0]`, 1 for `p[2]`): the side its other end stands on.
+///
+/// With the arc's homogeneous point `N(t)` over its weight `S(t)`, each a
+/// quadratic in Bernstein form, `G = |N − c S|² − r² S²` is a quartic of
+/// the condition's sign, `c` the axis's foot. The touch is a double root
+/// at `at`, divided out in closed form, which leaves a quadratic whose
+/// least value over `[0, 1]` is read exactly: the arc crosses the circle
+/// between its ends where that changes sign, however shallowly.
+fn keeps_to_circle(p: [ogeom_math::Point; 3], w: f64, axis: Axis, radius: f64, at: usize) -> bool {
+    let up = axis.direction.vector();
+    let weights = [1.0, w, 1.0];
+    let q: [ogeom_math::Vector; 3] = core::array::from_fn(|k| {
+        let off = p[k] - axis.location;
+        (off - up * off.dot(up)) * weights[k]
+    });
+    // The Bernstein coefficients of the product of two quadratics.
+    let product = |a: [f64; 3], b: [f64; 3]| -> [f64; 5] {
+        [
+            a[0] * b[0],
+            0.5 * a[0].mul_add(b[1], a[1] * b[0]),
+            (4.0 * a[1]).mul_add(b[1], a[0].mul_add(b[2], a[2] * b[0])) / 6.0,
+            0.5 * a[1].mul_add(b[2], a[2] * b[1]),
+            a[2] * b[2],
+        ]
+    };
+    let (x, y, z) = (q.map(|v| v.x), q.map(|v| v.y), q.map(|v| v.z));
+    let (xx, yy, zz, ww) = (
+        product(x, x),
+        product(y, y),
+        product(z, z),
+        product(weights, weights),
+    );
+    let g: [f64; 5] =
+        core::array::from_fn(|k| (-radius * radius).mul_add(ww[k], xx[k] + yy[k] + zz[k]));
+    // `G = t² H` touching at the start, `G = (1 − t)² H` at the end; the
+    // other end's value is `H`'s there.
+    let (h, far) = if at == 0 {
+        ([6.0 * g[2], 2.0 * g[3], g[4]], g[4])
+    } else {
+        ([g[0], 2.0 * g[1], 6.0 * g[2]], g[0])
+    };
+    // Each coefficient is a blend of products of coordinates rounded to
+    // their size and the radius's; the division multiplies by six.
+    let size = q
+        .iter()
+        .zip(weights)
+        .map(|(v, wk)| (v.magnitude() + radius * wk).powi(2))
+        .fold(0.0, f64::max);
+    let noise = size * f64::EPSILON * 64.0 * 6.0;
+    if far.abs() <= noise {
+        return false;
+    }
+    let h = h.map(|c| c * far.signum());
+    if h[0] < -noise || h[2] < -noise {
+        return false;
+    }
+    if h[1] >= 0.0 {
+        return true;
+    }
+    // Both ends above, the middle coefficient below: the least value is
+    // inside, at `(h0 − h1) / (h0 − 2 h1 + h2)`.
+    let bend = 2.0f64.mul_add(-h[1], h[0] + h[2]);
+    h[0].mul_add(h[2], -h[1] * h[1]) / bend >= -noise
+}
+
+/// Whether the asymmetric round `a`, with the elliptical section, fits its
+/// ruled seat by [`ruled_section`]: `None` where the seat is not ruled.
+///
+/// # Errors
+///
+/// As reading the solid; a refusal of the section is `Some(false)`.
+pub(crate) fn ruled_fits(
+    model: &Model,
+    solid: &Shape,
+    a: &Asymmetric,
+    tol: Tolerances,
+) -> OgeomResult<Option<bool>> {
+    match ruled_section(
+        model,
+        solid,
+        a,
+        crate::marched::ConicWeight::Elliptical,
+        tol,
+    ) {
+        Ok(found) => Ok(found.map(|_| true)),
+        Err(ogeom_core::OgeomError::Construction(_)) => Ok(Some(false)),
+        Err(e) => Err(e),
+    }
+}
+
+/// The tool of an asymmetric round on a ruled seat ([`ruled_section`]):
+/// the band is the section extruded along the edge, exact. At an end whose
+/// plane bounds the whole solid the prism runs on past it, so the tool
+/// shares no face with the solid's end there: the end cuts the band in its
+/// own exact section, rather than the band's end edge being matched in
+/// one plane against the solid's edge it runs beside. `None` where the
+/// seat is not ruled.
+///
+/// # Errors
+///
+/// As [`ruled_section`].
+fn ruled(
+    model: &mut Model,
+    solid: &Shape,
+    a: &Asymmetric,
+    weight: crate::marched::ConicWeight,
+    tol: Tolerances,
+) -> OgeomResult<Option<Tool>> {
+    let Some(found) = ruled_section(model, solid, a, weight, tol)? else {
+        return Ok(None);
+    };
+    let RuledSection {
+        start,
+        along,
+        length,
+        sections,
+        into,
+        d,
+        control,
+        w,
+        convex,
+    } = found;
+    // How far past each end a cut's prism runs: a leg's length where
+    // nothing of the solid stands beyond that end's plane, read on its
+    // guaranteed bound (widened by its vertices' and edges' tolerances, a
+    // hundred confusion distances at most), else none. A fill runs on
+    // nowhere: past the solid it would add material.
+    let bound = ogeom_algo::shape_bounds(model, solid, tol)?;
+    let reach = 100.0 * tol.confusion();
+    let past = |at: ogeom_math::Point, outward: ogeom_math::Vector| -> f64 {
+        let beyond = bound
+            .corners()
+            .iter()
+            .map(|c| (*c - at).dot(outward))
+            .fold(f64::NEG_INFINITY, f64::max);
+        if convex && beyond <= reach {
+            d[0].max(d[1])
+        } else {
+            0.0
+        }
+    };
+    let end = start + along * length;
+    let (before, after) = (past(start, -along), past(end, along));
+    let shift = -along * before;
+    let start = start + shift;
+    let length = length + before + after;
+    let control = control.map(|p| p + shift);
     let vertex = |model: &mut Model, p| ogeom_algo::make_vertex(model, p).shape;
     let (vc, va, vb) = (
         vertex(model, start),
-        vertex(model, walked[0].0),
-        vertex(model, walked[1].0),
+        vertex(model, control[0]),
+        vertex(model, control[2]),
     );
     let leg = |model: &mut Model, i: usize, to: &Shape| -> OgeomResult<Shape> {
         let (curve, range): (Curve, (f64, f64)) = match sections[i] {

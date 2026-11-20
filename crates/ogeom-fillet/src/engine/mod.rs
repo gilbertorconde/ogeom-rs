@@ -95,6 +95,7 @@ pub(crate) use apart::rounds as apart_rounds;
 pub(crate) use ball_corner::rounds as ball_corner_rounds;
 pub(crate) use conic_chain::varying as varying_distance_chain;
 pub(crate) use conic_tools::distances as distances_rounds;
+pub(crate) use conic_tools::ruled_fits;
 pub(crate) use conic_tools::varying_marched as varying_distances_marched;
 pub(crate) use contours::rounds as contour_rounds;
 pub(crate) use crease_loop::rounds as crease_loop_rounds;
