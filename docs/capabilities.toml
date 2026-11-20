@@ -1791,6 +1791,24 @@ tests = [
 ]
 
 [[capability]]
+id = "fillet.chamfer-overflow"
+title = "Overflow handling for chamfers: a bevel reaching geometry other than its own two faces"
+crate = "ogeom-fillet"
+verdict = "partial"
+restriction = """chamfer_edges_overflow takes the fillet's Overflow option set, limited to what applies to a flat bevel, tried in order, both on by default (chamfer_edges, chamfer_edges_with and chamfer_edges_cornered are the default): blend into round, then trim through. Hold edge and hold edge at the end are ignored for chamfers: a bevel has no ball to rest on an edge. Blend into round is built for a boss's foot: the closed rim between a planar floor and a cylindrical wall standing square on it, every edge of the rim asking the same legs (any spelling), whose leg on the floor crosses a straight edge of the floor along which a convex cylindrical round meets the floor tangentially and stays on that round. The bevel is the cone between its legs over the floor and, past the tangent line, the straight ruling from the leg on the wall to the leg on the round (where the wall's offset meets it), fitted through its exact sections within a confusion, the two pieces meeting G1 along the shared ruling; the fill is one tool fused into the solid, built only where nothing else of the solid stands within the box it can take up. Any other bevel reaching a round goes on to trim through. Trim through is the engine's own construction (the bevel keeps its plane or cone and the faces it reaches are trimmed or extended, amendment M5b). With trim through off, a result that changes any face other than the edges' own and those at their ends is refused by name, and so is a foot blend into round would take while it is off."""
+symbols = [
+    "ogeom_fillet::chamfer_edges_overflow",
+    "ogeom_fillet::Overflow",
+    "ogeom_fillet::chamfer_edges_cornered",
+]
+tests = [
+    "crates/ogeom-fillet/tests/chamfer_overflow.rs",
+    "crates/ogeom-fillet/tests/chamfer_overflow.rs::a_boss_s_foot_bevel_blends_into_the_edge_round_it_reaches",
+    "crates/ogeom-fillet/tests/chamfer_overflow.rs::blend_into_round_off_trims_through_as_before_and_both_off_refuse",
+    "crates/ogeom-fillet/tests/chamfer_overflow.rs::a_notch_trims_through_and_trim_through_off_refuses_it",
+]
+
+[[capability]]
 id = "fillet.corners-2d"
 title = "Filleting and chamfering the corners of planar wires"
 crate = "ogeom-fillet"

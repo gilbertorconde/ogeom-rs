@@ -11,6 +11,7 @@ pub mod bridge;
 pub mod chamfer;
 mod chamfer_corner;
 mod chamfer_marched;
+mod chamfer_overflow;
 mod chamfer_sphere;
 mod compound;
 pub mod corner2d;
@@ -55,6 +56,7 @@ pub use chamfer::{
     chamfer_edges_with, largest_chamfer_distance, largest_chamfer_distance_all,
 };
 pub use chamfer_corner::{ChamferCorner, chamfer_edges_cornered};
+pub use chamfer_overflow::chamfer_edges_overflow;
 pub use corner2d::{chamfer_corner_2d, fillet_corner_2d};
 pub use engine::vertex::round_vertex;
 pub use facepair::blend_faces;

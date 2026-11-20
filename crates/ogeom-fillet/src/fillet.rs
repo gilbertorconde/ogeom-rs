@@ -438,6 +438,12 @@ pub fn fillet_edges(
 /// A behaviour switched off passes the request to the next. Where none
 /// that is on builds a round reaching other geometry, the request is
 /// refused by name.
+///
+/// A chamfer takes the same options
+/// ([`chamfer_edges_overflow`](crate::chamfer_edges_overflow)): blend into
+/// round and trim through apply to a flat bevel, and `hold_edge` and
+/// `hold_edge_at_end` are ignored, a bevel having no ball to rest on an
+/// edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Overflow {
@@ -508,7 +514,13 @@ pub fn fillet_edges_overflow(
             return Ok(built);
         }
     } else if !overflow.trim_through
-        && crate::engine::overflow_reach(model, solid, edges, radius, tol)?
+        && crate::engine::overflow_reach(
+            model,
+            solid,
+            edges,
+            crate::engine::OverflowSize::Round(radius),
+            tol,
+        )?
     {
         ogeom_bail!(
             Construction,
@@ -546,14 +558,28 @@ fn blended_into_round(
         solid,
         edges,
         |edge| edge,
-        |model, part, own| crate::engine::overflow_rounds(model, part, own, radius, tol),
+        |model, part, own| {
+            crate::engine::overflow_blended(
+                model,
+                part,
+                own,
+                crate::engine::OverflowSize::Round(radius),
+                tol,
+            )
+        },
     )? {
         return Ok(Some(built));
     }
     if model.kind_of(solid)? != ShapeType::Solid {
         return Ok(None);
     }
-    crate::engine::overflow_rounds(model, solid, edges, radius, tol)
+    crate::engine::overflow_blended(
+        model,
+        solid,
+        edges,
+        crate::engine::OverflowSize::Round(radius),
+        tol,
+    )
 }
 
 /// The engine's rounds of `edges`, trimming through where they reach
