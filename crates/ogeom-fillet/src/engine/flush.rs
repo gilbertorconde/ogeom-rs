@@ -12,6 +12,7 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
 /// The surface a round's band ends flush on, and which side of it is the
 /// crease's.
+#[derive(Clone)]
 pub(crate) enum EndSurface {
     /// A plane through `at`, its unit normal `keep` towards the crease.
     Plane { at: Point, keep: Vector },

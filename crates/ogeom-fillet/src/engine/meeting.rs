@@ -871,6 +871,160 @@ pub(crate) fn carried_out(
     }
 }
 
+/// The rounds of `asked` on `solid` where every asked edge is a straight
+/// concave crease between planes, no two meeting or sharing a face, and
+/// each end meets one face past the crease's own: the fill runs on past
+/// the end and that face's surface, carried on past the face, trims it, as
+/// mainstream CAD ends a fillet against a wall at a sharp corner (ADR 0001,
+/// amendment "a concave band ends against its end face"). Each tool is
+/// the void's spandrel of the crease carried a few radii past each end and
+/// cut there by the end face's surface, kept on the crease's side; it must
+/// meet the void in one piece. `None` otherwise, or where a tool or the
+/// boolean will not build.
+///
+/// # Errors
+///
+/// As reading the solid, and a cancelled guard.
+pub(crate) fn concave_ends(
+    model: &mut Model,
+    solid: &Shape,
+    asked: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
+    if asked.is_empty() {
+        return Ok(None);
+    }
+    let Some(curved) = read(model, solid, tol)? else {
+        return Ok(None);
+    };
+    let mut creases: Vec<Crease> = Vec::with_capacity(asked.len());
+    let mut ends: Vec<[(Point, EndSurface); 2]> = Vec::with_capacity(asked.len());
+    for (edge, radius) in asked {
+        let Some(crease) = straight_of(&curved, id(edge), edge, *radius, false, tol)? else {
+            return Ok(None);
+        };
+        let shares = |c: &Crease| {
+            [c.ends.0, c.ends.1]
+                .iter()
+                .any(|v| *v == crease.ends.0 || *v == crease.ends.1)
+                || c.faces.iter().any(|f| crease.faces.contains(f))
+        };
+        if creases.iter().any(shares) {
+            return Ok(None);
+        }
+        let (Some(first), Some(last)) = (
+            end_face(&curved, &crease, 0, tol)?,
+            end_face(&curved, &crease, 1, tol)?,
+        ) else {
+            return Ok(None);
+        };
+        let pair = [first, last];
+        let free = [Some(pair[0].clone()), Some(pair[1].clone())];
+        if !seated_along(model, solid, &curved, &crease, true, &free, tol)? {
+            return Ok(None);
+        }
+        creases.push(crease);
+        ends.push(pair);
+    }
+    let mut scratch = model.clone();
+    let mut tools = Vec::with_capacity(creases.len());
+    for (c, pair) in creases.iter().zip(&ends) {
+        let near = 3.0 * c.radius;
+        let Some((mut tool, mut named)) =
+            spandrel_reaching(&mut scratch, &curved, c, (near, near), tol)?
+        else {
+            return Ok(None);
+        };
+        // A point of the fill at the crease's middle, half way out along
+        // the bisector to the band.
+        let within = {
+            let [(na, _), (nb, _)] = c.planes;
+            let half = f64::midpoint(1.0, na.dot(nb)).sqrt();
+            let depth = c.radius * (1.0 / half - 1.0);
+            let out = -(na + nb) / (na + nb).magnitude();
+            c.a.midpoint(c.b) + out * (0.5 * depth)
+        };
+        for (at, end) in pair {
+            let Some((kept, traced)) = super::flush::cut_far(
+                &mut scratch,
+                &tool,
+                &named,
+                end,
+                *at,
+                near,
+                Some(within),
+                tol,
+            )?
+            else {
+                return Ok(None);
+            };
+            tool = kept;
+            named = traced;
+        }
+        // The fill reaches nothing of the void but its own corner.
+        let Ok(filled) = ogeom_bool::cut(&mut scratch, &tool, solid, tol) else {
+            return Ok(None);
+        };
+        if explore_unique(&scratch, &filled.shape, ShapeType::Solid)?.len() != 1 || named.is_empty()
+        {
+            return Ok(None);
+        }
+        tools.push(Tool {
+            solid: tool,
+            sense: Sense::Fuse,
+            faces: named.into_iter().map(|f| (f, c.shape.clone())).collect(),
+        });
+    }
+    let edges: Vec<Shape> = creases.iter().map(|c| c.shape.clone()).collect();
+    let Some(built) = super::fallback::applied(&mut scratch, solid, &edges, &tools, tol)? else {
+        return Ok(None);
+    };
+    match super::guards::solid_fits(&scratch, &built.shape, tol) {
+        Ok(()) => {
+            *model = scratch;
+            Ok(Some(built))
+        }
+        Err(e @ ogeom_core::OgeomError::Cancelled) => Err(e),
+        Err(_) => Ok(None),
+    }
+}
+
+/// The one face at a concave crease's end `k` (0 its start) past the
+/// crease's own, read as the surface its fill ends on: standing across the
+/// crease's way into the material (a pocket's wall) or leaning on ahead
+/// out of it (the solid's side a slot's floor runs out to). `None` where
+/// the vertex holds no such face or more than one, the face runs on
+/// tangent to the crease's line, or its [`EndSurface`] does not read.
+fn end_face(
+    curved: &Curved,
+    crease: &Crease,
+    k: usize,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Point, EndSurface)>> {
+    let v = if k == 0 { crease.ends.0 } else { crease.ends.1 };
+    let at = if k == 0 { crease.a } else { crease.b };
+    let other = if k == 0 { crease.b } else { crease.a };
+    let ahead = (at - other) / at.distance(other);
+    let mut found = Vec::new();
+    for f in 0..curved.faces.len() {
+        if crease.faces.contains(&f) || !touches(curved, f, v) {
+            continue;
+        }
+        let Some(n) = outward(curved, f, curved.points[&v]) else {
+            return Ok(None);
+        };
+        if n.dot(ahead).abs() <= tol.angular() {
+            return Ok(None);
+        }
+        found.push((f, n));
+    }
+    let [(f, n)] = found[..] else {
+        return Ok(None);
+    };
+    let back = at + (other - at) * 1e-3;
+    Ok(EndSurface::of(&curved.faces[f].surface, at, n, back).map(|end| (at, end)))
+}
+
 /// `tool` kept to a box about the one of `pieces` (what it takes of the
 /// solid) holding `within`, the box `margin` past that piece and clear of
 /// every other piece's box, with `named` (its faces carrying the band)
@@ -1449,7 +1603,25 @@ fn crease_of(
     if matches!(c.curve, Curve::Circle(_)) {
         return rim_of(model, curved, edge, shape, radius, tol);
     }
-    if !matches!(c.curve, Curve::Line(_)) {
+    straight_of(curved, edge, shape, radius, true, tol)
+}
+
+/// `edge` as a straight open crease between two planar faces, convex where
+/// `convex`, else concave and read as the void's convex crease: its faces'
+/// normals turned to point into the material, so that its spandrel is the
+/// fill and its ball's centre stands in the void. `None` otherwise.
+fn straight_of(
+    curved: &Curved,
+    edge: Id,
+    shape: &Shape,
+    radius: f64,
+    convex: bool,
+    tol: Tolerances,
+) -> OgeomResult<Option<Crease>> {
+    let Some(c) = curved.edges.get(&edge) else {
+        return Ok(None);
+    };
+    if c.ends.0 == c.ends.1 || !matches!(c.curve, Curve::Line(_)) {
         return Ok(None);
     }
     // The crease's ends are its vertices brought onto its curve's line: a
@@ -1483,10 +1655,13 @@ fn crease_of(
     let (Some(na), Some(nb)) = (outward(curved, fa, mid), outward(curved, fb, mid)) else {
         return Ok(None);
     };
+    // The void's crease: its faces' normals turned into the material.
+    let (na, nb) = if convex { (na, nb) } else { (-na, -nb) };
     // Convex: each face's points away from the edge stand behind the
     // other's plane (the material between them), read at its edges' ends
     // and middles: a D-shaped block's top has no vertex off its chord, its
-    // arc's middle standing behind the chord's wall.
+    // arc's middle standing behind the chord's wall. Concave: behind the
+    // turned plane, in front of the face's own.
     let behind = |f: usize, n: Vector| {
         curved.faces[f].loops.iter().flatten().any(|(x, _)| {
             let g = &curved.edges[x];

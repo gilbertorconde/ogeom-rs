@@ -257,6 +257,13 @@ fn rolls(name: &str, m: &Model, s: &Shape, edges: &[Shape], r: f64, want: Want) 
 /// the orders agree, every new face is the ball's (no patch), and every
 /// edge the rounds leave between two of their own faces is smooth.
 fn rolls_alone(name: &str, m: &Model, s: &Shape, edges: &[Shape], r: f64, want: f64) {
+    rolls_to(name, m, s, edges, r, want, true);
+}
+
+/// [`rolls_alone`], each edge left between two curved faces checked
+/// smooth only where `smooth`: a band ending against a curved wall at a
+/// sharp corner meets it along a crease.
+fn rolls_to(name: &str, m: &Model, s: &Shape, edges: &[Shape], r: f64, want: f64, smooth: bool) {
     let mut first: Option<f64> = None;
     for seed in 0..3 {
         let mut rolled = m.clone();
@@ -292,7 +299,9 @@ fn rolls_alone(name: &str, m: &Model, s: &Shape, edges: &[Shape], r: f64, want: 
                 "{name}, order {seed}: a corner patch"
             );
         }
-        smooth_between_rounds(name, &rolled, &built.shape);
+        if smooth {
+            smooth_between_rounds(name, &rolled, &built.shape);
+        }
     }
 }
 
@@ -739,4 +748,99 @@ fn a_pyramid_s_apex_of_four_rounds_rolls_on_the_ball() {
         .map(|&(x, y)| edge_near(&m, &s, Point::new(x, y, 5.0)))
         .collect();
     rolls("pyramid apex", &m, &s, &apex, 1.0, Want::AsSetback);
+}
+
+/// A block 30 × 30 × 10 with a D pocket cut 5 deep: a half disc of radius
+/// 5 on its chord from (10, 12) to (20, 12).
+fn d_pocket(m: &mut Model) -> Shape {
+    pocketed(
+        m,
+        &[
+            Seg::Line([10.0, 12.0], [20.0, 12.0]),
+            Seg::Arc([20.0, 12.0], [15.0, 17.0], [10.0, 12.0]),
+        ],
+    )
+}
+
+/// `∫₀¹ f(s) ds` by Simpson's rule after `s = u²`, which takes the
+/// `√s` a round's section has at its contact out of the integrand.
+fn integral_01(f: impl Fn(f64) -> f64) -> f64 {
+    let n = 20_000;
+    let h = 1.0 / f64::from(n);
+    let g = |u: f64| f(u * u) * 2.0 * u;
+    let mut sum = g(0.0) + g(1.0);
+    for i in 1..n {
+        let w = if i % 2 == 1 { 4.0 } else { 2.0 };
+        sum += w * g(f64::from(i) * h);
+    }
+    sum * h / 3.0
+}
+
+/// What the D pocket's floor line rounded 1 fills: at `s` in from the
+/// chord its section is `h(s) = 1 - √(2s - s²)` high and runs across the
+/// D, `2√(25 - s²)` long.
+fn d_floor_line_fill() -> f64 {
+    integral_01(|s| 2.0 * (25.0 - s * s).sqrt() * (1.0 - (2.0 * s - s * s).sqrt()))
+}
+
+/// The D pocket's floor line rounded 1 alone (concave), its band ending at
+/// each end against the pocket's cylinder at a sharp corner. The band runs
+/// on and the wall trims it.
+#[test]
+fn a_d_pocket_s_floor_line_alone_runs_on_until_the_wall_trims_it() {
+    let mut m = Model::new();
+    let s = d_pocket(&mut m);
+    let edges = vec![edge_near(&m, &s, Point::new(15.0, 12.0, 5.0))];
+    let want = 9000.0 - 12.5 * PI * 5.0 + d_floor_line_fill();
+    rolls_to("D pocket floor line", &m, &s, &edges, 1.0, want, false);
+    let mut setback = m.clone();
+    let built = fillet_edges(&mut setback, &s, &edges, 1.0, T).unwrap();
+    assert!(
+        ogeom_algo::check(&setback, &built.shape, T)
+            .unwrap()
+            .is_valid()
+    );
+    let got = volume(&setback, &built.shape);
+    assert!(
+        (got - want).abs() <= 1e-6 * want,
+        "Setback: {got} against {want}"
+    );
+}
+
+/// The D pocket's whole floor loop rounded 1: the line's cylinder band
+/// crosses the arc's torus band at each corner, the upright there left
+/// sharp, and the fills take their union. The arc's fill is half the
+/// section turned about the axis (Pappus, its centroid `qx` in from the
+/// wall). Near each corner both fill the points `s` in from the chord and
+/// `t` in from the cylinder, up to `h(max(s, t))`; in `(s, t)` the plan's
+/// area element is `(5 - t) / √((5 - t)² - s²)`.
+#[test]
+fn a_d_pocket_s_floor_loop_rolls_as_its_line_and_arc_bands_cross() {
+    let mut m = Model::new();
+    let s = d_pocket(&mut m);
+    let edges = edges_of_face_at(&m, &s, Point::new(15.0, 14.0, 5.0));
+    assert_eq!(edges.len(), 2);
+    let h = |m: f64| 1.0 - (2.0 * m - m * m).sqrt();
+    let area = |s: f64, t: f64| (5.0 - t) / ((5.0 - t).powi(2) - s * s).sqrt();
+    let simpson = |f: &dyn Fn(f64) -> f64, b: f64| {
+        let n = 200;
+        let step = b / f64::from(n);
+        let mut sum = f(0.0) + f(b);
+        for i in 1..n {
+            sum += if i % 2 == 1 { 4.0 } else { 2.0 } * f(f64::from(i) * step);
+        }
+        sum * step / 3.0
+    };
+    let shared =
+        integral_01(|m| h(m) * (simpson(&|t| area(m, t), m) + simpson(&|s| area(s, m), m)));
+    let arc = PI * (5.0 - qx()) * Q;
+    let want = 9000.0 - 12.5 * PI * 5.0 + d_floor_line_fill() + arc - 2.0 * shared;
+    rolls(
+        "D pocket floor loop",
+        &m,
+        &s,
+        &edges,
+        1.0,
+        Want::Volume(want),
+    );
 }

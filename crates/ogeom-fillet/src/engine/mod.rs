@@ -103,8 +103,8 @@ pub(crate) use fits::request_fits;
 pub(crate) use law_tools::rounds as varying_rounds;
 pub(crate) use marched_seats::rounds as marched_rounds;
 pub(crate) use meeting::{
-    Spec as MeetingSpec, carried_out as carried_out_rounds, reaches_earlier_band,
-    rounds as meeting_rounds, rounds_with as meeting_rounds_with,
+    Spec as MeetingSpec, carried_out as carried_out_rounds, concave_ends as concave_end_rounds,
+    reaches_earlier_band, rounds as meeting_rounds, rounds_with as meeting_rounds_with,
 };
 pub(crate) use merged::merged;
 pub(crate) use mixed_tools::blend as mixed_asymmetric;

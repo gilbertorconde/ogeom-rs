@@ -1008,6 +1008,12 @@ fn rounds_by_engine_unplaced(
     {
         return Ok(Some(built));
     }
+    // Straight concave creases, each fill run on past both ends until the
+    // end faces' surfaces trim it (amendment "a concave band ends against
+    // its end face").
+    if let Some(built) = crate::engine::concave_end_rounds(model, solid, &once, tol)? {
+        return Ok(Some(built));
+    }
     // A rim whose band runs on past an end of its arc, round its circle,
     // until the end face trims it, or else ends in the plane through the
     // axis at its vertex; others asked with it rounded alone (amendment
