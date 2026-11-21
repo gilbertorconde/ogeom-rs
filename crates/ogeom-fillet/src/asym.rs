@@ -186,6 +186,98 @@ pub fn fillet_edge_distances(
     profile: RoundProfile,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    fillet_edge_distances_overflow(
+        model,
+        solid,
+        edge,
+        face,
+        on_face,
+        on_other,
+        profile,
+        crate::Overflow::default(),
+        tol,
+    )
+}
+
+/// [`fillet_edge_distances`], a round reaching geometry other than its own
+/// two faces handled as `overflow` says.
+///
+/// With [`Overflow::default`](crate::Overflow::default) this is
+/// [`fillet_edge_distances`]. Two equal distances of the elliptical
+/// profile are the circular round, which takes blend into round as
+/// [`fillet_edges_overflow`](crate::fillet_edges_overflow) does where the
+/// edge is a boss's whole foot rim. Every other request takes trim through
+/// alone, the construction [`fillet_edge_distances`] built before this
+/// option set: blend into round is not built for two different distances
+/// or a conic profile, nor hold edge and the narrow passages for this
+/// call, so switching them on changes nothing and switching them off
+/// refuses nothing. With trim through off, a result changing any face
+/// other than the edge's own and those at its ends is refused by name, as
+/// is a foot blend into round would take while both are off.
+///
+/// # Errors
+///
+/// As [`fillet_edge_distances`], and
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction), by
+/// name, where the round reaches other geometry and no behaviour that is
+/// on builds it.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the chamfer's distances' own, the profile and the overflow"
+)]
+pub fn fillet_edge_distances_overflow(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    face: &Shape,
+    on_face: f64,
+    on_other: f64,
+    profile: RoundProfile,
+    overflow: crate::Overflow,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let usable = |d: f64| d.is_finite() && d > tol.confusion();
+    if profile == RoundProfile::Elliptical
+        && on_face == on_other
+        && usable(on_face)
+        && model.kind_of(solid)? == ogeom_topo::ShapeType::Solid
+        && constant_dihedral(model, solid, edge, tol)?
+    {
+        let radius = equal_round(model, solid, edge, face, on_face, tol)?;
+        let one = std::slice::from_ref(edge);
+        if let Some(built) =
+            crate::fillet::blend_into_round_step(model, solid, one, radius, overflow, tol)?
+        {
+            return Ok(built);
+        }
+    }
+    let built = distances_as_today(model, solid, edge, face, on_face, on_other, profile, tol);
+    crate::fillet::trimmed_through(
+        model,
+        solid,
+        std::slice::from_ref(edge),
+        built,
+        overflow,
+        tol,
+    )
+}
+
+/// [`fillet_edge_distances`]' construction, the round keeping its own
+/// surface where it reaches other geometry.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the chamfer's distances' own, and the profile"
+)]
+fn distances_as_today(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    face: &Shape,
+    on_face: f64,
+    on_other: f64,
+    profile: RoundProfile,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     for d in [on_face, on_other] {
         if !d.is_finite() || d <= tol.confusion() {
             ogeom_bail!(
@@ -203,7 +295,7 @@ pub fn fillet_edge_distances(
         std::slice::from_ref(edge),
         |edge| edge,
         |model, part, _| {
-            fillet_edge_distances(model, part, edge, face, on_face, on_other, profile, tol)
+            distances_as_today(model, part, edge, face, on_face, on_other, profile, tol)
         },
     )? {
         return Ok(built);

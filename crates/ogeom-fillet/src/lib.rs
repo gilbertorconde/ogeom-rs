@@ -43,13 +43,15 @@ mod tangent_chain;
 mod turned_pole;
 
 pub use analyse::{BlendContact, analyse_blend, face_curvature_samples};
-pub use asym::{RoundProfile, fillet_edge_distances, largest_fillet_distances};
+pub use asym::{
+    RoundProfile, fillet_edge_distances, fillet_edge_distances_overflow, largest_fillet_distances,
+};
 pub use asym_law::{fillet_edge_distances_variable, fillet_edges_distances_variable};
 pub use blame::{
     BlendRefusal, chamfer_edges_checked, chamfer_edges_partial, fillet_edges_checked,
     fillet_edges_corner_checked, fillet_edges_partial,
 };
-pub use blend::{Blend, blend_edges};
+pub use blend::{Blend, blend_edges, blend_edges_overflow};
 pub use bridge::{End, make_blend_curve, make_blend_surface};
 pub use chamfer::{
     Chamfer, chamfer_edge, chamfer_edge_angle, chamfer_edge_distances, chamfer_edges,
@@ -64,7 +66,8 @@ pub use facepair::blend_faces;
 pub use fill_n::{FillBoundary, FillSide, Filled, make_filling_n};
 pub use fillet::{
     FilletCorner, Overflow, fillet_edge, fillet_edge_variable, fillet_edges, fillet_edges_corner,
-    fillet_edges_overflow, fillet_edges_variable, fillet_edges_with,
+    fillet_edges_corner_overflow, fillet_edges_overflow, fillet_edges_variable,
+    fillet_edges_variable_overflow, fillet_edges_with,
 };
 pub use fits::{largest_fillet_radius, largest_fillet_radius_all, largest_fillet_radius_overflow};
 pub use law::RadiusLaw;

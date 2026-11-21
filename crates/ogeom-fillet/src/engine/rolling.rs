@@ -12,12 +12,14 @@ use ogeom_topo::{Model, Shape, ShapeType, ancestors_of};
 use super::Request;
 
 /// `edges` of `solid` rounded at `radius`, each vertex where two or more
-/// meet closed by the ball rolling through it.
+/// meet closed by the ball rolling through it, a round reaching other
+/// geometry handled as `overflow` says.
 ///
 /// # Errors
 ///
-/// As [`crate::fillet_edges`] where the rounds at every vertex are of one
-/// sense. Elsewhere
+/// As [`crate::fillet_edges_overflow`] where the rounds at every vertex
+/// are of one sense, and by name with trim through off where the mixed
+/// corners' rounds change another face. Elsewhere
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction),
 /// naming the vertex, where one mixing convex and concave rounds joins
 /// other than three edges, touches a curved face where its lone band's
@@ -29,6 +31,7 @@ pub(crate) fn rounds(
     solid: &Shape,
     edges: &[Shape],
     radius: f64,
+    overflow: crate::Overflow,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     if !(radius.is_finite() && radius > tol.confusion()) {
@@ -61,7 +64,7 @@ pub(crate) fn rounds(
     // No vertex where rounds meet: no corner, and the rounds are the
     // default's.
     if meetings.is_empty() {
-        return crate::fillet_edges(model, solid, edges, radius, tol);
+        return crate::fillet_edges_overflow(model, solid, edges, radius, overflow, tol);
     }
     // Where the rounds meeting at a vertex are all of one sense, the
     // default's corner is already the ball's: the band running on through
@@ -96,7 +99,7 @@ pub(crate) fn rounds(
         .into_iter()
         .all(|planar| planar);
     if mixed.is_empty() && !between_planes {
-        return crate::fillet_edges(model, solid, edges, radius, tol);
+        return crate::fillet_edges_overflow(model, solid, edges, radius, overflow, tol);
     }
     // A mixed vertex on a curved face: the ball's sweep round the lone
     // band's end is the torus the lone band's foot is rounded by, so the
@@ -108,7 +111,7 @@ pub(crate) fn rounds(
         }
     }
     if curved {
-        let built = lone_bands_first(model, &work, &traced, &mixed, radius, tol)?;
+        let built = lone_bands_first(model, &work, &traced, &mixed, radius, overflow, tol)?;
         return Ok(if placed {
             Built::new(built.shape, baked.history.then(&built.history))
         } else {
@@ -167,6 +170,7 @@ pub(crate) fn rounds(
              beyond its ends, and is refused"
         );
     };
+    let built = crate::fillet::trimmed_through(model, &work, &traced, Ok(built), overflow, tol)?;
     Ok(if placed {
         Built::new(built.shape, baked.history.then(&built.history))
     } else {
@@ -283,7 +287,7 @@ fn ends(model: &Model, edge: &Shape) -> OgeomResult<Vec<Shape>> {
 /// three edges, a convex and a concave round meet beside an edge left
 /// sharp, the lone edge is curved, a face beside it is not ruled along
 /// it, or a round meeting the lone round there is reached from another
-/// lone band first. As [`crate::fillet_edges`] for either pass.
+/// lone band first. As [`crate::fillet_edges_overflow`] for either pass.
 #[allow(
     clippy::too_many_lines,
     reason = "one rule, read and applied end to end"
@@ -294,6 +298,7 @@ fn lone_bands_first(
     traced: &[Shape],
     mixed: &[&(Point, Shape)],
     radius: f64,
+    overflow: crate::Overflow,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     use ogeom_geom::Curve3d as _;
@@ -493,7 +498,7 @@ fn lone_bands_first(
         .filter(|&i| first[i])
         .map(|i| traced[i].clone())
         .collect();
-    let built = crate::fillet_edges(model, work, &ones, radius, tol)?;
+    let built = crate::fillet_edges_overflow(model, work, &ones, radius, overflow, tol)?;
     let left = ogeom_topo::explore_unique(model, &built.shape, ShapeType::Edge)?;
     let kept = |e: &Shape| left.iter().any(|l| l.is_same(e));
     let mut second: Vec<Shape> = Vec::new();
@@ -551,7 +556,7 @@ fn lone_bands_first(
             ));
         }
     }
-    let rolled = crate::fillet_edges(model, &built.shape, &second, radius, tol)?;
+    let rolled = crate::fillet_edges_overflow(model, &built.shape, &second, radius, overflow, tol)?;
     Ok(Built::new(
         rolled.shape,
         built.history.then(&rolled.history),
