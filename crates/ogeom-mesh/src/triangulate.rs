@@ -31,7 +31,9 @@ use ogeom_core::{Exact, OgeomResult, Predicates, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
 use ogeom_geom::{Curve2d, Surface, SurfaceGeometry};
 use ogeom_math::{Direction, Point, Point2, Vector};
-use ogeom_topo::{EdgeRepr, Model, NodeData, Orientation, Shape, ShapeType, Triangulation};
+use ogeom_topo::{
+    EdgeRepr, MeshFinding, Model, NodeData, Orientation, Shape, ShapeType, Triangulation,
+};
 use spade::handles::FixedVertexHandle;
 use spade::{
     ConstrainedDelaunayTriangulation, Point2 as SpadePoint, Triangulation as _, mitigate_underflow,
@@ -595,6 +597,7 @@ fn triangulate_reporting_from(
         }
     }
     let drawn = drawn.as_ref().unwrap_or(&uv);
+    let capped = planar.capped;
     let region_ms = phase.elapsed().as_secs_f64() * 1e3;
     let phase = Instant::now();
 
@@ -741,6 +744,20 @@ fn triangulate_reporting_from(
             }
         }
     }
+    if let Some(at) = capped {
+        mesh.findings.push(MeshFinding::RepairCapped {
+            at,
+            point: placement.apply(surface.point_at(at.0, at.1, tol)?),
+        });
+    }
+    if !matches!(surface.kind(), ogeom_geom::SurfaceKind::Plane)
+        && let Some(at) = surface_fold(&mesh, surface, &placement, reversed, tol)
+    {
+        mesh.findings.push(MeshFinding::SurfaceFolds {
+            at,
+            point: placement.apply(surface.point_at(at.0, at.1, tol)?),
+        });
+    }
     Ok((
         mesh,
         if crossed {
@@ -749,6 +766,102 @@ fn triangulate_reporting_from(
             Verdict::Whole
         },
     ))
+}
+
+/// How nearly parallel a surface's two tangents may be, the sine of the
+/// angle between them, for [`surface_fold`] to call the point a fold.
+const FOLD_SINE: f64 = 1e-6;
+
+/// How much shorter than the other a tangent at a fold may be: shorter,
+/// the side collapses to a point, a pole or an apex, which is not a fold.
+const FOLD_TANGENTS: f64 = 1e-6;
+
+/// Where the surface under `mesh` folds, if a triangle of it is wound
+/// against the surface there.
+///
+/// A triangle faces against the surface at its middle only where its
+/// corners stand across a turn of the surface's normal, and that is
+/// either a mesh drawn too coarsely or a surface that turns over. Each
+/// such triangle is searched, over its patch of the chart, for a point
+/// where the tangents run parallel: there the normal is nothing and turns
+/// right round it, and no flat triangle there faces the surface's way.
+fn surface_fold(
+    mesh: &Triangulation,
+    surface: &SurfaceGeometry,
+    placement: &ogeom_math::Transform,
+    reversed: bool,
+    tol: Tolerances,
+) -> Option<(f64, f64)> {
+    let side = if reversed { -1.0 } else { 1.0 };
+    for (i, t) in mesh.triangles.iter().enumerate() {
+        let [a, b, c] = t.map(|k| mesh.positions[k as usize]);
+        let uv = mesh.triangle_parameters(i)?;
+        let middle = (
+            (uv[0].0 + uv[1].0 + uv[2].0) / 3.0,
+            (uv[0].1 + uv[1].1 + uv[2].1) / 3.0,
+        );
+        let Ok(normal) = surface.normal_at(middle.0, middle.1, tol) else {
+            continue;
+        };
+        let normal = placement.apply_vector(normal.vector()) * side;
+        if (b - a).cross(c - a).dot(normal) > 0.0 {
+            continue;
+        }
+        if let Some(at) = parallel_tangents(surface, uv, tol) {
+            return Some(at);
+        }
+    }
+    None
+}
+
+/// A point over the chart box round `corners` where the surface's tangents
+/// run parallel, both of them there ([`FOLD_SINE`], [`FOLD_TANGENTS`]).
+fn parallel_tangents(
+    surface: &SurfaceGeometry,
+    corners: [(f64, f64); 3],
+    tol: Tolerances,
+) -> Option<(f64, f64)> {
+    const STEPS: u32 = 8;
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let lo = corners.iter().fold((f64::INFINITY, f64::INFINITY), |m, p| {
+        (m.0.min(p.0), m.1.min(p.1))
+    });
+    let hi = corners
+        .iter()
+        .fold((f64::NEG_INFINITY, f64::NEG_INFINITY), |m, p| {
+            (m.0.max(p.0), m.1.max(p.1))
+        });
+    let sine = |u: f64, v: f64| {
+        let (su, sv) = surface.d1_at(u, v, tol).ok()?;
+        let (lu, lv) = (su.magnitude(), sv.magnitude());
+        (lu.min(lv) > FOLD_TANGENTS * lu.max(lv)).then(|| su.cross(sv).magnitude() / (lu * lv))
+    };
+    // A grid over the box, narrowed round its least sine a step each
+    // time: the sine falls to nothing at a fold, as the distance to it.
+    let mut centre = (f64::midpoint(lo.0, hi.0), f64::midpoint(lo.1, hi.1));
+    let mut half = ((hi.0 - lo.0) / 2.0, (hi.1 - lo.1) / 2.0);
+    let mut best = (f64::INFINITY, centre);
+    for _ in 0..24 {
+        for i in 0..=STEPS {
+            for j in 0..=STEPS {
+                let u = (centre.0 - half.0 + 2.0 * half.0 * f64::from(i) / f64::from(STEPS))
+                    .clamp(u0, u1);
+                let v = (centre.1 - half.1 + 2.0 * half.1 * f64::from(j) / f64::from(STEPS))
+                    .clamp(v0, v1);
+                if let Some(s) = sine(u, v)
+                    && s < best.0
+                {
+                    best = (s, (u, v));
+                }
+            }
+        }
+        if best.0 <= FOLD_SINE {
+            return Some(best.1);
+        }
+        centre = best.1;
+        half = (half.0 / 3.0, half.1 / 3.0);
+    }
+    None
 }
 
 /// Triangulate every face below a shape, welded into one mesh.
@@ -4209,6 +4322,9 @@ struct PlanarMesh {
     /// The boundary alone did not triangulate to the count a boundary that
     /// encloses a region gives: it crosses itself somewhere.
     crossed: bool,
+    /// Where the chord repair would have refined next, in the chart, when
+    /// it stopped at [`REFINEMENT_ROUNDS`] still refining.
+    capped: Option<(f64, f64)>,
 }
 
 /// Triangulate a region in parameter space, given its boundary rings.
@@ -4500,6 +4616,7 @@ fn triangulate_region_inner(
             triangles: Vec::new(),
             boundary_triangles,
             crossed,
+            capped: None,
         });
     }
 
@@ -4515,6 +4632,7 @@ fn triangulate_region_inner(
     let interior_points = cdt.num_vertices();
     let sub = Instant::now();
     let mut rounds_run = 0usize;
+    let mut capped = None;
 
     // The scale a degenerate chart triangle is measured against: the
     // region's own span, the longer way. Its *position* is not its size:
@@ -4554,10 +4672,14 @@ fn triangulate_region_inner(
             ogeom_core::FastMap::default();
         let mut collapsed: ogeom_core::FastMap<[u64; 2], bool> = ogeom_core::FastMap::default();
         let bits = |p: (f64, f64)| [p.0.to_bits(), p.1.to_bits()];
+        // The interior points taken out from beside the border, not to be
+        // put back.
+        let mut cleared: ogeom_core::FastSet<[u64; 2]> = ogeom_core::FastSet::default();
         for _ in 0..REFINEMENT_ROUNDS {
             rounds_run += 1;
             let before = cdt.num_vertices();
             let mut worst: Vec<SpadePoint<f64>> = Vec::new();
+            let mut clear: Vec<SpadePoint<f64>> = Vec::new();
             for triangle in cdt.inner_faces() {
                 let vertices = triangle.vertices();
                 let centre = triangle.center();
@@ -4721,15 +4843,42 @@ fn triangulate_region_inner(
                             None => scale.to(middle.0, middle.1),
                         }
                     } else {
-                        centre
+                        match sliver_split(&triangle, corners, area) {
+                            Thin::No => centre,
+                            Thin::Split(point) => point,
+                            Thin::Clear(point) => {
+                                clear.push(point);
+                                continue;
+                            }
+                        }
                     });
                 }
             }
-            if worst.is_empty() {
+            let Some(&first) = worst.first().or(clear.first()) else {
                 break;
-            }
+            };
+            let next = scale.from(first.x, first.y);
             let mut inserted = 0usize;
+            for point in clear {
+                use spade::PositionInTriangulation as At;
+                let At::OnVertex(vertex) = cdt.locate(point) else {
+                    continue;
+                };
+                if cdt
+                    .vertex(vertex)
+                    .out_edges()
+                    .any(|e| e.is_constraint_edge())
+                {
+                    continue;
+                }
+                cleared.insert([point.x.to_bits(), point.y.to_bits()]);
+                cdt.remove(vertex);
+                inserted += 1;
+            }
             for point in worst {
+                if cleared.contains(&[point.x.to_bits(), point.y.to_bits()]) {
+                    continue;
+                }
                 let (u, v) = scale.from(point.x, point.y);
                 if !admission.holds(surface, Point2::new(u, v), tol)? {
                     continue;
@@ -4754,6 +4903,9 @@ fn triangulate_region_inner(
                 // Everything that sagged was a hair on a vertex; another
                 // round would find the same hairs.
                 break;
+            }
+            if rounds_run == REFINEMENT_ROUNDS {
+                capped = Some(next);
             }
             if *MESH_DEBUG_REFINE {
                 eprintln!(
@@ -4841,6 +4993,7 @@ fn triangulate_region_inner(
         triangles,
         boundary_triangles,
         crossed,
+        capped,
     })
 }
 
@@ -5481,6 +5634,71 @@ fn lands_on_the_mesh(
                 })
         }
         At::OutsideOfConvexHull(_) | At::NoTriangulation => false,
+    }
+}
+
+/// How thin a triangle may be, its height over its longest side, for the
+/// repair to refine it at its centre.
+///
+/// A thinner one fails its chord along its longest side, where its plane,
+/// spanned by that side and a height of nothing, is any plane through the
+/// side. Its centre stands a third of its height off that side, and the
+/// triangle it leaves there is as long and a third as tall: round after
+/// round the repair would stack slivers on the same side and never split
+/// it. The side is split instead, at its middle.
+const THIN: f64 = 1e-3;
+
+/// How the repair refines a triangle, by how thin it is ([`THIN`]).
+enum Thin {
+    /// Thick enough: at its centre.
+    No,
+    /// At the middle of its longest side.
+    Split(SpadePoint<f64>),
+    /// Its longest side is the face's border, which is not split, and the
+    /// corner across from it, an interior point all but on the border's
+    /// chord, is taken out: no point added beside that corner turns the
+    /// triangle on the chord into one that keeps to the face.
+    Clear(SpadePoint<f64>),
+}
+
+/// How the repair refines `triangle`, its scaled chart `corners` and
+/// `area`, by how thin it is.
+fn sliver_split(
+    triangle: &spade::handles::FaceHandle<
+        '_,
+        spade::handles::InnerTag,
+        SpadePoint<f64>,
+        (),
+        spade::CdtEdge<()>,
+        (),
+    >,
+    corners: [(f64, f64); 3],
+    area: f64,
+) -> Thin {
+    let length = |i: usize| {
+        let (a, b) = (corners[i], corners[(i + 1) % 3]);
+        (b.0 - a.0).hypot(b.1 - a.1)
+    };
+    let longest = (0..3)
+        .max_by(|&i, &j| length(i).total_cmp(&length(j)))
+        .unwrap_or(0);
+    if 2.0 * area >= THIN * length(longest) * length(longest) {
+        return Thin::No;
+    }
+    let (a, b) = (corners[longest], corners[(longest + 1) % 3]);
+    let border = triangle.adjacent_edges().iter().any(|e| {
+        let (p, q) = (e.from().position(), e.to().position());
+        let (p, q) = ((p.x, p.y), (q.x, q.y));
+        e.is_constraint_edge() && ((p, q) == (a, b) || (p, q) == (b, a))
+    });
+    if border {
+        let c = corners[(longest + 2) % 3];
+        Thin::Clear(SpadePoint::new(c.0, c.1))
+    } else {
+        Thin::Split(SpadePoint::new(
+            f64::midpoint(a.0, b.0),
+            f64::midpoint(a.1, b.1),
+        ))
     }
 }
 
@@ -7021,6 +7239,102 @@ mod tests {
         for p in &mesh.positions {
             assert_relative_eq!(p.to_vector().magnitude(), 3.0, epsilon = 1e-9);
         }
+    }
+
+    /// A cross-cap, `(s + t, s² - t², (s - t)²)`: at the origin its two
+    /// tangents are the same, its normal nothing, and round the origin
+    /// the normal turns right over, the patch passing through itself along
+    /// `s = -t`. Wherever a triangle of its mesh faces against the surface
+    /// the mesh names the fold, at the origin; no triangle is a sliver in
+    /// the chart.
+    #[test]
+    fn a_surface_that_folds_is_named_where_it_folds() {
+        use ogeom_algo::make_natural_face;
+        use ogeom_geom::BSplineSurface;
+        use ogeom_math::{ControlGrid, KnotVector};
+
+        // The patch's control points are its blossom at the knots: each
+        // direction's two arguments `(lo, lo)`, `(lo, hi)`, `(hi, hi)`, of
+        // which `s` reads their mean and `s²` their product.
+        let (s_span, t_span) = ((-0.9, 1.3), (-1.1, 0.8));
+        let blossom = |(lo, hi): (f64, f64), i: usize| match i {
+            0 => (lo, lo * lo),
+            1 => (f64::midpoint(lo, hi), lo * hi),
+            _ => (hi, hi * hi),
+        };
+        let mut points = Vec::new();
+        for i in 0..3 {
+            for j in 0..3 {
+                let ((s1, s2), (t1, t2)) = (blossom(s_span, i), blossom(t_span, j));
+                points.push(Point::new(s1 + t1, s2 - t2, s2 - 2.0 * s1 * t1 + t2));
+            }
+        }
+        let knots =
+            |(lo, hi): (f64, f64)| KnotVector::new(vec![lo, lo, lo, hi, hi, hi], 2).unwrap();
+        let surface = BSplineSurface::new(
+            knots(s_span),
+            knots(t_span),
+            &ControlGrid::new(points, 3, 3).unwrap(),
+            T,
+        )
+        .unwrap();
+        let mut model = Model::new();
+        let face = make_natural_face(&mut model, surface.clone().into())
+            .unwrap()
+            .shape;
+        let mut named = 0;
+        for chord in [0.05, 0.01, 0.002] {
+            let deflection = Deflection {
+                chord,
+                ..Deflection::default()
+            };
+            let mesh = triangulate_face(&model, &face, deflection, T).unwrap();
+            let folds: Vec<(f64, f64)> = mesh
+                .findings
+                .iter()
+                .filter_map(|f| match f {
+                    MeshFinding::SurfaceFolds { at, .. } => Some(*at),
+                    _ => None,
+                })
+                .collect();
+            for at in &folds {
+                assert!(
+                    at.0.hypot(at.1) < 1e-5,
+                    "chord {chord}: a fold named at {at:?}"
+                );
+            }
+            named += folds.len();
+            let mut against = 0;
+            for (i, t) in mesh.triangles.iter().enumerate() {
+                let [a, b, c] = t.map(|k| mesh.positions[k as usize]);
+                let uv = mesh.triangle_parameters(i).unwrap();
+                let side = |p: (f64, f64), q: (f64, f64)| (q.0 - p.0).hypot(q.1 - p.1);
+                let longest = side(uv[0], uv[1])
+                    .max(side(uv[1], uv[2]))
+                    .max(side(uv[2], uv[0]));
+                let twice = ((uv[1].0 - uv[0].0) * (uv[2].1 - uv[0].1)
+                    - (uv[1].1 - uv[0].1) * (uv[2].0 - uv[0].0))
+                    .abs();
+                assert!(
+                    twice / longest >= T.confusion(),
+                    "chord {chord}: a sliver {uv:?}"
+                );
+                let middle = (
+                    (uv[0].0 + uv[1].0 + uv[2].0) / 3.0,
+                    (uv[0].1 + uv[1].1 + uv[2].1) / 3.0,
+                );
+                if let Ok(n) = surface.normal_at(middle.0, middle.1, T)
+                    && (b - a).cross(c - a).dot(n.vector()) <= 0.0
+                {
+                    against += 1;
+                }
+            }
+            assert!(
+                against == 0 || !folds.is_empty(),
+                "chord {chord}: {against} triangles face against the surface, no fold named"
+            );
+        }
+        assert!(named > 0, "the fold is never named");
     }
 
     #[test]

@@ -594,13 +594,15 @@ fn an_apex_or_a_pole_meshes_as_one_vertex_and_no_triangle_of_no_area() {
     }
 }
 
-/// Every triangle of every face that meets its chord is wound with its
-/// face: its normal in space agrees in sign with the face's normal at the
-/// triangle's centre, found from its corner parameters. Near a pole, where
-/// one chart point stands for a whole row, is where a fold would show. A
-/// face that reports its chord missed is not held to it: freeform_panel's
-/// wall folds over itself, its normal turning through nothing inside the
-/// face, and no flat triangle across the fold can agree with both sides.
+/// Every triangle of every face is wound with its face: its normal in
+/// space agrees in sign with the face's normal at the triangle's centre,
+/// found from its corner parameters. Near a pole, where one chart point
+/// stands for a whole row, is where a fold would show. A face whose
+/// surface folds is not held to it, and says so: freeform_panel's wall
+/// has a point where its tangents run parallel, its normal turning right
+/// over round it, and no flat triangle across that point agrees with every
+/// side. And no triangle is narrower in the chart than the confusion
+/// tolerance.
 #[test]
 #[ignore = "heavy: every conformance part at three chords, the finest 0.0033"]
 fn every_triangle_is_wound_with_its_face() {
@@ -618,6 +620,8 @@ fn every_triangle_is_wound_with_its_face() {
     names.sort();
     assert!(names.len() >= 27, "the conformance parts are vendored");
     let mut against = Vec::new();
+    let mut slivers = Vec::new();
+    let mut folds = Vec::new();
     let mut poles = 0;
     for name in &names {
         let text = std::fs::read_to_string(corpus(name)).unwrap();
@@ -633,7 +637,25 @@ fn every_triangle_is_wound_with_its_face() {
                     ogeom::mesh::face_meshes_for(model, body, deflection, None, T).unwrap();
                 for (n, (face, mesh)) in faces.iter().enumerate() {
                     let mesh = mesh.as_ref().unwrap();
-                    if !mesh.deflection_met {
+                    for i in 0..mesh.triangles.len() {
+                        let uv = mesh.triangle_parameters(i).unwrap();
+                        let side = |p: (f64, f64), q: (f64, f64)| (q.0 - p.0).hypot(q.1 - p.1);
+                        let longest = side(uv[0], uv[1])
+                            .max(side(uv[1], uv[2]))
+                            .max(side(uv[2], uv[0]));
+                        let twice = ((uv[1].0 - uv[0].0) * (uv[2].1 - uv[0].1)
+                            - (uv[1].1 - uv[0].1) * (uv[2].0 - uv[0].0))
+                            .abs();
+                        if twice < T.confusion() * longest {
+                            slivers.push(format!("{name} at chord {chord}, face {n}: {uv:?}"));
+                        }
+                    }
+                    let folded = mesh
+                        .findings
+                        .iter()
+                        .any(|f| matches!(f, ogeom::topo::MeshFinding::SurfaceFolds { .. }));
+                    if folded {
+                        folds.push(format!("{name} at chord {chord}, face {n}"));
                         continue;
                     }
                     let data = model.node(face).unwrap().data().as_face().unwrap();
@@ -672,6 +694,17 @@ fn every_triangle_is_wound_with_its_face() {
         }
     }
     assert!(poles >= 12, "only {poles} faces reach a pole or an apex");
+    assert_eq!(
+        folds,
+        [0.01 / 3.0, 0.1, 1.0].map(|c| format!("freeform_panel.step at chord {c}, face 0")),
+        "the faces whose surface folds"
+    );
+    assert!(
+        slivers.is_empty(),
+        "{} triangles narrower than the confusion tolerance in the chart:\n{}",
+        slivers.len(),
+        slivers.join("\n")
+    );
     assert!(
         against.is_empty(),
         "{} triangles wound against their face:\n{}",
