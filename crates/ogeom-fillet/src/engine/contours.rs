@@ -90,7 +90,8 @@ pub(crate) fn rounds_piped(
                 _ => {}
             }
         }
-        if !planar {
+        // A pipe's chain may ride a curved cap.
+        if !planar && !piped {
             return Ok(None);
         }
         circles &= matches!(
@@ -128,7 +129,23 @@ fn build(
 ) -> OgeomResult<Option<Built>> {
     let edges: Vec<_> = once.iter().map(|(e, _)| e.clone()).collect();
     let radii: Vec<_> = once.iter().map(|(_, r)| *r).collect();
-    if super::request_fits(model, solid, &edges, &radii, tol)
+    let pipes = if piped {
+        let Some(pipes) = pipes(model, solid, once, tol)? else {
+            return Ok(None);
+        };
+        pipes
+    } else {
+        Vec::new()
+    };
+    // A pipe's neighbour keeps its band only short of the pipe's section.
+    let mut held: Vec<Option<(f64, f64)>> = vec![None; once.len()];
+    for (_, _, ends) in &pipes {
+        for end in ends {
+            let (a, b) = held[end.neighbour].unwrap_or((0.0, 1.0));
+            held[end.neighbour] = Some((a.max(end.kept.0), b.min(end.kept.1)));
+        }
+    }
+    if super::fits::request_fits_held(model, solid, &edges, &radii, &held, tol)
         .map_err(|b| b.error)?
         .iter()
         .any(|r| *r)
@@ -154,14 +171,6 @@ fn build(
     else {
         return Ok(None);
     };
-    let pipes = if piped {
-        let Some(pipes) = pipes(model, solid, once, tol)? else {
-            return Ok(None);
-        };
-        pipes
-    } else {
-        Vec::new()
-    };
     let mut bands = Vec::new();
     for (index, (edge, radius)) in once.iter().enumerate() {
         if pipes.iter().any(|(link, ..)| *link == index) {
@@ -186,6 +195,26 @@ fn build(
                 ));
                 continue;
             }
+            // A pipe's chain rounds a ruled seat (a plane against a drum
+            // along it) by its exact prism, where the march would hold its
+            // fit in distance only.
+            Curve::Line(_) if piped => {
+                if let Some(wedge) =
+                    super::ruled_seat::exact_wedge(model, solid, edge, *radius, tol)?
+                {
+                    bands.push((index, wedge));
+                    continue;
+                }
+                crate::marched::marched_wedge(
+                    model,
+                    solid,
+                    edge,
+                    *radius,
+                    Some((index, &met.mates)),
+                    &aside,
+                    tol,
+                )?;
+            }
             Curve::Circle(ref c) if rim => {
                 crate::rim_arc::revolved_arc_fillet(
                     model,
@@ -200,15 +229,27 @@ fn build(
                 )?;
             }
             _ => {
-                crate::marched::marched_wedge(
-                    model,
-                    solid,
-                    edge,
-                    *radius,
-                    Some((index, &met.mates)),
-                    &aside,
-                    tol,
-                )?;
+                // A band ending on a convex pipe's sections is trimmed
+                // back inside its crease, and its ball is held to it.
+                let mut march = || {
+                    crate::marched::marched_wedge(
+                        model,
+                        solid,
+                        edge,
+                        *radius,
+                        Some((index, &met.mates)),
+                        &aside,
+                        tol,
+                    )
+                };
+                let held = pipes.iter().any(|(_, pipe, ends)| {
+                    !pipe.additive && ends.iter().any(|e| e.neighbour == index)
+                });
+                if held {
+                    crate::marched::held_to_crease(march)?;
+                } else {
+                    march()?;
+                }
             }
         }
         bands.extend(aside.into_inner().into_iter().map(|w| (index, w)));
@@ -219,7 +260,7 @@ fn build(
             let reach = once[end.neighbour].1 * 3.0;
             let mut trimmed = false;
             for (index, band) in &mut bands {
-                if *index == end.neighbour && band.additive {
+                if *index == end.neighbour && band.additive == pipe.additive {
                     band.solid = crate::support::trimmed_wedge(
                         model,
                         &band.solid,
@@ -311,6 +352,11 @@ fn straight(
     })
 }
 
+/// Whether two crossings stand at one vertex.
+fn same_vertex(a: &super::switch_over::Crossing, b: &super::switch_over::Crossing) -> bool {
+    a.at.distance(b.at) <= f64::EPSILON.sqrt() * a.at.to_vector().magnitude().max(1.0)
+}
+
 /// A pipe: its link by its index in the request, its tool and its ends.
 type Piped = (usize, Wedge, [super::pipe_corner::End; 2]);
 
@@ -325,21 +371,32 @@ fn pipes(
     tol: Tolerances,
 ) -> OgeomResult<Option<Vec<Piped>>> {
     let faces = super::switch_over::Faces::of(model, solid)?;
-    let off: Vec<super::switch_over::Crossing> =
-        super::switch_over::crossings(model, solid, &faces, once, tol)?
-            .into_iter()
-            .filter(|c| c.by > super::switch_over::off_by(tol))
-            .collect();
+    let all = super::switch_over::crossings(model, solid, &faces, once, tol)?;
+    let off_by = super::switch_over::off_by(tol);
+    let off: Vec<&super::switch_over::Crossing> = all.iter().filter(|c| c.by > off_by).collect();
     let mut built = Vec::new();
     for link in 0..once.len() {
-        // The crossings at the link's ends that stand over its neighbours.
+        // The crossings at the link's ends that stand over its neighbours,
+        // and those in their vertex's own section.
         let here: Vec<&super::switch_over::Crossing> = off
             .iter()
+            .copied()
             .filter(|c| c.pair.contains(&link) && c.pair[c.over] != link)
             .collect();
         let pair: [&super::switch_over::Crossing; 2] = match here.as_slice() {
             [] => continue,
             [a, b] => [a, b],
+            [a] => {
+                // The link's other end hands over in its vertex's section.
+                let other: Vec<&super::switch_over::Crossing> = all
+                    .iter()
+                    .filter(|c| c.pair.contains(&link) && c.by <= off_by && !same_vertex(c, a))
+                    .collect();
+                match other.as_slice() {
+                    [b] => [a, b],
+                    _ => return Ok(None),
+                }
+            }
             _ => return Ok(None),
         };
         let Some((wedge, ends)) = super::pipe_corner::pipe(model, &faces, once, link, pair, tol)?
@@ -348,7 +405,7 @@ fn pipes(
         };
         built.push((link, wedge, ends));
     }
-    let covered = |c: &super::switch_over::Crossing| {
+    let covered = |c: &&super::switch_over::Crossing| {
         built
             .iter()
             .any(|(link, ..)| c.pair.contains(link) && c.pair[c.over] != *link)

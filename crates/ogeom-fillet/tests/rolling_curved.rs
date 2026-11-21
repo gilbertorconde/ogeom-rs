@@ -1382,9 +1382,14 @@ fn a_lone_round_on_an_arc_is_refused_by_name() {
 
 /// A rib fused against a drum, lower than the drum: the rib's top edge
 /// (convex) and its two edges on the drum (concave) rounded 0.5. The face
-/// across from the lone round is the drum: refused by name.
+/// across from the lone round is the drum: the top edge goes first and
+/// the concave ones roll round its foot through the pipe there. Near that
+/// corner (y > 10.2) the solid is the one where the rib's whole root is
+/// rounded, which `switch_over.rs` measures against a closing reference;
+/// the far end of the top's arc, beside the rib's other top edge left
+/// sharp, is left to its own round.
 #[test]
-fn a_mixed_corner_on_a_curved_cap_is_refused_by_name() {
+fn a_mixed_corner_on_a_curved_cap_rolls_round_the_lone_band() {
     let mut m = Model::new();
     let plate = ogeom_algo::make_box(
         &mut m,
@@ -1424,12 +1429,43 @@ fn a_mixed_corner_on_a_curved_cap_is_refused_by_name() {
     .iter()
     .map(|&p| edge_near(&m, &s, p))
     .collect();
-    refused_at(
-        &m,
-        &s,
-        &edges,
-        0.5,
-        "14.898979, 11.000000, 8.000000",
-        "the face across from the lone round is curved",
-    );
+    let mut one_model = m.clone();
+    let one =
+        fillet_edges_corner(&mut one_model, &s, &edges, 0.5, FilletCorner::Rolling, T).unwrap();
+    let found = ogeom_algo::check(&one_model, &one.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    // The whole root: both top edges, both uprights, both arcs.
+    let all: Vec<Shape> = [
+        Point::new(18.0, 11.0, 8.0),
+        Point::new(18.0, 9.0, 8.0),
+        Point::new(x, 11.0, 6.0),
+        Point::new(x, 9.0, 6.0),
+        Point::new(x + 0.05, 10.5, 8.0),
+        Point::new(x + 0.05, 9.5, 8.0),
+    ]
+    .iter()
+    .map(|&p| edge_near(&m, &s, p))
+    .collect();
+    let mut all_model = m.clone();
+    let whole =
+        fillet_edges_corner(&mut all_model, &s, &all, 0.5, FilletCorner::Rolling, T).unwrap();
+    let near = |model: &Model, solid: &Shape| -> f64 {
+        let mut model = model.clone();
+        let near_corner = ogeom_algo::make_box(
+            &mut model,
+            frame_at(Point::new(13.0, 10.2, 4.5), Direction::Z),
+            (11.5, 3.0, 5.0),
+            T,
+        )
+        .unwrap()
+        .shape;
+        let kept = ogeom_bool::common(&mut model, solid, &near_corner, T)
+            .unwrap()
+            .shape;
+        ogeom_algo::volume_properties(&model, &kept, ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    let (got, want) = (near(&one_model, &one.shape), near(&all_model, &whole.shape));
+    assert!((got - want).abs() <= 1e-9 * want, "{got} against {want}");
 }

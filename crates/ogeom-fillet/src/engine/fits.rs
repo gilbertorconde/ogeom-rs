@@ -24,7 +24,48 @@ pub(crate) fn request_fits(
     radii: &[f64],
     tol: Tolerances,
 ) -> Result<Vec<bool>, crate::support::Blamed> {
+    request_fits_held(model, solid, edges, radii, &vec![None; edges.len()], tol)
+}
+
+/// [`request_fits`], each edge with a window in `held` read only over it:
+/// the fractions of its curve's range, start to end, its band keeps where
+/// a pipe takes the ball over past them ([`super::pipe_corner`]).
+///
+/// # Errors
+///
+/// As [`request_fits`].
+pub(crate) fn request_fits_held(
+    model: &Model,
+    solid: &Shape,
+    edges: &[Shape],
+    radii: &[f64],
+    held: &[Option<(f64, f64)>],
+    tol: Tolerances,
+) -> Result<Vec<bool>, crate::support::Blamed> {
     use crate::support::Blamed;
+    // A held edge's ball is read at the quarters of its window; a straight
+    // sweep's is the same all along, and is read as it is.
+    let fits = |i: usize, carry: bool| -> ogeom_core::OgeomResult<Vec<crate::support::Contact>> {
+        let edge = &edges[i];
+        match held[i] {
+            Some((a, b))
+                if crate::engine::ruled_seat::ruled_seat(model, solid, edge, tol)?.is_none() =>
+            {
+                let fractions = [0.25, 0.5, 0.75].map(|f| a + (b - a) * f);
+                crate::support::ball_fits_within(
+                    model,
+                    solid,
+                    edge,
+                    &|_| radii[i],
+                    &fractions,
+                    (a, b),
+                    carry,
+                    tol,
+                )
+            }
+            _ => crate::support::ball_fits(model, solid, edge, radii[i], carry, tol),
+        }
+    };
     let blame = |i: usize| {
         move |error: OgeomError| Blamed {
             edges: vec![i],
@@ -77,7 +118,7 @@ pub(crate) fn request_fits(
                 rolled[i] = true;
                 continue;
             }
-            match crate::support::ball_fits(model, solid, edge, radii[i], !alone(i), tol) {
+            match fits(i, !alone(i)) {
                 Ok(found) => contacts.push(found),
                 Err(refusal @ OgeomError::Construction(_)) if edges.len() > 1 && alone(i) => {
                     if crate::engine::rolled::rolled_run(model, solid, edge, radii[i], tol)
@@ -105,7 +146,7 @@ pub(crate) fn request_fits(
             boxes.push(ogeom_algo::shape_bounds(model, edge, tol)?);
         }
         let reaches: Vec<Option<f64>> = contacts.iter().map(|found| reach(found)).collect();
-        for (i, edge) in edges.iter().enumerate() {
+        for i in 0..edges.len() {
             // A carried run already supplied its contacts on every support,
             // including the face across the narrow strip. Asking the ordinary
             // two-face ball again would discard that transfer. The same
@@ -121,8 +162,7 @@ pub(crate) fn request_fits(
                     && other.is_some_and(|other| boxes[i].distance_to_box(&boxes[j]) < own + other)
             });
             if near {
-                contacts[i] = crate::support::ball_fits(model, solid, edge, radii[i], true, tol)
-                    .map_err(blame(i))?;
+                contacts[i] = fits(i, true).map_err(blame(i))?;
             }
         }
         Ok(())
