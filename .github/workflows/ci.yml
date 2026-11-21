@@ -13,7 +13,20 @@ jobs:
   check:
     name: fmt / clippy / test
     runs-on: ubuntu-latest
+    # Full debug info for the suite's ~290 test binaries does not fit on
+    # the runner's disk. Line tables keep file and line in
+    # every backtrace at a fraction of the size.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
+      # The image's preinstalled SDKs the kernel never uses take about 30 GB
+      # the build needs.
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+
       - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable

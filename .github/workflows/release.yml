@@ -39,7 +39,16 @@ jobs:
   publish:
     name: publish to crates.io
     runs-on: ubuntu-latest
+    # The same full check as CI, so the same disk budget: see ci.yml.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
