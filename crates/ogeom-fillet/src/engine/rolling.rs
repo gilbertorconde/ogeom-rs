@@ -259,6 +259,48 @@ fn ends(model: &Model, edge: &Shape) -> OgeomResult<Vec<Shape>> {
     })
 }
 
+/// Whether each of `faces` is ruled along the line from `a` to `b`: a plane
+/// holding it, a cylinder along it or a cone it is a ruling of.
+fn ruled_beside(
+    model: &Model,
+    faces: [&Shape; 2],
+    a: Point,
+    b: Point,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    let along = (b - a) / (b - a).magnitude();
+    for f in faces {
+        let ruled = match super::rolled::host(model, f, tol)?.map(|(s, _)| s) {
+            Some(SurfaceGeometry::Plane(s)) => {
+                s.plane().normal().vector().dot(along).abs() <= tol.angular()
+            }
+            Some(SurfaceGeometry::Cylinder(s)) => {
+                s.cylinder()
+                    .axis()
+                    .direction
+                    .vector()
+                    .cross(along)
+                    .magnitude()
+                    <= tol.angular()
+            }
+            Some(cone @ SurfaceGeometry::Cone(_)) => {
+                let mut on = true;
+                for k in 0..=2 {
+                    let q = a + (b - a) * (f64::from(k) / 2.0);
+                    on &= ogeom_geom::project_on_surface(&cone, q, 16, tol)?.distance
+                        <= tol.confusion() * 10.0;
+                }
+                on
+            }
+            _ => false,
+        };
+        if !ruled {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// `edges` of `solid` rounded at `radius` where a vertex mixing convex and
 /// concave rounds touches a curved face (ADR 0001, amendment "mixed
 /// rolling corners on curved faces").
@@ -275,7 +317,10 @@ fn ends(model: &Model, edge: &Shape) -> OgeomResult<Vec<Shape>> {
 /// band's rails: the round between is the foot's pipe (amendment "a ball
 /// changing walls off the vertex"). On a curved cap (a rib under a drum's
 /// top) the band runs into the cap, its foot the curve they meet on, and
-/// the ball changes walls the same way. So the lone bands are built first,
+/// the ball changes walls the same way. The lone edge may also be a rim
+/// between its plane and a coaxial cylinder or cone (a half cylinder's end
+/// arc on a plate): its band is a torus about their axis, and its foot
+/// runs into the cap the same way. So the lone bands are built first,
 /// with every round reached from them through vertices of one sense, and
 /// the rest of the request then rounds with each lone band's foot on its
 /// cap as one tangent chain.
@@ -285,9 +330,10 @@ fn ends(model: &Model, edge: &Shape) -> OgeomResult<Vec<Shape>> {
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction),
 /// naming the vertex, where a mixed vertex is not so: it joins other than
 /// three edges, a convex and a concave round meet beside an edge left
-/// sharp, the lone edge is curved, a face beside it is not ruled along
-/// it, or a round meeting the lone round there is reached from another
-/// lone band first. As [`crate::fillet_edges_overflow`] for either pass.
+/// sharp, the lone edge is curved and no such rim, a face beside a
+/// straight one is not ruled along it, or a round meeting the lone round
+/// there is reached from another lone band first. As
+/// [`crate::fillet_edges_overflow`] for either pass.
 #[allow(
     clippy::too_many_lines,
     reason = "one rule, read and applied end to end"
@@ -393,11 +439,8 @@ fn lone_bands_first(
                 "its faces do not stand two beside the lone round and one across",
             ));
         };
-        let surface = |f: &Shape| -> OgeomResult<Option<SurfaceGeometry>> {
-            Ok(super::rolled::host(model, f, tol)?.map(|(s, _)| s))
-        };
         // A curved cap's corner is the foot's pipe too.
-        let Some(cap_surface) = surface(cap)? else {
+        let Some((cap_surface, _)) = super::rolled::host(model, cap, tol)? else {
             return Err(named(
                 p,
                 "the face across from the lone round has no surface",
@@ -406,53 +449,38 @@ fn lone_bands_first(
         let curved_edge = || {
             named(
                 p,
-                "the lone round's edge is curved, and the ball's sweep round its band's end \
-                 is no torus",
+                "the lone round's edge is curved and no rim between its plane and a coaxial \
+                 wall, and the ball's sweep round its band's end is no torus",
             )
         };
         let (curve, (t0, t1)) =
             ogeom_algo::placed_edge_curve(model, &traced[lone], tol)?.ok_or_else(curved_edge)?;
-        if !matches!(curve, ogeom_geom::Curve::Line(_)) {
-            return Err(curved_edge());
-        }
-        let (a, b) = (curve.point_at(t0, tol)?, curve.point_at(t1, tol)?);
-        let along = (b - a) / (b - a).magnitude();
-        // A lone edge leaning to the cap is rounded too: its foot's ball
-        // changes walls off the vertex, where the foot's pipe takes it
-        // (amendment "a ball changing walls off the vertex").
-        for f in [first, second] {
-            let ruled = match surface(f)? {
-                Some(SurfaceGeometry::Plane(s)) => {
-                    s.plane().normal().vector().dot(along).abs() <= tol.angular()
+        match curve {
+            // A rim between its plane and a coaxial cylinder or cone: its
+            // band is the torus about their axis, and its foot runs into
+            // the cap as a straight band's does.
+            ogeom_geom::Curve::Circle(rim) => {
+                match crate::support::revolved_seat(model, work, &traced[lone], &rim, tol) {
+                    Ok(_) => {}
+                    Err(ogeom_core::OgeomError::Construction(_)) => return Err(curved_edge()),
+                    Err(e) => return Err(e),
                 }
-                Some(SurfaceGeometry::Cylinder(s)) => {
-                    s.cylinder()
-                        .axis()
-                        .direction
-                        .vector()
-                        .cross(along)
-                        .magnitude()
-                        <= tol.angular()
-                }
-                // A cone along one of its rulings.
-                Some(cone @ SurfaceGeometry::Cone(_)) => {
-                    let mut on = true;
-                    for k in 0..=2 {
-                        let q = a + (b - a) * (f64::from(k) / 2.0);
-                        on &= ogeom_geom::project_on_surface(&cone, q, 16, tol)?.distance
-                            <= conf * 10.0;
-                    }
-                    on
-                }
-                _ => false,
-            };
-            if !ruled {
-                return Err(named(
-                    p,
-                    "a face beside the lone round is neither a plane, a cylinder along it nor \
-                     a cone it is a ruling of, so its band is not one the engine rounds there",
-                ));
             }
+            ogeom_geom::Curve::Line(_) => {
+                let (a, b) = (curve.point_at(t0, tol)?, curve.point_at(t1, tol)?);
+                // A lone edge leaning to the cap is rounded too: its foot's
+                // ball changes walls off the vertex, where the foot's pipe
+                // takes it (amendment "a ball changing walls off the vertex").
+                if !ruled_beside(model, [first, second], a, b, tol)? {
+                    return Err(named(
+                        p,
+                        "a face beside the lone round is neither a plane, a cylinder along it \
+                         nor a cone it is a ruling of, so its band is not one the engine rounds \
+                         there",
+                    ));
+                }
+            }
+            _ => return Err(curved_edge()),
         }
         lones.push((lone, asked, p, cap_surface));
     }
