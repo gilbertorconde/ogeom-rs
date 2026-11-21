@@ -54,6 +54,7 @@ pub use bridge::{End, make_blend_curve, make_blend_surface};
 pub use chamfer::{
     Chamfer, chamfer_edge, chamfer_edge_angle, chamfer_edge_distances, chamfer_edges,
     chamfer_edges_with, largest_chamfer_distance, largest_chamfer_distance_all,
+    largest_chamfer_distance_all_overflow, largest_chamfer_distance_overflow,
 };
 pub use chamfer_corner::{ChamferCorner, chamfer_edges_cornered};
 pub use chamfer_overflow::chamfer_edges_overflow;
@@ -65,7 +66,7 @@ pub use fillet::{
     FilletCorner, Overflow, fillet_edge, fillet_edge_variable, fillet_edges, fillet_edges_corner,
     fillet_edges_overflow, fillet_edges_variable, fillet_edges_with,
 };
-pub use fits::{largest_fillet_radius, largest_fillet_radius_all};
+pub use fits::{largest_fillet_radius, largest_fillet_radius_all, largest_fillet_radius_overflow};
 pub use law::RadiusLaw;
 pub use limit::{
     BlendLimit, BlendSizing, DistanceLawSize, LIMIT_PROBES, LIMIT_SAMPLES, LIMIT_TOLERANCE,

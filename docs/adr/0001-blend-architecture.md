@@ -4220,6 +4220,73 @@ Every case is `check` clean and the same in either edge order.
 takes, such as the rib's chain short of one upright. There, the foot's
 other end hands over in its section to an edge the request leaves sharp.
 
+### Amendment: largest-size readings for several bevels (#1223)
+
+Amendment "largest-size readings confirmed by the build" left
+`largest_chamfer_distance_all` with the seat promise only. It confirmed
+each edge alone, then read the overlap from the seats, and never built
+the request as a whole. Past its answer the request often still built:
+two bevels across a narrow face meet along their ridge, and a bevel
+rolls over its face's far side as a notch. Where three bevels meet at a
+corner the answer could be refused.
+
+**Rule.** The reading is confirmed like the others. `BlendSizing` gains
+`Chamfers { specs, corner, overflow }`: every bevel scaled by one measure, as
+`largest_chamfer_distance` scales one. Its seat is the old reading made
+from the seats alone: each bevel's seat, then the overlap across faces
+two bevels share, corner mates not held apart. `blend_limit` starts
+there and probes `chamfer_edges_overflow` with all the bevels, the
+corner and the overflow options asked. `largest_chamfer_distance_all` returns that size under
+`ChamferCorner::Facet`.
+
+**What the search found** (`tests/limit_chamfers.rs`, the same under
+both corners):
+
+| Request | Seat | Confirmed | Probes |
+|---|---|---|---|
+| 20 x 20 x 10 box, the four top edges | 10.0 | 19.9947 | 22 |
+| 20 x 20 x 2 plate, top and bottom front | 1.0 | 20.9982 | 26 |
+| 20 x 4 x 20 box, the two top edges | 2.0 | 21.9983 | 25 |
+| 20 x 20 x 2 plate, every edge, `Point` | 1.0 | 1.0 | 8 |
+
+The old reading gave 9.9615, 1.0, 2.0 and 1.0. The slot's floor and the
+post's corner (`tests/largest_chamfer_all.rs`) keep their closed forms,
+since the request is refused just past them. A bar's narrow top keeps its
+closed form as the seat, and its answer is now where the ridge's build
+is refused.
+
+### Amendment: largest-size readings under overflow options (#1221)
+
+The readings confirmed their answer with every `Overflow` behaviour on:
+`Rounds` probed `fillet_edges_corner`, `Chamfer` probed
+`chamfer_edges_cornered`. A request built with some behaviours off has
+another largest size, and no reading answered it.
+
+**Rule.** The sizing carries the request's `Overflow`, and each probe
+builds with it. `Chamfers` carries `overflow` and probes
+`chamfer_edges_overflow`; one spec is the single bevel. A new
+`RoundsOverflow { edges, overflow }` probes `fillet_edges_overflow`,
+whose corners are the setback's. `Rounds` and `Chamfer` keep their fields
+and their default options: a field added to them would break every caller
+that builds them. The readings `largest_fillet_radius_overflow`,
+`largest_chamfer_distance_overflow` and
+`largest_chamfer_distance_all_overflow` take the options; with
+`Overflow::default()` each answers what its plain reading does.
+
+**What the search found** (`tests/limit_overflow.rs`). The block
+40 x 30 x 15, its top front edge rounded 5, with a boss of radius 6 fused
+on its top about `(20, 12)`:
+
+- The foot round reads 8.6195 by default. With blend into round off it
+  reads 1.00999, against 1.0100 by bisecting the call; the default
+  reading is refused there.
+- The foot bevel reads 1.0 either way, its seat, where its leg reaches
+  the round's tangent line. It is refused a tolerance above, and builds
+  again by 2.71, which the report gives as `builds_again`.
+- A 2 mm plate's edge bevel reads 22 by default, notching over the
+  front's foot. With trim through off the notch is refused and it reads
+  2, the seat.
+
 ## 12. Acceptance corpus
 
 From #902:
