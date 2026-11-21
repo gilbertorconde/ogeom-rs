@@ -7,7 +7,12 @@
 use core::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use ogeom_core::Tolerances;
-use ogeom_fillet::{Overflow, fillet_edges, fillet_edges_overflow};
+use ogeom_fillet::{
+    Blend, ChamferCorner, FilletCorner, Overflow, RadiusLaw, RoundProfile, blend_edges,
+    blend_edges_overflow, fillet_edge_distances, fillet_edge_distances_overflow, fillet_edges,
+    fillet_edges_corner, fillet_edges_corner_overflow, fillet_edges_overflow,
+    fillet_edges_variable, fillet_edges_variable_overflow,
+};
 use ogeom_geom::{Curve3d as _, Surface as _, SurfaceGeometry};
 use ogeom_math::{Direction, Frame, Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType, ancestors_of, explore_unique};
@@ -424,4 +429,351 @@ fn trim_through_off_refuses_a_round_reaching_another_face() {
     let local = fillet_edges_overflow(&mut m, &block, &top, 2.0, Overflow::none(), T).unwrap();
     let want = 480.0 - 10.0 * 4.0 * (1.0 - PI / 4.0);
     assert!((volume(&m, &local.shape) - want).abs() < 1e-9);
+}
+
+/// One round call under test, taking the option set.
+type RoundCall<'a> =
+    dyn FnMut(&mut Model, Overflow) -> ogeom_core::OgeomResult<ogeom_algo::Built> + 'a;
+
+/// The volume of what `built` builds on `m`.
+fn measured(
+    m: &mut Model,
+    built: impl FnOnce(&mut Model) -> ogeom_core::OgeomResult<ogeom_algo::Built>,
+) -> f64 {
+    let b = built(m).unwrap();
+    volume(m, &b.shape)
+}
+
+/// Blend into round off, every behaviour off, and trim through off alone,
+/// for one round request: each option off gives the next option's result
+/// or a refusal naming it, as [`fillet_edges_overflow`] does on the foot.
+fn options_off_as_setback(m: &mut Model, round: &mut RoundCall<'_>, want: f64) {
+    let mut off = Overflow::default();
+    off.blend_into_round = false;
+    let err = round(m, off).unwrap_err();
+    assert!(
+        err.to_string().contains("does not reach so far"),
+        "trim through's refusal: {err}"
+    );
+    let err = round(m, Overflow::none()).unwrap_err();
+    assert!(err.to_string().contains("blend into round"), "{err}");
+    let mut trim_off = Overflow::default();
+    trim_off.trim_through = false;
+    let built = round(m, trim_off).unwrap();
+    assert!((volume(m, &built.shape) - want).abs() < 1e-9);
+}
+
+/// The foot with a rolling corner: no vertex where rounds meet, so the
+/// round is the setback call's, with its options. The default is
+/// `fillet_edges_corner`'s solid; blend into round off is refused as the
+/// setback call refuses it.
+#[test]
+fn a_rolling_corner_takes_the_overflow_options() {
+    let mut m = Model::new();
+    let (s, foot) = bossed(&mut m, 12.0);
+    let setback = fillet_edges(&mut m, &s, &foot, FOOT, T).unwrap();
+    let want = volume(&m, &setback.shape);
+    let rolled = fillet_edges_corner(&mut m, &s, &foot, FOOT, FilletCorner::Rolling, T).unwrap();
+    let by_default = fillet_edges_corner_overflow(
+        &mut m,
+        &s,
+        &foot,
+        FOOT,
+        FilletCorner::Rolling,
+        Overflow::default(),
+        T,
+    )
+    .unwrap();
+    assert!((volume(&m, &rolled.shape) - want).abs() < 1e-9);
+    assert!((volume(&m, &by_default.shape) - want).abs() < 1e-9);
+    options_off_as_setback(
+        &mut m,
+        &mut |m, o| fillet_edges_corner_overflow(m, &s, &foot, FOOT, FilletCorner::Rolling, o, T),
+        want,
+    );
+}
+
+/// The foot rounded by a law holding 3 all along (linear and by points),
+/// by two equal distances of the elliptical profile and by a plain round
+/// in `blend_edges`: before the option set each was refused, the variable
+/// and the blend calls rounding the foot without blend into round. With
+/// the volume of the foot's solid before, and of the constant round's.
+fn level_feet() -> (Model, Vec<ogeom_algo::Built>, f64, f64) {
+    let mut m = Model::new();
+    let (s, foot) = bossed(&mut m, 12.0);
+    let before = volume(&m, &s);
+    let constant = fillet_edges(&mut m, &s, &foot, FOOT, T).unwrap();
+    let want = volume(&m, &constant.shape);
+    let floor = ancestors_of(&m, &s, &foot[0], ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| matches!(surface_of(&m, f), SurfaceGeometry::Plane(_)))
+        .unwrap();
+    let distances: Vec<(Shape, Blend)> = foot
+        .iter()
+        .map(|e| {
+            (
+                e.clone(),
+                Blend::RoundDistances {
+                    face: floor.clone(),
+                    on_face: FOOT,
+                    on_other: FOOT,
+                    profile: RoundProfile::Elliptical,
+                },
+            )
+        })
+        .collect();
+    let rounds: Vec<(Shape, Blend)> = foot
+        .iter()
+        .map(|e| (e.clone(), Blend::Round(FOOT)))
+        .collect();
+    let level = RadiusLaw::Points(vec![(0.0, FOOT), (0.4, FOOT), (1.0, FOOT)]);
+    let built = vec![
+        fillet_edges_variable(
+            &mut m,
+            &s,
+            &foot,
+            &RadiusLaw::Linear {
+                start: FOOT,
+                end: FOOT,
+            },
+            T,
+        )
+        .unwrap(),
+        fillet_edges_variable(&mut m, &s, &foot, &level, T).unwrap(),
+        blend_edges(&mut m, &s, &distances, ChamferCorner::Facet, T).unwrap(),
+        blend_edges(&mut m, &s, &rounds, ChamferCorner::Facet, T).unwrap(),
+    ];
+    (m, built, before, want)
+}
+
+/// Each of [`level_feet`] is now the constant round blended into the edge
+/// round: the same volume within 1e-9, valid and closed, and G1 at every
+/// join of its fitted piece.
+#[test]
+fn a_level_law_and_equal_distances_blend_into_the_edge_round() {
+    let (m, built, _, want) = level_feet();
+    for b in &built {
+        let found = ogeom_algo::check(&m, &b.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        for shell in explore_unique(&m, &b.shape, ShapeType::Shell).unwrap() {
+            assert!(ogeom_algo::is_shell_closed(&m, &shell).unwrap(), "closed");
+        }
+        let v = volume(&m, &b.shape);
+        assert!((v - want).abs() < 1e-9, "{v} against the round's {want}");
+        let crease = worst_crease(&m, &b.shape);
+        assert!(crease < 1e-5, "the round's joins crease by {crease}");
+    }
+}
+
+/// Each of [`level_feet`]'s fills against the closing reference, within
+/// its bound (the change from 48 to 96 points per range) plus 1e-6.
+#[test]
+#[ignore = "heavy: the sampled reference takes most of a minute"]
+fn a_level_law_and_equal_distances_fill_as_the_closing() {
+    let (m, built, before, _) = level_feet();
+    let reference = Closing { boss_y: 12.0 };
+    let (coarse, fine) = (reference.volume(48), reference.volume(96));
+    let bound = (fine - coarse).abs().max(1e-9);
+    for b in &built {
+        let got = volume(&m, &b.shape) - before;
+        assert!(
+            (got - fine).abs() < 1e-6 + bound,
+            "the fill {got} against the reference {fine} (within {bound})"
+        );
+    }
+}
+
+/// The level law's and the equal distances' options off, as the setback
+/// call's; a law that varies along the foot is not blended (blend into
+/// round is built for one radius), so it keeps trim through's refusal
+/// with every option on, and with every option off; two different
+/// distances likewise keep theirs.
+#[test]
+fn variable_and_two_distance_feet_take_the_options_off_as_the_round() {
+    let mut m = Model::new();
+    let (s, foot) = bossed(&mut m, 12.0);
+    let want = measured(&mut m, |m| fillet_edges(m, &s, &foot, FOOT, T));
+    let level = RadiusLaw::Linear {
+        start: FOOT,
+        end: FOOT,
+    };
+    options_off_as_setback(
+        &mut m,
+        &mut |m, o| fillet_edges_variable_overflow(m, &s, &foot, &level, o, T),
+        want,
+    );
+    let floor = ancestors_of(&m, &s, &foot[0], ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| matches!(surface_of(&m, f), SurfaceGeometry::Plane(_)))
+        .unwrap();
+    let asked = |on_other: f64| -> Vec<(Shape, Blend)> {
+        foot.iter()
+            .map(|e| {
+                (
+                    e.clone(),
+                    Blend::RoundDistances {
+                        face: floor.clone(),
+                        on_face: FOOT,
+                        on_other,
+                        profile: RoundProfile::Elliptical,
+                    },
+                )
+            })
+            .collect()
+    };
+    let equal = asked(FOOT);
+    options_off_as_setback(
+        &mut m,
+        &mut |m, o| blend_edges_overflow(m, &s, &equal, ChamferCorner::Facet, o, T),
+        want,
+    );
+
+    let varying = RadiusLaw::Points(vec![(0.0, FOOT), (0.5, 2.5), (1.0, FOOT)]);
+    let unequal = asked(2.0);
+    for o in [Overflow::default(), Overflow::none()] {
+        let err = fillet_edges_variable_overflow(&mut m, &s, &foot, &varying, o, T).unwrap_err();
+        assert!(err.to_string().contains("does not reach so far"), "{err}");
+        let err =
+            blend_edges_overflow(&mut m, &s, &unequal, ChamferCorner::Facet, o, T).unwrap_err();
+        assert!(err.to_string().contains("sets back past the side"), "{err}");
+    }
+}
+
+/// The plate's rim beside a pocket: a varying law, a level one, a round
+/// of two distances and the same in `blend_edges` all trim through the
+/// pocket's walls by default, each as its call built it before the option
+/// set, and are refused by name with trim through off.
+#[test]
+fn trim_through_off_refuses_variable_and_two_distance_rounds_reaching_a_face() {
+    let mut m = Model::new();
+    let plate = ogeom_algo::make_box(&mut m, at(-20.0, -20.0, 0.0), (40.0, 40.0, 4.0), T)
+        .unwrap()
+        .shape;
+    let boss = ogeom_algo::make_cylinder(&mut m, at(0.0, 0.0, 4.0), 5.0, 5.0, T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &plate, &boss, T).unwrap().shape;
+    let pocket = ogeom_algo::make_box(&mut m, at(4.3, -0.25, 6.0), (0.5, 0.5, 4.0), T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::cut(&mut m, &s, &pocket, T).unwrap().shape;
+    let rim = edges_where(&m, &s, |p| {
+        (p.z - 9.0).abs() < 1e-6 && (p.x.hypot(p.y) - 5.0).abs() < 1e-6
+    });
+    let top = ancestors_of(&m, &s, &rim[0], ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| matches!(surface_of(&m, f), SurfaceGeometry::Plane(_)))
+        .unwrap();
+    let varying = RadiusLaw::Points(vec![(0.0, 1.0), (0.5, 0.8), (1.0, 1.0)]);
+    let level = RadiusLaw::Linear {
+        start: 1.0,
+        end: 1.0,
+    };
+    let blends: Vec<(Shape, Blend)> = rim
+        .iter()
+        .map(|e| {
+            (
+                e.clone(),
+                Blend::RoundDistances {
+                    face: top.clone(),
+                    on_face: 1.0,
+                    on_other: 0.7,
+                    profile: RoundProfile::Elliptical,
+                },
+            )
+        })
+        .collect();
+    let mut trim_off = Overflow::default();
+    trim_off.trim_through = false;
+    let calls: [&mut RoundCall<'_>; 4] = [
+        &mut |m, o| fillet_edges_variable_overflow(m, &s, &rim, &varying, o, T),
+        &mut |m, o| fillet_edges_variable_overflow(m, &s, &rim, &level, o, T),
+        &mut |m, o| {
+            fillet_edge_distances_overflow(
+                m,
+                &s,
+                &rim[0],
+                &top,
+                1.0,
+                0.7,
+                RoundProfile::Elliptical,
+                o,
+                T,
+            )
+        },
+        &mut |m, o| blend_edges_overflow(m, &s, &blends, ChamferCorner::Facet, o, T),
+    ];
+    let before = [
+        measured(&mut m, |m| fillet_edges_variable(m, &s, &rim, &varying, T)),
+        measured(&mut m, |m| fillet_edges_variable(m, &s, &rim, &level, T)),
+        measured(&mut m, |m| {
+            fillet_edge_distances(m, &s, &rim[0], &top, 1.0, 0.7, RoundProfile::Elliptical, T)
+        }),
+        measured(&mut m, |m| {
+            blend_edges(m, &s, &blends, ChamferCorner::Facet, T)
+        }),
+    ];
+    for (call, want) in calls.into_iter().zip(before) {
+        let got = call(&mut m, Overflow::default()).unwrap();
+        assert!((volume(&m, &got.shape) - want).abs() < 1e-9);
+        let err = call(&mut m, trim_off).unwrap_err();
+        assert!(err.to_string().contains("trim through is off"), "{err}");
+    }
+}
+
+/// A local round of each new call builds the same solid with every
+/// behaviour off as with every one on: a block's top edge, rounded by a
+/// level and a varying law, by two distances, and in `blend_edges`.
+#[test]
+fn local_rounds_build_alike_with_every_option_off() {
+    let mut m = Model::new();
+    let block = ogeom_algo::make_box(&mut m, at(0.0, 0.0, 0.0), (10.0, 8.0, 6.0), T)
+        .unwrap()
+        .shape;
+    let top = edges_where(&m, &block, |p| p.y.abs() < 1e-9 && (p.z - 6.0).abs() < 1e-9);
+    let face = ancestors_of(&m, &block, &top[0], ShapeType::Face).unwrap()[0].clone();
+    let law = RadiusLaw::Linear {
+        start: 1.0,
+        end: 2.0,
+    };
+    let blends = vec![(top[0].clone(), Blend::Round(2.0))];
+    let calls: [&mut RoundCall<'_>; 5] = [
+        &mut |m, o| fillet_edges_variable_overflow(m, &block, &top, &law, o, T),
+        &mut |m, o| {
+            fillet_edges_variable_overflow(
+                m,
+                &block,
+                &top,
+                &RadiusLaw::Linear {
+                    start: 2.0,
+                    end: 2.0,
+                },
+                o,
+                T,
+            )
+        },
+        &mut |m, o| {
+            fillet_edge_distances_overflow(
+                m,
+                &block,
+                &top[0],
+                &face,
+                2.0,
+                1.0,
+                RoundProfile::Elliptical,
+                o,
+                T,
+            )
+        },
+        &mut |m, o| blend_edges_overflow(m, &block, &blends, ChamferCorner::Facet, o, T),
+        &mut |m, o| fillet_edges_corner_overflow(m, &block, &top, 2.0, FilletCorner::Rolling, o, T),
+    ];
+    for call in calls {
+        let on = call(&mut m, Overflow::default()).unwrap();
+        let off = call(&mut m, Overflow::none()).unwrap();
+        assert!((volume(&m, &on.shape) - volume(&m, &off.shape)).abs() < 1e-12);
+    }
 }

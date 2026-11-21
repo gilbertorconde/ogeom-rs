@@ -4287,6 +4287,95 @@ on its top about `(20, 12)`:
   front's foot. With trim through off the notch is refused and it reads
   2, the seat.
 
+### Amendment: overflow options on the other round calls (#1222)
+
+Amendment "overflow handling" gave the option set to `fillet_edges` (setback
+corners, one radius) and to chamfers. The rolling corner, the variable
+radius and the round of two distances had no options, so an app offering
+them on its fillet feature had to leave them inert there.
+
+**The survey.** The public documentation surveyed for that amendment
+[P24, P25, P26, P30, P52], read in general terms:
+
+- The overflow setting and the corner type are separate settings of one
+  fillet feature. The corner type says how rounds meeting at a vertex close
+  it; the overflow setting says what a round does where it reaches other
+  geometry. Choosing one does not restrict the other.
+- The overflow setting is offered for variable-size rounds with the same
+  behaviours as for constant ones. The documentation gives no geometry for a
+  smooth overflow whose size changes along the edge.
+- Where a feature's behaviour is not available for a kind of round, the
+  documentation says that kind takes the one construction that is
+  available. For example, a round of two distances takes the setback corner
+  alone.
+
+**Rule.** Each round call takes the option set in a form ending
+`_overflow`: `fillet_edges_corner_overflow`, `fillet_edges_variable_overflow`,
+`fillet_edge_distances_overflow` and `blend_edges_overflow`. Each existing
+call is that form with `Overflow::default()`. The order of the behaviours and
+the effect of switching one off are amendment "overflow handling"'s. A
+behaviour not built for a call changes nothing when it is on and refuses
+nothing when it is off: there is nothing it would take. Trim through off
+still refuses by name any result that changes a face other than the edges'
+own and those at their ends.
+
+- **Rolling corners.** The rolling corner is a corner type, so a rolling
+  request takes the overflow options as a setback request does. Every pass
+  of rounds the rolling corner makes is `fillet_edges_overflow` with the
+  set. That covers a request with no vertex where rounds meet (a boss's
+  foot), a request whose vertices are all of one sense, and the lone-band
+  passes on a curved face. The sphere or torus that closes a mixed vertex
+  between planes is trim through's construction.
+- **Variable radii.** A law that holds one radius all along is the constant
+  round of that radius. The papers define a constant round by the rolling
+  ball [2, 3], and so does this ADR, so the law takes every behaviour of
+  that round in order: narrow passage, blend into round, hold edge. Trim
+  through is the variable round's own construction. A boss's foot under
+  such a law now blends into the edge round it reaches, where it used to be
+  refused.
+
+  A law that varies takes trim through alone. A ball whose radius changes
+  along the edge has no closing to define its fill, so neither the survey
+  nor the papers settle how such a ball rolls over the round it reaches.
+  Blend into round is therefore not built for it. Such a foot keeps the
+  refusal it had: the round sets back across a face that does not reach
+  so far.
+- **Two distances.** Two equal distances of the elliptical profile are the
+  circular round (as `fillet_edge_distances` builds them), so they take blend into round as that
+  round does, where the edges are a boss's whole foot rim. So does a
+  `blend_edges` request made only of rounds of one radius. The bevels of a
+  `blend_edges` request take the chamfer's set. Two different distances, or
+  a conic profile, take trim through alone: their section is no ball's.
+- Hold edge and the narrow passages apply only to the rounds that pass
+  through `fillet_edges_overflow` (rolling corners, and laws holding one
+  radius). `fillet_edge_distances` and `blend_edges` build their rounds with
+  the engine directly, as before, so for those calls these behaviours are
+  not built.
+
+**Oracle** (`tests/overflow.rs`, `tests/rolling_corner.rs`). These cases
+use the block and boss of amendment "overflow handling": a foot round of
+radius 3 reaching the edge round.
+
+- The newly built rounds are a linear and a points law holding 3, two equal
+  distances of 3 in `blend_edges`, and `Blend::Round(3)` in `blend_edges`.
+  Each is valid and closed, its volume is the constant round's within 1e-9,
+  and its fitted piece meets its neighbours within 1e-5 rad of tangent.
+  Each fill matches the morphological closing reference within that
+  reference's bound plus 1e-6: fill 78.026703316 against 78.026702763,
+  error 5.5e-7, bound 6.2e-6, worst G1 9.7e-7 rad.
+- With blend into round off, the rolling corner, the level law and the
+  equal distances get trim through's refusal, as `fillet_edges_overflow`
+  does. With every behaviour off they are refused naming blend into round.
+  With trim through off alone they still blend.
+- A varying law on the foot, and two different distances, keep their
+  refusals with every behaviour on and with every behaviour off.
+- A rim beside a pocket, rounded by a varying law, a level law, two
+  distances and `blend_edges`, trims through by default as before. With
+  trim through off it is refused by name.
+- A local round of each call builds the same solid with every behaviour
+  off as with every behaviour on. The rolled stairs with every behaviour off
+  are the default's spheres and tori, at the exact volume.
+
 ## 12. Acceptance corpus
 
 From #902:
@@ -4699,6 +4788,8 @@ a ball holding an edge on both sides at once).
 - [P30] SOLIDWORKS 2022, Example: Overflow Type:
   https://help.solidworks.com/2022/english/SolidWorks/sldworks/c_example_overflow_type.htm
 - [P31] SMLib manual, Fillets: https://docs.nvidia.com/smlib/manual/smlib/fillets
+- [P52] Vendor API reference, the fillet feature's rolling-ball corner
+  setting (the setback corner alone for asymmetric rounds).
 - [P46] CadQuery, class reference (`Workplane.clean`, the `clean`
   parameter of `union` and `cut`, and `occ_impl.shapes.clean`):
   https://cadquery.readthedocs.io/en/latest/classreference.html
