@@ -56,6 +56,7 @@ mod meeting;
 mod merged;
 pub(crate) mod mixed_corner;
 mod mixed_tools;
+mod narrow;
 mod overflow;
 mod planar_tools;
 pub(crate) mod point_corner;
@@ -110,6 +111,7 @@ pub(crate) use meeting::{
 };
 pub(crate) use merged::merged;
 pub(crate) use mixed_tools::blend as mixed_asymmetric;
+pub(crate) use narrow::{Needs as NarrowNeeds, built as narrow_built, reach as narrow_reach};
 pub(crate) use overflow::{
     Size as OverflowSize, bevel_size as overflow_bevel_size, blended as overflow_blended,
     changes_others as overflow_changes_others, reach_found as overflow_reach,

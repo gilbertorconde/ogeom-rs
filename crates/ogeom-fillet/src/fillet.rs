@@ -443,11 +443,33 @@ pub fn fillet_edges(
 /// that is on builds a round reaching other geometry, the request is
 /// refused by name.
 ///
+/// A **narrow passage** is a concave zone tighter than the radius, which
+/// the ball cannot roll through touching its seats on both sides: two
+/// walls of the floor no farther apart than twice the radius, or a corner
+/// face whose curvature is tighter than the radius. Each round there keeps
+/// its constant section and runs on through the zone, and the rounds meet
+/// each other where they cross. Three strategies, cheapest first, say what
+/// the tight zone may be made of; each takes what the ones before it take:
+///
+/// - `narrow_blend_made`: constant-radius rounds only (the request's own
+///   rounds over a narrow floor, corner faces tangent to both walls);
+/// - `narrow_whole_face`: also one whole corner face no round made (a
+///   cylinder meeting its walls at kinks);
+/// - `narrow_partial_face`: also a zone covering part of a face. Nothing
+///   needs it alone yet: such a zone goes on to the engine, which refuses
+///   it by name.
+///
+/// Built for a planar floor's rim with planar walls square to it, joined
+/// at square corners (sharp or through a corner face) or by a half
+/// cylinder between facing walls, and open ends flush on end faces. A
+/// passage whose strategies are all off is refused by name.
+///
 /// A chamfer takes the same options
 /// ([`chamfer_edges_overflow`](crate::chamfer_edges_overflow)): blend into
 /// round and trim through apply to a flat bevel, and `hold_edge` and
 /// `hold_edge_at_end` are ignored, a bevel having no ball to rest on an
-/// edge.
+/// edge. The narrow-passage switches are ignored too: a bevel in a narrow
+/// passage goes to the engine as before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Overflow {
@@ -459,6 +481,12 @@ pub struct Overflow {
     pub hold_edge_at_end: bool,
     /// Keep the round's surface and trim or extend what it reaches.
     pub trim_through: bool,
+    /// Round a narrow passage made of constant-radius rounds only.
+    pub narrow_blend_made: bool,
+    /// Round a narrow passage spanning one whole face.
+    pub narrow_whole_face: bool,
+    /// Round a narrow passage covering part of a face.
+    pub narrow_partial_face: bool,
 }
 
 impl Default for Overflow {
@@ -468,6 +496,9 @@ impl Default for Overflow {
             hold_edge: true,
             hold_edge_at_end: true,
             trim_through: true,
+            narrow_blend_made: true,
+            narrow_whole_face: true,
+            narrow_partial_face: true,
         }
     }
 }
@@ -481,6 +512,9 @@ impl Overflow {
             hold_edge: false,
             hold_edge_at_end: false,
             trim_through: false,
+            narrow_blend_made: false,
+            narrow_whole_face: false,
+            narrow_partial_face: false,
         }
     }
 }
@@ -513,6 +547,31 @@ pub fn fillet_edges_overflow(
     }
     if !radius.is_finite() || radius <= tol.confusion() {
         ogeom_bail!(Construction, "a fillet of radius {radius} rounds nothing");
+    }
+    if model.kind_of(solid)? == ShapeType::Solid
+        && let Some(narrow) = crate::engine::narrow_reach(model, solid, edges, radius, tol)?
+    {
+        let blend_made = narrow.needs == crate::engine::NarrowNeeds::BlendMade;
+        let general = overflow.narrow_whole_face || overflow.narrow_partial_face;
+        if (blend_made && overflow.narrow_blend_made) || general {
+            if let Some(built) = crate::engine::narrow_built(model, solid, edges, &narrow, tol)? {
+                return Ok(built);
+            }
+        } else if blend_made {
+            ogeom_bail!(
+                Construction,
+                "the round passes a narrow passage, a concave zone tighter than \
+                 the radius, and every narrow-passage strategy is off; see \
+                 docs/CAPABILITIES.md, fillet.overflow"
+            );
+        } else {
+            ogeom_bail!(
+                Construction,
+                "the round passes a narrow passage spanning a face no \
+                 constant-radius round made, and whole face and partial face \
+                 are off; see docs/CAPABILITIES.md, fillet.overflow"
+            );
+        }
     }
     if overflow.blend_into_round {
         if let Some(built) = blended_into_round(model, solid, edges, radius, tol)? {

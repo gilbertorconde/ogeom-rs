@@ -28,7 +28,8 @@ use ogeom_topo::{Model, Shape, ShapeType};
 ///   construction, what the chamfer built before this option set.
 ///
 /// `hold_edge` and `hold_edge_at_end` do not apply to a bevel, which has
-/// no ball to rest on an edge: they are ignored.
+/// no ball to rest on an edge: they are ignored, as are the narrow-passage
+/// switches.
 ///
 /// With [`Overflow::default`] this is
 /// [`chamfer_edges_cornered`](crate::chamfer_edges_cornered). A behaviour
