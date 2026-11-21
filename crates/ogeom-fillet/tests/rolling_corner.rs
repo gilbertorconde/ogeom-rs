@@ -6,7 +6,9 @@
 use core::f64::consts::PI;
 
 use ogeom_core::Tolerances;
-use ogeom_fillet::{FilletCorner, fillet_edges, fillet_edges_corner};
+use ogeom_fillet::{
+    FilletCorner, Overflow, fillet_edges, fillet_edges_corner, fillet_edges_corner_overflow,
+};
 use ogeom_geom::{Curve3d as _, Surface as _, SurfaceGeometry};
 use ogeom_math::{Direction, Frame, Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType, ancestors_of, explore_unique};
@@ -211,6 +213,35 @@ fn the_stairs_roll_every_corner_on_spheres_and_tori() {
     let v = volume(&m, rolled);
     let exact = stairs_volume(1.0);
     assert!((exact - (4966.0 + 157.0 * PI / 3.0 + PI * PI)).abs() < 1e-9);
+    assert!(
+        (v - exact).abs() <= 1e-6 * exact,
+        "volume {v}, exact {exact}"
+    );
+}
+
+/// The stairs rolled with every overflow behaviour off: the rounds meet
+/// only each other and the faces at their ends, so the spheres and tori
+/// of the mixed corners and every band are the default's, at the exact
+/// volume.
+#[test]
+fn the_stairs_roll_alike_with_every_overflow_option_off() {
+    let mut m = Model::new();
+    let solid = stairs(&mut m);
+    let edges = edges_of(&m, &solid);
+    let off = fillet_edges_corner_overflow(
+        &mut m,
+        &solid,
+        &edges,
+        1.0,
+        FilletCorner::Rolling,
+        Overflow::none(),
+        T,
+    )
+    .unwrap();
+    assert!(ogeom_algo::check(&m, &off.shape, T).unwrap().is_valid());
+    assert_eq!(kinds(&m, &off.shape), [10, 24, 12, 4, 0]);
+    let exact = stairs_volume(1.0);
+    let v = volume(&m, &off.shape);
     assert!(
         (v - exact).abs() <= 1e-6 * exact,
         "volume {v}, exact {exact}"

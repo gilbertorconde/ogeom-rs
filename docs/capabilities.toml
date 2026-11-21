@@ -1853,11 +1853,30 @@ face also takes a cylindrical corner face meeting its walls at kinks. A \
 zone covering part of a face, facing walls no farther apart than the \
 radius, walls lower than the radius, walls not square, a curved floor, or \
 another corner surface go on to the engine, which refuses them by name. \
-A passage whose strategies are off is refused by name."""
+A passage whose strategies are off is refused by name. The other round \
+calls take the same set (fillet_edges_corner, fillet_edges_variable, \
+fillet_edge_distances and blend_edges are their defaults). \
+fillet_edges_corner_overflow: a setback corner is fillet_edges_overflow; \
+a rolling corner passes every round to fillet_edges_overflow with the set, \
+and its mixed corners between planes take trim through alone. \
+fillet_edges_variable_overflow: a law holding one radius all along takes \
+every behaviour as the constant round (its foot blends into the edge round \
+it reaches), trim through being the variable round's construction; a law \
+that varies takes trim through alone, its foot reaching a round refused as \
+before. fillet_edge_distances_overflow and blend_edges_overflow: two \
+equal distances of the elliptical profile, and blend_edges' rounds alone \
+of one radius, take blend into round; blend_edges' bevels take the \
+chamfer's set; everything else takes trim through alone. A behaviour not \
+built for a call changes nothing switched on and refuses nothing switched \
+off; trim through off refuses by name a result changing another face."""
 symbols = [
     "ogeom_fillet::Overflow",
     "ogeom_fillet::fillet_edges_overflow",
     "ogeom_fillet::fillet_edges",
+    "ogeom_fillet::fillet_edges_corner_overflow",
+    "ogeom_fillet::fillet_edges_variable_overflow",
+    "ogeom_fillet::fillet_edge_distances_overflow",
+    "ogeom_fillet::blend_edges_overflow",
 ]
 tests = [
     "crates/ogeom-fillet/tests/overflow.rs",
@@ -1872,6 +1891,13 @@ tests = [
     "crates/ogeom-fillet/tests/blend_into_round.rs::a_foot_round_into_a_concave_round_fills_as_the_closing",
     "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_of_a_foot_is_not_blended",
     "crates/ogeom-fillet/tests/overflow.rs::trim_through_off_refuses_a_round_reaching_another_face",
+    "crates/ogeom-fillet/tests/overflow.rs::a_rolling_corner_takes_the_overflow_options",
+    "crates/ogeom-fillet/tests/overflow.rs::a_level_law_and_equal_distances_blend_into_the_edge_round",
+    "crates/ogeom-fillet/tests/overflow.rs::a_level_law_and_equal_distances_fill_as_the_closing",
+    "crates/ogeom-fillet/tests/overflow.rs::variable_and_two_distance_feet_take_the_options_off_as_the_round",
+    "crates/ogeom-fillet/tests/overflow.rs::trim_through_off_refuses_variable_and_two_distance_rounds_reaching_a_face",
+    "crates/ogeom-fillet/tests/overflow.rs::local_rounds_build_alike_with_every_option_off",
+    "crates/ogeom-fillet/tests/rolling_corner.rs::the_stairs_roll_alike_with_every_overflow_option_off",
     "crates/ogeom-fillet/tests/hold_edge.rs",
     "crates/ogeom-fillet/tests/hold_edge.rs::hold_edge_keeps_a_pocket_rim_the_ball_would_roll_over",
     "crates/ogeom-fillet/tests/hold_edge_seats.rs",

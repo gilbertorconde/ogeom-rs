@@ -1,6 +1,6 @@
 //! Rounds and bevels in one request, closed as one corner where they meet.
 
-use crate::{Chamfer, ChamferCorner, RoundProfile};
+use crate::{Chamfer, ChamferCorner, Overflow, RoundProfile};
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_topo::{Model, Shape};
@@ -42,6 +42,10 @@ pub enum Blend {
 /// two features, as mainstream applications take them (ADR 0001, section
 /// 13, question 3).
 ///
+/// Where a blend reaches geometry other than its own two faces, the
+/// behaviours of [`Overflow`] are tried in its order, every one on:
+/// [`blend_edges_overflow`] chooses among them.
+///
 /// # Errors
 ///
 /// As the rounds' and the bevels' own calls, and
@@ -53,6 +57,46 @@ pub fn blend_edges(
     solid: &Shape,
     edges: &[(Shape, Blend)],
     corner: ChamferCorner,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    blend_edges_overflow(model, solid, edges, corner, Overflow::default(), tol)
+}
+
+/// [`blend_edges`], a blend reaching geometry other than its own two faces
+/// handled as `overflow` says.
+///
+/// With [`Overflow::default`] this is [`blend_edges`]. The behaviours that
+/// apply:
+///
+/// - `blend_into_round`, for a request of rounds alone of one radius
+///   (circular rounds, and two equal distances of the elliptical profile,
+///   which are the circular round): the boss's foot of
+///   [`fillet_edges_overflow`](crate::fillet_edges_overflow), bent into
+///   the round it reaches. For bevels alone, the foot bevel of
+///   [`chamfer_edges_overflow`](crate::chamfer_edges_overflow); in a
+///   request mixing bevels and rounds, the bevels take it as there.
+/// - `trim_through`: the construction [`blend_edges`] built before this
+///   option set. With it off, a result changing any face other than the
+///   edges' own and those at their ends is refused by name.
+///
+/// Hold edge and the narrow passages are not built for this call, and
+/// neither is blend into round for two different distances or a conic
+/// profile: switching them on changes nothing and switching them off
+/// refuses nothing. A request blend into round would take while it and
+/// trim through are both off is refused by name.
+///
+/// # Errors
+///
+/// As [`blend_edges`], and
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction), by
+/// name, where a blend reaches other geometry and no behaviour that is on
+/// builds it.
+pub fn blend_edges_overflow(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[(Shape, Blend)],
+    corner: ChamferCorner,
+    overflow: Overflow,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let mut rounds: Vec<(Shape, f64)> = Vec::new();
@@ -88,28 +132,68 @@ pub fn blend_edges(
             }
         }
     }
+    if bevels.is_empty()
+        && asymmetric.is_empty()
+        && let Some(&(_, radius)) = rounds.first()
+        && rounds.iter().all(|&(_, r)| r == radius)
+    {
+        let shapes: Vec<Shape> = rounds.iter().map(|(e, _)| e.clone()).collect();
+        if let Some(built) =
+            crate::fillet::blend_into_round_step(model, solid, &shapes, radius, overflow, tol)?
+        {
+            return Ok(built);
+        }
+    }
+    if rounds.is_empty() && asymmetric.is_empty() {
+        return crate::chamfer_edges_overflow(model, solid, &bevels, corner, overflow, tol);
+    }
+    let shapes: Vec<Shape> = edges.iter().map(|(e, _)| e.clone()).collect();
+    let built = blended_as_today(
+        model,
+        solid,
+        rounds,
+        bevels,
+        &asymmetric,
+        corner,
+        overflow,
+        tol,
+    );
+    crate::fillet::trimmed_through(model, solid, &shapes, built, overflow, tol)
+}
+
+/// [`blend_edges`]' construction of the parsed request, its bevels taking
+/// `overflow` as [`chamfer_edges_overflow`](crate::chamfer_edges_overflow)
+/// does.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the request's three kinds, the corner and the overflow"
+)]
+fn blended_as_today(
+    model: &mut Model,
+    solid: &Shape,
+    rounds: Vec<(Shape, f64)>,
+    bevels: Vec<(Shape, Chamfer)>,
+    asymmetric: &[crate::asym::Asymmetric],
+    corner: ChamferCorner,
+    overflow: Overflow,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     // Rounds alone, of one radius and of their own distances: the blend
     // engine first, as one request.
     if !asymmetric.is_empty()
         && bevels.is_empty()
         && let Some(request) =
-            crate::engine::Request::from_mixed_rounds(model, solid, &rounds, &asymmetric, tol)?
+            crate::engine::Request::from_mixed_rounds(model, solid, &rounds, asymmetric, tol)?
         && let Some(built) = crate::engine::run(model, solid, &request, tol)?
     {
         return Ok(built);
     }
     if !asymmetric.is_empty() {
         return crate::engine::mixed_asymmetric(
-            model,
-            solid,
-            &rounds,
-            &bevels,
-            &asymmetric,
-            corner,
-            tol,
+            model, solid, &rounds, &bevels, asymmetric, corner, tol,
         );
     }
-    blend_symmetric(model, solid, rounds, bevels, corner, tol)
+    blend_symmetric(model, solid, rounds, bevels, corner, overflow, tol)
 }
 
 /// [`blend_edges`] of the rounds and bevels of one radius each.
@@ -119,10 +203,11 @@ fn blend_symmetric(
     mut rounds: Vec<(Shape, f64)>,
     mut bevels: Vec<(Shape, Chamfer)>,
     corner: ChamferCorner,
+    overflow: Overflow,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     if rounds.is_empty() {
-        return crate::chamfer_edges_cornered(model, solid, &bevels, corner, tol);
+        return crate::chamfer_edges_overflow(model, solid, &bevels, corner, overflow, tol);
     }
     if bevels.is_empty() {
         return crate::fillet_edges_with(model, solid, &rounds, tol);
@@ -131,7 +216,7 @@ fn blend_symmetric(
     bevels.sort_by_key(|(e, _)| e.node());
     // The bevels, then the rounds on what they leave (ADR 0001, section 13,
     // question 3): two features, whatever the request's order.
-    let beveled = crate::chamfer_edges_cornered(model, solid, &bevels, corner, tol)?;
+    let beveled = crate::chamfer_edges_overflow(model, solid, &bevels, corner, overflow, tol)?;
     let mut traced: Vec<(Shape, f64)> = Vec::with_capacity(rounds.len());
     for (edge, r) in &rounds {
         let now = beveled.history.trace(edge);
