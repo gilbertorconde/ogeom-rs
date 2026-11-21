@@ -679,3 +679,133 @@ fn every_triangle_is_wound_with_its_face() {
         against.join("\n")
     );
 }
+
+/// The sides of `mesh` not used exactly once each way: where it is open,
+/// or where more than two triangles meet.
+fn not_manifold(mesh: &Triangulation) -> Vec<(Point, Point, usize, usize)> {
+    let mut uses: FastMap<(u32, u32), (usize, usize)> = FastMap::default();
+    for t in &mesh.triangles {
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            let e = uses.entry((a.min(b), a.max(b))).or_default();
+            if a < b {
+                e.0 += 1;
+            } else {
+                e.1 += 1;
+            }
+        }
+    }
+    uses.into_iter()
+        .filter(|(_, n)| *n != (1, 1))
+        .map(|((a, b), (f, r))| (mesh.positions[a as usize], mesh.positions[b as usize], f, r))
+        .collect()
+}
+
+/// Each face's mesh meets its neighbours' along their edges and nowhere
+/// else. No curved face draws a triangle across three points of one edge:
+/// its corners are the edge's alone, the face across can draw the same
+/// triangle, and welded, the chord under the two is four triangles' side.
+/// And the faces of a valid solid, welded, use every side once each way.
+/// freeform_panel's is not: its wall folds through itself, and its mesh
+/// cannot close where the face does not.
+#[test]
+#[ignore = "heavy: every conformance part at four chords"]
+fn every_solid_meshes_two_manifold() {
+    let mut names: Vec<String> = Vec::new();
+    for dir in ["", "generated/"] {
+        for e in std::fs::read_dir(corpus(dir)).unwrap() {
+            let name = e.unwrap().file_name().into_string().unwrap();
+            if name.ends_with(".step") {
+                names.push(format!("{dir}{name}"));
+            }
+        }
+    }
+    names.sort();
+    let mut bad = Vec::new();
+    let mut ears = Vec::new();
+    let mut solids = 0;
+    for name in &names {
+        let text = std::fs::read_to_string(corpus(name)).unwrap();
+        let import = ogeom::io::read_step(&text, T).unwrap();
+        let model = import.document.model();
+        for chord in [0.0125, 0.05, 0.1, 0.25, 0.5] {
+            let deflection = Deflection {
+                chord,
+                ..Deflection::default()
+            };
+            for body in &import.solids {
+                let (faces, _) =
+                    ogeom::mesh::face_meshes_for(model, body, deflection, None, T).unwrap();
+                let mut joined = Triangulation::new();
+                for (face, mesh) in &faces {
+                    let mesh = mesh.as_ref().unwrap();
+                    joined.append(mesh);
+                    for (i, t) in edge_ears(model, face, mesh) {
+                        ears.push(format!("{name} at {chord}: triangle {i} {t:?}"));
+                    }
+                }
+                if !ogeom::algo::check(model, body, T).unwrap().is_valid() {
+                    continue;
+                }
+                solids += 1;
+                for (a, b, f, r) in not_manifold(&joined.welded(T)) {
+                    bad.push(format!("{name} at {chord}: {a:?}-{b:?} used {f}+{r}"));
+                }
+            }
+        }
+    }
+    assert!(solids >= 100, "only {solids} solids welded");
+    assert!(
+        ears.is_empty(),
+        "{} triangles across one edge:\n{}",
+        ears.len(),
+        ears.join("\n")
+    );
+    assert!(bad.is_empty(), "{} sides:\n{}", bad.len(), bad.join("\n"));
+}
+
+/// The triangles of a curved face's mesh drawn across three points of one
+/// edge: two sides on the mesh's border, meeting at a point that is no
+/// vertex of the face.
+fn edge_ears(model: &Model, face: &Shape, mesh: &Triangulation) -> Vec<(usize, [u32; 3])> {
+    use ogeom::geom::Surface as _;
+    use ogeom::topo::ShapeType;
+    let data = model.node(face).unwrap().data().as_face().unwrap();
+    let surface = model.geometry().surface(data.surface).unwrap();
+    if surface.kind() == ogeom::geom::SurfaceKind::Plane {
+        return Vec::new();
+    }
+    let corners: Vec<(Point, f64)> =
+        ogeom::topo::explore(model, face, ogeom::topo::Filter::OfType(ShapeType::Vertex))
+            .unwrap()
+            .iter()
+            .map(|v| {
+                let d = model.node(v).unwrap().data().as_vertex().unwrap();
+                let at = v.transform(model.datums()).unwrap().apply(d.point);
+                (at, d.tolerance.get().max(T.confusion()))
+            })
+            .collect();
+    let mut uses: FastMap<(u32, u32), usize> = FastMap::default();
+    for t in &mesh.triangles {
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+        }
+    }
+    let border = |a: u32, b: u32| uses.get(&(a.min(b), a.max(b))) == Some(&1);
+    mesh.triangles
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| {
+            (0..3).any(|k| {
+                let (a, m, b) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+                let at = mesh.positions[m as usize];
+                border(a, m)
+                    && border(m, b)
+                    && !border(b, a)
+                    && !corners.iter().any(|&(p, within)| p.distance(at) <= within)
+            })
+        })
+        .map(|(i, t)| (i, *t))
+        .collect()
+}
