@@ -85,9 +85,7 @@ bump may break the API and a patch bump may not.
     the same sense now meets it by intersection.
   - `largest_fillet_distances` on a curved seat now also stops where the
     faces' tangents at the contacts stop meeting in front of the crease.
-    On a concave drum ruling that reading is where the build stops. On a
-    convex ruling whose leg nears a quarter turn the band's boolean
-    refuses well before it, and the answer is where the boolean stops.
+    On a concave drum ruling that reading is where the build stops.
   - Still refused by name: a curved edge at a vertex left sharp, a
     convex-and-concave pair beside a bevel, and a varying concave end
     meeting a face that is not a plane.

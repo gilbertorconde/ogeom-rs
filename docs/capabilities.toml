@@ -1688,10 +1688,12 @@ or whose named face is not beside every edge; asymmetric rounds meeting \
 at a vertex other than as one \
 tangent chain, as a corner of three planes all blended, or as two of \
 three; a contact set back past its face's side or a rim's contact \
-reaching its axis. Where a convex ruling's leg turns towards a quarter \
-round its drum the band's boolean refuses well short of the shoulder's \
-bound, so the largest pair there is where the boolean stops, not the \
-shoulder."""
+reaching its axis; a ruling's section whose conic crosses a drum it is \
+tangent to between its contacts (a convex ruling whose drum leg turns \
+far past the flat's: on the half drum with legs 0.1 and 1, from scale \
+1.69143), read exactly; largest_fillet_distances stops there too, and \
+the build reaches it, a cut's prism running on past an end whose plane \
+bounds the whole solid."""
 symbols = [
     "ogeom_fillet::fillet_edge_distances",
     "ogeom_fillet::fillet_edge_distances_variable",
@@ -1727,6 +1729,8 @@ tests = [
     "crates/ogeom-fillet/tests/asymmetric.rs::a_bevel_and_an_asymmetric_round_beside_an_edge_left_sharp_meet_by_intersection",
     "crates/ogeom-fillet/tests/asymmetric.rs::a_bevel_and_an_asymmetric_fill_beside_an_edge_left_sharp_meet_by_intersection",
     "crates/ogeom-fillet/tests/asymmetric.rs::the_largest_pair_on_a_concave_ruling_stops_where_the_shoulder_reaches_a_contact",
+    "crates/ogeom-fillet/tests/asymmetric.rs::a_convex_ruling_builds_until_its_section_reaches_the_drum",
+    "crates/ogeom-fillet/tests/asymmetric.rs::the_largest_pair_on_a_convex_ruling_stops_where_its_section_reaches_the_drum",
 ]
 
 [[capability]]
