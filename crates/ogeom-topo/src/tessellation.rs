@@ -58,6 +58,35 @@ pub struct Triangulation {
     pub corner_normals: Vec<[Vector; 3]>,
     /// Whether every face met its requested deflection.
     pub deflection_met: bool,
+    /// What the mesher found about its faces that it could not mesh as
+    /// asked, each by name; empty for a mesh that did not come from one.
+    pub findings: Vec<MeshFinding>,
+}
+
+/// Something a mesher found about a face that kept it from meshing the face
+/// as asked, named, with where.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum MeshFinding {
+    /// The face's surface folds at a point inside the face: its two tangents
+    /// run parallel there, neither of them vanishing, and its normal turns
+    /// over round the point. No flat triangle across the point faces the
+    /// way the surface does on every side of it.
+    SurfaceFolds {
+        /// The surface parameters of the point.
+        at: (f64, f64),
+        /// The point, placed where the face is.
+        point: Point,
+    },
+    /// The chord repair stopped at its cap on rounds while it was still
+    /// refining: somewhere the mesh may stand off the face by more than the
+    /// chord.
+    RepairCapped {
+        /// The surface parameters of a point it would have refined at next.
+        at: (f64, f64),
+        /// That point on the surface, placed where the face is.
+        point: Point,
+    },
 }
 
 impl Triangulation {
@@ -385,6 +414,7 @@ impl Triangulation {
 
         let mut out = Self::new();
         out.deflection_met = self.deflection_met;
+        out.findings.clone_from(&self.findings);
         // Every vertex is kept, merged ones included, and the triangles are
         // remapped onto the representatives.
         out.positions = self.positions.clone();
@@ -487,6 +517,7 @@ impl Triangulation {
 
         let mut out = Self::new();
         out.deflection_met = self.deflection_met;
+        out.findings.clone_from(&self.findings);
         out.positions = self.positions.clone();
         out.normals = self.normals.clone();
         #[allow(deprecated, reason = "kept filled for the release it is deprecated in")]
@@ -864,6 +895,7 @@ impl Triangulation {
         self.corner_parameters = joined_p;
         self.corner_normals = joined_n;
         self.deflection_met &= other.deflection_met;
+        self.findings.extend_from_slice(&other.findings);
     }
 
     /// Merge vertices that coincide within `tol`, rewiring the triangles.
@@ -897,6 +929,7 @@ impl Triangulation {
         let mut remap = vec![0_u32; self.positions.len()];
         let mut out = Self::new();
         out.deflection_met = self.deflection_met;
+        out.findings.clone_from(&self.findings);
 
         for (index, position) in self.positions.iter().enumerate() {
             let (kx, ky, kz) = key(*position);
