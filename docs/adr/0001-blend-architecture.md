@@ -2961,7 +2961,8 @@ it is on, so the default request builds what it built before.
   - Any other round reaching a round (two rounds at once, one not tangent
     to the floor, a concave one, a wall not square to the floor, an open
     arc of a foot) is not blended in this step and goes on to the next
-    behaviour.
+    behaviour. The part "Blend into round, more feet" below builds the
+    first three of those.
 - **Hold edge** and **hold edge at the end** were not built in this
   step; the amendment's "Hold edge" part below builds them.
 - **Trim through** is the engine's construction unchanged. With it off,
@@ -3139,6 +3140,77 @@ leg on the top reaches 2 past the tangent line.
   and of the cone's whole fill. Both off: a refusal naming blend into
   round. A notch with trim through off: a refusal by name, and with it on
   the notch as before.
+
+**Blend into round, more feet.** The public documentation surveyed above
+describes the smooth overflow by its result alone: the round runs on over
+the tangent face it reaches with no step. It says nothing of a round that
+reaches several such faces, of a wall leaning from square, or of a concave
+face. The papers define a constant-radius round by the rolling ball, and
+its fill as the closing of the solid by that ball [3]; that is the rule
+settled here, and it needs no choice beyond the seat.
+
+- **Several rounds.** Where the contact circle crosses more than one
+  tangent line, the ball rests on each round over its own arc and on the
+  floor between, so the round is a torus piece between each two fitted
+  pieces, meeting each G1 at its seat change as in the first case. It is
+  built only where the arcs stand apart, so that no ball rests on two
+  rounds, or on the corner where they meet, at once: at a corner the top's
+  corner stands farther from the axis than the contact circle. Arcs that
+  meet or overlap are not blended.
+- **A leaning wall.** The wall is a cone about an axis square to the floor,
+  narrowing away from it. The ball touches the cone and the floor or the
+  round: its centre runs on the cone's offset (a cone about the same axis)
+  where it meets the floor's. Over the floor that is a circle, so the
+  round is a torus of that circle; past the tangent line the centre's
+  height and radius solve together. The seat change keeps its section in
+  the plane through the axis, since the round leaves the floor
+  tangentially and the cone's offset depends on height alone, so the
+  pieces meet G1 there. A cone widening away from the floor (an undercut),
+  or leaning more than 45 degrees, is not blended.
+- **A concave round.** The round curves up from the floor: its axis
+  stands above the floor at its radius. The ball climbs it, its centre on
+  the cylinder of the round's radius less the ball's about that axis. It
+  is built only where the ball's radius is less than the round's and the
+  centre stays inside that cylinder short of its edge, so every ball lies
+  inside the round's cylinder, clear of the faces beyond it.
+- **Proof.** The fill's room is the union of boxes between each two of
+  some hundred stations per arc, each box holding both stations' sections,
+  their feet and the floor under them, padded by the chord's sag. Nothing
+  of the solid but the wall, the floor and the rounds crossed may stand in
+  it, and no edge of those faces but the rim and the tangent lines. Every
+  other face whose box meets a ball's is measured from each centre: it
+  must stand farther than the radius plus the stations' spacing. The fuse
+  must add the tool's whole volume and the result must check valid, as
+  before.
+- **Not blended** (these go on to trim through): an open arc of a foot
+  (the rim must turn once round the axis), a round not tangent to the
+  floor, a curved floor, and a bevel reaching anything but one convex
+  round from a cylindrical wall.
+
+**Oracle** (`tests/blend_into_round.rs`). The reference is the closing,
+sampled without the construction, as for the first case, generalised: the
+free centres are bounded by the wall's offset (a line in each plane
+through the axis) and the floor's offset (the plane at the radius, each
+round's offset cylinder past its tangent line). At each angle about the
+axis the columns are integrated from where the fill starts on the wall to
+where it ends on the floor, both found by bisection, split at the wall's
+foot circle on a cone, and the angles are split at every seat change.
+Gauss-Legendre throughout; the bound is the change from 32 to 64 points
+per range. On a conical boss clear of any round it reproduces Pappus
+(the section is the quadrilateral of the foot, the touches and the centre,
+less the ball's sector) to 1e-6.
+
+| case | fill built | reference | error | bound | worst G1 |
+|---|---|---|---|---|---|
+| boss r 6 at (12, 12) by a corner of two rounds r 5 | 75.108708877 | 75.108707894 | 9.8e-7 | 1.8e-5 | 9.7e-7 rad |
+| cone r 6 to 4 over 15 at (20, 12), edge round r 5 | 55.909500322 | 55.909500788 | 4.7e-7 | 3.0e-6 | 5.6e-7 rad |
+| boss r 6 at (20, 21), concave round r 6 meeting the floor 7 off | 92.217220722 | 92.217224303 | 3.6e-6 | 7.3e-6 | 2.1e-6 rad |
+
+Each result is valid and closed, with one fitted piece per round reached.
+With blend into round off each foot gets trim through's refusal, as
+before, and with every behaviour off a refusal naming blend into round.
+An open arc of a foot reaching the edge round gets what trim through
+gives.
 
 ### Amendment: largest-size readings confirmed by the build (#1173)
 
