@@ -13,7 +13,7 @@ publish = false
 
 # Only the tests reach the kernel.
 [dev-dependencies]
-ogeom = { path = "../../crates/ogeom", version = "0.20.0" }
+ogeom = { path = "../../crates/ogeom", version = "0.21.0" }
 
 # The tests run natively under the std harness and on wasm32 under
 # `wasm-bindgen-test`, so a native build never compiles the wasm tooling.

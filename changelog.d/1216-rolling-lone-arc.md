@@ -1,3 +1,0 @@
-- **Fixed: `Rolling` rounds a half cylinder on a plate in one request** (#1216).
-  - At a mixed vertex on a curved face, the lone round may be an arc: a rim between its plane and a coaxial cylinder or cone, whose band is a torus. Its band goes first and the foot rolls round it through the pipes.
-  - The half cylinder's end arcs and foot in one request give the solid of the two calls within 1e-9 in volume, in either order, with `check` clean. It was refused because the lone edge was curved.
