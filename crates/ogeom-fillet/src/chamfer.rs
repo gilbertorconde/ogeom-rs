@@ -2055,44 +2055,40 @@ fn leg_on(legs: &Legs, face: &Shape) -> f64 {
     }
 }
 
-/// How many confusion distances wide [`largest_chamfer_distance_all`]
+/// How many confusion distances wide [`seat_chamfer_distance_all`]
 /// keeps the face between two bevels: a face of one such width between
 /// them is a sliver the engine does not build.
 const SLIVER: f64 = 4.0;
 
-/// The largest measure up to `up_to` at which the chamfers of `specs` all
-/// stay seated on their faces, as [`largest_chamfer_distance`] reads each,
-/// and no bevel's contact comes within another's leg of its edge across a
-/// face they share, the overlap [`chamfer_edges_with`] refuses where the
-/// face's setbacks cross. The measure is each spec's own, as
+/// The largest measure up to `up_to` at which [`chamfer_edges_with`]
+/// builds every chamfer of `specs` at once: every measure probed below it
+/// builds and a measure [`LIMIT_TOLERANCE`](crate::LIMIT_TOLERANCE) above
+/// it is refused, whatever refuses it. The measure is each spec's own, as
 /// [`largest_chamfer_distance`] reads it (the distance, the common scale
 /// of two distances, the distance along the named face at an angle), and
 /// one measure is asked of every spec; the measures `specs` name are not
-/// read. Edges meeting at a vertex are corner mates, whose bevels meet
-/// there by design, and are not held apart, under
-/// [`ChamferCorner::Facet`](crate::ChamferCorner::Facet) and
-/// [`ChamferCorner::Point`](crate::ChamferCorner::Point) alike; vertices
-/// and faces are told apart by placement as well as node. None where no
-/// measure leaving every leg longer than the confusion distance fits.
+/// read. None where no measure above the confusion distance builds.
 ///
-/// Read from the seats, without building, at the stations
-/// [`largest_fillet_radius`](crate::largest_fillet_radius) reads. A
-/// contact's distance to another edge changes no faster than the contact
-/// walks, and the edge's leg grows linearly, so the measure where the two
-/// first meet is approached from below in steps that cannot pass it, and
-/// the answer keeps them a few confusion distances apart. The
-/// promise is the single edge's, setback and overlap only: at the answer
-/// and below, the request is not refused for either. Past it, two convex
-/// bevels across a narrow face are not refused but meet along the ridge
-/// their planes share, the face between them gone, as
-/// [`chamfer_edges_with`] builds; the answer is the largest measure that
-/// keeps the face.
+/// The seat is read first, without building: each bevel seated on its
+/// faces as [`largest_chamfer_distance`] reads it, and no bevel's contact
+/// within another's leg of its edge across a face they share, the overlap
+/// [`chamfer_edges_with`] refuses where the face's setbacks cross. Edges
+/// meeting at a vertex are corner mates, whose bevels meet there by
+/// design, and are not held apart. That reading only starts the search:
+/// the answer is [`blend_limit`](crate::blend_limit)'s on
+/// [`BlendSizing::Chamfers`](crate::BlendSizing::Chamfers) under
+/// [`ChamferCorner::Facet`](crate::ChamferCorner::Facet), confirmed by
+/// building the request on a copy of the model at measures bracketing it.
+/// Past the seat two convex bevels across a narrow face meet along the
+/// ridge their planes share, and a bevel rolls over its face's far side as
+/// a notch; both are part of the answer where they build.
 ///
 /// # Errors
 ///
-/// As [`largest_chamfer_distance`] for each spec, and
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
-/// `specs` is empty.
+/// `specs` is empty or `up_to` or a distance is not a usable length; as
+/// [`chamfer_edges_with`] where the seat or a spelling is refused and no
+/// measure builds.
 pub fn largest_chamfer_distance_all(
     model: &Model,
     solid: &Shape,
@@ -2100,18 +2096,117 @@ pub fn largest_chamfer_distance_all(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
-    if specs.is_empty() {
-        ogeom_bail!(
-            Construction,
-            "a request of no edges has no largest distance"
-        );
-    }
+    largest_chamfer_distance_all_overflow(
+        model,
+        solid,
+        specs,
+        up_to,
+        crate::ChamferCorner::Facet,
+        crate::Overflow::default(),
+        tol,
+    )
+}
+
+/// [`largest_chamfer_distance_all`] for the request
+/// [`chamfer_edges_overflow`](crate::chamfer_edges_overflow) builds: every
+/// chamfer of `specs` at once, closed as `corner` says, a bevel reaching
+/// other geometry handled as `overflow` says. Each probe builds under
+/// those options, so every measure probed below the answer builds with
+/// them and one [`LIMIT_TOLERANCE`](crate::LIMIT_TOLERANCE) above it is
+/// refused. With [`ChamferCorner::Facet`](crate::ChamferCorner::Facet)
+/// and [`Overflow::default`](crate::Overflow::default) this is
+/// [`largest_chamfer_distance_all`].
+///
+/// # Errors
+///
+/// As [`largest_chamfer_distance_all`].
+pub fn largest_chamfer_distance_all_overflow(
+    model: &Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    up_to: f64,
+    corner: crate::ChamferCorner,
+    overflow: crate::Overflow,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let sizing = crate::BlendSizing::Chamfers {
+        specs,
+        corner,
+        overflow,
+    };
+    Ok(crate::blend_limit(model, solid, &sizing, up_to, tol)?.size)
+}
+
+/// [`largest_chamfer_distance`] for the request
+/// [`chamfer_edges_overflow`](crate::chamfer_edges_overflow) builds on
+/// `edge` alone, closed as `corner` says, a bevel reaching other geometry
+/// handled as `overflow` says. Each probe builds under those options, so
+/// every measure probed below the answer builds with them and one
+/// [`LIMIT_TOLERANCE`](crate::LIMIT_TOLERANCE) above it is refused. With
+/// [`Overflow::default`](crate::Overflow::default) this is
+/// [`largest_chamfer_distance`].
+///
+/// # Errors
+///
+/// As [`largest_chamfer_distance`].
+#[allow(
+    clippy::too_many_arguments,
+    reason = "largest_chamfer_distance's own, with chamfer_edges_overflow's options"
+)]
+pub fn largest_chamfer_distance_overflow(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    spec: &Chamfer,
+    up_to: f64,
+    corner: crate::ChamferCorner,
+    overflow: crate::Overflow,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    largest_chamfer_distance_all_overflow(
+        model,
+        solid,
+        &[(edge.clone(), spec.clone())],
+        up_to,
+        corner,
+        overflow,
+        tol,
+    )
+}
+
+/// The seat reading [`largest_chamfer_distance_all`] starts from: the
+/// largest measure up to `up_to` at which every bevel of `specs` stays
+/// seated on its faces, as [`seat_chamfer_distance`] reads each, and no
+/// bevel's contact comes within another's leg of its edge across a face
+/// they share. Vertices and faces are told apart by placement as well as
+/// node. None where no measure leaving every leg longer than the
+/// confusion distance fits.
+///
+/// Read at the stations [`largest_fillet_radius`](crate::largest_fillet_radius)
+/// reads. A contact's distance to another edge changes no faster than the
+/// contact walks, and the edge's leg grows linearly, so the measure where
+/// the two first meet is approached from below in steps that cannot pass
+/// it, and the answer keeps them a few confusion distances apart.
+///
+/// # Errors
+///
+/// As [`seat_chamfer_distance`] for each spec.
+pub(crate) fn seat_chamfer_distance_all(
+    model: &Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    up_to: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
     let mut largest = up_to;
     for (edge, spec) in specs {
-        match largest_chamfer_distance(model, solid, edge, spec, up_to, tol)? {
+        match seat_chamfer_distance(model, solid, edge, spec, up_to, tol)? {
             Some(measure) => largest = largest.min(measure),
             None => return Ok(None),
         }
+    }
+    if specs.len() < 2 {
+        return Ok(Some(largest));
     }
     let mut seated = Vec::with_capacity(specs.len());
     for (edge, spec) in specs {

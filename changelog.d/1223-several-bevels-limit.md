@@ -1,0 +1,4 @@
+- **Changed: `largest_chamfer_distance_all` is confirmed by building the request** (#1223).
+  - `BlendSizing::Chamfers { specs, corner }` reads the largest measure for several bevels at once. The seat reading gives the start, and `chamfer_edges_cornered` on every bevel confirms it: the size builds, and one `LIMIT_TOLERANCE` above it is refused.
+  - `largest_chamfer_distance_all` returns that size under `ChamferCorner::Facet`. Before, it confirmed each edge alone and read the overlap from the seats.
+  - The answer now includes bevels that meet along a ridge or notch over a face's far side. The four top edges of a 20 x 20 x 10 box read 19.9947, up from 9.9615. Two bevels across a 2 mm plate's front read 20.9982, up from 1.0.

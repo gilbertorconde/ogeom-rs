@@ -1,13 +1,17 @@
-//! The largest measure several chamfers take at once, read from the seats
-//! without building: every spelling, against closed forms, builds at the
-//! answer under both corners and is refused just past it where the
-//! refusal is the overlap or the setback.
+//! The largest measure several chamfers take at once: every spelling,
+//! against closed forms where the refusal just past them is the overlap or
+//! the setback, builds at the answer under both corners and is refused just
+//! past it. Where the request builds past its seat, the seat is still the
+//! closed form and the answer is past it.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use std::f64::consts::{FRAC_PI_3, FRAC_PI_4, FRAC_PI_6};
 
 use ogeom_core::Tolerances;
-use ogeom_fillet::{Chamfer, ChamferCorner, chamfer_edges_cornered, largest_chamfer_distance_all};
+use ogeom_fillet::{
+    BlendSizing, Chamfer, ChamferCorner, LIMIT_TOLERANCE, Overflow, blend_limit,
+    chamfer_edges_cornered, largest_chamfer_distance_all,
+};
 use ogeom_geom::Curve3d as _;
 use ogeom_math::{Direction, Frame, Point};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
@@ -157,11 +161,12 @@ fn bar(m: &mut Model) -> (Shape, [Shape; 2], Shape) {
 /// The bevels of a narrow face's two edges meet across it at half its
 /// width over their legs on it, every spelling: 1 symmetric, a scale of
 /// 1/2 for 2 along the top and 1 down the side, and 1 at an angle from
-/// the top. At the answer the top survives as a sliver (8 faces); just
-/// past it the two convex bevels meet along their ridge and the top is
-/// gone (7 faces), which is built, not refused.
+/// the top. That is the seat: there the top survives as a sliver (8
+/// faces), and just past it the two convex bevels meet along their ridge
+/// and the top is gone (7 faces), which is built, not refused. So the
+/// answer stands past the seat, where the build itself is refused.
 #[test]
-fn a_narrow_face_s_two_edges_chamfer_at_most_half_its_width() {
+fn a_narrow_face_s_two_edges_chamfer_past_half_its_width() {
     let mut m = Model::new();
     let (bar, edges, top) = bar(&mut m);
     let spellings: [(Chamfer, f64); 3] = [
@@ -185,17 +190,61 @@ fn a_narrow_face_s_two_edges_chamfer_at_most_half_its_width() {
     ];
     for (spec, oracle) in spellings {
         let specs: Vec<_> = edges.iter().map(|e| (e.clone(), spec.clone())).collect();
-        let got = reads_and_builds(&m, &bar, &specs, oracle, 20.0, Some(8));
+        let sizing = BlendSizing::Chamfers {
+            specs: &specs,
+            corner: ChamferCorner::Facet,
+            overflow: Overflow::default(),
+        };
+        let found = blend_limit(&m, &bar, &sizing, 100.0, T).unwrap();
+        let seat = found.seat.unwrap();
+        assert!(
+            (oracle - 1e-6 * 20.0..=oracle).contains(&seat),
+            "{spec:?}: seat {found:?} against {oracle}"
+        );
         for corner in CORNERS {
-            let mut past = m.clone();
-            let built =
-                chamfer_edges_cornered(&mut past, &bar, &at_measure(&specs, got * 1.01), corner, T)
-                    .unwrap();
-            let n = explore_unique(&past, &built.shape, ShapeType::Face)
-                .unwrap()
-                .len();
-            assert_eq!(n, 7, "{spec:?} {corner:?} past {got}");
+            for (measure, faces) in [(seat, 8), (seat * 1.01, 7)] {
+                let mut built_in = m.clone();
+                let built = chamfer_edges_cornered(
+                    &mut built_in,
+                    &bar,
+                    &at_measure(&specs, measure),
+                    corner,
+                    T,
+                )
+                .unwrap();
+                let n = explore_unique(&built_in, &built.shape, ShapeType::Face)
+                    .unwrap()
+                    .len();
+                assert_eq!(n, faces, "{spec:?} {corner:?} at {measure}");
+            }
         }
+        let got = largest_chamfer_distance_all(&m, &bar, &specs, 100.0, T)
+            .unwrap()
+            .unwrap();
+        assert_eq!(Some(got), found.size);
+        assert!(got > seat * 1.01, "{spec:?}: {found:?}");
+        let mut at = m.clone();
+        let built = chamfer_edges_cornered(
+            &mut at,
+            &bar,
+            &at_measure(&specs, got),
+            ChamferCorner::Facet,
+            T,
+        )
+        .unwrap();
+        assert!(ogeom_algo::check(&at, &built.shape, T).unwrap().is_valid());
+        let mut past = m.clone();
+        assert!(
+            chamfer_edges_cornered(
+                &mut past,
+                &bar,
+                &at_measure(&specs, got * (1.0 + LIMIT_TOLERANCE)),
+                ChamferCorner::Facet,
+                T,
+            )
+            .is_err(),
+            "{spec:?}: builds past {found:?}"
+        );
     }
 }
 
