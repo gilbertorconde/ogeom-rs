@@ -1,6 +1,0 @@
-- **Fixed: the pipe where the ball changes walls now builds on convex chains, at a vertex's own section, and on a curved cap** (#1145).
-  - A convex chain is built as the pipe inside the material: a half frustum's top loop, once its uprights are rounded, is within 4.6e-6 of a free-ball reference (the opening of the rounded frustum).
-  - A pipe may end where its crossing stands in the vertex's own section. A half cylinder lying on a plate, with its end arcs rounded, has its foot within 3.9e-7 of the reference.
-  - A pipe may ride a curved cap. A rib fused under a drum's top, with its top edges rounded, has its root on the drum within 4e-7 of a closing reference at radii 0.5 and 0.3. `Rolling` builds it in one request, the same solid as the two calls.
-  - In such a chain, a plane meeting a drum along a line is rounded by its exact prism. The march used before was 8e-5 short at 0.3, with a 3.5e-3 rad crease on the drum. A round between a plate and a drum's side no longer fails on the drum's seam.
-  - Each case builds the same solid in either edge order, `check` is clean, and every join is G1. A chain that no pipe closes is still refused by name.

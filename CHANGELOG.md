@@ -11,6 +11,251 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-21
+
+A minor release that breaks the API: fillets and chamfers handle overflow,
+size readings answer what builds, rolling corners reach curved faces, and the
+mesher gains per-corner parameters, self-intersection repair and remeshing.
+
+- **Breaking: `write_3mf` returns `OgeomResult<Vec<u8>>`.** Colours that are
+  not one per triangle, or a component that is not a number, are an error.
+  Add `?` at the call. `threemf::Object` gains `colour`, `colours` and
+  `Object::new(&mesh)`; build it as `Object { colour: Some(c),
+  ..Object::new(&mesh) }`.
+- **Breaking: `Triangulation` gains `corner_parameters` and
+  `corner_normals`.** A struct literal needs `..Triangulation::default()`.
+  `Triangulation::parameters` is deprecated and still filled; read a
+  triangle's chart coordinates with `triangle_parameters(i)` and its normals
+  with `triangle_normals(i)`. An apex or a pole is one vertex per face, with
+  no triangle of no area.
+- **Changed defaults.** A round that would roll over a sharp edge of a
+  neighbouring face now keeps the edge (hold edge) where it used to cut a
+  notch; `fillet_edges_overflow` with hold edge off gives the old result.
+- **Overflow options.** `fillet_edges_overflow` and `chamfer_edges_overflow`
+  take an `Overflow` set: blend into an existing round, hold edge, trim
+  through, and narrow passages, all on by default; an option that is off
+  falls to the next, or the request is refused by name.
+- **Limits that match what builds.** The largest-size readings are confirmed
+  by building (`blend_limit`), and cover several chamfered edges together
+  (`largest_chamfer_distance_all`) and variable-radius laws
+  (`largest_law_radius`, `largest_law_scale`, `largest_law_distances`).
+- **More rounds build.** Rolling corners on arcs and curved faces, fitted pipe
+  corners on cones and curved caps, concave rounds built from the void's
+  side, and the rest of the asymmetric rounds. Rounds that used to return a
+  wrong solid (a drum ruling past where it crosses the drum, a cone's corner
+  rounded in two calls) are refused by name.
+- **Mesh tools.** `self_intersections` and `resolve_self_intersections` find
+  and repair a mesh that crosses itself; `Editable::remesh` and
+  `Editable::subdivide` even and refine a mesh.
+- **Fixes.** The centre and inertia of a solid with a meshed face (a trimmed
+  bore, for one); slivers near a pole wound against the surface; an edge two
+  curved faces both closed off with a triangle.
+
+- **Fixed: two curved faces could mesh the same triangle across the edge
+  they share** (#1202).
+  - Where an edge's polyline bulges out of a curved face's straight chart
+    chords, the face could close off a point inside the edge with its two
+    neighbours along it. That triangle's corners are the edge's alone. The
+    face across, its border bulging the same way, could draw the very same
+    triangle, and welded, the chord under the two was four triangles' side.
+    A curved face now turns that chord to the triangle across it, so the
+    point reaches into the face. A plane keeps such a triangle, which lies
+    in it.
+  - Two quarter cylinders mitred on a quarter ellipse (a block's two
+    rounded edges meeting in a corner) drew such a triangle at chord 0.1;
+    now neither face does at any chord from 0.0125 to 0.5, and the two
+    weld with no side of more than two triangles. The step-conformance
+    parts mesh exactly as before.
+
+- **Fixed: slivers near a sphere's pole wound against the surface** (#1201).
+  - A pole or an apex is one chart point at whatever `u` its ring gave it.
+    The mesher's repair pass measured a triangle reaching it along a spiral
+    from that `u`, and put the triangle's centre on another meridian. The
+    triangles drawn round those centres folded over in space. The pass now
+    measures and places along the column the triangle meets the pole by.
+  - On `dome` and `dome_nurbs` at chord 0.01/3, 4 and 2 triangles faced
+    inwards; now none do. Faces that reach a pole or an apex mesh in 1 to 9%
+    fewer triangles, still within their chord. A face with no pole or apex
+    meshes as it did.
+  - Over the step-conformance parts at chords 0.01/3, 0.1 and 1.0, every
+    triangle of a face that meets its chord is now wound with the face.
+
+- **Added: self-intersections of a mesh, found and resolved** (#1187).
+  - `mesh::self_intersections` lists every pair of triangles that meet
+    anywhere but at the corners they share, decided exactly by the mesh
+    boolean's predicates, lower number first, sorted. Any triangulation is
+    taken, open or not; a hierarchy of boxes keeps a large scan fast.
+  - `mesh::resolve_self_intersections` cuts a closed, 2-manifold mesh
+    along every crossing and keeps the boundary of the points it winds
+    about at least once, by exact winding numbers: overlapping shells
+    merge, a nested shell is dropped, an inside-out one is kept as a
+    cavity, coplanar faces facing the same way are kept once. `Resolved`
+    carries the mesh, the count of crossing pairs, a `cut` flag per
+    triangle and the rounding bound, as `MeshBoolean` does. A mesh that
+    does not cross itself comes back with the same triangles.
+  - Where rounding the new vertices tilts a sliver past its neighbour,
+    the result is resolved again, at most three more times; a flat
+    triangle rounding leaves is removed by flipping it into its
+    neighbour, which moves no vertex.
+
+- **Added: remeshing and subdivision of an `Editable`** (#1186).
+  - `Editable::remesh` takes a `Remesh`: a target edge length, passes,
+    an optional crease angle, an optional region and an optional face
+    limit. Each pass splits edges longer than 4/3 of the target (longest
+    first), collapses those shorter than 4/5 where the mesh stays a
+    2-manifold and no face turns over, flips toward valence 6 (4 on a
+    rim), and relaxes each vertex across its tangent plane before
+    projecting it back onto the input. Crease and rim vertices slide
+    along their edges; corners stay. Faces with a corner outside the
+    region stay as they were. `RemeshReport` counts the splits, collapses
+    and flips and gives the largest and RMS distance from the new surface
+    to the old.
+  - `Editable::subdivide` cuts every face into four, `levels` times:
+    `Subdivision::Flat` at edge midpoints, `Subdivision::Smooth` by Loop's
+    scheme with creases and rims kept sharp. It returns a `SubdivideReport`.
+  - Both carry source vertices as `simplify` does, and refuse a result past
+    `max_faces` by name, leaving the mesh as it was.
+
+- **Added: blend into round for more boss feet** (#1171).
+  - A boss's foot round now blends into every round its contact circle
+    reaches, over arcs that stand apart (for example at a corner where two
+    convex edge rounds of the floor meet), into a concave round tangent to
+    the floor, and from a conical wall narrowing away from the floor. Each
+    is fitted through exact sections and meets the torus G1 (ADR 0001,
+    amendment "overflow handling", "Blend into round, more feet").
+  - These feet used to be refused by trim through. With blend into round
+    off they still are; option order and option-off behaviour are
+    unchanged.
+  - The proof that nothing else stands in the fill's way is now tighter:
+    boxes along the sections in place of one box round the whole foot, and
+    every other face near a ball measured from its centre.
+
+- **Fixed: a round whose ball is tangent to a far face along its whole
+  run no longer hangs** (#1171). The far-edge clearance proof halved each
+  interval to depth 24 on both sides when the face stood exactly a radius
+  away, about 16 million distance measures per station. It now stops after
+  2^17 measures per interval, about three times the most any passing proof
+  uses, and treats the face as not shown clear. A slot exactly twice the
+  radius wide used to hang. Now its two floor edges give the half-circle
+  trough, and one edge alone gives its band.
+
+- **Added: hold edge rests the ball on a vertex, and holds more rounds**
+  (#1171).
+  - Where a held edge stops and the next goes on at a convex corner of the
+    face, the ball rests on the vertex between them: its centre stays the
+    radius from it. The pieces on the edges and the vertex meet G1, and
+    both edges are kept (ADR 0001, amendment "overflow handling", "Hold
+    edge, more seats").
+  - Several held stretches on one band, a chain of edges along one line
+    over faces split in the same two planes, and end faces leaning up to
+    60 degrees from square are now held. They went to trim through before.
+  - A ball resting on two edges at once (a pocket's corner) is still not
+    held and goes to trim through, as before. So does the boss underside
+    of amendment "M5c", whose edge is concave.
+  - A B-spline surface's own boundary iso-curve now gets the chart's
+    straight side as its exact pcurve, also on a patch closing to a point.
+
+- **Added: narrow passages for fillets** (#1171).
+  - `Overflow` gains `narrow_blend_made`, `narrow_whole_face` and
+    `narrow_partial_face`, on by default. A narrow passage is a concave
+    zone tighter than the radius: two walls of a floor no farther apart
+    than twice the radius, or a corner face tighter than the radius. Each round there
+    keeps its constant section and runs on through the zone, and the
+    rounds meet where they cross (ADR 0001, amendment "overflow handling",
+    "Narrow passages").
+  - Built for a planar floor's rim with planar walls square to it: a
+    through slot or a stadium pocket no wider than twice the radius, and a
+    pocket whose corner faces are tighter than the radius (tangent, or at
+    kinks with whole face). These were refused before.
+  - Each strategy takes what the cheaper ones take. With all three off a
+    passage is refused by name. Partial face is not needed by any built
+    case yet.
+
+- **Fixed: the pipe where the ball changes walls now builds on convex chains, at a vertex's own section, and on a curved cap** (#1145).
+  - A convex chain is built as the pipe inside the material: a half frustum's top loop, once its uprights are rounded, is within 4.6e-6 of a free-ball reference (the opening of the rounded frustum).
+  - A pipe may end where its crossing stands in the vertex's own section. A half cylinder lying on a plate, with its end arcs rounded, has its foot within 3.9e-7 of the reference.
+  - A pipe may ride a curved cap. A rib fused under a drum's top, with its top edges rounded, has its root on the drum within 4e-7 of a closing reference at radii 0.5 and 0.3. `Rolling` builds it in one request, the same solid as the two calls.
+  - In such a chain, a plane meeting a drum along a line is rounded by its exact prism. The march used before was 8e-5 short at 0.3, with a 3.5e-3 rad crease on the drum. A round between a plate and a drum's side no longer fails on the drum's seam.
+  - Each case builds the same solid in either edge order, `check` is clean, and every join is G1. A chain that no pipe closes is still refused by name.
+
+- **Added: a marched round leaning into its end face is carried past it and clipped there** (#1145).
+  - A straight crease on a marched seat whose continuation runs into the material across one planar face (a half frustum's uprights on the cone's rulings, standing on a plate) was declined. Its band now runs past that end and is clipped by the face's plane, so the band ends on the face and the face keeps all it holds.
+  - Tried only where the engine's marched routes decline a request of straight creases. A band whose section does not clear the face before the clip is still declined.
+  - Against a sampled rolling-ball reference (the opening of the convex frustum), the volume taken off is within 1.8e-6. Both edge orders and `Rolling` agree, and `check` is clean.
+  - The concave ball rolling round such a band's foot changes walls where its contact crosses the band's rail, not where the creases meet; that corner is built as the fitted pipe (ADR 0001, amendment "a ball changing walls off the vertex").
+
+- **Tests: rolling corners on outlines with arcs** (#1145). Lens, inward
+  bow and figure-eight bosses and pockets, at foot, top, rim and floor,
+  pinned against the rounded outline's Steiner sections. A lone round on
+  an arc, on a cone's ruling, or under a curved cap stays refused by name.
+
+- **Fixed: a chain whose ball changes walls off its vertex is built as a pipe there, or refused by name** (#1145).
+  - Where two rounds meet tangent on one face and their walls meet along a seam, the ball changes walls where its contact crosses the seam at its own height. Joining the rounds at the vertex left a gap where that stood off the vertex: a half frustum's foot, rounded after its uprights, built 0.016 of fill short with `check` clean.
+  - A concave link whose crossings at both ends stand past its vertices is now rounded as the pipe about the ball's centre curve, fitted through its exact sections, with its neighbours ending on those sections. The half frustum's foot is within 2.3e-6 of a free-ball reference, the same in either order, G1 at every join. `Rolling` builds it in one request, leaning uprights included.
+  - Any other such chain is refused by name, naming the vertex.
+
+- **Added: concave rounds the engine declined are rounded from the void's
+  side** (#1145). Where every edge of a `fillet_edges` request is concave
+  and no route builds it, the void beside the edges (a box about them less
+  the solid) is rounded convex and the difference fused on as the fill.
+  It is refused where a fill reaches the box or the result is not one sound
+  solid. Three concave rounds meeting on a pocket's cylinder (a D pocket's
+  floor corners with its uprights) now close on the ball's sphere under
+  both `Setback` and `Rolling`, and a D pocket rounded all over rolls
+  (ADR 0001, amendment "rolling corners on arcs, and concave corners from
+  the void's side").
+
+- **Fixed: a face that runs to an apex or a pole meshed a triangle of no
+  area** (#982).
+  - A cone's apex or a sphere's pole is now one vertex of the face's mesh,
+    with a fan of real triangles round it. Before, the chart ring ran along
+    the collapsed row and left two copies of the apex a whole turn apart,
+    joined by a triangle with two corners at the apex.
+  - On the step-conformance parts `cone_point`, `cone_point_vertex` and
+    `dome`, at chords 0.01/3, 0.1 and 1.0, no triangle has two corners at
+    one point, each apex is one vertex per face, the chord is met and the
+    welded bodies close.
+
+- **Deprecated: `Triangulation::parameters`** (#982).
+  - A vertex at an apex holds only one of its `u` there. The field is
+    still filled for this release and removed in a later one.
+  - Migration: replace `mesh.parameters[t[k] as usize]` with
+    `mesh.triangle_parameters(i).unwrap()[k]` (or index
+    `corner_parameters[i][k]`), `mesh.parameters.len() ==
+    mesh.positions.len()` with `mesh.has_parameters()`, and a write of the
+    field with `set_vertex_parameters` once the triangles are final.
+  - Breaking: `Triangulation` has two new public fields, so a struct
+    literal needs `..Triangulation::default()`.
+
+- **Added: per-corner surface parameters and normals on `Triangulation`**
+  (#982).
+  - `Triangulation::corner_parameters` holds each triangle's three `(u, v)`
+    in the order of its indices, and `corner_normals` its three normals. A
+    point with more than one `u` (an apex, a pole, later a seam) keeps the
+    right one in each triangle, so the mean of a triangle's corner
+    parameters is a point on its own patch. At an apex the corner holds the
+    apex's `v` and the middle of the other two corners' `u`.
+  - `triangle_parameters(i)` and `triangle_normals(i)` read a triangle's
+    corners, falling back to the per-vertex arrays for a mesh built with
+    those alone. `has_parameters`, `vertex_parameters` and
+    `set_vertex_parameters` cover the per-vertex cases.
+  - The native format writes a triangle whose corners differ from its
+    vertices as an `fc` line, in version 4. A file with no such triangle is
+    written at the version it was before.
+
+- **Fixed: asymmetric rounds on a convex drum ruling past where their
+  section fits** (#907).
+  - As the drum's leg turns far past the flat's, the section's conic
+    bulges toward the drum and then crosses it between the contacts. That
+    round is now refused by name ("crosses the drum"), read exactly. Before,
+    it built a solid bulging out of the original, valid by `check`.
+  - Just short of that scale the build no longer fails in the boolean: a
+    cut's prism runs on past an end whose plane bounds the whole solid,
+    instead of sharing that end plane with the solid.
+  - `largest_fillet_distances` on a ruling stops there too. On the half
+    drum with legs 0.1 and 1 it answers 1.6914 (the section meets the drum
+    at 1.69143), where it answered 1.9085, already past that limit.
+
 - **Fixed: the centre and inertia of a solid with a face only its mesh can
   measure** (#1191).
   - The volume path integrates most faces in closed form and leaves the
@@ -15056,7 +15301,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.17.1...v0.18.0
