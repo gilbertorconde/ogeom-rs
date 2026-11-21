@@ -410,12 +410,14 @@ fn route(
 /// stands off the section square to the chain at the vertex (a band
 /// leaning to the face its foot is rounded on, an arc's torus band meeting
 /// a plane along a circle), the rounds joined in that section would leave
-/// a gap or a step. Concave, between a planar face and a link's wall with
-/// both its ends so (a half frustum's foot round its leaning uprights'
-/// bands), the link is rounded as the pipe about the ball's centre curve
-/// between the two crossings, fitted through the ball's exact sections,
-/// and its neighbours end on those sections; elsewhere the request is
-/// refused by name, naming the vertex.
+/// a gap or a step. Where a link's crossing at one end stands so over its
+/// neighbour, and at its other end so or in that vertex's section (a half
+/// frustum's foot or top round its leaning uprights' bands, a half
+/// cylinder's foot round its end arcs' bands, a rib's root on a drum round
+/// its rounded top), the link is rounded as the pipe about the ball's
+/// centre curve between the two crossings, fitted through the ball's exact
+/// sections, and its neighbours end on those sections; elsewhere the
+/// request is refused by name, naming the vertex.
 ///
 /// Where a round reaches geometry other than its own two faces, the
 /// behaviours of [`Overflow`] are tried in its order, every one on:
@@ -746,14 +748,14 @@ pub enum FilletCorner {
 /// corner, the sphere where one ball touches every face (a pyramid's apex
 /// of four rounds too), bands crossing beside an edge left sharp. The
 /// torus round a lone band's end is built between planes, and on a curved
-/// face where the lone edge is a line, the face across from it a plane and
-/// the faces beside it planes, cylinders along it or cones it is a ruling
-/// of: there the lone bands are rounded first and the rest roll round
-/// their feet. Square to the plane across (a D-shaped boss's foot with its
-/// uprights) that roll is the torus about the band's axis; leaning to it
-/// (a half frustum's uprights on a plate) the ball changes walls where its
-/// contact crosses the band's rails, and the round between is the pipe
-/// [`fillet_edges`] builds there.
+/// face where the lone edge is a line and the faces beside it planes,
+/// cylinders along it or cones it is a ruling of: there the lone bands are
+/// rounded first and the rest roll round their feet. Square to a plane
+/// across (a D-shaped boss's foot with its uprights) that roll is the
+/// torus about the band's axis; leaning to it (a half frustum's uprights
+/// on a plate), or with a curved face across (a rib's top under a drum's),
+/// the ball changes walls where its contact crosses the band's rails, and
+/// the round between is the pipe [`fillet_edges`] builds there.
 ///
 /// The result does not depend on the order of `edges`.
 ///
@@ -764,8 +766,8 @@ pub enum FilletCorner {
 /// the vertex, where the ball's sweep does not close it: a vertex mixing
 /// convex and concave rounds that joins other than three edges, or that
 /// touches a curved face where the lone round's edge is curved or its
-/// faces are not planes, cylinders along it or cones it is a ruling of,
-/// or the face across from it is curved; a convex and a concave round
+/// faces are not planes, cylinders along it or cones it is a ruling of;
+/// a convex and a concave round
 /// meeting beside an edge left sharp; and as [`fillet_edges`] where the
 /// rounds rolling round a leaning band's foot are refused. A request
 /// mixing senses that the engine's rounds between planes do not build is

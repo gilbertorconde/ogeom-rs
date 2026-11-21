@@ -1380,8 +1380,9 @@ plane across from it and its faces are planes or cylinders along it, \
 outlines of lines and arcs or arcs alone among them (a lens, an inward \
 bow, a figure eight's waist); a lone line leaning to its plane cap beside \
 a cone's ruling (a half frustum's uprights on a plate) closes through the \
-foot's pipe below; elsewhere such a vertex is refused by name (a lone \
-round on an arc, or under a curved cap). A request whose every edge is concave that the routes above \
+foot's pipe below, and so does a lone line under a curved cap (a rib's \
+top under a drum's); elsewhere such a vertex is refused by name (a lone \
+round on an arc). A request whose every edge is concave that the routes above \
 decline is rounded from the void's side: a box about the edges less the \
 solid, the void's images rounded convex and the difference fused on as \
 the fill, refused where a fill reaches the box's faces or the result is \
@@ -1403,16 +1404,19 @@ is declined. \
 Where two rounds meet tangent at a vertex on one shared face, their \
 walls meeting G1 along a seam, the ball changes walls where its contact \
 crosses the seam at its own height. Where that stands off the section \
-square to the chain at the vertex, a concave link between a planar face \
-and its wall with both ends so is rounded as the pipe about the ball's \
-centre curve between the crossings, fitted through the ball's exact sections, its neighbours \
-(straight rounds, and rims' torus rounds) ending on those sections, all \
-joined into one fill (a half frustum's foot round its rounded uprights, \
-within 2.3e-6 of a free-ball reference). Any other such chain is refused \
-by name, naming the vertex: a convex one (the half frustum's top loop), \
-and the foot of a half cylinder lying on a plate with its end arcs \
-rounded, where each arc band's foot hands over in its vertex's section \
-on the cylinder's side and off it on the end disc's."""
+square to the chain at the vertex, a link with its crossing at one end \
+so over its neighbour, and at its other end so or in that vertex's \
+section, is rounded as the pipe about the ball's centre curve between \
+the crossings, fitted through the ball's exact sections, its neighbours \
+ending on those sections, all joined into one fill or cut. Concave or \
+convex, on a planar or a curved cap: a half frustum's foot (within \
+2.3e-6 of a free-ball reference) and top loop (4.6e-6) round its \
+rounded uprights, a half cylinder's foot round its rounded end arcs \
+(3.9e-7), and a rib's root on a drum round its rounded top (4e-7). In \
+such a chain a plane against a drum along it is rounded by its exact \
+prism, and a band ending on a convex pipe's sections is marched only \
+just past its crease. Any other such chain is refused by name, naming \
+the vertex (a rib's root short of one of its uprights)."""
 symbols = [
     "ogeom_fillet::fillet_edge", "ogeom_fillet::fillet_edges",
     "ogeom_fillet::fillet_edges_with",
@@ -1450,8 +1454,11 @@ tests = [
     "crates/ogeom-fillet/tests/rolling_curved.rs",
     "crates/ogeom-fillet/tests/switch_over.rs",
     "crates/ogeom-fillet/tests/switch_over.rs::a_half_frustum_s_foot_rounds_through_its_pipe_corners",
-    "crates/ogeom-fillet/tests/switch_over.rs::a_half_frustum_s_top_loop_is_refused_by_name",
-    "crates/ogeom-fillet/tests/switch_over.rs::a_half_cylinder_s_foot_is_refused_by_name",
+    "crates/ogeom-fillet/tests/switch_over.rs::a_half_frustum_s_top_loop_rounds_through_its_pipe_corners",
+    "crates/ogeom-fillet/tests/switch_over.rs::a_half_cylinder_s_foot_rounds_through_its_pipe_corners",
+    "crates/ogeom-fillet/tests/switch_over.rs::a_rib_under_a_drum_s_top_rounds_through_its_pipe_corners",
+    "crates/ogeom-fillet/tests/switch_over.rs::a_rib_under_a_drum_s_top_rolls_in_one_request",
+    "crates/ogeom-fillet/tests/switch_over.rs::a_rib_s_chain_short_of_an_upright_is_refused_by_name",
 ]
 
 [[capability]]

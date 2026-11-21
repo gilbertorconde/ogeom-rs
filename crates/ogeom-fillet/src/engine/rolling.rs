@@ -259,17 +259,19 @@ fn ends(model: &Model, edge: &Shape) -> OgeomResult<Vec<Shape>> {
 /// concave rounds touches a curved face (ADR 0001, amendment "mixed
 /// rolling corners on curved faces").
 ///
-/// At such a vertex of three edges the lone round's edge is a line, the
-/// face across from it (the cap) a plane, and each face beside it a plane,
-/// a cylinder ruled along it or a cone it is a ruling of. Square to the
-/// cap, its band is a cylinder of radius `radius` about an axis square to
-/// the cap, and its ball's sweep round the band's end is the torus about
-/// that axis, major radius twice the radius: the round of the band's foot
-/// on the cap, which runs on tangent into the other two rounds. Leaning to
-/// the cap, the band runs past the cap and is clipped there, and the ball
+/// At such a vertex of three edges the lone round's edge is a line, and
+/// each face beside it a plane, a cylinder ruled along it or a cone it is
+/// a ruling of. Square to a plane cap (the face across from it), its band
+/// is a cylinder of radius `radius` about an axis square to the cap, and
+/// its ball's sweep round the band's end is the torus about that axis,
+/// major radius twice the radius: the round of the band's foot on the
+/// cap, which runs on tangent into the other two rounds. Leaning to the
+/// cap, the band runs past the cap and is clipped there, and the ball
 /// rolling round its foot changes walls where its contact crosses the
 /// band's rails: the round between is the foot's pipe (amendment "a ball
-/// changing walls off the vertex"). So the lone bands are built first,
+/// changing walls off the vertex"). On a curved cap (a rib under a drum's
+/// top) the band runs into the cap, its foot the curve they meet on, and
+/// the ball changes walls the same way. So the lone bands are built first,
 /// with every round reached from them through vertices of one sense, and
 /// the rest of the request then rounds with each lone band's foot on its
 /// cap as one tangent chain.
@@ -279,10 +281,9 @@ fn ends(model: &Model, edge: &Shape) -> OgeomResult<Vec<Shape>> {
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction),
 /// naming the vertex, where a mixed vertex is not so: it joins other than
 /// three edges, a convex and a concave round meet beside an edge left
-/// sharp, the cap is curved, the lone edge is curved, a face beside it is
-/// not ruled along it, or a round meeting the
-/// lone round there is reached from another lone band first. As
-/// [`crate::fillet_edges`] for either pass.
+/// sharp, the lone edge is curved, a face beside it is not ruled along
+/// it, or a round meeting the lone round there is reached from another
+/// lone band first. As [`crate::fillet_edges`] for either pass.
 #[allow(
     clippy::too_many_lines,
     reason = "one rule, read and applied end to end"
@@ -319,9 +320,9 @@ fn lone_bands_first(
             .filter(|&i| traced_ends[i].iter().any(|v| v.is_same(vertex)))
             .collect()
     };
-    // Each mixed vertex: its lone edge, the request's edges there, the
-    // cap's point and normal.
-    let mut lones: Vec<(usize, Vec<usize>, Point, ogeom_math::Vector)> = Vec::new();
+    // Each mixed vertex: its lone edge, the request's edges there, its
+    // point and the cap's surface.
+    let mut lones: Vec<(usize, Vec<usize>, Point, SurfaceGeometry)> = Vec::new();
     for (p, vertex) in mixed.iter().map(|m| (m.0, &m.1)) {
         let mut around: Vec<Shape> = Vec::new();
         for e in ancestors_of(model, work, vertex, ShapeType::Edge)? {
@@ -390,14 +391,13 @@ fn lone_bands_first(
         let surface = |f: &Shape| -> OgeomResult<Option<SurfaceGeometry>> {
             Ok(super::rolled::host(model, f, tol)?.map(|(s, _)| s))
         };
-        let Some(SurfaceGeometry::Plane(cap_plane)) = surface(cap)? else {
+        // A curved cap's corner is the foot's pipe too.
+        let Some(cap_surface) = surface(cap)? else {
             return Err(named(
                 p,
-                "the face across from the lone round is curved, and the ball's sweep round \
-                 the lone band's end there is no torus",
+                "the face across from the lone round has no surface",
             ));
         };
-        let up = cap_plane.plane().normal().vector();
         let curved_edge = || {
             named(
                 p,
@@ -449,7 +449,7 @@ fn lone_bands_first(
                 ));
             }
         }
-        lones.push((lone, asked, p, up));
+        lones.push((lone, asked, p, cap_surface));
     }
     // The first pass: the lone bands, and every round reached from them
     // through vertices of one sense, whose corners are the default's.
@@ -518,7 +518,7 @@ fn lone_bands_first(
         }
     }
     // Each lone band's foot: its edge on the cap.
-    for (lone, _, p, up) in &lones {
+    for (lone, _, p, cap) in &lones {
         let mut found = false;
         for face in built.history.generated(&traced[*lone]) {
             if model.kind_of(face)? != ShapeType::Face {
@@ -534,7 +534,7 @@ fn lone_bands_first(
                 let mut on_cap = true;
                 for k in 0..=4 {
                     let q = curve.point_at(a + (b - a) * f64::from(k) / 4.0, tol)?;
-                    on_cap &= (q - *p).dot(*up).abs() <= conf;
+                    on_cap &= ogeom_geom::project_on_surface(cap, q, 16, tol)?.distance <= conf;
                 }
                 if on_cap {
                     found = true;

@@ -53,6 +53,24 @@ thread_local! {
     /// Whether marched bands run out past an end face they lean into
     /// ([`carried_past_ends`]).
     static CARRIED_PAST: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+    /// Whether marched bands stop just past their crease's ends
+    /// ([`held_to_crease`]).
+    static HELD_TO_CREASE: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+/// `f` run with each marched band's fitted guide held to a quarter of its
+/// crease's length past each end, never run out farther: a band its
+/// caller trims back inside the crease, whose ball farther on would roll
+/// over a fitted host's continuation where no seat holds.
+pub(crate) fn held_to_crease<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            HELD_TO_CREASE.with(|flag| flag.set(self.0));
+        }
+    }
+    let _restore = Restore(HELD_TO_CREASE.with(|flag| flag.replace(true)));
+    f()
 }
 
 /// `f` run with marched bands carried past their ends: a straight crease
@@ -161,9 +179,19 @@ fn marched_fillet_by(
         loops,
         march_guide,
     } = marched_seat_over(model, solid, edge, radius, span, tol)?;
+    let held = HELD_TO_CREASE.with(core::cell::Cell::get) && !closed;
     let (guide, guide_range) =
         run_out_guide(guide, guide_range, closed, [&first, &second], radius, tol)?;
-    let (guide, guide_range, first, second) = if carried_past() && !closed {
+    let (guide, guide_range) = match &guide {
+        Curve::BSpline(spline) if held => {
+            let (lo, hi) = spline.domain();
+            let pad = (edge_range.1 - edge_range.0) * 0.25;
+            let window = ((edge_range.0 - pad).max(lo), (edge_range.1 + pad).min(hi));
+            (Curve::BSpline(spline.segment(window, tol)?), window)
+        }
+        _ => (guide, guide_range),
+    };
+    let (guide, guide_range, first, second) = if carried_past() && !closed && !held {
         // Two radii: room for the ball to clear an end face, short of
         // where the seat itself turns (a cone's spine over the top of its
         // hyperbola, onto the next ruling).
