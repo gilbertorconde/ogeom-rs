@@ -38,6 +38,9 @@ pub(super) enum Key {
     /// Where edge `a` of the first operand crosses edge `b` of the second,
     /// in their common plane.
     Ssi { a: [u32; 2], b: [u32; 2] },
+    /// Where the planes of three triangles of one mesh meet, in increasing
+    /// order.
+    Tpi { tris: [u32; 3] },
 }
 
 /// A triangle of one operand.

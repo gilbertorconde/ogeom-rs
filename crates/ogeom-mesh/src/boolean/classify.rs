@@ -68,7 +68,7 @@ fn crossing(t: &Tri, p: &impl Hom, axis: usize, dir: Sign) -> OgeomResult<Option
 
 /// The winding number of the mesh whose triangles are `tris`, indexed by
 /// `bvh`, about point `p`, counted along `axis` the way `dir` points,
-/// leaving out triangle `skip`.
+/// leaving out the triangles in `skip`.
 ///
 /// # Errors
 ///
@@ -80,7 +80,7 @@ pub(super) fn winding(
     p: &impl Hom,
     axis: usize,
     dir: Sign,
-    skip: Option<u32>,
+    skip: &[u32],
 ) -> OgeomResult<i64> {
     let h = p.iv();
     let bounds = [h[0].over(&h[3]), h[1].over(&h[3]), h[2].over(&h[3])];
@@ -106,7 +106,7 @@ pub(super) fn winding(
     };
     let mut total = 0_i64;
     for t in candidates {
-        if Some(t) == skip {
+        if skip.contains(&t) {
             continue;
         }
         match crossing(&tris[t as usize], p, axis, dir)? {
@@ -179,17 +179,17 @@ mod tests {
         ] {
             for axis in 0..3 {
                 for dir in [Sign::Positive, Sign::Negative] {
-                    let w = winding(&tris, &bvh, &at(p), axis, dir, None).unwrap();
+                    let w = winding(&tris, &bvh, &at(p), axis, dir, &[]).unwrap();
                     assert_eq!(w, want, "{p:?} axis {axis} {dir:?}");
                 }
             }
         }
         // A point on the cube is refused, not counted.
-        assert!(winding(&tris, &bvh, &at([0.0, 0.5, 0.5]), 0, Sign::Positive, None).is_err());
+        assert!(winding(&tris, &bvh, &at([0.0, 0.5, 0.5]), 0, Sign::Positive, &[]).is_err());
         // From a face's centre, outward with that face left out, nothing.
         let c = tris[0].p.map(|q| Pt::new(Def::Vertex(q)));
         let mid = Mid([&c[0], &c[1], &c[2]]);
-        let w = winding(&tris, &bvh, &mid, 2, Sign::Negative, Some(0)).unwrap();
+        let w = winding(&tris, &bvh, &mid, 2, Sign::Negative, &[0]).unwrap();
         assert_eq!(w, 0);
     }
 }
