@@ -1253,6 +1253,42 @@ fn a_half_cylinder_s_foot_rounds_through_its_pipe_corners() {
     }
 }
 
+/// The half cylinder on its plate in one request under `Rolling`: its four
+/// end arcs and its foot's four lines, rounded 1. At each mixed vertex the
+/// lone round is the arc, its band a torus about the cylinder's axis: it
+/// goes first, and the foot rolls round its band's foot through the
+/// pipes. The same solid as the two calls, in either order.
+#[test]
+fn a_half_cylinder_on_a_plate_rolls_in_one_request() {
+    let mut m = Model::new();
+    let (s, up, foot) = half_cylinder_with_rounded_ends(&mut m);
+    let mut two = m.clone();
+    let built = fillet_edges(&mut two, &up, &foot, 1.0, T).unwrap();
+    let want = volume(&two, &built.shape);
+    let asked: Vec<Shape> = explore_unique(&m, &s, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (c, (a, b)) = ogeom_algo::placed_edge_curve(&m, e, T).unwrap().unwrap();
+            let p = c.point_at(0.5 * (a + b), T).unwrap();
+            let end = (p.x - 5.0).abs() < 1e-9 || (p.x - 15.0).abs() < 1e-9;
+            let foot =
+                (p.z - 6.0).abs() < 1e-9 && p.x > 1.0 && p.x < 19.0 && p.y > 1.0 && p.y < 19.0;
+            (end && p.z > 6.5) || foot
+        })
+        .collect();
+    assert_eq!(asked.len(), 8);
+    for order in [asked.clone(), asked.iter().rev().cloned().collect()] {
+        let mut rolled = m.clone();
+        let built =
+            fillet_edges_corner(&mut rolled, &s, &order, 1.0, FilletCorner::Rolling, T).unwrap();
+        let found = ogeom_algo::check(&rolled, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        let got = volume(&rolled, &built.shape);
+        assert!((got - want).abs() <= 1e-9 * want, "{got} against {want}");
+    }
+}
+
 /// A plate 30 × 20 × 4, a drum of radius 5 standing on it about (10,
 /// 10), 8 high, and a rib 2 wide and 4 high fused against the drum's side
 /// from x = 12 to 24, lower than the drum's top.

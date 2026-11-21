@@ -4376,6 +4376,25 @@ radius 3 reaching the edge round.
   off as with every behaviour on. The rolled stairs with every behaviour off
   are the default's spheres and tori, at the exact volume.
 
+### Amendment: a lone arc in one rolling request (#1216)
+
+The half cylinder lying on a plate built its corner in two calls (the end
+arcs, then the foot) but was refused in one `Rolling` request, because
+the lone-band order took only a straight lone edge.
+
+**Rule.** At a mixed vertex on a curved face, the lone round's edge may
+also be a rim between its plane and a coaxial cylinder or cone (the seat
+the revolved rounds read). Its band is then a torus about their axis,
+and its foot runs into the cap as a straight band's does. So the lone
+bands go first, and the foot then rolls round each band's foot through
+the pipes, the same two passes as for a straight lone edge. Any other
+curved lone edge is still refused by name.
+
+| Case | Check |
+|---|---|
+| half cylinder, end arcs and foot (1), one request | the two calls' solid within 1e-9 in volume, either order, `check` clean |
+| one quarter arc per end and the foot | the two calls' solid within 1e-9 |
+
 ## 12. Acceptance corpus
 
 From #902:

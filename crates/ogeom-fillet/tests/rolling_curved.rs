@@ -1318,27 +1318,15 @@ fn frame_at(p: Point, z: Direction) -> Frame {
     Frame::new(p, z, x, T).unwrap()
 }
 
-/// `edges` of `s` rounded `r` with `Rolling` and `Setback`: both refuse,
-/// `Rolling` naming the vertex at `at` and saying `why`.
-fn refused_at(m: &Model, s: &Shape, edges: &[Shape], r: f64, at: &str, why: &str) {
-    let got = fillet_edges_corner(&mut m.clone(), s, edges, r, FilletCorner::Rolling, T)
-        .unwrap_err()
-        .to_string();
-    assert!(
-        got.contains(&format!("does not close the vertex at ({at})")) && got.contains(why),
-        "{got}"
-    );
-    assert!(fillet_edges(&mut m.clone(), s, edges, r, T).is_err());
-}
-
 /// A half cylinder of radius 4 lying on a plate, its axis on the plate's
-/// top: its two end arcs (convex) and its foot (concave) rounded 1. At
-/// each foot corner the lone round is the arc, whose band is a torus; the
-/// ball rolling round its end has its centre on a section of the torus
-/// offset by the radius, not a circle, so the sweep is no torus and the
-/// corner is refused by name.
+/// top: one quarter arc at each end (convex) and its foot (concave)
+/// rounded 1. At the two foot corners under those arcs the lone round is
+/// the arc, whose band is a torus about the cylinder's axis: the arcs go
+/// first and the foot rolls round their bands' feet, the same solid as
+/// the two calls, in either order. `switch_over.rs` measures the whole
+/// loop's corners against a free-ball reference.
 #[test]
-fn a_lone_round_on_an_arc_is_refused_by_name() {
+fn a_lone_round_on_an_arc_rolls_as_the_two_calls() {
     let mut m = Model::new();
     let plate = ogeom_algo::make_box(
         &mut m,
@@ -1359,25 +1347,48 @@ fn a_lone_round_on_an_arc_is_refused_by_name() {
     .shape;
     let fused = ogeom_bool::fuse(&mut m, &plate, &drum, T).unwrap().shape;
     let s = solid_of(&m, &fused);
-    let edges: Vec<Shape> = [
-        Point::new(5.0, 10.0, 10.0),
-        Point::new(15.0, 10.0, 10.0),
+    let at = |p: Point| edge_near(&m, &s, p);
+    let arcs = [
+        at(Point::new(5.0, 7.0, 9.0)),
+        at(Point::new(15.0, 7.0, 9.0)),
+    ];
+    let lines: Vec<Shape> = [
         Point::new(5.0, 10.0, 6.0),
         Point::new(15.0, 10.0, 6.0),
         Point::new(10.0, 6.0, 6.0),
         Point::new(10.0, 14.0, 6.0),
     ]
     .iter()
-    .map(|&p| edge_near(&m, &s, p))
+    .map(|&p| at(p))
     .collect();
-    refused_at(
-        &m,
-        &s,
-        &edges,
-        1.0,
-        "5.000000, 6.000000, 6.000000",
-        "the lone round's edge is curved",
-    );
+    let mut two = m.clone();
+    let ends = fillet_edges(&mut two, &s, &arcs, 1.0, T).unwrap();
+    // The foot after the arcs: the lines' images and the bands' feet.
+    let foot: Vec<Shape> = explore_unique(&two, &ends.shape, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            let (c, (a, b)) = ogeom_algo::placed_edge_curve(&two, e, T).unwrap().unwrap();
+            (0..=4).all(|i| {
+                let p = c.point_at(a + (b - a) * f64::from(i) / 4.0, T).unwrap();
+                (p.z - 6.0).abs() < 1e-6 && p.x > 1.0 && p.x < 19.0 && p.y > 1.0 && p.y < 19.0
+            })
+        })
+        .collect();
+    assert_eq!(foot.len(), 6);
+    let want = fillet_edges(&mut two, &ends.shape, &foot, 1.0, T).unwrap();
+    let want = volume(&two, &want.shape);
+    let mut asked = arcs.to_vec();
+    asked.extend(lines);
+    for order in [asked.clone(), asked.iter().rev().cloned().collect()] {
+        let mut rolled = m.clone();
+        let built =
+            fillet_edges_corner(&mut rolled, &s, &order, 1.0, FilletCorner::Rolling, T).unwrap();
+        let found = ogeom_algo::check(&rolled, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{:?}", found.problems);
+        let got = volume(&rolled, &built.shape);
+        assert!((got - want).abs() <= 1e-9 * want, "{got} against {want}");
+    }
 }
 
 /// A rib fused against a drum, lower than the drum: the rib's top edge
