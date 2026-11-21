@@ -1975,7 +1975,10 @@ at each held within its contact's reach; on a chain of several edges \
 the constant round's seat is held at every sixteenth. Not read past the \
 build: fillet_edge_distances_variable checks its contacts at the \
 interior sixteenths only, so a distance freed at an edge's end reads \
-what that check lets build, past the face's side at the end itself."""
+what that check lets build, past the face's side at the end itself. \
+blend_seat answers the seat reading alone for any sizing blend_limit \
+takes, without building: blend_limit's seat, by the same code, with \
+the seat reading's own refusal."""
 symbols = [
     "ogeom_fillet::largest_fillet_radius",
     "ogeom_fillet::largest_fillet_radius_all",
@@ -1986,6 +1989,7 @@ symbols = [
     "ogeom_fillet::largest_chamfer_distance_overflow",
     "ogeom_fillet::largest_chamfer_distance_all_overflow",
     "ogeom_fillet::blend_limit",
+    "ogeom_fillet::blend_seat",
     "ogeom_fillet::BlendLimit",
     "ogeom_fillet::BlendSizing",
     "ogeom_fillet::LIMIT_TOLERANCE",
@@ -2000,6 +2004,7 @@ symbols = [
 ]
 tests = [
     "crates/ogeom-fillet/tests/law_limits.rs",
+    "crates/ogeom-fillet/tests/blend_seat.rs",
     "crates/ogeom-fillet/tests/exact_limits.rs::planar_limits_build_below_and_are_refused_above",
     "crates/ogeom-fillet/tests/exact_limits.rs::curved_and_corpus_limits_build_below_and_are_refused_above",
     "crates/ogeom-fillet/tests/exact_limits.rs::the_chopped_corner_s_edge_alone_rounds_past_the_corner",
