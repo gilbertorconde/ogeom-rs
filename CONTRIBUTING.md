@@ -139,6 +139,11 @@ does not throw; it corrupts a document six operations later. So:
     answers.
   - `tools/check.sh` and CI run both tiers. `tools/test-times.sh` prints the
     slowest tests of the default tier and fails past 15 s.
+- **Changelog entries are fragments.** A change that alters behaviour adds
+  `changelog.d/<issue>-<slug>.md` holding its entry, and leaves `CHANGELOG.md`
+  alone, so parallel pull requests never conflict on it. See
+  [`changelog.d/README.md`](changelog.d/README.md); `tools/check.sh` runs
+  `tools/changelog.py check`.
 - **Workspace lints** forbid `unsafe`, and warn on `unwrap`/`expect` and lossy
   numeric casts in library code. A kernel is arithmetic from end to end, and
   these are how wrong answers get shipped. A deliberate exception needs an
@@ -171,6 +176,10 @@ the skill before the task it covers.
 The fifteen library crates under `crates/` are published together, at one
 version, from `[workspace.package]`. The three crates under `tools/` have
 `publish = false`; they exist only for this repository.
+
+Before publishing, `tools/changelog.py release <version>` moves the
+fragments in `changelog.d/` into `CHANGELOG.md` under the version's heading,
+the highest issue number first, and deletes them.
 
 ```sh
 cargo publish --dry-run --workspace   # packages, verifies and orders, uploads nothing
