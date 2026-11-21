@@ -3876,6 +3876,69 @@ rib on the drum are refused by name. `Setback` refuses them too.
   irrational):
   https://sintef.no/projectweb/computational-geometry/pro/saga/wp3-algebraic-geometry-for-cad-applications/improved-blends-between-primitive-surfaces
 
+### Amendment: a marched band leaning into its end face (#1145)
+
+Amendment "rolling corners on arcs" left a lone edge leaning to its cap
+refused. Read again from the lone band's own round: a half frustum on a
+plate, its uprights on the cone's rulings, rounded alone, was declined.
+The upright is a marched seat (a plane and a cone along a ruling, the
+ball's centre on a hyperbola), and its band stopped at the foot vertex:
+the plate continues past it, the crease runs on into the material, and
+the band caps in its section's own plane there. That plane leans off the
+plate as the ruling does, so the cut would notch the plate on one side
+of the ruling and leave a sliver standing on the other. A domain error
+(the march reading the bounded ruling and cone past their ends) was all
+that stopped it.
+
+**Rule.** Where the engine's marched routes decline a request of
+straight creases, it is tried once more with the bands carried past
+their ends (`marched::carried_past_ends`):
+
+- the crease is read on its whole line, and a cylinder or cone host on
+  past its height range by two radii, a cone short of its apex (further,
+  a cone's spine runs over the top of its hyperbola onto the next
+  ruling);
+- at an end where the crease's continuation runs into the material
+  across one planar face, the band runs on until the ball's centre
+  stands one and a half radii past the vertex, and its wedge is clipped
+  by that face's plane, so the face trims the band and keeps all it
+  holds;
+- the end section must lie wholly past the face before the clip, or the
+  request is declined as before;
+- the wedge's face on the clipping plane is credited to the end face,
+  not to the round: the band is the round's only face.
+
+**Oracle** (`tests/leaning_end.rs`). The half frustum run on below the
+plate is convex, so rounding its uprights is its opening: the balls of
+radius `r` inside it, whose centres fill `E = {y ≥ 10 + r, ρ ≤ R(z) −
+r / cos α}`. A point is kept where it lies within `r` of `E`, the
+distance read in closed form to `E`'s plane, its cone and the two
+hyperbolas where they meet. The volume taken off is integrated section
+by section in polar form, 4096 rays by 8 Gauss panels (2048 rays agree
+within 3e-8). Measured: relative error 1.8e-6, both orders alike to
+1e-9, `Rolling` the same, `check` clean, the plate whole below its top,
+the band G1 to the plane and the cone within 5.3e-4 rad along its rails
+(the march holds its fit in distance, the bands' fit target of 2e-4).
+
+**The rolling corner beside it stays refused.** With the uprights
+built, the lone-band order rounds the foot chain next: the plate meeting
+the cut face, the band and the cone. It builds, `check` clean, and the
+volume is wrong, by 0.016 of fill at the two corners against a sampled
+reference (the closing of the rounded frustum by balls clear of it and
+the plate). The concave ball changes walls where its contact crosses the
+band's rail, not where the creases meet: the rail leans, so at the
+height of the contact it stands 0.35 from the crease's vertex. The chain
+caps its straight and marched links at the vertex's section, and the
+straight band's end face is left exposed beside a gap. For an upright
+square to its cap the two places are one, which is why the D boss
+closes. The corner here is the pipe of radius `r` about the curve `{z
+= cap + r, dist(c, spine) = 2r}` between the sections where the contact
+crosses each rail, with the straight and rim rounds ending on those
+sections. Until that is built, the mixed vertex is refused by name as
+before ("does not stand square"). The lone arc (a half cylinder lying on
+a plate) and the curved cap (a rib under a drum's top) meet the same
+transition and stay refused too.
+
 ## 12. Acceptance corpus
 
 From #902:
