@@ -202,13 +202,7 @@ impl Parsed {
                 if m > 0.0 { n / m } else { Vector::Z }
             })
             .collect::<Vec<_>>();
-        Triangulation {
-            positions: positions.clone(),
-            normals,
-            parameters: vec![(0.0, 0.0); positions.len()],
-            triangles: self.triangles.clone(),
-            deflection_met: true,
-        }
+        crate::mesh_formats::imported(positions.clone(), normals, self.triangles.clone(), true)
     }
 }
 

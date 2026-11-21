@@ -271,14 +271,14 @@ fn reach(model: &Model, walk: &Walk, up: f64, tol: Tolerances) -> OgeomResult<Re
 /// region where it lies in a triangle or on one's side, as
 /// [`chart_holds`] reads it.
 fn straight_exit(mesh: &ogeom_topo::Triangulation, a: Point2, b: Point2) -> f64 {
-    let chart = |i: u32| {
-        let (u, v) = mesh.parameters[i as usize];
-        Point2::new(u, v)
-    };
-    let span = mesh
-        .parameters
+    let triangles: Vec<[Point2; 3]> = (0..mesh.triangles.len())
+        .filter_map(|i| mesh.triangle_parameters(i))
+        .map(|t| t.map(|(u, v)| Point2::new(u, v)))
+        .collect();
+    let span = triangles
         .iter()
-        .fold(0.0_f64, |m, (u, v)| m.max(u.abs()).max(v.abs()))
+        .flatten()
+        .fold(0.0_f64, |m, p| m.max(p.x.abs()).max(p.y.abs()))
         .max(1.0);
     let eps = span * 1e-9;
     let (dx, dy) = (b.x - a.x, b.y - a.y);
@@ -301,8 +301,7 @@ fn straight_exit(mesh: &ogeom_topo::Triangulation, a: Point2, b: Point2) -> f64 
         }
     };
     let mut spans: Vec<(f64, f64)> = Vec::new();
-    for t in &mesh.triangles {
-        let [p, q, r] = t.map(chart);
+    for &[p, q, r] in &triangles {
         let sides = [side(p, q), side(q, r), side(r, p)];
         // Every side's cross product at least -eps, or every one at most
         // eps: in the triangle either way it winds.

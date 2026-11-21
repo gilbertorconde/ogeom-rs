@@ -546,7 +546,7 @@ fn face_places(
     ) else {
         return Ok(places);
     };
-    if mesh.parameters.len() != mesh.positions.len() {
+    if !mesh.has_parameters() {
         return Ok(places);
     }
     let Some(data) = model.node(face).and_then(|n| n.data().as_face()) else {
@@ -563,12 +563,14 @@ fn face_places(
         let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
         a + ((b - a) + (c - a)) / 3.0
     };
-    let mut largest: Vec<(f64, &[u32; 3])> = mesh.triangles.iter().map(|t| (area(t), t)).collect();
+    let mut largest: Vec<(f64, usize)> = (0..mesh.triangles.len())
+        .map(|i| (area(&mesh.triangles[i]), i))
+        .collect();
     largest.sort_by(|x, y| y.0.total_cmp(&x.0));
     largest.truncate(CHOSEN_AMONG);
     // The largest first, then each time the one farthest from every
     // middle already taken; ties to the larger.
-    let mut order: Vec<(f64, &[u32; 3])> = Vec::with_capacity(largest.len());
+    let mut order: Vec<(f64, usize)> = Vec::with_capacity(largest.len());
     let mut apart: Vec<f64> = vec![f64::INFINITY; largest.len()];
     let mut taken = vec![false; largest.len()];
     for _ in 0..largest.len() {
@@ -581,9 +583,9 @@ fn face_places(
         let Some(k) = best else { break };
         taken[k] = true;
         order.push(largest[k]);
-        let at = middle(largest[k].1);
-        for (j, (_, t)) in largest.iter().enumerate() {
-            apart[j] = apart[j].min(middle(t).distance(at));
+        let at = middle(&mesh.triangles[largest[k].1]);
+        for (j, &(_, t)) in largest.iter().enumerate() {
+            apart[j] = apart[j].min(middle(&mesh.triangles[t]).distance(at));
         }
     }
     let placement = face.transform(model.datums())?;
@@ -598,7 +600,9 @@ fn face_places(
         if places.len() >= wanted {
             break;
         }
-        let uv = triangle.map(|i| mesh.parameters[i as usize]);
+        let Some(uv) = mesh.triangle_parameters(triangle) else {
+            continue;
+        };
         let (u, v) = (
             (uv[0].0 + uv[1].0 + uv[2].0) / 3.0,
             (uv[0].1 + uv[1].1 + uv[2].1) / 3.0,

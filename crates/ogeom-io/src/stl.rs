@@ -234,6 +234,7 @@ fn read_binary(bytes: &[u8], tol: Tolerances) -> OgeomResult<(Triangulation, f64
         push(&mut mesh, corners[0], corners[1], corners[2]);
     }
     let quantum = ogeom_algo::single_precision_quantum(&mesh);
+    mesh.set_vertex_parameters(vec![(0.0, 0.0); mesh.positions.len()]);
     Ok((mesh.welded(tol), quantum))
 }
 
@@ -337,6 +338,7 @@ fn read_ascii(bytes: &[u8], tol: Tolerances) -> OgeomResult<(Triangulation, f64)
     } else {
         ogeom_algo::single_precision_quantum(&mesh)
     };
+    mesh.set_vertex_parameters(vec![(0.0, 0.0); mesh.positions.len()]);
     Ok((mesh.welded(tol), quantum))
 }
 
@@ -352,7 +354,6 @@ fn push(mesh: &mut Triangulation, a: Point, b: Point, c: Point) {
     for p in [a, b, c] {
         mesh.positions.push(p);
         mesh.normals.push(normal);
-        mesh.parameters.push((0.0, 0.0));
     }
     mesh.triangles.push([base, base + 1, base + 2]);
 }
@@ -386,8 +387,8 @@ mod tests {
             Point::new(0.0, 0.0, 1.0),
         ];
         mesh.normals = vec![Vector::Z; 4];
-        mesh.parameters = vec![(0.0, 0.0); 4];
         mesh.triangles = vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]];
+        mesh.set_vertex_parameters(vec![(0.0, 0.0); 4]);
         mesh
     }
 

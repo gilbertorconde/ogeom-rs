@@ -69,13 +69,7 @@ impl PlyImport {
                 if m > 0.0 { n / m } else { Vector::Z }
             })
             .collect();
-        Triangulation {
-            parameters: vec![(0.0, 0.0); positions.len()],
-            positions,
-            normals,
-            triangles: self.triangles.clone(),
-            deflection_met: true,
-        }
+        crate::mesh_formats::imported(positions, normals, self.triangles.clone(), true)
     }
 }
 

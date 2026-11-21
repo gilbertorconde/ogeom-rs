@@ -767,7 +767,7 @@ impl State {
                 *normal *= 1.0 / length;
             }
         }
-        out.parameters = vec![(0.0, 0.0); out.positions.len()];
+        out.set_vertex_parameters(vec![(0.0, 0.0); out.positions.len()]);
         out.deflection_met = false;
         (out, moved)
     }

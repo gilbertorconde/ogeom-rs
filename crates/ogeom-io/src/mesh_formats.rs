@@ -505,9 +505,9 @@ mod tests {
                 Point::new(0.0, 0.0, 1.0),
             ],
             normals: Vec::new(),
-            parameters: Vec::new(),
             triangles: vec![[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]],
             deflection_met: true,
+            ..Triangulation::default()
         }
     }
 
@@ -1192,18 +1192,32 @@ fn read_primitive(
     } else {
         normals
     };
+    // The file says nothing about what deflection it was built at, so
+    // nothing is claimed about one.
     Ok(Some((
-        Triangulation {
-            parameters: vec![(0.0, 0.0); positions.len()],
-            positions,
-            normals,
-            triangles,
-            // The file says nothing about what deflection it was built at, so
-            // nothing is claimed about one.
-            deflection_met: false,
-        },
+        imported(positions, normals, triangles, false),
         colour,
     )))
+}
+
+/// A mesh read from a file: its vertices, their normals and its triangles,
+/// with the zero surface parameters a mesh from no surface holds.
+pub(crate) fn imported(
+    positions: Vec<Point>,
+    normals: Vec<Vector>,
+    triangles: Vec<[u32; 3]>,
+    deflection_met: bool,
+) -> Triangulation {
+    let zeros = vec![(0.0, 0.0); positions.len()];
+    let mut mesh = Triangulation {
+        positions,
+        normals,
+        triangles,
+        deflection_met,
+        ..Triangulation::default()
+    };
+    mesh.set_vertex_parameters(zeros);
+    mesh
 }
 
 /// Area-weighted vertex normals, for a file that gave none.

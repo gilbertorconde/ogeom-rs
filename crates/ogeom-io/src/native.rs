@@ -63,9 +63,15 @@ pub use ogeom_topo::Absorbed;
 /// A file naming a version this does not know is refused rather than guessed
 /// at; every version up to this one still reads, because each version only
 /// *added* to the one before: version 2 the conical helix and the periodic
-/// B-spline, version 3 entity tables with gaps in their ids. A file is
-/// written at the oldest version that holds it.
-pub const VERSION: u32 = 3;
+/// B-spline, version 3 entity tables with gaps in their ids, version 4 mesh
+/// triangles whose corners hold parameters or normals of their own (a
+/// cone's apex, a sphere's pole). A file is written at the oldest version
+/// that holds it.
+pub const VERSION: u32 = 4;
+
+/// The version a file with gaps in its entity ids and no mesh corners of
+/// their own is written at.
+const GAPPED_VERSION: u32 = 3;
 
 /// The version a file whose entity ids run without gaps is written at.
 const GAPLESS_VERSION: u32 = 2;
@@ -688,11 +694,20 @@ where
         .iter()
         .enumerate()
         .any(|(i, (id, _))| id.get() != i as u64 + 1);
+    let cornered = options.triangulations
+        && records.geometry.triangulations().any(|(_, mesh)| {
+            let at_vertex = mesh.vertex_parameters();
+            (0..mesh.triangles.len()).any(|i| own_corners(mesh, &at_vertex, i).is_some())
+        });
+    let version = if cornered {
+        VERSION
+    } else if gapped {
+        GAPPED_VERSION
+    } else {
+        GAPLESS_VERSION
+    };
     let mut out = String::new();
-    out.push_str(&format!(
-        "{MAGIC} {}\n",
-        if gapped { VERSION } else { GAPLESS_VERSION }
-    ));
+    out.push_str(&format!("{MAGIC} {version}\n"));
 
     // The unit scale, first, because everything after it is measured in those
     // units. A document that did not record it would read back correctly and be
@@ -2296,6 +2311,7 @@ fn provenance(t: &mut Tokens, p: &Provenance) {
 /// thing in the file by far and a one-line-per-vertex diff is the difference
 /// between reading a disagreement and scrolling past it.
 fn write_mesh(out: &mut String, id: ogeom_topo::TriangulationId, mesh: &Triangulation) {
+    let at_vertex = mesh.vertex_parameters();
     let mut t = Tokens::default();
     w(&mut t, "mesh");
     key(&mut t, id);
@@ -2312,19 +2328,64 @@ fn write_mesh(out: &mut String, id: ogeom_topo::TriangulationId, mesh: &Triangul
         // assembled by hand; the zeros keep the record rectangular and the
         // reader keeps whatever length it is told.
         vector(&mut t, mesh.normals.get(i).copied().unwrap_or(Vector::ZERO));
-        let (u_at, v_at) = mesh.parameters.get(i).copied().unwrap_or((0.0, 0.0));
+        let (u_at, v_at) = at_vertex[i].unwrap_or((0.0, 0.0));
         n(&mut t, u_at);
         n(&mut t, v_at);
         emit(out, &t);
     }
-    for triangle in &mesh.triangles {
+    // A triangle whose corners all read as their vertices is `f`; one with
+    // a corner of its own is `fc`, its corners' parameters and normals
+    // after its indices.
+    for (i, triangle) in mesh.triangles.iter().enumerate() {
         let mut t = Tokens::default();
-        w(&mut t, "f");
+        let own = own_corners(mesh, &at_vertex, i);
+        w(&mut t, if own.is_some() { "fc" } else { "f" });
         for index in triangle {
             u(&mut t, u64::from(*index));
         }
+        if let Some((uv, normals)) = own {
+            for (u_at, v_at) in uv {
+                n(&mut t, u_at);
+                n(&mut t, v_at);
+            }
+            for normal in normals {
+                vector(&mut t, normal);
+            }
+        }
         emit(out, &t);
     }
+}
+
+/// A triangle's corner parameters and normals, as an `fc` line holds them.
+type OwnCorners = ([(f64, f64); 3], [Vector; 3]);
+
+/// Triangle `i`'s corner parameters and normals, where some corner's are
+/// not what its vertex line says (`at_vertex`, and the vertex's normal):
+/// `None` where all three read as their vertices.
+fn own_corners(
+    mesh: &Triangulation,
+    at_vertex: &[Option<(f64, f64)>],
+    i: usize,
+) -> Option<OwnCorners> {
+    let t = mesh.triangles[i];
+    let vertex_normal = |v: u32| {
+        mesh.normals
+            .get(v as usize)
+            .copied()
+            .unwrap_or(Vector::ZERO)
+    };
+    let normals = mesh
+        .triangle_normals(i)
+        .unwrap_or_else(|| t.map(vertex_normal));
+    let uv = mesh.triangle_parameters(i)?;
+    let bits = |(a, b): (f64, f64)| (a.to_bits(), b.to_bits());
+    let vector_bits = |n: Vector| (n.x.to_bits(), n.y.to_bits(), n.z.to_bits());
+    let same = (0..3).all(|k| {
+        let v = t[k];
+        at_vertex[v as usize].map(bits) == Some(bits(uv[k]))
+            && vector_bits(normals[k]) == vector_bits(vertex_normal(v))
+    });
+    (!same).then_some((uv, normals))
 }
 
 fn write_node(
@@ -2928,18 +2989,22 @@ impl<'a> Cursor<'a> {
         let triangles = self.count()?;
         let mut mesh = Triangulation::new();
         mesh.deflection_met = self.flag()?;
+        let mut at_vertex = Vec::with_capacity(vertices);
         for _ in 0..vertices {
             if self.word()? != "v" {
                 ogeom_bail!(Construction, "expected a mesh vertex");
             }
             mesh.positions.push(self.point()?);
             mesh.normals.push(self.vector()?);
-            mesh.parameters.push((self.number()?, self.number()?));
+            at_vertex.push((self.number()?, self.number()?));
         }
+        let mut own = Vec::new();
         for _ in 0..triangles {
-            if self.word()? != "f" {
-                ogeom_bail!(Construction, "expected a mesh triangle");
-            }
+            let cornered = match self.word()? {
+                "f" => false,
+                "fc" => true,
+                _ => ogeom_bail!(Construction, "expected a mesh triangle"),
+            };
             let mut corners = [0_u32; 3];
             for corner in &mut corners {
                 *corner = self.small()?;
@@ -2951,7 +3016,24 @@ impl<'a> Cursor<'a> {
                     );
                 }
             }
+            if cornered {
+                let mut uv = [(0.0, 0.0); 3];
+                for c in &mut uv {
+                    *c = (self.number()?, self.number()?);
+                }
+                let mut normals = [Vector::ZERO; 3];
+                for normal in &mut normals {
+                    *normal = self.vector()?;
+                }
+                own.push((mesh.triangles.len(), uv, normals));
+            }
             mesh.triangles.push(corners);
+        }
+        mesh.set_vertex_parameters(at_vertex);
+        mesh.set_corner_normals_from_vertices();
+        for (i, uv, normals) in own {
+            mesh.corner_parameters[i] = uv;
+            mesh.corner_normals[i] = normals;
         }
         Ok(mesh)
     }
@@ -4048,6 +4130,46 @@ mod tests {
                 .count()
                 <= 1
         );
+    }
+
+    /// A cone's apex is one vertex whose corners each hold their own `u`
+    /// and normal: written as `fc` lines in a version 4 file, read back the
+    /// same. A box, whose corners all read as their vertices, is written
+    /// with no `fc` line at an older version.
+    #[test]
+    fn a_mesh_with_corners_of_their_own_round_trips() {
+        let mut model = Model::new();
+        let cone = make_cone(&mut model, Frame::WORLD, 2.0, 0.0, 3.0, T)
+            .unwrap()
+            .shape;
+        ogeom_mesh::tessellate(&mut model, &cone, fine(), T).unwrap();
+        let text = write(&model, std::slice::from_ref(&cone), WriteOptions::default()).unwrap();
+        assert!(text.starts_with("ogeom 4\n"));
+        assert!(text.lines().any(|l| l.starts_with("fc ")));
+        let (restored, _) = read(&text).unwrap();
+        for (before, after) in model
+            .geometry()
+            .triangulations()
+            .zip(restored.geometry().triangulations())
+        {
+            assert_eq!(before.1.corner_parameters, after.1.corner_parameters);
+            assert_eq!(before.1.corner_normals, after.1.corner_normals);
+            assert_eq!(before.1.triangles, after.1.triangles);
+        }
+
+        let mut model = Model::new();
+        let solid = make_box(&mut model, Frame::WORLD, (1.0, 2.0, 3.0), T)
+            .unwrap()
+            .shape;
+        ogeom_mesh::tessellate(&mut model, &solid, fine(), T).unwrap();
+        let text = write(
+            &model,
+            std::slice::from_ref(&solid),
+            WriteOptions::default(),
+        )
+        .unwrap();
+        assert!(!text.starts_with("ogeom 4"));
+        assert!(!text.lines().any(|l| l.starts_with("fc ")));
     }
 
     #[test]

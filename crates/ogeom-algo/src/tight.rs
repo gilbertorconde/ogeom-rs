@@ -311,16 +311,13 @@ fn face_extremes(
     if mesh.positions.is_empty() {
         return Ok(());
     }
-    let chart: Vec<[Point2; 3]> = mesh
-        .triangles
-        .iter()
-        .map(|t| {
-            t.map(|i| {
-                let (u, v) = mesh.parameters[i as usize];
-                Point2::new(u, v)
-            })
-        })
+    let chart: Vec<[Point2; 3]> = (0..mesh.triangles.len())
+        .filter_map(|i| mesh.triangle_parameters(i))
+        .map(|t| t.map(|(u, v)| Point2::new(u, v)))
         .collect();
+    if chart.len() != mesh.triangles.len() {
+        return Ok(());
+    }
     let inside = |p: Point2| chart.iter().any(|t| in_triangle(*t, p));
     let span = chart.iter().flatten().fold(
         (
@@ -341,23 +338,24 @@ fn face_extremes(
     // curves in the chart the chords stand outside it. A descent that
     // ends against the border was stopped by the chords, not by the
     // surface, and an extreme on the boundary is the edges' to find.
-    let mut sides: ogeom_core::FastMap<(u32, u32), usize> = ogeom_core::FastMap::default();
-    for t in &mesh.triangles {
-        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
-            *sides.entry((a.min(b), a.max(b))).or_default() += 1;
+    // Each side with the chart points its last triangle gives its ends.
+    let mut sides: ogeom_core::FastMap<(u32, u32), (usize, (Point2, Point2))> =
+        ogeom_core::FastMap::default();
+    for (t, corners) in mesh.triangles.iter().zip(&chart) {
+        for (j, k) in [(0, 1), (1, 2), (2, 0)] {
+            let (a, b) = (t[j], t[k]);
+            let entry = sides
+                .entry((a.min(b), a.max(b)))
+                .or_insert((0, (corners[j], corners[k])));
+            entry.0 += 1;
         }
     }
     let border: Vec<(Point2, Point2)> = sides
-        .into_iter()
-        .filter(|(_, n)| *n == 1)
-        .map(|((a, b), _)| {
-            let at = |i: u32| {
-                let (u, v) = mesh.parameters[i as usize];
-                Point2::new(u, v)
-            };
-            (at(a), at(b))
-        })
+        .into_values()
+        .filter(|(n, _)| *n == 1)
+        .map(|(_, ends)| ends)
         .collect();
+    let at_vertex = mesh.vertex_parameters();
     let against = ((upper[0] - lower[0]).min(upper[1] - lower[1])) * 1e-6;
     let on_border = |p: Point2| {
         border
@@ -391,7 +389,9 @@ fn face_extremes(
                 continue;
             };
             points.push(mesh.positions[best]);
-            let (u, v) = mesh.parameters[best];
+            let Some((u, v)) = at_vertex[best] else {
+                continue;
+            };
             let refined = solve_on_face(
                 |uv: &[f64]| {
                     let p = Point2::new(uv[0], uv[1]);

@@ -427,7 +427,8 @@ fn extended(
     // plane, then the faces the rims wind about nothing.
     let mut out = sheet.clone();
     out.normals.clear();
-    out.parameters.clear();
+    out.corner_normals.clear();
+    out.set_vertex_parameters(Vec::new());
     let first_corner = u32::try_from(out.positions.len())
         .ok()
         .filter(|&n| n.checked_add(4).is_some())
