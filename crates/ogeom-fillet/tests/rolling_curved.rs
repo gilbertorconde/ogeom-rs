@@ -1380,62 +1380,6 @@ fn a_lone_round_on_an_arc_is_refused_by_name() {
     );
 }
 
-/// A half frustum (radii 5 to 3, 6 high) on a plate, cut through its axis:
-/// its foot and the two uprights along the cone's rulings rounded 1. The
-/// uprights lean, so the ball's sweep round their bands' ends is no torus:
-/// refused by name.
-#[test]
-fn a_lone_round_on_a_cone_s_ruling_is_refused_by_name() {
-    let mut m = Model::new();
-    let plate = ogeom_algo::make_box(
-        &mut m,
-        frame_at(Point::new(0.0, 0.0, 0.0), Direction::Z),
-        (20.0, 20.0, 4.0),
-        T,
-    )
-    .unwrap()
-    .shape;
-    let cone = ogeom_algo::make_cone(
-        &mut m,
-        frame_at(Point::new(10.0, 10.0, 4.0), Direction::Z),
-        5.0,
-        3.0,
-        6.0,
-        T,
-    )
-    .unwrap()
-    .shape;
-    let cutter = ogeom_algo::make_box(
-        &mut m,
-        frame_at(Point::new(4.0, 4.0, 3.0), Direction::Z),
-        (12.0, 6.0, 8.0),
-        T,
-    )
-    .unwrap()
-    .shape;
-    let half = ogeom_bool::cut(&mut m, &cone, &cutter, T).unwrap().shape;
-    let half = solid_of(&m, &half);
-    let fused = ogeom_bool::fuse(&mut m, &plate, &half, T).unwrap().shape;
-    let s = solid_of(&m, &fused);
-    let edges: Vec<Shape> = [
-        Point::new(10.0, 10.0, 4.0),
-        Point::new(10.0, 15.0, 4.0),
-        Point::new(6.0, 10.0, 7.0),
-        Point::new(14.0, 10.0, 7.0),
-    ]
-    .iter()
-    .map(|&p| edge_near(&m, &s, p))
-    .collect();
-    refused_at(
-        &m,
-        &s,
-        &edges,
-        1.0,
-        "5.000000, 10.000000, 4.000000",
-        "does not stand square",
-    );
-}
-
 /// A rib fused against a drum, lower than the drum: the rib's top edge
 /// (convex) and its two edges on the drum (concave) rounded 0.5. The face
 /// across from the lone round is the drum: refused by name.

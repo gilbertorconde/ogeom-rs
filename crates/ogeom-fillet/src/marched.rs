@@ -4528,7 +4528,7 @@ fn pole_hole(
 /// `host` run on along its rulings by `pad` past each end where it is a
 /// cylinder or a cone over a height range, a cone short of its apex. Any
 /// other host is its whole self.
-fn ruled_on(host: &SurfaceGeometry, pad: f64) -> OgeomResult<SurfaceGeometry> {
+pub(crate) fn ruled_on(host: &SurfaceGeometry, pad: f64) -> OgeomResult<SurfaceGeometry> {
     use ogeom_geom::Surface as _;
     Ok(match host {
         SurfaceGeometry::Cylinder(c) => {
