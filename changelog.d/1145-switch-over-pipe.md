@@ -1,4 +1,4 @@
 - **Fixed: a chain whose ball changes walls off its vertex is built as a pipe there, or refused by name** (#1145).
   - Where two rounds meet tangent on one face and their walls meet along a seam, the ball changes walls where its contact crosses the seam at its own height. Joining the rounds at the vertex left a gap where that stood off the vertex: a half frustum's foot, rounded after its uprights, built 0.016 of fill short with `check` clean.
   - A concave link whose crossings at both ends stand past its vertices is now rounded as the pipe about the ball's centre curve, fitted through its exact sections, with its neighbours ending on those sections. The half frustum's foot is within 2.3e-6 of a free-ball reference, the same in either order, G1 at every join. `Rolling` builds it in one request, leaning uprights included.
-  - Any other such chain is refused by name, naming the vertex: a convex one, and a link with one crossing in its vertex's section (a half cylinder lying on a plate, its end arcs rounded).
+  - Any other such chain is refused by name, naming the vertex.

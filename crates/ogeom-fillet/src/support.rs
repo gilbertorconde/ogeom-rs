@@ -1671,6 +1671,40 @@ pub(crate) fn ball_fits_by(
     carry: bool,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Contact>> {
+    ball_fits_within(
+        model,
+        solid,
+        edge,
+        radius_at,
+        fractions,
+        (0.0, 1.0),
+        carry,
+        tol,
+    )
+}
+
+/// [`ball_fits_by`] over the window `within` of the edge's curve range
+/// (its fractions, start to end): the reach probes near the ends are read
+/// near the window's ends instead, the stretch past them a band the caller
+/// trims off.
+///
+/// # Errors
+///
+/// As [`ball_fits_by`].
+#[allow(
+    clippy::too_many_arguments,
+    reason = "ball_fits_by's own, and the window"
+)]
+pub(crate) fn ball_fits_within(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    radius_at: &dyn Fn(f64) -> f64,
+    fractions: &[f64],
+    within: (f64, f64),
+    carry: bool,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Contact>> {
     use ogeom_geom::Surface as _;
     let mut contacts = Vec::new();
     let Ok((curve, range)) = edge_curve(model, edge, tol) else {
@@ -1758,10 +1792,11 @@ pub(crate) fn ball_fits_by(
     let curved = !matches!(curve, Curve::Line(_));
     // The stations, then the reach probes near each end, which hold a
     // concave band's contacts to its faces and add none.
-    let stations = fractions
-        .iter()
-        .map(|f| (*f, false))
-        .chain(REACH_PROBES.iter().map(|f| (*f, true)));
+    let stations = fractions.iter().map(|f| (*f, false)).chain(
+        REACH_PROBES
+            .iter()
+            .map(|f| (within.0 + (within.1 - within.0) * f, true)),
+    );
     'stations: for (fraction, probing) in stations {
         let radius = radius_at(fraction);
         let t = range.0 + (range.1 - range.0) * fraction;

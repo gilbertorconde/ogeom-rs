@@ -4132,6 +4132,94 @@ its end arcs rounded: the arc band's foot hands over in the section on
 the cylinder's side and 0.17 off it on the end disc's). The curved cap
 (a rib under a drum's top) is declined by every route as before.
 
+### Amendment: the pipe's other corners (#1145)
+
+Amendment "a ball changing walls off the vertex" built the concave pipe
+on a plane cap with both crossings off their vertices, and refused the
+rest by name. Three more cases now build on the same pipe.
+
+**Convex chains.** The ball stands inside the material, a radius under
+the cap and off the link's wall. The half frustum's top loop, once its
+uprights are rounded, crosses each band's rail 0.19 past the vertex on
+the line and 0.08 on the arc, both over the band. So the line and the
+arc are the links: each runs on as a pipe (a straight cylinder, a torus
+piece), and the band's top round is trimmed at both ends. The pipe's
+tool is the cut, with each face's outward normal turned.
+
+Two things differ from the concave case:
+
+- **The end's ball.** The band is fitted, so it is G1 with the plane it
+  rounds only within its fit, about 5e-4 rad. The end's ball is therefore
+  solved off whichever wall is not a fitted band (here the link's),
+  rather than always off the neighbour's.
+- **The legs and the band's march.** A section cuts the band in a curve,
+  so a section's legs on a curved wall or cap are fitted through the
+  exact cut, where a straight leg will not do. A band whose crease ends
+  on a convex pipe's sections has its fitted guide held to a quarter of
+  the crease's length past each end. Run on farther, its ball rolled
+  over the band's continuation and the march stalled.
+
+**A crossing in the vertex's section.** A half cylinder lying on a plate,
+with its end arcs rounded, crosses 0.17 off its vertex on the end disc's
+side and in the section on the cylinder's. The pipe ends in that section
+there: its foot is the vertex, its leg on the neighbour's wall is the
+seam (checked to lie in the section), and no neighbour face is needed.
+The plate-to-cylinder round beside it read its contact's angle on the
+drum one turn off the face's chart, where the face crosses the drum's
+seam, and was refused as "touches outside its face". The angle is now
+read a turn either way.
+
+**A curved cap.** A rib fused under a drum's top, its top edges rounded,
+has the concave chain where it meets the drum: two uprights (a plane
+against the drum along a line), two band feet, two top arcs. Each foot
+crosses 0.05 off its vertex over the arc (at radius 0.5) and in its
+section on the upright's side: the same pipe, on a cylinder cap. Three
+changes reach it:
+
+- the contour route admits a pipe's chain on a curved cap;
+- the ball-fit guard reads a pipe's neighbour only over the stretch it
+  keeps, its reach probes held there too, since past the section the
+  pipe takes the ball;
+- the uprights are rounded by the ruled seat's exact prism (the ball's
+  cylinder about its fixed centre line, legs on the plane and the drum,
+  ended in the vertices' sections). The march held its fit in distance
+  only: at 0.3 the fill was 8e-5 short and the band met the drum 3.5e-3
+  rad off tangent.
+
+`Rolling`'s lone-band order now takes a curved cap. The lone top edges
+are rounded first, their feet found on the cap's surface, and the chain
+then rolls round them, which is the two calls.
+
+**Oracles** (`tests/switch_over.rs`), each independent of the kernel:
+
+- Convex: the opening of `(E ⊕ B_R) ∩ {z ≤ top}` by balls of `r`, which
+  is `C ⊕ B_r` with `C = (E ⊕ B_{R−r}) ∩ {z ≤ top − r}`, convex. Its
+  nearest point to a point is `E ⊕ B_{R−r}`'s where that stands at or
+  below `top − r`, and otherwise lies in the slice there. On an upright
+  D it gives `p r²(1 − π/4) − π r³(5/3 − π/2)` within 3e-6.
+- The half cylinder: amendment "a ball changing walls off the vertex"'s
+  closing reference, on the capped cylinder `E`.
+- The curved cap: the closing of drum ∪ rounded rib. A point is filled
+  where it stands more than `r` from the free centres. Their nearest
+  point is the drum offset's radially, the rib offset's along the rib's
+  nearest point, or on the curve where the two offsets meet, sampled.
+  Integrated on rays from the drum's axis, adaptive in angle and height,
+  above the plate's reach. Below that, the fill is the uprights' plane
+  section, whose area is read by Green's theorem, and the reference
+  reproduces it within 1e-7.
+
+| Case | Error | G1, widest | Also |
+|---|---|---|---|
+| half frustum, top loop (0.5) | 4.6e-6 | pipes 5.7e-4 rad; the band tops, marched on the fitted bands, 1.05e-3 | |
+| half cylinder, foot (1) | 3.9e-7 | 2.8e-5 rad | |
+| rib under a drum (0.5, 0.3) | 4.0e-7, 2.8e-7 | 2.8e-5 rad | `Rolling` in one request (0.5): the same solid |
+
+Every case is `check` clean and the same in either edge order.
+
+**Still refused, by name.** A chain whose off-vertex crossing no pipe
+takes, such as the rib's chain short of one upright. There, the foot's
+other end hands over in its section to an edge the request leaves sharp.
+
 ## 12. Acceptance corpus
 
 From #902:
