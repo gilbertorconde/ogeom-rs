@@ -1130,6 +1130,16 @@ fn rounds_by_engine_unplaced(
     if let Some(built) = crate::engine::marched_rounds(model, solid, &once, false, tol)? {
         return Ok(Some(built));
     }
+    // Straight creases whose marched bands stop short of an end face they
+    // lean into: carried past their ends, each wedge clipped by that face
+    // (amendment "a marched band leaning into its end face").
+    if lines_only(model, &once, tol)?
+        && let Some(built) = crate::marched::carried_past_ends(|| {
+            crate::engine::marched_rounds(model, solid, &once, false, tol)
+        })?
+    {
+        return Ok(Some(built));
+    }
     // A cone rim asked alone whose exact torus band nothing above closes,
     // its band fitted through the ball's arcs as the march builds it: the
     // boolean resolves some meetings of
@@ -1157,6 +1167,17 @@ fn rounds_by_engine_unplaced(
     // Last, groups of edges whose rounds stand apart, each built as it is
     // alone (amendment "rounds standing apart").
     crate::engine::apart_rounds(model, solid, &once, rounds_by_engine, tol)
+}
+
+/// Whether every edge of `once` lies on a line.
+fn lines_only(model: &Model, once: &[(Shape, f64)], tol: Tolerances) -> OgeomResult<bool> {
+    for (edge, _) in once {
+        let (curve, _) = crate::support::edge_curve(model, edge, tol)?;
+        if !matches!(curve, ogeom_geom::Curve::Line(_)) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// The engine's routes for [`rounds_by_engine_unplaced`], in turn, but the

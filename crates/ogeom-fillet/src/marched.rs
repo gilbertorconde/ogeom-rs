@@ -49,6 +49,36 @@ pub(crate) const HOST_REACH: f64 = 6.0;
 /// length.
 const WALL_REACH: f64 = 2.0 * CREASE_REACH;
 
+thread_local! {
+    /// Whether marched bands run out past an end face they lean into
+    /// ([`carried_past_ends`]).
+    static CARRIED_PAST: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+/// `f` run with marched bands carried past their ends: a straight crease
+/// and a cylinder or cone host over a height range are read on past the
+/// edge, and where the crease runs on into the material across one planar
+/// face at its end, the band runs out there and its wedge is clipped by
+/// that face's plane, so the face trims the band and keeps all it holds.
+/// A band stopped at such a vertex instead caps in its section's own
+/// plane, which leans off the face wherever the crease does and cuts into
+/// it or falls short of it.
+pub(crate) fn carried_past_ends<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CARRIED_PAST.with(|flag| flag.set(self.0));
+        }
+    }
+    let _restore = Restore(CARRIED_PAST.with(|flag| flag.replace(true)));
+    f()
+}
+
+/// Whether [`carried_past_ends`] is at work on this thread.
+fn carried_past() -> bool {
+    CARRIED_PAST.with(core::cell::Cell::get)
+}
+
 /// [`marched_fillet_by`] at a constant radius, with the wedge set `aside`
 /// unapplied, the solid as given handed back, where the solid stands as
 /// given; a seat whose leg needs the solid rebuilt on a turned chart hands
@@ -133,6 +163,27 @@ fn marched_fillet_by(
     } = marched_seat_over(model, solid, edge, radius, span, tol)?;
     let (guide, guide_range) =
         run_out_guide(guide, guide_range, closed, [&first, &second], radius, tol)?;
+    let (guide, guide_range, first, second) = if carried_past() && !closed {
+        // Two radii: room for the ball to clear an end face, short of
+        // where the seat itself turns (a cone's spine over the top of its
+        // hyperbola, onto the next ruling).
+        let reach = radius * 2.0;
+        let (guide, guide_range) = match guide {
+            Curve::Line(line) => (
+                Curve::Line(ogeom_geom::LineCurve::new(line.axis())),
+                (guide_range.0 - reach, guide_range.1 + reach),
+            ),
+            other => (other, guide_range),
+        };
+        (
+            guide,
+            guide_range,
+            ruled_on(&first, reach)?,
+            ruled_on(&second, reach)?,
+        )
+    } else {
+        (guide, guide_range, first, second)
+    };
 
     // A seat running through a point where its hosts are tangent (the
     // crossing of two equal drums) has no section there: the ball's arc
@@ -1673,6 +1724,10 @@ fn open_runout_wedge(
     // Per end (start, then end), the plane of a wall the end section lies
     // in, where the band stops at the vertex capped in that plane.
     let mut walls: [Option<(Point, Vector)>; 2] = [None, None];
+    // Per end, the plane the wedge is clipped by where the band runs out
+    // into the material across one planar face ([`carried_past_ends`]),
+    // its normal facing back over the edge, and that face.
+    let mut clips: [Option<(Point, Vector, Shape)>; 2] = [None, None];
     {
         let span = edge_range.1 - edge_range.0;
         if span <= 0.0 {
@@ -1851,6 +1906,55 @@ fn open_runout_wedge(
                 radius,
                 tol,
             )? {
+                let face = if carried_past() {
+                    lone_end_plane(model, solid, edge, host_faces, at, outward_here, tol)?
+                } else {
+                    None
+                };
+                let Some(plane) = face else {
+                    continue;
+                };
+                // Carried on until the ball's centre stands one and a half
+                // radii past the vertex, its section wholly past the face
+                // that clips it; a march that stops short of that declines.
+                let n = blend.len();
+                let outside: Vec<usize> = if end {
+                    (0..n).rev().filter(|&i| blend.along[i] < w0).collect()
+                } else {
+                    (0..n).filter(|&i| blend.along[i] > w1).collect()
+                };
+                let mut last = None;
+                for i in outside {
+                    if end {
+                        w0 = blend.along[i];
+                    } else {
+                        w1 = blend.along[i];
+                    }
+                    last = Some(i);
+                    if blend.spine[i].distance(at) >= radius * 1.5 {
+                        break;
+                    }
+                }
+                let (on, keep, _) = &plane;
+                let past = |q: Point| (q - *on).dot(*keep) < -tol.confusion();
+                let clear = last.is_some_and(|i| {
+                    let (a, b, c) = (blend.touch_first[i], blend.touch_second[i], blend.spine[i]);
+                    let middle = a.midpoint(b) - c;
+                    let arc = if middle.magnitude() > tol.confusion() {
+                        c + middle * (radius / middle.magnitude())
+                    } else {
+                        c
+                    };
+                    past(a) && past(b) && past(arc)
+                });
+                if !clear {
+                    ogeom_bail!(
+                        Construction,
+                        "a band leaning into its end face does not run far enough past it \
+                         to be clipped there"
+                    );
+                }
+                clips[usize::from(!end)] = Some(plane);
                 continue;
             }
             ends_on_a_wall = true;
@@ -2187,10 +2291,144 @@ fn open_runout_wedge(
             if ends_on_a_wall {
                 crate::support::note_melt_refusal_in(aside, RUNS_OUT_ON_A_FACE);
             }
+            if clips != [None, None] {
+                let Some(aside) = aside else {
+                    ogeom_bail!(
+                        Construction,
+                        "a band clipped by its end face is built only as a tool set aside"
+                    );
+                };
+                let reach = radius * 64.0 + (edge_range.1 - edge_range.0).abs();
+                let mut held = aside.borrow_mut();
+                let Some(last) = held.last_mut() else {
+                    ogeom_bail!(
+                        Construction,
+                        "a band clipped by its end face set no wedge aside"
+                    );
+                };
+                let mut on_faces = Vec::new();
+                for (on, keep, face) in clips.into_iter().flatten() {
+                    let side = clip_side(model, on, keep, reach, tol)?;
+                    let kept = ogeom_bool::common(model, &last.solid, &side, tol)?.shape;
+                    let solids = explore(model, &kept, Filter::OfType(ShapeType::Solid))?;
+                    let [only] = solids.as_slice() else {
+                        ogeom_bail!(
+                            Construction,
+                            "a band clipped by its end face leaves other than one wedge"
+                        );
+                    };
+                    last.solid = only.clone();
+                    on_faces.push((on, keep, face));
+                }
+                // The wedge's face on a clipping plane lies on the end face:
+                // the cut leaves that face, which the round does not make.
+                last.credit.clear();
+                for face in explore(model, &last.solid, Filter::OfType(ShapeType::Face))? {
+                    let Some(SurfaceGeometry::Plane(plane)) = model
+                        .node(&face)
+                        .and_then(|n| n.data().as_face())
+                        .and_then(|d| model.geometry().surface(d.surface))
+                        .cloned()
+                    else {
+                        continue;
+                    };
+                    let placement = face.transform(model.datums())?;
+                    let origin = placement.apply(plane.plane().origin());
+                    let normal = placement.apply_vector(plane.plane().normal().vector());
+                    for (on, keep, end_face) in &on_faces {
+                        if normal.cross(*keep).magnitude() <= tol.angular()
+                            && (origin - *on).dot(*keep).abs() <= tol.confusion()
+                        {
+                            last.credit.push((face.clone(), end_face.clone()));
+                        }
+                    }
+                }
+            }
             Ok(built)
         }
         other => other,
     }
+}
+
+/// The one face of `solid` at the vertex where `edge` ends at `at`, other
+/// than its hosts, where it is a plane leaning to the crease (the crease
+/// leaving the vertex `outward` crosses it): that plane, as a point on it
+/// and its unit normal facing back over the edge, and the face. `None`
+/// where more faces or another kind of face stand there.
+fn lone_end_plane(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    host_faces: [&Shape; 2],
+    at: Point,
+    outward: Vector,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Point, Vector, Shape)>> {
+    let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
+        return Ok(None);
+    };
+    let point_of = |v: &Shape| -> OgeomResult<Point> {
+        let Some(data) = model.node(v).and_then(|n| n.data().as_vertex().cloned()) else {
+            ogeom_bail!(Construction, "vertex node holds no point");
+        };
+        Ok(v.transform(model.datums())?.apply(data.point))
+    };
+    let vertex = if point_of(&a)?.distance(at) <= point_of(&b)?.distance(at) {
+        a
+    } else {
+        b
+    };
+    let mut found: Option<(Point, Vector, Shape)> = None;
+    for face in ogeom_topo::ancestors_of(model, solid, &vertex, ShapeType::Face)? {
+        if host_faces.iter().any(|h| h.is_same(&face)) {
+            continue;
+        }
+        let Some(plane) = model
+            .node(&face)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| model.geometry().surface(d.surface))
+            .and_then(|s| match s {
+                SurfaceGeometry::Plane(p) => Some(p.plane()),
+                _ => None,
+            })
+        else {
+            return Ok(None);
+        };
+        let normal = face
+            .transform(model.datums())?
+            .apply_vector(plane.normal().vector());
+        let normal = if normal.dot(outward) > 0.0 {
+            -normal
+        } else {
+            normal
+        };
+        if normal.dot(outward) >= -tol.angular() {
+            return Ok(None);
+        }
+        if found.is_some() {
+            return Ok(None);
+        }
+        found = Some((at, normal, face));
+    }
+    Ok(found)
+}
+
+/// A box standing on the plane through `on` square to `keep`, reaching
+/// `reach` along `keep` and either way across it: the side of that plane a
+/// wedge clipped there keeps.
+fn clip_side(
+    model: &mut Model,
+    on: Point,
+    keep: Vector,
+    reach: f64,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let z = ogeom_math::Direction::new(keep, tol)?;
+    let x = z.any_perpendicular();
+    let y = z.vector().cross(x.vector());
+    let corner = on - x.vector() * reach - y * reach;
+    let frame = ogeom_math::Frame::new(corner, z, x, tol)?;
+    Ok(ogeom_algo::make_box(model, frame, (2.0 * reach, 2.0 * reach, reach), tol)?.shape)
 }
 
 /// The open seat's wedge for a bevel: [`open_runout_wedge`] over the
@@ -4285,6 +4523,32 @@ fn pole_hole(
         edge.clone()
     };
     Ok(ogeom_algo::make_wire(model, &[turned], tol)?.shape)
+}
+
+/// `host` run on along its rulings by `pad` past each end where it is a
+/// cylinder or a cone over a height range, a cone short of its apex. Any
+/// other host is its whole self.
+fn ruled_on(host: &SurfaceGeometry, pad: f64) -> OgeomResult<SurfaceGeometry> {
+    use ogeom_geom::Surface as _;
+    Ok(match host {
+        SurfaceGeometry::Cylinder(c) => {
+            let (lo, hi) = c.domain().1;
+            ogeom_geom::CylinderSurface::new(c.cylinder(), (lo - pad, hi + pad))?.into()
+        }
+        SurfaceGeometry::Cone(c) => {
+            let (lo, hi) = c.domain().1;
+            let apex = c.apex_height();
+            let (lo, hi) = if apex < lo {
+                ((lo - pad).max(f64::midpoint(apex, lo)), hi + pad)
+            } else if apex > hi {
+                (lo - pad, (hi + pad).min(f64::midpoint(apex, hi)))
+            } else {
+                (lo, hi)
+            };
+            ogeom_geom::ConeSurface::new(c.cone(), (lo, hi))?.into()
+        }
+        other => other.clone(),
+    })
 }
 
 /// The host surface cut down to the window the leg actually spans, padded a
