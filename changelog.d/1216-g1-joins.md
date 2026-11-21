@@ -1,0 +1,6 @@
+- **Fixed: a pipe corner's joins are G1 within 1e-4 rad** (#1216).
+  - A marched band now holds its fit to the ball's normal within 5e-5 rad as well as in distance. No distance bound is loosened. Where it tilts, it is sampled more finely across and fitted tighter there.
+  - On the half frustum, the widest turn across a join drops from 5.2e-4 rad (the uprights) and 1.1e-3 rad (the top loop) to 3.8e-5 rad. Every pipe-corner part now joins within 4e-5 rad.
+  - Tangential contact tracing no longer crawls along a surface's border: a contact running along the bound is followed at full steps. A walk that took 5 s takes 30 ms.
+  - `ogeom_bool::note_meeting_along_edge` lets a caller state that two surfaces meet only along an edge already bounded on both sides. The general fuse then skips intersecting them. Fillet bands use it for the faces they were built against.
+  - `ogeom_geom::fit::fit_surface_grid_chordal_by` fits a grid with a tolerance per pass.

@@ -1412,9 +1412,12 @@ section, is rounded as the pipe about the ball's centre curve between \
 the crossings, fitted through the ball's exact sections, its neighbours \
 ending on those sections, all joined into one fill or cut. Concave or \
 convex, on a planar or a curved cap: a half frustum's foot (within \
-2.3e-6 of a free-ball reference) and top loop (4.6e-6) round its \
+2.2e-6 of a free-ball reference) and top loop (4.2e-6) round its \
 rounded uprights, a half cylinder's foot round its rounded end arcs \
-(3.9e-7), and a rib's root on a drum round its rounded top (4e-7). In \
+(3.9e-7), and a rib's root on a drum round its rounded top (4e-7), \
+every join G1 within 1e-4 rad. An open marched band holds its fit to \
+the ball's normal at its stations within 5e-5 rad as well as in \
+distance, sampled more finely across and fitted tighter where it tilts. In \
 such a chain a plane against a drum along it is rounded by its exact \
 prism, and a band ending on a convex pipe's sections is marched only \
 just past its crease. Any other such chain is refused by name, naming \

@@ -2065,6 +2065,46 @@ pub fn fit_surface_grid(
     fit_surface_grid_inner(rows, degree, tolerance, false, false, tol)
 }
 
+/// As [`fit_surface_grid_chordal`], with each of the two passes held to its
+/// own tolerance: `passes.0` for the rows along `u`, `passes.1` for the
+/// columns of their control points along `v`. A tighter row pass refines
+/// across the rows alone and leaves the columns' end rows, the surface's
+/// `u` borders, fitted as before. The result is measured against
+/// `tolerance`.
+///
+/// # Errors
+///
+/// As [`fit_surface_grid`], and where a pass's tolerance is not a distance.
+pub fn fit_surface_grid_chordal_by(
+    rows: &[Vec<Point>],
+    degree: usize,
+    passes: (f64, f64),
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Fitted<crate::BSplineSurface>> {
+    for t in [passes.0, passes.1, tolerance] {
+        if !t.is_finite() || t <= 0.0 {
+            ogeom_bail!(Construction, "a tolerance of {t} is not a distance");
+        }
+    }
+    let (u_params, v_params) = grid_parameters(rows, (true, true))?;
+    let raw: Vec<Vec<[f64; 3]>> = rows
+        .iter()
+        .map(|r| r.iter().map(|p| [p.x, p.y, p.z]).collect())
+        .collect();
+    fit_grid_passes(
+        rows,
+        &raw,
+        (&u_params, &v_params),
+        degree,
+        passes,
+        tolerance,
+        (false, false),
+        (&[], &[]),
+        tol,
+    )
+}
+
 /// As [`fit_surface_grid`], parameterized by chord length instead of the
 /// centripetal assignment, the open counterpart of
 /// [`fit_surface_grid_closed_v_chordal`], for a marched band that stops at
@@ -3131,8 +3171,32 @@ fn measured_between(
 fn fit_grid_on(
     rows: &[Vec<Point>],
     raw: &[Vec<[f64; 3]>],
+    params: (&[f64], &[f64]),
+    degree: usize,
+    tolerance: f64,
+    flags: (bool, bool),
+    kept: (Kept<'_>, Kept<'_>),
+    tol: Tolerances,
+) -> OgeomResult<Fitted<crate::BSplineSurface>> {
+    let passes = (tolerance * 0.5, tolerance * 0.5);
+    fit_grid_passes(
+        rows, raw, params, degree, passes, tolerance, flags, kept, tol,
+    )
+}
+
+/// [`fit_grid_on`] with each pass held to its own tolerance, `passes.0`
+/// along the rows (`u`) and `passes.1` across them (`v`), and the
+/// assembled surface measured against `tolerance`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the grid, its two parameterizations and the fit's own settings"
+)]
+fn fit_grid_passes(
+    rows: &[Vec<Point>],
+    raw: &[Vec<[f64; 3]>],
     (u_params, v_params): (&[f64], &[f64]),
     degree: usize,
+    passes: (f64, f64),
     tolerance: f64,
     (closed_v, interpolate): (bool, bool),
     (u_kept, v_kept): (Kept<'_>, Kept<'_>),
@@ -3144,7 +3208,7 @@ fn fit_grid_on(
         raw,
         u_params,
         degree,
-        tolerance * 0.5,
+        passes.0,
         false,
         interpolate,
         u_kept,
@@ -3159,7 +3223,7 @@ fn fit_grid_on(
         &control_columns,
         v_params,
         degree,
-        tolerance * 0.5,
+        passes.1,
         closed_v,
         interpolate,
         v_kept,

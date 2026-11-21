@@ -3085,7 +3085,117 @@ pub(crate) fn build_held_band_by(
     ];
     faces.push(blend_face);
     faces.extend(caps);
+    if let Some(edge) = edge {
+        note_rails(
+            model, solid, edge, blend_id, &blend_geo, blend, fit_target, tol,
+        )?;
+    }
     crate::support::finish_wedge(model, solid, edge, &faces, additive, aside, tol)
+}
+
+/// Tell the boolean that the band on `band` meets each face of `solid` at
+/// `edge` it was built against only along its rail, where that holds: the
+/// rail, the band's border at the face, lies on the face's surface within
+/// `fit`, and no point of the band stands past that surface from the side
+/// its ball rolls on. The wedge's leg on the face splits it along the rail,
+/// so the contact the two would be intersected for is known, and on a
+/// fitted band, touching its host only within its fit, it is no smooth
+/// curve to walk.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the band, its march and the solid it rounds"
+)]
+fn note_rails(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    band: ogeom_topo::SurfaceId,
+    surface: &SurfaceGeometry,
+    blend: &crate::march::MarchedBlend,
+    fit: f64,
+    tol: Tolerances,
+) -> OgeomResult<()> {
+    use ogeom_geom::Surface as _;
+    const ALONG: u32 = 32;
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let along = |k: u32| v0 + (v1 - v0) * f64::from(k) / f64::from(ALONG);
+    let mid = blend.len() / 2;
+    for face in ogeom_topo::ancestors_of(model, solid, edge, ShapeType::Face)? {
+        if !face.location().is_identity() {
+            continue;
+        }
+        let Some(host_id) = model
+            .node(&face)
+            .and_then(|n| n.data().as_face())
+            .map(|d| d.surface)
+        else {
+            continue;
+        };
+        let Some(host) = model.geometry().surface(host_id) else {
+            continue;
+        };
+        // The nearest point of the host, where it stands inside the host's
+        // domain: a point whose nearest one lies on a bound stands past the
+        // host's extent, where there is nothing to meet.
+        let ((hu0, hu1), (hv0, hv1)) = host.domain();
+        let foot = |p: Point| -> OgeomResult<Option<(Point, f64)>> {
+            let found = ogeom_geom::project_on_surface(host, p, 16, tol)?;
+            let (u, v) = found.parameters;
+            let slack = tol.parametric();
+            let on_bound = |x: f64, lo: f64, hi: f64, periodic: bool| {
+                !periodic && ((x - lo).abs() <= slack || (x - hi).abs() <= slack)
+            };
+            if on_bound(u, hu0, hu1, host.is_periodic_u())
+                || on_bound(v, hv0, hv1, host.is_periodic_v())
+            {
+                return Ok(None);
+            }
+            let side = (p - found.point).dot(host.normal_at(u, v, tol)?.vector());
+            Ok(Some((found.point, side)))
+        };
+        // The border lying on this face, wherever the face's surface
+        // reaches it, and over most of the band.
+        let mut rail = None;
+        for (u, touch) in [(u0, blend.touch_first[mid]), (u1, blend.touch_second[mid])] {
+            let (mut inside, mut on) = (0, true);
+            for k in 0..=ALONG {
+                let p = surface.point_at(u, along(k), tol)?;
+                if let Some((q, _)) = foot(p)? {
+                    inside += 1;
+                    on &= q.distance(p) <= fit;
+                }
+            }
+            if on && inside * 2 > ALONG {
+                rail = Some(touch);
+                break;
+            }
+        }
+        let Some(touch) = rail else { continue };
+        // The ball's side of the host, read at its centre over the middle
+        // station's touch.
+        let (Some((_, ball)), Some((q, _))) = (foot(blend.spine[mid])?, foot(touch)?) else {
+            continue;
+        };
+        if ball.abs() <= fit || q.distance(touch) > fit {
+            continue;
+        }
+        let mut clear = true;
+        'band: for i in 1..8 {
+            let u = u0 + (u1 - u0) * f64::from(i) / 8.0;
+            for k in 0..=ALONG {
+                if let Some((_, side)) = foot(surface.point_at(u, along(k), tol)?)?
+                    && side * ball.signum() < -fit
+                {
+                    clear = false;
+                    break 'band;
+                }
+            }
+        }
+        if clear {
+            ogeom_bool::note_meeting_along_edge(model, band, host_id, tol)?;
+        }
+    }
+    Ok(())
 }
 
 /// Two tenths of a micron at unit scale: what the march's own stations
@@ -3093,6 +3203,13 @@ pub(crate) fn build_held_band_by(
 pub(crate) fn band_fit_target(tol: Tolerances) -> f64 {
     (tol.confusion() * 2e3).max(2e-4)
 }
+
+/// Each station's exact normals along its arc, none at a pinched end.
+type ArcNormals = Vec<Vec<Option<Vector>>>;
+
+/// The widest turn a marched band's fitted normal may make from its exact
+/// ball's at the stations: the band joins its hosts G1 within it.
+const BAND_TURN_TARGET: f64 = 5e-5;
 
 /// Widen an edge to at least `by`, its vertices with it, so no vertex is
 /// held tighter than an edge meeting it. A non-finite `by` leaves it.
@@ -3139,58 +3256,128 @@ fn fit_open_band_to(
     fit_target: f64,
     tol: Tolerances,
 ) -> OgeomResult<ogeom_geom::BSplineSurface> {
-    let across_open = if fit_target < band_fit_target(tol) {
+    let n = blend.len();
+    let pole = |at: usize| (at == 0 && pinched[0]) || (at == n - 1 && pinched[1]);
+    // Each station's exact arc at `across` points, with its normals (none
+    // at a pinched end).
+    let sections = |across: usize| -> OgeomResult<(Vec<Vec<Point>>, ArcNormals)> {
+        let mut stations = Vec::with_capacity(n);
+        let mut normals = Vec::with_capacity(n);
+        for at in 0..n {
+            if pole(at) {
+                stations.push(vec![blend.touch_first[at]; across]);
+                normals.push(vec![None; across]);
+                continue;
+            }
+            let centre = blend.spine[at];
+            let radius = radius.unwrap_or_else(|| blend.touch_first[at].distance(centre));
+            let a = (blend.touch_first[at] - centre) / radius;
+            let b = (blend.touch_second[at] - centre) / radius;
+            let cross = a.cross(b);
+            let m = cross.magnitude();
+            if m <= tol.angular() {
+                ogeom_bail!(
+                    Construction,
+                    "a blend section collapsed; the radius wedges rather than \
+                     seats at station {at}"
+                );
+            }
+            let axis = cross / m;
+            let sweep = a.dot(b).clamp(-1.0, 1.0).acos();
+            let mut row = Vec::with_capacity(across);
+            let mut normal = Vec::with_capacity(across);
+            for k in 0..across {
+                #[allow(clippy::cast_precision_loss)]
+                let theta = sweep * (k as f64) / ((across - 1) as f64);
+                let dir = a * theta.cos() + axis.cross(a) * theta.sin();
+                row.push(centre + dir * radius);
+                normal.push(Some(dir));
+            }
+            stations.push(row);
+            normals.push(normal);
+        }
+        Ok((stations, normals))
+    };
+    // How far the fitted surface tilts off the exact ball's normal at the
+    // stations' points: across the arcs (its `u` derivative leaning off the
+    // tangent plane) and along the band (its `v` derivative).
+    let tilts = |surface: &ogeom_geom::BSplineSurface,
+                 stations: &[Vec<Point>],
+                 normals: &ArcNormals|
+     -> OgeomResult<(f64, f64)> {
+        use ogeom_geom::Surface as _;
+        let (u_at, v_at) = ogeom_geom::fit::grid_parameters(stations, (true, true))?;
+        let (mut across, mut along) = (0.0_f64, 0.0_f64);
+        for (row, v) in normals.iter().zip(&v_at) {
+            for (want, u) in row.iter().zip(&u_at) {
+                let Some(want) = want else { continue };
+                let (du, dv) = surface.d1_at(*u, *v, tol)?;
+                let (mu, mv) = (du.magnitude(), dv.magnitude());
+                if mu > tol.confusion() {
+                    across = across.max((du.dot(*want) / mu).abs().min(1.0).asin());
+                }
+                if mv > tol.confusion() {
+                    along = along.max((dv.dot(*want) / mv).abs().min(1.0).asin());
+                }
+            }
+        }
+        Ok((across, along))
+    };
+    // Each pass first at a quarter of the target: the two passes each hold
+    // their share, but the assembled surface's honest error is measured
+    // across both, and an open band lands near their sum where the closed
+    // band's wrap absorbs it. The acceptance stays the caller's target.
+    // Where the fit tilts off the ball's normal, that direction is refined:
+    // across, sampled more finely as well, since an arc's end tangent,
+    // where the band meets its host, is read from its points and is off by
+    // the cube of their spacing; along, held tighter between the stations.
+    let mut across = if fit_target < band_fit_target(tol) {
         33
     } else {
         17
     };
-    let n = blend.len();
-    let mut rows: Vec<Vec<Point>> = (0..across_open).map(|_| Vec::with_capacity(n)).collect();
-    for at in 0..n {
-        if (at == 0 && pinched[0]) || (at == n - 1 && pinched[1]) {
-            for row in &mut rows {
-                row.push(blend.touch_first[at]);
-            }
-            continue;
+    let (mut aim_u, mut aim_v) = (fit_target * 0.25, fit_target * 0.25);
+    let mut best: Option<(ogeom_geom::BSplineSurface, f64, f64)> = None;
+    for _ in 0..4 {
+        let (stations, normals) = sections(across)?;
+        let fitted = ogeom_geom::fit::fit_surface_grid_chordal_by(
+            &stations,
+            3,
+            (aim_u, aim_v),
+            fit_target,
+            tol,
+        )?;
+        let (tilt_u, tilt_v) = tilts(&fitted.curve, &stations, &normals)?;
+        let turn = tilt_u.max(tilt_v);
+        let met = fitted.error <= fit_target;
+        let better = match &best {
+            None => true,
+            Some((_, error, t)) => met && (*error > fit_target || turn < *t),
+        };
+        if better {
+            best = Some((fitted.curve, fitted.error, turn));
         }
-        let centre = blend.spine[at];
-        let radius = radius.unwrap_or_else(|| blend.touch_first[at].distance(centre));
-        let a = (blend.touch_first[at] - centre) / radius;
-        let b = (blend.touch_second[at] - centre) / radius;
-        let cross = a.cross(b);
-        let m = cross.magnitude();
-        if m <= tol.angular() {
-            ogeom_bail!(
-                Construction,
-                "a blend section collapsed; the radius wedges rather than \
-                 seats at station {at}"
-            );
+        if met && turn <= BAND_TURN_TARGET {
+            break;
         }
-        let axis = cross / m;
-        let sweep = a.dot(b).clamp(-1.0, 1.0).acos();
-        for (k, row) in rows.iter_mut().enumerate() {
-            #[allow(clippy::cast_precision_loss)]
-            let theta = sweep * (k as f64) / ((across_open - 1) as f64);
-            let dir = a * theta.cos() + axis.cross(a) * theta.sin();
-            row.push(centre + dir * radius);
+        if tilt_u > BAND_TURN_TARGET {
+            across = (2 * across - 1).min(65);
+            aim_u *= 0.1;
+        }
+        if tilt_v > BAND_TURN_TARGET {
+            aim_v *= 0.1;
         }
     }
-    let stations: Vec<Vec<Point>> = (0..n)
-        .map(|i| (0..across_open).map(|k| rows[k][i]).collect())
-        .collect();
-    // Fitted at half the target: the two passes each hold their half, but
-    // the assembled surface's honest error is measured across both, and an
-    // open band lands near their sum where the closed band's wrap absorbs
-    // it. The acceptance stays the caller's target.
-    let fitted = ogeom_geom::fit::fit_surface_grid_chordal(&stations, 3, fit_target * 0.5, tol)?;
-    if fitted.error > fit_target {
+    let Some((surface, error, _)) = best else {
+        ogeom_bail!(Construction, "a band has no fit");
+    };
+    if error > fit_target {
         ogeom_bail!(
             NotDone,
-            "the blend surface reached {} against a target of {fit_target}",
-            fitted.error
+            "the blend surface reached {error} against a target of {fit_target}"
         );
     }
-    Ok(fitted.curve)
+    Ok(surface)
 }
 
 /// The open ruled band through each station's chord from the first

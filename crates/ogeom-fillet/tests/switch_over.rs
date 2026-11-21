@@ -992,6 +992,36 @@ fn widest_turn_where(m: &Model, s: &Shape, faces: &[Shape], keep: &dyn Fn(Point)
     worst
 }
 
+/// The widest turn a join of a pipe corner's rounds may make: the rounds,
+/// the bands they run on and the faces those were built against.
+const G1: f64 = 1e-4;
+
+/// The half frustum's uprights rounded 1: each band, marched between the
+/// cut's plane and the cone and fitted, meets both within [`G1`]. The
+/// pipes of the foot and the top loop are solved off those bands, so their
+/// joins hold no better than the bands' own.
+#[test]
+fn a_half_frustum_s_upright_bands_join_their_walls_g1() {
+    let mut m = Model::new();
+    let s = half_frustum(&mut m);
+    let uprights = frustum_uprights(&m, &s);
+    let up = fillet_edges(&mut m, &s, &uprights, 1.0, T).unwrap();
+    let found = ogeom_algo::check(&m, &up.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let made: Vec<Shape> = uprights
+        .iter()
+        .flat_map(|e| up.history.generated(e).to_vec())
+        .collect();
+    assert_eq!(made.len(), 2);
+    // Each band runs past the plate and the top and is clipped there: its
+    // edges on them are creases, not joins.
+    let turn = widest_turn_where(&m, &up.shape, &made, &|p| {
+        p.z > 4.0 + 1e-6 && p.z < 10.0 - 1e-6
+    });
+    eprintln!("widest turn across an upright band's join {turn:.2e} rad");
+    assert!(turn <= G1, "a crease of {turn} rad");
+}
+
 /// The half frustum with its uprights rounded 1 (each band leaning into
 /// the plate, carried past it and clipped there), then its foot loop
 /// rounded 1: the plate's line, the two bands' feet and the cone's arc.
@@ -1031,7 +1061,7 @@ fn a_half_frustum_s_foot_rounds_through_its_pipe_corners() {
         assert!(!made.is_empty());
         let turn = widest_turn(&rounded, &built.shape, &made);
         eprintln!("widest turn across a join {turn:.2e} rad");
-        assert!(turn <= 1e-3, "a crease of {turn} rad");
+        assert!(turn <= G1, "a crease of {turn} rad");
     }
     // In one request under `Rolling` the uprights go first and the foot
     // rolls round them: the same solid in either order.
@@ -1142,12 +1172,12 @@ fn a_half_frustum_s_top_loop_rounds_through_its_pipe_corners() {
             assert_eq!(pipes.len(), 2);
             let turn = widest_turn(&rounded, &built.shape, &pipes);
             eprintln!("widest turn across a pipe's join {turn:.2e} rad");
-            assert!(turn <= 1e-3, "a crease of {turn} rad");
-            // A band marched on a fitted host holds its fit in distance
-            // (2e-4), and in angle only to about a milliradian.
+            assert!(turn <= G1, "a crease of {turn} rad");
+            // A band marched on a fitted host holds its fit in angle as
+            // well as in distance.
             let turn = widest_turn(&rounded, &built.shape, &made(&marched));
             eprintln!("widest turn across a marched top's join {turn:.2e} rad");
-            assert!(turn <= 2e-3, "a crease of {turn} rad");
+            assert!(turn <= G1, "a crease of {turn} rad");
         }
     }
 }
@@ -1249,7 +1279,7 @@ fn a_half_cylinder_s_foot_rounds_through_its_pipe_corners() {
         assert!(!made.is_empty());
         let turn = widest_turn(&rounded, &built.shape, &made);
         eprintln!("widest turn across a join {turn:.2e} rad");
-        assert!(turn <= 1e-3, "a crease of {turn} rad");
+        assert!(turn <= G1, "a crease of {turn} rad");
     }
 }
 
@@ -1502,7 +1532,7 @@ fn a_rib_under_a_drum_s_top_rounds_through_its_pipe_corners() {
             // sharp, not a join.
             let turn = widest_turn_where(&rounded, &built.shape, &made, &|p| p.z > 4.0 + 1e-6);
             eprintln!("widest turn across a join {turn:.2e} rad");
-            assert!(turn <= 1e-3, "a crease of {turn} rad");
+            assert!(turn <= G1, "a crease of {turn} rad");
         }
     }
 }
