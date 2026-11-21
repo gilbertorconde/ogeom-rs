@@ -3,7 +3,7 @@
 
 use crate::{Chamfer, ChamferCorner, Overflow};
 use ogeom_algo::Built;
-use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
+use ogeom_core::{OgeomError, OgeomResult, Tolerances, ogeom_bail, ogeom_err};
 use ogeom_topo::{Model, Shape, ShapeType};
 
 /// [`chamfer_edges_cornered`](crate::chamfer_edges_cornered), a bevel
@@ -38,6 +38,11 @@ use ogeom_topo::{Model, Shape, ShapeType};
 /// their ends is refused by name, as is a request that blend into round
 /// would take while it is off.
 ///
+/// A foot bevel whose leg on the floor touches the round's tangent line,
+/// or crosses it at under a hundredth of a radian, leaves the floor and the
+/// round wedges too sharp to build at the crossings: where neither
+/// behaviour builds it, it is refused by that name.
+///
 /// # Errors
 ///
 /// As [`chamfer_edges_cornered`](crate::chamfer_edges_cornered), and
@@ -67,7 +72,13 @@ pub fn chamfer_edges_overflow(
              fillet.chamfer-overflow"
         );
     }
-    let built = crate::chamfer_corner::cornered_as_today(model, solid, specs, corner, tol)?;
+    let built = match crate::chamfer_corner::cornered_as_today(model, solid, specs, corner, tol) {
+        Ok(built) => built,
+        Err(e @ OgeomError::Construction(_)) => {
+            return Err(grazing(model, solid, specs, tol)?.unwrap_or(e));
+        }
+        Err(e) => return Err(e),
+    };
     if overflow.trim_through {
         return Ok(built);
     }
@@ -130,13 +141,59 @@ fn reaches_round(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> OgeomResult<bool> {
+    for (part, edges, size) in feet(model, solid, specs, tol)? {
+        if crate::engine::overflow_reach(model, &part, &edges, size, tol)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The refusal of a foot bevel of `specs` whose leg on the floor grazes
+/// the tangent line of an existing round, on `solid` or a solid of a
+/// compound holding it; `None` where none does.
+///
+/// # Errors
+///
+/// As reading the solid.
+pub(crate) fn grazing(
+    model: &Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Option<OgeomError>> {
+    for (part, edges, size) in feet(model, solid, specs, tol)? {
+        let Some(angle) = crate::engine::overflow_grazes(model, &part, &edges, size, tol)? else {
+            continue;
+        };
+        return Ok(Some(ogeom_err!(
+            Construction,
+            "the chamfer's leg on the floor grazes the tangent line of an existing \
+             round, meeting it at {angle:.1e} rad, under a hundredth: the floor \
+             and the round are left wedges too sharp to build where the leg meets \
+             it; see docs/CAPABILITIES.md, fillet.chamfer-overflow"
+        )));
+    }
+    Ok(None)
+}
+
+/// Each solid of `solid` (itself, or each of a compound's) holding edges
+/// of `specs` that ask one bevel of a foot rim: the solid, the edges and
+/// the bevel.
+fn feet(
+    model: &Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Vec<(Shape, Vec<Shape>, crate::engine::OverflowSize)>> {
     let parts = if model.kind_of(solid)? == ShapeType::Compound {
         model.children_of(solid)?
     } else {
         vec![solid.clone()]
     };
-    for part in &parts {
-        let edges = ogeom_topo::explore_unique(model, part, ShapeType::Edge)?;
+    let mut out = Vec::new();
+    for part in parts {
+        let edges = ogeom_topo::explore_unique(model, &part, ShapeType::Edge)?;
         let own: Vec<(Shape, Chamfer)> = specs
             .iter()
             .filter(|(e, _)| edges.iter().any(|o| o.is_same(e)))
@@ -145,13 +202,9 @@ fn reaches_round(
         if own.is_empty() {
             continue;
         }
-        let Some((edges, size)) = crate::engine::overflow_bevel_size(model, part, &own, tol)?
-        else {
-            continue;
-        };
-        if crate::engine::overflow_reach(model, part, &edges, size, tol)? {
-            return Ok(true);
+        if let Some((edges, size)) = crate::engine::overflow_bevel_size(model, &part, &own, tol)? {
+            out.push((part, edges, size));
         }
     }
-    Ok(false)
+    Ok(out)
 }

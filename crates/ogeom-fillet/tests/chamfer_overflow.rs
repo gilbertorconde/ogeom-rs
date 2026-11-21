@@ -482,3 +482,132 @@ fn a_notch_trims_through_and_trim_through_off_refuses_it() {
         "refused by name: {err}"
     );
 }
+
+/// The boss at `y = 12` with its foot bevelled `d` on both legs, built with
+/// every overflow behaviour on: valid and closed, its fill against the
+/// reference within the reference's bound. With `past`, its leg on the
+/// floor reaches past the tangent line `y = 5` by more than the booleans'
+/// widened edges: the bevel meets the edge round with no ledge, the fitted
+/// piece meeting the cone G1 across both transition edges.
+fn foot_bevel_builds(d: f64, past: bool) {
+    let mut m = Model::new();
+    let (s, foot, _) = bossed(&mut m, 12.0);
+    let before = volume(&m, &s);
+    let specs: Vec<(Shape, Chamfer)> = foot
+        .iter()
+        .map(|e| (e.clone(), Chamfer::Symmetric(d)))
+        .collect();
+    let built = chamfer_edges_overflow(
+        &mut m,
+        &s,
+        &specs,
+        ChamferCorner::Facet,
+        Overflow::default(),
+        T,
+    )
+    .unwrap_or_else(|e| panic!("{d}: {e}"));
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{d}: {:?}", found.problems);
+    for shell in explore_unique(&m, &built.shape, ShapeType::Shell).unwrap() {
+        assert!(
+            ogeom_algo::is_shell_closed(&m, &shell).unwrap(),
+            "{d}: closed"
+        );
+    }
+    let reference = Reference {
+        boss_y: 12.0,
+        out: d,
+        rise: d,
+    };
+    let (coarse, fine) = (reference.volume(48), reference.volume(96));
+    let bound = (fine - coarse).abs().max(1e-9);
+    let got = volume(&m, &built.shape) - before;
+    assert!(
+        (got - fine).abs() < 1e-6 + bound,
+        "{d}: the fill {got} against the reference {fine} (within {bound})"
+    );
+    if past {
+        assert!(
+            meets_the_round_without_a_step(&m, &built.shape),
+            "{d}: the bevel meets the round with no ledge"
+        );
+        let (crease, transitions) = worst_transition(&m, &built.shape);
+        assert_eq!(transitions, 2, "{d}: the two transition edges");
+        assert!(crease < 1e-5, "{d}: the transition creases by {crease}");
+    }
+}
+
+/// The foot bevel short of the tangent line (0.9, the cone alone) and past
+/// it (1.1 to 2.7, blended into the edge round), where a reading of the
+/// largest bevel steps from its first refusal just above 1 straight to
+/// 2.71: every size between builds.
+#[test]
+fn a_foot_bevel_builds_either_side_of_the_tangent_line() {
+    for d in [0.9, 1.1, 1.9, 2.7, 2.71] {
+        foot_bevel_builds(d, d > 1.0);
+    }
+}
+
+/// [`a_foot_bevel_builds_either_side_of_the_tangent_line`] at every tenth
+/// from 1.1 to 2.6.
+#[test]
+#[ignore = "heavy: sixteen foot bevels and their references"]
+fn a_foot_bevel_builds_at_every_tenth_past_the_tangent_line() {
+    for k in 11..=26 {
+        foot_bevel_builds(f64::from(k) / 10.0, true);
+    }
+}
+
+/// The foot bevel 1 on both legs: its leg on the floor, the circle of
+/// radius 7 about the boss's axis, touches the tangent line `y = 5` 7 from
+/// the axis. The floor and the edge round would be left wedges closing to
+/// nothing there, and neither blend into round nor trim through builds
+/// them: refused by a name that says so, through `chamfer_edges_overflow`
+/// with blend into round on or off and through `chamfer_edges`. Just past
+/// the line, where the leg crosses it at under a hundredth of a radian
+/// (`d - 1` below about `3.5e-4`), the bevel either builds, valid and
+/// matching the reference, or is refused by the same name; a build there
+/// may fold the round's sliver under the bevel into an edge widened to it.
+#[test]
+fn a_foot_bevel_grazing_the_tangent_line_is_refused_by_name() {
+    let named = |e: &ogeom_core::OgeomError| {
+        let text = e.to_string();
+        text.contains("grazes the tangent line of an existing round") && text.contains("chamfer")
+    };
+    let mut m = Model::new();
+    let (s, foot, _) = bossed(&mut m, 12.0);
+    let specs: Vec<(Shape, Chamfer)> = foot
+        .iter()
+        .map(|e| (e.clone(), Chamfer::Symmetric(1.0)))
+        .collect();
+    let mut blend_off = Overflow::default();
+    blend_off.blend_into_round = false;
+    for options in [Overflow::default(), blend_off] {
+        let err = chamfer_edges_overflow(&mut m, &s, &specs, ChamferCorner::Facet, options, T)
+            .unwrap_err();
+        assert!(named(&err), "{err}");
+    }
+    let err = chamfer_edges(&mut m, &s, &foot, 1.0, T).unwrap_err();
+    assert!(named(&err), "{err}");
+
+    for past in [1e-6, 1e-5, 1e-4] {
+        let d = 1.0 + past;
+        let mut m = Model::new();
+        let (s, foot, _) = bossed(&mut m, 12.0);
+        let specs: Vec<(Shape, Chamfer)> = foot
+            .iter()
+            .map(|e| (e.clone(), Chamfer::Symmetric(d)))
+            .collect();
+        match chamfer_edges_overflow(
+            &mut m,
+            &s,
+            &specs,
+            ChamferCorner::Facet,
+            Overflow::default(),
+            T,
+        ) {
+            Ok(_) => foot_bevel_builds(d, false),
+            Err(e) => assert!(named(&e), "{d}: {e}"),
+        }
+    }
+}
