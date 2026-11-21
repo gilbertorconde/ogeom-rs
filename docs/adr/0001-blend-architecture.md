@@ -3069,6 +3069,8 @@ describes no geometry past that, so the following is settled here.
 - Anything else (a chain of edges, a curved face, a held edge that is
   neither a line nor a circle, a run needing a vertex seat, two runs, an
   oblique end face) is not held in this step and goes on to trim through.
+  The part "Hold edge, more seats" below builds vertex seats, several
+  runs, chains along one line and oblique end faces.
 
 **Oracle** (`tests/hold_edge.rs`). The reference is the definition,
 sampled without the construction: the ball's centres in closed form (at
@@ -3353,6 +3355,114 @@ every case. A through slot has a closed form.
   and it now stops after 2^17 distance measures per interval, the face
   then not shown clear, instead of walking the whole tree of 24 halvings.
   The most a passing proof uses is about 46,000.
+
+**Hold edge, more seats.** The public documentation surveyed above
+gives the edge seat by the ball (it touches one original face and is
+supported by the kept edge) and adds that the ball may roll onto
+adjacent edges; it gives no geometry for where one kept edge stops and
+the next begins, for several stretches on one round, or for a round's
+end on an end face that leans. §13, question 8 already rests the ball on
+whatever of the boundary it meets, a vertex among the seats, its offset
+the sphere about it [3]. The papers on rolling-ball blends define the
+round as the envelope of a ball kept in contact with the boundary [2].
+What follows is settled from those.
+
+- **Where the ball rests.** The ball touches `b` and stands as near
+  `a`'s plane as the region of `a` (its faces in that plane, taken as
+  one) lets it: its centre on `b`'s offset at the radius from the nearest
+  point of that region. That point is the ball's contact on `a` where the
+  contact lies on `a` (the band), a point inside a sharp edge of `a` (the
+  edge seat of the part above), or a vertex where two sharp edges of `a`
+  meet (a vertex seat). This reads the single run of the part above as
+  before.
+- **A vertex seat.** Where the foot on a held edge reaches the vertex
+  where that edge stops and the next goes on, the ball rests on the
+  vertex: its centre stays the radius from it while it touches `b`. Every
+  ball of that piece passes through the vertex, so the piece closes to it
+  there. The nearest point moves from an edge to a vertex only where the
+  vertex is a convex corner of `a`'s region; the centre's path is then
+  smooth (C1) across both changes, the two offsets are tangent, and the
+  pieces share the ball's arc there, which lies in its plane square to the
+  spine. The pieces meet G1 on it.
+- **A ball on two edges at once.** Where `a`'s region turns the other
+  way at a vertex (a pocket's corner, a notch), the nearest point jumps
+  from one edge to the other without passing the vertex, the ball resting
+  on both at once. The centre's path turns a corner there, and the balls
+  next to the corner reach into the pocket past both edges, so the round
+  would pass through the pocket's walls and the edges could not both be
+  kept. That is not held; the request goes on to trim through, as before.
+- **Several stretches.** Each stretch where the ball leaves the band is
+  held on its own terms, and the band runs between them. With hold edge at
+  the end off, a round any of whose stretches reaches an end of the band
+  goes on to trim through as a whole.
+- **A chain.** Edges end to end along one line, each between a face of
+  the same two planes, are one round over the line from the chain's first
+  vertex to its last; the seams between faces of one plane are not edges
+  of `a`'s region. Inside the chain no other face may meet it.
+- **An oblique end face.** An end face whose normal stands within 60
+  degrees of the edge cuts the round in its own plane, as amendment
+  "M5f" cuts a band: the band in the ellipse its plane cuts from the
+  band's cylinder, a fitted piece through sections by planes that turn
+  from the piece's other end to the end face's plane. Where no ball's
+  foot reaches the end face's plane (a held edge leaving the end too
+  steeply, its feet trailing the balls), the piece has no end there and
+  the request goes on to trim through.
+- **The boss's underside (amendment "M5c").** There the contact on the
+  wall runs into the boss, not past a sharp edge into air: the edge where
+  the wall meets the boss's underside is concave, and the vertex where it
+  meets the wall's cut is not a corner of the wall's region the ball could
+  rest on from outside. It does not reduce to a vertex seat, and stays
+  with trim through.
+
+**What is built for hold edge in this step.** A round of a chain of
+straight edges along one line between two planes meeting convexly, ending
+on end faces whose normals stand within 60 degrees of the edge. The edges
+of `a`'s region within reach are lines or circles in its plane. The
+ball's seat is read at a thousand stations and each change found by
+bisection; the pieces between are kept only where every change is the
+band onto an edge, or an edge onto a vertex where it stops, and no piece
+is shorter than a ten-thousandth of the radius. A piece on an edge or a
+vertex is fitted through its balls' arcs, or, reaching an end face,
+through its sections by planes turning to that face's plane. A piece on a
+vertex closes to the vertex along one side of its patch; its pieces' ends
+there are that patch's own boundary iso-curves, whose pcurves are the
+chart's straight sides, read exactly. The tool, its proofs and the
+options are those of the part above, every face past a held edge or at a
+held vertex counted with the faces past the held edge.
+
+**Oracle** (`tests/hold_edge_seats.rs`). The reference is the definition,
+sampled without the construction: the ball's centre stands the radius
+behind the front, at depth `sqrt(r^2 - h^2)` under the top, `h` the
+distance in the top's plane from its contact to the top's region, worked
+from the region's polygon or pockets directly. The cut is integrated as
+in the part above, split at the seat changes. On the leaning ends: the
+band's part near each end is its spandrel over the length between the end
+planes, a closed form from the spandrel's first moment
+`r^3 (5/6 - pi/4)`; at a canal's leaning end the columns are integrated up
+to the end plane, in `q` with `x = 20 - q^2 / 4` where the plane clips
+them.
+
+| case (r 4) | cut away (built) | reference | error | bound | worst G1 |
+|---|---|---|---|---|---|
+| vertex seat: top narrowing behind a cliff edge with a kink at `(14, 2.5)`, held from `x = 4` to the end | 53.507792555 | 53.507792541 | 1.4e-8 | 6.0e-8 | 2.1e-6 rad |
+| two runs: two pockets r 5 beside a band 40 long | 124.215057101 | 124.215056840 | 2.6e-7 | 1.3e-8 | 1.7e-6 rad |
+| a chain of three edges over a split top and front, pocket r 5 | 96.443822236 | 96.443822276 | 4.0e-8 | 6.5e-9 | 1.7e-6 rad |
+| both end faces leaning (`x = y / 4`, `x = 30 + 3 z / 10`), pocket r 5 | 94.756504255 | 94.756504295 | 4.0e-8 | 6.5e-9 | 1.7e-6 rad |
+| a canal cut by a leaning end face (`x = 20 + z / 4`) | 63.109947456 | 63.109947560 | 1.0e-7 | 4.6e-9 | 1.1e-6 rad |
+
+The volume comparisons are in the heavy tier; the builds, joins and kept
+edges are in the default one.
+
+- Each result is valid and closed, every fitted piece meets its
+  neighbours, the band and the front within 1e-5 rad of tangent, and the
+  held edges are kept on their curves.
+- The vertex seat reaches its part's end: with hold edge at the end off,
+  or hold edge off, the request goes on to trim through, which refuses
+  this part by name; with trim through off too it is refused naming hold
+  edge at the end.
+- A square pocket beside the edge (the ball on two rims at once) is not
+  held: the request gets trim through's solid, the same as with hold edge
+  off.
 
 ### Amendment: largest-size readings confirmed by the build (#1173)
 
