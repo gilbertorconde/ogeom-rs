@@ -689,6 +689,18 @@ fn triangulate_reporting_from(
         .into_iter()
         .map(|t| if flip { [t[0], t[2], t[1]] } else { t })
         .collect();
+    if !matches!(surface.kind(), ogeom_geom::SurfaceKind::Plane) {
+        let corners =
+            ogeom_topo::explore(model, face, ogeom_topo::Filter::OfType(ShapeType::Vertex))?
+                .iter()
+                .filter_map(|v| {
+                    let data = model.node(v)?.data().as_vertex()?;
+                    let at = v.transform(model.datums()).ok()?.apply(data.point);
+                    Some((at, data.tolerance.get()))
+                })
+                .collect::<Vec<_>>();
+        open_edge_ears(&mut mesh, &parameters, &corners, tol);
+    }
     split_flat_triangles(&mut mesh, tol);
     mesh.set_vertex_parameters(parameters);
     mesh.set_corner_normals_from_vertices();
@@ -1879,6 +1891,85 @@ fn toward_others(
     } else {
         (u, others.iter().map(|o| o.1).sum::<f64>() / count)
     })
+}
+
+/// Turn the chord of every triangle of a curved face drawn across three
+/// points of one edge.
+///
+/// Where the face's border bulges out of the chart's straight chords, the
+/// triangulation can close off a point inside an edge with its two
+/// neighbours along it: an ear, its two border sides the edge's and its
+/// third a chord under them. Its corners are the edge's alone, so it does
+/// not lie on the face's surface but on the edge's own bend, and the face
+/// across the edge, its border bulging the same way in its chart, can draw
+/// the very same triangle wound the other way. Welded, the two are a fin
+/// with no inside, and the chord is four triangles' side. The ear's chord
+/// is turned to the far corner of the triangle across it, where that keeps
+/// both triangles wound as they were in the chart: the point inside the
+/// edge then reaches into the face. An ear whose middle is a vertex of the
+/// face is a corner of two edges and is left. `parameters` are the chart
+/// points by vertex and `corners` the face's vertices with their
+/// tolerances.
+fn open_edge_ears(
+    mesh: &mut Triangulation,
+    parameters: &[(f64, f64)],
+    corners: &[(Point, f64)],
+    tol: Tolerances,
+) {
+    let mut across: ogeom_core::FastMap<(u32, u32), usize> = ogeom_core::FastMap::default();
+    let mut uses: ogeom_core::FastMap<(u32, u32), usize> = ogeom_core::FastMap::default();
+    for (i, t) in mesh.triangles.iter().enumerate() {
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            across.insert((a, b), i);
+            *uses.entry((a.min(b), a.max(b))).or_default() += 1;
+        }
+    }
+    let border = |a: u32, b: u32| uses.get(&(a.min(b), a.max(b))) == Some(&1);
+    let chart = |t: [u32; 3]| {
+        let [a, b, c] = t.map(|i| parameters[i as usize]);
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    };
+    let mut changed = vec![false; mesh.triangles.len()];
+    for i in 0..mesh.triangles.len() {
+        if changed[i] {
+            continue;
+        }
+        let t = mesh.triangles[i];
+        for k in 0..3 {
+            let (a, m, b) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+            if !border(a, m) || !border(m, b) || border(b, a) {
+                continue;
+            }
+            let at = mesh.positions[m as usize];
+            if corners
+                .iter()
+                .any(|&(p, within)| p.distance(at) <= within.max(tol.confusion()))
+            {
+                continue;
+            }
+            let Some(&j) = across.get(&(a, b)) else {
+                continue;
+            };
+            if changed[j] || j == i {
+                continue;
+            }
+            let other = mesh.triangles[j];
+            let Some(c) = other.iter().copied().find(|&v| v != a && v != b) else {
+                continue;
+            };
+            let side = chart(t).signum();
+            let (first, second) = ([a, m, c], [m, b, c]);
+            if chart(first).signum() != side || chart(second).signum() != side {
+                continue;
+            }
+            mesh.triangles[i] = first;
+            mesh.triangles[j] = second;
+            changed[i] = true;
+            changed[j] = true;
+            break;
+        }
+    }
 }
 
 /// How many times [`split_flat_triangles`] goes round a face: one per flat
