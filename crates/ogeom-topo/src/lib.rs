@@ -41,4 +41,4 @@ pub use model::{
     Absorbed, Filter, Model, ModelParts, Unshared, WidenMark, ancestors_of, explore, explore_unique,
 };
 pub use shape::{Orientation, PartnerKey, SameKey, Shape, ShapeType, TShape, TShapeId};
-pub use tessellation::Triangulation;
+pub use tessellation::{MeshFinding, Triangulation};
