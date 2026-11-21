@@ -1908,8 +1908,11 @@ title = "The largest radius or distance a blend builds at, confirmed by the buil
 crate = "ogeom-fillet"
 verdict = "partial"
 restriction = """largest_fillet_radius, largest_fillet_radius_all, \
-largest_fillet_distances and largest_chamfer_distance answer the largest \
-size up to a bound at which their blend call builds, whatever refuses the \
+largest_fillet_distances, largest_chamfer_distance and \
+largest_chamfer_distance_all answer the largest size up to a bound at which their blend call builds, \
+with every Overflow behaviour on, and largest_fillet_radius_overflow, \
+largest_chamfer_distance_overflow and \
+largest_chamfer_distance_all_overflow under the options given, whatever refuses the \
 next size up: a contact leaving its face, two bands overlapping, a corner \
 that does not close, a bevel reaching a concave floor, setbacks crossing, \
 an overflow the engine does not build, or a result failing its check. \
@@ -1918,7 +1921,8 @@ search; the request is then built on a copy of the model at sizes \
 bracketing the boundary and bisected to a relative 1e-4, at most 64 \
 builds, so the size builds and one 1e-4 above it is refused. blend_limit \
 answers the same with the options of the call (the rolling corner, the \
-asymmetric round's section, the chamfer corner) and reports how it was \
+asymmetric round's section, the chamfer corner, several bevels at once \
+scaled by one measure, the request's Overflow options) and reports how it was \
 confirmed: the seat, the refused size, and a size found building again \
 above a refusal, the answer then being where the sizes that build first \
 break. Not proven: that every size below the answer builds, or that none \
@@ -1946,6 +1950,10 @@ symbols = [
     "ogeom_fillet::largest_fillet_radius_all",
     "ogeom_fillet::largest_fillet_distances",
     "ogeom_fillet::largest_chamfer_distance",
+    "ogeom_fillet::largest_chamfer_distance_all",
+    "ogeom_fillet::largest_fillet_radius_overflow",
+    "ogeom_fillet::largest_chamfer_distance_overflow",
+    "ogeom_fillet::largest_chamfer_distance_all_overflow",
     "ogeom_fillet::blend_limit",
     "ogeom_fillet::BlendLimit",
     "ogeom_fillet::BlendSizing",
@@ -1965,6 +1973,9 @@ tests = [
     "crates/ogeom-fillet/tests/exact_limits.rs::curved_and_corpus_limits_build_below_and_are_refused_above",
     "crates/ogeom-fillet/tests/exact_limits.rs::the_chopped_corner_s_edge_alone_rounds_past_the_corner",
     "crates/ogeom-fillet/tests/largest.rs",
+    "crates/ogeom-fillet/tests/limit_chamfers.rs",
+    "crates/ogeom-fillet/tests/limit_overflow.rs",
+    "crates/ogeom-fillet/tests/largest_chamfer_all.rs",
     "crates/ogeom-fillet/src/limit.rs",
 ]
 

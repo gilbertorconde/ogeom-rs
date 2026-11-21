@@ -1,0 +1,4 @@
+- **Added: largest-size readings under the request's `Overflow` options** (#1221).
+  - `BlendSizing::Chamfers` carries an `overflow` and probes `chamfer_edges_overflow`. The new `BlendSizing::RoundsOverflow { edges, overflow }` probes `fillet_edges_overflow`. A reading then answers the request as it will be built.
+  - New readings: `largest_fillet_radius_overflow`, `largest_chamfer_distance_overflow` and `largest_chamfer_distance_all_overflow`. With `Overflow::default()` each answers what its plain reading does.
+  - A boss's foot round next to an edge round reads 8.6195 by default. With blend into round off it reads 1.01, where it is built, not the 8.6195 the call then refuses.

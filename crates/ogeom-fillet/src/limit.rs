@@ -13,7 +13,7 @@
 //! that was refused, bisected to [`LIMIT_TOLERANCE`].
 
 use crate::law::Profile;
-use crate::{Chamfer, ChamferCorner, FilletCorner, RadiusLaw, RoundProfile};
+use crate::{Chamfer, ChamferCorner, FilletCorner, Overflow, RadiusLaw, RoundProfile};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_topo::{Model, Shape};
 
@@ -63,7 +63,9 @@ pub struct BlendLimit {
 #[non_exhaustive]
 pub enum BlendSizing<'a> {
     /// [`fillet_edges_corner`](crate::fillet_edges_corner) on `edges`
-    /// closed as `corner` says; the size is the radius.
+    /// closed as `corner` says; the size is the radius. Every behaviour of
+    /// [`Overflow`] is on; [`BlendSizing::RoundsOverflow`] chooses among
+    /// them.
     Rounds {
         /// The edges rounded together.
         edges: &'a [Shape],
@@ -92,6 +94,8 @@ pub enum BlendSizing<'a> {
     /// for `spec`'s spelling, the measure `spec` itself names not read.
     /// One edge has no vertex where three of its bevels meet, so either
     /// corner builds alike there; the corner is the call's own option.
+    /// Every behaviour of [`Overflow`] is on; [`BlendSizing::Chamfers`]
+    /// chooses among them.
     Chamfer {
         /// The edge bevelled.
         edge: &'a Shape,
@@ -99,6 +103,37 @@ pub enum BlendSizing<'a> {
         spec: &'a Chamfer,
         /// How a vertex where three or more bevels meet is closed.
         corner: ChamferCorner,
+    },
+    /// [`fillet_edges_overflow`](crate::fillet_edges_overflow) on `edges`,
+    /// a round reaching geometry other than its own two faces handled as
+    /// `overflow` says; the size is the radius. Each vertex where rounds
+    /// meet is closed by setbacks, as that call closes it. With
+    /// [`Overflow::default`] this reads as [`BlendSizing::Rounds`] with
+    /// [`FilletCorner::Setback`].
+    RoundsOverflow {
+        /// The edges rounded together.
+        edges: &'a [Shape],
+        /// What a round reaching other geometry does.
+        overflow: Overflow,
+    },
+    /// [`chamfer_edges_overflow`](crate::chamfer_edges_overflow) on every
+    /// bevel of `specs` at once, closed as `corner` says, a bevel reaching
+    /// geometry other than its own two faces handled as `overflow` says;
+    /// the size is the one measure every spec is scaled to, as
+    /// [`BlendSizing::Chamfer`] scales one, the measures `specs` name not
+    /// read. With [`Overflow::default`] the call is
+    /// [`chamfer_edges_cornered`](crate::chamfer_edges_cornered), and one
+    /// spec reads as [`BlendSizing::Chamfer`]. The seat is
+    /// [`largest_chamfer_distance_all`](crate::largest_chamfer_distance_all)'s
+    /// seat reading: each bevel seated on its faces, and no bevel's contact
+    /// within another's leg of its edge across a face they share.
+    Chamfers {
+        /// The bevels, each scaled by the size.
+        specs: &'a [(Shape, Chamfer)],
+        /// How a vertex where three or more bevels meet is closed.
+        corner: ChamferCorner,
+        /// What a bevel reaching other geometry does.
+        overflow: Overflow,
     },
     /// [`fillet_edges_variable`](crate::fillet_edges_variable) on `chain`
     /// under `law`; the size is the law's value `size` frees, the rest of
@@ -181,9 +216,11 @@ pub enum DistanceLawSize {
 /// The largest size up to `up_to` at which `sizing`'s blend call builds on
 /// `solid`, with how it was confirmed: the reading behind
 /// [`largest_fillet_radius_all`](crate::largest_fillet_radius_all),
-/// [`largest_fillet_distances`](crate::largest_fillet_distances) and
-/// [`largest_chamfer_distance`](crate::largest_chamfer_distance), which
-/// return its [`BlendLimit::size`], with the options their calls take.
+/// [`largest_fillet_distances`](crate::largest_fillet_distances),
+/// [`largest_chamfer_distance`](crate::largest_chamfer_distance) and
+/// [`largest_chamfer_distance_all`](crate::largest_chamfer_distance_all),
+/// which return its [`BlendLimit::size`], with the options their calls
+/// take.
 ///
 /// The seat is read first, without building, as those readings did; then
 /// the call is asked on a copy of the model, first at the seat reading
@@ -233,7 +270,7 @@ pub fn blend_limit(
         BlendSizing::RoundLaw { .. }
         | BlendSizing::RoundLinear { .. }
         | BlendSizing::DistanceLaws { .. } => return law_limit(model, solid, sizing, up_to, tol),
-        BlendSizing::Rounds { edges, .. } => {
+        BlendSizing::Rounds { edges, .. } | BlendSizing::RoundsOverflow { edges, .. } => {
             if edges.is_empty() {
                 ogeom_bail!(Construction, "a request of no edges has no largest radius");
             }
@@ -265,30 +302,52 @@ pub fn blend_limit(
             )
         }
         BlendSizing::Chamfer { edge, spec, .. } => {
-            let floor = match spec {
-                Chamfer::Distances {
-                    on_face, on_other, ..
-                } => {
-                    for d in [*on_face, *on_other] {
-                        if !d.is_finite() || d <= conf {
-                            ogeom_bail!(
-                                Construction,
-                                "a bevel set back {d} from its edge bevels nothing"
-                            );
-                        }
-                    }
-                    conf / on_face.min(*on_other)
-                }
-                Chamfer::Symmetric(_) | Chamfer::Angle { .. } => conf,
-            };
+            let floor = chamfer_floor(spec, conf)?;
             (
                 crate::chamfer::seat_chamfer_distance(model, solid, edge, spec, up_to, tol),
+                floor,
+            )
+        }
+        BlendSizing::Chamfers { specs, .. } => {
+            if specs.is_empty() {
+                ogeom_bail!(
+                    Construction,
+                    "a request of no edges has no largest distance"
+                );
+            }
+            let mut floor = conf;
+            for (_, spec) in specs {
+                floor = floor.max(chamfer_floor(spec, conf)?);
+            }
+            (
+                crate::chamfer::seat_chamfer_distance_all(model, solid, specs, up_to, tol),
                 floor,
             )
         }
     };
     let builds = |size: f64| probe(model, solid, sizing, size, tol);
     settle(seat, up_to, floor, builds)
+}
+
+/// The smallest measure worth asking of `spec`: the one at which its
+/// shorter distance is a confusion distance.
+fn chamfer_floor(spec: &Chamfer, conf: f64) -> OgeomResult<f64> {
+    match spec {
+        Chamfer::Distances {
+            on_face, on_other, ..
+        } => {
+            for d in [*on_face, *on_other] {
+                if !d.is_finite() || d <= conf {
+                    ogeom_bail!(
+                        Construction,
+                        "a bevel set back {d} from its edge bevels nothing"
+                    );
+                }
+            }
+            Ok(conf / on_face.min(*on_other))
+        }
+        Chamfer::Symmetric(_) | Chamfer::Angle { .. } => Ok(conf),
+    }
 }
 
 /// The confirmed reading from `seat`: searched from the bound where the
@@ -435,6 +494,21 @@ fn probe(
         BlendSizing::Chamfer { edge, spec, corner } => {
             let specs = [(edge.clone(), scaled(spec, size))];
             crate::chamfer_edges_cornered(&mut scratch, solid, &specs, corner, tol).is_ok()
+        }
+        BlendSizing::RoundsOverflow { edges, overflow } => {
+            crate::fillet_edges_overflow(&mut scratch, solid, edges, size, overflow, tol).is_ok()
+        }
+        BlendSizing::Chamfers {
+            specs,
+            corner,
+            overflow,
+        } => {
+            let specs: Vec<(Shape, Chamfer)> = specs
+                .iter()
+                .map(|(edge, spec)| (edge.clone(), scaled(spec, size)))
+                .collect();
+            crate::chamfer_edges_overflow(&mut scratch, solid, &specs, corner, overflow, tol)
+                .is_ok()
         }
         // Read by `law_limit`, which probes them itself.
         BlendSizing::RoundLaw { .. }

@@ -588,6 +588,29 @@ pub fn largest_fillet_radius_all(
     Ok(crate::blend_limit(model, solid, &sizing, up_to, tol)?.size)
 }
 
+/// [`largest_fillet_radius_all`] for the request
+/// [`fillet_edges_overflow`](crate::fillet_edges_overflow) builds: a round
+/// reaching other geometry handled as `overflow` says. Each probe builds
+/// under those options, so every radius probed below the answer builds
+/// with them and one [`LIMIT_TOLERANCE`](crate::LIMIT_TOLERANCE) above it
+/// is refused. With [`Overflow::default`](crate::Overflow::default) this
+/// is [`largest_fillet_radius_all`].
+///
+/// # Errors
+///
+/// As [`largest_fillet_radius_all`].
+pub fn largest_fillet_radius_overflow(
+    model: &Model,
+    solid: &Shape,
+    edges: &[Shape],
+    up_to: f64,
+    overflow: crate::Overflow,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let sizing = crate::BlendSizing::RoundsOverflow { edges, overflow };
+    Ok(crate::blend_limit(model, solid, &sizing, up_to, tol)?.size)
+}
+
 /// The largest radius up to `up_to` at which the bands of `edges` all sit
 /// with their contacts on their faces at every station the request check
 /// reads, and no band's contact comes within another's setback of its edge
