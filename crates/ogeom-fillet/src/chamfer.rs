@@ -379,7 +379,8 @@ pub(crate) fn chamfer_edges_blamed(
     }
     Err(Blamed {
         edges: index,
-        error: declined(),
+        error: crate::chamfer_overflow::grazing(model, solid, &specs, tol)?
+            .unwrap_or_else(declined),
     })
 }
 

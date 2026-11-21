@@ -52,6 +52,10 @@ const APART: f64 = 1e-2;
 /// The wall's steepest lean from square to the floor, as the change of its
 /// radius per unit of height.
 const LEAN: f64 = 1.0;
+/// The angle under which a bevel's leg on the floor grazes a tangent line
+/// it touches or crosses: the floor and the round are left wedges that
+/// sharp at the crossings, which the booleans do not resolve reliably.
+const GRAZE: f64 = 1e-2;
 
 /// What the blend sweeps along the foot.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -377,12 +381,26 @@ fn plane_and_wall(curved: &Curved, faces: &[usize], cone: bool) -> Option<(usize
 /// # Errors
 ///
 /// As reading the solid.
-#[expect(clippy::too_many_lines, reason = "one reading of the foot, in order")]
 pub(crate) fn reach(
     model: &Model,
     solid: &Shape,
     edges: &[Shape],
     size: Size,
+    tol: Tolerances,
+) -> OgeomResult<Option<Reach>> {
+    read_reach(model, solid, edges, size, &mut None, tol)
+}
+
+/// [`reach`], setting `graze` to the angle at which a bevel's leg on the
+/// floor meets a tangent line it touches or crosses under [`GRAZE`], nought
+/// where it touches, whether or not the reading takes the request.
+#[expect(clippy::too_many_lines, reason = "one reading of the foot, in order")]
+fn read_reach(
+    model: &Model,
+    solid: &Shape,
+    edges: &[Shape],
+    size: Size,
+    graze: &mut Option<f64>,
     tol: Tolerances,
 ) -> OgeomResult<Option<Reach>> {
     let eps = tol.confusion();
@@ -570,7 +588,16 @@ pub(crate) fn reach(
         let to = to - up * to.dot(up);
         let to = to - along * to.dot(along);
         let gap = to.magnitude();
-        if gap <= foot_radius + eps * 10.0 || gap >= reach_radius - eps * 10.0 {
+        if gap <= foot_radius + eps * 10.0 {
+            continue;
+        }
+        if !round && !concave && gap < reach_radius + eps * 10.0 {
+            let angle = (gap / reach_radius).min(1.0).acos();
+            if angle < GRAZE {
+                *graze = Some(graze.map_or(angle, |g| g.min(angle)));
+            }
+        }
+        if gap >= reach_radius - eps * 10.0 {
             continue;
         }
         let past = reach_radius - gap;
@@ -1301,6 +1328,26 @@ pub(crate) fn reach_found(
     tol: Tolerances,
 ) -> OgeomResult<bool> {
     Ok(reach(model, solid, edges, size, tol)?.is_some())
+}
+
+/// The angle at which the bevel `size` of the foot rim `edges` grazes the
+/// tangent line of a straight convex round its leg on the floor touches or
+/// crosses ([`GRAZE`]); `None` where the foot is not one blend into round
+/// reads, or its leg meets no tangent line that sharply.
+///
+/// # Errors
+///
+/// As reading the solid.
+pub(crate) fn grazes(
+    model: &Model,
+    solid: &Shape,
+    edges: &[Shape],
+    size: Size,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    let mut graze = None;
+    read_reach(model, solid, edges, size, &mut graze, tol)?;
+    Ok(graze)
 }
 
 /// The edges of `specs` and the one bevel they ask, where every spec asks

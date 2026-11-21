@@ -118,7 +118,8 @@ pub(crate) use mixed_tools::blend as mixed_asymmetric;
 pub(crate) use narrow::{Needs as NarrowNeeds, built as narrow_built, reach as narrow_reach};
 pub(crate) use overflow::{
     Size as OverflowSize, bevel_size as overflow_bevel_size, blended as overflow_blended,
-    changes_others as overflow_changes_others, reach_found as overflow_reach,
+    changes_others as overflow_changes_others, grazes as overflow_grazes,
+    reach_found as overflow_reach,
 };
 pub(crate) use planar_tools::{linear_round, varying_distances};
 pub(crate) use request::{Request, Section};
