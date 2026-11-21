@@ -185,3 +185,22 @@ fn a_round_ending_at_a_kink_runs_on_until_the_turned_front_trims_it() {
         );
     }
 }
+
+/// At a 4 degree kink with the far end at 40, the first top edge picked
+/// with tangent propagation brings no other edge, and the
+/// round of that chain takes `20 (1 − π/4) + cot(4°)(5/6 − π/4)`,
+/// 4.977542, not the 4.292037 of a band capped square at the kink.
+#[test]
+fn a_tangent_pick_at_a_four_degree_kink_rounds_its_first_edge_alone() {
+    let kink = 4.0_f64.to_radians();
+    let mut m = Model::new();
+    let (s, first, _) = kinked(&mut m, kink, 40.0);
+    let chain = tangent_chain(&m, &s, &[first], TANGENT_CHAIN_ANGLE, T).unwrap();
+    assert_eq!(chain.len(), 1);
+    let before = volume(&m, &s);
+    let built = fillet_edges(&mut m, &s, &chain, 1.0, T).unwrap();
+    let want = 20.0 * (1.0 - PI / 4.0) + (5.0 / 6.0 - PI / 4.0) / kink.tan();
+    assert!((want - 4.977542).abs() < 5e-7, "{want}");
+    let got = before - volume(&m, &built.shape);
+    assert!((got - want).abs() <= 1e-6 * want, "took {got}");
+}
