@@ -2070,8 +2070,49 @@ fn exact_pcurve(
         SurfaceGeometry::Sphere(s) => on_sphere(curve, range, s.sphere(), tol),
         SurfaceGeometry::Torus(t) => on_torus(curve, range, t.torus(), tol),
         SurfaceGeometry::Cone(c) => on_cone(curve, range, c.cone(), tol),
+        SurfaceGeometry::BSpline(s) => on_bspline_boundary(curve, s, tol),
         _ => None,
     }
+}
+
+/// The pcurve of a B-spline surface's own boundary iso-curve: the chart's
+/// straight edge at that end of the domain, which the curve's parameter
+/// runs along unchanged. Only a curve identical to the iso-curve the
+/// surface gives there is read so; that holds where the surface degenerates
+/// along the boundary too (a fitted patch closing to a point), where a
+/// projection has no one foot to find.
+fn on_bspline_boundary(
+    curve: &Curve,
+    surface: &ogeom_geom::BSplineSurface,
+    tol: Tolerances,
+) -> Option<PlanarCurve> {
+    let Curve::BSpline(given) = curve else {
+        return None;
+    };
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    for u in [u0, u1] {
+        if surface.iso_u_curve(u, tol).ok().as_ref() == Some(given) {
+            return Line2d::over(
+                ogeom_math::Axis2::new(Point2::new(u, 0.0), ogeom_math::Direction2::Y),
+                v0,
+                v1,
+            )
+            .ok()
+            .map(Into::into);
+        }
+    }
+    for v in [v0, v1] {
+        if surface.iso_v_curve(v, tol).ok().as_ref() == Some(given) {
+            return Line2d::over(
+                ogeom_math::Axis2::new(Point2::new(0.0, v), ogeom_math::Direction2::X),
+                u0,
+                u1,
+            )
+            .ok()
+            .map(Into::into);
+        }
+    }
+    None
 }
 
 /// The parameter window of a circle's pcurve that inherits the circle's own
