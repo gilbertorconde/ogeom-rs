@@ -4679,3 +4679,79 @@ fn a_corner_of_rolling_bevels_two_cutting_keeps_what_the_facet_rule_keeps() {
     let got = volume(&m, &built.shape);
     assert!((got - want).abs() <= 1e-9 * want, "{got} against {want}");
 }
+
+/// A slab 10 high whose top, in plan, narrows from 12 deep at x = 0 to
+/// `end` deep at x = 20 (its back the line between), its top front edge
+/// chamfered 6. Where the top is less than 6 deep the bevel's leg runs off
+/// it over the back's top edge, a convex edge, so the bevel rolls over as
+/// a notch (ADR 0001, amendment "M5b"); with `end` 0 the top ends in a
+/// point. The slab is convex, so what goes is all of it above the bevel
+/// plane `z = y + 4`: at depth `w` a section of `6w − w²/2` while `w < 6`,
+/// 18 past it, with `w` running linearly in `x`.
+#[test]
+fn a_chamfer_wider_than_a_top_that_narrows_or_ends_rolls_over_its_back() {
+    for end in [4.0_f64, 0.0] {
+        let mut m = Model::new();
+        let mut outline = vec![(0.0, 0.0), (20.0, 0.0)];
+        if end > 0.0 {
+            outline.push((20.0, end));
+        }
+        outline.push((0.0, 12.0));
+        let s = slab(&mut m, &outline, 10.0);
+        let (edge, _) = front_top(&m, &s, 10.0, (0.0, 20.0));
+        let specs = [(edge, Chamfer::Symmetric(6.0))];
+        let built = ogeom_fillet::chamfer_edges_checked(&mut m, &s, &specs, T).unwrap();
+        let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "end {end}: {:?}", found.problems);
+        // `w = 12 − k x`; deeper than 6 up to x = 6 / k, then the section's
+        // antiderivative in `w` from 6 down to `end`, over `dx = dw / k`.
+        let k = (12.0 - end) / 20.0;
+        let section = |w: f64| 3.0 * w * w - w * w * w / 6.0;
+        let want = 18.0 * 6.0 / k + (section(6.0) - section(end)) / k;
+        let got = 10.0 * 0.5 * (12.0 + end) * 20.0 - volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "end {end}: took {got} against {want}"
+        );
+    }
+}
+
+/// A slab 20 × 12 × 10 with a block 10 × 8 × 5 standing on its top at the
+/// back of its right half (x in [10, 20], y in [4, 12]): there the top
+/// ends 4 deep at the block's foot, a concave edge. The top front edge
+/// chamfered 6 would have its leg cross that foot and its bevel cut under
+/// the block, so it is refused by name (ADR 0001, amendment "a bevel stops
+/// at a concave floor"). At 4 the leg reaches the foot exactly and the
+/// bevel builds, taking its prism `20 · 4²/2 = 160`.
+#[test]
+fn a_chamfer_wider_than_a_top_that_ends_at_a_wall_s_foot_is_refused_by_name() {
+    let part = |m: &mut Model| {
+        let base = block(m, (0.0, 0.0, 0.0), (20.0, 12.0, 10.0));
+        let boss = block(m, (10.0, 4.0, 10.0), (10.0, 8.0, 5.0));
+        ogeom_bool::fuse(m, &base, &boss, T).unwrap().shape
+    };
+    let mut m = Model::new();
+    let s = part(&mut m);
+    let (edge, _) = front_top(&m, &s, 10.0, (0.0, 20.0));
+    let refused =
+        ogeom_fillet::chamfer_edges_checked(&mut m, &s, &[(edge, Chamfer::Symmetric(6.0))], T)
+            .unwrap_err();
+    assert_eq!(refused.edges, vec![0]);
+    assert!(
+        refused.error.to_string().contains("below the floor"),
+        "{}",
+        refused.error
+    );
+
+    let mut m = Model::new();
+    let s = part(&mut m);
+    let before = volume(&m, &s);
+    let (edge, _) = front_top(&m, &s, 10.0, (0.0, 20.0));
+    let built =
+        ogeom_fillet::chamfer_edges_checked(&mut m, &s, &[(edge, Chamfer::Symmetric(4.0))], T)
+            .unwrap();
+    let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    let got = before - volume(&m, &built.shape);
+    assert!((got - 160.0).abs() <= 1e-9 * 160.0, "took {got}");
+}
