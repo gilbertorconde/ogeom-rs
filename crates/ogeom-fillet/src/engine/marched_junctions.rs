@@ -100,6 +100,47 @@ pub(crate) fn met(
     }))
 }
 
+impl Met {
+    /// The request's edges `pair` meeting flush in the plane through `on`
+    /// square to `towards_first`, which points to `pair[0]`'s side, their
+    /// bands ending there at `at`: their flush junction moved there, or
+    /// one added. False where they meet in a crossed junction.
+    pub(crate) fn flush_at(
+        &mut self,
+        pair: [usize; 2],
+        (on, towards_first): (Point, Vector),
+        at: Point,
+    ) -> bool {
+        for junction in &mut self.junctions {
+            let normal = if junction.pair == pair {
+                towards_first
+            } else if junction.pair == [pair[1], pair[0]] {
+                -towards_first
+            } else {
+                continue;
+            };
+            if junction.crossed {
+                return false;
+            }
+            junction.flush = (on, normal);
+            junction.at = at;
+            return true;
+        }
+        self.junctions.push(Junction {
+            at,
+            pair,
+            outward: [-towards_first, towards_first],
+            reentrant: false,
+            flush: (on, towards_first),
+            crossed: false,
+            top: Vector::ZERO,
+            sides: [Vector::ZERO; 2],
+            turned: None,
+        });
+        true
+    }
+}
+
 /// The band of an edge of another kind meeting a marched one at a junction,
 /// set `aside` on `solid` as given: a rim's arc its exact torus band (or
 /// the march's where a cone's ball would reach its axis).
@@ -616,6 +657,9 @@ pub(crate) fn join_flush(
         else {
             continue;
         };
+        if first.additive != second.additive {
+            ogeom_bail!(Construction, "a fill and a cut meet flush at a junction");
+        }
         let (solid, traced) = crate::engine::junction::joined(
             model,
             [&first.solid, &second.solid],
@@ -653,7 +697,7 @@ pub(crate) fn join_flush(
             edge,
             Wedge {
                 solid,
-                additive: false,
+                additive: first.additive,
                 edges: rounded,
                 melt_refusal: first.melt_refusal.or(second.melt_refusal),
                 credit,

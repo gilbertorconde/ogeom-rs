@@ -4049,6 +4049,89 @@ before ("does not stand square"). The lone arc (a half cylinder lying on
 a plate) and the curved cap (a rib under a drum's top) meet the same
 transition and stay refused too.
 
+### Amendment: a ball changing walls off the vertex (#1145)
+
+Amendment "a marched band leaning into its end face" left the half
+frustum's foot, rounded once its uprights are, 0.016 of fill short with
+`check` clean: a wrong solid reachable in two calls. The cause is
+general. Where two rounds of a request meet tangent at a vertex on one
+shared face (the cap) and their other faces (the walls) meet G1 along a
+seam there, the ball rolling along the chain changes walls where its
+contact crosses the seam at its own height, at the radius from the cap.
+The chain's rounds are joined in the section square to the chain at the
+vertex, so where the crossing stands off that section they leave a gap
+or a step beside the seam. An upright seam (the D boss's) crosses in the
+section; a leaning one (a band's rail on the frustum's cut face, 0.35
+off) or a curved one upright at its foot (an arc's torus band meeting
+the end disc along a circle, 0.17 off) does not.
+
+**Detection** (`engine::switch_over`). For each two rounds of one sense
+and radius meeting tangent at a vertex on one shared face, with an edge
+of their two walls at the vertex: walk the seam from the vertex to where
+the ball off the walls' mean normal stands the radius from the cap (on
+the material's side for convex rounds), and measure how far along the
+chain that centre stands from the vertex's section. Beyond ten times
+the bands' fit target the crossing is off the vertex. `fillet_edges`
+and `fillet_edges_with` read this before any route, so no route joins
+such a chain at the vertex: the request is built as below or refused by
+name, naming the vertex and the distance.
+
+**The pipe** (`engine::pipe_corner`, through the contour route). Where a
+concave link's crossings at both its ends stand past their vertices over
+its neighbours, the ball between them touches the cap and the link's
+wall alone, its centre on the curve at the radius from both. The round
+there is the pipe of the radius about that curve:
+
+- each end's ball is solved again off the neighbour's own wall at the
+  seam's point, so it stands the radius from the cap and from the seam
+  exactly; its section is the plane square to both contacts, which is
+  the neighbour's own section there;
+- the centre is marched between the two sections in steps of a
+  two-hundredth of the radius on the cap's and the wall's offsets, then
+  64 stations are settled on it, closer toward the ends, each the ball's
+  exact arc from its cap contact to its wall contact;
+- the sections are fitted within half the confusion, and the fit is
+  held to the bands' fit target of the ball about the centre's run
+  halfway between them;
+- the tool is the fill itself: the pipe, legs on the cap and on the
+  link's wall bounded by the link's foot, the seams and the pipe's rails,
+  a leg on each neighbour's wall past its vertex, and the two section
+  planes;
+- each neighbour's band (a straight round, a rim's torus) is trimmed
+  back to its section and joined to the pipe there, the whole loop one
+  fill.
+
+A joined pair of wedges keeps its bands' sense (fill or cut): the flush
+join had always made a cut, which no fill reached before.
+
+**Rolling.** `Rolling`'s lone-band order now takes a lone line leaning
+to its plane cap, beside planes, cylinders along it or cones it is a
+ruling of: the lone bands go first, and the foot then rolls round them,
+through the pipe.
+
+**Oracle** (`tests/switch_over.rs`). Run on below the plate, the solid
+is a plate under the opening `S = E ⊕ B_r` of a convex body. The free
+centres are `F = {z ≥ cap + r} ∖ int D`, `D = E ⊕ B_2r`, and a point
+outside `S` below `cap + r` is filled exactly where none of three holds:
+its lift to `cap + r` lies outside `D`; it moved `2r − d` along the
+normal from its nearest point of `E` reaches `cap + r`; it lies within
+`r` of `∂D ∩ {z = cap + r}`. For `E` convex every other candidate
+nearest point of `F` is farther than `r`. The fill is integrated in
+polar sections, `z = cap + r s²`, the panels split where the cone's
+contact stands. On an upright D (no slope) it gives the closed form
+`p r²(1 − π/4) + π r³(5/3 − π/2)` within 2.9e-6. Measured on the half
+frustum: fill within 2.3e-6 of the reference (3.438297, converged to
+3e-8), the same in either order, `check` clean, every join G1 within
+2.4e-4 rad, and `Rolling` in one request the same solid in either
+order.
+
+**Still refused, by name.** A convex chain (the half frustum's top loop
+once its uprights are rounded, 0.19 off), and a link with one crossing
+off and one in its vertex's section (a half cylinder lying on a plate,
+its end arcs rounded: the arc band's foot hands over in the section on
+the cylinder's side and 0.17 off it on the end disc's). The curved cap
+(a rib under a drum's top) is declined by every route as before.
+
 ## 12. Acceptance corpus
 
 From #902:
