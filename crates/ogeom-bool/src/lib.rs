@@ -37,6 +37,7 @@
 //! outside it. [`split_sheet`] keeps every piece, unclassified. The kept
 //! pieces are sewn into shells with no closure asked of them.
 
+mod along_edges;
 mod arrange;
 mod aside;
 mod ball_chart;
@@ -53,6 +54,8 @@ mod sub_shapes;
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub mod work;
+
+pub use along_edges::note_meeting_along_edge;
 
 pub use ball_chart::TOUCHING as POLE_TOUCHING;
 pub use ball_chart::{POLE_MARGIN, Recharted, rechart_clear_of_poles};
@@ -5811,6 +5814,7 @@ fn fill(
     }
     let at_rims = AT_RIMS.get();
     let as_stated = AS_STATED.get();
+    let along_edges = along_edges::Noted::read();
     let mut pairs: Vec<(usize, usize)> = if admit_all {
         (0..ga.faces.len())
             .flat_map(|ia| (0..gb.faces.len()).map(move |ib| (ia, ib)))
@@ -5888,7 +5892,19 @@ fn fill(
             // The intersector measures a pair without a closed form for
             // coincidence at the chord; the faces' own stated looseness is
             // asked here, since only the faces know it.
-            let met = if coincide_as_stated(fa, fb, as_stated, tol) {
+            // A blend's band and a face it was built against: they meet
+            // along the band's rail, which the wedge's leg on that face
+            // splits it along.
+            let noted = fa.carrier.1.is_identity()
+                && fb.carrier.1.is_identity()
+                && along_edges.holds(
+                    (&fa.surface, &fb.surface),
+                    (fa.carrier.0, fb.carrier.0),
+                    tol,
+                );
+            let met = if noted {
+                SurfaceIntersection::Apart
+            } else if coincide_as_stated(fa, fb, as_stated, tol) {
                 SurfaceIntersection::Same
             } else if let Some(found) = at_rim {
                 if found.is_empty() {
