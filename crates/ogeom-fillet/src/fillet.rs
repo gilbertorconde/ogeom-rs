@@ -431,11 +431,13 @@ pub fn fillet_edges(
 /// - `hold_edge`: where the ball would roll over a sharp edge of the body,
 ///   the edge is kept and the ball rests on it: it touches the other face
 ///   and the round there is the canal surface it sweeps, meeting the band
-///   G1. `hold_edge_at_end` applies the same rule where the stretch held
-///   reaches one end of the band and not the other. Built for a round of
-///   one straight edge between two planes, ending flush on end faces square
-///   to it, whose contact runs past a line or a circle bounding one of its
-///   faces; any other request goes on to `trim_through`.
+///   G1. Where one held edge stops and the next goes on, the ball rests on
+///   the vertex between them. `hold_edge_at_end` applies the same rule
+///   where a stretch held reaches an end of the band. Built for a round of
+///   a straight edge, or a chain of edges along one line, between two
+///   planes, ending on end faces within 60 degrees of square to it, whose
+///   contact runs past lines or circles bounding one plane's faces; any
+///   other request goes on to `trim_through`.
 /// - `trim_through`: the round keeps its own surface, and the faces it
 ///   reaches are trimmed or extended to meet it.
 ///
