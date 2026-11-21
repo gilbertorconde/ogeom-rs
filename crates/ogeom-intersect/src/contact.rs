@@ -725,6 +725,16 @@ impl Walk<'_> {
                         {
                             break Err(Some(edge.contact));
                         }
+                        // A contact running along the edge itself (a band
+                        // whose rail is its own border, touching the face it
+                        // was built against) nicks the bound at nearly every
+                        // step. Held on the bound the step's point is still a
+                        // contact a full step on, so it is taken; halving
+                        // would only nick it again, step after step, down to
+                        // the shortest.
+                        if self.holds(&c) && (c.contact.point - at.point).dot(along) > step * 0.5 {
+                            break Ok(c.contact);
+                        }
                     } else if self.holds(&c) && c.contact.point.distance(at.point) > step * 0.5 {
                         break Ok(c.contact);
                     }
