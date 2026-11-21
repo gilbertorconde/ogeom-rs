@@ -276,3 +276,72 @@ fn a_facet_corner_through_five_points_off_one_plane_closes_on_their_patch() {
         ));
     }
 }
+
+/// Every edge of a 20 × 20 × 10 box chamfered 1, through each public
+/// chamfer call. The bevel prisms, each `d²/2` in section along the edge,
+/// total `d²/2 · 4(20 + 20 + 10) = 100`. In a corner's `d` cube they are
+/// `x + y < d`, `y + z < d`, `x + z < d` in the corner's own axes: each
+/// `d³/2`, each pair `∫₀^d (d − y)² dy = d³/3`, and all three, by symmetry,
+/// six times the part `x ≤ y ≤ z` where only `y + z < d` binds,
+/// `∫₀^(d/2) y (d − 2y) dy = d³/24`: `d³/4`. So the corner's union is `3d³/2 − d³ + d³/4 = 3d³/4`, against `3d³/2` counted
+/// in the prisms: the mitre takes `100 − 8 · 3/4 = 94`. The facet takes the
+/// tetrahedron between the mitre's point `(d/2, d/2, d/2)` and the
+/// crossings `(d, d, 0)`, `(0, d, d)`, `(d, 0, d)` more at each corner,
+/// `d³/12`: `94 + 2/3`, the default.
+#[test]
+fn every_edge_of_a_box_chamfered_one_loses_94_by_the_point_and_94_and_two_thirds_by_default() {
+    let mut m = Model::new();
+    let frame = Frame::new(Point::ORIGIN, Direction::Z, Direction::X, T).unwrap();
+    let b = ogeom_algo::make_box(&mut m, frame, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = explore_unique(&m, &b, ShapeType::Edge).unwrap();
+    assert_eq!(edges.len(), 12);
+    let specs: Vec<(Shape, Chamfer)> = edges
+        .iter()
+        .map(|e| (e.clone(), Chamfer::Symmetric(1.0)))
+        .collect();
+    let d: f64 = 1.0;
+    let prisms = 0.5 * d * d * 4.0 * (20.0 + 20.0 + 10.0);
+    let all_three = 6.0 * d * d * d / 24.0;
+    let corner_union = 3.0 * d * d * d / 2.0 - 3.0 * d * d * d / 3.0 + all_three;
+    let point = prisms - 8.0 * (3.0 * d * d * d / 2.0 - corner_union);
+    assert!((point - 94.0).abs() < 1e-12, "{point}");
+    let facet = point + 8.0 * d * d * d / 12.0;
+
+    let before = vol(&m, &b);
+    let took = |name: &str, built: ogeom_algo::Built, m: &Model, want: f64| {
+        let found = ogeom_algo::check(m, &built.shape, T).unwrap();
+        assert!(found.is_valid(), "{name}: {:?}", found.problems);
+        let got = before - vol(m, &built.shape);
+        assert!(
+            (got - want).abs() <= 1e-9 * want,
+            "{name}: took {got} against {want}"
+        );
+    };
+    let mut n = m.clone();
+    let built = ogeom_fillet::chamfer_edges(&mut n, &b, &edges, d, T).unwrap();
+    took("chamfer_edges", built, &n, facet);
+    let mut n = m.clone();
+    let built = chamfer_edges_with(&mut n, &b, &specs, T).unwrap();
+    took("chamfer_edges_with", built, &n, facet);
+    let mut n = m.clone();
+    let built = ogeom_fillet::chamfer_edges_checked(&mut n, &b, &specs, T).unwrap();
+    took("chamfer_edges_checked", built, &n, facet);
+    for (corner, want) in [(ChamferCorner::Facet, facet), (ChamferCorner::Point, point)] {
+        let mut n = m.clone();
+        let built = chamfer_edges_cornered(&mut n, &b, &specs, corner, T).unwrap();
+        took(&format!("cornered {corner:?}"), built, &n, want);
+        let mut n = m.clone();
+        let built = ogeom_fillet::chamfer_edges_overflow(
+            &mut n,
+            &b,
+            &specs,
+            corner,
+            ogeom_fillet::Overflow::default(),
+            T,
+        )
+        .unwrap();
+        took(&format!("overflow {corner:?}"), built, &n, want);
+    }
+}
