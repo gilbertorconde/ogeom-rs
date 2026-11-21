@@ -1,0 +1,3 @@
+- **Added: `blend_seat`, the seat reading without the confirming builds** (#1224).
+  - `blend_seat(model, solid, sizing, up_to, tol)` returns `blend_limit(..).seat` for any `BlendSizing`, through the same code, and builds nothing. Its errors are the seat reading's own, for example `NotDone` on a marched crease.
+  - On a 20 x 4 x 20 plate's top front edge, a round of distances 1 and 1e-5 reads 4 for the top face and 20 for the front, with no builds. `blend_limit` spent 8 builds to confirm the top face's reading.

@@ -222,17 +222,18 @@ pub enum DistanceLawSize {
 /// which return its [`BlendLimit::size`], with the options their calls
 /// take.
 ///
-/// The seat is read first, without building, as those readings did; then
-/// the call is asked on a copy of the model, first at the seat reading
-/// (at `up_to` where the seat cannot be read) and a [`LIMIT_TOLERANCE`]
-/// past it, then doubling or halving the size until one builds and one
-/// is refused, and bisecting between the largest size that built and the
-/// smallest refused until they stand within [`LIMIT_TOLERANCE`] of each
-/// other. [`LIMIT_SAMPLES`] sizes evenly below the result, and as many
-/// spread geometrically from the refusal to `up_to`, are then probed: a
-/// refusal below moves the answer down to the boundary under it, a build
-/// above is reported as [`BlendLimit::builds_again`]. At most
-/// [`LIMIT_PROBES`] builds are probed.
+/// The seat is read first, without building, as [`blend_seat`] reads it
+/// alone; then the call is asked on a copy of the model, first at the
+/// seat reading (at `up_to` where the seat cannot be read) and a
+/// [`LIMIT_TOLERANCE`] past it, then doubling or halving the size until
+/// one builds and one is refused, and bisecting between the largest size
+/// that built and the smallest refused until they stand within
+/// [`LIMIT_TOLERANCE`] of each other. [`LIMIT_SAMPLES`] sizes evenly
+/// below the result, and as many spread geometrically from the refusal to
+/// `up_to`, are then probed: a refusal below moves the answer down to the
+/// boundary under it, a build above is reported as
+/// [`BlendLimit::builds_again`]. At most [`LIMIT_PROBES`] builds are
+/// probed.
 ///
 /// A reading where the seat brackets the limit costs `2 + 2 ·`
 /// [`LIMIT_SAMPLES`] builds of the request; one bisected from a factor of
@@ -259,6 +260,47 @@ pub fn blend_limit(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<BlendLimit> {
+    read_seat(model, solid, sizing, up_to, tol, |seat, floor, builds| {
+        settle(seat, up_to, floor, builds)
+    })
+}
+
+/// The size where a contact of `sizing`'s blend first leaves its face, at
+/// most `up_to`, read from the seats without building: the reading
+/// [`blend_limit`] starts from, its [`BlendLimit::seat`]. None where no
+/// size above the confusion distance stays seated.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+/// `up_to`, an edge list or a distance is not usable, as [`blend_limit`]
+/// refuses them; otherwise the seat reading's own refusal, such as
+/// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) where the seat
+/// is not read from the seat (a marched crease).
+pub fn blend_seat(
+    model: &Model,
+    solid: &Shape,
+    sizing: &BlendSizing<'_>,
+    up_to: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
+    read_seat(model, solid, sizing, up_to, tol, |seat, _, _| seat)
+}
+
+/// The probe [`read_seat`] hands on: whether the request builds at a size.
+type Builds<'b> = &'b mut dyn FnMut(f64) -> bool;
+
+/// `sizing`'s seat reading, the smallest size worth probing and the probe,
+/// handed to `then`: [`blend_limit`] confirms the seat with the probe,
+/// [`blend_seat`] returns it. Nothing is built before `then` asks.
+fn read_seat<R>(
+    model: &Model,
+    solid: &Shape,
+    sizing: &BlendSizing<'_>,
+    up_to: f64,
+    tol: Tolerances,
+    then: impl FnOnce(OgeomResult<Option<f64>>, f64, Builds<'_>) -> OgeomResult<R>,
+) -> OgeomResult<R> {
     let conf = tol.confusion();
     if !up_to.is_finite() || up_to <= conf {
         ogeom_bail!(
@@ -269,7 +311,9 @@ pub fn blend_limit(
     let (seat, floor) = match *sizing {
         BlendSizing::RoundLaw { .. }
         | BlendSizing::RoundLinear { .. }
-        | BlendSizing::DistanceLaws { .. } => return law_limit(model, solid, sizing, up_to, tol),
+        | BlendSizing::DistanceLaws { .. } => {
+            return law_seat_reading(model, solid, sizing, up_to, tol, then);
+        }
         BlendSizing::Rounds { edges, .. } | BlendSizing::RoundsOverflow { edges, .. } => {
             if edges.is_empty() {
                 ogeom_bail!(Construction, "a request of no edges has no largest radius");
@@ -325,8 +369,11 @@ pub fn blend_limit(
             )
         }
     };
-    let builds = |size: f64| probe(model, solid, sizing, size, tol);
-    settle(seat, up_to, floor, builds)
+    then(
+        seat,
+        floor,
+        &mut counted(|size| probe(model, solid, sizing, size, tol)),
+    )
 }
 
 /// The smallest measure worth asking of `spec`: the one at which its
@@ -510,7 +557,7 @@ fn probe(
             crate::chamfer_edges_overflow(&mut scratch, solid, &specs, corner, overflow, tol)
                 .is_ok()
         }
-        // Read by `law_limit`, which probes them itself.
+        // Read by `law_seat_reading`, which probes them itself.
         BlendSizing::RoundLaw { .. }
         | BlendSizing::RoundLinear { .. }
         | BlendSizing::DistanceLaws { .. } => false,
@@ -724,16 +771,27 @@ fn law_floor(laws: &[(&RadiusLaw, Option<Free>)], conf: f64) -> f64 {
     }
 }
 
-/// [`blend_limit`] for a request under a law: the seat read at
-/// [`LAW_STATIONS`] along the chain under the law at each size, then
-/// confirmed by the call under the law at each size probed.
-fn law_limit(
+/// `builds`, each call counted under test, so a test can tell how many
+/// builds a reading asked.
+fn counted(mut builds: impl FnMut(f64) -> bool) -> impl FnMut(f64) -> bool {
+    move |size| {
+        #[cfg(test)]
+        tests::BUILDS.with(|n| n.set(n.get() + 1));
+        builds(size)
+    }
+}
+
+/// [`read_seat`] for a request under a law: the seat read at
+/// [`LAW_STATIONS`] along the chain under the law at each size, the probe
+/// the call under the law at the size asked.
+fn law_seat_reading<R>(
     model: &Model,
     solid: &Shape,
     sizing: &BlendSizing<'_>,
     up_to: f64,
     tol: Tolerances,
-) -> OgeomResult<BlendLimit> {
+    then: impl FnOnce(OgeomResult<Option<f64>>, f64, Builds<'_>) -> OgeomResult<R>,
+) -> OgeomResult<R> {
     let conf = tol.confusion();
     match *sizing {
         BlendSizing::RoundLaw { chain, law, size } => {
@@ -756,7 +814,7 @@ fn law_limit(
                 let mut scratch = model.clone();
                 crate::fillet_edges_variable(&mut scratch, solid, chain, &at(v), tol).is_ok()
             };
-            settle(seat, up_to, law_floor(&laws, conf), builds)
+            then(seat, law_floor(&laws, conf), &mut counted(builds))
         }
         BlendSizing::RoundLinear {
             edge,
@@ -782,7 +840,7 @@ fn law_limit(
                 let mut scratch = model.clone();
                 crate::fillet_edge_variable(&mut scratch, solid, edge, start, end, tol).is_ok()
             };
-            settle(seat, up_to, law_floor(&laws, conf), builds)
+            then(seat, law_floor(&laws, conf), &mut counted(builds))
         }
         BlendSizing::DistanceLaws {
             edge,
@@ -845,7 +903,7 @@ fn law_limit(
                 )
                 .is_ok()
             };
-            settle(seat, up_to, law_floor(&laws, conf), builds)
+            then(seat, law_floor(&laws, conf), &mut counted(builds))
         }
         _ => ogeom_bail!(Construction, "not a request under a law"),
     }
@@ -856,7 +914,7 @@ fn law_limit(
 /// chain are not read, the constant round's seat held at every fraction.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the request's parts, as law_limit has them"
+    reason = "the request's parts, as law_seat_reading has them"
 )]
 fn round_law_seat(
     model: &Model,
@@ -1074,6 +1132,188 @@ pub(crate) fn confirm(
 mod tests {
     #![allow(clippy::unwrap_used, reason = "test code")]
     use super::*;
+    use ogeom_geom::Curve3d as _;
+    use ogeom_math::{Direction, Frame, Point};
+    use ogeom_topo::{ShapeType, explore_unique};
+    use std::cell::Cell;
+
+    thread_local! {
+        /// The builds asked on this thread, counted by [`counted`].
+        pub(super) static BUILDS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// A plate 20 wide (x), 4 deep (y), 20 tall (z), with its top front
+    /// edge (y = 0, z = 20), its top face and its front face.
+    fn plate() -> (Model, Shape, Shape, Shape, Shape) {
+        let mut m = Model::new();
+        let frame = Frame::new(Point::ORIGIN, Direction::Z, Direction::X, T).unwrap();
+        let s = ogeom_algo::make_box(&mut m, frame, (20.0, 4.0, 20.0), T)
+            .unwrap()
+            .shape;
+        let edge = explore_unique(&m, &s, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                let (c, (a, b)) = ogeom_algo::placed_edge_curve(&m, e, T).unwrap().unwrap();
+                [a, b].iter().all(|&t| {
+                    let p = c.point_at(t, T).unwrap();
+                    p.y.abs() < 1e-9 && (p.z - 20.0).abs() < 1e-9
+                })
+            })
+            .unwrap();
+        let face_at = |on: &dyn Fn(Point) -> bool| {
+            explore_unique(&m, &s, ShapeType::Face)
+                .unwrap()
+                .into_iter()
+                .find(|f| {
+                    let b = ogeom_algo::shape_bounds(&m, f, T).unwrap();
+                    on(b.low().unwrap()) && on(b.high().unwrap())
+                })
+                .unwrap()
+        };
+        let top = face_at(&|p| (p.z - 20.0).abs() < 1e-6);
+        let front = face_at(&|p| p.y.abs() < 1e-6);
+        (m, s, edge, top, front)
+    }
+
+    /// `blend_seat` on `sizing`, checked to build nothing and to be
+    /// `blend_limit`'s seat, which is checked to count its builds.
+    fn seat_agrees(m: &Model, s: &Shape, sizing: &BlendSizing<'_>, up_to: f64) -> Option<f64> {
+        BUILDS.with(|n| n.set(0));
+        let seat = blend_seat(m, s, sizing, up_to, T).unwrap();
+        assert_eq!(BUILDS.with(Cell::get), 0, "the seat reading built");
+        let limit = blend_limit(m, s, sizing, up_to, T).unwrap();
+        assert_eq!(BUILDS.with(Cell::get), limit.probes);
+        assert!(limit.probes > 0);
+        assert_eq!(seat, limit.seat);
+        seat
+    }
+
+    #[test]
+    fn a_round_s_seat_is_the_limit_s_without_a_build() {
+        let (m, s, edge, ..) = plate();
+        let edges = [edge];
+        let sizing = BlendSizing::Rounds {
+            edges: &edges,
+            corner: FilletCorner::Rolling,
+        };
+        assert!(seat_agrees(&m, &s, &sizing, 40.0).is_some());
+    }
+
+    #[test]
+    fn a_round_s_seat_under_overflow_is_the_limit_s_without_a_build() {
+        let (m, s, edge, ..) = plate();
+        let edges = [edge];
+        let sizing = BlendSizing::RoundsOverflow {
+            edges: &edges,
+            overflow: Overflow::default(),
+        };
+        assert!(seat_agrees(&m, &s, &sizing, 40.0).is_some());
+    }
+
+    #[test]
+    fn each_face_s_reach_is_read_without_a_build() {
+        let (m, s, edge, top, front) = plate();
+        for (face, reach) in [(&top, 4.0), (&front, 20.0)] {
+            let sizing = BlendSizing::RoundDistances {
+                edge: &edge,
+                face,
+                on_face: 1.0,
+                on_other: 1e-5,
+                profile: RoundProfile::Elliptical,
+            };
+            let seat = seat_agrees(&m, &s, &sizing, 40.0).unwrap();
+            assert!((seat - reach).abs() < 1e-6, "{seat} against {reach}");
+        }
+    }
+
+    #[test]
+    fn a_bevel_s_seat_is_the_limit_s_without_a_build() {
+        let (m, s, edge, ..) = plate();
+        let sizing = BlendSizing::Chamfer {
+            edge: &edge,
+            spec: &Chamfer::Symmetric(1.0),
+            corner: ChamferCorner::Point,
+        };
+        assert!(seat_agrees(&m, &s, &sizing, 40.0).is_some());
+    }
+
+    #[test]
+    fn bevels_seat_is_the_limit_s_without_a_build() {
+        let (m, s, edge, ..) = plate();
+        let specs = [(edge, Chamfer::Symmetric(1.0))];
+        let sizing = BlendSizing::Chamfers {
+            specs: &specs,
+            corner: ChamferCorner::Point,
+            overflow: Overflow::default(),
+        };
+        assert!(seat_agrees(&m, &s, &sizing, 40.0).is_some());
+    }
+
+    #[test]
+    fn a_law_s_seat_is_the_limit_s_without_a_build() {
+        let (m, s, edge, ..) = plate();
+        let chain = [edge];
+        let law = RadiusLaw::Linear {
+            start: 1.0,
+            end: 2.0,
+        };
+        let sizing = BlendSizing::RoundLaw {
+            chain: &chain,
+            law: &law,
+            size: LawSize::Scale,
+        };
+        assert!(seat_agrees(&m, &s, &sizing, 40.0).is_some());
+    }
+
+    #[test]
+    fn a_linear_round_s_seat_is_the_limit_s_without_a_build() {
+        let (m, s, edge, ..) = plate();
+        let sizing = BlendSizing::RoundLinear {
+            edge: &edge,
+            start: 1.0,
+            end: 2.0,
+            size: LawSize::At(LawStation::End),
+        };
+        assert!(seat_agrees(&m, &s, &sizing, 40.0).is_some());
+    }
+
+    #[test]
+    fn distance_laws_seat_is_the_limit_s_without_a_build() {
+        let (m, s, edge, top, _) = plate();
+        let on_face = RadiusLaw::Linear {
+            start: 1.0,
+            end: 2.0,
+        };
+        let on_other = RadiusLaw::Linear {
+            start: 1.0,
+            end: 1.0,
+        };
+        let sizing = BlendSizing::DistanceLaws {
+            edge: &edge,
+            face: &top,
+            on_face: &on_face,
+            on_other: &on_other,
+            profile: RoundProfile::Elliptical,
+            size: DistanceLawSize::Scale,
+        };
+        assert!(seat_agrees(&m, &s, &sizing, 40.0).is_some());
+    }
+
+    #[test]
+    fn an_unusable_bound_is_refused_as_the_limit_refuses_it() {
+        let (m, s, edge, ..) = plate();
+        let edges = [edge];
+        let sizing = BlendSizing::Rounds {
+            edges: &edges,
+            corner: FilletCorner::Setback,
+        };
+        let seat = blend_seat(&m, &s, &sizing, 0.0, T).unwrap_err();
+        let limit = blend_limit(&m, &s, &sizing, 0.0, T).unwrap_err();
+        assert_eq!(seat.to_string(), limit.to_string());
+    }
 
     fn run(seat: Option<Option<f64>>, up_to: f64, builds: impl Fn(f64) -> bool) -> BlendLimit {
         confirm(seat, up_to, 1e-7, builds)
