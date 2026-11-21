@@ -3741,6 +3741,122 @@ within 1e-6. The open spline slab with a block fused behind it, its wall
 ending 2 from the crease at a concave foot, chamfered 2.5 is refused by
 name; at 1.5 the rule passes it to the build.
 
+### Amendment: rolling corners on arcs, and concave corners from the void's side (#1145)
+
+Amendment "mixed rolling corners on curved faces" built the torus round
+a lone band's end where the lone edge is a line square to the cap. What
+it left was read again in this order: corners on outlines with arcs,
+a lone edge not square to its cap, cones, curved caps.
+
+**Corners on outlines with arcs.** Bosses and pockets whose outlines
+mix lines and arcs that are not full circles, or are arcs alone, have
+their mixed corners at the uprights. There the lone round is the upright:
+a line square to the cap, its faces planes or cylinders along it. So the
+existing rule already covers a line meeting an arc in a convex or a
+concave bow, two arcs meeting (a lens), and reflex corners (two discs
+fused into a figure eight, at its waist), on bosses and pockets. Tests
+now pin each one.
+
+One case did not build: a D pocket rounded all over. Its floor corners
+join three concave rounds on the pocket's cylinder, the floor's line and
+arc and the upright. The lone-band rule rounds those first, and the
+engine had no route for three concave rounds meeting on a curved face,
+though it closes the convex case (the boss's top) on the ball's sphere.
+`Setback` refused them too, so this was a gap in the engine, not in the
+rolling rule.
+
+**Rule: concave rounds from the void's side.** Rounding a concave edge
+with a ball is rounding the same edge of the void, where it is convex:
+the closing of a solid is the complement of its void's opening. Where
+every edge of a `fillet_edges` request is concave and the engine's own
+routes decline, the request is taken from the void's side
+(`engine/void_side.rs`):
+
+- A box stands about the asked edges, `8.371 r` clear of each, and the
+  solid is cut from it. What is left is the void beside the edges, where
+  each asked edge is convex.
+- The void's images of the edges are rounded by the engine. What that
+  takes off the void is the fill, which is fused onto the solid.
+- It is refused, and the request declined as before, where any of these
+  holds: a fill reaches a face the box made (a band running that far
+  would be the box's round, not the solid's), the void's rounds do not
+  build, or the result is not one sound solid with one shell.
+- Each asked edge's band faces are recorded as generated from it, so a
+  later pass (the lone-band rule's second) finds them.
+
+Named refusals of the request stand before this route is tried. Every
+corner it builds has rounds of one sense, so `Setback` and `Rolling` build
+the same solid. With it the D pocket's floor and uprights close on the
+ball's sphere, and the pocket rounded all over rolls.
+
+**A lone edge not square to its cap, cones, curved caps: still refused.**
+
+- A lone round whose edge is an arc (a half cylinder lying on a plate,
+  its end arcs convex over a concave foot) has a torus band. The ball
+  rolling round that band's end keeps its centre a radius off the cap
+  and twice the radius off the torus's centre circle. That path is a
+  section of a torus, not a circle.
+- A lone edge leaning to its cap (a frustum halved through its axis, its
+  uprights along the cone's rulings) gives an ellipse.
+- A curved cap (a rib below the top of a drum it is fused to) bends the
+  path in turn.
+
+In every one of these the sweep is a pipe of the ball's radius about a
+non-circular centre curve. It is a canal surface, generally not rational
+and not analytic.
+
+**Survey.** Mainstream CAD's public documentation describes the
+rolling-ball corner by the ball, rolled along each edge and round the
+corner, and offers setbacks (one patch over the opening) as the other
+corner type. Nothing restricts the ball's corner to analytic surfaces.
+The literature agrees that a constant-radius rolling-ball blend is in
+general irrational and is approximated where its spine is not a conic
+[S2, S3]. So the corner these cases ask for is the fitted pipe about
+the centre curve, G1 to the bands, not a patch. A setback patch would
+be a different corner, so it is not substituted.
+
+The engine cannot build that pipe in the lone-band order yet. The
+second pass would round a tangent chain whose middle link is marched
+(a plane against an inclined cylinder or a torus, with the two lines
+beside it). The engine declines that chain from either side, and on a
+leaning block it even declines some of the lone marched links alone.
+Until that chain builds, these corners stay refused by name, naming the
+vertex and the condition. `Rolling`'s promise that every new face is a
+plane, a cylinder, a cone, a sphere or a torus holds for everything it
+builds today. Admitting the fitted pipe will relax it for these corners
+only.
+
+**Oracle** (`tests/rolling_curved.rs`), in three orders, `check` clean,
+no patch face, every edge between two curved faces G1 within 1e-6 rad.
+At `t` within a round, the section of the boss or of the pocket's void
+is the outline rounded `r` in plan, grown or shrunk by the round's
+offset `w`. Steiner gives `A ± P w + π w²` for it, with `A` and `P`
+computed independently in the test: each corner's circle is centred
+where the two pieces' carriers, offset `r`, meet, and the area follows
+by Green's theorem piece by piece (checked against the rounded D's
+closed form to 1e-12). Measured relative errors:
+
+- lens boss foot and uprights 5e-16, all round 5e-13;
+- boss with an inward arc, foot and uprights 3e-16;
+- lens pocket rim and uprights 2e-16, all over 2e-14;
+- pocket with an inward arc, rim and uprights 2e-16;
+- figure-eight boss top and waist 4e-16, figure-eight pocket floor and
+  waist 7e-16;
+- D pocket floor and uprights 1e-13, the same under `Setback`;
+- D pocket all over 1e-13.
+
+The half cylinder's foot, the half frustum's foot and uprights, and the
+rib on the drum are refused by name. `Setback` refuses them too.
+
+- [S2] Vilnius University, blending natural quadrics by a rational
+  variable rolling ball (the general rolling-ball blend is not rational,
+  so a rational one is built instead):
+  https://epublications.vu.lt/object/elaba:3210101/3210101.pdf
+- [S3] SINTEF, SAGA WP3, Improved blends between primitive surfaces
+  (approximate fixed-radius rolling-ball blends where the spine is
+  irrational):
+  https://sintef.no/projectweb/computational-geometry/pro/saga/wp3-algebraic-geometry-for-cad-applications/improved-blends-between-primitive-surfaces
+
 ## 12. Acceptance corpus
 
 From #902:

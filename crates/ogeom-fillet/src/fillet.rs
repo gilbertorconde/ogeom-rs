@@ -683,6 +683,11 @@ fn rounded_as_today(
     }
     let radii = vec![radius; edges.len()];
     refused_as_checked(model, solid, edges, &radii, tol)?;
+    // Concave rounds the engine declines on the solid's side are the
+    // void's convex rounds, which it may build.
+    if let Some(built) = crate::engine::void_side_rounds(model, solid, &asked, tol)? {
+        return crate::engine::merged(model, solid, built, tol);
+    }
     Err(declined())
 }
 
