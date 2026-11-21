@@ -664,12 +664,15 @@ fn crossing_segments(
         .map(|p| neutral.signed_distance_to(*p))
         .collect();
     let mut segments: Vec<[((f64, f64), Point); 2]> = Vec::new();
-    for t in &mesh.triangles {
+    for (n, t) in mesh.triangles.iter().enumerate() {
+        let Some(uv) = mesh.triangle_parameters(n) else {
+            continue;
+        };
         let mut ends: Vec<((f64, f64), Point)> = Vec::with_capacity(2);
-        for &corner in t {
+        for (k, &corner) in t.iter().enumerate() {
             let i = corner as usize;
             if side[i].abs() <= on {
-                ends.push((mesh.parameters[i], mesh.positions[i]));
+                ends.push((uv[k], mesh.positions[i]));
             }
         }
         for k in 0..3 {
@@ -679,7 +682,7 @@ fn crossing_segments(
                 continue;
             }
             let f = a / (a - b);
-            let (pa, pb) = (mesh.parameters[i], mesh.parameters[j]);
+            let (pa, pb) = (uv[k], uv[(k + 1) % 3]);
             let (qa, qb) = (mesh.positions[i], mesh.positions[j]);
             ends.push((
                 (pa.0 + (pb.0 - pa.0) * f, pa.1 + (pb.1 - pa.1) * f),
@@ -1363,20 +1366,17 @@ fn outward_sign(
     let mesh = ogeom_mesh::triangulate_face(model, face, ogeom_mesh::Deflection::default(), tol)?;
     let mut at = None;
     let mut largest = 0.0_f64;
-    for t in &mesh.triangles {
+    for (i, t) in mesh.triangles.iter().enumerate() {
         let [a, b, c] = [
             mesh.positions[t[0] as usize],
             mesh.positions[t[1] as usize],
             mesh.positions[t[2] as usize],
         ];
         let area = (b - a).cross(c - a).magnitude();
-        if area > largest {
+        if area > largest
+            && let Some(params) = mesh.triangle_parameters(i)
+        {
             largest = area;
-            let params = [
-                mesh.parameters[t[0] as usize],
-                mesh.parameters[t[1] as usize],
-                mesh.parameters[t[2] as usize],
-            ];
             at = Some((
                 (params[0].0 + params[1].0 + params[2].0) / 3.0,
                 (params[0].1 + params[1].1 + params[2].1) / 3.0,

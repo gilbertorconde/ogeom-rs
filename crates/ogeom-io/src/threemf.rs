@@ -2019,13 +2019,7 @@ impl Flat {
             })
             .collect();
         Welded {
-            mesh: Triangulation {
-                parameters: vec![(0.0, 0.0); kept.len()],
-                positions: kept,
-                normals,
-                triangles,
-                deflection_met: true,
-            },
+            mesh: crate::mesh_formats::imported(kept, normals, triangles, true),
             corners,
             volumes,
         }

@@ -1354,11 +1354,10 @@ fn judge_faces(
             model.node(&face).and_then(|n| n.data().as_face()),
             face.transform(model.datums()),
         ) && let Some(surface) = model.geometry().surface(data.surface)
-            && mesh.parameters.len() == mesh.positions.len()
+            && mesh.has_parameters()
         {
             use ogeom::geom::Surface as _;
-            for t in &mesh.triangles {
-                let [a, b, c] = t.map(|i| mesh.parameters[i as usize]);
+            for [a, b, c] in (0..mesh.triangles.len()).filter_map(|i| mesh.triangle_parameters(i)) {
                 let (u, v) = ((a.0 + b.0 + c.0) / 3.0, (a.1 + b.1 + c.1) / 3.0);
                 if let Ok(p) = surface.point_at(u, v, T) {
                     samples.push(placement.apply(p));

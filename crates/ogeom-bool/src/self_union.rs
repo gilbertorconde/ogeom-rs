@@ -248,17 +248,19 @@ fn interior_point(
         return Ok(Some((piece.probe, Point2::new(u, v))));
     }
     let mesh = ogeom_mesh::triangulate_face(model, &face.face, Deflection::default(), tol)?;
-    if mesh.parameters.len() != mesh.positions.len() {
+    if !mesh.has_parameters() {
         return Ok(None);
     }
-    let area = |t: &[u32; 3]| {
-        let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+    let area = |i: usize| {
+        let [a, b, c] = mesh.triangles[i].map(|i| mesh.positions[i as usize]);
         (b - a).cross(c - a).magnitude()
     };
-    let mut triangles: Vec<&[u32; 3]> = mesh.triangles.iter().collect();
-    triangles.sort_by(|x, y| area(y).total_cmp(&area(x)));
+    let mut triangles: Vec<usize> = (0..mesh.triangles.len()).collect();
+    triangles.sort_by(|&x, &y| area(y).total_cmp(&area(x)));
     for triangle in triangles {
-        let corners = triangle.map(|i| mesh.parameters[i as usize]);
+        let Some(corners) = mesh.triangle_parameters(triangle) else {
+            continue;
+        };
         let uv = Point2::new(
             (corners[0].0 + corners[1].0 + corners[2].0) / 3.0,
             (corners[0].1 + corners[1].1 + corners[2].1) / 3.0,

@@ -16840,7 +16840,7 @@ fn sampled_relation(
             let mesh =
                 ogeom_mesh::triangulate_face(model, &face, ogeom_mesh::Deflection::default(), tol)?;
             out.extend(mesh.positions.iter().copied());
-            if mesh.parameters.len() != mesh.positions.len() {
+            if !mesh.has_parameters() {
                 continue;
             }
             let trim = ogeom_algo::classify::FaceTrim::of(
@@ -16852,8 +16852,7 @@ fn sampled_relation(
                 },
                 tol,
             )?;
-            for t in &mesh.triangles {
-                let [p, q, r] = t.map(|i| mesh.parameters[i as usize]);
+            for [p, q, r] in (0..mesh.triangles.len()).filter_map(|i| mesh.triangle_parameters(i)) {
                 let (u, v) = ((p.0 + q.0 + r.0) / 3.0, (p.1 + q.1 + r.1) / 3.0);
                 if trim.holds(model, (u, v), 0.0, tol)? == Containment::In {
                     out.push(placement.apply(surface.point_at(u, v, tol)?));
@@ -16995,11 +16994,17 @@ fn pokes_out(
         ogeom_core::progress::checkpoint()?;
         let surface = placed(&face)?;
         let mesh = ogeom_mesh::triangulate_face(model, &face, deflection, tol)?;
-        if mesh.parameters.len() != mesh.positions.len() || mesh.parameters.is_empty() {
+        if !mesh.has_parameters() {
             continue;
         }
-        let (mut lo, mut hi) = (mesh.parameters[0], mesh.parameters[0]);
-        for &(u, v) in &mesh.parameters {
+        let corners: Vec<[(f64, f64); 3]> = (0..mesh.triangles.len())
+            .filter_map(|i| mesh.triangle_parameters(i))
+            .collect();
+        let Some(&[first, ..]) = corners.first() else {
+            continue;
+        };
+        let (mut lo, mut hi) = (first, first);
+        for &(u, v) in corners.iter().flatten() {
             lo = (lo.0.min(u), lo.1.min(v));
             hi = (hi.0.max(u), hi.1.max(v));
         }
@@ -17008,9 +17013,8 @@ fn pokes_out(
             continue;
         }
         let lift = |at: (f64, f64)| surface.point_at(at.0, at.1, tol);
-        let mut starts: Vec<(f64, f64)> = mesh.parameters.clone();
-        for t in &mesh.triangles {
-            let [p, q, r] = t.map(|i| mesh.parameters[i as usize]);
+        let mut starts: Vec<(f64, f64)> = mesh.vertex_parameters().into_iter().flatten().collect();
+        for &[p, q, r] in &corners {
             starts.push(((p.0 + q.0 + r.0) / 3.0, (p.1 + q.1 + r.1) / 3.0));
         }
         for wall in &walls {

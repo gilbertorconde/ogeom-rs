@@ -1692,15 +1692,15 @@ impl SolidBoundary {
             }
             if let Ok(mesh) =
                 ogeom_mesh::triangulate_face(model, &prepared.face, ring_deflection, tol)
-                && mesh.parameters.len() == mesh.positions.len()
+                && mesh.has_parameters()
             {
                 let mut middles: Vec<(f64, (f64, f64))> = mesh
                     .triangles
                     .iter()
-                    .map(|t| {
+                    .enumerate()
+                    .filter_map(|(i, t)| Some((t, mesh.triangle_parameters(i)?)))
+                    .map(|(t, [pa, pb, pc])| {
                         let [a, b, c] = t.map(|i| i as usize);
-                        let (pa, pb, pc) =
-                            (mesh.parameters[a], mesh.parameters[b], mesh.parameters[c]);
                         let uv = ((pa.0 + pb.0 + pc.0) / 3.0, (pa.1 + pb.1 + pc.1) / 3.0);
                         let at = Point::new(
                             (mesh.positions[a].x + mesh.positions[b].x + mesh.positions[c].x) / 3.0,

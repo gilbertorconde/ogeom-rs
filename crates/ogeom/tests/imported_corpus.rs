@@ -342,7 +342,9 @@ fn a_cone_s_apex_run_is_kept_at_a_quarter_turn() {
         (area - 1.10391).abs() < 0.01,
         "the apex triangle is drawn: area {area:.5}, not 0.84195"
     );
-    // Both apex ends survive into the mesh: two vertices at the apex row.
+    // The two apex ends are one point in space, and the mesh holds it as
+    // one vertex shared by the fan, not two with a triangle of no area
+    // between them. The area above is what says the run was kept.
     let (_, (va, _)) = ogeom::geom::Surface::domain(
         model
             .geometry()
@@ -358,14 +360,12 @@ fn a_cone_s_apex_run_is_kept_at_a_quarter_turn() {
             .unwrap(),
     );
     let at_apex = mesh
-        .parameters
-        .iter()
+        .vertex_parameters()
+        .into_iter()
+        .flatten()
         .filter(|(_, v)| (v - va).abs() < 1e-9 || (v + 1.0).abs() < 1e-9)
         .count();
-    assert!(
-        at_apex >= 2,
-        "both rulings reach the apex row: {at_apex} vertices there"
-    );
+    assert_eq!(at_apex, 1, "the apex is one vertex: {at_apex} there");
 }
 
 /// A ring folds across a closed chart's join, periodic or not.

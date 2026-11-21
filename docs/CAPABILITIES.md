@@ -313,7 +313,7 @@ than a plane or a B-spline over its patch's parameters.
 - **mesh.shadow**: The shadow of a triangle mesh on a plane, holes kept, and the regions of weighted planar chains, traced with exact integer tests and snap rounding · `covered`
 - **mesh.smoothing-curvature**: Feature-preserving smoothing of an editable mesh onto local least-squares quadrics, creases kept by normal angle, moves capped and blended into a region; mean, Gaussian and principal curvatures with their directions at each vertex of a mesh · `covered`
 - **mesh.spatial-index**: Spatial indexes over meshes and point clouds: nearest point, ball and ray queries, batched in parallel, equal to brute force · `covered`
-- **mesh.tessellation**: Triangulating shapes to a stated deflection by chord and angle alone, with no length cap, deterministically, in parallel · `covered`
+- **mesh.tessellation**: Triangulating shapes to a stated deflection by chord and angle alone, with no length cap, deterministically, in parallel; an apex or a pole one vertex per face, fanned by real triangles · `covered`
 
 ### ogeom-offset
 
@@ -337,6 +337,6 @@ than a plane or a B-spline over its patch's parameters.
 - **topo.location-chain**: Placement as a chain of transforms, so instancing shares geometry · `covered`
 - **topo.multi-representation-edges**: Edges and vertices carrying several representations: space curve, pcurves per face, polygons on triangulations · `covered`
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
-- **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
+- **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, surface parameters and normals per triangle corner · `covered`
 
-<!-- ledger-checksum: 49155f05954feb5a -->
+<!-- ledger-checksum: 9f56a79e5609afd6 -->

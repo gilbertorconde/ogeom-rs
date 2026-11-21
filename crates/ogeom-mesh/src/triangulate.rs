@@ -645,6 +645,10 @@ fn triangulate_reporting_from(
     let mut mesh = Triangulation::new();
     mesh.deflection_met = met;
     let mut hits = 0_usize;
+    let mut parameters = Vec::with_capacity(planar.parameters.len());
+    // The vertices where the surface has no normal of its own: a cone's
+    // apex, a sphere's pole, a patch's collapsed side.
+    let mut degenerate = Vec::with_capacity(planar.parameters.len());
     for (u, v) in planar.parameters {
         // Anchors are already in world coordinates (their edges' own
         // placements applied), where surface lifts still need the face's.
@@ -655,11 +659,14 @@ fn triangulate_reporting_from(
             }
             None => placement.apply(surface.point_at(u, v, tol)?),
         };
-        let normal =
-            limit_normal(surface, u, v, tol).map_or(Vector::ZERO, |n| placement.apply_vector(n));
+        let exact = surface.normal_at(u, v, tol).ok().map(|n| n.vector());
+        degenerate.push(exact.is_none());
+        let normal = exact
+            .or_else(|| limit_normal(surface, u, v, tol))
+            .map_or(Vector::ZERO, |n| placement.apply_vector(n));
         mesh.positions.push(point);
         mesh.normals.push(if reversed { -normal } else { normal });
-        mesh.parameters.push((u, v));
+        parameters.push((u, v));
     }
     if *MESH_DEBUG_REFINE && (rings_ms + region_ms) > 50.0 {
         eprintln!(
@@ -683,6 +690,10 @@ fn triangulate_reporting_from(
         .map(|t| if flip { [t[0], t[2], t[1]] } else { t })
         .collect();
     split_flat_triangles(&mut mesh, tol);
+    mesh.set_vertex_parameters(parameters);
+    mesh.set_corner_normals_from_vertices();
+    join_collapsed_sides(&mut mesh, &mut degenerate, tol);
+    apex_corners(&mut mesh, &degenerate, surface, &placement, reversed, tol);
     // The chord is met where the mesh says it is. The grid holds each row
     // and column to it, and a cell's middle can stand off by both sides'
     // sags together: each triangle's middle, lifted onto the surface, is
@@ -693,13 +704,12 @@ fn triangulate_reporting_from(
     // middle stands inside the bend by most of the bend's sag.
     if mesh.deflection_met && !matches!(surface.kind(), ogeom_geom::SurfaceKind::Plane) {
         let chord = deflection.chord * placement.scale_factor().abs();
-        for t in &mesh.triangles {
+        for (t, &[ua, ub, uc]) in mesh.triangles.iter().zip(&mesh.corner_parameters) {
             let [a, b, c] = t.map(|i| i as usize);
             let (pa, pb, pc) = (mesh.positions[a], mesh.positions[b], mesh.positions[c]);
             let Ok(normal) = (pb - pa).cross(pc - pa).normalized(tol) else {
                 continue;
             };
-            let (ua, ub, uc) = (mesh.parameters[a], mesh.parameters[b], mesh.parameters[c]);
             let middle = ((ua.0 + ub.0 + uc.0) / 3.0, (ua.1 + ub.1 + uc.1) / 3.0);
             let Ok(on) = surface.point_at(middle.0, middle.1, tol) else {
                 continue;
@@ -1710,6 +1720,153 @@ fn face_chords(
     Ok(finer)
 }
 
+/// Join the two corners of every side that runs between two copies of one
+/// degenerate point, and drop each triangle left with two corners the same.
+///
+/// A chart ring closes against a row where the surface collapses to a
+/// point (a cone's apex, a sphere's pole, a patch's collapsed side) by
+/// running along it: one side of the chart, one point in space. The
+/// triangle on that side has no area, its two corners two vertices at the
+/// apex. Joined into one, the fan round the apex shares that vertex and
+/// the triangle goes; its other two sides become one, so the face's
+/// outline in space is what it was. Copies within the confusion distance
+/// count as one point, since a pole lifted at two `u` differs in its last
+/// bits. The joined vertex keeps the position smallest by its bits, so two
+/// faces joining the same pair keep the same one. Every corner keeps the
+/// parameters and normal it had in its own triangle.
+fn join_collapsed_sides(mesh: &mut Triangulation, degenerate: &mut Vec<bool>, tol: Tolerances) {
+    fn root(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    let n = mesh.positions.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    let bits = |p: Point| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+    let mut joined = false;
+    for t in &mesh.triangles {
+        for k in 0..3 {
+            let (a, b) = (t[k] as usize, t[(k + 1) % 3] as usize);
+            if a == b
+                || !degenerate[a]
+                || !degenerate[b]
+                || mesh.positions[a].distance(mesh.positions[b]) > tol.confusion()
+            {
+                continue;
+            }
+            let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));
+            if ra == rb {
+                continue;
+            }
+            let keep_a = (bits(mesh.positions[ra]), ra) < (bits(mesh.positions[rb]), rb);
+            let (kept, gone) = if keep_a { (ra, rb) } else { (rb, ra) };
+            parent[gone] = kept;
+            joined = true;
+        }
+    }
+    if !joined {
+        return;
+    }
+    let at_vertex = mesh.vertex_parameters();
+    let mut index = vec![u32::MAX; n];
+    let mut kept = Triangulation::new();
+    kept.deflection_met = mesh.deflection_met;
+    let mut kept_parameters = Vec::new();
+    let mut kept_degenerate = Vec::new();
+    for i in 0..n {
+        if root(&mut parent, i) == i {
+            index[i] = u32::try_from(kept.positions.len()).unwrap_or(u32::MAX);
+            kept.positions.push(mesh.positions[i]);
+            kept.normals.push(mesh.normals[i]);
+            kept_parameters.push(at_vertex[i].unwrap_or((0.0, 0.0)));
+            kept_degenerate.push(degenerate[i]);
+        }
+    }
+    for i in 0..n {
+        index[i] = index[root(&mut parent, i)];
+    }
+    for (t, (uv, normals)) in mesh
+        .triangles
+        .iter()
+        .zip(mesh.corner_parameters.iter().zip(&mesh.corner_normals))
+    {
+        let [a, b, c] = t.map(|v| index[v as usize]);
+        if a != b && b != c && c != a {
+            kept.triangles.push([a, b, c]);
+            kept.corner_parameters.push(*uv);
+            kept.corner_normals.push(*normals);
+        }
+    }
+    // The deprecated per-vertex parameters, kept filled: a joined vertex
+    // holds its own copy's, and the corners keep theirs.
+    let corners = std::mem::take(&mut kept.corner_parameters);
+    kept.set_vertex_parameters(kept_parameters);
+    kept.corner_parameters = corners;
+    *mesh = kept;
+    *degenerate = kept_degenerate;
+}
+
+/// Give each corner at a degenerate vertex the parameters and normal it
+/// has in its own triangle.
+///
+/// At a cone's apex or a sphere's pole every `u` names the same point, so
+/// the corner's `u` is free. It takes the middle of the triangle's other
+/// two corners' `u` and keeps its own `v`: the triangle is then well shaped
+/// in the chart, the mean of its corners lies on its own patch, and the
+/// corner's normal is the limit along the ruling or meridian the triangle
+/// meets the apex by. A side collapsed along `v` (a patch's) is the same
+/// with the two directions swapped.
+fn apex_corners(
+    mesh: &mut Triangulation,
+    degenerate: &[bool],
+    surface: &SurfaceGeometry,
+    placement: &ogeom_math::Transform,
+    reversed: bool,
+    tol: Tolerances,
+) {
+    if !degenerate.iter().any(|&d| d) {
+        return;
+    }
+    for (t, (uv, normals)) in mesh.triangles.iter().zip(
+        mesh.corner_parameters
+            .iter_mut()
+            .zip(mesh.corner_normals.iter_mut()),
+    ) {
+        let original = *uv;
+        for k in 0..3 {
+            if !degenerate[t[k] as usize] {
+                continue;
+            }
+            let others: Vec<(f64, f64)> = [(k + 1) % 3, (k + 2) % 3]
+                .into_iter()
+                .filter(|&j| !degenerate[t[j] as usize])
+                .map(|j| original[j])
+                .collect();
+            if others.is_empty() {
+                continue;
+            }
+            let (u, v) = original[k];
+            let Ok((du, dv)) = surface.d1_at(u, v, tol) else {
+                continue;
+            };
+            #[allow(clippy::cast_precision_loss, reason = "one or two corners")]
+            let count = others.len() as f64;
+            let at = if du.magnitude() <= dv.magnitude() {
+                (others.iter().map(|o| o.0).sum::<f64>() / count, v)
+            } else {
+                (u, others.iter().map(|o| o.1).sum::<f64>() / count)
+            };
+            uv[k] = at;
+            if let Some(n) = limit_normal(surface, at.0, at.1, tol) {
+                let n = placement.apply_vector(n);
+                normals[k] = if reversed { -n } else { n };
+            }
+        }
+    }
+}
+
 /// How many times [`split_flat_triangles`] goes round a face: one per flat
 /// triangle in the longest row of them along one line.
 const FLAT_PASSES: usize = 16;
@@ -2641,11 +2798,12 @@ fn sliver_fan(
     tol: Tolerances,
 ) -> Triangulation {
     let mut mesh = Triangulation::new();
+    let mut parameters = Vec::new();
     for ring in walked {
         let base = u32::try_from(mesh.positions.len()).unwrap_or(u32::MAX);
         for (uv, at) in ring {
             mesh.positions.push(*at);
-            mesh.parameters.push((uv.x, uv.y));
+            parameters.push((uv.x, uv.y));
             let normal = surface
                 .normal_at(uv.x, uv.y, tol)
                 .map_or(ogeom_math::Vector::Z, |n| {
@@ -2658,6 +2816,8 @@ fn sliver_fan(
             mesh.triangles.push([base, base + k, base + k + 1]);
         }
     }
+    mesh.set_vertex_parameters(parameters);
+    mesh.set_corner_normals_from_vertices();
     mesh
 }
 
@@ -6587,12 +6747,15 @@ mod tests {
             let mesh = triangulate_face(&model, &face, fine(), T).unwrap();
             let data = model.node(&face).unwrap().data().as_face().unwrap().clone();
             let surface = model.geometry().surface(data.surface).unwrap();
-            for (position, (u, v)) in mesh.positions.iter().zip(&mesh.parameters) {
-                let exact = surface.point_at(*u, *v, T).unwrap();
-                assert!(
-                    position.is_equal(exact, T),
-                    "{position:?} is not on its surface"
-                );
+            for (t, uv) in mesh.triangles.iter().zip(&mesh.corner_parameters) {
+                for (&i, &(u, v)) in t.iter().zip(uv) {
+                    let position = mesh.positions[i as usize];
+                    let exact = surface.point_at(u, v, T).unwrap();
+                    assert!(
+                        position.is_equal(exact, T),
+                        "{position:?} is not on its surface"
+                    );
+                }
             }
         }
     }
