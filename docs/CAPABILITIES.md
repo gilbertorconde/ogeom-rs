@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 101 |
+| `covered` | 102 |
 | `partial` | 16 |
 | `divergent` | 6 |
 
-123 capabilities. Ratchet: `unreviewed_max = 0`.
+124 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -307,6 +307,7 @@ than a plane or a B-spline over its patch's parameters.
 - **mesh.hollow-thicken**: Hollowing a closed mesh to a wall from its exact distance field, the cavity marched on tetrahedra, decimated within a sixteenth of a cell and checked exactly strictly inside; thickening an open mesh by two offset layers walled along each rim · `covered`
 - **mesh.offset**: Offsetting an editable mesh by a distance with sharp edges and corners kept by least squares over corner-angle-weighted face normals, moves capped, folds repaired by pushing overshooting vertices onto the offset planes and collapsing folded faces while staying a manifold, and a region stepped behind a closed wall · `covered`
 - **mesh.plane-cut**: Cutting an editable mesh by a plane with the section's exact side test, and capping the cut flat and watertight: discs, rings and nested caps, rim gaps bridged within a distance, the rest reported open · `covered`
+- **mesh.remesh**: Remeshing an editable mesh to a target edge length by isotropic split, collapse, flip and tangential relaxation projected onto the input, creases and rims kept with their vertices sliding along them, a region left untouched outside, a face limit refused before work; subdividing flat at edge midpoints or by Loop's scheme with sharp creases and rims · `covered`
 - **mesh.section**: Sections of a triangle mesh by a plane or a stack of planes: polylines welded through shared edges, carrying the material side, with exact side tests and non-manifold edges reported · `covered`
 - **mesh.self_intersections**: Finding the triangles where a mesh crosses itself, decided exactly, and resolving a closed mesh into the embedded boundary of what it winds about · `covered`
 - **mesh.shadow**: The shadow of a triangle mesh on a plane, holes kept, and the regions of weighted planar chains, traced with exact integer tests and snap rounding · `covered`
@@ -338,4 +339,4 @@ than a plane or a B-spline over its patch's parameters.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, parameters · `covered`
 
-<!-- ledger-checksum: c0b2ee08156fae97 -->
+<!-- ledger-checksum: 49155f05954feb5a -->

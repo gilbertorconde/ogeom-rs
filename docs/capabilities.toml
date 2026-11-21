@@ -2552,6 +2552,21 @@ tests = [
 ]
 
 [[capability]]
+id = "mesh.remesh"
+title = "Remeshing an editable mesh to a target edge length by isotropic split, collapse, flip and tangential relaxation projected onto the input, creases and rims kept with their vertices sliding along them, a region left untouched outside, a face limit refused before work; subdividing flat at edge midpoints or by Loop's scheme with sharp creases and rims"
+crate = "ogeom-mesh"
+verdict = "covered"
+symbols = [
+    "ogeom_mesh::Editable", "ogeom_mesh::Remesh", "ogeom_mesh::RemeshReport",
+    "ogeom_mesh::Subdivision", "ogeom_mesh::SubdivideReport",
+    "ogeom_mesh::RIM_CORNER",
+]
+tests = [
+    "crates/ogeom-mesh/src/editable/remesh/tests.rs",
+    "crates/ogeom/tests/mesh_editable.rs::a_hundred_thousand_triangles_remeshed",
+]
+
+[[capability]]
 id = "mesh.offset"
 title = "Offsetting an editable mesh by a distance with sharp edges and corners kept by least squares over corner-angle-weighted face normals, moves capped, folds repaired by pushing overshooting vertices onto the offset planes and collapsing folded faces while staying a manifold, and a region stepped behind a closed wall"
 crate = "ogeom-mesh"

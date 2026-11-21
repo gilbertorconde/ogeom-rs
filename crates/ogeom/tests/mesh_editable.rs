@@ -1,5 +1,6 @@
 //! A scan-sized mesh held for editing: built, read back, a patch cut out
-//! of it, the whole cut by a plane and capped, and a hole filled.
+//! of it, the whole cut by a plane and capped, a hole filled, and a mesh
+//! of a hundred thousand triangles remeshed.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 #[path = "support/cpu_time.rs"]
@@ -11,7 +12,7 @@ use std::time::Duration;
 
 use ogeom::core::Tolerances;
 use ogeom::math::{Direction, Plane, Point, Vector};
-use ogeom::mesh::{Cap, CutReport, Editable, Fairing, Fill, OPTIMAL_UP_TO, Side};
+use ogeom::mesh::{Cap, CutReport, Editable, Fairing, Fill, OPTIMAL_UP_TO, Remesh, Side};
 use ogeom::topo::Triangulation;
 
 /// A torus about the `z` axis, `rings` by `sides` quads, two triangles each.
@@ -148,4 +149,53 @@ fn a_hole_of_five_hundred_edges_filled_in_five_million_triangles() {
     eprintln!("largest departure from the tube: {off}");
     assert!(off < 0.03, "{off}");
     assert!(took < Duration::from_secs(150), "{took:?} to fill");
+}
+
+/// A hundred thousand long thin triangles, a torus of quads 0.25 by 0.09,
+/// remeshed to edges of 0.15 in five passes in under 10 s of processor
+/// time: closed and a manifold after, nearly every edge within half the
+/// target of it, and every vertex on the input.
+#[test]
+#[ignore = "heavy"]
+fn a_hundred_thousand_triangles_remeshed() {
+    let mesh = torus(10.0, 3.0, 250, 200);
+    assert_eq!(mesh.triangles.len(), 100_000);
+    let mut e = Editable::from(&mesh, 0.0).unwrap();
+    let remesh = Remesh {
+        edge: 0.15,
+        passes: 5,
+        keep_edges: None,
+        region: None,
+        max_faces: None,
+    };
+    let (report, took) = cpu_time(|| e.remesh(&remesh).unwrap());
+    let out = e.to_triangulation();
+    eprintln!(
+        "100k triangles remeshed to {}: {took:?}, {report:?}",
+        out.triangles.len()
+    );
+    assert!(e.is_closed() && e.non_manifold().is_empty());
+    let mut edges: Vec<(u32, u32)> = out
+        .triangles
+        .iter()
+        .flat_map(|t| (0..3).map(move |k| (t[k].min(t[(k + 1) % 3]), t[k].max(t[(k + 1) % 3]))))
+        .collect();
+    edges.sort_unstable();
+    edges.dedup();
+    let within = edges
+        .iter()
+        .filter(|&&(a, b)| {
+            let l = out.positions[a as usize].distance(out.positions[b as usize]);
+            (0.075..=0.225).contains(&l)
+        })
+        .count();
+    assert!(
+        within * 100 >= edges.len() * 95,
+        "{within} of {}",
+        edges.len()
+    );
+    // The vertices lie on the input's facets, within a facet's sag of the
+    // torus it approximates.
+    assert!(report.max < 0.01, "{report:?}");
+    assert!(took < Duration::from_secs(10), "{took:?} to remesh");
 }
