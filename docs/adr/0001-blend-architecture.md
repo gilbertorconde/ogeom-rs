@@ -4395,6 +4395,50 @@ curved lone edge is still refused by name.
 | half cylinder, end arcs and foot (1), one request | the two calls' solid within 1e-9 in volume, either order, `check` clean |
 | one quarter arc per end and the foot | the two calls' solid within 1e-9 |
 
+### Amendment: marched bands hold their fit in angle (#1216)
+
+The march held its fitted band to the ball's arcs in distance (the band
+fit target, 2e-4) but not in angle. Its across fit took 17 points of each
+arc and then dropped knots until the distance held, so the band's normal
+at its rails stood off the ball's by 5e-4 to 1.3e-3 rad, evenly along the
+band. A pipe corner's ends are solved off those bands, so its joins held
+no better: 5.2e-4 rad on the half frustum's uprights, 1.1e-3 where its
+top loop's bands, marched on the fitted uprights, met them.
+
+**The fit.** An open band is fitted as before, then its normal is read
+against the exact ball's at every station point, across the arc and along
+the band apart. Where either tilts past 5e-5 rad, that direction is fitted
+again a tenth as tight, and across with each arc sampled twice as finely,
+up to 65 points, at most four fits. The grid fit's two passes take a
+tolerance each (`fit_surface_grid_chordal_by`), so tightening across
+leaves the rails, the fit's end rows, as they were. No distance bound is
+loosened.
+
+**The boolean.** A band so close to tangent to the face it was built
+against made the boolean walk their contact along the rail, the band's
+own border, and two changes keep that cheap.
+
+- The contact walk took a step's point that crossed a surface's bound
+  only by landing on the bound as the contact leaving the domain. A
+  contact running along the border nicks it at nearly every step, so it
+  halved down to its shortest step: 5 s a walk. A point that, held on the
+  bound, is still a contact a full step on is now taken.
+- The band notes to the boolean that it meets each face it was built
+  against only along its rail (`ogeom_bool::note_meeting_along_edge`),
+  and the general fuse reads that pair as apart. The wedge's leg on the
+  face splits it along the rail, as before, where the pair already read
+  apart. The note is made only where the rail lies on the face's surface
+  within the fit wherever that surface reaches it, over most of the band,
+  and no point of the band stands past the surface from the ball's side.
+
+| Case | Error | G1, widest |
+|---|---|---|
+| half frustum, uprights (1) | | 3.8e-5 rad |
+| half frustum, foot (1) | 2.2e-6 | 2.8e-5 rad |
+| half frustum, top loop (0.5) | 4.2e-6 | 3.5e-5 rad |
+| half cylinder, foot (1) | 3.9e-7 | 2.8e-5 rad |
+| rib under a drum (0.5, 0.3) | 4.0e-7, 2.8e-7 | 2.8e-5 rad |
+
 ## 12. Acceptance corpus
 
 From #902:
