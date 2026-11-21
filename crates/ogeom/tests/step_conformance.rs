@@ -593,3 +593,89 @@ fn an_apex_or_a_pole_meshes_as_one_vertex_and_no_triangle_of_no_area() {
         assert!(apexes >= 3, "{name}: no face reaches an apex or a pole");
     }
 }
+
+/// Every triangle of every face that meets its chord is wound with its
+/// face: its normal in space agrees in sign with the face's normal at the
+/// triangle's centre, found from its corner parameters. Near a pole, where
+/// one chart point stands for a whole row, is where a fold would show. A
+/// face that reports its chord missed is not held to it: freeform_panel's
+/// wall folds over itself, its normal turning through nothing inside the
+/// face, and no flat triangle across the fold can agree with both sides.
+#[test]
+#[ignore = "heavy: every conformance part at three chords, the finest 0.0033"]
+fn every_triangle_is_wound_with_its_face() {
+    use ogeom::geom::Surface as _;
+    use ogeom::topo::Orientation;
+    let mut names: Vec<String> = Vec::new();
+    for dir in ["", "generated/"] {
+        for e in std::fs::read_dir(corpus(dir)).unwrap() {
+            let name = e.unwrap().file_name().into_string().unwrap();
+            if name.ends_with(".step") {
+                names.push(format!("{dir}{name}"));
+            }
+        }
+    }
+    names.sort();
+    assert!(names.len() >= 27, "the conformance parts are vendored");
+    let mut against = Vec::new();
+    let mut poles = 0;
+    for name in &names {
+        let text = std::fs::read_to_string(corpus(name)).unwrap();
+        let import = ogeom::io::read_step(&text, T).unwrap();
+        let model = import.document.model();
+        for chord in [0.01 / 3.0, 0.1, 1.0] {
+            let deflection = Deflection {
+                chord,
+                ..Deflection::default()
+            };
+            for body in import.solids.iter().chain(&import.shells) {
+                let (faces, _) =
+                    ogeom::mesh::face_meshes_for(model, body, deflection, None, T).unwrap();
+                for (n, (face, mesh)) in faces.iter().enumerate() {
+                    let mesh = mesh.as_ref().unwrap();
+                    if !mesh.deflection_met {
+                        continue;
+                    }
+                    let data = model.node(face).unwrap().data().as_face().unwrap();
+                    let surface = model.geometry().surface(data.surface).unwrap();
+                    if mesh
+                        .corner_parameters
+                        .iter()
+                        .flatten()
+                        .any(|&(u, v)| surface.is_degenerate_at(u, v, T).unwrap_or(false))
+                    {
+                        poles += 1;
+                    }
+                    let placement = face.transform(model.datums()).unwrap();
+                    let side = if face.orientation() == Orientation::Reversed {
+                        -1.0
+                    } else {
+                        1.0
+                    };
+                    for (i, t) in mesh.triangles.iter().enumerate() {
+                        let [a, b, c] = t.map(|k| mesh.positions[k as usize]);
+                        let uv = mesh.triangle_parameters(i).unwrap();
+                        let (u, v) = (
+                            (uv[0].0 + uv[1].0 + uv[2].0) / 3.0,
+                            (uv[0].1 + uv[1].1 + uv[2].1) / 3.0,
+                        );
+                        let Ok(normal) = surface.normal_at(u, v, T) else {
+                            continue;
+                        };
+                        let normal = placement.apply_vector(normal.vector()) * side;
+                        if (b - a).cross(c - a).dot(normal) <= 0.0 {
+                            against.push(format!("{name} at chord {chord}, face {n}: {uv:?}"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(poles >= 12, "only {poles} faces reach a pole or an apex");
+    assert!(
+        against.is_empty(),
+        "{} triangles wound against their face:\n{}",
+        against.len(),
+        against.join("\n")
+    );
+}

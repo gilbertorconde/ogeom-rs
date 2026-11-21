@@ -1847,16 +1847,8 @@ fn apex_corners(
             if others.is_empty() {
                 continue;
             }
-            let (u, v) = original[k];
-            let Ok((du, dv)) = surface.d1_at(u, v, tol) else {
+            let Some(at) = toward_others(surface, original[k], &others, tol) else {
                 continue;
-            };
-            #[allow(clippy::cast_precision_loss, reason = "one or two corners")]
-            let count = others.len() as f64;
-            let at = if du.magnitude() <= dv.magnitude() {
-                (others.iter().map(|o| o.0).sum::<f64>() / count, v)
-            } else {
-                (u, others.iter().map(|o| o.1).sum::<f64>() / count)
             };
             uv[k] = at;
             if let Some(n) = limit_normal(surface, at.0, at.1, tol) {
@@ -1865,6 +1857,28 @@ fn apex_corners(
             }
         }
     }
+}
+
+/// The parameters a corner at a degenerate point takes in a triangle whose
+/// other corners are `others`: the free parameter (`u` at a pole or apex,
+/// `v` on a side collapsed along it) is their mean, the other is the
+/// corner's own. Every value of the free parameter names the same point,
+/// so this is the column the triangle reaches the point by. `None` where
+/// the surface has no derivatives there.
+fn toward_others(
+    surface: &SurfaceGeometry,
+    (u, v): (f64, f64),
+    others: &[(f64, f64)],
+    tol: Tolerances,
+) -> Option<(f64, f64)> {
+    let (du, dv) = surface.d1_at(u, v, tol).ok()?;
+    #[allow(clippy::cast_precision_loss, reason = "one or two corners")]
+    let count = others.len() as f64;
+    Some(if du.magnitude() <= dv.magnitude() {
+        (others.iter().map(|o| o.0).sum::<f64>() / count, v)
+    } else {
+        (u, others.iter().map(|o| o.1).sum::<f64>() / count)
+    })
 }
 
 /// How many times [`split_flat_triangles`] goes round a face: one per flat
@@ -4443,9 +4457,12 @@ fn triangulate_region_inner(
         let mut sags: ogeom_core::FastMap<([u64; 2], [u64; 2]), bool> =
             ogeom_core::FastMap::default();
         // And a vertex's point on the surface is asked once, however many
-        // chart edges end at it.
+        // chart edges end at it, and so is whether the surface collapses
+        // to a point there.
         let mut lifted: ogeom_core::FastMap<[u64; 2], Option<Point>> =
             ogeom_core::FastMap::default();
+        let mut collapsed: ogeom_core::FastMap<[u64; 2], bool> = ogeom_core::FastMap::default();
+        let bits = |p: (f64, f64)| [p.0.to_bits(), p.1.to_bits()];
         for _ in 0..REFINEMENT_ROUNDS {
             rounds_run += 1;
             let before = cdt.num_vertices();
@@ -4472,6 +4489,50 @@ fn triangulate_region_inner(
                 if area < degenerate_area {
                     continue;
                 }
+                // A pole or an apex is one chart point standing for a whole
+                // row, at whatever `u` its ring gave it, and a triangle
+                // reaching it from columns far from that `u` is a fan
+                // triangle round it in space all the same. Its sides and
+                // middle are measured, and its centre placed, along the
+                // column it reaches the point by: taken at the chart point
+                // as it stands, a side to the pole lifts to a spiral round
+                // it, and the centre lands on another meridian, where the
+                // triangles Delaunay draws round it fold over in space.
+                let chart = corners.map(|p| scale.from(p.0, p.1));
+                let at_point = chart.map(|p| {
+                    *collapsed.entry(bits(p)).or_insert_with(|| {
+                        use ogeom_geom::Surface as _;
+                        surface.normal_at(p.0, p.1, tol).is_err()
+                    })
+                });
+                let reach = |i: usize, others: &[usize]| -> (f64, f64) {
+                    if !at_point[i] {
+                        return chart[i];
+                    }
+                    let others: Vec<(f64, f64)> = others
+                        .iter()
+                        .filter(|&&j| !at_point[j])
+                        .map(|&j| chart[j])
+                        .collect();
+                    if others.is_empty() {
+                        return chart[i];
+                    }
+                    toward_others(surface, chart[i], &others, tol).unwrap_or(chart[i])
+                };
+                let fanned = at_point.iter().any(|&d| d);
+                let middle = if fanned {
+                    let fan = [reach(0, &[1, 2]), reach(1, &[0, 2]), reach(2, &[0, 1])];
+                    (
+                        (fan[0].0 + fan[1].0 + fan[2].0) / 3.0,
+                        (fan[0].1 + fan[1].1 + fan[2].1) / 3.0,
+                    )
+                } else {
+                    scale.from(centre.x, centre.y)
+                };
+                let side = |i: usize, j: usize| {
+                    let (a, b) = (reach(i, &[j]), reach(j, &[i]));
+                    (a, b, (f64::midpoint(a.0, b.0), f64::midpoint(a.1, b.1)))
+                };
                 // The grid already bounds sag along rows and columns, and a
                 // grid triangle's diagonal spanning one cell each way may
                 // legitimately sag up to the sum (twice the chord). The
@@ -4481,22 +4542,21 @@ fn triangulate_region_inner(
                 // (including a perfectly symmetric one, whose mesh must stay
                 // symmetric) is left untouched.
                 let sagged = (0..3).any(|i| {
-                    let (a, b) = (corners[i], corners[(i + 1) % 3]);
-                    let bits = |p: (f64, f64)| [p.0.to_bits(), p.1.to_bits()];
+                    let j = (i + 1) % 3;
+                    let (a, b) = (corners[i], corners[j]);
                     let key = if bits(a) <= bits(b) {
                         (bits(a), bits(b))
                     } else {
                         (bits(b), bits(a))
                     };
                     *sags.entry(key).or_insert_with(|| {
-                        let (from, to) = (scale.from(a.0, a.1), scale.from(b.0, b.1));
+                        let (from, to, mid) = side(i, j);
                         let mut lift = |p: (f64, f64), uv: (f64, f64)| {
                             *lifted
                                 .entry(bits(p))
                                 .or_insert_with(|| GridSample::point_at(surface, uv, tol))
                         };
                         let (start, end) = (lift(a, from), lift(b, to));
-                        let mid = (f64::midpoint(from.0, to.0), f64::midpoint(from.1, to.1));
                         let sag = match (start, end, GridSample::point_at(surface, mid, tol)) {
                             (Some(start), Some(end), Some(middle)) => {
                                 chord_sag(start, end, middle, tol)
@@ -4516,9 +4576,8 @@ fn triangulate_region_inner(
                 // middle and the middles of its sides, lifted, are held to
                 // the chord against its plane.
                 let middle_off = || {
-                    let lift =
-                        |p: (f64, f64)| GridSample::point_at(surface, scale.from(p.0, p.1), tol);
-                    let [a, b, c] = corners.map(lift);
+                    let lift = |p: (f64, f64)| GridSample::point_at(surface, p, tol);
+                    let [a, b, c] = chart.map(lift);
                     let (Some(a), Some(b), Some(c)) = (a, b, c) else {
                         return false;
                     };
@@ -4526,18 +4585,53 @@ fn triangulate_region_inner(
                         return false;
                     };
                     let half = |i: usize, j: usize| {
-                        (
-                            f64::midpoint(corners[i].0, corners[j].0),
-                            f64::midpoint(corners[i].1, corners[j].1),
-                        )
+                        if at_point[i] || at_point[j] {
+                            side(i, j).2
+                        } else {
+                            scale.from(
+                                f64::midpoint(corners[i].0, corners[j].0),
+                                f64::midpoint(corners[i].1, corners[j].1),
+                            )
+                        }
                     };
-                    [(centre.x, centre.y), half(0, 1), half(1, 2), half(2, 0)]
+                    [middle, half(0, 1), half(1, 2), half(2, 0)]
                         .into_iter()
                         .filter_map(lift)
                         .any(|m| (m - a).dot(n).abs() > deflection.chord)
                 };
                 if sagged || middle_off() {
-                    worst.push(SpadePoint::new(centre.x, centre.y));
+                    worst.push(if fanned {
+                        // Round a pole a fan triangle's two sides to it run
+                        // along columns, and what falls short is its far
+                        // side: split there, unless the far side is the
+                        // face's border. Its middle, a third of the way to
+                        // the pole, lands on the row its far corners came
+                        // from, beside their own points, and leaves the
+                        // triangles either side as wide as before.
+                        let far = (0..3)
+                            .find(|&k| {
+                                at_point[k] && !at_point[(k + 1) % 3] && !at_point[(k + 2) % 3]
+                            })
+                            .map(|k| ((k + 1) % 3, (k + 2) % 3))
+                            .filter(|&(i, j)| {
+                                !triangle.adjacent_edges().iter().any(|e| {
+                                    let (p, q) = (e.from().position(), e.to().position());
+                                    let (p, q) = ((p.x, p.y), (q.x, q.y));
+                                    e.is_constraint_edge()
+                                        && ((p, q) == (corners[i], corners[j])
+                                            || (p, q) == (corners[j], corners[i]))
+                                })
+                            });
+                        match far {
+                            Some((i, j)) => SpadePoint::new(
+                                f64::midpoint(corners[i].0, corners[j].0),
+                                f64::midpoint(corners[i].1, corners[j].1),
+                            ),
+                            None => scale.to(middle.0, middle.1),
+                        }
+                    } else {
+                        centre
+                    });
                 }
             }
             if worst.is_empty() {
