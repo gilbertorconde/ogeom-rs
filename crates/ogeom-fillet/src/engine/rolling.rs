@@ -259,24 +259,28 @@ fn ends(model: &Model, edge: &Shape) -> OgeomResult<Vec<Shape>> {
 /// concave rounds touches a curved face (ADR 0001, amendment "mixed
 /// rolling corners on curved faces").
 ///
-/// At such a vertex of three edges the lone round's edge is a line square
-/// to the plane across from it (the cap), and each face beside it is a
-/// plane or a cylinder ruled along it, so its band is a cylinder of radius
-/// `radius` about an axis square to the cap. Its ball's sweep round the
-/// band's end is then the torus about that axis, major radius twice the
-/// radius: the round of the band's foot on the cap, which runs on tangent
-/// into the other two rounds. So the lone bands are built first, with
-/// every round reached from them through vertices of one sense, and the
-/// rest of the request then rounds with each lone band's foot on its cap
-/// as one tangent chain.
+/// At such a vertex of three edges the lone round's edge is a line, the
+/// face across from it (the cap) a plane, and each face beside it a plane,
+/// a cylinder ruled along it or a cone it is a ruling of. Square to the
+/// cap, its band is a cylinder of radius `radius` about an axis square to
+/// the cap, and its ball's sweep round the band's end is the torus about
+/// that axis, major radius twice the radius: the round of the band's foot
+/// on the cap, which runs on tangent into the other two rounds. Leaning to
+/// the cap, the band runs past the cap and is clipped there, and the ball
+/// rolling round its foot changes walls where its contact crosses the
+/// band's rails: the round between is the foot's pipe (amendment "a ball
+/// changing walls off the vertex"). So the lone bands are built first,
+/// with every round reached from them through vertices of one sense, and
+/// the rest of the request then rounds with each lone band's foot on its
+/// cap as one tangent chain.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction),
 /// naming the vertex, where a mixed vertex is not so: it joins other than
 /// three edges, a convex and a concave round meet beside an edge left
-/// sharp, the cap is curved, the lone edge is curved or not square to the
-/// cap, a face beside it is not ruled along it, or a round meeting the
+/// sharp, the cap is curved, the lone edge is curved, a face beside it is
+/// not ruled along it, or a round meeting the
 /// lone round there is reached from another lone band first. As
 /// [`crate::fillet_edges`] for either pass.
 #[allow(
@@ -406,15 +410,11 @@ fn lone_bands_first(
         if !matches!(curve, ogeom_geom::Curve::Line(_)) {
             return Err(curved_edge());
         }
-        let along = curve.point_at(t1, tol)? - curve.point_at(t0, tol)?;
-        let along = along / along.magnitude();
-        if along.cross(up).magnitude() > tol.angular() {
-            return Err(named(
-                p,
-                "the lone round's edge does not stand square to the face across from it, \
-                 and the ball's sweep round its band's end is no torus",
-            ));
-        }
+        let (a, b) = (curve.point_at(t0, tol)?, curve.point_at(t1, tol)?);
+        let along = (b - a) / (b - a).magnitude();
+        // A lone edge leaning to the cap is rounded too: its foot's ball
+        // changes walls off the vertex, where the foot's pipe takes it
+        // (amendment "a ball changing walls off the vertex").
         for f in [first, second] {
             let ruled = match surface(f)? {
                 Some(SurfaceGeometry::Plane(s)) => {
@@ -429,13 +429,23 @@ fn lone_bands_first(
                         .magnitude()
                         <= tol.angular()
                 }
+                // A cone along one of its rulings.
+                Some(cone @ SurfaceGeometry::Cone(_)) => {
+                    let mut on = true;
+                    for k in 0..=2 {
+                        let q = a + (b - a) * (f64::from(k) / 2.0);
+                        on &= ogeom_geom::project_on_surface(&cone, q, 16, tol)?.distance
+                            <= conf * 10.0;
+                    }
+                    on
+                }
                 _ => false,
             };
             if !ruled {
                 return Err(named(
                     p,
-                    "a face beside the lone round is neither a plane nor a cylinder along it, \
-                     so its band is no cylinder",
+                    "a face beside the lone round is neither a plane, a cylinder along it nor \
+                     a cone it is a ruling of, so its band is not one the engine rounds there",
                 ));
             }
         }

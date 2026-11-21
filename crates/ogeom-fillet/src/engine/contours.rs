@@ -31,6 +31,24 @@ pub(crate) fn rounds(
     asked: &[(Shape, f64)],
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
+    rounds_piped(model, solid, asked, false, tol)
+}
+
+/// [`rounds`], and where `piped`, each link whose ball changes walls off
+/// both its vertices built as the pipe between the two crossings
+/// ([`super::pipe_corner`]), its neighbours ending on those sections.
+/// Without `piped` such a request is not this route's to build.
+///
+/// # Errors
+///
+/// As [`rounds`].
+pub(crate) fn rounds_piped(
+    model: &mut Model,
+    solid: &Shape,
+    asked: &[(Shape, f64)],
+    piped: bool,
+    tol: Tolerances,
+) -> OgeomResult<Option<Built>> {
     let Some((_, radius)) = asked.first() else {
         return Ok(None);
     };
@@ -80,13 +98,14 @@ pub(crate) fn rounds(
             Curve::Circle(_)
         );
     }
-    if !(swept || circles) {
+    if !(swept || circles || piped) {
         return Ok(None);
     }
     let mut once = asked.to_vec();
     once.sort_unstable_by_key(|(e, _)| super::id(e));
     let mut scratch = model.clone();
-    let built = super::marched_seats::building_tools(|| build(&mut scratch, solid, &once, tol));
+    let built =
+        super::marched_seats::building_tools(|| build(&mut scratch, solid, &once, piped, tol));
     match built {
         Ok(Some(built)) => {
             *model = scratch;
@@ -104,6 +123,7 @@ fn build(
     model: &mut Model,
     solid: &Shape,
     once: &[(Shape, f64)],
+    piped: bool,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
     let edges: Vec<_> = once.iter().map(|(e, _)| e.clone()).collect();
@@ -129,12 +149,24 @@ fn build(
     {
         return Ok(None);
     }
-    let Some(met) = super::marched_junctions::met(model, solid, &edges, &radii, &ends, true, tol)?
+    let Some(mut met) =
+        super::marched_junctions::met(model, solid, &edges, &radii, &ends, true, tol)?
     else {
         return Ok(None);
     };
+    let pipes = if piped {
+        let Some(pipes) = pipes(model, solid, once, tol)? else {
+            return Ok(None);
+        };
+        pipes
+    } else {
+        Vec::new()
+    };
     let mut bands = Vec::new();
     for (index, (edge, radius)) in once.iter().enumerate() {
+        if pipes.iter().any(|(link, ..)| *link == index) {
+            continue;
+        }
         let aside = core::cell::RefCell::new(Vec::new());
         let (curve, _) = crate::support::edge_curve(model, edge, tol)?;
         let rim = if let Curve::Circle(c) = &curve {
@@ -180,6 +212,29 @@ fn build(
             }
         }
         bands.extend(aside.into_inner().into_iter().map(|w| (index, w)));
+    }
+    // Each pipe's neighbours end on its sections, and meet it there.
+    for (link, pipe, ends) in pipes {
+        for end in &ends {
+            let reach = once[end.neighbour].1 * 3.0;
+            let mut trimmed = false;
+            for (index, band) in &mut bands {
+                if *index == end.neighbour && band.additive {
+                    band.solid = crate::support::trimmed_wedge(
+                        model,
+                        &band.solid,
+                        (end.centre, -end.into),
+                        reach,
+                        tol,
+                    )?;
+                    trimmed = true;
+                }
+            }
+            if !trimmed || !met.flush_at([link, end.neighbour], (end.centre, end.into), end.foot) {
+                return Ok(None);
+            }
+        }
+        bands.push((link, pipe));
     }
     let wedges = super::marched_junctions::joined(model, solid, once, &met, bands, tol)?;
     let Some(built) = super::marched_seats::applied(model, solid, once, &wedges, tol)? else {
@@ -254,4 +309,52 @@ fn straight(
         melt_refusal: None,
         credit: Vec::new(),
     })
+}
+
+/// A pipe: its link by its index in the request, its tool and its ends.
+type Piped = (usize, Wedge, [super::pipe_corner::End; 2]);
+
+/// The pipes of `once` on `solid`: each link whose ball changes walls off
+/// both its vertices, with its tool and its two ends. `None` where an
+/// off-vertex crossing is not one of a pipe's two ends, or a pipe will not
+/// build.
+fn pipes(
+    model: &mut Model,
+    solid: &Shape,
+    once: &[(Shape, f64)],
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<Piped>>> {
+    let faces = super::switch_over::Faces::of(model, solid)?;
+    let off: Vec<super::switch_over::Crossing> =
+        super::switch_over::crossings(model, solid, &faces, once, tol)?
+            .into_iter()
+            .filter(|c| c.by > super::switch_over::off_by(tol))
+            .collect();
+    let mut built = Vec::new();
+    for link in 0..once.len() {
+        // The crossings at the link's ends that stand over its neighbours.
+        let here: Vec<&super::switch_over::Crossing> = off
+            .iter()
+            .filter(|c| c.pair.contains(&link) && c.pair[c.over] != link)
+            .collect();
+        let pair: [&super::switch_over::Crossing; 2] = match here.as_slice() {
+            [] => continue,
+            [a, b] => [a, b],
+            _ => return Ok(None),
+        };
+        let Some((wedge, ends)) = super::pipe_corner::pipe(model, &faces, once, link, pair, tol)?
+        else {
+            return Ok(None);
+        };
+        built.push((link, wedge, ends));
+    }
+    let covered = |c: &super::switch_over::Crossing| {
+        built
+            .iter()
+            .any(|(link, ..)| c.pair.contains(link) && c.pair[c.over] != *link)
+    };
+    if !off.iter().all(covered) {
+        return Ok(None);
+    }
+    Ok(Some(built))
 }

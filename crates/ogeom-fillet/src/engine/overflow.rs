@@ -892,6 +892,21 @@ pub(super) fn closed(
     faces: &[ToolFace],
     tol: Tolerances,
 ) -> OgeomResult<Option<(Shape, Vec<Shape>)>> {
+    closed_within(model, points, curves, faces, &[], tol)
+}
+
+/// [`closed`], each curve widened to its width in `widths` (by the curves'
+/// order, missing or nought for none), as [`super::curved::build_with_widths`]
+/// widens them: curves read off the solid's own edges, which meet within
+/// those edges' tolerances.
+pub(super) fn closed_within(
+    model: &mut Model,
+    points: &[Point],
+    curves: &[SheetCurve],
+    faces: &[ToolFace],
+    widths: &[f64],
+    tol: Tolerances,
+) -> OgeomResult<Option<(Shape, Vec<Shape>)>> {
     let mut sheet: Vec<SheetRings> = Vec::with_capacity(faces.len());
     for face in faces {
         let first = face.curves[0];
@@ -966,7 +981,8 @@ pub(super) fn closed(
             reversed: du.cross(dv).dot(face.out) < 0.0,
         });
     }
-    let Ok(built) = super::curved::build(model, points, curves, &sheet, tol) else {
+    let Ok(built) = super::curved::build_with_widths(model, points, curves, &sheet, widths, tol)
+    else {
         return Ok(None);
     };
     let shell = ogeom_algo::make_shell(model, &built.faces)?.shape;
