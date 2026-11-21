@@ -52,6 +52,21 @@ pub(crate) fn round(
     if asked.windows(2).any(|w| w[0].0 == w[1].0) {
         return Ok(None);
     }
+    // A pole is an edge of the solid the read leaves out, with nothing to
+    // round; an edge not of the solid at all is the caller's mistake.
+    for (e, shape, _) in &asked {
+        if !curved.edges.contains_key(e) {
+            if ogeom_topo::ancestors_of(model, solid, shape, ogeom_topo::ShapeType::Face)?
+                .is_empty()
+            {
+                ogeom_core::ogeom_bail!(
+                    Dangling,
+                    "an edge asked is not an edge of the solid rounded"
+                );
+            }
+            return Ok(None);
+        }
+    }
     // In order of where each edge stands, its key only between two that
     // stand alike: a dissolved solid's keys change from one reading to the
     // next, and the strips' order is the result's face order.
@@ -1558,4 +1573,33 @@ pub(crate) fn far_faces(
         far.iter().map(shape).collect(),
         near.iter().map(shape).collect(),
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, reason = "test code")]
+    use ogeom_core::OgeomError;
+    use ogeom_math::{Direction, Frame, Point};
+    use ogeom_topo::{ShapeType, explore_unique};
+
+    use super::*;
+
+    const T: Tolerances = Tolerances::millimetres();
+
+    /// An edge of another solid asked of a drum is refused by name, never
+    /// looked up.
+    #[test]
+    fn an_edge_of_another_solid_is_refused_by_name() {
+        let mut m = Model::new();
+        let at = Frame::new(Point::ORIGIN, Direction::Z, Direction::X, T).unwrap();
+        let drum = ogeom_algo::make_cylinder(&mut m, at, 5.0, 5.0, T)
+            .unwrap()
+            .shape;
+        let block = ogeom_algo::make_box(&mut m, Frame::WORLD, (1.0, 1.0, 1.0), T)
+            .unwrap()
+            .shape;
+        let foreign = explore_unique(&m, &block, ShapeType::Edge).unwrap()[0].clone();
+        let r = round(&mut m, &drum, &[(foreign, 1.0)], T);
+        assert!(matches!(r, Err(OgeomError::Dangling(_))), "{r:?}");
+    }
 }

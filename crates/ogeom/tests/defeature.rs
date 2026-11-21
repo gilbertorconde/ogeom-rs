@@ -219,6 +219,47 @@ fn removing_a_fillet_restores_the_sharp_box() {
     );
 }
 
+/// Each face the removal keeps traces to a face the result holds, through
+/// the sewing that rebuilds the faces closing the wound: a pocket cut
+/// through a boss's top just inside its rim.
+#[test]
+fn a_removals_history_names_the_faces_the_result_holds() {
+    let at = |x, y, z| Frame::new(Point::new(x, y, z), Direction::Z, Direction::X, T).unwrap();
+    let mut model = Model::new();
+    let plate = ogeom::algo::make_box(&mut model, at(-20.0, -20.0, 0.0), (40.0, 40.0, 4.0), T)
+        .unwrap()
+        .shape;
+    let boss = ogeom::algo::make_cylinder(&mut model, at(0.0, 0.0, 4.0), 5.0, 5.0, T)
+        .unwrap()
+        .shape;
+    let solid = ogeom::boolean::fuse(&mut model, &plate, &boss, T)
+        .unwrap()
+        .shape;
+    let pocket = ogeom::algo::make_box(&mut model, at(4.3, -0.25, 6.0), (0.5, 0.5, 4.0), T)
+        .unwrap()
+        .shape;
+    let solid = ogeom::boolean::cut(&mut model, &solid, &pocket, T)
+        .unwrap()
+        .shape;
+    let room = ogeom::math::Aabb::of_corners(Point::new(4.2, -0.3, 5.9), Point::new(5.1, 0.3, 9.1));
+    let walls: Vec<Shape> = explore_unique(&model, &solid, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .filter(|f| room.contains_box(&ogeom::algo::shape_bounds(&model, f, T).unwrap()))
+        .collect();
+    assert!(!walls.is_empty());
+    let built = ogeom::boolean::remove_faces(&mut model, &solid, &walls, T).unwrap();
+    let held = explore_unique(&model, &built.shape, ShapeType::Face).unwrap();
+    for face in explore_unique(&model, &solid, ShapeType::Face).unwrap() {
+        if walls.iter().any(|w| w.is_same(&face)) {
+            continue;
+        }
+        let images = built.history.trace(&face);
+        assert_eq!(images.len(), 1);
+        assert!(held.iter().any(|h| h.is_same(&images[0])));
+    }
+}
+
 /// The refusals, by name.
 #[test]
 fn impossible_removals_are_refused_by_name() {

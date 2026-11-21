@@ -319,7 +319,9 @@ fn remove_faces_own(
         );
     }
     let built = make_solid(model, std::slice::from_ref(shell))?;
-    let mut solid_history = history;
+    // Sewing rebuilds every face it joins: the faces trace on to the ones
+    // the solid holds.
+    let mut solid_history = history.then(&sewn.history);
     solid_history.modify(solid, built.shape.clone());
     Ok(Built::new(built.shape, solid_history))
 }

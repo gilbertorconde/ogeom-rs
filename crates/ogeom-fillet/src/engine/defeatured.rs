@@ -10,7 +10,9 @@
 
 use ogeom_algo::Built;
 use ogeom_core::{FastMap, OgeomResult, Tolerances};
-use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
+use ogeom_geom::Curve3d as _;
+use ogeom_math::Point;
+use ogeom_topo::{Model, Shape, ShapeType, ancestors_of, explore_unique};
 
 use super::fallback::{Sense, Tool};
 use super::{Id, id};
@@ -131,10 +133,10 @@ pub(crate) fn tools_across(
                 only.clone()
             }
             None => {
-                let [only] = copy.history.trace(edge) else {
+                let Some(image) = image_of(model, solid, &copy, edge, tol)? else {
                     return Ok(None);
                 };
-                only.clone()
+                image
             }
         };
         // Two edges standing for one crease are rounded once, alike.
@@ -190,4 +192,65 @@ pub(crate) fn tools_across(
         });
     }
     Ok((!tools.is_empty()).then_some(tools))
+}
+
+/// The edge of `copy` standing for `edge` of `solid`. Taking faces off
+/// records what became of faces only: an edge between two rebuilt faces
+/// traces to itself though the copy holds a new one, which is found as
+/// the edge the two faces' images share that runs through `edge`'s
+/// middle. `None` where no one edge does.
+fn image_of(
+    model: &Model,
+    solid: &Shape,
+    copy: &Built,
+    edge: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<Shape>> {
+    let edges = explore_unique(model, &copy.shape, ShapeType::Edge)?;
+    if let [only] = copy.history.trace(edge)
+        && edges.iter().any(|e| e.is_same(only))
+    {
+        return Ok(Some(only.clone()));
+    }
+    let faces = ancestors_of(model, solid, edge, ShapeType::Face)?;
+    let [a, b] = faces.as_slice() else {
+        return Ok(None);
+    };
+    let ([a], [b]) = (copy.history.trace(a), copy.history.trace(b)) else {
+        return Ok(None);
+    };
+    let Some((curve, (s, t))) = ogeom_algo::placed_edge_curve(model, edge, tol)? else {
+        return Ok(None);
+    };
+    let middle = curve.point_at(0.5 * (s + t), tol)?;
+    let of_b = explore_unique(model, b, ShapeType::Edge)?;
+    let mut through = Vec::new();
+    for e in explore_unique(model, a, ShapeType::Edge)? {
+        if of_b.iter().any(|x| x.is_same(&e)) && runs_through(model, &e, middle, tol)? {
+            through.push(e);
+        }
+    }
+    let [only] = &through[..] else {
+        return Ok(None);
+    };
+    Ok(Some(only.clone()))
+}
+
+/// Whether `edge` passes within the confusion distance of `p` inside its
+/// own range.
+fn runs_through(model: &Model, edge: &Shape, p: Point, tol: Tolerances) -> OgeomResult<bool> {
+    let Some((curve, (s, t))) = ogeom_algo::placed_edge_curve(model, edge, tol)? else {
+        return Ok(false);
+    };
+    let near = ogeom_algo::project_on_curve(&curve, p, 64, tol)?;
+    if near.distance > tol.confusion() {
+        return Ok(false);
+    }
+    let (lo, hi) = (s.min(t), s.max(t));
+    let within = |u: f64| u >= lo - tol.parametric() && u <= hi + tol.parametric();
+    let (a, b) = curve.domain();
+    let period = b - a;
+    Ok(within(near.parameter)
+        || (curve.is_periodic()
+            && (within(near.parameter + period) || within(near.parameter - period))))
 }
