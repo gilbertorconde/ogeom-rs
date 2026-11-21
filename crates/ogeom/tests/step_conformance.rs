@@ -381,9 +381,9 @@ fn a_twisting_wall_meshes_within_its_chord_in_every_triangle() {
             .1
             .as_ref()
             .unwrap();
-        for t in &mesh.triangles {
+        for (i, t) in mesh.triangles.iter().enumerate() {
             let [a, b, c] = t.map(|k| mesh.positions[k as usize]);
-            let uv = t.map(|k| mesh.parameters[k as usize]);
+            let uv = mesh.triangle_parameters(i).unwrap();
             let Ok(normal) = (b - a).cross(c - a).normalized(T) else {
                 continue;
             };
@@ -428,9 +428,9 @@ fn a_cone_to_its_apex_meshes_within_its_chord_in_every_triangle() {
             }
             cones += 1;
             let mesh = mesh.as_ref().unwrap();
-            for t in &mesh.triangles {
+            for (i, t) in mesh.triangles.iter().enumerate() {
                 let [a, b, c] = t.map(|k| mesh.positions[k as usize]);
-                let uv = t.map(|k| mesh.parameters[k as usize]);
+                let uv = mesh.triangle_parameters(i).unwrap();
                 let Ok(normal) = (b - a).cross(c - a).normalized(T) else {
                     continue;
                 };
@@ -483,9 +483,9 @@ fn drums_and_cones_mesh_between_their_rims_within_their_chord() {
                 triangles += mesh.triangles.len();
                 let data = model.node(face).unwrap().data().as_face().unwrap();
                 let surface = model.geometry().surface(data.surface).unwrap();
-                for t in &mesh.triangles {
+                for (i, t) in mesh.triangles.iter().enumerate() {
                     let [a, b, c] = t.map(|k| mesh.positions[k as usize]);
-                    let uv = t.map(|k| mesh.parameters[k as usize]);
+                    let uv = mesh.triangle_parameters(i).unwrap();
                     let Ok(normal) = (b - a).cross(c - a).normalized(T) else {
                         continue;
                     };
@@ -506,5 +506,90 @@ fn drums_and_cones_mesh_between_their_rims_within_their_chord() {
             }
         }
         assert!(triangles <= ceiling, "{part}: {triangles} triangles");
+    }
+}
+
+/// A face that runs to a point where its surface collapses (a cone's apex,
+/// a sphere's pole) meshes that point as one vertex of the face, a fan of
+/// real triangles round it. At three chords on the parts that end in an
+/// apex or a pole: no triangle has two corners at one point or no area,
+/// each degenerate point is one vertex per face, every face meets its
+/// chord, each body welds closed, and the mean of every triangle's corner
+/// parameters lifts to a point within the chord of the triangle's plane.
+#[test]
+fn an_apex_or_a_pole_meshes_as_one_vertex_and_no_triangle_of_no_area() {
+    use ogeom::geom::Surface as _;
+    for name in [
+        "generated/cone_point.step",
+        "generated/cone_point_vertex.step",
+        "generated/dome.step",
+    ] {
+        let text = std::fs::read_to_string(corpus(name)).unwrap();
+        let import = ogeom::io::read_step(&text, T).unwrap();
+        let model = import.document.model();
+        let mut apexes = 0;
+        for chord in [0.01 / 3.0, 0.1, 1.0] {
+            let deflection = Deflection {
+                chord,
+                ..Deflection::default()
+            };
+            for body in import.solids.iter().chain(&import.shells) {
+                let (faces, _) =
+                    ogeom::mesh::face_meshes_for(model, body, deflection, None, T).unwrap();
+                for (n, (face, mesh)) in faces.iter().enumerate() {
+                    let mesh = mesh.as_ref().unwrap();
+                    let at = format!("{name} at chord {chord}, face {n}");
+                    assert!(mesh.deflection_met, "{at}: misses its chord");
+                    let data = model.node(face).unwrap().data().as_face().unwrap();
+                    let surface = model.geometry().surface(data.surface).unwrap();
+                    let mut degenerate: Vec<(Point, Vec<u32>)> = Vec::new();
+                    for (i, t) in mesh.triangles.iter().enumerate() {
+                        let [a, b, c] = t.map(|k| mesh.positions[k as usize]);
+                        let longest = a.distance(b).max(b.distance(c)).max(c.distance(a));
+                        let area = (b - a).cross(c - a).magnitude();
+                        assert!(
+                            a.distance(b) > T.confusion()
+                                && b.distance(c) > T.confusion()
+                                && c.distance(a) > T.confusion()
+                                && area > T.confusion() * longest,
+                            "{at}: triangle {t:?} at {a:?}, {b:?}, {c:?} has no area"
+                        );
+                        let uv = mesh.triangle_parameters(i).unwrap();
+                        for (k, &(u, v)) in uv.iter().enumerate() {
+                            if surface.is_degenerate_at(u, v, T).unwrap() {
+                                let p = mesh.positions[t[k] as usize];
+                                match degenerate
+                                    .iter_mut()
+                                    .find(|(q, _)| q.distance(p) <= T.confusion())
+                                {
+                                    Some((_, vertices)) => vertices.push(t[k]),
+                                    None => degenerate.push((p, vec![t[k]])),
+                                }
+                            }
+                        }
+                        let normal = (b - a).cross(c - a).normalized(T).unwrap();
+                        let mean = (
+                            (uv[0].0 + uv[1].0 + uv[2].0) / 3.0,
+                            (uv[0].1 + uv[1].1 + uv[2].1) / 3.0,
+                        );
+                        let on = surface.point_at(mean.0, mean.1, T).unwrap();
+                        let off = (on - a).dot(normal).abs();
+                        assert!(
+                            off <= chord + T.confusion(),
+                            "{at}: the mean of {uv:?} lifts {off} off its triangle's plane"
+                        );
+                    }
+                    for (p, mut vertices) in degenerate {
+                        vertices.sort_unstable();
+                        vertices.dedup();
+                        assert_eq!(vertices.len(), 1, "{at}: {vertices:?} all stand at {p:?}");
+                        apexes += 1;
+                    }
+                }
+                let welded = ogeom::mesh::triangulate(model, body, deflection, T).unwrap();
+                assert!(welded.is_closed(), "{name} at chord {chord}: not closed");
+            }
+        }
+        assert!(apexes >= 3, "{name}: no face reaches an apex or a pole");
     }
 }

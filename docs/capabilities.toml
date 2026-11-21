@@ -598,7 +598,7 @@ keeping a config-file interpreter would be an application affordance."""
 
 [[capability]]
 id = "mesh.tessellation"
-title = "Triangulating shapes to a stated deflection by chord and angle alone, with no length cap, deterministically, in parallel"
+title = "Triangulating shapes to a stated deflection by chord and angle alone, with no length cap, deterministically, in parallel; an apex or a pole one vertex per face, fanned by real triangles"
 crate = "ogeom-mesh"
 verdict = "covered"
 symbols = [
@@ -609,16 +609,22 @@ symbols = [
 ]
 tests = [
     "crates/ogeom-mesh/src/triangulate.rs",
+    "crates/ogeom-mesh/tests/apex.rs",
+    "crates/ogeom/tests/step_conformance.rs::an_apex_or_a_pole_meshes_as_one_vertex_and_no_triangle_of_no_area",
     "crates/ogeom/tests/foundations.rs::parallel_tessellation_is_bit_identical",
     "crates/ogeom/tests/imported_corpus.rs::every_closed_corpus_solid_meshes_closed_drawn_by_curvature_alone",
 ]
 
 [[capability]]
 id = "topo.triangulation-store"
-title = "Triangulations as first-class model data: triangles, polygons on them, parameters"
+title = "Triangulations as first-class model data: triangles, polygons on them, surface parameters and normals per triangle corner"
 crate = "ogeom-topo"
 verdict = "covered"
-symbols = ["ogeom_topo::Triangulation", "ogeom_topo::TriangulationId"]
+symbols = [
+    "ogeom_topo::Triangulation", "ogeom_topo::TriangulationId",
+    "ogeom_topo::Triangulation::triangle_parameters",
+    "ogeom_topo::Triangulation::triangle_normals",
+]
 tests = ["crates/ogeom-topo/src/tessellation.rs"]
 
 [[capability]]

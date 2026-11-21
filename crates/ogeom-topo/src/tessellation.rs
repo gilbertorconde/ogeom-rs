@@ -13,22 +13,49 @@ use ogeom_math::{Aabb, Point, Vector};
 
 /// A triangulated surface.
 ///
-/// Vertices carry their parameters as well as their positions, so a caller can
-/// ask the exact surface about a triangulated point rather than only the
-/// approximation.
+/// Triangle corners carry their surface parameters as well as their
+/// vertices' positions, so a caller can ask the exact surface about a
+/// triangulated point rather than only the approximation.
+///
+/// Parameters and normals are kept per corner, not per vertex, because a
+/// point of the surface can have more than one: a cone's apex or a
+/// sphere's pole is one vertex, the fan round it a ring of real triangles,
+/// and the `u` it has depends on the triangle it is read from. A vertex on
+/// a seam has a `u` at either end of the period in the same way.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Triangulation {
     /// Vertex positions.
     pub positions: Vec<Point>,
     /// Outward unit normals, one per vertex, or none for a mesh read
-    /// without them.
+    /// without them. Where a vertex has no single normal (a cone's tip),
+    /// this is one of its corners' and [`Self::corner_normals`] has each.
     pub normals: Vec<Vector>,
     /// The surface parameters each vertex came from, or none for a mesh
-    /// that did not come from a surface.
+    /// that did not come from a surface. A vertex with more than one (a
+    /// cone's apex, a sphere's pole) holds one of them here.
+    #[deprecated(
+        since = "0.20.0",
+        note = "a vertex at an apex or a pole has no single (u, v); read                 `corner_parameters` (or `Triangulation::triangle_parameters`)                 instead. Still filled for one release."
+    )]
     pub parameters: Vec<(f64, f64)>,
     /// Triangles, as indices into the vertex arrays, wound counter-clockwise
     /// about the outward normal.
     pub triangles: Vec<[u32; 3]>,
+    /// The surface parameters at each triangle's corners, in the order of
+    /// its indices, one entry per triangle; or none for a mesh that did not
+    /// come from a surface.
+    ///
+    /// The mean of a triangle's three is a point inside the triangle's
+    /// patch of the chart, so the surface there is the point the triangle
+    /// stands in for. At an apex or a pole, where any `u` names the same
+    /// point, the corner holds the apex's own `v` and the middle of the
+    /// other two corners' `u`.
+    pub corner_parameters: Vec<[(f64, f64); 3]>,
+    /// Outward unit normals at each triangle's corners, in the order of its
+    /// indices, one entry per triangle; or none for a mesh without normals.
+    /// At a cone's tip each corner has the normal of the ruling its
+    /// triangle meets the tip along.
+    pub corner_normals: Vec<[Vector; 3]>,
     /// Whether every face met its requested deflection.
     pub deflection_met: bool,
 }
@@ -59,6 +86,137 @@ impl Triangulation {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.triangles.is_empty()
+    }
+
+    /// The surface parameters at triangle `index`'s corners, in the order
+    /// of its indices.
+    ///
+    /// Read from [`Self::corner_parameters`] where it holds one entry per
+    /// triangle, otherwise from the vertices' own, for a mesh built with
+    /// those alone. `None` for a mesh with neither, or past the triangles.
+    #[must_use]
+    pub fn triangle_parameters(&self, index: usize) -> Option<[(f64, f64); 3]> {
+        if self.corner_parameters.len() == self.triangles.len() {
+            return self.corner_parameters.get(index).copied();
+        }
+        let t = self.triangles.get(index)?;
+        #[allow(deprecated, reason = "the fallback for a mesh built before corners")]
+        let per_vertex = &self.parameters;
+        Some([
+            *per_vertex.get(t[0] as usize)?,
+            *per_vertex.get(t[1] as usize)?,
+            *per_vertex.get(t[2] as usize)?,
+        ])
+    }
+
+    /// The normals at triangle `index`'s corners, as
+    /// [`Self::triangle_parameters`] reads the parameters.
+    #[must_use]
+    pub fn triangle_normals(&self, index: usize) -> Option<[Vector; 3]> {
+        if self.corner_normals.len() == self.triangles.len() {
+            return self.corner_normals.get(index).copied();
+        }
+        let t = self.triangles.get(index)?;
+        Some([
+            *self.normals.get(t[0] as usize)?,
+            *self.normals.get(t[1] as usize)?,
+            *self.normals.get(t[2] as usize)?,
+        ])
+    }
+
+    /// Whether every triangle has its corners' surface parameters.
+    #[must_use]
+    pub fn has_parameters(&self) -> bool {
+        #[allow(deprecated, reason = "the fallback for a mesh built before corners")]
+        let per_vertex = self.parameters.len() == self.positions.len();
+        !self.triangles.is_empty()
+            && (self.corner_parameters.len() == self.triangles.len() || per_vertex)
+    }
+
+    /// The surface parameters a corner of each vertex has, `None` for a
+    /// vertex no triangle uses or a mesh without parameters.
+    ///
+    /// A vertex at an apex or a pole has more than one; this is the first
+    /// triangle's that uses it, which names the same point of the surface.
+    /// For a value tied to a triangle, read [`Self::triangle_parameters`].
+    #[must_use]
+    pub fn vertex_parameters(&self) -> Vec<Option<(f64, f64)>> {
+        let mut out = vec![None; self.positions.len()];
+        for index in 0..self.triangles.len() {
+            let Some(corners) = self.triangle_parameters(index) else {
+                break;
+            };
+            for (&v, uv) in self.triangles[index].iter().zip(corners) {
+                if let Some(slot) = out.get_mut(v as usize)
+                    && slot.is_none()
+                {
+                    *slot = Some(uv);
+                }
+            }
+        }
+        out
+    }
+
+    /// Set every vertex's surface parameters, and each corner's from its
+    /// vertex: for a mesh whose vertices each have one `(u, v)`. Call it
+    /// once the triangles are final.
+    pub fn set_vertex_parameters(&mut self, parameters: Vec<(f64, f64)>) {
+        self.corner_parameters = self
+            .triangles
+            .iter()
+            .map(|t| t.map(|i| parameters.get(i as usize).copied().unwrap_or((0.0, 0.0))))
+            .collect();
+        if parameters.len() != self.positions.len() {
+            self.corner_parameters.clear();
+        }
+        #[allow(deprecated, reason = "kept filled for the release it is deprecated in")]
+        {
+            self.parameters = parameters;
+        }
+    }
+
+    /// Set each corner's normal from its vertex's, for a mesh whose vertices
+    /// each have one. Call it once the triangles are final.
+    pub fn set_corner_normals_from_vertices(&mut self) {
+        self.corner_normals = if self.normals.len() == self.positions.len() {
+            self.triangles
+                .iter()
+                .map(|t| t.map(|i| self.normals[i as usize]))
+                .collect()
+        } else {
+            Vec::new()
+        };
+    }
+
+    /// The corner arrays for triangles taken from this mesh's `sources`,
+    /// each array empty unless this mesh has one entry per triangle.
+    fn corners_of(&self, sources: &[usize]) -> Corners {
+        (
+            picked(&self.corner_parameters, self.triangles.len(), sources),
+            picked(&self.corner_normals, self.triangles.len(), sources),
+        )
+    }
+
+    /// Every triangle's corner parameters, read as
+    /// [`Self::triangle_parameters`] reads them; `None` where some triangle
+    /// has none.
+    fn all_corner_parameters(&self) -> Option<Vec<[(f64, f64); 3]>> {
+        if self.corner_parameters.len() == self.triangles.len() {
+            return Some(self.corner_parameters.clone());
+        }
+        (0..self.triangles.len())
+            .map(|i| self.triangle_parameters(i))
+            .collect()
+    }
+
+    /// Every triangle's corner normals, as [`Self::all_corner_parameters`].
+    fn all_corner_normals(&self) -> Option<Vec<[Vector; 3]>> {
+        if self.corner_normals.len() == self.triangles.len() {
+            return Some(self.corner_normals.clone());
+        }
+        (0..self.triangles.len())
+            .map(|i| self.triangle_normals(i))
+            .collect()
     }
 
     /// The bounding box of the vertices.
@@ -231,13 +389,19 @@ impl Triangulation {
         // remapped onto the representatives.
         out.positions = self.positions.clone();
         out.normals = self.normals.clone();
-        out.parameters = self.parameters.clone();
-        for t in &self.triangles {
+        #[allow(deprecated, reason = "kept filled for the release it is deprecated in")]
+        {
+            out.parameters = self.parameters.clone();
+        }
+        let mut sources = Vec::new();
+        for (source, t) in self.triangles.iter().enumerate() {
             let mapped = t.map(|i| remap[i as usize]);
             if mapped[0] != mapped[1] && mapped[1] != mapped[2] && mapped[2] != mapped[0] {
                 out.triangles.push(mapped);
+                sources.push(source);
             }
         }
+        (out.corner_parameters, out.corner_normals) = self.corners_of(&sources);
         out
     }
 
@@ -325,7 +489,10 @@ impl Triangulation {
         out.deflection_met = self.deflection_met;
         out.positions = self.positions.clone();
         out.normals = self.normals.clone();
-        out.parameters = self.parameters.clone();
+        #[allow(deprecated, reason = "kept filled for the release it is deprecated in")]
+        {
+            out.parameters = self.parameters.clone();
+        }
         let mut sources = Vec::new();
         for (source, t) in self.triangles.iter().enumerate() {
             // Split each original side from the opposite corner. A fan from
@@ -392,7 +559,76 @@ impl Triangulation {
                 sources.push(source);
             }
         }
+        self.split_corners(&mut out, &sources);
         (out, sources)
+    }
+
+    /// Give `out`'s triangles, each a piece of this mesh's triangle
+    /// `sources[i]`, their corners' parameters and normals: a corner of the
+    /// source keeps its own, a vertex put on a side of it is interpolated
+    /// along that side.
+    fn split_corners(&self, out: &mut Self, sources: &[usize]) {
+        let full_p = !self.corner_parameters.is_empty()
+            && self.corner_parameters.len() == self.triangles.len();
+        let full_n =
+            !self.corner_normals.is_empty() && self.corner_normals.len() == self.triangles.len();
+        if !full_p && !full_n {
+            return;
+        }
+        for (piece, &source) in out.triangles.iter().zip(sources) {
+            let t = self.triangles[source];
+            let weights = piece.map(|v| self.weights_in(t, v));
+            if full_p {
+                let uv = self.corner_parameters[source];
+                out.corner_parameters.push(weights.map(|w| {
+                    (
+                        w[0] * uv[0].0 + w[1] * uv[1].0 + w[2] * uv[2].0,
+                        w[0] * uv[0].1 + w[1] * uv[1].1 + w[2] * uv[2].1,
+                    )
+                }));
+            }
+            if full_n {
+                let n = self.corner_normals[source];
+                out.corner_normals.push(weights.map(|w| {
+                    let blend = n[0] * w[0] + n[1] * w[1] + n[2] * w[2];
+                    let length = blend.magnitude();
+                    if length > 0.0 { blend / length } else { n[0] }
+                }));
+            }
+        }
+    }
+
+    /// Vertex `v`'s weights on triangle `t`'s corners: one on the corner it
+    /// is, else its nearest point's on the side it lies nearest.
+    fn weights_in(&self, t: [u32; 3], v: u32) -> [f64; 3] {
+        if let Some(k) = t.iter().position(|&c| c == v) {
+            let mut w = [0.0; 3];
+            w[k] = 1.0;
+            return w;
+        }
+        let p = self.positions[v as usize];
+        let mut best = (f64::INFINITY, [1.0, 0.0, 0.0]);
+        for k in 0..3 {
+            let (a, b) = (
+                self.positions[t[k] as usize],
+                self.positions[t[(k + 1) % 3] as usize],
+            );
+            let d = b - a;
+            let l2 = d.dot(d);
+            let along = if l2 > 0.0 {
+                ((p - a).dot(d) / l2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let off = (a + d * along).distance(p);
+            if off < best.0 {
+                let mut w = [0.0; 3];
+                w[k] = 1.0 - along;
+                w[(k + 1) % 3] = along;
+                best = (off, w);
+            }
+        }
+        best.1
     }
 
     /// This mesh with its folds cancelled and its cracks sealed: the last
@@ -426,6 +662,7 @@ impl Triangulation {
             }
         }
         let mut done: ogeom_core::FastSet<u32> = ogeom_core::FastSet::default();
+        let filled_from = out.triangles.len();
         let mut starts: Vec<u32> = onward.keys().copied().collect();
         starts.sort_unstable();
         // The walk each vertex was last put on a ring by, plus one.
@@ -490,7 +727,48 @@ impl Triangulation {
                 out.triangles.push([ring[0], ring[i], ring[i + 1]]);
             }
         }
+        out.fill_corners_from(filled_from);
         out
+    }
+
+    /// Give the triangles from `first` on, added without corners, the
+    /// corners another triangle has at the same vertices: a triangle
+    /// sealing a crack joins vertices of the triangles round it.
+    fn fill_corners_from(&mut self, first: usize) {
+        let added = first..self.triangles.len();
+        if added.is_empty() {
+            return;
+        }
+        if self.corner_parameters.len() == first && first > 0 {
+            let mut at: Vec<Option<(f64, f64)>> = vec![None; self.positions.len()];
+            for (t, uv) in self.triangles.iter().zip(&self.corner_parameters) {
+                for (&v, &c) in t.iter().zip(uv) {
+                    at[v as usize].get_or_insert(c);
+                }
+            }
+            for i in added.clone() {
+                let t = self.triangles[i];
+                self.corner_parameters
+                    .push(t.map(|v| at[v as usize].unwrap_or((0.0, 0.0))));
+            }
+        } else {
+            self.corner_parameters.clear();
+        }
+        if self.corner_normals.len() == first && first > 0 {
+            let mut at: Vec<Option<Vector>> = vec![None; self.positions.len()];
+            for (t, n) in self.triangles.iter().zip(&self.corner_normals) {
+                for (&v, &c) in t.iter().zip(n) {
+                    at[v as usize].get_or_insert(c);
+                }
+            }
+            for i in added {
+                let t = self.triangles[i];
+                self.corner_normals
+                    .push(t.map(|v| at[v as usize].unwrap_or(Vector::ZERO)));
+            }
+        } else {
+            self.corner_normals.clear();
+        }
     }
 
     /// Cancel opposite triangles on the same vertices, retaining each survivor's source.
@@ -533,18 +811,58 @@ impl Triangulation {
         let sources: Vec<_> = (0..self.triangles.len()).filter(|&i| !drop[i]).collect();
         let mut out = self.clone();
         out.triangles = sources.iter().map(|&i| self.triangles[i]).collect();
+        (out.corner_parameters, out.corner_normals) = self.corners_of(&sources);
         (out, sources)
     }
 
     /// Append another mesh, shifting its indices.
+    ///
+    /// The corner arrays stay one entry per triangle: where only one of the
+    /// two meshes has them, the other's are read from its vertices, and
+    /// where that has none either they are dropped.
     pub fn append(&mut self, other: &Self) {
         #[allow(clippy::cast_possible_truncation)]
         let offset = self.positions.len() as u32;
+        // Kept as they are where both meshes hold them per corner, as every
+        // face mesh does, so appending face after face stays linear.
+        let joined_p = if self.corner_parameters.len() == self.triangles.len()
+            && other.corner_parameters.len() == other.triangles.len()
+        {
+            let mut a = std::mem::take(&mut self.corner_parameters);
+            a.extend_from_slice(&other.corner_parameters);
+            a
+        } else {
+            match (self.all_corner_parameters(), other.all_corner_parameters()) {
+                (Some(mut a), Some(b)) => {
+                    a.extend(b);
+                    a
+                }
+                _ => Vec::new(),
+            }
+        };
+        let joined_n = if self.corner_normals.len() == self.triangles.len()
+            && other.corner_normals.len() == other.triangles.len()
+        {
+            let mut a = std::mem::take(&mut self.corner_normals);
+            a.extend_from_slice(&other.corner_normals);
+            a
+        } else {
+            match (self.all_corner_normals(), other.all_corner_normals()) {
+                (Some(mut a), Some(b)) => {
+                    a.extend(b);
+                    a
+                }
+                _ => Vec::new(),
+            }
+        };
         self.positions.extend_from_slice(&other.positions);
         self.normals.extend_from_slice(&other.normals);
+        #[allow(deprecated, reason = "kept filled for the release it is deprecated in")]
         self.parameters.extend_from_slice(&other.parameters);
         self.triangles
             .extend(other.triangles.iter().map(|t| t.map(|i| i + offset)));
+        self.corner_parameters = joined_p;
+        self.corner_normals = joined_n;
         self.deflection_met &= other.deflection_met;
     }
 
@@ -616,6 +934,7 @@ impl Triangulation {
                 {
                     out.normals.push(normal);
                 }
+                #[allow(deprecated, reason = "kept filled for the release it is deprecated in")]
                 if let Some(&uv) = self.parameters.get(index)
                     && self.parameters.len() == self.positions.len()
                 {
@@ -633,14 +952,17 @@ impl Triangulation {
             remap[index] = target;
         }
 
-        for t in &self.triangles {
+        let mut sources = Vec::new();
+        for (source, t) in self.triangles.iter().enumerate() {
             let mapped = t.map(|i| remap[i as usize]);
             // A triangle whose corners merged is degenerate and contributes
             // nothing but trouble to anything that divides by its area.
             if mapped[0] != mapped[1] && mapped[1] != mapped[2] && mapped[2] != mapped[0] {
                 out.triangles.push(mapped);
+                sources.push(source);
             }
         }
+        (out.corner_parameters, out.corner_normals) = self.corners_of(&sources);
         out
     }
 }
@@ -669,6 +991,18 @@ fn nearest_split_sides<V: Copy + Eq + std::hash::Hash>(
         .into_iter()
         .map(|(v, (side, _))| (v, side))
         .collect()
+}
+
+/// A mesh's two per-corner arrays: parameters, then normals.
+type Corners = (Vec<[(f64, f64); 3]>, Vec<[Vector; 3]>);
+
+/// The entries of a per-triangle array `all` for the triangles `sources`,
+/// or none where `all` does not hold one per triangle of `count`.
+fn picked<T: Copy>(all: &[T], count: usize, sources: &[usize]) -> Vec<T> {
+    if all.is_empty() || all.len() != count {
+        return Vec::new();
+    }
+    sources.iter().map(|&i| all[i]).collect()
 }
 
 /// How many triangles use each undirected edge, keyed (smaller, larger).
@@ -786,7 +1120,7 @@ mod tests {
         mesh.triangles = vec![[0, 1, 2], [3, 4, 5]];
         let welded = mesh.welded(T);
         assert_eq!(welded.positions.len(), 4);
-        assert!(welded.normals.is_empty() && welded.parameters.is_empty());
+        assert!(welded.normals.is_empty() && !welded.has_parameters());
         assert_eq!(welded.triangles, vec![[0, 1, 2], [1, 3, 2]]);
     }
 
@@ -843,7 +1177,6 @@ mod tests {
         for p in points {
             mesh.positions.push(*p);
             mesh.normals.push(Vector::Z);
-            mesh.parameters.push((0.0, 0.0));
         }
         mesh.triangles.extend_from_slice(triangles);
         mesh
@@ -896,7 +1229,6 @@ mod tests {
         let m = pair.positions.len() as u32;
         pair.positions.push(mirrored);
         pair.normals.push(Vector::Z);
-        pair.parameters.push((0.0, 0.0));
         let apex = 3;
         pair.triangles
             .extend_from_slice(&[[0, 1, m], [0, m, apex], [0, apex, 1], [1, apex, m]]);
@@ -910,6 +1242,64 @@ mod tests {
         assert!(pair.is_closed(), "and the pair is still closed");
     }
 
+    /// A mesh built with one `(u, v)` per vertex alone reads its corners
+    /// from them, and keeps doing so through a weld.
+    #[test]
+    #[allow(deprecated, reason = "the per-vertex field is what this reads back")]
+    fn corners_fall_back_to_per_vertex_parameters() {
+        let mut mesh = over(
+            &[
+                Point::ORIGIN,
+                Point::new(1.0, 0.0, 0.0),
+                Point::new(0.0, 1.0, 0.0),
+            ],
+            &[[0, 1, 2]],
+        );
+        mesh.parameters = vec![(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)];
+        assert!(mesh.has_parameters());
+        let expected = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)];
+        assert_eq!(mesh.triangle_parameters(0), Some(expected));
+        assert_eq!(mesh.welded(T).triangle_parameters(0), Some(expected));
+    }
+
+    /// A triangle split where a neighbour's vertex stands on its side gives
+    /// the new corner the parameters part way along that side, and keeps
+    /// the old corners' own: the corners at one vertex need not agree.
+    #[test]
+    fn a_stitched_side_interpolates_its_corners() {
+        let points = [
+            Point::ORIGIN,
+            Point::new(2.0, 0.0, 0.0),
+            Point::new(0.0, 2.0, 0.0),
+            Point::new(1.0, 0.0, 0.0),
+            Point::new(1.0, -1.0, 0.0),
+            Point::new(2.0, 0.0, 0.0),
+        ];
+        // The upper triangle's long side runs under the two lower ones,
+        // which meet at the middle of it.
+        let mut mesh = over(&points, &[[0, 1, 2], [0, 4, 3], [3, 4, 5]]);
+        mesh.corner_parameters = vec![
+            [(10.0, 0.0), (12.0, 0.0), (10.0, 2.0)],
+            [(0.0, 0.0), (1.0, -1.0), (1.0, 0.0)],
+            [(1.0, 0.0), (1.0, -1.0), (2.0, 0.0)],
+        ];
+        mesh.set_corner_normals_from_vertices();
+        let welded = mesh.border_welded(1e-6);
+        let stitched = welded.border_stitched(1e-6);
+        assert_eq!(stitched.triangles.len(), 4);
+        assert_eq!(stitched.corner_parameters.len(), 4);
+        let mut on_the_side = 0;
+        for (t, uv) in stitched.triangles.iter().zip(&stitched.corner_parameters) {
+            for (&v, &c) in t.iter().zip(uv) {
+                if stitched.positions[v as usize] == Point::new(1.0, 0.0, 0.0) && c.0 > 5.0 {
+                    assert!((c.0 - 11.0).abs() < 1e-12 && c.1.abs() < 1e-12, "{c:?}");
+                    on_the_side += 1;
+                }
+            }
+        }
+        assert_eq!(on_the_side, 2, "both pieces of the upper triangle hold it");
+    }
+
     #[test]
     fn welding_drops_triangles_that_collapse() {
         // Three corners that merge into one describe no area, and anything that
@@ -918,7 +1308,6 @@ mod tests {
         for _ in 0..3 {
             mesh.positions.push(Point::ORIGIN);
             mesh.normals.push(Vector::Z);
-            mesh.parameters.push((0.0, 0.0));
         }
         mesh.triangles.push([0, 1, 2]);
         let welded = mesh.welded(T);
@@ -931,12 +1320,10 @@ mod tests {
         let mut a = Triangulation::new();
         a.positions.push(Point::ORIGIN);
         a.normals.push(Vector::Z);
-        a.parameters.push((0.0, 0.0));
 
         let mut b = Triangulation::new();
         b.positions.push(Point::new(1.0, 0.0, 0.0));
         b.normals.push(Vector::Z);
-        b.parameters.push((1.0, 0.0));
         b.triangles.push([0, 0, 0]);
 
         a.append(&b);

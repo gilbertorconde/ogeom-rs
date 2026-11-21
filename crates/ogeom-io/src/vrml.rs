@@ -654,14 +654,9 @@ fn geometry_mesh(geometry: &Node) -> OgeomResult<Option<Triangulation>> {
         return Ok(None);
     }
     let normals = normals_from_triangles(&positions, &triangles);
-    let parameters = vec![(0.0, 0.0); positions.len()];
-    Ok(Some(Triangulation {
-        positions,
-        normals,
-        parameters,
-        triangles,
-        deflection_met: true,
-    }))
+    Ok(Some(crate::mesh_formats::imported(
+        positions, normals, triangles, true,
+    )))
 }
 
 /// Polygons, `-1` apart, fanned into triangles.
@@ -815,6 +810,9 @@ fn placed(mut mesh: Triangulation, placement: Placement) -> Triangulation {
         for t in &mut mesh.triangles {
             t.swap(1, 2);
         }
+        for c in &mut mesh.corner_parameters {
+            c.swap(1, 2);
+        }
     }
     mesh.normals = normals_from_triangles(&mesh.positions, &mesh.triangles);
     mesh
@@ -965,14 +963,7 @@ fn walk_one(node: &Rc<Node>, state: &mut State, out: &mut Vec<ImportedMesh>) -> 
                 .collect();
             if !triangles.is_empty() {
                 let normals = normals_from_triangles(&kept, &triangles);
-                let parameters = vec![(0.0, 0.0); kept.len()];
-                let mesh = Triangulation {
-                    positions: kept,
-                    normals,
-                    parameters,
-                    triangles,
-                    deflection_met: true,
-                };
+                let mesh = crate::mesh_formats::imported(kept, normals, triangles, true);
                 out.push(ImportedMesh {
                     mesh: placed(mesh, state.placement),
                     colour: state.colour,
@@ -1006,16 +997,9 @@ fn walk_one(node: &Rc<Node>, state: &mut State, out: &mut Vec<ImportedMesh>) -> 
                 ),
             };
             let normals = normals_from_triangles(&positions, &triangles);
-            let parameters = vec![(0.0, 0.0); positions.len()];
             out.push(ImportedMesh {
                 mesh: placed(
-                    Triangulation {
-                        positions,
-                        normals,
-                        parameters,
-                        triangles,
-                        deflection_met: true,
-                    },
+                    crate::mesh_formats::imported(positions, normals, triangles, true),
                     state.placement,
                 ),
                 colour: state.colour,

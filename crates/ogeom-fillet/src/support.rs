@@ -2406,18 +2406,17 @@ pub(crate) fn chart_holds(
     tol: Tolerances,
 ) -> OgeomResult<bool> {
     let mesh = face_mesh(model, face, tol)?;
-    let chart = |i: u32| {
-        let (u, v) = mesh.parameters[i as usize];
-        ogeom_math::Point2::new(u, v)
-    };
-    let span = mesh
-        .parameters
+    let triangles: Vec<[ogeom_math::Point2; 3]> = (0..mesh.triangles.len())
+        .filter_map(|i| mesh.triangle_parameters(i))
+        .map(|t| t.map(|(u, v)| ogeom_math::Point2::new(u, v)))
+        .collect();
+    let span = triangles
         .iter()
-        .fold(0.0_f64, |m, (u, v)| m.max(u.abs()).max(v.abs()))
+        .flatten()
+        .fold(0.0_f64, |m, p| m.max(p.x.abs()).max(p.y.abs()))
         .max(1.0);
     let eps = span * 1e-9;
-    Ok(mesh.triangles.iter().any(|t| {
-        let [a, b, c] = t.map(chart);
+    Ok(triangles.iter().any(|&[a, b, c]| {
         let cross = |p: ogeom_math::Point2, q: ogeom_math::Point2| {
             (q.x - p.x) * (at.y - p.y) - (q.y - p.y) * (at.x - p.x)
         };

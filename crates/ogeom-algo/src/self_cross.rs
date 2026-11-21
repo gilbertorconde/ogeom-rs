@@ -112,7 +112,7 @@ pub(crate) fn crossings(
         let Some(surface) = model.geometry().surface(data.surface) else {
             continue;
         };
-        let Some(mesh) = mesh.filter(|m| m.parameters.len() == m.positions.len()) else {
+        let Some(mesh) = mesh.filter(ogeom_topo::Triangulation::has_parameters) else {
             continue;
         };
         let mut reach = data.tolerance.get().max(tol.confusion());
@@ -131,12 +131,15 @@ pub(crate) fn crossings(
             reach,
             trim: std::sync::OnceLock::new(),
         });
-        for triangle in &mesh.triangles {
+        for (i, triangle) in mesh.triangles.iter().enumerate() {
             let corners = triangle.map(|i| mesh.positions[i as usize]);
+            let Some(chart) = mesh.triangle_parameters(i) else {
+                continue;
+            };
             facets.push(Facet {
                 sheet,
                 corners,
-                chart: triangle.map(|i| mesh.parameters[i as usize]),
+                chart,
                 bound: Aabb::of_points(&corners).expanded(tol.confusion()),
             });
         }

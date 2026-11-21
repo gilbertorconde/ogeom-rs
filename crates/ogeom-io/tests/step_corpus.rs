@@ -417,33 +417,18 @@ fn a_slit_sphere_zone_meshes_its_own_region_not_the_complement() {
             continue;
         };
         let mut worst = 0.0_f64;
-        for t in &mesh.triangles {
+        for (i, t) in mesh.triangles.iter().enumerate() {
             let [a, b, c] = [
                 mesh.positions[t[0] as usize],
                 mesh.positions[t[1] as usize],
                 mesh.positions[t[2] as usize],
             ];
-            // A corner on a cone's apex stands at one point whatever its
-            // chart column, which says nothing of where the triangle is:
-            // its chart centre is no measure there.
-            if let ogeom_geom::SurfaceGeometry::Cone(cone) = &surface
-                && [a, b, c]
-                    .iter()
-                    .any(|p| p.distance(cone.cone().apex()) <= 1e-9)
-            {
-                continue;
-            }
             let mid = ogeom_math::Point::from_vector(
                 (a.to_vector() + b.to_vector() + c.to_vector()) / 3.0,
             );
-            let mu = (mesh.parameters[t[0] as usize].0
-                + mesh.parameters[t[1] as usize].0
-                + mesh.parameters[t[2] as usize].0)
-                / 3.0;
-            let mv = (mesh.parameters[t[0] as usize].1
-                + mesh.parameters[t[1] as usize].1
-                + mesh.parameters[t[2] as usize].1)
-                / 3.0;
+            let uv = mesh.triangle_parameters(i).unwrap();
+            let mu = (uv[0].0 + uv[1].0 + uv[2].0) / 3.0;
+            let mv = (uv[0].1 + uv[1].1 + uv[2].1) / 3.0;
             if let Ok(on) = surface.point_at(mu, mv, T) {
                 worst = worst.max(on.distance(mid));
             }
@@ -516,7 +501,7 @@ fn two_oblique_rims_on_a_sphere_bound_a_face_not_a_band() {
         let mesh = ogeom_mesh::triangulate_face(model, &face, ogeom_mesh::Deflection::default(), T)
             .unwrap();
         let mut worst = 0.0_f64;
-        for t in &mesh.triangles {
+        for (i, t) in mesh.triangles.iter().enumerate() {
             let [a, b, c] = [
                 mesh.positions[t[0] as usize],
                 mesh.positions[t[1] as usize],
@@ -525,14 +510,9 @@ fn two_oblique_rims_on_a_sphere_bound_a_face_not_a_band() {
             let mid = ogeom_math::Point::from_vector(
                 (a.to_vector() + b.to_vector() + c.to_vector()) / 3.0,
             );
-            let mu = (mesh.parameters[t[0] as usize].0
-                + mesh.parameters[t[1] as usize].0
-                + mesh.parameters[t[2] as usize].0)
-                / 3.0;
-            let mv = (mesh.parameters[t[0] as usize].1
-                + mesh.parameters[t[1] as usize].1
-                + mesh.parameters[t[2] as usize].1)
-                / 3.0;
+            let uv = mesh.triangle_parameters(i).unwrap();
+            let mu = (uv[0].0 + uv[1].0 + uv[2].0) / 3.0;
+            let mv = (uv[0].1 + uv[1].1 + uv[2].1) / 3.0;
             if let Ok(on) = surface.point_at(mu, mv, T) {
                 worst = worst.max(on.distance(mid));
             }
