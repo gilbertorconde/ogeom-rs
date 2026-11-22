@@ -9,7 +9,7 @@
 //! past its region) is reported for P5 to judge. It is not refined until a
 //! check passes.
 
-use crate::fill_n::{FillBoundary, FillSide, Region, make_filling_n_fixed};
+use ogeom_algo::{FillBoundary, FillRegion as Region, FillSide, make_filling_n_fixed};
 use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_topo::{Model, Shape};
 
@@ -55,8 +55,15 @@ pub(crate) fn vertex_patch(
     region: Region<'_>,
     tol: Tolerances,
 ) -> OgeomResult<VertexPatch> {
-    let (filled, region_past) =
-        make_filling_n_fixed(model, boundary, &[], VERTEX_NET, Some(region), tol)?;
+    let (filled, region_past) = make_filling_n_fixed(
+        model,
+        boundary,
+        &[],
+        crate::marched::band_fit_target(tol),
+        VERTEX_NET,
+        Some(region),
+        tol,
+    )?;
     Ok(VertexPatch {
         face: filled.built.shape,
         sides: filled.sides,
@@ -68,10 +75,10 @@ pub(crate) fn vertex_patch(
 #[allow(clippy::unwrap_used, reason = "test code")]
 mod tests {
     use super::vertex_patch;
-    use crate::fill_n::FillBoundary;
     use crate::round::section::{PlanarSection, RoundSpec};
     use crate::round::sphere::SphereCorner;
     use crate::support::Seat;
+    use ogeom_algo::FillBoundary;
     use ogeom_core::Tolerances;
     use ogeom_geom::{Continuity, Surface as _};
     use ogeom_math::{Point, Vector};

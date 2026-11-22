@@ -18,8 +18,6 @@ pub mod corner2d;
 mod cusp;
 mod engine;
 pub mod facepair;
-mod fill_n;
-mod fill_patch;
 pub mod fillet;
 mod fits;
 mod law;
@@ -63,7 +61,6 @@ pub use chamfer_overflow::chamfer_edges_overflow;
 pub use corner2d::{chamfer_corner_2d, fillet_corner_2d};
 pub use engine::vertex::round_vertex;
 pub use facepair::blend_faces;
-pub use fill_n::{FillBoundary, FillSide, Filled, make_filling_n};
 pub use fillet::{
     FilletCorner, Overflow, fillet_edge, fillet_edge_variable, fillet_edges, fillet_edges_corner,
     fillet_edges_corner_overflow, fillet_edges_overflow, fillet_edges_variable,
@@ -79,6 +76,7 @@ pub use limit::{
 pub use march::{
     BlendStop, MarchedBlend, Sides, march_blend, march_blend_seeded, march_blend_sided,
 };
+pub use ogeom_algo::{FillBoundary, FillSide, Filled, make_filling_n};
 pub use setback::{Setbacks, fillet_edges_cornered, round_vertex_setback};
 pub use sharp::round_vertex_setback_sharp;
 pub use sheet::{fillet_faces, fillet_sheet_edges};

@@ -542,13 +542,13 @@ pub(super) fn filled_opening(
     let boundary: Vec<_> = sides
         .iter()
         .zip(supports)
-        .map(|(side, support)| crate::fill_n::FillBoundary {
+        .map(|(side, support)| ogeom_algo::FillBoundary {
             edge: side.edge.clone(),
             support: Some(support.clone()),
             continuity: ogeom_geom::Continuity::G1,
         })
         .collect();
-    let filled = crate::fill_n::make_filling_n_within(
+    let filled = ogeom_algo::make_filling_n_within(
         model,
         &boundary,
         &[],

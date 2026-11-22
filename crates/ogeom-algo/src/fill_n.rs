@@ -1,7 +1,7 @@
 //! The N-sided filling: one face over a hole bounded by any number of
 //! edges, meeting each side's face at G0, G1 or G2.
 
-use ogeom_algo::{
+use crate::{
     Built, History, attach_pcurve, edge_vertices, make_edge_between, make_face, make_vertex,
     make_wire,
 };
@@ -209,7 +209,7 @@ pub fn make_filling_n(
 /// holds it, the filling is refused by name. A corner closed against the
 /// planes of a convex vertex passes those planes, so the patch takes
 /// nothing outside the solid. With none it is [`make_filling_n`].
-pub(crate) fn make_filling_n_within(
+pub fn make_filling_n_within(
     model: &mut Model,
     boundary: &[FillBoundary],
     constraints: &[Shape],
@@ -238,13 +238,13 @@ pub(crate) fn make_filling_n_within(
 /// What a region a filling is held inside says of a point: its signed
 /// distance outside (positive outside) and the outward unit normal of the
 /// region's boundary nearest it.
-pub(crate) type Region<'a> = &'a (dyn Fn(Point) -> (f64, Vector) + Sync);
+pub type Region<'a> = &'a (dyn Fn(Point) -> (f64, Vector) + Sync);
 
 /// [`make_filling_n`], the patch held inside `region`: a net whose patch
 /// stands outside it by more than `tolerance` inside the hole misses as a
 /// side does, as [`make_filling_n_within`] holds it inside half-spaces,
 /// which are one such region.
-pub(crate) fn make_filling_n_region(
+pub fn make_filling_n_region(
     model: &mut Model,
     boundary: &[FillBoundary],
     constraints: &[Shape],
@@ -260,21 +260,22 @@ pub(crate) fn make_filling_n_region(
 /// side's report (its gap and its angle from its support), and how far it
 /// stands past `region`, the most past any of the region's pieces inside
 /// the hole (or negative infinity with none). Nothing is refined until a
-/// check passes; the caller reads the residual and decides.
+/// check passes; the caller reads the residual and decides. `tolerance`
+/// is read as [`make_filling_n`] reads it.
 ///
 /// # Errors
 ///
 /// As [`make_filling_n`], except that a net missing its tolerance is
 /// built and reported rather than refused.
-pub(crate) fn make_filling_n_fixed(
+pub fn make_filling_n_fixed(
     model: &mut Model,
     boundary: &[FillBoundary],
     constraints: &[Shape],
+    tolerance: f64,
     controls: usize,
     region: Option<Region<'_>>,
     tol: Tolerances,
 ) -> OgeomResult<(Filled, f64)> {
-    let tolerance = crate::marched::band_fit_target(tol);
     filling_with(
         model,
         boundary,
@@ -833,7 +834,7 @@ fn read_support(
         found
     } else {
         let (fitted, _, _, _, _) =
-            ogeom_algo::pcurve_fit::fit_projected_pcurve(curve, range, &surface, tol)?;
+            crate::pcurve_fit::fit_projected_pcurve(curve, range, &surface, tol)?;
         let worst = off(&fitted, range)?;
         (fitted, range, worst)
     };

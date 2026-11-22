@@ -1,7 +1,9 @@
 //! The two-patch G1 opening at the endpoint of an edge left sharp.
 
-use crate::fill_n::{FillBoundary, Region, make_filling_n_region, make_filling_n_within};
-use ogeom_algo::{Across, CurveDef, NetworkOptions, PatchDef, PatchSide};
+use ogeom_algo::{
+    Across, CurveDef, FillBoundary, FillRegion as Region, NetworkOptions, PatchDef, PatchSide,
+    make_filling_n_region, make_filling_n_within,
+};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Continuity, Curve, Curve3d as _};
 use ogeom_math::{Point, Vector};
