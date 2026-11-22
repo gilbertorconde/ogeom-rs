@@ -1,0 +1,3 @@
+- **Changed: the pole re-chart lives in `ogeom-algo`** (#1261).
+  - `rechart_clear_of_poles`, `Recharted` and `POLE_MARGIN` moved from `ogeom-bool` to `ogeom-algo`, and are now also reached as `ogeom::algo::{rechart_clear_of_poles, Recharted, POLE_MARGIN}`. `ogeom_bool::` and `ogeom::boolean::` keep re-exporting them for one release.
+  - `ogeom-heal` no longer depends on `ogeom-bool`. Behaviour is unchanged.

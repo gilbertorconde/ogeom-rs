@@ -23,7 +23,11 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 FACADE = ROOT / "crates" / "ogeom" / "src" / "lib.rs"
 
 # Root names the facade leaves out on purpose, as `crate::name`.
-INTERNAL: set[str] = set()
+INTERNAL: set[str] = {
+    # Reached as `ogeom::boolean::POLE_TOUCHING`, and the booleans' own step.
+    "ogeom_algo::POLE_TOUCHING",
+    "ogeom_algo::operands_clear_of_poles",
+}
 
 LEXEME = re.compile(
     r"""//[^\n]*"""
