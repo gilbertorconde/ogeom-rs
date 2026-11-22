@@ -79,6 +79,11 @@ echo "== capabilities =="
 python3 tools/capabilities.py check
 python3 tools/changelog.py check
 
+echo "== facade =="
+# crates/ogeom names every public item of every crate root, so a new public
+# item is unreachable for users until it is added there.
+python3 tools/facade.py check
+
 passing=$(grep -E '^test result:' "$log" \
     | awk -F'ok\\. ' '{split($2,a," "); s+=a[1]} END {print s}')
 echo

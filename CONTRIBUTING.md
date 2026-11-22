@@ -155,6 +155,12 @@ does not throw; it corrupts a document six operations later. So:
     argued again.
 - **Public items are documented.** `missing_docs` is a warning, and CI runs with
   `-D warnings`.
+- **Public items go through the facade.** `crates/ogeom/src/lib.rs` re-exports
+  each crate root's items by name, and users reach them only through it. A new
+  public item at a crate root is added to its facade module;
+  `tools/facade.py check` fails until it is. An item that moves to another
+  crate keeps its `ogeom::<module>` path: change where the facade imports it
+  from.
 
 ## Skills for coding agents
 

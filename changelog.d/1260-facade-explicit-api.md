@@ -1,0 +1,4 @@
+- **Changed: the `ogeom` facade lists its items by name** (#1260).
+  - Each `ogeom::<module>` is now a module of the facade that re-exports every item of the crate under it by name. It is no longer an alias for the whole crate. Every existing `ogeom::<module>::<item>` path still resolves to the same item, and these paths stay put when an item moves between the `ogeom-*` crates.
+  - The crate documentation groups the modules by task. `tools/facade.py check` (run by `tools/check.sh`) fails when a crate root has a public item that the facade does not list.
+  - `ogeom::boolean::work` is gone. It existed only with the `test-hooks` feature and was never a supported interface; `ogeom_bool::work` is unchanged.
