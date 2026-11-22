@@ -6828,3 +6828,372 @@ fn a_ball_resting_on_a_far_edge_ends_where_its_arc_crosses_the_seam_s_end() {
         "changed by {change}, the fill {fill} less the plain round's {taken}: {want}"
     );
 }
+
+/// The surface under a face.
+fn surface_of(model: &Model, face: &Shape) -> ogeom::geom::SurfaceGeometry {
+    let ogeom::topo::NodeData::Face(data) = model.node(face).unwrap().data() else {
+        panic!("not a face");
+    };
+    model.geometry().surface(data.surface).unwrap().clone()
+}
+
+/// Whether two unit directions are one line, either way round, to `bound`.
+fn same_line(a: Direction, b: Vector, bound: f64) -> bool {
+    (a.vector().dot(b).abs() - b.magnitude()).abs() <= bound * b.magnitude()
+}
+
+#[test]
+fn face_curvature_at_reads_a_located_plane_flat_and_refuses_a_foot_off_its_trim() {
+    use ogeom::fillet::face_curvature_at;
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let top = planar_face_at(&model, &block, Point::new(1.0, 1.0, 5.0));
+    let turn = ogeom::math::Axis {
+        location: Point::new(3.0, -2.0, 1.0),
+        direction: Direction::new(Vector::new(1.0, 2.0, 2.0), T).unwrap(),
+    };
+    let motion = ogeom::math::Transform::rotation(turn, 0.9);
+    let top = ogeom::algo::transformed(&mut model, &top, motion)
+        .unwrap()
+        .shape;
+
+    let c = face_curvature_at(
+        &model,
+        &top,
+        motion.apply(Point::new(5.0, 7.0, 8.0)),
+        None,
+        T,
+    )
+    .unwrap();
+    assert!(c.curvature.max == 0.0 && c.curvature.min == 0.0, "{c:?}");
+    assert!(c.curvature.is_umbilic(T), "{c:?}");
+    let up = motion.apply_vector(Vector::new(0.0, 0.0, 1.0));
+    assert!(
+        (c.curvature.normal.vector().dot(up) - 1.0).abs() < 1e-12,
+        "{c:?}"
+    );
+    assert!(
+        c.point.distance(motion.apply(Point::new(5.0, 7.0, 5.0))) < 1e-12,
+        "{c:?}"
+    );
+    assert!((c.distance - 3.0).abs() < 1e-12, "{c:?}");
+
+    // The plane runs on past the block's edge at x = 20; its foot there is
+    // no point of the face.
+    let off = face_curvature_at(
+        &model,
+        &top,
+        motion.apply(Point::new(25.0, 7.0, 6.0)),
+        None,
+        T,
+    );
+    assert!(
+        matches!(&off, Err(ogeom::core::OgeomError::Domain(cause)) if cause.to_string().contains("outside the face")),
+        "{off:?}"
+    );
+}
+
+#[test]
+fn face_curvature_at_reads_a_turned_cylinder_round_and_along() {
+    use ogeom::fillet::face_curvature_at;
+    use ogeom::math::Point2;
+    let r = 4.0;
+    let mut model = Model::new();
+    let post = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, r, 10.0, T)
+        .unwrap()
+        .shape;
+    let side = cylinder_face_of(&model, &post);
+    let turn = ogeom::math::Axis {
+        location: Point::new(1.0, 1.0, 0.0),
+        direction: Direction::X,
+    };
+    let motion = ogeom::math::Transform::rotation(turn, 0.7);
+    let side = ogeom::algo::transformed(&mut model, &side, motion)
+        .unwrap()
+        .shape;
+
+    for a in [0.3_f64, 2.0, 4.1, 5.9] {
+        let p = motion.apply(Point::new(7.0 * a.cos(), 7.0 * a.sin(), 3.0));
+        let c = face_curvature_at(&model, &side, p, None, T).unwrap();
+        let k = &c.curvature;
+        assert!(
+            k.max.abs() < 1e-12 && (k.min + 1.0 / r).abs() < 1e-12,
+            "{c:?}"
+        );
+        let axis = motion.apply_vector(Vector::new(0.0, 0.0, 1.0));
+        let round = motion.apply_vector(Vector::new(-a.sin(), a.cos(), 0.0));
+        let out = motion.apply_vector(Vector::new(a.cos(), a.sin(), 0.0));
+        assert!(same_line(k.max_direction, axis, 1e-12), "{c:?}");
+        assert!(same_line(k.min_direction, round, 1e-12), "{c:?}");
+        assert!((k.normal.vector().dot(out) - 1.0).abs() < 1e-12, "{c:?}");
+        assert!((c.distance - 3.0).abs() < 1e-12, "{c:?}");
+    }
+
+    // Every point of the axis is as near every generator: a hint chooses.
+    let on_axis = motion.apply(Point::new(0.0, 0.0, 5.0));
+    for u in [1.0, 2.5] {
+        let c = face_curvature_at(&model, &side, on_axis, Some(Point2::new(u, 5.0)), T).unwrap();
+        assert!((c.uv.x - u).abs() < 1e-9, "{c:?}");
+        assert!((c.curvature.min + 1.0 / r).abs() < 1e-12, "{c:?}");
+    }
+}
+
+#[test]
+fn face_curvature_at_reads_a_scaled_reversed_and_mirrored_sphere_and_its_pole() {
+    use ogeom::fillet::face_curvature_at;
+    let mut model = Model::new();
+    let ball = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 5.0, T)
+        .unwrap()
+        .shape;
+    let face = sphere_face_of(&model, &ball);
+    let doubling = ogeom::math::Transform::scaling(Point::new(1.0, 2.0, 3.0), 2.0, T).unwrap();
+    let grown = ogeom::algo::transformed(&mut model, &face, doubling)
+        .unwrap()
+        .shape;
+    let d = Vector::new(0.48, 0.6, 0.64);
+    let p = doubling.apply(Point::ORIGIN + d * 7.0);
+
+    for (face, sign) in [(grown.clone(), -1.0), (grown.reversed(), 1.0)] {
+        let c = face_curvature_at(&model, &face, p, None, T).unwrap();
+        let k = &c.curvature;
+        assert!((k.mean() - sign * 0.1).abs() < 1e-12, "{c:?}");
+        assert!(
+            (k.max - sign * 0.1).abs() < 1e-8 && (k.min - sign * 0.1).abs() < 1e-8,
+            "{c:?}"
+        );
+        assert!(k.is_umbilic(T), "{c:?}");
+        assert!((k.normal.vector().dot(d) + sign).abs() < 1e-12, "{c:?}");
+        assert!((c.distance - 4.0).abs() < 1e-9, "{c:?}");
+    }
+
+    // A mirror turns the sphere's own normal inward; the face's stays out.
+    let mirror = ogeom::math::Transform::plane_mirror(Point::new(0.0, 0.0, 1.0), Direction::X);
+    let mirrored = ogeom::algo::transformed(&mut model, &face, mirror)
+        .unwrap()
+        .shape;
+    let q = mirror.apply(Point::ORIGIN + d * 7.0);
+    let c = face_curvature_at(&model, &mirrored, q, None, T).unwrap();
+    assert!(
+        (c.curvature.max + 0.2).abs() < 1e-8 && (c.curvature.min + 0.2).abs() < 1e-8,
+        "{c:?}"
+    );
+    assert!(
+        c.curvature
+            .normal
+            .vector()
+            .dot(c.point - mirror.apply(Point::ORIGIN))
+            > 0.0,
+        "{c:?}"
+    );
+    let centre = mirror.apply(Point::ORIGIN);
+    for (at, k) in ogeom::fillet::face_curvature_samples(&model, &mirrored, 6, T).unwrap() {
+        assert!((k.mean() + 0.2).abs() < 1e-9, "{at:?}: {k:?}");
+        assert!(k.normal.vector().dot(at - centre) > 0.0, "{at:?}: {k:?}");
+    }
+
+    // The pole, where the sphere's chart collapses: read as its limit.
+    let c = face_curvature_at(
+        &model,
+        &grown,
+        doubling.apply(Point::new(0.0, 0.0, 9.0)),
+        None,
+        T,
+    )
+    .unwrap();
+    assert!(
+        (c.curvature.max + 0.1).abs() < 1e-8 && (c.curvature.min + 0.1).abs() < 1e-8,
+        "{c:?}"
+    );
+    assert!((c.curvature.normal.vector().z - 1.0).abs() < 1e-9, "{c:?}");
+
+    // The same ball as a rational patch, its pole a collapsed row of
+    // control points.
+    let patch = ogeom::algo::to_nurbs(&mut model, &face, T).unwrap().shape;
+    assert!(matches!(
+        surface_of(&model, &patch),
+        ogeom::geom::SurfaceGeometry::BSpline(_)
+    ));
+    for top in [Point::new(0.0, 0.0, 8.0), Point::new(0.0, 0.0, -8.0)] {
+        let c = face_curvature_at(&model, &patch, top, None, T).unwrap();
+        let off = (c.curvature.max + 0.2)
+            .abs()
+            .max((c.curvature.min + 0.2).abs());
+        // The patch's own jet is rounding-sized in one tangent this near
+        // its pole, so the two readings carry its noise.
+        assert!(off < 1e-7, "{c:?}");
+        assert!(
+            (c.curvature.normal.vector().z - top.z / 8.0).abs() < 1e-9,
+            "{c:?}"
+        );
+    }
+}
+
+#[test]
+fn face_curvature_at_reads_a_torus_at_both_equators() {
+    use ogeom::fillet::face_curvature_at;
+    let (major, minor) = (10.0, 3.0);
+    let mut model = Model::new();
+    let ring = ogeom::algo::make_torus(&mut model, Frame::WORLD, major, minor, T)
+        .unwrap()
+        .shape;
+    let face = explore_unique(&model, &ring, ShapeType::Face).unwrap()[0].clone();
+    let y = Vector::new(0.0, 1.0, 0.0);
+    let z = Vector::new(0.0, 0.0, 1.0);
+    // The outer equator bends away from the outward normal both ways; the
+    // inner one is a saddle, its parallel bending towards the normal.
+    for (at, max, min, out) in [
+        (15.0, -1.0 / (major + minor), -1.0 / minor, 1.0),
+        (8.0, 1.0 / (major - minor), -1.0 / minor, -1.0),
+    ] {
+        let c = face_curvature_at(&model, &face, Point::new(at, 0.0, 0.0), None, T).unwrap();
+        let k = &c.curvature;
+        assert!(
+            (k.max - max).abs() < 1e-12 && (k.min - min).abs() < 1e-12,
+            "{at}: {c:?}"
+        );
+        assert!(same_line(k.max_direction, y, 1e-12), "{at}: {c:?}");
+        assert!(same_line(k.min_direction, z, 1e-12), "{at}: {c:?}");
+        assert!((k.normal.vector().x - out).abs() < 1e-12, "{at}: {c:?}");
+    }
+}
+
+#[test]
+fn face_curvature_at_on_a_spline_matches_finite_differences_of_its_own_points() {
+    use ogeom::fillet::face_curvature_at;
+    use ogeom::geom::Surface as _;
+    let mut model = Model::new();
+    let (_, left, _) = spline_pair(&mut model, 1.0, true);
+    let surface = surface_of(&model, &left);
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let flip = if left.orientation() == ogeom::topo::Orientation::Reversed {
+        -1.0
+    } else {
+        1.0
+    };
+    for (fu, fv) in [(0.3, 0.6), (0.7, 0.2), (0.5, 0.5)] {
+        let (u, v) = (ua + fu * (ub - ua), va + fv * (vb - va));
+        // Second-order central differences: truncation h², rounding
+        // eps / h², both near 1e-8 at this step.
+        let h = 1e-4;
+        let at = |du: f64, dv: f64| surface.point_at(u + du, v + dv, T).unwrap();
+        let su = (at(h, 0.0) - at(-h, 0.0)) / (2.0 * h);
+        let sv = (at(0.0, h) - at(0.0, -h)) / (2.0 * h);
+        let centre = at(0.0, 0.0);
+        let suu = (at(h, 0.0) - centre + (at(-h, 0.0) - centre)) / (h * h);
+        let svv = (at(0.0, h) - centre + (at(0.0, -h) - centre)) / (h * h);
+        let suv = (at(h, h) - at(h, -h) - (at(-h, h) - at(-h, -h))) / (4.0 * h * h);
+        let n = su.cross(sv) * (flip / su.cross(sv).magnitude());
+        let (e, f, g) = (su.dot(su), su.dot(sv), sv.dot(sv));
+        let (l, m, nn) = (suu.dot(n), suv.dot(n), svv.dot(n));
+        let det = e * g - f * f;
+        let gaussian = (l * nn - m * m) / det;
+        let mean = (e * nn - 2.0 * f * m + g * l) / (2.0 * det);
+        let spread = (mean * mean - gaussian).max(0.0).sqrt();
+
+        let p = centre + n * 0.25;
+        let c = face_curvature_at(&model, &left, p, None, T).unwrap();
+        assert!(
+            (c.uv.x - u).abs() < 1e-7 && (c.uv.y - v).abs() < 1e-7,
+            "{c:?}"
+        );
+        let k = &c.curvature;
+        assert!(
+            (k.max - (mean + spread)).abs() < 1e-6,
+            "{c:?} against {}",
+            mean + spread
+        );
+        assert!(
+            (k.min - (mean - spread)).abs() < 1e-6,
+            "{c:?} against {}",
+            mean - spread
+        );
+        assert!((k.normal.vector().dot(n) - 1.0).abs() < 1e-9, "{c:?}");
+    }
+}
+
+#[test]
+fn face_curvature_at_agrees_across_a_spline_tubes_seam() {
+    use ogeom::fillet::face_curvature_at;
+    let r = 4.0;
+    let mut model = Model::new();
+    let post = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, r, 10.0, T)
+        .unwrap()
+        .shape;
+    let side = cylinder_face_of(&model, &post);
+    let tube = ogeom::algo::to_nurbs(&mut model, &side, T).unwrap().shape;
+    assert!(matches!(
+        surface_of(&model, &tube),
+        ogeom::geom::SurfaceGeometry::BSpline(_)
+    ));
+    let e = 1e-7_f64;
+    let read = |a: f64, hint| {
+        face_curvature_at(
+            &model,
+            &tube,
+            Point::new(6.0 * a.cos(), 6.0 * a.sin(), 4.0),
+            hint,
+            T,
+        )
+        .unwrap()
+    };
+    let (before, after) = (read(-e, None), read(e, None));
+    let across = read(e, Some(before.uv));
+    for c in [&after, &across] {
+        let (a, b) = (&before.curvature, &c.curvature);
+        assert!(
+            (a.max - b.max).abs() < 1e-9 && (a.min - b.min).abs() < 1e-9,
+            "{a:?} {b:?}"
+        );
+        assert!(
+            same_line(a.max_direction, b.max_direction.vector(), 1e-9),
+            "{a:?} {b:?}"
+        );
+        assert!(
+            same_line(a.min_direction, b.min_direction.vector(), 1e-9),
+            "{a:?} {b:?}"
+        );
+        assert!(
+            b.max.abs() < 1e-9 && (b.min + 1.0 / r).abs() < 1e-9,
+            "{b:?}"
+        );
+    }
+}
+
+#[test]
+fn face_curvature_at_refuses_an_apex_a_non_face_and_a_point_at_infinity() {
+    use ogeom::fillet::face_curvature_at;
+    let mut model = Model::new();
+    let spike = ogeom::algo::make_cone(&mut model, Frame::WORLD, 4.0, 0.0, 6.0, T)
+        .unwrap()
+        .shape;
+    let side = explore_unique(&model, &spike, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| matches!(surface_of(&model, f), ogeom::geom::SurfaceGeometry::Cone(_)))
+        .unwrap();
+    // Halfway up the side the cone bends -1 / (r cos α) round and not at
+    // all along; above the apex its nearest point is the apex itself.
+    let half = (4.0_f64).atan2(6.0);
+    let out = Vector::new(half.cos(), 0.0, half.sin());
+    let c = face_curvature_at(&model, &side, Point::new(2.0, 0.0, 3.0) + out, None, T).unwrap();
+    assert!(c.point.distance(Point::new(2.0, 0.0, 3.0)) < 1e-12, "{c:?}");
+    assert!(c.curvature.max.abs() < 1e-12, "{c:?}");
+    assert!((c.curvature.min + half.cos() / 2.0).abs() < 1e-12, "{c:?}");
+    let apex = face_curvature_at(&model, &side, Point::new(0.0, 0.0, 7.0), None, T);
+    assert!(
+        matches!(&apex, Err(ogeom::core::OgeomError::Domain(cause)) if cause.to_string().contains("apex")),
+        "{apex:?}"
+    );
+
+    let edge = edge_near(&model, &spike, Point::new(4.0, 0.0, 0.0));
+    assert!(matches!(
+        face_curvature_at(&model, &edge, Point::ORIGIN, None, T),
+        Err(ogeom::core::OgeomError::Construction(_))
+    ));
+    assert!(matches!(
+        face_curvature_at(&model, &side, Point::new(f64::NAN, 0.0, 0.0), None, T),
+        Err(ogeom::core::OgeomError::Domain(_))
+    ));
+}

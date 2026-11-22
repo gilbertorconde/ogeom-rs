@@ -14,7 +14,7 @@
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve3d as _, Surface as _, SurfaceCurvature};
-use ogeom_math::{Direction, Point, Point2};
+use ogeom_math::{Direction, Point, Point2, Vector};
 use ogeom_topo::{EdgeRepr, Model, NodeData, Orientation, Shape, ShapeType, explore_unique};
 
 /// How well a blend face meets one neighbour along one edge.
@@ -263,7 +263,7 @@ pub fn face_curvature_samples(
         ogeom_bail!(Dangling, "face refers to a surface not in this model");
     };
     let placement = face.transform(model.datums())?;
-    let flip = (face.orientation() == Orientation::Reversed) != !placement.preserves_handedness();
+    let flip = face.orientation() == Orientation::Reversed;
 
     let (mut lo, mut hi) = (
         Point2::new(f64::INFINITY, f64::INFINITY),
@@ -302,13 +302,217 @@ pub fn face_curvature_samples(
     Ok(out)
 }
 
+/// The curvature of a face at one point of it, as [`face_curvature_at`]
+/// reads it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FaceCurvature {
+    /// The principal curvatures and directions, placed where the face
+    /// stands and signed against its outward normal there.
+    pub curvature: SurfaceCurvature,
+    /// The point of the face they are read at, where the face stands.
+    pub point: Point,
+    /// That point's parameters on the face's surface: a hint for the next
+    /// query nearby.
+    pub uv: Point2,
+    /// How far the queried point is from it.
+    pub distance: f64,
+}
+
+/// The principal curvatures of `face`, as placed and as oriented, at the
+/// point of its surface nearest `p`.
+///
+/// `p` is taken where the face stands. It is carried into the surface's own
+/// frame and projected onto the surface: in closed form where the surface
+/// has one, over its spans for a B-spline patch, from a seed grid for
+/// anything else. A `hint` (surface parameters, such as the
+/// [`FaceCurvature::uv`] of a query nearby) is refined from as well, and
+/// its foot is kept wherever it is no farther than the global one by more
+/// than the confusion distance, so a probe dragged across a surface with
+/// several equally near feet (a point on a cylinder's axis) stays on the
+/// one it had.
+///
+/// The foot must lie on the face: inside its trim, or on its boundary
+/// within the face's tolerance and the trim's default deflection. One
+/// outside it is refused rather than moved to the nearest point of the
+/// boundary: what is asked about is the surface's nearest point.
+///
+/// The curvatures are signed as [`face_curvature_samples`] signs them:
+/// against the face's outward normal, so a convex face reads negative and
+/// a cavity positive. The placement's scale divides them, a reversed face
+/// turns their sign round (the largest and smallest trading places), and a
+/// mirror changes nothing: it carries the outward normal to the image's.
+/// A plane reads `0` twice; a cylinder of radius `r` reads `0` along its
+/// axis ([`SurfaceCurvature::max_direction`]) and `-1/r` round it.
+///
+/// Where every direction bends alike (an umbilic: every point of a sphere
+/// or a plane, and the pole of a surface of revolution) the two principal
+/// curvatures are equal and the directions are any perpendicular pair of
+/// tangents; [`SurfaceCurvature::is_umbilic`] says so.
+///
+/// Where the surface's parameterization degenerates (the pole of a sphere,
+/// a B-spline patch with a collapsed row of control points) its own
+/// derivatives give no normal. The curvature there is the limit of the
+/// curvatures read approaching it along the parameter that does not
+/// collapse, which is the curvature of the geometry whenever the geometry
+/// is smooth there. Where it has no limit (a cone's apex, where one
+/// principal curvature grows without bound) the point is refused.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+/// `face` is not a face;
+/// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if it is not
+/// in this model;
+/// [`OgeomError::Domain`](ogeom_core::OgeomError::Domain) if `p` is not
+/// finite, if the surface's nearest point lies outside the face, or if the
+/// surface has no curvature there (an apex).
+pub fn face_curvature_at(
+    model: &Model,
+    face: &Shape,
+    p: Point,
+    hint: Option<Point2>,
+    tol: Tolerances,
+) -> OgeomResult<FaceCurvature> {
+    if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
+        ogeom_bail!(Domain, "curvature asked at a point that is not finite");
+    }
+    if model.kind_of(face)? != ShapeType::Face {
+        ogeom_bail!(Construction, "expected a face");
+    }
+    let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
+        ogeom_bail!(Construction, "expected a face");
+    };
+    let Some(surface) = model.geometry().surface(data.surface) else {
+        ogeom_bail!(Dangling, "face refers to a surface not in this model");
+    };
+    let placement = face.transform(model.datums())?;
+    let local = placement.inverse()?.apply(p);
+
+    // The grid only seeds a surface with neither a closed form nor spans;
+    // 32 a side tells the near and far sides of a folded surface apart, as
+    // the face classifier finds.
+    let mut foot = ogeom_algo::project_on_surface(surface, local, 32, tol)?;
+    if let Some(hint) = hint
+        && let Ok(near) = ogeom_algo::project_on_surface_from(surface, local, (hint.x, hint.y), tol)
+        && near.distance <= foot.distance + tol.confusion()
+    {
+        foot = near;
+    }
+
+    let trim =
+        ogeom_algo::classify::FaceTrim::of(model, face, ogeom_mesh::Deflection::default(), tol)?;
+    let reach = tol.confusion().max(data.tolerance.get());
+    if trim.holds(model, foot.parameters, reach, tol)? == ogeom_algo::Containment::Out {
+        ogeom_bail!(
+            Domain,
+            "the nearest point of the surface, at ({}, {}), lies outside the face",
+            foot.parameters.0,
+            foot.parameters.1
+        );
+    }
+
+    let (u, v) = foot.parameters;
+    let curvature = surface_curvature_or_limit(surface, u, v, tol)?;
+    let flip = face.orientation() == Orientation::Reversed;
+    Ok(FaceCurvature {
+        curvature: placed(&curvature, &placement, flip, tol)?,
+        point: placement.apply(foot.point),
+        uv: Point2::new(u, v),
+        distance: foot.distance * placement.scale_factor(),
+    })
+}
+
+/// The surface's curvature at `(u, v)`, or where its parameterization
+/// degenerates there, the limit of it approaching along the parameter
+/// that does not collapse.
+///
+/// The surface is read twice, a ten-thousandth and a hundred-thousandth of
+/// that parameter's range in from the point. Where the two readings agree
+/// to a hundredth (a smooth surface's curvature changes by the step's
+/// order between them, an apex's by the steps' ratio) the curvatures and
+/// the normal are carried on to the point along the line through them,
+/// and the directions are laid in the tangent plane of that normal.
+fn surface_curvature_or_limit(
+    surface: &ogeom_geom::SurfaceGeometry,
+    u: f64,
+    v: f64,
+    tol: Tolerances,
+) -> OgeomResult<SurfaceCurvature> {
+    if !surface.is_degenerate_at(u, v, tol)?
+        && let Ok(c) = surface.curvature_at(u, v, tol)
+    {
+        return Ok(c);
+    }
+    let ((ua, ub), (va, vb)) = surface.domain();
+    let (du, dv) = surface.d1_at(u, v, tol)?;
+    // The parameter whose derivative survives is the one to approach along,
+    // inward from whichever end of its range is nearer.
+    let along_v = du.magnitude() <= dv.magnitude();
+    let (at, (lo, hi)) = if along_v {
+        (v, (va, vb))
+    } else {
+        (u, (ua, ub))
+    };
+    let span = if (hi - lo).is_finite() { hi - lo } else { 1.0 };
+    let inward = if at - lo <= hi - at { 1.0 } else { -1.0 };
+    let read = |fraction: f64| -> Option<SurfaceCurvature> {
+        let t = (inward * fraction).mul_add(span, at).clamp(lo, hi);
+        let (s, w) = if along_v { (u, t) } else { (t, v) };
+        surface.curvature_at(s, w, tol).ok()
+    };
+    let (Some(far), Some(near)) = (read(1e-4), read(1e-5)) else {
+        ogeom_bail!(
+            Domain,
+            "the surface has no normal near ({u}, {v}), so no curvature there"
+        );
+    };
+    let agree = |a: f64, b: f64| (a - b).abs() <= 1e-2 * a.abs().max(b.abs()) + tol.angular();
+    if !(agree(far.max, near.max) && agree(far.min, near.min)) {
+        ogeom_bail!(
+            Domain,
+            "the surface's curvature grows without bound towards ({u}, {v}), an apex"
+        );
+    }
+    // Each reading is the limit plus a term of the step's order: on the
+    // line through them, the step's ninth past the nearer.
+    let on = |far: f64, near: f64| (near - far).mul_add(1.0 / 9.0, near);
+    let (max, min) = (on(far.max, near.max), on(far.min, near.min));
+    let towards = |far: Direction, near: Direction| -> Vector {
+        (near.vector() - far.vector()) * (1.0 / 9.0) + near.vector()
+    };
+    let normal = Direction::new(towards(far.normal, near.normal), tol)?;
+    let n = normal.vector();
+    let d = near.max_direction.vector();
+    let max_direction = Direction::new(d - n * d.dot(n), tol)?;
+    let min_direction = Direction::new(n.cross(max_direction.vector()), tol)?;
+    Ok(if max >= min {
+        SurfaceCurvature {
+            max,
+            min,
+            max_direction,
+            min_direction,
+            normal,
+        }
+    } else {
+        SurfaceCurvature {
+            max: min,
+            min: max,
+            max_direction: min_direction,
+            min_direction: max_direction,
+            normal,
+        }
+    })
+}
+
 /// A curvature read in a surface's own frame, carried to where its face
 /// stands and signed against the face's normal there.
 ///
 /// A similarity `s R` maps the normal `n` to the direction of `s R n`, and
-/// every normal curvature `k` to `k / s` against it; turning the normal
-/// round for the face's orientation negates them again, and the largest
-/// and smallest trade places whenever the sign changes.
+/// every normal curvature `k` to `k / s` against it. A mirror among them
+/// changes neither: it carries the outward normal to the image's outward
+/// normal, as the mesher carries it. Turning the normal round for a
+/// reversed face negates the curvatures, and the largest and smallest
+/// trade places.
 fn placed(
     c: &SurfaceCurvature,
     placement: &ogeom_math::Transform,

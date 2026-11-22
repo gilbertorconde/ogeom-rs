@@ -1,0 +1,2 @@
+- **Fixed: `Surface::curvature_at` beside a pole** (#1251).
+  - Just off a collapsed side at an umbilic (a sphere a hundred-thousandth of its latitude from its pole) the principal direction was rounding-sized and the call failed; any tangent now stands in there.
