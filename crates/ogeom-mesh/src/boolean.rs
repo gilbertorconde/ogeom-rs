@@ -760,7 +760,7 @@ fn near(bvh: &Bvh, lo: P3, hi: P3) -> Vec<u32> {
 /// How many triangles a parallel task takes.
 const CHUNK: usize = 256;
 
-fn find(parent: &mut [u32], mut x: u32) -> u32 {
+pub(crate) fn find(parent: &mut [u32], mut x: u32) -> u32 {
     while parent[x as usize] != x {
         let up = parent[parent[x as usize] as usize];
         parent[x as usize] = up;
@@ -770,7 +770,7 @@ fn find(parent: &mut [u32], mut x: u32) -> u32 {
 }
 
 /// Join two sets, the lower index the root.
-fn union(parent: &mut [u32], a: u32, b: u32) {
+pub(crate) fn union(parent: &mut [u32], a: u32, b: u32) {
     let (ra, rb) = (find(parent, a), find(parent, b));
     if ra < rb {
         parent[rb as usize] = ra;

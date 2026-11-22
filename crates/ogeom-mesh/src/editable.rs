@@ -67,6 +67,8 @@ use ogeom_core::{FastMap, OgeomResult, ogeom_bail};
 use ogeom_math::{Aabb, Point, Vector};
 use ogeom_topo::Triangulation;
 
+use crate::boolean::{find, union};
+
 pub mod cut;
 pub mod fill;
 pub mod offset;
@@ -134,7 +136,8 @@ pub struct Editable {
     deflection_met: bool,
 }
 
-/// A connected piece of the mesh: faces joined across edges.
+/// A connected piece of the mesh: faces sharing edges, whatever their
+/// winding. See [`Editable::components`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Component {
     /// Its faces, in increasing order.
@@ -518,47 +521,74 @@ impl Editable {
             .collect()
     }
 
-    /// The connected pieces, faces joined across edges, in the order of
-    /// their lowest-numbered faces.
+    /// The connected pieces, in the order of their lowest-numbered faces.
+    ///
+    /// Two faces are in one piece when a chain of faces leads from one to
+    /// the other, each sharing an edge, its two points, with the next. The
+    /// joining rule plays no part: faces that run an edge the same way, a
+    /// fin and the sheet it stands on, and two bodies sharing an edge are
+    /// each one piece. Faces meeting only at a point are not joined. What
+    /// the joining rule leaves open is reported apart, by
+    /// [`Editable::non_manifold`] and [`Editable::rims`].
     #[must_use]
     pub fn components(&self) -> Vec<Component> {
-        let mut seen = vec![false; self.corners.len()];
-        let mut pieces = Vec::new();
-        let mut stack = Vec::new();
-        for seed in 0..self.corners.len() {
-            if !self.live[seed] || seen[seed] {
+        let n = self.corners.len();
+        let mut parent: Vec<u32> = (0..n).map(index).collect();
+        let split = |v: u32| self.copies[v as usize] != v;
+        let mut at_split: Vec<(u64, u32)> = Vec::new();
+        for (h, &g) in self.twin.iter().enumerate() {
+            if !self.live[h / 3] {
                 continue;
             }
-            seen[seed] = true;
-            stack.push(index(seed));
-            let mut faces = Vec::new();
-            let (mut lo, mut hi) = (
-                Point::new(f64::MAX, f64::MAX, f64::MAX),
-                Point::new(f64::MIN, f64::MIN, f64::MIN),
-            );
-            let mut area = 0.0;
-            while let Some(f) = stack.pop() {
-                faces.push(f);
-                let [a, b, c] = self.corners[f as usize].map(|v| self.positions[v as usize]);
-                lo = lo.min(a).min(b).min(c);
-                hi = hi.max(a).max(b).max(c);
-                area += (b - a).cross(c - a).magnitude() * 0.5;
-                for h in 3 * f..3 * f + 3 {
-                    let g = self.twin[h as usize];
-                    if g != NONE && !seen[(g / 3) as usize] {
-                        seen[(g / 3) as usize] = true;
-                        stack.push(g / 3);
-                    }
-                }
+            if g != NONE {
+                union(&mut parent, index(h / 3), g / 3);
             }
-            faces.sort_unstable();
-            pieces.push(Component {
+            let h = index(h);
+            if split(self.tail(h)) && split(self.head(h)) {
+                at_split.push((self.edge_key(h), h / 3));
+            }
+        }
+        // Where an end of an edge is one vertex, every face about it is in
+        // its one fan, so the twins have joined every face on the edge.
+        // Only edges with both ends split need joining by their points.
+        at_split.sort_unstable();
+        for run in at_split.chunk_by(|a, b| a.0 == b.0) {
+            for &(_, f) in &run[1..] {
+                union(&mut parent, run[0].1, f);
+            }
+        }
+
+        let mut slot = vec![NONE; n];
+        let mut pieces: Vec<(Vec<u32>, Point, Point, f64)> = Vec::new();
+        for f in 0..n {
+            if !self.live[f] {
+                continue;
+            }
+            let root = find(&mut parent, index(f)) as usize;
+            if slot[root] == NONE {
+                slot[root] = index(pieces.len());
+                pieces.push((
+                    Vec::new(),
+                    Point::new(f64::MAX, f64::MAX, f64::MAX),
+                    Point::new(f64::MIN, f64::MIN, f64::MIN),
+                    0.0,
+                ));
+            }
+            let (faces, lo, hi, area) = &mut pieces[slot[root] as usize];
+            faces.push(index(f));
+            let [a, b, c] = self.corners[f].map(|v| self.positions[v as usize]);
+            *lo = lo.min(a).min(b).min(c);
+            *hi = hi.max(a).max(b).max(c);
+            *area += (b - a).cross(c - a).magnitude() * 0.5;
+        }
+        pieces
+            .into_iter()
+            .map(|(faces, lo, hi, area)| Component {
                 faces,
                 bounds: Aabb::of_corners(lo, hi),
                 area,
-            });
-        }
-        pieces
+            })
+            .collect()
     }
 
     /// The rims: the loops of half-edges with no twin, in the order of
@@ -1457,9 +1487,8 @@ mod tests {
         assert_eq!(e.non_manifold(), vec![0, 1, 5, 6]);
         assert_eq!(e.source_vertex(5), Some(0));
         assert_eq!(e.source_vertex(6), Some(1));
-        let pieces = e.components();
-        assert_eq!(pieces.len(), 2);
-        assert_eq!(pieces[1].faces, vec![2]);
+        // The fin is not joined, but it shares the sheet's edge.
+        assert_eq!(faces_of(&e), vec![vec![0, 1, 2]]);
     }
 
     #[test]
@@ -1481,7 +1510,9 @@ mod tests {
         let e = Editable::from(&m, 0.0).unwrap();
         check(&e);
         assert!(e.is_closed());
-        assert_eq!(e.components().len(), 2);
+        // Each closes on its own, and the edge they share makes them one
+        // piece.
+        assert_eq!(faces_of(&e), vec![(0..8).collect::<Vec<u32>>()]);
         assert_eq!(e.non_manifold(), vec![0, 1, 6, 7]);
     }
 
@@ -1510,7 +1541,7 @@ mod tests {
         assert_eq!(rims.len(), 2);
         // The same three edges, summed from different starts.
         assert!((rims[0].length - rims[1].length).abs() <= 4.0 * f64::EPSILON * rims[0].length);
-        assert_eq!(e.components().len(), 2);
+        assert_eq!(e.components().len(), 1);
         assert!(!e.non_manifold().is_empty());
         assert!(
             (0..e.vertex_count())
@@ -1635,8 +1666,163 @@ mod tests {
         assert_eq!(diameter(&points), brute);
     }
 
+    /// A box of side `s` from `o`: eight vertices, twelve triangles wound
+    /// outward.
+    fn box_mesh(o: Point, s: f64) -> Triangulation {
+        let positions = (0..8)
+            .map(|k| {
+                let bit = |b: u32| if k & (1 << b) == 0 { 0.0 } else { s };
+                o + Vector::new(bit(0), bit(1), bit(2))
+            })
+            .collect();
+        let quads = [
+            [0, 2, 3, 1],
+            [4, 5, 7, 6],
+            [0, 1, 5, 4],
+            [2, 6, 7, 3],
+            [0, 4, 6, 2],
+            [1, 3, 7, 5],
+        ];
+        let triangles = quads
+            .iter()
+            .flat_map(|&[a, b, c, d]| [[a, b, c], [a, c, d]])
+            .collect();
+        mesh(positions, triangles)
+    }
+
+    /// The pieces of `m` by a union-find over its triangles, two joined
+    /// when they name the same two vertices in either order: each piece
+    /// as its triangles in increasing order, pieces ordered by their
+    /// first.
+    fn pieces_sharing_vertex_pairs(m: &Triangulation) -> Vec<Vec<u32>> {
+        fn root(parent: &mut [usize], mut x: usize) -> usize {
+            while parent[x] != x {
+                x = parent[x];
+            }
+            x
+        }
+        let n = m.triangles.len();
+        let mut parent: Vec<usize> = (0..n).collect();
+        let pairs = |t: [u32; 3]| {
+            [0, 1, 2].map(|k| {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                (a.min(b), a.max(b))
+            })
+        };
+        for i in 0..n {
+            for j in i + 1..n {
+                let (p, q) = (pairs(m.triangles[i]), pairs(m.triangles[j]));
+                let shared = p.iter().any(|x| q.contains(x));
+                if shared {
+                    let (a, b) = (root(&mut parent, i), root(&mut parent, j));
+                    parent[a.max(b)] = a.min(b);
+                }
+            }
+        }
+        let mut by_root: Vec<Vec<u32>> = vec![Vec::new(); n];
+        for t in 0..n {
+            by_root[root(&mut parent, t)].push(index(t));
+        }
+        by_root.into_iter().filter(|p| !p.is_empty()).collect()
+    }
+
+    fn faces_of(e: &Editable) -> Vec<Vec<u32>> {
+        e.components().into_iter().map(|c| c.faces).collect()
+    }
+
+    #[test]
+    fn a_face_wound_against_its_neighbours_stays_in_their_piece() {
+        let mut m = box_mesh(Point::new(0.0, 0.0, 0.0), 10.0);
+        assert!(m.volume() > 0.0);
+        m.triangles[0].swap(1, 2);
+        let e = Editable::from(&m, 0.0).unwrap();
+        check(&e);
+        let want = pieces_sharing_vertex_pairs(&m);
+        assert_eq!(want, vec![(0..12).collect::<Vec<u32>>()]);
+        assert_eq!(faces_of(&e), want);
+        // The winding is reported apart: its three edges are open and
+        // their ends flagged.
+        assert!(!e.is_closed());
+        assert!(!e.non_manifold().is_empty());
+    }
+
+    #[test]
+    fn two_disjoint_boxes_with_flipped_faces_are_two_pieces() {
+        let mut m = box_mesh(Point::new(0.0, 0.0, 0.0), 10.0);
+        m.append(&box_mesh(Point::new(20.0, 0.0, 0.0), 5.0));
+        m.triangles[3].swap(1, 2);
+        m.triangles[19].swap(0, 1);
+        let e = Editable::from(&m, 0.0).unwrap();
+        check(&e);
+        let want = pieces_sharing_vertex_pairs(&m);
+        assert_eq!(want.len(), 2);
+        assert!(want.iter().all(|p| p.len() == 12));
+        assert_eq!(faces_of(&e), want);
+    }
+
+    #[test]
+    fn removing_small_islands_keeps_a_flipped_face_on_its_box() {
+        let mut m = box_mesh(Point::new(0.0, 0.0, 0.0), 10.0);
+        m.triangles[0].swap(1, 2);
+        let o = Point::new(30.0, 0.0, 0.0);
+        let first = index(m.positions.len());
+        let corners = [
+            o,
+            o + Vector::new(1.0, 0.0, 0.0),
+            o + Vector::new(0.0, 1.0, 0.0),
+            o + Vector::new(0.0, 0.0, 1.0),
+        ];
+        m.positions.extend(corners);
+        m.triangles.extend(tetrahedron(corners, first));
+        let mut e = Editable::from(&m, 0.0).unwrap();
+        let islands: Vec<u32> = e
+            .components()
+            .into_iter()
+            .filter(|c| c.faces.len() < 6)
+            .flat_map(|c| c.faces)
+            .collect();
+        assert_eq!(islands, vec![12, 13, 14, 15]);
+        e.remove_faces(&islands);
+        check(&e);
+        assert_eq!(e.to_triangulation().triangles.len(), 12);
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// The pieces of a torus with faces flipped and removed are those
+        /// a union-find over shared vertex pairs finds, built afresh or
+        /// edited into.
+        #[test]
+        fn pieces_follow_shared_edges_whatever_the_winding(
+            flips in prop::collection::vec(0_u32..60, 0..20),
+            removals in prop::collection::vec(0_u32..60, 0..30),
+        ) {
+            let torus = torus(6, 5);
+            let mut edited = Editable::from(&torus, 0.0).unwrap();
+            edited.flip_faces(&flips);
+            edited.remove_faces(&removals);
+            // A face listed more than once is flipped once.
+            let mut m = torus.clone();
+            for f in 0..60 {
+                if flips.contains(&f) {
+                    m.triangles[f as usize].swap(1, 2);
+                }
+            }
+            let kept: Vec<u32> = (0..60).filter(|f| !removals.contains(f)).collect();
+            let left = mesh(
+                m.positions.clone(),
+                kept.iter().map(|&f| m.triangles[f as usize]).collect(),
+            );
+            let want: Vec<Vec<u32>> = pieces_sharing_vertex_pairs(&left)
+                .into_iter()
+                .map(|p| p.into_iter().map(|t| kept[t as usize]).collect())
+                .collect();
+            let mut fresh = Editable::from(&m, 0.0).unwrap();
+            fresh.remove_faces(&removals);
+            prop_assert_eq!(faces_of(&edited), want.clone());
+            prop_assert_eq!(faces_of(&fresh), want);
+        }
 
         /// After any removals and flips the structure is sound, and reads
         /// the same as one built afresh from what it writes.
@@ -1658,9 +1844,12 @@ mod tests {
             }
             let written = e.to_triangulation();
             let again = Editable::from(&written, 0.0).unwrap();
-            prop_assert_eq!(again.to_triangulation(), written);
+            prop_assert_eq!(&again.to_triangulation(), &written);
             prop_assert_eq!(again.is_closed(), e.is_closed());
-            prop_assert_eq!(again.components().len(), e.components().len());
+            // Copies are written as vertices of their own, so the pieces
+            // read back only once they are welded together again.
+            let welded = Editable::from(&written, 1e-9).unwrap();
+            prop_assert_eq!(welded.components().len(), e.components().len());
             let lengths = |m: &Editable| {
                 let mut l: Vec<usize> = m.rims().iter().map(|r| r.edges.len()).collect();
                 l.sort_unstable();
