@@ -11,6 +11,108 @@ bump may break the API and a patch bump may not.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-11-21
+
+A minor release of fixes for applications, with one API break: rounds no
+longer panic on a model a refused request left, readings answer the request
+as it will be built, and a folding surface is named instead of meshed badly.
+
+- **Breaking: `Triangulation` gains `findings`.** A struct literal needs
+  `..Triangulation::default()` (as since 0.20.0 for the corner fields). The
+  mesher lists `MeshFinding::SurfaceFolds` where a face's surface turns over
+  on itself and `MeshFinding::RepairCapped` where its chord repair stopped at
+  its round limit.
+- **Fixed: no panic after a refused request.** A round on a model that holds
+  what an earlier refused request left, or whose far feature the engine takes
+  off before rounding, panicked in `round_strips`; it now builds, or is
+  refused by name.
+- **Limits that answer the request.** `largest_chamfer_distance_all` is
+  confirmed by building every bevel together, and new readings take the
+  request's `Overflow` options (`largest_fillet_radius_overflow`,
+  `largest_chamfer_distance_overflow`,
+  `largest_chamfer_distance_all_overflow`, `BlendSizing::Chamfers`,
+  `BlendSizing::RoundsOverflow`).
+- **The seat reading on its own.** `blend_seat` returns where a blend's
+  contact first leaves its face, read without building: the number
+  `blend_limit` starts from, for every `BlendSizing`.
+- **Overflow options on every round call.** `fillet_edges_corner_overflow`,
+  `fillet_edges_variable_overflow`, `fillet_edge_distances_overflow` and
+  `blend_edges_overflow`; the existing calls are their `Overflow::default()`.
+- **Rounds.** `Rolling` rounds a half cylinder on a plate in one request; a
+  pipe corner's joins are G1 within 1e-4 rad; a foot bevel whose leg grazes
+  an edge round's tangent line is refused by a name that says so.
+
+- **Fixed: a boss foot bevel whose leg touches an edge round's tangent line
+  is refused by a name that says why** (#1226).
+  - On a block with a rounded edge and a fused boss, the foot bevel was
+    read as building up to 1.0, refused just above it and building again
+    from 2.71. Only the limit reading jumped from 1.0001 to 2.71: every
+    tenth from 1.1 to 2.7 builds, valid, with its fill within 7e-9 of a
+    sampled reference.
+  - At 1.0 the bevel's leg on the floor touches the round's tangent line.
+    Just past it, the leg crosses that line at a grazing angle, and the
+    floor and the round are left wedges too sharp for the booleans. Where
+    neither blend into round nor trim through builds such a bevel (the
+    leg meeting the line at under a hundredth of a radian),
+    `chamfer_edges` and `chamfer_edges_overflow` now say so by name
+    instead of giving the engine's generic refusal.
+
+- **Added: `blend_seat`, the seat reading without the confirming builds** (#1224).
+  - `blend_seat(model, solid, sizing, up_to, tol)` returns `blend_limit(..).seat` for any `BlendSizing`, through the same code, and builds nothing. Its errors are the seat reading's own, for example `NotDone` on a marched crease.
+  - On a 20 x 4 x 20 plate's top front edge, a round of distances 1 and 1e-5 reads 4 for the top face and 20 for the front, with no builds. `blend_limit` spent 8 builds to confirm the top face's reading.
+
+- **Changed: `largest_chamfer_distance_all` is confirmed by building the request** (#1223).
+  - `BlendSizing::Chamfers { specs, corner }` reads the largest measure for several bevels at once. The seat reading gives the start, and `chamfer_edges_cornered` on every bevel confirms it: the size builds, and one `LIMIT_TOLERANCE` above it is refused.
+  - `largest_chamfer_distance_all` returns that size under `ChamferCorner::Facet`. Before, it confirmed each edge alone and read the overlap from the seats.
+  - The answer now includes bevels that meet along a ridge or notch over a face's far side. The four top edges of a 20 x 20 x 10 box read 19.9947, up from 9.9615. Two bevels across a 2 mm plate's front read 20.9982, up from 1.0.
+
+- **Added: overflow options on rolling corners, variable radii and two distances (#1222).**
+  - `fillet_edges_corner_overflow`, `fillet_edges_variable_overflow`,
+    `fillet_edge_distances_overflow` and `blend_edges_overflow` take the
+    `Overflow` set; `Overflow::default()` is each existing call.
+  - A rolling corner passes its rounds to `fillet_edges_overflow`, so blend
+    into round, hold edge and trim through switch off as for setback corners.
+  - A law holding one radius, two equal elliptical distances and
+    `blend_edges` rounds of one radius now blend a boss's foot into the edge
+    round it reaches, where they were refused before.
+  - A law that varies and two different distances take trim through alone;
+    with trim through off, a result changing another face is refused by name.
+
+- **Added: largest-size readings under the request's `Overflow` options** (#1221).
+  - `BlendSizing::Chamfers` carries an `overflow` and probes `chamfer_edges_overflow`. The new `BlendSizing::RoundsOverflow { edges, overflow }` probes `fillet_edges_overflow`. A reading then answers the request as it will be built.
+  - New readings: `largest_fillet_radius_overflow`, `largest_chamfer_distance_overflow` and `largest_chamfer_distance_all_overflow`. With `Overflow::default()` each answers what its plain reading does.
+  - A boss's foot round next to an edge round reads 8.6195 by default. With blend into round off it reads 1.01, where it is built, not the 8.6195 the call then refuses.
+
+- **Fixed: a round whose far feature is taken off the solid no longer panics
+  on an edge the removal rebuilt** (#1220).
+  - `remove_faces` now traces each kept face to the face the result holds,
+    through the sewing that closes the wound. Before, it traced it to a face
+    from before the sewing.
+  - The engine's rounds on a solid with a feature taken off find each asked
+    edge again between its two faces' images when the removal rebuilt it.
+    They no longer hand on the old edge, which panicked in `fillet_edges`,
+    `fillet_edges_overflow` and `fillet_edges_corner` with "no entry found
+    for key". The answer no longer depends on how the model numbers its
+    nodes, so it is the same after a refused request as on the solid alone.
+  - An edge asked that is not an edge of the solid is refused by name
+    (`OgeomError::Dangling`) where the curved engine reads it.
+
+- **Fixed: a pipe corner's joins are G1 within 1e-4 rad** (#1216).
+  - A marched band now holds its fit to the ball's normal within 5e-5 rad as well as in distance. No distance bound is loosened. Where it tilts, it is sampled more finely across and fitted tighter there.
+  - On the half frustum, the widest turn across a join drops from 5.2e-4 rad (the uprights) and 1.1e-3 rad (the top loop) to 3.8e-5 rad. Every pipe-corner part now joins within 4e-5 rad.
+  - Tangential contact tracing no longer crawls along a surface's border: a contact running along the bound is followed at full steps. A walk that took 5 s takes 30 ms.
+  - `ogeom_bool::note_meeting_along_edge` lets a caller state that two surfaces meet only along an edge already bounded on both sides. The general fuse then skips intersecting them. Fillet bands use it for the faces they were built against.
+  - `ogeom_geom::fit::fit_surface_grid_chordal_by` fits a grid with a tolerance per pass.
+
+- **Fixed: `Rolling` rounds a half cylinder on a plate in one request** (#1216).
+  - At a mixed vertex on a curved face, the lone round may be an arc: a rim between its plane and a coaxial cylinder or cone, whose band is a torus. Its band goes first and the foot rolls round it through the pipes.
+  - The half cylinder's end arcs and foot in one request give the solid of the two calls within 1e-9 in volume, in either order, with `check` clean. It was refused because the lone edge was curved.
+
+- **Fixed: a face whose surface folds is named, and the chord repair leaves no slivers** (#1204).
+  - A B-spline face can have a point where its two tangents run parallel, its normal turning right over round it (a cross-cap). No flat triangle across that point faces the surface's way on every side. Where a triangle of a curved face's mesh faces against the surface, the mesher now looks for such a point under it and, finding one, adds `MeshFinding::SurfaceFolds` with its parameters and its point to the mesh's new `findings`.
+  - The chord repair refined a failing triangle at its centre, and a sliver failing along its longest side bred a sliver a third as tall each round until the round cap. A triangle a thousand times longer than it is tall is now split at the middle of its longest side. Where that side is the face's border, which is not split, the interior point across from it, all but on the border's chord, is taken out and not put back. A repair that still reaches its cap adds `MeshFinding::RepairCapped`.
+  - On step-conformance `freeform_panel`, the wall's fold is named at every chord, no triangle of any part is narrower in the chart than the confusion tolerance, and every other face is wound with its surface. Every other conformance part meshes to the same triangle counts.
+
 ## [0.20.0] - 2026-11-21
 
 A minor release that breaks the API: fillets and chamfers handle overflow,
@@ -15301,7 +15403,8 @@ beyond convex polygons, and the IGES entities listed as refused by name.
 Nothing here is a silent gap. A capability that is not implemented refuses
 by name rather than returning an answer it cannot stand behind.
 
-[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/gilbertorconde/ogeom-rs/compare/v0.18.0...v0.18.1
