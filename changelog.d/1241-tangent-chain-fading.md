@@ -1,0 +1,3 @@
+- **Added: `tangent_chain_with` and `ChainRules`** (#1241).
+  - `through_fading` runs a tangent chain on through a vertex where both edges' creases fade (each edge's two faces turn tangent there), whatever the angle between the edges. Picking one arc of the seam where two equal drums cross now can take the whole seam; by default it takes the arc's ellipse, as before.
+  - `through_cusps` runs it on where two edges leave a vertex the same way. `tangent_chain` is unchanged. The rule is in ADR 0001, amendment "tangent chains through fading creases".
