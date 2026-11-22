@@ -83,6 +83,18 @@ impl Piece {
         }
     }
 
+    fn mid_point(&self) -> Point2 {
+        match self {
+            Self::Seg { from, to } => from.midpoint(*to),
+            Self::Arc {
+                centre,
+                radius,
+                start,
+                end,
+            } => at_angle(*centre, *radius, f64::midpoint(*start, *end)),
+        }
+    }
+
     /// Unit tangent along traversal at the start or end.
     fn tangent(&self, at_end: bool) -> Vector2 {
         match self {
@@ -123,7 +135,10 @@ fn at_angle(centre: Point2, radius: f64, angle: f64) -> Point2 {
 /// per `join`; overlaps are trimmed to the pieces' intersection. The history
 /// reports every input edge modified into its offset piece, every join
 /// generated from the corner vertex it replaces, and the wire modified into
-/// the result. An offset the collapse severs into islands is a compound of
+/// the result. Where the offset collapses, the result bounds the region at
+/// the offset or more from the wire: a stretch two pieces share running the
+/// same way is kept once, and one they share running opposite ways is
+/// dropped. An offset the collapse severs into islands is a compound of
 /// wires.
 ///
 /// # Errors
@@ -485,8 +500,24 @@ pub fn offset_wire(
             if j == i + 1 || (i == 0 && j == m - 1) {
                 continue;
             }
-            for p in crossings(&chain[i].0, &chain[j].0, tol)? {
-                if within(&chain[i].0, p, tol) && within(&chain[j].0, p, tol) {
+            let (a, b) = (&chain[i].0, &chain[j].0);
+            if same_support(a, b, tol) {
+                // Pieces on one line or circle meet in a stretch, not a
+                // crossing: each is cut where the other ends inside it.
+                for p in [b.start_point(), b.end_point()] {
+                    if lies_inside(a, p, tol) {
+                        cuts[i].push(p);
+                    }
+                }
+                for p in [a.start_point(), a.end_point()] {
+                    if lies_inside(b, p, tol) {
+                        cuts[j].push(p);
+                    }
+                }
+                continue;
+            }
+            for p in crossings(a, b, tol)? {
+                if within(a, p, tol) && within(b, p, tol) {
                     cuts[i].push(p);
                     cuts[j].push(p);
                 }
@@ -513,18 +544,36 @@ pub fn offset_wire(
     let had_cuts = cuts.iter().any(|c| !c.is_empty());
     let survivors: Vec<(Piece, Provenance)> = resolved
         .into_iter()
-        .filter(|(piece, _)| {
-            let mid = match piece {
-                Piece::Seg { from, to } => from.midpoint(*to),
-                Piece::Arc {
-                    centre,
-                    radius,
-                    start,
-                    end,
-                } => at_angle(*centre, *radius, f64::midpoint(*start, *end)),
-            };
-            source_distance(mid) >= keep_beyond
-        })
+        .filter(|(piece, _)| source_distance(piece.mid_point()) >= keep_beyond)
+        .collect();
+    // The result bounds the region at the offset or more from the source.
+    // Two survivors on the same span running the same way are one stretch
+    // of that boundary, kept once; running opposite ways they bound a
+    // sliver with no inside, and both go.
+    let eps = tol.confusion() * 100.0;
+    let near = |p: Point2, q: Point2| p.distance(q) <= eps;
+    let mut dropped = vec![false; survivors.len()];
+    for i in 0..survivors.len() {
+        for j in i + 1..survivors.len() {
+            if dropped[i] || dropped[j] {
+                continue;
+            }
+            let (a, b) = (&survivors[i].0, &survivors[j].0);
+            if !near(a.mid_point(), b.mid_point()) || !same_support(a, b, tol) {
+                continue;
+            }
+            if near(a.start_point(), b.start_point()) && near(a.end_point(), b.end_point()) {
+                dropped[j] = true;
+            } else if near(a.start_point(), b.end_point()) && near(a.end_point(), b.start_point()) {
+                dropped[i] = true;
+                dropped[j] = true;
+            }
+        }
+    }
+    let survivors: Vec<(Piece, Provenance)> = survivors
+        .into_iter()
+        .zip(dropped)
+        .filter_map(|(piece, gone)| (!gone).then_some(piece))
         .collect();
     if survivors.is_empty() {
         ogeom_bail!(Construction, "the offset consumes the wire whole");
@@ -534,7 +583,6 @@ pub fn offset_wire(
     let loops: Vec<Vec<(Piece, Provenance)>> = if !had_cuts && survivors.len() == chain.len() {
         vec![survivors]
     } else {
-        let eps = tol.confusion() * 100.0;
         let mut pool = survivors;
         let mut out: Vec<Vec<(Piece, Provenance)>> = Vec::new();
         while let Some(first) = pool.pop() {
@@ -816,6 +864,37 @@ fn distance_to_piece(piece: &Piece, p: Point2) -> f64 {
             }
         }
     }
+}
+
+/// Whether two pieces lie on one line, or on one circle.
+fn same_support(a: &Piece, b: &Piece, tol: Tolerances) -> bool {
+    let eps = tol.confusion() * 100.0;
+    match (a, b) {
+        (Piece::Seg { from, to }, Piece::Seg { .. }) => {
+            let d = (*to - *from) / (*to - *from).magnitude();
+            [b.start_point(), b.end_point()]
+                .iter()
+                .all(|p| d.cross(*p - *from).abs() <= eps)
+        }
+        (
+            Piece::Arc {
+                centre: c1,
+                radius: r1,
+                ..
+            },
+            Piece::Arc {
+                centre: c2,
+                radius: r2,
+                ..
+            },
+        ) => c1.distance(*c2) <= eps && (r1 - r2).abs() <= eps,
+        _ => false,
+    }
+}
+
+/// Whether `p` lies on the piece, strictly between its ends.
+fn lies_inside(piece: &Piece, p: Point2, tol: Tolerances) -> bool {
+    distance_to_piece(piece, p) <= tol.confusion() * 100.0 && within(piece, p, tol)
 }
 
 /// Whether a support crossing lands within the piece's own span, endpoints

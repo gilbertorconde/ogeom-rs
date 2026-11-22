@@ -297,3 +297,141 @@ fn an_inward_offset_keeps_the_offset_of_a_wide_arc() {
     assert_eq!(radii.len(), 1, "one arc: {radii:?}");
     assert!((radii[0] - (r - d)).abs() < 1e-9, "{radii:?}");
 }
+
+/// Two 10-squares joined by a 4-wide neck of height `neck` centred on
+/// y = 5, as one counter-clockwise polygon.
+fn two_squares(model: &mut ogeom_topo::Model, neck: f64) -> (ogeom_topo::Shape, Vec<Point>) {
+    let (lo, hi) = (5.0 - neck / 2.0, 5.0 + neck / 2.0);
+    let outline: Vec<Point> = [
+        (0.0, 0.0),
+        (10.0, 0.0),
+        (10.0, lo),
+        (14.0, lo),
+        (14.0, 0.0),
+        (24.0, 0.0),
+        (24.0, 10.0),
+        (14.0, 10.0),
+        (14.0, hi),
+        (10.0, hi),
+        (10.0, 10.0),
+        (0.0, 10.0),
+    ]
+    .iter()
+    .map(|&(x, y)| Point::new(x, y, 0.0))
+    .collect();
+    let wire = ogeom_algo::make_polygon(model, &outline, true, T)
+        .unwrap()
+        .shape;
+    (wire, outline)
+}
+
+/// The largest departure of the result from the offset's definition, over
+/// a fine sampling of every result edge. With arc joins every point stands
+/// exactly `distance` off the polygon. With intersection joins a mitred
+/// corner stands farther off, so every point must be at least `distance`
+/// off the polygon and exactly `distance` off the line of one of its sides.
+fn worst_distance_error(
+    model: &ogeom_topo::Model,
+    shape: &ogeom_topo::Shape,
+    polygon: &[Point],
+    distance: f64,
+    join: Join,
+) -> f64 {
+    let sides: Vec<(Point, Point)> = (0..polygon.len())
+        .map(|i| (polygon[i], polygon[(i + 1) % polygon.len()]))
+        .collect();
+    let to_polygon = |p: Point| -> f64 {
+        sides
+            .iter()
+            .map(|&(a, b)| {
+                let d = b - a;
+                let t = ((p - a).dot(d) / d.dot(d)).clamp(0.0, 1.0);
+                p.distance(a + d * t)
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    let off_a_line = |p: Point| -> f64 {
+        sides
+            .iter()
+            .map(|&(a, b)| {
+                let d = (b - a) / (b - a).magnitude();
+                ((p - a).cross(d).magnitude() - distance).abs()
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    let mut worst = 0.0_f64;
+    for edge in explore(model, shape, Filter::OfType(ShapeType::Edge)).unwrap() {
+        let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+        let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            panic!("an edge without a curve");
+        };
+        let geometry = model.geometry().curve(*curve).unwrap().clone();
+        for i in 0..=64 {
+            let t = range.0 + (range.1 - range.0) * f64::from(i) / 64.0;
+            let p = geometry.point_at(t, T).unwrap();
+            let error = match join {
+                Join::Arc => (to_polygon(p) - distance).abs(),
+                Join::Intersection => (distance - to_polygon(p)).max(0.0).max(off_a_line(p)),
+            };
+            worst = worst.max(error);
+        }
+    }
+    worst
+}
+
+/// The walls' inward offsets pass each other inside the neck, and the
+/// pieces that survive on either side of it share a line with a piece of
+/// the next wall: the shared stretch is one boundary, and the neck closes.
+#[test]
+fn an_inward_offset_through_a_neck_merges_the_pieces_on_one_line() {
+    let d = 1.5;
+    // The two arc joins at the neck's mouth leave a lens past x = 10 - d,
+    // between the circles of radius d about (10, 5 -+ 1); each half is
+    // the integral of d - sqrt(d^2 - u^2) over u in [0, 1].
+    let half_lens = d - 0.5 * (d * d - 1.0_f64).sqrt() - 0.5 * d * d * (1.0 / d).asin();
+    for (join, island) in [
+        (Join::Intersection, 49.0),
+        (Join::Arc, 49.0 + 2.0 * half_lens),
+    ] {
+        let mut model = ogeom_topo::Model::new();
+        let (wire, outline) = two_squares(&mut model, 2.0);
+        let result = ogeom_offset::offset_wire(&mut model, &wire, -d, join, T)
+            .unwrap_or_else(|e| panic!("{join:?}: {e}"));
+        let (loops, total) = area_of_all(&model, &result.shape);
+        assert_eq!(loops, 2, "{join:?}: the neck closes into two islands");
+        assert!(
+            (total - 2.0 * island).abs() < 1e-3,
+            "{join:?}: area {total} against {}",
+            2.0 * island
+        );
+        let worst = worst_distance_error(&model, &result.shape, &outline, d, join);
+        assert!(worst < 1e-9, "{join:?}: distance off by {worst}");
+    }
+}
+
+/// A neck exactly twice the offset wide: its two walls' offsets meet on
+/// the centre line running opposite ways, a sliver with no inside, and
+/// the islands are what is left.
+#[test]
+fn an_inward_offset_drops_a_neck_that_closes_exactly() {
+    let d = 1.5;
+    // The arc joins at the mouth are quarter circles about (10, 5 -+ d),
+    // touching on the centre line; the lens they leave past x = 10 - d is
+    // the square of side d less its quarter disc, twice.
+    let lens = 2.0 * d * d * (1.0 - core::f64::consts::FRAC_PI_4);
+    for (join, island) in [(Join::Intersection, 49.0), (Join::Arc, 49.0 + lens)] {
+        let mut model = ogeom_topo::Model::new();
+        let (wire, outline) = two_squares(&mut model, 2.0 * d);
+        let result = ogeom_offset::offset_wire(&mut model, &wire, -d, join, T)
+            .unwrap_or_else(|e| panic!("{join:?}: {e}"));
+        let (loops, total) = area_of_all(&model, &result.shape);
+        assert_eq!(loops, 2, "{join:?}: the closed neck leaves two islands");
+        assert!(
+            (total - 2.0 * island).abs() < 1e-3,
+            "{join:?}: area {total} against {}",
+            2.0 * island
+        );
+        let worst = worst_distance_error(&model, &result.shape, &outline, d, join);
+        assert!(worst < 1e-9, "{join:?}: distance off by {worst}");
+    }
+}
