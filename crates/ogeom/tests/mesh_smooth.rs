@@ -668,7 +668,10 @@ fn an_edge_of_four_faces_is_joined_as_it_stands() {
     }
     let afresh = Editable::from(&e.to_triangulation(), half * 1e-9).unwrap();
     assert!(e.is_closed());
-    assert_eq!(e.components().len(), 2);
+    // The two cubes share an edge, so they read as one piece;
+    // the edge stays non-manifold, as checked against `afresh` below.
+    assert_eq!(e.components().len(), 1);
+    assert_eq!(e.components().len(), afresh.components().len());
     assert_eq!(e.non_manifold(), afresh.non_manifold());
     assert_eq!(e.to_triangulation(), afresh.to_triangulation());
 }
