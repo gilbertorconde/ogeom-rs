@@ -3204,8 +3204,8 @@ settled here, and it needs no choice beyond the seat.
   must add the tool's whole volume and the result must check valid, as
   before.
 - **Not blended** (these go on to trim through): an open arc of a foot
-  (the rim must turn once round the axis), a round not tangent to the
-  floor, a curved floor, and a bevel reaching anything but one convex
+  (the part "an open arc of a foot" below builds some), a round not
+  tangent to the floor, a curved floor, and a bevel reaching anything but one convex
   round from a cylindrical wall.
 
 **Oracle** (`tests/blend_into_round.rs`). The reference is the closing,
@@ -3231,6 +3231,56 @@ Each result is valid and closed, with one fitted piece per round reached.
 With blend into round off each foot gets trim through's refusal, as
 before, and with every behaviour off a refusal naming blend into round.
 An open arc of a foot reaching the edge round gets what trim through
+gives.
+
+**Blend into round, an open arc of a foot.** The rim may stop before it
+turns once round the axis: a boss cut through its axis, a half boss
+standing against a wall. Its ends need no new rule. Amendment "a rim arc
+ending obliquely on a flat" settled how a rim arc ends: the ball rolls on
+past each end and the plane of the face the arc ends on trims it, the
+"keep surface" trim of the public documentation surveyed there. On a
+plane through the wall's axis that trim is the section itself: every
+ball's section lies in the plane through its centre and the axis, so the
+round ends flush in the end face's plane, as §4.3 ends a strip in its
+third face. Blend into round keeps that end.
+
+- **Built.** A round's rim of one or more edges on the foot circle,
+  joined end to end, whose two end vertices each meet one face besides the
+  floor and the wall, a plane holding the wall's axis. The end face may lie
+  on the boss's side (a cut boss's flat, the cap carrying it on) or on the
+  air's (a wall the boss stands against, the cap touching it). Every
+  crossing's arc stands inside the open arc, clear of each end by the
+  least angle kept between two crossings' arcs (0.01 rad); a crossing
+  wholly off the arc is left out. The
+  tool is the closed rim's pieces over the arc, capped at each end by the
+  corner between the wall and the floor, less the ball's section, in the
+  end face's plane. The proof is the closed rim's over the arc's angles
+  alone, the end faces seated, and the edges of the seated faces along the
+  caps' two straight sides (up the wall and out along the floor from the
+  foot) taken as the caps' bounds.
+- **Not blended** (these go on to trim through, as before): an arc ending
+  on a plane beside the axis, or on a curved face or several faces, where
+  the trim would cut the round obliquely; an arc whose seat on a round
+  reaches one of its ends, where the end plane would cut the fitted piece;
+  a bevel's open arc.
+
+**Oracle** (`tests/blend_into_round.rs`). The reference is the closing of
+the whole boss, as above, integrated over the arc's wedge alone, the end
+planes cutting it there. On a boss clear of any round it reproduces
+Pappus over half a turn to 1e-6. The parts are the cone's block with a
+cylinder r 6 at (20, 12) whose half beyond `y = 12` is gone, its foot
+round r 3 reaching 2 past the edge round's tangent line.
+
+| case | fill built | reference | error | bound | worst G1 |
+|---|---|---|---|---|---|
+| boss cut through its axis at `y = 12` | 37.554354418 | 37.554353947 | 4.7e-7 | 9.0e-6 | 9.7e-7 rad |
+| half boss against a wall at `y = 12` | 37.554354439 | 37.554353947 | 4.9e-7 | 9.0e-6 | 9.7e-7 rad |
+
+Each result is valid and closed, with one fitted piece. Blend into round
+off: trim through's own solid on the cut boss and its refusal by name
+against the wall; every behaviour off: a refusal naming blend into round.
+A boss cut at `y = 13`, beside its axis, and one cut at `x = 20`, whose
+seat on the edge round straddles the arc's end, get what trim through
 gives.
 
 **Narrow passages.** A concave zone is a narrow passage where it is

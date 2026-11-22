@@ -1,0 +1,4 @@
+- **Added: blend into round for an open arc of a foot** (#1237).
+  - A foot rim that is an open arc of the foot circle, its ends on planes through the wall's axis (a boss cut through its axis, a half boss against a wall), now blends into the rounds it reaches inside the arc. Each end's plane caps the fill flush on the section there, which lies in it.
+  - An arc ending on a plane beside the axis, or whose seat on a round reaches an end, goes on to trim through, as before.
+  - A half boss r 6 by an edge round r 5, foot round r 3: cut through its axis, 37.554354418 against the closing within the arc's wedge of 37.554353947 (bound 9.0e-6); against a wall, 37.554354439. Worst G1 9.7e-7 rad.

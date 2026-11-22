@@ -442,7 +442,9 @@ pub fn fillet_edges(
 ///   and no crease. Built for a boss's foot: the closed rim between a
 ///   planar floor and a wall about an axis square to it (a cylinder, or a
 ///   cone narrowing away from the floor), whose round reaches straight
-///   rounds tangent to the floor, convex or concave, over arcs apart.
+///   rounds tangent to the floor, convex or concave, over arcs apart. The
+///   rim may be an open arc whose ends stand on planes through the axis,
+///   the rounds it reaches inside it: each end's plane caps the round.
 /// - `hold_edge`: where the ball would roll over a sharp edge of the body,
 ///   the edge is kept and the ball rests on it: it touches the other face
 ///   and the round there is the canal surface it sweeps, meeting the band

@@ -324,6 +324,13 @@ impl Closing {
     /// the round meets the wall; up a cone's wall and out along the floor
     /// they are split at the foot circle.
     fn volume(&self, n: usize) -> f64 {
+        self.volume_within(n, None)
+    }
+
+    /// [`Closing::volume`] within the wedge of angles from `from` to `to`
+    /// about the axis, where `within` gives one: the fill of an open arc
+    /// whose ends' planes through the axis cut the round.
+    fn volume_within(&self, n: usize, within: Option<(f64, f64)>) -> f64 {
         let g = gauss(n);
         let reach = self.offset_radius(FOOT);
         let mut cuts = Vec::new();
@@ -338,19 +345,24 @@ impl Closing {
         if cuts.is_empty() {
             cuts.push(0.0);
         }
-        let cuts: Vec<f64> = {
+        let ranges: Vec<(f64, f64)> = if let Some((from, to)) = within {
+            let mut c: Vec<f64> = cuts
+                .iter()
+                .map(|a| from + (a - from).rem_euclid(TAU))
+                .filter(|a| *a < to)
+                .collect();
+            c.extend([from, to]);
+            c.sort_by(f64::total_cmp);
+            c.windows(2).map(|w| (w[0], w[1])).collect()
+        } else {
             let mut c: Vec<f64> = cuts.iter().map(|a| a.rem_euclid(TAU)).collect();
             c.sort_by(f64::total_cmp);
-            c
+            (0..c.len())
+                .map(|i| (c[i], c.get(i + 1).copied().unwrap_or(c[0] + TAU)))
+                .collect()
         };
         let mut sum = 0.0;
-        for i in 0..cuts.len() {
-            let a0 = cuts[i];
-            let a1 = if i + 1 < cuts.len() {
-                cuts[i + 1]
-            } else {
-                cuts[0] + TAU
-            };
+        for (a0, a1) in ranges {
             let ha = 0.5 * (a1 - a0);
             for (ga, wa) in &g {
                 let t = a0 + ha * (ga + 1.0);
@@ -702,30 +714,172 @@ fn a_foot_round_into_a_concave_round_fills_as_the_closing() {
     fills_as_the_closing(concave());
 }
 
-/// An open arc of a foot: the boss of the cone's place, a cylinder r 6,
-/// cut away beyond `y = 12`, so its foot is a half circle and a straight
-/// edge. Its round reaches the edge round, but blend into round does not
-/// take it: the default request gives what blend into round off gives.
-#[test]
-fn an_open_arc_of_a_foot_is_not_blended() {
+/// The part of the cone's place with its boss a cylinder r 6, cut away
+/// beyond the plane `y = cut`: where `cut` is 12 the cut
+/// holds the axis, the foot is a half circle and a straight edge, and the
+/// half circle's ends stand on the flat. Its round reaches the edge round
+/// over the middle of the arc.
+fn cut_boss(cut: f64) -> (Model, Shape, Vec<Shape>) {
     let mut m = Model::new();
     let rounded = rounded_block(&mut m, false);
+    let away = ogeom_algo::make_box(&mut m, at(0.0, cut, 15.0), (40.0, 30.0 - cut, 20.0), T)
+        .unwrap()
+        .shape;
+    cut_boss_on(m, &rounded, &away)
+}
+
+/// The block `rounded` with a cylinder r 6, 15 tall, about `(20, 12)` on
+/// its top, `away` cut from the cylinder before it is fused on, so the top
+/// stays one face; with the foot's arc.
+fn cut_boss_on(mut m: Model, rounded: &Shape, away: &Shape) -> (Model, Shape, Vec<Shape>) {
     let boss = ogeom_algo::make_cylinder(&mut m, at(20.0, 12.0, 15.0), 6.0, 15.0, T)
         .unwrap()
         .shape;
-    let s = ogeom_bool::fuse(&mut m, &rounded, &boss, T).unwrap().shape;
-    let away = ogeom_algo::make_box(&mut m, at(0.0, 12.0, 15.0), (40.0, 20.0, 20.0), T)
+    let boss = ogeom_bool::cut(&mut m, &boss, away, T).unwrap().shape;
+    let s = ogeom_bool::fuse(&mut m, rounded, &boss, T).unwrap().shape;
+    let arc = foot_rim(&m, &s, (20.0, 12.0, 15.0), 6.0);
+    (m, s, arc)
+}
+
+/// A half boss r 6 against a wall: the block's top behind `y = 12` rises
+/// 15 as a wall, and a cylinder r 6, 10 tall, about `(20, 12)` stands
+/// half out of it, so its foot is a half circle ending on the wall's
+/// plane, which holds the axis.
+fn boss_on_a_wall() -> (Model, Shape, Vec<Shape>) {
+    let mut m = Model::new();
+    let rounded = rounded_block(&mut m, false);
+    let wall = ogeom_algo::make_box(&mut m, at(0.0, 12.0, 15.0), (40.0, 18.0, 15.0), T)
         .unwrap()
         .shape;
-    let s = ogeom_bool::cut(&mut m, &s, &away, T).unwrap().shape;
-    let arc = edges_where(&m, &s, |p| {
-        (p.z - 15.0).abs() < 1e-9 && ((p.x - 20.0).hypot(p.y - 12.0) - 6.0).abs() < 1e-9
-    });
-    assert!(!arc.is_empty(), "the open arc");
+    let s = ogeom_bool::fuse(&mut m, &rounded, &wall, T).unwrap().shape;
+    let boss = ogeom_algo::make_cylinder(&mut m, at(20.0, 12.0, 15.0), 6.0, 10.0, T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &s, &boss, T).unwrap().shape;
+    let arc = foot_rim(&m, &s, (20.0, 12.0, 15.0), 6.0);
+    (m, s, arc)
+}
+
+/// The open arc of either part: the half circle in front of `y = 12`,
+/// from angle pi to 2 pi about the axis, its round reaching the edge
+/// round along `y = 5`.
+fn open_arc(part: (Model, Shape, Vec<Shape>)) -> Case {
+    let (m, s, foot) = part;
+    Case {
+        m,
+        s,
+        foot,
+        reference: Closing {
+            axis: (20.0, 12.0),
+            foot: 6.0,
+            slope: 0.0,
+            rounds: vec![convex_edge_round()],
+        },
+        rounds: 1,
+    }
+}
+
+/// The open arc's round: valid and closed, one fitted face meeting its
+/// neighbours G1. Blend into round off falls to trim through's result,
+/// which differs, or its refusal by name; every behaviour off refuses it,
+/// naming blend into round.
+fn open_arc_blends(mut case: Case) {
+    let (m, s, foot) = (&mut case.m, &case.s, &case.foot);
+    let built = fillet_edges(m, s, foot, FOOT, T).unwrap();
+    let found = ogeom_algo::check(m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    for shell in explore_unique(m, &built.shape, ShapeType::Shell).unwrap() {
+        assert!(ogeom_algo::is_shell_closed(m, &shell).unwrap(), "closed");
+    }
+    for e in foot {
+        assert!(!built.history.generated(e).is_empty(), "the rim's round");
+    }
+    let (crease, fitted) = worst_crease(m, &built.shape);
+    println!("worst crease {crease:.2e} over {fitted} fitted faces");
+    assert_eq!(fitted, case.rounds, "one fitted piece per round reached");
+    assert!(crease < 1e-5, "the round's joins crease by {crease}");
+
     let mut off = Overflow::default();
     off.blend_into_round = false;
-    let default = fillet_edges(&mut m, &s, &arc, FOOT, T);
-    let trimmed = fillet_edges_overflow(&mut m, &s, &arc, FOOT, off, T);
+    match fillet_edges_overflow(m, s, foot, FOOT, off, T) {
+        Ok(next) => assert!(
+            (volume(m, &next.shape) - volume(m, &built.shape)).abs() > 1e-6,
+            "trim through's own result"
+        ),
+        Err(err) => assert!(err.to_string().contains("reach"), "by name: {err}"),
+    }
+    let err = fillet_edges_overflow(m, s, foot, FOOT, Overflow::none(), T).unwrap_err();
+    assert!(err.to_string().contains("blend into round"), "{err}");
+}
+
+/// The cut boss's open arc blends into the edge round, its round ending
+/// flush with the flat.
+#[test]
+fn an_open_arc_of_a_cut_boss_blends_into_the_edge_round() {
+    open_arc_blends(open_arc(cut_boss(12.0)));
+}
+
+/// The half boss's open arc against the wall blends into the edge round,
+/// its round ending on the wall.
+#[test]
+fn an_open_arc_against_a_wall_blends_into_the_edge_round() {
+    open_arc_blends(open_arc(boss_on_a_wall()));
+}
+
+/// The reference for an open arc is the closing of the whole boss within
+/// the arc's wedge, pi to 2 pi: the end planes hold the axis and cut the
+/// round. It is first checked against Pappus on a boss clear of the round:
+/// half the turn of the section, the square of the radius less the
+/// quarter disc, about the axis.
+#[test]
+#[ignore = "heavy: the sampled reference takes about 10 s"]
+fn open_arcs_fill_as_the_closing_within_their_wedge() {
+    let clear = Closing {
+        axis: (20.0, 40.0),
+        foot: 6.0,
+        slope: 0.0,
+        rounds: Vec::new(),
+    };
+    let r = FOOT;
+    let area = r * r * (1.0 - PI / 4.0);
+    // The section's centroid from the wall: `r (10 - 3 pi) / (12 - 3 pi)`.
+    let from_wall = r * 3.0f64.mul_add(-PI, 10.0) / 3.0f64.mul_add(-PI, 12.0);
+    let pappus = PI * area * (6.0 + from_wall);
+    let self_check = clear.volume_within(32, Some((PI, TAU)));
+    assert!(
+        (self_check - pappus).abs() < 1e-6,
+        "the reference {self_check} against Pappus {pappus}"
+    );
+    for part in [cut_boss(12.0), boss_on_a_wall()] {
+        let mut case = open_arc(part);
+        let (m, s, foot) = (&mut case.m, &case.s, &case.foot);
+        let before = volume(m, s);
+        let built = fillet_edges(m, s, foot, FOOT, T).unwrap();
+        let wedge = Some((PI, TAU));
+        let (coarse, fine) = (
+            case.reference.volume_within(32, wedge),
+            case.reference.volume_within(64, wedge),
+        );
+        let bound = (fine - coarse).abs().max(1e-9);
+        let got = volume(m, &built.shape) - before;
+        println!(
+            "fill {got:.9}, reference {fine:.9}, error {:.2e}, bound {bound:.2e}",
+            (got - fine).abs()
+        );
+        assert!(
+            (got - fine).abs() < 1e-6 + bound,
+            "the fill {got} against the reference {fine} (within {bound})"
+        );
+    }
+}
+
+/// What blend into round does not take of an open arc gives what blend
+/// into round off gives.
+fn not_blended(mut m: Model, s: &Shape, arc: &[Shape]) {
+    let mut off = Overflow::default();
+    off.blend_into_round = false;
+    let default = fillet_edges(&mut m, s, arc, FOOT, T);
+    let trimmed = fillet_edges_overflow(&mut m, s, arc, FOOT, off, T);
     match (default, trimmed) {
         (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string()),
         (Ok(a), Ok(b)) => {
@@ -733,4 +887,27 @@ fn an_open_arc_of_a_foot_is_not_blended() {
         }
         (a, b) => panic!("the default {a:?} against trim through {b:?}"),
     }
+}
+
+/// A boss cut by a plane beside its axis, `y = 13`: the arc's ends stand
+/// on a plane the round's sections do not lie in, so its end would need
+/// the plane to trim the round obliquely. Not blended.
+#[test]
+fn an_open_arc_ending_off_the_axis_is_not_blended() {
+    let (m, s, arc) = cut_boss(13.0);
+    not_blended(m, &s, &arc);
+}
+
+/// A boss cut by `x = 20` from the floor up: the arc runs from angle
+/// pi / 2 to 3 pi / 2, and the round's seat on the edge round straddles
+/// its end at 3 pi / 2. Not blended.
+#[test]
+fn an_open_arc_ending_on_its_round_s_seat_is_not_blended() {
+    let mut m = Model::new();
+    let rounded = rounded_block(&mut m, false);
+    let away = ogeom_algo::make_box(&mut m, at(20.0, 0.0, 15.0), (20.0, 30.0, 20.0), T)
+        .unwrap()
+        .shape;
+    let (m, s, arc) = cut_boss_on(m, &rounded, &away);
+    not_blended(m, &s, &arc);
 }
