@@ -1824,7 +1824,12 @@ short of the whole band: there the ball touches the other face and rests \
 on the nearest point of the first plane's faces, an edge or a vertex \
 where one held edge stops and the next goes on (a convex corner), the \
 foot passing from one held edge to the next where they meet tangentially \
-(a chain that turns: line, arc, line), each \
+(a chain that turns: line, arc, line), or jumping from one held edge to \
+another where the ball rests on both at once (a pocket's corner, or a \
+chain's corner rounded less than the balls stand behind the face), the \
+round there that ball's sphere between its arcs to the two feet and the \
+faces past the edges trimming it, so the edges between the feet are cut \
+away; each \
 piece fitted within a confusion and meeting its neighbours and the band \
 G1, and the held edges are kept on their curves. Several stretches on one \
 band are held. A stretch reaching an end of the band needs hold edge at \
@@ -1832,9 +1837,10 @@ the end as well; past an end face the round runs on and the end face's \
 plane cuts it, in an ellipse across the band where the face leans. The \
 region between the edge and the round is one tool cut from the solid, \
 built only where nothing else of the solid stands within the box it can \
-take up, the cut taking its whole volume and the held edges kept under \
-every foot. A ball resting on two edges at once (a pocket's corner), a \
-held edge whose feet never reach the end face's plane, a curved face, \
+take up, the cut taking its whole volume (its volume within the solid \
+where the ball jumps) and the held edges kept under every foot. A held \
+edge square to the edge (a square pocket's side, the foot resting on one \
+point of it), a held edge whose feet never reach the end face's plane, a curved face, \
 or a held edge neither a line nor a circle are not held: they go on to \
 trim through. With hold edge (or hold edge at the end, for a stretch at the \
 end) off and trim through off, a request hold edge would take is refused \
@@ -1913,7 +1919,13 @@ tests = [
     "crates/ogeom-fillet/tests/hold_edge_seats.rs::a_vertex_seat_at_the_end_follows_hold_edge_at_end",
     "crates/ogeom-fillet/tests/hold_edge_seats.rs::hold_edge_holds_two_runs_on_one_band",
     "crates/ogeom-fillet/tests/hold_edge_seats.rs::two_runs_cut_away_the_reference",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::a_ball_on_two_rims_at_once_is_not_held",
+    "crates/ogeom-fillet/tests/hold_edge_seats.rs::a_ball_on_two_rims_of_a_square_pocket_goes_to_trim_through",
+    "crates/ogeom-fillet/tests/hold_edge_seats.rs::hold_edge_rests_the_ball_on_a_pocket_s_corners",
+    "crates/ogeom-fillet/tests/hold_edge_seats.rs::a_ball_on_a_pocket_s_corners_cuts_away_the_reference",
+    "crates/ogeom-fillet/tests/hold_edge_seats.rs::a_pocket_s_corners_with_hold_edge_off_go_to_trim_through",
+    "crates/ogeom-fillet/tests/hold_edge_seats.rs::hold_edge_rests_the_ball_on_two_cliff_edges",
+    "crates/ogeom-fillet/tests/hold_edge_seats.rs::a_ball_on_two_cliff_edges_cuts_away_the_reference",
+    "crates/ogeom-fillet/tests/hold_edge_seats.rs::a_ball_on_two_cliff_edges_with_hold_edge_off_goes_to_trim_through",
     "crates/ogeom-fillet/tests/hold_edge_seats.rs::hold_edge_holds_a_chain_of_edges_along_one_line",
     "crates/ogeom-fillet/tests/hold_edge_seats.rs::a_chain_cuts_away_the_one_edge_s_reference",
     "crates/ogeom-fillet/tests/hold_edge_seats.rs::hold_edge_holds_a_band_ending_on_oblique_end_faces",

@@ -1,6 +1,7 @@
 //! Hold edge where the ball's seat changes more than once: it rests on a
 //! held edge, on the vertex where that edge ends, on the next held edge,
-//! or on two pockets' rims in turn. The reference is the definition: the
+//! on two pockets' rims in turn, or on two edges at once where its foot
+//! jumps between them. The reference is the definition: the
 //! ball touches the front and rests on the nearest point of the top's
 //! region.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
@@ -75,6 +76,8 @@ enum Top {
     /// The top lies in front of the polyline `p0 k p1`, carried on past
     /// its ends, its corner `k` rounded to `radius`.
     Rounded([(f64, f64); 3], f64),
+    /// The top holds one pocket, the convex polygon through these points.
+    Pocket(&'static [(f64, f64)]),
 }
 
 /// The corner `k` of the polyline `p0 k p1` rounded to `radius`, the arc's
@@ -175,7 +178,40 @@ impl Top {
                 .iter()
                 .map(|(cx, cy, r)| (r - (x - cx).hypot(y - cy)).max(0.0))
                 .fold(0.0, f64::max),
+            Self::Pocket(corners) => {
+                let n = corners.len();
+                let side = |k: usize| {
+                    let (a, b) = (corners[k], corners[(k + 1) % n]);
+                    (b.0 - a.0) * (y - a.1) - (b.1 - a.1) * (x - a.0)
+                };
+                let turn = side(0).signum();
+                if (0..n).any(|k| side(k) * turn <= 0.0) {
+                    return 0.0;
+                }
+                (0..n)
+                    .map(|k| to_piece(x, y, corners[k], corners[(k + 1) % n], (false, false)))
+                    .fold(f64::INFINITY, f64::min)
+            }
         }
+    }
+
+    /// How far behind the front the top runs at `x` before it first gives
+    /// way (to a pocket or past a cliff), up to `R`: the faces below its
+    /// edges stand square to it, deeper than any ball reaches.
+    fn extent(self, x: f64) -> f64 {
+        if self.distance(x, R) == 0.0 {
+            return R;
+        }
+        let (mut lo, mut hi) = (0.0, R);
+        for _ in 0..60 {
+            let mid = 0.5 * (lo + hi);
+            if self.distance(x, mid) == 0.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        0.5 * (lo + hi)
     }
 }
 
@@ -248,7 +284,9 @@ impl Reference {
 
     /// The volume cut away: in `x` over `ranges`, each Gauss-Legendre of
     /// `n` points; down the front from the top to the ball's contact there,
-    /// in `s` with `z = -s^2`, each column's depth.
+    /// in `s` with `z = -s^2`, each column's depth as far as the solid
+    /// runs (the top's [`Top::extent`]). Where the cut reaches past that,
+    /// the column is split at the `s` where it stops doing so.
     fn volume(&self, ranges: &[(f64, f64)], n: usize) -> f64 {
         let g = gauss(n);
         let mut sum = 0.0;
@@ -257,10 +295,29 @@ impl Reference {
             for (gx, wx) in &g {
                 let x = x0 + hx * (gx + 1.0);
                 let s1 = (-self.centre(x).z).sqrt();
-                let hs = 0.5 * s1;
-                for (gs, ws) in &g {
-                    let s = hs * (gs + 1.0);
-                    sum += wx * ws * hx * hs * self.depth(x, -s * s) * 2.0 * s;
+                let wall = self.top.extent(x);
+                let past = |s: f64| self.depth(x, -s * s) > wall;
+                let mut splits = vec![0.0];
+                if past(0.0) && !past(s1) {
+                    let (mut lo, mut hi) = (0.0, s1);
+                    for _ in 0..50 {
+                        let mid = 0.5 * (lo + hi);
+                        if past(mid) {
+                            lo = mid;
+                        } else {
+                            hi = mid;
+                        }
+                    }
+                    splits.push(0.5 * (lo + hi));
+                }
+                splits.push(s1);
+                for w in splits.windows(2) {
+                    let hs = 0.5 * (w[1] - w[0]);
+                    for (gs, ws) in &g {
+                        let s = w[0] + hs * (gs + 1.0);
+                        let d = self.depth(x, -s * s).min(wall);
+                        sum += wx * ws * hx * hs * d * 2.0 * s;
+                    }
                 }
             }
         }
@@ -320,7 +377,7 @@ fn worst_join(m: &Model, s: &Shape) -> (f64, usize) {
         };
         let mid = c.point_at(0.5 * (lo + hi), T).unwrap();
         let tangent_kind = match other {
-            SurfaceGeometry::BSpline(_) => true,
+            SurfaceGeometry::BSpline(_) | SurfaceGeometry::Sphere(_) => true,
             SurfaceGeometry::Cylinder(cy) => {
                 cy.cylinder()
                     .axis()
@@ -778,24 +835,206 @@ fn a_chain_turning_the_other_way_cuts_away_the_reference() {
     a_chain_turning_the_other_way_case(true);
 }
 
-/// The same chain with its corner rounded to 1.5, less than the depth its
-/// balls stand behind the top: the ball's nearest point jumps from the
-/// first cliff edge to the second without passing over the arc, resting on
-/// two edges at once. That is not held: the request gets the same answer
-/// as with hold edge off, trim through's refusal of this part.
-#[test]
-fn a_ball_jumping_across_a_small_arc_is_not_held() {
+/// The radius of [`WIDEN`]'s corner where its balls stand behind the top
+/// farther than that: the ball's nearest point jumps from the first cliff
+/// edge to the second without passing over the arc.
+const WIDEN_SMALL: f64 = 1.5;
+
+/// Where the foot of the ball whose contact is `(x, R)` jumps from the line
+/// `l0` to the line `l1`, between `lo` and `hi`: `x` the contact stands as
+/// far from both at, and the feet on each.
+fn jump_between(
+    l0: [(f64, f64); 2],
+    l1: [(f64, f64); 2],
+    (mut lo, mut hi): (f64, f64),
+) -> (f64, (f64, f64), (f64, f64)) {
+    let gap = |x: f64| {
+        to_piece(x, R, l0[0], l0[1], (true, true)) - to_piece(x, R, l1[0], l1[1], (true, true))
+    };
+    let below = gap(lo) < 0.0;
+    for _ in 0..80 {
+        let mid = 0.5 * (lo + hi);
+        if (gap(mid) < 0.0) == below {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let x = 0.5 * (lo + hi);
+    let foot = |[a, b]: [(f64, f64); 2]| {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let t = ((x - a.0) * dx + (R - a.1) * dy) / dx.mul_add(dx, dy * dy);
+        (t.mul_add(dx, a.0), t.mul_add(dy, a.1))
+    };
+    (x, foot(l0), foot(l1))
+}
+
+/// Where the line through `a` and `b` meets the contact line `y = R`.
+fn onto([a, b]: [(f64, f64); 2]) -> f64 {
+    a.0 + (R - a.1) * (b.0 - a.0) / (b.1 - a.1)
+}
+
+/// The result's edges on the line `l` of the top `z = 0`: the farthest
+/// they stray from it in the top's plane, and the x-range they cover behind
+/// the front by less than `R`. An edge is on the top where every point of
+/// it lies within 1e-9 of its plane; the ball's sphere meets a cliff face
+/// just under it, touching it at the foot.
+fn kept_on(m: &Model, s: &Shape, [a, b]: [(f64, f64); 2]) -> (f64, (f64, f64)) {
+    let on = |p: Point| p.z.abs() < 1e-9 && to_piece(p.x, p.y, a, b, (true, true)) < 1e-6;
+    let (mut worst, mut lo, mut hi) = (0.0_f64, f64::INFINITY, f64::NEG_INFINITY);
+    for e in edges_where(m, s, on) {
+        let (cv, (ta, tb)) = ogeom_algo::placed_edge_curve(m, &e, T).unwrap().unwrap();
+        for k in 0..=50 {
+            let p = cv
+                .point_at(ta + (tb - ta) * f64::from(k) / 50.0, T)
+                .unwrap();
+            worst = worst.max(to_piece(p.x, p.y, a, b, (true, true)));
+            if p.y < R + 1e-6 {
+                lo = lo.min(p.x);
+                hi = hi.max(p.x);
+            }
+        }
+    }
+    (worst, (lo, hi))
+}
+
+/// How many faces of `s` lie on a sphere of radius `R`: the jumping balls'
+/// own surfaces.
+fn spheres(m: &Model, s: &Shape) -> usize {
+    explore_unique(m, s, ShapeType::Face)
+        .unwrap()
+        .iter()
+        .filter(|f| {
+            matches!(surface_of(m, f), SurfaceGeometry::Sphere(sp) if (sp.sphere().radius() - R).abs() < 1e-12)
+        })
+        .count()
+}
+
+/// `ranges` from 0 to `len`, split at each of `at` between.
+fn split(at: &[f64], len: f64) -> Vec<(f64, f64)> {
+    let mut cuts: Vec<f64> = at
+        .iter()
+        .copied()
+        .filter(|x| *x > 0.0 && *x < len)
+        .collect();
+    cuts.extend([0.0, len]);
+    cuts.sort_by(f64::total_cmp);
+    cuts.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    cuts.windows(2).map(|w| (w[0], w[1])).collect()
+}
+
+/// The ball on two edges at once, where a chain's corner is rounded less
+/// than its balls stand behind the top: [`WIDEN`] with its corner rounded
+/// to [`WIDEN_SMALL`]. Past `x = 6` the ball rests on the first cliff edge;
+/// where its contact stands as far from both lines, its foot jumps to the
+/// second, which it rests on to the end. At the jump the ball touches both:
+/// the round there is its sphere between its arcs to the two feet, and
+/// past those feet the cliff's faces trim the round, so the lines between
+/// the feet and the arc between them are cut away. The lines are kept
+/// under every foot.
+fn hold_edge_rests_the_ball_on_two_cliff_edges_case(heavy: bool) {
     let mut m = Model::new();
-    let (s, edge) = turning_on(&mut m, WIDEN, 1.5);
+    let (s, edge) = turning_on(&mut m, WIDEN, WIDEN_SMALL);
+    let before = volume(&m, &s);
+    let built = fillet_edges(&mut m, &s, &edge, R, T).unwrap();
+    let (c, [t0, t1], _) = rounded(WIDEN, WIDEN_SMALL);
+    let (l0, l1) = ([WIDEN[0], t0], [t1, WIDEN[2]]);
+    let on = onto(l0);
+    let (x, f0, f1) = jump_between(l0, l1, (on, 20.0));
+    eprintln!("onto {on}, jump at {x}, feet {f0:?} {f1:?}");
+    holds(
+        heavy,
+        &m,
+        before,
+        &built,
+        &edge[0],
+        &Reference {
+            top: Top::Rounded(WIDEN, WIDEN_SMALL),
+        },
+        &split(&[on, x, f0.0, f1.0, t0.0, t1.0], 20.0),
+        20.0,
+    );
+    assert_eq!(spheres(&m, &built.shape), 1, "the jumping ball's face");
+    let (worst, (lo, hi)) = kept_on(&m, &built.shape, l0);
+    eprintln!("first line kept over {lo}..{hi}, off it by {worst:.1e}");
+    assert!(worst < 1e-9, "off the first line by {worst}");
+    assert!(
+        lo <= on + 1e-6 && hi >= f0.0 - 1e-6 && hi <= t0.0 + 1e-6,
+        "{lo}..{hi}"
+    );
+    let (worst, (lo, hi)) = kept_on(&m, &built.shape, l1);
+    eprintln!("second line kept over {lo}..{hi}, off it by {worst:.1e}");
+    assert!(worst < 1e-9, "off the second line by {worst}");
+    assert!(
+        lo <= f1.0 + 1e-6 && lo >= t1.0 - 1e-6 && hi >= 20.0 - 1e-6,
+        "{lo}..{hi}"
+    );
+    // Between each foot and the arc the jumping ball's sphere meets the
+    // cliff's face just under the top, touching it at the foot. The result
+    // may hold that stretch as a piece of the line, its edge's tolerance
+    // (plus a confusion) then covering how far the sphere's curve dips
+    // below it there.
+    let centre = Reference {
+        top: Top::Rounded(WIDEN, WIDEN_SMALL),
+    }
+    .centre(x);
+    let dip = |p: Point| {
+        let flat = (p.x - centre.x).hypot(p.y - centre.y);
+        -(centre.z + (R * R - flat * flat).sqrt())
+    };
+    for (line, foot) in [(l0, f0), (l1, f1)] {
+        let on = |p: Point| {
+            p.z.abs() < 1e-9
+                && to_piece(p.x, p.y, line[0], line[1], (true, true)) < 1e-6
+                && (p.x - foot.0).abs() < 0.1
+        };
+        for e in edges_where(&m, &built.shape, on) {
+            let (cv, (ta, tb)) = ogeom_algo::placed_edge_curve(&m, &e, T).unwrap().unwrap();
+            let (p, q) = (cv.point_at(ta, T).unwrap(), cv.point_at(tb, T).unwrap());
+            let deepest = dip(p).max(dip(q));
+            let width = m.tolerance_of(&e).unwrap().map_or(0.0, |t| t.get());
+            eprintln!("by the foot {foot:?}: dips {deepest:.1e}, edge tolerance {width:.1e}");
+            assert!(
+                deepest <= width + T.confusion(),
+                "dips {deepest} past {width}"
+            );
+        }
+    }
+    // The arc between the feet is cut away.
+    let on_arc =
+        |p: Point| p.z.abs() < 1e-6 && ((p.x - c.0).hypot(p.y - c.1) - WIDEN_SMALL).abs() < 1e-6;
+    assert!(edges_where(&m, &built.shape, on_arc).is_empty(), "the arc");
+}
+
+#[test]
+fn hold_edge_rests_the_ball_on_two_cliff_edges() {
+    hold_edge_rests_the_ball_on_two_cliff_edges_case(false);
+}
+
+/// The two cliff edges' volume against the reference.
+#[test]
+#[ignore = "heavy"]
+fn a_ball_on_two_cliff_edges_cuts_away_the_reference() {
+    hold_edge_rests_the_ball_on_two_cliff_edges_case(true);
+}
+
+/// The ball on two cliff edges with hold edge off goes on to trim through,
+/// which refuses this part by name; with trim through off too it is
+/// refused naming hold edge.
+#[test]
+fn a_ball_on_two_cliff_edges_with_hold_edge_off_goes_to_trim_through() {
+    let mut m = Model::new();
+    let (s, edge) = turning_on(&mut m, WIDEN, WIDEN_SMALL);
     let mut off = Overflow::default();
     off.hold_edge = false;
-    let on = fillet_edges(&mut m, &s, &edge, R, T).unwrap_err();
-    let held_off = fillet_edges_overflow(&mut m, &s, &edge, R, off, T).unwrap_err();
-    assert_eq!(on.to_string(), held_off.to_string());
+    let err = fillet_edges_overflow(&mut m, &s, &edge, R, off, T).unwrap_err();
     assert!(
-        on.to_string().contains("builds no round of this kind"),
-        "{on}"
+        err.to_string().contains("builds no round of this kind"),
+        "{err}"
     );
+    off.trim_through = false;
+    let err = fillet_edges_overflow(&mut m, &s, &edge, R, off, T).unwrap_err();
+    assert!(err.to_string().contains("hold edge is off"), "{err}");
 }
 
 /// The turning chain's run reaches the part's end: with hold edge at the
@@ -907,11 +1146,14 @@ fn two_runs_cut_away_the_reference() {
 }
 
 /// A square pocket beside the edge: its contact crosses the pocket's side
-/// rims square to the edge, and between them the ball would rest on two
-/// rims at once, its centre turning a corner. That is not held: the request
-/// gets trim through's solid, the same as with hold edge off.
+/// rims square to the edge, the ball's foot staying on one point of each
+/// while it rests there, then jumping to the front rim. The band's section
+/// where the ball leaves the top lies in the side wall's plane, a tool edge
+/// lying in a face of the solid, which the boolean does not resolve: hold
+/// edge does not build, and the request gets trim through's solid, the
+/// same as with hold edge off.
 #[test]
-fn a_ball_on_two_rims_at_once_is_not_held() {
+fn a_ball_on_two_rims_of_a_square_pocket_goes_to_trim_through() {
     let mut m = Model::new();
     let block = ogeom_algo::make_box(&mut m, at(0.0, 0.0, -15.0), (30.0, 20.0, 15.0), T)
         .unwrap()
@@ -928,6 +1170,111 @@ fn a_ball_on_two_rims_at_once_is_not_held() {
     let trimmed = fillet_edges_overflow(&mut m, &s, &edge, R, off, T).unwrap();
     assert!(ogeom_algo::check(&m, &built.shape, T).unwrap().is_valid());
     assert!((volume(&m, &built.shape) - volume(&m, &trimmed.shape)).abs() < 1e-9);
+}
+
+/// A pocket beside the edge whose sides lean in plan: its front rim from
+/// `(10, 2)` to `(20, 2.6)`, its sides back to `(8.5, 10)` and
+/// `(21.5, 10)`, sunk 8.
+const SLANTED: [(f64, f64); 4] = [(10.0, 2.0), (20.0, 2.6), (21.5, 10.0), (8.5, 10.0)];
+
+/// A block 30 by 20 by 15 under `z = 0`, [`SLANTED`] sunk into its top,
+/// its front top edge along `y = 0` asked.
+fn slanted_pocket(m: &mut Model) -> (Shape, Vec<Shape>) {
+    let block = ogeom_algo::make_box(m, at(0.0, 0.0, -15.0), (30.0, 20.0, 15.0), T)
+        .unwrap()
+        .shape;
+    let ring =
+        |z: f64| -> Vec<Point> { SLANTED.iter().map(|(x, y)| Point::new(*x, *y, z)).collect() };
+    let pocket = prism(m, &ring(-8.0), &ring(1.0));
+    let s = ogeom_bool::cut(m, &block, &pocket, T).unwrap().shape;
+    let edge = edges_where(m, &s, |p| p.y.abs() < 1e-9 && p.z.abs() < 1e-9);
+    assert_eq!(edge.len(), 1, "the front top edge");
+    (s, edge)
+}
+
+/// The ball on two rims at a pocket's corners: the front top edge of
+/// [`slanted_pocket`] rounded at 4. Its contact `y = 4` crosses the left
+/// rim at `x = 9.625` and the ball rests on it; where its contact stands as
+/// far from the front rim, its foot jumps there, and on to the right rim
+/// the same way, which it rests on until the contact leaves the pocket at
+/// `x = 20.28`. At each jump the round is the ball's sphere between its
+/// arcs to the two feet, and the pocket's walls trim the round past them:
+/// the rims between the feet and the pocket's corners are cut away, and
+/// each rim is kept under every foot.
+fn hold_edge_rests_the_ball_on_a_pocket_s_corners_case(heavy: bool) {
+    let mut m = Model::new();
+    let (s, edge) = slanted_pocket(&mut m);
+    let before = volume(&m, &s);
+    let built = fillet_edges(&mut m, &s, &edge, R, T).unwrap();
+    let [p0, p1, p2, p3] = SLANTED;
+    let (left, front, right) = ([p3, p0], [p0, p1], [p1, p2]);
+    let (on, off) = (onto(left), onto(right));
+    let (x0, f0, f1) = jump_between(left, front, (on, 15.0));
+    let (x1, g0, g1) = jump_between(front, right, (15.0, off));
+    eprintln!("jumps at {x0} {x1}, feet {f0:?} {f1:?} {g0:?} {g1:?}");
+    holds(
+        heavy,
+        &m,
+        before,
+        &built,
+        &edge[0],
+        &Reference {
+            top: Top::Pocket(&SLANTED),
+        },
+        &split(&[on, x0, x1, off, p0.0, p1.0, f0.0, f1.0, g0.0, g1.0], 30.0),
+        30.0,
+    );
+    assert_eq!(spheres(&m, &built.shape), 2, "the jumping balls' faces");
+    let (worst, (lo, hi)) = kept_on(&m, &built.shape, left);
+    eprintln!("left rim kept over {lo}..{hi}, off it by {worst:.1e}");
+    assert!(worst < 1e-9, "off the left rim by {worst}");
+    assert!(lo <= on + 1e-6 && (hi - f0.0).abs() < 1e-6, "{lo}..{hi}");
+    let (worst, (lo, hi)) = kept_on(&m, &built.shape, front);
+    eprintln!("front rim kept over {lo}..{hi}, off it by {worst:.1e}");
+    assert!(worst < 1e-9, "off the front rim by {worst}");
+    assert!(
+        (lo - f1.0).abs() < 1e-6 && (hi - g0.0).abs() < 1e-6,
+        "{lo}..{hi}"
+    );
+    let (worst, (lo, hi)) = kept_on(&m, &built.shape, right);
+    eprintln!("right rim kept over {lo}..{hi}, off it by {worst:.1e}");
+    assert!(worst < 1e-9, "off the right rim by {worst}");
+    assert!((lo - g1.0).abs() < 1e-6 && hi >= off - 1e-6, "{lo}..{hi}");
+}
+
+#[test]
+fn hold_edge_rests_the_ball_on_a_pocket_s_corners() {
+    hold_edge_rests_the_ball_on_a_pocket_s_corners_case(false);
+}
+
+/// The pocket's corners' volume against the reference.
+#[test]
+#[ignore = "heavy"]
+fn a_ball_on_a_pocket_s_corners_cuts_away_the_reference() {
+    hold_edge_rests_the_ball_on_a_pocket_s_corners_case(true);
+}
+
+/// The pocket's corners with hold edge off: trim through's notch, the rims
+/// cut away, more than hold edge cuts; with trim through off too, refused
+/// naming hold edge.
+#[test]
+fn a_pocket_s_corners_with_hold_edge_off_go_to_trim_through() {
+    let mut m = Model::new();
+    let (s, edge) = slanted_pocket(&mut m);
+    let before = volume(&m, &s);
+    let held = fillet_edges(&mut m, &s, &edge, R, T).unwrap();
+    let mut off = Overflow::default();
+    off.hold_edge = false;
+    let trimmed = fillet_edges_overflow(&mut m, &s, &edge, R, off, T).unwrap();
+    let (a, b) = (
+        before - volume(&m, &held.shape),
+        before - volume(&m, &trimmed.shape),
+    );
+    eprintln!("held cuts {a}, trimmed through {b}");
+    assert!(b > a + 1.0, "trim through cuts {b}, hold edge {a}");
+    off.trim_through = false;
+    let err = fillet_edges_overflow(&mut m, &s, &edge, R, off, T).unwrap_err();
+    assert!(err.to_string().contains("hold edge is off"), "{err}");
 }
 
 /// One pocket of radius 5, sunk 8, about `(15, 7)`.
