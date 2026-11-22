@@ -445,6 +445,9 @@ pub fn fillet_edges(
 ///   rounds tangent to the floor, convex or concave, over arcs apart. The
 ///   rim may be an open arc whose ends stand on planes through the axis,
 ///   the rounds it reaches inside it: each end's plane caps the round.
+///   On a closed rim of a cylinder the arcs may meet where convex rounds
+///   of one radius run on into each other round a corner a torus or a
+///   sphere rounds: the ball rests on each in turn.
 /// - `hold_edge`: where the ball would roll over a sharp edge of the body,
 ///   the edge is kept and the ball rests on it: it touches the other face
 ///   and the round there is the canal surface it sweeps, meeting the band

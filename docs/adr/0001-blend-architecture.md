@@ -3177,7 +3177,8 @@ settled here, and it needs no choice beyond the seat.
   built only where the arcs stand apart, so that no ball rests on two
   rounds, or on the corner where they meet, at once: at a corner the top's
   corner stands farther from the axis than the contact circle. Arcs that
-  meet or overlap are not blended.
+  meet or overlap are not blended here; the part "Blend into round, arcs
+  that meet" below builds them round a rounded corner.
 - **A leaning wall.** The wall is a cone about an axis square to the floor,
   narrowing away from it. The ball touches the cone and the floor or the
   round: its centre runs on the cone's offset (a cone about the same axis)
@@ -3282,6 +3283,61 @@ against the wall; every behaviour off: a refusal naming blend into round.
 A boss cut at `y = 13`, beside its axis, and one cut at `x = 20`, whose
 seat on the edge round straddles the arc's end, get what trim through
 gives.
+
+**Blend into round, arcs that meet.** The contact circle may reach the
+corner where two of the floor's rounds meet, so the arcs over which the
+ball rests on each meet or overlap. This needs no new rule: the closing by
+the rolling ball, settled in the part "more feet", says where the ball
+rests, and the public documentation surveyed above describes the smooth
+overflow only by its result, no step and no crease. What the closing gives
+depends on how the rounds meet.
+
+- **Round a rounded corner.** Where convex rounds of one radius `a` meet
+  one another G1, the top past the floor is the set of points within `a`
+  of the floor's region (seen from above) sunk by `a`: straight edges on
+  cylinders, arcs on tori about axes square to the floor, corners of the
+  region rounded by spheres. A ball touching it stands over the nearest
+  point of the region's outline, at the height where its distance from
+  the sunk region is `a` plus its radius, and touches the round there
+  only. The ball never rests on two rounds at once: it passes from one to
+  the next where its centre crosses the plane square to the outline
+  through the vertex between them, its contact then on the edge between
+  the two rounds' faces. The offsets meet G1 there, so the pieces do.
+- **Built.** A closed rim on a cylinder, whose contact circle crosses such
+  a stretch of the outline. Each stretch is read off the floor's loop:
+  where the circle leaves the floor and comes back, and where the nearest
+  piece of the outline changes, by sampling and bisection. The round is a
+  fitted piece over each round of the stretch, between the seats, and the
+  torus over the floor between stretches. The tool's faces on the rounds
+  are bounded by the outline, the ball's contact and the edges between the
+  rounds, down from the floor's vertex to the contact. The proof is the
+  closed rim's, the stretch's rounds seated, their outline and the edges
+  between them taken as the fill's bounds. Each ball's contact at a seat
+  between two rounds must lie on the edge between them, measured.
+- **Not blended** (these go on to trim through): two rounds meeting in a
+  crease (the ball would rest on the crease, an edge seat this part does
+  not build), rounds of different radii or concave rounds at the corner, a
+  cone's foot, an open arc reaching a corner, and a stretch whose seats
+  stand closer than 0.01 rad.
+
+**Oracle** (`tests/blend_into_round.rs`). The reference is the closing of
+the part "more feet", its top over the corner taken in closed form from
+the floor's region (the quadrant inside both tangent lines, its corner
+rounded): a point's distance from the top is its distance from the sunk
+region less `a`, and its projection onto the floor's offset runs from its
+nearest point of that region. The seat changes it splits at come from the
+reference's own region. The block's top edges are rounded r 5 round the
+corner at the origin; the foot round is r 3.
+
+| case | fill built | reference | error | bound | worst G1 |
+|---|---|---|---|---|---|
+| boss r 5 at (11, 11), torus corner (upright edge r 12) | 59.918253068 | 59.918253429 | 3.6e-7 | 1.8e-6 | 7.4e-7 rad |
+| boss r 4 at (9.5, 10), sphere corner (three edges r 5) | 50.455154954 | 50.455154670 | 2.8e-7 | 2.1e-6 | 1.5e-6 rad |
+
+Each result is valid and closed, with three fitted pieces. Blend into
+round off: trim through's refusal by name; every behaviour off: a refusal
+naming blend into round. The second boss on the block whose two top edges
+alone are rounded, meeting in a crease, gets what trim through gives.
 
 **Narrow passages.** A concave zone is a narrow passage where it is
 tighter than the radius, so that the ball cannot roll through touching its
