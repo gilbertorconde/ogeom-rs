@@ -15,6 +15,24 @@ Everything here is in `ogeom::offset`.
 | `offset_wire` | 2D offset of a planar wire. The caller picks the `Join` style (arcs or intersections). Useful for tool-path-like outlines. |
 | `apply_draft` | Tilts faces by a draft angle about a neutral plane, for moulded parts. |
 
+### Where a wire offset collapses
+
+An inward offset that runs past a narrow part of the profile crosses
+itself. `offset_wire` follows the common CAD rule for this: split the raw
+offset where it crosses itself and drop the loops that are invalid. The
+result is the boundary of the region at the offset distance or more from
+the wire. In detail:
+
+- A piece that comes closer to the wire than the offset is dropped.
+- Two surviving pieces on the same line or circle that run the same way
+  are one stretch of the boundary, so it is kept once. This happens when
+  a neck closes and the walls on either side of it line up.
+- Two surviving pieces on the same span that run opposite ways enclose
+  nothing, so both are dropped. This is a neck exactly twice the offset
+  wide.
+- When the collapse cuts the region apart, the result is a compound with
+  one wire per island.
+
 ## Sweeps
 
 The general sweeps share this module's machinery:
