@@ -1,0 +1,4 @@
+- **Added: blend into round where the foot meets two rounds** (#1237).
+  - On a cylinder's closed foot rim, the contact circle may now cross a stretch where two convex edge rounds of one radius run on into each other round a corner rounded by a torus or a sphere. The ball rests on the first round, the corner and the second in turn, with one fitted piece per round, each meeting the next G1.
+  - Two rounds meeting in a crease, concave rounds and cones there go on to trim through, as before.
+  - A block whose top edges are rounded r 5 round a corner, foot round r 3: a boss r 5 across a torus corner fills 59.918253068 against the closing of 59.918253429 (bound 1.8e-6); a boss r 4 across a sphere corner, 50.455154954 against 50.455154670 (bound 2.1e-6). Worst G1 1.5e-6 rad.

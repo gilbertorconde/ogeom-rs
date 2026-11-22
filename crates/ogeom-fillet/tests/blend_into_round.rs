@@ -103,9 +103,42 @@ struct Closing {
     /// The wall's radius change per unit of height.
     slope: f64,
     rounds: Vec<Round>,
+    /// Where `rounds` holds two convex rounds of one radius, square to each
+    /// other, that meet round the top's corner: the corner's radius seen
+    /// from above (nought where a sphere rounds it). The top is then the
+    /// set of points within the rounds' radius of the prism under the
+    /// floor's region (the half planes inside both tangent lines, its
+    /// corner rounded at this radius) sunk by that radius, so a point's
+    /// distance from it comes from its distance from that region.
+    corner: Option<f64>,
 }
 
 impl Closing {
+    /// Over a rounded corner's top: where `(x, y)` stands outside the
+    /// floor's region, how far, and its foot on the region's outline.
+    fn outside(&self, x: f64, y: f64) -> Option<(f64, (f64, f64))> {
+        let rho = self.corner?;
+        let [a, b] = [self.rounds[0], self.rounds[1]];
+        // The region shrunk by `rho` is the quadrant inside both lines
+        // moved in by `rho`; its foot pulls the point back square to each.
+        let (sa, sb) = ((a.past(x, y) + rho).max(0.0), (b.past(x, y) + rho).max(0.0));
+        let (fx, fy) = (
+            sa.mul_add(-a.n.0, sb.mul_add(-b.n.0, x)),
+            sa.mul_add(-a.n.1, sb.mul_add(-b.n.1, y)),
+        );
+        let to = sa.hypot(sb);
+        if to <= rho {
+            return None;
+        }
+        let k = rho / to;
+        Some((to - rho, ((x - fx).mul_add(k, fx), (y - fy).mul_add(k, fy))))
+    }
+
+    /// The rounds' radius at a rounded corner.
+    fn corner_radius(&self) -> f64 {
+        self.rounds[0].radius
+    }
+
     fn rho(&self, x: f64, y: f64) -> f64 {
         (x - self.axis.0).hypot(y - self.axis.1)
     }
@@ -121,6 +154,13 @@ impl Closing {
 
     /// The floor's height at `(x, y)`.
     fn floor(&self, x: f64, y: f64) -> f64 {
+        if self.corner.is_some() {
+            let a = self.corner_radius();
+            return self.outside(x, y).map_or(0.0, |(d, _)| {
+                let d = d.min(a);
+                a.mul_add(a, -d * d).sqrt() - a
+            });
+        }
         match self.past(x, y) {
             None => 0.0,
             Some((r, s)) => {
@@ -133,6 +173,12 @@ impl Closing {
 
     /// A centre's clearance from the floor less the radius.
     fn above(&self, c: Point) -> f64 {
+        if self.corner.is_some() {
+            let a = self.corner_radius();
+            return self
+                .outside(c.x, c.y)
+                .map_or(c.z - FOOT, |(d, _)| d.hypot(c.z + a) - a - FOOT);
+        }
         match self.past(c.x, c.y) {
             None => c.z - FOOT,
             Some((r, s)) if r.concave => r.radius - s.hypot(c.z - r.radius) - FOOT,
@@ -157,6 +203,12 @@ impl Closing {
 
     /// The floor's offset: a centre's height at `(x, y)`.
     fn offset_height(&self, x: f64, y: f64) -> f64 {
+        if self.corner.is_some() {
+            let a = self.corner_radius();
+            return self
+                .outside(x, y)
+                .map_or(FOOT, |(d, _)| (a + FOOT).powi(2).sub_sq(d).sqrt() - a);
+        }
         match self.past(x, y) {
             None => FOOT,
             Some((r, s)) if r.concave => r.radius - (r.radius - FOOT).powi(2).sub_sq(s).sqrt(),
@@ -204,12 +256,27 @@ impl Closing {
         if self.above(q) >= -1e-12 {
             best = best.min(p.distance(q));
         }
+        // Onto the floor's offset over a rounded corner: from the nearest
+        // point of the sunk prism, out to the rounds' radius and the ball's.
+        if self.corner.is_some() {
+            let a = self.corner_radius();
+            let q = match self.outside(p.x, p.y) {
+                None => Point::new(p.x, p.y, FOOT),
+                Some((_, (fx, fy))) => {
+                    let m = Point::new(fx, fy, -a);
+                    m + (p - m) * ((a + FOOT) / p.distance(m))
+                }
+            };
+            if self.beside(q) >= -1e-12 {
+                best = best.min(p.distance(q));
+            }
+        }
         // Onto the floor's offset: the plane, and each round's cylinder.
         let flat = Point::new(p.x, p.y, FOOT);
-        if self.past(p.x, p.y).is_none() && self.beside(flat) >= -1e-12 {
+        if self.corner.is_none() && self.past(p.x, p.y).is_none() && self.beside(flat) >= -1e-12 {
             best = best.min(p.distance(flat));
         }
-        for r in &self.rounds {
+        for r in self.rounds.iter().filter(|_| self.corner.is_none()) {
             let s = r.past(p.x, p.y);
             let (centre, size) = if r.concave {
                 (r.radius, r.radius - FOOT)
@@ -323,6 +390,53 @@ impl Closing {
     /// foot the columns run `rho = out - (out - foot) cos s`, smooth where
     /// the round meets the wall; up a cone's wall and out along the floor
     /// they are split at the foot circle.
+    /// Over a rounded corner: the angles about the axis at which the ball's
+    /// centre, on the circle of radius `reach`, changes seat (between the
+    /// floor, either round and the corner), found by sampling and
+    /// bisection.
+    fn corner_cuts(&self, reach: f64) -> Vec<f64> {
+        let seat = |t: f64| -> u8 {
+            let (x, y) = (
+                reach.mul_add(t.cos(), self.axis.0),
+                reach.mul_add(t.sin(), self.axis.1),
+            );
+            let rho = self.corner.unwrap_or(0.0);
+            if self.outside(x, y).is_none() {
+                return 0;
+            }
+            match (
+                self.rounds[0].past(x, y) + rho > 0.0,
+                self.rounds[1].past(x, y) + rho > 0.0,
+            ) {
+                (true, true) => 3,
+                (true, false) => 1,
+                _ => 2,
+            }
+        };
+        let samples = 4096;
+        let mut cuts = Vec::new();
+        for k in 0..samples {
+            let (mut a, mut b) = (
+                TAU * f64::from(k) / f64::from(samples),
+                TAU * f64::from(k + 1) / f64::from(samples),
+            );
+            let held = seat(a);
+            if seat(b) == held {
+                continue;
+            }
+            for _ in 0..80 {
+                let mid = 0.5 * (a + b);
+                if seat(mid) == held {
+                    a = mid;
+                } else {
+                    b = mid;
+                }
+            }
+            cuts.push(0.5 * (a + b));
+        }
+        cuts
+    }
+
     fn volume(&self, n: usize) -> f64 {
         self.volume_within(n, None)
     }
@@ -333,8 +447,12 @@ impl Closing {
     fn volume_within(&self, n: usize, within: Option<(f64, f64)>) -> f64 {
         let g = gauss(n);
         let reach = self.offset_radius(FOOT);
-        let mut cuts = Vec::new();
-        for r in &self.rounds {
+        let mut cuts = if self.corner.is_some() {
+            self.corner_cuts(reach)
+        } else {
+            Vec::new()
+        };
+        for r in self.rounds.iter().filter(|_| self.corner.is_none()) {
             let gap = -r.past(self.axis.0, self.axis.1);
             if gap < reach {
                 let mid = r.n.1.atan2(r.n.0);
@@ -516,6 +634,7 @@ fn corner() -> Case {
             foot: 6.0,
             slope: 0.0,
             rounds: vec![convex_edge_round(), side],
+            corner: None,
         },
         rounds: 2,
     }
@@ -545,6 +664,7 @@ fn conical() -> Case {
             foot: 6.0,
             slope: LEAN,
             rounds: vec![convex_edge_round()],
+            corner: None,
         },
         rounds: 1,
     }
@@ -587,6 +707,7 @@ fn concave() -> Case {
                 radius: 6.0,
                 concave: true,
             }],
+            corner: None,
         },
         rounds: 1,
     }
@@ -674,6 +795,7 @@ fn a_conical_boss_s_foot_round_fills_as_the_closing() {
         foot: 6.0,
         slope: k,
         rounds: Vec::new(),
+        corner: None,
     };
     let pappus = {
         let q = k.hypot(1.0);
@@ -774,6 +896,7 @@ fn open_arc(part: (Model, Shape, Vec<Shape>)) -> Case {
             foot: 6.0,
             slope: 0.0,
             rounds: vec![convex_edge_round()],
+            corner: None,
         },
         rounds: 1,
     }
@@ -839,6 +962,7 @@ fn open_arcs_fill_as_the_closing_within_their_wedge() {
         foot: 6.0,
         slope: 0.0,
         rounds: Vec::new(),
+        corner: None,
     };
     let r = FOOT;
     let area = r * r * (1.0 - PI / 4.0);
@@ -910,4 +1034,122 @@ fn an_open_arc_ending_on_its_round_s_seat_is_not_blended() {
         .shape;
     let (m, s, arc) = cut_boss_on(m, &rounded, &away);
     not_blended(m, &s, &arc);
+}
+
+/// The block of [`rounded_block`] whose top edges along `y = 0` and
+/// `x = 0` meet round a rounded corner: with `vertical` its upright edge
+/// at the origin is rounded at that radius first, so the top's two rounds
+/// r 5 run on round the corner as one chain, a torus between them;
+/// without, the three edges at the corner are rounded together at 5 and
+/// a sphere rounds the corner.
+fn corner_block(m: &mut Model, vertical: Option<f64>) -> Shape {
+    let block = ogeom_algo::make_box(m, at(0.0, 0.0, 0.0), (40.0, 30.0, 15.0), T)
+        .unwrap()
+        .shape;
+    let upright = |p: Point| p.x.abs() < 1e-9 && p.y.abs() < 1e-9;
+    let Some(rho) = vertical else {
+        let edges = edges_where(m, &block, |p| {
+            ((p.y.abs() < 1e-9 || p.x.abs() < 1e-9) && (p.z - 15.0).abs() < 1e-9) || upright(p)
+        });
+        return fillet_edges(m, &block, &edges, 5.0, T).unwrap().shape;
+    };
+    let edge = edges_where(m, &block, upright);
+    let s = fillet_edges(m, &block, &edge, rho, T).unwrap().shape;
+    let top = edges_where(m, &s, |p| {
+        (p.z - 15.0).abs() < 1e-9
+            && (p.x.abs() < 1e-9
+                || p.y.abs() < 1e-9
+                || ((p.x - rho).hypot(p.y - rho) - rho).abs() < 1e-9)
+    });
+    fillet_edges(m, &s, &top, 5.0, T).unwrap().shape
+}
+
+/// A boss r `r` at `(x, y)` on [`corner_block`], its foot round's contact
+/// circle crossing both tangent lines and the corner between them; the
+/// corner is rounded at `rho` seen from above (nought for the sphere).
+fn crossing(vertical: Option<f64>, (x, y): (f64, f64), r: f64) -> Case {
+    let mut m = Model::new();
+    let block = corner_block(&mut m, vertical);
+    let boss = ogeom_algo::make_cylinder(&mut m, at(x, y, 15.0), r, 15.0, T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &block, &boss, T).unwrap().shape;
+    let foot = foot_rim(&m, &s, (x, y, 15.0), r);
+    let side = Round {
+        p: (5.0, 0.0),
+        n: (-1.0, 0.0),
+        ..convex_edge_round()
+    };
+    Case {
+        m,
+        s,
+        foot,
+        reference: Closing {
+            axis: (x, y),
+            foot: r,
+            slope: 0.0,
+            rounds: vec![convex_edge_round(), side],
+            corner: Some(vertical.map_or(0.0, |v| v - 5.0)),
+        },
+        rounds: 3,
+    }
+}
+
+/// The upright edge rounded at 12, so the top's outline turns round an arc
+/// r 7 about `(12, 12)` and a torus joins the two rounds. A boss r 5 at
+/// `(11, 11)`: its contact circle (radius 8) crosses `y = 5` at
+/// `x = 16.3`, passes 2.4 beyond the arc and comes back across `x = 5`, so
+/// the ball rests on the first round, the torus and the second in turn.
+fn torus_corner() -> Case {
+    crossing(Some(12.0), (11.0, 11.0), 5.0)
+}
+
+/// The three edges at the corner rounded together at 5, a sphere about
+/// `(5, 5, 10)` rounding it. A boss r 4 at `(9.5, 10)`: its contact circle
+/// (radius 7) crosses both tangent lines and passes 0.27 beyond the top's
+/// corner at `(5, 5)`, where the ball rests on the sphere.
+fn sphere_corner() -> Case {
+    crossing(None, (9.5, 10.0), 4.0)
+}
+
+/// Where the two rounds meet round a torus, the ball passes from the
+/// first round to the torus and on to the second: three fitted pieces
+/// meeting each other and the torus pieces G1.
+#[test]
+fn a_foot_round_blends_across_a_torus_corner() {
+    blends_smoothly(torus_corner());
+}
+
+/// The same across a sphere rounding the corner.
+#[test]
+fn a_foot_round_blends_across_a_sphere_corner() {
+    blends_smoothly(sphere_corner());
+}
+
+#[test]
+#[ignore = "heavy: the sampled reference takes about 20 s"]
+fn a_foot_round_across_a_torus_corner_fills_as_the_closing() {
+    fills_as_the_closing(torus_corner());
+}
+
+#[test]
+#[ignore = "heavy: the sampled reference takes about 20 s"]
+fn a_foot_round_across_a_sphere_corner_fills_as_the_closing() {
+    fills_as_the_closing(sphere_corner());
+}
+
+/// The two top edges rounded alone meet in a crease, the upright edge left
+/// sharp: there the ball would rest on the crease between the rounds, an
+/// edge seat blend into round does not build. The boss of
+/// [`sphere_corner`] there gets what blend into round off gives.
+#[test]
+fn a_foot_round_reaching_a_creased_corner_is_not_blended() {
+    let mut m = Model::new();
+    let block = rounded_block(&mut m, true);
+    let boss = ogeom_algo::make_cylinder(&mut m, at(9.5, 10.0, 15.0), 4.0, 15.0, T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &block, &boss, T).unwrap().shape;
+    let foot = foot_rim(&m, &s, (9.5, 10.0, 15.0), 4.0);
+    not_blended(m, &s, &foot);
 }
