@@ -66,3 +66,15 @@ other operation.
 (`AlongNormals`) or along a direction (`Along`). Each curve must cross the
 face from boundary to boundary or close inside it. The pieces share the new
 edges, and the history maps the face to its pieces.
+
+A stretch of a curve along the face's boundary, or along an earlier cut,
+divides nothing and is passed over. A curve that only runs outside the face
+or along its boundary misses it, and is refused.
+
+`split_face_with` takes `SplitOptions`. With `skip_misses`, a curve that
+misses the face (its projection never lands, or its trace lies outside the
+face or along its boundary) is left out and its index returned in
+`Split::missed`, instead of refusing the split. Each
+`PieceOrigin` in `Split::pieces` lists the entries of `edges` that close into
+a loop round the piece, so a sketch region can be matched to its piece
+without sampling it.

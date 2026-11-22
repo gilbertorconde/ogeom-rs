@@ -1,0 +1,7 @@
+- **Added: `heal::split_face_with` skips curves that miss the face and says which closed curves each piece lies inside** (#1243).
+  - New `SplitOptions { skip_misses }`, `Split { built, missed, pieces }` and `PieceOrigin { piece, inside_of }`. `split_face` is unchanged.
+  - With `skip_misses`, a curve whose projection never lands on the face, or whose trace lies wholly outside it, is left out and its index listed in `missed`.
+  - **Changed:** a stretch of a curve along the face's boundary, or along an earlier cut, now divides nothing and is passed over, in `split_face` too, instead of refusing the split. A curve that only runs along the boundary misses the face: refused as "does not cross the face" by default, listed in `missed` with `skip_misses`.
+  - Each piece lists the entries of `edges` that close into one loop round it on the face's chart. A loop closing only round a period or through a pole bounds no piece.
+  - `make_thick_sheet` documents that `thickness` is taken along the faces' oriented normals.
+  - Three nested circles on a 10 x 10 square: pieces of 100 - 16π, 7π, 5π and 4π, each listing the circles round it, area error at most 1.1e-15 relative.

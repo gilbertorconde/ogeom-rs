@@ -65,7 +65,11 @@ pub enum Projection {
 /// Every stretch of a curve inside the face must run from the face's
 /// boundary to its boundary, the boundary including the stretches cut
 /// before it, or close on itself inside the face; a curve that runs past
-/// the face is cut where it leaves it. The pieces share the new edges, and
+/// the face is cut where it leaves it. A stretch running along the face's
+/// boundary, or along a stretch cut before it, divides nothing and is
+/// passed over, as a stretch outside the face is; a curve all of whose
+/// stretches are passed over misses the face. Of two curves running along
+/// each other, the one cut first divides the face. The pieces share the new edges, and
 /// the boundary edges a cut ends on are cut there in every face that holds
 /// them. A region a seam of the face runs through is one piece, its
 /// boundary crossing the seam. A face given on its own comes back as a
@@ -79,8 +83,8 @@ pub enum Projection {
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction), by
 /// reason, where `face` is not a face of `shape`, no edge is given, an edge
 /// asked to lie on the face does not, a curve or its projection misses the
-/// face, a curve ends inside the face, runs along its boundary, or runs from
-/// one boundary loop of it to another.
+/// face (it lies outside the face or along its boundary), a curve ends
+/// inside the face, or runs from one boundary loop of it to another.
 pub fn split_face(
     model: &mut Model,
     shape: &Shape,
@@ -89,6 +93,105 @@ pub fn split_face(
     projection: Projection,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    Ok(split(
+        model,
+        shape,
+        face,
+        edges,
+        projection,
+        SplitOptions::default(),
+        false,
+        tol,
+    )?
+    .built)
+}
+
+/// What [`split_face_with`] does beyond [`split_face`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SplitOptions {
+    /// Leave out a curve that misses the face, instead of refusing the
+    /// split, and list it in [`Split::missed`]. Off by default.
+    ///
+    /// A curve misses where, after the projection, none of it lands on the
+    /// face's surface, or its trace there neither crosses the face nor
+    /// closes inside it: it lies outside the face's boundary, only touches
+    /// it at a point, or runs along it (a boundary edge already divides
+    /// the face there). A curve asked to lie on the face that does not
+    /// still refuses the split.
+    pub skip_misses: bool,
+}
+
+/// A split by [`split_face_with`]: the rebuilt shape, the curves left out,
+/// and which closed curves each piece lies inside.
+#[derive(Clone, Debug)]
+pub struct Split {
+    /// The rebuilt shape and its history, as [`split_face`] returns them.
+    pub built: Built,
+    /// The indices into `edges` of the entries that cut nothing, in
+    /// increasing order. Empty unless [`SplitOptions::skip_misses`] is set.
+    pub missed: Vec<usize>,
+    /// Each piece of the face, once, with the closed curves it lies inside.
+    pub pieces: Vec<PieceOrigin>,
+}
+
+/// A piece of a split face and the closed curves it lies inside.
+#[derive(Clone, Debug)]
+pub struct PieceOrigin {
+    /// The piece, as it stands in [`Split::built`].
+    pub piece: Shape,
+    /// The indices into `edges` of the closed curves whose region on the
+    /// face's surface holds the piece, in increasing order.
+    ///
+    /// An entry of `edges` is a closed curve where its own curves chain
+    /// into one path that lands on the surface whole and closes there in
+    /// the face's chart. Its region is the part of the chart it encloses.
+    /// A path closing only round a period of the surface (a circle round a
+    /// drum, or round a sphere's pole) or through a pole encloses nothing
+    /// in the chart, and is listed for no piece. Curves from several
+    /// entries that only close together are not a closed curve. A closed
+    /// curve that misses the face but encloses it is listed for every
+    /// piece.
+    pub inside_of: Vec<usize>,
+}
+
+/// [`split_face`] with [`SplitOptions`], reporting the curves that missed
+/// and which closed curves each piece lies inside.
+///
+/// With `options.skip_misses`, a curve that misses the face is left out
+/// and listed in [`Split::missed`]; where every curve misses, the face is
+/// returned whole, held in a shell where given alone, as the one piece.
+///
+/// # Errors
+///
+/// As [`split_face`], except that a curve that misses the face is no error
+/// where `options.skip_misses` is set.
+pub fn split_face_with(
+    model: &mut Model,
+    shape: &Shape,
+    face: &Shape,
+    edges: &[Shape],
+    projection: Projection,
+    options: SplitOptions,
+    tol: Tolerances,
+) -> OgeomResult<Split> {
+    split(model, shape, face, edges, projection, options, true, tol)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "split_face_with's inputs, and whether to place the pieces"
+)]
+#[expect(clippy::too_many_lines, reason = "one cut loop")]
+fn split(
+    model: &mut Model,
+    shape: &Shape,
+    face: &Shape,
+    edges: &[Shape],
+    projection: Projection,
+    options: SplitOptions,
+    origins: bool,
+    tol: Tolerances,
+) -> OgeomResult<Split> {
     if model.kind_of(face)? != ShapeType::Face {
         ogeom_bail!(Construction, "only a face can be split along curves");
     }
@@ -98,11 +201,12 @@ pub fn split_face(
     {
         ogeom_bail!(Construction, "the face to split is not a face of the shape");
     }
-    let mut sources: Vec<Shape> = Vec::new();
-    for given in edges {
+    // Each edge to cut along, with the entry of `edges` it came from.
+    let mut sources: Vec<(Shape, usize)> = Vec::new();
+    for (i, given) in edges.iter().enumerate() {
         for edge in explore_unique(model, given, ShapeType::Edge)? {
             if !edge_data(model, &edge)?.degenerate {
-                sources.push(edge);
+                sources.push((edge, i));
             }
         }
     }
@@ -142,10 +246,18 @@ pub fn split_face(
     let window = chart_bounds(&rings(model, &forward(&target), data.surface, tol)?, tol);
 
     let mut segments: Vec<Segment> = Vec::new();
-    for source in &sources {
+    // Each entry's traces before they are brought into the face's window.
+    let mut traces: Vec<Vec<Segment>> = vec![Vec::new(); edges.len()];
+    for (source, i) in &sources {
         let found = segments_of(model, source, &surface, data.surface, projection, tol)?;
         if found.is_empty() {
+            if options.skip_misses {
+                continue;
+            }
             ogeom_bail!(Construction, "the projection of an edge misses the face");
+        }
+        if origins {
+            traces[*i].extend(found.iter().cloned());
         }
         for segment in found {
             segments.extend(unfold(segment, &surface, window, tol)?);
@@ -154,6 +266,7 @@ pub fn split_face(
     let mut cutters = chain(segments, &surface, tol)?;
 
     let mut targets: Vec<Shape> = vec![target];
+    let mut cut_from: FastSet<TShapeId> = FastSet::default();
     let mut pending: Vec<usize> = (0..cutters.len()).collect();
     loop {
         let mut progressed = false;
@@ -188,6 +301,7 @@ pub fn split_face(
                 let mut step = made.reshape.apply(model, &current.shape)?;
                 for (source, edge) in &made.edges {
                     step.history.generate(source, edge.clone());
+                    cut_from.insert(source.node());
                 }
                 let mut next_targets = Vec::new();
                 for t in &targets {
@@ -210,7 +324,7 @@ pub fn split_face(
             };
             if dangling {
                 held.push(k);
-            } else if cutters[k].consumed.is_empty() {
+            } else if cutters[k].consumed.is_empty() && !options.skip_misses {
                 ogeom_bail!(
                     Construction,
                     "a curve to split along does not cross the face"
@@ -229,7 +343,7 @@ pub fn split_face(
         }
         pending = held;
     }
-    let current = join_across_seams(model, current, &targets, data.surface, tol)?;
+    let (current, joined) = join_across_seams(model, current, &targets, data.surface, tol)?;
     // A cut lands on the face's surface through a fitted pcurve where no
     // closed form projects it (a circle dropped onto a drum along the
     // normals), and the fit stands off its edge between its samples: every
@@ -244,7 +358,189 @@ pub fn split_face(
         .filter(|e| !held.contains(&e.node()))
         .collect();
     ogeom_algo::state_pcurve_gaps_of(model, &made, tol)?;
-    Ok(current)
+
+    let missed: Vec<usize> = if options.skip_misses {
+        (0..edges.len())
+            .filter(|&i| {
+                !sources
+                    .iter()
+                    .any(|(e, j)| *j == i && cut_from.contains(&e.node()))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let pieces = if origins {
+        origins_of(model, &targets, &joined, traces, &surface, tol)?
+    } else {
+        Vec::new()
+    };
+    Ok(Split {
+        built: current,
+        missed,
+        pieces,
+    })
+}
+
+/// Each piece with the closed curves it lies inside: `pieces` the faces
+/// cut, `joined` the face each of them stands in after the join across
+/// seams, and `traces` each entry's traces on the surface.
+fn origins_of(
+    model: &Model,
+    pieces: &[Shape],
+    joined: &[Shape],
+    traces: Vec<Vec<Segment>>,
+    surface: &SurfaceGeometry,
+    tol: Tolerances,
+) -> OgeomResult<Vec<PieceOrigin>> {
+    const SAMPLES: usize = 64;
+    let (pu, pv) = periods(surface, tol);
+    let mut loops: Vec<(usize, Vec<Point2>)> = Vec::new();
+    for (i, segments) in traces.into_iter().enumerate() {
+        if segments.is_empty() {
+            continue;
+        }
+        // Joined in space, then each trace moved by whole periods to start
+        // where the one before it ends.
+        let paths = chain_across(segments, (0.0, 0.0), tol)?;
+        let [path] = paths.as_slice() else {
+            continue;
+        };
+        if !path.closed {
+            continue;
+        }
+        let turns = |gap: f64, period: f64| {
+            if period > 0.0 {
+                (gap / period).round() * period
+            } else {
+                0.0
+            }
+        };
+        // The jumps left once whole periods are taken out: a trace through a
+        // pole jumps along the pole's row, and encloses nothing.
+        let mut jumps: Vec<f64> = Vec::with_capacity(path.path.len());
+        let mut walk: Vec<Segment> = Vec::with_capacity(path.path.len());
+        for segment in &path.path {
+            let segment = match walk.last() {
+                Some(last) => {
+                    let gap = last.chart(1.0, tol)? - segment.chart(0.0, tol)?;
+                    let by = Vector2::new(turns(gap.x, pu), turns(gap.y, pv));
+                    jumps.push((gap - by).magnitude());
+                    segment.clone().shifted(by, tol)?
+                }
+                None => segment.clone(),
+            };
+            walk.push(segment);
+        }
+        let (Some(first), Some(last)) = (walk.first(), walk.last()) else {
+            continue;
+        };
+        let gap = last.chart(1.0, tol)? - first.chart(0.0, tol)?;
+        if turns(gap.x, pu) != 0.0 || turns(gap.y, pv) != 0.0 {
+            continue;
+        }
+        jumps.push(gap.magnitude());
+        let mut ring = Vec::with_capacity(walk.len() * SAMPLES);
+        for segment in &walk {
+            for s in 0..SAMPLES {
+                #[expect(clippy::cast_precision_loss, reason = "a sample index")]
+                ring.push(segment.chart(s as f64 / SAMPLES as f64, tol)?);
+            }
+        }
+        let (mut lo, mut hi) = (ring[0], ring[0]);
+        for p in &ring {
+            lo = Point2::new(lo.x.min(p.x), lo.y.min(p.y));
+            hi = Point2::new(hi.x.max(p.x), hi.y.max(p.y));
+        }
+        let size = (hi - lo).magnitude();
+        if jumps.iter().any(|&j| j > 1e-3 * size) {
+            continue;
+        }
+        loops.push((i, ring));
+    }
+    // The copies of a chart point a period or two over, where the surface
+    // repeats: a loop's trace may stand in another copy of the window.
+    let shifts = |period: f64| -> Vec<f64> {
+        if period > 0.0 {
+            (-2..=2).map(|k| f64::from(k) * period).collect()
+        } else {
+            vec![0.0]
+        }
+    };
+    let (su, sv) = (shifts(pu), shifts(pv));
+    let mut out: Vec<PieceOrigin> = Vec::new();
+    for (piece, standing) in pieces.iter().zip(joined) {
+        let chart = chart_of(model, piece, tol)?;
+        let Some(at) = interior_point(&chart.outlines) else {
+            ogeom_bail!(Construction, "a piece of the split face encloses no area");
+        };
+        let inside_of: Vec<usize> = loops
+            .iter()
+            .filter(|(_, ring)| {
+                su.iter().any(|&du| {
+                    sv.iter().any(|&dv| {
+                        inside(
+                            std::slice::from_ref(ring),
+                            Point2::new(at.x + du, at.y + dv),
+                        )
+                    })
+                })
+            })
+            .map(|(i, _)| *i)
+            .collect();
+        match out.iter_mut().find(|o| o.piece.node() == standing.node()) {
+            Some(o) => {
+                for i in inside_of {
+                    if !o.inside_of.contains(&i) {
+                        o.inside_of.push(i);
+                    }
+                }
+                o.inside_of.sort_unstable();
+            }
+            None => out.push(PieceOrigin {
+                piece: standing.clone(),
+                inside_of,
+            }),
+        }
+    }
+    Ok(out)
+}
+
+/// A chart point well inside the region `rings` bound by even-odd: the
+/// middle of the widest span inside along a few lines across it.
+fn interior_point(rings: &[Vec<Point2>]) -> Option<Point2> {
+    const LINES: usize = 16;
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for p in rings.iter().flatten() {
+        lo = lo.min(p.y);
+        hi = hi.max(p.y);
+    }
+    if hi.partial_cmp(&lo) != Some(core::cmp::Ordering::Greater) {
+        return None;
+    }
+    let mut best: Option<(f64, Point2)> = None;
+    for k in 0..LINES {
+        // Off the even fractions, so a line seldom runs through a sample.
+        #[expect(clippy::cast_precision_loss, reason = "a line index")]
+        let y = (hi - lo).mul_add((k as f64 + 0.5 + 0.0731) / (LINES as f64 + 0.2), lo);
+        let mut xs: Vec<f64> = Vec::new();
+        for ring in rings {
+            let n = ring.len();
+            for i in 0..n {
+                let (a, b) = (ring[i], ring[(i + 1) % n]);
+                if (a.y > y) != (b.y > y) {
+                    xs.push(a.x + (y - a.y) / (b.y - a.y) * (b.x - a.x));
+                }
+            }
+        }
+        xs.sort_by(f64::total_cmp);
+        for &[a, b] in xs.as_chunks::<2>().0 {
+            if best.is_none_or(|(w, _)| b - a > w) {
+                best = Some((b - a, Point2::new(f64::midpoint(a, b), y)));
+            }
+        }
+    }
+    best.map(|(_, p)| p)
 }
 
 /// What the search for a path's next stretch turned up.
@@ -818,11 +1114,20 @@ fn unfold(
 /// The segments chained end to end into paths: two ends join where they
 /// meet in space and their traces meet in the chart, not a period apart.
 fn chain(
-    mut segments: Vec<Segment>,
+    segments: Vec<Segment>,
     surface: &SurfaceGeometry,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Cutter>> {
-    let (pu, pv) = periods(surface, tol);
+    chain_across(segments, periods(surface, tol), tol)
+}
+
+/// [`chain`] with the chart's periods given: `(0, 0)` joins ends that meet
+/// in space wherever their traces stand.
+fn chain_across(
+    mut segments: Vec<Segment>,
+    (pu, pv): (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<Vec<Cutter>> {
     let meet = |a: &Segment, fa: f64, b: &Segment, fb: f64| -> OgeomResult<bool> {
         let reach = a.tolerance + b.tolerance + tol.confusion();
         if a.point(fa, tol)?.distance(b.point(fb, tol)?) > reach {
@@ -1197,8 +1502,9 @@ fn next_stretch(
     let t_eps = cutter.resolution(tol);
     let (lo, hi) = cutter.range();
 
-    // Whether the stretch `(a, b)` lies inside the face, refusing one that
-    // runs along its boundary.
+    // Whether the stretch `(a, b)` lies inside the face. One that runs
+    // along its boundary, the cuts before it included, divides nothing and
+    // is passed over, as a stretch outside the face is.
     let within = |a: f64, b: f64| -> OgeomResult<bool> {
         let mid = 0.5 * (a + b);
         let at = cutter.chart(mid, tol)?;
@@ -1210,10 +1516,7 @@ fn next_stretch(
             let (_, near) = nearest_on(o, at, tol)?;
             let reach = boundary_reach(model, o, cutter, tol)?;
             if surface.point_at(near.x, near.y, tol)?.distance(p) <= reach {
-                ogeom_bail!(
-                    Construction,
-                    "a curve to split along runs along the face's boundary"
-                );
+                return Ok(false);
             }
         }
         Ok(inside(&chart.outlines, at))
@@ -1547,7 +1850,7 @@ fn join_across_seams(
     pieces: &[Shape],
     surface: SurfaceId,
     tol: Tolerances,
-) -> OgeomResult<Built> {
+) -> OgeomResult<(Built, Vec<Shape>)> {
     // A seam whose two sides stand a period apart along a direction the
     // surface repeats in: a ring crossing it reads on, a period over. On a
     // chart that only closes, a ring crossing its join has nowhere to go.
@@ -1625,7 +1928,7 @@ fn join_across_seams(
         }
     }
     if parting.is_empty() {
-        return Ok(current);
+        return Ok((current, pieces.to_vec()));
     }
 
     let mut group: Vec<usize> = (0..pieces.len()).collect();
@@ -1643,6 +1946,8 @@ fn join_across_seams(
         }
     }
     let mut reshape = crate::Reshape::new();
+    // The piece each piece's region stands in after the join.
+    let mut into: Vec<usize> = (0..pieces.len()).collect();
     for keeper in 0..pieces.len() {
         let members: Vec<usize> = (0..pieces.len())
             .filter(|&k| root(&mut group, k) == root(&mut group, keeper))
@@ -1731,13 +2036,27 @@ fn join_across_seams(
         reshape.replace(&forward(&pieces[keeper]), face);
         for &m in &members[1..] {
             reshape.remove(&forward(&pieces[m]));
+            into[m] = keeper;
         }
     }
     if reshape.is_empty() {
-        return Ok(current);
+        return Ok((current, pieces.to_vec()));
     }
     let step = reshape.apply(model, &current.shape)?;
-    Ok(Built::new(step.shape, current.history.then(&step.history)))
+    let mut standing = Vec::with_capacity(pieces.len());
+    for &k in &into {
+        let Some(face) = step.history.trace(&pieces[k]).first().cloned() else {
+            ogeom_bail!(
+                Construction,
+                "a piece of the split face is lost in the join"
+            );
+        };
+        standing.push(face);
+    }
+    Ok((
+        Built::new(step.shape, current.history.then(&step.history)),
+        standing,
+    ))
 }
 
 // --- one cut -----------------------------------------------------------------

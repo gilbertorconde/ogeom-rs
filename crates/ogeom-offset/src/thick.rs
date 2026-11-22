@@ -134,6 +134,10 @@ pub fn offset_sheet(
 /// them), or by half of it to each side when `both_sides`, the two layers
 /// joined by side faces along the sheet's free edges.
 ///
+/// The normals are the faces' oriented ones: a reversed face is moved
+/// against its surface's normal, so the sign of `thickness` says which side
+/// of the sheet as it is oriented the solid stands on.
+///
 /// The layers are built as [`offset_sheet`] builds them, so a free-form
 /// face is fitted to the same bound and reports its deviation in its
 /// tolerance. Where two faces meet at a crease, their offsets meet on the

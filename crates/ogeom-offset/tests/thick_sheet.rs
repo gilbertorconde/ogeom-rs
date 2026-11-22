@@ -235,6 +235,19 @@ fn a_square_thickened_by_two_is_a_box_of_volume_200() {
         (lo + 2.0).abs() < 1e-12 && hi.abs() < 1e-12,
         "z in [{lo}, {hi}]"
     );
+
+    // The sheet turned over: its oriented normal points down, and so does
+    // a positive thickness.
+    let turned = make_thick_sheet(&mut model, &face.reversed(), 2.0, false, T)
+        .unwrap()
+        .shape;
+    assert_valid(&model, &turned);
+    assert!((volume(&model, &turned) - 200.0).abs() < 1e-9);
+    let (lo, hi) = z_range(&model, &turned);
+    assert!(
+        (lo + 2.0).abs() < 1e-12 && hi.abs() < 1e-12,
+        "z in [{lo}, {hi}]"
+    );
 }
 
 #[test]

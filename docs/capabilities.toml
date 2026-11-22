@@ -391,7 +391,8 @@ symbols = [
     "ogeom_heal::unify_same_domain", "ogeom_heal::merge_edges", "ogeom_heal::divide_face",
     "ogeom_heal::divide_by_continuity", "ogeom_heal::divide_by_angle",
     "ogeom_heal::divide_by_area", "ogeom_heal::to_bezier",
-    "ogeom_heal::split_face", "ogeom_heal::Projection",
+    "ogeom_heal::split_face", "ogeom_heal::Projection", "ogeom_heal::split_face_with",
+    "ogeom_heal::SplitOptions", "ogeom_heal::Split", "ogeom_heal::PieceOrigin",
 ]
 tests = [
     "crates/ogeom/tests/upgrade.rs", "crates/ogeom/tests/divide.rs",
