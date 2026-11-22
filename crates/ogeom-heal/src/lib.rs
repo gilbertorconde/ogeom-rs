@@ -41,7 +41,7 @@ pub use same_parameter::{SameParameterReport, repair_same_parameter};
 pub use seam::seam_periodic_faces;
 pub use small::{SmallFaces, fix_small_faces, remove_small_solids};
 pub use solid::solids_from_shells;
-pub use split::{Projection, split_face};
+pub use split::{PieceOrigin, Projection, Split, SplitOptions, split_face, split_face_with};
 pub use upgrade::{
     UnifyOptions, merge_edges, reduce_tolerances, same_domain, unify_same_domain,
     unify_same_domain_around, unify_same_domain_with,

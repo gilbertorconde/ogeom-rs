@@ -154,16 +154,16 @@ pub mod geom {
 /// Healing, simplification and upgrading of imported shapes.
 pub mod heal {
     pub use ogeom_heal::{
-        CanonicalReport, FixReport, Fixed, FixedTrims, FreeBounds, IsoLine, Projection,
-        ReanchoredBoundaries, Reshape, SameParameterReport, Simplified, SmallFaces, UnifyOptions,
-        canonical, canonical_simplify, divide, divide_by_angle, divide_by_area,
-        divide_by_continuity, divide_face, fix, fix_face_pcurves, fix_shape, fix_small_faces,
-        free_bounds, join_seam_columns, merge_edges, reanchor, reanchor_boundaries,
-        reanchor_periodic_rings, recognize_surface, reduce_tolerances, remodel,
-        remove_small_solids, repair_same_parameter, reshape, restrict_degree, same_domain,
+        CanonicalReport, FixReport, Fixed, FixedTrims, FreeBounds, IsoLine, PieceOrigin,
+        Projection, ReanchoredBoundaries, Reshape, SameParameterReport, Simplified, SmallFaces,
+        Split, SplitOptions, UnifyOptions, canonical, canonical_simplify, divide, divide_by_angle,
+        divide_by_area, divide_by_continuity, divide_face, fix, fix_face_pcurves, fix_shape,
+        fix_small_faces, free_bounds, join_seam_columns, merge_edges, reanchor,
+        reanchor_boundaries, reanchor_periodic_rings, recognize_surface, reduce_tolerances,
+        remodel, remove_small_solids, repair_same_parameter, reshape, restrict_degree, same_domain,
         same_parameter, seam, seam_periodic_faces, small, solid, solids_from_shells, split,
-        split_face, swept_to_elementary, to_bezier, unify_same_domain, unify_same_domain_around,
-        unify_same_domain_with, upgrade,
+        split_face, split_face_with, swept_to_elementary, to_bezier, unify_same_domain,
+        unify_same_domain_around, unify_same_domain_with, upgrade,
     };
 }
 

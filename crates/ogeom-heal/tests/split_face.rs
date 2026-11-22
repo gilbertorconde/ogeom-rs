@@ -10,7 +10,7 @@ use ogeom_geom::{
     BSplineSurface, CircleCurve, Curve, LineCurve, PlaneSurface, Surface as _, SurfaceGeometry,
 };
 use ogeom_geom::{Curve2d as _, Curve3d as _};
-use ogeom_heal::{Projection, split_face};
+use ogeom_heal::{Projection, SplitOptions, split_face, split_face_with};
 use ogeom_math::{Axis, Circle, ControlGrid, Direction, Frame, KnotVector, Plane, Point, Vector};
 use ogeom_mesh::Deflection;
 use ogeom_topo::{EdgeRepr, Model, NodeData, Shape, ShapeType, explore_unique};
@@ -576,7 +576,7 @@ fn a_projection_that_never_lands_is_refused() {
 }
 
 #[test]
-fn a_line_along_the_boundary_is_refused() {
+fn a_line_along_the_boundary_misses_the_face() {
     let mut model = Model::new();
     let face = square(&mut model);
     let line = segment(
@@ -592,7 +592,7 @@ fn a_line_along_the_boundary_is_refused() {
         Projection::OnFace,
         T,
     ));
-    assert!(why.contains("runs along the face's boundary"), "{why}");
+    assert!(why.contains("does not cross the face"), "{why}");
 }
 
 #[test]
@@ -1223,4 +1223,355 @@ fn a_circle_through_a_spheres_pole_lands_on_the_sphere_within_the_confusion() {
     )
     .unwrap();
     assert!(off <= T.confusion(), "{off}");
+}
+
+// --- skipping misses and placing pieces ------------------------------------------
+
+fn holds(model: &Model, piece: &Shape, p: Point) -> bool {
+    ogeom_algo::classify_on_face(model, piece, p, fine(), T).unwrap() == ogeom_algo::Containment::In
+}
+
+fn skipping() -> SplitOptions {
+    SplitOptions { skip_misses: true }
+}
+
+/// The top face of the box `[0, 10]^3`.
+fn block_top(model: &mut Model) -> (Shape, Shape) {
+    let block = make_box(model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let top = faces(model, &block)
+        .into_iter()
+        .find(|f| {
+            let Some(NodeData::Face(data)) = model.node(f).map(|n| n.data()) else {
+                return false;
+            };
+            let s = model.geometry().surface(data.surface).unwrap();
+            s.point_at(0.0, 0.0, T).unwrap().z > 9.0 && s.point_at(1.0, 1.0, T).unwrap().z > 9.0
+        })
+        .unwrap();
+    (block, top)
+}
+
+#[test]
+fn a_circle_off_the_face_is_skipped_and_listed_as_missed() {
+    let mut model = Model::new();
+    let (block, top) = block_top(&mut model);
+    let x = Vector::new(1.0, 0.0, 0.0);
+    let on = circle(&mut model, Point::new(5.0, 5.0, 10.0), x, 2.0);
+    let off = circle(&mut model, Point::new(55.0, 5.0, 10.0), x, 2.0);
+    let curves = [on, off];
+    let along = Projection::Along(Direction::Z);
+    let refused = split_face(&mut model, &block, &top, &curves, along, T);
+    assert!(refusal(refused).contains("does not cross the face"));
+    let kept = split_face_with(
+        &mut model,
+        &block,
+        &top,
+        &curves,
+        along,
+        SplitOptions::default(),
+        T,
+    );
+    assert!(kept.is_err(), "without the option a miss is still refused");
+
+    let split = split_face_with(&mut model, &block, &top, &curves, along, skipping(), T).unwrap();
+    assert_eq!(split.missed, [1]);
+    assert_eq!(split.pieces.len(), 2);
+    assert_eq!(faces(&model, &split.built.shape).len(), 7);
+    let volume = ogeom_algo::volume_properties(&model, &split.built.shape, fine(), T)
+        .unwrap()
+        .mass;
+    assert!((volume - 1000.0).abs() <= 1e-6, "{volume}");
+    let (disc, rest) = (4.0 * PI, 100.0 - 4.0 * PI);
+    for origin in &split.pieces {
+        let a = area(&model, &origin.piece);
+        if origin.inside_of == [0] {
+            assert!((a - disc).abs() <= disc * 1e-6, "{a} against {disc}");
+            assert!(holds(&model, &origin.piece, Point::new(5.0, 5.0, 10.0)));
+        } else {
+            assert!(origin.inside_of.is_empty(), "{:?}", origin.inside_of);
+            assert!((a - rest).abs() <= rest * 1e-6, "{a} against {rest}");
+            assert!(holds(&model, &origin.piece, Point::new(1.0, 1.0, 10.0)));
+        }
+    }
+}
+
+#[test]
+fn each_piece_of_nested_circles_lists_the_circles_round_it() {
+    // Radii 4, 2 and 3 about the square's middle, given in that order: the
+    // annulus between 4 and 3 lies inside circle 0 alone, the one between
+    // 3 and 2 inside 0 and 2, the disc inside all three.
+    let mut model = Model::new();
+    let face = square(&mut model);
+    let x = Vector::new(1.0, 0.0, 0.0);
+    let c = Point::new(5.0, 5.0, 0.0);
+    let curves: Vec<Shape> = [4.0, 2.0, 3.0]
+        .into_iter()
+        .map(|r| circle(&mut model, c, x, r))
+        .collect();
+    let split = split_face_with(
+        &mut model,
+        &face,
+        &face,
+        &curves,
+        Projection::OnFace,
+        SplitOptions::default(),
+        T,
+    )
+    .unwrap();
+    assert!(split.missed.is_empty());
+    // The region's loops, its closed-form area and a point inside it.
+    let expected: [(&[usize], f64, f64); 4] = [
+        (&[], 100.0 - 16.0 * PI, -4.5),
+        (&[0], 7.0 * PI, 3.5),
+        (&[0, 2], 5.0 * PI, 2.5),
+        (&[0, 1, 2], 4.0 * PI, 0.0),
+    ];
+    assert_eq!(split.pieces.len(), 4);
+    let mut total = 0.0;
+    for (loops, closed_form, dx) in expected {
+        let found: Vec<_> = split
+            .pieces
+            .iter()
+            .filter(|o| o.inside_of == loops)
+            .collect();
+        assert_eq!(found.len(), 1, "one piece inside {loops:?}");
+        let a = area(&model, &found[0].piece);
+        total += a;
+        assert!(
+            (a - closed_form).abs() <= closed_form * 1e-6,
+            "{a} against {closed_form}"
+        );
+        assert!(holds(
+            &model,
+            &found[0].piece,
+            Point::new(5.0 + dx, 5.0, 0.0)
+        ));
+    }
+    assert!((total - 100.0).abs() <= 1e-6, "{total}");
+}
+
+#[test]
+fn a_loop_round_the_whole_face_misses_it_and_holds_every_piece() {
+    let mut model = Model::new();
+    let face = square(&mut model);
+    let round = circle(
+        &mut model,
+        Point::new(5.0, 5.0, 0.0),
+        Vector::new(1.0, 0.0, 0.0),
+        20.0,
+    );
+    let across = segment(
+        &mut model,
+        Point::new(5.0, -1.0, 0.0),
+        Point::new(5.0, 11.0, 0.0),
+    );
+    let beside = segment(
+        &mut model,
+        Point::new(20.0, 0.0, 0.0),
+        Point::new(20.0, 10.0, 0.0),
+    );
+    let split = split_face_with(
+        &mut model,
+        &face,
+        &face,
+        &[round, across, beside],
+        Projection::OnFace,
+        skipping(),
+        T,
+    )
+    .unwrap();
+    assert_eq!(split.missed, [0, 2]);
+    assert_eq!(split.pieces.len(), 2);
+    for origin in &split.pieces {
+        assert_eq!(origin.inside_of, [0]);
+        let a = area(&model, &origin.piece);
+        assert!((a - 50.0).abs() <= 1e-9, "{a}");
+    }
+}
+
+#[test]
+fn a_face_every_curve_misses_comes_back_whole() {
+    let mut model = Model::new();
+    let face = square(&mut model);
+    let beside = segment(
+        &mut model,
+        Point::new(20.0, 0.0, 0.0),
+        Point::new(20.0, 10.0, 0.0),
+    );
+    let split = split_face_with(
+        &mut model,
+        &face,
+        &face,
+        &[beside],
+        Projection::OnFace,
+        skipping(),
+        T,
+    )
+    .unwrap();
+    assert_eq!(split.missed, [0]);
+    assert_eq!(split.pieces.len(), 1);
+    assert!(split.pieces[0].inside_of.is_empty());
+    assert!((area(&model, &split.pieces[0].piece) - 100.0).abs() <= 1e-9);
+}
+
+#[test]
+fn stretches_along_the_boundary_or_an_earlier_cut_are_passed_over() {
+    // A line along the bottom edge, a polyline along it and then up the
+    // middle, the square's own outline, and the middle line again: only
+    // the middle divides the face, once.
+    let mut model = Model::new();
+    let face = square(&mut model);
+    let bottom = segment(
+        &mut model,
+        Point::new(-2.0, 0.0, 0.0),
+        Point::new(12.0, 0.0, 0.0),
+    );
+    let corner = [
+        Point::new(-1.0, 0.0, 0.0),
+        Point::new(5.0, 0.0, 0.0),
+        Point::new(5.0, 11.0, 0.0),
+    ];
+    let bend = make_polygon(&mut model, &corner, false, T).unwrap().shape;
+    let outline = [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(10.0, 0.0, 0.0),
+        Point::new(10.0, 10.0, 0.0),
+        Point::new(0.0, 10.0, 0.0),
+    ];
+    let outline = make_polygon(&mut model, &outline, true, T).unwrap().shape;
+    let again = segment(
+        &mut model,
+        Point::new(5.0, -2.0, 0.0),
+        Point::new(5.0, 12.0, 0.0),
+    );
+
+    let halved = split_face(
+        &mut model,
+        &face,
+        &face,
+        std::slice::from_ref(&bend),
+        Projection::OnFace,
+        T,
+    )
+    .unwrap();
+    let areas = piece_areas(&model, &halved, &face);
+    assert_eq!(areas.len(), 2);
+    assert!(areas.iter().all(|a| (a - 50.0).abs() <= 1e-9), "{areas:?}");
+    let alone = split_face(
+        &mut model,
+        &face,
+        &face,
+        std::slice::from_ref(&outline),
+        Projection::OnFace,
+        T,
+    );
+    assert!(refusal(alone).contains("does not cross the face"));
+
+    let split = split_face_with(
+        &mut model,
+        &face,
+        &face,
+        &[bottom, bend, outline, again],
+        Projection::OnFace,
+        skipping(),
+        T,
+    )
+    .unwrap();
+    // Of the climb and the middle line, whichever is cut first divides the
+    // face, and the other runs along its cut.
+    assert!(
+        split.missed == [0, 1, 2] || split.missed == [0, 2, 3],
+        "{:?}",
+        split.missed
+    );
+    assert_eq!(split.pieces.len(), 2);
+    for origin in &split.pieces {
+        assert_eq!(origin.inside_of, [2], "the outline holds both halves");
+        let a = area(&model, &origin.piece);
+        assert!((a - 50.0).abs() <= 1e-9, "{a}");
+    }
+}
+
+#[test]
+fn a_rectangle_dropped_across_a_cylinders_seam_bounds_its_piece() {
+    // The rectangle lands across the seam, so its piece is joined from the
+    // two sides of the chart's window.
+    let mut model = Model::new();
+    let cylinder = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 15.0, 30.0, T)
+        .unwrap()
+        .shape;
+    let rectangle = make_polygon(
+        &mut model,
+        &[
+            Point::new(25.0, -5.0, 9.0),
+            Point::new(25.0, 5.0, 9.0),
+            Point::new(25.0, 5.0, 21.0),
+            Point::new(25.0, -5.0, 21.0),
+        ],
+        true,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let side = faces(&model, &cylinder)
+        .into_iter()
+        .find(|f| {
+            let data = model.node(f).unwrap().data().as_face().unwrap();
+            matches!(
+                model.geometry().surface(data.surface),
+                Some(SurfaceGeometry::Cylinder(_))
+            )
+        })
+        .unwrap();
+    let split = split_face_with(
+        &mut model,
+        &cylinder,
+        &side,
+        &[rectangle],
+        Projection::Along(Direction::X),
+        SplitOptions::default(),
+        T,
+    )
+    .unwrap();
+    assert_eq!(split.pieces.len(), 2);
+    let whole = TAU * 15.0 * 30.0;
+    let faced = 2.0 * (5.0_f64 / 15.0).asin() * 15.0 * 12.0;
+    for origin in &split.pieces {
+        let a = area(&model, &origin.piece);
+        if origin.inside_of == [0] {
+            assert!((a - faced).abs() <= faced * 1e-4, "{a} against {faced}");
+            assert!(holds(&model, &origin.piece, Point::new(15.0, 0.0, 15.0)));
+        } else {
+            assert!(origin.inside_of.is_empty(), "{:?}", origin.inside_of);
+            let rest = whole - faced;
+            assert!((a - rest).abs() <= rest * 1e-5, "{a} against {rest}");
+            assert!(holds(&model, &origin.piece, Point::new(-15.0, 0.0, 15.0)));
+        }
+    }
+}
+
+#[test]
+fn a_circle_round_a_drum_bounds_no_piece() {
+    let mut model = Model::new();
+    let (drum, wall) = drum(&mut model);
+    let ring = circle(
+        &mut model,
+        Point::new(0.0, 0.0, 2.0),
+        Vector::new(0.0, 1.0, 0.0),
+        2.0,
+    );
+    let split = split_face_with(
+        &mut model,
+        &drum,
+        &wall,
+        &[ring],
+        Projection::OnFace,
+        SplitOptions::default(),
+        T,
+    )
+    .unwrap();
+    assert_eq!(split.pieces.len(), 2);
+    assert!(split.pieces.iter().all(|o| o.inside_of.is_empty()));
 }
