@@ -3464,6 +3464,62 @@ edges are in the default one.
   held: the request gets trim through's solid, the same as with hold edge
   off.
 
+**Hold edge, chains that turn (#1237).** The part above reads the ball's
+seat as the nearest point of `a`'s region and keeps two kinds of seat
+change: the band onto an edge, and an edge onto the vertex where it stops.
+A chain of held edges that turns tangentially (a line, an arc and a line
+in `a`'s plane, as where a top's outline has a rounded corner in plan)
+needs a third, and the same rule settles it, as the surveyed
+documentation's ball rolling onto adjacent edges does; no new source is
+needed.
+
+- **Where the ball rests.** Where two held edges meet tangentially, the
+  nearest point of `a`'s region passes from one to the other through their
+  vertex and never rests on it: on either side the other edge's own foot
+  is as near. The vertex is not a seat.
+- **The seat change.** At the vertex the ball's foot lies on both edges,
+  the pipes about them (a cylinder about the line, a torus about the arc)
+  are tangent along the circle about that point, and so the centre's path
+  on `b`'s offset is C1 there. The two pieces share the ball's arc, in its
+  plane square to the spine, and meet G1 on it, as at a vertex seat.
+- **Either turn.** The chain may turn either way. Where it bends away
+  from `a`'s region (the arc's centre outside it), the nearest point stays
+  on the arc only while the balls stand behind the region by less than the
+  arc's radius. Past that, it jumps from one line to the other, the ball
+  resting on two edges at once, and that is not held, as for a pocket's
+  square corner.
+
+**What is built.** The part above, with an edge onto the next one where
+they meet tangentially, within the angular tolerance, as a further seat
+change, kept only where the feet of the balls on both edges at the change lie at
+their vertex within a millionth of the radius. Every other change,
+including a jump between edges that do not share a vertex, still goes
+on to trim through.
+
+**Oracle** (`tests/hold_edge_seats.rs`). As in the part above. The top's
+region is the wedge between its two lines moved by the arc's radius toward
+the arc's centre, grown by that radius where the centre lies in front, the
+rest of the plane so grown where it lies behind. The distance `h` from
+each contact to the region is then worked out from that wedge directly.
+With the corner's radius at 1e-9 it gives the polyline's distances to
+1e-8.
+
+| case (r 4, part 20 long) | cut away (built) | reference | error | bound | worst G1 |
+|---|---|---|---|---|---|
+| narrowing: cliff edge `(0, 4.8)`, `(12, 3.6)`, `(20, 0.4)`, corner arc r 8, held from `x = 8` to the end | 56.964521731 | 56.964521704 | 2.7e-8 | 7.3e-9 | 1.1e-6 rad |
+| widening: cliff edge `(0, 7)`, `(9, 2.5)`, `(20, 1.5)`, corner arc r 6, held from `x = 6` to the end | 52.196848416 | 52.196848455 | 3.9e-8 | 7.9e-8 | 9.8e-7 rad |
+
+- Each result is valid and closed, and every fitted piece meets its
+  neighbours, the band and the front within 1e-5 rad of tangent.
+- The result keeps the two lines and the arc whole, on their curves
+  within 1e-9 (measured 2e-15).
+- Hold edge at the end off and hold edge off give the same refusal by
+  trim through; with trim through off too, the request is refused naming
+  hold edge at the end.
+- The widening chain with its arc at r 1.5 has its foot jump from line to
+  line and is not held: the request gets the same refusal as with hold
+  edge off.
+
 ### Amendment: largest-size readings confirmed by the build (#1173)
 
 Apps clamp a size slider with `largest_fillet_radius`,
