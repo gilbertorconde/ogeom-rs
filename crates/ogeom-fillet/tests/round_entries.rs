@@ -194,8 +194,8 @@ fn a_compound_s_solids_round_each_alone() {
     }
 }
 
-/// A prism whose far cap is its profile placed (the same nodes standing
-/// twice): a 6 by 4 rectangle swept 5 up, an edge of its far cap rounded
+/// A prism whose far cap stands on its profile's ring placed (the same
+/// edge and vertex nodes standing twice): a 6 by 4 rectangle swept 5 up, an edge of its far cap rounded
 /// at 1. Rounded with its placements baked in, with no boolean: the prism
 /// less the spandrel along the 6 long edge, and the far cap's history
 /// carried back to the faces asked.

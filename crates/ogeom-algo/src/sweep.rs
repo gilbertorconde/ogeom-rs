@@ -622,8 +622,9 @@ fn prism_over_face(
     // Getting this wrong makes a solid that is inside out along one face, and
     // the volume comes out short by exactly that face's contribution rather
     // than obviously wrong.
-    let bottom = profile.reversed();
-    let top = profile.moved(displacement);
+    let (bottom, top) = caps(model, &profile, tol)?;
+    let bottom = bottom.reversed();
+    let top = top.moved(displacement);
     model.set_derived(&bottom, std::slice::from_ref(face), roles::SWEEP_BOTTOM)?;
     model.set_derived(&top, std::slice::from_ref(face), roles::SWEEP_TOP)?;
     history.generate(face, top.clone());
@@ -634,6 +635,20 @@ fn prism_over_face(
     let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
     history.generate(face, solid.clone());
     Ok(Built::new(solid, history))
+}
+
+/// The two end caps of a sweep over `profile`, each a face node of its own
+/// over the profile's rings, as the profile is placed and presented.
+///
+/// A node carries one identity, so caps sharing a node with each other or
+/// with the profile would leave a single role for all of them: the last one
+/// recorded.
+fn caps(model: &mut Model, profile: &Shape, tol: Tolerances) -> OgeomResult<(Shape, Shape)> {
+    let rings = vec![false; model.children_of(profile)?.len()];
+    Ok((
+        rewound(model, profile, &rings, tol)?,
+        rewound(model, profile, &rings, tol)?,
+    ))
 }
 
 /// `face` again with the rings `turned` walked the other way round: a face
@@ -1145,8 +1160,9 @@ fn revolution_over_face(
         // on the solid.
         history.delete(face);
     } else {
-        let bottom = profile.reversed();
-        let top = profile.moved(&turn.displacement);
+        let (bottom, top) = caps(model, &profile, tol)?;
+        let bottom = bottom.reversed();
+        let top = top.moved(&turn.displacement);
         model.set_derived(&bottom, std::slice::from_ref(face), roles::SWEEP_BOTTOM)?;
         model.set_derived(&top, std::slice::from_ref(face), roles::SWEEP_TOP)?;
         history.generate(face, top.clone());
@@ -2085,6 +2101,107 @@ mod tests {
         crate::build::make_face_with_pcurves(model, surface, &[outer_edges, vec![ring]], T)
             .unwrap()
             .shape
+    }
+
+    /// The one face of `solid` carrying `role`.
+    fn face_with_role(model: &Model, solid: &Shape, role: ogeom_core::Role) -> Shape {
+        let found: Vec<Shape> = explore_unique(model, solid, ShapeType::Face)
+            .unwrap()
+            .into_iter()
+            .filter(|f| {
+                model
+                    .provenance_of(f)
+                    .and_then(ogeom_core::Provenance::role)
+                    == Some(role)
+            })
+            .collect();
+        assert_eq!(found.len(), 1, "faces with role {role:?}");
+        found[0].clone()
+    }
+
+    /// Each end cap of a sweep carries its own role and names the profile
+    /// as its source, and the profile keeps the role it had. The caps are
+    /// told apart without the roles: the bottom lies in the profile's plane
+    /// and faces against the travel, the top lies one travel along and
+    /// faces with it. Checked for a plain face, a face with a hole wound
+    /// either way, a profile presented backwards, a slanted travel, and a
+    /// part turn whose far cap is the profile turned about the axis.
+    #[test]
+    fn each_cap_of_a_sweep_carries_its_own_role() {
+        use crate::measure::{face_normal, shape_bounds};
+        let mut model = Model::new();
+        let plain = square(&mut model, 2.0);
+        let mut profiles = vec![plain.clone(), plain.reversed()];
+        for hole_like_outline in [false, true] {
+            profiles.push(holed_square(&mut model, hole_like_outline));
+        }
+        let mut cases = Vec::new();
+        for profile in &profiles {
+            for vector in [Vector::new(0.0, 0.0, 5.0), Vector::new(3.0, -2.0, 5.0)] {
+                cases.push((profile.clone(), Some(vector)));
+            }
+        }
+        cases.push((
+            box_face(&mut model, 2.0, crate::primitive::roles::FACE_MIN_Y),
+            None,
+        ));
+        for (profile, vector) in cases {
+            let before = model.provenance_of(&profile).cloned();
+            let source = model.identity_of(&profile);
+            let solid = match vector {
+                Some(vector) => make_prism(&mut model, &profile, vector, T).unwrap().shape,
+                None => {
+                    let axis = Axis::new(Point::new(-5.0, 0.0, 0.0), ogeom_math::Direction::Z);
+                    make_revolution(&mut model, &profile, axis, 1.0, T)
+                        .unwrap()
+                        .shape
+                }
+            };
+            assert_eq!(
+                model.provenance_of(&profile).cloned(),
+                before,
+                "the profile's own role"
+            );
+            let bottom = face_with_role(&model, &solid, roles::SWEEP_BOTTOM);
+            let top = face_with_role(&model, &solid, roles::SWEEP_TOP);
+            for cap in [&bottom, &top] {
+                let inputs = model.provenance_of(cap).unwrap().inputs().to_vec();
+                assert_eq!(inputs, source.into_iter().collect::<Vec<_>>());
+            }
+            let held = shape_bounds(&model, &profile, T).unwrap();
+            let (b_low, b_high) = {
+                let b = shape_bounds(&model, &bottom, T).unwrap();
+                (b.low().unwrap(), b.high().unwrap())
+            };
+            assert!(
+                (b_low - held.low().unwrap()).magnitude() < 1e-9
+                    && (b_high - held.high().unwrap()).magnitude() < 1e-9,
+                "the bottom cap lies where the profile does"
+            );
+            let (_, bottom_normal) = face_normal(&model, &bottom, T).unwrap();
+            let (_, top_normal) = face_normal(&model, &top, T).unwrap();
+            let (_, profile_normal) = face_normal(&model, &profile, T).unwrap();
+            if let Some(vector) = vector {
+                let t = shape_bounds(&model, &top, T).unwrap();
+                assert!(
+                    (t.low().unwrap() - (held.low().unwrap() + vector)).magnitude() < 1e-9,
+                    "the top cap lies one travel along"
+                );
+                assert!(bottom_normal.dot(vector) < 0.0, "the bottom faces back");
+                assert!(top_normal.dot(vector) > 0.0, "the top faces on");
+            } else {
+                // A part turn of 1 rad about z: the bottom faces against
+                // the turn's direction at the profile (-y side of an xz
+                // face clear of the axis turns towards +y), the top along it.
+                assert!(bottom_normal.dot(profile_normal).abs() > 1.0 - 1e-9);
+                assert!(bottom_normal.y < 0.0, "the bottom faces back");
+                assert!(
+                    (top_normal - Vector::new(-(1.0_f64).sin(), 1.0_f64.cos(), 0.0)).magnitude()
+                        < 1e-9,
+                    "the top faces along the turn at its end"
+                );
+            }
+        }
     }
 
     /// Every edge between two faces of a swept solid is walked once each
@@ -3594,24 +3711,40 @@ mod tests {
     }
 
     #[test]
-    fn the_far_end_is_the_same_topology_at_a_different_place() {
-        // The point of using a location rather than a copy: one profile, two
-        // placements. A copy would double the geometry and let the two ends
-        // drift apart under a later edit.
+    fn the_far_end_is_the_same_rings_at_a_different_place() {
+        // One profile, two placements of its rings: a copy of the rings
+        // would double the geometry and let the two ends drift apart under
+        // a later edit. Each end is a face node of its own, since a node
+        // carries one identity and the ends carry different roles.
         let mut model = Model::new();
         let face = square(&mut model, 1.0);
+        let surface_of =
+            |model: &Model, f: &Shape| model.node(f).unwrap().data().as_face().unwrap().surface;
+        let surface = surface_of(&model, &face);
+        let ring = model.children_of(&face).unwrap()[0].clone();
         let before = model.node_count();
         let built = make_prism(&mut model, &face, Vector::new(0.0, 0.0, 1.0), T).unwrap();
 
         let faces = explore_unique(&model, &built.shape, ShapeType::Face).unwrap();
-        let ends: Vec<&Shape> = faces.iter().filter(|f| f.is_partner(&face)).collect();
-        assert_eq!(ends.len(), 2, "both ends share the profile's node");
+        let ends: Vec<&Shape> = faces
+            .iter()
+            .filter(|f| surface_of(&model, f) == surface)
+            .collect();
+        assert_eq!(ends.len(), 2, "both ends lie on the profile's surface");
         assert!(
-            !ends[0].is_same(ends[1]),
-            "and are still distinct, because their placements differ"
+            !ends[0].is_partner(ends[1]),
+            "each end is a node of its own"
         );
+        for end in &ends {
+            assert!(!end.is_partner(&face), "and neither is the profile's");
+            let rings = model.children_of(end).unwrap();
+            assert!(
+                rings.len() == 1 && rings[0].is_partner(&ring),
+                "over the profile's ring"
+            );
+        }
 
-        // Four side faces, four rails, one wire, a shell and a solid, but no
+        // Four side faces, four rails, two caps, a shell and a solid, but no
         // second copy of the profile's four edges or four vertices.
         assert!(
             model.node_count() - before < 20,

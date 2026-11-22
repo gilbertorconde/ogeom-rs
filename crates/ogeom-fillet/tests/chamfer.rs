@@ -304,11 +304,10 @@ fn a_chamfer_far_from_the_origin_loses_exactly_the_wedge() {
 
 /// A chamfer of unequal distances names the face its first distance runs
 /// along, and that face must meet the edge. On a 20 x 20 x 2 plate built
-/// as a prism of a square, the top face is the bottom face placed up the
-/// sweep, one node in two places; a top edge with its first distance
-/// named along the bottom face was taken as named along the top, and
-/// bevelled there. It is refused, as on a box; named along the top it
-/// loses the wedge of legs 0.5 and 1 along its length of 20.
+/// as a prism of a square, the top face stands on the bottom face's ring
+/// placed up the sweep; a top edge with its first distance named along
+/// the bottom face is refused, as on a box. Named along the top it loses
+/// the wedge of legs 0.5 and 1 along its length of 20.
 #[test]
 fn a_chamfer_named_on_a_prism_s_far_end_face_is_refused() {
     use ogeom_math::{Direction, Vector};
@@ -349,7 +348,6 @@ fn a_chamfer_named_on_a_prism_s_far_end_face_is_refused() {
             .unwrap()
     };
     let (bottom, top) = (at_height(&model, 0.0), at_height(&model, 2.0));
-    assert!(bottom.is_partner(&top), "the prism's ends share one node");
     let edge = ogeom_topo::explore_unique(&model, &plate, ShapeType::Edge)
         .unwrap()
         .into_iter()
