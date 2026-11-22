@@ -3576,7 +3576,8 @@ What follows is settled from those.
   from the piece's other end to the end face's plane. Where no ball's
   foot reaches the end face's plane (a held edge leaving the end too
   steeply, its feet trailing the balls), the piece has no end there and
-  the request goes on to trim through.
+  the request goes on to trim through. (The part "Hold edge, end faces"
+  below settles these ends.)
 - **The boss's underside (amendment "M5c").** There the contact on the
   wall runs into the boss, not past a sharp edge into air: the edge where
   the wall meets the boss's underside is concave, and the vertex where it
@@ -3794,7 +3795,8 @@ those, with the nearest point of `a`'s region as the rule.
   ellipse, so the tool's edge on `b` at an end would be an ellipse's arc;
   on a cylinder the end faces stand square to the edge, and the tool's
   edges across `b` at the ends are arcs about the axis. A leaning one
-  goes on to trim through.
+  goes on to trim through. (The part "Hold edge, end faces" below builds
+  it.)
 - **Other curved faces beside the edge.** On a cone whose ruling is the
   edge, or any other curved `b`, the offsets of `a` and `b` meet in a
   curve, not a line along the edge: the band is not straight, and the
@@ -3850,6 +3852,91 @@ dominating); the builds, joins and kept edges are in the default one.
   naming hold edge.
 - A cone beside the edge, and a bore's rim on the drum, give the same
   as hold edge off.
+
+**Hold edge, end faces (#1237).** The parts above cut the round at an
+end face by one piece's section: the band's ellipse, or a fitted piece's
+section by planes turning to the end face's plane. That assumes the balls
+past the end face (amendment "M5f": the centres run on as they are, each
+held edge carried on along its tangent) that still reach inside the face
+rest on the same seat as the piece at the end. It fails where they do
+not: a vertex piece reaching the end face, whose feet all stand on the
+vertex and never on the face; a held edge whose feet trail the balls,
+reached on the face only by balls past it on another seat; and a leaning
+end face on a cylinder beside the edge, which cuts `b` in an ellipse. No
+new source was needed: M5f's rule is the definition, the round is the
+envelope of the balls past the face as well, and the end face trims it.
+
+- **Which ends run on.** Past each end the balls are read, a 64th of the
+  radius apart, out to where a ball's arc and the region between it and
+  the edge lie wholly past the end face's plane, and stay so for the rest
+  of the scan (far enough for any centre to stand a radius past the
+  face). An end is cut as before where every ball read that still
+  reaches inside the face has the end piece's seat and that piece does
+  not rest on one point. Otherwise, and on a cylinder under a leaning end
+  face, the round runs on.
+- **How a round runs on.** The spine is read into pieces out to the
+  first station past which nothing reaches back, plus up to a quarter
+  radius more as far as balls stand there. On the band it ends square to
+  the edge; elsewhere in its last ball's plane, square to the path of
+  the centres, so its end is that ball's arc and the region between it
+  and the edge one planar face (on a plane `b` only: on a cylinder that
+  plane would cut `b` in an ellipse). That end must lie wholly past the
+  end face, lean no more than 60 degrees from square, and have one seat
+  from the ball to where its plane meets the edge. The tool so made
+  passes over the end face; the cut trims the round by it, and the volume
+  proof takes the tool's volume within the solid, as where the ball
+  jumps.
+- **A seat change past the face is a seat change.** Each change read on
+  the way is one the parts above accept. The band onto a held edge is
+  accepted only where the band's contact lies on that edge there: past an
+  end face a carried edge can cross the round's own edge, where the
+  nearest point jumps back to the band without the contact crossing
+  anything.
+- **Feet that never reach the end face: not held.** Where no ball stands
+  past the face (the carried edge falls away faster than a ball touching
+  `b` can follow), or the carried edge crosses the round's own edge,
+  before the round clears the face, the round past the face is not
+  defined: the request goes on to trim through.
+- **A vertex piece cut by an end face: not built yet.** The round runs on
+  past the face and its tool is valid, but the boolean does not resolve
+  the cut of a vertex piece and the piece past it by the end face (the
+  kept pieces do not close into a shell). The request goes on to trim
+  through, as before.
+
+**What is built.** The leaning end face on a cylinder beside the edge
+(within 60 degrees of square), the band run on past it and trimmed. The
+ends the parts above built keep their construction.
+
+**Oracle** (`tests/hold_edge_ends.rs`). On the drum part's band, far
+from the pocket, every section is the same: the corner between the top,
+the drum and the ball's arc. Leaning the far end plane to `x = 30 + k z`
+changes the volume cut away by `k` times that section's first moment
+`∫ z dA`, leaning the near one to `x = k z` by `-k` times it. The moment
+is integrated in polar coordinates about the ball's centre, each ray's
+reach to the top or the drum in closed form, Gauss-Legendre either side
+of the direction to the edge; its bound is the change from 24 to 48
+points. The square part's volume is the one "Hold edge, curved faces"
+checks against the sampled reference.
+
+| case (r 4, drum part, `∫ z dA` = -0.565316979670, bound 7e-16) | cut away (built) | square plus moment | error | worst G1 |
+|---|---|---|---|---|
+| far end `x = 30 + z / 4` | 30.728596675 | 30.728596675 | 5.5e-13 | 5.2e-7 rad |
+| far end `x = 30 - z / 4` | 31.011255165 | 31.011255165 | 2.2e-12 | 5.2e-7 rad |
+| near end `x = -z / 5`, far end `x = 30 + z / 4` | 30.615533279 | 30.615533279 | 1.0e-12 | 5.2e-7 rad |
+
+- Each result is valid and closed, the fitted piece meets the band and
+  the drum within 1e-5 rad of tangent, and the pocket's rim is kept on
+  its circle within 1e-9 over every foot. The test tolerance is 1e-9.
+- Hold edge at the end off holds it the same (the held stretch lies
+  inside the band). Hold edge off goes on to trim through, which refuses
+  this part by name, as before; with trim through off too, it is refused
+  naming hold edge.
+- Still with trim through, each pinned to give the same as hold edge
+  off: feet that never reach the end face (a top's edge bending at
+  `(18, 2.5)` down to 0.4 behind the front at the end); a held edge
+  crossing the round's edge past a leaning end face (a top narrowing from
+  9 to 0.5, the end `x = 20 - z / 2`); a vertex piece cut by the end face
+  (a top's edge bending at `(19.3, 1.8)` down to 1.45 at the end).
 
 ### Amendment: largest-size readings confirmed by the build (#1173)
 

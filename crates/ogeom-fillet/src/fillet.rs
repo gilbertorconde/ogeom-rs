@@ -455,11 +455,11 @@ pub fn fillet_edges(
 ///   the vertex between them. `hold_edge_at_end` applies the same rule
 ///   where a stretch held reaches an end of the band. Built for a round of
 ///   a straight edge, or a chain of edges along one line, between two
-///   planes (ending on end faces within 60 degrees of square to it) or a
-///   plane and a cylinder whose axis runs along the edge (ending on end
-///   faces square to it), whose contact runs past curves bounding the
-///   plane's faces in its plane; any other request goes on to
-///   `trim_through`.
+///   planes or a plane and a cylinder whose axis runs along the edge,
+///   ending on end faces within 60 degrees of square to it, whose contact
+///   runs past curves bounding the plane's faces in its plane; past an end
+///   face the round runs on and the end face trims it. Any other request
+///   goes on to `trim_through`.
 /// - `trim_through`: the round keeps its own surface, and the faces it
 ///   reaches are trimmed or extended to meet it.
 ///

@@ -10,8 +10,8 @@
 //! Built for a straight edge, or a chain of edges along one line, between
 //! a plane `a` and a plane or a cylinder `b` whose axis runs along the
 //! edge, the held edges any curves lying in `a`'s plane, the round ending
-//! on end faces within 60 degrees of square to its edge (square to it on a
-//! cylinder). On a cylinder the band's centres still lie on a line, and
+//! on end faces within 60 degrees of square to its edge. On a cylinder the
+//! band's centres still lie on a line, and
 //! off the band a ball's centre rises round the axis on `b`'s offset. Each
 //! ball's arc runs from its contact on `b` to its foot, on its
 //! characteristic circle. Where the seat changes the ball touches both
@@ -23,7 +23,11 @@
 //! is the ball's arc in its plane square to the spine. A piece is fitted through its balls' arcs,
 //! or, where it reaches an end face, through its sections by planes turning
 //! to that face's plane. Past an end face the centres run on as they are
-//! and the end face's plane cuts the round (amendment "M5f"). Where the
+//! and the end face's plane cuts the round (amendment "M5f"). Where that
+//! is not one piece's section (the balls past the face that still reach
+//! inside it change seat, the piece there rests on a vertex, or the face
+//! leans on a cylinder), the round runs on to where it stands wholly past
+//! the face and the cut trims it there. Where the
 //! nearest point jumps from one edge to another, the ball resting on both
 //! at once, its centre's path turns a corner: the round there is that
 //! ball's own surface between its two arcs, up to `a`'s plane, which meets
@@ -417,6 +421,12 @@ pub(crate) struct Hold {
     pieces: Vec<Piece>,
     /// Whether a stretch held reaches an end of the band.
     pub(crate) at_end: bool,
+    /// At each end run on past its end face, that end face's point on the
+    /// edge and outward normal: the round there ends wholly past the end
+    /// face, which the cut trims it by.
+    ends_at: [Option<(Point, Vector)>; 2],
+    /// The stretch of the spine along the edge itself.
+    real: (f64, f64),
 }
 
 /// A ball of the round: its centre, its contact on `b`, and its touch on
@@ -860,7 +870,14 @@ impl Hold {
         for k in 1..pieces.len() {
             let (before, x) = (pieces[k - 1].seat, pieces[k - 1].to);
             fits &= match (before, pieces[k].seat) {
-                (Seat::Face, Seat::Rim(_)) | (Seat::Rim(_), Seat::Face) => true,
+                // The band's contact crosses the edge there.
+                (Seat::Face, Seat::Rim(i)) | (Seat::Rim(i), Seat::Face) => {
+                    let contact = self.band(x) + self.na * self.radius;
+                    self.rims[i]
+                        .cliff
+                        .foot(contact)
+                        .is_some_and(|f| f.distance(contact) <= self.radius * 1e-6)
+                }
                 (Seat::Rim(i), Seat::Corner(c)) | (Seat::Corner(c), Seat::Rim(i)) => {
                     self.rims[i].stops.contains(&Some(c))
                 }
@@ -1053,6 +1070,161 @@ impl Hold {
         }
         let row = self.section(piece.seat, at, normal, x, 2)?;
         Some((row[0], row[1]))
+    }
+
+    /// The balls past the end `k` of the edge that still reach inside its
+    /// end face, out to where the round stands wholly past that face: the
+    /// station from which every ball's arc, and the region between it and
+    /// the edge, lie past the end face's plane on to the end of the scan,
+    /// and the seat of each station before it that reaches inside. `None`
+    /// where a ball there cannot be found, or none stands past.
+    fn past_end(&self, k: usize) -> Option<(f64, Vec<Seat>)> {
+        let r = self.radius;
+        let (from, out) = if k == 0 {
+            (self.real.0, -1.0)
+        } else {
+            (self.real.1, 1.0)
+        };
+        let end = self.on_edge(from);
+        let normal = self.end_normals[k];
+        let lean = normal.dot(self.along * out);
+        let margin = r * 1e-3;
+        // Far enough for a ball's centre, standing off the edge by at most
+        // the band's offset and its rise, to stand a radius past the face.
+        let offset = (self.band(0.0) - self.origin).magnitude() + r;
+        let span = (r + offset) / lean + r;
+        let step = r / 64.0;
+        let mut seats = Vec::new();
+        let mut clear: Option<f64> = None;
+        let mut j = 1.0;
+        while step * j <= span {
+            let t = from + out * step * j;
+            let (ball, seat) = self.ball(t, None)?;
+            let on_edge = self.on_edge(t);
+            let mut points = self.across_b_points(on_edge, ball.on_b);
+            points.push(ball.on_a);
+            for u in 1..8 {
+                points.push(self.point(t, f64::from(u) / 8.0, seat)?);
+            }
+            if points.iter().all(|p| (*p - end).dot(normal) >= margin) {
+                clear.get_or_insert(t);
+            } else {
+                clear = None;
+                seats.push(seat);
+            }
+            j += 1.0;
+        }
+        Some((clear?, seats))
+    }
+
+    /// The hold with each end that needs it run on past its end face: an
+    /// end whose balls past the face that still reach inside it change
+    /// seat, or whose piece there rests on one point, or one `forced`. The
+    /// round then runs on to where it stands wholly past the end face and
+    /// ends there ([`Self::end_past`]), and the cut trims it by the end
+    /// face. `None` where the balls
+    /// past an end cannot be read, or the round run on does not read into
+    /// pieces.
+    fn run_on(mut self, forced: [bool; 2]) -> Option<Self> {
+        let mut ends: [Option<(f64, Vector)>; 2] = [None; 2];
+        let last = self.pieces.len() - 1;
+        for (k, index) in [(0, 0), (1, last)] {
+            let (at, seats) = self.past_end(k)?;
+            let seat = self.pieces[index].seat;
+            let simple =
+                !forced[k] && self.pin(index).is_none() && seats.iter().all(|s| *s == seat);
+            if !simple {
+                ends[k] = Some(self.end_past(k, at)?);
+            }
+        }
+        if ends.iter().all(Option::is_none) {
+            return Some(self);
+        }
+        let by = ends.map(|e| e.map_or(0.0, |(by, _)| by));
+        for (k, end) in ends.iter().enumerate() {
+            if let Some((_, normal)) = end {
+                let x = if k == 0 { self.real.0 } else { self.real.1 };
+                self.ends_at[k] = Some((self.on_edge(x), self.end_normals[k]));
+                self.end_normals[k] = *normal;
+            }
+        }
+        self.origin -= self.along * by[0];
+        self.centre -= self.along * by[0];
+        self.real = (by[0], by[0] + self.len);
+        self.len += by[0] + by[1];
+        self.pieces = self.read_pieces()?;
+        let last = self.pieces.len() - 1;
+        for (k, index) in [(0, 0), (1, last)] {
+            if ends[k].is_some() && self.pin(index).is_some() {
+                return None;
+            }
+        }
+        let (a, b) = self.real;
+        let near = self.len * 1e-9;
+        self.at_end = self
+            .pieces
+            .iter()
+            .any(|p| p.seat != Seat::Face && (p.from < a + near || p.to > b - near));
+        Some(self)
+    }
+
+    /// Where the round run on past end `k` ends, from the station `at`
+    /// where it stands wholly past the end face, up to a quarter radius
+    /// further as far as balls stand there: how far past the edge's end
+    /// the edge's line meets the end's plane, and that plane's outward
+    /// normal. On the band the plane stands square to the edge; elsewhere
+    /// it is the plane of the last ball's arc, square to the path of the
+    /// centres, so the round's end is that arc and the region between it
+    /// and the edge one planar face. `None` on a cylinder off the band,
+    /// where that plane leans more than 60 degrees from square, where the
+    /// seat changes between the ball and where the plane meets the edge,
+    /// or where the end so placed is not wholly past the end face.
+    fn end_past(&self, k: usize, at: f64) -> Option<(f64, Vector)> {
+        let r = self.radius;
+        let (from, out) = if k == 0 {
+            (self.real.0, -1.0)
+        } else {
+            (self.real.1, 1.0)
+        };
+        let step = r / 64.0;
+        let mut x = at;
+        while (x - at) * out < 0.25 * r && self.ball(x + out * step, None).is_some() {
+            x += out * step;
+        }
+        let (ball, seat) = self.ball(x, None)?;
+        let (meet, normal) = if seat == Seat::Face {
+            (x, self.along * out)
+        } else {
+            if matches!(self.front, Front::Cylinder { .. }) {
+                return None;
+            }
+            let spine = self.spine(x, seat)? * out;
+            if spine.dot(self.along * out) < 0.5 {
+                return None;
+            }
+            let meet = x + (ball.centre - self.on_edge(x)).dot(spine) / self.along.dot(spine);
+            (meet, spine)
+        };
+        let (lo, hi) = (x.min(meet), x.max(meet));
+        let mut t = lo;
+        while t < hi {
+            if self.ball(t, None)?.1 != seat {
+                return None;
+            }
+            t += step;
+        }
+        let end = self.on_edge(from);
+        let real = self.end_normals[k];
+        let margin = r * 1e-3;
+        let mut points = self.across_b_points(self.on_edge(meet), ball.on_b);
+        points.push(ball.on_a);
+        for u in 1..8 {
+            points.push(self.point(x, f64::from(u) / 8.0, seat)?);
+        }
+        if points.iter().any(|p| (*p - end).dot(real) < margin) {
+            return None;
+        }
+        Some(((meet - from) * out, normal))
     }
 
     /// Whether every ball's foot on a held edge lies on one of `runs`,
@@ -1586,12 +1758,13 @@ pub(crate) fn reach(
         let Some(centre) = band_centre(p0, along, na, nb, front, radius, eps) else {
             continue;
         };
-        // On a cylinder the end faces stand square to the edge.
-        if matches!(front, Front::Cylinder { .. })
-            && (end_normals[0].dot(-along) < 1.0 - ang || end_normals[1].dot(along) < 1.0 - ang)
-        {
-            continue;
-        }
+        // On a cylinder an end face leaning over the band cuts `b` in an
+        // ellipse: the round runs on past it, cut by the boolean.
+        let leaning = [
+            end_normals[0].dot(-along) < 1.0 - ang,
+            end_normals[1].dot(along) < 1.0 - ang,
+        ];
+        let forced = leaning.map(|l| l && matches!(front, Front::Cylinder { .. }));
         let across = {
             let v = along.cross(na);
             let contact = centre + na * radius - p0;
@@ -1626,6 +1799,8 @@ pub(crate) fn reach(
             corners,
             pieces: Vec::new(),
             at_end: false,
+            ends_at: [None; 2],
+            real: (0.0, len),
         };
         let Some(pieces) = hold.read_pieces() else {
             continue;
@@ -1643,6 +1818,9 @@ pub(crate) fn reach(
         }
         hold.at_end = first.seat != Seat::Face || last.seat != Seat::Face;
         hold.pieces = pieces;
+        let Some(hold) = hold.run_on(forced) else {
+            continue;
+        };
         found.push(hold);
     }
     let [hold] = &found[..] else {
@@ -1918,6 +2096,24 @@ fn band_end(
     Ok((p.distance(p0) <= near && q.distance(p1) <= near).then_some((reversed, (curve, range))))
 }
 
+/// The surface of `b` over the tool's reach: a cylinder's height range
+/// grown to cover the round run on past its end faces.
+fn front_surface(hold: &Hold) -> OgeomResult<SurfaceGeometry> {
+    let surface = &hold.curved.faces[hold.b].surface;
+    let SurfaceGeometry::Cylinder(c) = surface else {
+        return Ok(surface.clone());
+    };
+    if hold.ends_at.iter().all(Option::is_none) {
+        return Ok(surface.clone());
+    }
+    let cylinder = c.cylinder();
+    let axis = cylinder.axis();
+    let height = |p: Point| (p - axis.location).dot(axis.direction.vector());
+    let (h0, h1) = (height(hold.on_edge(0.0)), height(hold.on_edge(hold.len)));
+    let pad = 4.0 * hold.radius;
+    Ok(CylinderSurface::new(cylinder, (h0.min(h1) - pad, h0.max(h1) + pad))?.into())
+}
+
 /// The tool: the region between the edge and the round, closed by its
 /// two faces' planes and its end faces' planes, with its round faces.
 #[allow(
@@ -2181,7 +2377,7 @@ fn tool(
     let curved = &hold.curved;
     let mut faces = vec![
         ToolFace {
-            surface: curved.faces[hold.b].surface.clone(),
+            surface: front_surface(hold)?,
             curves: [vec![edge_line, b_end], along_b.clone(), vec![b_start]].concat(),
             at: on_mid + (mb - on_mid) * 0.5,
             out: hold.nb_at(on_mid + (mb - on_mid) * 0.5),
@@ -2206,8 +2402,17 @@ fn tool(
             (points[e1], hold.end_normals[1])
         };
         let (pb, pa) = (points[at_b[k]], points[at_a[k].0]);
+        let side = usize::from(k != 0);
+        let surface = if hold.ends_at[side].is_some() {
+            // Run on past the end face: the plane the round ends in.
+            let x = hold.na - out * hold.na.dot(out);
+            let frame = Frame::new(pe, Direction::new(out, tol)?, Direction::new(x, tol)?, tol)?;
+            SurfaceGeometry::Plane(ogeom_geom::PlaneSurface::new(ogeom_math::Plane::new(frame)))
+        } else {
+            curved.faces[end].surface.clone()
+        };
         faces.push(ToolFace {
-            surface: curved.faces[end].surface.clone(),
+            surface,
             curves: if k == 0 {
                 vec![b_start, sections[0].1, a_start]
             } else {
@@ -2304,8 +2509,9 @@ pub(crate) fn held(
     let deflection = ogeom_mesh::Deflection::default();
     let before = ogeom_algo::volume_properties(model, solid, deflection, tol)?.mass;
     // Where the foot jumps the tool passes over the faces past the edges,
-    // and the cut takes its volume within the solid.
-    let inside = if hold.pieces.iter().any(|p| p.jump) {
+    // and where it runs on past an end face over the face; the cut takes
+    // its volume within the solid.
+    let inside = if hold.pieces.iter().any(|p| p.jump) || hold.ends_at.iter().any(Option::is_some) {
         let Ok(within) = ogeom_bool::common(model, &cut, solid, tol) else {
             return Ok(None);
         };
