@@ -101,20 +101,36 @@ pub fn order_edges(model: &Model, edges: &[Shape], tol: Tolerances) -> OgeomResu
     }
 
     // Start from a free end if there is one, so an open chain comes out running
-    // the way it reads. A closed loop has none, and any edge will do.
-    let start = (0..edges.len())
-        .find(|&i| {
-            !ends.iter().enumerate().any(|(j, (a, b))| {
-                j != i && (a.is_equal(ends[i].0, tol) || b.is_equal(ends[i].0, tol))
-            })
+    // the way it reads. A closed loop has none, and any edge will do. A free
+    // end at an edge's start is taken first, so a chain whose edges all run
+    // one way keeps their direction; only where every free end is an edge's
+    // finish does the walk leave along that edge backwards.
+    let free = |i: usize, at: Point| {
+        !ends
+            .iter()
+            .enumerate()
+            .any(|(j, (a, b))| j != i && (a.is_equal(at, tol) || b.is_equal(at, tol)))
+    };
+    let (start, backwards) = (0..edges.len())
+        .find(|&i| free(i, ends[i].0))
+        .map(|i| (i, false))
+        .or_else(|| {
+            (0..edges.len())
+                .find(|&i| free(i, ends[i].1))
+                .map(|i| (i, true))
         })
-        .unwrap_or(0);
+        .unwrap_or((0, false));
 
     let mut used = vec![false; edges.len()];
     let mut out = Vec::with_capacity(edges.len());
     used[start] = true;
-    out.push(edges[start].clone());
-    let mut reach = ends[start].1;
+    let mut reach = if backwards {
+        out.push(edges[start].reversed());
+        ends[start].0
+    } else {
+        out.push(edges[start].clone());
+        ends[start].1
+    };
 
     while out.len() < edges.len() {
         let mut stepped = false;
@@ -3279,6 +3295,127 @@ mod tests {
             err.to_string().contains("branching"),
             "unexpected message: {err}"
         );
+    }
+
+    /// A line edge per consecutive pair of `points`, sharing a vertex where
+    /// two meet (one vertex for a repeated point), the `k`th running from
+    /// its second point to its first where bit `k` of `flip` is set.
+    fn chain_of_lines(model: &mut Model, points: &[Point], flip: u32) -> Vec<Shape> {
+        let mut vertices: Vec<(Point, Shape)> = Vec::new();
+        for p in points {
+            if !vertices.iter().any(|(q, _)| q.is_equal(*p, T)) {
+                vertices.push((*p, crate::make_vertex(model, *p).shape));
+            }
+        }
+        let vertex = |p: Point| {
+            vertices
+                .iter()
+                .find(|(q, _)| q.is_equal(p, T))
+                .unwrap()
+                .1
+                .clone()
+        };
+        let mut edges = Vec::new();
+        for (k, pair) in points.windows(2).enumerate() {
+            let (from, to) = if flip >> k & 1 == 1 {
+                (pair[1], pair[0])
+            } else {
+                (pair[0], pair[1])
+            };
+            let line: ogeom_geom::Curve =
+                ogeom_geom::LineCurve::segment(from, to, T).unwrap().into();
+            let range = (0.0, from.distance(to));
+            edges.push(
+                crate::make_edge_between(model, line, range, &vertex(from), &vertex(to), T)
+                    .unwrap()
+                    .shape,
+            );
+        }
+        edges
+    }
+
+    /// The positions an ordered chain walks through: each edge's start in
+    /// turn, then the last edge's end, checking that every edge starts
+    /// where the one before it ends.
+    fn walked(model: &Model, ordered: &[Shape]) -> Vec<Point> {
+        let mut out = Vec::new();
+        for edge in ordered {
+            let (a, b) = edge_vertices(model, edge).unwrap().unwrap();
+            let (a, b) = (placed(model, &a).unwrap(), placed(model, &b).unwrap());
+            if let Some(last) = out.last() {
+                assert!(a.is_equal(*last, T), "a gap at {a:?} after {last:?}");
+                out.pop();
+            }
+            out.push(a);
+            out.push(b);
+        }
+        out
+    }
+
+    #[test]
+    fn an_open_chain_orders_whichever_way_its_edges_point() {
+        // A walk that turns at every vertex, in and out of the plane, so no
+        // two of its vertices are confused.
+        let path = [
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(10.0, 0.0, 0.0),
+            Point::new(10.0, 10.0, 0.0),
+            Point::new(10.0, 10.0, 7.0),
+            Point::new(3.0, 12.0, 7.0),
+            Point::new(-4.0, 5.0, 9.0),
+        ];
+        for count in [2usize, 3, 5] {
+            let points = &path[..=count];
+            let backwards: Vec<Point> = points.iter().rev().copied().collect();
+            for flip in 0..1u32 << count {
+                for turn in 0..count {
+                    let mut model = Model::new();
+                    let mut edges = chain_of_lines(&mut model, points, flip);
+                    // Every starting edge of the bag, and the bag both ways.
+                    edges.rotate_left(turn);
+                    if turn % 2 == 1 {
+                        edges.reverse();
+                    }
+                    let ordered = order_edges(&model, &edges, T).unwrap_or_else(|e| {
+                        panic!("{count} edges, flip {flip:b}, turn {turn}: {e}")
+                    });
+                    // Each edge exactly once, the walk through the chain's
+                    // own vertices in order, one free end to the other.
+                    assert_eq!(ordered.len(), count);
+                    for edge in &edges {
+                        assert_eq!(ordered.iter().filter(|o| o.is_same(edge)).count(), 1);
+                    }
+                    let walk = walked(&model, &ordered);
+                    let same = |run: &[Point]| walk.iter().zip(run).all(|(p, q)| p.is_equal(*q, T));
+                    assert!(
+                        walk.len() == points.len() && (same(points) || same(&backwards)),
+                        "{count} edges, flip {flip:b}, turn {turn}: walked {walk:?}"
+                    );
+                    make_wire(&mut model, &ordered, T).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_loop_of_mixed_directions_orders_to_a_loop() {
+        let ring = [
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(10.0, 0.0, 0.0),
+            Point::new(10.0, 10.0, 0.0),
+            Point::new(0.0, 10.0, 3.0),
+            Point::new(0.0, 0.0, 0.0),
+        ];
+        for flip in 0..1u32 << 4 {
+            let mut model = Model::new();
+            let edges = chain_of_lines(&mut model, &ring, flip);
+            let ordered = order_edges(&model, &edges, T).unwrap();
+            let walk = walked(&model, &ordered);
+            assert_eq!(walk.len(), 5);
+            assert!(walk[0].is_equal(walk[4], T), "flip {flip:b}: {walk:?}");
+            let wire = make_wire(&mut model, &ordered, T).unwrap().shape;
+            assert!(crate::is_wire_closed(&model, &wire, T).unwrap());
+        }
     }
 
     #[test]
