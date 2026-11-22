@@ -1486,15 +1486,16 @@ fn lifted_apart(
 /// The dropped edge's parametric representations as the survivor carries
 /// them: reversed when the merge flipped, and refitted at the survivor's
 /// parameters when the two curves pace one stretch differently. Two edges
-/// on one curve object, or on curves whose middle parameters land within
-/// the pair's honesty of each other, are carried as they are.
+/// on one curve object, or on curves whose middle and quarter parameters
+/// land within the pair's honesty of each other, are carried as they are.
 ///
 /// A refit is lifted through its surface and measured against the
 /// survivor's curve at the same parameter, bounded between samples by
 /// [`widest_refined`]; the widest miss comes back with the carry, for the
 /// survivor to state where it is wider than its tolerance. `None` where a
 /// refit misses by more than the readers' trim cap, or the gap sewn across
-/// where that is wider: the two edges are not one.
+/// where that is wider: the two edges are not one, unless their middles
+/// agree, when the pcurves are carried as they are.
 ///
 /// [`widest_refined`]: crate::pcurve_gap::widest_refined
 fn repaced_carry(
@@ -1523,7 +1524,22 @@ fn repaced_carry(
         return Ok(as_is());
     };
     let reach = floor.max(dropped_fp.width).max(kept_fp.width);
-    if dropped_fp.middle.distance(kept_fp.middle) <= reach {
+    // Two curves through one shoulder can still pace the stretch either
+    // side of it apart (a conic's rational parameter against a fit's
+    // across one fitted band), so the quarters must land together too, the
+    // dropped one's swapped where the merge flipped.
+    let middles_agree = dropped_fp.middle.distance(kept_fp.middle) <= reach;
+    let quarters = if flipped {
+        [dropped_fp.quarters[1], dropped_fp.quarters[0]]
+    } else {
+        dropped_fp.quarters
+    };
+    let paced_alike = middles_agree
+        && quarters
+            .iter()
+            .zip(&kept_fp.quarters)
+            .all(|(d, k)| d.distance(*k) <= reach);
+    if paced_alike {
         if std::env::var_os("OGEOM_DEBUG_SEW").is_some() {
             eprintln!(
                 "SEW carry as is: flipped {flipped}, middles {:.2e} apart, kept {:?} {:?} dropped {:?} {:?}",
@@ -1671,10 +1687,12 @@ fn repaced_carry(
                 dropped_fp.range
             );
         }
-        if !fitted.met || fitted.error > reach.max(tol.confusion() * 1e3) {
+        if fitted.error > reach.max(tol.confusion() * 1e3) {
             // A refit that misses its budget is no description of the edge;
             // the pcurve is carried as it came, its drift along the edge and
-            // all, rather than replaced by a worse one.
+            // all, rather than replaced by a worse one. One that falls short
+            // of the fit's own target but within the budget is measured
+            // below like any other.
             out.push(if flipped {
                 reversed_repr(repr.clone())
             } else {
@@ -1707,7 +1725,14 @@ fn repaced_carry(
             tol.parametric() / (khi - klo).abs(),
         )?;
         if off > cap {
-            return Ok(None);
+            // Where the middles agree, or the fit fell short of its target,
+            // the pcurves are carried as they came rather than the edges
+            // parted.
+            return Ok(if middles_agree || !fitted.met {
+                as_is()
+            } else {
+                None
+            });
         }
         missed = missed.max(off);
         pending.push((*surface, location.clone(), planar, (klo, khi)));
