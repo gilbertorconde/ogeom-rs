@@ -8,8 +8,11 @@
 //! round is the canal surface those balls sweep, one piece per seat.
 //!
 //! Built for a straight edge, or a chain of edges along one line, between
-//! two planes, the held edges lines or circles lying in `a`'s plane, the
-//! round ending on end faces within 60 degrees of square to its edge. Each
+//! a plane `a` and a plane or a cylinder `b` whose axis runs along the
+//! edge, the held edges any curves lying in `a`'s plane, the round ending
+//! on end faces within 60 degrees of square to its edge (square to it on a
+//! cylinder). On a cylinder the band's centres still lie on a line, and
+//! off the band a ball's centre rises round the axis on `b`'s offset. Each
 //! ball's arc runs from its contact on `b` to its foot, on its
 //! characteristic circle. Where the seat changes the ball touches both
 //! seats at once and the two offsets are tangent, so neighbouring pieces
@@ -55,10 +58,14 @@ const SAMPLES: usize = 64;
 /// Stations along the edge where the ball's seat is read.
 const READINGS: usize = 1024;
 
-/// The curve of a sharp edge of `a`: a line through `at` along `along`, or
+/// The curve of a sharp edge of `a`: a line through `at` along `along`,
 /// the circle of `radius` about `centre` in the plane square to `normal`,
-/// its angle measured from `x` toward `y`.
-#[derive(Debug, Clone, Copy)]
+/// its angle measured from `x` toward `y`, or any other curve in `a`'s
+/// plane over the range the edge covers, read at `samples` for the nearest
+/// point's start, `closed` where the edge is the whole curve. An open
+/// curve of the third kind is carried on past each end along its tangent
+/// there, its parameter growing at the rate it has at that end.
+#[derive(Debug, Clone)]
 enum Cliff {
     Line {
         at: Point,
@@ -71,12 +78,22 @@ enum Cliff {
         x: Vector,
         y: Vector,
     },
+    General {
+        curve: Curve,
+        range: (f64, f64),
+        samples: Vec<(f64, Point)>,
+        closed: bool,
+        tol: Tolerances,
+    },
 }
+
+/// Points read along a curve of the third kind for its nearest point.
+const READ_ALONG: usize = 256;
 
 impl Cliff {
     /// The point of the curve nearest `p`, `None` on a circle's axis.
-    fn foot(self, p: Point) -> Option<Point> {
-        match self {
+    fn foot(&self, p: Point) -> Option<Point> {
+        match *self {
             Self::Line { at, along } => Some(at + along * (p - at).dot(along)),
             Self::Circle {
                 centre,
@@ -89,19 +106,118 @@ impl Cliff {
                 let m = radial.magnitude();
                 (m > 0.0).then(|| centre + radial * (radius / m))
             }
+            Self::General { .. } => self.nearest(p).map(|(_, f)| f),
         }
     }
 
-    /// Where `p` lies along the curve: along a line, or its angle about a
-    /// circle.
-    fn param(self, p: Point) -> f64 {
-        match self {
+    /// Where `p` lies along the curve: along a line, its angle about a
+    /// circle, or the parameter of its nearest point.
+    fn param(&self, p: Point) -> f64 {
+        match *self {
             Self::Line { at, along } => (p - at).dot(along),
             Self::Circle { centre, x, y, .. } => {
                 let q = p - centre;
                 q.dot(y).atan2(q.dot(x))
             }
+            Self::General { range, .. } => self.nearest(p).map_or(range.0, |(t, _)| t),
         }
+    }
+
+    /// The point at `t` of a curve of the third kind, its first and second
+    /// derivatives.
+    fn general_at(&self, t: f64) -> Option<(Point, Vector, Vector)> {
+        let Self::General { curve, tol, .. } = self else {
+            return None;
+        };
+        let d = curve.derivatives_at(t, 2, *tol).ok()?;
+        let [p, d1, d2] = d[..] else {
+            return None;
+        };
+        Some((Point::new(p.x, p.y, p.z), d1, d2))
+    }
+
+    /// The end `k` of an open curve of the third kind: its point, its unit
+    /// tangent toward growing parameter and its parameter's rate there.
+    fn general_end(&self, k: usize) -> Option<(Point, Vector, f64)> {
+        let Self::General { range, .. } = self else {
+            return None;
+        };
+        let t = if k == 0 { range.0 } else { range.1 };
+        let (p, d1, _) = self.general_at(t)?;
+        let m = d1.magnitude();
+        (m > 0.0).then(|| (p, d1 / m, m))
+    }
+
+    /// The parameter and point of a curve of the third kind nearest `p`:
+    /// from the nearest of its samples, by Newton's step kept within the
+    /// samples either side; past an open end, on the tangent there.
+    fn nearest(&self, p: Point) -> Option<(f64, Point)> {
+        let Self::General {
+            range,
+            samples,
+            closed,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let k = (0..samples.len()).min_by(|i, j| {
+            p.distance(samples[*i].1)
+                .total_cmp(&p.distance(samples[*j].1))
+        })?;
+        let n = samples.len() - 1;
+        let (mut lo, mut hi) = (samples[k.saturating_sub(1)].0, samples[(k + 1).min(n)].0);
+        let g = |t: f64| {
+            self.general_at(t)
+                .map(|(c, d1, d2)| ((c - p).dot(d1), d1.dot(d1) + (c - p).dot(d2)))
+        };
+        let (glo, ghi) = (g(lo)?.0, g(hi)?.0);
+        let mut t = if glo >= 0.0 {
+            lo
+        } else if ghi <= 0.0 {
+            hi
+        } else {
+            let span = range.1 - range.0;
+            let mut t = samples[k].0;
+            for _ in 0..60 {
+                let (v, slope) = g(t)?;
+                if v == 0.0 {
+                    break;
+                }
+                if v > 0.0 {
+                    hi = t;
+                } else {
+                    lo = t;
+                }
+                let next = if slope > 0.0 { t - v / slope } else { f64::NAN };
+                let next = if next > lo && next < hi {
+                    next
+                } else {
+                    0.5 * (lo + hi)
+                };
+                let done = (next - t).abs() <= 1e-15 * span || hi - lo <= 1e-15 * span;
+                t = next;
+                if done {
+                    break;
+                }
+            }
+            t
+        };
+        if !closed {
+            for (end, sign) in [(0, -1.0), (1, 1.0)] {
+                let at_end = if end == 0 { range.0 } else { range.1 };
+                if t != at_end {
+                    continue;
+                }
+                let (q, tangent, rate) = self.general_end(end)?;
+                let s = (p - q).dot(tangent);
+                if s * sign > 0.0 {
+                    return Some((at_end + s / rate, q + tangent * s));
+                }
+            }
+        }
+        t = t.clamp(range.0, range.1);
+        Some((t, self.general_at(t)?.0))
     }
 }
 
@@ -140,7 +256,8 @@ impl Rim {
     /// end it runs on at, else stopped at the nearer corner.
     fn place(&self, t: f64) -> Along {
         match self.cliff {
-            Cliff::Line { .. } => {
+            Cliff::General { closed: true, .. } => Along::Inside,
+            Cliff::Line { .. } | Cliff::General { .. } => {
                 if t < self.range.0
                     && let Some(c) = self.stops[0]
                 {
@@ -179,13 +296,33 @@ impl Rim {
                 let m = t.magnitude();
                 (m > 0.0).then(|| t / m)
             }
+            Cliff::General { range, .. } => {
+                let t = self.cliff.param(p);
+                if t <= range.0 {
+                    return self.cliff.general_end(0).map(|(_, d, _)| d);
+                }
+                if t >= range.1 {
+                    return self.cliff.general_end(1).map(|(_, d, _)| d);
+                }
+                let (_, d1, _) = self.cliff.general_at(t)?;
+                let m = d1.magnitude();
+                (m > 0.0).then(|| d1 / m)
+            }
         }
     }
 
     /// Whether `t` lies within the edge itself, not past an end.
     fn covers(&self, t: f64, slack: f64) -> bool {
-        match self.cliff {
+        match &self.cliff {
             Cliff::Line { .. } => t >= self.range.0 - slack && t <= self.range.1 + slack,
+            Cliff::General {
+                closed, samples, ..
+            } => {
+                // The slack, a length, as a parameter span.
+                let length: f64 = samples.windows(2).map(|w| w[0].1.distance(w[1].1)).sum();
+                let slack = slack * (self.range.1 - self.range.0) / length.max(f64::MIN_POSITIVE);
+                *closed || (t >= self.range.0 - slack && t <= self.range.1 + slack)
+            }
             Cliff::Circle { .. } => {
                 self.whole
                     || (t - self.range.0 + slack).rem_euclid(TAU)
@@ -233,6 +370,20 @@ struct Jump {
     sweep: f64,
 }
 
+/// The face `b` the ball touches throughout: a plane, or a cylinder whose
+/// axis runs along the edge, through `axis`, of `radius`, `sense` 1 where
+/// the solid lies inside it and -1 where it lies outside. Either way the
+/// band's centres lie on a line along the edge.
+#[derive(Debug, Clone, Copy)]
+enum Front {
+    Plane,
+    Cylinder {
+        axis: Point,
+        radius: f64,
+        sense: f64,
+    },
+}
+
 /// A straight round whose contact on face `a` runs past sharp edges of it,
 /// read piece by piece.
 #[derive(Debug, Clone)]
@@ -252,9 +403,12 @@ pub(crate) struct Hold {
     origin: Point,
     along: Vector,
     len: f64,
-    /// The outward normals of `a` and `b`.
+    /// The outward normals of `a` and of `b` at the edge, and `b` itself.
     na: Vector,
     nb: Vector,
+    front: Front,
+    /// The band's centre at the edge's start.
+    centre: Point,
     /// In `a`, square to the edge, pointing from the edge into `a`.
     across: Vector,
     radius: f64,
@@ -280,8 +434,98 @@ impl Hold {
     }
 
     fn band(&self, x: f64) -> Point {
-        let k = -self.radius / (1.0 + self.na.dot(self.nb));
-        self.on_edge(x) + (self.na + self.nb) * k
+        self.centre + self.along * x
+    }
+
+    /// The outward normal of `b` at the point of it nearest `p`.
+    fn nb_at(&self, p: Point) -> Vector {
+        match self.front {
+            Front::Plane => self.nb,
+            Front::Cylinder { axis, sense, .. } => {
+                let q = p - axis;
+                let radial = q - self.along * q.dot(self.along);
+                radial * (sense / radial.magnitude())
+            }
+        }
+    }
+
+    /// The curve on `b` from `from` to `to`, both on it in one plane square
+    /// to the edge: a segment on a plane, an arc about a cylinder's axis.
+    fn across_b(&self, from: Point, to: Point, tol: Tolerances) -> OgeomResult<Arc> {
+        match self.front {
+            Front::Plane => segment(from, to, tol),
+            Front::Cylinder { axis, radius, .. } => {
+                let hub = axis + self.along * (from - axis).dot(self.along);
+                let (u, w) = (from - hub, to - hub);
+                let z = u.cross(w);
+                let sweep = (u.dot(w) / (u.magnitude() * w.magnitude()))
+                    .clamp(-1.0, 1.0)
+                    .acos();
+                arc(hub, z, u, radius, sweep, tol)
+            }
+        }
+    }
+
+    /// Points along the curve on `b` from `from` to `to`, as
+    /// [`Self::across_b`] runs.
+    fn across_b_points(&self, from: Point, to: Point) -> Vec<Point> {
+        match self.front {
+            Front::Plane => vec![from, to],
+            Front::Cylinder { axis, radius, .. } => {
+                let hub = axis + self.along * (from - axis).dot(self.along);
+                (0..=8)
+                    .map(|k| {
+                        let s = f64::from(k) / 8.0;
+                        let v = (from - hub) * (1.0 - s) + (to - hub) * s;
+                        hub + v * (radius / v.magnitude())
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    /// The point `s` along the path of the centres touching `b` that rises
+    /// from the band's centre `c` toward `a`'s plane, and how far that path
+    /// runs before it reaches the plane or turns back from it: a line on a
+    /// plane's offset, an arc about a cylinder's axis.
+    fn rise(&self, c: Point) -> Option<(impl Fn(f64) -> Point, f64)> {
+        let (along, na) = (self.along, self.na);
+        let height = move |p: Point| (p - self.origin).dot(na);
+        let (step, foot, v0, w0) = match self.front {
+            Front::Plane => {
+                let g = along.cross(self.nb);
+                let g = if g.dot(na) < 0.0 { -g } else { g };
+                (Some(g), c, Vector::new(0.0, 0.0, 0.0), g)
+            }
+            Front::Cylinder { axis, .. } => {
+                let foot = axis + along * (c - axis).dot(along);
+                let v0 = c - foot;
+                let w0 = along.cross(v0);
+                let w0 = if w0.dot(na) < 0.0 { -w0 } else { w0 };
+                (None, foot, v0, w0)
+            }
+        };
+        let at = move |s: f64| match step {
+            Some(g) => foot + g * s,
+            None => foot + v0 * s.cos() + w0 * s.sin(),
+        };
+        let reach = match step {
+            Some(g) => -height(c) / g.dot(na),
+            None => {
+                // The arc's highest point, or where it reaches the plane
+                // before that.
+                let top = w0.dot(na).atan2(v0.dot(na));
+                if top <= 0.0 {
+                    return None;
+                }
+                if height(at(top)) < 0.0 {
+                    top
+                } else {
+                    root(|s| Some(height(at(s))), 0.0, top)?
+                }
+            }
+        };
+        (reach > 0.0).then_some((at, reach))
     }
 
     /// How far into `a` the band's contact lies from the edge.
@@ -298,11 +542,27 @@ impl Hold {
             return true;
         }
         let base = self.on_edge(x);
+        let far = 10.0 * (self.len + self.radius);
+        // Whether the walk crosses the segment from `p` to `q`.
+        let crosses = |p: Point, q: Point| {
+            let (px, qx) = (
+                (p - self.origin).dot(self.along) - x,
+                (q - self.origin).dot(self.along) - x,
+            );
+            if px * qx >= 0.0 {
+                return false;
+            }
+            let (py, qy) = (
+                (p - self.origin).dot(self.across),
+                (q - self.origin).dot(self.across),
+            );
+            let cy = py + (qy - py) * px / (px - qx);
+            cy > start && cy < y
+        };
         let mut crossings = 0;
         for rim in &self.rims {
-            match rim.cliff {
-                Cliff::Line { at, along } => {
-                    let far = 10.0 * (self.len + self.radius);
+            match &rim.cliff {
+                &Cliff::Line { at, along } => {
                     let lo = if rim.stops[0].is_none() {
                         rim.range.0 - far
                     } else {
@@ -313,24 +573,55 @@ impl Hold {
                     } else {
                         rim.range.1
                     };
-                    let (p, q) = (at + along * lo, at + along * hi);
-                    let (px, qx) = (
-                        (p - self.origin).dot(self.along) - x,
-                        (q - self.origin).dot(self.along) - x,
-                    );
-                    if px * qx >= 0.0 {
-                        continue;
-                    }
-                    let (py, qy) = (
-                        (p - self.origin).dot(self.across),
-                        (q - self.origin).dot(self.across),
-                    );
-                    let cy = py + (qy - py) * px / (px - qx);
-                    if cy > start && cy < y {
+                    if crosses(at + along * lo, at + along * hi) {
                         crossings += 1;
                     }
                 }
-                Cliff::Circle { centre, radius, .. } => {
+                Cliff::General {
+                    samples, closed, ..
+                } => {
+                    // Where the curve meets the plane of the walk, between
+                    // samples either side of it, and on the tangents an
+                    // open end is carried on along.
+                    let gap = |t: f64| {
+                        rim.cliff
+                            .general_at(t)
+                            .map(|(p, _, _)| (p - base).dot(self.along))
+                    };
+                    for w in samples.windows(2) {
+                        let (a, b) = (
+                            (w[0].1 - base).dot(self.along),
+                            (w[1].1 - base).dot(self.along),
+                        );
+                        if (a <= 0.0) == (b <= 0.0) {
+                            continue;
+                        }
+                        let Some(t) = root(gap, w[0].0, w[1].0) else {
+                            continue;
+                        };
+                        let Some((p, _, _)) = rim.cliff.general_at(t) else {
+                            continue;
+                        };
+                        let cy = (p - self.origin).dot(self.across);
+                        if cy > start && cy < y {
+                            crossings += 1;
+                        }
+                    }
+                    if !closed {
+                        for (k, sign) in [(0, -1.0), (1, 1.0)] {
+                            if rim.stops[k].is_some() {
+                                continue;
+                            }
+                            let Some((q, tangent, _)) = rim.cliff.general_end(k) else {
+                                continue;
+                            };
+                            if crosses(q, q + tangent * (sign * far)) {
+                                crossings += 1;
+                            }
+                        }
+                    }
+                }
+                &Cliff::Circle { centre, radius, .. } => {
                     let d = base - centre;
                     let half = d.dot(self.across);
                     let disc = half * half - (d.dot(d) - radius * radius);
@@ -405,23 +696,21 @@ impl Hold {
         let c = self.band(x);
         let band = Ball {
             centre: c,
-            on_b: c + self.nb * r,
+            on_b: c + self.nb_at(c) * r,
             on_a: c + self.na * r,
         };
         if seat == Some(Seat::Face) || (seat.is_none() && self.inside_at(x, self.contact_depth())) {
             return Some((band, Seat::Face));
         }
-        let g = self.along.cross(self.nb);
-        let g = if g.dot(self.na) < 0.0 { -g } else { g };
-        let reach = r / g.dot(self.na);
-        let f = |s: f64| self.support(c + g * s, seat).map(|(d, _, _)| d - r);
+        let (path, reach) = self.rise(c)?;
+        let f = |s: f64| self.support(path(s), seat).map(|(d, _, _)| d - r);
         let s = root(f, 0.0, reach)?;
-        let centre = c + g * s;
+        let centre = path(s);
         let (_, foot, found) = self.support(centre, seat)?;
         Some((
             Ball {
                 centre,
-                on_b: centre + self.nb * r,
+                on_b: centre + self.nb_at(centre) * r,
                 on_a: foot,
             },
             found,
@@ -783,7 +1072,7 @@ impl Hold {
             // run does not straddle the cut at a half turn.
             let reference = rim.cliff.param(middle.on_a);
             let rel = |t: f64| match rim.cliff {
-                Cliff::Line { .. } => t,
+                Cliff::Line { .. } | Cliff::General { .. } => t,
                 Cliff::Circle { .. } => (t - reference + TAU / 2.0).rem_euclid(TAU) - TAU / 2.0,
             };
             let coords: Vec<Vec<f64>> = runs
@@ -860,8 +1149,9 @@ fn root(f: impl Fn(f64) -> Option<f64>, lo: f64, hi: f64) -> Option<f64> {
 }
 
 /// The curve of the edge `held` of the plane with normal `plane_normal`,
-/// where it is a line or a circle lying in that plane.
-fn cliff_of(curved: &Curved, held: Id, plane_normal: Vector, eps: f64) -> Option<Cliff> {
+/// where it lies in that plane, over the range the edge covers.
+fn cliff_of(curved: &Curved, held: Id, plane_normal: Vector, tol: Tolerances) -> Option<Cliff> {
+    let eps = tol.angular();
     let edge = &curved.edges[&held];
     match &edge.curve {
         Curve::Line(line) => {
@@ -884,7 +1174,32 @@ fn cliff_of(curved: &Curved, held: Id, plane_normal: Vector, eps: f64) -> Option
                 y: frame.y().vector(),
             })
         }
-        _ => None,
+        curve => {
+            let (lo, hi) = (
+                edge.range.0.min(edge.range.1),
+                edge.range.0.max(edge.range.1),
+            );
+            if hi - lo <= 0.0 {
+                return None;
+            }
+            let mut samples = Vec::with_capacity(READ_ALONG + 1);
+            for k in 0..=READ_ALONG {
+                #[expect(clippy::cast_precision_loss, reason = "a few hundred samples")]
+                let t = lo + (hi - lo) * k as f64 / READ_ALONG as f64;
+                samples.push((t, curve.point_at(t, tol).ok()?));
+            }
+            let first = samples[0].1;
+            samples
+                .iter()
+                .all(|(_, p)| (*p - first).dot(plane_normal).abs() <= tol.confusion())
+                .then(|| Cliff::General {
+                    curve: curve.clone(),
+                    range: (lo, hi),
+                    samples,
+                    closed: edge.ends.0 == edge.ends.1,
+                    tol,
+                })
+        }
     }
 }
 
@@ -906,8 +1221,7 @@ fn touches(curved: &Curved, fi: usize, v: Id) -> bool {
 
 /// The sharp edges of the faces of `a`'s plane near the band, as rims,
 /// and the vertices where two of them meet, as corners; `None` where an
-/// edge of theirs within reach of the band is neither a line nor a circle
-/// in that plane. The round's own edges, the seams between those faces and
+/// edge of theirs within reach of the band does not lie in that plane. The round's own edges, the seams between those faces and
 /// their edges on an end face are not rims.
 #[allow(clippy::too_many_arguments, reason = "the band's reading, passed on")]
 fn rims_of(
@@ -935,7 +1249,7 @@ fn rims_of(
         if between.iter().any(|f| ends.contains(f)) || between.iter().all(|f| a.contains(f)) {
             continue;
         }
-        let Some(cliff) = cliff_of(curved, *e, na, tol.angular()) else {
+        let Some(cliff) = cliff_of(curved, *e, na, tol) else {
             let edge = &curved.edges[e];
             if ogeom_algo::shape_bounds(model, &edge.shape, tol)?.intersects(room) {
                 return Ok(None);
@@ -964,9 +1278,16 @@ fn rims_of(
                 let sweep = edge.range.1 - edge.range.0;
                 (cliff, (start, start + sweep), edge.ends.0 == edge.ends.1)
             }
+            Cliff::General { range, closed, .. } => (cliff, range, closed),
         };
+        // The vertex at each end of the range: a curve of the third kind
+        // may run its range from the edge's last vertex to its first.
+        let mut ends_at = [edge.ends.0, edge.ends.1];
+        if matches!(cliff, Cliff::General { .. }) && edge.range.0 > edge.range.1 {
+            ends_at.swap(0, 1);
+        }
         let mut stops = [None, None];
-        for (k, v) in [edge.ends.0, edge.ends.1].into_iter().enumerate() {
+        for (k, v) in ends_at.into_iter().enumerate() {
             if whole || ends.iter().any(|f| touches(curved, *f, v)) {
                 continue;
             }
@@ -1053,11 +1374,56 @@ fn chain_of(curved: &Curved, ids: &[Id], eps: f64) -> Option<(Id, Id)> {
     (straight && (total - len).abs() <= eps * 10.0).then_some((first, last))
 }
 
-/// `edges` read as one straight round of `radius` between two planes
-/// whose contact on one runs past sharp edges of it, held as hold edge
-/// holds them; `None` for any other request, or where anything else of the
-/// solid stands within its reach. The edges may be a chain along one line,
-/// each between faces of the same two planes.
+/// The band's centre at `p0` on the edge: the radius inside `a`'s plane
+/// (outward normal `na`) and inside `b`, on `b`'s offset; on a cylinder, of
+/// the two points where the offsets meet, the one nearer the edge. `None`
+/// where they do not meet, or the cylinder's offset closes up.
+fn band_centre(
+    p0: Point,
+    along: Vector,
+    na: Vector,
+    nb: Vector,
+    front: Front,
+    r: f64,
+    eps: f64,
+) -> Option<Point> {
+    match front {
+        Front::Plane => {
+            let k = -r / (1.0 + na.dot(nb));
+            Some(p0 + (na + nb) * k)
+        }
+        Front::Cylinder {
+            axis,
+            radius,
+            sense,
+        } => {
+            let rho = radius - sense * r;
+            if rho <= eps {
+                return None;
+            }
+            let o = p0 - na * r;
+            let w = along.cross(na);
+            let q = o - axis;
+            let d = q - along * q.dot(along);
+            let half = d.dot(w);
+            let disc = half * half - (d.dot(d) - rho * rho);
+            if disc < 0.0 {
+                return None;
+            }
+            [-half - disc.sqrt(), -half + disc.sqrt()]
+                .into_iter()
+                .map(|s| o + w * s)
+                .min_by(|a, b| a.distance(p0).total_cmp(&b.distance(p0)))
+        }
+    }
+}
+
+/// `edges` read as one straight round of `radius` between a plane and a
+/// plane or a cylinder along the edge, whose contact on the plane runs
+/// past sharp edges of it, held as hold edge holds them; `None` for any
+/// other request, or where anything else of the solid stands within its
+/// reach. The edges may be a chain along one line, each between faces of
+/// the same two surfaces.
 ///
 /// # Errors
 ///
@@ -1082,7 +1448,9 @@ pub(crate) fn reach(
                 .node(f)
                 .and_then(|n| n.data().as_face())
                 .and_then(|d| model.geometry().surface(d.surface))
-                .is_some_and(|s| matches!(s, SurfaceGeometry::Plane(_)))
+                .is_some_and(|s| {
+                    matches!(s, SurfaceGeometry::Plane(_) | SurfaceGeometry::Cylinder(_))
+                })
         });
         if kinds.len() != 2 || !planes {
             return Ok(None);
@@ -1134,6 +1502,47 @@ pub(crate) fn reach(
         side.sort_unstable();
         side.dedup();
     }
+    // Each side's faces: planes, or faces of one cylinder whose axis runs
+    // along the edge.
+    let front_of = |side: &[usize]| -> Option<Front> {
+        let mut found: Option<(Point, f64, f64)> = None;
+        let mut plane = false;
+        for fi in side {
+            match &curved.faces[*fi].surface {
+                SurfaceGeometry::Plane(_) => plane = true,
+                SurfaceGeometry::Cylinder(c) => {
+                    let axis = c.cylinder().axis();
+                    if axis.direction.vector().cross(along).magnitude() > ang {
+                        return None;
+                    }
+                    let sense = if curved.faces[*fi].reversed {
+                        -1.0
+                    } else {
+                        1.0
+                    };
+                    let this = (axis.location, c.cylinder().radius(), sense);
+                    if let Some((at, r, s)) = found {
+                        let q = this.0 - at;
+                        let off = (q - along * q.dot(along)).magnitude();
+                        if off > eps || (this.1 - r).abs() > eps || s != this.2 {
+                            return None;
+                        }
+                    }
+                    found = Some(this);
+                }
+                _ => return None,
+            }
+        }
+        match found {
+            None => Some(Front::Plane),
+            Some(_) if plane => None,
+            Some((axis, radius, sense)) => Some(Front::Cylinder {
+                axis,
+                radius,
+                sense,
+            }),
+        }
+    };
     let ours: Vec<usize> = sides.concat();
     if sides[0].iter().any(|f| sides[1].contains(f)) {
         return Ok(None);
@@ -1171,10 +1580,21 @@ pub(crate) fn reach(
     let mut found: Vec<Hold> = Vec::new();
     for (sa, na, nb) in [(0, n0, n1), (1, n1, n0)] {
         let (a_faces, b_faces) = (sides[sa].clone(), sides[1 - sa].clone());
+        let (Some(Front::Plane), Some(front)) = (front_of(&a_faces), front_of(&b_faces)) else {
+            continue;
+        };
+        let Some(centre) = band_centre(p0, along, na, nb, front, radius, eps) else {
+            continue;
+        };
+        // On a cylinder the end faces stand square to the edge.
+        if matches!(front, Front::Cylinder { .. })
+            && (end_normals[0].dot(-along) < 1.0 - ang || end_normals[1].dot(along) < 1.0 - ang)
+        {
+            continue;
+        }
         let across = {
             let v = along.cross(na);
-            let k = -radius / (1.0 + na.dot(nb));
-            let contact = (na + nb) * k + na * radius;
+            let contact = centre + na * radius - p0;
             if contact.dot(v) < 0.0 { -v } else { v }
         };
         // The room the band's balls take up, with a radius to spare.
@@ -1198,6 +1618,8 @@ pub(crate) fn reach(
             len,
             na,
             nb,
+            front,
+            centre,
             across,
             radius,
             rims,
@@ -1275,7 +1697,9 @@ fn clear(model: &Model, hold: &Hold, tol: Tolerances) -> OgeomResult<bool> {
         let Some((ball, _)) = hold.ball(x, None) else {
             return Ok(false);
         };
-        points.extend([ball.on_a, ball.on_b]);
+        points.push(ball.on_a);
+        // A cylinder bulges between the edge and the contact on it.
+        points.extend(hold.across_b_points(hold.on_edge(x), ball.on_b));
     }
     // An end face leaning over the band carries the round past the edge's
     // end.
@@ -1633,14 +2057,17 @@ fn tool(
         curves.len() - 1
     };
     let edge_line = push((e0, e1), segment(points[e0], points[e1], tol)?);
-    let b_start = push((e0, at_b[0]), segment(points[e0], points[at_b[0]], tol)?);
+    let b_start = push(
+        (e0, at_b[0]),
+        hold.across_b(points[e0], points[at_b[0]], tol)?,
+    );
     let a_start = push(
         (e0, at_a[0].1),
         segment(points[e0], points[at_a[0].1], tol)?,
     );
     let b_end = push(
         (e1, at_b[last]),
-        segment(points[e1], points[at_b[last]], tol)?,
+        hold.across_b(points[e1], points[at_b[last]], tol)?,
     );
     let a_end = push(
         (e1, at_a[last].0),
@@ -1757,7 +2184,7 @@ fn tool(
             surface: curved.faces[hold.b].surface.clone(),
             curves: [vec![edge_line, b_end], along_b.clone(), vec![b_start]].concat(),
             at: on_mid + (mb - on_mid) * 0.5,
-            out: hold.nb,
+            out: hold.nb_at(on_mid + (mb - on_mid) * 0.5),
         },
         ToolFace {
             surface: curved.faces[hold.a].surface.clone(),

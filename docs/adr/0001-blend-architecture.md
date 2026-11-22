@@ -3089,6 +3089,8 @@ describes no geometry past that, so the following is settled here.
   oblique end face) is not held in this step and goes on to trim through.
   The part "Hold edge, more seats" below builds vertex seats, several
   runs, chains along one line and oblique end faces.
+  The part "Hold edge, curved faces and general held edges" builds a
+  cylinder beside the edge and held edges of any curve in `a`'s plane.
 
 **Oracle** (`tests/hold_edge.rs`). The reference is the definition,
 sampled without the construction: the ball's centres in closed form (at
@@ -3725,6 +3727,86 @@ distance from a point inside it is that to its nearest side.
   too, either is refused naming hold edge.
 - The square pocket gets trim through's solid, the same as with hold edge
   off.
+
+**Hold edge, curved faces and general held edges (#1237).** The parts
+above hold a round between two planes, its held edges lines or circles
+in `a`'s plane. The public documentation surveyed above states the rule
+by the ball alone (it touches one face and rests on the kept edge) and
+names no restriction on the kind of face or edge; the rolling-ball
+papers [2] define the round as the envelope of a ball kept on the
+boundary, whatever the boundary's curves. What follows is settled from
+those, with the nearest point of `a`'s region as the rule.
+
+- **A cylinder beside the edge.** Where `b` is a cylinder whose axis
+  runs along the edge (the edge one of its rulings), `b`'s offset is the
+  coaxial cylinder at the radius inside the material, and it meets the
+  offset of `a`'s plane in a line along the edge: the band is still a
+  cylinder, its contact on `b` a ruling. Off the band the ball keeps to
+  `b`'s offset: its centre rises from the band's centre round the axis,
+  on the circle of that offset in its plane square to the edge, until it
+  stands the radius from its seat (or the circle turns back from `a`'s
+  plane, and the seat is not reached). Everything else is the parts
+  above: the seat changes, the pieces, the joins.
+- **The end faces there.** A leaning end face cuts that cylinder in an
+  ellipse, so the tool's edge on `b` at an end would be an ellipse's arc;
+  on a cylinder the end faces stand square to the edge, and the tool's
+  edges across `b` at the ends are arcs about the axis. A leaning one
+  goes on to trim through.
+- **Other curved faces beside the edge.** On a cone whose ruling is the
+  edge, or any other curved `b`, the offsets of `a` and `b` meet in a
+  curve, not a line along the edge: the band is not straight, and the
+  pieces above do not apply. A held edge on a curved `a` (a rim on a
+  drum) has no plane to rest the ball over. Both go on to trim through,
+  unchanged.
+- **A held edge of any curve.** A held edge may be any curve lying in
+  `a`'s plane (an ellipse, a B-spline). The ball's foot on it is the
+  curve's nearest point to the centre, found from the nearest of 256
+  points along it by Newton's step kept between its neighbours, to
+  rounding. Where an open held edge runs to an end face, it is carried
+  on past the face along its tangent there, as a line runs on along
+  itself, the ball's feet past the face cut off with the round
+  (amendment "M5f"): a curve's own continuation past its range is not
+  part of the solid, and the tangent is the extension that keeps the
+  centres' path C1 at the end face.
+
+**What is built.** The parts above, with `b` a plane or a cylinder whose
+axis runs along the edge (its end faces then square to the edge), and
+every edge of `a`'s region within reach any curve in `a`'s plane. The
+tool's edges across `b` from the edge to the contact are segments on a
+plane and arcs on the cylinder, their points counted in the box it can
+take up. The tool, its proofs and the options are those of the parts
+above.
+
+**Oracle** (`tests/hold_edge_curved.rs`). As in the parts above. On the
+drum the reference's centre rises on the circle 6 from the drum's axis,
+by bisection, until `sqrt(h^2 + z^2) = r`, `h` the distance in the top's
+plane from the point over it to the top's region; a point counts as cut
+away between its nearest ball's arcs to its contact on the drum and to
+its touch on the top or its foot. On the drum's band far from the pocket
+the reference gives the section's closed form (the triangle from the
+edge to the ball's contacts, less the ball's segment, plus the drum's)
+to 1e-9. The ellipse's and the B-spline's distances are by Newton on
+their own formulas.
+
+| case (r 4) | cut away (built) | reference | error | bound | worst G1 | held edge off its curve |
+|---|---|---|---|---|---|---|
+| drum: part 30 long, front a drum r 10 about `(y, z) = (8, -6)`, pocket r 5 at `(15, 6.5)` sunk 8, held from `x = 12.22` to `17.78` | 30.869925920 | 30.869925919 | 1e-9 | 1.2e-9 | 5.2e-7 rad | 2.7e-15 |
+| ellipse: part 20 long, cliff edge the lower half of the ellipse about `(10, 9)`, semi-axes 14 and 6, held from `x = 2.26` to `17.74` | 65.012388433 | 65.012388498 | 6.5e-8 | 6.6e-9 | 9.4e-7 rad | 4.4e-15 |
+| B-spline: part 20 long, cliff edge the cubic Bezier `(-1, 5.6)`, `(6, 0.6)`, `(14, 1.6)`, `(21, 5.2)`, held from `x = 1.67` to `18.39` | 57.261089158 | 57.261089157 | 1e-9 | 2.2e-9 | 1.0e-6 rad | 3.7e-15 |
+
+The volume comparisons are in the heavy tier (several minutes each, the
+reference's nearest-ball search on the drum and the curves' Newton steps
+dominating); the builds, joins and kept edges are in the default one.
+
+- Each result is valid and closed, every fitted piece meets the band
+  and the front within 1e-5 rad of tangent, and the held edge is kept
+  on its curve within 1e-9 over every foot.
+- Hold edge off: trim through, as before. The drum part's rim is notched
+  (cutting more); the ellipse's and the B-spline's parts are refused by
+  trim through by name. With trim through off too, each is refused
+  naming hold edge.
+- A cone beside the edge, and a bore's rim on the drum, give the same
+  as hold edge off.
 
 ### Amendment: largest-size readings confirmed by the build (#1173)
 
