@@ -57,10 +57,11 @@ pub mod work;
 
 pub use along_edges::note_meeting_along_edge;
 
-pub use ball_chart::TOUCHING as POLE_TOUCHING;
-pub use ball_chart::{POLE_MARGIN, Recharted, rechart_clear_of_poles};
 pub use defeature::remove_faces;
 pub use mesh_region::cut_by_mesh_region;
+pub use ogeom_algo::POLE_TOUCHING;
+// The pole re-chart moved to `ogeom_algo`; re-exported here for one release.
+pub use ogeom_algo::{POLE_MARGIN, Recharted, rechart_clear_of_poles};
 pub use section_face::section_face;
 pub use self_union::self_union;
 

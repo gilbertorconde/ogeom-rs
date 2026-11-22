@@ -49,6 +49,7 @@ mod self_cross;
 pub mod sew;
 pub mod sheet;
 mod sheet_flat;
+mod sphere_chart;
 pub mod sweep;
 pub mod text;
 pub mod thickness;
@@ -129,6 +130,11 @@ pub use sew::{
     sew_around_within, sew_within,
 };
 pub use sheet::{SheetDistortion, SheetMethod, SheetPlacement, SurfaceSheet};
+pub use sphere_chart::{POLE_MARGIN, Recharted, rechart_clear_of_poles};
+// The booleans' side of the pole re-chart: the ball operands turned clear
+// of the other operand, and how near a pole may come before they are.
+#[doc(hidden)]
+pub use sphere_chart::{TOUCHING as POLE_TOUCHING, turned as operands_clear_of_poles};
 pub use sweep::{make_prism, make_prism_tapered, make_revolution};
 pub use text::make_text;
 pub use thickness::{Thickness, thickness, thickness_of_shape};

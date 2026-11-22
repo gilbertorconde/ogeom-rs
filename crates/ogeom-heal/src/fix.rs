@@ -18,9 +18,9 @@ pub struct FixedTrims {
     /// offset each was measured at.
     pub refused: Vec<(Shape, f64)>,
     /// Whether the face, a sphere face whose trim came within
-    /// [`ogeom_bool::POLE_MARGIN`] of a pole of its chart, was re-charted
+    /// [`ogeom_algo::POLE_MARGIN`] of a pole of its chart, was re-charted
     /// about an axis whose poles stand clear of it
-    /// ([`ogeom_bool::rechart_clear_of_poles`]).
+    /// ([`ogeom_algo::rechart_clear_of_poles`]).
     pub recharted: bool,
 }
 
@@ -36,7 +36,7 @@ pub struct FixedTrims {
 /// ([`Model::unshare`]), so their edges keep the trims they have.
 ///
 /// A sphere face whose trim, once every edge has its trim, comes within
-/// [`ogeom_bool::POLE_MARGIN`] of a pole of its chart without running
+/// [`ogeom_algo::POLE_MARGIN`] of a pole of its chart without running
 /// through it is then re-charted about an axis whose poles stand clear of
 /// it: beside a pole no fitted trim follows the curve, and the face would
 /// mesh short and classify wrong.
@@ -61,10 +61,10 @@ pub fn fix_face_pcurves(
         attach_trims(model, plan, fits, tol, &mut report)?;
     }
     if report.refused.is_empty() {
-        match ogeom_bool::rechart_clear_of_poles(model, face, tol)? {
-            ogeom_bool::Recharted::Untouched => {}
-            ogeom_bool::Recharted::Restated => report.recharted = true,
-            ogeom_bool::Recharted::Refused(why) => {
+        match ogeom_algo::rechart_clear_of_poles(model, face, tol)? {
+            ogeom_algo::Recharted::Untouched => {}
+            ogeom_algo::Recharted::Restated => report.recharted = true,
+            ogeom_algo::Recharted::Refused(why) => {
                 ogeom_bail!(NotDone, "{why}");
             }
         }

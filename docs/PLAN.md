@@ -33,7 +33,7 @@ joint fit of curve and images misses its tolerance a hundredfold and
 either chart has a pole, the curve is fitted in space alone and each image
 read off it by inversion, measured lifted against the curve (`projected`
 in `ogeom-intersect/src/approx.rs`), the closer fit standing. A face left
-on its own chart (where `ball_chart.rs` cannot restate it: a face with one
+on its own chart (where `sphere_chart.rs` cannot restate it: a face with one
 new pole inside whose loop round it the seam meridian crosses at no
 vertex, a face placed inside its solid, a face with an edge that has no
 curve in space, a face whose trim holds no pole of its chart) therefore
