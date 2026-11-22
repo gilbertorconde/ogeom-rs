@@ -231,7 +231,7 @@ pub mod mesh {
         OFFSET_FARTHEST, OPTIMAL_UP_TO, OffsetReport, PASSES, PointIndex, Polyline, RIM_CORNER,
         Remesh, RemeshReport, Resolved, Rim, RimId, Section, Side, Simplified, SimplifyReport,
         Smooth, SmoothReport, SubdivideReport, Subdivision, Target, Tessellated, Thicken,
-        Thickened, attach, boolean, boolean_with_shape, bvh, curvature, discretize,
+        Thickened, WeldedMesh, attach, boolean, boolean_with_shape, bvh, curvature, discretize,
         discretize_on_surface, discretize_planar, edge_chords_for, editable, face_boundary,
         face_boundary_in_chart, face_boundary_in_chart_met, face_meshes_for, hatch, hatch_face,
         hollow, inside_boundary, inside_boundary_with, is_straight, is_straight_planar,
@@ -239,7 +239,7 @@ pub mod mesh {
         resolve_self_intersections, section, sections, self_intersections, shadow, simplify,
         tessellate, thicken, triangulate, triangulate_face, triangulate_face_kept,
         triangulate_face_with, triangulate_with_chords, triangulate_with_face_meshes,
-        triangulation_of,
+        triangulate_with_faces, triangulation_of,
     };
 }
 

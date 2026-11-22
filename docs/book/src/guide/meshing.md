@@ -9,6 +9,8 @@ angular bound.
 - The triangulation is stored on the model. Read it back with
   `triangulation_of` and `polyline_of`.
 - `triangulate` returns one welded mesh for a whole shape.
+- `triangulate_with_faces` returns that mesh with the face each
+  triangle lies on, as an index into the shape's faces in exploration order.
 - `simplify` decimates an existing mesh toward a `Target`.
 - `hatch_face` cross-hatches a face, for section fills.
 
