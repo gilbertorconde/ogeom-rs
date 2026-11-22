@@ -1822,7 +1822,9 @@ degrees of square to it, whose contact on one plane's faces runs past \
 their sharp convex edges (lines or circles in that plane) over stretches \
 short of the whole band: there the ball touches the other face and rests \
 on the nearest point of the first plane's faces, an edge or a vertex \
-where one held edge stops and the next goes on (a convex corner), each \
+where one held edge stops and the next goes on (a convex corner), the \
+foot passing from one held edge to the next where they meet tangentially \
+(a chain that turns: line, arc, line), each \
 piece fitted within a confusion and meeting its neighbours and the band \
 G1, and the held edges are kept on their curves. Several stretches on one \
 band are held. A stretch reaching an end of the band needs hold edge at \

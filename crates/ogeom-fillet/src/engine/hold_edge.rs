@@ -15,8 +15,9 @@
 //! seats at once and the two offsets are tangent, so neighbouring pieces
 //! share that ball's characteristic circle and meet G1 on it. From the band
 //! to an edge the spine runs along the edge there, so that circle is the
-//! band's own section; from an edge to a vertex it is the ball's arc in its
-//! plane square to the spine. A piece is fitted through its balls' arcs,
+//! band's own section; from an edge to a vertex, or to the next edge where
+//! the two meet tangentially and the foot passes through their vertex, it
+//! is the ball's arc in its plane square to the spine. A piece is fitted through its balls' arcs,
 //! or, where it reaches an end face, through its sections by planes turning
 //! to that face's plane. Past an end face the centres run on as they are
 //! and the end face's plane cuts the round (amendment "M5f"). A ball
@@ -163,6 +164,19 @@ impl Rim {
         }
     }
 
+    /// The unit tangent of the rim's curve at `p` on it, `None` on a
+    /// circle's axis.
+    fn tangent(&self, p: Point) -> Option<Vector> {
+        match self.cliff {
+            Cliff::Line { along, .. } => Some(along),
+            Cliff::Circle { centre, normal, .. } => {
+                let t = normal.cross(p - centre);
+                let m = t.magnitude();
+                (m > 0.0).then(|| t / m)
+            }
+        }
+    }
+
     /// Whether `t` lies within the edge itself, not past an end.
     fn covers(&self, t: f64, slack: f64) -> bool {
         match self.cliff {
@@ -176,11 +190,14 @@ impl Rim {
     }
 }
 
-/// A vertex where two sharp edges of `a` meet.
+/// A vertex where two sharp edges of `a` meet, and whether they meet
+/// tangentially there, so the ball's foot passes from one to the other
+/// without resting on the vertex.
 #[derive(Debug, Clone, Copy)]
 struct Corner {
     id: Id,
     at: Point,
+    smooth: bool,
 }
 
 /// A stretch of the edge over which the ball keeps one seat.
@@ -340,6 +357,9 @@ impl Hold {
                     };
                     let (f, seat) = match rim.place(rim.cliff.param(f)) {
                         Along::Inside => (f, Seat::Rim(i)),
+                        // Past a tangent vertex the next edge's own foot is
+                        // as near.
+                        Along::Stopped(k) if self.corners[k].smooth => continue,
                         Along::Stopped(k) => (self.corners[k].at, Seat::Corner(k)),
                     };
                     let d = p.distance(f);
@@ -449,10 +469,11 @@ impl Hold {
     }
 
     /// The edge read into pieces of one seat each, every seat change one
-    /// the round meets G1 across: the band onto an edge it crosses, or an
-    /// edge onto a vertex where it stops. `None` where the seat cannot be
-    /// read, or changes any other way (the ball resting on two edges at
-    /// once, its centre turning a corner).
+    /// the round meets G1 across: the band onto an edge it crosses, an edge
+    /// onto a vertex where it stops, or an edge onto the next where the two
+    /// meet tangentially, the foot passing through their vertex. `None`
+    /// where the seat cannot be read, or changes any other way (the ball
+    /// resting on two edges at once, its centre turning a corner).
     fn read_pieces(&self) -> Option<Vec<Piece>> {
         #[expect(clippy::cast_precision_loss, reason = "a thousand readings")]
         let at = |k: usize| self.len * k as f64 / READINGS as f64;
@@ -522,10 +543,28 @@ impl Hold {
             (Seat::Rim(i), Seat::Corner(k)) | (Seat::Corner(k), Seat::Rim(i)) => {
                 self.rims[i].stops.contains(&Some(k))
             }
+            (Seat::Rim(i), Seat::Rim(j)) => self.passes(i, j, w[0].to),
             _ => false,
         });
         let short = pieces.iter().any(|p| p.to - p.from <= self.radius * 1e-4);
         (fits && !short).then_some(pieces)
+    }
+
+    /// Whether the foot of the ball at `x` passes from rim `i` onto rim `j`
+    /// through a tangent vertex where both stop: the foot on each lies at
+    /// that vertex. Elsewhere the nearest point jumps between them.
+    fn passes(&self, i: usize, j: usize, x: f64) -> bool {
+        let near = self.radius * 1e-6;
+        let [ri, rj] = [&self.rims[i], &self.rims[j]];
+        ri.stops.iter().flatten().any(|&k| {
+            let corner = self.corners[k];
+            corner.smooth
+                && rj.stops.contains(&Some(k))
+                && [Seat::Rim(i), Seat::Rim(j)].into_iter().all(|seat| {
+                    self.ball(x, Some(seat))
+                        .is_some_and(|(b, _)| b.on_a.distance(corner.at) <= near)
+                })
+        })
     }
 
     /// The plane a piece ends in at break `k`, at `x`: the end face's at
@@ -787,6 +826,7 @@ fn rims_of(
                 corners.push(Corner {
                     id: v,
                     at: curved.points[&v],
+                    smooth: false,
                 });
                 corners.len() - 1
             });
@@ -799,6 +839,17 @@ fn rims_of(
             whole,
             stops,
         });
+    }
+    for (k, corner) in corners.iter_mut().enumerate() {
+        let tangents: Vec<Option<Vector>> = rims
+            .iter()
+            .filter(|r| r.stops.contains(&Some(k)))
+            .map(|r| r.tangent(corner.at))
+            .collect();
+        corner.smooth = matches!(
+            tangents[..],
+            [Some(s), Some(t)] if s.cross(t).magnitude() <= tol.angular()
+        );
     }
     Ok(Some((rims, corners)))
 }

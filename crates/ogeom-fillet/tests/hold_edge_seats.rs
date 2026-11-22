@@ -72,6 +72,41 @@ enum Top {
     Below(&'static [(f64, f64)]),
     /// The top holds these pockets, each `(x, y, radius)`.
     Pockets(&'static [(f64, f64, f64)]),
+    /// The top lies in front of the polyline `p0 k p1`, carried on past
+    /// its ends, its corner `k` rounded to `radius`.
+    Rounded([(f64, f64); 3], f64),
+}
+
+/// The corner `k` of the polyline `p0 k p1` rounded to `radius`, the arc's
+/// centre in front of the polyline where it turns clockwise (the region in
+/// front convex there), else behind: the centre, where the arc meets each
+/// line, and each line's unit direction from `p0` toward `p1`.
+#[allow(clippy::type_complexity, reason = "one corner's pieces")]
+fn rounded(
+    [p0, k, p1]: [(f64, f64); 3],
+    radius: f64,
+) -> ((f64, f64), [(f64, f64); 2], [(f64, f64); 2]) {
+    let unit = |a: (f64, f64), b: (f64, f64)| {
+        let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+        let m = dx.hypot(dy);
+        (dx / m, dy / m)
+    };
+    let (d0, d1) = (unit(p0, k), unit(k, p1));
+    // The normals toward the arc's centre, the bisector from `k` along
+    // them to the point `radius` from both lines.
+    let side = if d0.0 * d1.1 - d0.1 * d1.0 < 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let (n0, n1) = ((side * d0.1, -side * d0.0), (side * d1.1, -side * d1.0));
+    let (bx, by) = (n0.0 + n1.0, n0.1 + n1.1);
+    let reach = radius / (bx * n0.0 + by * n0.1) * bx.hypot(by);
+    let m = bx.hypot(by);
+    let c = (k.0 + bx / m * reach, k.1 + by / m * reach);
+    let t0 = (c.0 - n0.0 * radius, c.1 - n0.1 * radius);
+    let t1 = (c.0 - n1.0 * radius, c.1 - n1.1 * radius);
+    (c, [t0, t1], [d0, d1])
 }
 
 /// The distance from `(x, y)` to the segment `a b`, or to the line through
@@ -104,6 +139,37 @@ impl Top {
                 (1..n)
                     .map(|k| to_piece(x, y, line[k - 1], line[k], (k == 1, k == n - 1)))
                     .fold(f64::INFINITY, f64::min)
+            }
+            // The side of the rounded corner the arc's centre lies on is
+            // the wedge between the lines moved `radius` toward it, grown
+            // by `radius`: in front, the top itself; behind, the rest.
+            Self::Rounded(line, radius) => {
+                let (c, _, [d0, d1]) = rounded(line, radius);
+                let convex = d0.0 * d1.1 - d0.1 * d1.0 < 0.0;
+                let side = if convex { 1.0 } else { -1.0 };
+                // How far `(x, y)` stands past each moved line, away from
+                // the centre.
+                let (px, py) = (x - c.0, y - c.1);
+                let o0 = side * (py * d0.0 - px * d0.1);
+                let o1 = side * (py * d1.0 - px * d1.1);
+                let far0 = (c.0 - d0.0, c.1 - d0.1);
+                let far1 = (c.0 + d1.0, c.1 + d1.1);
+                let wedge = if o0 <= 0.0 && o1 <= 0.0 {
+                    -(-o0).min(-o1)
+                } else {
+                    to_piece(x, y, far0, c, (true, false)).min(to_piece(
+                        x,
+                        y,
+                        c,
+                        far1,
+                        (false, true),
+                    ))
+                };
+                if convex {
+                    (wedge - radius).max(0.0)
+                } else {
+                    (radius - wedge).max(0.0)
+                }
             }
             Self::Pockets(pockets) => pockets
                 .iter()
@@ -460,6 +526,297 @@ fn a_vertex_seat_at_the_end_follows_hold_edge_at_end() {
     let b = fillet_edges_overflow(&mut m, &s, &edge, R, off, T).unwrap_err();
     assert_eq!(a.to_string(), b.to_string());
     assert!(a.to_string().contains("sets back"), "{a}");
+    end_off.trim_through = false;
+    let err = fillet_edges_overflow(&mut m, &s, &edge, R, end_off, T).unwrap_err();
+    assert!(
+        err.to_string().contains("hold edge at the end is off"),
+        "{err}"
+    );
+}
+
+/// The top's back edge of the turning part: down from 4.8 deep at `x = 0`
+/// to a corner at `(12, 3.6)`, then more steeply to 0.4 at `x = 20`, the
+/// corner rounded to [`TURN_RADIUS`].
+const TURN: [(f64, f64); 3] = [(0.0, 4.8), (12.0, 3.6), (20.0, 0.4)];
+const TURN_RADIUS: f64 = 8.0;
+
+/// A block 20 by 12 by 15 under `z = 0` whose top lies in front of the
+/// line, arc, line of [`TURN`], a cliff 6 high falling from that edge to a
+/// ledge; its front top edge along `y = 0` asked. The cliff is cut by a
+/// prism standing past the block's ends and back, so it meets no face of
+/// the block in its plane.
+fn turning(m: &mut Model) -> (Shape, Vec<Shape>) {
+    turning_on(m, TURN, TURN_RADIUS)
+}
+
+fn turning_on(m: &mut Model, turn: [(f64, f64); 3], radius: f64) -> (Shape, Vec<Shape>) {
+    use ogeom_geom::{CircleCurve, Curve, LineCurve, PlaneSurface};
+    let block = ogeom_algo::make_box(m, at(0.0, 0.0, -15.0), (20.0, 12.0, 15.0), T)
+        .unwrap()
+        .shape;
+    let (c, [t0, t1], [d0, d1]) = rounded(turn, radius);
+    let convex = d0.0 * d1.1 - d0.1 * d1.0 < 0.0;
+    let floor = -6.0;
+    let on0 = |x: f64| turn[0].1 + (x - turn[0].0) * d0.1 / d0.0;
+    let on1 = |x: f64| turn[2].1 + (x - turn[2].0) * d1.1 / d1.0;
+    let plan = [
+        (-1.0, on0(-1.0)),
+        t0,
+        t1,
+        (21.0, on1(21.0)),
+        (21.0, 13.0),
+        (-1.0, 13.0),
+    ];
+    let p = |(x, y): (f64, f64)| Point::new(x, y, floor);
+    let corners: Vec<Shape> = plan
+        .iter()
+        .map(|q| ogeom_algo::make_vertex(m, p(*q)).shape)
+        .collect();
+    let mut edges = Vec::new();
+    for k in 0..plan.len() {
+        let (a, b) = (plan[k], plan[(k + 1) % plan.len()]);
+        let (va, vb) = (&corners[k], &corners[(k + 1) % plan.len()]);
+        let edge = if k == 1 {
+            // Clockwise in plan about the arc's centre: its circle faces
+            // down.
+            let up = if convex { -Direction::Z } else { Direction::Z };
+            let frame = Frame::new(p(c), up, Direction::X, T).unwrap();
+            let sign = if convex { -1.0 } else { 1.0 };
+            let angle = |q: (f64, f64)| (sign * (q.1 - c.1)).atan2(q.0 - c.0);
+            let circle = ogeom_math::Circle::new(frame, radius, T).unwrap();
+            ogeom_algo::make_edge_between(
+                m,
+                CircleCurve::new(circle).into(),
+                (angle(a), angle(b)),
+                va,
+                vb,
+                T,
+            )
+        } else {
+            let line = Curve::Line(LineCurve::segment(p(a), p(b), T).unwrap());
+            ogeom_algo::make_edge_between(m, line, (0.0, p(a).distance(p(b))), va, vb, T)
+        };
+        edges.push(edge.unwrap().shape);
+    }
+    let wire = ogeom_algo::make_wire(m, &edges, T).unwrap().shape;
+    let plane = PlaneSurface::new(ogeom_math::Plane::new(at(0.0, 0.0, floor)));
+    let face = ogeom_algo::make_face(m, SurfaceGeometry::Plane(plane), &[wire], T)
+        .unwrap()
+        .shape;
+    let cutter = ogeom_algo::make_prism(m, &face, Vector::new(0.0, 0.0, 7.0), T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::cut(m, &block, &cutter, T).unwrap().shape;
+    let edge = edges_where(m, &s, |p| p.y.abs() < 1e-9 && p.z.abs() < 1e-9);
+    assert_eq!(edge.len(), 1, "the front top edge");
+    (s, edge)
+}
+
+/// Where the ball's seat changes on [`turning`]: its contact `(x, 4)`
+/// meets the first line, then the normals to the arc at its ends.
+fn turn_changes(turn: [(f64, f64); 3], radius: f64) -> [f64; 3] {
+    let (_, [t0, t1], [d0, d1]) = rounded(turn, radius);
+    let onto = (R - turn[0].1) * d0.0 / d0.1 + turn[0].0;
+    let off = |t: (f64, f64), d: (f64, f64)| t.0 - (R - t.1) * d.1 / d.0;
+    [onto, off(t0, d0), off(t1, d1)]
+}
+
+/// The ball rolls round a chain that turns: the front top edge of
+/// [`turning`] rounded at 4. Past `x = 8` its contact lies behind the top
+/// and the ball rests on the first cliff edge, then on the arc, then on
+/// the second cliff edge to the end; where one edge passes into the next,
+/// tangentially, the foot runs through their vertex. All three edges are
+/// kept, on their curves, and the three fitted pieces meet each other and
+/// the band G1.
+fn hold_edge_rolls_the_ball_along_a_chain_that_turns_case(heavy: bool) {
+    turns_case(heavy, TURN, TURN_RADIUS);
+}
+
+/// The chain of `turn` rounded to `radius` held, and checked as
+/// [`hold_edge_rolls_the_ball_along_a_chain_that_turns_case`] says.
+fn turns_case(heavy: bool, turn: [(f64, f64); 3], radius: f64) {
+    let mut m = Model::new();
+    let (s, edge) = turning_on(&mut m, turn, radius);
+    let before = volume(&m, &s);
+    let built = fillet_edges(&mut m, &s, &edge, R, T).unwrap();
+    let [onto, arc_from, arc_to] = turn_changes(turn, radius);
+    eprintln!("seat changes {onto} {arc_from} {arc_to}");
+    let mid = |a: f64, b: f64| 0.5 * (a + b);
+    holds(
+        heavy,
+        &m,
+        before,
+        &built,
+        &edge[0],
+        &Reference {
+            top: Top::Rounded(turn, radius),
+        },
+        &[
+            (0.0, onto),
+            (onto, mid(onto, arc_from)),
+            (mid(onto, arc_from), arc_from),
+            (arc_from, mid(arc_from, arc_to)),
+            (mid(arc_from, arc_to), arc_to),
+            (arc_to, mid(arc_to, 20.0)),
+            (mid(arc_to, 20.0), 20.0),
+        ],
+        20.0,
+    );
+    let (c, [t0, t1], _) = rounded(turn, radius);
+    // How far the result's edges on each cliff line stray from it.
+    for (a, b) in [(turn[0], t0), (t1, turn[2])] {
+        let on = |p: Point| p.z.abs() < 1e-6 && to_piece(p.x, p.y, a, b, (true, true)) < 1e-6;
+        let worst = edges_where(&m, &built.shape, on)
+            .iter()
+            .flat_map(|e| {
+                let (cv, (lo, hi)) = ogeom_algo::placed_edge_curve(&m, e, T).unwrap().unwrap();
+                (0..=50).map(move |k| {
+                    cv.point_at(lo + (hi - lo) * f64::from(k) / 50.0, T)
+                        .unwrap()
+                })
+            })
+            .map(|p| to_piece(p.x, p.y, a, b, (true, true)).max(p.z.abs()))
+            .fold(0.0, f64::max);
+        eprintln!("line {a:?}..{b:?} kept, off it by {worst:.1e}");
+        assert!(worst < 1e-9, "off the line by {worst}");
+    }
+    let (lo, hi) = kept_along(&m, &built.shape, turn[0], t0);
+    assert!(
+        lo <= onto + 1e-6 && hi >= t0.0 - 1e-6,
+        "first edge {lo}..{hi}"
+    );
+    let (lo, hi) = kept_along(&m, &built.shape, t1, turn[2]);
+    assert!(
+        lo <= t1.0 + 1e-6 && hi >= 20.0 - 1e-6,
+        "second edge {lo}..{hi}"
+    );
+    // The arc: an edge of the result on its circle, end to end, every
+    // point of it there within 1e-6.
+    let on_arc =
+        |p: Point| p.z.abs() < 1e-6 && ((p.x - c.0).hypot(p.y - c.1) - radius).abs() < 1e-6;
+    let arcs = edges_where(&m, &built.shape, on_arc);
+    let worst = arcs
+        .iter()
+        .flat_map(|e| {
+            let (cv, (a, b)) = ogeom_algo::placed_edge_curve(&m, e, T).unwrap().unwrap();
+            (0..=50).map(move |k| cv.point_at(a + (b - a) * f64::from(k) / 50.0, T).unwrap())
+        })
+        .map(|p| ((p.x - c.0).hypot(p.y - c.1) - radius).abs().max(p.z.abs()))
+        .fold(0.0, f64::max);
+    let spans: Vec<(f64, f64)> = arcs
+        .iter()
+        .map(|e| {
+            let (cv, (a, b)) = ogeom_algo::placed_edge_curve(&m, e, T).unwrap().unwrap();
+            let (p, q) = (cv.point_at(a, T).unwrap(), cv.point_at(b, T).unwrap());
+            (p.x.min(q.x), p.x.max(q.x))
+        })
+        .collect();
+    eprintln!("arc kept {spans:?}, off its circle by {worst:.1e}");
+    assert!(worst < 1e-9, "off the arc by {worst}");
+    assert!(
+        spans
+            .iter()
+            .any(|(a, b)| *a <= t0.0 + 1e-6 && *b >= t1.0 - 1e-6),
+        "the arc from {t0:?} to {t1:?} is kept: {spans:?}"
+    );
+}
+
+#[test]
+fn hold_edge_rolls_the_ball_along_a_chain_that_turns() {
+    hold_edge_rolls_the_ball_along_a_chain_that_turns_case(false);
+}
+
+/// The turning chain's volume against the reference, split at its seat
+/// changes.
+#[test]
+#[ignore = "heavy"]
+fn a_chain_that_turns_cuts_away_the_reference() {
+    hold_edge_rolls_the_ball_along_a_chain_that_turns_case(true);
+}
+
+/// The reference's rounded top, its corner rounded to next to nothing, is
+/// the polyline's: the same distance from points round the corner on
+/// either side, either way it turns.
+#[test]
+fn a_corner_rounded_to_nothing_is_the_polyline() {
+    for line in [&KINK, &TURN, &WIDEN] {
+        for k in 0..=40 {
+            let x = 20.0 * f64::from(k) / 40.0;
+            for y in [0.5, 2.0, 3.0, 4.0, 6.0] {
+                let a = Top::Rounded(*line, 1e-9).distance(x, y);
+                let b = Top::Below(line).distance(x, y);
+                assert!((a - b).abs() < 1e-8, "({x}, {y}): {a} against {b}");
+            }
+        }
+    }
+}
+
+/// The top's back edge of the widening part: down from 7 deep at `x = 0`
+/// to a corner at `(9, 2.5)`, then less steeply to 1.5 at `x = 20`, the
+/// corner (concave in the top) rounded to [`WIDEN_RADIUS`].
+const WIDEN: [(f64, f64); 3] = [(0.0, 7.0), (9.0, 2.5), (20.0, 1.5)];
+const WIDEN_RADIUS: f64 = 6.0;
+
+/// The chain turns the other way: the top's edge falls steeply, then the
+/// arc bends it back toward the edge's direction. Past `x = 6` the ball
+/// rests on the first cliff edge, the arc and the second cliff edge in
+/// turn, its foot passing each tangent vertex; the arc's centre lies
+/// behind the top, farther than any ball's centre from the arc.
+fn a_chain_turning_the_other_way_case(heavy: bool) {
+    turns_case(heavy, WIDEN, WIDEN_RADIUS);
+}
+
+#[test]
+fn hold_edge_rolls_the_ball_along_a_chain_turning_the_other_way() {
+    a_chain_turning_the_other_way_case(false);
+}
+
+/// The other way's volume against the reference.
+#[test]
+#[ignore = "heavy"]
+fn a_chain_turning_the_other_way_cuts_away_the_reference() {
+    a_chain_turning_the_other_way_case(true);
+}
+
+/// The same chain with its corner rounded to 1.5, less than the depth its
+/// balls stand behind the top: the ball's nearest point jumps from the
+/// first cliff edge to the second without passing over the arc, resting on
+/// two edges at once. That is not held: the request gets the same answer
+/// as with hold edge off, trim through's refusal of this part.
+#[test]
+fn a_ball_jumping_across_a_small_arc_is_not_held() {
+    let mut m = Model::new();
+    let (s, edge) = turning_on(&mut m, WIDEN, 1.5);
+    let mut off = Overflow::default();
+    off.hold_edge = false;
+    let on = fillet_edges(&mut m, &s, &edge, R, T).unwrap_err();
+    let held_off = fillet_edges_overflow(&mut m, &s, &edge, R, off, T).unwrap_err();
+    assert_eq!(on.to_string(), held_off.to_string());
+    assert!(
+        on.to_string().contains("builds no round of this kind"),
+        "{on}"
+    );
+}
+
+/// The turning chain's run reaches the part's end: with hold edge at the
+/// end off, or hold edge off, the request goes on to trim through, which
+/// refuses this part by name; with trim through off too it is refused
+/// naming hold edge at the end.
+#[test]
+fn a_chain_that_turns_at_the_end_follows_hold_edge_at_end() {
+    let mut m = Model::new();
+    let (s, edge) = turning(&mut m);
+    let mut end_off = Overflow::default();
+    end_off.hold_edge_at_end = false;
+    let mut off = Overflow::default();
+    off.hold_edge = false;
+    let a = fillet_edges_overflow(&mut m, &s, &edge, R, end_off, T).unwrap_err();
+    let b = fillet_edges_overflow(&mut m, &s, &edge, R, off, T).unwrap_err();
+    assert_eq!(a.to_string(), b.to_string());
+    assert!(
+        a.to_string().contains("builds no round of this kind"),
+        "{a}"
+    );
     end_off.trim_through = false;
     let err = fillet_edges_overflow(&mut m, &s, &edge, R, end_off, T).unwrap_err();
     assert!(
