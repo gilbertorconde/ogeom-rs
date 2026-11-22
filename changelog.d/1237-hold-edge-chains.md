@@ -1,4 +1,3 @@
 - **Added: hold edge on a chain that turns (line, arc, line)** (#1237).
   - Where the held edges of a face meet tangentially (a line, an arc and a line in its plane), the ball's foot passes from one to the next through their vertex, and the round there is one fitted piece per edge, each meeting the next G1 on the ball's arc at that vertex. Both turns are built: the top narrowing round a convex rounded corner, and widening round a concave one.
-  - Where the nearest point jumps from one edge to another instead (an arc smaller than the depth the balls stand behind the face), the request goes on to trim through, as before.
   - A block 20 long, its front top edge r 4 under a cliff edge of line, arc r 8, line: cut away 56.964521731 against a reference of 56.964521704 (bound 7.3e-9); turning the other way round an arc r 6: 52.196848416 against 52.196848455 (bound 7.9e-8). The held edges stay on their curves within 2e-15.

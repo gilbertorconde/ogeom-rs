@@ -1,0 +1,5 @@
+- **Added: hold edge where the ball rests on two edges at once** (#1237).
+  - Where the nearest point of the held face's region jumps from one sharp edge to another (a pocket's corner, or a chain's corner rounded less than the balls stand behind the face), the ball touches both. The round there is that ball's own sphere between its arcs to the two feet, meeting the pieces either side G1, and the faces past the two edges trim the round where it passes over them, so the edges between the two feet are cut away. Each held edge stays on its curve under every foot.
+  - A block 30 long, front top edge r 4, a pocket with leaning sides 2 behind the edge: cut away 92.927741790 against a reference of 92.927741349 (bound 1.2e-6). The chain line, arc r 1.5, line: 52.131868295 against 52.131868360 (bound 3.4e-9). Joins within 3.2e-6 rad.
+  - Not held, still trim through as before: a pocket whose sides stand square to the edge (the foot rests on one point of the side, and the band's section there lies in the side's own plane).
+  - Changed: with hold edge off and trim through off, these parts are now refused naming hold edge.

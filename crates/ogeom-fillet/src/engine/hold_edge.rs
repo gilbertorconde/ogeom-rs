@@ -20,13 +20,18 @@
 //! is the ball's arc in its plane square to the spine. A piece is fitted through its balls' arcs,
 //! or, where it reaches an end face, through its sections by planes turning
 //! to that face's plane. Past an end face the centres run on as they are
-//! and the end face's plane cuts the round (amendment "M5f"). A ball
-//! resting on two edges at once, its centre turning a corner, is not held.
+//! and the end face's plane cuts the round (amendment "M5f"). Where the
+//! nearest point jumps from one edge to another, the ball resting on both
+//! at once, its centre's path turns a corner: the round there is that
+//! ball's own surface between its two arcs, up to `a`'s plane, which meets
+//! both pieces G1, and the faces past the two edges trim the round where
+//! it passes over them.
 //!
 //! The region between the edge and the round is one closed tool, cut from
 //! the solid; it is built only where nothing else of the solid stands
-//! within its reach, the cut takes the tool's whole volume, the result is
-//! valid and the held edges are still there under every ball's foot.
+//! within its reach, the cut takes the tool's whole volume (where the ball
+//! jumps between edges, its volume within the solid), the result is valid
+//! and the held edges are still there under every ball's foot.
 
 use core::f64::consts::TAU;
 
@@ -200,12 +205,32 @@ struct Corner {
     smooth: bool,
 }
 
-/// A stretch of the edge over which the ball keeps one seat.
+/// A stretch of the edge over which the ball keeps one seat, and whether
+/// the foot jumps onto it from the previous piece's edge.
 #[derive(Debug, Clone, Copy)]
 struct Piece {
     seat: Seat,
     from: f64,
     to: f64,
+    jump: bool,
+}
+
+/// The ball where the foot jumps from one edge to another: its centre, its
+/// contact on `b`, its feet on the two edges and the spine's unit tangent
+/// on each side, and the arc in `a`'s plane between the feet where the
+/// ball's surface meets that plane, about `hub` square to `normal`, from
+/// the direction `from` through `sweep` at radius `reach`.
+#[derive(Debug, Clone, Copy)]
+struct Jump {
+    centre: Point,
+    on_b: Point,
+    feet: [Point; 2],
+    spines: [Vector; 2],
+    hub: Point,
+    normal: Vector,
+    from: Vector,
+    reach: f64,
+    sweep: f64,
 }
 
 /// A straight round whose contact on face `a` runs past sharp edges of it,
@@ -471,9 +496,10 @@ impl Hold {
     /// The edge read into pieces of one seat each, every seat change one
     /// the round meets G1 across: the band onto an edge it crosses, an edge
     /// onto a vertex where it stops, or an edge onto the next where the two
-    /// meet tangentially, the foot passing through their vertex. `None`
-    /// where the seat cannot be read, or changes any other way (the ball
-    /// resting on two edges at once, its centre turning a corner).
+    /// meet tangentially, the foot passing through their vertex, or an
+    /// edge onto another the foot jumps to, the ball resting on both, its
+    /// own sphere meeting the pieces either side G1. `None` where the seat
+    /// cannot be read, or changes any other way.
     fn read_pieces(&self) -> Option<Vec<Piece>> {
         #[expect(clippy::cast_precision_loss, reason = "a thousand readings")]
         let at = |k: usize| self.len * k as f64 / READINGS as f64;
@@ -508,6 +534,7 @@ impl Hold {
                 seat: left.0,
                 from,
                 to: end,
+                jump: false,
             });
             if start - end > self.len * 1e-9 {
                 // A seat between the readings: it holds over the gap.
@@ -522,6 +549,7 @@ impl Hold {
                     seat,
                     from: end,
                     to: start,
+                    jump: false,
                 });
                 from = start;
             } else {
@@ -537,15 +565,24 @@ impl Hold {
             seat: last.0,
             from,
             to: self.len,
+            jump: false,
         });
-        let fits = pieces.windows(2).all(|w| match (w[0].seat, w[1].seat) {
-            (Seat::Face, Seat::Rim(_)) | (Seat::Rim(_), Seat::Face) => true,
-            (Seat::Rim(i), Seat::Corner(k)) | (Seat::Corner(k), Seat::Rim(i)) => {
-                self.rims[i].stops.contains(&Some(k))
-            }
-            (Seat::Rim(i), Seat::Rim(j)) => self.passes(i, j, w[0].to),
-            _ => false,
-        });
+        let mut fits = true;
+        for k in 1..pieces.len() {
+            let (before, x) = (pieces[k - 1].seat, pieces[k - 1].to);
+            fits &= match (before, pieces[k].seat) {
+                (Seat::Face, Seat::Rim(_)) | (Seat::Rim(_), Seat::Face) => true,
+                (Seat::Rim(i), Seat::Corner(c)) | (Seat::Corner(c), Seat::Rim(i)) => {
+                    self.rims[i].stops.contains(&Some(c))
+                }
+                (Seat::Rim(i), Seat::Rim(j)) => {
+                    let jump = !self.passes(i, j, x) && self.jump(x, i, j).is_some();
+                    pieces[k].jump = jump;
+                    jump || self.passes(i, j, x)
+                }
+                _ => false,
+            };
+        }
         let short = pieces.iter().any(|p| p.to - p.from <= self.radius * 1e-4);
         (fits && !short).then_some(pieces)
     }
@@ -567,11 +604,132 @@ impl Hold {
         })
     }
 
-    /// The plane a piece ends in at break `k`, at `x`: the end face's at
-    /// an end; square to the edge where the band meets an edge, the spine
-    /// running along it there; else the plane of the ball's arc, square to
-    /// the spine. Each normal points along the edge.
-    fn plane_at(&self, x: f64, k: usize) -> Option<(Point, Vector)> {
+    /// The unit tangent of the path of the centres on `seat` at `x`.
+    fn spine(&self, x: f64, seat: Seat) -> Option<Vector> {
+        let h = self.radius * 1e-5;
+        let (ahead, _) = self.ball(x + h, Some(seat))?;
+        let (behind, _) = self.ball(x - h, Some(seat))?;
+        let t = ahead.centre - behind.centre;
+        let m = t.magnitude();
+        (m > 0.0).then(|| t / m)
+    }
+
+    /// The ball at `x` where the foot jumps from rim `i` to rim `j`: one
+    /// centre the radius from both, two feet apart, the path of the centres
+    /// turning there, and each foot clear of the other side's next balls,
+    /// so the ball's surface between its two arcs (the lune facing the way
+    /// the path turns from) is the round there. `None` for any other change.
+    fn jump(&self, x: f64, i: usize, j: usize) -> Option<Jump> {
+        let r = self.radius;
+        let near = r * 1e-6;
+        let (bi, _) = self.ball(x, Some(Seat::Rim(i)))?;
+        let (bj, _) = self.ball(x, Some(Seat::Rim(j)))?;
+        let (ti, tj) = (self.spine(x, Seat::Rim(i))?, self.spine(x, Seat::Rim(j))?);
+        let c = bi.centre;
+        let (ui, uj) = ((bi.on_a - c) / r, (bj.on_a - c) / r);
+        let apart = c.distance(bj.centre) <= near
+            && bi.on_a.distance(bj.on_a) > near
+            && ti.cross(tj).magnitude() > 1e-6;
+        if !apart || ui.dot(tj) > 1e-7 || uj.dot(ti) < -1e-7 {
+            return None;
+        }
+        let hub = c - self.na * (c - self.origin).dot(self.na);
+        let (fi, fj) = (bi.on_a - hub, bj.on_a - hub);
+        let reach = fi.magnitude();
+        if reach <= near || (fj.magnitude() - reach).abs() > near {
+            return None;
+        }
+        let from = fi / reach;
+        let turn = fj
+            .dot(self.na.cross(from))
+            .atan2(fj.dot(from))
+            .rem_euclid(TAU);
+        // The way round from one foot to the other that stays on the lune.
+        [(self.na, turn), (-self.na, TAU - turn)]
+            .into_iter()
+            .find(|(normal, sweep)| {
+                let half = 0.5 * sweep;
+                let mid = hub + (from * half.cos() + normal.cross(from) * half.sin()) * reach;
+                (mid - c).dot(ti) >= -near && (mid - c).dot(tj) <= near
+            })
+            .map(|(normal, sweep)| Jump {
+                centre: c,
+                on_b: bi.on_b,
+                feet: [bi.on_a, bj.on_a],
+                spines: [ti, tj],
+                hub,
+                normal,
+                from,
+                reach,
+                sweep,
+            })
+    }
+
+    /// The jump at the start of piece `k`, where it has one.
+    fn jump_into(&self, k: usize) -> Option<Option<Jump>> {
+        let piece = self.pieces[k];
+        if !piece.jump {
+            return Some(None);
+        }
+        let (Seat::Rim(i), Seat::Rim(j)) = (self.pieces[k - 1].seat, piece.seat) else {
+            return None;
+        };
+        self.jump(piece.from, i, j).map(Some)
+    }
+
+    /// The one point every ball of piece `k` sets its foot on, where there
+    /// is one: a vertex seat, or an edge square to the spine.
+    fn pin(&self, k: usize) -> Option<Point> {
+        let piece = self.pieces[k];
+        match piece.seat {
+            Seat::Face => None,
+            Seat::Corner(c) => Some(self.corners[c].at),
+            Seat::Rim(_) => {
+                let foot = |x: f64| self.ball(x, Some(piece.seat)).map(|(b, _)| b.on_a);
+                let mid = 0.5 * (piece.from + piece.to);
+                let (p, q, m) = (foot(piece.from)?, foot(piece.to)?, foot(mid)?);
+                let near = self.radius * 1e-9;
+                (p.distance(q) <= near && p.distance(m) <= near).then_some(m)
+            }
+        }
+    }
+
+    /// The rims from `i` to `j` through the vertices where they stop, and
+    /// those vertices, by the fewest rims; `None` where no walk joins them.
+    fn walk(&self, i: usize, j: usize) -> Option<(Vec<usize>, Vec<usize>)> {
+        let mut came: Vec<Option<(usize, usize)>> = vec![None; self.rims.len()];
+        let mut queue = std::collections::VecDeque::from([i]);
+        let mut seen = vec![false; self.rims.len()];
+        seen[i] = true;
+        while let Some(a) = queue.pop_front() {
+            if a == j {
+                let (mut rims, mut corners) = (vec![j], Vec::new());
+                let mut at = j;
+                while let Some((prev, corner)) = came[at] {
+                    rims.push(prev);
+                    corners.push(corner);
+                    at = prev;
+                }
+                return Some((rims, corners));
+            }
+            for &c in self.rims[a].stops.iter().flatten() {
+                for (b, rim) in self.rims.iter().enumerate() {
+                    if !seen[b] && rim.stops.contains(&Some(c)) {
+                        seen[b] = true;
+                        came[b] = Some((a, c));
+                        queue.push_back(b);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// The plane a piece on `seat` ends in at break `k`, at `x`: the end
+    /// face's at an end; square to the edge where the band meets an edge,
+    /// the spine running along it there; else the plane of the ball's arc,
+    /// square to the spine. Each normal points along the edge.
+    fn plane_at(&self, x: f64, k: usize, seat: Seat) -> Option<(Point, Vector)> {
         let last = self.pieces.len();
         if k == 0 {
             return Some((self.on_edge(x), -self.end_normals[0]));
@@ -580,21 +738,11 @@ impl Hold {
             return Some((self.on_edge(x), self.end_normals[1]));
         }
         let square = self.pieces[k - 1].seat == Seat::Face || self.pieces[k].seat == Seat::Face;
-        let seat = if k == 0 {
-            self.pieces[0].seat
-        } else {
-            self.pieces[k - 1].seat
-        };
         let (ball, _) = self.ball(x, Some(seat))?;
         if square {
             return Some((ball.centre, self.along));
         }
-        let h = self.radius * 1e-5;
-        let (ahead, _) = self.ball(x + h, Some(seat))?;
-        let (behind, _) = self.ball(x - h, Some(seat))?;
-        let t = ahead.centre - behind.centre;
-        let m = t.magnitude();
-        (m > 0.0).then(|| (ball.centre, t / m))
+        Some((ball.centre, self.spine(x, seat)?))
     }
 
     /// Where the end face at break `k` (the first or the last) cuts the
@@ -606,7 +754,7 @@ impl Hold {
         } else {
             (self.len, self.pieces[last - 1])
         };
-        let (at, normal) = self.plane_at(x, k)?;
+        let (at, normal) = self.plane_at(x, k, piece.seat)?;
         if piece.seat == Seat::Face {
             // The band's contact lines, straight along the edge, met by
             // the end face's plane.
@@ -1137,6 +1285,20 @@ fn clear(model: &Model, hold: &Hold, tol: Tolerances) -> OgeomResult<bool> {
         };
         points.extend([pb, pa]);
     }
+    // Where the foot jumps, the ball's arc in `a`'s plane bulges toward the
+    // corner between the two edges.
+    for k in 1..hold.pieces.len() {
+        let Some(jump) = hold.jump_into(k) else {
+            return Ok(false);
+        };
+        if let Some(j) = jump {
+            let w = j.normal.cross(j.from);
+            points.extend((0..=16).map(|s| {
+                let t = j.sweep * f64::from(s) / 16.0;
+                j.hub + (j.from * t.cos() + w * t.sin()) * j.reach
+            }));
+        }
+    }
     let room = Aabb::of_points(&points);
     let margin = hold.radius * 1e-3 + eps * 10.0;
     let (Some(lo), Some(hi)) = (room.low(), room.high()) else {
@@ -1163,6 +1325,27 @@ fn clear(model: &Model, hold: &Hold, tol: Tolerances) -> OgeomResult<bool> {
                 let v = hold.corners[k].id;
                 ours.extend((0..c.faces.len()).filter(|fi| touches(c, *fi, v)));
             }
+        }
+    }
+    // Where the foot jumps, the round passes over the edges between the two
+    // it rests on, and the faces past them trim it.
+    for (k, pair) in hold.pieces.windows(2).enumerate() {
+        let (Seat::Rim(i), Seat::Rim(j)) = (pair[0].seat, pair[1].seat) else {
+            continue;
+        };
+        if !hold.pieces[k + 1].jump {
+            continue;
+        }
+        let Some((rims, corners)) = hold.walk(i, j) else {
+            return Ok(false);
+        };
+        for r in rims {
+            held.push(hold.rims[r].id);
+            ours.extend(faces_of(c, hold.rims[r].id));
+        }
+        for k in corners {
+            let v = hold.corners[k].id;
+            ours.extend((0..c.faces.len()).filter(|fi| touches(c, *fi, v)));
         }
     }
     ours.sort_unstable();
@@ -1327,12 +1510,31 @@ fn tool(
     let last = pieces.len();
     let mut breaks = vec![0.0];
     breaks.extend(pieces.iter().map(|p| p.to));
-    let mut planes = Vec::with_capacity(breaks.len());
-    for (k, &x) in breaks.iter().enumerate() {
-        let Some(plane) = hold.plane_at(x, k) else {
-            return Ok(None);
+    // The pieces either side of each break.
+    let sides = |k: usize| (k.saturating_sub(1), k.min(last - 1));
+    let mut jumps = Vec::with_capacity(breaks.len());
+    for k in 0..breaks.len() {
+        let jump = if k == 0 || k == last {
+            None
+        } else {
+            let Some(jump) = hold.jump_into(k) else {
+                return Ok(None);
+            };
+            jump
         };
-        planes.push(plane);
+        jumps.push(jump);
+    }
+    let pins: Vec<Option<Point>> = (0..last).map(|k| hold.pin(k)).collect();
+    // An edge square to the spine holds every foot on one point, and where
+    // the band meets it the band's section lies in the plane of the face
+    // past it: a tool edge lying in a face of the solid, which the boolean
+    // does not resolve. Not built.
+    if pieces
+        .iter()
+        .zip(&pins)
+        .any(|(p, pin)| matches!(p.seat, Seat::Rim(_)) && pin.is_some())
+    {
+        return Ok(None);
     }
     // Each piece off the band, fitted once.
     let mut surfaces = Vec::with_capacity(last);
@@ -1340,14 +1542,24 @@ fn tool(
         surfaces.push(if piece.seat == Seat::Face {
             None
         } else {
-            // A vertex piece's balls all pass through the vertex: it is
-            // fitted through their arcs, and not built where an end face
-            // would cut it.
+            // A piece whose balls all pass through one point is fitted
+            // through their arcs, and not built where an end face would
+            // cut it.
             let reaches_end = k == 0 || k + 1 == last;
-            if reaches_end && matches!(piece.seat, Seat::Corner(_)) {
+            if reaches_end && pins[k].is_some() {
                 return Ok(None);
             }
-            let planes = reaches_end.then(|| (planes[k], planes[k + 1]));
+            let planes = if reaches_end {
+                let (Some(p0), Some(p1)) = (
+                    hold.plane_at(piece.from, k, piece.seat),
+                    hold.plane_at(piece.to, k + 1, piece.seat),
+                ) else {
+                    return Ok(None);
+                };
+                Some((p0, p1))
+            } else {
+                None
+            };
             let Some(s) = fitted(hold, piece.seat, (piece.from, piece.to), planes, tol)? else {
                 return Ok(None);
             };
@@ -1355,49 +1567,64 @@ fn tool(
         });
     }
     let mut points = vec![hold.on_edge(0.0), hold.on_edge(hold.len)];
-    let mut corner_points: Vec<(usize, usize)> = Vec::new();
-    // At each break, its contact on `b` and on `a` or the held edge.
+    // A point every ball of a piece sets its foot on is one point for
+    // every break that piece reaches.
+    let mut pinned: Vec<Option<usize>> = vec![None; last];
+    let foot = |j: usize, at: Point, points: &mut Vec<Point>, pinned: &mut Vec<Option<usize>>| {
+        let Some(pin) = pins[j] else {
+            points.push(at);
+            return points.len() - 1;
+        };
+        *pinned[j].get_or_insert_with(|| {
+            points.push(pin);
+            points.len() - 1
+        })
+    };
+    // At each break, its contact on `b`, and its feet on `a` or the held
+    // edges, the piece before's and the piece after's, two apart where the
+    // foot jumps.
     let mut at_b = Vec::with_capacity(breaks.len());
-    let mut at_a = Vec::with_capacity(breaks.len());
+    let mut at_a: Vec<(usize, usize)> = Vec::with_capacity(breaks.len());
     for (k, &x) in breaks.iter().enumerate() {
-        let piece = if k == last { pieces[k - 1] } else { pieces[k] };
-        let end = k == 0 || k == last;
-        let (pb, pa) = if end {
+        let (before, after) = sides(k);
+        if let Some(jump) = jumps[k] {
+            at_b.push(points.len());
+            points.push(jump.on_b);
+            let left = foot(before, jump.feet[0], &mut points, &mut pinned);
+            let right = foot(after, jump.feet[1], &mut points, &mut pinned);
+            at_a.push((left, right));
+            continue;
+        }
+        let (pb, pa) = if k == 0 || k == last {
             let Some(cut) = hold.end_cut(k) else {
                 return Ok(None);
             };
             cut
         } else {
-            let Some((ball, _)) = hold.ball(x, Some(piece.seat)) else {
+            let Some((ball, _)) = hold.ball(x, Some(pieces[after].seat)) else {
                 return Ok(None);
             };
             (ball.on_b, ball.on_a)
         };
         at_b.push(points.len());
         points.push(pb);
-        // A held vertex is one point for every piece reaching it.
-        let corner = [
-            k.checked_sub(1).map(|j| pieces[j].seat),
-            pieces.get(k).map(|p| p.seat),
-        ]
-        .into_iter()
-        .flatten()
-        .find_map(|s| match s {
-            Seat::Corner(c) => Some(c),
-            _ => None,
-        });
-        if let Some(c) = corner {
-            if let Some(&(_, i)) = corner_points.iter().find(|(cc, _)| *cc == c) {
-                at_a.push(i);
-            } else {
-                corner_points.push((c, points.len()));
-                at_a.push(points.len());
-                points.push(hold.corners[c].at);
+        let one = match (
+            pins[before].is_some() && k > 0,
+            pins[after].is_some() && k < last,
+        ) {
+            (true, true) => {
+                let i = foot(before, pa, &mut points, &mut pinned);
+                pinned[after] = Some(i);
+                i
             }
-        } else {
-            at_a.push(points.len());
-            points.push(pa);
-        }
+            (true, false) => foot(before, pa, &mut points, &mut pinned),
+            (false, true) => foot(after, pa, &mut points, &mut pinned),
+            (false, false) => {
+                points.push(pa);
+                points.len() - 1
+            }
+        };
+        at_a.push((one, one));
     }
     let (e0, e1) = (0, 1);
     let mut curves: Vec<SheetCurve> = Vec::new();
@@ -1407,74 +1634,90 @@ fn tool(
     };
     let edge_line = push((e0, e1), segment(points[e0], points[e1], tol)?);
     let b_start = push((e0, at_b[0]), segment(points[e0], points[at_b[0]], tol)?);
-    let a_start = push((e0, at_a[0]), segment(points[e0], points[at_a[0]], tol)?);
+    let a_start = push(
+        (e0, at_a[0].1),
+        segment(points[e0], points[at_a[0].1], tol)?,
+    );
     let b_end = push(
         (e1, at_b[last]),
         segment(points[e1], points[at_b[last]], tol)?,
     );
     let a_end = push(
-        (e1, at_a[last]),
-        segment(points[e1], points[at_a[last]], tol)?,
+        (e1, at_a[last].0),
+        segment(points[e1], points[at_a[last].0], tol)?,
     );
-    // The section at each break: the band's arc, the arc of the ball two
-    // pieces share, or a fitted piece's end in an end face's plane. Where a
-    // piece on a vertex meets the next it is that piece's own end, which
-    // its surface holds exactly up to the vertex it closes to.
-    let mut sections = Vec::with_capacity(breaks.len());
+    // The section at each break, the piece before's and the piece after's:
+    // the band's arc, the arc of the ball two pieces share, or a fitted
+    // piece's end in an end face's plane. A piece whose feet stay on one
+    // point ends in its own boundary, which its surface holds exactly up
+    // to the point it closes to. Where the foot jumps, the two are the
+    // ball's arcs to its two feet.
+    let mut sections: Vec<(usize, usize)> = Vec::with_capacity(breaks.len());
     for (k, &x) in breaks.iter().enumerate() {
-        let ends = (at_b[k], at_a[k]);
-        let piece = if k == last { k - 1 } else { k };
-        let on_corner = [k.checked_sub(1), (k < last).then_some(k)]
-            .into_iter()
-            .flatten()
-            .find(|j| matches!(pieces[*j].seat, Seat::Corner(_)));
-        let own = if k == 0 || k == last {
-            Some(piece)
-        } else {
-            on_corner
-        };
-        if let Some(j) = own
-            && let Some(surface) = &surfaces[j]
-        {
-            let Some(side) = boundary_from(surface, &points, ends, tol)? else {
-                return Ok(None);
-            };
-            sections.push(push(side.ends, (side.curve, side.range)));
-        } else {
-            let seat = if k == 0 {
-                pieces[0].seat
+        let (before, after) = sides(k);
+        let end = k == 0 || k == last;
+        let mut side = |j: usize, a: usize| -> OgeomResult<Option<usize>> {
+            let ends = (at_b[k], a);
+            let own = end || pins[j].is_some() || jumps[k].is_some();
+            if own && let Some(surface) = &surfaces[j] {
+                let Some(side) = boundary_from(surface, &points, ends, tol)? else {
+                    return Ok(None);
+                };
+                return Ok(Some(push(side.ends, (side.curve, side.range))));
+            }
+            let (at, normal) = if k == 0 {
+                (hold.on_edge(x), -hold.end_normals[0])
+            } else if k == last {
+                (hold.on_edge(x), hold.end_normals[1])
             } else {
-                pieces[k - 1].seat
+                (points[at_b[k]], hold.along)
             };
-            let (at, normal) = planes[k];
-            let oblique =
-                (k == 0 || k == last) && normal.cross(hold.along).magnitude() > tol.angular();
-            if oblique {
+            if end && normal.cross(hold.along).magnitude() > tol.angular() {
                 // The band cut by an end face leaning over it: an arc of the
                 // ellipse its plane cuts from the band's cylinder.
                 let Some((flip, cut)) =
-                    band_end(hold, at, normal, (points[at_b[k]], points[at_a[k]]), tol)?
+                    band_end(hold, at, normal, (points[ends.0], points[ends.1]), tol)?
                 else {
                     return Ok(None);
                 };
-                sections.push(push(if flip { (ends.1, ends.0) } else { ends }, cut));
-                continue;
+                return Ok(Some(push(if flip { (ends.1, ends.0) } else { ends }, cut)));
             }
-            let Some((ball, _)) = hold.ball(x, Some(seat)) else {
+            let Some((ball, _)) = hold.ball(x, Some(pieces[j].seat)) else {
                 return Ok(None);
             };
-            let (u, w) = (ball.on_b - ball.centre, points[at_a[k]] - ball.centre);
+            let (u, w) = (ball.on_b - ball.centre, points[a] - ball.centre);
             let z = u.cross(w);
             let sweep = (u.dot(w) / (r * r)).clamp(-1.0, 1.0).acos();
-            sections.push(push(ends, arc(ball.centre, z, u, r, sweep, tol)?));
-        }
+            Ok(Some(push(ends, arc(ball.centre, z, u, r, sweep, tol)?)))
+        };
+        let pair = if jumps[k].is_some() {
+            let (Some(left), Some(right)) = (side(before, at_a[k].0)?, side(after, at_a[k].1)?)
+            else {
+                return Ok(None);
+            };
+            (left, right)
+        } else {
+            // Away from the ends, a piece on one point holds the section.
+            let j = if end {
+                if k == 0 { after } else { before }
+            } else if pins[before].is_some() {
+                before
+            } else {
+                after
+            };
+            let Some(one) = side(j, at_a[k].0)? else {
+                return Ok(None);
+            };
+            (one, one)
+        };
+        sections.push(pair);
     }
     // Along each piece, its contact on `b` and on `a` or the held edge; a
-    // piece on a vertex has its one foot there.
+    // piece on one point has its one foot there.
     let mut along_b = Vec::with_capacity(last);
     let mut along_a = Vec::with_capacity(last);
     for (k, surface) in surfaces.iter().enumerate() {
-        let (b0, b1, a0, a1) = (at_b[k], at_b[k + 1], at_a[k], at_a[k + 1]);
+        let (b0, b1, a0, a1) = (at_b[k], at_b[k + 1], at_a[k].1, at_a[k + 1].0);
         if let Some(surface) = surface {
             let Some(sb) = boundary_from(surface, &points, (b0, b1), tol)? else {
                 return Ok(None);
@@ -1491,6 +1734,14 @@ fn tool(
         } else {
             along_b.push(push((b0, b1), segment(points[b0], points[b1], tol)?));
             along_a.push(Some(push((a0, a1), segment(points[a0], points[a1], tol)?)));
+        }
+    }
+    // Where the foot jumps, the arc in `a`'s plane between the two feet.
+    let mut tops = Vec::new();
+    for (k, jump) in jumps.iter().enumerate() {
+        if let Some(j) = jump {
+            let curve = arc(j.hub, j.normal, j.from, j.reach, j.sweep, tol)?;
+            tops.push((k, push(at_a[k], curve)));
         }
     }
     let first = pieces[0];
@@ -1513,6 +1764,7 @@ fn tool(
             curves: [
                 vec![edge_line, a_end],
                 along_a.iter().flatten().copied().collect(),
+                tops.iter().map(|(_, c)| *c).collect(),
                 vec![a_start],
             ]
             .concat(),
@@ -1526,13 +1778,13 @@ fn tool(
         } else {
             (points[e1], hold.end_normals[1])
         };
-        let (pb, pa) = (points[at_b[k]], points[at_a[k]]);
+        let (pb, pa) = (points[at_b[k]], points[at_a[k].0]);
         faces.push(ToolFace {
             surface: curved.faces[end].surface.clone(),
             curves: if k == 0 {
-                vec![b_start, sections[0], a_start]
+                vec![b_start, sections[0].1, a_start]
             } else {
-                vec![b_end, sections[last], a_end]
+                vec![b_end, sections[last].0, a_end]
             },
             at: pe + (pb - pe) * 0.2 + (pa - pe) * 0.2,
             out,
@@ -1562,14 +1814,42 @@ fn tool(
             )?
             .into()
         };
-        let mut loop_ = vec![along_b[k], sections[k + 1]];
+        let mut loop_ = vec![along_b[k], sections[k + 1].0];
         loop_.extend(along_a[k]);
-        loop_.push(sections[k]);
+        loop_.push(sections[k].1);
         faces.push(ToolFace {
             surface,
             curves: loop_,
             at: p,
             out: (ball.centre - p) / r,
+        });
+    }
+    // Where the foot jumps, the ball's own sphere between its two arcs, its
+    // poles along the spine's turn and its seam behind the lune.
+    for (k, top) in tops {
+        let Some(j) = jumps[k] else {
+            return Ok(None);
+        };
+        let w = j.normal.cross(j.from);
+        let half = 0.5 * j.sweep;
+        let on_top = j.hub + (j.from * half.cos() + w * half.sin()) * j.reach;
+        let lune = (on_top - j.centre) + (j.on_b - j.centre);
+        let lune = lune / lune.magnitude();
+        let pole = j.spines[0] + j.spines[1];
+        let pole = pole / pole.magnitude();
+        let seam = -(lune - pole * lune.dot(pole));
+        let frame = Frame::new(
+            j.centre,
+            Direction::new(pole, tol)?,
+            Direction::new(seam, tol)?,
+            tol,
+        )?;
+        let sphere = ogeom_math::Sphere::new(frame, r, tol)?;
+        faces.push(ToolFace {
+            surface: SurfaceGeometry::Sphere(ogeom_geom::SphereSurface::new(sphere)),
+            curves: vec![sections[k].0, top, sections[k].1],
+            at: j.centre + lune * r,
+            out: -lune,
         });
     }
     let Some((solid, made)) = closed(model, &points, &curves, &faces, tol)? else {
@@ -1596,7 +1876,17 @@ pub(crate) fn held(
     };
     let deflection = ogeom_mesh::Deflection::default();
     let before = ogeom_algo::volume_properties(model, solid, deflection, tol)?.mass;
-    let taken = ogeom_algo::volume_properties(model, &cut, deflection, tol)?.mass;
+    // Where the foot jumps the tool passes over the faces past the edges,
+    // and the cut takes its volume within the solid.
+    let inside = if hold.pieces.iter().any(|p| p.jump) {
+        let Ok(within) = ogeom_bool::common(model, &cut, solid, tol) else {
+            return Ok(None);
+        };
+        within.shape
+    } else {
+        cut.clone()
+    };
+    let taken = ogeom_algo::volume_properties(model, &inside, deflection, tol)?.mass;
     let named = rounds
         .iter()
         .flat_map(|f| edges.iter().map(move |e| (f.clone(), e.clone())))

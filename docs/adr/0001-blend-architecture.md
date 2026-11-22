@@ -3391,6 +3391,7 @@ What follows is settled from those.
   next to the corner reach into the pocket past both edges, so the round
   would pass through the pocket's walls and the edges could not both be
   kept. That is not held; the request goes on to trim through, as before.
+  The part "Hold edge, two edges at once" below builds it.
 - **Several stretches.** Each stretch where the ball leaves the band is
   held on its own terms, and the band runs between them. With hold edge at
   the end off, a round any of whose stretches reaches an end of the band
@@ -3487,7 +3488,7 @@ needed.
   on the arc only while the balls stand behind the region by less than the
   arc's radius. Past that, it jumps from one line to the other, the ball
   resting on two edges at once, and that is not held, as for a pocket's
-  square corner.
+  square corner. The part "Hold edge, two edges at once" below builds it.
 
 **What is built.** The part above, with an edge onto the next one where
 they meet tangentially, within the angular tolerance, as a further seat
@@ -3519,6 +3520,87 @@ With the corner's radius at 1e-9 it gives the polyline's distances to
 - The widening chain with its arc at r 1.5 has its foot jump from line to
   line and is not held: the request gets the same refusal as with hold
   edge off.
+
+**Hold edge, two edges at once (#1237).** The parts above leave the ball
+resting on two edges at once to trim through: where `a`'s region turns
+away at a vertex (a pocket's corner, or a chain's corner rounded less than
+the balls stand behind `a`), the nearest point jumps from one edge to the
+other and the balls near the jump reach past both edges. The public
+documentation surveyed above adds that a round keeping its edges is broken
+into separate surfaces, and that its top edge may dip below the face it
+leaves. The rolling-ball papers [2] define the round as the boundary of
+the balls' union. What follows is settled from those, with the nearest
+point of `a`'s region as the rule.
+
+- **Where the ball rests.** Unchanged: on `b`'s offset at the radius from
+  the nearest point of `a`'s region. At the jump that point is two, one
+  on each edge, at the same distance; the centre's path is continuous but
+  turns a corner there.
+- **The round at the jump.** The union of the balls takes, at a corner of
+  the centres' path, the part of that corner's ball between the two
+  characteristic circles, on the side the path turns away from: the lune
+  between the planes through the centre square to the path's tangent on
+  either side. Bounded by `a`'s plane, it is a patch of that ball's sphere
+  between its arcs from the contact on `b` to the two feet and the circle
+  where the sphere meets `a`'s plane. It meets the pieces either side G1,
+  each along the characteristic circle they share with it. The jump is
+  kept only where each foot lies outside the other side's next balls (the
+  lune holds both feet), the path turns by more than a millionth of a
+  radian, and the two balls agree within a millionth of the radius.
+- **Trimmed by the faces past the edges.** The balls near the jump and
+  that patch stand over the void past the two edges, so the round and the
+  faces past the edges trim each other: the round is the boundary of the
+  region cut away within the solid. The edges between the two feet (the
+  corner of the region between them, and any edge joining them through
+  vertices) are cut away, so the result's top edge dips there, as the
+  documentation says. Each held edge is kept under every foot.
+- **A foot that does not move.** An edge square to the spine (a square
+  pocket's side) holds every foot of its piece on one point, and the
+  band's section where the ball leaves the band lies in that side's own
+  plane. The tool would then hold an edge lying in a face of the solid,
+  which the boolean does not resolve. That is not built; the request goes
+  on to trim through, as before.
+
+**What is built.** The parts above, with an edge onto another that the
+foot jumps to as a further seat change. The tool is the region between the
+edge and the round, the jump's sphere patch among its faces, the arc where
+that sphere meets `a`'s plane among the edges of its face there. It is
+built only where nothing but the faces already counted, the faces past
+every edge joining the two edges through the vertices where they stop, and
+the faces at those vertices stands within the box it can take up, that
+arc's points counted in the box. It passes over void, so the cut must take
+the tool's volume within the solid (the common of the two), not its whole
+volume. The result must check valid and keep the held edges under every
+foot, as before.
+
+**Oracle** (`tests/hold_edge_seats.rs`). As in the parts above, with the
+material stated: the faces below the top's edges stand square to it,
+deeper than any ball reaches, so each column of the cut is counted only as
+far behind the front as the top runs before it first gives way, and the
+column is split where the cut stops reaching past that. A convex pocket's
+distance from a point inside it is that to its nearest side.
+
+| case (r 4) | cut away (built) | reference | error | bound | worst G1 |
+|---|---|---|---|---|---|
+| pocket corners: block 30 long, pocket `(10, 2)`, `(20, 2.6)`, `(21.5, 10)`, `(8.5, 10)` sunk 8, two jumps | 92.927741790 | 92.927741349 | 4.4e-7 | 1.2e-6 | 3.2e-6 rad |
+| a chain's corner rounded r 1.5: cliff edge `(0, 7)`, `(9, 2.5)`, `(20, 1.5)`, one jump, held to the end | 52.131868295 | 52.131868360 | 6.5e-8 | 3.4e-9 | 9.9e-7 rad |
+
+- Each result is valid and closed, holds one sphere patch per jump, and
+  every fitted piece meets its neighbours, the sphere patches, the band
+  and the front within 1e-5 rad of tangent.
+- The held edges are kept on their lines within 1e-9 (measured 4e-15),
+  each from its first foot to its last; the pocket's rims between the feet
+  at each corner are gone, and so is the chain's arc.
+- On the chain, between each foot and the arc the sphere meets the cliff's
+  face just under the top, touching it at the foot. The result holds that
+  stretch (0.006 long) as a piece of the line, its edge's tolerance (5.2e-6)
+  covering how far the sphere's curve dips below it (5.1e-6), within a
+  confusion.
+- Hold edge off: trim through, which notches the pocket's part (cutting
+  more) and refuses the chain's by name as before; with trim through off
+  too, either is refused naming hold edge.
+- The square pocket gets trim through's solid, the same as with hold edge
+  off.
 
 ### Amendment: largest-size readings confirmed by the build (#1173)
 
