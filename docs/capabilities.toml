@@ -1805,7 +1805,10 @@ between a planar floor and a wall about an axis square to it (a cylinder, \
 or a cone narrowing away from the floor by up to 45 degrees), whose \
 round's contact circle crosses straight edges of the floor along which \
 cylindrical rounds, convex or concave, meet the floor tangentially, over \
-arcs that stand apart. The round is the torus over the floor and, past \
+arcs that stand apart; or, for a round, an open arc of that circle whose \
+ends stand on planes through the axis (a boss cut through its axis, or a \
+half boss against a wall), the rounds it reaches inside the arc, each \
+end's plane capping the fill flush on the section there. The round is the torus over the floor and, past \
 each tangent line, the ball resting on the wall and that round, fitted \
 through its exact sections within a confusion, the pieces meeting G1 \
 where the ball touches the tangent line; the fill is one tool fused into \
@@ -1814,8 +1817,9 @@ boxes its sections take up and no other face comes within the radius of \
 a ball. A concave round is taken only where the ball stays inside its \
 cylinder. A bevel is blended only from a cylindrical wall into one \
 convex round. Crossings whose arcs meet, a round not tangent to the \
-floor, an undercut wall, a curved floor, and an open arc of a foot are not \
-blended into the round: they go on to trim through. Hold edge is built \
+floor, an undercut wall, a curved floor, and an open arc ending off \
+the axis or on a round's seat are not blended into the round: they go \
+on to trim through. Hold edge is built \
 for a round of a straight edge, or a chain of edges along one line, \
 between two planes meeting convexly, ending on end faces within 60 \
 degrees of square to it, whose contact on one plane's faces runs past \
@@ -1902,7 +1906,11 @@ tests = [
     "crates/ogeom-fillet/tests/blend_into_round.rs::a_conical_boss_s_foot_round_fills_as_the_closing",
     "crates/ogeom-fillet/tests/blend_into_round.rs::a_foot_round_blends_into_a_concave_round",
     "crates/ogeom-fillet/tests/blend_into_round.rs::a_foot_round_into_a_concave_round_fills_as_the_closing",
-    "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_of_a_foot_is_not_blended",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_of_a_cut_boss_blends_into_the_edge_round",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_against_a_wall_blends_into_the_edge_round",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::open_arcs_fill_as_the_closing_within_their_wedge",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_ending_off_the_axis_is_not_blended",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_ending_on_its_round_s_seat_is_not_blended",
     "crates/ogeom-fillet/tests/overflow.rs::trim_through_off_refuses_a_round_reaching_another_face",
     "crates/ogeom-fillet/tests/overflow.rs::a_rolling_corner_takes_the_overflow_options",
     "crates/ogeom-fillet/tests/overflow.rs::a_level_law_and_equal_distances_blend_into_the_edge_round",
