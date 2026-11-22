@@ -2820,12 +2820,30 @@ Rules:
     stops flush in its end section where a chain mate continues the
     crease. The bands are joined across each junction into one tool.
   - Measured limit: where both laws vary at a junction between a straight
-    edge and an arc, the two bands share the end section but their
-    tangent planes across it differ by up to a few hundredths of a
-    radian. The sections stand in planes square to the crease, and the
-    marched band's along-derivative at its trimmed end is held only to
-    the fit. The circular law's chain shows the same (about 0.016 rad on
-    the same block). Volume and contacts are within the march's fit.
+    edge and an arc, the two bands share the end section, and their
+    tangent planes across it differ by what the sections square to the
+    crease give. A section's points run along the crease at a pace that
+    jumps at the junction by how far each stands in from the crease over
+    the arc's radius, while the laws move them across it alike on both
+    sides, so the planes part by about the laws' slope times that jump.
+    No band with these sections is G1 there, and a rolling ball of
+    varying radius is not either: its contact circle leans with the
+    centre's pace, which jumps too.
+    - On the rounded corner's chain (laws 0.6 to 1.2 on the top and 0.4
+      to 1.0 on the walls over about 30.7, corner radius 3) the sections
+      part by 1.2e-3 and 1.4e-3 rad at the two junctions with the
+      elliptical section, and 3.8e-4 and 4.3e-4 with the conic of rho
+      0.65. The built bands meet within 1.3e-4 of that elliptically and
+      6e-4 conically, the march's fit. Under one radius law of 0.6 to 1.2
+      the circular round meets as its sections do, 1.42e-3 and 1.60e-3,
+      to 1e-6.
+    - The few hundredths of a radian first reported here (0.07, and 0.016
+      for the circular law) were the sewing's, not the bands': the
+      marched band's end edge was carried onto the straight band's end
+      curve with its own pace, the two curves meeting at their middles
+      only, so the normals compared at one parameter stood at two places
+      of the section. Sewing now refits a carried pcurve at the survivor's
+      pace unless the quarters agree too (#1237).
 - **A concave edge ending at a face not square to it.** The fill ends in
   the plane of each face at its end. Where one is not square to the
   crease, the fill runs on with its laws held level and is trimmed by

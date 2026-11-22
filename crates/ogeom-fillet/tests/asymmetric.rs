@@ -3938,6 +3938,118 @@ fn rounded_corner_chain(m: &mut Model) -> (Shape, [Shape; 3], Shape, f64) {
     (s, [front, arc, right], top, length)
 }
 
+/// The tangent planes' gap at a junction of the rounded corner's chain
+/// `sigma` along it, of the round whose sections stand square to the
+/// crease: legs `d(sigma)` (along the top, down the wall), weight `w`.
+/// Where the laws vary, a section's points move along the crease at a pace
+/// that jumps at the junction by how far each point stands in from the
+/// crease over the arc's radius, while the laws move them across it alike
+/// on both sides; so the two bands' tangent planes part there by an angle
+/// of the laws' slope times that jump. The largest over the section, each
+/// side's along-derivative taken one-sidedly.
+fn junction_gap(sigma: f64, d: impl Fn(f64) -> (f64, f64), w: f64) -> f64 {
+    use core::f64::consts::PI;
+    let arc = 1.5 * PI;
+    // The crease point and the top's leg inward, by arc length.
+    let crease = |s: f64| -> (Point, Vector) {
+        if s <= 17.0 {
+            (Point::new(s, 0.0, 4.0), Y)
+        } else if s <= 17.0 + arc {
+            let th = (s - 17.0) / 3.0;
+            (
+                Point::new(17.0 + 3.0 * th.sin(), 3.0 - 3.0 * th.cos(), 4.0),
+                Vector::new(-th.sin(), th.cos(), 0.0),
+            )
+        } else {
+            (Point::new(20.0, 3.0 + s - 17.0 - arc, 4.0), -X)
+        }
+    };
+    let section = |s: f64, t: f64| -> Vector {
+        let (c, u) = crease(s);
+        let (a, b) = d(s);
+        let c = c - Point::ORIGIN;
+        let (p0, p2) = (c + u * a, c - Vector::new(0.0, 0.0, b));
+        let (b0, b1, b2) = ((1.0 - t) * (1.0 - t), 2.0 * t * (1.0 - t) * w, t * t);
+        (p0 * b0 + c * b1 + p2 * b2) * (1.0 / (b0 + b1 + b2))
+    };
+    let h = 1e-6;
+    let mut worst = 0.0_f64;
+    for k in 1..64 {
+        let t = f64::from(k) / 64.0;
+        let p = section(sigma, t);
+        let across = section(sigma, t + h) - section(sigma, t - h);
+        let n = |v: Vector| v * (1.0 / v.magnitude());
+        let before = n(across.cross(p - section(sigma - h, t)));
+        let after = n(across.cross(section(sigma + h, t) - p));
+        worst = worst.max(before.dot(after).clamp(-1.0, 1.0).acos());
+    }
+    worst
+}
+
+/// Each place two bands of `s` meet (a band being a face on neither a
+/// plane nor a cylinder), as a point of the edge between them, and the
+/// angle between their normals along it.
+fn band_joins(m: &Model, s: &Shape) -> Vec<(Point, f64)> {
+    use ogeom_geom::Curve3d as _;
+    let band = |f: &Shape| {
+        let data = m.node(f).unwrap().data().as_face().unwrap();
+        !matches!(
+            m.geometry().surface(data.surface),
+            Some(ogeom_geom::SurfaceGeometry::Plane(_) | ogeom_geom::SurfaceGeometry::Cylinder(_))
+        )
+    };
+    let mut joins = Vec::new();
+    for f in explore_unique(m, s, ShapeType::Face).unwrap() {
+        if !band(&f) {
+            continue;
+        }
+        for c in ogeom_fillet::analyse_blend(m, s, &f, 65, T).unwrap() {
+            if band(&c.neighbour) {
+                let (curve, (lo, hi)) = ogeom_algo::placed_edge_curve(m, &c.edge, T)
+                    .unwrap()
+                    .unwrap();
+                let p = curve.point_at(f64::midpoint(lo, hi), T).unwrap();
+                joins.push((p, c.tangency_error));
+            }
+        }
+    }
+    joins
+}
+
+/// Each band-to-band join of a round along the rounded corner's chain held
+/// to the model's own gap at its junction, within `within`; both junctions
+/// met, from either side.
+fn junctions_hold(
+    m: &Model,
+    s: &Shape,
+    d: impl Fn(f64) -> (f64, f64) + Copy,
+    w: f64,
+    within: f64,
+    label: &str,
+) {
+    use core::f64::consts::PI;
+    let at = [17.0, 17.0 + 1.5 * PI];
+    let joins = band_joins(m, s);
+    let mut met = [0; 2];
+    for (p, measured) in joins {
+        // The first junction's section stands in x = 17, the second's in
+        // y = 3.
+        let k = usize::from(p.x > 17.5 && (p.y - 3.0).abs() < 1e-6);
+        assert!(
+            k == 1 || (p.x - 17.0).abs() < 1e-6,
+            "{label}: bands meet at {p:?}, at no junction"
+        );
+        met[k] += 1;
+        let model = junction_gap(at[k], d, w);
+        assert!(
+            (measured - model).abs() <= within,
+            "{label}: the bands at {p:?} meet at {measured:.3e} rad, the model's sections at \
+             {model:.3e}"
+        );
+    }
+    assert!(met == [2, 2], "{label}: joins {met:?} at the two junctions");
+}
+
 /// The chain round the rounded corner asked with one law on the top, 0.6
 /// to 1.2, and one on the walls, 0.4 to 1.0, laid along the whole chain by
 /// arc length. Each station's section is the square conic corner of its
@@ -3946,8 +4058,10 @@ fn rounded_corner_chain(m: &mut Model) -> (Shape, [Shape; 3], Shape, f64) {
 /// into the top, by Pappus station by station; the laws run from the
 /// front edge's start the way it runs. Valid, the edges consumed, each
 /// band tangent to the faces it meets within the march's fit, and within
-/// that fit of what the band takes. The walls are three
-/// faces, so naming the front alone is refused by name.
+/// that fit of what the band takes. At each junction the bands meet as
+/// the sections square to the crease do ([`junction_gap`]), within the
+/// march's fit. The walls are three faces, so naming the front alone is
+/// refused by name.
 #[test]
 fn distances_varying_along_a_tangent_chain_take_the_integral_of_their_corners() {
     use core::f64::consts::PI;
@@ -4043,6 +4157,7 @@ fn distances_varying_along_a_tangent_chain_take_the_integral_of_their_corners() 
             worst <= 1e-3,
             "{profile:?}: a band meets a face at {worst} rad"
         );
+        junctions_hold(&m, &built.shape, at, w, 1e-3, &format!("{profile:?}"));
         // Naming the walls: each straight edge's wall and the drum are
         // different faces, so the chain names the top only.
         let front = face_at(&m, &s, Point::new(10.0, 0.0, 2.0));
@@ -4053,6 +4168,56 @@ fn distances_varying_along_a_tangent_chain_take_the_integral_of_their_corners() 
         .to_string();
         assert!(refused.contains("beside every edge"), "{refused}");
     }
+}
+
+/// The same chain round the rounded corner under one radius law, 0.6 to
+/// 1.2, laid along it by arc length: the circular round, each section the
+/// square corner's quarter circle, its volume taken by Pappus as the
+/// asymmetric chain's is. At each junction the bands meet as the sections
+/// square to the crease do ([`junction_gap`]): the straight band exact
+/// and the marched one within its fit of the model.
+#[test]
+fn a_radius_law_along_a_tangent_chain_meets_at_its_junctions_as_its_sections_do() {
+    use core::f64::consts::PI;
+    use ogeom_fillet::RadiusLaw;
+    let mut m = Model::new();
+    let (s, chain, _, length) = rounded_corner_chain(&mut m);
+    let before = volume(&m, &s);
+    let (first, _) = ogeom_algo::edge_vertices(&m, &chain[0]).unwrap().unwrap();
+    let from_left = point_of(&m, &first).x < 1.0;
+    let at = |sigma: f64| {
+        let t = sigma / length;
+        let r = 0.6 + 0.6 * if from_left { t } else { 1.0 - t };
+        (r, r)
+    };
+    let w = FRAC_1_SQRT_2;
+    let straight = |from: f64, run: f64| {
+        integrate(run, |u| {
+            let (a, b) = at(from + u);
+            corner_area(a, b, FRAC_PI_2, w)
+        })
+    };
+    let arc = 1.5 * PI;
+    let turned = integrate(arc, |u| {
+        let (a, b) = at(17.0 + u);
+        let (area, c) = square_corner(a, b, w);
+        area * (3.0 - c[0]) / 3.0
+    });
+    let taken = straight(0.0, 17.0) + turned + straight(17.0 + arc, 9.0);
+    let law = RadiusLaw::Linear {
+        start: 0.6,
+        end: 1.2,
+    };
+    let built = ogeom_fillet::fillet_edges_variable(&mut m, &s, &chain, &law, T).unwrap();
+    let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let v = volume(&m, &built.shape);
+    assert!(
+        (v - (before - taken)).abs() <= 1e-4 * taken,
+        "volume {v} against {}",
+        before - taken
+    );
+    junctions_hold(&m, &built.shape, at, w, 1e-5, "circular");
 }
 
 /// The drum standing in the slab's corner, its concave ruling at (5, 0, z)

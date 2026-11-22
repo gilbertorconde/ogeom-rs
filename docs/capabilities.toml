@@ -1698,10 +1698,13 @@ tangent chain of such edges, open or closed, naming one face beside \
 every edge: each straight edge between planes takes its exact band under \
 its stretch of the laws, any other the marched band stopped in its end \
 sections, and the bands are joined across each junction into one tool; \
-there they meet in the same section, and their tangent planes across it \
-agree only to within a few hundredths of a radian where both laws vary \
-at a junction between a straight edge and an arc (the circular law's \
-chain shows the same). Any other crease the march seats (a spline's crease along a wall, \
+there they meet in the same section. Where both laws vary at a junction \
+between a straight edge and an arc, sections square to the crease leave \
+the two tangent planes apart by about the laws' slope times the share of \
+the arc's radius a point stands in from the crease (about 1e-3 rad on \
+a 0.6 to 1.2 law round a radius 3 corner), and the bands meet as those \
+sections do, within the march's fit; the circular law's chain the same. \
+Any other crease the march seats (a spline's crease along a wall, \
 a bore's rim on a drum, open or closed) takes a band fitted to the \
 march's target through the conic sections station by station: each leg \
 walked its distance along its face's section in the plane square to the \
