@@ -1,0 +1,3 @@
+- **Fixed: `order_edges` orders an open chain whose end edges point inward** (#1259).
+  - A free end was looked for only at an edge's start, so a chain such as B -> A, B -> C was refused as "not one connected path". A free end at an edge's finish now starts the walk along that edge reversed.
+  - Every orientation of every edge of open chains of 2, 3 and 5 edges, in every rotation of the bag (192 cases), orders to the chain's own vertex sequence one way or the other, each edge once, consecutive edges sharing a vertex; a loop of four edges in all 16 orientations orders to a closed wire; a branch is still refused.
