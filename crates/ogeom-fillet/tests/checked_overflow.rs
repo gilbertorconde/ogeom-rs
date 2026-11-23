@@ -283,7 +283,7 @@ fn a_foot_round_refused_by_its_options_is_named() {
 /// trim through off, under either corner: the corner's three bevels close
 /// on the point or the facet. The foot of `chamfer_overflow.rs`, one edge
 /// round: a whole rim reaching it is refused by name with these options,
-/// where two rounds or one arc alone are not yet (#1305).
+/// where a rim reaching two rounds, or one arc of it, is not yet.
 #[test]
 fn a_foot_bevel_refused_by_its_options_is_named() {
     for corner in [ChamferCorner::Point, ChamferCorner::Facet] {
