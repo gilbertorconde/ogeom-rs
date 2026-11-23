@@ -3475,7 +3475,8 @@ rule settled here is the second statement's, carried across the zone:
   those faces' edges but the request's and those between two of them.
   The fuses must add material, no more than the prisms hold, and the
   result must check valid. Otherwise the request goes on to the engine.
-- **Not built:**
+- **Not built** (the part "Narrow passages, more shapes" below builds
+  several of these):
   - a zone covering part of a face. Nothing needs partial face alone
     yet; such a request goes on to the engine, which refuses it by name;
   - walls not square to the floor or to each other;
@@ -3524,6 +3525,84 @@ every case. A through slot has a closed form.
   and it now stops after 2^17 distance measures per interval, the face
   then not shown clear, instead of walking the whole tree of 24 halvings.
   The most a passing proof uses is about 46,000.
+
+**Narrow passages, more shapes.** The rule of the part "Narrow
+passages" stands: every round keeps its section, runs on to the plane of
+the next wall, and the fill is the union of the bands' fills cut to the
+solid's air. What follows settles how it reads on more shapes.
+
+- **A zone covering part of a face.** Two walls face each other closer
+  than twice the radius over part of one's length only (a pocket narrow
+  up to a step and wider past it). The tight zone covers that part of
+  the wall's face, and the band is split there in effect: the other
+  wall's band crosses it along a G0 crease over the zone, and past the
+  zone the band is its own round, meeting its wall G1 as everywhere.
+  Such a passage needs `narrow_partial_face`; with it off, it is refused
+  by name.
+- **A convex corner of the walls** (the floor's rim turning outward, as
+  at a step). The ball rolls round the walls' vertical edge resting on
+  it, so the fill there is the band's spandrel turned about that edge
+  through the angle between the walls' normals. The bands either side
+  stop flush on it. This is the rolling ball's own fill, not a tight
+  zone.
+- **Walls not square to each other.** At a concave sharp corner of any
+  angle each band runs on past the corner to the next wall's plane and
+  is cut by it; the two bands meet along their intersection, mitred as
+  at a square corner. A band runs on `r cot(alpha)` past an obtuse corner
+  of angle `pi - alpha`, and none past an acute one, whose band the next
+  wall's plane cuts before the corner. Where the run on passes the next
+  wall's far end, that end must be a concave corner too (the run on is
+  then behind the wall beyond, inside the solid); otherwise the run on
+  must stand against the next wall's own face.
+- **Walls no farther apart than the radius.** Each band crosses the wall
+  it faces and is cut there, so over the slot the fill stands as tall as
+  the taller of the two rounds. A section that passes into the solid
+  through a wall must not come out into air again: no other wall of the
+  passage in a band's room may face the way its sections run (a thin rib
+  standing nearer than the radius, with air behind it, is not built).
+- **Walls not square to the floor.** The engine already builds these
+  (each wall's round spanning the dihedral angle between floor and wall,
+  the rounds meeting where they cross), and its result is the union of
+  the bands' fills: the oracle below measures it.
+
+**What stays refused by name.** A floor that is not planar; a corner
+face that is not a cylinder (an elliptic corner, for instance); a band
+that would cross a thin wall into air beyond; walls lower than the
+radius. Each goes on to the engine, which refuses it by name.
+
+**Oracle** (`tests/narrow_passage.rs`). The reference is the plan's
+erosion, computed without the construction. Over the plan `P` of the
+passage's air, the fill's section at height `z` above the floor is the
+part of `P` within `h(z)` of its rim (`h(s) = r - sqrt(r^2 - (r - s)^2)`
+is its own inverse, the quarter circle's height and reach swapping), so
+the fill is the integral over `z` of `P`'s area less the area of `P`
+farther than `h(z)` from its rim. That area is `P` clipped by its sides'
+lines moved in (a convex plan) or the step's closed form (its two
+rectangles moved in, less their overlap, and beside the convex corner a
+square less its quarter disc). The integral is Gauss-Legendre on 400 and
+800 panels with `z = t^2`; the bound is their difference. The new
+reference reproduces the strip integral of the part above on a 20 by 14
+rectangle to 1e-12. Leaning walls take the plan at each height (each
+wall moved out `z cot(alpha)`) and the arc's reach there,
+`r cot(alpha / 2) - sqrt(r^2 - (r - z)^2)`, up to `r (1 + cos(alpha))`.
+
+| case (r 4, floor 7 deep) | strategy | fill built | reference | error | bound |
+|---|---|---|---|---|---|
+| stepped pocket, 6 wide to 12 wide | partial face | 193.207983816 | 193.207983853 | 3.6e-8 | 3.5e-7 |
+| stepped pocket, 3 wide to 12 wide | partial face | 180.938946060 | 180.938945557 | 5.0e-7 | 9.2e-7 |
+| through slot 3 wide (below r), 20 long | blend-made | 109.512215925 | 109.512214747 | 1.2e-6 | 2.1e-6 |
+| through slot 4 wide (= r), 20 long | blend-made | 123.460848223 | 123.460847646 | 5.8e-7 | 1.0e-5 |
+| pocket 20 by 6, corners chamfered 1.5 (135 degrees) | blend-made | 144.992378358 | 144.992378433 | 7.5e-8 | 7.1e-7 |
+| parallelogram pocket 6 wide (60 and 120 degrees) | blend-made | 142.014167859 | 142.014167918 | 5.9e-8 | 5.6e-7 |
+| pocket 20 by 6, walls leaning out 0.05 rad | (engine) | 138.600086899 | 138.600087045 | 1.5e-7 | 1.4e-6 |
+| pocket 20 by 6, walls leaning in 0.05 rad | (engine) | 167.891947753 | 167.891947306 | 4.5e-7 | 7.6e-7 |
+
+- Each result checks valid with a closed shell, and every round meets its
+  own wall G1 (worst 0 rad).
+- The stepped pockets build with partial face alone, and are refused by
+  name ("partial face is off") with it off.
+- Refused by name: a pocket with elliptic corners, a thin rib 2 from a
+  wall with air behind it, a slot whose floor is a cylinder.
 
 **Hold edge, more seats.** The public documentation surveyed above
 gives the edge seat by the ball (it touches one original face and is
