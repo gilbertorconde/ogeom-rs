@@ -178,8 +178,9 @@ fn unify_own(
             let mut reached = vec![false; faces.len()];
             let mut carriers: FastMap<usize, Option<Carrier>> = FastMap::default();
             let mut queue: Vec<usize> = Vec::new();
+            let seeds: FastSet<TShapeId> = seeds.iter().map(Shape::node).collect();
             for (i, face) in faces.iter().enumerate() {
-                if seeds.iter().any(|s| s.node() == face.node()) {
+                if seeds.contains(&face.node()) {
                     reached[i] = true;
                     queue.push(i);
                 }
@@ -906,13 +907,24 @@ pub fn merge_edges(
     shape: &Shape,
     tol: Tolerances,
 ) -> OgeomResult<(Built, usize)> {
+    merge_edges_at(model, shape, None, tol)
+}
+
+/// [`merge_edges`], dissolving only the vertices `at` names where it is
+/// given: a run of edges continues across a vertex outside it as it stood.
+pub fn merge_edges_at(
+    model: &mut Model,
+    shape: &Shape,
+    at: Option<&FastSet<TShapeId>>,
+    tol: Tolerances,
+) -> OgeomResult<(Built, usize)> {
     // One pass merges disjoint pairs; a chain of three needs the next pass
     // to see the pair the first one made. Eight is well past any real chain.
     let mut current = shape.clone();
     let mut steps: Vec<History> = Vec::new();
     let mut merged = 0;
     for _ in 0..8 {
-        let Some((step, joined)) = merge_pass(model, &current, tol)? else {
+        let Some((step, joined)) = merge_pass(model, &current, at, tol)? else {
             break;
         };
         current = step.shape;
@@ -932,6 +944,7 @@ pub fn merge_edges(
 fn merge_pass(
     model: &mut Model,
     shape: &Shape,
+    at: Option<&FastSet<TShapeId>>,
     tol: Tolerances,
 ) -> OgeomResult<Option<(Built, usize)>> {
     // Which parameterizations each edge is actually *read* on: the faces
@@ -1011,15 +1024,13 @@ fn merge_pass(
             // the joined edge.
             let mut dissolved = explore_unique(model, &a, ShapeType::Vertex)?;
             dissolved.extend(explore_unique(model, &b, ShapeType::Vertex)?);
-            if dissolved
-                .iter()
-                .filter(|v| v.node() != from.node() && v.node() != to.node())
-                .any(|v| {
-                    meeting
-                        .get(&v.node())
-                        .is_some_and(|edges| edges.iter().any(|e| *e != a.node() && *e != b.node()))
-                })
-            {
+            dissolved.retain(|v| v.node() != from.node() && v.node() != to.node());
+            if dissolved.iter().any(|v| {
+                meeting
+                    .get(&v.node())
+                    .is_some_and(|edges| edges.iter().any(|e| *e != a.node() && *e != b.node()))
+                    || at.is_some_and(|at| !at.contains(&v.node()))
+            }) {
                 i += 1;
                 continue;
             }

@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 103 |
+| `covered` | 104 |
 | `partial` | 16 |
 | `divergent` | 6 |
 
-125 capabilities. Ratchet: `unreviewed_max = 0`.
+126 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -98,6 +98,7 @@ on itself at the wall's seam: the box and the drum come back exactly. What
 stays refused by name: a wound whose sides meet in no curve and lie on no
 one surface, a removal that would leave a face with no boundary and no
 edge to grow to, and a gap the recovered edges do not bridge.
+- **bool.fuse-all**: The union of many solids in one call: solids that meet joined, groups apart kept as separate solids, faces of different solids on one carrier merged, one history over all · `covered`
 - **bool.glue**: Gluing shapes along known-coincident boundaries · `divergent`
   - *reasoning:* Subsumed, and recorded as a settled decision in docs/PLAN.md: the boolean's same-domain unification already skips nothing it needs and unifies what glue would, so a separate glue mode would be a second spelling of the fuse with a faster wrong answer available. MakeConnected's job (conformal multi-body assembly) falls out of the fuse plus history.
 - **bool.make-periodic**: Making a shape periodic so instances tile without seam duplication · `covered`
@@ -340,4 +341,4 @@ than a plane or a B-spline over its patch's parameters.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, surface parameters and normals per triangle corner · `covered`
 
-<!-- ledger-checksum: 55d81afe0ba93255 -->
+<!-- ledger-checksum: 1b0f235fcbcac0c3 -->

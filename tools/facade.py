@@ -32,7 +32,8 @@ INTERNAL: set[str] = {
     "ogeom_algo::make_filling_n_fixed",
     "ogeom_algo::make_filling_n_region",
     "ogeom_algo::make_filling_n_within",
-    # The upgrade's step the healing calls.
+    # The upgrade's steps the healing and the many-operand union call.
+    "ogeom_algo::merge_edges_at",
     "ogeom_algo::measure_edge",
 }
 

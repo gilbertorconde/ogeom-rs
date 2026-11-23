@@ -84,9 +84,9 @@ pub mod algo {
 pub mod boolean {
     pub use ogeom_bool::{
         Cells, POLE_MARGIN, POLE_TOUCHING, Recharted, cells, common, common_fuzzy, cut,
-        cut_by_mesh_region, cut_fuzzy, cut_seated, fuse, fuse_fuzzy, fuse_seated, make_periodic,
-        make_volume, note_meeting_along_edge, rechart_clear_of_poles, remove_faces, section,
-        section_face, self_union, split_sheet,
+        cut_by_mesh_region, cut_fuzzy, cut_seated, fuse, fuse_all, fuse_fuzzy, fuse_seated,
+        make_periodic, make_volume, note_meeting_along_edge, rechart_clear_of_poles, remove_faces,
+        section, section_face, self_union, split_sheet,
     };
 }
 

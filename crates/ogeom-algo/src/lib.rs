@@ -158,7 +158,8 @@ pub use upgrade::{
     UnifyOptions, merge_edges, reduce_tolerances, same_domain, unify_same_domain,
     unify_same_domain_around, unify_same_domain_with,
 };
-// The healing's side of the upgrade: an edge's measured deviation.
+// The healing's and the many-operand union's side of the upgrade: edges
+// joined at named vertices only, and an edge's measured deviation.
 #[doc(hidden)]
-pub use upgrade::measure_edge;
+pub use upgrade::{measure_edge, merge_edges_at};
 pub use volume_difference::{Form, Material, Region, volume_difference};

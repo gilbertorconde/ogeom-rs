@@ -382,6 +382,56 @@ impl History {
         self
     }
 
+    /// This history together with `other`, a record of the same step about
+    /// other inputs: what one operation run on two sets of inputs side by
+    /// side says. An input both speak of keeps the images and generated
+    /// shapes of both, is deleted only where both delete it and neither
+    /// gives it an image, and is an exact copy only where one copy is all
+    /// it became.
+    #[must_use]
+    pub fn joined(mut self, other: Self) -> Self {
+        for (key, images) in other.modified {
+            let slot = self.modified.entry(key).or_default();
+            for image in images {
+                if !slot.contains(&image) {
+                    slot.push(image);
+                }
+            }
+        }
+        for (key, made) in other.generated {
+            let slot = self.generated.entry(key).or_default();
+            for shape in made {
+                if !slot.contains(&shape) {
+                    slot.push(shape);
+                }
+            }
+        }
+        self.copied.extend(other.copied);
+        self.deleted.extend(other.deleted);
+        let Self {
+            modified,
+            deleted,
+            copied,
+            ..
+        } = &mut self;
+        deleted.retain(|key| !modified.contains_key(key));
+        copied.retain(|key| modified.get(key).is_some_and(|images| images.len() == 1));
+        self
+    }
+
+    /// This history with the records of every input `keep` refuses
+    /// dropped: a chain of steps through shapes made on the way and not
+    /// handed back, told only of the shapes it was given.
+    #[must_use]
+    pub fn only_for(mut self, mut keep: impl FnMut(&Shape) -> bool) -> Self {
+        self.generated.retain(|key, _| keep(&key.0));
+        self.modified.retain(|key, _| keep(&key.0));
+        self.deleted.retain(|key| keep(&key.0));
+        let modified = &self.modified;
+        self.copied.retain(|key| modified.contains_key(key));
+        self
+    }
+
     /// Fold a sequence of histories into one, in order.
     #[must_use]
     pub fn chain(steps: &[Self]) -> Self {

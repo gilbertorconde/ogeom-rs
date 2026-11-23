@@ -1,0 +1,7 @@
+- **Added: `boolean::fuse_all`, the union of many solids in one call** (#1254).
+  - Takes solids and compounds of solids. Solids that meet become one solid. Groups that stay apart come back as a compound of separate solids, never as one solid with several outer shells, and a solid that meets nothing is handed back as it is.
+  - Solids whose bounds overlap nothing of each other go into one compound, and those compounds are fused in a balanced tree. Fifty cubes in a row take one boolean instead of 49.
+  - Faces of different solids that meet on one carrier are merged, and the edges continuing one curve across them are joined: fifty cubes in a row come back as one box of six faces. Each solid's own splits are kept. If the merge would not leave a valid solid, the union comes back unmerged.
+  - The order of the inputs does not change the result, except between solids whose bounds coincide. One history covers everything: each input face, edge and vertex traces to its images or is deleted, and each input solid and compound traces to the result solids holding it.
+  - If the boolean refuses the solids together, they are fused one at a time. If that refuses too, the error names the two inputs that do not fuse, or the input that does not fuse with the union of its neighbours.
+  - New `History::joined` and `History::only_for`.
