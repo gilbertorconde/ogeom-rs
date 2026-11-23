@@ -45,6 +45,7 @@ mod defeatured;
 mod fallback;
 mod far_edge;
 mod fits;
+pub(crate) mod flat_faces;
 mod flush;
 mod guards;
 mod hold_edge;

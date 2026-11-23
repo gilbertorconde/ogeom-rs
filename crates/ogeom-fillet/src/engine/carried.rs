@@ -47,7 +47,9 @@
 //! both sides at once.
 
 use crate::engine::consumed_seat::{seat_of, segment};
-use crate::engine::rolled::{Flat, basis, enters, face_distance, flat, host, inside};
+use crate::engine::flat_faces::{
+    Flat, basis, enters, face_distance, flat, host, inside, segment_distance, trig_max,
+};
 use crate::support::{Seat, edge_curve, same_occurrence};
 use ogeom_core::{OgeomError, OgeomResult, Tolerances};
 use ogeom_geom::Curve3d as _;
@@ -274,20 +276,6 @@ fn trig_roots(a: f64, b: f64, c: f64, near: f64) -> Vec<f64> {
         }
     }
     out
-}
-
-/// The greatest of `a cos s + b sin s` over `[lo, hi]`.
-pub(crate) fn trig_max(a: f64, b: f64, lo: f64, hi: f64) -> f64 {
-    let (lo, hi) = (lo.min(hi), lo.max(hi));
-    let m = a.hypot(b);
-    let phase = b.atan2(a);
-    let tau = core::f64::consts::TAU;
-    let peak = phase + tau * ((lo - phase) / tau).ceil();
-    if peak <= hi {
-        return m;
-    }
-    let f = |s: f64| a * s.cos() + b * s.sin();
-    f(lo).max(f(hi))
 }
 
 impl Crease<'_> {
@@ -889,7 +877,7 @@ fn start(crease: &Crease<'_>, faces: &[Reach], x: f64) -> Option<([Hold; 2], f64
             && inside(&sides, p, basis(side.normal))
             && sides
                 .iter()
-                .all(|[a, b]| crate::engine::rolled::segment_distance(p, [*a, *b]) > conf)
+                .all(|[a, b]| segment_distance(p, [*a, *b]) > conf)
     };
     // A ball clear of every face of the solid.
     let free = |c: Point| -> bool {

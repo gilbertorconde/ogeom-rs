@@ -12,7 +12,7 @@ use ogeom_math::{Point, Vector};
 use ogeom_topo::Triangulation;
 
 use crate::image::{Image, Wrap};
-use crate::mesh_formats::{MeshColours, held_is_unset};
+use crate::mesh_read::{MeshColours, held_is_unset};
 
 /// What [`read_obj_with_materials`] found.
 #[derive(Debug, Clone)]
@@ -202,7 +202,7 @@ impl Parsed {
                 if m > 0.0 { n / m } else { Vector::Z }
             })
             .collect::<Vec<_>>();
-        crate::mesh_formats::imported(positions.clone(), normals, self.triangles.clone(), true)
+        crate::mesh_read::imported(positions.clone(), normals, self.triangles.clone(), true)
     }
 }
 

@@ -816,7 +816,7 @@ fn runs_through(
         if explore_unique(model, &f, ShapeType::Vertex)?
             .iter()
             .any(|v| v.is_same(vertex))
-            && crate::engine::rolled::flat(model, &f, tol)?.is_none()
+            && crate::engine::flat_faces::flat(model, &f, tol)?.is_none()
         {
             return Ok(true);
         }
@@ -850,8 +850,8 @@ pub(crate) fn edge_is_convex(
         return Ok(None);
     };
     let (Some(a), Some(b)) = (
-        crate::engine::rolled::host(model, first, tol)?,
-        crate::engine::rolled::host(model, second, tol)?,
+        crate::engine::flat_faces::host(model, first, tol)?,
+        crate::engine::flat_faces::host(model, second, tol)?,
     ) else {
         return Ok(None);
     };
@@ -890,7 +890,7 @@ fn signed_corner(
     let corner = point_of(model, vertex)?;
     // The faces at the vertex, coplanar neighbours (a fused solid's seam)
     // taken as one: each group's planar faces and its outward normal.
-    let mut groups: Vec<(Vec<Shape>, crate::engine::rolled::Flat)> = Vec::new();
+    let mut groups: Vec<(Vec<Shape>, crate::engine::flat_faces::Flat)> = Vec::new();
     for f in explore_unique(model, solid, ShapeType::Face)? {
         if !explore_unique(model, &f, ShapeType::Vertex)?
             .iter()
@@ -898,7 +898,7 @@ fn signed_corner(
         {
             continue;
         }
-        let Some(flat) = crate::engine::rolled::flat(model, &f, tol)? else {
+        let Some(flat) = crate::engine::flat_faces::flat(model, &f, tol)? else {
             return Err(signed_refusal("every face of the vertex is planar"));
         };
         let same = groups.iter_mut().find(|(_, g)| {
@@ -981,7 +981,8 @@ fn signed_corner(
         radius_of.push(r);
     }
     // Each face's two edges at the vertex.
-    let flats: Vec<crate::engine::rolled::Flat> = groups.iter().map(|(_, g)| g.clone()).collect();
+    let flats: Vec<crate::engine::flat_faces::Flat> =
+        groups.iter().map(|(_, g)| g.clone()).collect();
     let mut pairs: Vec<[usize; 2]> = Vec::with_capacity(3);
     for gi in 0..3 {
         let own: Vec<usize> = (0..3).filter(|&k| edge_groups[k].contains(&gi)).collect();
@@ -1020,10 +1021,10 @@ fn signed_corner(
         let u = flat.normal.cross(dir[k]).normalized(tol)?;
         let base = corner + dir[k] * (reach[k] * 0.5);
         let step = reach[k] * 1e-3;
-        let frame = crate::engine::rolled::basis(flat.normal);
+        let frame = crate::engine::flat_faces::basis(flat.normal);
         match (
-            crate::engine::rolled::inside(&flat.sides, base + u * step, frame),
-            crate::engine::rolled::inside(&flat.sides, base - u * step, frame),
+            crate::engine::flat_faces::inside(&flat.sides, base + u * step, frame),
+            crate::engine::flat_faces::inside(&flat.sides, base - u * step, frame),
         ) {
             (true, false) => Ok(u),
             (false, true) => Ok(-u),

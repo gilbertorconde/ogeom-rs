@@ -57,7 +57,7 @@ impl PlyImport {
             let face = (b - a).cross(c - a);
             for index in triangle {
                 let slot = &mut resolved[*index as usize];
-                if crate::mesh_formats::held_is_unset(slot) {
+                if crate::mesh_read::held_is_unset(slot) {
                     *slot += face;
                 }
             }
@@ -69,7 +69,7 @@ impl PlyImport {
                 if m > 0.0 { n / m } else { Vector::Z }
             })
             .collect();
-        crate::mesh_formats::imported(positions, normals, self.triangles.clone(), true)
+        crate::mesh_read::imported(positions, normals, self.triangles.clone(), true)
     }
 }
 

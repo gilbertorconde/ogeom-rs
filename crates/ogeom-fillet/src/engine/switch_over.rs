@@ -270,7 +270,7 @@ fn crossing(
     };
     let (from, to) = from_end(&curve, range, at, tol)?;
     let hosts =
-        [cap, wall_i, wall_j].map(|k| crate::engine::rolled::host(model, &faces.faces[k], tol));
+        [cap, wall_i, wall_j].map(|k| crate::engine::flat_faces::host(model, &faces.faces[k], tol));
     let [Ok(Some(cap_host)), Ok(Some(host_i)), Ok(Some(host_j))] = hosts else {
         return Ok(None);
     };
