@@ -16,6 +16,7 @@ use ogeom_algo::{
     Built, History, edge_vertices, make_cone, make_cylinder, make_edge, make_edge_between,
     make_face_with_pcurves, make_solid, make_torus, make_vertex, sew,
 };
+use ogeom_core::diag::{self, Channel};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
 use ogeom_geom::Transformable as _;
@@ -4287,9 +4288,10 @@ fn closed_loop_shell(
         }
         let sewn = sew(model, &faces, tol)?;
         if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
-            if std::env::var_os("OGEOM_DEBUG_RING").is_some() {
+            if diag::enabled(Channel::Sweep) {
                 use ogeom_geom::Curve3d as _;
-                eprintln!(
+                ogeom_core::diag!(
+                    Channel::Sweep,
                     "RING: {} shells from {} strips",
                     sewn.shells.len(),
                     faces.len()
@@ -4312,7 +4314,8 @@ fn closed_loop_shell(
                                 d.curve3d()
                             && let Some(g) = model.geometry().curve(*curve)
                         {
-                            eprintln!(
+                            ogeom_core::diag!(
+                                Channel::Sweep,
                                 "RING open edge tol {:.2e}: {:?} -> {:?}",
                                 d.tolerance.get(),
                                 g.point_at(range.0, tol)?,
@@ -8204,8 +8207,9 @@ fn pipe_shell_law(
         make_solid(model, &shells)?
     } else {
         if sewn.shells.len() != 1 || !ogeom_algo::is_shell_closed(model, &sewn.shells[0])? {
-            if std::env::var_os("OGEOM_DEBUG_SWEEP").is_some() {
-                eprintln!(
+            if diag::enabled(Channel::Sweep) {
+                ogeom_core::diag!(
+                    Channel::Sweep,
                     "SWEEP: {} shells, {} free edges from {} faces",
                     sewn.shells.len(),
                     sewn.free_edges.len(),
@@ -8217,9 +8221,18 @@ fn pipe_shell_law(
                     let b = curve.point_at(range.1, tol)?;
                     let m = curve.point_at(f64::midpoint(range.0, range.1), tol)?;
                     let t = model.tolerance_of(edge)?.map_or(0.0, |t| t.get());
-                    eprintln!(
+                    ogeom_core::diag!(
+                        Channel::Sweep,
                         "  free ({:.3},{:.3},{:.3}) -> ({:.3},{:.3},{:.3}) via ({:.3},{:.3},{:.3}) tol {t:.2e}",
-                        a.x, a.y, a.z, b.x, b.y, b.z, m.x, m.y, m.z
+                        a.x,
+                        a.y,
+                        a.z,
+                        b.x,
+                        b.y,
+                        b.z,
+                        m.x,
+                        m.y,
+                        m.z
                     );
                 }
             }

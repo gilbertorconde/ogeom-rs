@@ -4,6 +4,12 @@
 //! false same-parameter claims. Healing repairs those before the shape is
 //! modelled with.
 
+// Debug output goes through `ogeom_core::diag`, never to stdout or stderr.
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stderr, clippy::print_stdout, clippy::dbg_macro)
+)]
+
 pub mod divide;
 pub mod fix;
 pub mod fix_shape;

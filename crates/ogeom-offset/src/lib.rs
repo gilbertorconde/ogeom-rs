@@ -1,6 +1,12 @@
 //! Offsetting and sweeping: offset shape, thicken/shell, pipe, pipe-shell,
 //! loft/thru-sections, draft angle, evolved, filling, normal projection.
 
+// Debug output goes through `ogeom_core::diag`, never to stdout or stderr.
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stderr, clippy::print_stdout, clippy::dbg_macro)
+)]
+
 pub mod draft;
 pub mod feature;
 pub mod fill;

@@ -21,6 +21,7 @@
 //! meet within tolerance stay in separate shells, and the result says how many
 //! there are.
 
+use ogeom_core::diag::{self, Channel};
 use ogeom_core::{FastMap, FastSet};
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
@@ -1540,16 +1541,15 @@ fn repaced_carry(
             .zip(&kept_fp.quarters)
             .all(|(d, k)| d.distance(*k) <= reach);
     if paced_alike {
-        if std::env::var_os("OGEOM_DEBUG_SEW").is_some() {
-            eprintln!(
-                "SEW carry as is: flipped {flipped}, middles {:.2e} apart, kept {:?} {:?} dropped {:?} {:?}",
-                dropped_fp.middle.distance(kept_fp.middle),
-                kept_fp.start,
-                kept_fp.end,
-                dropped_fp.start,
-                dropped_fp.end
-            );
-        }
+        ogeom_core::diag!(
+            Channel::Sew,
+            "SEW carry as is: flipped {flipped}, middles {:.2e} apart, kept {:?} {:?} dropped {:?} {:?}",
+            dropped_fp.middle.distance(kept_fp.middle),
+            kept_fp.start,
+            kept_fp.end,
+            dropped_fp.start,
+            dropped_fp.end
+        );
         return Ok(as_is());
     }
     const SAMPLES: usize = 24;
@@ -1667,7 +1667,7 @@ fn repaced_carry(
         }
         let fitted =
             ogeom_geom::fit::fit_points_2d_at(&params, &image, 3, tol.confusion() * 10.0, tol)?;
-        if std::env::var_os("OGEOM_DEBUG_SEW").is_some() {
+        if diag::enabled(Channel::Sew) {
             use ogeom_geom::Surface as _;
             let mut worst_sample = 0.0_f64;
             let mut worst_fit = 0.0_f64;
@@ -1679,7 +1679,8 @@ fn repaced_carry(
                     worst_fit = worst_fit.max(sg.point_at(f.x, f.y, tol)?.distance(p));
                 }
             }
-            eprintln!(
+            ogeom_core::diag!(
+                Channel::Sew,
                 "SEW refit: samples off surface by {worst_sample:.2e}, fit off by {worst_fit:.2e} (fit error {:.2e} met {}) domain {:?} over ({klo:.4}, {khi:.4}); dropped range {:?}",
                 fitted.error,
                 fitted.met,
@@ -2190,9 +2191,10 @@ impl Fingerprint {
         if !near(self.middle, other.middle)
             && !(other.off(self.middle, tol)? <= reach && self.off(other.middle, tol)? <= reach)
         {
-            if std::env::var_os("OGEOM_DEBUG_SEW").is_some() {
+            if diag::enabled(Channel::Sew) {
                 let foot = crate::project_on_curve(&other.curve, self.middle, 64, tol)?;
-                eprintln!(
+                ogeom_core::diag!(
+                    Channel::Sew,
                     "SEW near miss: ends agree within {reach:.2e}, middles off {:.2e} / {:.2e} (widths {:.2e}, {:.2e}) at {:?}; foot on other at {:.6} (range {:?}, domain {:?}, periodic {}) distance {:.2e}",
                     other.off(self.middle, tol)?,
                     self.off(other.middle, tol)?,
@@ -2437,13 +2439,14 @@ fn rebuild_face(
         let wire = match make_wire(model, &ring, tol) {
             Ok(w) => w.shape,
             Err(e) => {
-                if std::env::var_os("OGEOM_DEBUG_SEW").is_some() {
-                    eprintln!("SEW WIRE FAIL: {e}");
+                if diag::enabled(Channel::Sew) {
+                    ogeom_core::diag!(Channel::Sew, "SEW WIRE FAIL: {e}");
                     for edge in &ring {
                         if let Some((a, b)) = edge_vertices(model, edge)? {
                             let (pa, pb) = (placed(model, &a)?, placed(model, &b)?);
                             let fp = fingerprint(model, edge, tol)?;
-                            eprintln!(
+                            ogeom_core::diag!(
+                                Channel::Sew,
                                 "   edge {:?}{} ({:.5},{:.5},{:.5}) v{} -> ({:.5},{:.5},{:.5}) v{} width {:.2e}",
                                 edge.node(),
                                 if edge.orientation() == ogeom_topo::Orientation::Reversed {
@@ -2478,13 +2481,14 @@ fn rebuild_face(
     let sewn = match make_face_on(model, data.surface, &wires, tol) {
         Ok(built) => built.shape,
         Err(e) => {
-            if std::env::var_os("OGEOM_DEBUG_SEW").is_some() {
-                eprintln!("SEW FACE FAIL: {e}");
+            if diag::enabled(Channel::Sew) {
+                ogeom_core::diag!(Channel::Sew, "SEW FACE FAIL: {e}");
                 for (wi, wire) in wires.iter().enumerate() {
                     for edge in model.ordered_children_of(wire)? {
                         if let Some((a, b)) = edge_vertices(model, &edge)? {
                             let (pa, pb) = (placed(model, &a)?, placed(model, &b)?);
-                            eprintln!(
+                            ogeom_core::diag!(
+                                Channel::Sew,
                                 "   wire {wi} edge {:?}{} ({:.5},{:.5},{:.5}) v{} -> ({:.5},{:.5},{:.5}) v{}",
                                 edge.node(),
                                 if edge.orientation() == ogeom_topo::Orientation::Reversed {

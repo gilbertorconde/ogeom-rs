@@ -27,6 +27,7 @@
 //! give each face its own idea of where the edge runs, and the seams would show.
 
 use ogeom_core::clock::Instant;
+use ogeom_core::diag::{self, Channel};
 use ogeom_core::{Exact, OgeomResult, Predicates, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
 use ogeom_geom::{Curve2d, Surface, SurfaceGeometry};
@@ -616,14 +617,13 @@ fn triangulate_reporting_from(
     let narrow = narrow_chord(surface, drawn, deflection, tol)
         .is_some_and(|want| !edges_already_at(model, face, finer, want));
     let crossed = narrow || planar.crossed || planar.triangles.len() < planar.boundary_triangles;
-    if *MESH_DEBUG_REFINE {
-        eprintln!(
-            "SHORT {} triangles against {boundary} boundary points in {} rings: crossed {crossed} (boundary pass {})",
-            planar.triangles.len(),
-            drawn.len(),
-            planar.crossed
-        );
-    }
+    ogeom_core::diag!(
+        Channel::Mesh,
+        "SHORT {} triangles against {boundary} boundary points in {} rings: crossed {crossed} (boundary pass {})",
+        planar.triangles.len(),
+        drawn.len(),
+        planar.crossed
+    );
 
     // Boundary vertices take their positions from their edges' own curves
     // (the shared authority), keyed by their exact parameter-space bits.
@@ -647,7 +647,6 @@ fn triangulate_reporting_from(
     let flip = reversed != !face.location().preserves_handedness(model.datums())?;
     let mut mesh = Triangulation::new();
     mesh.deflection_met = met;
-    let mut hits = 0_usize;
     let mut parameters = Vec::with_capacity(planar.parameters.len());
     // The vertices where the surface has no normal of its own: a cone's
     // apex, a sphere's pole, a patch's collapsed side.
@@ -656,10 +655,7 @@ fn triangulate_reporting_from(
         // Anchors are already in world coordinates (their edges' own
         // placements applied), where surface lifts still need the face's.
         let point = match anchored.get(&(u.to_bits(), v.to_bits())) {
-            Some(anchor) => {
-                hits += 1;
-                *anchor
-            }
+            Some(anchor) => *anchor,
             None => placement.apply(surface.point_at(u, v, tol)?),
         };
         let exact = surface.normal_at(u, v, tol).ok().map(|n| n.vector());
@@ -671,20 +667,13 @@ fn triangulate_reporting_from(
         mesh.normals.push(if reversed { -normal } else { normal });
         parameters.push((u, v));
     }
-    if *MESH_DEBUG_REFINE && (rings_ms + region_ms) > 50.0 {
-        eprintln!(
+    if diag::enabled(Channel::Mesh) && (rings_ms + region_ms) > 50.0 {
+        ogeom_core::diag!(
+            Channel::Mesh,
             "PHASE rings {rings_ms:.0}ms region {region_ms:.0}ms lift {:.0}ms  ({} ring points, {} tris)",
             phase.elapsed().as_secs_f64() * 1e3,
             uv.iter().map(Vec::len).sum::<usize>(),
             planar.triangles.len()
-        );
-    }
-    if *MESH_DEBUG {
-        eprintln!(
-            "DBG anchors map={} hits={} verts={}",
-            anchored.len(),
-            hits,
-            mesh.positions.len()
         );
     }
     mesh.triangles = planar
@@ -1350,8 +1339,9 @@ fn first_pass(
             Err(e) => computed.push(Err(e)),
         }
     }
-    if *MESH_DEBUG_REFINE && !crossed.is_empty() {
-        eprintln!(
+    if diag::enabled(Channel::Mesh) && !crossed.is_empty() {
+        ogeom_core::diag!(
+            Channel::Mesh,
             "REFINE {} of {} faces came up short",
             crossed.len(),
             faces.len()
@@ -2777,22 +2767,6 @@ fn trimming_rings(
                         p.y += turns * span;
                     }
                 }
-            }
-        }
-    }
-    if *MESH_DEBUG {
-        for (i, (ring, anchors)) in rings.iter().zip(&ring_anchors).enumerate() {
-            eprintln!("DBG ring {i}: {} points", ring.len());
-            for (p, a) in ring.iter().zip(anchors) {
-                eprintln!(
-                    "DBG   uv({:.5},{:.5}) anchor {}",
-                    p.x,
-                    p.y,
-                    a.map_or("-".to_string(), |q| format!(
-                        "({:.4},{:.4},{:.4})",
-                        q.x, q.y, q.z
-                    ))
-                );
             }
         }
     }
@@ -4622,7 +4596,7 @@ fn triangulate_region_inner(
                 cdt.add_constraint(a, b);
             } else {
                 refused += 1;
-                if *MESH_DEBUG_REFINE {
+                if diag::enabled(Channel::Mesh) {
                     let n = ring.len();
                     let partners: Vec<usize> = (0..n)
                         .filter(|&j| j != i && j != (i + 1) % n && j != (i + n - 1) % n)
@@ -4631,17 +4605,24 @@ fn triangulate_region_inner(
                         })
                         .collect();
                     let len = ring[i].distance(ring[(i + 1) % n]);
-                    eprintln!(
+                    ogeom_core::diag!(
+                        Channel::Mesh,
                         "REFUSED segment {i} of {n} (chart length {len:.3e}) crosses {partners:?}"
                     );
                     for j in [(i + n - 1) % n, i, (i + 1) % n, (i + 2) % n, (i + 3) % n] {
-                        eprintln!("   ring[{j}] = ({:.12}, {:.12})", ring[j].x, ring[j].y);
+                        ogeom_core::diag!(
+                            Channel::Mesh,
+                            "   ring[{j}] = ({:.12}, {:.12})",
+                            ring[j].x,
+                            ring[j].y
+                        );
                     }
                 }
             }
         }
-        if *MESH_DEBUG_REFINE && (refused > 0 || same > 0) {
-            eprintln!(
+        if diag::enabled(Channel::Mesh) && (refused > 0 || same > 0) {
+            ogeom_core::diag!(
+                Channel::Mesh,
                 "CONSTRAINTS ring of {}: {refused} refused, {same} zero-length",
                 ring.len()
             );
@@ -4658,9 +4639,10 @@ fn triangulate_region_inner(
     let boundary_triangles = (cdt.num_vertices() + 2 * rings.len()).saturating_sub(4 + junctions);
     let crossed = refused_total > 0
         || inside_by_parity(&cdt).is_none_or(|inside| inside != boundary_triangles);
-    if *MESH_DEBUG_REFINE && crossed {
+    if diag::enabled(Channel::Mesh) && crossed {
         let points: usize = rings.iter().map(Vec::len).sum();
-        eprintln!(
+        ogeom_core::diag!(
+            Channel::Mesh,
             "PARITY inside {:?} vertices {} points {points} rings {} inner faces {}",
             inside_by_parity(&cdt),
             cdt.num_vertices(),
@@ -4965,18 +4947,18 @@ fn triangulate_region_inner(
             if rounds_run == REFINEMENT_ROUNDS {
                 capped = Some(next);
             }
-            if *MESH_DEBUG_REFINE {
-                eprintln!(
-                    "ROUND {rounds_run}: +{} vertices",
-                    cdt.num_vertices() - before
-                );
-            }
+            ogeom_core::diag!(
+                Channel::Mesh,
+                "ROUND {rounds_run}: +{} vertices",
+                cdt.num_vertices() - before
+            );
         }
     }
 
     let refine_ms = sub.elapsed().as_secs_f64() * 1e3;
-    if *MESH_DEBUG_REFINE && boundary_ms + interior_ms + refine_ms > 50.0 {
-        eprintln!(
+    if diag::enabled(Channel::Mesh) && boundary_ms + interior_ms + refine_ms > 50.0 {
+        ogeom_core::diag!(
+            Channel::Mesh,
             "SUB boundary {boundary_ms:.0}ms interior {interior_ms:.0}ms ({interior_points} verts) refine {refine_ms:.0}ms ({rounds_run} rounds, {} verts)",
             cdt.num_vertices()
         );
@@ -5034,12 +5016,11 @@ fn triangulate_region_inner(
         triangles.push(indices);
     }
 
-    if *MESH_DEBUG_REFINE {
-        eprintln!(
-            "FILTER {dbg_total} triangles: {dbg_outside} outside, {dbg_degenerate} degenerate (area < {degenerate_area:.3e}), {} kept",
-            triangles.len()
-        );
-    }
+    ogeom_core::diag!(
+        Channel::Mesh,
+        "FILTER {dbg_total} triangles: {dbg_outside} outside, {dbg_degenerate} degenerate (area < {degenerate_area:.3e}), {} kept",
+        triangles.len()
+    );
     // No triangles is not refused here: a boundary drawn coarsely enough
     // to cross itself can enclose nothing at all (an annulus narrower
     // than the sag of its rims' polygons, two arcs a hair apart), and the
@@ -5206,10 +5187,11 @@ fn add_interior_points(
         )
     };
 
-    if *MESH_DEBUG_REFINE {
+    if diag::enabled(Channel::Mesh) {
         let v = f64::midpoint(low.y, high.y);
         let (columns, _) = columns_at(v);
-        eprintln!(
+        ogeom_core::diag!(
+            Channel::Mesh,
             "GRID u [{:.3},{:.3}] v [{:.3},{:.3}]: {} rows after aspect, {} columns at the middle row, chord {}",
             low.x,
             high.x,
@@ -6216,17 +6198,6 @@ fn crosses_odd_times<P: Predicates>(ring: &[Point2], p: Point2) -> bool {
     }
     inside
 }
-
-/// Whether to report, per shape, how many faces were drawn again finer.
-///
-/// Read once: `env::var` takes a process-wide lock and allocates its answer,
-/// and this is asked per face.
-static MESH_DEBUG_REFINE: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var("OGEOM_MESH_DEBUG_REFINE").is_ok());
-
-/// Whether the mesh debug dump is on, read once for the same reason.
-static MESH_DEBUG: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var("OGEOM_MESH_DEBUG").is_ok());
 
 /// The ring edges that can cross a horizontal ray, bucketed by height.
 ///

@@ -15,6 +15,7 @@
 //! surface type does not break existing algorithms. It only forgoes a
 //! shortcut until someone writes one.
 
+use ogeom_core::diag::Channel;
 use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_math::{Direction, Point, Point2, Transform, Vector, Vector2};
 
@@ -27,12 +28,6 @@ pub(crate) fn domain_slack(a: f64, b: f64, tol: Tolerances) -> f64 {
     tol.parametric()
         .max(a.abs().max(b.abs()) * 4.0 * f64::EPSILON)
 }
-
-/// Whether a curve evaluated outside its domain says where it was asked
-/// from. Read once: the refusal is routine inside booleans, and reading the
-/// environment takes a lock.
-static DEBUG_DOMAIN: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var_os("OGEOM_DEBUG_DOMAIN").is_some());
 
 /// How smooth a curve or surface is.
 ///
@@ -247,12 +242,11 @@ pub trait Curve3d {
         }
         let slack = domain_slack(a, b, tol);
         if !u.is_finite() || u < a - slack || u > b + slack {
-            if *DEBUG_DOMAIN {
-                eprintln!(
-                    "DOMAIN {u} outside [{a}, {b}]:\n{}",
-                    std::backtrace::Backtrace::force_capture()
-                );
-            }
+            ogeom_core::diag!(
+                Channel::Domain,
+                "DOMAIN {u} outside [{a}, {b}]:\n{}",
+                std::backtrace::Backtrace::force_capture()
+            );
             return Err(ogeom_core::ogeom_err!(
                 Domain,
                 "parameter {u} outside curve domain [{a}, {b}]"

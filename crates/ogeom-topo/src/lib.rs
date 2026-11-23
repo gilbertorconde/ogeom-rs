@@ -23,6 +23,12 @@
 //!   polygon and triangulation representations, with a `same_parameter` flag and a
 //!   repair routine.
 
+// Debug output goes through `ogeom_core::diag`, never to stdout or stderr.
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stderr, clippy::print_stdout, clippy::dbg_macro)
+)]
+
 mod content;
 pub mod entity;
 mod kept;

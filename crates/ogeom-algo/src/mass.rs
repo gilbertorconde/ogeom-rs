@@ -38,6 +38,7 @@
 //! `n(n+1)` is what that collapses to. One function serves all three, which is
 //! also why the three agree with each other rather than drifting apart.
 
+use ogeom_core::diag::Channel;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Transformable as _;
 use ogeom_math::{Direction, Matrix3, Point, Vector};
@@ -627,12 +628,11 @@ fn exact_volume_properties(
                 exact.extend(found);
             }
             None => {
-                if *DEBUG_MASS {
-                    eprintln!(
-                        "MASS face {} is not exactly integrable",
-                        face.node().index()
-                    );
-                }
+                ogeom_core::diag!(
+                    Channel::Mass,
+                    "MASS face {} is not exactly integrable",
+                    face.node().index()
+                );
                 unspoken.push(at);
             }
         }
@@ -1021,10 +1021,6 @@ fn or_mesh<T>(result: OgeomResult<T>, fallback: T) -> OgeomResult<T> {
         Err(_) => Ok(fallback),
     }
 }
-
-/// Whether the exact path says which faces it leaves to the mesh. Read once.
-static DEBUG_MASS: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var_os("OGEOM_DEBUG_MASS").is_some());
 
 /// The slivers between a face's mesh and its edges, each triangle handed
 /// to `sliver` wound as the face's own triangles are.
@@ -1565,15 +1561,19 @@ pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> Ogeo
                 }
             }
             None => {
-                if *DEBUG_MASS {
-                    eprintln!("MASS face {:?} cannot be walked", face.node());
-                }
+                ogeom_core::diag!(
+                    Channel::Mass,
+                    "MASS face {:?} cannot be walked",
+                    face.node()
+                );
             }
         }
     }
-    if *DEBUG_MASS {
-        eprintln!("MASS flags_agree walked {} edges", walks.len());
-    }
+    ogeom_core::diag!(
+        Channel::Mass,
+        "MASS flags_agree walked {} edges",
+        walks.len()
+    );
     // Which set each face is in, as a forest of parents, and whether each
     // face is turned against its parent.
     let mut parent: Vec<(usize, bool)> = (0..faces.len()).map(|at| (at, false)).collect();
@@ -1603,9 +1603,11 @@ pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> Ogeo
             // more round it) must walk it each way equally often.
             let ahead = uses.iter().filter(|(ahead, ..)| *ahead).count();
             if ahead * 2 != uses.len() {
-                if *DEBUG_MASS {
-                    eprintln!("MASS edge {} is walked {uses:?}", edge.index());
-                }
+                ogeom_core::diag!(
+                    Channel::Mass,
+                    "MASS edge {} is walked {uses:?}",
+                    edge.index()
+                );
                 return Ok(Flags {
                     agree: false,
                     sets: Vec::new(),
@@ -1620,12 +1622,11 @@ pub(crate) fn flags_agree(model: &Model, shape: &Shape, tol: Tolerances) -> Ogeo
             let turned = first_turned ^ other_turned ^ against;
             if other == first {
                 if turned {
-                    if *DEBUG_MASS {
-                        eprintln!(
-                            "MASS edge {} closes a loop of faces turned oddly",
-                            edge.index()
-                        );
-                    }
+                    ogeom_core::diag!(
+                        Channel::Mass,
+                        "MASS edge {} closes a loop of faces turned oddly",
+                        edge.index()
+                    );
                     return Ok(Flags {
                         agree: false,
                         sets: Vec::new(),
@@ -2004,9 +2005,7 @@ fn sets_facing_in(
         let mut settled = vec![false; sets.len()];
         for (&(set, _, _, against), facing) in asked.iter().zip(facing) {
             let facing = or_mesh(facing, None)?;
-            if *DEBUG_MASS {
-                eprintln!("MASS set {set} probed {facing:?}");
-            }
+            ogeom_core::diag!(Channel::Mass, "MASS set {set} probed {facing:?}");
             if let Some(facing) = facing {
                 // A face turned against the set's first answers for it
                 // turned back.
@@ -2017,9 +2016,7 @@ fn sets_facing_in(
         // A set out of faces with none settled is left to the mesh.
         for (set, faces) in &pending {
             if !settled[*set] && faces.is_empty() {
-                if *DEBUG_MASS {
-                    eprintln!("MASS set {set}: no face settles it");
-                }
+                ogeom_core::diag!(Channel::Mass, "MASS set {set}: no face settles it");
                 return Ok(None);
             }
         }

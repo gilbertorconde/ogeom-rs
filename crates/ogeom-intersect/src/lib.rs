@@ -37,6 +37,12 @@
 //! `tests/instruments.rs`. They demonstrably fail when something is genuinely
 //! missing.
 
+// Debug output goes through `ogeom_core::diag`, never to stdout or stderr.
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stderr, clippy::print_stdout, clippy::dbg_macro)
+)]
+
 pub mod approx;
 mod bezier_clip;
 pub mod contact;

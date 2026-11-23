@@ -15,6 +15,7 @@
 //! a boolean, several operations later.
 
 use ogeom_core::FastMap;
+use ogeom_core::diag::{self, Channel};
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, Curve3d, SurfaceGeometry};
@@ -132,22 +133,21 @@ pub fn make_edge_between(
         let on_curve = curve.point_at(parameter, tol)?;
         let reach = data.tolerance.get().max(tol.confusion());
         if !on_curve.is_within(placed, reach) {
-            if std::env::var_os("OGEOM_DEBUG_EDGE").is_some() {
-                eprintln!(
-                    "EDGE MISS range {range:?} at {parameter}: curve {on_curve:?} vertex {placed:?} kind {}",
-                    match &curve {
-                        Curve::Line(_) => "line",
-                        Curve::Circle(_) => "circle",
-                        Curve::BSpline(b) =>
-                            if b.degree() == 1 {
-                                "bspline-1"
-                            } else {
-                                "bspline"
-                            },
-                        _ => "other",
-                    }
-                );
-            }
+            ogeom_core::diag!(
+                Channel::Edge,
+                "EDGE MISS range {range:?} at {parameter}: curve {on_curve:?} vertex {placed:?} kind {}",
+                match &curve {
+                    Curve::Line(_) => "line",
+                    Curve::Circle(_) => "circle",
+                    Curve::BSpline(b) =>
+                        if b.degree() == 1 {
+                            "bspline-1"
+                        } else {
+                            "bspline"
+                        },
+                    _ => "other",
+                }
+            );
             ogeom_bail!(
                 Construction,
                 "curve at {parameter} is {} from the vertex it should meet, \
@@ -480,7 +480,7 @@ fn check_connected(model: &Model, edges: &[Shape], tol: Tolerances) -> OgeomResu
             && !model.same_position(end, next_start, tol)?
             && !one_point(model, end, next_start, tol)?
         {
-            if std::env::var("OGEOM_DEBUG_WIRE").is_ok()
+            if diag::enabled(Channel::Wire)
                 && let (Some(a), Some(b)) = (
                     model.node(end).and_then(|n| n.data().as_vertex().cloned()),
                     model
@@ -488,7 +488,8 @@ fn check_connected(model: &Model, edges: &[Shape], tol: Tolerances) -> OgeomResu
                         .and_then(|n| n.data().as_vertex().cloned()),
                 )
             {
-                eprintln!(
+                ogeom_core::diag!(
+                    Channel::Wire,
                     "WIRE GAP: {:?} (tol {:.2e}) vs {:?} (tol {:.2e}), gap {:.3e}",
                     a.point,
                     a.tolerance.get(),

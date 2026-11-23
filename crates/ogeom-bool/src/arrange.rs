@@ -11,6 +11,7 @@
 //! rebuild works from the exact geometry and the polylines are never promoted
 //! to an answer.
 
+use ogeom_core::diag::Channel;
 use ogeom_core::predicates::{Exact, Predicates, Sign};
 use ogeom_core::{OgeomResult, ogeom_bail};
 use ogeom_math::Point2;
@@ -527,15 +528,14 @@ fn walk<'s, T>(
                 }
                 let strand = live[k];
                 if strand.boundary {
-                    if std::env::var("OGEOM_ARRANGE_DEBUG").is_ok() {
-                        eprintln!(
-                            "DANGLE: boundary strand {:?} .. {:?} (deg {} / {})",
-                            strand.polyline[0],
-                            strand.polyline[strand.polyline.len() - 1],
-                            degree[u],
-                            degree[v]
-                        );
-                    }
+                    ogeom_core::diag!(
+                        Channel::Arrange,
+                        "DANGLE: boundary strand {:?} .. {:?} (deg {} / {})",
+                        strand.polyline[0],
+                        strand.polyline[strand.polyline.len() - 1],
+                        degree[u],
+                        degree[v]
+                    );
                     ogeom_bail!(
                         Construction,
                         "a face boundary strand dangles; the boundary does not \

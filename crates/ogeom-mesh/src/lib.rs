@@ -12,6 +12,12 @@
 //! on one ([`shadow()`]), traced by the exact planar region engine in
 //! [`planar`], and its curvature at each vertex ([`curvature()`]).
 
+// Debug output goes through `ogeom_core::diag`, never to stdout or stderr.
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stderr, clippy::print_stdout, clippy::dbg_macro)
+)]
+
 pub mod attach;
 pub mod boolean;
 pub mod bvh;

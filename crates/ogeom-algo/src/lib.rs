@@ -7,6 +7,12 @@
 //! Every operation in this crate emits history (`generated` / `modified` /
 //! `is_deleted`): downstream stable naming is built directly on it.
 
+// Debug output goes through `ogeom_core::diag`, never to stdout or stderr.
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stderr, clippy::print_stdout, clippy::dbg_macro)
+)]
+
 mod bins;
 pub mod build;
 pub mod certify;
