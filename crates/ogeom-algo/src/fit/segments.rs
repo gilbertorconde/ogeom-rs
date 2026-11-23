@@ -754,7 +754,7 @@ pub(crate) fn strip(points: &[Point2]) -> Option<Shape> {
 
 /// The convex hull of the points, counter-clockwise, without points
 /// along its edges: one point, or two, where the points are on a line.
-fn hull(points: &[Point2]) -> Vec<Point2> {
+pub(crate) fn hull(points: &[Point2]) -> Vec<Point2> {
     let mut sorted = points.to_vec();
     sorted.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
     sorted.dedup();

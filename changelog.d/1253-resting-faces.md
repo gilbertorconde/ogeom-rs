@@ -1,0 +1,5 @@
+- **Added: `resting_faces` and `resting_faces_of`, the ways a part can lie on a flat bed** (#1253).
+  - Each plane of the part's convex hull it can lie on, as a `Rest`: the way it faces the bed, the contact area of its own faces in that plane, its height and its centre of mass's height, the footprint (support polygon) in a bed frame, the static stability margin, the tip angle and whether it is stable at uniform density.
+  - A curved wall is no rest: where the hull turns by less than 30° across two opposite edges of a face and the part tips over one of them, the part rolls. A cylinder lies on its caps only and a sphere nowhere; a flat face with rounded edges stays a rest.
+  - Stable rests first, then by contact area, lower centre of mass and `down` nearest −z. The solid version takes its centre of mass and contact areas from the exact geometry.
+  - Box 30 × 20 × 10: six stable rests, areas, heights and margins exact to 1e-9. L-bracket: the inside faces are no rests, the two end faces tip (margins −16.65 and −1.65), the bed across the opening stands on two edges with no contact area. Cylinder r 5: caps only, contact area π r² to 1e-6 on the solid.
