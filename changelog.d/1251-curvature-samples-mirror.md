@@ -1,0 +1,2 @@
+- **Fixed: `face_curvature_samples` keeps the sign on a mirrored face** (#1251).
+  - A mirroring placement turned the curvatures and normal round, so a convex mirrored face read positive against an inward normal. A mirror now changes neither, as the mesh's normals do.

@@ -579,11 +579,25 @@ pub trait Surface {
             }
             Ok(along)
         };
-        let max_direction = Direction::new(direction_for(max)?, tol)?;
+        // Beside a pole an umbilic's rows are rounding, short of the test
+        // above by a little and too short to normalise: any tangent is
+        // right there, so the longer of the two derivatives stands in.
+        let tangent = || {
+            Direction::new(
+                if jet.du.magnitude() >= jet.dv.magnitude() {
+                    jet.du
+                } else {
+                    jet.dv
+                },
+                tol,
+            )
+        };
+        let max_direction = Direction::new(direction_for(max)?, tol).or_else(|_| tangent())?;
+        let across = || Direction::new(n.cross(max_direction.vector()), tol);
         let min_direction = if spread <= tol.angular() * max.abs().max(min.abs()).max(1.0) {
-            Direction::new(n.cross(max_direction.vector()), tol)?
+            across()?
         } else {
-            Direction::new(direction_for(min)?, tol)?
+            Direction::new(direction_for(min)?, tol).or_else(|_| across())?
         };
         Ok(SurfaceCurvature {
             max,

@@ -40,7 +40,9 @@ mod support;
 mod tangent_chain;
 mod turned_pole;
 
-pub use analyse::{BlendContact, analyse_blend, face_curvature_samples};
+pub use analyse::{
+    BlendContact, FaceCurvature, analyse_blend, face_curvature_at, face_curvature_samples,
+};
 pub use asym::{
     RoundProfile, fillet_edge_distances, fillet_edge_distances_overflow, largest_fillet_distances,
 };
