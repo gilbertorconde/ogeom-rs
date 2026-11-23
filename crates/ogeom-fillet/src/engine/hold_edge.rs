@@ -22,7 +22,9 @@
 //! the two meet tangentially and the foot passes through their vertex, it
 //! is the ball's arc in its plane square to the spine. A piece is fitted through its balls' arcs,
 //! or, where it reaches an end face, through its sections by planes turning
-//! to that face's plane. Past an end face the centres run on as they are
+//! to that face's plane about the line the two planes share. A piece whose
+//! feet all rest on one point beside a plane is that point's ball arc
+//! revolved, exactly. Past an end face the centres run on as they are
 //! and the end face's plane cuts the round (amendment "M5f"). Where that
 //! is not one piece's section (the balls past the face that still reach
 //! inside it change seat, the piece there rests on a vertex, or the face
@@ -44,7 +46,7 @@ use core::f64::consts::TAU;
 
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances};
-use ogeom_geom::{Curve, Curve3d as _, CylinderSurface, SurfaceGeometry};
+use ogeom_geom::{Curve, Curve3d as _, CylinderSurface, Surface as _, SurfaceGeometry};
 use ogeom_math::{Aabb, Cylinder, Direction, Frame, Point, Vector};
 use ogeom_topo::{Model, Shape};
 
@@ -505,7 +507,7 @@ impl Hold {
             Front::Plane => {
                 let g = along.cross(self.nb);
                 let g = if g.dot(na) < 0.0 { -g } else { g };
-                (Some(g), c, Vector::new(0.0, 0.0, 0.0), g)
+                (Some(g), c, Vector::ZERO, g)
             }
             Front::Cylinder { axis, .. } => {
                 let foot = axis + along * (c - axis).dot(along);
@@ -1982,10 +1984,11 @@ fn clear(model: &Model, hold: &Hold, tol: Tolerances) -> OgeomResult<bool> {
 
 /// The piece on `seat` over `from..to` fitted through its sections,
 /// closer together toward the ends. A piece reaching an end face (`planes`
-/// given) is cut by planes turning from the plane at its start to the one
-/// at its end, so its end lies in the end face's plane; any other is
-/// fitted through its balls' arcs, which at each end are the arcs it
-/// shares with its neighbours.
+/// given) is cut by the planes of [`Pencil`] from the plane at its start to
+/// the one at its end, so its end lies in the end face's plane; any other
+/// is fitted through its balls' arcs, which at each end are the arcs it
+/// shares with its neighbours. `None` where two neighbouring sections
+/// cross.
 fn fitted(
     hold: &Hold,
     seat: Seat,
@@ -1993,29 +1996,41 @@ fn fitted(
     planes: Option<((Point, Vector), (Point, Vector))>,
     tol: Tolerances,
 ) -> OgeomResult<Option<ogeom_geom::BSplineSurface>> {
-    let centre = |x: f64| hold.ball(x, Some(seat)).map(|(b, _)| b.centre);
-    let (Some(c0), Some(c1)) = (centre(from), centre(to)) else {
-        return Ok(None);
+    let pencil = match planes {
+        Some((p0, p1)) => {
+            let Some(pencil) = Pencil::new(p0, p1) else {
+                return Ok(None);
+            };
+            Some(pencil)
+        }
+        None => None,
     };
-    let mut rows = Vec::with_capacity(STATIONS + 1);
+    let mut rows: Vec<Vec<Point>> = Vec::with_capacity(STATIONS + 1);
+    let mut cut_by: Option<(Point, Vector)> = None;
     for i in 0..=STATIONS {
         #[expect(clippy::cast_precision_loss, reason = "a hundred stations")]
         let s = 0.5 * (1.0 - (core::f64::consts::PI * i as f64 / STATIONS as f64).cos());
-        let x = from + (to - from) * s;
-        let row = if let Some(((p0, n0), (p1, n1))) = planes {
-            let n = n0 * (1.0 - s) + n1 * s;
-            let m = n.magnitude();
-            let Some(c) = centre(x) else {
-                return Ok(None);
-            };
-            if m <= 0.0 {
+        let row = if let Some(pencil) = &pencil {
+            let (at, normal) = pencil.at(s);
+            // The ball whose arc the plane meets lies near where it meets
+            // the edge.
+            let along = normal.dot(hold.along);
+            if along <= 0.0 {
                 return Ok(None);
             }
-            // The plane through the station's centre, carried to each end's
-            // plane as the station reaches it.
-            let at = c + (p0 - c0) * (1.0 - s) + (p1 - c1) * s;
-            hold.section(seat, at, n / m, x, ACROSS)
+            let x = (at - hold.origin).dot(normal) / along;
+            // Each section lies wholly ahead of the one before: the
+            // sections do not cross, and the rails run one way.
+            let row = hold.section(seat, at, normal, x, ACROSS);
+            if let (Some(row), Some((at, normal))) = (&row, cut_by)
+                && row.iter().any(|p| (*p - at).dot(normal) <= 0.0)
+            {
+                return Ok(None);
+            }
+            cut_by = Some((at, normal));
+            row
         } else {
+            let x = from + (to - from) * s;
             (0..ACROSS)
                 .map(|k| {
                     #[expect(clippy::cast_precision_loss, reason = "a few dozen points")]
@@ -2034,6 +2049,155 @@ fn fitted(
         return Ok(None);
     };
     Ok((fitted.error <= tol.confusion()).then_some(fitted.curve))
+}
+
+/// The piece on `seat` over `from..to` whose every ball sets its foot on
+/// `pin`, where `b` is a plane, exactly: each centre lies on `b`'s offset
+/// at the radius from `pin`, so the centres turn about the line through
+/// `pin` square to `b`, and each ball's arc, in the plane through that line
+/// and its centre, is the first ball's arc turned with it. The piece is
+/// that arc revolved about the line, a torus whose tube reaches the line at
+/// `pin`, and it meets its neighbours G1 along the arcs it shares with
+/// them. `None` where `b` is not a plane or the balls do not so turn.
+fn revolved(
+    hold: &Hold,
+    seat: Seat,
+    (from, to): (f64, f64),
+    pin: Point,
+    tol: Tolerances,
+) -> OgeomResult<Option<ogeom_geom::BSplineSurface>> {
+    if !matches!(hold.front, Front::Plane) {
+        return Ok(None);
+    }
+    let r = hold.radius;
+    let line = hold.nb;
+    let off = |c: Point| {
+        let w = c - pin;
+        (w - line * w.dot(line), w.dot(line))
+    };
+    let balls: Option<Vec<Ball>> = [from, 0.5 * (from + to), to]
+        .iter()
+        .map(|x| hold.ball(*x, Some(seat)).map(|(b, _)| b))
+        .collect();
+    let Some(balls) = balls else {
+        return Ok(None);
+    };
+    let (w0, h0) = off(balls[0].centre);
+    let near = r * 1e-9;
+    let on_circle = balls.iter().all(|b| {
+        let (w, h) = off(b.centre);
+        (w.magnitude() - w0.magnitude()).abs() <= near
+            && (h - h0).abs() <= near
+            && b.on_a.distance(pin) <= near
+    });
+    if !on_circle || w0.magnitude() <= near {
+        return Ok(None);
+    }
+    let w1 = off(balls[2].centre).0;
+    let turn = w0.cross(w1).dot(line).atan2(w0.dot(w1));
+    if turn.abs() <= tol.angular() {
+        return Ok(None);
+    }
+    let axis = ogeom_math::Axis {
+        location: pin,
+        direction: Direction::new(line * turn.signum(), tol)?,
+    };
+    // The first ball's arc, from its contact on `b` to `pin`.
+    let ball = balls[0];
+    let (u, e) = ((ball.on_b - ball.centre) / r, (pin - ball.centre) / r);
+    let normal = u.cross(e);
+    let sweep = u.dot(e).clamp(-1.0, 1.0).acos();
+    let frame = Frame::new(
+        ball.centre,
+        Direction::new(normal, tol)?,
+        Direction::new(u, tol)?,
+        tol,
+    )?;
+    let circle: Curve =
+        ogeom_geom::CircleCurve::new(ogeom_math::Circle::new(frame, r, tol)?).into();
+    let profile: Curve = circle.to_bspline_over((0.0, sweep), tol)?.into();
+    let surface: SurfaceGeometry =
+        ogeom_geom::RevolutionSurface::new(profile, axis, turn.abs())?.into();
+    let patch = surface.to_bspline(tol)?;
+    // Its corners are the first and last balls' contacts on `b` and `pin`.
+    let ((u0, u1), (v0, v1)) = patch.domain();
+    let mut corners = Vec::with_capacity(4);
+    for (u, v) in [(u0, v0), (u0, v1), (u1, v0), (u1, v1)] {
+        corners.push(patch.point_at(u, v, tol)?);
+    }
+    let reach = tol.confusion();
+    let holds = |p: Point| corners.iter().any(|c| c.distance(p) <= reach);
+    if !(holds(balls[0].on_b) && holds(balls[2].on_b) && holds(pin)) {
+        return Ok(None);
+    }
+    Ok(Some(patch))
+}
+
+/// The planes turning from one plane to another about the line the two
+/// share: any two of them meet only on that line, so the sections they cut
+/// from a piece the line stays clear of never cross. Each plane is a point
+/// on it and its unit normal; between parallel planes, the plane moved
+/// from the first to the second.
+struct Pencil {
+    /// A point on the line the planes share, or on the first plane.
+    at: Point,
+    /// The first plane's unit normal.
+    normal: Vector,
+    /// The unit normal a quarter turn on from `normal` about the line.
+    turn: Vector,
+    /// The angle between the two normals, nought where they are parallel.
+    angle: f64,
+    /// Between parallel planes, the move from the first to the second.
+    shift: Vector,
+}
+
+impl Pencil {
+    /// The planes from `(p0, n0)` to `(p1, n1)`, the normals pointing the
+    /// same way along the piece; `None` where a normal is null or the two
+    /// face each other.
+    fn new((p0, n0): (Point, Vector), (p1, n1): (Point, Vector)) -> Option<Self> {
+        let (m0, m1) = (n0.magnitude(), n1.magnitude());
+        if m0 <= 0.0 || m1 <= 0.0 {
+            return None;
+        }
+        let (n0, n1) = (n0 / m0, n1 / m1);
+        let cos = n0.dot(n1);
+        if cos <= 0.0 {
+            return None;
+        }
+        let axis = n0.cross(n1);
+        let sin = axis.magnitude();
+        if sin <= 1e-12 {
+            return Some(Self {
+                at: p0,
+                normal: n0,
+                turn: Vector::ZERO,
+                angle: 0.0,
+                shift: n0 * (p1 - p0).dot(n0),
+            });
+        }
+        // The point of the shared line nearest the origin: the mix of `n0`
+        // and `n1` lying in both planes.
+        let (h0, h1) = (n0.dot(p0 - Point::ORIGIN), n1.dot(p1 - Point::ORIGIN));
+        let s2 = sin * sin;
+        let at = Point::ORIGIN + n0 * ((h0 - h1 * cos) / s2) + n1 * ((h1 - h0 * cos) / s2);
+        Some(Self {
+            at,
+            normal: n0,
+            turn: (axis / sin).cross(n0),
+            angle: sin.atan2(cos),
+            shift: Vector::ZERO,
+        })
+    }
+
+    /// The plane a fraction `s` of the way from the first to the second.
+    fn at(&self, s: f64) -> (Point, Vector) {
+        if self.angle == 0.0 {
+            return (self.at + self.shift * s, self.normal);
+        }
+        let (sin, cos) = (self.angle * s).sin_cos();
+        (self.at, self.normal * cos + self.turn * sin)
+    }
 }
 
 /// A curve and the range of it a sheet edge covers.
@@ -2145,26 +2309,16 @@ fn tool(
         jumps.push(jump);
     }
     let pins: Vec<Option<Point>> = (0..last).map(|k| hold.pin(k)).collect();
-    // An edge square to the spine holds every foot on one point. The piece
-    // fitted through those balls' arcs meets the band and the jump's
-    // sphere further from tangent than a fitted piece may. Not built.
-    if pieces
-        .iter()
-        .zip(&pins)
-        .any(|(p, pin)| matches!(p.seat, Seat::Rim(_)) && pin.is_some())
-    {
-        return Ok(None);
-    }
     // Each piece off the band, fitted once.
     let mut surfaces = Vec::with_capacity(last);
     for (k, piece) in pieces.iter().enumerate() {
         surfaces.push(if piece.seat == Seat::Face {
             None
         } else {
-            // A piece whose balls all pass through one point is fitted
-            // through their arcs. At an end it is built only run on past
-            // the end face, which the cut trims it by; ended in the end
-            // piece's section planes it is not.
+            // A piece whose balls all pass through one point is revolved
+            // beside a plane, else fitted through their arcs. At an end it
+            // is built only run on past the end face, which the cut trims
+            // it by; ended in the end piece's section planes it is not.
             let reaches_end = k == 0 || k + 1 == last;
             let ended = (k == 0 && hold.ends_at[0].is_none())
                 || (k + 1 == last && hold.ends_at[1].is_none());
@@ -2182,8 +2336,21 @@ fn tool(
             } else {
                 None
             };
-            let Some(s) = fitted(hold, piece.seat, (piece.from, piece.to), planes, tol)? else {
-                return Ok(None);
+            let exact = match pins[k] {
+                Some(pin) if planes.is_none() => {
+                    revolved(hold, piece.seat, (piece.from, piece.to), pin, tol)?
+                }
+                _ => None,
+            };
+            let s = match exact {
+                Some(s) => s,
+                None => {
+                    let Some(s) = fitted(hold, piece.seat, (piece.from, piece.to), planes, tol)?
+                    else {
+                        return Ok(None);
+                    };
+                    s
+                }
             };
             Some(s)
         });
