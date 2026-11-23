@@ -54,8 +54,9 @@ pub use asym::{
 };
 pub use asym_law::{fillet_edge_distances_variable, fillet_edges_distances_variable};
 pub use blame::{
-    BlendRefusal, chamfer_edges_checked, chamfer_edges_partial, fillet_edges_checked,
-    fillet_edges_corner_checked, fillet_edges_partial,
+    BlendRefusal, chamfer_edges_checked, chamfer_edges_overflow_checked, chamfer_edges_partial,
+    fillet_edges_checked, fillet_edges_corner_checked, fillet_edges_corner_overflow_checked,
+    fillet_edges_partial,
 };
 pub use blend::{Blend, blend_edges, blend_edges_overflow};
 pub use bridge::{End, make_blend_curve, make_blend_surface};

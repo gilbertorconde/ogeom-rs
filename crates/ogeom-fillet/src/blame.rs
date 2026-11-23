@@ -153,6 +153,88 @@ pub fn chamfer_edges_checked(
     })
 }
 
+/// [`fillet_edges_corner_overflow`](crate::fillet_edges_corner_overflow),
+/// its refusal naming every edge of `edges` it refuses, by their indices
+/// there.
+///
+/// On success exactly the same [`Built`] as
+/// [`fillet_edges_corner_overflow`](crate::fillet_edges_corner_overflow).
+/// Refused, the request is read in order, each set built on a copy of the
+/// model with the same `corner` and `overflow`: an edge joins the
+/// accepted edges where they build with it, and is refused where they do
+/// not. [`BlendRefusal::edges`] lists the refused edges in request order,
+/// so that the request without them builds with the same options, and
+/// [`BlendRefusal::error`] is the request's own refusal. Under overflow
+/// options no check of the default reading refuses an edge unbuilt: a
+/// request it refuses may build with another behaviour, so every reading
+/// is a build (ADR 0001, amendment "checked blends under overflow").
+///
+/// Where two edges are refused only together, the later in the request is
+/// named: reorder the request to keep another.
+///
+/// # Errors
+///
+/// As [`fillet_edges_corner_overflow`](crate::fillet_edges_corner_overflow),
+/// in a [`BlendRefusal`]; its `edges` empty where cancelled or where
+/// `edges` is empty.
+pub fn fillet_edges_corner_overflow_checked(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    radius: f64,
+    corner: crate::FilletCorner,
+    overflow: crate::Overflow,
+    tol: Tolerances,
+) -> Result<Built, BlendRefusal> {
+    let error = match crate::fillet_edges_corner_overflow(
+        model, solid, edges, radius, corner, overflow, tol,
+    ) {
+        Ok(built) => return Ok(built),
+        Err(error) => error,
+    };
+    let build = |model: &mut Model, set: &[usize]| {
+        let picked: Vec<Shape> = set.iter().map(|&i| edges[i].clone()).collect();
+        crate::fillet_edges_corner_overflow(model, solid, &picked, radius, corner, overflow, tol)
+    };
+    Err(refused_in_order(model, solid, edges, error, build))
+}
+
+/// [`chamfer_edges_overflow`](crate::chamfer_edges_overflow), its refusal
+/// naming every spec it refuses, by their indices in `specs`, read as
+/// [`fillet_edges_corner_overflow_checked`] reads a round's: each set built
+/// with the same `corner` and `overflow`, the refused specs listed in
+/// request order so that the request without them builds. Covers both
+/// corners, [`ChamferCorner::Point`](crate::ChamferCorner::Point) as well
+/// as [`ChamferCorner::Facet`](crate::ChamferCorner::Facet).
+///
+/// On success exactly the same [`Built`] as
+/// [`chamfer_edges_overflow`](crate::chamfer_edges_overflow).
+///
+/// # Errors
+///
+/// As [`chamfer_edges_overflow`](crate::chamfer_edges_overflow), in a
+/// [`BlendRefusal`]; its `edges` empty where cancelled or where `specs` is
+/// empty.
+pub fn chamfer_edges_overflow_checked(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    corner: crate::ChamferCorner,
+    overflow: crate::Overflow,
+    tol: Tolerances,
+) -> Result<Built, BlendRefusal> {
+    let error = match crate::chamfer_edges_overflow(model, solid, specs, corner, overflow, tol) {
+        Ok(built) => return Ok(built),
+        Err(error) => error,
+    };
+    let edges: Vec<Shape> = specs.iter().map(|(edge, _)| edge.clone()).collect();
+    let build = |model: &mut Model, set: &[usize]| {
+        let picked: Vec<(Shape, Chamfer)> = set.iter().map(|&i| specs[i].clone()).collect();
+        crate::chamfer_edges_overflow(model, solid, &picked, corner, overflow, tol)
+    };
+    Err(refused_in_order(model, solid, &edges, error, build))
+}
+
 /// Round what of a request can be rounded, leaving the rest sharp.
 ///
 /// The edges are taken in request order; an edge joins the built set when
@@ -324,6 +406,39 @@ fn partial(
             Err(_) => {}
         }
     }
+    let (last, refused) = in_order(model, solid, edges, build, check)?;
+    let Some((built_model, built)) = last else {
+        return Err(match refused.into_iter().next() {
+            Some(first) => first.error,
+            None => ogeom_core::ogeom_err!(Construction, "a request of no edges blends nothing"),
+        });
+    };
+    *model = built_model;
+    Ok((built, refused))
+}
+
+/// The request's edges taken in order, each joining the accepted set
+/// where `check` passes the set with it and `build` builds that set on a
+/// copy of `model`; each refused edge reported, naming it, then the edges
+/// `check` names with it or, refused by the build, the accepted edges it
+/// meets. With the model holding the last set that built and its result,
+/// or `None` where no edge was accepted.
+///
+/// # Errors
+///
+/// [`OgeomError::Cancelled`] when cancelled, and as reading the edges'
+/// vertices and faces.
+#[allow(
+    clippy::type_complexity,
+    reason = "the accepted build, then the refusals; used by two callers only"
+)]
+fn in_order(
+    model: &Model,
+    solid: &Shape,
+    edges: &[Shape],
+    build: impl Fn(&mut Model, &[usize]) -> OgeomResult<Built>,
+    check: impl Fn(&Model, &[usize]) -> Option<(Vec<usize>, OgeomError)>,
+) -> OgeomResult<(Option<(Model, Built)>, Vec<BlendRefusal>)> {
     let touched = touches(model, solid, edges)?;
     let mut accepted: Vec<usize> = Vec::new();
     let mut refused: Vec<BlendRefusal> = Vec::new();
@@ -363,12 +478,41 @@ fn partial(
             }
         }
     }
-    let Some((built_model, built)) = last else {
-        return Err(match refused.into_iter().next() {
-            Some(first) => first.error,
-            None => ogeom_core::ogeom_err!(Construction, "a request of no edges blends nothing"),
-        });
-    };
-    *model = built_model;
-    Ok((built, refused))
+    Ok((last, refused))
+}
+
+/// The refusal of a request under its options that did not build with
+/// `error`: every edge of it the request read in order leaves out, each
+/// set built on a copy of `model` with the same options, so that the
+/// request without them builds (ADR 0001, amendment "checked blends under
+/// overflow"). Empty where cancelled or where the request holds no edge.
+fn refused_in_order(
+    model: &Model,
+    solid: &Shape,
+    edges: &[Shape],
+    error: OgeomError,
+    build: impl Fn(&mut Model, &[usize]) -> OgeomResult<Built>,
+) -> BlendRefusal {
+    if matches!(error, OgeomError::Cancelled) || edges.is_empty() {
+        return BlendRefusal {
+            edges: Vec::new(),
+            error,
+        };
+    }
+    match in_order(model, solid, edges, build, |_, _| None) {
+        Ok((_, refused)) if !refused.is_empty() => BlendRefusal {
+            edges: refused.iter().map(|r| r.edges[0]).collect(),
+            error,
+        },
+        Err(e @ OgeomError::Cancelled) => BlendRefusal {
+            edges: Vec::new(),
+            error: e,
+        },
+        // Every edge accepted is the whole request, which did not build;
+        // or its edges did not read: the whole request is named.
+        _ => BlendRefusal {
+            edges: (0..edges.len()).collect(),
+            error,
+        },
+    }
 }

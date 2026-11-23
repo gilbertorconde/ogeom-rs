@@ -5034,6 +5034,100 @@ own border, and two changes keep that cheap.
 | half cylinder, foot (1) | 3.9e-7 | 2.8e-5 rad |
 | rib under a drum (0.5, 0.3) | 4.0e-7, 2.8e-7 | 2.8e-5 rad |
 
+### Amendment: checked blends under overflow (#1240)
+
+`fillet_edges_checked`, `fillet_edges_corner_checked` and
+`chamfer_edges_checked` name the edges of a refused request, but each
+builds with every `Overflow` behaviour on, and the chamfer's names specs
+only for the facet corner. A request refused because a behaviour is off,
+or one using the point corner, said nothing of which edges failed: an app
+had to rebuild the request edge by edge on copies to find out.
+
+**Rule.** `fillet_edges_corner_overflow_checked` and
+`chamfer_edges_overflow_checked` first make the unchecked call. If it
+builds, that result is returned unchanged. If it is refused, the request
+is read in order, each set built on a copy of the model with the same
+corner and the same options: an edge joins the accepted edges where they
+build with it, and is refused where they do not. `BlendRefusal::edges`
+lists every refused edge, by its index in the request, in request order.
+`BlendRefusal::error` is the unchecked call's error. Nothing in the model
+changes past what the unchecked call leaves.
+
+**Why every refused edge, not the first failing prefix.** The plain
+checked calls name the first edge whose prefix of the request fails, then
+the earlier edges it meets. That names one culprit, but taking it out
+need not make the request build. A boss's foot rim is two arcs, and each
+arc's round reaches an edge round. The prefix reading names one arc, and
+the request without it is still refused for the other. Applications that
+report a failed blend list every edge that did not build, so the user can
+drop them all at once or change their sizes. They then rebuild with the
+rest, which must build. The in-order reading gives exactly that set: the
+last accepted set is the request without the named edges, and it was
+built. Every named edge is refused together with the accepted edges
+before it.
+
+**No check of the default reading.** The plain calls first ask the
+request's check (`request_fits`: a ball that does not seat, two bands
+overlapping across a face), which reads the request with the default
+options. Under other options a request that check refuses may build with
+another behaviour, and one it passes may be refused by a behaviour that is
+off. So every reading here is a build.
+
+**Order.** Where two edges are refused only together (two concave rounds
+across a floor too narrow for both bands), the later in the request is
+named. Moving an edge earlier in the request keeps it.
+
+**Cost.** One build per edge on a refused request, each of the accepted
+set and one more edge, as `fillet_edges_partial` builds. A request that
+builds costs nothing more than the unchecked call.
+
+**Seen, not changed here.**
+
+- A rolling corner is built by the engine only where the solid holds
+  planes alone. On a solid with a curved face or a face with a hole,
+  `Rolling` refuses even a corner of three convex rounds of one sense, by
+  name. Its checked call names those edges as refused.
+- Trim through off reads the faces a result may change as the faces of
+  every edge of the request, and those at their ends. A notch trimming
+  through the floor is let through when another edge of the same request
+  owns the floor, for instance an edge along the floor's rim (#1305).
+  Nor does that check see a foot bevel left as a flat ledge over an edge
+  round: the ledge overhangs the round without changing its faces. It is
+  refused only by the pre-check of a whole rim reaching one round, so a
+  rim reaching two rounds, or one arc of it, builds the ledge with every
+  option off (#1305). The checked call reads what the unchecked call
+  builds, so it is exactly as sound as that check. The tests keep clear
+  edges off the faces a refused feature trims, and bevel the one-round
+  foot.
+
+**What the tests found** (`tests/checked_overflow.rs`). Each part holds a
+feature some options refuse, and edges well clear of it whose blends have
+a closed form. The request puts the feature's edges second. The expected
+set is written from the construction. The request without the named edges
+builds, and its volume is compared with the closed form. The named edges
+alone are refused.
+
+| Part, feature, blend | Options | Corner | Named | Taken | Closed form | Error |
+|---|---|---|---|---|---|---|
+| boss foot between two edge rounds, two arcs, round 3; box corner 40, 22, 10 | blend into round off; also trim through off; all off | setback | both arcs | 134.542074412 | 134.542074412 | 3.4e-13 |
+| boss foot by one edge round, two arcs, bevel 3; box corner 40, 30, 15, bevel 2 | all off; blend into round and trim through off | point | both arcs | 164.000000000 | 164 | 0 |
+| same | same | facet | both arcs | 164.666666667 | 164 2/3 | 4.9e-12 |
+| pocket rim beside the front edge, round 4; box corner 30, 20, 15 | hold edge and trim through off; all off | setback | front edge | 212.472035801 | 212.472035801 | 2.5e-12 |
+| cliff past the band's end, round 4; corner 20, 12, 9 | hold edge at the end and trim through off; hold edge and trim through off; all off | setback, rolling | front edge | 130.064930545 | 130.064930545 | 2.6e-12 |
+| boss rim beside a pocket, two arcs, round 1; box corner 40, 40, 4 | trim through off; all off | setback | both arcs | 17.859149989 | 17.859149989 | 2.3e-13 |
+| slot 6 wide, rim of two concave edges, round 4; two bottom edges 20 | narrow passages off; all off | setback | the later rim edge | 68.672587713 | 68.672587713 | 3.7e-12 |
+| notch through a 2 mm plate's floor, bevel 1 x 3; top back edge, bevel 0.5 | trim through off; all off | point, facet | notch | 1.25 | 1.25 | 1.4e-13 |
+
+The closed forms: a round `r` on a square convex edge takes `r²(1 - pi/4)`
+per length; three meeting at a box's corner close on the ball's sphere,
+`sum (l - r) r²(1 - pi/4) + r³(1 - pi/6)`. Bevels `d` at a box's corner
+take `sum l d²/2 - d³ + d³/4` with the point (inclusion and exclusion of
+the three prisms), and `d³/12` more with the facet (the simplex under
+`x + y + z = 2d`). On the slot the first rim edge's concave fill,
+`20 r²(1 - pi/4)`, is added back. The bound is `1e-9` of the solid's
+volume; the worst error is 4.9e-12. Each request that builds returns the
+unchecked call's result, face for face and to 1e-9 in volume.
+
 ## 12. Acceptance corpus
 
 From #902:

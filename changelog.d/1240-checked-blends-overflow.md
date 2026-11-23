@@ -1,0 +1,3 @@
+- **Added: checked blends under overflow options** (#1240).
+  - `fillet_edges_corner_overflow_checked` and `chamfer_edges_overflow_checked` are the overflow calls whose refusal, a `BlendRefusal`, names every edge (or spec) the request refuses, by index. They work with every `Overflow` option set, with both round corners, and with both chamfer corners (`Point` too).
+  - A request that builds returns exactly the unchecked call's result. A refused request is read in order, each set built on a copy with the same corner and options. The named edges are the ones that did not join, so the request without them builds. Where two edges are refused only together, the later one is named.
