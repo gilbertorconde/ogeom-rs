@@ -1515,52 +1515,67 @@ fn prism(m: &mut Model, a: &[Point], b: &[Point]) -> Shape {
     faceted(m, &points, &rings)
 }
 
-/// The cliff's slope on the part whose far end leans.
+/// The cliff's slope on the part whose far end leans: from 6 behind the
+/// front at `x = 0` to 2, 1 or 0.5 at `x = 20`.
 const SLOPE: [(f64, f64); 2] = [(0.0, 6.0), (20.0, 2.0)];
+const SLOPE_1: [(f64, f64); 2] = [(0.0, 6.0), (20.0, 1.0)];
+const SLOPE_HALF: [(f64, f64); 2] = [(0.0, 6.0), (20.0, 0.5)];
+
+/// A canal ending on an oblique end face: the end plane `x = 20 + lean z`,
+/// the block `depth` deep, its top in front of the cliff `slope`.
+#[derive(Clone, Copy)]
+struct Canal {
+    lean: f64,
+    depth: f64,
+    slope: &'static [(f64, f64); 2],
+}
 
 /// Hold edge at an oblique end: a block whose top narrows from 6 deep at
-/// `x = 0` to 2 at `x = 20`, a cliff 6 high falling from its back edge,
-/// its far end face the plane `x = 20 + z / 4`. Past `x = 10` the ball
-/// rests on the cliff edge to the end, and the leaning end face cuts that
-/// canal. The reference integrates the definition up to the end plane:
-/// near the end, over `x = 20 - q^2 / 4`, the column's height is `q^2`.
-fn hold_edge_holds_a_canal_ending_on_an_oblique_end_face_case(heavy: bool) {
-    const K: f64 = 0.25;
+/// `x = 0` to the slope's far end at `x = 20`, a cliff 6 high falling from
+/// its back edge, its far end face the plane `x = 20 + lean z`. Past
+/// `x = 10` the ball rests on the cliff edge to the end, and the leaning end
+/// face cuts that canal. Built by hold edge (trim through off). The
+/// reference integrates the definition up to the end plane: near the end,
+/// over `x = 20 - lean q^2`, the column's height is `q^2`.
+fn hold_edge_holds_a_canal_ending_on_an_oblique_end_face_case(canal: Canal, heavy: bool) {
+    let Canal { lean, depth, slope } = canal;
     let mut m = Model::new();
+    let line = |x: f64| (slope[1].1 - slope[0].1).mul_add(x / 20.0, slope[0].1);
     let at_x0 = |y: f64, z: f64| Point::new(0.0, y, z);
-    let at_x1 = |y: f64, z: f64| Point::new(K.mul_add(z, 20.0), y, z);
+    let at_x1 = |y: f64, z: f64| Point::new(lean.mul_add(z, 20.0), y, z);
     let near = [
         at_x0(0.0, 0.0),
-        at_x0(0.0, -15.0),
-        at_x0(12.0, -15.0),
+        at_x0(0.0, -depth),
+        at_x0(12.0, -depth),
         at_x0(12.0, -6.0),
-        at_x0(6.0, -6.0),
-        at_x0(6.0, 0.0),
+        at_x0(line(0.0), -6.0),
+        at_x0(line(0.0), 0.0),
     ];
-    // The cliff's foot meets the leaning end at `x = 18.5`, where the
-    // cliff stands 2.3 behind the front.
+    // The cliff's foot, where it meets the leaning end.
     let far = [
         at_x1(0.0, 0.0),
-        at_x1(0.0, -15.0),
-        at_x1(12.0, -15.0),
+        at_x1(0.0, -depth),
+        at_x1(12.0, -depth),
         at_x1(12.0, -6.0),
-        at_x1(2.3, -6.0),
-        at_x1(2.0, 0.0),
+        at_x1(line(lean.mul_add(-6.0, 20.0)), -6.0),
+        at_x1(line(20.0), 0.0),
     ];
     let s = prism(&mut m, &near, &far);
     let edge = edges_where(&m, &s, |p| p.y.abs() < 1e-9 && p.z.abs() < 1e-9);
     assert_eq!(edge.len(), 1, "the front top edge");
     let before = volume(&m, &s);
-    let built = fillet_edges(&mut m, &s, &edge, R, T).unwrap();
+    let mut held = Overflow::default();
+    held.trim_through = false;
+    let built = fillet_edges_overflow(&mut m, &s, &edge, R, held, T).unwrap();
     let found = ogeom_algo::check(&m, &built.shape, T).unwrap();
     assert!(found.is_valid(), "{:?}", found.problems);
     for shell in explore_unique(&m, &built.shape, ShapeType::Shell).unwrap() {
         assert!(ogeom_algo::is_shell_closed(&m, &shell).unwrap(), "closed");
     }
     let (crease, joins) = worst_join(&m, &built.shape);
-    eprintln!("oblique canal end: worst join {crease:.1e} rad over {joins} edges");
+    eprintln!("oblique canal end {lean}: worst join {crease:.1e} rad over {joins} edges");
     assert!(joins >= 2 && crease < 1e-5, "{crease} over {joins}");
-    let (lo, hi) = kept_along(&m, &built.shape, SLOPE[0], SLOPE[1]);
+    let (lo, hi) = kept_along(&m, &built.shape, slope[0], slope[1]);
     assert!(
         lo <= 10.0 + 1e-6 && hi >= 19.9,
         "the cliff edge kept over {lo}..{hi}"
@@ -1569,42 +1584,48 @@ fn hold_edge_holds_a_canal_ending_on_an_oblique_end_face_case(heavy: bool) {
         return;
     }
     let reference = Reference {
-        top: Top::Below(&SLOPE),
+        top: Top::Below(slope),
     };
-    // Where the end plane first clips a column: its height `(20 - x) / K`
+    // Where the end plane first clips a column: its height `(20 - x) / lean`
     // meets the depth of the ball's contact on the front.
-    let (mut lo, mut hi) = (10.0, 20.0);
+    let (mut lo, mut hi) = (0.0, 20.0);
     for _ in 0..80 {
         let x = 0.5 * (lo + hi);
-        if -reference.centre(x).z < (20.0 - x) / K {
+        if -reference.centre(x).z < (20.0 - x) / lean {
             lo = x;
         } else {
             hi = x;
         }
     }
     let x_star = 0.5 * (lo + hi);
+    // The seat changes where the band's contact, `R` behind the front,
+    // reaches the cliff edge; each integral is split there.
+    let seat = 20.0 * (slope[0].1 - R) / (slope[0].1 - slope[1].1);
+    let open: Vec<(f64, f64)> = if x_star > seat {
+        vec![(0.0, seat), (seat, x_star)]
+    } else {
+        vec![(0.0, x_star)]
+    };
     let volume_at = |n: usize| {
-        let open = reference.volume(&[(0.0, 10.0), (10.0, x_star)], n);
+        let open = reference.volume(&open, n);
         let g = gauss(n);
-        let q1 = ((20.0 - x_star) / K).sqrt();
+        let q1 = ((20.0 - x_star) / lean).sqrt();
+        let q_seat = ((20.0 - seat) / lean).sqrt().min(q1);
         let mut tail = 0.0;
-        for (gq, wq) in &g {
-            let q = 0.5 * q1 * (gq + 1.0);
-            let x = (K * q).mul_add(-q, 20.0);
-            for (gs, ws) in &g {
-                let s = 0.5 * q * (gs + 1.0);
-                tail += wq
-                    * ws
-                    * 0.5
-                    * q1
-                    * 0.5
-                    * q
-                    * reference.depth(x, -s * s)
-                    * 2.0
-                    * s
-                    * 2.0
-                    * K
-                    * q;
+        for (q0, q1) in [(0.0, q_seat), (q_seat, q1)] {
+            if q1 - q0 <= 0.0 {
+                continue;
+            }
+            let hq = 0.5 * (q1 - q0);
+            for (gq, wq) in &g {
+                let q = q0 + hq * (gq + 1.0);
+                let x = (lean * q).mul_add(-q, 20.0);
+                let wall = reference.top.extent(x);
+                for (gs, ws) in &g {
+                    let s = 0.5 * q * (gs + 1.0);
+                    let d = reference.depth(x, -s * s).min(wall);
+                    tail += wq * ws * hq * 0.5 * q * d * 2.0 * s * 2.0 * lean * q;
+                }
             }
         }
         open + tail
@@ -1612,18 +1633,83 @@ fn hold_edge_holds_a_canal_ending_on_an_oblique_end_face_case(heavy: bool) {
     let (coarse, fine) = (volume_at(24), volume_at(48));
     let bound = (fine - coarse).abs();
     let got = before - volume(&m, &built.shape);
-    eprintln!("oblique canal end: cut away {got:.9}, reference {fine:.9}, bound {bound:.1e}");
+    eprintln!(
+        "oblique canal end {lean}, {depth} deep, to {}: cut away {got:.9}, reference {fine:.9}, \
+         error {:.1e}, bound {bound:.1e}",
+        slope[1].1,
+        (got - fine).abs()
+    );
     assert!((got - fine).abs() < 1e-6 + bound, "{got} against {fine}");
 }
 
+/// The end leaning a quarter: past `x = 18.5` the end plane clips the
+/// canal.
+const QUARTER: Canal = Canal {
+    lean: 0.25,
+    depth: 15.0,
+    slope: &SLOPE,
+};
+
+/// Steep ends: the end planes turn from square at the seat change to past
+/// 45 degrees, faster than the sections move along the edge at the front's
+/// depth; the sections turn about the line where those two planes meet.
+/// The block is shallower where a steeper plane would reach the near end.
+const STEEP: [Canal; 6] = [
+    Canal {
+        lean: 1.3,
+        depth: 15.0,
+        slope: &SLOPE,
+    },
+    Canal {
+        lean: 1.5,
+        depth: 12.0,
+        slope: &SLOPE,
+    },
+    Canal {
+        lean: 1.5,
+        depth: 10.0,
+        slope: &SLOPE,
+    },
+    Canal {
+        lean: 1.0,
+        depth: 15.0,
+        slope: &SLOPE,
+    },
+    Canal {
+        lean: 1.0,
+        depth: 15.0,
+        slope: &SLOPE_1,
+    },
+    Canal {
+        lean: 1.0,
+        depth: 15.0,
+        slope: &SLOPE_HALF,
+    },
+];
+
 #[test]
 fn hold_edge_holds_a_canal_ending_on_an_oblique_end_face() {
-    hold_edge_holds_a_canal_ending_on_an_oblique_end_face_case(false);
+    hold_edge_holds_a_canal_ending_on_an_oblique_end_face_case(QUARTER, false);
 }
 
 /// The oblique canal end's volume against the reference.
 #[test]
 #[ignore = "heavy"]
 fn an_oblique_canal_end_cuts_away_the_reference() {
-    hold_edge_holds_a_canal_ending_on_an_oblique_end_face_case(true);
+    hold_edge_holds_a_canal_ending_on_an_oblique_end_face_case(QUARTER, true);
+}
+
+/// The steepest end, built by hold edge.
+#[test]
+fn hold_edge_holds_a_canal_ending_on_a_steep_end_face() {
+    hold_edge_holds_a_canal_ending_on_an_oblique_end_face_case(STEEP[1], false);
+}
+
+/// Every steep end against the reference.
+#[test]
+#[ignore = "heavy"]
+fn steep_canal_ends_cut_away_the_reference() {
+    for canal in STEEP {
+        hold_edge_holds_a_canal_ending_on_an_oblique_end_face_case(canal, true);
+    }
 }
