@@ -1056,7 +1056,7 @@ pub(super) fn merge(
     let mut ends: Vec<(TShapeId, TShapeId)> = Vec::with_capacity(boundary.len());
     let mut leaving: FastMap<TShapeId, Vec<usize>> = FastMap::default();
     for (k, &w) in boundary.iter().enumerate() {
-        let Some((start, end)) = ogeom_algo::edge_vertices(model, &walks[w].1)? else {
+        let Some((start, end)) = crate::edge_vertices(model, &walks[w].1)? else {
             return Ok(None);
         };
         leaving.entry(start.node()).or_default().push(k);
@@ -1292,7 +1292,7 @@ impl Edits {
         }
         for (edge, pcurve, range) in attach {
             if !has_slot(model, &edge, surface) {
-                ogeom_algo::attach_pcurve(
+                crate::attach_pcurve(
                     model,
                     &edge,
                     pcurve,
@@ -1310,7 +1310,7 @@ impl Edits {
                     r.surface() != Some(surface) || r.location() != Some(edge.location())
                 });
             }
-            ogeom_algo::attach_seam(
+            crate::attach_seam(
                 model,
                 &edge,
                 forward,

@@ -46,6 +46,7 @@ pub mod recognize;
 mod recognize_patch;
 mod recognize_swept;
 pub mod register;
+mod reshape;
 pub mod rest;
 mod seam_columns;
 pub mod segments_2d;
@@ -59,6 +60,7 @@ pub mod text;
 pub mod thickness;
 pub mod tight;
 pub mod traced;
+mod upgrade;
 pub mod volume_difference;
 mod winding;
 
@@ -133,6 +135,7 @@ pub use primitive::{
 pub use project_plane::{ProjectedCurve, project_edge_onto_plane};
 pub use proximity::{ClosestPair, PointDistance, ShapeDistance, distance_between_shapes};
 pub use recognize::{Canonical, Recognized, recognize_points};
+pub use reshape::Reshape;
 pub use rest::{Rest, resting_faces, resting_faces_of};
 pub use seam_columns::join_seam_columns;
 pub use segments_2d::{Segment2, Segments, fit_segments_2d};
@@ -151,4 +154,11 @@ pub use sweep::{make_prism, make_prism_tapered, make_revolution};
 pub use text::make_text;
 pub use thickness::{Thickness, thickness, thickness_of_shape};
 pub use tight::{face_bounds, tight_bounds};
+pub use upgrade::{
+    UnifyOptions, merge_edges, reduce_tolerances, same_domain, unify_same_domain,
+    unify_same_domain_around, unify_same_domain_with,
+};
+// The healing's side of the upgrade: an edge's measured deviation.
+#[doc(hidden)]
+pub use upgrade::measure_edge;
 pub use volume_difference::{Form, Material, Region, volume_difference};

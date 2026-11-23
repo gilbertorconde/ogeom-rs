@@ -1,0 +1,3 @@
+- **Changed: face unification, edge merging and `Reshape` are defined in `ogeom-algo`** (#1254).
+  - `unify_same_domain`, `unify_same_domain_with`, `unify_same_domain_around`, `UnifyOptions`, `merge_edges`, `same_domain`, `reduce_tolerances` and `Reshape` move from `ogeom-heal` to `ogeom-algo`, and are also under `ogeom::algo`. This lets the booleans use them without `ogeom-heal` depending on `ogeom-bool`.
+  - Every `ogeom_heal::` and `ogeom::heal::` path, including `ogeom_heal::upgrade::*` and `ogeom_heal::reshape::Reshape`, re-exports the same items. No behaviour change.
