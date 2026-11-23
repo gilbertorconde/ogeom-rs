@@ -1,0 +1,3 @@
+- **Changed: N-sided filling lives in `ogeom-algo`** (#1266).
+  - `make_filling_n`, `FillBoundary`, `FillSide` and `Filled` moved from `ogeom-fillet` to `ogeom-algo`. They are now also reached as `ogeom::algo::{make_filling_n, FillBoundary, FillSide, Filled}`. `ogeom_fillet::`, `ogeom::fillet::make_filling_n`, `ogeom_offset::` and `ogeom::offset::` keep re-exporting them for one release.
+  - Behaviour is unchanged.

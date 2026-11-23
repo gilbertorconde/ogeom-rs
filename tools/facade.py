@@ -27,6 +27,11 @@ INTERNAL: set[str] = {
     # Reached as `ogeom::boolean::POLE_TOUCHING`, and the booleans' own step.
     "ogeom_algo::POLE_TOUCHING",
     "ogeom_algo::operands_clear_of_poles",
+    # The blend engine's entry points into the N-sided filling.
+    "ogeom_algo::FillRegion",
+    "ogeom_algo::make_filling_n_fixed",
+    "ogeom_algo::make_filling_n_region",
+    "ogeom_algo::make_filling_n_within",
 }
 
 LEXEME = re.compile(

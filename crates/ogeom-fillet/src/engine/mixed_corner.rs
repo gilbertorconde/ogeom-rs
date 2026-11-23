@@ -1,12 +1,11 @@
 //! Setback openings between round, conic and bevel tools.
 
-use ogeom_algo::{Built, History};
+use ogeom_algo::{Built, FillBoundary, History, make_filling_n_within};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Continuity, Curve, Curve3d as _};
 use ogeom_math::{Direction, Plane, Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
-use crate::fill_n::{FillBoundary, make_filling_n_within};
 use crate::setback::{CornerEnd, guard_cell, in_cell, point_of, trim_conic};
 
 /// The bands of `banded` meeting at `vertex`, whose corner reads as

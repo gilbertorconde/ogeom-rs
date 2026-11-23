@@ -2386,6 +2386,8 @@ verdict = "covered"
 symbols = [
     "ogeom_offset::make_filling", "ogeom_offset::make_filling_n",
     "ogeom_offset::FillBoundary", "ogeom_offset::FillSide", "ogeom_offset::Filled",
+    "ogeom_algo::make_filling_n", "ogeom_algo::FillBoundary", "ogeom_algo::FillSide",
+    "ogeom_algo::Filled",
 ]
 tests = ["crates/ogeom/tests/filling.rs", "crates/ogeom-offset/tests/filling_n.rs"]
 

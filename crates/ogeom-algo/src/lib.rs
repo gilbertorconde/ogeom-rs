@@ -18,6 +18,8 @@ mod cutoff;
 pub mod derived;
 pub mod distance;
 pub mod extend;
+mod fill_n;
+mod fill_patch;
 pub mod fit;
 pub mod held;
 pub mod history;
@@ -84,6 +86,13 @@ pub use convert::{
 };
 pub use cutoff::Cutoff;
 pub use extend::{Extension, extend_face};
+pub use fill_n::{FillBoundary, FillSide, Filled, make_filling_n};
+// The blend engine's side of the filling: held inside a region, or fitted
+// once on a given net.
+#[doc(hidden)]
+pub use fill_n::{
+    Region as FillRegion, make_filling_n_fixed, make_filling_n_region, make_filling_n_within,
+};
 pub use fit::{Spacing, approximate, approximate_within, interpolate};
 pub use held::{NetOutside, net_held_within};
 pub use history::{Built, History, on_own_nodes, on_own_nodes_with, unshare};
