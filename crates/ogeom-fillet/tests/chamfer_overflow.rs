@@ -611,3 +611,126 @@ fn a_foot_bevel_grazing_the_tangent_line_is_refused_by_name() {
         }
     }
 }
+
+/// The notch of [`a_notch_trims_through_and_trim_through_off_refuses_it`]
+/// with the three edges at the corner `(10, 10, 0)` bevelled 0.5 in the
+/// same request. The corner's bottom edges are seated on the floor the
+/// notch trims, but the notch's bevel is not: trim through off still
+/// refuses the request by name, under both corners. With trim
+/// through on it builds, the notch and the corner taking the plate's
+/// material apart.
+#[test]
+fn trim_through_off_holds_per_blend_when_another_edge_owns_the_face() {
+    let mut m = Model::new();
+    let s = ogeom_algo::make_box(&mut m, at(0.0, 0.0, 0.0), (10.0, 10.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let top = explore_unique(&m, &s, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .find(|f| ogeom_algo::face_normal(&m, f, T).unwrap().1.z > 0.5)
+        .unwrap();
+    let notch = edges_where(&m, &s, |p| p.y.abs() < 1e-9 && (p.z - 2.0).abs() < 1e-9);
+    let mut specs = vec![(
+        notch[0].clone(),
+        Chamfer::Distances {
+            face: top,
+            on_face: 1.0,
+            on_other: 3.0,
+        },
+    )];
+    let corner = edges_where(&m, &s, |p| {
+        let at_x = (p.x - 10.0).abs() < 1e-9;
+        let at_y = (p.y - 10.0).abs() < 1e-9;
+        let at_z = p.z.abs() < 1e-9;
+        (at_x && at_y) || (at_x && at_z) || (at_y && at_z)
+    });
+    assert_eq!(corner.len(), 3, "the corner's three edges");
+    specs.extend(corner.iter().map(|e| (e.clone(), Chamfer::Symmetric(0.5))));
+    let mut trim_off = Overflow::default();
+    trim_off.trim_through = false;
+    for corner in [ChamferCorner::Point, ChamferCorner::Facet] {
+        let built = chamfer_edges_overflow(&mut m, &s, &specs, corner, Overflow::default(), T)
+            .unwrap_or_else(|e| panic!("{corner:?}: trim through builds it: {e}"));
+        assert!(volume(&m, &built.shape) < 200.0 - 10.0 * 4.0 / 3.0 + 1e-9);
+        let err = chamfer_edges_overflow(&mut m, &s, &specs, corner, trim_off, T)
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("trim through is off"),
+            "{corner:?}: refused by name: {err}"
+        );
+    }
+}
+
+/// The block 40 by 22 by 15, both its top long edges rounded at 5, and the
+/// boss of radius 6 standing on the top at `(20, 11)`; with the boss's
+/// foot rim.
+fn bossed_between_rounds(m: &mut Model) -> (Shape, Vec<Shape>) {
+    let block = ogeom_algo::make_box(m, at(0.0, 0.0, 0.0), (40.0, 22.0, 15.0), T)
+        .unwrap()
+        .shape;
+    let top = edges_where(m, &block, |p| {
+        (p.y.abs() < 1e-9 || (p.y - 22.0).abs() < 1e-9) && (p.z - 15.0).abs() < 1e-9
+    });
+    assert_eq!(top.len(), 2);
+    let rounded = fillet_edges(m, &block, &top, EDGE_ROUND, T).unwrap().shape;
+    let boss = ogeom_algo::make_cylinder(m, at(20.0, 11.0, 15.0), BOSS, BOSS_HIGH, T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(m, &rounded, &boss, T).unwrap().shape;
+    let foot = edges_where(m, &s, |p| {
+        (p.z - 15.0).abs() < 1e-9 && ((p.x - 20.0).hypot(p.y - 11.0) - BOSS).abs() < 1e-9
+    });
+    assert!(!foot.is_empty(), "the foot rim");
+    (s, foot)
+}
+
+/// A foot bevel whose floor ring trim through carries on flat as a ledge
+/// over an edge round changes no face of the solid, but lays the floor on
+/// past its side over nothing: only trim through builds it, so with trim
+/// through off it is refused by name. The foot between two rounds
+/// (which blend into round does not take) under every option set with
+/// trim through off and both corners, and one arc of the one-round foot
+/// alone with every option off.
+#[test]
+fn trim_through_off_refuses_a_foot_ledge_over_an_edge_round() {
+    let named = |e: &ogeom_core::OgeomError| e.to_string().contains("trim through is off");
+    let mut m = Model::new();
+    let (s, foot) = bossed_between_rounds(&mut m);
+    let specs: Vec<(Shape, Chamfer)> = foot
+        .iter()
+        .map(|e| (e.clone(), Chamfer::Symmetric(3.0)))
+        .collect();
+    let mut trim_off = Overflow::default();
+    trim_off.trim_through = false;
+    for corner in [ChamferCorner::Point, ChamferCorner::Facet] {
+        for options in [trim_off, Overflow::none()] {
+            let err = chamfer_edges_overflow(&mut m, &s, &specs, corner, options, T)
+                .map(|_| ())
+                .unwrap_err();
+            assert!(named(&err), "{corner:?}: {err}");
+        }
+    }
+
+    let mut m = Model::new();
+    let (s, foot, _) = bossed(&mut m, 12.0);
+    assert!(foot.len() > 1, "the rim's arcs");
+    for arc in &foot {
+        let specs = vec![(arc.clone(), Chamfer::Symmetric(3.0))];
+        let err = chamfer_edges_overflow(
+            &mut m,
+            &s,
+            &specs,
+            ChamferCorner::Facet,
+            Overflow::none(),
+            T,
+        )
+        .map(|_| ())
+        .unwrap_err();
+        assert!(
+            named(&err) || err.to_string().contains("blend into round"),
+            "{err}"
+        );
+    }
+}

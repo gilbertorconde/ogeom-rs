@@ -147,7 +147,19 @@ pub fn blend_edges_overflow(
     if rounds.is_empty() && asymmetric.is_empty() {
         return crate::chamfer_edges_overflow(model, solid, &bevels, corner, overflow, tol);
     }
-    let shapes: Vec<Shape> = edges.iter().map(|(e, _)| e.clone()).collect();
+    let sized: Vec<(Shape, f64)> = edges
+        .iter()
+        .map(|(e, blend)| {
+            let size = match blend {
+                Blend::Round(r) => *r,
+                Blend::Chamfer(c) => crate::chamfer_overflow::longer_leg(c),
+                Blend::RoundDistances {
+                    on_face, on_other, ..
+                } => on_face.max(*on_other),
+            };
+            (e.clone(), size)
+        })
+        .collect();
     let built = blended_as_today(
         model,
         solid,
@@ -158,7 +170,7 @@ pub fn blend_edges_overflow(
         overflow,
         tol,
     );
-    crate::fillet::trimmed_through(model, solid, &shapes, built, overflow, tol)
+    crate::fillet::trimmed_through(model, solid, &sized, built, overflow, tol)
 }
 
 /// [`blend_edges`]' construction of the parsed request, its bevels taking

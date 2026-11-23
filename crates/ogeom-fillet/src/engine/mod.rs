@@ -82,6 +82,7 @@ mod strip_taken;
 pub(crate) mod switch_over;
 mod taken_whole;
 mod trimmed;
+mod trims_through;
 pub(crate) mod vertex;
 mod vertex_carry;
 mod vertex_curved;
@@ -119,8 +120,7 @@ pub(crate) use mixed_tools::blend as mixed_asymmetric;
 pub(crate) use narrow::{Needs as NarrowNeeds, built as narrow_built, reach as narrow_reach};
 pub(crate) use overflow::{
     Size as OverflowSize, bevel_size as overflow_bevel_size, blended as overflow_blended,
-    changes_others as overflow_changes_others, grazes as overflow_grazes,
-    reach_found as overflow_reach,
+    grazes as overflow_grazes, reach_found as overflow_reach,
 };
 pub(crate) use planar_tools::{linear_round, varying_distances};
 pub(crate) use request::{Request, Section};
@@ -137,6 +137,7 @@ pub(crate) use trimmed::{
     chamfer as chamfer_curved, chamfer_mitred as chamfer_curved_mitred, chamfer_patched,
     convex_one_boolean, creases_one_boolean, rims_revolved, rolling_tools,
 };
+pub(crate) use trims_through::{Through, through as trims_through};
 pub(crate) use void_side::rounds as void_side_rounds;
 
 /// Whether `solid` is one the polyhedral classes read: one solid bounded by
