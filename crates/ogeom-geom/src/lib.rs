@@ -6,6 +6,12 @@
 //! whether the input is an analytic cylinder or a NURBS patch. Concrete types
 //! implement the traits. Algorithms only ever see the traits.
 
+// Debug output goes through `ogeom_core::diag`, never to stdout or stderr.
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stderr, clippy::print_stdout, clippy::dbg_macro)
+)]
+
 pub mod convert;
 pub mod curve;
 pub mod curve2d;

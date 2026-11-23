@@ -20,6 +20,7 @@ use crate::law::Profile;
 use crate::march::{BlendStop, Sides, march_blend_seeded};
 use crate::support::{edge_curve, face_from_edges};
 use ogeom_algo::Built;
+use ogeom_core::diag::Channel;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve3d as _;
 use ogeom_geom::{Curve, PlanarCurve, SurfaceGeometry};
@@ -400,22 +401,21 @@ fn marched_fillet_by(
         return Err(first_refusal
             .unwrap_or_else(|| ogeom_core::ogeom_err!(NotDone, "no ball seats on the edge")));
     };
-    if std::env::var_os("OGEOM_DEBUG_RUNOUT").is_some() {
-        eprintln!(
-            "MARCH stopped {:?} with {} stations; guide domain {:?} closed {closed}; first {:?}/{:?} at {:?}; last {:?}/{:?} at {:?}; hosts {:?} {:?}",
-            blend.stopped,
-            blend.len(),
-            guide.domain(),
-            blend.on_first.first(),
-            blend.on_second.first(),
-            blend.spine.first(),
-            blend.on_first.last(),
-            blend.on_second.last(),
-            blend.spine.last(),
-            first.domain(),
-            second.domain()
-        );
-    }
+    ogeom_core::diag!(
+        Channel::Fillet,
+        "MARCH stopped {:?} with {} stations; guide domain {:?} closed {closed}; first {:?}/{:?} at {:?}; last {:?}/{:?} at {:?}; hosts {:?} {:?}",
+        blend.stopped,
+        blend.len(),
+        guide.domain(),
+        blend.on_first.first(),
+        blend.on_second.first(),
+        blend.spine.first(),
+        blend.on_first.last(),
+        blend.on_second.last(),
+        blend.spine.last(),
+        first.domain(),
+        second.domain()
+    );
     // Stations steered by the smooth loop carry its parameters; the seat's
     // own curve is what the wedge measures windows on, so each station is
     // re-placed on it by projection.
@@ -1782,14 +1782,13 @@ fn open_runout_wedge(
         // instead, the wedge stops short of the wall by the plane's slant
         // and leaves a sliver of sharp crease between cap and wall, the
         // remnant a second fillet then has to meet.
-        if std::env::var_os("OGEOM_DEBUG_RUNOUT").is_some() {
-            eprintln!(
-                "RUNOUT start: edge_range {edge_range:?} w0 {w0:.5} w1 {w1:.5} run {:.5}..{:.5} guide domain {:?}",
-                blend.along[0],
-                blend.along[blend.len() - 1],
-                guide.domain()
-            );
-        }
+        ogeom_core::diag!(
+            Channel::Fillet,
+            "RUNOUT start: edge_range {edge_range:?} w0 {w0:.5} w1 {w1:.5} run {:.5}..{:.5} guide domain {:?}",
+            blend.along[0],
+            blend.along[blend.len() - 1],
+            guide.domain()
+        );
         for end in [true, false] {
             // The window may stand a period past a periodic guide's stored
             // domain; the point is the same turn either way.
@@ -1802,9 +1801,10 @@ fn open_runout_wedge(
                 guide.point_at(w, tol)?
             };
             let terminates = crease_terminates_at(model, solid, edge, host_faces, at, tol)?;
-            if std::env::var_os("OGEOM_DEBUG_RUNOUT").is_some() {
-                eprintln!("RUNOUT end {end} at {at:?} terminates {terminates}");
-            }
+            ogeom_core::diag!(
+                Channel::Fillet,
+                "RUNOUT end {end} at {at:?} terminates {terminates}"
+            );
             if !terminates {
                 continue;
             }
@@ -2083,13 +2083,12 @@ fn open_runout_wedge(
         // station is the honest end.
         let cap0 = blend.along[0] < w0;
         let cap1 = blend.along[blend.len() - 1] > w1;
-        if std::env::var_os("OGEOM_DEBUG_RUNOUT").is_some() {
-            eprintln!(
-                "RUNOUT edge_range {edge_range:?} window ({w0:.5}, {w1:.5}) run {:.5}..{:.5} cap0 {cap0} cap1 {cap1}",
-                blend.along[0],
-                blend.along[blend.len() - 1]
-            );
-        }
+        ogeom_core::diag!(
+            Channel::Fillet,
+            "RUNOUT edge_range {edge_range:?} window ({w0:.5}, {w1:.5}) run {:.5}..{:.5} cap0 {cap0} cap1 {cap1}",
+            blend.along[0],
+            blend.along[blend.len() - 1]
+        );
         let mut keep_from = 0;
         let mut keep_to = blend.len();
         for (i, t) in blend.along.iter().enumerate() {

@@ -28,6 +28,12 @@
 //! multi-representation edges, operation history) because that model is what
 //! makes the algorithms possible. See `docs/DATA_MODEL.md`.
 
+// Debug output goes through `ogeom_core::diag`, never to stdout or stderr.
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stderr, clippy::print_stdout, clippy::dbg_macro)
+)]
+
 /// Construction, measurement, classification, sewing and mesh to solid.
 pub mod algo {
     pub use ogeom_algo::{
@@ -90,14 +96,14 @@ pub mod boolean {
     };
 }
 
-/// Arenas, identity, errors, tolerances and predicates.
+/// Arenas, identity, errors, tolerances, predicates and diagnostics.
 pub mod core {
     pub use ogeom_core::{
         Arena, Canceller, Cause, DefaultPredicates, EntityId, Exact, Fast, FastHasher, FastMap,
         FastSet, Key, OgeomError, OgeomResult, OpId, P2, P3, Predicates, Provenance,
         ProvenanceTable, Role, Sign, SourceId, Stage, Tolerance, Tolerances, UNSCOPED, Watch,
-        arena, check_containment, clock, collections, error, id, ogeom_bail, ogeom_err, parallel,
-        predicates, progress, tolerance,
+        arena, check_containment, clock, collections, diag, error, id, ogeom_bail, ogeom_err,
+        parallel, predicates, progress, tolerance,
     };
 }
 

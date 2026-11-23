@@ -13,6 +13,12 @@
 //! Deliberately not a label-and-attribute tree. The capability is required; that
 //! particular design, and compatibility with anyone's file format, are not.
 
+// Debug output goes through `ogeom_core::diag`, never to stdout or stderr.
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stderr, clippy::print_stdout, clippy::dbg_macro)
+)]
+
 pub mod attributes;
 pub mod construction;
 pub mod pmi;

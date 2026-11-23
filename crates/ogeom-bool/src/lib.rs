@@ -42,6 +42,12 @@
 //! outside it. [`split_sheet`] keeps every piece, unclassified. The kept
 //! pieces are sewn into shells with no closure asked of them.
 
+// Debug output goes through `ogeom_core::diag`, never to stdout or stderr.
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stderr, clippy::print_stdout, clippy::dbg_macro)
+)]
+
 mod along_edges;
 mod arrange;
 mod aside;
@@ -76,6 +82,7 @@ use ogeom_algo::{
     Built, Containment, History, is_shell_closed, make_edge_between, make_face_on, make_vertex,
     make_wire, sew_around, sew_around_within, shape_bounds,
 };
+use ogeom_core::diag::{self, Channel};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::Curve2d as _;
 use ogeom_geom::Curve3d as _;
@@ -440,7 +447,7 @@ struct GFace {
     /// slack for the ruled kinds whose rulings pin them to their boundary's
     /// hull, most of the diagonal for anything that can genuinely bulge, a
     /// dome past its equator. The poles join after. Gates the pair filter
-    /// and refusals. `OGEOM_BOOL_AUDIT_BOUNDS` audits its conservatism.
+    /// and refusals. The `bool-audit` diagnostics channel audits its conservatism.
     bound: ogeom_math::Aabb,
     /// What the pair tests read: [`GFace::bound`] cut down to the box the
     /// model keeps for the face, which stands off a dome by its tolerance
@@ -1101,8 +1108,8 @@ fn gather(
         // boundary's hull and only the boundary's own sampling slack is needed,
         // the plane's as much as the ruled surface's.
         // Anything else may genuinely bulge (a dome past its equator) and
-        // keeps most of its own diagonal as allowance. The audit behind
-        // OGEOM_BOOL_AUDIT_BOUNDS holds every arm to conservatism.
+        // keeps most of its own diagonal as allowance. The `bool-audit`
+        // channel's audit holds every arm to conservatism.
         let bulge = match &surface {
             SurfaceGeometry::Plane(_) | SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_) => {
                 slack
@@ -2699,12 +2706,11 @@ fn measured_overlaps(
                 let foot = ogeom_algo::project_on_curve(&e.curve, p, 64, tol)?;
                 Ok(onto_range(foot.parameter, &e.curve, e.crange, tol))
             };
-            if *DEBUG_WIRE {
-                eprintln!(
-                    "CONTACT along edge {} measured over ({lo:.6}, {hi:.6}) within {width:.2e}",
-                    e.node.index()
-                );
-            }
+            ogeom_core::diag!(
+                Channel::Wire,
+                "CONTACT along edge {} measured over ({lo:.6}, {hi:.6}) within {width:.2e}",
+                e.node.index()
+            );
             out.push(ogeom_intersect::Overlap {
                 on_a: (lo, hi),
                 on_b: (on_edge(lo)?, on_edge(hi)?),
@@ -3496,9 +3502,7 @@ fn snapped_to_vertices(
         move_to_2d(&mut control_a, images[0]);
         move_to_2d(&mut control_b, images[1]);
         moved = moved.max(vertex.distance(at));
-        if *DEBUG_WIRE {
-            eprintln!("SNAP end {end} {at:?} -> {vertex:?}");
-        }
+        ogeom_core::diag!(Channel::Wire, "SNAP end {end} {at:?} -> {vertex:?}");
     }
     if moved == 0.0 {
         return Ok((curve, pa, pb, 0.0));
@@ -3815,12 +3819,11 @@ fn graze_contacts(
                     ) else {
                         continue;
                     };
-                    if *DEBUG_WIRE {
-                        eprintln!(
-                            "GRAZE edge {} over {crange:?} onto face {target_face} (from_a {target_from_a})",
-                            e.node.index()
-                        );
-                    }
+                    ogeom_core::diag!(
+                        Channel::Wire,
+                        "GRAZE edge {} over {crange:?} onto face {target_face} (from_a {target_from_a})",
+                        e.node.index()
+                    );
                     out.push(ContactRec {
                         curve: (*e.curve).clone(),
                         crange,
@@ -4117,13 +4120,12 @@ fn tangent_contacts(
                 ) else {
                     continue;
                 };
-                if *DEBUG_WIRE {
-                    eprintln!(
-                        "TANGENT edge {} over {:?} onto face {target_face} (from_a {target_from_a})",
-                        e.node.index(),
-                        e.crange
-                    );
-                }
+                ogeom_core::diag!(
+                    Channel::Wire,
+                    "TANGENT edge {} over {:?} onto face {target_face} (from_a {target_from_a})",
+                    e.node.index(),
+                    e.crange
+                );
                 out.push(ContactRec {
                     curve: (*e.curve).clone(),
                     crange: e.crange,
@@ -5570,12 +5572,13 @@ fn share_hugs(
             continue;
         }
         let section = &sections[piece.section];
-        if *DEBUG_WIRE {
-            eprintln!(
-                "PAVE s{}: ({:.6}, {:.6}) hugs the edge with the section beside it",
-                piece.section, piece.range.0, piece.range.1
-            );
-        }
+        ogeom_core::diag!(
+            Channel::Wire,
+            "PAVE s{}: ({:.6}, {:.6}) hugs the edge with the section beside it",
+            piece.section,
+            piece.range.0,
+            piece.range.1
+        );
         piece.hugs[side] = true;
         piece.hug_key = Some(if side == 0 {
             (key, false, section.face_b)
@@ -6139,17 +6142,16 @@ fn fill(
                                         // melts with splits nothing there.
                                         continue;
                                     };
-                                    if *DEBUG_WIRE {
-                                        eprintln!(
-                                            "SAME owner {} face {} (from_a {owner_from_a}) edge {} of kind {:?}: {:?} .. {:?} against target face {target_face}",
-                                            if owner_from_a { "a" } else { "b" },
-                                            if owner_from_a { ia } else { ib },
-                                            e.node.index(),
-                                            core::mem::discriminant(&*e.curve),
-                                            e.curve.point_at(e.crange.0, tol).ok(),
-                                            e.curve.point_at(e.crange.1, tol).ok()
-                                        );
-                                    }
+                                    ogeom_core::diag!(
+                                        Channel::Wire,
+                                        "SAME owner {} face {} (from_a {owner_from_a}) edge {} of kind {:?}: {:?} .. {:?} against target face {target_face}",
+                                        if owner_from_a { "a" } else { "b" },
+                                        if owner_from_a { ia } else { ib },
+                                        e.node.index(),
+                                        core::mem::discriminant(&*e.curve),
+                                        e.curve.point_at(e.crange.0, tol).ok(),
+                                        e.curve.point_at(e.crange.1, tol).ok()
+                                    );
                                     vec![(pcurve, e.crange, e.crange)]
                                 }
                             };
@@ -6431,12 +6433,13 @@ fn fill(
                             let (length, reach) = length_and_reach(&sc.curve, tol)?;
                             let turn =
                                 4.0 * fa.bound.diagonal().max(fb.bound.diagonal()).max(reach);
-                            if *DEBUG_WIRE {
-                                eprintln!(
-                                    "SECTION CHECK faces {ia}/{ib} exact {} closed {} length {length:.4} turn {turn:.4} tol {:.2e}",
-                                    sc.exact, sc.closed, sc.tolerance
-                                );
-                            }
+                            ogeom_core::diag!(
+                                Channel::Wire,
+                                "SECTION CHECK faces {ia}/{ib} exact {} closed {} length {length:.4} turn {turn:.4} tol {:.2e}",
+                                sc.exact,
+                                sc.closed,
+                                sc.tolerance
+                            );
                             if length > turn {
                                 ogeom_bail!(
                                     NotDone,
@@ -6525,13 +6528,12 @@ fn fill(
                                 }
                                 // No image fits: march the pair instead, so
                                 // curve and pcurves are fitted *together*.
-                                if *DEBUG_WIRE {
-                                    eprintln!(
-                                        "MARCH PAIR faces {ia}/{ib} a {:?} b {:?} admitted {admitted}",
-                                        core::mem::discriminant(&fa.surface),
-                                        core::mem::discriminant(&fb.surface)
-                                    );
-                                }
+                                ogeom_core::diag!(
+                                    Channel::Wire,
+                                    "MARCH PAIR faces {ia}/{ib} a {:?} b {:?} admitted {admitted}",
+                                    core::mem::discriminant(&fa.surface),
+                                    core::mem::discriminant(&fb.surface)
+                                );
                                 out.sections.truncate(before);
                                 marched = true;
                                 let shared = if admitted {
@@ -6998,14 +7000,13 @@ fn fill(
                                 let foot = ogeom_algo::project_on_curve(drawn, tip, 64, tol)?;
                                 let width =
                                     (crossing.reach + honest(weld, tol)).max(tol.confusion() * 1e3);
-                                if *DEBUG_WIRE {
-                                    eprintln!(
-                                        "PAVE s{si}: touch on edge {} at {:.6}: tip {:.3e} off the edge, width {width:.2e}",
-                                        e.node.index(),
-                                        crossing.on_a,
-                                        foot.distance
-                                    );
-                                }
+                                ogeom_core::diag!(
+                                    Channel::Wire,
+                                    "PAVE s{si}: touch on edge {} at {:.6}: tip {:.3e} off the edge, width {width:.2e}",
+                                    e.node.index(),
+                                    crossing.on_a,
+                                    foot.distance
+                                );
                                 if foot.distance <= width {
                                     ended = true;
                                     on_a = end;
@@ -7165,15 +7166,14 @@ fn fill(
                                 }
                             }
                         }
-                        if *DEBUG_WIRE {
-                            eprintln!(
-                                "PAVE s{si}: side {side} edge {} crossing at {on_a:.6} (edge {on_b:.6}) gap {:.2e} reach {:.2e} honesty {honesty:.2e} at {:?}",
-                                e.node.index(),
-                                crossing.gap,
-                                crossing.reach,
-                                crossing.point
-                            );
-                        }
+                        ogeom_core::diag!(
+                            Channel::Wire,
+                            "PAVE s{si}: side {side} edge {} crossing at {on_a:.6} (edge {on_b:.6}) gap {:.2e} reach {:.2e} honesty {honesty:.2e} at {:?}",
+                            e.node.index(),
+                            crossing.gap,
+                            crossing.reach,
+                            crossing.point
+                        );
                         // A loose edge (a chord between a facet and the drum
                         // it was converted beside, standing off the drum by
                         // its sag) is met by the faces either side of it each
@@ -7250,9 +7250,10 @@ fn fill(
                             if hi - lo <= tol.parametric() {
                                 continue;
                             }
-                            if *DEBUG_WIRE {
-                                eprintln!("PAVE s{si}: side {side} overlap ({lo:.6}, {hi:.6})");
-                            }
+                            ogeom_core::diag!(
+                                Channel::Wire,
+                                "PAVE s{si}: side {side} overlap ({lo:.6}, {hi:.6})"
+                            );
                             // The edge splits where the shared stretch ends, as
                             // the section does: the stretch itself is the edge's
                             // to carry, and the section's next piece must meet
@@ -7509,21 +7510,19 @@ fn fill(
                                 .max(tol.confusion() * 1e3)
                                 + loose.unwrap_or(0.0);
                             if !within_face(beside, crossing.point, doubt, tol)? {
-                                if *DEBUG_WIRE {
-                                    eprintln!(
-                                        "PAVE s{si}: cross s{sj} at {at:.6} off s{sj}'s face, no cut"
-                                    );
-                                }
+                                ogeom_core::diag!(
+                                    Channel::Wire,
+                                    "PAVE s{si}: cross s{sj} at {at:.6} off s{sj}'s face, no cut"
+                                );
                                 continue;
                             }
                         }
                     }
-                    if *DEBUG_WIRE {
-                        eprintln!(
-                            "PAVE s{si}: cross s{sj} at {at:.6} gap {:.2e}",
-                            crossing.gap
-                        );
-                    }
+                    ogeom_core::diag!(
+                        Channel::Wire,
+                        "PAVE s{si}: cross s{sj} at {at:.6} gap {:.2e}",
+                        crossing.gap
+                    );
                     cross_ts.push(at);
                 }
             }
@@ -7631,12 +7630,12 @@ fn fill(
                             if taken {
                                 continue;
                             }
-                            if *DEBUG_WIRE {
-                                eprintln!(
-                                    "PAVE s{si}: stop at {:.6} beside the vertex {vertex:?}, {:.2e} off",
-                                    foot.parameter, foot.distance
-                                );
-                            }
+                            ogeom_core::diag!(
+                                Channel::Wire,
+                                "PAVE s{si}: stop at {:.6} beside the vertex {vertex:?}, {:.2e} off",
+                                foot.parameter,
+                                foot.distance
+                            );
                             vertex_stops.push(foot.parameter);
                         }
                     }
@@ -7739,13 +7738,14 @@ fn fill(
                     mid
                 };
                 let held = inside_over(lo, hi)?;
-                if *DEBUG_WIRE {
+                if diag::enabled(Channel::Wire) {
                     let tf = if section.closed {
                         fold(mid, domain)
                     } else {
                         mid
                     };
-                    eprintln!(
+                    ogeom_core::diag!(
+                        Channel::Wire,
                         "PAVE s{si}: candidate ({lo:.6}, {hi:.6}) inside {held:?} at a {:?} b {:?}",
                         section
                             .pc_a
@@ -7839,13 +7839,12 @@ fn fill(
                             }
                             let d = hug_distance(drawn, drange, at, tol)?;
                             if d <= width {
-                                if *DEBUG_WIRE {
-                                    eprintln!(
-                                        "PAVE s{si}: side {side} sample {i} hugs edge {} at {d:.2e} (width {width:.2e}) range {:?} point {at:?}",
-                                        e.node.index(),
-                                        e.crange
-                                    );
-                                }
+                                ogeom_core::diag!(
+                                    Channel::Wire,
+                                    "PAVE s{si}: side {side} sample {i} hugs edge {} at {d:.2e} (width {width:.2e}) range {:?} point {at:?}",
+                                    e.node.index(),
+                                    e.crange
+                                );
                                 // Every edge within reach is hugged, not the
                                 // first found: where three rims converge on
                                 // a pole corner all three come within a
@@ -7896,9 +7895,10 @@ fn fill(
                         );
                     }
                 }
-                if *DEBUG_WIRE {
-                    eprintln!("PAVE s{si}: candidate ({lo:.6}, {hi:.6}) hugs {hugs:?}");
-                }
+                ogeom_core::diag!(
+                    Channel::Wire,
+                    "PAVE s{si}: candidate ({lo:.6}, {hi:.6}) hugs {hugs:?}"
+                );
                 // Inside both faces the piece is a section of both. Hugging
                 // one face's own edge while that face's trim reads it out
                 // (by a hair, on the edge), it is still the other face's
@@ -8014,13 +8014,12 @@ fn fill(
                         .curve
                         .point_at(at_param(s, domain, section.closed), tol)?;
                     let foot = ogeom_algo::project_on_curve(e.drawn().0, at, 64, tol)?;
-                    if *DEBUG_WIRE {
-                        eprintln!(
-                            "PAVE s{si}: side {side} edge {} crossing at {on_section:.6} handed to the stop at {s:.6}, {:.2e} off",
-                            node.index(),
-                            foot.distance
-                        );
-                    }
+                    ogeom_core::diag!(
+                        Channel::Wire,
+                        "PAVE s{si}: side {side} edge {} crossing at {on_section:.6} handed to the stop at {s:.6}, {:.2e} off",
+                        node.index(),
+                        foot.distance
+                    );
                     paves.push((
                         *node,
                         Pave {
@@ -8072,14 +8071,13 @@ fn fill(
                         for end in [e.crange.0, e.crange.1] {
                             let p = e.curve.point_at(end, tol)?;
                             let foot = ogeom_algo::project_on_curve(&section.curve, p, 64, tol)?;
-                            if *DEBUG_WIRE {
-                                eprintln!(
-                                    "PAVE s{si}: side {side} hugged edge {} end {end:.6} lands at {:.6} off {:.2e} against ({lo:.6}, {hi:.6})",
-                                    e.node.index(),
-                                    foot.parameter,
-                                    foot.distance
-                                );
-                            }
+                            ogeom_core::diag!(
+                                Channel::Wire,
+                                "PAVE s{si}: side {side} hugged edge {} end {end:.6} lands at {:.6} off {:.2e} against ({lo:.6}, {hi:.6})",
+                                e.node.index(),
+                                foot.parameter,
+                                foot.distance
+                            );
                             if foot.distance > reach.max(tol.confusion() * 1e3) {
                                 continue;
                             }
@@ -8094,12 +8092,11 @@ fn fill(
                                 }
                             }
                             if t > lo + tol.parametric() && t < hi - tol.parametric() {
-                                if *DEBUG_WIRE {
-                                    eprintln!(
-                                        "PAVE s{si}: side {side} cut at {t:.6} where hugged edge {} ends",
-                                        e.node.index()
-                                    );
-                                }
+                                ogeom_core::diag!(
+                                    Channel::Wire,
+                                    "PAVE s{si}: side {side} cut at {t:.6} where hugged edge {} ends",
+                                    e.node.index()
+                                );
                                 cuts.push(t);
                             }
                         }
@@ -8162,16 +8159,15 @@ fn fill(
                             ],
                             tol,
                         );
-                        if *DEBUG_WIRE {
-                            eprintln!(
-                                "PAVE s{si}: the domain-end split of ({lo:.6}, {hi:.6}) leaves {shortest:.3e}; {}",
-                                if reseamed.is_some() {
-                                    "the seam moves to the interval's start"
-                                } else {
-                                    "it stays"
-                                }
-                            );
-                        }
+                        ogeom_core::diag!(
+                            Channel::Wire,
+                            "PAVE s{si}: the domain-end split of ({lo:.6}, {hi:.6}) leaves {shortest:.3e}; {}",
+                            if reseamed.is_some() {
+                                "the seam moves to the interval's start"
+                            } else {
+                                "it stays"
+                            }
+                        );
                         if reseamed.is_some() {
                             cuts.remove(at);
                         }
@@ -8215,12 +8211,11 @@ fn fill(
                             {
                                 continue;
                             }
-                            if *DEBUG_WIRE {
-                                eprintln!(
-                                    "PAVE s{si}: side {side} hugged edge {} paved at {on_e:.6} for the cut at {c:.6}",
-                                    e.node.index()
-                                );
-                            }
+                            ogeom_core::diag!(
+                                Channel::Wire,
+                                "PAVE s{si}: side {side} hugged edge {} paved at {on_e:.6} for the cut at {c:.6}",
+                                e.node.index()
+                            );
                             paves.push((
                                 e.node,
                                 Pave {
@@ -8313,13 +8308,12 @@ fn fill(
                             {
                                 continue;
                             }
-                            if *DEBUG_WIRE {
-                                eprintln!(
-                                    "PAVE s{si}: side {side} edge {} along ({lo:.6}, {hi:.6}) paved at {on_e:.6} for the stop at {stop:.6}, {:.2e} off",
-                                    e.node.index(),
-                                    foot.distance
-                                );
-                            }
+                            ogeom_core::diag!(
+                                Channel::Wire,
+                                "PAVE s{si}: side {side} edge {} along ({lo:.6}, {hi:.6}) paved at {on_e:.6} for the stop at {stop:.6}, {:.2e} off",
+                                e.node.index(),
+                                foot.distance
+                            );
                             paves.push((
                                 e.node,
                                 Pave {
@@ -8555,14 +8549,13 @@ fn fill(
                 } else {
                     x
                 };
-                if *DEBUG_WIRE {
-                    eprintln!(
-                        "PAVE: s{} and s{} split one face along one line; s{} speaks for it",
-                        px.section,
-                        py.section,
-                        pieces[if loser == x { y } else { x }].section
-                    );
-                }
+                ogeom_core::diag!(
+                    Channel::Wire,
+                    "PAVE: s{} and s{} split one face along one line; s{} speaks for it",
+                    px.section,
+                    py.section,
+                    pieces[if loser == x { y } else { x }].section
+                );
                 drop.push(loser);
                 if loser == x {
                     break;
@@ -8955,15 +8948,14 @@ fn fill(
                             spread: 0.0,
                         });
                     }
-                    if *DEBUG_WIRE {
-                        eprintln!(
-                            "CONTACT c{ci} along edge {} over ({lo:.6}, {hi:.6}) of {:?}: {:?} .. {:?}",
-                            e.node.index(),
-                            contact.crange,
-                            contact.curve.point_at(lo, tol).ok(),
-                            contact.curve.point_at(hi, tol).ok()
-                        );
-                    }
+                    ogeom_core::diag!(
+                        Channel::Wire,
+                        "CONTACT c{ci} along edge {} over ({lo:.6}, {hi:.6}) of {:?}: {:?} .. {:?}",
+                        e.node.index(),
+                        contact.crange,
+                        contact.curve.point_at(lo, tol).ok(),
+                        contact.curve.point_at(hi, tol).ok()
+                    );
                     contact_along[ci].push((lo, hi));
                     let mut apart = 0.0_f64;
                     for t in [lo, f64::midpoint(lo, hi), hi] {
@@ -10198,13 +10190,12 @@ fn seams_through_junctions(
                     }
                 }
                 if sides == [true; 2] {
-                    if *DEBUG_WIRE {
-                        eprintln!(
-                            "PAVE seam e{} at {t:.6}: a junction at {:?} holds ends on both sides",
-                            e.node.index(),
-                            junction.at
-                        );
-                    }
+                    ogeom_core::diag!(
+                        Channel::Wire,
+                        "PAVE seam e{} at {t:.6}: a junction at {:?} holds ends on both sides",
+                        e.node.index(),
+                        junction.at
+                    );
                     paves.entry(e.node).or_default().push(Pave {
                         t,
                         honesty: gap,
@@ -11260,12 +11251,11 @@ fn fitted_image(
             foot = ogeom_algo::project_on_surface(surface, p, 48, tol)?;
         }
         if foot.distance > budget.max(tol.confusion() * 1e2) {
-            if *DEBUG_WIRE {
-                eprintln!(
-                    "IMAGE FIT: a point sits {:.2e} off the surface; no image",
-                    foot.distance
-                );
-            }
+            ogeom_core::diag!(
+                Channel::Wire,
+                "IMAGE FIT: a point sits {:.2e} off the surface; no image",
+                foot.distance
+            );
             return Ok(None);
         }
         Ok(Some((foot.parameters, foot.distance)))
@@ -11366,21 +11356,21 @@ fn fitted_image(
     for t in checks {
         let uv = planar.point_at(t, tol)?;
         let Ok(on_surface) = lift(uv.x, uv.y) else {
-            if *DEBUG_WIRE {
-                eprintln!("IMAGE FIT: the image leaves the chart at {uv:?}; no image");
-            }
+            ogeom_core::diag!(
+                Channel::Wire,
+                "IMAGE FIT: the image leaves the chart at {uv:?}; no image"
+            );
             return Ok(None);
         };
         off = off.max(on_surface.distance(curve.point_at(t, tol)?));
     }
-    if *DEBUG_WIRE {
-        eprintln!(
-            "IMAGE FIT: image off the curve by {off:.2e} against {:.2e} (fit error {:.2e} met {})",
-            budget.max(tol.confusion() * 1e3),
-            fitted.error,
-            fitted.met
-        );
-    }
+    ogeom_core::diag!(
+        Channel::Wire,
+        "IMAGE FIT: image off the curve by {off:.2e} against {:.2e} (fit error {:.2e} met {})",
+        budget.max(tol.confusion() * 1e3),
+        fitted.error,
+        fitted.met
+    );
     if off > budget.max(tol.confusion() * 1e3) {
         return Ok(None);
     }
@@ -11537,21 +11527,6 @@ fn mark_covered_coincidences(
     pairs
 }
 
-/// The face-bound filter's audit: admit every pair, and name any the filter
-/// would have dropped that then produces a record. A conservative filter is
-/// a correctness precondition (a pair wrongly dropped is absorbed by the
-/// empty-result fallback, and would be a wrong solid if that fallback came
-/// up empty too), and this is the check that makes the precondition
-/// falsifiable. Costs one branch per pair when off.
-static AUDIT_BOUNDS: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var("OGEOM_BOOL_AUDIT_BOUNDS").is_ok());
-/// The debug dumps, read once rather than once per face: `env::var` takes a
-/// process-wide lock and allocates, and a large model asks thousands of
-/// times to be told no.
-static DEBUG_WIRE: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var("OGEOM_DEBUG_WIRE").is_ok());
-static DEBUG_STRANDS: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var("OGEOM_DEBUG_STRANDS").is_ok());
 thread_local! {
     /// Whether a piece read on the other solid's boundary, with no coincident
     /// partner, is settled by asking just off it on both sides. Off on the
@@ -11948,9 +11923,6 @@ fn welded_within(model: &Model, shape: &Shape, weld: f64) -> OgeomResult<bool> {
     Ok(true)
 }
 
-static ARRANGE_DEBUG: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var("OGEOM_ARRANGE_DEBUG").is_ok());
-
 /// The strict audit's verdict: the filtered fill and the unfiltered fill
 /// keep the same material.
 ///
@@ -12173,12 +12145,22 @@ fn general_fuse_as(
     }
     let along = crossed_along(&contacts);
     let mut junctions = pave_junctions(&ga, &gb, &paves, &along, tol)?;
-    if *DEBUG_WIRE {
+    if diag::enabled(Channel::Wire) {
         for j in &junctions {
-            eprintln!("JUNCTION from paves at {:?} reach {:.3e}", j.at, j.reach);
+            ogeom_core::diag!(
+                Channel::Wire,
+                "JUNCTION from paves at {:?} reach {:.3e}",
+                j.at,
+                j.reach
+            );
         }
         for j in &hugs {
-            eprintln!("JUNCTION from hugs at {:?} reach {:.3e}", j.at, j.reach);
+            ogeom_core::diag!(
+                Channel::Wire,
+                "JUNCTION from hugs at {:?} reach {:.3e}",
+                j.at,
+                j.reach
+            );
         }
     }
     junctions.extend(hugs);
@@ -12214,9 +12196,10 @@ fn general_fuse_as(
                         }
                 };
                 if radius > tol.confusion() * 10.0 && !kept() {
-                    if *DEBUG_WIRE {
-                        eprintln!("JUNCTION from vertex at {at:?} radius {radius:.3e}");
-                    }
+                    ogeom_core::diag!(
+                        Channel::Wire,
+                        "JUNCTION from vertex at {at:?} radius {radius:.3e}"
+                    );
                     junctions.push(Junction {
                         at,
                         reach: radius,
@@ -12244,9 +12227,14 @@ fn general_fuse_as(
             tol,
         )?;
     }
-    if *DEBUG_WIRE {
+    if diag::enabled(Channel::Wire) {
         for j in &junctions {
-            eprintln!("JUNCTION at {:?} reach {:.3e}", j.at, j.reach);
+            ogeom_core::diag!(
+                Channel::Wire,
+                "JUNCTION at {:?} reach {:.3e}",
+                j.at,
+                j.reach
+            );
         }
         let kind = |sf: &SurfaceGeometry| match sf {
             SurfaceGeometry::Plane(_) => "plane",
@@ -12284,7 +12272,8 @@ fn general_fuse_as(
                 worst_b = worst_b.max(near(fb)?);
             }
             let pieces = section_pieces.iter().filter(|p| p.section == si).count();
-            eprintln!(
+            ogeom_core::diag!(
+                Channel::Wire,
                 "SECTION s{si} a{}({}) x b{}({}) tol {:.2e} closed {} len {:.4} pieces {pieces} hug-dist a {:.3e} b {:.3e}",
                 sec.face_a,
                 kind(&fa.surface),
@@ -12297,14 +12286,19 @@ fn general_fuse_as(
                 worst_b
             );
         }
-        eprintln!("TANGENTS {}  CONTACTS {}", tangents.len(), contacts.len());
+        ogeom_core::diag!(
+            Channel::Wire,
+            "TANGENTS {}  CONTACTS {}",
+            tangents.len(),
+            contacts.len()
+        );
     }
     // The strict audit: fill again with every pair admitted and demand the
     // same kept material. The production result above is always the
     // filtered run (under audit too), so the audit compares rather than
     // substitutes, and a filtered run *is* replayed exactly. Zero cost with
     // the variable unset.
-    if *AUDIT_BOUNDS {
+    if diag::enabled(Channel::BoolAudit) {
         // A pair only the unfiltered fill tries may refuse (a march beside a
         // pole the filter never sends it), which says nothing of the
         // filter. The audit says so and compares nothing.
@@ -12315,7 +12309,10 @@ fn general_fuse_as(
                 tol,
             ),
             Err(e @ ogeom_core::OgeomError::Cancelled) => return Err(e),
-            Err(e) => eprintln!("bound-filter audit skipped: the unfiltered fill refused: {e}"),
+            Err(e) => ogeom_core::diag!(
+                Channel::BoolAudit,
+                "bound-filter audit skipped: the unfiltered fill refused: {e}"
+            ),
         }
     }
 
@@ -12690,9 +12687,10 @@ fn general_fuse_as(
                     .any(|(lo, hi)| mid_t >= *lo && mid_t <= *hi)
                 {
                     // Already boundary on both sides.
-                    if *DEBUG_STRANDS {
-                        eprintln!("CONTACT c{ci} {sub:?} on fi={fi}: along boundary, skipped");
-                    }
+                    ogeom_core::diag!(
+                        Channel::Strands,
+                        "CONTACT c{ci} {sub:?} on fi={fi}: along boundary, skipped"
+                    );
                     continue;
                 }
                 // Keep only what lies inside this face's trim. The rest
@@ -12727,11 +12725,10 @@ fn general_fuse_as(
                     None
                 };
                 if !beside.unwrap_or_else(|| trim.inside_slanted(mid)) {
-                    if *DEBUG_STRANDS {
-                        eprintln!(
-                            "CONTACT c{ci} {sub:?} on fi={fi}: outside the trim at {mid:?}, skipped"
-                        );
-                    }
+                    ogeom_core::diag!(
+                        Channel::Strands,
+                        "CONTACT c{ci} {sub:?} on fi={fi}: outside the trim at {mid:?}, skipped"
+                    );
                     continue;
                 }
                 strands.push(Strand {
@@ -13174,12 +13171,11 @@ fn general_fuse_as(
                     && a == b
                     && lengths[si] <= weld_of[a]
                 {
-                    if *DEBUG_STRANDS {
-                        eprintln!(
-                            "WELD from_a={from_a} fi={fi}: strand {si} is dust at its ends' weld {:.3e}",
-                            weld_of[a]
-                        );
-                    }
+                    ogeom_core::diag!(
+                        Channel::Strands,
+                        "WELD from_a={from_a} fi={fi}: strand {si} is dust at its ends' weld {:.3e}",
+                        weld_of[a]
+                    );
                     st.polyline = vec![st.polyline[0], st.polyline[0]];
                 }
             }
@@ -13282,8 +13278,9 @@ fn general_fuse_as(
                 }
             }
         }
-        if *DEBUG_STRANDS {
-            eprintln!(
+        if diag::enabled(Channel::Strands) {
+            ogeom_core::diag!(
+                Channel::Strands,
                 "FACE-SNAP from_a={from_a} fi={fi}: snap {face_snap:.3e} edges {:?}",
                 face.edges
                     .iter()
@@ -13301,7 +13298,8 @@ fn general_fuse_as(
                     Tag::Pole { pole, range } => format!("Pole p{pole} {range:?}"),
                 };
                 let (a, b) = (st.polyline[0], st.polyline[st.polyline.len() - 1]);
-                eprintln!(
+                ogeom_core::diag!(
+                    Channel::Strands,
                     "STRAND from_a={from_a} fi={fi} {si}: boundary={} {tag} pts={} {a:?} .. {b:?}",
                     st.boundary,
                     st.polyline.len()
@@ -13563,11 +13561,10 @@ fn general_fuse_as(
                     let Some((from, to)) = space_ends(face, &st.tag)? else {
                         continue;
                     };
-                    if *DEBUG_STRANDS {
-                        eprintln!(
-                            "DUST from_a={from_a} fi={fi}: strand {i} collapses with its partners, {from:?} -> {to:?}"
-                        );
-                    }
+                    ogeom_core::diag!(
+                        Channel::Strands,
+                        "DUST from_a={from_a} fi={fi}: strand {i} collapses with its partners, {from:?} -> {to:?}"
+                    );
                     junctions.push(Junction {
                         at: from.midpoint(to),
                         reach: from.distance(to) / 2.0 + tol.confusion() * 1e2,
@@ -13612,8 +13609,11 @@ fn general_fuse_as(
             let split = match arrange_pieces(walked, places, face_snap, lone) {
                 Ok(split) => split,
                 Err(err) => {
-                    if *ARRANGE_DEBUG {
-                        eprintln!("ARRANGE from_a={from_a} fi={fi} failed: {err}");
+                    if diag::enabled(Channel::Arrange) {
+                        ogeom_core::diag!(
+                            Channel::Arrange,
+                            "ARRANGE from_a={from_a} fi={fi} failed: {err}"
+                        );
                         for (si, st) in strands.iter().enumerate() {
                             let (a, b) = (st.polyline[0], st.polyline[st.polyline.len() - 1]);
                             let describe = |curve: &Curve, range: (f64, f64)| -> String {
@@ -13647,8 +13647,9 @@ fn general_fuse_as(
                                 }
                                 _ => String::new(),
                             };
-                            eprintln!("    {geometry}");
-                            eprintln!(
+                            ogeom_core::diag!(Channel::Arrange, "    {geometry}");
+                            ogeom_core::diag!(
+                                Channel::Arrange,
                                 "  strand {si} boundary={} {:?} {a:?} .. {b:?}",
                                 st.boundary,
                                 match st.tag {
@@ -14080,12 +14081,11 @@ fn general_fuse_as(
                                     continue;
                                 }
                             }
-                            if *DEBUG_WIRE {
-                                eprintln!(
-                                    "ON-CONTACT piece of {} face {fi} probe {probe:?} partners {partners:?}",
-                                    if from_a { "A" } else { "B" }
-                                );
-                            }
+                            ogeom_core::diag!(
+                                Channel::Wire,
+                                "ON-CONTACT piece of {} face {fi} probe {probe:?} partners {partners:?}",
+                                if from_a { "A" } else { "B" }
+                            );
                             ogeom_bail!(
                                 NotDone,
                                 "a piece lies on the other solid's boundary \
@@ -14140,14 +14140,15 @@ fn general_fuse_as(
         junctions.extend(face_junctions);
     }
     let coincident = mark_covered_coincidences(&ga, &gb, &mut pieces, tol);
-    if *ARRANGE_DEBUG {
+    if diag::enabled(Channel::Arrange) {
         for (fi, partners) in same_a.iter().enumerate() {
             if !partners.is_empty() {
-                eprintln!("SAME a{fi} with b{partners:?}");
+                ogeom_core::diag!(Channel::Arrange, "SAME a{fi} with b{partners:?}");
             }
         }
         for (ci, contact) in contacts.iter().enumerate() {
-            eprintln!(
+            ogeom_core::diag!(
+                Channel::Arrange,
                 "CONTACT c{ci} onto {}{} over {:?} prange {:?} node {} pcurve {:?}",
                 if contact.target_from_a { "a" } else { "b" },
                 contact.target_face,
@@ -14170,7 +14171,8 @@ fn general_fuse_as(
                 SurfaceGeometry::BSpline(_) => "bspline",
                 _ => "other",
             };
-            eprintln!(
+            ogeom_core::diag!(
+                Channel::Arrange,
                 "PIECE {i} from_a={} face={} {kind} state={:?} covered={} probe={:?} rings {:?}",
                 p.from_a,
                 p.face,
@@ -14255,9 +14257,7 @@ impl Rebuild<'_> {
         // The rim is as generous as the positional weld below: two strand
         // ends a weld apart must not fall on opposite sides of it.
         let slack = self.weld.max(tol.confusion() * 1e2);
-        if *DEBUG_WIRE {
-            eprintln!("VERTEX ask {p:?}");
-        }
+        ogeom_core::diag!(Channel::Wire, "VERTEX ask {p:?}");
         let reach = self.junction_reach;
         let inside = |slot: &usize| {
             let j = &self.junctions[*slot].0;
@@ -14493,16 +14493,18 @@ fn build_piece(
             let near = |a: (f64, f64), b: (f64, f64)| {
                 (a.0 - b.0).abs() <= tol.parametric() && (a.1 - b.1).abs() <= tol.parametric()
             };
-            if *DEBUG_WIRE && (range.1 - range.0).abs() < 1e-4 {
+            if diag::enabled(Channel::Wire) && (range.1 - range.0).abs() < 1e-4 {
                 let kind = match &traversal.tag {
                     Tag::Boundary { .. } => "boundary",
                     Tag::Section { .. } => "section",
                     Tag::Contact { .. } => "contact",
                     Tag::Pole { .. } => "pole",
                 };
-                eprintln!(
+                ogeom_core::diag!(
+                    Channel::Wire,
                     "DUST {kind} {key_edge} range {range:?} in piece from_a={} face={}",
-                    piece.from_a, piece.face
+                    piece.from_a,
+                    piece.face
                 );
             }
             let built = if let Some((_, shape)) = cache
@@ -14547,12 +14549,13 @@ fn build_piece(
                 && g.point_at(f64::midpoint(r3.0, r3.1), tol)?.distance(vd.0)
                     <= vd.1.max(tol.confusion() * 1e4)
             {
-                if *DEBUG_WIRE {
-                    eprintln!(
-                        "DUST piece closing on one vertex at {:?} dropped from piece from_a={} face={}",
-                        vd.0, piece.from_a, piece.face
-                    );
-                }
+                ogeom_core::diag!(
+                    Channel::Wire,
+                    "DUST piece closing on one vertex at {:?} dropped from piece from_a={} face={}",
+                    vd.0,
+                    piece.from_a,
+                    piece.face
+                );
                 continue;
             }
             edges.push(if traversal.reversed {
@@ -14566,12 +14569,12 @@ fn build_piece(
         // it bounds no face.
         if edges.is_empty() {
             if wires.is_empty() {
-                if *DEBUG_WIRE {
-                    eprintln!(
-                        "DUST piece from_a={} face={}: its boundary closes on one point",
-                        piece.from_a, piece.face
-                    );
-                }
+                ogeom_core::diag!(
+                    Channel::Wire,
+                    "DUST piece from_a={} face={}: its boundary closes on one point",
+                    piece.from_a,
+                    piece.face
+                );
                 return Ok(None);
             }
             continue;
@@ -14579,10 +14582,12 @@ fn build_piece(
         let wire = match make_wire(rebuild.model, &edges, tol) {
             Ok(w) => w.shape,
             Err(e) => {
-                if *DEBUG_WIRE {
-                    eprintln!(
+                if diag::enabled(Channel::Wire) {
+                    ogeom_core::diag!(
+                        Channel::Wire,
                         "WIRE FAIL piece from_a={} face={}",
-                        piece.from_a, piece.face
+                        piece.from_a,
+                        piece.face
                     );
                     for built in &edges {
                         if let Some((a, b)) = ogeom_algo::edge_vertices(rebuild.model, built)? {
@@ -14593,7 +14598,8 @@ fn build_piece(
                                     .and_then(|n| n.data().as_vertex())
                                     .map(|d| (d.point, d.tolerance.get()))
                             };
-                            eprintln!(
+                            ogeom_core::diag!(
+                                Channel::Wire,
                                 "   built {:?}{}: v{} {:?} -> v{} {:?}",
                                 built.node(),
                                 if built.orientation() == ogeom_topo::Orientation::Reversed {
@@ -14624,7 +14630,7 @@ fn build_piece(
                             ),
                             Tag::Pole { pole, range } => format!("Pole p{pole} {range:?}"),
                         };
-                        eprintln!("   {tag} reversed={}", t.reversed);
+                        ogeom_core::diag!(Channel::Wire, "   {tag} reversed={}", t.reversed);
                     }
                 }
                 return Err(e);
@@ -14635,10 +14641,12 @@ fn build_piece(
     let built = match make_face_on(rebuild.model, surface_id, &wires, tol) {
         Ok(b) => b.shape,
         Err(e) => {
-            if *DEBUG_WIRE {
-                eprintln!(
+            if diag::enabled(Channel::Wire) {
+                ogeom_core::diag!(
+                    Channel::Wire,
                     "FACE FAIL piece from_a={} face={}: {e}",
-                    piece.from_a, piece.face
+                    piece.from_a,
+                    piece.face
                 );
                 for (wi, wire) in wires.iter().enumerate() {
                     for edge in rebuild.model.ordered_children_of(wire)? {
@@ -14650,7 +14658,8 @@ fn build_piece(
                                     .and_then(|n| n.data().as_vertex())
                                     .map(|d| d.point)
                             };
-                            eprintln!(
+                            ogeom_core::diag!(
+                                Channel::Wire,
                                 "   wire {wi} edge {:?}{}: v{} {:?} -> v{} {:?}",
                                 edge.node(),
                                 if edge.orientation() == ogeom_topo::Orientation::Reversed {
@@ -15275,7 +15284,7 @@ fn assemble_result(
         if !shut {
             // Env-gated forensics: the open shell's unshared edges, the
             // question every failure here starts from.
-            if *ARRANGE_DEBUG {
+            if diag::enabled(Channel::Arrange) {
                 use ogeom_geom::Curve3d as _;
                 for edge in ogeom_topo::explore_unique(model, shell, ShapeType::Edge)? {
                     let users = ogeom_topo::explore(model, shell, Filter::OfType(ShapeType::Face))?
@@ -15304,7 +15313,8 @@ fn assemble_result(
                     {
                         let a = g.point_at(range.0, tol)?;
                         let b = g.point_at(range.1, tol)?;
-                        eprintln!(
+                        ogeom_core::diag!(
+                            Channel::Arrange,
                             "  open edge uses={occurrences} faces={users} {:?} range={range:?}: {a:?} -> {b:?}",
                             core::mem::discriminant(g)
                         );
@@ -15336,7 +15346,8 @@ fn assemble_result(
                             if same {
                                 let om = og.point_at(f64::midpoint(orange.0, orange.1), tol)?;
                                 let m = g.point_at(f64::midpoint(range.0, range.1), tol)?;
-                                eprintln!(
+                                ogeom_core::diag!(
+                                    Channel::Arrange,
                                     "    twin {:?} range={orange:?} mid gap {:.2e} tol {:.2e} vs {:.2e}",
                                     core::mem::discriminant(og),
                                     om.distance(m),
@@ -15358,7 +15369,8 @@ fn assemble_result(
                                 && let Some(sg) = model.geometry().surface(fd.surface)
                             {
                                 let bound = shape_bounds(model, &f, tol)?;
-                                eprintln!(
+                                ogeom_core::diag!(
+                                    Channel::Arrange,
                                     "    used by face on {:?} bound {:?}",
                                     core::mem::discriminant(sg),
                                     bound
@@ -15368,7 +15380,7 @@ fn assemble_result(
                     }
                 }
             }
-            if *ARRANGE_DEBUG {
+            if diag::enabled(Channel::Arrange) {
                 use ogeom_geom::Curve3d as _;
                 for f in ogeom_topo::explore(model, shell, Filter::OfType(ShapeType::Face))? {
                     let Some(ogeom_topo::NodeData::Face(fd)) = model.node(&f).map(|n| n.data())
@@ -15379,7 +15391,8 @@ fn assemble_result(
                         continue;
                     };
                     let edges = ogeom_topo::explore_unique(model, &f, ShapeType::Edge)?;
-                    eprintln!(
+                    ogeom_core::diag!(
+                        Channel::Arrange,
                         "  face {:?} with {} edges",
                         core::mem::discriminant(sg),
                         edges.len()
@@ -15393,7 +15406,8 @@ fn assemble_result(
                             {
                                 let a = g.point_at(range.0, tol)?;
                                 let b = g.point_at(range.1, tol)?;
-                                eprintln!(
+                                ogeom_core::diag!(
+                                    Channel::Arrange,
                                     "    sphere edge {:?} ({:.4},{:.4},{:.4}) -> ({:.4},{:.4},{:.4})",
                                     core::mem::discriminant(g),
                                     a.x,

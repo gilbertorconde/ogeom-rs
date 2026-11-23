@@ -18,6 +18,12 @@
 //! [`native::write()`], because "write this shape" means something different for
 //! each and a name that did not say which would be the wrong kind of convenience.
 
+// Debug output goes through `ogeom_core::diag`, never to stdout or stderr.
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stderr, clippy::print_stdout, clippy::dbg_macro)
+)]
+
 pub(crate) mod bodies;
 pub mod brep;
 pub mod cloud;

@@ -74,6 +74,7 @@
 
 use crate::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_algo::{Built, History, make_edge_between, make_solid, make_vertex, sew};
+use ogeom_core::diag::{self, Channel};
 use ogeom_core::ogeom_err;
 use ogeom_core::{FastMap, FastSet};
 use ogeom_geom::Curve3d as _;
@@ -1351,7 +1352,7 @@ fn rebuild_interrupted(
                 )?),
             ));
         }
-        if std::env::var_os("OGEOM_DEBUG_DEFEATURE").is_some() {
+        if diag::enabled(Channel::Defeature) {
             let point = |v: &Shape| {
                 model
                     .node(v)
@@ -1360,7 +1361,8 @@ fn rebuild_interrupted(
             };
             for (edge, spliced) in &ring {
                 let (a, b) = edge_ends(model, spliced.as_ref().unwrap_or(edge))?;
-                eprintln!(
+                ogeom_core::diag!(
+                    Channel::Defeature,
                     "DEFEATURE wire edge {} {} {:?} .. {:?}",
                     edge.node().index(),
                     if spliced.is_none() { "RIM" } else { "kept" },
@@ -1635,21 +1637,27 @@ fn bridge_gap(
                 // where the rim stood.
                 return Ok(chain);
             }
-            if std::env::var_os("OGEOM_DEBUG_DEFEATURE").is_some() {
+            if diag::enabled(Channel::Defeature) {
                 let point = |v: &Shape| {
                     model
                         .node(v)
                         .and_then(|n| n.data().as_vertex())
                         .map(|d| d.point)
                 };
-                eprintln!(
+                ogeom_core::diag!(
+                    Channel::Defeature,
                     "DEFEATURE bridge stuck at {:?} heading for {:?}",
                     point(from),
                     point(to)
                 );
                 for edge in pool.iter() {
                     let (a, b) = edge_ends(model, edge)?;
-                    eprintln!("  border {:?} .. {:?}", point(&a), point(&b));
+                    ogeom_core::diag!(
+                        Channel::Defeature,
+                        "  border {:?} .. {:?}",
+                        point(&a),
+                        point(&b)
+                    );
                 }
             }
             ogeom_bail!(

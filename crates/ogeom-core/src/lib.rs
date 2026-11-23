@@ -20,9 +20,16 @@
 //! See `docs/DATA_MODEL.md` for the normative invariants. Section numbers in this
 //! crate's documentation refer to it.
 
+// Debug output goes through `diag`, never to stdout or stderr.
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stderr, clippy::print_stdout, clippy::dbg_macro)
+)]
+
 pub mod arena;
 pub mod clock;
 pub mod collections;
+pub mod diag;
 pub mod error;
 pub mod id;
 pub mod parallel;

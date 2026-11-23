@@ -1,6 +1,12 @@
 //! Blending: constant- and variable-radius edge fillets, vertex blends, chamfers,
 //! and their 2D counterparts.
 
+// Debug output goes through `ogeom_core::diag`, never to stdout or stderr.
+#![cfg_attr(
+    not(test),
+    warn(clippy::print_stderr, clippy::print_stdout, clippy::dbg_macro)
+)]
+
 pub mod analyse;
 mod asym;
 mod asym_law;
