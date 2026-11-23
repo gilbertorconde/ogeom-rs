@@ -4857,6 +4857,55 @@ radius 3 reaching the edge round.
   off as with every behaviour on. The rolled stairs with every behaviour off
   are the default's spheres and tori, at the exact volume.
 
+### Amendment: readings under overflow for every round call (#1236)
+
+Amendment "overflow options on the other round calls" gave the rolling
+corner, the variable radius and the round of two distances their option
+set, but their readings still probed with every behaviour on:
+`RoundsOverflow` takes the setback corner only, and `RoundLaw` and
+`RoundDistances` probe the plain calls. An app stopping a size drag on a
+request with some behaviours off was given a size its request refuses.
+
+**The survey.** The documentation surveyed there [P24, P25, P26, P30,
+P52] keeps the overflow setting and the corner type as two settings of
+one feature, and does not describe a size limit read apart from the
+feature's settings. Amendment "largest-size readings confirmed by the
+build" makes a reading the boundary of the call the request makes, with
+the same options, so a limit is read under the request's own settings.
+
+**Rule.** Every round call that takes `Overflow` has a sizing that probes
+it under the request's options, as amendment "largest-size readings
+under overflow options" did for the setback round and the bevels:
+
+- `RoundsCornerOverflow { edges, corner, overflow }` probes
+  `fillet_edges_corner_overflow`. With `FilletCorner::Setback` it is
+  `RoundsOverflow`.
+- `RoundLawOverflow { chain, law, size, overflow }` probes
+  `fillet_edges_variable_overflow`, the law freed as `RoundLaw` frees
+  it: on a closed chain a point at the start and one at the end move as
+  one, so a law holding one radius stays level and takes every behaviour.
+- `RoundDistancesOverflow { .., overflow }` probes
+  `fillet_edge_distances_overflow`.
+
+These are new variants: a field added to `Rounds`, `RoundLaw` or
+`RoundDistances` would break every caller that builds them. With
+`Overflow::default()` each probes the same build as its plain sizing, so
+it reads the same size. The options decide what is built where a
+contact reaches other geometry, not where it does, so the seat is the
+plain sizing's. `fillet_edge_distances_variable` takes no options, so
+`DistanceLaws` has no form under them and reads with every behaviour on.
+
+**Oracle** (`tests/limit_overflow.rs`). Each reading builds under its
+options, and a `LIMIT_TOLERANCE` and 1% above it are refused. With
+`Overflow::default()` each `BlendLimit` equals its plain sizing's, probe
+for probe.
+
+| Case | Default | Option off | Bound |
+|---|---|---|---|
+| block and boss of amendment "largest-size readings under overflow options", foot round, `Rolling`, blend into round off | 8.61951 (refused off) | 1.009989 | 1.0100 by bisecting the setback call; seat 1.0 |
+| same, `Linear { r, r }` with the start freed (the end with it) | 8.61938 (refused off) | 1.009973 | 1.0100, as above |
+| boss of radius 5 with a pocket 0.5 square, far wall 4.8 from the axis; rim round of `k` and `0.7 k`, trim through off | 4.0, the bound | 0.193481, refused at 0.193497 | `5 - hypot(4.8, 0.25)` = 0.193494, where the top contact reaches the pocket's far corner |
+
 ### Amendment: a lone arc in one rolling request (#1216)
 
 The half cylinder lying on a plate built its corner in two calls (the end

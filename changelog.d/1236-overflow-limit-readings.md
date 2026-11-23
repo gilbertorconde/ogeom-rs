@@ -1,0 +1,5 @@
+- **Added: largest-size readings under `Overflow` for rolling corners, radius laws and two distances** (#1236).
+  - `BlendSizing::RoundsCornerOverflow { edges, corner, overflow }` probes `fillet_edges_corner_overflow`, so a `Rolling` request reads under its options.
+  - `BlendSizing::RoundLawOverflow { chain, law, size, overflow }` probes `fillet_edges_variable_overflow`. A law holding one radius on a boss's foot with blend into round off now reads about 1.01, where the build stops.
+  - `BlendSizing::RoundDistancesOverflow { .., overflow }` probes `fillet_edge_distances_overflow`.
+  - With `Overflow::default()` each reads as `Rounds`, `RoundLaw` and `RoundDistances` do. The rule is in ADR 0001, amendment "readings under overflow for every round call".

@@ -64,8 +64,8 @@ pub struct BlendLimit {
 pub enum BlendSizing<'a> {
     /// [`fillet_edges_corner`](crate::fillet_edges_corner) on `edges`
     /// closed as `corner` says; the size is the radius. Every behaviour of
-    /// [`Overflow`] is on; [`BlendSizing::RoundsOverflow`] chooses among
-    /// them.
+    /// [`Overflow`] is on; [`BlendSizing::RoundsCornerOverflow`] chooses
+    /// among them.
     Rounds {
         /// The edges rounded together.
         edges: &'a [Shape],
@@ -75,7 +75,8 @@ pub enum BlendSizing<'a> {
     /// [`fillet_edge_distances`](crate::fillet_edge_distances) on `edge`,
     /// meeting `face` `size · on_face` from the edge and the other face
     /// `size · on_other` from it, its section `profile`; the size is the
-    /// common scale.
+    /// common scale. Every behaviour of [`Overflow`] is on;
+    /// [`BlendSizing::RoundDistancesOverflow`] chooses among them.
     RoundDistances {
         /// The edge rounded.
         edge: &'a Shape,
@@ -137,7 +138,8 @@ pub enum BlendSizing<'a> {
     },
     /// [`fillet_edges_variable`](crate::fillet_edges_variable) on `chain`
     /// under `law`; the size is the law's value `size` frees, the rest of
-    /// the law held as given.
+    /// the law held as given. Every behaviour of [`Overflow`] is on;
+    /// [`BlendSizing::RoundLawOverflow`] chooses among them.
     RoundLaw {
         /// The chain rounded, as the call takes it.
         chain: &'a [Shape],
@@ -162,7 +164,8 @@ pub enum BlendSizing<'a> {
     /// [`fillet_edge_distances_variable`](crate::fillet_edge_distances_variable)
     /// on `edge`, meeting `face` at the distances `on_face` gives and the
     /// other face at those `on_other` gives, its section `profile`; the size
-    /// is the value `size` frees.
+    /// is the value `size` frees. That call takes no [`Overflow`], so this
+    /// reading has no form under options.
     DistanceLaws {
         /// The edge rounded.
         edge: &'a Shape,
@@ -176,6 +179,54 @@ pub enum BlendSizing<'a> {
         profile: RoundProfile,
         /// Which value of the laws the size is.
         size: DistanceLawSize,
+    },
+    /// [`fillet_edges_corner_overflow`](crate::fillet_edges_corner_overflow)
+    /// on `edges` closed as `corner` says, a round reaching geometry other
+    /// than its own two faces handled as `overflow` says; the size is the
+    /// radius. The seat is [`BlendSizing::Rounds`]'. With
+    /// [`Overflow::default`] this reads as [`BlendSizing::Rounds`], and with
+    /// [`FilletCorner::Setback`] as [`BlendSizing::RoundsOverflow`].
+    RoundsCornerOverflow {
+        /// The edges rounded together.
+        edges: &'a [Shape],
+        /// How a vertex where rounds meet is closed.
+        corner: FilletCorner,
+        /// What a round reaching other geometry does.
+        overflow: Overflow,
+    },
+    /// [`fillet_edge_distances_overflow`](crate::fillet_edge_distances_overflow)
+    /// on `edge`, as [`BlendSizing::RoundDistances`] scales its distances,
+    /// a round reaching geometry other than its own two faces handled as
+    /// `overflow` says. The seat is [`BlendSizing::RoundDistances`]'. With
+    /// [`Overflow::default`] this reads as [`BlendSizing::RoundDistances`].
+    RoundDistancesOverflow {
+        /// The edge rounded.
+        edge: &'a Shape,
+        /// The face the first distance runs along.
+        face: &'a Shape,
+        /// The distance along `face` at a scale of one.
+        on_face: f64,
+        /// The distance along the other face at a scale of one.
+        on_other: f64,
+        /// The section between the contacts.
+        profile: RoundProfile,
+        /// What a round reaching other geometry does.
+        overflow: Overflow,
+    },
+    /// [`fillet_edges_variable_overflow`](crate::fillet_edges_variable_overflow)
+    /// on `chain` under `law`, as [`BlendSizing::RoundLaw`] frees its value,
+    /// a round reaching geometry other than its own two faces handled as
+    /// `overflow` says. The seat is [`BlendSizing::RoundLaw`]'. With
+    /// [`Overflow::default`] this reads as [`BlendSizing::RoundLaw`].
+    RoundLawOverflow {
+        /// The chain rounded, as the call takes it.
+        chain: &'a [Shape],
+        /// The law, its freed value as given ignored.
+        law: &'a RadiusLaw,
+        /// Which value of the law the size is.
+        size: LawSize,
+        /// What a round reaching other geometry does.
+        overflow: Overflow,
     },
 }
 
@@ -239,7 +290,8 @@ pub enum DistanceLawSize {
 /// [`LIMIT_SAMPLES`] builds of the request; one bisected from a factor of
 /// two costs about 14 more.
 ///
-/// Under a law ([`BlendSizing::RoundLaw`], [`BlendSizing::RoundLinear`],
+/// Under a law ([`BlendSizing::RoundLaw`],
+/// [`BlendSizing::RoundLawOverflow`], [`BlendSizing::RoundLinear`],
 /// [`BlendSizing::DistanceLaws`]) the size is one value of the law, or the
 /// scale of all of them, and each probe asks the call under the whole law
 /// so set, over the whole chain. The seat is read at both ends of the edge
@@ -310,11 +362,14 @@ fn read_seat<R>(
     }
     let (seat, floor) = match *sizing {
         BlendSizing::RoundLaw { .. }
+        | BlendSizing::RoundLawOverflow { .. }
         | BlendSizing::RoundLinear { .. }
         | BlendSizing::DistanceLaws { .. } => {
             return law_seat_reading(model, solid, sizing, up_to, tol, then);
         }
-        BlendSizing::Rounds { edges, .. } | BlendSizing::RoundsOverflow { edges, .. } => {
+        BlendSizing::Rounds { edges, .. }
+        | BlendSizing::RoundsOverflow { edges, .. }
+        | BlendSizing::RoundsCornerOverflow { edges, .. } => {
             if edges.is_empty() {
                 ogeom_bail!(Construction, "a request of no edges has no largest radius");
             }
@@ -324,6 +379,13 @@ fn read_seat<R>(
             )
         }
         BlendSizing::RoundDistances {
+            edge,
+            face,
+            on_face,
+            on_other,
+            ..
+        }
+        | BlendSizing::RoundDistancesOverflow {
             edge,
             face,
             on_face,
@@ -521,6 +583,20 @@ fn probe(
         BlendSizing::Rounds { edges, corner } => {
             crate::fillet_edges_corner(&mut scratch, solid, edges, size, corner, tol).is_ok()
         }
+        BlendSizing::RoundsCornerOverflow {
+            edges,
+            corner,
+            overflow,
+        } => crate::fillet_edges_corner_overflow(
+            &mut scratch,
+            solid,
+            edges,
+            size,
+            corner,
+            overflow,
+            tol,
+        )
+        .is_ok(),
         BlendSizing::RoundDistances {
             edge,
             face,
@@ -535,6 +611,25 @@ fn probe(
             size * on_face,
             size * on_other,
             profile,
+            tol,
+        )
+        .is_ok(),
+        BlendSizing::RoundDistancesOverflow {
+            edge,
+            face,
+            on_face,
+            on_other,
+            profile,
+            overflow,
+        } => crate::fillet_edge_distances_overflow(
+            &mut scratch,
+            solid,
+            edge,
+            face,
+            size * on_face,
+            size * on_other,
+            profile,
+            overflow,
             tol,
         )
         .is_ok(),
@@ -559,6 +654,7 @@ fn probe(
         }
         // Read by `law_seat_reading`, which probes them itself.
         BlendSizing::RoundLaw { .. }
+        | BlendSizing::RoundLawOverflow { .. }
         | BlendSizing::RoundLinear { .. }
         | BlendSizing::DistanceLaws { .. } => false,
     }
@@ -795,27 +891,15 @@ fn law_seat_reading<R>(
     let conf = tol.confusion();
     match *sizing {
         BlendSizing::RoundLaw { chain, law, size } => {
-            if chain.is_empty() {
-                ogeom_bail!(
-                    Construction,
-                    "a variable radius over no edges has no largest size"
-                );
-            }
-            let closed = chain_closes(model, chain)?;
-            let free = Some(match size {
-                LawSize::At(at) => free_point(law, at)?,
-                LawSize::Scale => Free::Scale,
-            });
-            let at = |v: f64| law_at(law, free, v, closed, tol);
-            Profile::new(&at(up_to), closed, tol)?;
-            let laws = [(law, free)];
-            let seat = round_law_seat(model, solid, chain, closed, &laws, &at, up_to, tol);
-            let builds = |v: f64| {
-                let mut scratch = model.clone();
-                crate::fillet_edges_variable(&mut scratch, solid, chain, &at(v), tol).is_ok()
-            };
-            then(seat, law_floor(&laws, conf), &mut counted(builds))
+            let overflow = Overflow::default();
+            round_law_reading(model, solid, chain, law, size, overflow, up_to, tol, then)
         }
+        BlendSizing::RoundLawOverflow {
+            chain,
+            law,
+            size,
+            overflow,
+        } => round_law_reading(model, solid, chain, law, size, overflow, up_to, tol, then),
         BlendSizing::RoundLinear {
             edge,
             start,
@@ -907,6 +991,47 @@ fn law_seat_reading<R>(
         }
         _ => ogeom_bail!(Construction, "not a request under a law"),
     }
+}
+
+/// [`law_seat_reading`] for [`BlendSizing::RoundLaw`] and
+/// [`BlendSizing::RoundLawOverflow`]: each probe builds under `overflow`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the request's parts and law_seat_reading's own"
+)]
+fn round_law_reading<R>(
+    model: &Model,
+    solid: &Shape,
+    chain: &[Shape],
+    law: &RadiusLaw,
+    size: LawSize,
+    overflow: Overflow,
+    up_to: f64,
+    tol: Tolerances,
+    then: impl FnOnce(OgeomResult<Option<f64>>, f64, Builds<'_>) -> OgeomResult<R>,
+) -> OgeomResult<R> {
+    let conf = tol.confusion();
+    if chain.is_empty() {
+        ogeom_bail!(
+            Construction,
+            "a variable radius over no edges has no largest size"
+        );
+    }
+    let closed = chain_closes(model, chain)?;
+    let free = Some(match size {
+        LawSize::At(at) => free_point(law, at)?,
+        LawSize::Scale => Free::Scale,
+    });
+    let at = |v: f64| law_at(law, free, v, closed, tol);
+    Profile::new(&at(up_to), closed, tol)?;
+    let laws = [(law, free)];
+    let seat = round_law_seat(model, solid, chain, closed, &laws, &at, up_to, tol);
+    let builds = |v: f64| {
+        let mut scratch = model.clone();
+        crate::fillet_edges_variable_overflow(&mut scratch, solid, chain, &at(v), overflow, tol)
+            .is_ok()
+    };
+    then(seat, law_floor(&laws, conf), &mut counted(builds))
 }
 
 /// A round's seat under a law: on one edge its contacts' reach at each
@@ -1211,6 +1336,65 @@ mod tests {
             overflow: Overflow::default(),
         };
         assert!(seat_agrees(&m, &s, &sizing, 40.0).is_some());
+    }
+
+    #[test]
+    fn seats_under_overflow_are_the_plain_seats_without_a_build() {
+        let (m, s, edge, top, _) = plate();
+        let edges = [edge.clone()];
+        let law = RadiusLaw::Linear {
+            start: 1.0,
+            end: 2.0,
+        };
+        let off = Overflow::none();
+        let pairs = [
+            (
+                BlendSizing::Rounds {
+                    edges: &edges,
+                    corner: FilletCorner::Rolling,
+                },
+                BlendSizing::RoundsCornerOverflow {
+                    edges: &edges,
+                    corner: FilletCorner::Rolling,
+                    overflow: off,
+                },
+            ),
+            (
+                BlendSizing::RoundDistances {
+                    edge: &edge,
+                    face: &top,
+                    on_face: 1.0,
+                    on_other: 0.5,
+                    profile: RoundProfile::Elliptical,
+                },
+                BlendSizing::RoundDistancesOverflow {
+                    edge: &edge,
+                    face: &top,
+                    on_face: 1.0,
+                    on_other: 0.5,
+                    profile: RoundProfile::Elliptical,
+                    overflow: off,
+                },
+            ),
+            (
+                BlendSizing::RoundLaw {
+                    chain: &edges,
+                    law: &law,
+                    size: LawSize::Scale,
+                },
+                BlendSizing::RoundLawOverflow {
+                    chain: &edges,
+                    law: &law,
+                    size: LawSize::Scale,
+                    overflow: off,
+                },
+            ),
+        ];
+        for (plain, under) in &pairs {
+            let seat = seat_agrees(&m, &s, under, 40.0);
+            assert!(seat.is_some());
+            assert_eq!(seat, blend_seat(&m, &s, plain, 40.0, T).unwrap());
+        }
     }
 
     #[test]

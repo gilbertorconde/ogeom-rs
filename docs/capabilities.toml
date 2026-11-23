@@ -2036,7 +2036,11 @@ bracketing the boundary and bisected to a relative 1e-4, at most 64 \
 builds, so the size builds and one 1e-4 above it is refused. blend_limit \
 answers the same with the options of the call (the rolling corner, the \
 asymmetric round's section, the chamfer corner, several bevels at once \
-scaled by one measure, the request's Overflow options) and reports how it was \
+scaled by one measure, the request's Overflow options: under them \
+fillet_edges_overflow, fillet_edges_corner_overflow with either corner, \
+fillet_edge_distances_overflow and, for a radius law, \
+fillet_edges_variable_overflow; fillet_edge_distances_variable takes no \
+options and is read with every behaviour on) and reports how it was \
 confirmed: the seat, the refused size, and a size found building again \
 above a refusal, the answer then being where the sizes that build first \
 break. Not proven: that every size below the answer builds, or that none \
