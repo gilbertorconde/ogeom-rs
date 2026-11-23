@@ -1011,6 +1011,19 @@ tests = [
 ]
 
 [[capability]]
+id = "bool.fuse-all"
+title = "The union of many solids in one call: solids that meet joined, groups apart kept as separate solids, faces of different solids on one carrier merged, one history over all"
+crate = "ogeom-bool"
+verdict = "covered"
+symbols = ["ogeom_bool::fuse_all", "ogeom_algo::History::joined", "ogeom_algo::History::only_for"]
+tests = [
+    "crates/ogeom/tests/fuse_all.rs",
+    "crates/ogeom/tests/fuse_all.rs::fifty_cubes_in_a_row_fuse_into_one_box_of_six_faces",
+    "crates/ogeom/tests/fuse_all.rs::an_overlapping_grid_gives_the_slab_whatever_the_order",
+    "crates/ogeom/tests/fuse_all.rs::a_row_of_overlapping_drums_has_the_inclusion_exclusion_volume",
+]
+
+[[capability]]
 id = "bool.cells"
 title = "The cells builder: arbitrary take/remove over the fused arrangement"
 crate = "ogeom-bool"
