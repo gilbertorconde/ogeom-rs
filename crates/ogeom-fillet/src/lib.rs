@@ -82,4 +82,4 @@ pub use march::{
 pub use setback::{Setbacks, fillet_edges_cornered, round_vertex_setback};
 pub use sharp::round_vertex_setback_sharp;
 pub use sheet::{fillet_faces, fillet_sheet_edges};
-pub use tangent_chain::{TANGENT_CHAIN_ANGLE, tangent_chain};
+pub use tangent_chain::{ChainRules, TANGENT_CHAIN_ANGLE, tangent_chain, tangent_chain_with};

@@ -113,7 +113,7 @@ pub mod doc {
 /// Fillets, chamfers and vertex blends.
 pub mod fillet {
     pub use ogeom_fillet::{
-        Blend, BlendContact, BlendLimit, BlendRefusal, BlendSizing, BlendStop, Chamfer,
+        Blend, BlendContact, BlendLimit, BlendRefusal, BlendSizing, BlendStop, ChainRules, Chamfer,
         ChamferCorner, DistanceLawSize, End, FillBoundary, FillSide, Filled, FilletCorner,
         LIMIT_PROBES, LIMIT_SAMPLES, LIMIT_TOLERANCE, LawSize, LawStation, MarchedBlend, Overflow,
         RadiusLaw, RoundProfile, Setbacks, Sides, TANGENT_CHAIN_ANGLE, analyse, analyse_blend,
@@ -133,7 +133,7 @@ pub mod fillet {
         largest_fillet_radius_overflow, largest_law_distances, largest_law_radius,
         largest_law_scale, make_blend_curve, make_blend_surface, make_filling_n, march,
         march_blend, march_blend_seeded, march_blend_sided, round_vertex, round_vertex_setback,
-        round_vertex_setback_sharp, sheet, tangent_chain,
+        round_vertex_setback_sharp, sheet, tangent_chain, tangent_chain_with,
     };
 }
 

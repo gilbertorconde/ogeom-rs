@@ -2568,6 +2568,49 @@ far = 40) that is `4.977542`, against the report's `4.292037`.
 - [P51] Vendor help pages on tangent propagation and tangent chain
   selection.
 
+### Amendment: tangent chains through fading creases (#1241)
+
+A downstream request: picking one arc of the seam where two equal drums
+cross at right angles should be able to take the whole seam. The seam is
+two ellipses whose four arcs meet at the two points where the drums
+touch. There the arcs of different ellipses meet square, so the rule
+above takes one ellipse and stops. Each arc's crease fades there: its two
+faces turn tangent to each other.
+
+**What documentation says.** The surveyed help pages [P53] define the
+tangent chain by the edges alone: the picked edge and the edges that
+continue tangent from it, extending to faces tangent to the picked one.
+None defines a rule for a vertex where the creases fade but the edges
+meet at an angle, and none takes edges meeting back to back (a cusp).
+The rule is ours.
+
+**Rule.**
+
+- `tangent_chain` is unchanged: it runs on only where edges are tangent.
+- `tangent_chain_with` takes `ChainRules { angle, through_fading,
+  through_cusps }`. With `through_fading` the walk also runs on through a
+  vertex where both edges' creases fade: at the vertex each edge's two
+  faces have outward normals within `angle` of each other, whatever the
+  angle between the edges. An edge whose faces agree at every interior
+  sample (a seam, a smooth edge), or that has other than two faces, has
+  no crease and never fades.
+- With `through_cusps` the walk also runs on where two edges leave the
+  vertex the same way, within `angle`.
+- As above, the rules choose edges only. The engine closes every vertex
+  that is not tangent as a corner.
+
+**Oracle.** The drums of radius 5 about the x and y axes: the seam is
+every edge on both `y² + z² = 25` and `x² + z² = 25`. One arc in the
+plane `y = x` takes that ellipse by default and the whole seam with
+`through_fading`. At `(0, 0, ±5)` the drums' normals `(0, y, z)/5` and
+`(x, 0, z)/5` agree and the two ellipses' arcs meet at π/2. A box edge
+takes no other edge under every rule. A prism whose profile has a cusp
+takes the cusp's second edge only with `through_cusps`.
+
+- [P53] Vendor help pages on the tangent chain, tangent propagation and
+  rule-based chain selection (systems C to F of amendment "tangent
+  chains stop at a kink").
+
 ### Amendment: rolling corners on curved faces (#1145)
 
 Amendment "rolling corners" refused every vertex where rounds meet that
