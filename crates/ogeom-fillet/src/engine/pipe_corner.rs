@@ -96,7 +96,7 @@ pub(crate) fn pipe(
     if crossings[1].walls[slot_of(crossings[1])] != wall {
         return Ok(None);
     }
-    let host = |k: usize| crate::engine::rolled::host(model, &faces.faces[k], tol);
+    let host = |k: usize| crate::engine::flat_faces::host(model, &faces.faces[k], tol);
     let (Some(cap_host), Some(wall_host)) = (host(cap)?, host(wall)?) else {
         return Ok(None);
     };
@@ -378,11 +378,11 @@ fn end(
     let other = 1 - slot;
     let neighbour = crossing.pair[other];
     let wall = crossing.walls[other];
-    let Some(wall_host) = crate::engine::rolled::host(model, &faces.faces[wall], tol)? else {
+    let Some(wall_host) = crate::engine::flat_faces::host(model, &faces.faces[wall], tol)? else {
         return Ok(None);
     };
     let Some(link_host) =
-        crate::engine::rolled::host(model, &faces.faces[crossing.walls[slot]], tol)?
+        crate::engine::flat_faces::host(model, &faces.faces[crossing.walls[slot]], tol)?
     else {
         return Ok(None);
     };

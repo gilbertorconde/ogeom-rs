@@ -270,7 +270,7 @@ fn ruled_beside(
 ) -> OgeomResult<bool> {
     let along = (b - a) / (b - a).magnitude();
     for f in faces {
-        let ruled = match super::rolled::host(model, f, tol)?.map(|(s, _)| s) {
+        let ruled = match super::flat_faces::host(model, f, tol)?.map(|(s, _)| s) {
             Some(SurfaceGeometry::Plane(s)) => {
                 s.plane().normal().vector().dot(along).abs() <= tol.angular()
             }
@@ -440,7 +440,7 @@ fn lone_bands_first(
             ));
         };
         // A curved cap's corner is the foot's pipe too.
-        let Some((cap_surface, _)) = super::rolled::host(model, cap, tol)? else {
+        let Some((cap_surface, _)) = super::flat_faces::host(model, cap, tol)? else {
             return Err(named(
                 p,
                 "the face across from the lone round has no surface",

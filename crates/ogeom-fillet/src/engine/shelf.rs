@@ -143,11 +143,11 @@ pub(crate) fn run(
             if radius * bend >= 1.0 {
                 ogeom_bail!(Construction, "a carried shelf's sections may cross");
             }
-            let Some(first) = crate::engine::rolled::host(model, &seat.faces[1 - narrow], tol)?
+            let Some(first) = crate::engine::flat_faces::host(model, &seat.faces[1 - narrow], tol)?
             else {
                 continue;
             };
-            let Some(second) = crate::engine::rolled::host(model, cap, tol)? else {
+            let Some(second) = crate::engine::flat_faces::host(model, cap, tol)? else {
                 continue;
             };
             let parameter = |y| range.0 + (range.1 - range.0) * (y - y0) / (y1 - y0);
@@ -174,7 +174,8 @@ pub(crate) fn run(
                 FaceTrim::of(model, &run.faces[0], detail, tol)?,
                 FaceTrim::of(model, &run.faces[1], detail, tol)?,
             ];
-            let Some((beyond_surface, _)) = crate::engine::rolled::host(model, &run.beyond, tol)?
+            let Some((beyond_surface, _)) =
+                crate::engine::flat_faces::host(model, &run.beyond, tol)?
             else {
                 continue;
             };

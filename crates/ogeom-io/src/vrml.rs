@@ -18,7 +18,8 @@ use ogeom_core::{OgeomResult, ogeom_bail};
 use ogeom_math::{Point, Vector};
 use ogeom_topo::Triangulation;
 
-use crate::mesh_formats::{ImportedMesh, Placement, normals_from_triangles};
+use crate::mesh_formats::{ImportedMesh, Placement};
+use crate::mesh_read::normals_from_triangles;
 
 /// Read the meshes a VRML file draws.
 ///
@@ -654,7 +655,7 @@ fn geometry_mesh(geometry: &Node) -> OgeomResult<Option<Triangulation>> {
         return Ok(None);
     }
     let normals = normals_from_triangles(&positions, &triangles);
-    Ok(Some(crate::mesh_formats::imported(
+    Ok(Some(crate::mesh_read::imported(
         positions, normals, triangles, true,
     )))
 }
@@ -963,7 +964,7 @@ fn walk_one(node: &Rc<Node>, state: &mut State, out: &mut Vec<ImportedMesh>) -> 
                 .collect();
             if !triangles.is_empty() {
                 let normals = normals_from_triangles(&kept, &triangles);
-                let mesh = crate::mesh_formats::imported(kept, normals, triangles, true);
+                let mesh = crate::mesh_read::imported(kept, normals, triangles, true);
                 out.push(ImportedMesh {
                     mesh: placed(mesh, state.placement),
                     colour: state.colour,
@@ -999,7 +1000,7 @@ fn walk_one(node: &Rc<Node>, state: &mut State, out: &mut Vec<ImportedMesh>) -> 
             let normals = normals_from_triangles(&positions, &triangles);
             out.push(ImportedMesh {
                 mesh: placed(
-                    crate::mesh_formats::imported(positions, normals, triangles, true),
+                    crate::mesh_read::imported(positions, normals, triangles, true),
                     state.placement,
                 ),
                 colour: state.colour,

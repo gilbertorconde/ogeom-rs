@@ -22,7 +22,7 @@ use ogeom_topo::Triangulation;
 use std::fmt::Write as _;
 
 use crate::image::{Image, Wrap};
-use crate::mesh_formats::MeshColours;
+use crate::mesh_read::MeshColours;
 use crate::xml;
 
 /// One mesh in the package, with the name and colours the object carries.
@@ -2019,7 +2019,7 @@ impl Flat {
             })
             .collect();
         Welded {
-            mesh: crate::mesh_formats::imported(kept, normals, triangles, true),
+            mesh: crate::mesh_read::imported(kept, normals, triangles, true),
             corners,
             volumes,
         }

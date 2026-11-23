@@ -28,6 +28,7 @@ pub(crate) mod inflate;
 pub(crate) mod inversion;
 pub mod json;
 pub mod mesh_formats;
+mod mesh_read;
 pub mod native;
 mod obj;
 pub(crate) mod pcurves;

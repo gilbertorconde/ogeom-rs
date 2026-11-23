@@ -2035,11 +2035,11 @@ fn carried_contacts(
         radius,
         convex,
     } = station;
-    if crate::engine::rolled::flat(model, face, tol)?.is_none() {
+    if crate::engine::flat_faces::flat(model, face, tol)?.is_none() {
         return Ok(None);
     }
     // The first side of the face the step from the edge crosses.
-    let (e1, e2) = crate::engine::rolled::basis(n_face);
+    let (e1, e2) = crate::engine::flat_faces::basis(n_face);
     let flat2 = |v: Vector| (v.dot(e1), v.dot(e2));
     let (dx, dy) = flat2(step);
     let mut first: Option<(f64, Shape)> = None;
@@ -2090,7 +2090,7 @@ fn carried_contacts(
     if !convex {
         return Ok(Some(carried));
     }
-    let Some(flat) = crate::engine::rolled::flat(model, across, tol)? else {
+    let Some(flat) = crate::engine::flat_faces::flat(model, across, tol)? else {
         return Ok(None);
     };
     // The ball's arc in the plane square to the edge, from the run-off
@@ -2126,7 +2126,7 @@ fn carried_contacts(
         return Ok(None);
     };
     let c = centre + (n_face * theta.cos() + towards * theta.sin()) * radius;
-    if crate::engine::rolled::face_distance(&flat, c) > conf {
+    if crate::engine::flat_faces::face_distance(&flat, c) > conf {
         return Ok(None);
     }
     carried.push(contact(across, c));
