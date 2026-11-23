@@ -3727,9 +3727,11 @@ point of `a`'s region as the rule.
 - **A foot that does not move.** An edge square to the spine (a square
   pocket's side) holds every foot of its piece on one point, and the
   band's section where the ball leaves the band lies in that side's own
-  plane. The tool would then hold an edge lying in a face of the solid,
-  which the boolean does not resolve. That is not built; the request goes
-  on to trim through, as before.
+  plane. The boolean resolves that tool (#1296), and the cut matches the
+  reference (90.790969765 against 90.790971893, bound 1.9e-5), but the
+  piece fitted through the balls on that one point meets the band and the
+  jump's sphere 8.6e-5 rad from tangent, past the 1e-5 rad a fitted piece
+  may. That is not built; the request goes on to trim through, as before.
 
 **What is built.** The parts above, with an edge onto another that the
 foot jumps to as a further seat change. The tool is the region between the

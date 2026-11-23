@@ -1147,11 +1147,10 @@ fn two_runs_cut_away_the_reference() {
 
 /// A square pocket beside the edge: its contact crosses the pocket's side
 /// rims square to the edge, the ball's foot staying on one point of each
-/// while it rests there, then jumping to the front rim. The band's section
-/// where the ball leaves the top lies in the side wall's plane, a tool edge
-/// lying in a face of the solid, which the boolean does not resolve: hold
-/// edge does not build, and the request gets trim through's solid, the
-/// same as with hold edge off.
+/// while it rests there, then jumping to the front rim. The piece fitted
+/// through the balls resting on that point meets its neighbours further
+/// from tangent than a fitted piece may: hold edge does not build, and the
+/// request gets trim through's solid, the same as with hold edge off.
 #[test]
 fn a_ball_on_two_rims_of_a_square_pocket_goes_to_trim_through() {
     let mut m = Model::new();

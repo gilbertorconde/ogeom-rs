@@ -2145,10 +2145,9 @@ fn tool(
         jumps.push(jump);
     }
     let pins: Vec<Option<Point>> = (0..last).map(|k| hold.pin(k)).collect();
-    // An edge square to the spine holds every foot on one point, and where
-    // the band meets it the band's section lies in the plane of the face
-    // past it: a tool edge lying in a face of the solid, which the boolean
-    // does not resolve. Not built.
+    // An edge square to the spine holds every foot on one point. The piece
+    // fitted through those balls' arcs meets the band and the jump's
+    // sphere further from tangent than a fitted piece may. Not built.
     if pieces
         .iter()
         .zip(&pins)

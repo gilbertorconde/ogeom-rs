@@ -28,6 +28,11 @@
 //! shared chart, and refused by name where they cannot. A tangential touch
 //! splits nothing and is carried as the contact curve it is.
 //!
+//! An edge of one operand lying in a face of the other is an on-on contact:
+//! it splits that face as a section would, and the pieces either side are
+//! classified on their own. A face's outline for those tests holds every
+//! side of its chart, a side that closes to one point (a pole) included.
+//!
 //! # Sheets
 //!
 //! A sheet (a face, a shell or a compound of those) runs the same pipeline
@@ -525,11 +530,29 @@ impl GFace {
                         );
                     }
                 }
+                lines.extend(self.pole_rows(tol).ok()?);
                 weld_outline_ends(&mut lines, self, tol);
                 bridge_outline_gaps(&mut lines);
                 Some(lines)
             })
             .as_deref()
+    }
+
+    /// Each pole's row in the chart, end to end: the stretch of the
+    /// outline a collapsed side stands for. A row across the chart's
+    /// columns (a sphere's pole) is level with a containment ray, but one
+    /// along them (a patch whose every row ends in one point) is crossed
+    /// like any other side.
+    fn pole_rows(&self, tol: Tolerances) -> OgeomResult<Vec<Vec<Point2>>> {
+        self.poles
+            .iter()
+            .map(|pole| {
+                Ok(vec![
+                    pole.pcurve.point_at(pole.prange.0, tol)?,
+                    pole.pcurve.point_at(pole.prange.1, tol)?,
+                ])
+            })
+            .collect()
     }
 }
 
@@ -6665,6 +6688,7 @@ fn fill(
                 )?);
             }
         }
+        lines.extend(face.pole_rows(tol)?);
         weld_outline_ends(&mut lines, face, tol);
         bridge_outline_gaps(&mut lines);
         Ok(lines)
