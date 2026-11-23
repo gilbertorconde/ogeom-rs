@@ -38,6 +38,7 @@ pub mod outline;
 pub mod pcurve_fit;
 pub mod pcurve_gap;
 pub mod place;
+mod planar_faces;
 pub mod pole;
 pub mod primitive;
 pub mod project_plane;
@@ -126,6 +127,7 @@ pub use pcurve_gap::{
     edge_pcurve_gap, edges_apart, pcurve_gap, state_pcurve_gaps, state_pcurve_gaps_of,
 };
 pub use place::{copied, transformed};
+pub use planar_faces::{PlanarFaces, faces_from_planar_wires};
 pub use pole::pole_crossings;
 pub use primitive::{
     make_box, make_cone, make_cylinder, make_faceted_solid, make_faceted_solid_with_holes,
