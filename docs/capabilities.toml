@@ -765,6 +765,14 @@ symbols = [
 tests = ["crates/ogeom-algo/src/classify.rs"]
 
 [[capability]]
+id = "algo.curve-hit"
+title = "Where a curve first or last meets a shape's trimmed faces, exactly, with the face named"
+crate = "ogeom-algo"
+verdict = "covered"
+symbols = ["ogeom_algo::curve_hit", "ogeom_algo::Hit", "ogeom_algo::CurveHit"]
+tests = ["crates/ogeom-algo/tests/curve_hit.rs"]
+
+[[capability]]
 id = "algo.shape-distance"
 title = "Distance, proximity and overlap between whole shapes, and self-intersection"
 crate = "ogeom-algo"
@@ -2511,6 +2519,16 @@ symbols = [
     "ogeom_offset::feature_rib", "ogeom_offset::feature_slot",
 ]
 tests = ["crates/ogeom/tests/features.rs::the_form_features_are_the_compositions_they_say_they_are"]
+
+[[capability]]
+id = "offset.sweep-until"
+title = "Sweeps that stop on faces: a prism up to faces or the next face of a part, a revolution up to a face"
+crate = "ogeom-offset"
+verdict = "covered"
+symbols = ["ogeom_offset::make_prism_until", "ogeom_offset::make_revolution_until"]
+tests = [
+    "crates/ogeom-offset/tests/prism_until.rs", "crates/ogeom/tests/revolution_until.rs",
+]
 
 [[capability]]
 id = "offset.projection"

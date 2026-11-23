@@ -30,6 +30,7 @@ pub mod fit;
 pub mod frames;
 pub mod held;
 pub mod history;
+pub mod hit;
 mod hull3;
 pub mod length;
 pub mod mass;
@@ -109,6 +110,7 @@ pub use fit::{Spacing, approximate, approximate_within, interpolate};
 pub use frames::{CurveFrame, CurveFrames, rotation_minimizing_frames};
 pub use held::{NetOutside, net_held_within};
 pub use history::{Built, History, on_own_nodes, on_own_nodes_with, unshare};
+pub use hit::{CurveHit, Hit, curve_hit};
 pub use length::{curve_length, parameter_at_length, points_by_count, points_by_spacing};
 pub use mass::{MassProperties, linear_properties, surface_properties, volume_properties};
 pub use measure::{

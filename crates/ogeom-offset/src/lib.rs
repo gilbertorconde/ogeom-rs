@@ -14,6 +14,7 @@ pub(crate) mod fixed;
 mod freeform;
 pub mod loft;
 pub mod middle;
+mod prism_until;
 pub mod project;
 pub mod shape;
 pub mod sheet;
@@ -26,6 +27,7 @@ pub use feature::{Feature, feature_prism, feature_revol, feature_rib, feature_sl
 pub use fill::{FillBoundary, FillSide, Filled, make_filling, make_filling_n};
 pub use loft::make_loft_solid;
 pub use middle::{MiddlePath, middle_path};
+pub use prism_until::make_prism_until;
 pub use project::{Projected, normal_projection};
 pub use shape::{make_thick_solid, make_thick_solid_with, move_faces, offset_faces, offset_shape};
 pub use sheet::{make_loft_surface, make_ruled, make_sweep_surface, make_sweep_two_rails};
