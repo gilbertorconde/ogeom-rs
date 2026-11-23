@@ -31,6 +31,7 @@
 //! them, so the solid is exact wherever the runs are swept exactly. A
 //! closed wire sweeps the walls of the face it bounds.
 
+use ogeom_algo::frames::path_stations;
 use ogeom_algo::{
     Built, History, curve_length, make_box, make_prism, make_revolution, parameter_at_length,
     project_on_curve, shape_bounds,
@@ -45,7 +46,7 @@ use super::meeting::{self, Meeting};
 use super::{
     DOUBLED_BACK, LEAST_TURN_SINE, PipeCorners, PipeLaw, bounded_face, fuse_in_order, law_normals,
     outside_half, pipe_shell_ends, profile_square_at_start, realized_profile_wound, rmf_normals,
-    sample_wire, shell_stations, spine_curve_of, station_frame, walls_of, whole_ring,
+    sample_wire, spine_curve_of, station_frame, walls_of, whole_ring,
 };
 
 /// A spine edge's ends and its unit tangents there, in the direction of
@@ -129,7 +130,7 @@ pub(super) fn law_cornered(
     let Some(plane) = ogeom_algo::find_plane(model, profile, tol)? else {
         ogeom_bail!(Construction, "a pipe shell sweeps a planar profile");
     };
-    let stations = shell_stations(model, spine, tol)?;
+    let stations = path_stations(model, spine, tol)?;
     profile_square_at_start(model, &plane, spine, stations[0].at, tol)?;
 
     let legs = legs_of(model, spine, tol)?;
@@ -651,7 +652,7 @@ fn law_frame_at(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Frame> {
-    let stations = shell_stations(model, spine, tol)?;
+    let stations = path_stations(model, spine, tol)?;
     let normals = law_normals(model, &stations, law, tolerance, tol)?;
     station_frame(&stations[0], normals[0], tol)
 }
@@ -669,7 +670,7 @@ fn keeps_frame(
     match law {
         PipeLaw::RotationMinimizing | PipeLaw::Binormal(_) => Ok(true),
         _ => {
-            let stations = shell_stations(model, run, tol)?;
+            let stations = path_stations(model, run, tol)?;
             let normals = law_normals(model, &stations, law, tolerance, tol)?;
             Ok(normals.iter().all(|n| {
                 n.cross(normals[0]).magnitude() <= tol.angular() && n.dot(normals[0]) > 0.0
@@ -976,7 +977,7 @@ pub(super) fn law_is_rotation_minimizing(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<bool> {
-    let stations = shell_stations(model, spine, tol)?;
+    let stations = path_stations(model, spine, tol)?;
     let normals = law_normals(model, &stations, law, tolerance, tol)?;
     let carried = rmf_normals(&stations);
     let angle = |i: usize| -> f64 {

@@ -35,6 +35,7 @@
 //! a face of the corner's plane could close the gap, which a sheet has
 //! not, so it is refused there.
 
+use ogeom_algo::frames::path_stations;
 use ogeom_algo::{Built, History, make_edge_between, make_vertex};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve, Curve3d as _, Surface as _, Transformable as _};
@@ -48,7 +49,7 @@ use super::open_lines::{
 use super::{
     DOUBLED_BACK, PipeCorners, PipeLaw, Skin, SpineStation, SpineWalk, fractions, frenet_normals,
     guide_curves, law_normals, law_normals_on, law_stations, placed_path, rmf_normals,
-    shell_stations, skinned_strip, spine_curve_of, walk_curves,
+    skinned_strip, spine_curve_of, walk_curves,
 };
 
 /// The samples each strip starts from along its profile piece.
@@ -81,7 +82,7 @@ pub(super) fn open_wire_skinned(
 ) -> OgeomResult<Built> {
     let given_spine = spine;
     let spine = &placed_path(model, spine, tol)?;
-    let stations = shell_stations(model, spine, tol)?;
+    let stations = path_stations(model, spine, tol)?;
     let turns = |i: usize, stations: &[SpineStation]| {
         let (a, b) = (stations[i].tangent, stations[i + 1].tangent);
         stations[i].at.distance(stations[i + 1].at) <= tol.confusion()

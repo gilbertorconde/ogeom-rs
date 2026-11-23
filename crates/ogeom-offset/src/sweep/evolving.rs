@@ -14,6 +14,7 @@
 //! the walls are skinned through the placed sections and held to the
 //! tolerance between them against the law itself.
 
+use ogeom_algo::frames::path_stations;
 use std::sync::Arc;
 
 use ogeom_algo::{Built, History, curve_length, find_plane};
@@ -27,8 +28,7 @@ use super::placement::{PipeContact, profile_in_contact};
 use super::{
     PipeCorners, PipeLaw, SpineStation, WalkCurve, closed_pipe_shell, closes_on_a_corner,
     densified, evenly_by, has_sharp_corner, law_loft, make_loft, make_pipe_shell_with, moved_ring,
-    placed_path, profile_square_at_start, shell_stations, spine_closes, spine_curve_of,
-    straight_legs,
+    placed_path, profile_square_at_start, spine_closes, spine_curve_of, straight_legs,
 };
 
 /// How a pipe's section scales and twists along its spine, each in
@@ -798,7 +798,7 @@ pub fn make_pipe_shell_laws(
     let Some(plane) = find_plane(model, profile, tol)? else {
         ogeom_bail!(Construction, "a pipe shell sweeps a planar profile");
     };
-    let stations = shell_stations(model, spine, tol)?;
+    let stations = path_stations(model, spine, tol)?;
     profile_square_at_start(model, &plane, spine, stations[0].at, tol)?;
     if rings.len() > 1 && evolution.scale.end() == 0.0 {
         ogeom_bail!(
@@ -937,7 +937,7 @@ fn evolving_ring(
             "a section shrinks to a point only down one straight edge, unturned"
         );
     }
-    let stations = shell_stations(model, spine, tol)?;
+    let stations = path_stations(model, spine, tol)?;
     let ring_spine =
         stations[0].at.distance(stations[stations.len() - 1].at) <= tol.confusion() * 10.0;
     if ring_spine || has_sharp_corner(model, spine, tol)? {
@@ -992,7 +992,7 @@ pub(super) fn closed_law_pipe(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    let stations = shell_stations(model, spine, tol)?;
+    let stations = path_stations(model, spine, tol)?;
     let turned = densified(model, spine, stations.clone(), law, tolerance, tol)?.len();
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let twisted = (twist.variation() / super::MOST_TURN).ceil() as usize + 1;
