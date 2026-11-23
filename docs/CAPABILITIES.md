@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 102 |
+| `covered` | 103 |
 | `partial` | 16 |
 | `divergent` | 6 |
 
-124 capabilities. Ratchet: `unreviewed_max = 0`.
+125 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -40,6 +40,7 @@ per module. Each verdict cites the symbols and tests that back it, and
 - **algo.point-projection**: Projecting a point onto a curve or a surface, nearest first, all minima found · `covered`
 - **algo.primitive-fits**: Best fits of planes, spheres, cylinders, cones, tori, circles and lines to points, with residuals, a mesh region grown for one from clicks, its rounded rim peeled, a rim circle or a crease line traced along a mesh's sharp edges from a click, and the line where the faces either side of a rounded edge meet · `covered`
 - **algo.primitives**: The primitive solids: box, wedge, cylinder, cone, sphere, torus, half-space, prism, revolution · `covered`
+- **algo.resting-faces**: The stable ways a part can lie on a flat bed: hull planes with contact area, footprint, height and stability margin · `covered`
 - **algo.rigid-registration**: Rigid registration: closed-form absolute orientation, point-to-plane ICP onto a mesh with free motions, and symmetry planes · `covered`
 - **algo.sewing**: Sewing faces into shells along coincident edges, or across a gap asked for, with spatial acceleration · `covered`
 - **algo.shape-distance**: Distance, proximity and overlap between whole shapes, and self-intersection · `covered`
@@ -339,4 +340,4 @@ than a plane or a B-spline over its patch's parameters.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, surface parameters and normals per triangle corner · `covered`
 
-<!-- ledger-checksum: 47b4b215ccb6ec35 -->
+<!-- ledger-checksum: 55d81afe0ba93255 -->

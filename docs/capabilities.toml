@@ -889,6 +889,20 @@ tests = [
 ]
 
 [[capability]]
+id = "algo.resting-faces"
+title = "The stable ways a part can lie on a flat bed: hull planes with contact area, footprint, height and stability margin"
+crate = "ogeom-algo"
+verdict = "covered"
+symbols = [
+    "ogeom_algo::resting_faces", "ogeom_algo::resting_faces_of",
+    "ogeom_algo::Rest",
+]
+tests = [
+    "crates/ogeom-algo/tests/rest.rs",
+    "crates/ogeom-algo/src/hull3.rs",
+]
+
+[[capability]]
 id = "algo.signed-distance"
 title = "Signed distances from many points to a mesh or a shape's own faces, facing-aware"
 crate = "ogeom-algo"
