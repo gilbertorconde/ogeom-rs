@@ -2162,10 +2162,13 @@ fn tool(
             None
         } else {
             // A piece whose balls all pass through one point is fitted
-            // through their arcs, and not built where an end face would
-            // cut it.
+            // through their arcs. At an end it is built only run on past
+            // the end face, which the cut trims it by; ended in the end
+            // piece's section planes it is not.
             let reaches_end = k == 0 || k + 1 == last;
-            if reaches_end && pins[k].is_some() {
+            let ended = (k == 0 && hold.ends_at[0].is_none())
+                || (k + 1 == last && hold.ends_at[1].is_none());
+            if pins[k].is_some() && ended {
                 return Ok(None);
             }
             let planes = if reaches_end {

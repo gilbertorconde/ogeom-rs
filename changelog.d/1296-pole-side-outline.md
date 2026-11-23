@@ -1,4 +1,5 @@
 - **Fixed: `cut` and `common` through a face whose chart closes to a point along a side** (#1296).
   - A face whose whole chart side collapses to one point (a fitted patch whose rows all end at an apex, as hold edge's pieces resting on one point are) left that side out of the outline its sections are tested against. A section through the face then read as outside it, split nothing, and the boolean refused with "the kept pieces did not close into a shell". The side is now part of the outline.
-  - A cone over a base bounded by an arc, its side such a patch, cut by a box at three heights: `cut` and `common` match the closed form `V s^3` to 1e-12 and check valid.
-  - Hold edge's tool for a square pocket now passes `cut` and `common`. Hold edge still sends that part on to trim through, because the piece resting on one point meets its neighbours 8.6e-5 rad from tangent.
+  - A cone over a base bounded by an arc, its side such a patch, cut by a box at three heights: `cut` and `common` match the closed form to 1e-12 and check valid.
+  - Hold edge now holds a vertex piece cut by an end face: a top's edge bending at `(19.3, 1.8)` to 1.45 at the end, front top edge r 4, cuts away 58.208017878 against a sampled reference of 58.208017917 (bound 8.3e-8), worst G1 5.5e-6 rad. It used to go on to trim through, which refuses that part by name.
+  - Hold edge's tool for a square pocket now passes `cut` and `common`, but the part still goes on to trim through: the piece resting on one point meets its neighbours 8.6e-5 rad from tangent.

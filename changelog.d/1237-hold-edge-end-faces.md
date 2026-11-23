@@ -1,5 +1,5 @@
 - **Added: hold edge runs the round on past an end face where one piece's section cannot end it** (#1237).
   - Past an end face the balls that still reach inside it are read. Where they change seat, the piece at the end rests on a vertex, or the face leans on a cylinder beside the edge, the round runs on to where it stands wholly past the face and the cut trims it there.
   - A leaning end face on a cylinder beside the edge is now held: a drum part 30 long, front top edge r 4, a pocket r 5 beside it, far end `x = 30 + z / 4` cuts away 30.728596675; leaning the end changes the cut by the band section's first moment to 5.5e-13.
-  - Not held, still trim through: a held edge whose feet never reach the end face (no ball stands on it carried on past the face, or it crosses the round's own edge first), and a vertex piece cut by an end face, which the boolean does not resolve yet.
+  - Not held, still trim through: a held edge whose feet never reach the end face (no ball stands on it carried on past the face, or it crosses the round's own edge first).
   - Changed: a leaning end face on a cylinder used to go on to trim through; with hold edge and trim through both off it is now refused naming hold edge.

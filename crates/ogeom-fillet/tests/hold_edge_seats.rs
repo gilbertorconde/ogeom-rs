@@ -387,7 +387,10 @@ fn worst_join(m: &Model, s: &Shape) -> (f64, usize) {
                     .magnitude()
                     < 1e-9
             }
-            SurfaceGeometry::Plane(_) => mid.y.abs() < 1e-6,
+            // The front, not an end face meeting the round along it.
+            SurfaceGeometry::Plane(pl) => {
+                mid.y.abs() < 1e-6 && pl.plane().normal().vector().y.abs() > 1.0 - 1e-9
+            }
             _ => false,
         };
         if !tangent_kind {
@@ -471,26 +474,36 @@ fn holds(
 /// to 2.5 at `x = 14`, then more steeply to 0.4 at `x = 20`.
 const KINK: [(f64, f64); 3] = [(0.0, 4.6), (14.0, 2.5), (20.0, 0.4)];
 
-/// A part 20 long whose top `z = 0` lies in front of [`KINK`], a cliff 6
-/// high falling from that edge to a ledge, the block 12 deep and 15 tall
-/// below; its front top edge along `y = 0` asked.
+/// A part 20 long whose top `z = 0` lies in front of [`KINK`]; see
+/// [`kinked_along`].
 fn kinked(m: &mut Model) -> (Shape, Vec<Shape>) {
+    kinked_along(m, KINK)
+}
+
+/// A part 20 long whose top `z = 0` lies in front of the polyline
+/// `p0 k p1` (from `x = 0` to `x = 20`), a cliff 6 high falling from that
+/// edge to a ledge, the block 12 deep and 15 tall below; its front top
+/// edge along `y = 0` asked.
+fn kinked_along(
+    m: &mut Model,
+    [(x0, y0), (xk, yk), (x1, y1)]: [(f64, f64); 3],
+) -> (Shape, Vec<Shape>) {
     let p = |x: f64, y: f64, z: f64| Point::new(x, y, z);
     let points = [
-        p(0.0, 0.0, 0.0),    // 0
-        p(20.0, 0.0, 0.0),   // 1
-        p(20.0, 0.4, 0.0),   // 2
-        p(14.0, 2.5, 0.0),   // 3
-        p(0.0, 4.6, 0.0),    // 4
-        p(20.0, 0.4, -6.0),  // 5
-        p(14.0, 2.5, -6.0),  // 6
-        p(0.0, 4.6, -6.0),   // 7
-        p(20.0, 12.0, -6.0), // 8
-        p(0.0, 12.0, -6.0),  // 9
-        p(0.0, 0.0, -15.0),  // 10
-        p(20.0, 0.0, -15.0), // 11
-        p(20.0, 12.0, -15.0),
-        p(0.0, 12.0, -15.0),
+        p(x0, 0.0, 0.0),
+        p(x1, 0.0, 0.0),
+        p(x1, y1, 0.0),
+        p(xk, yk, 0.0),
+        p(x0, y0, 0.0),
+        p(x1, y1, -6.0),
+        p(xk, yk, -6.0),
+        p(x0, y0, -6.0),
+        p(x1, 12.0, -6.0),
+        p(x0, 12.0, -6.0),
+        p(x0, 0.0, -15.0),
+        p(x1, 0.0, -15.0),
+        p(x1, 12.0, -15.0),
+        p(x0, 12.0, -15.0),
     ];
     let rings = vec![
         vec![0, 1, 2, 3, 4],
@@ -565,6 +578,61 @@ fn hold_edge_rolls_the_ball_round_the_vertex_where_a_held_edge_ends() {
 #[ignore = "heavy"]
 fn a_vertex_seat_cuts_away_the_reference() {
     hold_edge_rolls_the_ball_round_the_vertex_where_a_held_edge_ends_case(true);
+}
+
+/// The top's back edge of the part whose vertex seat reaches the end:
+/// down from 4.6 deep at `x = 0` to a kink at `(19.3, 1.8)`, then to 1.45
+/// at `x = 20`.
+const END_KINK: [(f64, f64); 3] = [(0.0, 4.6), (19.3, 1.8), (20.0, 1.45)];
+
+/// A vertex piece cut by the end face: the front top edge of
+/// [`kinked_along`] [`END_KINK`] rounded at 4. Past `x = 4.136` the ball
+/// rests on the first cliff edge; from `x = 19.619` its nearest point of
+/// the top is the kink's vertex, to `x = 20.4` past the end face, so the
+/// round runs on past the face and the face cuts the vertex piece.
+fn hold_edge_holds_a_vertex_piece_cut_by_the_end_face_case(heavy: bool) {
+    let mut m = Model::new();
+    let (s, edge) = kinked_along(&mut m, END_KINK);
+    let before = volume(&m, &s);
+    let built = fillet_edges(&mut m, &s, &edge, R, T).unwrap();
+    let [p0, k, p1] = END_KINK;
+    let on = p0.0 + (p0.1 - R) * (k.0 - p0.0) / (p0.1 - k.1);
+    let (dx, dy) = (k.0 - p0.0, k.1 - p0.1);
+    let seat = k.0 - (R - k.1) * dy / dx;
+    eprintln!("first edge from {on}, vertex seat from {seat}");
+    holds(
+        heavy,
+        &m,
+        before,
+        &built,
+        &edge[0],
+        &Reference {
+            top: Top::Below(&END_KINK),
+        },
+        &split(&[on, k.0, seat], 20.0),
+        20.0,
+    );
+    let (lo, hi) = kept_along(&m, &built.shape, p0, k);
+    eprintln!("first edge kept over {lo}..{hi}");
+    assert!(lo <= on + 1e-6 && hi >= k.0 - 1e-6, "first edge {lo}..{hi}");
+    let (lo, hi) = kept_along(&m, &built.shape, k, p1);
+    eprintln!("second edge kept over {lo}..{hi}");
+    assert!(
+        lo <= k.0 + 1e-6 && hi >= p1.0 - 1e-6,
+        "second edge {lo}..{hi}"
+    );
+}
+
+#[test]
+fn hold_edge_holds_a_vertex_piece_cut_by_the_end_face() {
+    hold_edge_holds_a_vertex_piece_cut_by_the_end_face_case(false);
+}
+
+/// The vertex piece cut by the end face: its volume against the reference.
+#[test]
+#[ignore = "heavy"]
+fn a_vertex_piece_cut_by_the_end_face_cuts_away_the_reference() {
+    hold_edge_holds_a_vertex_piece_cut_by_the_end_face_case(true);
 }
 
 /// The run reaches the part's end: with hold edge at the end off, or hold

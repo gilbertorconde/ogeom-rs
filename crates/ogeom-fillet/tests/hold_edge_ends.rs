@@ -458,15 +458,27 @@ fn a_held_edge_crossing_the_round_s_edge_past_the_end_goes_on_to_trim_through() 
     as_with_hold_edge_off(&mut m, &s);
 }
 
-/// A vertex piece cut by the end face: the top's edge bends at
-/// `(19.3, 1.8)`, so the ball rests on that vertex from `x = 19.62` to past
-/// the end, then on the next edge, whose feet trail the balls back inside
-/// the end face. The round runs on past the face, but the boolean does not
-/// resolve the vertex piece's cut by it, so the request goes on to trim
-/// through.
+/// A vertex piece cut by the end face, the part `hold_edge_seats.rs`
+/// checks against its reference: with hold edge at the end off, or hold
+/// edge off, the request goes on to trim through, which refuses it by name;
+/// with trim through off too it is refused naming hold edge at the end.
 #[test]
-fn a_vertex_piece_cut_by_the_end_face_goes_on_to_trim_through() {
+fn a_vertex_piece_cut_by_the_end_face_follows_the_options() {
     let mut m = Model::new();
     let s = kinked(&mut m, [(0.0, 4.6), (19.3, 1.8), (20.0, 1.45)]);
-    as_with_hold_edge_off(&mut m, &s);
+    let edge = front_edge(&m, &s);
+    let mut end_off = Overflow::default();
+    end_off.hold_edge_at_end = false;
+    let mut off = Overflow::default();
+    off.hold_edge = false;
+    let a = fillet_edges_overflow(&mut m, &s, &edge, R, end_off, T).unwrap_err();
+    let b = fillet_edges_overflow(&mut m, &s, &edge, R, off, T).unwrap_err();
+    assert_eq!(a.to_string(), b.to_string());
+    assert!(a.to_string().contains("sets back"), "{a}");
+    end_off.trim_through = false;
+    let err = fillet_edges_overflow(&mut m, &s, &edge, R, end_off, T).unwrap_err();
+    assert!(
+        err.to_string().contains("hold edge at the end is off"),
+        "{err}"
+    );
 }
