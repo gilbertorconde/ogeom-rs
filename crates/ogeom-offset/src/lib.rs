@@ -29,7 +29,10 @@ pub use loft::make_loft_solid;
 pub use middle::{MiddlePath, middle_path};
 pub use prism_until::make_prism_until;
 pub use project::{Projected, normal_projection};
-pub use shape::{make_thick_solid, make_thick_solid_with, move_faces, offset_faces, offset_shape};
+pub use shape::{
+    Walls, make_thick_solid, make_thick_solid_sided, make_thick_solid_with, move_faces,
+    offset_faces, offset_shape,
+};
 pub use sheet::{make_loft_surface, make_ruled, make_sweep_surface, make_sweep_two_rails};
 pub use sweep::{
     PipeContact, PipeCorners, PipeEvolution, PipeLaw, PipeLaws, PipePlacement, SpineFunction,
@@ -38,5 +41,5 @@ pub use sweep::{
     make_pipe_shell, make_pipe_shell_evolving, make_pipe_shell_law, make_pipe_shell_laws,
     make_pipe_shell_with, make_pipe_skinned, make_revolution_until, place_on_spine,
 };
-pub use thick::{make_thick_sheet, offset_sheet};
+pub use thick::{make_thick_sheet, make_thick_sheet_sided, offset_sheet};
 pub use wire2d::{Join, offset_wire};

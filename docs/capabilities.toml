@@ -2197,10 +2197,14 @@ symbols = [
     "ogeom_offset::move_faces",
     "ogeom_offset::offset_sheet",
     "ogeom_offset::make_thick_sheet",
+    "ogeom_offset::make_thick_solid_sided",
+    "ogeom_offset::make_thick_sheet_sided",
+    "ogeom_offset::Walls",
 ]
 tests = [
     "crates/ogeom-offset/tests/shape.rs", "crates/ogeom/tests/direct_edit.rs",
     "crates/ogeom-offset/tests/thick_sheet.rs",
+    "crates/ogeom-offset/tests/thick_both_sides.rs",
     "crates/ogeom/tests/sheet_offset.rs", "crates/ogeom/tests/offset_solid.rs",
 ]
 
