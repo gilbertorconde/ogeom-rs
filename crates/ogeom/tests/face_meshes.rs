@@ -92,3 +92,136 @@ fn face_content_tells_faces_apart_by_geometry_not_handles() {
     // The bore and the top and bottom faces it pierces.
     assert_eq!(differing, 3);
 }
+
+/// The surfaces of [`drilled`]'s block, in closed form: the six planes of
+/// the box, then the bore about (12, 9) of `radius`.
+fn surface_distances(p: Point, radius: f64) -> [f64; 7] {
+    [
+        p.x.abs(),
+        (p.x - 30.0).abs(),
+        p.y.abs(),
+        (p.y - 20.0).abs(),
+        p.z.abs(),
+        (p.z - 10.0).abs(),
+        ((p.x - 12.0).hypot(p.y - 9.0) - radius).abs(),
+    ]
+}
+
+/// The closed-form areas of those surfaces' faces: the two faces the bore
+/// pierces lose its disc, the bore is its full wall.
+fn surface_areas(radius: f64) -> [f64; 7] {
+    let disc = std::f64::consts::PI * radius * radius;
+    let wall = 2.0 * std::f64::consts::PI * radius * 10.0;
+    [200.0, 200.0, 300.0, 300.0, 600.0 - disc, 600.0 - disc, wall]
+}
+
+/// Each welded triangle names the face it lies on: its centroid is on that
+/// face's surface (exactly on a plane, within the chord on the bore), each
+/// face's named triangles cover its closed-form area, and the weld joins
+/// exactly the face meshes' coincident vertices.
+#[test]
+fn every_welded_triangle_names_the_face_it_lies_on() {
+    let radius = 4.0;
+    let (model, solid) = drilled(radius);
+    let deflection = Deflection::default();
+    let welded = ogeom::mesh::triangulate_with_faces(&model, &solid, deflection, None, T).unwrap();
+    assert_eq!(
+        welded.mesh,
+        ogeom::mesh::triangulate(&model, &solid, deflection, T).unwrap()
+    );
+    assert!(welded.mesh.is_closed());
+    let mesh = &welded.mesh;
+    assert_eq!(welded.triangle_faces.len(), mesh.triangles.len());
+
+    // Each face's surface, read from its own mesh: the one every vertex of
+    // it lies on.
+    let chord = deflection.chord;
+    let surface_of: Vec<usize> = welded
+        .faces
+        .iter()
+        .map(|(_, piece)| {
+            let piece = piece.as_ref().unwrap();
+            let on: Vec<usize> = (0..7)
+                .filter(|&s| {
+                    piece
+                        .positions
+                        .iter()
+                        .all(|&p| surface_distances(p, radius)[s] <= 1e-9)
+                })
+                .collect();
+            assert_eq!(on.len(), 1, "a face lies on one surface");
+            on[0]
+        })
+        .collect();
+
+    let centroid = |t: [u32; 3]| {
+        let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+        Point::new(
+            (a.x + b.x + c.x) / 3.0,
+            (a.y + b.y + c.y) / 3.0,
+            (a.z + b.z + c.z) / 3.0,
+        )
+    };
+    let mut areas = [0.0_f64; 7];
+    let (mut plane_off, mut bore_off) = (0.0_f64, 0.0_f64);
+    for (&t, &face) in mesh.triangles.iter().zip(&welded.triangle_faces) {
+        let surface = surface_of[face as usize];
+        let off = surface_distances(centroid(t), radius)[surface];
+        if surface == 6 {
+            bore_off = bore_off.max(off);
+        } else {
+            plane_off = plane_off.max(off);
+        }
+        let [a, b, c] = t.map(|i| mesh.positions[i as usize]);
+        areas[surface] += (b - a).cross(c - a).magnitude() / 2.0;
+    }
+    eprintln!("centroid off its surface: planes {plane_off:.3e}, bore {bore_off:.3e}");
+    assert!(
+        plane_off <= 1e-9,
+        "a plane's triangle off it by {plane_off}"
+    );
+    assert!(bore_off <= chord, "a bore triangle off it by {bore_off}");
+
+    // An inscribed polygon falls short of a circle's disc by at most its
+    // sag times the perimeter, and a faceted wall short of the cylinder by
+    // its area times sag over radius; flat rectangles are exact.
+    let closed = surface_areas(radius);
+    let rim = 2.0 * std::f64::consts::PI * radius;
+    let bounds = [
+        1e-9,
+        1e-9,
+        1e-9,
+        1e-9,
+        chord * rim,
+        chord * rim,
+        closed[6] * chord / radius,
+    ];
+    for s in 0..7 {
+        let error = (areas[s] - closed[s]).abs();
+        eprintln!(
+            "surface {s}: area {:.6} closed {:.6} error {error:.3e} bound {:.3e}",
+            areas[s], closed[s], bounds[s]
+        );
+        assert!(error <= bounds[s], "surface {s}: {error} > {}", bounds[s]);
+    }
+
+    // The weld, done here by brute force: the face meshes' vertices merged
+    // where they coincide within the confusion tolerance.
+    let mut kept: Vec<Point> = Vec::new();
+    for (_, piece) in &welded.faces {
+        for &p in &piece.as_ref().unwrap().positions {
+            if !kept.iter().any(|&q| q.distance(p) <= T.confusion()) {
+                kept.push(p);
+            }
+        }
+    }
+    let mut used = vec![false; mesh.positions.len()];
+    for t in &mesh.triangles {
+        for &i in t {
+            used[i as usize] = true;
+        }
+    }
+    let used = used.into_iter().filter(|&u| u).count();
+    eprintln!("welded vertices {used}, test-side weld {}", kept.len());
+    assert_eq!(used, kept.len());
+}

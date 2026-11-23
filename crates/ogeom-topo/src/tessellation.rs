@@ -351,9 +351,16 @@ impl Triangulation {
     /// `reach`.
     #[must_use]
     pub fn border_welded(&self, reach: f64) -> Self {
+        self.border_welded_with_sources(reach).0
+    }
+
+    /// As [`Self::border_welded`], with the input triangle each output
+    /// triangle is.
+    #[must_use]
+    pub fn border_welded_with_sources(&self, reach: f64) -> (Self, Vec<usize>) {
         use ogeom_core::FastMap;
         if !reach.is_finite() || reach <= 0.0 {
-            return self.clone();
+            return (self.clone(), (0..self.triangles.len()).collect());
         }
         // Border vertices: endpoints of triangle edges used an odd number of
         // times.
@@ -366,7 +373,7 @@ impl Triangulation {
         border.sort_unstable();
         border.dedup();
         if border.is_empty() {
-            return self.clone();
+            return (self.clone(), (0..self.triangles.len()).collect());
         }
 
         // Cluster border vertices within reach, first-seen wins, checked
@@ -432,7 +439,7 @@ impl Triangulation {
             }
         }
         (out.corner_parameters, out.corner_normals) = self.corners_of(&sources);
-        out
+        (out, sources)
     }
 
     /// Split border segments at border vertices that lie on them.
@@ -676,19 +683,31 @@ impl Triangulation {
     /// vertex with more than one way on, is a real opening and stays.
     #[must_use]
     pub fn sealed(&self, width: f64) -> Self {
+        self.sealed_with_sources(width).0
+    }
+
+    /// As [`Self::sealed`], with an input triangle for each output triangle:
+    /// the one it is, or for a triangle fanned across a crack, the one on
+    /// the other side of the crack edge it closes, so a crack's triangles
+    /// belong to the triangles round it.
+    #[must_use]
+    pub fn sealed_with_sources(&self, width: f64) -> (Self, Vec<usize>) {
         use ogeom_core::FastMap;
-        let mut out = self.without_folds_with_sources().0;
+        let (mut out, mut sources) = self.without_folds_with_sources();
         if !width.is_finite() || width <= 0.0 {
-            return out;
+            return (out, sources);
         }
         // Cracks: each border edge walked the other way from its triangle.
         let uses = edge_uses(&out.triangles);
         let mut onward: FastMap<u32, Vec<u32>> = FastMap::default();
-        for t in &out.triangles {
+        // The triangle walking each border edge, by its direction there.
+        let mut owner: FastMap<(u32, u32), usize> = FastMap::default();
+        for (index, t) in out.triangles.iter().enumerate() {
             for k in 0..3 {
                 let (a, b) = (t[k], t[(k + 1) % 3]);
                 if uses[&(a.min(b), a.max(b))] == 1 {
                     onward.entry(b).or_default().push(a);
+                    owner.insert((a, b), index);
                 }
             }
         }
@@ -756,10 +775,17 @@ impl Triangulation {
             }
             for i in 1..ring.len() - 1 {
                 out.triangles.push([ring[0], ring[i], ring[i + 1]]);
+                // The walk steps from `at` to `onward[at]`, so the
+                // triangle on side (ring[i], ring[i + 1]) walks it the
+                // other way.
+                let across = owner
+                    .get(&(ring[i + 1], ring[i]))
+                    .map_or(0, |&t| sources[t]);
+                sources.push(across);
             }
         }
         out.fill_corners_from(filled_from);
-        out
+        (out, sources)
     }
 
     /// Give the triangles from `first` on, added without corners, the
@@ -907,6 +933,12 @@ impl Triangulation {
     /// what lets [`Triangulation::is_closed`] answer truthfully.
     #[must_use]
     pub fn welded(&self, tol: Tolerances) -> Self {
+        self.welded_with_sources(tol).0
+    }
+
+    /// As [`Self::welded`], with the input triangle each output triangle is.
+    #[must_use]
+    pub fn welded_with_sources(&self, tol: Tolerances) -> (Self, Vec<usize>) {
         use ogeom_core::FastMap;
 
         // Quantize to a grid a good deal finer than the tolerance, then check
@@ -996,7 +1028,7 @@ impl Triangulation {
             }
         }
         (out.corner_parameters, out.corner_normals) = self.corners_of(&sources);
-        out
+        (out, sources)
     }
 }
 
@@ -1419,6 +1451,39 @@ mod tests {
         assert_eq!(sources.len(), unfolded.triangles.len());
         for (triangle, source) in unfolded.triangles.iter().zip(sources) {
             assert_eq!(*triangle, folded.triangles[source]);
+        }
+    }
+
+    /// A triangle sealing a crack is named after the triangle across the
+    /// crack side it closes: that triangle walks one of its sides the other
+    /// way. Every other triangle is named after itself.
+    #[test]
+    fn a_sealing_triangle_is_named_after_its_neighbour_across_the_crack() {
+        let corners = [
+            Point::new(0.0, 0.0, 0.0),
+            Point::new(1.0, 0.0, 0.0),
+            Point::new(0.5, 0.01, 0.0),
+            Point::new(0.5, 0.5, 1.0),
+        ];
+        let mut cracked = over(&corners, &[[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]]);
+        cracked.triangles.remove(0);
+        let (sealed, sources) = cracked.sealed_with_sources(0.05);
+        assert_eq!(sources.len(), sealed.triangles.len());
+        assert_eq!(sealed.triangles.len(), cracked.triangles.len() + 1);
+        for (i, (triangle, &source)) in sealed.triangles.iter().zip(&sources).enumerate() {
+            if i < cracked.triangles.len() {
+                assert_eq!(*triangle, cracked.triangles[source]);
+                continue;
+            }
+            let across = cracked.triangles[source];
+            let shares_a_side_reversed = (0..3).any(|k| {
+                let (a, b) = (triangle[k], triangle[(k + 1) % 3]);
+                (0..3).any(|j| (across[j], across[(j + 1) % 3]) == (b, a))
+            });
+            assert!(
+                shares_a_side_reversed,
+                "{triangle:?} named after {across:?}"
+            );
         }
     }
 

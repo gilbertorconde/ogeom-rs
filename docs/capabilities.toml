@@ -599,11 +599,12 @@ keeping a config-file interpreter would be an application affordance."""
 
 [[capability]]
 id = "mesh.tessellation"
-title = "Triangulating shapes to a stated deflection by chord and angle alone, with no length cap, deterministically, in parallel; an apex or a pole one vertex per face, fanned by real triangles"
+title = "Triangulating shapes to a stated deflection by chord and angle alone, with no length cap, deterministically, in parallel; an apex or a pole one vertex per face, fanned by real triangles; the welded mesh names each triangle's face"
 crate = "ogeom-mesh"
 verdict = "covered"
 symbols = [
     "ogeom_mesh::triangulate", "ogeom_mesh::triangulate_with_chords",
+    "ogeom_mesh::triangulate_with_faces", "ogeom_mesh::WeldedMesh",
     "ogeom_mesh::triangulate_face",
     "ogeom_mesh::Deflection", "ogeom_mesh::Deflection::curvature_only",
     "ogeom_mesh::tessellate",
@@ -611,6 +612,7 @@ symbols = [
 tests = [
     "crates/ogeom-mesh/src/triangulate.rs",
     "crates/ogeom-mesh/tests/apex.rs",
+    "crates/ogeom/tests/face_meshes.rs::every_welded_triangle_names_the_face_it_lies_on",
     "crates/ogeom/tests/step_conformance.rs::an_apex_or_a_pole_meshes_as_one_vertex_and_no_triangle_of_no_area",
     "crates/ogeom/tests/foundations.rs::parallel_tessellation_is_bit_identical",
     "crates/ogeom/tests/imported_corpus.rs::every_closed_corpus_solid_meshes_closed_drawn_by_curvature_alone",

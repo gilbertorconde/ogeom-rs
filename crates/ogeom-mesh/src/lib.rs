@@ -57,8 +57,9 @@ pub use shadow::shadow;
 pub use simplify::{Deviation, Simplified, Target, simplify};
 pub use thicken::{Thicken, Thickened, thicken};
 pub use triangulate::{
-    EdgeChords, FaceMesh, FaceMeshCache, edge_chords_for, face_boundary, face_boundary_in_chart,
-    face_boundary_in_chart_met, face_meshes_for, inside_boundary, inside_boundary_with,
-    open_chart_ring, polyline_of_edge, triangulate, triangulate_face, triangulate_face_kept,
-    triangulate_face_with, triangulate_with_chords, triangulate_with_face_meshes,
+    EdgeChords, FaceMesh, FaceMeshCache, WeldedMesh, edge_chords_for, face_boundary,
+    face_boundary_in_chart, face_boundary_in_chart_met, face_meshes_for, inside_boundary,
+    inside_boundary_with, open_chart_ring, polyline_of_edge, triangulate, triangulate_face,
+    triangulate_face_kept, triangulate_face_with, triangulate_with_chords,
+    triangulate_with_face_meshes, triangulate_with_faces,
 };

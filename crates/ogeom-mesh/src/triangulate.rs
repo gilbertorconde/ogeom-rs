@@ -911,6 +911,46 @@ pub fn triangulate_with_face_meshes(
     kept: Option<&FaceMeshCache>,
     tol: Tolerances,
 ) -> OgeomResult<(Triangulation, EdgeChords, Vec<FaceMesh>)> {
+    let welded = triangulate_with_faces(model, shape, deflection, kept, tol)?;
+    Ok((welded.mesh, welded.chords, welded.faces))
+}
+
+/// A shape's welded mesh with the face each of its triangles lies on.
+///
+/// What [`triangulate_with_faces`] answers.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct WeldedMesh {
+    /// Every face below the shape welded into one mesh, as
+    /// [`triangulate_with_face_meshes`] answers it.
+    pub mesh: Triangulation,
+    /// For each triangle of [`Self::mesh`], the index in [`Self::faces`]
+    /// (the shape's faces in exploration order) of the face it lies on.
+    ///
+    /// A triangle the weld kept or split is its face's. A triangle added to
+    /// seal a crack between two faces' meshes is the face's across the
+    /// crack side it closes, so it sits against a triangle of that face.
+    pub triangle_faces: Vec<u32>,
+    /// The edge chords the faces agreed on.
+    pub chords: EdgeChords,
+    /// Every face below the shape in exploration order, with its own mesh.
+    pub faces: Vec<FaceMesh>,
+}
+
+/// As [`triangulate_with_face_meshes`], with the face each welded triangle
+/// lies on: what a writer colouring triangles by face, or picking a face
+/// from a hit triangle, needs without searching the face meshes.
+///
+/// # Errors
+///
+/// As [`triangulate_face`].
+pub fn triangulate_with_faces(
+    model: &Model,
+    shape: &Shape,
+    deflection: Deflection,
+    kept: Option<&FaceMeshCache>,
+    tol: Tolerances,
+) -> OgeomResult<WeldedMesh> {
     // Faces in two phases, as `tessellate` does: each face is meshed from a
     // model nothing is writing to, in parallel; the pieces are then appended
     // sequentially in face order. The split is what keeps the answer
@@ -920,14 +960,23 @@ pub fn triangulate_with_face_meshes(
 
     let mut mesh = Triangulation::new();
     let mut pieces: Vec<(usize, usize)> = Vec::with_capacity(faces.len());
-    for (_, piece) in &faces {
+    let mut triangle_faces: Vec<u32> = Vec::new();
+    for (index, (_, piece)) in faces.iter().enumerate() {
         let piece = piece.as_ref().map_err(Clone::clone)?;
         let t0 = mesh.triangles.len();
         mesh.append(piece);
         pieces.push((t0, mesh.triangles.len()));
+        #[allow(clippy::cast_possible_truncation)]
+        triangle_faces.resize(mesh.triangles.len(), index as u32);
     }
     orient_pieces(&mut mesh, &pieces);
-    let mesh = mesh.welded(tol);
+    // Each pass names the triangle it took each of its own from, so the
+    // faces follow the triangles through every pass.
+    let follow = |faces: &[u32], sources: &[usize]| -> Vec<u32> {
+        sources.iter().map(|&s| faces[s]).collect()
+    };
+    let (mesh, sources) = mesh.welded_with_sources(tol);
+    let triangle_faces = follow(&triangle_faces, &sources);
 
     // A second, border-only pass at the tolerance the model itself recorded:
     // imported edges carry the file's slop in their widened tolerances, and
@@ -948,11 +997,14 @@ pub fn triangulate_with_face_meshes(
     // smaller than that is below the resolution of the mesh they accepted,
     // whether or not the model recorded the slop that caused it.
     let reach = reach.max(deflection.chord * 0.1);
-    let mesh = if reach > tol.confusion() {
+    let (mesh, triangle_faces) = if reach > tol.confusion() {
         let reach = reach + tol.confusion();
-        mesh.border_welded(reach).border_stitched(reach)
+        let (mesh, sources) = mesh.border_welded_with_sources(reach);
+        let triangle_faces = follow(&triangle_faces, &sources);
+        let (mesh, sources) = mesh.border_stitched_with_sources(reach);
+        (mesh, follow(&triangle_faces, &sources))
     } else {
-        mesh
+        (mesh, triangle_faces)
     };
     // What is left open narrower than the chord asked for is two faces
     // sampling a shared corner differently, below the mesh's own
@@ -965,7 +1017,13 @@ pub fn triangulate_with_face_meshes(
             (face, piece)
         })
         .collect();
-    Ok((mesh.sealed(deflection.chord), chords, faces))
+    let (mesh, sources) = mesh.sealed_with_sources(deflection.chord);
+    Ok(WeldedMesh {
+        triangle_faces: follow(&triangle_faces, &sources),
+        mesh,
+        chords,
+        faces,
+    })
 }
 
 /// A face and its mesh, or why it would not draw.

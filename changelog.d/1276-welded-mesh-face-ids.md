@@ -1,0 +1,5 @@
+- **Added: the welded mesh names each triangle's face** (#1276).
+  - `ogeom::mesh::triangulate_with_faces` returns a `WeldedMesh`: the welded, sealed mesh `triangulate_with_face_meshes` gives, its chords and face meshes, and `triangle_faces`, one index per triangle into the shape's faces in exploration order.
+  - A triangle the weld keeps or splits keeps its face. A triangle that seals a crack between two faces takes the face of the triangle across the crack side it closes.
+  - `Triangulation` gains `welded_with_sources`, `border_welded_with_sources` and `sealed_with_sources`, which give the input triangle behind each output triangle.
+  - A 30 x 20 x 10 block drilled r 4: every centroid lies on its face's surface (planes 0 off, bore 0.068 off, bound the 0.1 chord), each face's triangles sum to its closed-form area (flat faces exact; pierced faces 0.863 off, bound 2.51; bore 1.49 off, bound 6.28), and the weld keeps 64 vertices, the same as a brute-force weld.
