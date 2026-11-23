@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 104 |
+| `covered` | 105 |
 | `partial` | 16 |
 | `divergent` | 6 |
 
-126 capabilities. Ratchet: `unreviewed_max = 0`.
+127 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -26,6 +26,7 @@ per module. Each verdict cites the symbols and tests that back it, and
 - **algo.builders**: Building topology by hand: vertices, edges, wires, faces, shells, solids · `covered`
 - **algo.classification**: Classifying a point against a solid or a face: in, out, or on, exactly · `covered`
 - **algo.curve-sampling**: Sampling curves: by count, by spacing, by deflection, by abscissa · `covered`
+- **algo.faces-from-planar-wires**: Faces from closed planar wires: nesting into outer wires and holes, oriented to the plane's normal · `covered`
 - **algo.fit-outline**: An outline of lines, tangent arcs and circles fitted around a 2D silhouette, every point between a play and the play plus twice a tolerance outside it, negative play inside it, optionally about the silhouette with holes and notches narrower than a width filled · `covered`
 - **algo.fit-segments-2d**: The fewest lines and tangent or cornered arcs fitted to a 2D polyline, open or closed, every input point within a hard tolerance of its piece · `covered`
 - **algo.fitting**: Interpolating and approximating points with B-splines, curves and surfaces, and fitting scattered points over a seed surface's chart to a tolerance · `covered`
@@ -341,4 +342,4 @@ than a plane or a B-spline over its patch's parameters.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, surface parameters and normals per triangle corner · `covered`
 
-<!-- ledger-checksum: cd588d605f935226 -->
+<!-- ledger-checksum: 1486e059980b0537 -->

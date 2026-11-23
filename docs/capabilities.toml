@@ -713,6 +713,14 @@ symbols = [
 tests = ["crates/ogeom/tests/built_by_hand.rs"]
 
 [[capability]]
+id = "algo.faces-from-planar-wires"
+title = "Faces from closed planar wires: nesting into outer wires and holes, oriented to the plane's normal"
+crate = "ogeom-algo"
+verdict = "covered"
+symbols = ["ogeom_algo::faces_from_planar_wires", "ogeom_algo::PlanarFaces"]
+tests = ["crates/ogeom-algo/src/planar_faces/tests.rs"]
+
+[[capability]]
 id = "algo.primitives"
 title = "The primitive solids: box, wedge, cylinder, cone, sphere, torus, half-space, prism, revolution"
 crate = "ogeom-algo"

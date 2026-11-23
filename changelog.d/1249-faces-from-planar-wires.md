@@ -1,0 +1,4 @@
+- **Added: `faces_from_planar_wires` and `PlanarFaces`** (#1249).
+  - Turns closed wires lying in one plane, given in any order and either direction, into faces under the even-odd rule: a wire inside an odd number of others is a hole in the innermost one around it, otherwise it starts a face. Outer wires run counterclockwise about the plane's normal and holes clockwise; every face faces the normal and carries exact pcurves.
+  - Nesting, crossing and orientation are decided on the exact curves (closed-form or Newton-polished intersections, ray crossings, Green's-theorem areas), never on sampled polygons. Only wires whose boxes overlap are compared: 200 disjoint circles inside one ring classify 200 points.
+  - Refused by name: open wires, wires off the plane, a wire crossing itself, two wires crossing or sharing a stretch, and two wires of one face touching. Wires of different faces may touch, tangent ones included.
