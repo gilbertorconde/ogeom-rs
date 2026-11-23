@@ -1,7 +1,7 @@
 - **Added: hold edge beside a cylinder, and on held edges of any planar curve** (#1237).
-  - The face the ball runs on may be a cylinder whose axis runs along the edge (a drum bulging below a top): the band stays a cylinder, and off it the ball's centre rises round the drum's axis until it rests on the held edge. End faces there stand square to the edge.
+  - The face the ball runs on may be a cylinder whose axis runs along the edge (a drum bulging below a top): the band stays a cylinder, and off it the ball's centre rises round the drum's axis until it rests on the held edge.
   - A held edge may be any curve in the held face's plane (an ellipse, a B-spline), not only a line or a circle. Past an end face an open one is carried on along its tangent there.
   - A part 30 long under a drum r 10, front top edge r 4, a pocket r 5 sunk 8 beside it: cut away 30.869925920 against a reference of 30.869925919 (bound 1.2e-9).
   - A part 20 long behind a cliff edge on an ellipse: 65.012388433 against 65.012388498 (bound 6.6e-9); on a cubic B-spline: 57.261089158 against 57.261089157 (bound 2.2e-9). Joins within 1.0e-6 rad; the held edges stay on their curves within 5e-15.
-  - Not held, still trim through as before: a cone or any other curved face beside the edge, a held edge on a curved face, and a leaning end face on the cylinder.
+  - Not held, still trim through as before: a cone or any other curved face beside the edge, and a held edge on a curved face.
   - Changed: these parts used to trim through the face past the edge (a notch) or be refused by trim through; they now keep the edge.
