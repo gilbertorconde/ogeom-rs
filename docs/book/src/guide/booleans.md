@@ -29,6 +29,14 @@ The [getting-started example](getting-started.md#a-first-solid) is a
   parametrisation singularity of that face's surface, produces the correct
   section curve. The test suite checks these cases against closed forms
   (sphere octants, blend corners).
+- **A curve one operand holds in the other's face is a contact.** An
+  edge lying in a face of the other operand, or a section running through
+  it, splits that face along it, and each piece either side is classified
+  on its own, as coplanar faces are. Where two faces lie on one surface,
+  whether their outward normals agree decides which pieces are kept. A
+  face whose chart closes to one point along a whole side (a patch whose
+  rows all end at an apex) is bounded by that side too, so a section
+  beside it is inside the face.
 - **Unresolvable cases are refused.** If two inputs interfere in a way the
   algorithm cannot resolve correctly, the operation returns a named error
   instead of a shape that is wrong.

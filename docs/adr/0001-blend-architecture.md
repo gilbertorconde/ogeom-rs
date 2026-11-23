@@ -3727,9 +3727,11 @@ point of `a`'s region as the rule.
 - **A foot that does not move.** An edge square to the spine (a square
   pocket's side) holds every foot of its piece on one point, and the
   band's section where the ball leaves the band lies in that side's own
-  plane. The tool would then hold an edge lying in a face of the solid,
-  which the boolean does not resolve. That is not built; the request goes
-  on to trim through, as before.
+  plane. The boolean resolves that tool (#1296), and the cut matches the
+  reference (90.790969765 against 90.790971893, bound 1.9e-5), but the
+  piece fitted through the balls on that one point meets the band and the
+  jump's sphere 8.6e-5 rad from tangent, past the 1e-5 rad a fitted piece
+  may. That is not built; the request goes on to trim through, as before.
 
 **What is built.** The parts above, with an edge onto another that the
 foot jumps to as a further seat change. The tool is the region between the
@@ -3897,11 +3899,10 @@ envelope of the balls past the face as well, and the end face trims it.
   `b` can follow), or the carried edge crosses the round's own edge,
   before the round clears the face, the round past the face is not
   defined: the request goes on to trim through.
-- **A vertex piece cut by an end face: not built yet.** The round runs on
-  past the face and its tool is valid, but the boolean does not resolve
-  the cut of a vertex piece and the piece past it by the end face (the
-  kept pieces do not close into a shell). The request goes on to trim
-  through, as before.
+- **A vertex piece cut by an end face: built (#1296).** The round runs
+  on past the face and the end face trims the vertex piece and the piece
+  past it. A piece resting on one point is built at an end only where the
+  round runs on; ended in the end piece's section planes, it is not.
 
 **What is built.** The leaning end face on a cylinder beside the edge
 (within 60 degrees of square), the band run on past it and trimmed. The
@@ -3935,8 +3936,14 @@ checks against the sampled reference.
   off: feet that never reach the end face (a top's edge bending at
   `(18, 2.5)` down to 0.4 behind the front at the end); a held edge
   crossing the round's edge past a leaning end face (a top narrowing from
-  9 to 0.5, the end `x = 20 - z / 2`); a vertex piece cut by the end face
-  (a top's edge bending at `(19.3, 1.8)` down to 1.45 at the end).
+  9 to 0.5, the end `x = 20 - z / 2`).
+- A vertex piece cut by the end face (a top's edge bending at
+  `(19.3, 1.8)` down to 1.45 at the end, #1296) is checked in
+  `tests/hold_edge_seats.rs` against that suite's sampled reference: cut
+  away 58.208017878 against 58.208017917 (bound 8.3e-8), worst G1 5.5e-6
+  rad, both cliff edges kept. Hold edge at the end off, or hold edge off,
+  goes on to trim through, which refuses it by name; with trim through
+  off too, it is refused naming hold edge at the end.
 
 ### Amendment: largest-size readings confirmed by the build (#1173)
 
