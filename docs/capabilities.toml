@@ -791,6 +791,20 @@ symbols = [
 tests = ["crates/ogeom-algo/src/length.rs"]
 
 [[capability]]
+id = "algo.rotation-minimizing-frames"
+title = "Rotation-minimizing frames along a curve or a wire at shares of its length, with a closed path's holonomy, the frames the pipe sweeps use"
+crate = "ogeom-algo"
+verdict = "covered"
+symbols = [
+    "ogeom_algo::rotation_minimizing_frames", "ogeom_algo::CurveFrame",
+    "ogeom_algo::CurveFrames",
+]
+tests = [
+    "crates/ogeom-algo/tests/frames.rs",
+    "crates/ogeom-offset/tests/frames_match_pipe.rs",
+]
+
+[[capability]]
 id = "algo.fitting"
 title = "Interpolating and approximating points with B-splines, curves and surfaces, and fitting scattered points over a seed surface's chart to a tolerance"
 crate = "ogeom-algo"

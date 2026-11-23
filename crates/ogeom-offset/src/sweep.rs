@@ -12,6 +12,7 @@
 //! fitted: the skin holds every section to a stated tolerance and refuses
 //! when it cannot reach it.
 
+use ogeom_algo::frames::{self, carry_normal as rmf_step};
 use ogeom_algo::{
     Built, History, edge_vertices, make_cone, make_cylinder, make_edge, make_edge_between,
     make_face_with_pcurves, make_solid, make_torus, make_vertex, sew,
@@ -220,7 +221,7 @@ fn disc_at_start(
             );
         }
     }
-    let stations = shell_stations(model, spine, tol)?;
+    let stations = frames::path_stations(model, spine, tol)?;
     let (at, heading) = (stations[0].at, stations[0].tangent);
     let frame = Frame::about(at, Direction::new(heading, tol)?);
     let circle = Circle::new(frame, radius, tol)?;
@@ -4203,16 +4204,7 @@ pub fn make_pipe_skinned(
 }
 
 /// One sampled spine station: where the spine is and which way it runs.
-#[derive(Clone, Copy)]
-pub(crate) struct SpineStation {
-    pub(crate) at: Point,
-    /// The unit tangent, in the direction of travel.
-    pub(crate) tangent: Vector,
-    /// The spine edge this station stands on, by position in the spine.
-    pub(crate) edge: usize,
-    /// The station's parameter on that edge's curve.
-    pub(crate) t: f64,
-}
+pub(crate) use ogeom_algo::frames::PathStation as SpineStation;
 
 /// One profile wire's closed shell round the spine: smooth wires skin as a
 /// single closed face, faceted ones as one ring strip per facet.
@@ -4525,72 +4517,11 @@ fn turned_loop_shell(
     Ok(sewn.shells[0].clone())
 }
 
-/// Rotation-minimizing normals along the stations, by double reflection:
-/// reflect in each chord's plane, then in the plane bisecting the tangents.
-/// Self-contained (it needs only the station list) and shared by every
-/// sweep that must not twist where its spine bends.
+/// Rotation-minimizing normals along the stations from the default first
+/// normal, as [`ogeom_algo::frames::carry_normals`] carries them: shared by
+/// every sweep that must not twist where its spine bends.
 fn rmf_normals(stations: &[SpineStation]) -> Vec<Vector> {
-    let mut normals: Vec<Vector> = Vec::with_capacity(stations.len());
-    let t0 = stations[0].tangent;
-    let seed = if t0.cross(ogeom_math::Vector::Z).magnitude() > 0.5 {
-        ogeom_math::Vector::Z
-    } else {
-        ogeom_math::Vector::X
-    };
-    let n0 = {
-        let v = seed - t0 * seed.dot(t0);
-        v / v.magnitude()
-    };
-    normals.push(n0);
-    for i in 1..stations.len() {
-        let (p0, t0) = (stations[i - 1].at, stations[i - 1].tangent);
-        let (p1, t1) = (stations[i].at, stations[i].tangent);
-        let n = normals[i - 1];
-        let v1 = p1 - p0;
-        let c1 = v1.dot(v1);
-        if c1 <= 1e-20 {
-            // A corner's twin station: no travel to reflect through. The
-            // normal is reflected across the corner's mitre plane instead;
-            // for a vector square to the incoming tangent that is exactly
-            // the parallel transport about the corner's own axis, and the
-            // mirror symmetry is what lands both legs' sheared sections on
-            // one ring. A planar corner's normal lies in the mitre plane
-            // already and carries straight across; a skew corner's does
-            // not, and carried unchanged it leaves the far leg's section
-            // off the mitre.
-            let bisector = t0 + t1;
-            let m = bisector.magnitude();
-            if m <= 1e-12 {
-                normals.push(n);
-                continue;
-            }
-            let b = bisector / m;
-            normals.push(n - b * (2.0 * n.dot(b)));
-            continue;
-        }
-        normals.push(rmf_step(p0, t0, n, p1, t1));
-    }
-    normals
-}
-
-/// One rotation-minimizing step: the normal `n0` at `(p0, t0)` carried to
-/// `(p1, t1)` by double reflection. No travel means no change.
-fn rmf_step(p0: Point, t0: Vector, n0: Vector, p1: Point, t1: Vector) -> Vector {
-    let v1 = p1 - p0;
-    let c1 = v1.dot(v1);
-    if c1 <= 1e-20 {
-        return n0;
-    }
-    let nl = n0 - v1 * (2.0 / c1 * v1.dot(n0));
-    let tl = t0 - v1 * (2.0 / c1 * v1.dot(t0));
-    let v2 = t1 - tl;
-    let c2 = v2.dot(v2);
-    let next = if c2 > 1e-20 {
-        nl - v2 * (2.0 / c2 * v2.dot(nl))
-    } else {
-        nl
-    };
-    next / next.magnitude()
+    frames::carry_normals(stations, frames::default_start_normal(stations[0].tangent))
 }
 
 /// A leg's generators, evaluated anywhere: the spine's own curve between
@@ -6035,7 +5966,7 @@ pub(crate) fn pipe_shell_ends(
 
 /// Whether the spine comes back to where it starts.
 fn spine_closes(model: &Model, spine: &Shape, tol: Tolerances) -> OgeomResult<bool> {
-    let stations = shell_stations(model, spine, tol)?;
+    let stations = frames::path_stations(model, spine, tol)?;
     Ok(stations[0].at.distance(stations[stations.len() - 1].at) <= tol.confusion() * 10.0)
 }
 
@@ -6044,7 +5975,7 @@ fn closes_on_a_corner(model: &Model, spine: &Shape, tol: Tolerances) -> OgeomRes
     if !spine_closes(model, spine, tol)? {
         return Ok(false);
     }
-    let stations = shell_stations(model, spine, tol)?;
+    let stations = frames::path_stations(model, spine, tol)?;
     let (a, b) = (stations[stations.len() - 1].tangent, stations[0].tangent);
     Ok(a.cross(b).magnitude() > tol.angular() || a.dot(b) < 0.0)
 }
@@ -6119,7 +6050,7 @@ fn straight_legs(
 
 /// Whether the spine turns sharply anywhere between its edges.
 pub(crate) fn has_sharp_corner(model: &Model, spine: &Shape, tol: Tolerances) -> OgeomResult<bool> {
-    let stations = shell_stations(model, spine, tol)?;
+    let stations = frames::path_stations(model, spine, tol)?;
     Ok((0..stations.len() - 1).any(|i| {
         stations[i].at.distance(stations[i + 1].at) <= tol.confusion()
             && (stations[i]
@@ -6801,7 +6732,7 @@ pub fn make_pipe_sections(
     } else {
         PipeLaw::RotationMinimizing
     };
-    let stations = shell_stations(model, spine, tol)?;
+    let stations = frames::path_stations(model, spine, tol)?;
     let stations = evenly(model, spine, stations, 24, false, tol)?;
     let normals = law_normals(model, &stations, &law, tolerance, tol)?;
     // Length run along the spine at each station.
@@ -7362,7 +7293,7 @@ fn pipe_shell_law(
     if classic && let Some(exact) = exact_legs(model, profile, spine, frenet, tolerance, tol)? {
         return Ok(exact);
     }
-    let stations = shell_stations(model, spine, tol)?;
+    let stations = frames::path_stations(model, spine, tol)?;
     let stations = if classic {
         stations
     } else {
@@ -9046,100 +8977,6 @@ fn closed_pipe_shell(
 /// where its faces point into what it bounds.
 fn shell_signed_volume(model: &Model, shell: &Shape, tol: Tolerances) -> OgeomResult<f64> {
     Ok(ogeom_mesh::triangulate(model, shell, ogeom_mesh::Deflection::default(), tol)?.volume())
-}
-
-/// Sample a spine (one edge or a wire of them) into stations, each edge
-/// given a station count by its own turning.
-fn shell_stations(model: &Model, spine: &Shape, tol: Tolerances) -> OgeomResult<Vec<SpineStation>> {
-    let edges: Vec<Shape> = match model.kind_of(spine)? {
-        ShapeType::Edge => vec![spine.clone()],
-        ShapeType::Wire => model.ordered_children_of(spine)?,
-        other => ogeom_bail!(
-            Construction,
-            "a pipe shell runs along an edge or a wire, not a {other:?}"
-        ),
-    };
-    if edges.is_empty() {
-        ogeom_bail!(Construction, "the spine has no edge to run along");
-    }
-    let mut stations: Vec<SpineStation> = Vec::new();
-    for (ei, edge) in edges.iter().enumerate() {
-        let (curve, range) = {
-            let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
-                ogeom_bail!(Construction, "a spine edge holds no data");
-            };
-            let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
-                ogeom_bail!(Construction, "a spine edge has no curve");
-            };
-            let Some(geometry) = model.geometry().curve(*curve) else {
-                ogeom_bail!(Dangling, "curve is not in this model");
-            };
-            (geometry.clone(), *range)
-        };
-        let reversed = edge.orientation() == ogeom_topo::Orientation::Reversed;
-        // Stations by turning: sample tangents coarsely, sum the angles, and
-        // give each edge enough stations that no step turns more than a few
-        // degrees. A straight edge keeps a healthy minimum for the fit.
-        let turning = {
-            let mut sum = 0.0_f64;
-            let mut last: Option<Vector> = None;
-            for i in 0..=16 {
-                let t = range.0 + (range.1 - range.0) * f64::from(i) / 16.0;
-                let d = curve.d1_at(t, tol)?;
-                let m = d.magnitude();
-                if m <= tol.confusion() {
-                    continue;
-                }
-                let u = d / m;
-                if let Some(prev) = last {
-                    sum += prev.dot(u).clamp(-1.0, 1.0).acos() * 16.0 / 16.0;
-                }
-                last = Some(u);
-            }
-            sum
-        };
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let count = (turning / (core::f64::consts::TAU / 64.0)).ceil().max(8.0) as usize;
-        for i in 0..=count {
-            #[allow(clippy::cast_precision_loss)]
-            let f = (i as f64) / (count as f64);
-            let t = if reversed {
-                range.1 - (range.1 - range.0) * f
-            } else {
-                range.0 + (range.1 - range.0) * f
-            };
-            let p = curve.point_at(t, tol)?;
-            let d = curve.d1_at(t, tol)?;
-            let m = d.magnitude();
-            if m <= tol.confusion() {
-                ogeom_bail!(Construction, "the spine is degenerate at {t}");
-            }
-            let tangent = if reversed { -(d / m) } else { d / m };
-            if let Some(prev) = stations.last()
-                && prev.edge == ei
-                && prev.at.distance(p) <= tol.confusion()
-                && prev.tangent.cross(tangent).magnitude() <= tol.angular()
-                && prev.tangent.dot(tangent) > 0.0
-            {
-                continue;
-            }
-            // A station coincident with the last but on the next edge is a
-            // twin: heading elsewhere it is a *corner* the sweep mitres, and
-            // heading on it is a smooth junction where the next edge's own
-            // run of skin begins, since one fit across two curves' joins
-            // cannot follow the step in their curvature.
-            stations.push(SpineStation {
-                at: p,
-                tangent,
-                edge: ei,
-                t,
-            });
-        }
-    }
-    if stations.len() < 2 {
-        ogeom_bail!(Construction, "the spine collapses to a point");
-    }
-    Ok(stations)
 }
 
 /// Frenet normals: each station's frame turns with the spine's own

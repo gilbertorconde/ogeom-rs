@@ -27,6 +27,7 @@ pub mod extend;
 mod fill_n;
 mod fill_patch;
 pub mod fit;
+pub mod frames;
 pub mod held;
 pub mod history;
 mod hull3;
@@ -105,6 +106,7 @@ pub use fill_n::{
     Region as FillRegion, make_filling_n_fixed, make_filling_n_region, make_filling_n_within,
 };
 pub use fit::{Spacing, approximate, approximate_within, interpolate};
+pub use frames::{CurveFrame, CurveFrames, rotation_minimizing_frames};
 pub use held::{NetOutside, net_held_within};
 pub use history::{Built, History, on_own_nodes, on_own_nodes_with, unshare};
 pub use length::{curve_length, parameter_at_length, points_by_count, points_by_spacing};
