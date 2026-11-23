@@ -1213,30 +1213,87 @@ fn two_runs_cut_away_the_reference() {
     hold_edge_holds_two_runs_on_one_band_case(true);
 }
 
-/// A square pocket beside the edge: its contact crosses the pocket's side
-/// rims square to the edge, the ball's foot staying on one point of each
-/// while it rests there, then jumping to the front rim. The piece fitted
-/// through the balls resting on that point meets its neighbours further
-/// from tangent than a fitted piece may: hold edge does not build, and the
-/// request gets trim through's solid, the same as with hold edge off.
-#[test]
-fn a_ball_on_two_rims_of_a_square_pocket_goes_to_trim_through() {
-    let mut m = Model::new();
-    let block = ogeom_algo::make_box(&mut m, at(0.0, 0.0, -15.0), (30.0, 20.0, 15.0), T)
+/// A square pocket beside the edge: its front rim from `(10, 2)` to
+/// `(20, 2)`, its sides back to `y = 10`, sunk 8.
+const SQUARE: [(f64, f64); 4] = [(10.0, 2.0), (20.0, 2.0), (20.0, 10.0), (10.0, 10.0)];
+
+/// A block 30 by 20 by 15 under `z = 0`, [`SQUARE`] sunk into its top,
+/// its front top edge along `y = 0` asked.
+fn square_pocket(m: &mut Model) -> (Shape, Vec<Shape>) {
+    let block = ogeom_algo::make_box(m, at(0.0, 0.0, -15.0), (30.0, 20.0, 15.0), T)
         .unwrap()
         .shape;
-    let pocket = ogeom_algo::make_box(&mut m, at(10.0, 2.0, -8.0), (10.0, 8.0, 9.0), T)
+    let pocket = ogeom_algo::make_box(m, at(10.0, 2.0, -8.0), (10.0, 8.0, 9.0), T)
         .unwrap()
         .shape;
-    let s = ogeom_bool::cut(&mut m, &block, &pocket, T).unwrap().shape;
-    let edge = edges_where(&m, &s, |p| p.y.abs() < 1e-9 && p.z.abs() < 1e-9);
+    let s = ogeom_bool::cut(m, &block, &pocket, T).unwrap().shape;
+    let edge = edges_where(m, &s, |p| p.y.abs() < 1e-9 && p.z.abs() < 1e-9);
     assert_eq!(edge.len(), 1, "the front top edge");
-    let built = fillet_edges(&mut m, &s, &edge, R, T).unwrap();
-    let mut off = Overflow::default();
-    off.hold_edge = false;
-    let trimmed = fillet_edges_overflow(&mut m, &s, &edge, R, off, T).unwrap();
-    assert!(ogeom_algo::check(&m, &built.shape, T).unwrap().is_valid());
-    assert!((volume(&m, &built.shape) - volume(&m, &trimmed.shape)).abs() < 1e-9);
+    (s, edge)
+}
+
+/// The ball on the sides of a square pocket: the front top edge of
+/// [`square_pocket`] rounded at 4. Its contact `y = 4` crosses the left
+/// side's rim at `x = 10`, square to the edge, and the ball rests on the
+/// one point `(10, 4)` of it, its centre turning about that point, until
+/// its contact stands as far from the front rim at `x = 12`, where the foot
+/// jumps there; on to the right side the same way. The piece on one point
+/// is a horn torus about the line through that point square to the front,
+/// built exactly, so it meets the band and the jump's sphere G1 along the
+/// arcs it shares with them.
+fn hold_edge_rests_the_ball_on_a_square_pocket_s_sides_case(heavy: bool) {
+    let mut m = Model::new();
+    let (s, edge) = square_pocket(&mut m);
+    let before = volume(&m, &s);
+    let mut held = Overflow::default();
+    held.trim_through = false;
+    let built = fillet_edges_overflow(&mut m, &s, &edge, R, held, T).unwrap();
+    let [p0, p1, p2, p3] = SQUARE;
+    let (left, front, right) = ([p3, p0], [p0, p1], [p1, p2]);
+    let (x0, f0, f1) = jump_between(left, front, (10.0, 15.0));
+    let (x1, g0, g1) = jump_between(front, right, (15.0, 20.0));
+    eprintln!("jumps at {x0} {x1}, feet {f0:?} {f1:?} {g0:?} {g1:?}");
+    holds(
+        heavy,
+        &m,
+        before,
+        &built,
+        &edge[0],
+        &Reference {
+            top: Top::Pocket(&SQUARE),
+        },
+        &split(&[p0.0, x0, x1, p1.0, f1.0, g0.0], 30.0),
+        30.0,
+    );
+    assert_eq!(spheres(&m, &built.shape), 2, "the jumping balls' faces");
+    for (rim, at) in [(left, p0.0), (right, p1.0)] {
+        let (worst, (lo, hi)) = kept_on(&m, &built.shape, rim);
+        eprintln!("side rim kept at {lo}..{hi}, off it by {worst:.1e}");
+        assert!(worst < 1e-9, "off the side rim by {worst}");
+        assert!(
+            (lo - at).abs() < 1e-6 && (hi - at).abs() < 1e-6,
+            "{lo}..{hi}"
+        );
+    }
+    let (worst, (lo, hi)) = kept_on(&m, &built.shape, front);
+    eprintln!("front rim kept over {lo}..{hi}, off it by {worst:.1e}");
+    assert!(worst < 1e-9, "off the front rim by {worst}");
+    assert!(
+        (lo - f1.0).abs() < 1e-6 && (hi - g0.0).abs() < 1e-6,
+        "{lo}..{hi}"
+    );
+}
+
+#[test]
+fn hold_edge_rests_the_ball_on_a_square_pocket_s_sides() {
+    hold_edge_rests_the_ball_on_a_square_pocket_s_sides_case(false);
+}
+
+/// The square pocket's volume against the reference.
+#[test]
+#[ignore = "heavy"]
+fn a_ball_on_a_square_pocket_s_sides_cuts_away_the_reference() {
+    hold_edge_rests_the_ball_on_a_square_pocket_s_sides_case(true);
 }
 
 /// A pocket beside the edge whose sides lean in plan: its front rim from

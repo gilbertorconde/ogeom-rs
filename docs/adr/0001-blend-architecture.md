@@ -3631,9 +3631,9 @@ edges are in the default one.
   or hold edge off, the request goes on to trim through, which refuses
   this part by name; with trim through off too it is refused naming hold
   edge at the end.
-- A square pocket beside the edge (the ball on two rims at once) is not
-  held: the request gets trim through's solid, the same as with hold edge
-  off.
+- A square pocket beside the edge (the ball on two rims at once) is held
+  by the parts "Hold edge, two edges at once" and "Hold edge, steep ends
+  and one point" below.
 
 **Hold edge, chains that turn (#1237).** The part above reads the ball's
 seat as the nearest point of `a`'s region and keeps two kinds of seat
@@ -3727,11 +3727,9 @@ point of `a`'s region as the rule.
 - **A foot that does not move.** An edge square to the spine (a square
   pocket's side) holds every foot of its piece on one point, and the
   band's section where the ball leaves the band lies in that side's own
-  plane. The boolean resolves that tool (#1296), and the cut matches the
-  reference (90.790969765 against 90.790971893, bound 1.9e-5), but the
-  piece fitted through the balls on that one point meets the band and the
-  jump's sphere 8.6e-5 rad from tangent, past the 1e-5 rad a fitted piece
-  may. That is not built; the request goes on to trim through, as before.
+  plane. The boolean resolves that tool (#1296). The piece is built
+  exactly, as the part "Hold edge, steep ends and one point (#1296)"
+  below settles.
 
 **What is built.** The parts above, with an edge onto another that the
 foot jumps to as a further seat change. The tool is the region between the
@@ -3771,8 +3769,8 @@ distance from a point inside it is that to its nearest side.
 - Hold edge off: trim through, which notches the pocket's part (cutting
   more) and refuses the chain's by name as before; with trim through off
   too, either is refused naming hold edge.
-- The square pocket gets trim through's solid, the same as with hold edge
-  off.
+- The square pocket is held; its oracle is in the part "Hold edge, steep
+  ends and one point (#1296)" below.
 
 **Hold edge, curved faces and general held edges (#1237).** The parts
 above hold a round between two planes, its held edges lines or circles
@@ -3944,6 +3942,73 @@ checks against the sampled reference.
   rad, both cliff edges kept. Hold edge at the end off, or hold edge off,
   goes on to trim through, which refuses it by name; with trim through
   off too, it is refused naming hold edge at the end.
+
+**Hold edge, steep ends and one point (#1296).** Two constructions of the
+parts above fell short of the definition; both are settled from the
+geometry alone.
+
+- **Sections at a steep end.** A piece reaching an end face was fitted
+  through its sections by planes whose normal was blended from the
+  piece's start plane to the end face's, each through its own station.
+  Where the end face leans past about 45 degrees, those planes turn
+  faster than they move along the edge at the front's depth, so
+  neighbouring sections cross. The contact on `b` then runs forward and
+  back (on the canal with its end at `x = 20 + 1.3 z`, out to
+  `x = 15.28` and back to `14.96`, where the end plane meets the
+  contact), and the surface fitted through those rows folds. The tool's
+  face on `b` carried that folded rail, and the boolean found no piece of
+  the solid's front. Now the sections are the planes turning about the
+  line where the start plane and the end face's plane meet (moved along
+  the normal where the two are parallel). Two of them meet only on that
+  line, which stands clear of the piece, so the sections never cross.
+  Each section must lie wholly ahead of the one before; where one does
+  not (the line passing through the piece), the piece is not built and
+  the request goes on to trim through.
+- **A piece on one point beside a plane.** Where every foot of a piece
+  rests on one point `P` (a vertex, or an edge square to the spine) and
+  `b` is a plane, each centre lies on `b`'s offset at the radius from
+  `P`: a circle about the line through `P` square to `b`. Each ball's
+  arc lies in the plane through that line and its centre, so the piece is
+  one arc revolved about the line: a torus whose tube reaches the line at
+  `P` (a horn torus where `P` lies on the offset, as on a square pocket's
+  side). It touches each ball along that ball's arc, so it meets the band
+  and the jump's sphere exactly G1 along the arcs it shares with them;
+  only `P` itself, where the tube closes, is singular. The 8.6e-5 rad
+  measured before came from fitting a B-spline through the arcs near that
+  singular point, not from the geometry. The piece is now the revolved
+  arc as an exact rational patch. A piece reaching an end face, and any
+  piece beside a cylinder (where the centres do not turn about one line),
+  is still fitted.
+
+**What is built.** The parts above with both constructions: the steep
+ends hold through hold edge, and so does the square pocket. A piece is
+revolved only where its first, middle and last balls stand on one circle
+about the line within a billionth of the radius, its feet on `P`, and the
+patch's corners are their contacts on `b` and `P`.
+
+**Oracle** (`tests/hold_edge_seats.rs`). The sampled reference of the
+parts above. On a steep canal end the columns are integrated up to the end
+plane in `q` with `x = 20 - k q^2`, split where the seat changes (the
+cliff line meets `y = 4`). Built with trim through off.
+
+| case (r 4) | cut away (built) | reference | error | bound | worst G1 |
+|---|---|---|---|---|---|
+| canal, end `x = 20 + 1.3 z`, 15 deep, cliff 6 to 2 | 61.051423316 | 61.051423391 | 7.5e-8 | 4.5e-9 | 1.4e-6 rad |
+| canal, end `x = 20 + 1.5 z`, 12 deep, cliff 6 to 2 | 60.613598489 | 60.613598556 | 6.8e-8 | 4.4e-9 | 1.4e-6 rad |
+| canal, end `x = 20 + 1.5 z`, 10 deep, cliff 6 to 2 | 60.613598489 | 60.613598556 | 6.8e-8 | 4.4e-9 | 1.4e-6 rad |
+| canal, end `x = 20 + z`, 15 deep, cliff 6 to 2 | 61.681524336 | 61.681524423 | 8.6e-8 | 4.5e-9 | 1.3e-6 rad |
+| canal, end `x = 20 + z`, 15 deep, cliff 6 to 1 | 55.888975789 | 55.888975843 | 5.4e-8 | 3.7e-9 | 1.1e-6 rad |
+| canal, end `x = 20 + z`, 15 deep, cliff 6 to 0.5 | 52.322566703 | 52.322566731 | 2.8e-8 | 3.3e-9 | 8.6e-7 rad |
+| square pocket `(10, 2)` to `(20, 10)` sunk 8, block 30 long | 90.790969752 | 90.790971893 | 2.1e-6 | 1.9e-5 | 2.7e-7 rad |
+
+- Each result is valid and closed, and every fitted or revolved piece
+  meets its neighbours, the band, the jump's spheres and the front within
+  1e-5 rad of tangent.
+- On the square pocket the side rims are kept at their feet `(10, 4)`
+  and `(20, 4)`, the front rim from `x = 12` to `18` (the jumps), each on
+  its line within 1e-9, and the result holds the two jumps' spheres.
+- The canal's quarter-leaning end (`x = 20 + z / 4`) now also builds with
+  trim through off: 63.109947457 against 63.109947560.
 
 ### Amendment: largest-size readings confirmed by the build (#1173)
 
