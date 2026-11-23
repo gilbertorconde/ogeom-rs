@@ -435,3 +435,63 @@ fn an_inward_offset_drops_a_neck_that_closes_exactly() {
         assert!(worst < 1e-9, "{join:?}: distance off by {worst}");
     }
 }
+
+/// A D: the chord x = 0 from (0, -5) to (0, 5) closed by the half circle
+/// of radius 5 through (5, 0). Offset out by 1 with sharp corners, the
+/// chord's line x = -1 and the circle of radius 6 are extended to their
+/// meeting at (-1, ±√35): the disc of radius 6 less its segment beyond
+/// x = -1, area 36π − (36 acos(1/6) − √35).
+#[test]
+fn an_intersection_join_carries_an_arc_on_to_its_meeting() {
+    use ogeom_geom::{CircleCurve, Curve, LineCurve};
+    use ogeom_math::{Circle, Frame};
+    let mut model = ogeom_topo::Model::new();
+    let (top, bottom) = (Point::new(0.0, 5.0, 0.0), Point::new(0.0, -5.0, 0.0));
+    let [vt, vb] = [top, bottom].map(|x| ogeom_algo::make_vertex(&mut model, x).shape);
+    let circle = Curve::Circle(CircleCurve::new(Circle::new(Frame::WORLD, 5.0, T).unwrap()));
+    let half = core::f64::consts::FRAC_PI_2;
+    let arc = ogeom_algo::make_edge_between(&mut model, circle, (-half, half), &vb, &vt, T)
+        .unwrap()
+        .shape;
+    let line = Curve::Line(LineCurve::segment(top, bottom, T).unwrap());
+    let domain = line.domain();
+    let chord = ogeom_algo::make_edge_between(&mut model, line, domain, &vt, &vb, T)
+        .unwrap()
+        .shape;
+    let wire = ogeom_algo::make_wire(&mut model, &[arc, chord], T)
+        .unwrap()
+        .shape;
+
+    let result = ogeom_offset::offset_wire(&mut model, &wire, 1.0, Join::Intersection, T)
+        .unwrap()
+        .shape;
+    let mut corners = 0;
+    for v in explore(&model, &result, Filter::OfType(ShapeType::Vertex)).unwrap() {
+        let at = model.node(&v).unwrap().data().as_vertex().unwrap().point;
+        let at = v.transform(model.datums()).unwrap().apply(at);
+        if (at.x + 1.0).abs() < 1e-9 && (at.y.abs() - 35.0_f64.sqrt()).abs() < 1e-9 {
+            corners += 1;
+        }
+    }
+    assert!(corners >= 2, "the two meetings at (-1, ±√35)");
+    let faces = ogeom_algo::faces_from_planar_wires(
+        &mut model,
+        ogeom_math::Plane::XY,
+        std::slice::from_ref(&result),
+        T,
+    )
+    .unwrap()
+    .faces;
+    let measured =
+        ogeom_algo::surface_properties(&model, &faces[0], ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass;
+    let want = 36.0f64.mul_add(
+        core::f64::consts::PI,
+        -36.0f64.mul_add((1.0f64 / 6.0).acos(), -35.0f64.sqrt()),
+    );
+    assert!(
+        (measured - want).abs() < 1e-6,
+        "area {measured}, want {want}"
+    );
+}
