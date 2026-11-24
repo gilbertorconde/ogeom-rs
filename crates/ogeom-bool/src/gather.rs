@@ -277,7 +277,7 @@ pub(crate) struct GFace {
     /// The edges its rings walk out along and straight back ([`slits`]),
     /// left out of `edges`.
     pub(crate) slits: ogeom_core::FastSet<EdgeKey>,
-    /// The face's boundary polylined in its chart within [`STRAND_SAG`],
+    /// The face's boundary polylined in its chart within [`strand_sag`],
     /// both seam columns, ends welded: the trim [`chart_point_within`]
     /// tests against. Built the first time a probe asks and kept, since the
     /// same face is asked about once per piece that might lie on it. `None`
@@ -350,7 +350,7 @@ impl GFace {
                 }
                 lines.extend(self.pole_rows(tol).ok()?);
                 weld_outline_ends(&mut lines, self, tol);
-                bridge_outline_gaps(&mut lines);
+                bridge_outline_gaps(&mut lines, param_snap(&self.surface, tol));
                 Some(lines)
             })
             .as_deref()
@@ -531,6 +531,7 @@ pub(crate) fn gather(
             );
         }
         let surface = stored.transformed(&placement, tol)?;
+        let chart_snap = param_snap(&surface, tol);
         let surface_id = data.surface;
         let tolerance = data.tolerance.get();
 
@@ -770,14 +771,14 @@ pub(crate) fn gather(
                 }
             }
             let own = edges[i].tolerance.max(edges[i].ends_tolerance);
-            // Two ends meet within PARAM_SNAP in the chart, or as far apart
+            // Two ends meet within the chart snap, or as far apart
             // across it as both their radii reach in space, twice over: a
             // loop's pcurve, sewn shut in space within its ends' radius, can
             // stop a hair short of the column it closes on. Read across the
             // chart, not in space, where the seam's two columns are one.
             let meets = |q: Point2, at: Point2, reach: f64| -> bool {
                 let apart = q.distance(at);
-                if apart <= PARAM_SNAP {
+                if apart <= chart_snap {
                     return true;
                 }
                 // A hair, not a turn: at a pole a column's whole width
@@ -860,8 +861,8 @@ pub(crate) fn gather(
             let now = e
                 .pcurve
                 .point_at(f64::midpoint(e.prange.0, e.prange.1), tol)?;
-            if ((now.x - at.x).abs() > PARAM_SNAP && !repeats[0])
-                || ((now.y - at.y).abs() > PARAM_SNAP && !repeats[1])
+            if ((now.x - at.x).abs() > chart_snap && !repeats[0])
+                || ((now.y - at.y).abs() > chart_snap && !repeats[1])
             {
                 ogeom_bail!(
                     NotDone,
@@ -1274,6 +1275,7 @@ pub(crate) fn fold_rings(
     slits: &ogeom_core::FastSet<EdgeKey>,
     tol: Tolerances,
 ) -> OgeomResult<()> {
+    let chart_snap = param_snap(surface, tol);
     /// One edge as a ring walks it: a boundary edge, which may move; a
     /// degenerate one, which anchors the ring; or a seam the ring walks
     /// once, on the side it walks (an index into the ring's seam sides),
@@ -1299,8 +1301,8 @@ pub(crate) fn fold_rings(
     let inside = |pc: &PlanarCurve, range: (f64, f64)| -> OgeomResult<bool> {
         for k in 0..=2 {
             let p = pc.point_at(range.0 + (range.1 - range.0) * f64::from(k) / 2.0, tol)?;
-            if (!periodic[0] && (p.x < ua - PARAM_SNAP || p.x > ub + PARAM_SNAP))
-                || (!periodic[1] && (p.y < va - PARAM_SNAP || p.y > vb + PARAM_SNAP))
+            if (!periodic[0] && (p.x < ua - chart_snap || p.x > ub + chart_snap))
+                || (!periodic[1] && (p.y < va - chart_snap || p.y > vb + chart_snap))
             {
                 return Ok(false);
             }
@@ -1413,7 +1415,7 @@ pub(crate) fn fold_rings(
         // where that weld then meets it.
         let meets = |a: Point2, b: Point2, step: Step, prev: Step, within: f64| -> bool {
             if is_pole(step) || is_pole(prev) {
-                a.distance(b) <= within.max(PARAM_SNAP)
+                a.distance(b) <= within.max(chart_snap)
             } else {
                 apart(a, b).is_some_and(|d| d <= within)
             }
@@ -1428,7 +1430,7 @@ pub(crate) fn fold_rings(
         let across_a_degenerate_row = |a: Point2, b: Point2| -> bool {
             let gap = b - a;
             let length = gap.magnitude();
-            if length <= PARAM_SNAP {
+            if length <= chart_snap {
                 return false;
             }
             let middle = Point2::new(f64::midpoint(a.x, b.x), f64::midpoint(a.y, b.y));
@@ -1547,9 +1549,9 @@ pub(crate) fn fold_rings(
         );
         let shift = whole(ocentre, centre);
         let beside =
-            |lo: f64, hi: f64, olo: f64, ohi: f64| hi < olo - PARAM_SNAP || lo > ohi + PARAM_SNAP;
+            |lo: f64, hi: f64, olo: f64, ohi: f64| hi < olo - chart_snap || lo > ohi + chart_snap;
         let within =
-            |lo: f64, hi: f64, olo: f64, ohi: f64| lo >= olo - PARAM_SNAP && hi <= ohi + PARAM_SNAP;
+            |lo: f64, hi: f64, olo: f64, ohi: f64| lo >= olo - chart_snap && hi <= ohi + chart_snap;
         let along = |s: f64, lo: f64, hi: f64, olo: f64, ohi: f64| {
             s == 0.0 || (beside(lo, hi, olo, ohi) && within(lo + s, hi + s, olo, ohi))
         };
@@ -1628,6 +1630,7 @@ pub(crate) fn fold_seamed_rings(
     slits: &ogeom_core::FastSet<EdgeKey>,
     tol: Tolerances,
 ) -> OgeomResult<()> {
+    let chart_snap = param_snap(surface, tol);
     #[derive(Clone)]
     enum Step {
         Seam(usize, Point2, Point2),
@@ -1656,8 +1659,8 @@ pub(crate) fn fold_seamed_rings(
     let inside = |pc: &PlanarCurve, range: (f64, f64)| -> OgeomResult<bool> {
         for k in 0..=2 {
             let p = pc.point_at(range.0 + (range.1 - range.0) * f64::from(k) / 2.0, tol)?;
-            if (!periodic[0] && (p.x < ua - PARAM_SNAP || p.x > ub + PARAM_SNAP))
-                || (!periodic[1] && (p.y < va - PARAM_SNAP || p.y > vb + PARAM_SNAP))
+            if (!periodic[0] && (p.x < ua - chart_snap || p.x > ub + chart_snap))
+                || (!periodic[1] && (p.y < va - chart_snap || p.y > vb + chart_snap))
             {
                 return Ok(false);
             }
@@ -1696,10 +1699,10 @@ pub(crate) fn fold_seamed_rings(
                 (near.y, far.y, va, vb)
             };
             let turns = ((to - from) / period).round();
-            if turns.abs() < 2.0 || ((to - from) - turns * period).abs() > PARAM_SNAP {
+            if turns.abs() < 2.0 || ((to - from) - turns * period).abs() > chart_snap {
                 continue;
             }
-            let inside = |x: f64| x >= lo - PARAM_SNAP && x <= hi + PARAM_SNAP;
+            let inside = |x: f64| x >= lo - chart_snap && x <= hi + chart_snap;
             let copies: Vec<f64> = [-1.0, 1.0]
                 .into_iter()
                 .filter(|s| inside(from + s * period))
@@ -1779,7 +1782,7 @@ pub(crate) fn fold_seamed_rings(
                 a.distance(b) <= SEAM_HAIR
             } else {
                 let within = 2.0 * (radius(step) + radius(prev)) + tol.confusion();
-                a.distance(b) <= PARAM_SNAP || apart(a, b).is_some_and(|d| d <= within)
+                a.distance(b) <= chart_snap || apart(a, b).is_some_and(|d| d <= within)
             }
         };
         let Step::Seam(_, begin, mut last) = walk[0] else {
@@ -1880,6 +1883,7 @@ pub(crate) fn close_pole_joints(
     pole_keys: &[EdgeKey],
     tol: Tolerances,
 ) -> OgeomResult<()> {
+    let chart_snap = param_snap(surface, tol);
     let index: ogeom_core::FastMap<EdgeKey, usize> =
         edges.iter().enumerate().map(|(i, e)| (e.node, i)).collect();
     // The middle of the face's trim in the chart.
@@ -1963,7 +1967,7 @@ pub(crate) fn close_pole_joints(
                 end(*a, *a_back, a_side, true)?,
                 end(*b, *b_back, b_side, false)?,
             );
-            if from.distance(to) <= PARAM_SNAP {
+            if from.distance(to) <= chart_snap {
                 continue;
             }
             let reach = ra.max(rb).max(tol.confusion());
@@ -1986,7 +1990,7 @@ pub(crate) fn close_pole_joints(
                     closes[1],
                 )
             };
-            if closing && length >= width - PARAM_SNAP {
+            if closing && length >= width - chart_snap {
                 continue;
             }
             let mut collapses = true;
@@ -2857,7 +2861,7 @@ pub(crate) fn pcurve_polyline(
     chart_polyline(pcurve, prange, crange, sub, surface, sagged, tol)
 }
 
-/// [`pcurve_polyline`] with its chords held within [`STRAND_SAG`] of the
+/// [`pcurve_polyline`] with its chords held within [`strand_sag`] of the
 /// pcurve on any surface, not only on a plane.
 pub(crate) fn pcurve_polyline_within_sag(
     pcurve: &PlanarCurve,
@@ -2871,7 +2875,7 @@ pub(crate) fn pcurve_polyline_within_sag(
 }
 
 /// The pcurve's course over a sub-range of the curve's parameters, its
-/// chords within [`STRAND_SAG`] where `sagged`.
+/// chords within [`strand_sag`] where `sagged`.
 pub(crate) fn chart_polyline(
     pcurve: &PlanarCurve,
     prange: (f64, f64),
@@ -2917,9 +2921,10 @@ pub(crate) fn chart_polyline(
         count = count.max(steps);
     }
     if sagged && !matches!(pcurve, PlanarCurve::Line(_)) {
-        count = match circle_sag_count(pcurve, lo, hi, count) {
+        let within = strand_sag(surface, tol);
+        count = match circle_sag_count(pcurve, lo, hi, count, within) {
             Some(count) => count,
-            None => sag_count(&|t| pcurve.point_at(t, tol), lo, hi, count)?.0,
+            None => sag_count(&|t| pcurve.point_at(t, tol), lo, hi, count, within)?.0,
         };
     }
     let mut out = Vec::with_capacity(count + 1);

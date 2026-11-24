@@ -1,0 +1,5 @@
+- **Fixed: the boolean's fixed lengths, and a band's seam, follow the model's unit** (#1335).
+  - `Tolerances::unit()` is the model's millimetres per unit, and `Tolerances::read_at(mm_per_unit)` reads the thresholds at another scale and keeps the unit. A fuzzy boolean and the boolean's widened retries use it, so the lengths inside stay in the model's unit.
+  - The plane strand sag (1e-4 mm), the chart node snap on a plane (1e-6 mm) and the quiet-edge length (1e-2 mm) now read in the model's unit. In metres they were 1000 times wider. Two drums a thousandth of a millimetre apart in radius or in axis were refused in metres and now fuse, cut and common as in millimetres.
+  - `make_band_between` floored a cylinder's chart stretch at 1 model unit. In metres a ring start a hair off the other's column took a helix seam a fraction of a nanoradian long, and the boolean that applied the band refused. The floor is now 1 mm. A marched fillet in metres (a post leaning out of a slab, its elliptical seat rounded) builds.
+  - Nothing changes at 1 mm per unit.

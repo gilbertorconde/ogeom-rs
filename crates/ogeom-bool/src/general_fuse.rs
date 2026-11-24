@@ -480,12 +480,19 @@ pub(crate) fn general_fuse_as(
             } else if matches!(pcurve, PlanarCurve::Line(_)) {
                 (32, 0.0)
             } else {
-                match circle_sag_count(pcurve, sub.0, sub.1, 32) {
+                let within = strand_sag(&face.surface, tol);
+                match circle_sag_count(pcurve, sub.0, sub.1, 32, within) {
                     Some(count) => (
                         count,
                         circle_sag(pcurve, sub.0, sub.1, count).unwrap_or(f64::INFINITY),
                     ),
-                    None => sag_count(&|t| pcurve.point_at(fold_at(t), tol), sub.0, sub.1, 32)?,
+                    None => sag_count(
+                        &|t| pcurve.point_at(fold_at(t), tol),
+                        sub.0,
+                        sub.1,
+                        32,
+                        within,
+                    )?,
                 }
             };
             let mut line = Vec::with_capacity(count + 1);
@@ -612,11 +619,12 @@ pub(crate) fn general_fuse_as(
                     {
                         let along = (*end - axis.location).dot(axis.direction.vector());
                         let foot = axis.point_at(along);
-                        if foot.distance(*end) > PARAM_SNAP {
+                        if foot.distance(*end) > param_snap(&face.surface, tol) {
                             continue;
                         }
                         met.push(along);
-                        if along > pole.prange.0 + PARAM_SNAP && along < pole.prange.1 - PARAM_SNAP
+                        if along > pole.prange.0 + param_snap(&face.surface, tol)
+                            && along < pole.prange.1 - param_snap(&face.surface, tol)
                         {
                             stops.push(along);
                         }
@@ -624,8 +632,11 @@ pub(crate) fn general_fuse_as(
                 }
             }
             stops.sort_by(|a, b| a.partial_cmp(b).unwrap_or(core::cmp::Ordering::Equal));
-            stops.dedup_by(|a, b| (*a - *b).abs() <= PARAM_SNAP);
-            let meets = |t: f64| met.iter().any(|m| (m - t).abs() <= PARAM_SNAP);
+            stops.dedup_by(|a, b| (*a - *b).abs() <= param_snap(&face.surface, tol));
+            let meets = |t: f64| {
+                met.iter()
+                    .any(|m| (m - t).abs() <= param_snap(&face.surface, tol))
+            };
             for pair in stops.windows(2) {
                 if !met.is_empty() && !(meets(pair[0]) && meets(pair[1])) {
                     continue;
@@ -823,7 +834,9 @@ pub(crate) fn general_fuse_as(
         let near = contacts
             .iter()
             .filter(|c| c.target_from_a == from_a && c.target_face == fi)
-            .fold(PARAM_SNAP, |acc, c| acc.max(c.tolerance * 2.0))
+            .fold(param_snap(&face.surface, tol), |acc, c| {
+                acc.max(c.tolerance * 2.0)
+            })
             .max(tol.confusion() * 2.0)
             .max(everywhere(face))
             .max(if read_thin { 0.0 } else { spread })
@@ -955,7 +968,7 @@ pub(crate) fn general_fuse_as(
             .fold(f64::INFINITY, f64::min);
         let in_chart = |length: f64| -> f64 {
             if stretch.is_finite() && stretch > 1.0 {
-                (length / stretch).max(PARAM_SNAP)
+                (length / stretch).max(param_snap(&face.surface, tol))
             } else {
                 length
             }
@@ -1004,7 +1017,7 @@ pub(crate) fn general_fuse_as(
             .iter()
             .filter(|k| k.2 * 2.0 <= face_snap)
             .fold(face_snap, |acc, k| acc.min(k.2))
-            .max(PARAM_SNAP);
+            .max(param_snap(&face.surface, tol));
         for (e, r) in ends.iter().zip(reach.iter_mut()) {
             for &(a, b, half) in &kept {
                 if half * 2.0 <= *r && (e.2.distance(a) <= *r || e.2.distance(b) <= *r) {
@@ -1358,8 +1371,8 @@ pub(crate) fn general_fuse_as(
                 || !face.poles.is_empty()
                 || face.edges.iter().any(|e| {
                     paves.contains_key(&e.node)
-                        || e.ends[0].0.distance(e.ends[1].0) <= QUIET_EDGE
-                        || e.bound.diagonal() <= QUIET_EDGE
+                        || e.ends[0].0.distance(e.ends[1].0) <= quiet_edge(tol)
+                        || e.bound.diagonal() <= quiet_edge(tol)
                 })
             {
                 quiet[side][fi] = false;

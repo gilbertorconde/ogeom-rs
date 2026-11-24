@@ -333,6 +333,11 @@ and then misbehave silently on models authored in metres or inches.
 below, and its square, is a normal `f64`: from about `7.5e-161` to about
 `6.7e144` millimetres per unit, micrometres to kilometres with room to spare.
 
+`Tolerances::read_at` reads the thresholds at another scale and keeps the
+model's unit (`Tolerances::unit`). The boolean uses it for a fuzz and for its
+widened retries, so the fixed lengths it writes in millimetres still convert
+with the model's unit.
+
 | Constant | Value at unit scale | Meaning |
 |---|---|---|
 | `CONFUSION` | `1e-7` | two points are the same point |

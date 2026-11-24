@@ -2102,11 +2102,12 @@ pub(crate) fn fold_inside(
             )
         },
     );
+    let chart_snap = param_snap(surface, tol);
     let boxed = |q: &Point2| {
-        q.x >= low.x - PARAM_SNAP
-            && q.x <= high.x + PARAM_SNAP
-            && q.y >= low.y - PARAM_SNAP
-            && q.y <= high.y + PARAM_SNAP
+        q.x >= low.x - chart_snap
+            && q.x <= high.x + chart_snap
+            && q.y >= low.y - chart_snap
+            && q.y <= high.y + chart_snap
     };
     let copies: Vec<Point2> = shifts_toward(surface, folded, middle_of(trim.iter().copied()), tol)
         .into_iter()

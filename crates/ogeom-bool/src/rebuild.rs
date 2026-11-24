@@ -810,7 +810,7 @@ pub(crate) fn build_sub_edge(
                     .unwrap_or(node);
                 let vertex = if k == 0 { &v0 } else { &v1 };
                 let radius = model.tolerance_of(vertex)?.map_or(0.0, |r| r.get());
-                if node.distance(end) > PARAM_SNAP
+                if node.distance(end) > param_snap(&face.surface, tol)
                     && !on_collapsed_row(&face.surface, node, radius, tol)
                     && face.surface.point_at(node.x, node.y, tol)?.distance(at)
                         < face.surface.point_at(end.x, end.y, tol)?.distance(at)

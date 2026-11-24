@@ -310,9 +310,15 @@ pub(crate) fn pave_junctions(
     Ok(junctions)
 }
 
-/// How long an edge of a face left alone must be: a shorter one may be
-/// dust some other chart collapses, which only the face's own split finds.
-pub(crate) const QUIET_EDGE: f64 = 1e-2;
+/// How long an edge of a face left alone must be, in millimetres: a shorter
+/// one may be dust some other chart collapses, which only the face's own
+/// split finds.
+const QUIET_EDGE: f64 = 1e-2;
+
+/// [`QUIET_EDGE`] in the model's unit.
+pub(crate) fn quiet_edge(tol: Tolerances) -> f64 {
+    QUIET_EDGE / tol.unit()
+}
 
 /// The one piece of a face the other solid leaves alone: its own wires as
 /// rings, its state read at the middle of one of its edges, which no
@@ -617,7 +623,7 @@ impl EndsByX {
 /// along it), a ray cast for containment passes through the opening, counts
 /// one crossing, and a point level with it reads inside. A short segment
 /// across each opening closes the outline as the topology does.
-pub(crate) fn bridge_outline_gaps(lines: &mut Vec<Vec<Point2>>) {
+pub(crate) fn bridge_outline_gaps(lines: &mut Vec<Vec<Point2>>, snap: f64) {
     let ends: Vec<(usize, bool, Point2)> = lines
         .iter()
         .enumerate()
@@ -631,10 +637,10 @@ pub(crate) fn bridge_outline_gaps(lines: &mut Vec<Vec<Point2>>) {
     let by_x = EndsByX::new(&ends);
     let mut joins: Vec<Vec<Point2>> = Vec::new();
     for (k, &(i, end_i, p)) in ends.iter().enumerate() {
-        for m in by_x.near(p, PARAM_SNAP) {
+        for m in by_x.near(p, snap) {
             let (j, end_j, q) = ends[m];
             let d = p.distance(q);
-            if m > k && (j, end_j) != (i, end_i) && d > 0.0 && d <= PARAM_SNAP {
+            if m > k && (j, end_j) != (i, end_i) && d > 0.0 && d <= snap {
                 joins.push(vec![p, q]);
             }
         }
@@ -642,9 +648,9 @@ pub(crate) fn bridge_outline_gaps(lines: &mut Vec<Vec<Point2>>) {
     let open: Vec<Point2> = ends
         .iter()
         .filter(|&&(i, end_i, p)| {
-            !by_x.near(p, PARAM_SNAP).into_iter().any(|m| {
+            !by_x.near(p, snap).into_iter().any(|m| {
                 let (j, end_j, q) = ends[m];
-                (j, end_j) != (i, end_i) && p.distance(q) <= PARAM_SNAP
+                (j, end_j) != (i, end_i) && p.distance(q) <= snap
             })
         })
         .map(|&(_, _, p)| p)
@@ -758,7 +764,11 @@ pub(crate) fn weld_outline_ends(lines: &mut [Vec<Point2>], face: &GFace, tol: To
                 // every purpose here, and moving one by rounding noise
                 // takes a probe that stands exactly on a chart's seam off
                 // it.
-                if (j, end_j) >= (i, end_i) || owner[j] == owner[i] || d <= PARAM_SNAP || d > snap {
+                if (j, end_j) >= (i, end_i)
+                    || owner[j] == owner[i]
+                    || d <= param_snap(&face.surface, tol)
+                    || d > snap
+                {
                     return None;
                 }
                 (lifted[m]?.distance(at) <= within).then_some((d, q))
@@ -1831,7 +1841,7 @@ pub(crate) fn retried(
     }
     let restore = Restore(MEMBRANE_WITHIN.replace(limit.min(MEMBRANE_WITHIN.get())));
     for widen in [10.0, 100.0] {
-        let Ok(wider) = Tolerances::with_scale(tol.scale() / widen) else {
+        let Ok(wider) = tol.read_at(tol.scale() / widen) else {
             continue;
         };
         match attempt(model, wider) {

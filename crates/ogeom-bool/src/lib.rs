@@ -110,7 +110,10 @@ use pieces::*;
 use rebuild::*;
 use sections::*;
 
-/// Parameter-space chord for the polyline scaffolding.
+/// Parameter-space chord for the polyline scaffolding: a span of the
+/// pcurve's own parameter (an angle, a knot unit), which sets a curved
+/// strand's first count and is no length in the model. On a plane the
+/// count is then raised to [`strand_sag`], which is.
 const SCAFFOLD_CHORD: f64 = 1e-3;
 
 /// How far a curved strand's chords may stand off its curve on a plane, and
@@ -121,10 +124,23 @@ const SCAFFOLD_CHORD: f64 = 1e-3;
 /// section's piece is kept on a face by its middle read against the face's
 /// outline, and a piece standing nearer the rim than the rim's chords bow
 /// (an arc between two crossings of a bowed seam) reads on the wrong side.
+///
+/// On a plane the chart is the model's lengths and this is millimetres,
+/// read in the model's unit by [`strand_sag`]. On any other surface it is a
+/// chart value (angles, knot units) and stands as it is.
 const STRAND_SAG: f64 = 1e-4;
 
-/// Samples enough that a curve's chords stand within [`STRAND_SAG`] of it in
-/// the chart: from `count`, raised as the measured sag at the chords'
+/// [`STRAND_SAG`] in `surface`'s chart.
+fn strand_sag(surface: &SurfaceGeometry, tol: Tolerances) -> f64 {
+    if matches!(surface, SurfaceGeometry::Plane(_)) {
+        STRAND_SAG / tol.unit()
+    } else {
+        STRAND_SAG
+    }
+}
+
+/// Samples enough that a curve's chords stand within `within` of it in the
+/// chart (a [`strand_sag`]): from `count`, raised as the measured sag at the chords'
 /// middles asks, up to 512. With the count, the sag measured at it, or
 /// infinity where the count was raised past the last measure.
 fn sag_count(
@@ -132,6 +148,7 @@ fn sag_count(
     lo: f64,
     hi: f64,
     mut count: usize,
+    within: f64,
 ) -> OgeomResult<(usize, f64)> {
     const MOST: usize = 512;
     let mut measured = f64::INFINITY;
@@ -151,7 +168,7 @@ fn sag_count(
             sag = sag.max(middle.distance(Point2::midpoint(previous, here)));
             previous = here;
         }
-        if sag <= STRAND_SAG {
+        if sag <= within {
             measured = sag;
             break;
         }
@@ -161,7 +178,7 @@ fn sag_count(
             clippy::cast_sign_loss,
             clippy::cast_precision_loss
         )]
-        let raised = ((count as f64) * (sag / STRAND_SAG).sqrt()).ceil() as usize;
+        let raised = ((count as f64) * (sag / within).sqrt()).ceil() as usize;
         count = raised.clamp(count + 1, MOST);
     }
     Ok((count, measured))
@@ -169,16 +186,22 @@ fn sag_count(
 
 /// [`sag_count`] for a circle, whose chords' sag is known: `r(1 - cos(θ/2))`
 /// over a step of `θ`. `None` for any other curve.
-fn circle_sag_count(pcurve: &PlanarCurve, lo: f64, hi: f64, count: usize) -> Option<usize> {
+fn circle_sag_count(
+    pcurve: &PlanarCurve,
+    lo: f64,
+    hi: f64,
+    count: usize,
+    within: f64,
+) -> Option<usize> {
     const MOST: usize = 512;
     let PlanarCurve::Circle(circle) = pcurve else {
         return None;
     };
     let radius = circle.circle().radius();
-    if radius <= STRAND_SAG {
+    if radius <= within {
         return Some(count);
     }
-    let step = 2.0 * (1.0 - STRAND_SAG / radius).acos();
+    let step = 2.0 * (1.0 - within / radius).acos();
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -200,8 +223,19 @@ fn circle_sag(pcurve: &PlanarCurve, lo: f64, hi: f64, count: usize) -> Option<f6
     Some(circle.circle().radius() * (1.0 - (step / 2.0).cos()))
 }
 
-/// Parameter-space node snap for the arrangement.
+/// Parameter-space node snap for the arrangement. On a plane the chart is
+/// the model's lengths and this is millimetres, read in the model's unit by
+/// [`param_snap`]. On any other surface it is a chart value.
 const PARAM_SNAP: f64 = 1e-6;
+
+/// [`PARAM_SNAP`] in `surface`'s chart.
+fn param_snap(surface: &SurfaceGeometry, tol: Tolerances) -> f64 {
+    if matches!(surface, SurfaceGeometry::Plane(_)) {
+        PARAM_SNAP / tol.unit()
+    } else {
+        PARAM_SNAP
+    }
+}
 
 /// The widest chart gap a seam column's end may stand from the face's
 /// other edges and still meet them within their radii in space.
@@ -315,7 +349,7 @@ fn fuzzed(fuzz: f64, tol: Tolerances) -> OgeomResult<Tolerances> {
     if fuzz <= tol.confusion() {
         return Ok(tol);
     }
-    Tolerances::with_scale(ogeom_core::tolerance::CONFUSION / fuzz)
+    tol.read_at(ogeom_core::tolerance::CONFUSION / fuzz)
 }
 
 /// [`fuse`] with geometry within `fuzz` of touching counted as touching.

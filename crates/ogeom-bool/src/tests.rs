@@ -683,12 +683,13 @@ fn a_circle_is_sampled_to_the_strand_sag_in_closed_form() {
         let circle = ogeom_math::Circle2::new(ogeom_math::Frame2::WORLD, radius, T).unwrap();
         let pcurve = PlanarCurve::Circle(ogeom_geom::Circle2d::new(circle));
         for (lo, hi) in [(0.0, 2.0 * PI), (1.0, 2.5)] {
-            let count = circle_sag_count(&pcurve, lo, hi, 8).unwrap();
+            let count = circle_sag_count(&pcurve, lo, hi, 8, STRAND_SAG).unwrap();
             let step = (hi - lo) / f64::from(u32::try_from(count).unwrap());
             assert!(
                 count == 512 || radius * (1.0 - (step / 2.0).cos()) <= STRAND_SAG * (1.0 + 1e-9)
             );
-            let (measured, _) = sag_count(&|t| pcurve.point_at(t, T), lo, hi, 8).unwrap();
+            let (measured, _) =
+                sag_count(&|t| pcurve.point_at(t, T), lo, hi, 8, STRAND_SAG).unwrap();
             assert!(count <= measured, "{count} against {measured}");
         }
     }
@@ -707,7 +708,7 @@ fn an_outline_closes_across_the_openings_its_ends_leave() {
             vec![Point2::new(0.06, 0.0), Point2::new(0.06, top)],
             vec![Point2::new(0.06, top - short), Point2::new(0.0, 0.0)],
         ];
-        bridge_outline_gaps(&mut lines);
+        bridge_outline_gaps(&mut lines, PARAM_SNAP);
         let lines: Vec<&[Point2]> = lines.iter().map(Vec::as_slice).collect();
         // Level with the opening, a turn round from the wedge, so its
         // ray runs across the wedge.

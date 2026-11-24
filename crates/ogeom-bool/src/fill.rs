@@ -220,10 +220,9 @@ pub(crate) fn fill(
                                         if slop <= tol.confusion() {
                                             return None;
                                         }
-                                        let loose = Tolerances::with_scale(
-                                            tol.scale() * tol.confusion() / slop,
-                                        )
-                                        .ok()?;
+                                        let loose = tol
+                                            .read_at(tol.scale() * tol.confusion() / slop)
+                                            .ok()?;
                                         ogeom_intersect::exact_pcurve_of(
                                             &e.curve,
                                             &target.surface,
@@ -900,7 +899,7 @@ pub(crate) fn fill(
         }
         lines.extend(face.pole_rows(tol)?);
         weld_outline_ends(&mut lines, face, tol);
-        bridge_outline_gaps(&mut lines);
+        bridge_outline_gaps(&mut lines, param_snap(&face.surface, tol));
         Ok(lines)
     };
     // Only the faces a section crosses are asked about: on a large solid
