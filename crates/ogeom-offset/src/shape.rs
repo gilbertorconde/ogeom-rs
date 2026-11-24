@@ -62,6 +62,12 @@ fn is_free_form(surface: &SurfaceGeometry) -> bool {
 /// The displacement constraint one face puts on a point of itself.
 type Displacement<'a> = dyn Fn(&Model, usize, Point) -> OgeomResult<Option<(Vector, f64)>> + 'a;
 
+/// A tenth of a micron at unit scale: what a fitted support (a drafted
+/// wall, its border rows) holds to.
+pub(crate) fn support_fit_target(tol: Tolerances) -> f64 {
+    tol.confusion() * 1e3
+}
+
 /// Canonicalize a solid whose topology is *placed*: a node placed twice (a
 /// prism's far cap reusing the profile's nodes under the travel), or any
 /// occurrence standing away from its node under a location (a solid moved
@@ -1516,7 +1522,7 @@ pub(crate) fn rebuilt(
                     // Within the moved supports' own stated accuracy: a
                     // fitted support holds its points only to the fit
                     // target, and the hinge is exactly on it by less.
-                    (worst <= (tol.confusion() * 1e3).max(1e-4)).then_some(worst)
+                    (worst <= support_fit_target(tol)).then_some(worst)
                 };
                 if let Some(worst) = unmoved {
                     let Some((sv, ev)) = edge_vertices(model, &forward)? else {
@@ -2056,7 +2062,7 @@ fn rebuilt_seam_edge(
     // the far end of a ruling their errors add; a few targets' worth is
     // the support's own honesty, not a wrong column.
     let slack = if matches!(prep.surface, SurfaceGeometry::BSpline(_)) {
-        (tol.confusion() * 1e3).max(1e-4) * 4.0
+        support_fit_target(tol) * 4.0
     } else {
         tol.confusion() * 100.0
     };
@@ -2467,7 +2473,7 @@ fn corner_met(
             SurfaceGeometry::Torus(s) => s.torus().distance_to(at),
             other => ogeom_algo::project_on_surface(other, at, 32, tol)?.distance,
         };
-        if off > (tol.confusion() * 1e3).max(1e-4) {
+        if off > support_fit_target(tol) {
             ogeom_bail!(
                 Construction,
                 "the moved faces no longer meet at a corner they shared; the \

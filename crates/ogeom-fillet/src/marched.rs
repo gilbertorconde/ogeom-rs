@@ -1303,9 +1303,7 @@ pub(crate) fn closed_band_wedge(
     // material added.
     let additive = !convex;
 
-    // Two tenths of a micron at unit scale: what the march's own stations
-    // hold to, and what the band's edges are widened to say.
-    let fit_target = (tol.confusion() * 2e3).max(2e-4);
+    let fit_target = band_fit_target(tol);
 
     // The blend surface: each station's exact ball arc, the loop of stations
     // fitted *closed*: the join is C1 wherever the seam lands, so anchoring
@@ -3200,7 +3198,7 @@ fn note_rails(
 /// Two tenths of a micron at unit scale: what the march's own stations
 /// hold to, and what a marched band's edges are widened to say.
 pub(crate) fn band_fit_target(tol: Tolerances) -> f64 {
-    (tol.confusion() * 2e3).max(2e-4)
+    tol.confusion() * 2e3
 }
 
 /// Each station's exact normals along its arc, none at a pinched end.
