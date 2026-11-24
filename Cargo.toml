@@ -117,6 +117,9 @@ proptest = "1"
 # The timing tests read a thread's processor clock through it, without
 # `unsafe`.
 rustix = { version = "1.1", default-features = false, features = ["time"] }
+# Counts what the global allocator frees, for the face mesh cache test that
+# measures its byte cap against the real heap without `unsafe` of its own.
+stats_alloc = "0.1.10"
 
 [profile.release]
 opt-level = 3

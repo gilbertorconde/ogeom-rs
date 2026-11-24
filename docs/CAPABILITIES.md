@@ -12,11 +12,11 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 | verdict | capabilities |
 |---|---|
-| `covered` | 108 |
+| `covered` | 109 |
 | `partial` | 18 |
 | `divergent` | 6 |
 
-132 capabilities. Ratchet: `unreviewed_max = 0`.
+133 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -307,6 +307,7 @@ than a plane or a B-spline over its patch's parameters.
 
 - **mesh.boolean**: Booleans between closed meshes, and between a mesh and a meshed solid, decided exactly, coplanar faces included, new vertices rounded and flagged · `covered`
 - **mesh.editing**: Editing triangulations: half-edges with stable numbers and source vertices, components, rims, face removal and flips, non-manifold input split and reported, welding, decimation verified both ways, in place with source vertex sets carried through collapses and markings of the source mapped to regions · `covered`
+- **mesh.face-mesh-cache**: Face meshes kept across models by what each face is made of, bounded by bytes or faces with least-recently-used eviction, swept to the faces of the body meshed last, with hit, miss and eviction counts · `covered`
 - **mesh.hatching**: Hatching faces: iso and free-direction line families clipped to the trim · `covered`
 - **mesh.hole-filling**: Filling a rim of an editable mesh: triangulated with the least largest bend then the least area, exactly up to 500 edges and ear-clipped on its plane beyond, refined to the mesh's spacing, faired curved or flat, closed and manifold about the patch, touching holes parted at their shared point · `covered`
 - **mesh.hollow-thicken**: Hollowing a closed mesh to a wall from its exact distance field, the cavity marched on tetrahedra, decimated within a sixteenth of a cell and checked exactly strictly inside; thickening an open mesh by two offset layers walled along each rim · `covered`
@@ -349,4 +350,4 @@ than a plane or a B-spline over its patch's parameters.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, surface parameters and normals per triangle corner · `covered`
 
-<!-- ledger-checksum: 598fbfa87a17a173 -->
+<!-- ledger-checksum: 3eb2a8010df89aa8 -->

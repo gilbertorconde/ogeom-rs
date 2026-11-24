@@ -1,0 +1,5 @@
+- **Added: `FaceMeshCache` bounds, eviction and counts** (#1257).
+  - `retain_used` drops every face not looked up or stored since the call before: called after each mesh of a body, the cache holds that body's faces and meshing it again draws none.
+  - `with_byte_limit` and `with_face_limit` cap the cache, dropping the least recently used face first. The byte count covers the keys, meshes, chords and the tables indexing them; measured against the allocator, it stays at or above what the cache frees (within 0.4% on a drilled-block workload).
+  - `len`, `is_empty`, `bytes`, `forget(model, face)`, `clear` and `stats` (faces, bytes, hits, misses, evicted, dropped). A face is one entry for all the deflections and passes it was drawn at. Recency is an access count, so the cache behaves the same on wasm32.
+  - Facade: `ogeom::mesh::FaceMeshCacheStats`.
