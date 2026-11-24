@@ -1,0 +1,6 @@
+- **Added: more narrow passages under `Overflow`** (#1237).
+  - A zone covering part of a wall's face: a pocket narrow up to a step and wider past it. The step's convex corner gets the spandrel turned about the walls' edge, and the request needs `narrow_partial_face` (refused by name with it off).
+  - Walls not square to each other: at a sharp corner of any angle each band runs on to the next wall's plane and is cut there (chamfered corners, a parallelogram pocket).
+  - Facing walls no farther apart than the radius: each band crosses the wall it faces and is cut there.
+  - Walls leaning from square to the floor were already built by the engine; a test now measures them against the union of the bands' fills.
+  - Still refused by name: a curved floor, corner faces that are not cylinders, a band that would cross a thin wall into air beyond, walls lower than the radius. The rules are in ADR 0001, amendment "overflow handling", part "Narrow passages, more shapes".

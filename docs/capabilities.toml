@@ -1960,20 +1960,26 @@ trimmed or extended), and where it does not build a request the request \
 is refused by name as before. With trim through off, a result with a blend changing a face it is not seated on (its edge's faces and those at its ends, whichever other edge of the request is seated there), or carrying a face on past its side over nothing, is refused by name, and so is a foot blend into round would take while it is off. Narrow passages (a concave zone tighter than the radius) take three \
 more switches, on by default and each taking what the cheaper ones take: \
 blend-made only, whole face, partial face. Built for a planar floor's rim \
-with planar walls square to it, joined at square corners (sharp, or \
-through a cylindrical corner face tighter than the radius standing within \
-the radius of both walls) or across a half cylinder tangent to two facing \
-walls, with open ends flush on end faces square to the edge: each wall's \
-band keeps its constant section and runs on through the zone, its \
-spandrel prism fused into the solid, so the rounds meet where they cross \
-(a G0 crease) and meet their walls G1. Blend-made only takes corner faces \
-tangent to both walls and floors no wider than twice the radius (exactly \
-twice gives the half-circle trough); whole \
-face also takes a cylindrical corner face meeting its walls at kinks. A \
-zone covering part of a face, facing walls no farther apart than the \
-radius, walls lower than the radius, walls not square, a curved floor, or \
-another corner surface go on to the engine, which refuses them by name. \
-A passage whose strategies are off is refused by name. The other round \
+with planar walls square to it, joined at sharp corners of any angle (a \
+concave one: each band runs on to the next wall's plane and is cut there; \
+a convex one: the spandrel turned about the walls' edge), at square \
+corners through a cylindrical corner face tighter than the radius \
+standing within the radius of both walls, or across a half cylinder \
+tangent to two facing walls, with open ends flush on end faces square to \
+the edge: each wall's band keeps its constant section and runs on \
+through the zone, its spandrel prism fused into the solid, so the rounds \
+meet where they cross (a G0 crease) and meet their walls G1. Blend-made \
+only takes corner faces tangent to both walls and floors no wider than \
+twice the radius (exactly twice gives the half-circle trough; no wider \
+than the radius, each band crosses the wall it faces); whole face also \
+takes a cylindrical corner face meeting its walls at kinks; partial face \
+also takes walls facing each other closer than twice the radius over part \
+of one's length only (a pocket narrow up to a step). Walls leaning from \
+square to the floor are built by the engine as the same union. A band \
+that would cross a thin wall into air beyond, walls lower than the \
+radius, a curved floor, or a corner surface other than a cylinder go on \
+to the engine, which refuses them by name. A passage that the strategies \
+switched on do not take is refused by name. The other round \
 calls take the same set (fillet_edges_corner, fillet_edges_variable, \
 fillet_edge_distances and blend_edges are their defaults). \
 fillet_edges_corner_overflow: a setback corner is fillet_edges_overflow; \
@@ -2077,7 +2083,14 @@ tests = [
     "crates/ogeom-fillet/tests/narrow_passage.rs::a_pocket_whose_corners_are_kinked_arcs",
     "crates/ogeom-fillet/tests/narrow_passage.rs::each_strategy_off_passes_a_blend_made_passage_on",
     "crates/ogeom-fillet/tests/narrow_passage.rs::a_kinked_corner_needs_whole_face_or_partial_face",
-    "crates/ogeom-fillet/tests/narrow_passage.rs::passages_the_union_does_not_round_are_refused_by_name",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::a_slot_shallower_than_the_radius_is_refused_by_name",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::a_pocket_narrow_over_part_of_a_wall_rounds_through_its_step",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::a_through_slot_no_wider_than_the_radius",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::a_narrow_pocket_whose_walls_meet_at_other_angles",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::a_narrow_pocket_whose_walls_lean_from_the_floor",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::a_pocket_whose_corners_are_elliptic_arcs_is_refused_by_name",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::a_band_that_would_cross_a_thin_rib_into_air_is_refused_by_name",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::a_slot_with_a_curved_floor_is_refused_by_name",
     "crates/ogeom-fillet/tests/narrow_passage.rs::a_slot_exactly_twice_the_radius_wide_answers_in_time",
     "crates/ogeom-fillet/tests/narrow_passage.rs::one_round_of_a_slot_twice_the_radius_wide_answers_in_time",
 ]

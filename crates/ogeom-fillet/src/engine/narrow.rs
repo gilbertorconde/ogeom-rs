@@ -8,24 +8,29 @@
 //! past its edge's ends through the tight zone, to the plane of the next
 //! wall or to the far side of the face closing the zone, and the rounds
 //! meet each other where they cross. The fill is the union of the bands'
-//! fills: one spandrel prism per wall, each fused into the solid. The
-//! faces of the tight zone (a corner face, or a floor narrower than twice
-//! the radius) are buried where the fill covers them.
+//! fills, cut to the solid's air: one spandrel prism per wall, each fused
+//! into the solid. The faces of the tight zone (a corner face, or a floor
+//! narrower than twice the radius) are buried where the fill covers them.
 //!
-//! Built for a planar floor with planar walls square to it, joined at
-//! square corners (sharp, or through a cylindrical corner face square to
-//! the floor tighter than the radius) or across a half cylinder tangent to
-//! two facing walls, and for open ends flush on end faces square to their
-//! edge. Prisms are kept only where nothing else of the solid stands in
-//! their room, the fuses add no more than the prisms hold, and the result
-//! is valid.
+//! Built for a planar floor with planar walls square to it. Neighbouring
+//! walls meet at a sharp corner of any angle (a concave one: the band runs
+//! on to the next wall's plane and is cut there; a convex one: the ball
+//! pivots on the walls' edge and the spandrel is turned about it), at a
+//! square corner through a cylindrical corner face tighter than the radius,
+//! or across a half cylinder tangent to two facing walls; open ends are
+//! flush on end faces square to their edge. Facing walls may stand closer
+//! than the radius, each band then crossing the wall it faces. Pieces are
+//! kept only where nothing else of the solid stands in their room, a
+//! section entering the solid through a wall never comes out into air
+//! again, the fuses add no more than the pieces hold, and the result is
+//! valid.
 
 use core::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_geom::{Curve, PlaneSurface, SurfaceGeometry};
-use ogeom_math::{Aabb, Circle, Direction, Frame, Plane, Point, Vector};
+use ogeom_math::{Aabb, Axis, Circle, Direction, Frame, Plane, Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
 use super::curved::{Curved, read};
@@ -44,11 +49,15 @@ pub(crate) enum Needs {
     /// The tight zone spans one whole corner face that no constant-radius
     /// round made: a cylinder meeting its walls at kinks.
     WholeFace,
+    /// The tight zone covers part of a wall's face: walls facing each
+    /// other closer than twice the radius over part of one's length only.
+    PartialFace,
 }
 
 /// One wall's band, run on through the tight zone at either end: its
 /// prism starts at `start` and runs `len` along `along`, `inward` the
-/// wall's outward normal (into the passage).
+/// wall's outward normal (into the passage). `lead` is how far it runs on
+/// past its edge at the start and at the end.
 #[derive(Debug, Clone)]
 struct Band {
     edge: Id,
@@ -56,6 +65,26 @@ struct Band {
     along: Vector,
     len: f64,
     inward: Vector,
+    lead: [f64; 2],
+    /// The faces of the passage its prism may reach: its own wall, the
+    /// faces at its ends, those its run on reaches, and walls facing it.
+    reaches: Vec<usize>,
+    /// The planes its prism is cut by, at the corners where it runs on to
+    /// a wall not square to it: a point and the wall's normal into the air.
+    trims: Vec<(Point, Vector)>,
+}
+
+/// A convex corner of the walls (the floor's rim turning outward): the
+/// rolling ball pivots on the vertical edge at `at`, so the fill there is
+/// the spandrel turned about that edge from the direction `from` (the
+/// first wall's normal into the air) to `to` (the second's).
+#[derive(Debug, Clone)]
+struct Pivot {
+    vertex: Shape,
+    at: Point,
+    from: Vector,
+    to: Vector,
+    reaches: Vec<usize>,
 }
 
 /// A narrow passage the union of its bands' fills rounds.
@@ -65,6 +94,7 @@ pub(crate) struct Narrow {
     up: Vector,
     radius: f64,
     bands: Vec<Band>,
+    pivots: Vec<Pivot>,
     /// Each corner face's rim edge, with the bands either side of it.
     corners: Vec<(Id, [usize; 2])>,
     shapes: Vec<(Id, Shape)>,
@@ -274,7 +304,10 @@ pub(crate) fn reach(
     let mut needs = Needs::BlendMade;
     let mut tight = false;
     let mut bands: Vec<Band> = Vec::new();
+    let mut walls_of: Vec<usize> = Vec::new();
+    let mut pivots: Vec<Pivot> = Vec::new();
     let mut band_of: Vec<Option<usize>> = vec![None; rims.len()];
+    let near = |v: Id| faces_at(&curved, v, &[floor]);
     for (k, rim) in rims.iter().enumerate() {
         let Rim::Wall { ends, inward } = rim else {
             continue;
@@ -282,8 +315,13 @@ pub(crate) fn reach(
         let (pa, pb) = (curved.points[&ends.0], curved.points[&ends.1]);
         let along = (pb - pa) / pa.distance(pb);
         let mut ext = [0.0; 2];
+        let mut reaches = vec![floor, walls[k]];
+        // The planes the band runs on to at concave corners that are not
+        // square: a point and the next wall's normal into the air.
+        let mut trims: Vec<(Point, Vector)> = Vec::new();
         for (side, (v, out)) in [(ends.0, -along), (ends.1, along)].into_iter().enumerate() {
             let pv = curved.points[&v];
+            reaches.extend(near(v));
             match other(v, k) {
                 None => {
                     // An open end, flush on an end face square to the edge.
@@ -298,8 +336,58 @@ pub(crate) fn reach(
                     }
                 }
                 Some(j) => match &rims[j] {
-                    Rim::Wall { inward: next, .. } => {
-                        if next.dot(out) > -1.0 + ang {
+                    Rim::Wall {
+                        ends: next_ends,
+                        inward: next,
+                    } => {
+                        let turn = next.dot(out);
+                        if turn > ang {
+                            // A convex corner: the ball pivots on the
+                            // walls' edge there, and the band stops flush.
+                            if k < j {
+                                let Some(vertex) = curved.shapes.get(&v) else {
+                                    return Ok(None);
+                                };
+                                pivots.push(Pivot {
+                                    vertex: vertex.clone(),
+                                    at: pv,
+                                    from: *inward,
+                                    to: *next,
+                                    reaches: [vec![floor], near(v)].concat(),
+                                });
+                            }
+                        } else if turn < -ang {
+                            // A concave corner at any angle: the band runs
+                            // on to the next wall's plane.
+                            ext[side] = (-radius * next.dot(*inward) / turn).max(0.0);
+                            if next.dot(*inward).abs() > ang {
+                                trims.push((pv, *next));
+                            }
+                            // Run on past the corner, the band reaches past
+                            // the next wall's far end only where the corner
+                            // there is concave too: the run on is then behind
+                            // the wall beyond, in the solid. Otherwise it must
+                            // stand against the next wall's own face.
+                            let w = if next_ends.0 == v {
+                                next_ends.1
+                            } else {
+                                next_ends.0
+                            };
+                            let pw = curved.points[&w];
+                            let past = other(w, j).map(|m| &rims[m]);
+                            if ext[side] > eps {
+                                if let Some(Rim::Wall { inward: beyond, .. }) = past
+                                    && beyond.dot(pw - pv) < 0.0
+                                {
+                                    reaches.extend(near(w));
+                                } else {
+                                    let reach = pv + out * ext[side] + *inward * radius;
+                                    if (reach - pv).dot(pw - pv) > pv.distance(pw).powi(2) + eps {
+                                        return Ok(None);
+                                    }
+                                }
+                            }
+                        } else if next.dot(*inward) < 1.0 - ang {
                             return Ok(None);
                         }
                     }
@@ -319,6 +407,7 @@ pub(crate) fn reach(
                         let Rim::Wall { inward: beyond, .. } = &rims[m] else {
                             return Ok(None);
                         };
+                        reaches.extend(near(w));
                         let pw = curved.points[&w];
                         let rc = circle.radius();
                         let o = circle.frame().origin();
@@ -348,48 +437,65 @@ pub(crate) fn reach(
                 },
             }
         }
-        band_of[k] = Some(bands.len());
-        bands.push(Band {
+        let band = Band {
             edge: ids[k],
             start: pa - along * ext[0],
             along,
             len: pa.distance(pb) + ext[0] + ext[1],
             inward: *inward,
-        });
+            lead: ext,
+            reaches,
+            trims,
+        };
+        band_of[k] = Some(bands.len());
+        bands.push(band);
+        walls_of.push(walls[k]);
     }
-    // Facing walls: twice the radius apart or closer is a narrow passage, and
-    // a band must stop short of the wall it faces.
+    // Facing walls: twice the radius apart or closer is a narrow passage.
+    // Where they face each other over part of a wall's edge only, the zone
+    // covers part of that wall's face.
+    let mut facing = Vec::new();
     for (i, a) in bands.iter().enumerate() {
-        for b in &bands[i + 1..] {
+        for (j, b) in bands.iter().enumerate().skip(i + 1) {
             if a.inward.dot(b.inward) > -1.0 + ang {
                 continue;
             }
             let span = |band: &Band| {
                 let (s0, s1) = (
-                    (band.start - a.start).dot(a.along),
-                    (band.start + band.along * band.len - a.start).dot(a.along),
+                    (band.start + band.along * band.lead[0] - a.start).dot(a.along),
+                    (band.start + band.along * (band.len - band.lead[1]) - a.start).dot(a.along),
                 );
                 (s0.min(s1), s0.max(s1))
             };
             let (u0, u1) = span(a);
             let (w0, w1) = span(b);
-            if u1.min(w1) - u0.max(w0) <= eps {
+            let overlap = u1.min(w1) - u0.max(w0);
+            if overlap <= eps {
                 continue;
             }
             let d = (b.start - a.start).dot(a.inward);
             if d <= 0.0 {
                 continue;
             }
-            if d <= radius + eps {
+            if d <= eps {
                 return Ok(None);
             }
+            facing.push((i, j));
             // Exactly twice the radius apart, the contacts meet on one
             // line of the floor: the trough the two rounds make is one half
-            // circle, and the floor between is taken whole.
+            // circle, and the floor between is taken whole. Closer than the
+            // radius, each band crosses the wall it faces and is cut there.
             if d < 2.0 * radius + eps {
                 tight = true;
+                if overlap < u1 - u0 - eps || overlap < w1 - w0 - eps {
+                    needs = needs.max(Needs::PartialFace);
+                }
             }
         }
+    }
+    for (i, j) in facing {
+        bands[i].reaches.push(walls_of[j]);
+        bands[j].reaches.push(walls_of[i]);
     }
     if !tight || bands.is_empty() {
         return Ok(None);
@@ -409,6 +515,7 @@ pub(crate) fn reach(
         up,
         radius,
         bands,
+        pivots,
         corners,
         shapes: ids.iter().copied().zip(edges.iter().cloned()).collect(),
     };
@@ -431,28 +538,83 @@ pub(crate) fn reach(
 }
 
 impl Band {
+    /// The eight corners of the box the band's prism stands in, the bit
+    /// `4` set at its end, `2` across the floor and `1` up the wall.
+    fn corners(&self, up: Vector, radius: f64) -> [Point; 8] {
+        core::array::from_fn(|i| {
+            let t = if i & 4 == 0 { 0.0 } else { self.len };
+            let s = if i & 2 == 0 { 0.0 } else { radius };
+            let z = if i & 1 == 0 { 0.0 } else { radius };
+            self.start + self.along * t + self.inward * s + up * z
+        })
+    }
+
     /// The box the band's prism stands in.
     fn room(&self, up: Vector, radius: f64, margin: f64) -> Option<Aabb> {
-        let end = self.start + self.along * self.len;
-        let mut points = Vec::with_capacity(8);
-        for p in [self.start, end] {
-            points.extend([
-                p,
-                p + self.inward * radius,
-                p + up * radius,
-                p + (self.inward + up) * radius,
-            ]);
-        }
-        let room = Aabb::of_points(&points);
-        let (lo, hi) = (room.low()?, room.high()?);
-        let pad = Vector::new(margin, margin, margin);
-        Some(Aabb::of_points(&[lo - pad, hi + pad]))
+        padded(&self.corners(up, radius), margin)
     }
 }
 
+impl Pivot {
+    /// The cube about the corner the turned spandrel stands in.
+    fn room(&self, radius: f64, margin: f64) -> Option<Aabb> {
+        let h = Vector::new(radius, radius, radius);
+        padded(&[self.at - h, self.at + h], margin)
+    }
+}
+
+/// The box of `points` padded by `margin` all round.
+fn padded(points: &[Point], margin: f64) -> Option<Aabb> {
+    let room = Aabb::of_points(points);
+    let (lo, hi) = (room.low()?, room.high()?);
+    let pad = Vector::new(margin, margin, margin);
+    Some(Aabb::of_points(&[lo - pad, hi + pad]))
+}
+
+/// Whether face `fi` stands in `room`: its box meets it, and where it is
+/// planar, its plane passes through it.
+fn stands_in(
+    model: &Model,
+    curved: &Curved,
+    fi: usize,
+    room: &Aabb,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    if !room.intersects(&ogeom_algo::shape_bounds(
+        model,
+        &curved.faces[fi].shape,
+        tol,
+    )?) {
+        return Ok(false);
+    }
+    let SurfaceGeometry::Plane(plane) = &curved.faces[fi].surface else {
+        return Ok(true);
+    };
+    let (Some(lo), Some(hi)) = (room.low(), room.high()) else {
+        return Ok(true);
+    };
+    let (o, n) = (
+        plane.plane().frame().origin(),
+        plane.plane().normal().vector(),
+    );
+    let sides: Vec<f64> = (0..8)
+        .map(|i| {
+            let p = Point::new(
+                if i & 1 == 0 { lo.x } else { hi.x },
+                if i & 2 == 0 { lo.y } else { hi.y },
+                if i & 4 == 0 { lo.z } else { hi.z },
+            );
+            n.dot(p - o)
+        })
+        .collect();
+    Ok(sides.iter().any(|v| *v > 0.0) && sides.iter().any(|v| *v < 0.0))
+}
+
 /// Whether nothing of the solid but the passage's own faces (`ours`)
-/// stands in any band's room, and none of their edges but the request's
-/// and those between two of them.
+/// stands in any band's or pivot's room, none of their edges but the
+/// request's and those between two of them, and of the passage's own faces
+/// only those each piece may reach: a prism passes into the solid only
+/// through the walls it reaches, never on into air beyond.
 fn clear(
     model: &Model,
     curved: &Curved,
@@ -462,16 +624,43 @@ fn clear(
     tol: Tolerances,
 ) -> OgeomResult<bool> {
     let margin = narrow.radius * 1e-3 + tol.confusion() * 10.0;
-    let mut rooms = Vec::with_capacity(narrow.bands.len());
+    // Each piece's room, the faces it may reach, and the directions its
+    // sections run from the wall into the air.
+    let mut rooms: Vec<(Aabb, &[usize], Vec<Vector>)> = Vec::new();
     for band in &narrow.bands {
         let Some(room) = band.room(narrow.up, narrow.radius, margin) else {
             return Ok(false);
         };
-        rooms.push(room);
+        rooms.push((room, &band.reaches, vec![band.inward]));
     }
-    let meets = |b: &Aabb| rooms.iter().any(|r| r.intersects(b));
+    for pivot in &narrow.pivots {
+        let Some(room) = pivot.room(narrow.radius, margin) else {
+            return Ok(false);
+        };
+        rooms.push((room, &pivot.reaches, vec![pivot.from, pivot.to]));
+    }
+    let meets = |b: &Aabb| rooms.iter().any(|(r, _, _)| r.intersects(b));
     for (fi, face) in curved.faces.iter().enumerate() {
         if ours.contains(&fi) {
+            for (room, reaches, rays) in &rooms {
+                if reaches.contains(&fi) || !stands_in(model, curved, fi, room, tol)? {
+                    continue;
+                }
+                // Another wall of the passage in the room: a section that
+                // passes into the solid through a wall facing it must not
+                // come out into air again, so no such wall may face the
+                // way the section runs.
+                let SurfaceGeometry::Plane(plane) = &face.surface else {
+                    return Ok(false);
+                };
+                let o = plane.plane().frame().origin();
+                let Some(n) = outward(curved, fi, o) else {
+                    return Ok(false);
+                };
+                if rays.iter().any(|d| n.dot(*d) > tol.angular()) {
+                    return Ok(false);
+                }
+            }
             continue;
         }
         if meets(&ogeom_algo::shape_bounds(model, &face.shape, tol)?) {
@@ -530,21 +719,104 @@ fn prism(
         tol,
     )?));
     let face = ogeom_algo::make_face(model, SurfaceGeometry::Plane(plane), &[wire], tol)?.shape;
-    let solid = ogeom_algo::make_prism(model, &face, band.along * band.len, tol)?.shape;
-    let mut rounds = Vec::new();
-    for f in explore_unique(model, &solid, ShapeType::Face)? {
-        let data = model.node(&f).and_then(|n| n.data().as_face());
-        let cylinder = data
-            .and_then(|d| model.geometry().surface(d.surface))
-            .is_some_and(|s| matches!(s, SurfaceGeometry::Cylinder(_)));
-        if cylinder {
-            rounds.push(f);
+    let mut solid = ogeom_algo::make_prism(model, &face, band.along * band.len, tol)?.shape;
+    // Each trim takes off what lies behind the next wall's plane: a box
+    // on that side, wider and deeper than the prism.
+    let span = band.len + 4.0 * r;
+    for (at, n) in &band.trims {
+        let into = Direction::new(-*n, tol)?;
+        // The walls stand square to the floor: `up` lies in each plane.
+        let x = Direction::new(up, tol)?;
+        let frame = Frame::new(*at, into, x, tol)?;
+        let (fx, fy) = (frame.x().vector(), frame.y().vector());
+        let corner = *at - (fx + fy) * span;
+        let frame = Frame::new(corner, into, x, tol)?;
+        let block = ogeom_algo::make_box(model, frame, (2.0 * span, 2.0 * span, span), tol)?.shape;
+        match ogeom_bool::cut(model, &solid, &block, tol) {
+            Ok(cut) => solid = cut.shape,
+            Err(e @ ogeom_core::OgeomError::Cancelled) => return Err(e),
+            Err(_) => return Ok(None),
         }
     }
+    let rounds = round_faces(model, &solid, |g| matches!(g, SurfaceGeometry::Cylinder(_)))?;
     let [round_face] = &rounds[..] else {
         return Ok(None);
     };
     Ok(Some((solid, round_face.clone())))
+}
+
+/// The faces of `solid` whose surface `round` picks.
+fn round_faces(
+    model: &Model,
+    solid: &Shape,
+    round: impl Fn(&SurfaceGeometry) -> bool,
+) -> OgeomResult<Vec<Shape>> {
+    let mut found = Vec::new();
+    for f in explore_unique(model, solid, ShapeType::Face)? {
+        let data = model.node(&f).and_then(|n| n.data().as_face());
+        if data
+            .and_then(|d| model.geometry().surface(d.surface))
+            .is_some_and(&round)
+        {
+            found.push(f);
+        }
+    }
+    Ok(found)
+}
+
+/// The fill at a convex corner: the band's spandrel turned about the
+/// walls' vertical edge from `from` to `to`; the solid and its round face.
+fn turned(
+    model: &mut Model,
+    pivot: &Pivot,
+    up: Vector,
+    r: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<(Shape, Shape)>> {
+    let e = pivot.at;
+    let (on_floor, on_axis) = (e + pivot.from * r, e + up * r);
+    let centre = e + (up + pivot.from) * r;
+    let corner = ogeom_algo::make_vertex(model, e).shape;
+    let foot = ogeom_algo::make_vertex(model, on_floor).shape;
+    let top = ogeom_algo::make_vertex(model, on_axis).shape;
+    let (c0, r0) = segment(e, on_floor, tol)?;
+    let first = ogeom_algo::make_edge_between(model, c0, r0, &corner, &foot, tol)?.shape;
+    let (c1, r1) = arc(centre, up.cross(pivot.from), -up, r, FRAC_PI_2, tol)?;
+    let round = ogeom_algo::make_edge_between(model, c1, r1, &foot, &top, tol)?.shape;
+    let (c2, r2) = segment(on_axis, e, tol)?;
+    let last = ogeom_algo::make_edge_between(model, c2, r2, &top, &corner, tol)?.shape;
+    let wire = ogeom_algo::make_wire(model, &[first, round, last], tol)?.shape;
+    let plane = PlaneSurface::new(Plane::new(Frame::new(
+        e,
+        Direction::new(up.cross(pivot.from), tol)?,
+        Direction::new(pivot.from, tol)?,
+        tol,
+    )?));
+    let face = ogeom_algo::make_face(model, SurfaceGeometry::Plane(plane), &[wire], tol)?.shape;
+    let turn = pivot.from.angle(pivot.to, tol)?;
+    let axis = if pivot.from.cross(pivot.to).dot(up) >= 0.0 {
+        up
+    } else {
+        -up
+    };
+    let solid = ogeom_algo::make_revolution(
+        model,
+        &face,
+        Axis {
+            location: e,
+            direction: Direction::new(axis, tol)?,
+        },
+        turn,
+        tol,
+    )?;
+    let rounds = round_faces(model, &solid.shape, |g| {
+        !matches!(g, SurfaceGeometry::Plane(_))
+    })?;
+    let [round_face] = &rounds[..] else {
+        return Ok(None);
+    };
+    let round_face = round_face.clone();
+    Ok(Some((solid.shape, round_face)))
 }
 
 /// The passage rounded: each band's prism fused into `solid`; `None`
@@ -590,6 +862,17 @@ pub(crate) fn built(
             solid: fill,
             sense: super::fallback::Sense::Fuse,
             faces,
+        });
+    }
+    for pivot in &narrow.pivots {
+        let Some((fill, round)) = turned(model, pivot, narrow.up, narrow.radius, tol)? else {
+            return Ok(None);
+        };
+        held += ogeom_algo::volume_properties(model, &fill, deflection, tol)?.mass;
+        tools.push(super::fallback::Tool {
+            solid: fill,
+            sense: super::fallback::Sense::Fuse,
+            faces: vec![(round, pivot.vertex.clone())],
         });
     }
     let before = ogeom_algo::volume_properties(model, solid, deflection, tol)?.mass;

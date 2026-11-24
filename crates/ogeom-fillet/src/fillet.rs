@@ -479,14 +479,15 @@ pub fn fillet_edges(
 ///   rounds over a narrow floor, corner faces tangent to both walls);
 /// - `narrow_whole_face`: also one whole corner face no round made (a
 ///   cylinder meeting its walls at kinks);
-/// - `narrow_partial_face`: also a zone covering part of a face. Nothing
-///   needs it alone yet: such a zone goes on to the engine, which refuses
-///   it by name.
+/// - `narrow_partial_face`: also a zone covering part of a wall's face
+///   (a pocket narrow over part of its length, past a step), the band
+///   split where the zone starts and ends.
 ///
 /// Built for a planar floor's rim with planar walls square to it, joined
-/// at square corners (sharp or through a corner face) or by a half
-/// cylinder between facing walls, and open ends flush on end faces. A
-/// passage whose strategies are all off is refused by name.
+/// at sharp corners of any angle, at square corners through a corner face,
+/// or by a half cylinder between facing walls, and open ends flush on end
+/// faces. Facing walls may stand closer than the radius. A passage that
+/// the strategies switched on do not take is refused by name.
 ///
 /// A chamfer takes the same options
 /// ([`chamfer_edges_overflow`](crate::chamfer_edges_overflow)): blend into
@@ -604,26 +605,42 @@ fn before_trim_through(
     if model.kind_of(solid)? == ShapeType::Solid
         && let Some(narrow) = crate::engine::narrow_reach(model, solid, edges, radius, tol)?
     {
-        let blend_made = narrow.needs == crate::engine::NarrowNeeds::BlendMade;
-        let general = overflow.narrow_whole_face || overflow.narrow_partial_face;
-        if (blend_made && overflow.narrow_blend_made) || general {
+        let taken = match narrow.needs {
+            crate::engine::NarrowNeeds::BlendMade => {
+                overflow.narrow_blend_made
+                    || overflow.narrow_whole_face
+                    || overflow.narrow_partial_face
+            }
+            crate::engine::NarrowNeeds::WholeFace => {
+                overflow.narrow_whole_face || overflow.narrow_partial_face
+            }
+            crate::engine::NarrowNeeds::PartialFace => overflow.narrow_partial_face,
+        };
+        if taken {
             if let Some(built) = crate::engine::narrow_built(model, solid, edges, &narrow, tol)? {
                 return Ok(Some(built));
             }
-        } else if blend_made {
-            ogeom_bail!(
-                Construction,
-                "the round passes a narrow passage, a concave zone tighter than \
-                 the radius, and every narrow-passage strategy is off; see \
-                 docs/CAPABILITIES.md, fillet.overflow"
-            );
         } else {
-            ogeom_bail!(
-                Construction,
-                "the round passes a narrow passage spanning a face no \
-                 constant-radius round made, and whole face and partial face \
-                 are off; see docs/CAPABILITIES.md, fillet.overflow"
-            );
+            match narrow.needs {
+                crate::engine::NarrowNeeds::BlendMade => ogeom_bail!(
+                    Construction,
+                    "the round passes a narrow passage, a concave zone tighter than \
+                     the radius, and every narrow-passage strategy is off; see \
+                     docs/CAPABILITIES.md, fillet.overflow"
+                ),
+                crate::engine::NarrowNeeds::WholeFace => ogeom_bail!(
+                    Construction,
+                    "the round passes a narrow passage spanning a face no \
+                     constant-radius round made, and whole face and partial face \
+                     are off; see docs/CAPABILITIES.md, fillet.overflow"
+                ),
+                crate::engine::NarrowNeeds::PartialFace => ogeom_bail!(
+                    Construction,
+                    "the round passes a narrow passage covering part of a wall's \
+                     face, and partial face is off; see docs/CAPABILITIES.md, \
+                     fillet.overflow"
+                ),
+            }
         }
     }
     if let Some(built) = blend_into_round_step(model, solid, edges, radius, overflow, tol)? {
