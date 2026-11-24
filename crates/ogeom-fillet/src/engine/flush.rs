@@ -374,49 +374,14 @@ pub(crate) fn rejoined(
         return Ok(built);
     }
     let (joined, _) = ogeom_heal::merge_edges(&mut scratch, &unified.shape, tol)?;
-    let history = rejoined_edges(&scratch, &unified.shape, &joined)?;
     let shape = joined.shape;
     match super::guards::solid_fits(&scratch, &shape, tol) {
         Ok(()) => {
             *model = scratch;
-            let history = built.history.then(&unified.history).then(&history);
+            let history = built.history.then(&unified.history).then(&joined.history);
             Ok(ogeom_algo::Built::new(shape, history))
         }
         Err(e @ ogeom_core::OgeomError::Cancelled) => Err(e),
         Err(_) => Ok(built),
     }
-}
-
-/// `joined`'s history with each edge of `before` it merged away traced to
-/// the edge it joined: the neighbour across a vertex it shares, which
-/// became a new edge reaching on over both.
-fn rejoined_edges(
-    model: &Model,
-    before: &Shape,
-    joined: &ogeom_algo::Built,
-) -> OgeomResult<ogeom_algo::History> {
-    let mut history = joined.history.clone();
-    let edges = explore_unique(model, before, ShapeType::Edge)?;
-    let ends = |e: &Shape| -> OgeomResult<Vec<Shape>> {
-        Ok(ogeom_algo::edge_vertices(model, e)?
-            .map(|(a, b)| vec![a, b])
-            .unwrap_or_default())
-    };
-    let meets = |a: &[Shape], b: &[Shape]| a.iter().any(|v| b.iter().any(|w| w.is_same(v)));
-    for gone in edges.iter().filter(|e| joined.history.is_deleted(e)) {
-        let own = ends(gone)?;
-        for next in &edges {
-            if next.is_same(gone) || !meets(&ends(next)?, &own) {
-                continue;
-            }
-            if let [image] = joined.history.trace(next)
-                && !image.is_same(next)
-                && meets(&ends(image)?, &own)
-            {
-                history.modify(gone, image.clone());
-                break;
-            }
-        }
-    }
-    Ok(history)
 }

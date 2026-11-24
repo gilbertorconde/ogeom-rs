@@ -9,8 +9,8 @@ use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve2d as _, Curve3d as _, PlanarCurve, SurfaceGeometry};
 use ogeom_math::{Direction2, Plane, Point, Point2, Transform};
 use ogeom_topo::{
-    EdgeRepr, Location, Model, NodeData, Orientation, PCurveId, Shape, ShapeType, SurfaceId,
-    TShapeId, explore_unique,
+    EdgeRepr, Location, Model, NodeData, Orientation, PCurveId, SameKey, Shape, ShapeType,
+    SurfaceId, TShapeId, explore_unique,
 };
 
 use crate::reshape::Reshape;
@@ -32,7 +32,8 @@ mod curved;
 /// stay as a seam where the merged face closes round its carrier; the
 /// faces' own seams stay seams; the remaining boundary re-chains into an
 /// outer ring and one ring per hole, and the history modifies every face
-/// of a merged set into the merged face. Faces whose boundary does not
+/// of a merged set into the merged face and deletes the edges and
+/// vertices that dissolved. Faces whose boundary does not
 /// re-chain so (two rings through one vertex, an edge a third face also
 /// bounds, a band closing round its axis with no seam) are left split, the
 /// rest merged. Faces on any other surface pass through untouched.
@@ -319,7 +320,42 @@ fn unify_own(
             }
         }
     }
+    settle_dissolved(model, shape, &mut built)?;
     Ok((built, unified))
+}
+
+/// `built`, a rebuild of `input`, with every face, edge and vertex of
+/// `input` traced only to shapes `built` holds: where an image is gone,
+/// the part keeps the images still held, and is deleted where none is. A
+/// shared edge dissolved inside a merged face, or a vertex dissolved
+/// inside a joined edge, has no image of its own.
+fn settle_dissolved(model: &Model, input: &Shape, built: &mut Built) -> OgeomResult<()> {
+    let history = &mut built.history;
+    for kind in [ShapeType::Face, ShapeType::Edge, ShapeType::Vertex] {
+        let held: FastSet<SameKey> = explore_unique(model, &built.shape, kind)?
+            .into_iter()
+            .map(SameKey)
+            .collect();
+        for part in explore_unique(model, input, kind)? {
+            let images = history.trace(&part);
+            if images
+                .iter()
+                .all(|image| held.contains(&SameKey(image.clone())))
+            {
+                continue;
+            }
+            let kept: Vec<Shape> = images
+                .iter()
+                .filter(|image| held.contains(&SameKey((*image).clone())))
+                .cloned()
+                .collect();
+            history.delete(&part);
+            for image in kept {
+                history.modify(&part, image);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The clusters `members` falls into when only plain pairs join: faces
@@ -897,7 +933,8 @@ fn chart_line(
 /// pcurve the pair carried is joined with it and then
 /// *measured* against the joined curve: a pair whose parameterizations do
 /// not join cleanly is left split rather than merged into a face that could
-/// no longer be triangulated.
+/// no longer be triangulated. The history modifies both edges of a pair
+/// into the joined edge and deletes the vertex between them.
 ///
 /// # Errors
 ///
@@ -982,6 +1019,7 @@ fn merge_pass(
     let wires = explore_unique(model, shape, ShapeType::Wire)?;
     let mut reshape = Reshape::new();
     let mut merged_nodes: FastSet<TShapeId> = FastSet::default();
+    let mut pairs_joined: Vec<(Shape, Shape)> = Vec::new();
     for wire in &wires {
         let edges = model.ordered_children_of(wire)?;
         if edges.len() < 2 {
@@ -1055,6 +1093,7 @@ fn merge_pass(
             merged_nodes.insert(b.node());
             reshape.replace(&a, joined);
             reshape.remove(&b);
+            pairs_joined.push((a, b));
             i += 2;
         }
     }
@@ -1062,7 +1101,15 @@ fn merge_pass(
         return Ok(None);
     }
     let joined = reshape.len();
-    Ok(Some((reshape.apply(model, shape)?, joined)))
+    let mut built = reshape.apply(model, shape)?;
+    // The second edge of a pair is merged into the edge the pair became.
+    for (a, b) in &pairs_joined {
+        for image in built.history.trace(a).to_vec() {
+            built.history.modify(b, image);
+        }
+    }
+    settle_dissolved(model, shape, &mut built)?;
+    Ok(Some((built, joined)))
 }
 
 /// Whether an ordered edge list closes back on its own start.

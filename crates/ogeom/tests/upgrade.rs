@@ -1099,3 +1099,131 @@ fn a_wall_tilted_within_the_confusion_over_its_length_merges() {
     assert!(diagnosis.is_valid(), "{diagnosis}");
     assert_eq!(planar_faces(&model, &unified), 6);
 }
+
+/// Every face, edge and vertex of `input` traces through `built`'s history
+/// only to shapes `built` holds, or is deleted; and how many were deleted.
+fn traced_into(model: &Model, input: &ogeom::topo::Shape, built: &ogeom::algo::Built) -> usize {
+    let mut deleted = 0;
+    for kind in [ShapeType::Face, ShapeType::Edge, ShapeType::Vertex] {
+        let held = explore_unique(model, &built.shape, kind).unwrap();
+        for part in explore_unique(model, input, kind).unwrap() {
+            let images = built.history.trace(&part);
+            if images.is_empty() {
+                assert!(built.history.is_deleted(&part));
+                deleted += 1;
+            }
+            for image in images {
+                assert!(
+                    held.iter().any(|h| h.is_same(image)),
+                    "a {kind:?} traces to a shape the result does not hold"
+                );
+            }
+        }
+    }
+    deleted
+}
+
+/// Two unit cubes fused face to face, then unified around the faces next
+/// to the shared wall: the edges between the merged faces dissolve, and
+/// are deleted rather than left tracing to themselves. Unified whole, the
+/// split edges join as well, and the second of each pair traces to the
+/// joined edge.
+#[test]
+fn edges_and_vertices_a_merge_dissolves_trace_into_the_result() {
+    let mut model = Model::new();
+    let first = ogeom::algo::make_box(&mut model, Frame::WORLD, (1.0, 1.0, 1.0), T)
+        .unwrap()
+        .shape;
+    let at = Frame::new(Point::new(1.0, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let second = ogeom::algo::make_box(&mut model, at, (1.0, 1.0, 1.0), T)
+        .unwrap()
+        .shape;
+    let fused = ogeom::boolean::fuse(&mut model, &first, &second, T)
+        .unwrap()
+        .shape;
+    let faces = explore_unique(&model, &fused, ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 10);
+    // The bottom edge of the first cube at x = 1, inside the merged bottom.
+    let wall_bottom = explore_unique(&model, &fused, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let (a, b) = ogeom::algo::edge_vertices(&model, e).unwrap().unwrap();
+            let p =
+                |v: &ogeom::topo::Shape| model.node(v).unwrap().data().as_vertex().unwrap().point;
+            let (p, q) = (p(&a), p(&b));
+            (p.x - 1.0).abs() < 1e-9
+                && (q.x - 1.0).abs() < 1e-9
+                && p.z.abs() < 1e-9
+                && q.z.abs() < 1e-9
+        })
+        .unwrap();
+
+    let (around, merged) =
+        ogeom::heal::unify_same_domain_around(&mut model, &fused, &faces, T).unwrap();
+    assert!(merged > 0);
+    assert_eq!(
+        explore_unique(&model, &around.shape, ShapeType::Face)
+            .unwrap()
+            .len(),
+        6
+    );
+    assert!(around.history.trace(&wall_bottom).is_empty());
+    assert!(around.history.is_deleted(&wall_bottom));
+    assert_eq!(traced_into(&model, &fused, &around), 4, "four shared edges");
+
+    let (whole, _) = ogeom::heal::unify_same_domain(&mut model, &fused, T).unwrap();
+    assert_eq!(
+        explore_unique(&model, &whole.shape, ShapeType::Edge)
+            .unwrap()
+            .len(),
+        12
+    );
+    // Four shared edges, and the four vertices at their ends.
+    assert_eq!(traced_into(&model, &fused, &whole), 8);
+    // The edges along x either side of the wall each pair became one
+    // edge, which both trace to.
+    let mut sources: Vec<usize> = vec![0; 12];
+    let edges = explore_unique(&model, &whole.shape, ShapeType::Edge).unwrap();
+    for e in explore_unique(&model, &fused, ShapeType::Edge).unwrap() {
+        for image in whole.history.trace(&e) {
+            let at = edges.iter().position(|h| h.is_same(image)).unwrap();
+            sources[at] += 1;
+        }
+    }
+    assert_eq!(
+        sources.iter().filter(|&&n| n == 2).count(),
+        4,
+        "{sources:?}"
+    );
+}
+
+/// A cylinder cut lengthwise in two and fused back: the halves' curved
+/// faces share two lines. Unified, one line stays as the whole band's seam
+/// and the other dissolves and is deleted.
+#[test]
+fn a_split_cylinder_unified_traces_into_the_whole_band() {
+    use ogeom::geom::SurfaceKind;
+    let mut model = Model::new();
+    let half = |model: &mut Model, x: f64| {
+        let cylinder = ogeom::algo::make_cylinder(model, Frame::WORLD, 3.0, 5.0, T)
+            .unwrap()
+            .shape;
+        let at = Frame::new(Point::new(x, -4.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+        let keep = ogeom::algo::make_box(model, at, (4.0, 8.0, 7.0), T)
+            .unwrap()
+            .shape;
+        ogeom::boolean::common(model, &cylinder, &keep, T)
+            .unwrap()
+            .shape
+    };
+    let (left, right) = (half(&mut model, -4.0), half(&mut model, 0.0));
+    let fused = ogeom::boolean::fuse(&mut model, &left, &right, T)
+        .unwrap()
+        .shape;
+    assert_eq!(faces_on(&model, &fused, SurfaceKind::Cylinder), 2);
+
+    let (unified, _) = ogeom::heal::unify_same_domain(&mut model, &fused, T).unwrap();
+    assert_eq!(faces_on(&model, &unified.shape, SurfaceKind::Cylinder), 1);
+    assert!(traced_into(&model, &fused, &unified) >= 1);
+}
