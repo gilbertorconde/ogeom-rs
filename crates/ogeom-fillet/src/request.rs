@@ -323,7 +323,7 @@ impl BlendRequest {
                     );
                 }
                 if rolling {
-                    crate::fillet_edges_corner_overflow(
+                    crate::fillet::rounds_corner(
                         model,
                         solid,
                         &edges,
@@ -333,7 +333,7 @@ impl BlendRequest {
                         tol,
                     )
                 } else {
-                    crate::fillet_edges_overflow(model, solid, &edges, radius, self.overflow, tol)
+                    crate::fillet::rounds(model, solid, &edges, radius, self.overflow, tol)
                 }
             }
             Lowered::RoundsWith(rounds) => {
@@ -356,9 +356,9 @@ impl BlendRequest {
             }
             Lowered::Chamfers(specs) => {
                 if defaults && self.chamfer_corner == ChamferCorner::Facet {
-                    crate::chamfer_edges_with(model, solid, &specs, tol)
+                    crate::chamfer::bevels(model, solid, &specs, tol)
                 } else {
-                    crate::chamfer_edges_overflow(
+                    crate::chamfer_overflow::bevels_overflow(
                         model,
                         solid,
                         &specs,
@@ -374,7 +374,7 @@ impl BlendRequest {
                 on_face,
                 on_other,
                 profile,
-            } => crate::fillet_edge_distances_overflow(
+            } => crate::asym::distance_round(
                 model,
                 solid,
                 &edge,
@@ -394,7 +394,7 @@ impl BlendRequest {
                 tol,
             ),
             Lowered::RoundLaw { chain, law } => {
-                crate::fillet_edges_variable_overflow(model, solid, chain, law, self.overflow, tol)
+                crate::fillet::law_rounds(model, solid, chain, law, self.overflow, tol)
             }
             Lowered::DistanceLaws {
                 chain,
@@ -408,7 +408,7 @@ impl BlendRequest {
                         "distance laws under overflow options are not built".into(),
                     ));
                 }
-                crate::fillet_edges_distances_variable(
+                crate::asym_law::distance_law_rounds(
                     model, solid, chain, face, on_face, on_other, profile, tol,
                 )
             }
@@ -446,7 +446,7 @@ impl BlendRequest {
             )));
         }
         match lowered {
-            Lowered::Rounds { edges, radius } => crate::fillet_edges_corner_overflow_checked(
+            Lowered::Rounds { edges, radius } => crate::blame::rounds_checked(
                 model,
                 solid,
                 &edges,
@@ -455,7 +455,7 @@ impl BlendRequest {
                 self.overflow,
                 tol,
             ),
-            Lowered::Chamfers(specs) => crate::chamfer_edges_overflow_checked(
+            Lowered::Chamfers(specs) => crate::blame::bevels_checked(
                 model,
                 solid,
                 &specs,
@@ -507,7 +507,7 @@ impl BlendRequest {
                         "a partial reading with rolling corners is not built".into(),
                     ));
                 }
-                crate::fillet_edges_partial(model, solid, &edges, radius, tol)
+                crate::blame::rounds_partial(model, solid, &edges, radius, tol)
             }
             Lowered::Chamfers(specs) => {
                 if self.chamfer_corner != ChamferCorner::Facet {
@@ -515,7 +515,7 @@ impl BlendRequest {
                         "a partial reading with point corners is not built".into(),
                     ));
                 }
-                crate::chamfer_edges_partial(model, solid, &specs, tol)
+                crate::blame::bevels_partial(model, solid, &specs, tol)
             }
             other => Err(refused(format!(
                 "a partial reading of {} is not built",
@@ -545,7 +545,7 @@ impl BlendRequest {
         tol: Tolerances,
     ) -> OgeomResult<BlendLimit> {
         self.reading(vary, |sizing, unit| {
-            let limit = crate::blend_limit(model, solid, sizing, up_to * unit, tol)?;
+            let limit = crate::limit::limit_of(model, solid, sizing, up_to * unit, tol)?;
             Ok(BlendLimit {
                 size: per(limit.size, unit),
                 refused: per(limit.refused, unit),
@@ -588,7 +588,7 @@ impl BlendRequest {
     ) -> OgeomResult<Option<f64>> {
         self.reading(vary, |sizing, unit| {
             Ok(per(
-                crate::blend_seat(model, solid, sizing, up_to * unit, tol)?,
+                crate::limit::seat_of(model, solid, sizing, up_to * unit, tol)?,
                 unit,
             ))
         })
@@ -771,6 +771,17 @@ impl BlendRequest {
         }
     }
 
+    /// A request of `specs`' bevels in their order. With no bevels it is
+    /// still a request of bevels, refused by their call's own text.
+    pub(crate) fn bevels(specs: &[(Shape, Chamfer)]) -> Self {
+        if specs.is_empty() {
+            return Self::new().chamfer(std::iter::empty(), 1.0);
+        }
+        specs.iter().fold(Self::new(), |request, (edge, spec)| {
+            request.edge(edge.clone(), spec.clone())
+        })
+    }
+
     /// The request as the call that builds it. A request with no edges
     /// takes the kind of its first builder call, rounds where there is
     /// none, so the call refuses it by its own text.
@@ -809,7 +820,11 @@ impl BlendRequest {
         if let Some(first) = radius(pairs[0].1)
             && pairs.iter().all(|(_, s)| radius(s).is_some())
         {
-            if pairs.iter().all(|(_, s)| radius(s) == Some(first)) {
+            // Bit for bit as well, so that rounds of one radius that is not
+            // a number are still rounds of one radius.
+            if pairs.iter().all(|(_, s)| {
+                radius(s).is_some_and(|r| r == first || r.to_bits() == first.to_bits())
+            }) {
                 return Ok(Lowered::Rounds {
                     edges: pairs.into_iter().map(|(e, _)| e).collect(),
                     radius: first,

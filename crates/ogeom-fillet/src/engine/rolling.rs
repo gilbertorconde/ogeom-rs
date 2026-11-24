@@ -64,7 +64,7 @@ pub(crate) fn rounds(
     // No vertex where rounds meet: no corner, and the rounds are the
     // default's.
     if meetings.is_empty() {
-        return crate::fillet_edges_overflow(model, solid, edges, radius, overflow, tol);
+        return crate::fillet::rounds(model, solid, edges, radius, overflow, tol);
     }
     // Where the rounds meeting at a vertex are all of one sense, the
     // default's corner is already the ball's: the band running on through
@@ -99,7 +99,7 @@ pub(crate) fn rounds(
         .into_iter()
         .all(|planar| planar);
     if mixed.is_empty() && !between_planes {
-        return crate::fillet_edges_overflow(model, solid, edges, radius, overflow, tol);
+        return crate::fillet::rounds(model, solid, edges, radius, overflow, tol);
     }
     // A mixed vertex on a curved face: the ball's sweep round the lone
     // band's end is the torus the lone band's foot is rounded by, so the
@@ -526,7 +526,7 @@ fn lone_bands_first(
         .filter(|&i| first[i])
         .map(|i| traced[i].clone())
         .collect();
-    let built = crate::fillet_edges_overflow(model, work, &ones, radius, overflow, tol)?;
+    let built = crate::fillet::rounds(model, work, &ones, radius, overflow, tol)?;
     let left = ogeom_topo::explore_unique(model, &built.shape, ShapeType::Edge)?;
     let kept = |e: &Shape| left.iter().any(|l| l.is_same(e));
     let mut second: Vec<Shape> = Vec::new();
@@ -584,7 +584,7 @@ fn lone_bands_first(
             ));
         }
     }
-    let rolled = crate::fillet_edges_overflow(model, &built.shape, &second, radius, overflow, tol)?;
+    let rolled = crate::fillet::rounds(model, &built.shape, &second, radius, overflow, tol)?;
     Ok(Built::new(
         rolled.shape,
         built.history.then(&rolled.history),
