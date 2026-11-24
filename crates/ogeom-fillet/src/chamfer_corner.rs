@@ -7,7 +7,7 @@ use ogeom_topo::{Model, Shape};
 
 /// How a chamfer request closes a vertex where three or more of its bevels
 /// meet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChamferCorner {
     /// The bevels run on to the point they share and meet each other from
     /// there, with no facet between them; at a convex vertex of four bevels
@@ -22,6 +22,7 @@ pub enum ChamferCorner {
     /// [`chamfer_edges_checked`](crate::chamfer_edges_checked) build. At a
     /// box's corner of bevels `d` it takes `d³/12` more than
     /// [`ChamferCorner::Point`].
+    #[default]
     Facet,
 }
 

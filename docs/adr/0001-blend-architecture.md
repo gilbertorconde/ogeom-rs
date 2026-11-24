@@ -5419,6 +5419,87 @@ reading may give a point to a neighbour.
 | block 40 × 30 × 15 of amendment "overflow handling", one arc of the foot alone, bevel 3 | all off | built, the ledge spread to the whole rim | refused |
 | L section 20 long, inner concave edge 10 up and 15 across, round 4 ending on both end faces | all off | built | built, fill `20 · 16 (1 - π/4)` within 1e-9 |
 
+### Amendment: the public request (#1265)
+
+The edge blends had grown to 43 public functions whose names spell their
+options (`fillet_edges_corner_overflow_checked`), over 23 bodies, and
+`BlendSizing` repeated the pattern for the readings. The design note
+`docs/design/1265-fillet-request.md` decides one public request instead:
+section 3's set of `(edge, section)` pairs, with the options of this ADR's
+amendments as methods. This amendment records the rule, the audit the note
+asks of its first pull request, and what that pull request decided where
+the note left it open.
+
+**Rule.** `BlendRequest` holds the edges with their `BlendSection`
+(`Round`, `RoundLaw`, `RoundDistances`, `DistanceLaws`, `Chamfer`) and the
+options: `round_corner` (default `Setback`), `chamfer_corner` (default
+`Facet`, so `ChamferCorner` now implements `Default`), `setback` per
+vertex (none by default, question 2 of section 13) and `overflow` (every
+behaviour on, amendment "overflow handling"). `build`, `build_checked`,
+`build_partial`, `limit`, `largest` and `seat` each pick the existing call
+that builds the request and pass it the arguments it takes today. The
+request validates nothing itself, so every result and every refusal text
+is that call's own. A combination no call builds is refused by name with
+`OgeomError::Construction`, never mapped to the nearest one that builds.
+Lifting such a refusal later is a change with its own tests and no API
+change. `BlendRefusal::edges` indexes the request's edges in the order they
+were added, chains flattened.
+
+**Readings are a scale.** `Vary::Scale` reads the largest factor at which
+the request, every length times the factor, builds; `Vary::Law`,
+`Vary::OnFace` and `Vary::OnOther` free one station of a law. A request at
+unit sizes reads exactly what the old `largest_*` call reads, bit for bit.
+
+**Left open by the note, decided here.**
+
+- A request with no blends at all reads as rounds of no edges and takes
+  that call's refusal ("a chain of no edges rounds nothing"). An empty
+  `round`, `chamfer` or `chain` call routes by its own kind. An empty chain
+  of two distances has no call taking it (that call takes one edge) and is
+  refused by name.
+- A corner option naming no blend of the request is not read: the round
+  corner of bevels alone, the chamfer corner of rounds alone. This is how
+  `blend_edges` already reads its corner on rounds alone.
+- Several rounds of two distances, or one with other sections, are a mixed
+  request (`blend_edges_overflow`); only one alone is
+  `fillet_edge_distances_overflow`.
+- A scale reading at a measure `m` other than one (rounds of radius 2, a
+  bevel of 3) reads the old sizing up to `m` times the bound and divides
+  what it finds by `m`. At `m = 1` both steps are exact. Bevels whose
+  symmetric or angle distances differ share no measure the old readings
+  scale, and a measure that is not a positive finite length scales
+  nothing: both are refused by name.
+- The partial reading takes the defaults only, as `fillet_edges_partial`
+  and `chamfer_edges_partial` do: under other options, rolling corners,
+  point corners or setbacks it is refused by name. The checked reading
+  refuses setbacks by name, and its by-name refusals name no edge.
+- Setback corners are built only on rounds of one radius under the default
+  overflow and corner, as `fillet_edges_cornered` takes them.
+
+**The audit of calls that lower to one request.** A request always lowers
+to the general call, the multi-edge one at the default options. Where
+another public function lowers to the same request through a body of its
+own, it becomes a wrapper over the request only if its own tests pass
+through the general body; otherwise it stays a verbatim function over its
+own body until it is removed.
+
+| Pair | Outcome | Decided by |
+|---|---|---|
+| (a) `fillet_edge(e, r)` and `fillet_edges(&[e], r)` | stays verbatim | the note: the one-edge straight family section 10 retires; `fillet_edge` stops flush against a neighbouring blend |
+| (b) `chamfer_edge`, `chamfer_edge_angle`, `chamfer_edge_distances` and `chamfer_edges_with(&[(e, spec)])` | stay verbatim | the note: the same family, with their own refusal texts |
+| (c) `fillet_edge_variable(e, a, b)` and `fillet_edges_variable(&[e], Linear)` | stays verbatim | the note: the same family |
+| (d) `chamfer_edges_cornered(Facet)` and `chamfer_edges_with` | becomes a wrapper | the audit: with `chamfer_edges_cornered(Facet)` routed through `chamfer_edges_with`, its ten test files (`blend_edges.rs`, `cell_guard.rs`, `chamfer_corner.rs`, `chamfer_point_and_pockets.rs`, `compound_blend.rs`, `curved_chamfer.rs`, `exact_limits.rs`, `largest_chamfer_all.rs`, `limit_chamfers.rs`, `polyhedral_chamfer.rs`, 128 tests with the ignored ones) pass |
+| (e) `fillet_edges_checked`, `fillet_edges_corner_checked`, `chamfer_edges_checked` and the in-order checked calls | stay verbatim | the note: `build_checked` is the in-order reading of amendment "checked blends under overflow" |
+
+**Tests** (`tests/blend_request.rs`). For each dispatch row the request and
+the old call run on their own copies of one part (the block 20 by 20 by 10
+and its corner's three edges, and the pocketed block of amendment
+"checked blends under overflow", whose front round of 4 hold edge builds
+and, with hold edge and trim through off, is refused).
+They give the same faces, area and volume to the bit, or the same refusal
+text; the checked and partial readings the same edges named; the readings
+the same `BlendLimit`. Each refused combination is pinned by its text.
+
 ## 12. Acceptance corpus
 
 From #902:
