@@ -11,7 +11,7 @@ use ogeom_topo::{Model, Orientation, SameKey, Shape, ShapeType, explore_unique};
 use super::{Closest, DistanceOptions, ShapeFeature, signed, unit, unit_or_zero};
 use crate::classify::{Containment, SolidBoundary, segment_distance};
 use crate::measure::{curve_bounds, project_on_curve, project_on_surface};
-use crate::proximity::{Element, PointDistance, RING_ANGULAR, RING_CHORD, Trim, trim_side};
+use crate::proximity::{Element, PointDistance, RING_ANGULAR, Trim, ring_chord, trim_side};
 
 /// The signed distance from each point to `shape`'s faces, edges and
 /// vertices, measured on their own surfaces, curves and points, with the
@@ -120,7 +120,7 @@ impl Target {
         let mut faces_of = vec![Vec::new(); list.len()];
         let mut finer = Vec::with_capacity(list.len());
         let mut chords = Vec::new();
-        let mut chord = RING_CHORD;
+        let mut chord = ring_chord(tol);
         while chord > tol.confusion() {
             chord = (chord / 100.0).max(tol.confusion());
             chords.push(chord);
@@ -355,7 +355,7 @@ impl Target {
                         element: i,
                         normal,
                     };
-                    match trim_side(prepared, None, RING_CHORD, foot.point, tol)? {
+                    match trim_side(prepared, None, ring_chord(tol), foot.point, tol)? {
                         Trim::Inside => best = Some(found),
                         Trim::Outside => {}
                         Trim::Band => banded.push(found),
@@ -422,7 +422,7 @@ impl Target {
                     clippy::cast_sign_loss,
                     clippy::cast_precision_loss
                 )]
-                let cap = (coarse as f64 * (RING_CHORD / chord).sqrt()).ceil() as usize;
+                let cap = (coarse as f64 * (ring_chord(tol) / chord).sqrt()).ceil() as usize;
                 let deflection = Deflection {
                     chord,
                     angular: RING_ANGULAR,

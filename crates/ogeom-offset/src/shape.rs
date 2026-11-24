@@ -62,10 +62,10 @@ fn is_free_form(surface: &SurfaceGeometry) -> bool {
 /// The displacement constraint one face puts on a point of itself.
 type Displacement<'a> = dyn Fn(&Model, usize, Point) -> OgeomResult<Option<(Vector, f64)>> + 'a;
 
-/// A tenth of a micron at unit scale: what a fitted support (a drafted
+/// A tenth of a micron in every unit: what a fitted support (a drafted
 /// wall, its border rows) holds to.
 pub(crate) fn support_fit_target(tol: Tolerances) -> f64 {
-    tol.confusion() * 1e3
+    1e-4 / tol.scale()
 }
 
 /// Canonicalize a solid whose topology is *placed*: a node placed twice (a

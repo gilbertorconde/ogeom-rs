@@ -153,8 +153,9 @@ fn filleted_leaning_post(mm_per_unit: f64) -> f64 {
 }
 
 /// The marched band's edges are widened to its fit target, two tenths of a
-/// micron in every unit. A part in metres is refused by the blend engine
-/// before the band is built, so that unit is not in the list.
+/// micron in every unit. A part in metres is refused: the march closes, but
+/// the boolean that applies the band leaves a strand of the tool's seam face
+/// dangling, so that unit is not in the list.
 #[test]
 fn a_marched_fillet_states_the_same_tolerance_in_every_unit() {
     let at_mm = filleted_leaning_post(1.0);
@@ -298,4 +299,136 @@ fn a_drafted_spline_wall_is_fitted_the_same_in_every_unit() {
             "{mm_per_unit} mm per unit: the drafted wall's control net"
         );
     }
+}
+
+/// A 10 mm cube and a ball of radius 1 mm whose centre stands 2 mm over
+/// the top, half a millimetre in from one edge. Returns the distance
+/// between them, in millimetres.
+fn ball_over_a_cube_edge(mm_per_unit: f64) -> f64 {
+    let tol = Tolerances::with_scale(mm_per_unit).unwrap();
+    let u = |mm: f64| mm / mm_per_unit;
+    let mut model = Model::with_tolerances(tol);
+    let cube = make_box(&mut model, Frame::WORLD, (u(10.0), u(10.0), u(10.0)), tol)
+        .unwrap()
+        .shape;
+    let centre = Frame::new(
+        Point::new(u(0.5), u(5.0), u(12.0)),
+        Direction::Z,
+        Direction::X,
+        tol,
+    )
+    .unwrap();
+    let ball = ogeom::algo::make_sphere(&mut model, centre, u(1.0), tol)
+        .unwrap()
+        .shape;
+    let found = ogeom::algo::distance_between_shapes(
+        &model,
+        &cube,
+        &ball,
+        ogeom::intersect::ExtremaOptions::default(),
+        tol,
+    )
+    .unwrap();
+    found.distance * mm_per_unit
+}
+
+/// The ball's nearest point on the cube is on its top face, half a
+/// millimetre from the edge. The face's trim test holds a band of the
+/// same width in every unit, so the face's answer counts.
+#[test]
+fn a_distance_near_a_face_edge_is_the_same_in_every_unit() {
+    for mm_per_unit in [1e-3, 1.0, 25.4, 1e3] {
+        let distance = ball_over_a_cube_edge(mm_per_unit);
+        assert!(
+            (distance - 1.0).abs() <= 1e-6,
+            "{mm_per_unit} mm per unit: {distance} mm, against 1 mm"
+        );
+    }
+}
+
+/// A frustum of radius 6 mm at its foot and 3 mm at its top, 6 mm tall,
+/// cut in half through its axis, the cut face's two rulings on the cone
+/// rounded at 0.5 mm: strips fitted through their exact sections. Returns
+/// the fitted strips' control net sizes.
+fn rounded_cone_rulings(mm_per_unit: f64) -> Vec<(usize, usize)> {
+    let tol = Tolerances::with_scale(mm_per_unit).unwrap();
+    let u = |mm: f64| mm / mm_per_unit;
+    let mut model = Model::with_tolerances(tol);
+    let cone = ogeom::algo::make_cone(&mut model, Frame::WORLD, u(6.0), u(3.0), u(6.0), tol)
+        .unwrap()
+        .shape;
+    let at = Frame::new(
+        Point::new(u(-10.0), 0.0, u(-1.0)),
+        Direction::Z,
+        Direction::X,
+        tol,
+    )
+    .unwrap();
+    let tool = make_box(&mut model, at, (u(20.0), u(10.0), u(8.0)), tol)
+        .unwrap()
+        .shape;
+    let half = ogeom::boolean::cut(&mut model, &cone, &tool, tol)
+        .unwrap()
+        .shape;
+    let rulings: Vec<_> = ogeom::topo::explore_unique(&model, &half, ogeom::topo::ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            ogeom::algo::edge_vertices(&model, e)
+                .unwrap()
+                .is_some_and(|(a, b)| {
+                    let p = |v: &ogeom::topo::Shape| {
+                        model.node(v).unwrap().data().as_vertex().unwrap().point
+                    };
+                    let (a, b) = (p(&a), p(&b));
+                    a.y.abs() < u(1e-9) && b.y.abs() < u(1e-9) && (a.z - b.z).abs() > u(1.0)
+                })
+        })
+        .collect();
+    assert_eq!(rulings.len(), 2);
+    let round = ogeom::fillet::fillet_edges(&mut model, &half, &rulings, u(0.5), tol)
+        .unwrap()
+        .shape;
+    let diagnosis = check(&model, &round, tol).unwrap();
+    assert!(
+        diagnosis.is_valid(),
+        "{mm_per_unit} mm per unit: {diagnosis:?}"
+    );
+    let mut nets: Vec<(usize, usize)> =
+        ogeom::topo::explore_unique(&model, &round, ogeom::topo::ShapeType::Face)
+            .unwrap()
+            .iter()
+            .filter_map(|f| match face_surface(&model, f)? {
+                ogeom::geom::SurfaceGeometry::BSpline(b) => {
+                    Some((b.grid().u_count(), b.grid().v_count()))
+                }
+                _ => None,
+            })
+            .collect();
+    nets.sort_unstable();
+    nets
+}
+
+/// The strips are fitted to twice the confusion distance, the same length
+/// in every unit, so each comes out with the same control net.
+#[test]
+fn a_cone_ruling_round_is_fitted_the_same_in_every_unit() {
+    let at_mm = rounded_cone_rulings(1.0);
+    assert_eq!(at_mm.len(), 2, "two fitted strips: {at_mm:?}");
+    for mm_per_unit in [1e-3, 25.4, 1e3] {
+        assert_eq!(
+            rounded_cone_rulings(mm_per_unit),
+            at_mm,
+            "{mm_per_unit} mm per unit"
+        );
+    }
+}
+
+/// The surface a face lies on.
+fn face_surface(model: &Model, f: &ogeom::topo::Shape) -> Option<ogeom::geom::SurfaceGeometry> {
+    model
+        .node(f)
+        .and_then(|n| n.data().as_face())
+        .and_then(|d| model.geometry().surface(d.surface))
+        .cloned()
 }

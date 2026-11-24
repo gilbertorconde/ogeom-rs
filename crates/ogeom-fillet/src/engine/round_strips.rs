@@ -1076,8 +1076,11 @@ fn run_clear(
     Ok(true)
 }
 
-/// How close the fit holds a fitted straight strip to its exact sections.
-const STRAIGHT_FIT: f64 = 2e-7;
+/// How close the fit holds a fitted straight strip to its exact sections:
+/// twice the confusion distance.
+fn straight_fit(tol: Tolerances) -> f64 {
+    tol.confusion() * 2.0
+}
 
 /// A straight edge's strip where no closed form gives it (a cone along its
 /// ruling beside a plane: the ball's centre runs on the conic their offsets
@@ -1086,7 +1089,7 @@ const STRAIGHT_FIT: f64 = 2e-7;
 /// convex edge, `side` negative, out at a concave one) from the centre the
 /// faces' tangent planes at the edge give; its feet on each face; the balls'
 /// arcs between the feet fitted along the stations, the spine through the
-/// centres and each contact through its feet, each within [`STRAIGHT_FIT`]
+/// centres and each contact through its feet, each within [`straight_fit`]
 /// of them, the stations doubled until it holds. The stations run on two
 /// radii past each end, for the assembly to find the corners. `None` where
 /// a centre does not converge or the fit misses at the finest stations.
@@ -1200,10 +1203,10 @@ fn fitted_straight(
                     .collect())
             })
             .collect::<OgeomResult<_>>()?;
-        let surface = ogeom_geom::fit::fit_surface_grid_chordal(&rows, 3, STRAIGHT_FIT, tol)?;
-        let spine = ogeom_geom::fit::fit_points(&centres, 3, STRAIGHT_FIT, tol)?;
-        let c0 = ogeom_geom::fit::fit_points(&feet[0], 3, STRAIGHT_FIT, tol)?;
-        let c1 = ogeom_geom::fit::fit_points(&feet[1], 3, STRAIGHT_FIT, tol)?;
+        let surface = ogeom_geom::fit::fit_surface_grid_chordal(&rows, 3, straight_fit(tol), tol)?;
+        let spine = ogeom_geom::fit::fit_points(&centres, 3, straight_fit(tol), tol)?;
+        let c0 = ogeom_geom::fit::fit_points(&feet[0], 3, straight_fit(tol), tol)?;
+        let c1 = ogeom_geom::fit::fit_points(&feet[1], 3, straight_fit(tol), tol)?;
         if surface.met && spine.met && c0.met && c1.met {
             // Outside the box a convex round takes up: between the edge's
             // ends, inside both faces' tangent planes along it (a cone's is
