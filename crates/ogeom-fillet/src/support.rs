@@ -1187,7 +1187,7 @@ impl LazyProbe {
 
 /// The faces of `solid` following the crease of `edge` at its end `at`:
 /// the faces other than `hosts` meeting the edge's vertex there.
-fn following_faces(
+pub(crate) fn following_faces(
     model: &Model,
     solid: &Shape,
     edge: &Shape,
@@ -1253,6 +1253,112 @@ pub(crate) fn following_planes(
             normal = -normal;
         }
         following.push((face, origin, normal));
+    }
+    Ok((!following.is_empty()).then_some(following))
+}
+
+/// How a face following a crease at its end bounds the material there.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum EndFace {
+    /// A plane, as a point on it and its outward unit normal.
+    Plane(Point, Vector),
+    /// A cylinder: its axis, its radius, and whether the material lies
+    /// inside it.
+    Drum(ogeom_math::Axis, f64, bool),
+}
+
+impl EndFace {
+    /// The face's outward unit normal at `p`, a point on it.
+    pub(crate) fn normal_at(self, p: Point) -> Vector {
+        match self {
+            Self::Plane(_, normal) => normal,
+            Self::Drum(axis, _, inside) => {
+                let up = axis.direction.vector();
+                let off = p - axis.location;
+                let radial = off - up * off.dot(up);
+                let unit = radial / radial.magnitude();
+                if inside { unit } else { -unit }
+            }
+        }
+    }
+
+    /// How far from `p` along the unit `dir` the material this face bounds
+    /// ends: where the line leaves the plane's or the cylinder's material
+    /// side. `None` where the line never does, or the material does not
+    /// lie ahead.
+    pub(crate) fn exit(self, p: Point, dir: Vector) -> Option<f64> {
+        match self {
+            Self::Plane(origin, normal) => {
+                let rate = normal.dot(dir);
+                (rate > 0.0).then(|| (origin - p).dot(normal) / rate)
+            }
+            Self::Drum(axis, radius, inside) => {
+                let up = axis.direction.vector();
+                let off = p - axis.location;
+                let q = off - up * off.dot(up);
+                let d = dir - up * dir.dot(up);
+                let a = d.dot(d);
+                if a <= f64::EPSILON {
+                    return None;
+                }
+                let b = q.dot(d);
+                let c = radius.mul_add(-radius, q.dot(q));
+                let disc = b.mul_add(b, -a * c);
+                if disc < 0.0 {
+                    return None;
+                }
+                let root = disc.sqrt();
+                // Inside, the line leaves through the far crossing; outside,
+                // the material ends where the line enters the cylinder.
+                Some(if inside {
+                    (root - b) / a
+                } else {
+                    (-b - root) / a
+                })
+            }
+        }
+    }
+}
+
+/// The faces of `solid` following the crease of `edge` at its end `at`,
+/// as [`following_planes`], each a plane or a cylinder. `None` where one
+/// of them is neither, or none follows.
+pub(crate) fn following_ends(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    hosts: [&Shape; 2],
+    at: Point,
+    tol: Tolerances,
+) -> OgeomResult<Option<Vec<(Shape, EndFace)>>> {
+    use ogeom_geom::Transformable as _;
+    let Some(faces) = following_faces(model, solid, edge, hosts, at)? else {
+        return Ok(None);
+    };
+    let mut following = Vec::new();
+    for face in faces {
+        let Some(surface) = model
+            .node(&face)
+            .and_then(|n| n.data().as_face())
+            .and_then(|d| model.geometry().surface(d.surface))
+        else {
+            return Ok(None);
+        };
+        let placed = surface
+            .clone()
+            .transformed(&face.transform(model.datums())?, tol)?;
+        let reversed = face.orientation() == Orientation::Reversed;
+        let end = match placed {
+            SurfaceGeometry::Plane(p) => {
+                let normal = p.plane().normal().vector();
+                EndFace::Plane(p.plane().origin(), if reversed { -normal } else { normal })
+            }
+            SurfaceGeometry::Cylinder(c) => {
+                EndFace::Drum(c.cylinder().axis(), c.cylinder().radius(), !reversed)
+            }
+            _ => return Ok(None),
+        };
+        following.push((face, end));
     }
     Ok((!following.is_empty()).then_some(following))
 }
@@ -1469,6 +1575,53 @@ pub(crate) fn trimmed_wedge(
     let solids = explore(model, &cut, Filter::OfType(ShapeType::Solid))?;
     let [solid] = solids.as_slice() else {
         ogeom_bail!(Construction, "the blend wedge trimmed by a face fell apart");
+    };
+    Ok(solid.clone())
+}
+
+/// `wedge` less what lies off the material side of the cylinder `drum`:
+/// kept within it where the material lies inside, outside it otherwise.
+/// The cylinder is taken `span` long either way along its axis from the
+/// foot of the wedge's bounds' centre.
+pub(crate) fn trimmed_by_drum(
+    model: &mut Model,
+    wedge: &Shape,
+    drum: EndFace,
+    span: f64,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let EndFace::Drum(axis, radius, inside) = drum else {
+        ogeom_bail!(
+            Construction,
+            "a wedge trimmed by a cylinder needs a cylinder"
+        );
+    };
+    let up = axis.direction.vector();
+    let Some(centre) = ogeom_algo::shape_bounds(model, wedge, tol)?.centre() else {
+        ogeom_bail!(Construction, "a blend wedge has no extent");
+    };
+    let foot = axis.location + up * ((centre - axis.location).dot(up) - span);
+    let across = {
+        let x = if up.x.abs() < 0.9 {
+            Vector::new(1.0, 0.0, 0.0)
+        } else {
+            Vector::new(0.0, 1.0, 0.0)
+        };
+        Direction::new(x - up * x.dot(up), tol)?
+    };
+    let frame = Frame::new(foot, axis.direction, across, tol)?;
+    let cylinder = ogeom_algo::make_cylinder(model, frame, radius, span * 2.0, tol)?.shape;
+    let trimmed = if inside {
+        ogeom_bool::common(model, wedge, &cylinder, tol)?.shape
+    } else {
+        ogeom_bool::cut(model, wedge, &cylinder, tol)?.shape
+    };
+    let solids = explore(model, &trimmed, Filter::OfType(ShapeType::Solid))?;
+    let [solid] = solids.as_slice() else {
+        ogeom_bail!(
+            Construction,
+            "the blend wedge trimmed by a cylinder at its end fell apart"
+        );
     };
     Ok(solid.clone())
 }
@@ -2518,6 +2671,30 @@ pub(crate) fn on_face_or_boundary(
         }
     }
     on_boundary(model, solid, point, tol)
+}
+
+/// Whether `point` lies on `face` itself: on its surface, within the
+/// model's reach, and inside its chart region.
+pub(crate) fn on_face_itself(
+    model: &Model,
+    face: &Shape,
+    point: Point,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    use ogeom_geom::Transformable as _;
+    let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
+        return Ok(false);
+    };
+    let Some(surface) = model.geometry().surface(data.surface) else {
+        return Ok(false);
+    };
+    let placed = surface
+        .clone()
+        .transformed(&face.transform(model.datums())?, tol)?;
+    let found = ogeom_algo::project_on_surface(&placed, point, 16, tol)?;
+    let (u, v) = found.parameters;
+    Ok(found.distance <= tol.confusion() * 100.0
+        && chart_holds(model, face, ogeom_math::Point2::new(u, v), tol)?)
 }
 
 /// Whether a point lies on some face of `solid`: on its surface, within

@@ -273,10 +273,17 @@ pub(crate) fn varying_marched(
 /// band runs past it where planes following the crease there lean back
 /// from it, far enough to clear them, and is trimmed by those overhanging
 /// it: the circular round's own ends. A concave seat's fill ends in the
-/// planes following its crease there: where one is not square to the
-/// crease the fill runs on until it clears them all and is trimmed by
-/// each, kept on the side of the material its face bounds. A varying law
-/// is held level over the run past an end.
+/// faces following its crease there, planes or cylinders: where one is a
+/// cylinder or a plane not square to the crease, the fill runs on until
+/// it clears them all and is trimmed by each, kept on the side of the
+/// material its face bounds. A varying law is held level over the run
+/// past an end.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
+/// where a fill's end meets a face that is neither a plane nor a
+/// cylinder, or a cylinder the crease runs into tangent to it.
 pub(super) fn extended_sweep(
     model: &mut Model,
     solid: &Shape,
@@ -297,40 +304,133 @@ pub(super) fn extended_sweep(
                 continue;
             }
             let hosts = [&original.faces[0], &original.faces[1]];
-            let Some(planes) = crate::support::following_planes(model, solid, edge, hosts, at)?
-            else {
+            // A fill also ends in a cylinder following its crease; a band
+            // cut away runs on only to planes.
+            let ends = if original.convex {
+                crate::support::following_planes(model, solid, edge, hosts, at)?.map(|planes| {
+                    planes
+                        .into_iter()
+                        .map(|(face, origin, normal)| {
+                            (face, crate::support::EndFace::Plane(origin, normal))
+                        })
+                        .collect::<Vec<_>>()
+                })
+            } else {
+                crate::support::following_ends(model, solid, edge, hosts, at, tol)?
+            };
+            let Some(ends) = ends else {
+                if !original.convex
+                    && crate::support::following_faces(model, solid, edge, hosts, at)?
+                        .is_some_and(|faces| !faces.is_empty())
+                {
+                    ogeom_bail!(
+                        Construction,
+                        "a round's fill on a concave edge ends in the faces at its edge's \
+                         ends, and an end of this edge meets a face that is neither a plane \
+                         nor a cylinder; see docs/CAPABILITIES.md, fillet.asymmetric-rounds"
+                    );
+                }
                 continue;
             };
+            // A cylinder ends the fill only where it spans the fill's end:
+            // each point of the end section meets it, run along the crease,
+            // on the face itself, read at the vertex's height along the
+            // axis. Elsewhere the fill stops square, as it does at any face
+            // but a plane.
+            let hull_at = |s: f64| {
+                let mut hull = section.conic_net_at(s).map_or_else(
+                    || vec![section.contact(0, s), section.contact(1, s)],
+                    |(points, _, _)| points,
+                );
+                hull.push(at);
+                hull
+            };
+            let mut spans = true;
+            for (face, end_face) in &ends {
+                let crate::support::EndFace::Drum(axis, ..) = *end_face else {
+                    continue;
+                };
+                let up = axis.direction.vector();
+                for p in hull_at(if end == 0 { 0.0 } else { section.length() }) {
+                    let Some(t) = end_face.exit(p, outward) else {
+                        spans = false;
+                        break;
+                    };
+                    let c = p + outward * t;
+                    let c = c + up * (at - c).dot(up);
+                    let nudge = up * (tol.confusion() * 10.0);
+                    let mut on = false;
+                    for q in [c, c + nudge, c - nudge] {
+                        on = on || crate::support::on_face_itself(model, face, q, tol)?;
+                    }
+                    spans = spans && on;
+                }
+            }
+            if !spans {
+                if matches!(spec, RoundSpec::Varying { .. }) {
+                    ogeom_bail!(
+                        Construction,
+                        "an asymmetric round whose distances vary on a concave edge ends in \
+                         the faces at its edge's ends, and a cylinder at an end of this edge \
+                         does not span the fill's end; see docs/CAPABILITIES.md, \
+                         fillet.asymmetric-rounds"
+                    );
+                }
+                continue;
+            }
             // A fill capped square already ends in planes square to it or
             // running along it.
-            let square = |normal: ogeom_math::Vector| {
-                let rate = normal.dot(outward).abs();
-                rate <= tol.angular() || rate >= 1.0 - tol.angular()
+            let square = |end: &crate::support::EndFace| match end {
+                crate::support::EndFace::Plane(_, normal) => {
+                    let rate = normal.dot(outward).abs();
+                    rate <= tol.angular() || rate >= 1.0 - tol.angular()
+                }
+                crate::support::EndFace::Drum(..) => false,
             };
-            if !original.convex && planes.iter().all(|(_, _, normal)| square(*normal)) {
+            if !original.convex && ends.iter().all(|(_, end)| square(end)) {
                 continue;
             }
             let mut reach = 0.0_f64;
             let s = if end == 0 { 0.0 } else { section.length() };
-            let mut hull = section.conic_net_at(s).map_or_else(
-                || vec![section.contact(0, s), section.contact(1, s)],
-                |(points, _, _)| points,
-            );
-            hull.push(at);
-            for (_, origin, normal) in planes {
-                let rate = normal.dot(outward);
-                if rate.abs() <= tol.angular() {
-                    continue;
-                }
-                for p in &hull {
-                    reach = reach.max((origin - *p).dot(normal) / rate);
-                }
-                if !original.convex {
-                    // The fill stands only behind the face, in front of
-                    // which there is no material for it to fill against.
-                    trims.push((origin, -normal));
-                } else if rate < -tol.angular() {
-                    trims.push((origin, normal));
+            let hull = hull_at(s);
+            for (_, face) in ends {
+                match face {
+                    crate::support::EndFace::Plane(origin, normal) => {
+                        let rate = normal.dot(outward);
+                        if rate.abs() <= tol.angular() {
+                            continue;
+                        }
+                        for p in &hull {
+                            reach = reach.max((origin - *p).dot(normal) / rate);
+                        }
+                        if !original.convex {
+                            // The fill stands only behind the face, in front
+                            // of which there is no material for it to fill
+                            // against.
+                            trims.push(Trim::Plane(origin, -normal));
+                        } else if rate < -tol.angular() {
+                            trims.push(Trim::Plane(origin, normal));
+                        }
+                    }
+                    crate::support::EndFace::Drum(..) => {
+                        // A cylinder the crease runs into along its surface
+                        // gives no end the fill could stop in.
+                        if face.normal_at(at).dot(outward).abs() <= tol.angular() {
+                            ogeom_bail!(
+                                Construction,
+                                "a round's fill on a concave edge ends in the face at its \
+                                 end, and that face is a cylinder the edge runs into \
+                                 tangent to it; see docs/CAPABILITIES.md, \
+                                 fillet.asymmetric-rounds"
+                            );
+                        }
+                        for p in &hull {
+                            if let Some(t) = face.exit(*p, outward) {
+                                reach = reach.max(t);
+                            }
+                        }
+                        trims.push(Trim::Drum(face));
+                    }
                 }
             }
             if reach > tol.confusion() {
@@ -359,12 +459,28 @@ pub(super) fn extended_sweep(
     };
     let section = PlanarSection::new(&seat, &spec, tol)?;
     let mut tool = super::planar_tools::sweep(model, edge, &section, tol)?;
-    for plane in trims {
+    for trim in trims {
         let span = ogeom_algo::shape_bounds(model, &tool.solid, tol)?.diagonal() * 2.0;
-        let solid = crate::support::trimmed_wedge(model, &tool.solid, plane, span, tol)?;
+        let solid = match trim {
+            Trim::Plane(origin, normal) => {
+                crate::support::trimmed_wedge(model, &tool.solid, (origin, normal), span, tol)?
+            }
+            Trim::Drum(face) => {
+                crate::support::trimmed_by_drum(model, &tool.solid, face, span, tol)?
+            }
+        };
         tool = named(model, solid, edge, tool.sense)?;
     }
     Ok(tool)
+}
+
+/// What cuts a tool run on past an end of its seat.
+enum Trim {
+    /// The half-space behind this plane (a point on it and the normal
+    /// pointing away from what is kept) is cut away.
+    Plane(ogeom_math::Point, ogeom_math::Vector),
+    /// Only what lies on the material side of this cylinder is kept.
+    Drum(crate::support::EndFace),
 }
 
 /// How a host of a ruled seat meets the plane square to its edge: a line,
