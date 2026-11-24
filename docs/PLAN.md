@@ -67,7 +67,7 @@ Two planar faces leaning a hair apart cross at a small angle, and a strip
 of one between the crossing and its edge, narrower than the confusion
 distance's reach divided by the angle, stands on the other at every point.
 On the attempt that settles such pieces from both sides (`settled` in
-`ogeom-bool/src/lib.rs`), the edges bounding the strip are carried onto
+`ogeom-bool/src/pieces.rs`), the edges bounding the strip are carried onto
 the other face from where a plane-plane section line crosses them
 (`graze_contacts`), so the other face's matching strip is split off and
 the two are kept as one contact. A line edge is crossed first; where that

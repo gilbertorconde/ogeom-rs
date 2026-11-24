@@ -81,3 +81,50 @@ fn one_part_measures_the_same_in_every_unit() {
         );
     }
 }
+
+/// Two drums 4 mm tall, one of radius 2 mm and one 2 mm higher, either a
+/// thousandth of a millimetre wider or with its axis that far off: the
+/// wider cap leaves an annulus or a crescent that thin. Fuse, common and
+/// cut keep their volumes to the closed forms, in cubic millimetres, in
+/// every unit.
+#[test]
+fn drums_a_thousandth_apart_keep_their_volumes_in_every_unit() {
+    use core::f64::consts::PI;
+    for (radius, offset) in [(2.001, 0.0), (2.0001, 0.0), (2.0, 1e-3)] {
+        for mm_per_unit in [1e-3, 1.0, 25.4, 1e3] {
+            let tol = Tolerances::with_scale(mm_per_unit).unwrap();
+            let u = |mm: f64| mm / mm_per_unit;
+            let mut model = Model::with_tolerances(tol);
+            let at = |x: f64, z: f64| {
+                Frame::new(Point::new(u(x), 0.0, u(z)), Direction::Z, Direction::X, tol).unwrap()
+            };
+            let low = make_cylinder(&mut model, at(0.0, 0.0), u(2.0), u(4.0), tol)
+                .unwrap()
+                .shape;
+            let high = make_cylinder(&mut model, at(offset, 2.0), u(radius), u(4.0), tol)
+                .unwrap()
+                .shape;
+            let chord = Deflection::with_chord(u(1e-3)).unwrap();
+            let mm3 = |model: &Model, shape: &ogeom::topo::Shape| {
+                volume_properties(model, shape, chord, tol).unwrap().mass * mm_per_unit.powi(3)
+            };
+            let case = format!("radius {radius}, offset {offset}, {mm_per_unit} mm per unit");
+            let fuse = ogeom::boolean::fuse(&mut model, &low, &high, tol)
+                .unwrap_or_else(|e| panic!("{case}: fuse: {e}"));
+            let common = ogeom::boolean::common(&mut model, &low, &high, tol)
+                .unwrap_or_else(|e| panic!("{case}: common: {e}"));
+            let cut = ogeom::boolean::cut(&mut model, &low, &high, tol)
+                .unwrap_or_else(|e| panic!("{case}: cut: {e}"));
+            let (f, c, k) = (
+                mm3(&model, &fuse.shape),
+                mm3(&model, &common.shape),
+                mm3(&model, &cut.shape),
+            );
+            let (va, vb) = (16.0 * PI, 4.0 * PI * radius * radius);
+            let lens = 8.0 * (offset / 4.0).acos() - offset / 2.0 * (16.0 - offset * offset).sqrt();
+            assert!((f + c - va - vb).abs() < 1e-6, "{case}: {f} + {c}");
+            assert!((k + c - va).abs() < 1e-6, "{case}: {k} + {c}");
+            assert!((c - 2.0 * lens.min(4.0 * PI)).abs() < 1e-6, "{case}: {c}");
+        }
+    }
+}

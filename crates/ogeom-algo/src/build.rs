@@ -2936,10 +2936,11 @@ pub fn make_band_between(
     // distance: the offset times the chart's stretch there, since an
     // off-column iso misses a start vertex by exactly that. Starts further
     // apart take the chart segment, which meets both exactly; a segment
-    // spanning less than confusion would be an edge with no length.
+    // spanning less than confusion would be an edge with no length. The
+    // stretch is read no smaller than a millimetre per chart unit.
     let stretch = {
         let (du, _) = surface.d1_at(start0.x, start0.y, tol)?;
-        du.magnitude().max(1.0)
+        du.magnitude().max(1.0 / tol.unit())
     };
     let (seam, up_is_forward, chart_from, chart_to) = if dcol.abs() * stretch <= tol.confusion() {
         let column = start0.x;
@@ -3576,6 +3577,79 @@ mod tests {
             assert!(
                 e.pcurve_for(data.surface, edge.location()).is_some(),
                 "a fitted trim was attached"
+            );
+        }
+    }
+
+    /// Two rings 2 mm apart on a drum of radius 3 mm whose starts differ
+    /// by 5e-10 rad, 1.5e-9 mm in space, well inside the confusion
+    /// distance: the seam runs down the start column as a straight iso,
+    /// in micrometres, millimetres, inches and metres alike.
+    #[test]
+    fn rings_starting_a_hair_apart_share_a_straight_seam_in_every_unit() {
+        for mm_per_unit in [1e-3, 1.0, 25.4, 1e3] {
+            let tol = ogeom_core::Tolerances::with_scale(mm_per_unit).unwrap();
+            let u = |mm: f64| mm / mm_per_unit;
+            let mut model = Model::with_tolerances(tol);
+            let surface: SurfaceGeometry = ogeom_geom::CylinderSurface::new(
+                ogeom_math::Cylinder::new(Frame::WORLD, u(3.0), tol).unwrap(),
+                (u(-1.0), u(4.0)),
+            )
+            .unwrap()
+            .into();
+            let mut ring_at = |height: f64, phase: f64| {
+                let x = ogeom_math::Direction::new(
+                    ogeom_math::Vector::new(phase.cos(), phase.sin(), 0.0),
+                    tol,
+                )
+                .unwrap();
+                let frame = Frame::new(
+                    Point::new(0.0, 0.0, height),
+                    ogeom_math::Direction::Z,
+                    x,
+                    tol,
+                )
+                .unwrap();
+                let curve: Curve =
+                    CircleCurve::new(Circle::new(frame, u(3.0), tol).unwrap()).into();
+                let domain = curve.domain();
+                let edge = make_edge(&mut model, curve, domain, tol).unwrap().shape;
+                let pcurve: ogeom_geom::PlanarCurve = ogeom_geom::Line2d::over(
+                    ogeom_math::Axis2::new(
+                        ogeom_math::Point2::new(phase, height),
+                        ogeom_math::Direction2::new(ogeom_math::Vector2::new(1.0, 0.0), tol)
+                            .unwrap(),
+                    ),
+                    0.0,
+                    core::f64::consts::TAU,
+                )
+                .unwrap()
+                .into();
+                (edge, pcurve)
+            };
+            let (lo, lo_pcurve) = ring_at(0.0, 0.0);
+            let (hi, hi_pcurve) = ring_at(u(2.0), 5e-10);
+            let band = make_band_between(
+                &mut model,
+                &surface,
+                [(&lo, lo_pcurve), (&hi, hi_pcurve)],
+                tol,
+            )
+            .unwrap();
+            let straight = explore_unique(&model, &band, ShapeType::Edge)
+                .unwrap()
+                .into_iter()
+                .any(|e| {
+                    let Some(ogeom_topo::EdgeRepr::Curve3d { curve, .. }) =
+                        model.node(&e).unwrap().data().as_edge().unwrap().curve3d()
+                    else {
+                        return false;
+                    };
+                    matches!(model.geometry().curve(*curve), Some(Curve::Line(_)))
+                });
+            assert!(
+                straight,
+                "{mm_per_unit} mm per unit: the seam is not straight"
             );
         }
     }

@@ -21,9 +21,15 @@ use crate::{OgeomResult, ogeom_bail};
 /// `linear_scale` is the length of one model unit in millimetres: `1.0` for a
 /// model in millimetres, `1000.0` for metres, `25.4` for inches. Linear
 /// tolerances scale with it. Angular and parametric ones do not.
+///
+/// `unit` is the model's own millimetres per unit. It equals `linear_scale`
+/// except on tolerances made by [`Tolerances::read_at`], which loosen or
+/// tighten the thresholds and keep the unit: a boolean taken at a fuzz
+/// still measures its own fixed lengths in the model's unit.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tolerances {
     linear_scale: f64,
+    unit: f64,
 }
 
 /// Two points closer than this are the same point, at unit scale.
@@ -57,7 +63,10 @@ impl Tolerances {
     /// Tolerances for a model whose unit is one millimetre.
     #[must_use]
     pub const fn millimetres() -> Self {
-        Self { linear_scale: 1.0 }
+        Self {
+            linear_scale: 1.0,
+            unit: 1.0,
+        }
     }
 
     /// Tolerances for a model whose unit is one metre.
@@ -65,13 +74,17 @@ impl Tolerances {
     pub const fn metres() -> Self {
         Self {
             linear_scale: 1000.0,
+            unit: 1000.0,
         }
     }
 
     /// Tolerances for a model whose unit is one inch.
     #[must_use]
     pub const fn inches() -> Self {
-        Self { linear_scale: 25.4 }
+        Self {
+            linear_scale: 25.4,
+            unit: 25.4,
+        }
     }
 
     /// Tolerances for a model whose unit is `mm_per_unit` millimetres.
@@ -87,6 +100,21 @@ impl Tolerances {
     /// [`OgeomError::Construction`](crate::OgeomError::Construction) if the scale is
     /// not finite and positive, or is outside that range.
     pub fn with_scale(mm_per_unit: f64) -> OgeomResult<Self> {
+        Self::checked(mm_per_unit, mm_per_unit)
+    }
+
+    /// These tolerances with every linear threshold read as for a unit of
+    /// `mm_per_unit` millimetres, the model's [`unit`](Self::unit) kept.
+    /// A threshold read at a tenth of the scale is ten times looser.
+    ///
+    /// # Errors
+    ///
+    /// As [`Tolerances::with_scale`].
+    pub fn read_at(self, mm_per_unit: f64) -> OgeomResult<Self> {
+        Self::checked(mm_per_unit, self.unit)
+    }
+
+    fn checked(mm_per_unit: f64, unit: f64) -> OgeomResult<Self> {
         if !mm_per_unit.is_finite() || mm_per_unit <= 0.0 {
             ogeom_bail!(
                 Construction,
@@ -95,6 +123,7 @@ impl Tolerances {
         }
         let scaled = Self {
             linear_scale: mm_per_unit,
+            unit,
         };
         let linear = [
             scaled.confusion(),
@@ -112,10 +141,19 @@ impl Tolerances {
         Ok(scaled)
     }
 
-    /// Millimetres per model unit.
+    /// Millimetres per model unit, as the linear thresholds read it: the
+    /// model's [`unit`](Self::unit) unless [`Tolerances::read_at`] moved it.
     #[must_use]
     pub const fn scale(self) -> f64 {
         self.linear_scale
+    }
+
+    /// Millimetres per model unit, as the model states it. A fixed length
+    /// written in millimetres is `mm / unit()` in the model, whatever scale
+    /// the thresholds are read at.
+    #[must_use]
+    pub const fn unit(self) -> f64 {
+        self.unit
     }
 
     /// Distance below which two points are the same point.
@@ -312,6 +350,19 @@ mod tests {
             let (near, far) = (0.5 * c, 2.0 * c);
             assert!(near * near <= c * c && far * far > c * c);
         }
+    }
+
+    /// Read at a tenth of the scale, the thresholds are ten times looser
+    /// and the unit is the model's still; a nonsense scale is refused.
+    #[test]
+    fn thresholds_read_at_another_scale_keep_the_unit() {
+        let m = Tolerances::metres();
+        let loose = m.read_at(m.scale() / 10.0).unwrap();
+        assert_eq!(loose.confusion(), CONFUSION / 100.0);
+        assert_eq!(loose.scale(), 100.0);
+        assert_eq!(loose.unit(), 1000.0);
+        assert_eq!(m.unit(), m.scale());
+        assert!(m.read_at(0.0).is_err() && m.read_at(f64::NAN).is_err());
     }
 
     #[test]
