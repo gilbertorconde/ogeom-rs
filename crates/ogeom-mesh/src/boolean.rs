@@ -91,7 +91,10 @@ use self::pairs::{Key, Side, Touch, Tri};
 use self::points::{Def, Mid, P3, Pt, by_weight, normal_approx, normal_sign, orient2d};
 use crate::{Bvh, Deflection};
 
-pub use self::selfcross::{Resolved, resolve_self_intersections, self_intersections};
+pub use self::selfcross::{
+    Quantum, Resolved, resolve_self_intersections, resolve_self_intersections_with,
+    self_intersections,
+};
 
 /// A boolean operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

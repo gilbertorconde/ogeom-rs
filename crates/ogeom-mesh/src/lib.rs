@@ -39,8 +39,8 @@ pub mod triangulate;
 
 pub use attach::{Tessellated, polyline_of, tessellate, triangulation_of};
 pub use boolean::{
-    BoolKind, MeshBoolean, Resolved, boolean, boolean_with_shape, resolve_self_intersections,
-    self_intersections,
+    BoolKind, MeshBoolean, Quantum, Resolved, boolean, boolean_with_shape,
+    resolve_self_intersections, resolve_self_intersections_with, self_intersections,
 };
 pub use bvh::{Bvh, Hit};
 pub use curvature::{Curvature, NEIGHBOURS, curvature};

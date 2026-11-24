@@ -43,6 +43,10 @@ use super::{
 };
 use crate::Bvh;
 
+mod snap;
+
+pub use self::snap::{Quantum, resolve_self_intersections_with};
+
 /// The answer of [`resolve_self_intersections`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Resolved {
@@ -61,8 +65,11 @@ pub struct Resolved {
     /// wound the other way.
     pub cut: Vec<bool>,
     /// The farthest any new vertex lies from the exact point it rounds, as
-    /// [`MeshBoolean::rounding`](super::MeshBoolean::rounding), summed over
-    /// the passes where the result was resolved again.
+    /// [`MeshBoolean::rounding`](super::MeshBoolean::rounding), and under a
+    /// [`Quantum`] other than `F64` the farthest any vertex moved onto the
+    /// grid, summed over the passes where the result was resolved again.
+    /// No point of the result lies farther than this from the input
+    /// surface.
     pub rounding: f64,
 }
 
@@ -137,6 +144,11 @@ pub fn self_intersections(mesh: &Triangulation) -> OgeomResult<Vec<[u32; 2]>> {
 /// overlapping there, or if after rounding the result still crosses itself
 /// or keeps a flat triangle that cannot be flipped away.
 pub fn resolve_self_intersections(mesh: &Triangulation) -> OgeomResult<Resolved> {
+    resolve_f64(mesh)
+}
+
+/// [`resolve_self_intersections`], its new vertices rounded to `f64`.
+fn resolve_f64(mesh: &Triangulation) -> OgeomResult<Resolved> {
     let (first, crossings) = resolve_once(mesh)?;
     let mut out = Resolved {
         mesh: first.mesh,

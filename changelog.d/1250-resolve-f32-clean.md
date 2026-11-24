@@ -1,0 +1,5 @@
+- **Added: `resolve_self_intersections_with`, a resolved mesh that stays embedded on the grid it is stored on** (#1250).
+  - `Quantum::{F64, F32, Grid(h)}` names the grid. `F64` gives `resolve_self_intersections` bit for bit.
+  - Under `F32` or `Grid`, every vertex of the result is on the grid, and the result is checked on the rounded coordinates by the exact predicates of `self_intersections`: no crossing, no flat triangle, every shell outward. Edges that round to a point are collapsed and flat triangles flipped away; a result still crossing itself is resolved again from the rounded coordinates, at most three more times, and begun again once from the rounded input where that would leave parts touching. Otherwise the call refuses by name.
+  - `Resolved::rounding` now also counts the moves onto the grid. No point of the result lies farther than it from the input surface, and it is at most five times `√3 · Quantum::half_step` of the largest coordinate plus the `f64` rounding.
+  - `Resolved` is unchanged in shape; `Quantum` and `resolve_self_intersections_with` are exported from `ogeom::mesh`.

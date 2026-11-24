@@ -571,3 +571,346 @@ fn a_flat_triangle_is_flipped_away_without_moving_a_vertex() {
     assert_eq!(cut.iter().filter(|&&c| c).count(), 2);
     assert!(mesh.triangles.contains(&[0, m, 1]) && mesh.triangles.contains(&[m, 3, 1]));
 }
+
+/// The point of triangle `abc` nearest `p`, by the regions of its plane
+/// (C. Ericson, *Real-Time Collision Detection*, 5.1.5).
+fn nearest_on_triangle(p: P3, [a, b, c]: [P3; 3]) -> P3 {
+    let sub = |x: P3, y: P3| [x[0] - y[0], x[1] - y[1], x[2] - y[2]];
+    let dot = |x: P3, y: P3| x[0] * y[0] + x[1] * y[1] + x[2] * y[2];
+    let along = |o: P3, d: P3, t: f64| [o[0] + t * d[0], o[1] + t * d[1], o[2] + t * d[2]];
+    let (ab, ac, ap) = (sub(b, a), sub(c, a), sub(p, a));
+    let (d1, d2) = (dot(ab, ap), dot(ac, ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = sub(p, b);
+    let (d3, d4) = (dot(ab, bp), dot(ac, bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return along(a, ab, d1 / (d1 - d3));
+    }
+    let cp = sub(p, c);
+    let (d5, d6) = (dot(ab, cp), dot(ac, cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return along(a, ac, d2 / (d2 - d6));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
+        return along(b, sub(c, b), (d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    let denom = 1.0 / (va + vb + vc);
+    let (v, w) = (vb * denom, vc * denom);
+    along(along(a, ab, v), ac, w)
+}
+
+/// How far `p` lies from the surface of `mesh`, by every triangle.
+fn distance_to(mesh: &Triangulation, p: P3) -> f64 {
+    mesh.triangles
+        .iter()
+        .map(|t| {
+            let q = nearest_on_triangle(p, t.map(|v| coords(mesh.positions[v as usize])));
+            ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt()
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+fn area(mesh: &Triangulation) -> f64 {
+    mesh.triangles
+        .iter()
+        .map(|t| {
+            let [a, b, c] = t.map(|v| mesh.positions[v as usize]);
+            (b - a).cross(c - a).magnitude() / 2.0
+        })
+        .sum()
+}
+
+/// What rounding to `quantum` did: the farthest a vertex of the result
+/// lies from the input surface, the bound on it, and the change in volume
+/// from the `f64` result with the first-order bound on that.
+#[derive(Debug, Default, Clone, Copy)]
+struct Measured {
+    moved: f64,
+    bound: f64,
+    volume: f64,
+    volume_bound: f64,
+}
+
+/// The answer under `quantum`, checked as [`resolved`] checks and then on
+/// the rounded coordinates: every coordinate on the grid, no crossing, no
+/// flat triangle, every shell outward; every vertex within
+/// [`Resolved::rounding`] of the input surface, and that within the
+/// documented bound.
+fn snapped(mesh: &Triangulation, quantum: Quantum) -> (Resolved, Measured) {
+    let out = resolve_self_intersections_with(mesh, quantum).unwrap();
+    let exact = resolve_self_intersections(mesh).unwrap();
+    assert_eq!(out.cut.len(), out.mesh.triangles.len());
+    for p in &out.mesh.positions {
+        for x in coords(*p) {
+            assert_eq!(quantum.round(x), Some(x), "{x} is off the grid");
+        }
+    }
+    let largest = mesh
+        .positions
+        .iter()
+        .chain(&exact.mesh.positions)
+        .flat_map(|p| coords(*p))
+        .fold(0.0_f64, |m, x| m.max(x.abs()));
+    // Five roundings onto the grid at most, plus the f64 rounding of each
+    // pass's new vertices, a few units in the last place of `largest`.
+    let bound = 5.0 * (3.0_f64.sqrt() * quantum.half_step(largest) + 64.0 * f64::EPSILON * largest);
+    assert!(out.rounding <= bound, "{} > {bound}", out.rounding);
+    let moved = out
+        .mesh
+        .positions
+        .iter()
+        .map(|p| distance_to(mesh, coords(*p)))
+        .fold(0.0_f64, f64::max);
+    assert!(
+        moved <= out.rounding * (1.0 + 1e-9) + 4.0 * f64::EPSILON * largest,
+        "{moved} > {}",
+        out.rounding
+    );
+    let volume = (out.mesh.volume() - exact.mesh.volume()).abs();
+    let volume_bound = area(&exact.mesh).max(area(&out.mesh)) * out.rounding;
+    assert!(volume <= volume_bound, "{volume} > {volume_bound}");
+    if !out.mesh.triangles.is_empty() {
+        let solid = Operand::new(&out.mesh, 0, "rounded").unwrap();
+        solid.check_wound("rounded", None, 0).unwrap();
+        assert_eq!(pairs_of(&out.mesh), Vec::<[u32; 2]>::new());
+    }
+    (
+        out,
+        Measured {
+            moved,
+            bound,
+            volume,
+            volume_bound,
+        },
+    )
+}
+
+/// `mesh` turned by `angle` about the axis `axis`, through `centre`.
+fn turned(mesh: &Triangulation, axis: P3, angle: f64, centre: P3) -> Triangulation {
+    let norm = axis.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let [ux, uy, uz] = axis.map(|x| x / norm);
+    let (s, c) = angle.sin_cos();
+    let mut out = mesh.clone();
+    for p in &mut out.positions {
+        let (x, y, z) = (p.x - centre[0], p.y - centre[1], p.z - centre[2]);
+        let dot = ux * x + uy * y + uz * z;
+        let cr = [uy * z - uz * y, uz * x - ux * z, ux * y - uy * x];
+        let r: Vec<f64> = [x, y, z]
+            .iter()
+            .zip([ux, uy, uz])
+            .zip(cr)
+            .map(|((&v, u), w)| v * c + w * s + u * dot * (1.0 - c))
+            .collect();
+        *p = Point::new(r[0] + centre[0], r[1] + centre[1], r[2] + centre[2]);
+    }
+    out
+}
+
+/// `mesh` moved by `by`.
+fn shifted(mesh: &Triangulation, by: P3) -> Triangulation {
+    let mut out = mesh.clone();
+    for p in &mut out.positions {
+        *p = Point::new(p.x + by[0], p.y + by[1], p.z + by[2]);
+    }
+    out
+}
+
+#[test]
+fn double_precision_is_the_plain_resolution_bit_for_bit() {
+    let a = cuboid([0.0; 3], [10.0; 3]);
+    let b = cuboid([5.0, 3.0, 4.0], [15.0, 12.0, 13.0]);
+    let ball = sphere([0.0; 3], 1.0, 10, 16, 0.31);
+    let other = sphere([0.9, 0.13, 0.07], 0.8, 9, 15, 0.77);
+    for mesh in [joined(&[&a, &b]), joined(&[&ball, &other])] {
+        assert_eq!(
+            resolve_self_intersections_with(&mesh, Quantum::F64).unwrap(),
+            resolve_self_intersections(&mesh).unwrap()
+        );
+    }
+}
+
+#[test]
+fn the_kernel_fixtures_rounded_to_single_precision_never_cross() {
+    let a = cuboid([0.0; 3], [10.0; 3]);
+    let b = cuboid([5.0, 3.0, 4.0], [15.0, 12.0, 13.0]);
+    let ball = sphere([0.0; 3], 1.0, 10, 16, 0.31);
+    let b2 = sphere([0.9, 0.13, 0.07], 0.8, 9, 15, 0.77);
+    let c2 = sphere([0.4, 0.71, -0.23], 0.7, 8, 13, 1.13);
+    let mut meshes = vec![
+        joined(&[&a, &b]),
+        joined(&[&a, &a]),
+        joined(&[&ball, &b2]),
+        joined(&[&ball, &b2, &c2]),
+        joined(&[&a, &cuboid([2.0; 3], [8.0; 3])]),
+        joined(&[&a, &inside_out(&cuboid([2.0; 3], [8.0; 3]))]),
+    ];
+    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    let unit = cuboid([-0.5; 3], [0.5; 3]);
+    for _ in 0..12 {
+        let parts: Vec<Triangulation> = (0..3 + (rng.next() * 2.0) as usize)
+            .map(|_| {
+                let axis = [0, 1, 2].map(|_| rng.next() - 0.5);
+                let shift = [0, 1, 2].map(|_| rng.next() * 0.6 - 0.3);
+                shifted(
+                    &turned(&unit, axis, rng.next() * std::f64::consts::TAU, [0.0; 3]),
+                    shift,
+                )
+            })
+            .collect();
+        meshes.push(joined(&parts.iter().collect::<Vec<_>>()));
+    }
+    let (naive, refused) = report("kernel fixtures", &meshes, Quantum::F32);
+    assert_eq!(refused, 0);
+    assert!(naive > 0, "no fixture needed more than rounding");
+}
+
+/// Each mesh resolved under `quantum` and checked by [`snapped`]; prints
+/// the largest of each measure over them. Answers how many of the `f64`
+/// results rounded naively, every coordinate to the grid, would have
+/// crossed themselves or held a flat triangle, and how many were refused,
+/// each by name.
+fn report(what: &str, meshes: &[Triangulation], quantum: Quantum) -> (usize, usize) {
+    let mut worst = Measured::default();
+    let (mut naive, mut refused) = (0, 0);
+    for mesh in meshes {
+        if let Err(e) = resolve_self_intersections_with(mesh, quantum) {
+            assert!(
+                message(&e).contains(&format!("rounding the result to {quantum}")),
+                "{e}"
+            );
+            refused += 1;
+            continue;
+        }
+        let (_, m) = snapped(mesh, quantum);
+        worst.moved = worst.moved.max(m.moved);
+        worst.bound = worst.bound.max(m.bound);
+        worst.volume = worst.volume.max(m.volume);
+        worst.volume_bound = worst.volume_bound.max(m.volume_bound);
+        let mut plain = resolve_self_intersections(mesh).unwrap().mesh;
+        for p in &mut plain.positions {
+            let [x, y, z] = coords(*p).map(|x| quantum.round(x).unwrap());
+            *p = Point::new(x, y, z);
+        }
+        if !self_intersections(&plain).is_ok_and(|pairs| pairs.is_empty()) {
+            naive += 1;
+        }
+    }
+    eprintln!(
+        "{what}: {} meshes, {refused} refused, {naive} cross when rounded naively; vertex moved {:.3e} (bound {:.3e}), volume changed {:.3e} (bound {:.3e})",
+        meshes.len(),
+        worst.moved,
+        worst.bound,
+        worst.volume,
+        worst.volume_bound
+    );
+    (naive, refused)
+}
+
+#[test]
+fn boxes_whose_faces_lie_closer_than_a_single_step_round_to_one_solid() {
+    // A box against a face of another, overlapping it, apart from it, or
+    // turned on it by less than a step of `f32` at that size: rounded,
+    // the near faces fall on one plane.
+    let a = cuboid([0.0; 3], [1.0; 3]);
+    let mut meshes = Vec::new();
+    for gap in [-1e-9, -3e-8, 1e-9, 3e-8, 1e-12, -1e-12] {
+        let b = cuboid([1.0 + gap, 0.25, 0.3], [2.0, 0.75, 0.8]);
+        meshes.push(joined(&[&a, &b]));
+        let flush = cuboid([1.0 + gap, 0.0, 0.0], [2.0, 1.0, 1.0]);
+        meshes.push(joined(&[&a, &flush]));
+        let over = cuboid([0.5, 0.2, 1.0 + gap], [1.5, 0.9, 1.7]);
+        meshes.push(joined(&[&a, &over]));
+    }
+    for angle in [1e-9, 3e-8, -2e-8] {
+        let b = cuboid([0.9, 0.25, 0.3], [2.0, 0.75, 0.8]);
+        meshes.push(joined(&[
+            &a,
+            &turned(&b, [0.0, 0.0, 1.0], angle, [1.0, 0.5, 0.5]),
+        ]));
+    }
+    let (naive, refused) = report("near-coincident boxes", &meshes, Quantum::F32);
+    assert_eq!(refused, 0);
+    assert!(naive > meshes.len() / 2, "{naive}");
+}
+
+#[test]
+fn shells_turned_on_themselves_by_a_hair_leave_slivers_that_round_clean() {
+    // A shell crossed with itself turned by a few steps of `f32`: every
+    // pair of faces meets at a vanishing angle, so the pieces are slivers
+    // a step or two across.
+    let ball = sphere([0.0; 3], 1.0, 8, 12, 0.4);
+    let cube = cuboid([-1.0; 3], [1.0; 3]);
+    let mut meshes = Vec::new();
+    for angle in [2e-7, 1e-6, 5e-6] {
+        for axis in [[1.0, 0.3, 0.2], [0.1, 1.0, -0.4]] {
+            meshes.push(joined(&[
+                &ball,
+                &turned(&ball, axis, angle, [0.01, 0.0, 0.0]),
+            ]));
+            meshes.push(joined(&[&cube, &turned(&cube, axis, angle, [0.0; 3])]));
+        }
+    }
+    // Where the rounded pieces touch along an edge or at a point, the
+    // answer would not be a 2-manifold and is refused by name.
+    let (naive, refused) = report("hair-turned shells", &meshes, Quantum::F32);
+    assert!(naive > 0, "no sliver here needed more than rounding");
+    assert!(refused <= 4, "{refused}");
+}
+
+#[test]
+fn randomly_jittered_overlaps_round_clean_to_single_precision() {
+    // Boxes and balls jittered by a few steps of `f32`, vertex by vertex,
+    // crossing a copy of themselves jittered differently.
+    let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+    let mut meshes = Vec::new();
+    for k in 0..16 {
+        let base = if k % 2 == 0 {
+            cuboid([-0.7, -0.4, -0.5], [0.7, 0.4, 0.5])
+        } else {
+            sphere([0.0; 3], 0.8, 7, 10, 0.2 + f64::from(k))
+        };
+        let jitter = |m: &Triangulation, rng: &mut Rng| {
+            let mut out = m.clone();
+            for p in &mut out.positions {
+                let d = [0, 1, 2].map(|_| (rng.next() - 0.5) * 4e-7);
+                *p = Point::new(p.x + d[0], p.y + d[1], p.z + d[2]);
+            }
+            out
+        };
+        let (a, b) = (jitter(&base, &mut rng), jitter(&base, &mut rng));
+        meshes.push(joined(&[&a, &b]));
+    }
+    let (naive, refused) = report("jittered copies", &meshes, Quantum::F32);
+    assert!(naive > meshes.len() / 2, "{naive}");
+    assert!(refused <= 1, "{refused}");
+}
+
+#[test]
+fn a_coarse_grid_holds_the_result_and_a_bad_spacing_is_refused() {
+    let a = cuboid([0.0; 3], [10.0; 3]);
+    let b = turned(
+        &cuboid([5.0, 3.0, 4.0], [15.0, 12.0, 13.0]),
+        [1.0, 2.0, 3.0],
+        0.3,
+        [0.0; 3],
+    );
+    report("grid 1/64", &[joined(&[&a, &b])], Quantum::Grid(1.0 / 64.0));
+    for h in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        let e = resolve_self_intersections_with(&a, Quantum::Grid(h)).unwrap_err();
+        assert!(message(&e).contains("positive and finite"), "{e}");
+    }
+    let far = cuboid([1e39; 3], [2e39; 3]);
+    let e = resolve_self_intersections_with(&far, Quantum::F32).unwrap_err();
+    assert!(message(&e).contains("single precision"), "{e}");
+}
