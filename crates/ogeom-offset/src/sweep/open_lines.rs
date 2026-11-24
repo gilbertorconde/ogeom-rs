@@ -78,7 +78,7 @@ use ogeom_topo::{
 use super::inside_turn::InsideTurn;
 use super::{
     DOUBLED_BACK, PipeCorners, PipeLaw, SpineStation, frenet_normals, law_normals,
-    realized_profile_wound, realized_rings, rmf_normals, spine_curve_of, wire_ends,
+    realized_profile_wound, realized_rings, rmf_normals, spine_curve_of, walk_curves, wire_ends,
 };
 
 /// How a leg carries the section: down a line by its displacement, or
@@ -163,6 +163,7 @@ pub(super) fn open_wire_law(
     let normals = match law {
         PipeLaw::Frenet => {
             // Each run between sharp corners has its own Frenet frame.
+            let spine_curves = walk_curves(model, spine)?;
             let mut normals = Vec::with_capacity(stations.len());
             let mut from = 0;
             for k in 0..legs.len() {
@@ -184,12 +185,12 @@ pub(super) fn open_wire_law(
                          between sharp corners"
                     );
                 }
-                normals.extend(frenet_normals(&run, tol)?);
+                normals.extend(frenet_normals(&run, &spine_curves, tol)?);
                 from = k + 1;
             }
             normals
         }
-        _ => law_normals(model, &stations, law, tolerance, tol)?,
+        _ => law_normals(model, spine, &stations, law, tolerance, tol)?,
     };
     if !turned_rotation_minimizing(&stations, &normals, tol) {
         ogeom_bail!(

@@ -6585,7 +6585,7 @@ fn densified(
     }
     let mut stations = stations;
     for _ in 0..12 {
-        let normals = law_normals(model, &stations, law, tolerance, tol)?;
+        let normals = law_normals(model, spine, &stations, law, tolerance, tol)?;
         let mut out: Vec<SpineStation> = Vec::with_capacity(stations.len() * 2);
         let mut added = false;
         for i in 0..stations.len() {
@@ -6868,7 +6868,7 @@ fn law_loft(
         history.generate(profile, shape.clone());
         return Ok(Built::new(shape, history));
     }
-    let normals = law_normals(model, stations, law, tolerance, tol)?;
+    let normals = law_normals(model, spine, stations, law, tolerance, tol)?;
     let start = station_frame(&stations[0], normals[0], tol)?;
     let mut kept: Vec<SpineStation> = Vec::with_capacity(stations.len());
     let mut kept_normals: Vec<Vector> = Vec::with_capacity(stations.len());
@@ -6938,7 +6938,7 @@ fn law_loft(
         let normal = if carried {
             carried_normal
         } else {
-            law_normals_on(&guide, &[here], law, tolerance, tol)?[0]
+            law_normals_on(&guide, &[], &[here], law, tolerance, tol)?[0]
         };
         let frame = station_frame(&here, normal, tol)?;
         let m = Transform::from_frame(&frame) * evolved(s)? * Transform::to_frame(&start);
@@ -7026,7 +7026,7 @@ pub fn make_pipe_sections(
     };
     let stations = frames::path_stations(model, spine, tol)?;
     let stations = evenly(model, spine, stations, 24, false, tol)?;
-    let normals = law_normals(model, &stations, &law, tolerance, tol)?;
+    let normals = law_normals(model, spine, &stations, &law, tolerance, tol)?;
     // Length run along the spine at each station.
     let mut run = vec![0.0_f64];
     for pair in stations.windows(2) {
@@ -7365,12 +7365,24 @@ fn evenly_by(
 /// along its end tangent.
 pub(crate) fn law_normals(
     model: &Model,
+    spine: &Shape,
     stations: &[SpineStation],
     law: &PipeLaw<'_>,
     reach: f64,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Vector>> {
-    law_normals_on(&guide_curves(model, law)?, stations, law, reach, tol)
+    let spine_curves = match law {
+        PipeLaw::Frenet => walk_curves(model, spine)?,
+        _ => Vec::new(),
+    };
+    law_normals_on(
+        &guide_curves(model, law)?,
+        &spine_curves,
+        stations,
+        law,
+        reach,
+        tol,
+    )
 }
 
 /// An auxiliary law's guide, each edge's curve and range in the guide's
@@ -7395,9 +7407,11 @@ fn guide_curves(
 }
 
 /// [`law_normals`], an auxiliary law's guide read already
-/// ([`guide_curves`]).
+/// ([`guide_curves`]), and for the Frenet law the spine's curves the
+/// stations stand on ([`walk_curves`]).
 fn law_normals_on(
     curves: &[(ogeom_geom::Curve, (f64, f64))],
+    spine_curves: &[WalkCurve],
     stations: &[SpineStation],
     law: &PipeLaw<'_>,
     reach: f64,
@@ -7411,7 +7425,7 @@ fn law_normals_on(
             "a fixed section keeps its own frame; it has no frame normals"
         ),
         PipeLaw::RotationMinimizing => Ok(rmf_normals(stations)),
-        PipeLaw::Frenet => frenet_normals(stations, tol),
+        PipeLaw::Frenet => frenet_normals(stations, spine_curves, tol),
         PipeLaw::Binormal(b) => stations
             .iter()
             .map(|s| {
@@ -7640,7 +7654,7 @@ fn pipe_shell_law(
              spine with the rotation-minimizing frame"
         );
     }
-    let normals = law_normals(model, &stations, law, tolerance, tol)?;
+    let normals = law_normals(model, spine, &stations, law, tolerance, tol)?;
     // A ring's frame must come home: carry once more across the wrap
     // corner, read the twist between departure and return, and spread it
     // along the arc: the smooth loop's own reconciliation, ending at a
@@ -9096,7 +9110,7 @@ fn closed_pipe_shell(
     // carry the frame through by continuation and the continuation is
     // path-dependent. One reconciliation serves both.
     let mut normals: Vec<Vector> = if !classic {
-        law_normals(model, &stations, law, tolerance, tol)?
+        law_normals(model, spine, &stations, law, tolerance, tol)?
     } else if frenet {
         // The Frenet frame is the spine's own, single-valued round a loop:
         // read with wrapped neighbours it closes on itself and owes no
@@ -9104,7 +9118,7 @@ fn closed_pipe_shell(
         // does not: the one-sided differences at the walk's two ends
         // disagree with the interior, and the strips built on them miss
         // each other at the join by that kink.
-        frenet_normals_closed(&stations, tol)?
+        frenet_normals_closed(&stations, &walk_curves(model, spine)?, tol)?
     } else {
         let mut extended = stations.clone();
         extended.push(stations[0]);
@@ -9205,7 +9219,7 @@ fn closed_pipe_shell(
                     tangent: t,
                     ..round[0]
                 };
-                law_normals_on(&guide, &[here], law, tolerance, tol)?[0]
+                law_normals_on(&guide, &[], &[here], law, tolerance, tol)?[0]
             };
             (p, t, x)
         };
@@ -9272,26 +9286,64 @@ fn shell_signed_volume(model: &Model, shell: &Shape, tol: Tolerances) -> OgeomRe
     Ok(ogeom_mesh::triangulate(model, shell, ogeom_mesh::Deflection::default(), tol)?.volume())
 }
 
+/// The spine's own principal normal at `station`, read from the second
+/// derivative of the curve it stands on (`curves`, by the station's
+/// edge), agreeing in sense with `estimate`. `None` where the station does
+/// not stand on that curve or the curve does not bend there.
+fn exact_bend(
+    curves: &[WalkCurve],
+    station: &SpineStation,
+    estimate: Vector,
+    tol: Tolerances,
+) -> Option<Vector> {
+    let (curve, _, _) = curves.get(station.edge)?;
+    let d = curve.derivatives_at(station.t, 2, tol).ok()?;
+    let on = Point::new(d[0].x, d[0].y, d[0].z);
+    if on.distance(station.at) > tol.confusion() {
+        return None;
+    }
+    // The second derivative's part square to the tangent is the bend,
+    // whichever way and at whatever pace the curve is walked.
+    let t = station.tangent;
+    let bend = d[2] - t * d[2].dot(t);
+    let (m, speed) = (bend.magnitude(), d[1].magnitude());
+    let curvature = m / (speed * speed);
+    (speed > tol.confusion() && curvature > 1e-9 && bend.dot(estimate) > 0.0).then(|| bend / m)
+}
+
+/// The bend at station `i` read from its neighbours' tangents, `before`
+/// and `after` it: the gate for whether the spine bends there at all, and
+/// the direction where its curve does not give one ([`exact_bend`]). A
+/// difference is centred on the station only where its neighbours stand
+/// evenly about it, so at a walk's ends and where station spacing changes
+/// it leans toward the wider step; the curve's own normal does not.
+fn station_bend(
+    stations: &[SpineStation],
+    curves: &[WalkCurve],
+    (before, i, after): (usize, usize, usize),
+    tol: Tolerances,
+) -> Option<Vector> {
+    let dt = stations[after].tangent - stations[before].tangent;
+    let t = stations[i].tangent;
+    let bend = dt - t * dt.dot(t);
+    let m = bend.magnitude();
+    (m > tol.angular().max(1e-9))
+        .then(|| exact_bend(curves, &stations[i], bend, tol).unwrap_or(bend / m))
+}
+
 /// Frenet normals: each station's frame turns with the spine's own
-/// curvature, read from the tangents' finite differences. Straight runs
-/// carry the last bending station's normal forward; a spine that never
-/// bends has no Frenet frame at all and is refused by name.
-fn frenet_normals(stations: &[SpineStation], tol: Tolerances) -> OgeomResult<Vec<Vector>> {
+/// curvature, read from the curve each station stands on ([`station_bend`]).
+/// Straight runs carry the last bending station's normal forward; a spine
+/// that never bends has no Frenet frame at all and is refused by name.
+fn frenet_normals(
+    stations: &[SpineStation],
+    curves: &[WalkCurve],
+    tol: Tolerances,
+) -> OgeomResult<Vec<Vector>> {
     let mut normals: Vec<Option<Vector>> = Vec::with_capacity(stations.len());
     for i in 0..stations.len() {
-        let (before, after) = (
-            &stations[i.saturating_sub(1)],
-            &stations[(i + 1).min(stations.len() - 1)],
-        );
-        let dt = after.tangent - before.tangent;
-        let t = stations[i].tangent;
-        let bend = dt - t * dt.dot(t);
-        let m = bend.magnitude();
-        normals.push(if m > tol.angular().max(1e-9) {
-            Some(bend / m)
-        } else {
-            None
-        });
+        let around = (i.saturating_sub(1), i, (i + 1).min(stations.len() - 1));
+        normals.push(station_bend(stations, curves, around, tol));
     }
     // Carry forward, then backward, so straight lead-ins take the first
     // bend's frame rather than none.
@@ -9327,20 +9379,20 @@ fn frenet_normals(stations: &[SpineStation], tol: Tolerances) -> OgeomResult<Vec
 /// neighbours across the join as well, so the field is periodic. A loop
 /// with a straight stretch carries the last bend's normal through it, as
 /// the open form does; a loop that never bends has no Frenet frame.
-fn frenet_normals_closed(stations: &[SpineStation], tol: Tolerances) -> OgeomResult<Vec<Vector>> {
+fn frenet_normals_closed(
+    stations: &[SpineStation],
+    curves: &[WalkCurve],
+    tol: Tolerances,
+) -> OgeomResult<Vec<Vector>> {
     let n = stations.len();
     let mut normals: Vec<Option<Vector>> = Vec::with_capacity(n);
     for i in 0..n {
-        let (before, after) = (&stations[(i + n - 1) % n], &stations[(i + 1) % n]);
-        let dt = after.tangent - before.tangent;
-        let t = stations[i].tangent;
-        let bend = dt - t * dt.dot(t);
-        let m = bend.magnitude();
-        normals.push(if m > tol.angular().max(1e-9) {
-            Some(bend / m)
-        } else {
-            None
-        });
+        normals.push(station_bend(
+            stations,
+            curves,
+            ((i + n - 1) % n, i, (i + 1) % n),
+            tol,
+        ));
     }
     let Some(first_bend) = normals.iter().position(Option::is_some) else {
         ogeom_bail!(
