@@ -1,0 +1,3 @@
+- **Fixed: a rim round trimming through a pocket, with the pocket's floor rounds in one request, builds** (#1312).
+  - The engine's seat check read a straight contact at parameters 0 and 1. A short edge's contact is trimmed to a shorter domain, so the request failed with `domain error: parameter 1 outside curve domain`. The check now reads each contact inside its own domain; an edge whose ends fall outside its contact leaves the ball no seat, and the engine takes its other routes.
+  - A plate with a boss r 5, its rim rounded r 1 beside a pocket 0.5 square, the pocket's floor edges rounded r 0.05 or r 0.1: 6785.555674383 against the closed form 6785.555674389, and 6785.558557864 against 6785.558557870.

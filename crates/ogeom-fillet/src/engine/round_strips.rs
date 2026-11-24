@@ -1311,14 +1311,20 @@ fn contacts_on_faces(
         let contact = &strip.contacts[k];
         let (mut lo, mut hi) = contact.domain();
         // A straight contact runs on past the edge's ends: only its piece
-        // between them is the strip's.
+        // between them is the strip's. It is read inside its own domain,
+        // which a short edge's contact keeps short; a piece reaching past
+        // that domain leaves the ball no seat.
         if let Curve::Line(_) = contact {
             let e = &curved.edges[&strip.edge];
-            let o = contact.point_at(0.0, tol)?;
-            let d = contact.point_at(1.0, tol)? - o;
-            let at = |v: Id| (curved.points[&v] - o).dot(d) / d.dot(d);
+            let o = contact.point_at(lo, tol)?;
+            let d = contact.point_at(hi, tol)? - o;
+            let at = |v: Id| lo + (hi - lo) * (curved.points[&v] - o).dot(d) / d.dot(d);
             let (ta, tb) = (at(e.ends.0), at(e.ends.1));
-            (lo, hi) = (ta.min(tb), ta.max(tb));
+            let slack = tol.confusion();
+            if ta.min(tb) < lo - slack || ta.max(tb) > hi + slack {
+                return Ok(false);
+            }
+            (lo, hi) = (ta.min(tb).max(lo), ta.max(tb).min(hi));
         }
         for i in 0..64 {
             let p = contact.point_at(lo + (hi - lo) * (f64::from(i) + 0.5) / 64.0, tol)?;
