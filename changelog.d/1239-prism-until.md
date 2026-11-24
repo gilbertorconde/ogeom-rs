@@ -1,0 +1,4 @@
+- **Added: a prism that stops on faces, and the first hit of a curve on a shape** (#1239).
+  - `make_prism_until` extrudes a planar face along a direction, each line of the sweep ending where it first meets one of the limits (faces, or parts whose faces all count) inside that face's trim, after an optional offset along the direction. Lines that meet no limit are refused by name; limits behind the profile stop nothing; a limit that bends back, a cylinder across the travel, leaves nothing past where each line first meets it. The near end carries `SWEEP_BOTTOM` derived from the profile, each far-end face `SWEEP_TOP` derived from the limit face it lies on.
+  - `curve_hit` answers where a curve over a range first or last meets a face of a shape, trimmed faces only, solved against the true surfaces: the face, the point and the curve's parameter.
+  - Facade: `ogeom::offset::make_prism_until`, `ogeom::algo::{curve_hit, Hit, CurveHit, hit}`.
