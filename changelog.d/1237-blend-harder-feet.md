@@ -1,0 +1,5 @@
+- **Added: blend into round under an undercut wall, and for more foot bevels** (#1237).
+  - A boss's foot round on a cone widening away from the floor (an undercut, up to 45 degrees) now blends into the rounds it reaches, as on a narrowing cone. A cone r 6 to 8 over 15 by an edge round r 5, foot round r 3: fill 107.873066065 against the closing of 107.873066080. Worst G1 1.8e-6 rad.
+  - A foot bevel from a cylindrical wall now blends into several rounds whose arcs stand apart, into a concave round, and along an open arc whose ends stand on planes through the axis (capped flush there). Bevel 3, boss r 6: two rounds r 5, 193.743217880 against 193.743217900; a concave round r 6, 199.638554683 against 199.638554675; a half boss, 96.871608919 against 96.871608950.
+  - Still trim through, pinned by tests: a round not tangent to the floor, a curved floor, a bevel up a cone.
+  - Changed: these feet used to trim through (the bevels left a ledge or were refused by name); `fillet_edges` and `chamfer_edges` now build the blend.

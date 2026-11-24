@@ -1931,7 +1931,8 @@ behaviours are tried in order, all on by default (fillet_edges is the \
 default): blend into round, hold edge (with hold edge at the end), then \
 trim through. Blend into round is built for a boss's foot: the closed rim \
 between a planar floor and a wall about an axis square to it (a cylinder, \
-or a cone narrowing away from the floor by up to 45 degrees), whose \
+or a cone leaning by up to 45 degrees, narrowing away from the floor or \
+widening as an undercut), whose \
 round's contact circle crosses straight edges of the floor along which \
 cylindrical rounds, convex or concave, meet the floor tangentially, over \
 arcs that stand apart; or, for a round, an open arc of that circle whose \
@@ -1951,10 +1952,11 @@ where the ball touches the tangent line; the fill is one tool fused into \
 the solid, built only where nothing else of the solid stands within the \
 boxes its sections take up and no other face comes within the radius of \
 a ball. A concave round is taken only where the ball stays inside its \
-cylinder. A bevel is blended only from a cylindrical wall into one \
-convex round. Crossings whose arcs meet at a creased corner (two \
+cylinder. A bevel is blended from a cylindrical wall into convex or \
+concave rounds over arcs apart, on a closed rim or an open arc. \
+Crossings whose arcs meet at a creased corner (two \
 rounds meeting in an edge), at concave rounds or on a cone, a round not tangent to the \
-floor, an undercut wall, a curved floor, and an open arc ending off \
+floor, a curved floor, a bevel up a cone or where its arcs meet, and an open arc ending off \
 the axis or on a round's seat are not blended into the round: they go \
 on to trim through. Hold edge is built \
 for a round of a straight edge, or a chain of edges along one line, \
@@ -2072,6 +2074,10 @@ tests = [
     "crates/ogeom-fillet/tests/blend_into_round.rs::open_arcs_fill_as_the_closing_within_their_wedge",
     "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_ending_off_the_axis_is_not_blended",
     "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_ending_on_its_round_s_seat_is_not_blended",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::an_undercut_boss_s_foot_round_blends_into_the_edge_round",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::an_undercut_boss_s_foot_round_fills_as_the_closing",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::a_foot_round_reaching_a_round_not_tangent_to_the_floor_is_not_blended",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::a_foot_round_on_a_curved_floor_is_not_blended",
     "crates/ogeom-fillet/tests/overflow.rs::trim_through_off_refuses_a_round_reaching_another_face",
     "crates/ogeom-fillet/tests/overflow.rs::a_rolling_corner_takes_the_overflow_options",
     "crates/ogeom-fillet/tests/overflow.rs::a_level_law_and_equal_distances_blend_into_the_edge_round",
@@ -2232,7 +2238,7 @@ id = "fillet.chamfer-overflow"
 title = "Overflow handling for chamfers: a bevel reaching geometry other than its own two faces"
 crate = "ogeom-fillet"
 verdict = "partial"
-restriction = """chamfer_edges_overflow takes the fillet's Overflow option set, limited to what applies to a flat bevel, tried in order, both on by default (chamfer_edges, chamfer_edges_with and chamfer_edges_cornered are the default): blend into round, then trim through. Hold edge and hold edge at the end are ignored for chamfers: a bevel has no ball to rest on an edge. Blend into round is built for a boss's foot: the closed rim between a planar floor and a cylindrical wall standing square on it, every edge of the rim asking the same legs (any spelling), whose leg on the floor crosses a straight edge of the floor along which a convex cylindrical round meets the floor tangentially and stays on that round. The bevel is the cone between its legs over the floor and, past the tangent line, the straight ruling from the leg on the wall to the leg on the round (where the wall's offset meets it), fitted through its exact sections within a confusion, the two pieces meeting G1 along the shared ruling; the fill is one tool fused into the solid, built only where nothing else of the solid stands within the box it can take up. Any other bevel reaching a round goes on to trim through. Trim through is the engine's own construction (the bevel keeps its plane or cone and the faces it reaches are trimmed or extended, amendment M5b). With trim through off, a result with a blend changing a face it is not seated on (its edge's faces and those at its ends, whichever other edge of the request is seated there), or carrying a face on past its side over nothing, is refused by name, and so is a foot blend into round would take while it is off. A foot bevel whose leg on the floor touches the round's tangent line, or crosses it at under a hundredth of a radian, leaves the floor and the round wedges too sharp at the crossings for the booleans: where neither behaviour builds it, it is refused by that name; the sizes either side build. chamfer_edges_overflow_checked names the specs a refusal leaves out, under either corner, read as the round's checked call reads its edges."""
+restriction = """chamfer_edges_overflow takes the fillet's Overflow option set, limited to what applies to a flat bevel, tried in order, both on by default (chamfer_edges, chamfer_edges_with and chamfer_edges_cornered are the default): blend into round, then trim through. Hold edge and hold edge at the end are ignored for chamfers: a bevel has no ball to rest on an edge. Blend into round is built for a boss's foot: the closed rim between a planar floor and a cylindrical wall standing square on it, or an open arc of it whose ends stand on planes through the wall's axis, every edge of the rim asking the same legs (any spelling), whose leg on the floor crosses straight edges of the floor along which cylindrical rounds, convex or concave, meet the floor tangentially, over arcs apart, and stays on each round. The bevel is the cone between its legs over the floor and, past each tangent line, the straight ruling from the leg on the wall to the leg on the round (where the wall's offset meets it), fitted through its exact sections within a confusion, the pieces meeting G1 along the shared rulings; an open arc's ends are capped flush in their planes, which hold the end rulings; the fill is one tool fused into the solid, built only where nothing else of the solid stands within the box it can take up. Any other bevel reaching a round goes on to trim through. Trim through is the engine's own construction (the bevel keeps its plane or cone and the faces it reaches are trimmed or extended, amendment M5b). With trim through off, a result with a blend changing a face it is not seated on (its edge's faces and those at its ends, whichever other edge of the request is seated there), or carrying a face on past its side over nothing, is refused by name, and so is a foot blend into round would take while it is off. A foot bevel whose leg on the floor touches the round's tangent line, or crosses it at under a hundredth of a radian, leaves the floor and the round wedges too sharp at the crossings for the booleans: where neither behaviour builds it, it is refused by that name; the sizes either side build. chamfer_edges_overflow_checked names the specs a refusal leaves out, under either corner, read as the round's checked call reads its edges."""
 symbols = [
     "ogeom_fillet::chamfer_edges_overflow",
     "ogeom_fillet::chamfer_edges_overflow_checked",
@@ -2246,6 +2252,10 @@ tests = [
     "crates/ogeom-fillet/tests/chamfer_overflow.rs::a_notch_trims_through_and_trim_through_off_refuses_it",
     "crates/ogeom-fillet/tests/chamfer_overflow.rs::a_foot_bevel_builds_either_side_of_the_tangent_line",
     "crates/ogeom-fillet/tests/chamfer_overflow.rs::a_foot_bevel_grazing_the_tangent_line_is_refused_by_name",
+    "crates/ogeom-fillet/tests/chamfer_overflow.rs::a_foot_bevel_blends_into_two_rounds",
+    "crates/ogeom-fillet/tests/chamfer_overflow.rs::a_foot_bevel_blends_into_a_concave_round",
+    "crates/ogeom-fillet/tests/chamfer_overflow.rs::an_open_arc_s_bevel_blends_into_the_edge_round",
+    "crates/ogeom-fillet/tests/chamfer_overflow.rs::a_conical_boss_s_foot_bevel_is_not_blended",
     "crates/ogeom-fillet/tests/checked_overflow.rs::a_foot_bevel_refused_by_its_options_is_named",
     "crates/ogeom-fillet/tests/checked_overflow.rs::a_notch_refused_with_trim_through_off_is_named",
 ]

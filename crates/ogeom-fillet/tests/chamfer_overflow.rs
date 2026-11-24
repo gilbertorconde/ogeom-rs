@@ -1,6 +1,6 @@
 //! Overflow handling for chamfers (`chamfer_edges_overflow`): a bevel
 //! reaching geometry other than its own two faces. Blend into round runs a
-//! boss's foot bevel on over the straight round it reaches; trim through is
+//! boss's foot bevel on over the straight rounds it reaches; trim through is
 //! the construction the chamfer built before the option set; with both off
 //! the request is refused by name. Hold edge does not apply to a bevel.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
@@ -732,5 +732,478 @@ fn trim_through_off_refuses_a_foot_ledge_over_an_edge_round() {
             named(&err) || err.to_string().contains("blend into round"),
             "{err}"
         );
+    }
+}
+
+/// A straight round of the floor seen from above: a point of its tangent
+/// line, the direction square to it away from the boss, its radius, and
+/// whether it is concave (curving up from the floor).
+#[derive(Clone, Copy)]
+struct Seat {
+    p: (f64, f64),
+    n: (f64, f64),
+    radius: f64,
+    concave: bool,
+}
+
+impl Seat {
+    fn past(&self, x: f64, y: f64) -> f64 {
+        (x - self.p.0).mul_add(self.n.0, (y - self.p.1) * self.n.1)
+    }
+}
+
+/// The reference of [`Reference`] for any foot whose floor at height
+/// `top` meets straight rounds tangentially, convex or concave, and for an
+/// open arc's wedge of angles: at each angle the bevel is the straight
+/// line from the wall at `rise` to the floor straight below the circle
+/// `out` from the wall. The columns are integrated by Gauss-Legendre
+/// quadrature, the angles split where the leg on the floor crosses a
+/// tangent line, the radii where a column does.
+struct Feet {
+    axis: (f64, f64),
+    foot: f64,
+    top: f64,
+    out: f64,
+    rise: f64,
+    rounds: Vec<Seat>,
+}
+
+impl Feet {
+    fn floor(&self, x: f64, y: f64) -> f64 {
+        let Some((r, s)) = self
+            .rounds
+            .iter()
+            .map(|r| (*r, r.past(x, y)))
+            .filter(|(_, s)| *s > 0.0)
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+        else {
+            return self.top;
+        };
+        let s = s.min(r.radius);
+        let drop = r.radius - r.radius.mul_add(r.radius, -s * s).sqrt();
+        if r.concave {
+            self.top + drop
+        } else {
+            self.top - drop
+        }
+    }
+
+    fn column(&self, rho: f64, t: f64) -> f64 {
+        let at = |r: f64| {
+            self.floor(
+                r.mul_add(t.cos(), self.axis.0),
+                r.mul_add(t.sin(), self.axis.1),
+            )
+        };
+        let reach = self.foot + self.out;
+        let wall = self.top + self.rise;
+        let line = wall + (at(reach) - wall) * (rho - self.foot) / self.out;
+        (line - at(rho)).max(0.0)
+    }
+
+    fn volume(&self, n: usize, wedge: Option<(f64, f64)>) -> f64 {
+        let g = gauss(n);
+        let reach = self.foot + self.out;
+        let mut cuts: Vec<f64> = Vec::new();
+        for r in &self.rounds {
+            let gap = -r.past(self.axis.0, self.axis.1);
+            if gap < reach {
+                let mid = r.n.1.atan2(r.n.0);
+                let half = (gap / reach).acos();
+                cuts.extend([mid - half, mid + half]);
+            }
+        }
+        let (from, to) = wedge.unwrap_or((0.0, TAU));
+        let mut c: Vec<f64> = cuts
+            .iter()
+            .map(|a| from + (a - from).rem_euclid(TAU))
+            .filter(|a| *a > from && *a < to)
+            .collect();
+        c.extend([from, to]);
+        c.sort_by(f64::total_cmp);
+        let mut sum = 0.0;
+        for w in c.windows(2) {
+            let ha = 0.5 * (w[1] - w[0]);
+            for (ga, wa) in &g {
+                let t = w[0] + ha * (ga + 1.0);
+                let mut radii = vec![self.foot];
+                for r in &self.rounds {
+                    let towards = r.n.0.mul_add(t.cos(), r.n.1 * t.sin());
+                    let cross = -r.past(self.axis.0, self.axis.1) / towards;
+                    if towards > 0.0 && cross > self.foot && cross < reach {
+                        radii.push(cross);
+                    }
+                }
+                radii.sort_by(f64::total_cmp);
+                radii.push(reach);
+                for v in radii.windows(2) {
+                    let hr = 0.5 * (v[1] - v[0]);
+                    for (gr, wr) in &g {
+                        let rho = v[0] + hr * (gr + 1.0);
+                        sum += wa * wr * self.column(rho, t) * rho * hr * ha;
+                    }
+                }
+            }
+        }
+        sum
+    }
+}
+
+/// The largest angle between the normals either side of every edge
+/// bounding a fitted face, sampled and projected as in
+/// [`worst_transition`]; with how many fitted faces there are.
+fn worst_fitted_join(m: &Model, s: &Shape) -> (f64, usize) {
+    let fitted = explore_unique(m, s, ShapeType::Face)
+        .unwrap()
+        .iter()
+        .filter(|f| kind(&surface_of(m, f)) == "fitted")
+        .count();
+    let mut worst = 0.0_f64;
+    for e in explore_unique(m, s, ShapeType::Edge).unwrap() {
+        let faces = ancestors_of(m, s, &e, ShapeType::Face).unwrap();
+        let [a, b] = &faces[..] else {
+            continue;
+        };
+        let (sa, sb) = (surface_of(m, a), surface_of(m, b));
+        if kind(&sa) != "fitted" && kind(&sb) != "fitted" {
+            continue;
+        }
+        // A fitted piece meets the floor's round and the wall at the
+        // bevel's own angle; only its joins with the rest of the bevel are
+        // smooth.
+        let bevel = |g: &SurfaceGeometry| matches!(kind(g), "cone" | "fitted");
+        if !bevel(&sa) || !bevel(&sb) {
+            continue;
+        }
+        let (c, (lo, hi)) = ogeom_algo::placed_edge_curve(m, &e, T).unwrap().unwrap();
+        for k in 1..20 {
+            let p = c.point_at(lo + (hi - lo) * f64::from(k) / 20.0, T).unwrap();
+            let normal = |g: &SurfaceGeometry| -> Vector {
+                let foot = ogeom_geom::project::project_on_surface(g, p, 16, T).unwrap();
+                let (u, v) = foot.parameters;
+                g.normal_at(u, v, T).unwrap().vector()
+            };
+            worst = worst.max(normal(&sa).dot(normal(&sb)).abs().clamp(0.0, 1.0).acos());
+        }
+    }
+    (worst, fitted)
+}
+
+/// A part whose boss's foot bevel blends into the rounds it reaches: the
+/// solid, the foot rim, the reference, the wedge an open arc keeps, and how
+/// many rounds the bevel reaches.
+struct Part {
+    m: Model,
+    s: Shape,
+    foot: Vec<Shape>,
+    reference: Feet,
+    wedge: Option<(f64, f64)>,
+    rounds: usize,
+}
+
+const EDGE: Seat = Seat {
+    p: (0.0, EDGE_ROUND),
+    n: (0.0, -1.0),
+    radius: EDGE_ROUND,
+    concave: false,
+};
+
+fn foot_of(m: &Model, s: &Shape, (x, y, z): (f64, f64, f64)) -> Vec<Shape> {
+    let foot = edges_where(m, s, |p| {
+        (p.z - z).abs() < 1e-9 && ((p.x - x).hypot(p.y - y) - BOSS).abs() < 1e-9
+    });
+    assert!(!foot.is_empty(), "the foot rim");
+    foot
+}
+
+/// The block with its top edges along `y = 0` and `x = 0` rounded at 5,
+/// and the boss at `(12, 12)`: the bevel's leg on the floor, the circle of
+/// radius 9, crosses both tangent lines `x = 5` and `y = 5` by 2, over two
+/// arcs apart (the top's corner stands 9.9 from the axis).
+fn two_rounds() -> Part {
+    let mut m = Model::new();
+    let block = ogeom_algo::make_box(&mut m, at(0.0, 0.0, 0.0), BLOCK, T)
+        .unwrap()
+        .shape;
+    let top = edges_where(&m, &block, |p| {
+        (p.y.abs() < 1e-9 || p.x.abs() < 1e-9) && (p.z - BLOCK.2).abs() < 1e-9
+    });
+    let rounded = fillet_edges(&mut m, &block, &top, EDGE_ROUND, T)
+        .unwrap()
+        .shape;
+    let boss = ogeom_algo::make_cylinder(&mut m, at(12.0, 12.0, BLOCK.2), BOSS, BOSS_HIGH, T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &rounded, &boss, T).unwrap().shape;
+    let foot = foot_of(&m, &s, (12.0, 12.0, BLOCK.2));
+    let side = Seat {
+        p: (EDGE_ROUND, 0.0),
+        n: (-1.0, 0.0),
+        ..EDGE
+    };
+    Part {
+        m,
+        s,
+        foot,
+        reference: Feet {
+            axis: (12.0, 12.0),
+            foot: BOSS,
+            top: BLOCK.2,
+            out: 3.0,
+            rise: 3.0,
+            rounds: vec![EDGE, side],
+        },
+        wedge: None,
+        rounds: 2,
+    }
+}
+
+/// A step's lower floor at height 10, its foot along `y = 8` rounded at 6,
+/// so the concave round meets the floor along `y = 14`; the boss at
+/// `(20, 21)` on it. The leg on the floor (radius 9) crosses that line by
+/// 2 and climbs the round, short of where it turns up square.
+fn concave_round() -> Part {
+    let mut m = Model::new();
+    let base = ogeom_algo::make_box(&mut m, at(0.0, 0.0, 0.0), (40.0, 40.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let step = ogeom_algo::make_box(&mut m, at(0.0, 0.0, 10.0), (40.0, 8.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &base, &step, T).unwrap().shape;
+    let valley = edges_where(&m, &s, |p| {
+        (p.y - 8.0).abs() < 1e-9 && (p.z - 10.0).abs() < 1e-9
+    });
+    let s = fillet_edges(&mut m, &s, &valley, 6.0, T).unwrap().shape;
+    let boss = ogeom_algo::make_cylinder(&mut m, at(20.0, 21.0, 10.0), BOSS, BOSS_HIGH, T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &s, &boss, T).unwrap().shape;
+    let foot = foot_of(&m, &s, (20.0, 21.0, 10.0));
+    Part {
+        m,
+        s,
+        foot,
+        reference: Feet {
+            axis: (20.0, 21.0),
+            foot: BOSS,
+            top: 10.0,
+            out: 3.0,
+            rise: 3.0,
+            rounds: vec![Seat {
+                p: (0.0, 14.0),
+                n: (0.0, -1.0),
+                radius: 6.0,
+                concave: true,
+            }],
+        },
+        wedge: None,
+        rounds: 1,
+    }
+}
+
+/// The boss at `(20, 12)` on the block of [`bossed`], its half beyond
+/// `y = 12` cut away before it is fused on: the foot is the half circle in
+/// front of the cut, from angle pi to 2 pi, ending on the flat, a plane
+/// through the axis. The leg on the floor reaches 2 past `y = 5` over the
+/// middle of the arc.
+fn cut_boss() -> Part {
+    let mut m = Model::new();
+    let block = ogeom_algo::make_box(&mut m, at(0.0, 0.0, 0.0), BLOCK, T)
+        .unwrap()
+        .shape;
+    let top = edges_where(&m, &block, |p| {
+        p.y.abs() < 1e-9 && (p.z - BLOCK.2).abs() < 1e-9
+    });
+    let rounded = fillet_edges(&mut m, &block, &top, EDGE_ROUND, T)
+        .unwrap()
+        .shape;
+    let boss = ogeom_algo::make_cylinder(&mut m, at(20.0, 12.0, BLOCK.2), BOSS, BOSS_HIGH, T)
+        .unwrap()
+        .shape;
+    let away = ogeom_algo::make_box(&mut m, at(0.0, 12.0, BLOCK.2), (40.0, 18.0, 20.0), T)
+        .unwrap()
+        .shape;
+    let boss = ogeom_bool::cut(&mut m, &boss, &away, T).unwrap().shape;
+    let s = ogeom_bool::fuse(&mut m, &rounded, &boss, T).unwrap().shape;
+    let foot = foot_of(&m, &s, (20.0, 12.0, BLOCK.2));
+    Part {
+        m,
+        s,
+        foot,
+        reference: Feet {
+            axis: (20.0, 12.0),
+            foot: BOSS,
+            top: BLOCK.2,
+            out: 3.0,
+            rise: 3.0,
+            rounds: vec![EDGE],
+        },
+        wedge: Some((PI, TAU)),
+        rounds: 1,
+    }
+}
+
+/// The part's foot bevelled 3 on both legs by default: valid and closed,
+/// one fitted piece per round reached, meeting the cone pieces G1. Blend
+/// into round off gives trim through's own solid, which differs, or its
+/// refusal by name; every behaviour off refuses it, naming blend into
+/// round.
+fn bevel_blends(mut part: Part) {
+    let (m, s, foot) = (&mut part.m, &part.s, &part.foot);
+    let built = chamfer_edges(m, s, foot, 3.0, T).unwrap();
+    let found = ogeom_algo::check(m, &built.shape, T).unwrap();
+    assert!(found.is_valid(), "{:?}", found.problems);
+    for shell in explore_unique(m, &built.shape, ShapeType::Shell).unwrap() {
+        assert!(ogeom_algo::is_shell_closed(m, &shell).unwrap(), "closed");
+    }
+    for e in foot {
+        assert!(!built.history.generated(e).is_empty(), "the rim's bevel");
+    }
+    let (crease, fitted) = worst_fitted_join(m, &built.shape);
+    println!("worst join {crease:.2e} over {fitted} fitted faces");
+    assert_eq!(fitted, part.rounds, "one fitted piece per round reached");
+    assert!(crease < 1e-5, "the bevel's joins crease by {crease}");
+
+    let specs: Vec<(Shape, Chamfer)> = foot
+        .iter()
+        .map(|e| (e.clone(), Chamfer::Symmetric(3.0)))
+        .collect();
+    let corner = ChamferCorner::Facet;
+    let mut off = Overflow::default();
+    off.blend_into_round = false;
+    match chamfer_edges_overflow(m, s, &specs, corner, off, T) {
+        Ok(next) => assert!(
+            (volume(m, &next.shape) - volume(m, &built.shape)).abs() > 1e-6,
+            "trim through's own result"
+        ),
+        Err(err) => assert!(err.to_string().contains("chamfer"), "by name: {err}"),
+    }
+    let err = chamfer_edges_overflow(m, s, &specs, corner, Overflow::none(), T).unwrap_err();
+    assert!(err.to_string().contains("blend into round"), "{err}");
+}
+
+/// The fill the part's bevel adds against the reference, within the
+/// reference's bound (the change from 32 to 64 points per range) plus
+/// 1e-6.
+fn bevel_fills_as_defined(mut part: Part) {
+    let (m, s, foot) = (&mut part.m, &part.s, &part.foot);
+    let before = volume(m, s);
+    let built = chamfer_edges(m, s, foot, 3.0, T).unwrap();
+    let (coarse, fine) = (
+        part.reference.volume(32, part.wedge),
+        part.reference.volume(64, part.wedge),
+    );
+    let bound = (fine - coarse).abs().max(1e-9);
+    let got = volume(m, &built.shape) - before;
+    println!(
+        "fill {got:.9}, reference {fine:.9}, error {:.2e}, bound {bound:.2e}",
+        (got - fine).abs()
+    );
+    assert!(
+        (got - fine).abs() < 1e-6 + bound,
+        "the fill {got} against the reference {fine} (within {bound})"
+    );
+}
+
+/// The reference against Pappus on a boss clear of any round: over the
+/// whole turn the cone's fill `2 pi 7 4.5`, and half of it over the wedge
+/// pi to 2 pi.
+#[test]
+fn the_bevel_reference_reproduces_pappus() {
+    let clear = Feet {
+        axis: (20.0, 40.0),
+        foot: BOSS,
+        top: BLOCK.2,
+        out: 3.0,
+        rise: 3.0,
+        rounds: Vec::new(),
+    };
+    let pappus = TAU * (BOSS + 1.0) * 4.5;
+    for (wedge, share) in [(None, 1.0), (Some((PI, TAU)), 0.5)] {
+        let got = clear.volume(32, wedge);
+        assert!(
+            (got - share * pappus).abs() < 1e-9,
+            "the reference {got} against Pappus {}",
+            share * pappus
+        );
+    }
+}
+
+/// By the corner where two rounded top edges meet, the bevel runs on over
+/// each round over its own arc, the cone between: two fitted pieces.
+#[test]
+fn a_foot_bevel_blends_into_two_rounds() {
+    bevel_blends(two_rounds());
+}
+
+#[test]
+#[ignore = "heavy: about 10 s"]
+fn a_foot_bevel_into_two_rounds_fills_as_defined() {
+    bevel_fills_as_defined(two_rounds());
+}
+
+/// The bevel's leg on the floor climbs a concave round: the fill under the
+/// straight ruling stays above the round, which curves away below it.
+#[test]
+fn a_foot_bevel_blends_into_a_concave_round() {
+    bevel_blends(concave_round());
+}
+
+#[test]
+#[ignore = "heavy: about 10 s"]
+fn a_foot_bevel_into_a_concave_round_fills_as_defined() {
+    bevel_fills_as_defined(concave_round());
+}
+
+/// An open arc's bevel ends flush in the flat's plane, which holds every
+/// section's ruling.
+#[test]
+fn an_open_arc_s_bevel_blends_into_the_edge_round() {
+    bevel_blends(cut_boss());
+}
+
+#[test]
+#[ignore = "heavy: about 10 s"]
+fn an_open_arc_s_bevel_fills_as_defined() {
+    bevel_fills_as_defined(cut_boss());
+}
+
+/// A conical boss r 6 narrowing to 4 over 15 at `(20, 12)`, its foot
+/// bevelled 3: the leg up a leaning wall is not read as the round's offset
+/// is, so blend into round does not take it. The default gives what blend
+/// into round off gives.
+#[test]
+fn a_conical_boss_s_foot_bevel_is_not_blended() {
+    let mut m = Model::new();
+    let block = ogeom_algo::make_box(&mut m, at(0.0, 0.0, 0.0), BLOCK, T)
+        .unwrap()
+        .shape;
+    let top = edges_where(&m, &block, |p| {
+        p.y.abs() < 1e-9 && (p.z - BLOCK.2).abs() < 1e-9
+    });
+    let rounded = fillet_edges(&mut m, &block, &top, EDGE_ROUND, T)
+        .unwrap()
+        .shape;
+    let boss = ogeom_algo::make_cone(&mut m, at(20.0, 12.0, BLOCK.2), BOSS, 4.0, BOSS_HIGH, T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &rounded, &boss, T).unwrap().shape;
+    let foot = foot_of(&m, &s, (20.0, 12.0, BLOCK.2));
+    let specs: Vec<(Shape, Chamfer)> = foot
+        .iter()
+        .map(|e| (e.clone(), Chamfer::Symmetric(3.0)))
+        .collect();
+    let corner = ChamferCorner::Facet;
+    let mut off = Overflow::default();
+    off.blend_into_round = false;
+    let default = chamfer_edges_overflow(&mut m, &s, &specs, corner, Overflow::default(), T);
+    let trimmed = chamfer_edges_overflow(&mut m, &s, &specs, corner, off, T);
+    match (default, trimmed) {
+        (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string()),
+        (Ok(a), Ok(b)) => {
+            assert!((volume(&m, &a.shape) - volume(&m, &b.shape)).abs() < 1e-9);
+        }
+        (a, b) => panic!("the default {a:?} against trim through {b:?}"),
     }
 }
