@@ -2516,7 +2516,10 @@ impl<'a> Reader<'a> {
                 if off > self.tol.confusion() && off <= reach {
                     self.model.widen(
                         &vertex,
-                        ogeom_core::Tolerance::new(off + self.tol.confusion())?,
+                        ogeom_core::Tolerance::new_in(
+                            off + self.tol.confusion(),
+                            self.model.tolerances(),
+                        )?,
                     )?;
                 }
             }
@@ -2992,7 +2995,7 @@ impl<'a> Reader<'a> {
         } else if off > self.tol.confusion() {
             self.model.widen(
                 edge,
-                ogeom_core::Tolerance::new(off + self.tol.confusion())?,
+                ogeom_core::Tolerance::new_in(off + self.tol.confusion(), self.model.tolerances())?,
             )?;
         }
         Ok(())
@@ -3222,7 +3225,10 @@ impl<'a> Reader<'a> {
             if gap > stated.1.get() && gap <= cap {
                 self.model.widen(
                     vertex,
-                    ogeom_core::Tolerance::new(gap + self.tol.confusion())?,
+                    ogeom_core::Tolerance::new_in(
+                        gap + self.tol.confusion(),
+                        self.model.tolerances(),
+                    )?,
                 )?;
                 self.vertex_misses.0 += 1;
                 self.vertex_misses.1 = self.vertex_misses.1.max(gap);

@@ -2202,7 +2202,7 @@ fn cut(
         Stretch::Open(a, b) => (vertex_of(a)?, vertex_of(b)?),
         Stretch::Loop => {
             let p = cutter.point(planned.span.0, tol)?;
-            let v = model.add_vertex(VertexData::new(p));
+            let v = model.add_vertex(VertexData::new_in(p, tol));
             (v.clone(), v)
         }
     };
@@ -2405,7 +2405,7 @@ fn cut_edges(
         let before = cutter.locate(t - 0.5).0.point(1.0, tol)?;
         let after = cutter.point(t, tol)?;
         let at = Point::from_vector((before.to_vector() + after.to_vector()) * 0.5);
-        vertices.push(model.add_vertex(VertexData::new(at)));
+        vertices.push(model.add_vertex(VertexData::new_in(at, tol)));
     }
     vertices.push(to.clone());
 
@@ -2423,7 +2423,7 @@ fn cut_edges(
             (&vertices[k + 1], &vertices[k])
         };
         let curve_id = model.geometry_mut().add_curve(segment.curve.clone());
-        let mut data = EdgeData::on_curve(curve_id, Location::identity(), range);
+        let mut data = EdgeData::on_curve_in(curve_id, Location::identity(), range, tol);
         let trace = model.geometry_mut().add_pcurve(segment.pcurve.clone());
         data.add(EdgeRepr::PCurve {
             curve: trace,
@@ -2440,7 +2440,7 @@ fn cut_edges(
         let edge = model.add_edge(data, &[start.clone(), end.clone()])?;
         model.widen(
             &edge,
-            Tolerance::new(reach.max(segment.tolerance) + tol.confusion())?,
+            Tolerance::new_in(reach.max(segment.tolerance) + tol.confusion(), tol)?,
         )?;
         let walked = if t0 <= t1 {
             edge.clone()

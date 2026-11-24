@@ -251,7 +251,7 @@ pub fn extend_face(
         .oriented(outer.orientation());
     let mut new_wires = vec![new_outer];
     new_wires.extend(wires[1..].iter().cloned());
-    let mut data = FaceData::new(new_surface_id, Location::identity());
+    let mut data = FaceData::new_in(new_surface_id, Location::identity(), tol);
     data.tolerance = face_tolerance;
     let face = model
         .add_face(data, &new_wires)?

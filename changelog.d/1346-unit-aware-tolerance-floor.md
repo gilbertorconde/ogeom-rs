@@ -1,0 +1,5 @@
+- **Fixed: the least vertex, edge and face tolerance is a physical length, so thin features survive in metres** (#1346).
+  - Every entity was clamped to `1e-7` model units, which is `1e-4` mm in metres. The boolean welds at the stated tolerances, so annuli and crescents thinner than that collapsed: drums of radius 2 and 2.00002 mm fused to the wrong volume in metres.
+  - The floor is now `Tolerances::least_tolerance()` = `1e-7 / unit()`, `1e-7` mm in every unit. In millimetres every value is bit for bit what it was.
+  - New: `Tolerance::new_in(value, tol)` and `Tolerance::least(tol)` in `ogeom-core`; `VertexData::new_in`, `VertexData::with_tolerance_in`, `EdgeData::new_in`, `EdgeData::on_curve_in`, `FaceData::new_in` and `FaceData::natural_in` in `ogeom-topo`. Every builder in the kernel uses them with the model's tolerances. `Tolerance::new`, `Tolerance::MIN` and the old constructors keep the millimetre floor.
+  - `Model::add_point` uses the model's own floor. The native reader reads stored tolerances back unclamped in any unit.

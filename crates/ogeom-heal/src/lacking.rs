@@ -326,8 +326,8 @@ fn lacking_edge(
         pcurves.push((pcurve, domain, surface_id));
     }
     let id = model.geometry_mut().add_curve(line);
-    let mut data = EdgeData::on_curve(id, Location::identity(), range);
-    data.widen(Tolerance::new(stated)?);
+    let mut data = EdgeData::on_curve_in(id, Location::identity(), range, tol);
+    data.widen(Tolerance::new_in(stated, tol)?);
     let edge = model.add_edge(data, &[first.from.clone(), first.to.clone()])?;
     for (pcurve, domain, surface) in pcurves {
         ogeom_algo::attach_pcurve(model, &edge, pcurve, surface, Location::identity(), domain)?;

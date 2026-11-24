@@ -218,7 +218,7 @@ pub(crate) fn build_with_widths(
         if let Some(&width) = widths.get(k)
             && width > 0.0
         {
-            let wide = ogeom_core::Tolerance::new(width)?;
+            let wide = ogeom_core::Tolerance::new_in(width, tol)?;
             for shape in [&vertices[e.ends.0], &vertices[e.ends.1]] {
                 model.widen(shape, wide)?;
             }
@@ -228,7 +228,7 @@ pub(crate) fn build_with_widths(
     for (k, e) in edges.iter().enumerate() {
         let (a, b) = e.ends;
         let wide = match widths.get(k) {
-            Some(&width) if width > 0.0 => Some(ogeom_core::Tolerance::new(width)?),
+            Some(&width) if width > 0.0 => Some(ogeom_core::Tolerance::new_in(width, tol)?),
             _ => None,
         };
         let edge = ogeom_algo::make_edge_between(

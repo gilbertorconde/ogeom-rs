@@ -383,7 +383,7 @@ fn degenerate_edge(
     surface: ogeom_topo::SurfaceId,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
-    let mut data = EdgeData::new();
+    let mut data = EdgeData::new_in(tol);
     data.degenerate = true;
     let edge = model.add_edge(data, &[pole.vertex.clone(), pole.vertex.clone()])?;
     crate::build::attach_pcurve(

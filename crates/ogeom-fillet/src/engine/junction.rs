@@ -2225,7 +2225,7 @@ fn trimmed_on_its_surface(
             range,
         )?;
         if missed > edge_data.tolerance.get() {
-            model.widen(&edge, ogeom_core::Tolerance::new(missed)?)?;
+            model.widen(&edge, ogeom_core::Tolerance::new_in(missed, tol)?)?;
         }
     }
     Ok(())
@@ -2246,7 +2246,7 @@ impl Rings {
         if let Some((q, v)) = self.pool.iter().find(|(q, _)| q.distance(p) <= self.near) {
             let gap = q.distance(p);
             if gap > self.tol.confusion() {
-                model.widen(v, ogeom_core::Tolerance::new(gap * 2.0)?)?;
+                model.widen(v, ogeom_core::Tolerance::new_in(gap * 2.0, self.tol)?)?;
             }
             return Ok(v.clone());
         }

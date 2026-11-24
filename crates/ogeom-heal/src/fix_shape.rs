@@ -544,7 +544,7 @@ fn state_curve_ends(model: &mut Model, shape: &Shape, tol: Tolerances) -> OgeomR
         }
     }
     for (vertex, gap) in &widened {
-        model.widen(vertex, ogeom_core::Tolerance::new(*gap)?)?;
+        model.widen(vertex, ogeom_core::Tolerance::new_in(*gap, tol)?)?;
     }
     Ok(widened.len())
 }
@@ -746,7 +746,10 @@ fn collapse_small_edges(
                 (placed(model, &vertex)?, placed(model, &to)?)
             {
                 let need = from.distance(at) + reach;
-                model.widen(&to, ogeom_core::Tolerance::new(need.max(tol.confusion()))?)?;
+                model.widen(
+                    &to,
+                    ogeom_core::Tolerance::new_in(need.max(tol.confusion()), tol)?,
+                )?;
             }
             reshape.replace(&vertex, to);
         }
@@ -924,7 +927,7 @@ fn merge_wire_gaps(
     }
     for (keep, wide) in need {
         if !refused.contains(&keep) {
-            model.widen(&Shape::of(keep), ogeom_core::Tolerance::new(wide)?)?;
+            model.widen(&Shape::of(keep), ogeom_core::Tolerance::new_in(wide, tol)?)?;
         }
     }
     Ok(count)

@@ -3661,7 +3661,7 @@ pub(crate) fn coincide_as_stated(fa: &GFace, fb: &GFace, as_stated: bool, tol: T
     // boolean has widened it past theirs: a fuzz is a statement of how far
     // the two solids' geometry may disagree and still be one.
     let reach = (fa.tolerance + fb.tolerance).max(tol.confusion() * 2.0);
-    if reach <= ogeom_core::tolerance::CONFUSION * 10.0 && !as_stated {
+    if reach <= tol.least_tolerance() * 10.0 && !as_stated {
         return false;
     }
     // Two closed forms of different kinds share no patch: a plane is no

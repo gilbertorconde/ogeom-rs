@@ -699,7 +699,7 @@ impl Flat {
             .oriented(self.wires[w].orientation());
         let mut wires = self.wires.clone();
         wires[w] = wire;
-        let mut data = FaceData::new(self.surface_id, Location::identity());
+        let mut data = FaceData::new_in(self.surface_id, Location::identity(), tol);
         data.tolerance = self.tolerance;
         Ok(model
             .add_face(data, &wires)?

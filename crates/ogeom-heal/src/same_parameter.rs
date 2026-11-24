@@ -80,7 +80,7 @@ pub fn repair_same_parameter(
                     report.agreed += 1;
                 } else {
                     report.widened += 1;
-                    model.widen(edge, Tolerance::new(worst + tol.confusion())?)?;
+                    model.widen(edge, Tolerance::new_in(worst + tol.confusion(), tol)?)?;
                 }
                 set_flag(model, edge, true);
             }

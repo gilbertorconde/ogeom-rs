@@ -96,7 +96,7 @@ pub(crate) fn state_joining(
     }
     for &k in &kept {
         for (sub, reach) in &twins[k].widen {
-            model.widen(sub, Tolerance::new(*reach)?)?;
+            model.widen(sub, Tolerance::new_in(*reach, tol)?)?;
         }
     }
     Ok(kept.len())
@@ -123,7 +123,7 @@ fn trial(
             let Some(made) = image.get(&sub.node()) else {
                 return Ok(None);
             };
-            model.widen(made, Tolerance::new(*reach)?)?;
+            model.widen(made, Tolerance::new_in(*reach, tol)?)?;
         }
     }
     let faces = explore_unique(model, &copy.shape, ShapeType::Face)?;

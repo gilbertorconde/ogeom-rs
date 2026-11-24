@@ -193,7 +193,7 @@ pub fn normal_projection(
             // The curve and its pcurve stand as far apart as the fit
             // measured them; the edge carries that.
             if fitted.error > tol.confusion() {
-                model.widen(&built, ogeom_core::Tolerance::new(fitted.error)?)?;
+                model.widen(&built, ogeom_core::Tolerance::new_in(fitted.error, tol)?)?;
             }
             let pcurve: PlanarCurve = on_face.into();
             ogeom_algo::attach_pcurve(

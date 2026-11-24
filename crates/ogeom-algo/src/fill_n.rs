@@ -2393,7 +2393,7 @@ fn build(
         )?;
         if report.gap > side.edge_tolerance {
             // The edge owns the gap, and so do the vertices bounding it.
-            let widened = Tolerance::new(report.gap + tol.confusion())?;
+            let widened = Tolerance::new_in(report.gap + tol.confusion(), tol)?;
             model.widen(&side.edge, widened)?;
             if let Some((a, b)) = edge_vertices(model, &side.edge)? {
                 model.widen(&a, widened)?;
@@ -2442,7 +2442,7 @@ fn stand_in(
         let reach = (0.5 * from.distance(to) + tol.confusion())
             .max(a.edge_tolerance)
             .max(b.edge_tolerance);
-        model.widen(&vertex, Tolerance::new(reach)?)?;
+        model.widen(&vertex, Tolerance::new_in(reach, tol)?)?;
         corners.push((vertex, false));
     }
     for k in 0..n {
@@ -2457,7 +2457,7 @@ fn stand_in(
             (&start.0, &end.0)
         };
         let edge = make_edge_between(model, side.curve.clone(), side.range, from, to, tol)?.shape;
-        model.widen(&edge, Tolerance::new(side.edge_tolerance)?)?;
+        model.widen(&edge, Tolerance::new_in(side.edge_tolerance, tol)?)?;
         sides[order[k]].edge = edge;
     }
     Ok(())

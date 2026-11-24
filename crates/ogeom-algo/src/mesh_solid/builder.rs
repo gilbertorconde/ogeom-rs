@@ -84,15 +84,15 @@ impl Builder<'_> {
                         Corner::Mesh(v) => self.points[v as usize],
                         Corner::Placed(i) => self.plan.placed[i],
                     };
-                    self.model.add_vertex(VertexData::new(at))
+                    self.model.add_vertex(VertexData::new_in(at, self.tol))
                 });
             }
             let id = self.model.geometry_mut().add_curve(spec.curve.clone());
-            let mut data = EdgeData::on_curve(id, Location::identity(), spec.range);
+            let mut data = EdgeData::on_curve_in(id, Location::identity(), spec.range, self.tol);
             // A tolerance measured as a gap is held a millionth wider: the
             // checker measures the same gap again, a rounding apart.
-            data.tolerance =
-                Tolerance::new(spec.tolerance * (1.0 + TOLERANCE_MARGIN)).map_err(|_| index)?;
+            data.tolerance = Tolerance::new_in(spec.tolerance * (1.0 + TOLERANCE_MARGIN), self.tol)
+                .map_err(|_| index)?;
             let bounds = if spec.ends[0] == spec.ends[1] {
                 vec![
                     corners[&spec.ends[0]].clone(),
@@ -277,7 +277,7 @@ impl Builder<'_> {
                     Point2::new(top(if forward { from } else { to }), 0.0),
                     Point2::new(top(leaves), 0.0),
                 );
-                let mut data = EdgeData::new();
+                let mut data = EdgeData::new_in(self.tol);
                 data.degenerate = true;
                 let pole = self
                     .model
@@ -304,9 +304,10 @@ impl Builder<'_> {
         // normal; a face turned against its surface stores it walked back.
         let wire = if outward { wire } else { walked_back(&wire) };
         let wire = self.model.add_wire(&wire)?;
-        let face = self
-            .model
-            .add_face(FaceData::new(surface, Location::identity()), &[wire])?;
+        let face = self.model.add_face(
+            FaceData::new_in(surface, Location::identity(), self.tol),
+            &[wire],
+        )?;
         Ok(Some(if outward { face } else { face.reversed() }))
     }
 
@@ -437,7 +438,7 @@ impl Builder<'_> {
                 ) else {
                     return Ok(None);
                 };
-                let mut data = EdgeData::new();
+                let mut data = EdgeData::new_in(self.tol);
                 data.degenerate = true;
                 let pole = self
                     .model
@@ -463,9 +464,10 @@ impl Builder<'_> {
         // normal; a face turned against its surface stores it walked back.
         let wire = if outward { wire } else { walked_back(&wire) };
         let wire = self.model.add_wire(&wire)?;
-        let face = self
-            .model
-            .add_face(FaceData::new(surface, Location::identity()), &[wire])?;
+        let face = self.model.add_face(
+            FaceData::new_in(surface, Location::identity(), self.tol),
+            &[wire],
+        )?;
         Ok(Some(if outward { face } else { face.reversed() }))
     }
 
@@ -506,8 +508,10 @@ impl Builder<'_> {
         }
         wires.sort_by(|a, b| b.0.total_cmp(&a.0));
         let wires: Vec<Shape> = wires.into_iter().map(|(_, w)| w).collect();
-        self.model
-            .add_face(FaceData::new(surface, Location::identity()), &wires)
+        self.model.add_face(
+            FaceData::new_in(surface, Location::identity(), self.tol),
+            &wires,
+        )
     }
 
     /// An edge's image in a plane face's chart. The closed-form image keeps
@@ -604,7 +608,7 @@ impl Builder<'_> {
                     };
                     self.model.widen(
                         &edges[edge],
-                        Tolerance::new(deviation.max(self.tol.confusion()))?,
+                        Tolerance::new_in(deviation.max(self.tol.confusion()), self.tol)?,
                     )?;
                     crate::build::attach_pcurve(
                         self.model,
@@ -632,8 +636,8 @@ impl Builder<'_> {
         let wires: Vec<Shape> = wires.into_iter().map(|(_, w)| w).collect();
         // Fitted images answer on whichever branch their projection chose.
         crate::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
-        let mut data = FaceData::new(surface, Location::identity());
-        data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
+        let mut data = FaceData::new_in(surface, Location::identity(), self.tol);
+        data.tolerance = Tolerance::new_in(curved.deviation.max(self.tol.confusion()), self.tol)?;
         let face = self.model.add_face(data, &wires)?;
         Ok(if outward { face } else { face.reversed() })
     }
@@ -677,7 +681,7 @@ impl Builder<'_> {
                 };
                 self.model.widen(
                     &edges[edge],
-                    Tolerance::new(deviation.max(self.tol.confusion()))?,
+                    Tolerance::new_in(deviation.max(self.tol.confusion()), self.tol)?,
                 )?;
                 crate::build::attach_pcurve(
                     self.model,
@@ -765,8 +769,8 @@ impl Builder<'_> {
             chart_trace(&curved.shape, (a, b), (pa, pb), self.tol)?
         };
         let id = self.model.geometry_mut().add_curve(seam_curve);
-        let mut data = EdgeData::on_curve(id, Location::identity(), range);
-        data.tolerance = Tolerance::new(deviation)?;
+        let mut data = EdgeData::on_curve_in(id, Location::identity(), range, self.tol);
+        data.tolerance = Tolerance::new_in(deviation, self.tol)?;
         let seam = self
             .model
             .add_edge(data, &[from[i].1.clone(), to[j].1.clone()])?;
@@ -822,8 +826,8 @@ impl Builder<'_> {
             wires.push(self.model.add_wire(&list)?);
         }
         crate::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
-        let mut data = FaceData::new(surface, Location::identity());
-        data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
+        let mut data = FaceData::new_in(surface, Location::identity(), self.tol);
+        data.tolerance = Tolerance::new_in(curved.deviation.max(self.tol.confusion()), self.tol)?;
         let face = self.model.add_face(data, &wires)?;
         Ok(if outward { face } else { face.reversed() })
     }
@@ -979,7 +983,7 @@ impl Builder<'_> {
         };
         let (from_vertex, to_vertex) = (vertex(low)?, vertex(high)?);
         let id = self.model.geometry_mut().add_curve(seam_curve);
-        let data = EdgeData::on_curve(id, Location::identity(), seam_range);
+        let data = EdgeData::on_curve_in(id, Location::identity(), seam_range, self.tol);
         let seam = self.model.add_edge(data, &[from_vertex, to_vertex])?;
         // The seam's two images: where the wire walks it forward, then back.
         let (forward, back) = if round_tube {
@@ -1029,8 +1033,8 @@ impl Builder<'_> {
             ]
         };
         let wire = self.model.add_wire(&ring)?;
-        let mut data = FaceData::new(surface, Location::identity());
-        data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
+        let mut data = FaceData::new_in(surface, Location::identity(), self.tol);
+        data.tolerance = Tolerance::new_in(curved.deviation.max(self.tol.confusion()), self.tol)?;
         let face = self.model.add_face(data, std::slice::from_ref(&wire))?;
         Ok(if outward { face } else { face.reversed() })
     }

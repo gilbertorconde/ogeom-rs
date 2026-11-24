@@ -1026,7 +1026,10 @@ impl RunOn<'_> {
             let at = cut_curve.point_at(t, tol)?;
             let miss = vertex_point(model, vertex)?.distance(at);
             if miss > tol.confusion() {
-                model.widen(vertex, ogeom_core::Tolerance::new(miss + tol.confusion())?)?;
+                model.widen(
+                    vertex,
+                    ogeom_core::Tolerance::new_in(miss + tol.confusion(), tol)?,
+                )?;
             }
         }
         let cut =
@@ -1089,7 +1092,7 @@ impl RunOn<'_> {
                 let ruling = if from[k].is_same(to[k]) {
                     // On the corner's axis the row runs on nowhere: the
                     // surface's column collapses to the point.
-                    let mut data = ogeom_topo::EdgeData::new();
+                    let mut data = ogeom_topo::EdgeData::new_in(tol);
                     data.degenerate = true;
                     model.add_edge(data, &[from[k].clone(), from[k].clone()])?
                 } else if let Some(edge) = shared[k][side].clone() {
@@ -1106,7 +1109,10 @@ impl RunOn<'_> {
                             .shape;
                     let miss = a.distance(corner[0]).max(b.distance(corner[1]));
                     if miss > tol.confusion() {
-                        model.widen(&edge, ogeom_core::Tolerance::new(miss + tol.confusion())?)?;
+                        model.widen(
+                            &edge,
+                            ogeom_core::Tolerance::new_in(miss + tol.confusion(), tol)?,
+                        )?;
                     }
                     edge
                 };

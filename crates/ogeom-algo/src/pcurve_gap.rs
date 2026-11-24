@@ -496,7 +496,7 @@ pub fn state_pcurve_gaps_of(
         }
     }
     for (edge, gap) in wider {
-        model.widen(&edge, Tolerance::new(gap * (1.0 + MARGIN))?)?;
+        model.widen(&edge, Tolerance::new_in(gap * (1.0 + MARGIN), tol)?)?;
     }
     Ok(())
 }

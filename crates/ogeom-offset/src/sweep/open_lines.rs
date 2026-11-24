@@ -1111,7 +1111,7 @@ impl Sweep {
             }
             let edge = ogeom_algo::make_edge(model, fit, (0.0, 1.0), tol)?.shape;
             if error > tol.confusion() {
-                let held = ogeom_core::Tolerance::new(error)?;
+                let held = ogeom_core::Tolerance::new_in(error, tol)?;
                 model.widen(&edge, held)?;
                 if let Some((v0, v1)) = edge_vertices(model, &edge)? {
                     for v in [&v0, &v1] {

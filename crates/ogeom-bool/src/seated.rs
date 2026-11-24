@@ -1518,7 +1518,7 @@ fn plan_wedge(
                         range,
                         from: vertices[&first.node()].clone(),
                         to: vertices[&last.node()].clone(),
-                        tolerance: Tolerance::new(tolerance.max(tol.confusion()))?,
+                        tolerance: Tolerance::new_in(tolerance.max(tol.confusion()), tol)?,
                     });
                     Target::New(new_edges.len() - 1)
                 }
@@ -1819,7 +1819,10 @@ fn split_at(
     let at = curve.point_at(t, tol)?;
     let vertex = model.add_vertex(ogeom_topo::VertexData {
         point: at,
-        tolerance: Tolerance::new(tolerance.max(reach + p.distance(at)).max(tol.confusion()))?,
+        tolerance: Tolerance::new_in(
+            tolerance.max(reach + p.distance(at)).max(tol.confusion()),
+            tol,
+        )?,
     });
     let first = model.add_edge(first, &[bounds[0].clone(), vertex.clone()])?;
     let second = model.add_edge(second, &[vertex.clone(), bounds[1].clone()])?;

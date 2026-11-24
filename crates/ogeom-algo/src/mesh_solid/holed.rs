@@ -62,8 +62,9 @@ impl Builder<'_> {
         let Some(rim_vertex) = self.model.children_of(&edges[rim])?.first().cloned() else {
             ogeom_bail!(Construction, "a rim has no vertex");
         };
-        let pole = self.model.add_vertex(VertexData::new(
+        let pole = self.model.add_vertex(VertexData::new_in(
             sphere.centre() + frame.z().vector() * sphere.radius(),
+            self.tol,
         ));
         let normal = Direction::new(frame.x().vector().cross(frame.z().vector()), self.tol)?;
         let meridian: Curve = ogeom_geom::CircleCurve::new(ogeom_math::Circle::new(
@@ -75,7 +76,7 @@ impl Builder<'_> {
         let id = self.model.geometry_mut().add_curve(meridian);
         let seam_range = (v_rim, north);
         let seam = self.model.add_edge(
-            EdgeData::on_curve(id, Location::identity(), seam_range),
+            EdgeData::on_curve_in(id, Location::identity(), seam_range, self.tol),
             &[rim_vertex, pole.clone()],
         )?;
         crate::build::attach_seam(
@@ -87,7 +88,7 @@ impl Builder<'_> {
             Location::identity(),
             seam_range,
         )?;
-        let mut data = EdgeData::new();
+        let mut data = EdgeData::new_in(self.tol);
         data.degenerate = true;
         let tip = self.model.add_edge(data, &[pole.clone(), pole])?;
         crate::build::attach_pcurve(
@@ -107,8 +108,8 @@ impl Builder<'_> {
             seam.reversed(),
         ];
         let wire = self.model.add_wire(&ring)?;
-        let mut data = FaceData::new(surface, Location::identity());
-        data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
+        let mut data = FaceData::new_in(surface, Location::identity(), self.tol);
+        data.tolerance = Tolerance::new_in(curved.deviation.max(self.tol.confusion()), self.tol)?;
         let face = self.model.add_face(data, std::slice::from_ref(&wire))?;
         Ok(if outward { face } else { face.reversed() })
     }
@@ -198,14 +199,14 @@ impl Builder<'_> {
             vertex
         };
         let at_apex = frame.origin() + frame.z().vector() * v_apex;
-        let apex = self.model.add_vertex(VertexData::new(at_apex));
+        let apex = self.model.add_vertex(VertexData::new_in(at_apex, self.tol));
         let seam_range = (0.0, at_apex.distance(start));
         let id = self
             .model
             .geometry_mut()
             .add_curve(LineCurve::segment(at_apex, start, self.tol)?.into());
         let seam = self.model.add_edge(
-            EdgeData::on_curve(id, Location::identity(), seam_range),
+            EdgeData::on_curve_in(id, Location::identity(), seam_range, self.tol),
             &[apex.clone(), rim_vertex],
         )?;
         crate::build::attach_seam(
@@ -217,7 +218,7 @@ impl Builder<'_> {
             Location::identity(),
             seam_range,
         )?;
-        let mut data = EdgeData::new();
+        let mut data = EdgeData::new_in(self.tol);
         data.degenerate = true;
         let tip = self.model.add_edge(data, &[apex.clone(), apex])?;
         crate::build::attach_pcurve(
@@ -234,8 +235,8 @@ impl Builder<'_> {
         ring.extend(rim_ring);
         ring.push(seam.reversed());
         let wire = self.model.add_wire(&ring)?;
-        let mut data = FaceData::new(surface, Location::identity());
-        data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
+        let mut data = FaceData::new_in(surface, Location::identity(), self.tol);
+        data.tolerance = Tolerance::new_in(curved.deviation.max(self.tol.confusion()), self.tol)?;
         let face = self.model.add_face(data, std::slice::from_ref(&wire))?;
         Ok(if outward { face } else { face.reversed() })
     }
@@ -277,7 +278,7 @@ impl Builder<'_> {
                 };
                 self.model.widen(
                     &edges[edge],
-                    Tolerance::new(deviation.max(self.tol.confusion()))?,
+                    Tolerance::new_in(deviation.max(self.tol.confusion()), self.tol)?,
                 )?;
                 crate::build::attach_pcurve(
                     self.model,
@@ -347,10 +348,10 @@ impl Builder<'_> {
         } else {
             chart_trace(&curved.shape, (a, b), (pa, pole_at), self.tol)?
         };
-        let pole = self.model.add_vertex(VertexData::new(pole_at));
+        let pole = self.model.add_vertex(VertexData::new_in(pole_at, self.tol));
         let id = self.model.geometry_mut().add_curve(seam_curve);
-        let mut data = EdgeData::on_curve(id, Location::identity(), range);
-        data.tolerance = Tolerance::new(deviation)?;
+        let mut data = EdgeData::on_curve_in(id, Location::identity(), range, self.tol);
+        data.tolerance = Tolerance::new_in(deviation, self.tol)?;
         let seam = self
             .model
             .add_edge(data, &[starts[i].0.clone(), pole.clone()])?;
@@ -371,7 +372,7 @@ impl Builder<'_> {
             Location::identity(),
             range,
         )?;
-        let mut tip_data = EdgeData::new();
+        let mut tip_data = EdgeData::new_in(self.tol);
         tip_data.degenerate = true;
         let tip = self.model.add_edge(tip_data, &[pole.clone(), pole])?;
         crate::build::attach_pcurve(
@@ -407,8 +408,9 @@ impl Builder<'_> {
             wires.push(self.model.add_wire(&list)?);
         }
         crate::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
-        let mut face_data = FaceData::new(surface, Location::identity());
-        face_data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
+        let mut face_data = FaceData::new_in(surface, Location::identity(), self.tol);
+        face_data.tolerance =
+            Tolerance::new_in(curved.deviation.max(self.tol.confusion()), self.tol)?;
         let face = self.model.add_face(face_data, &wires)?;
         Ok(if outward { face } else { face.reversed() })
     }
@@ -450,7 +452,7 @@ impl Builder<'_> {
                     };
                     self.model.widen(
                         &edges[edge],
-                        Tolerance::new(deviation.max(self.tol.confusion()))?,
+                        Tolerance::new_in(deviation.max(self.tol.confusion()), self.tol)?,
                     )?;
                     crate::build::attach_pcurve(
                         self.model,
@@ -470,7 +472,7 @@ impl Builder<'_> {
             wires.push(self.model.add_wire(&ring_edges)?);
         }
         crate::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
-        let mut face_data = FaceData::new(surface, Location::identity());
+        let mut face_data = FaceData::new_in(surface, Location::identity(), self.tol);
         face_data.tolerance = data.tolerance;
         let face = self.model.add_face(face_data, &wires)?;
         Ok(if outward { face } else { face.reversed() })
@@ -515,7 +517,7 @@ impl Builder<'_> {
                 };
                 self.model.widen(
                     &edges[edge],
-                    Tolerance::new(deviation.max(self.tol.confusion()))?,
+                    Tolerance::new_in(deviation.max(self.tol.confusion()), self.tol)?,
                 )?;
                 crate::build::attach_pcurve(
                     self.model,
@@ -602,7 +604,9 @@ impl Builder<'_> {
         };
         let chart_of = |p: (f64, f64)| swapped(p, swap);
         let start_point = evaluate(&curved.shape, chart_of(thread.start));
-        let start = self.model.add_vertex(VertexData::new(start_point));
+        let start = self
+            .model
+            .add_vertex(VertexData::new_in(start_point, self.tol));
         // The chain's straight pieces, each a seam edge: walked forward on
         // its first image, back on its image a whole turn up.
         let pieces = thread_pieces(thread.start, &thread.stops);
@@ -626,8 +630,8 @@ impl Builder<'_> {
             let (curve, range, deviation) =
                 chart_trace(&curved.shape, (ca, cb), (from.1, to.1), self.tol)?;
             let id = self.model.geometry_mut().add_curve(curve);
-            let mut data = EdgeData::on_curve(id, Location::identity(), range);
-            data.tolerance = Tolerance::new(deviation)?;
+            let mut data = EdgeData::on_curve_in(id, Location::identity(), range, self.tol);
+            data.tolerance = Tolerance::new_in(deviation, self.tol)?;
             let piece = self.model.add_edge(data, &[from.0.clone(), to.0.clone()])?;
             let low = linear(ca, cb, range, self.tol)?;
             let high = linear(
@@ -669,7 +673,7 @@ impl Builder<'_> {
             .geometry_mut()
             .add_curve(ogeom_geom::CircleCurve::new(circle).into());
         let side = self.model.add_edge(
-            EdgeData::on_curve(id, Location::identity(), (0.0, TAU)),
+            EdgeData::on_curve_in(id, Location::identity(), (0.0, TAU), self.tol),
             &[start.clone(), start],
         )?;
         let s0 = thread.start;
@@ -730,8 +734,8 @@ impl Builder<'_> {
             wires.push(self.model.add_wire(&list)?);
         }
         crate::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
-        let mut data = FaceData::new(surface, Location::identity());
-        data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
+        let mut data = FaceData::new_in(surface, Location::identity(), self.tol);
+        data.tolerance = Tolerance::new_in(curved.deviation.max(self.tol.confusion()), self.tol)?;
         let face = self.model.add_face(data, &wires)?;
         Ok(if outward { face } else { face.reversed() })
     }
@@ -777,7 +781,7 @@ impl Builder<'_> {
         // requires of a face looser than its boundary.
         self.model.widen(
             &face,
-            Tolerance::new(curved.deviation.max(self.tol.confusion()))?,
+            Tolerance::new_in(curved.deviation.max(self.tol.confusion()), self.tol)?,
         )?;
         Ok(if outward { face } else { face.reversed() })
     }

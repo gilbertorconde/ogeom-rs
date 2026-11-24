@@ -610,12 +610,23 @@ pub struct VertexData {
 }
 
 impl VertexData {
-    /// A vertex at `point` with the minimum tolerance.
+    /// A vertex at `point` with the minimum tolerance of a model in
+    /// millimetres; [`VertexData::new_in`] for a model in another unit.
     #[must_use]
     pub fn new(point: Point) -> Self {
         Self {
             point,
             tolerance: Tolerance::MIN,
+        }
+    }
+
+    /// A vertex at `point` with the least tolerance of a model with
+    /// tolerances `tol`.
+    #[must_use]
+    pub fn new_in(point: Point, tol: Tolerances) -> Self {
+        Self {
+            point,
+            tolerance: Tolerance::least(tol),
         }
     }
 
@@ -632,6 +643,22 @@ impl VertexData {
         Ok(Self {
             point,
             tolerance: Tolerance::new(tolerance)?,
+        })
+    }
+
+    /// [`VertexData::with_tolerance`], the tolerance clamped to the floor of
+    /// a model with tolerances `tol` ([`Tolerance::new_in`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`VertexData::with_tolerance`].
+    pub fn with_tolerance_in(point: Point, tolerance: f64, tol: Tolerances) -> OgeomResult<Self> {
+        if !point.is_finite() {
+            ogeom_bail!(Construction, "vertex position is not finite");
+        }
+        Ok(Self {
+            point,
+            tolerance: Tolerance::new_in(tolerance, tol)?,
         })
     }
 
@@ -662,7 +689,9 @@ pub struct EdgeData {
 }
 
 impl EdgeData {
-    /// An edge with no representations yet.
+    /// An edge with no representations yet, at the minimum tolerance of a
+    /// model in millimetres; [`EdgeData::new_in`] for a model in another
+    /// unit.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -670,6 +699,16 @@ impl EdgeData {
             representations: SmallVec::new(),
             same_parameter: true,
             degenerate: false,
+        }
+    }
+
+    /// An edge with no representations yet, at the least tolerance of a
+    /// model with tolerances `tol`.
+    #[must_use]
+    pub fn new_in(tol: Tolerances) -> Self {
+        Self {
+            tolerance: Tolerance::least(tol),
+            ..Self::new()
         }
     }
 
@@ -683,6 +722,21 @@ impl EdgeData {
             range,
         });
         edge
+    }
+
+    /// [`EdgeData::on_curve`] at the least tolerance of a model with
+    /// tolerances `tol`.
+    #[must_use]
+    pub fn on_curve_in(
+        curve: CurveId,
+        location: Location,
+        range: (f64, f64),
+        tol: Tolerances,
+    ) -> Self {
+        Self {
+            tolerance: Tolerance::least(tol),
+            ..Self::on_curve(curve, location, range)
+        }
     }
 
     /// Add a representation.
@@ -822,7 +876,9 @@ pub struct FaceData {
 }
 
 impl FaceData {
-    /// A face on `surface`, trimmed by its own wires.
+    /// A face on `surface`, trimmed by its own wires, at the minimum
+    /// tolerance of a model in millimetres; [`FaceData::new_in`] for a model
+    /// in another unit.
     #[must_use]
     pub fn new(surface: SurfaceId, location: Location) -> Self {
         Self {
@@ -840,6 +896,26 @@ impl FaceData {
         Self {
             natural_restriction: true,
             ..Self::new(surface, location)
+        }
+    }
+
+    /// [`FaceData::new`] at the least tolerance of a model with tolerances
+    /// `tol`.
+    #[must_use]
+    pub fn new_in(surface: SurfaceId, location: Location, tol: Tolerances) -> Self {
+        Self {
+            tolerance: Tolerance::least(tol),
+            ..Self::new(surface, location)
+        }
+    }
+
+    /// [`FaceData::natural`] at the least tolerance of a model with
+    /// tolerances `tol`.
+    #[must_use]
+    pub fn natural_in(surface: SurfaceId, location: Location, tol: Tolerances) -> Self {
+        Self {
+            tolerance: Tolerance::least(tol),
+            ..Self::natural(surface, location)
         }
     }
 

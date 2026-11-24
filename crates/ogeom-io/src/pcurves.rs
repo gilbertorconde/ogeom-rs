@@ -339,7 +339,10 @@ pub(crate) fn split_at_poles(
             made
         };
         if miss > tol.confusion() {
-            model.widen(&vertex, ogeom_core::Tolerance::new(miss + tol.confusion())?)?;
+            model.widen(
+                &vertex,
+                ogeom_core::Tolerance::new_in(miss + tol.confusion(), model.tolerances())?,
+            )?;
         }
         stops.push((t, vertex));
     }

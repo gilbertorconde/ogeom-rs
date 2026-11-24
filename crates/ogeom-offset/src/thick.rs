@@ -962,23 +962,26 @@ fn moved_layer(
             for (t, (vertex, at)) in [(range.0, (&from, from_at)), (range.1, (&to, to_at))] {
                 let gap = moved.point_at(t, tol)?.distance(at);
                 if gap > tol.confusion() {
-                    model.widen(vertex, Tolerance::new(gap + tol.confusion())?)?;
+                    model.widen(vertex, Tolerance::new_in(gap + tol.confusion(), tol)?)?;
                 }
             }
             let shape = make_edge_between(model, moved, range, &from, &to, tol)?.shape;
             if slop > 0.0 {
-                model.widen(&shape, Tolerance::new(slop + tol.confusion())?)?;
+                model.widen(&shape, Tolerance::new_in(slop + tol.confusion(), tol)?)?;
             }
             shape
         } else {
-            let mut data = EdgeData::new();
+            let mut data = EdgeData::new_in(tol);
             data.degenerate = true;
             model.add_edge(data, &[from.clone(), to.clone()])?
         };
         for end in [edge.ends.0, edge.ends.1] {
             let slop = vertex_slop.get(&end).copied().unwrap_or(0.0);
             if slop > tol.confusion() {
-                model.widen(&vertices[&end].0, Tolerance::new(slop + tol.confusion())?)?;
+                model.widen(
+                    &vertices[&end].0,
+                    Tolerance::new_in(slop + tol.confusion(), tol)?,
+                )?;
             }
         }
         // An edge the mitre moved is charted afresh on each moved surface.
@@ -1092,15 +1095,15 @@ fn moved_layer(
             wires.push(model.add_wire(&ring)?.oriented(*wire_sense));
         }
         let data = if face.natural {
-            FaceData::natural(surfaces[fi].id, Location::identity())
+            FaceData::natural_in(surfaces[fi].id, Location::identity(), tol)
         } else {
-            FaceData::new(surfaces[fi].id, Location::identity())
+            FaceData::new_in(surfaces[fi].id, Location::identity(), tol)
         };
         let bare = model.add_face(data, &wires)?;
         if surfaces[fi].deviation > 0.0 {
             model.widen(
                 &bare,
-                Tolerance::new(surfaces[fi].deviation + tol.confusion())?,
+                Tolerance::new_in(surfaces[fi].deviation + tol.confusion(), tol)?,
             )?;
         }
         let shape = bare.oriented(face.occurrence.orientation());
@@ -1692,7 +1695,7 @@ fn same_parameter(model: &mut Model, edge: &Shape, tol: Tolerances) -> OgeomResu
         }
     }
     if worst > tol.confusion() {
-        model.widen(edge, Tolerance::new(worst + tol.confusion())?)?;
+        model.widen(edge, Tolerance::new_in(worst + tol.confusion(), tol)?)?;
     }
     if let Some(node) = model.node_mut(edge)
         && let NodeData::Edge(data) = node.data_mut()
@@ -2431,7 +2434,7 @@ fn side_face(
         same_parameter(model, e, tol)?;
     }
     if deviation > 0.0 {
-        model.widen(&bare, Tolerance::new(deviation + tol.confusion())?)?;
+        model.widen(&bare, Tolerance::new_in(deviation + tol.confusion(), tol)?)?;
     }
 
     let mid = f64::midpoint(t0, t1);

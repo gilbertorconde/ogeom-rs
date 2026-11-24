@@ -120,7 +120,7 @@ pub(super) fn faces(
         for (k, side) in patch.sides.iter().enumerate() {
             if side.is_empty() {
                 let apex = &vertices[topo.corner_vertex[p][k]];
-                let mut data = EdgeData::new();
+                let mut data = EdgeData::new_in(tol);
                 data.degenerate = true;
                 let edge = model.add_edge(data, &[apex.clone(), apex.clone()])?;
                 traced.push((

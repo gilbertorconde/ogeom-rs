@@ -156,6 +156,14 @@ impl Tolerances {
         self.unit
     }
 
+    /// The least tolerance an entity of this model states: the confusion
+    /// distance in the model's [`unit`](Self::unit), whatever scale the
+    /// thresholds are read at. [`Tolerance::MIN`] in a model in millimetres.
+    #[must_use]
+    pub fn least_tolerance(self) -> f64 {
+        CONFUSION / self.unit
+    }
+
     /// Distance below which two points are the same point.
     #[must_use]
     pub fn confusion(self) -> f64 {
@@ -215,10 +223,21 @@ impl Tolerances {
 pub struct Tolerance(f64);
 
 impl Tolerance {
-    /// The smallest meaningful tolerance, at unit scale.
+    /// The smallest meaningful tolerance in a model in millimetres. A model
+    /// in another unit has its own: [`Tolerance::least`].
     pub const MIN: Self = Self(CONFUSION);
 
-    /// A tolerance of `value`, clamped up to [`Tolerance::MIN`].
+    /// The smallest meaningful tolerance in a model with tolerances `tol`:
+    /// [`Tolerances::least_tolerance`], the same physical length in every
+    /// unit.
+    #[must_use]
+    pub fn least(tol: Tolerances) -> Self {
+        Self(tol.least_tolerance())
+    }
+
+    /// A tolerance of `value`, clamped up to [`Tolerance::MIN`]: the floor
+    /// of a model in millimetres. Where the model's [`Tolerances`] are at
+    /// hand, [`Tolerance::new_in`] clamps to that model's own floor.
     ///
     /// # Errors
     ///
@@ -226,13 +245,27 @@ impl Tolerance {
     /// finite or is negative. A NaN tolerance poisons every comparison it
     /// reaches, so it is rejected at the boundary rather than propagated.
     pub fn new(value: f64) -> OgeomResult<Self> {
+        Self::clamped(value, CONFUSION)
+    }
+
+    /// A tolerance of `value`, clamped up to [`Tolerance::least`] of `tol`.
+    /// The same as [`Tolerance::new`] in a model in millimetres.
+    ///
+    /// # Errors
+    ///
+    /// As [`Tolerance::new`].
+    pub fn new_in(value: f64, tol: Tolerances) -> OgeomResult<Self> {
+        Self::clamped(value, tol.least_tolerance())
+    }
+
+    fn clamped(value: f64, floor: f64) -> OgeomResult<Self> {
         if !value.is_finite() || value < 0.0 {
             ogeom_bail!(
                 Construction,
                 "tolerance {value} must be finite and non-negative"
             );
         }
-        Ok(Self(value.max(CONFUSION)))
+        Ok(Self(value.max(floor)))
     }
 
     /// The tolerance as a length.
@@ -369,6 +402,26 @@ mod tests {
     fn tolerance_never_drops_below_min() {
         assert_eq!(Tolerance::new(0.0).unwrap(), Tolerance::MIN);
         assert_eq!(Tolerance::new(1e-30).unwrap(), Tolerance::MIN);
+    }
+
+    /// The floor is the same physical length in every unit, the model's
+    /// unit and not the scale the thresholds are read at; in millimetres it
+    /// is the same bits as [`Tolerance::MIN`].
+    #[test]
+    fn the_floor_is_the_confusion_distance_in_the_models_unit() {
+        let mm = Tolerances::millimetres();
+        assert_eq!(Tolerance::least(mm), Tolerance::MIN);
+        assert_eq!(Tolerance::new_in(1e-30, mm).unwrap(), Tolerance::MIN);
+        assert_eq!(
+            Tolerance::new_in(3e-7, mm).unwrap(),
+            Tolerance::new(3e-7).unwrap()
+        );
+        let m = Tolerances::metres();
+        assert_eq!(Tolerance::least(m).get(), CONFUSION / 1000.0);
+        assert_eq!(Tolerance::new_in(2e-10, m).unwrap().get(), 2e-10);
+        let fuzzed = m.read_at(1.0).unwrap();
+        assert_eq!(Tolerance::least(fuzzed), Tolerance::least(m));
+        assert!(Tolerance::new_in(f64::NAN, m).is_err());
     }
 
     #[test]

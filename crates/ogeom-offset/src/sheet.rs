@@ -1502,7 +1502,7 @@ fn adopted_row(
         );
     }
     if worst > tol.confusion() {
-        let widened = ogeom_core::Tolerance::new(worst + tol.confusion())?;
+        let widened = ogeom_core::Tolerance::new_in(worst + tol.confusion(), tol)?;
         model.widen(edge, widened)?;
         if let Some((a, b)) = edge_vertices(model, edge)? {
             model.widen(&a, widened)?;

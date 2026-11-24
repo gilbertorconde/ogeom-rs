@@ -1589,7 +1589,7 @@ fn skinned_ring_strip(
     let rail_of = |model: &mut Model, i: usize, given: Option<&Shape>| -> OgeomResult<Shape> {
         let Some(edge) = given else {
             let edge = make_edge(model, rail_curve(i)?, v_dom, tol)?.shape;
-            model.widen(&edge, ogeom_core::Tolerance::new(slack)?)?;
+            model.widen(&edge, ogeom_core::Tolerance::new_in(slack, tol)?)?;
             return Ok(edge);
         };
         let (curve, range) = spine_curve_of(model, edge)?;
@@ -1600,10 +1600,10 @@ fn skinned_ring_strip(
             let p = curve.point_at(t, tol)?;
             off = off.max(ogeom_algo::project_on_surface(&surface_geo, p, 16, tol)?.distance);
         }
-        model.widen(edge, ogeom_core::Tolerance::new(off + slack)?)?;
+        model.widen(edge, ogeom_core::Tolerance::new_in(off + slack, tol)?)?;
         if let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? {
             for v in [&a, &b] {
-                model.widen(v, ogeom_core::Tolerance::new(off + slack)?)?;
+                model.widen(v, ogeom_core::Tolerance::new_in(off + slack, tol)?)?;
             }
         }
         Ok(edge.clone())
@@ -1728,10 +1728,10 @@ fn adopt_border(
         let p = curve.point_at(t, tol)?;
         off = off.max(ogeom_algo::project_on_surface(surface, p, 16, tol)?.distance);
     }
-    model.widen(edge, ogeom_core::Tolerance::new(off + slack)?)?;
+    model.widen(edge, ogeom_core::Tolerance::new_in(off + slack, tol)?)?;
     if let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? {
         for v in [&a, &b] {
-            model.widen(v, ogeom_core::Tolerance::new(off + slack)?)?;
+            model.widen(v, ogeom_core::Tolerance::new_in(off + slack, tol)?)?;
         }
     }
     Ok(())
@@ -2067,9 +2067,9 @@ fn apex_patch(
     let anchor0 = ogeom_algo::edge_vertices(model, &ring0)?
         .map(|(a, _)| a)
         .ok_or_else(|| ogeom_core::ogeom_err!(Construction, "a skinned ring has no vertex"))?;
-    let apex_vertex = model.add_vertex(VertexData::new(apex));
+    let apex_vertex = model.add_vertex(VertexData::new_in(apex, tol));
     let apex_edge = {
-        let mut data = EdgeData::new();
+        let mut data = EdgeData::new_in(tol);
         data.degenerate = true;
         model.add_edge(data, &[apex_vertex.clone(), apex_vertex.clone()])?
     };
@@ -2919,7 +2919,7 @@ fn skinned_strip(
             // The image stands off the border by what it was measured at;
             // the edge and its ends carry that.
             if off > tol.confusion() {
-                let held = ogeom_core::Tolerance::new(off)?;
+                let held = ogeom_core::Tolerance::new_in(off, tol)?;
                 model.widen(edge, held)?;
                 if let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? {
                     for v in [&a, &b] {
@@ -2944,7 +2944,7 @@ fn skinned_strip(
     // the same transported corners independently, and the weld between them
     // is only as tight as both fits.
     for edge in [&bottom, &top, &rail0, &rail1] {
-        model.widen(edge, ogeom_core::Tolerance::new(error)?)?;
+        model.widen(edge, ogeom_core::Tolerance::new_in(error, tol)?)?;
     }
 
     let wire = ogeom_algo::make_wire(
@@ -4549,7 +4549,7 @@ fn turned_loop_shell(
     let corners: Vec<Shape> = starts
         .iter()
         .map(|p| -> OgeomResult<Shape> {
-            Ok(model.add_vertex(VertexData::new(carried(0.0, flat(*p))?)))
+            Ok(model.add_vertex(VertexData::new_in(carried(0.0, flat(*p))?, tol)))
         })
         .collect::<OgeomResult<_>>()?;
     // Each edge at the start is one edge, the bottom of its own strip and
@@ -7153,7 +7153,7 @@ pub fn make_pipe_sections(
     if let (Some((point, _)), Some(ring), 2) = (apex, &last_ring, sections.len())
         && straight_legs(model, spine, tol)?.is_some_and(|legs| legs.len() == 1)
     {
-        let tip = model.add_vertex(VertexData::new(point));
+        let tip = model.add_vertex(VertexData::new_in(point, tol));
         let mut built = loft_plain(model, ring, &tip, tol)?;
         built.history.generate(spine, built.shape.clone());
         for section in sections {
@@ -7238,7 +7238,7 @@ pub fn make_pipe_sections(
         if !at_end {
             rings.reverse();
         }
-        rings.push(model.add_vertex(VertexData::new(point)));
+        rings.push(model.add_vertex(VertexData::new_in(point, tol)));
     }
     let mut built = loft_skinned_along(model, &rings, None, false, tolerance, tol)?;
     state_new_gaps(model, &rings, &built.shape, tol)?;
@@ -8182,7 +8182,7 @@ fn pipe_shell_law(
                 let set = make_corners(model, 0)?;
                 if worst > tol.confusion() {
                     for v in &set {
-                        model.widen(v, ogeom_core::Tolerance::new(worst * 2.0)?)?;
+                        model.widen(v, ogeom_core::Tolerance::new_in(worst * 2.0, tol)?)?;
                     }
                 }
                 corners_at[0] = Some(set.clone());

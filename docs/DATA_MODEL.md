@@ -151,6 +151,17 @@ tol(vertex) >= tol(edge) >= tol(face)
 - Operations may only *increase* tolerances, never silently decrease them.
 - An operation that cannot satisfy the rule has failed and must say so.
 
+**The floor is a physical length.** No entity states less than the
+confusion distance in the model's unit, `Tolerances::least_tolerance` =
+`CONFUSION / unit` (`1e-7` mm in every unit). Code that builds or widens an
+entity with the model's `Tolerances` at hand clamps to it:
+`Tolerance::new_in`, `Tolerance::least`, and in `ogeom-topo` the `_in`
+constructors (`VertexData::new_in`, `EdgeData::new_in`, `FaceData::new_in`,
+...). `Tolerance::MIN` and `Tolerance::new` are the floor of a model in
+millimetres, kept for code with no `Tolerances` in scope. A floor in model
+units would be `1e-4` mm in metres, wider than the model's own confusion
+distance, and the boolean would weld features thinner than that.
+
 This is not a workaround for sloppy code. Exact arithmetic cannot represent the
 intersection curve of two NURBS surfaces (it is transcendental). A
 tolerance-carrying topology is the only known way to build a kernel whose

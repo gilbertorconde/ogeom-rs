@@ -36,7 +36,8 @@ pub mod roles {
 
 /// Add a vertex at `point`.
 pub fn make_vertex(model: &mut Model, point: Point) -> Built {
-    Built::from_nothing(model.add_vertex(VertexData::new(point)))
+    let tol = model.tolerances();
+    Built::from_nothing(model.add_vertex(VertexData::new_in(point, tol)))
 }
 
 /// Build an edge on `curve`, bounded by its own endpoints.
@@ -64,17 +65,17 @@ pub fn make_edge(
     let start = curve.point_at(lo, tol)?;
     let end = curve.point_at(hi, tol)?;
 
-    let start_vertex = model.add_vertex(VertexData::new(start));
+    let start_vertex = model.add_vertex(VertexData::new_in(start, tol));
     // A closed edge names one vertex twice rather than two coincident ones:
     // two would leave the wire looking open at the join.
     let end_vertex = if start.is_equal(end, tol) {
         start_vertex.clone()
     } else {
-        model.add_vertex(VertexData::new(end))
+        model.add_vertex(VertexData::new_in(end, tol))
     };
 
     let id = model.geometry_mut().add_curve(curve);
-    let data = EdgeData::on_curve(id, Location::identity(), range);
+    let data = EdgeData::on_curve_in(id, Location::identity(), range, tol);
     let edge = model.add_edge(data, &[start_vertex.clone(), end_vertex.clone()])?;
 
     model.set_derived(
@@ -158,7 +159,7 @@ pub fn make_edge_between(
     }
 
     let id = model.geometry_mut().add_curve(curve);
-    let data = EdgeData::on_curve(id, Location::identity(), range);
+    let data = EdgeData::on_curve_in(id, Location::identity(), range, tol);
     let edge = model.add_edge(data, &[from.clone(), to.clone()])?;
     Ok(Built::from_nothing(edge))
 }
@@ -328,7 +329,7 @@ pub fn make_polygon(
 
     let mut vertices: Vec<Shape> = Vec::with_capacity(points.len());
     for point in points {
-        vertices.push(model.add_vertex(VertexData::new(*point)));
+        vertices.push(model.add_vertex(VertexData::new_in(*point, tol)));
     }
 
     let mut edges = Vec::with_capacity(points.len());
@@ -714,7 +715,7 @@ pub fn make_face_on(
         }
     }
 
-    let data = FaceData::new(surface, Location::identity());
+    let data = FaceData::new_in(surface, Location::identity(), tol);
     let face = model.add_face(data, wires)?;
 
     let mut history = History::new();
@@ -808,7 +809,8 @@ pub fn make_face_with_pcurves(
                     if worst_off > tol.confusion() {
                         // The edge owns the offset, and so must the vertices
                         // that bound it: the containment rule.
-                        let widened = ogeom_core::Tolerance::new(worst_off + tol.confusion())?;
+                        let widened =
+                            ogeom_core::Tolerance::new_in(worst_off + tol.confusion(), tol)?;
                         model.widen(edge, widened)?;
                         if let Some((a, b)) = edge_vertices(model, edge)? {
                             model.widen(&a, widened)?;
@@ -1179,7 +1181,7 @@ pub fn closed_at_poles(
         let Some((at, from, to)) = run else {
             continue;
         };
-        let mut data = EdgeData::new();
+        let mut data = EdgeData::new_in(tol);
         data.degenerate = true;
         let pole = model.add_edge(data, &[at.clone(), at])?;
         attach_pcurve(
@@ -1323,7 +1325,7 @@ pub fn belted_wire(
         {
             return Ok(None);
         }
-        (model.add_vertex(VertexData::new(points[0])), row)
+        (model.add_vertex(VertexData::new_in(points[0], tol)), row)
     };
     let first = &belts[0];
     let up = first.row < end_row;
@@ -1378,8 +1380,9 @@ pub fn belted_wire(
 /// Never fails for a well-formed surface; the signature matches [`make_face`]
 /// so the two are interchangeable at a call site.
 pub fn make_natural_face(model: &mut Model, surface: SurfaceGeometry) -> OgeomResult<Built> {
+    let tol = model.tolerances();
     let id = model.geometry_mut().add_surface(surface);
-    let face = model.add_face(FaceData::natural(id, Location::identity()), &[])?;
+    let face = model.add_face(FaceData::natural_in(id, Location::identity(), tol), &[])?;
     Ok(Built::from_nothing(face))
 }
 
@@ -1806,7 +1809,7 @@ fn fitted_where_bare(
     if gap > tol.confusion() {
         // The edge owns the miss, and so must the vertices that bound it:
         // the containment rule.
-        let widened = ogeom_core::Tolerance::new(gap + tol.confusion())?;
+        let widened = ogeom_core::Tolerance::new_in(gap + tol.confusion(), tol)?;
         model.widen(edge, widened)?;
         if let Some((a, b)) = edge_vertices(model, edge)? {
             model.widen(&a, widened)?;
@@ -2979,7 +2982,7 @@ pub fn make_band_between(
             let placed = vertex.transform(model.datums())?.apply(data.point);
             let miss = seam_curve.point_at(at, tol)?.distance(placed);
             if miss > tol.confusion() {
-                model.widen(vertex, ogeom_core::Tolerance::new(miss * 2.0)?)?;
+                model.widen(vertex, ogeom_core::Tolerance::new_in(miss * 2.0, tol)?)?;
             }
         }
         let seam = make_edge_between(model, seam_curve, curve_range, &from, &to, tol)?.shape;
@@ -3047,14 +3050,14 @@ pub fn make_band_between(
             let placed = vertex.transform(model.datums())?.apply(data.point);
             let miss = connector.point_at(at, tol)?.distance(placed);
             if miss > tol.confusion() {
-                model.widen(vertex, ogeom_core::Tolerance::new(miss * 2.0)?)?;
+                model.widen(vertex, ogeom_core::Tolerance::new_in(miss * 2.0, tol)?)?;
             }
         }
         let seam = make_edge_between(model, connector, (0.0, length), &from, &to, tol)?.shape;
         if fit_error > tol.confusion() {
             model.widen(
                 &seam,
-                ogeom_core::Tolerance::new(fit_error + tol.confusion())?,
+                ogeom_core::Tolerance::new_in(fit_error + tol.confusion(), tol)?,
             )?;
         }
         (seam, forward, a, b)
@@ -3203,8 +3206,8 @@ pub fn make_apex_band(
             "only a cone has the single apex a one-ring cap implies"
         );
     };
-    let apex = model.add_vertex(VertexData::new(c.cone().apex()));
-    let mut data = EdgeData::new();
+    let apex = model.add_vertex(VertexData::new_in(c.cone().apex(), tol));
+    let mut data = EdgeData::new_in(tol);
     data.degenerate = true;
     let edge = model.add_edge(data, &[apex.clone(), apex])?;
     make_revolution_band(model, surface, ring, &edge, tol)

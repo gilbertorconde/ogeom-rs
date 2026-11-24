@@ -188,7 +188,7 @@ impl Rebuild<'_> {
 
     /// Widen a vertex this rebuild handed out. A kept vertex is not
     /// widened: one that would need it strains the rebuild.
-    fn widen(&mut self, vertex: &Shape, to: f64) -> OgeomResult<()> {
+    fn widen(&mut self, vertex: &Shape, to: f64, tol: Tolerances) -> OgeomResult<()> {
         if self.kept.contains_key(&vertex.node()) {
             let own = self
                 .model
@@ -198,7 +198,8 @@ impl Rebuild<'_> {
             self.strained |= own < to;
             return Ok(());
         }
-        self.model.widen(vertex, ogeom_core::Tolerance::new(to)?)?;
+        self.model
+            .widen(vertex, ogeom_core::Tolerance::new_in(to, tol)?)?;
         self.note_tolerance(vertex);
         Ok(())
     }
@@ -507,7 +508,7 @@ pub(crate) fn build_sub_edge(
             let p = &face.poles[*pole];
             let at = rebuild.vertex(p.point, tol);
             let model = &mut *rebuild.model;
-            let mut data = ogeom_topo::EdgeData::new();
+            let mut data = ogeom_topo::EdgeData::new_in(tol);
             data.degenerate = true;
             let built = model.add_edge(data, &[at.clone(), at])?;
             ogeom_algo::attach_pcurve(
@@ -580,14 +581,14 @@ pub(crate) fn build_sub_edge(
             // A fuzzy boolean's confusion is its fuzz, which is no floor
             // here: a piece is born at the smallest tolerance an edge
             // states, and keeps whatever its edge stated above that.
-            if e.tolerance > ogeom_core::Tolerance::MIN.get() {
+            if e.tolerance > tol.least_tolerance() {
                 if let Some(node) = model.node_mut(&built)
                     && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
                 {
                     data.tolerance = data.tolerance.widen_to(e.tolerance);
                 }
                 for v in [&v0, &v1] {
-                    rebuild.widen(v, e.tolerance)?;
+                    rebuild.widen(v, e.tolerance, tol)?;
                 }
             }
             let model = &mut *rebuild.model;
@@ -638,14 +639,14 @@ pub(crate) fn build_sub_edge(
                 && let Some(data) = model.node(&built).and_then(|n| n.data().as_edge())
                 && gap > data.tolerance.get()
             {
-                let widened = ogeom_core::Tolerance::new(gap * (1.0 + 1e-6))?;
+                let widened = ogeom_core::Tolerance::new_in(gap * (1.0 + 1e-6), tol)?;
                 if let Some(node) = model.node_mut(&built)
                     && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
                 {
                     data.tolerance = data.tolerance.widen(widened);
                 }
                 for v in [&v0, &v1] {
-                    rebuild.widen(v, widened.get())?;
+                    rebuild.widen(v, widened.get(), tol)?;
                 }
             }
             if whole {
@@ -664,14 +665,14 @@ pub(crate) fn build_sub_edge(
             // A tolerant contact's pieces and ends own its stated slop, as a
             // boundary's and a section's do: three kinds of strand close one
             // ring, and every junction meets at the strands' own honesty.
-            if c.tolerance > ogeom_core::Tolerance::MIN.get() {
+            if c.tolerance > tol.least_tolerance() {
                 if let Some(node) = model.node_mut(&built)
                     && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
                 {
                     data.tolerance = data.tolerance.widen_to(c.tolerance);
                 }
                 for v in [&v0, &v1] {
-                    rebuild.widen(v, c.tolerance)?;
+                    rebuild.widen(v, c.tolerance, tol)?;
                 }
             }
             let model = &mut *rebuild.model;
@@ -703,14 +704,14 @@ pub(crate) fn build_sub_edge(
                 && let Some(data) = model.node(&built).and_then(|n| n.data().as_edge())
                 && gap > data.tolerance.get()
             {
-                let widened = ogeom_core::Tolerance::new(gap * (1.0 + 1e-6))?;
+                let widened = ogeom_core::Tolerance::new_in(gap * (1.0 + 1e-6), tol)?;
                 if let Some(node) = model.node_mut(&built)
                     && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
                 {
                     data.tolerance = data.tolerance.widen(widened);
                 }
                 for v in [&v0, &v1] {
-                    rebuild.widen(v, widened.get())?;
+                    rebuild.widen(v, widened.get(), tol)?;
                 }
             }
             Ok(built)
@@ -746,14 +747,14 @@ pub(crate) fn build_sub_edge(
             // stated slop, exactly as a tolerant boundary's do: the ring
             // they close alternates between the two, and both sides must
             // meet at the junction's own resolution.
-            if own > ogeom_core::Tolerance::MIN.get() {
+            if own > tol.least_tolerance() {
                 if let Some(node) = model.node_mut(&built)
                     && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
                 {
                     data.tolerance = data.tolerance.widen_to(own);
                 }
                 for v in [&v0, &v1] {
-                    rebuild.widen(v, own)?;
+                    rebuild.widen(v, own, tol)?;
                 }
             }
             let model = &mut *rebuild.model;
@@ -839,14 +840,14 @@ pub(crate) fn build_sub_edge(
                 && let Some(data) = model.node(&built).and_then(|n| n.data().as_edge())
                 && gap > data.tolerance.get()
             {
-                let widened = ogeom_core::Tolerance::new(gap * (1.0 + 1e-6))?;
+                let widened = ogeom_core::Tolerance::new_in(gap * (1.0 + 1e-6), tol)?;
                 if let Some(node) = model.node_mut(&built)
                     && let ogeom_topo::NodeData::Edge(data) = node.data_mut()
                 {
                     data.tolerance = data.tolerance.widen(widened);
                 }
                 for v in [&v0, &v1] {
-                    rebuild.widen(v, widened.get())?;
+                    rebuild.widen(v, widened.get(), tol)?;
                 }
             }
             Ok(built)
@@ -1069,6 +1070,7 @@ pub(crate) fn assemble_result(
             &sewn.shells,
             keep_aside,
             &mut history,
+            tol,
         )?;
         sewn.shells = shells;
         closed = Some(shut);
@@ -1613,6 +1615,7 @@ pub(crate) fn with_aside(
     shells: &[Shape],
     keep_aside: [bool; 2],
     history: &mut History,
+    tol: Tolerances,
 ) -> OgeomResult<(Vec<Shape>, Vec<bool>, Vec<Shape>)> {
     if kept.len() != faces.len() {
         ogeom_bail!(
@@ -1670,7 +1673,7 @@ pub(crate) fn with_aside(
             .flat_map(|&h| source.holes_aside[h].beside.iter().map(move |&j| (side, j)))
             .collect();
         let walk = model.node(&image).map_or(0, |n| n.children().len());
-        let made = with_holes(model, &image, &wires)?;
+        let made = with_holes(model, &image, &wires, tol)?;
         // A plane's holes lie inside its outer boundary, which alone sets
         // its box: the face with its holes back keeps the box of the face
         // without them.
@@ -1876,7 +1879,12 @@ pub(crate) fn hole_point(
 
 /// `image` with the holes `holes` added: a new face on the same surface,
 /// facing the same way.
-pub(crate) fn with_holes(model: &mut Model, image: &Shape, holes: &[Shape]) -> OgeomResult<Shape> {
+pub(crate) fn with_holes(
+    model: &mut Model,
+    image: &Shape,
+    holes: &[Shape],
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
     if !image.location().is_identity() {
         ogeom_bail!(
             NotDone,
@@ -1891,7 +1899,7 @@ pub(crate) fn with_holes(model: &mut Model, image: &Shape, holes: &[Shape]) -> O
     // The holes' edges are the solid's own and are not widened: a face
     // looser than one of them takes none back. No edge is tighter than the
     // least tolerance.
-    if data.tolerance.get() > ogeom_core::Tolerance::MIN.get() {
+    if data.tolerance.get() > tol.least_tolerance() {
         for hole in holes {
             for edge in model.children_of(hole)? {
                 if model
