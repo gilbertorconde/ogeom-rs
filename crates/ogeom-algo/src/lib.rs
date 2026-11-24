@@ -165,7 +165,7 @@ pub use sphere_chart::{TOUCHING as POLE_TOUCHING, turned as operands_clear_of_po
 pub use sweep::{make_prism, make_prism_tapered, make_revolution};
 pub use text::make_text;
 pub use thickness::{Thickness, thickness, thickness_of_shape};
-pub use tight::{face_bounds, tight_bounds};
+pub use tight::{extent_along, face_bounds, tight_bounds};
 pub use upgrade::{
     UnifyOptions, merge_edges, reduce_tolerances, same_domain, unify_same_domain,
     unify_same_domain_around, unify_same_domain_with,
