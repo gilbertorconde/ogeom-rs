@@ -1,7 +1,7 @@
 //! Pipe shells whose section scales and twists along the spine.
 //!
 //! The section is the profile placed in the law's frame at each point of
-//! the spine, as for [`make_pipe_shell_with`],
+//! the spine, as for [`make_pipe_shell_with`](super::make_pipe_shell_with),
 //! and before that scaled about the spine and turned about it, each by its
 //! own law of the share of the spine's length run there: linear, a
 //! monotone cubic through given values, or a function the caller gives.
@@ -27,8 +27,8 @@ use super::corners::law_cornered;
 use super::placement::{PipeContact, profile_in_contact};
 use super::{
     PipeCorners, PipeLaw, SpineStation, WalkCurve, closed_pipe_shell, closes_on_a_corner,
-    densified, evenly_by, has_sharp_corner, law_loft, make_loft, make_pipe_shell_with, moved_ring,
-    placed_path, profile_square_at_start, spine_closes, spine_curve_of, straight_legs,
+    densified, evenly_by, has_sharp_corner, law_loft, loft_plain, moved_ring, pipe_shell_ends,
+    placed_path, profile_square_at_start, spine_closes, spine_curve_of, straight_legs, traced_pipe,
 };
 
 /// How a pipe's section scales and twists along its spine, each in
@@ -621,7 +621,7 @@ impl SpineLengths {
 /// the spine the section is the profile scaled about the spine by
 /// `1 + (scale - 1) λ` and turned about it by `twist λ`, `λ` the share of
 /// the spine's length run there, then carried by `law`. With no scale and
-/// no twist this is [`make_pipe_shell_with`] with mitred corners; it is
+/// no twist this is [`make_pipe_shell_with`](super::make_pipe_shell_with) with mitred corners; it is
 /// [`make_pipe_shell_laws`] with linear laws.
 ///
 /// Scaled without a twist down one straight edge under the
@@ -650,7 +650,7 @@ impl SpineLengths {
 /// to a scale of zero; if a section is scaled, or twisted by a part of a
 /// turn that does not bring each of its loops home onto itself, round a
 /// closed spine; and as
-/// [`make_pipe_shell_with`] or the law refuses the spine.
+/// [`make_pipe_shell_with`](super::make_pipe_shell_with) or the law refuses the spine.
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if the skin
 /// cannot reach `tolerance`.
 pub fn make_pipe_shell_evolving(
@@ -696,16 +696,21 @@ pub fn make_pipe_shell_evolving(
 /// the result.
 ///
 /// Round sharp corners a face sweeps run by run as
-/// [`make_pipe_shell_with`] does, each corner turned as `corners` asks:
+/// [`make_pipe_shell_with`](super::make_pipe_shell_with) does, each corner turned as `corners` asks:
 /// each smooth run is swept under the laws over its share of the spine's
 /// length, from the section it starts with (a run the laws neither scale
 /// nor turn is the prism or pipe shell of that section), and the runs
 /// meet at each corner on the section the laws give there.
 ///
+/// The history records each edge of the given profile as generating
+/// every piece of the wall it swept and each of its vertices the edges of
+/// its path; the caps carry `SWEEP_BOTTOM` and `SWEEP_TOP` derived from
+/// the profile.
+///
 /// # Errors
 ///
 /// As [`make_pipe_shell_evolving`] and, round sharp corners, as
-/// [`make_pipe_shell_with`]; and
+/// [`make_pipe_shell_with`](super::make_pipe_shell_with); and
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a
 /// law's shares do not rise strictly to one, a value is not finite, a
 /// scale law through values reaches naught or below, or a law given as a
@@ -724,6 +729,36 @@ pub fn make_pipe_shell_laws(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    let (built, swept) =
+        pipe_shell_laws_swept(model, profile, spine, law, laws, corners, tolerance, tol)?;
+    let placed_spine = placed_path(model, spine, tol)?;
+    // Sections the laws neither scale nor turn are the frame law's own.
+    let still = laws.scale == SpineLaw::Linear(1.0) && laws.twist == SpineLaw::Linear(0.0);
+    traced_pipe(
+        model,
+        built,
+        &swept,
+        profile,
+        &placed_spine,
+        still.then_some(law),
+        tolerance,
+        tol,
+    )
+}
+
+/// [`make_pipe_shell_laws`] as built, and the profile it swept: the given
+/// one, or the copy of it moved into contact with the spine.
+#[allow(clippy::too_many_arguments)]
+fn pipe_shell_laws_swept(
+    model: &mut Model,
+    profile: &Shape,
+    spine: &Shape,
+    law: &PipeLaw<'_>,
+    laws: &PipeLaws,
+    corners: PipeCorners,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<(Built, Shape)> {
     if let SpineLaw::Linear(scale) = laws.scale
         && (!scale.is_finite() || scale < 0.0)
     {
@@ -744,7 +779,7 @@ pub fn make_pipe_shell_laws(
     // The spine is swept where it stands.
     let placed_spine = placed_path(model, spine, tol)?;
     if placed_spine != *spine {
-        let mut built = make_pipe_shell_laws(
+        let (mut built, swept) = pipe_shell_laws_swept(
             model,
             profile,
             &placed_spine,
@@ -755,11 +790,11 @@ pub fn make_pipe_shell_laws(
             tol,
         )?;
         built.history.generate(spine, built.shape.clone());
-        return Ok(built);
+        return Ok((built, swept));
     }
     let placed = profile_in_contact(model, profile, spine, laws.contact, tol)?;
     if placed != *profile {
-        let mut built = make_pipe_shell_laws(
+        let (mut built, swept) = pipe_shell_laws_swept(
             model,
             &placed,
             spine,
@@ -773,7 +808,7 @@ pub fn make_pipe_shell_laws(
             tol,
         )?;
         built.history.generate(profile, built.shape.clone());
-        return Ok(built);
+        return Ok((built, swept));
     }
     if matches!(laws.scale, SpineLaw::Through(_) | SpineLaw::Function(_))
         && evolution.scale.least() <= 0.0
@@ -785,7 +820,8 @@ pub fn make_pipe_shell_laws(
         );
     }
     if evolution.is_still() {
-        return make_pipe_shell_with(model, profile, spine, law, corners, tolerance, tol);
+        let built = pipe_shell_ends(model, profile, spine, law, corners, false, tolerance, tol)?;
+        return Ok((built, profile.clone()));
     }
     let rings: Vec<Shape> = match model.kind_of(profile)? {
         ShapeType::Face => explore(model, profile, Filter::OfType(ShapeType::Wire))?,
@@ -829,12 +865,13 @@ pub fn make_pipe_shell_laws(
                 .twist
                 .ending_at(turns.round() * core::f64::consts::TAU)?
         };
-        return closed_law_pipe(model, profile, spine, law, &twist, tolerance, tol);
+        let built = closed_law_pipe(model, profile, spine, law, &twist, tolerance, tol)?;
+        return Ok((built, profile.clone()));
     }
     if !matches!(law, PipeLaw::Fixed)
         && (has_sharp_corner(model, spine, tol)? || closes_on_a_corner(model, spine, tol)?)
     {
-        return law_cornered(
+        let built = law_cornered(
             model,
             profile,
             spine,
@@ -843,7 +880,8 @@ pub fn make_pipe_shell_laws(
             Some(&evolution),
             tolerance,
             tol,
-        );
+        )?;
+        return Ok((built, profile.clone()));
     }
     let shape = evolved_run(
         model, profile, spine, law, &evolution, false, tolerance, tol,
@@ -851,7 +889,7 @@ pub fn make_pipe_shell_laws(
     let mut history = History::new();
     history.generate(spine, shape.clone());
     history.generate(profile, shape.clone());
-    Ok(Built::new(shape, history))
+    Ok((Built::new(shape, history), profile.clone()))
 }
 
 /// A planar profile swept along a spine with no sharp corner under the
@@ -919,7 +957,7 @@ fn evolving_ring(
         // A polygon or a circle lofts to its image as planes or a cone;
         // any other ring as the ruled walls between matched edges.
         let shape = if scale == 0.0 || analytic_ring(model, ring, start, tol)? {
-            make_loft(model, ring, &end, tol)?.shape
+            loft_plain(model, ring, &end, tol)?.shape
         } else {
             crate::loft::make_loft_solid(model, &[ring.clone(), end], &[], true, tol)?.shape
         };
@@ -1025,7 +1063,7 @@ pub(super) fn closed_law_pipe(
 }
 
 /// Whether a ring is all straight edges, or one circle about `axis_at`:
-/// what [`make_loft`] lofts to its image scaled about `axis_at` exactly.
+/// what [`make_loft`](super::make_loft) lofts to its image scaled about `axis_at` exactly.
 fn analytic_ring(
     model: &Model,
     ring: &Shape,

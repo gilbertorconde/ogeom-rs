@@ -35,6 +35,7 @@ mod mitred_arcs;
 mod open_lines;
 mod open_skinned;
 mod placement;
+pub(crate) mod traced;
 
 pub use evolving::{
     PipeEvolution, PipeLaws, SpineFunction, SpineLaw, make_pipe_shell_evolving,
@@ -163,7 +164,7 @@ fn pipe_along_wire(
     // The exact legs and mitres ask nothing of the skin; one asked of it
     // all the same is held to the model's own confusion, and a skin that
     // misses it or a fitted face it leaves is refused below.
-    let built = match make_pipe_shell(model, &disc, spine, false, tol.confusion(), tol) {
+    let built = match pipe_shell_plain(model, &disc, spine, tol.confusion(), tol) {
         Err(ogeom_core::OgeomError::NotDone(_)) => ogeom_bail!(
             Construction,
             "a pipe along this wire is not swept exactly; make_pipe_shell sweeps it \
@@ -448,12 +449,36 @@ fn pipe_segment(
 /// through its four corners (the ruled surface between them, exact), so
 /// sections may be turned against each other or differ in shape.
 ///
+/// The history records each section edge as generating the walls it
+/// lies on and each section vertex the edges through it; the start cap
+/// carries `SWEEP_BOTTOM` from the first section and the end cap
+/// `SWEEP_TOP` from the last.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the sections
 /// are not both circles or both polygons of the same count, or are not on
 /// parallel planes.
 pub fn make_loft(
+    model: &mut Model,
+    bottom: &Shape,
+    top: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let built = loft_plain(model, bottom, top, tol)?;
+    traced_loft(
+        model,
+        built,
+        &[bottom.clone(), top.clone()],
+        tol.confusion(),
+        tol,
+    )
+}
+
+/// [`make_loft`], its records left as the construction made them: a loft
+/// built as a step of another operation, whose own records are what that
+/// operation reports.
+pub(crate) fn loft_plain(
     model: &mut Model,
     bottom: &Shape,
     top: &Shape,
@@ -3487,6 +3512,11 @@ fn plane_cap(
 /// eight there), the last section reaches the point by the straight cone
 /// over it instead, with an edge where the two meet.
 ///
+/// The history records each section edge as generating the walls it
+/// lies on and each section vertex the edges through it; the start cap
+/// carries `SWEEP_BOTTOM` from the first section and the end cap
+/// `SWEEP_TOP` from the last.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if fewer than
@@ -3501,6 +3531,62 @@ pub fn make_loft_skinned(
 ) -> OgeomResult<Built> {
     let built = loft_skinned_along(model, sections, None, false, tolerance, tol)?;
     state_new_gaps(model, sections, &built.shape, tol)?;
+    traced_loft(model, built, sections, tolerance, tol)
+}
+
+/// A loft's records traced per section edge (see [`traced::traced`]): each
+/// closed section's edges generate the walls they lie on and each of its
+/// vertices the rail through it; the first section's face is the start
+/// cap and the last's the end cap, each named after its own section.
+fn traced_loft(
+    model: &mut Model,
+    mut built: Built,
+    sections: &[Shape],
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let rings: Vec<&Shape> = sections
+        .iter()
+        .filter(|s| model.kind_of(s).is_ok_and(|k| k == ShapeType::Wire))
+        .collect();
+    let (Some(first), Some(last)) = (rings.first().copied(), rings.last().copied()) else {
+        return Ok(built);
+    };
+    let far = match sections.last() {
+        Some(s) if s.is_same(last) && !last.is_same(first) => {
+            ogeom_topo::explore_unique(model, last, ShapeType::Vertex)?
+                .first()
+                .map(|v| traced::point_of(model, v))
+                .transpose()?
+        }
+        _ => None,
+    };
+    for (k, ring) in rings.iter().enumerate() {
+        let ends = traced::SweepEnds {
+            start: ogeom_algo::find_plane(model, ring, tol)?,
+            far: if k == 0 { far } else { None },
+            caps: k == 0,
+            carried: Vec::new(),
+        };
+        built = traced::traced(model, built, ring, ring, &ends, tolerance, tol)?;
+    }
+    // The end cap is the last section's.
+    if far.is_some() {
+        for face in ogeom_topo::explore_unique(model, &built.shape, ShapeType::Face)? {
+            let top = model
+                .provenance_of(&face)
+                .and_then(ogeom_core::Provenance::role)
+                == Some(ogeom_algo::sweep::roles::SWEEP_TOP);
+            if top {
+                model.set_derived(
+                    &face,
+                    std::slice::from_ref(last),
+                    ogeom_algo::sweep::roles::SWEEP_TOP,
+                )?;
+                built.history.generate(last, face);
+            }
+        }
+    }
     Ok(built)
 }
 
@@ -3532,7 +3618,7 @@ fn loft_skinned_along(
     if sections.len() == 2
         && !to_point
         && along.is_none()
-        && let Ok(built) = make_loft(model, &sections[0], &sections[1], tol)
+        && let Ok(built) = loft_plain(model, &sections[0], &sections[1], tol)
     {
         return Ok(built);
     }
@@ -4099,7 +4185,7 @@ pub fn make_pipe_skinned(
             return Ok(built);
         }
         let disc = disc_at_start(model, spine, &edges, radius, tol)?;
-        let built = make_pipe_shell(model, &disc, spine, false, tolerance, tol)?;
+        let built = pipe_shell_plain(model, &disc, spine, tolerance, tol)?;
         let mut history = History::new();
         history.generate(spine, built.shape.clone());
         return Ok(Built::new(built.shape, history));
@@ -4725,6 +4811,10 @@ impl SpineWalk<'_> {
 /// fitted through each profile edge's exact screw images; the caps are the
 /// profile where it starts and where it ends.
 ///
+/// The history records each profile edge as generating the walls it
+/// swept and each profile vertex the edges of its path; the caps carry
+/// `SWEEP_BOTTOM` and `SWEEP_TOP` derived from the profile.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
@@ -5169,7 +5259,21 @@ pub fn make_helical_sweep(
     let mut history = History::new();
     history.generate(profile, solid.clone());
     state_new_gaps(model, std::slice::from_ref(profile), &solid, tol)?;
-    Ok(Built::new(solid, history))
+    let ends = traced::SweepEnds {
+        start: ogeom_algo::find_plane(model, profile, tol)?,
+        far: Some(screw(centre_of(model, profile, tol)?, total)?),
+        caps: true,
+        carried: Vec::new(),
+    };
+    traced::traced(
+        model,
+        Built::new(solid, history),
+        profile,
+        profile,
+        &ends,
+        tolerance,
+        tol,
+    )
 }
 
 /// Revolve `profile` (a planar face) about `axis`, each point turning the
@@ -5182,6 +5286,11 @@ pub fn make_helical_sweep(
 /// Built as the half turn of the profile kept on the profile's side of the
 /// limit: exact wherever every circle meets the surface within that half
 /// turn and does not come back to the profile's side before it ends.
+///
+/// The history records each profile edge as generating the pieces of
+/// its wall the limit keeps; the start cap carries `SWEEP_BOTTOM` derived
+/// from the profile and the end cap, what is kept of the limit, carries
+/// `SWEEP_TOP` derived from `limit`, which generates it.
 ///
 /// # Errors
 ///
@@ -5293,9 +5402,79 @@ pub fn make_revolution_until(
     let half = ogeom_algo::make_revolution(model, profile, axis, core::f64::consts::PI, tol)?;
     let inside = centre_of(model, profile, tol)?;
     let bound = ogeom_algo::make_half_space(model, limit, inside, tol)?.shape;
-    let mut built = ogeom_bool::common(model, &half.shape, &bound, tol)?;
-    built.history.generate(profile, built.shape.clone());
-    Ok(built)
+    let common = ogeom_bool::common(model, &half.shape, &bound, tol)?;
+    // The half turn's own records carried through the common: each profile
+    // edge's wall and each vertex's rail to their kept pieces. The far cap
+    // is what the common keeps of the limit, and the near one what it
+    // keeps of the half turn's start.
+    let mut history = half.history.then(&common.history);
+    let shape = common.shape;
+    history.generate(profile, shape.clone());
+    let kept: Vec<Shape> = ogeom_topo::explore_unique(model, &shape, ShapeType::Face)?;
+    for edge in ogeom_topo::explore_unique(model, profile, ShapeType::Edge)? {
+        for piece in history.generated(&edge).to_vec() {
+            if kept.iter().any(|k| k.is_same(&piece)) {
+                model.set_derived(
+                    &piece,
+                    std::slice::from_ref(&edge),
+                    ogeom_algo::sweep::roles::SWEEP_SIDE,
+                )?;
+            }
+        }
+    }
+    let start_caps: Vec<Shape> = ogeom_topo::explore_unique(model, &half.shape, ShapeType::Face)?
+        .into_iter()
+        .filter(|f| {
+            model
+                .provenance_of(f)
+                .and_then(ogeom_core::Provenance::role)
+                == Some(ogeom_algo::sweep::roles::SWEEP_BOTTOM)
+        })
+        .collect();
+    for cap in &start_caps {
+        for piece in history_images(&common.history, cap) {
+            if kept.iter().any(|k| k.is_same(&piece)) {
+                model.set_derived(
+                    &piece,
+                    std::slice::from_ref(profile),
+                    ogeom_algo::sweep::roles::SWEEP_BOTTOM,
+                )?;
+                history.generate(profile, piece);
+            }
+        }
+    }
+    // The far cap: what the common keeps of the limit, the kept faces
+    // that are no piece of the half turn's (the common sews the limit's
+    // pieces in as faces of their own).
+    let mut of_half: Vec<Shape> = Vec::new();
+    for face in ogeom_topo::explore_unique(model, &half.shape, ShapeType::Face)? {
+        of_half.extend(history_images(&common.history, &face));
+    }
+    let far_caps: Vec<Shape> = kept
+        .iter()
+        .filter(|k| !of_half.iter().any(|h| h.is_same(k)))
+        .cloned()
+        .collect();
+    for piece in far_caps {
+        model.set_derived(
+            &piece,
+            std::slice::from_ref(limit),
+            ogeom_algo::sweep::roles::SWEEP_TOP,
+        )?;
+        history.generate(limit, piece);
+    }
+    Ok(Built::new(shape, history))
+}
+
+/// What `history` says `input` became: its images, or itself where it
+/// was left alone.
+fn history_images(history: &History, input: &Shape) -> Vec<Shape> {
+    if history.is_deleted(input) {
+        return Vec::new();
+    }
+    let mut out: Vec<Shape> = history.trace(input).to_vec();
+    out.extend(history.generated(input).iter().cloned());
+    out
 }
 
 /// The centroid of a face's outer ring's samples.
@@ -5788,6 +5967,12 @@ pub fn make_pipe_shell_law(
 /// corner's axis; inside either it runs on until its paths down the two
 /// legs cross.
 ///
+/// The history records each profile edge as generating every piece of
+/// the wall it swept and each profile vertex the edges of its path; the
+/// caps carry `SWEEP_BOTTOM` and `SWEEP_TOP` derived from the profile. A
+/// face no one profile edge swept (two runs meeting on a mitre plane with
+/// different sections) is generated by the profile.
+///
 /// # Errors
 ///
 /// As [`make_pipe_shell`], and
@@ -5819,7 +6004,113 @@ pub fn make_pipe_shell_with(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    pipe_shell_ends(model, profile, spine, law, corners, false, tolerance, tol)
+    let built = pipe_shell_ends(model, profile, spine, law, corners, false, tolerance, tol)?;
+    traced_pipe(
+        model,
+        built,
+        profile,
+        profile,
+        spine,
+        Some(law),
+        tolerance,
+        tol,
+    )
+}
+
+/// [`make_pipe_shell`] under the rotation-minimizing frame, its records
+/// left as the construction made them: a pipe built as a step of another
+/// sweep, whose own records are what that sweep reports.
+fn pipe_shell_plain(
+    model: &mut Model,
+    profile: &Shape,
+    spine: &Shape,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    pipe_shell_ends(
+        model,
+        profile,
+        spine,
+        &PipeLaw::RotationMinimizing,
+        PipeCorners::Mitre,
+        false,
+        tolerance,
+        tol,
+    )
+}
+
+/// A pipe's records traced per profile edge (see [`traced::traced`]): the
+/// profile stands at the spine's start, and the far cap, where the spine
+/// is open, square to its end. Under a `law` whose sections are known
+/// without the pipe (the rotation-minimizing frames, or none turned at
+/// all), the profile carried to the middle of each spine edge seeds that
+/// run's walls too.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn traced_pipe(
+    model: &mut Model,
+    built: Built,
+    profile: &Shape,
+    given: &Shape,
+    spine: &Shape,
+    law: Option<&PipeLaw<'_>>,
+    tolerance: f64,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let stations = frames::path_stations(model, spine, tol)?;
+    let (first, last) = (stations[0].at, stations[stations.len() - 1].at);
+    let closed = first.distance(last) <= tol.confusion() * 10.0;
+    let carried = match law {
+        Some(PipeLaw::RotationMinimizing | PipeLaw::Fixed) => {
+            let fixed = matches!(law, Some(PipeLaw::Fixed));
+            // Each spine edge's middle, as a share of the walk's length.
+            let mut run = vec![0.0_f64];
+            for pair in stations.windows(2) {
+                let last_run = run[run.len() - 1];
+                run.push(last_run + pair[0].at.distance(pair[1].at));
+            }
+            let total = run[run.len() - 1];
+            let mut shares = vec![0.0];
+            if total > tol.confusion() {
+                let edges = stations.iter().map(|s| s.edge).max().unwrap_or(0);
+                for edge in 0..=edges {
+                    let along: Vec<f64> = stations
+                        .iter()
+                        .zip(&run)
+                        .filter(|(s, _)| s.edge == edge)
+                        .map(|(_, r)| *r)
+                        .collect();
+                    if let (Some(a), Some(b)) = (along.first(), along.last()) {
+                        shares.push((f64::midpoint(*a, *b) / total).clamp(0.0, 1.0));
+                    }
+                }
+            }
+            let found = frames::rotation_minimizing_frames(model, spine, &shares, None, tol)?;
+            let placed = if found.closing_twist.is_some() {
+                found.closed_up(tol)?
+            } else {
+                found.frames
+            };
+            let frame_of = |f: &frames::CurveFrame| Frame::new(f.at, f.tangent, f.normal, tol);
+            let start = frame_of(&placed[0])?;
+            let mut out = Vec::with_capacity(placed.len());
+            for f in &placed[1..] {
+                out.push(if fixed {
+                    Transform::translation(f.at - placed[0].at)
+                } else {
+                    Transform::from_frame(&frame_of(f)?) * Transform::to_frame(&start)
+                });
+            }
+            out
+        }
+        _ => Vec::new(),
+    };
+    let ends = traced::SweepEnds {
+        start: ogeom_algo::find_plane(model, profile, tol)?,
+        far: (!closed).then_some(last),
+        caps: true,
+        carried,
+    };
+    traced::traced(model, built, profile, given, &ends, tolerance, tol)
 }
 
 /// [`make_pipe_shell_with`], and where `exact_ends` asks it, a pipe swept
@@ -5949,12 +6240,13 @@ pub(crate) fn pipe_shell_ends(
             state_new_gaps(model, &[profile.clone(), spine.clone()], &built.shape, tol)?;
             return Ok(built);
         }
-        return make_pipe_shell_with(
+        return pipe_shell_ends(
             model,
             profile,
             spine,
             &PipeLaw::RotationMinimizing,
             corners,
+            false,
             tolerance,
             tol,
         );
@@ -6862,7 +7154,7 @@ pub fn make_pipe_sections(
         && straight_legs(model, spine, tol)?.is_some_and(|legs| legs.len() == 1)
     {
         let tip = model.add_vertex(VertexData::new(point));
-        let mut built = make_loft(model, ring, &tip, tol)?;
+        let mut built = loft_plain(model, ring, &tip, tol)?;
         built.history.generate(spine, built.shape.clone());
         for section in sections {
             built.history.generate(section, built.shape.clone());
@@ -6948,7 +7240,8 @@ pub fn make_pipe_sections(
         }
         rings.push(model.add_vertex(VertexData::new(point)));
     }
-    let mut built = make_loft_skinned(model, &rings, tolerance, tol)?;
+    let mut built = loft_skinned_along(model, &rings, None, false, tolerance, tol)?;
+    state_new_gaps(model, &rings, &built.shape, tol)?;
     built.history.generate(spine, built.shape.clone());
     for section in sections {
         built.history.generate(section, built.shape.clone());
@@ -8449,7 +8742,7 @@ fn mitred_pieces(
                 realized_profile(model, profile, &motion, tol)?
             }
         };
-        let mut piece = make_pipe_shell(model, &placed, &sub_spine, false, tolerance, tol)?.shape;
+        let mut piece = pipe_shell_plain(model, &placed, &sub_spine, tolerance, tol)?.shape;
         if model.kind_of(&piece)? != ShapeType::Solid {
             ogeom_bail!(Construction, "a mitred piece did not sweep into a solid");
         }
@@ -9114,6 +9407,11 @@ struct Station {
 /// reach. An open profile along a wire spine is refused, and the refusal says
 /// which spine would close it.
 ///
+/// The history records each profile edge as generating the walls it
+/// swept, its prisms and turns alike, and each profile vertex the edges
+/// of its path; the caps carry `SWEEP_BOTTOM` and `SWEEP_TOP` derived
+/// from the profile.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the spine is
@@ -9169,7 +9467,6 @@ pub fn make_evolved(
              the profile is not square to the spine it travels"
         );
     }
-    let _ = profile_origin;
     let reference = (start.from, start.tangent_in);
 
     // The profile as a face, which is what makes each swept piece a *solid*
@@ -9241,7 +9538,32 @@ pub fn make_evolved(
     };
     history.generate(spine, shape.clone());
     history.generate(profile, shape.clone());
-    Ok(Built::new(shape, history))
+    // The far cap stands where the last station carries the profile; a
+    // closed spine has none.
+    let far = if last.to.distance(start.from) <= tol.confusion() {
+        None
+    } else {
+        let carry = station_transform(reference, last.to, last.tangent_out, normal, tol)?;
+        Some(carry.apply(profile_origin))
+    };
+    let ends = traced::SweepEnds {
+        start: Some(Plane::through(
+            profile_origin,
+            Direction::new(profile_normal, tol)?,
+        )),
+        far,
+        caps: true,
+        carried: Vec::new(),
+    };
+    traced::traced(
+        model,
+        Built::new(shape, history),
+        profile,
+        profile,
+        &ends,
+        tol.confusion(),
+        tol,
+    )
 }
 
 /// The profile as a face.

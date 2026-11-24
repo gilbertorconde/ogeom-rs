@@ -278,6 +278,9 @@ pub fn make_loft_surface(
 /// along the spine, exactly, and keeps within ten confusions of the swept
 /// profile between them, measured halfway between each pair of copies.
 ///
+/// The history records each profile edge as generating its strip of the
+/// sheet and each profile vertex the edges of its path.
+///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
@@ -334,7 +337,22 @@ pub fn make_sweep_surface(
     if let PipeLaw::Auxiliary { guide } = law {
         history.generate(guide, shape.clone());
     }
-    Ok(Built { shape, history })
+    // A sheet has no caps: the profile is its first section.
+    let ends = crate::sweep::traced::SweepEnds {
+        start: ogeom_algo::find_plane(model, profile, tol)?,
+        far: None,
+        caps: true,
+        carried: Vec::new(),
+    };
+    crate::sweep::traced::traced(
+        model,
+        Built { shape, history },
+        profile,
+        profile,
+        &ends,
+        target,
+        tol,
+    )
 }
 
 /// Sweep a profile between two rails into a sheet.
