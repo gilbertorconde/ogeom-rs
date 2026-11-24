@@ -1287,10 +1287,9 @@ fn a_frenet_pipe_down_a_helix_traces_each_skinned_wall() {
         &profile,
         Some(&[&spine]),
         &runs,
-        // The walls stand a few thousandths off the closed-form Frenet
-        // sweep here and the other edges' about one off: the bound tells
-        // the strips apart and leaves the skin's accuracy to its own tests.
-        1e-2,
+        // The walls hold the skin's tolerance (1e-3) to the closed-form
+        // Frenet sweep and the other edges stand about one off.
+        1e-3,
         &[
             (
                 roles::SWEEP_BOTTOM,
