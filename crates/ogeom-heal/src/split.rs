@@ -67,12 +67,12 @@ pub enum Projection {
 /// before it, or close on itself inside the face; a curve that runs past
 /// the face is cut where it leaves it. A stretch running along the face's
 /// boundary, or along a stretch cut before it, divides nothing and is
-/// passed over, as a stretch outside the face is; a curve all of whose
-/// stretches are passed over misses the face. Of two curves running along
-/// each other, the one cut first divides the face. The pieces share the new edges, and
-/// the boundary edges a cut ends on are cut there in every face that holds
-/// them. A region a seam of the face runs through is one piece, its
-/// boundary crossing the seam. A face given on its own comes back as a
+/// passed over, as a stretch outside the face is; an entry of `edges` all
+/// of whose stretches are passed over misses the face. Of two curves
+/// running along each other, the one cut first divides the face. The
+/// pieces share the new edges, and the boundary edges a cut ends on are
+/// cut there in every face that holds them. A region a seam of the face
+/// runs through is one piece, its boundary crossing the seam. A face given on its own comes back as a
 /// shell of its pieces.
 ///
 /// The history records `face` modified into its pieces and each edge in
@@ -324,11 +324,6 @@ fn split(
             };
             if dangling {
                 held.push(k);
-            } else if cutters[k].consumed.is_empty() && !options.skip_misses {
-                ogeom_bail!(
-                    Construction,
-                    "a curve to split along does not cross the face"
-                );
             }
         }
         if held.is_empty() {
@@ -342,6 +337,22 @@ fn split(
             );
         }
         pending = held;
+    }
+    // A miss is judged by entry of `edges`, not by path: a trace the
+    // window's period lines cut into two paths (one crossing the face, one
+    // a period off beside it) crosses the face if either does.
+    let missed: Vec<usize> = (0..edges.len())
+        .filter(|&i| {
+            !sources
+                .iter()
+                .any(|(e, j)| *j == i && cut_from.contains(&e.node()))
+        })
+        .collect();
+    if !missed.is_empty() && !options.skip_misses {
+        ogeom_bail!(
+            Construction,
+            "a curve to split along does not cross the face"
+        );
     }
     let (current, joined) = join_across_seams(model, current, &targets, data.surface, tol)?;
     // A cut lands on the face's surface through a fitted pcurve where no
@@ -359,17 +370,6 @@ fn split(
         .collect();
     ogeom_algo::state_pcurve_gaps_of(model, &made, tol)?;
 
-    let missed: Vec<usize> = if options.skip_misses {
-        (0..edges.len())
-            .filter(|&i| {
-                !sources
-                    .iter()
-                    .any(|(e, j)| *j == i && cut_from.contains(&e.node()))
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
     let pieces = if origins {
         origins_of(model, &targets, &joined, traces, &surface, tol)?
     } else {

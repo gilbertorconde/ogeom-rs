@@ -118,8 +118,10 @@ face from boundary to boundary or close inside it. The pieces share the new
 edges, and the history maps the face to its pieces.
 
 A stretch of a curve along the face's boundary, or along an earlier cut,
-divides nothing and is passed over. A curve that only runs outside the face
-or along its boundary misses it, and is refused.
+divides nothing and is passed over. An entry of `edges` that only runs
+outside the face or along its boundary misses it, and is refused. A curve
+that crosses the face anywhere does not miss it, even where part of it runs
+outside.
 
 `split_face_with` takes `SplitOptions`. With `skip_misses`, a curve that
 misses the face (its projection never lands, or its trace lies outside the
