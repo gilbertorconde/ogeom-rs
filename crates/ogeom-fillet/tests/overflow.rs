@@ -777,3 +777,123 @@ fn local_rounds_build_alike_with_every_option_off() {
         assert!((volume(&m, &on.shape) - volume(&m, &off.shape)).abs() < 1e-12);
     }
 }
+
+/// A block 20 by 10 by 6 with a groove 0.4 wide and 0.5 deep sunk into
+/// its top, 0.8 behind the top front edge and 10 long; with the front
+/// edge, the groove's two floor edges, and the top back edge.
+fn grooved(m: &mut Model) -> (Shape, Shape, Vec<Shape>, Shape) {
+    let block = ogeom_algo::make_box(m, at(0.0, 0.0, 0.0), (20.0, 10.0, 6.0), T)
+        .unwrap()
+        .shape;
+    let groove = ogeom_algo::make_box(m, at(5.0, 0.8, 5.5), (10.0, 0.4, 1.5), T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::cut(m, &block, &groove, T).unwrap().shape;
+    let front = edges_where(m, &s, |p| p.y.abs() < 1e-9 && (p.z - 6.0).abs() < 1e-9);
+    let floor = edges_where(m, &s, |p| {
+        (p.z - 5.5).abs() < 1e-9 && ((p.y - 0.8).abs() < 1e-9 || (p.y - 1.2).abs() < 1e-9)
+    });
+    let back = edges_where(m, &s, |p| {
+        (p.y - 10.0).abs() < 1e-9 && (p.z - 6.0).abs() < 1e-9
+    });
+    assert_eq!((front.len(), floor.len(), back.len()), (1, 2, 1));
+    (s, front[0].clone(), floor, back[0].clone())
+}
+
+/// The top front edge of [`grooved`] rounded at 2 crosses the groove and
+/// trims through its walls and floor; the groove's floor edges rounded 0.1
+/// in the same request are seated on those faces, but the front round is
+/// not: trim through off still refuses the request by name, as it
+/// refuses the front round alone. With trim through on it builds; the
+/// groove's rounds with the back edge's, which reach no face but their
+/// own, build with every option off as with every option on.
+#[test]
+fn trim_through_off_holds_per_round_when_another_edge_owns_the_face() {
+    let mut m = Model::new();
+    let (s, front, floor, back) = grooved(&mut m);
+    let mut trim_off = Overflow::default();
+    trim_off.trim_through = false;
+    let reached: Vec<(Shape, Blend)> = core::iter::once((front.clone(), Blend::Round(2.0)))
+        .chain(floor.iter().map(|e| (e.clone(), Blend::Round(0.1))))
+        .collect();
+    assert!(
+        blend_edges_overflow(
+            &mut m,
+            &s,
+            &reached,
+            ChamferCorner::Facet,
+            Overflow::default(),
+            T
+        )
+        .is_ok(),
+        "trimmed through"
+    );
+    for options in [trim_off, Overflow::none()] {
+        let err = blend_edges_overflow(&mut m, &s, &reached, ChamferCorner::Facet, options, T)
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("trim through is off"),
+            "refused by name: {err}"
+        );
+    }
+    let err = fillet_edges_overflow(&mut m, &s, &[front], 2.0, trim_off, T)
+        .map(|_| ())
+        .unwrap_err();
+    assert!(err.to_string().contains("trim through is off"), "{err}");
+
+    let local: Vec<(Shape, Blend)> = floor
+        .iter()
+        .map(|e| (e.clone(), Blend::Round(0.1)))
+        .chain(core::iter::once((back, Blend::Round(2.0))))
+        .collect();
+    let on = blend_edges_overflow(
+        &mut m,
+        &s,
+        &local,
+        ChamferCorner::Facet,
+        Overflow::default(),
+        T,
+    )
+    .unwrap();
+    let off = blend_edges_overflow(
+        &mut m,
+        &s,
+        &local,
+        ChamferCorner::Facet,
+        Overflow::none(),
+        T,
+    )
+    .unwrap();
+    assert!((volume(&m, &on.shape) - volume(&m, &off.shape)).abs() < 1e-9);
+}
+
+/// A concave round's band ends on the faces at its edge's ends, which are
+/// extended to cap its fill: no trim through. An L section's inner edge,
+/// ending on the two end faces, rounded at 4 builds with every option off
+/// as with every option on, its fill `20 (1 - pi / 4) 16`.
+#[test]
+fn a_concave_round_capped_by_its_end_faces_builds_with_every_option_off() {
+    let mut m = Model::new();
+    let base = ogeom_algo::make_box(&mut m, at(0.0, 0.0, 0.0), (20.0, 20.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let upright = ogeom_algo::make_box(&mut m, at(0.0, 0.0, 0.0), (20.0, 5.0, 15.0), T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &base, &upright, T).unwrap().shape;
+    let inner = edges_where(&m, &s, |p| {
+        (p.y - 5.0).abs() < 1e-9 && (p.z - 5.0).abs() < 1e-9
+    });
+    assert_eq!(inner.len(), 1, "the inner edge");
+    let want = volume(&m, &s) + 20.0 * 16.0 * (1.0 - PI / 4.0);
+    for options in [Overflow::default(), Overflow::none()] {
+        let built = fillet_edges_overflow(&mut m, &s, &inner, 4.0, options, T)
+            .unwrap_or_else(|e| panic!("{options:?}: {e}"));
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() < 1e-9 * want,
+            "{options:?}: {got} against {want}"
+        );
+    }
+}

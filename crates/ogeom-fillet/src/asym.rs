@@ -211,9 +211,10 @@ pub fn fillet_edge_distances(
 /// option set: blend into round is not built for two different distances
 /// or a conic profile, nor hold edge and the narrow passages for this
 /// call, so switching them on changes nothing and switching them off
-/// refuses nothing. With trim through off, a result changing any face
-/// other than the edge's own and those at its ends is refused by name, as
-/// is a foot blend into round would take while both are off.
+/// refuses nothing. With trim through off, a result where the round
+/// changes a face other than the edge's own and those at its ends, or
+/// carries a face on past its side over nothing, is refused by name, as is
+/// a foot blend into round would take while both are off.
 ///
 /// # Errors
 ///
@@ -252,14 +253,8 @@ pub fn fillet_edge_distances_overflow(
         }
     }
     let built = distances_as_today(model, solid, edge, face, on_face, on_other, profile, tol);
-    crate::fillet::trimmed_through(
-        model,
-        solid,
-        std::slice::from_ref(edge),
-        built,
-        overflow,
-        tol,
-    )
+    let sized = [(edge.clone(), on_face.max(on_other))];
+    crate::fillet::trimmed_through(model, solid, &sized, built, overflow, tol)
 }
 
 /// [`fillet_edge_distances`]' construction, the round keeping its own

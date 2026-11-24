@@ -34,9 +34,10 @@ use ogeom_topo::{Model, Shape, ShapeType};
 /// With [`Overflow::default`] this is
 /// [`chamfer_edges_cornered`](crate::chamfer_edges_cornered). A behaviour
 /// switched off passes the request to the next. With `trim_through` off, a
-/// result that changes any face other than the edges' own and those at
-/// their ends is refused by name, as is a request that blend into round
-/// would take while it is off.
+/// result where a bevel changes a face other than its own edge's and those
+/// at its ends (whichever other edge of the request is seated on it), or
+/// carries a face on past its side over nothing, is refused by name, as is
+/// a request that blend into round would take while it is off.
 ///
 /// A foot bevel whose leg on the floor touches the round's tangent line,
 /// or crosses it at under a hundredth of a radian, leaves the floor and the
@@ -82,16 +83,32 @@ pub fn chamfer_edges_overflow(
     if overflow.trim_through {
         return Ok(built);
     }
-    let edges: Vec<Shape> = specs.iter().map(|(e, _)| e.clone()).collect();
-    if crate::engine::overflow_changes_others(model, solid, &edges, &built, tol)? {
-        ogeom_bail!(
-            Construction,
-            "the chamfer reaches a face it is not seated on, which only trim \
-             through builds here, and trim through is off; see \
-             docs/CAPABILITIES.md, fillet.chamfer-overflow"
-        );
+    let edges: Vec<(Shape, f64)> = specs
+        .iter()
+        .map(|(e, spec)| (e.clone(), longer_leg(spec)))
+        .collect();
+    if let Some(through) = crate::engine::trims_through(model, solid, &edges, &built, tol)? {
+        return Err(crate::fillet::refused_through(
+            through,
+            "chamfer",
+            "fillet.chamfer-overflow",
+        ));
     }
     Ok(built)
+}
+
+/// The longer of the two legs `spec` asks: the reach of its bevel from
+/// the edge.
+pub(crate) fn longer_leg(spec: &Chamfer) -> f64 {
+    match spec {
+        Chamfer::Symmetric(d) => *d,
+        Chamfer::Distances {
+            on_face, on_other, ..
+        } => on_face.max(*on_other),
+        Chamfer::Angle {
+            distance, angle, ..
+        } => distance.max(distance * angle.tan().abs()),
+    }
 }
 
 /// The foot bevel of [`Overflow::blend_into_round`], on a solid or on each

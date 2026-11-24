@@ -5128,6 +5128,68 @@ the three prisms), and `d³/12` more with the facet (the simplex under
 volume; the worst error is 4.9e-12. Each request that builds returns the
 unchecked call's result, face for face and to 1e-9 in volume.
 
+### Amendment: trim through holds per blend (#1305)
+
+Amendment "overflow handling" refused a result, with trim through off,
+where it changed a face other than the edges' own and those at their
+ends. The own faces were taken over the whole request, so a blend that
+trimmed through a face was let through whenever another edge of the same
+request was seated on that face: a notch trimming a plate's floor built
+once a corner's bottom edges joined the request. And a foot bevel whose
+floor ring trim through carries flat over an edge round as a ledge
+changed no face at all, so it built with every behaviour off.
+
+**The survey.** The documentation surveyed in amendment "overflow
+handling" [P27, P28, P29, P30] describes the overflow behaviours per
+blend: each round, where its own ball reaches other geometry, rolls on,
+holds the edge, or keeps its surface and trims or extends what it meets.
+None makes one blend's resolution depend on which other edges share the
+feature. Keeping the surface is described as trimming or extending the
+faces met, so a face laid on past its side is that behaviour as much as a
+face cut back.
+
+**Rule.** With trim through off, a built result is refused by name where
+either holds:
+
+- **A blend reaches a face it is not seated on.** As before, a face that
+  is no edge's own and changed refuses the request. Then each point where
+  an edge of the result runs along a face of the solid, away from the
+  solid's own edges, is attributed to the blend whose reach holds it most
+  tightly: the request edge nearest it, the distance read in that blend's
+  size (a round's largest radius, a bevel's longer leg). The face must be
+  one the attributed blend is seated on, one of its edge's faces or a face
+  at its ends. Read in sizes, a large round's contact is not taken by a
+  small round's edge that happens to stand nearer it.
+- **A face is carried on past its side.** An edge of the result runs
+  along a face's surface at a point no face of the solid holds: the face
+  is laid on over nothing, as the ledge is. Only trim through extends a
+  face, so this is refused even where no face changed. The one exception
+  is a face at the ends of the attributed blend's edge, other than its
+  two faces: a concave band's end closes its fill there, extending the
+  end face as every blend does, with or without trim through.
+
+Each is read at seven points along each edge of the result. A request
+that does not reach other geometry builds as before with every option
+off.
+
+**Not covered.** The attribution reads which blend's reach holds a point
+most tightly, not which band was built there: where two blends' reaches
+overlap on a face, the nearer in size takes the point. A band's size is
+read as its distance from the edge, which holds for a square edge; on a
+sharp or open dihedral the contact stands nearer or farther, and the
+reading may give a point to a neighbour.
+
+**Oracle.**
+
+| Case | Options | Before | Now |
+|---|---|---|---|
+| plate 10 × 10 × 2, top front edge bevelled 1 on the top and 3 down the front (the notch), with the three edges at `(10, 10, 0)` bevelled 0.5, point and facet corners | trim through off | built, notch included | refused naming trim through |
+| block 20 × 10 × 6, groove 0.4 × 0.5 sunk 0.8 behind the top front edge; front edge round 2 with the groove's floor edges round 0.1 | trim through off; all off | built | refused naming trim through |
+| same, the groove's floor rounds with the top back edge round 2 | all off | built | built, the volume all on builds |
+| block 40 × 22 × 15, both long top edges round 5, boss r 6 at `(20, 11)`, foot bevel 3, point and facet corners | trim through off; all off | built, the ledge over both rounds | refused naming trim through |
+| block 40 × 30 × 15 of amendment "overflow handling", one arc of the foot alone, bevel 3 | all off | built, the ledge spread to the whole rim | refused |
+| L section 20 long, inner concave edge 10 up and 15 across, round 4 ending on both end faces | all off | built | built, fill `20 · 16 (1 - π/4)` within 1e-9 |
+
 ## 12. Acceptance corpus
 
 From #902:

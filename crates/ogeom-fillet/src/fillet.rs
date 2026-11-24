@@ -549,10 +549,11 @@ impl Overflow {
 /// With [`Overflow::default`] this is [`fillet_edges`]. Blend into round
 /// is tried first where it is on, then hold edge. A request neither builds
 /// goes on to the engine's own construction, which trims through where a
-/// round reaches another face. With `trim_through` off, a result that
-/// changes any face other than the edges' own and those at their ends is
-/// refused by name, as is a request that blend into round or hold edge
-/// would take while it is off.
+/// round reaches another face. With `trim_through` off, a result where a
+/// round changes a face other than its own edge's and those at its ends
+/// (whichever other edge of the request is seated on it), or carries a
+/// face on past its side over nothing, is refused by name, as is a request
+/// that blend into round or hold edge would take while it is off.
 ///
 /// # Errors
 ///
@@ -580,7 +581,7 @@ pub fn fillet_edges_overflow(
         return Ok(built);
     }
     let built = rounded_as_today(model, solid, edges, radius, tol);
-    trimmed_through(model, solid, edges, built, overflow, tol)
+    trimmed_through(model, solid, &asked, built, overflow, tol)
 }
 
 /// The behaviours of `overflow` tried before trim through on a round of
@@ -692,9 +693,11 @@ pub(crate) fn blend_into_round_step(
     Ok(None)
 }
 
-/// Trim through's result `built` for the request of `edges`: as built
-/// where trim through is on; with it off, refused by name where it changed
-/// a face other than the edges' own and those at their ends.
+/// Trim through's result `built` for the request of `edges`, each with
+/// its blend's size (a round's largest radius, a bevel's longer leg): as
+/// built where trim through is on; with it off, refused by name where a
+/// blend changed a face it is not seated on, or carried a face on past its
+/// side ([`Through`](crate::engine::Through)).
 ///
 /// # Errors
 ///
@@ -702,23 +705,38 @@ pub(crate) fn blend_into_round_step(
 pub(crate) fn trimmed_through(
     model: &Model,
     solid: &Shape,
-    edges: &[Shape],
+    edges: &[(Shape, f64)],
     built: OgeomResult<Built>,
     overflow: Overflow,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let built = built?;
     if !overflow.trim_through
-        && crate::engine::overflow_changes_others(model, solid, edges, &built, tol)?
+        && let Some(through) = crate::engine::trims_through(model, solid, edges, &built, tol)?
     {
-        ogeom_bail!(
-            Construction,
-            "the round reaches a face it is not seated on, which only trim \
-             through builds here, and trim through is off; see \
-             docs/CAPABILITIES.md, fillet.overflow"
-        );
+        return Err(refused_through(through, "round", "fillet.overflow"));
     }
     Ok(built)
+}
+
+/// The refusal by name of what only trim through builds, for a `blend`
+/// ("round" or "chamfer") whose capability is `anchor`.
+pub(crate) fn refused_through(
+    through: crate::engine::Through,
+    blend: &str,
+    anchor: &str,
+) -> OgeomError {
+    let what = match through {
+        crate::engine::Through::Reaches => "reaches a face it is not seated on",
+        crate::engine::Through::Carries => {
+            "carries a face of the solid on past its side over nothing"
+        }
+    };
+    ogeom_core::ogeom_err!(
+        Construction,
+        "the {blend} {what}, which only trim through builds here, and trim \
+         through is off; see docs/CAPABILITIES.md, {anchor}"
+    )
 }
 
 /// The foot round of [`Overflow::blend_into_round`], on a solid or on
@@ -879,8 +897,9 @@ pub fn fillet_edges_corner(
 /// each pass of rounds is that call too, and the corner closed between
 /// planes by the ball's sphere or torus is trim through's construction:
 /// blend into round, hold edge and the narrow passages are not built
-/// there, and with trim through off, a result changing any face other than
-/// the edges' own and those at their ends is refused by name.
+/// there, and with trim through off, a result where a round changes a
+/// face other than its own edge's and those at its ends, or carries a face
+/// on past its side, is refused by name.
 ///
 /// # Errors
 ///
@@ -1861,8 +1880,8 @@ pub fn fillet_edges_variable(
 /// did before this option set. Blend into round, hold edge and the narrow
 /// passages are not built for it, so switching them on changes nothing and
 /// switching them off refuses nothing; with trim through off, a result
-/// changing any face other than the chain's own and those at its ends is
-/// refused by name.
+/// where a round changes a face other than its own edge's and those at its
+/// ends, or carries a face on past its side, is refused by name.
 ///
 /// # Errors
 ///
@@ -1887,15 +1906,17 @@ pub fn fillet_edges_variable_overflow(
         .ok()
         .filter(|p| p.level(tol))
         .map(|p| p.largest());
+    let largest = Profile::new(law, false, tol).map_or(0.0, |p| p.largest());
+    let sized: Vec<(Shape, f64)> = chain.iter().map(|e| (e.clone(), largest)).collect();
     let Some(radius) = level else {
         let built = varying_as_today(model, solid, chain, law, tol);
-        return trimmed_through(model, solid, chain, built, overflow, tol);
+        return trimmed_through(model, solid, &sized, built, overflow, tol);
     };
     if let Some(built) = before_trim_through(model, solid, chain, radius, overflow, tol)? {
         return Ok(built);
     }
     let built = varying_as_today(model, solid, chain, law, tol);
-    trimmed_through(model, solid, chain, built, overflow, tol)
+    trimmed_through(model, solid, &sized, built, overflow, tol)
 }
 
 /// [`fillet_edges_variable`]'s construction, the round keeping its own

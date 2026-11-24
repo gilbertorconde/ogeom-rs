@@ -170,7 +170,7 @@ pub(crate) fn rounds(
              beyond its ends, and is refused"
         );
     };
-    let built = crate::fillet::trimmed_through(model, &work, &traced, Ok(built), overflow, tol)?;
+    let built = crate::fillet::trimmed_through(model, &work, &rounds, Ok(built), overflow, tol)?;
     Ok(if placed {
         Built::new(built.shape, baked.history.then(&built.history))
     } else {

@@ -1,0 +1,5 @@
+- **Fixed: trim through off holds per blend** (#1305).
+  - **Changed:** with `Overflow { trim_through: false, .. }`, a blend that trims a face it is not seated on is now refused by name even where another edge of the same request is seated on that face. Before, the faces allowed were taken over the whole request, so a plate's floor notch built once a corner's bottom edges joined it.
+  - **Changed:** a result that carries a face of the solid on past its side over nothing is refused by name with trim through off: a foot bevel's floor ring laid flat as a ledge over an edge round, which changed no face and so built with every option off.
+  - Each point where the result newly runs along a face is attributed to the request edge nearest it, its distance read in that blend's size (a round's largest radius, a bevel's longer leg).
+  - Covers `chamfer_edges_overflow`, `fillet_edges_overflow`, `fillet_edges_corner_overflow`, `fillet_edges_variable_overflow`, `fillet_edge_distances_overflow`, `blend_edges_overflow` and the checked calls built on them. The rule is in ADR 0001, amendment "trim through holds per blend".
