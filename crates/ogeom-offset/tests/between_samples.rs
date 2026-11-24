@@ -983,3 +983,111 @@ fn a_twisted_polygon_loft_states_its_rails_gaps() {
         }
     }
 }
+
+/// The helix of radius `R` and pitch `P` about z, from the x axis: its
+/// point, first and second derivatives at angle `t`, in closed form.
+const R: f64 = 10.0;
+const P: f64 = 5.0;
+fn helix_at(t: f64) -> (Point, ogeom_math::Vector, ogeom_math::Vector) {
+    use ogeom_math::Vector;
+    let c = P / (2.0 * PI);
+    (
+        Point::new(R * t.cos(), R * t.sin(), c * t),
+        Vector::new(-R * t.sin(), R * t.cos(), c),
+        Vector::new(-R * t.cos(), -R * t.sin(), 0.0),
+    )
+}
+
+/// The distance from `p` to the closed-form Frenet sweep of the square
+/// of half side `half` centred on the helix ([`helix_at`]) in its normal
+/// plane: the angle whose normal plane holds `p`, found by Newton from the
+/// angle about the axis nearest its height, and the distance there from
+/// the square's outline in that station's normal and binormal.
+fn off_frenet_square(p: Point, half: f64) -> f64 {
+    let c = P / (2.0 * PI);
+    let mut t = p.z / c;
+    t += (p.y.atan2(p.x) - t + PI).rem_euclid(2.0 * PI) - PI;
+    for _ in 0..40 {
+        let (at, d1, d2) = helix_at(t);
+        let f = (p - at).dot(d1);
+        let df = (p - at).dot(d2) - d1.dot(d1);
+        t -= f / df;
+    }
+    let (at, d1, d2) = helix_at(t);
+    let tangent = d1 / d1.magnitude();
+    let bend = d2 - tangent * d2.dot(tangent);
+    let normal = bend / bend.magnitude();
+    let binormal = tangent.cross(normal);
+    let (a, b) = ((p - at).dot(normal), (p - at).dot(binormal));
+    (a.abs().max(b.abs()) - half).abs()
+}
+
+#[test]
+fn a_frenet_pipe_down_a_helix_holds_its_square_between_stations() {
+    // A unit square in the normal and binormal of a helix of radius ten
+    // and pitch five, three turns: the Frenet frame turns it about the
+    // tangent with the helix's torsion, which a round profile would not
+    // show. Each wall is measured against the closed-form sweep of the
+    // square, not against the stations it was fitted through.
+    use ogeom_geom::Curve3d as _;
+    let helix = ogeom_geom::HelixCurve::conical(Frame::WORLD, R, P, 0.0, 0.0, 6.0 * PI).unwrap();
+    let (lo, hi) = helix.domain();
+    for t in [lo, 1.0, hi] {
+        assert!(helix.point_at(t, T).unwrap().distance(helix_at(t).0) < 1e-12);
+    }
+    let (at, d1, d2) = helix_at(lo);
+    let tangent = d1 / d1.magnitude();
+    let normal = {
+        let bend = d2 - tangent * d2.dot(tangent);
+        bend / bend.magnitude()
+    };
+    let binormal = tangent.cross(normal);
+    let half = 0.5;
+    for tolerance in [1e-3, 1e-4] {
+        let mut model = Model::new();
+        let corners: Vec<Point> = [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)]
+            .iter()
+            .map(|(a, b)| at + normal * (a * half) + binormal * (b * half))
+            .collect();
+        let wire = ogeom_algo::make_polygon(&mut model, &corners, true, T)
+            .unwrap()
+            .shape;
+        let plane = ogeom_algo::find_plane(&model, &wire, T).unwrap().unwrap();
+        let profile = ogeom_algo::make_face(
+            &mut model,
+            ogeom_geom::PlaneSurface::new(plane).into(),
+            &[wire],
+            T,
+        )
+        .unwrap()
+        .shape;
+        let edge = ogeom_algo::make_edge(&mut model, helix.into(), (lo, hi), T)
+            .unwrap()
+            .shape;
+        let spine = ogeom_algo::make_wire(&mut model, &[edge], T).unwrap().shape;
+        let pipe = ogeom_offset::make_pipe_shell(&mut model, &profile, &spine, true, tolerance, T)
+            .unwrap()
+            .shape;
+        let diagnosis = ogeom_algo::check(&model, &pipe, T).unwrap();
+        assert!(diagnosis.is_valid(), "{diagnosis}");
+        let walls = spline_surfaces(&model, &pipe);
+        assert_eq!(walls.len(), 4, "one wall a profile edge");
+        let mut worst = 0.0_f64;
+        for wall in &walls {
+            let (ud, vd) = wall.domain();
+            for j in 0..=60 {
+                for i in 0..=60 {
+                    let p = wall
+                        .point_at(across(ud, i, 60), across(vd, j, 60), T)
+                        .unwrap();
+                    worst = worst.max(off_frenet_square(p, half));
+                }
+            }
+        }
+        eprintln!("Frenet pipe down a helix (skin to {tolerance}) off its square by {worst}");
+        assert!(
+            worst <= tolerance,
+            "a wall strays {worst} from the Frenet sweep"
+        );
+    }
+}

@@ -318,7 +318,7 @@ pub fn make_sweep_surface(
                 breaks,
             });
         }
-        let normals = law_normals(model, &stations, law, target, tol)?;
+        let normals = law_normals(model, spine, &stations, law, target, tol)?;
         let start = station_frame(&stations[0], normals[0], tol)?;
         let mut out = Vec::with_capacity(stations.len());
         for (s, n) in stations.iter().zip(&normals) {

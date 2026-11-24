@@ -115,18 +115,19 @@ pub(super) fn open_wire_skinned(
             // the sheet is then that frame's.
             let normals = match law {
                 PipeLaw::Frenet => {
+                    let spine_curves = walk_curves(model, spine)?;
                     let mut normals = Vec::with_capacity(stations.len());
                     let mut from = 0;
                     for k in 0..stations.len() {
                         if k + 1 < stations.len() && !turns(k, &stations) {
                             continue;
                         }
-                        normals.extend(frenet_normals(&stations[from..=k], tol)?);
+                        normals.extend(frenet_normals(&stations[from..=k], &spine_curves, tol)?);
                         from = k + 1;
                     }
                     normals
                 }
-                _ => law_normals(model, &stations, law, tolerance, tol)?,
+                _ => law_normals(model, spine, &stations, law, tolerance, tol)?,
             };
             if !turned_rotation_minimizing(&stations, &normals, tol) {
                 ogeom_bail!(
@@ -144,7 +145,7 @@ pub(super) fn open_wire_skinned(
             // Down lines and arcs a law carrying the section as the
             // rotation-minimizing frame turned by one fixed angle sweeps
             // that frame's exact sheet.
-            let normals = law_normals(model, &stations, law, tolerance, tol)?;
+            let normals = law_normals(model, spine, &stations, law, tolerance, tol)?;
             if lines_and_arcs(model, spine)? && turned_rotation_minimizing(&stations, &normals, tol)
             {
                 return open_wire_legs(model, profile, given_spine, corners, tolerance, tol);
@@ -153,7 +154,7 @@ pub(super) fn open_wire_skinned(
                 (None, stations, normals)
             } else {
                 let stations = law_stations(model, spine, stations, law, tolerance, tol)?;
-                let normals = law_normals(model, &stations, law, tolerance, tol)?;
+                let normals = law_normals(model, spine, &stations, law, tolerance, tol)?;
                 (Some(*law), stations, normals)
             }
         }
@@ -648,7 +649,7 @@ impl Frames<'_> {
                     tangent: t,
                     ..self.walk.stations[run.0]
                 };
-                law_normals_on(guide, &[here], law, self.reach, self.tol)?[0]
+                law_normals_on(guide, &[], &[here], law, self.reach, self.tol)?[0]
             }
             _ => x,
         };

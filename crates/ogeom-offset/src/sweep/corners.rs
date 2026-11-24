@@ -653,7 +653,7 @@ fn law_frame_at(
     tol: Tolerances,
 ) -> OgeomResult<Frame> {
     let stations = path_stations(model, spine, tol)?;
-    let normals = law_normals(model, &stations, law, tolerance, tol)?;
+    let normals = law_normals(model, spine, &stations, law, tolerance, tol)?;
     station_frame(&stations[0], normals[0], tol)
 }
 
@@ -671,7 +671,7 @@ fn keeps_frame(
         PipeLaw::RotationMinimizing | PipeLaw::Binormal(_) => Ok(true),
         _ => {
             let stations = path_stations(model, run, tol)?;
-            let normals = law_normals(model, &stations, law, tolerance, tol)?;
+            let normals = law_normals(model, run, &stations, law, tolerance, tol)?;
             Ok(normals.iter().all(|n| {
                 n.cross(normals[0]).magnitude() <= tol.angular() && n.dot(normals[0]) > 0.0
             }))
@@ -978,7 +978,7 @@ pub(super) fn law_is_rotation_minimizing(
     tol: Tolerances,
 ) -> OgeomResult<bool> {
     let stations = path_stations(model, spine, tol)?;
-    let normals = law_normals(model, &stations, law, tolerance, tol)?;
+    let normals = law_normals(model, spine, &stations, law, tolerance, tol)?;
     let carried = rmf_normals(&stations);
     let angle = |i: usize| -> f64 {
         let (r, n) = (carried[i], normals[i]);
