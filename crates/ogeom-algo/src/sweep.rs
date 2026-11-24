@@ -37,6 +37,9 @@ use crate::build::{
 };
 use crate::history::{Built, History};
 
+mod regions;
+use regions::Walls;
+
 /// Roles a sweep assigns.
 pub mod roles {
     use ogeom_core::Role;
@@ -90,11 +93,39 @@ pub fn make_prism(
     match model.kind_of(profile)? {
         ShapeType::Face => {
             crate::build::trimmed_or_fitted_where_bare(model, profile, tol)?;
-            prism_over_face(model, rails, profile, &displacement, vector, tol)
+            prism_over_face(
+                model,
+                rails,
+                &mut Walls::default(),
+                profile,
+                &displacement,
+                vector,
+                tol,
+            )
+        }
+        ShapeType::Shell | ShapeType::Compound => {
+            let faces = regions::profile_faces(model, profile)?;
+            for face in &faces {
+                crate::build::trimmed_or_fitted_where_bare(model, face, tol)?;
+            }
+            if faces.len() > 1 {
+                regions::one_plane(model, &faces, tol)?;
+                regions::apart(model, &faces, tol)?;
+            }
+            regions::swept_regions(model, profile, &faces, |model, walls, face| {
+                prism_over_face(model, rails, walls, face, &displacement, vector, tol)
+            })
         }
         ShapeType::Wire => {
-            let (faces, history) =
-                prism_over_wire(model, rails, profile, &displacement, vector, tol)?;
+            let (faces, history) = prism_over_wire(
+                model,
+                rails,
+                &mut Walls::default(),
+                profile,
+                &displacement,
+                vector,
+                tol,
+            )?;
             let shell = make_shell(model, &faces)?.shape;
             Ok(Built::new(shell, history))
         }
@@ -105,8 +136,8 @@ pub fn make_prism(
         }
         other => ogeom_bail!(
             Construction,
-            "a {other:?} cannot be swept into anything; sweep an edge, a wire or \
-             a face"
+            "a {other:?} cannot be swept into anything; sweep an edge, a wire, \
+             a face, or a shell or compound of faces"
         ),
     }
 }
@@ -544,6 +575,7 @@ fn attach_cap_pcurves(model: &mut Model, cap: &Shape, tol: Tolerances) -> OgeomR
 fn prism_over_face(
     model: &mut Model,
     rails: &mut Rails,
+    walls: &mut Walls,
     face: &Shape,
     displacement: &Location,
     vector: Vector,
@@ -613,7 +645,8 @@ fn prism_over_face(
     };
     let wires = model.children_of(&profile)?;
     for wire in &wires {
-        let (sides, wire_history) = prism_over_wire(model, rails, wire, displacement, vector, tol)?;
+        let (sides, wire_history) =
+            prism_over_wire(model, rails, walls, wire, displacement, vector, tol)?;
         history = history.then(&wire_history);
         faces.extend(sides);
     }
@@ -684,6 +717,7 @@ fn rewound(
 fn prism_over_wire(
     model: &mut Model,
     rails: &mut Rails,
+    walls: &mut Walls,
     wire: &Shape,
     displacement: &Location,
     vector: Vector,
@@ -692,9 +726,12 @@ fn prism_over_wire(
     let mut faces = Vec::new();
     let mut history = History::new();
     for edge in model.ordered_children_of(wire)? {
-        let (face, edge_history) = prism_over_edge(model, rails, &edge, displacement, vector, tol)?;
+        let (face, edge_history) = walls.sweep(model, &edge, |model| {
+            prism_over_edge(model, rails, &edge, displacement, vector, tol)
+                .map(|(face, history)| (Some(face), history))
+        })?;
         history = history.then(&edge_history);
-        faces.push(face);
+        faces.extend(face);
     }
     if faces.is_empty() {
         ogeom_bail!(Construction, "a wire with no edges sweeps out nothing");
@@ -992,6 +1029,11 @@ struct Turn {
 /// which is the topology [`make_cylinder`](crate::make_cylinder) produces for
 /// the identical solid. A partial turn has two distinct ends and caps them.
 ///
+/// A shell or compound of faces sweeps as [`make_prism`] sweeps one: a solid
+/// per face, glued into a compsolid along the walls their shared edges turn
+/// out. Its faces must lie in one plane through the axis, all on one side of
+/// it.
+///
 /// The seam is not an implementation detail to be avoided. Building a full turn
 /// as two half-turns would sidestep it and give a different face count for the
 /// same solid, and a boolean later has to split along seams like any other
@@ -1037,9 +1079,30 @@ pub fn make_revolution(
 
     let rails = &mut Rails::default();
     match model.kind_of(profile)? {
-        ShapeType::Face => revolution_over_face(model, rails, profile, &turn, tol),
+        ShapeType::Face => {
+            revolution_over_face(model, rails, &mut Walls::default(), profile, &turn, tol)
+        }
+        ShapeType::Shell | ShapeType::Compound => {
+            let faces = regions::profile_faces(model, profile)?;
+            for face in &faces {
+                if turn.full {
+                    crate::build::trimmed_where_bare(model, face, tol)?;
+                } else {
+                    crate::build::trimmed_or_fitted_where_bare(model, face, tol)?;
+                }
+            }
+            if faces.len() > 1 {
+                let plane = regions::one_plane(model, &faces, tol)?;
+                regions::beside_axis(model, &faces, plane, axis, tol)?;
+                regions::apart(model, &faces, tol)?;
+            }
+            regions::swept_regions(model, profile, &faces, |model, walls, face| {
+                revolution_over_face(model, rails, walls, face, &turn, tol)
+            })
+        }
         ShapeType::Wire => {
-            let (faces, history) = revolution_over_wire(model, rails, profile, &turn, tol)?;
+            let (faces, history) =
+                revolution_over_wire(model, rails, &mut Walls::default(), profile, &turn, tol)?;
             let shell = make_shell(model, &faces)?.shape;
             Ok(Built::new(shell, history))
         }
@@ -1057,7 +1120,7 @@ pub fn make_revolution(
         other => ogeom_bail!(
             Construction,
             "a {other:?} cannot be revolved into anything; revolve an edge, a \
-             wire or a face"
+             wire, a face, or a shell or compound of faces"
         ),
     }
 }
@@ -1066,6 +1129,7 @@ pub fn make_revolution(
 fn revolution_over_face(
     model: &mut Model,
     rails: &mut Rails,
+    walls: &mut Walls,
     face: &Shape,
     turn: &Turn,
     tol: Tolerances,
@@ -1147,7 +1211,7 @@ fn revolution_over_face(
     let mut history = History::new();
     let mut faces = Vec::new();
     for wire in &model.children_of(&profile)? {
-        let (sides, wire_history) = revolution_over_wire(model, rails, wire, turn, tol)?;
+        let (sides, wire_history) = revolution_over_wire(model, rails, walls, wire, turn, tol)?;
         history = history.then(&wire_history);
         faces.extend(sides);
     }
@@ -1180,6 +1244,7 @@ fn revolution_over_face(
 fn revolution_over_wire(
     model: &mut Model,
     rails: &mut Rails,
+    walls: &mut Walls,
     wire: &Shape,
     turn: &Turn,
     tol: Tolerances,
@@ -1187,7 +1252,9 @@ fn revolution_over_wire(
     let mut faces = Vec::new();
     let mut history = History::new();
     for edge in model.ordered_children_of(wire)? {
-        let (face, edge_history) = revolution_over_edge(model, rails, &edge, turn, tol)?;
+        let (face, edge_history) = walls.sweep(model, &edge, |model| {
+            revolution_over_edge(model, rails, &edge, turn, tol)
+        })?;
         history = history.then(&edge_history);
         // An edge lying along the axis turns onto itself. It contributes no
         // face, which is what makes a rectangle with one side on the axis

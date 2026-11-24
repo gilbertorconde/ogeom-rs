@@ -1452,6 +1452,48 @@ pub fn make_compsolid(model: &mut Model, solids: &[Shape]) -> OgeomResult<Built>
     Ok(Built::new(compsolid, history))
 }
 
+/// The one solid a compsolid's members make together: a solid bounded by
+/// the faces only one member holds, every face two members share dropped.
+///
+/// The faces kept are the compsolid's own, so the solid shares every face,
+/// edge and vertex of its outer boundary with the members; its history
+/// reports the compsolid generating it.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
+/// `compsolid` is not a compsolid, or a face bounds more than two members.
+pub fn outer_solid(model: &mut Model, compsolid: &Shape) -> OgeomResult<Built> {
+    if model.kind_of(compsolid)? != ShapeType::CompSolid {
+        ogeom_bail!(Construction, "only a compsolid has an outer solid");
+    }
+    let mut uses: Vec<(Shape, usize)> = Vec::new();
+    for solid in model.children_of(compsolid)? {
+        for face in ogeom_topo::explore(model, &solid, ogeom_topo::Filter::OfType(ShapeType::Face))?
+        {
+            match uses.iter_mut().find(|(f, _)| f.is_same(&face)) {
+                Some((_, count)) => *count += 1,
+                None => uses.push((face, 1)),
+            }
+        }
+    }
+    if uses.iter().any(|(_, count)| *count > 2) {
+        ogeom_bail!(
+            Construction,
+            "a face bounds more than two members of the compsolid"
+        );
+    }
+    let outer: Vec<Shape> = uses
+        .into_iter()
+        .filter_map(|(face, count)| (count == 1).then_some(face))
+        .collect();
+    let shell = make_shell(model, &outer)?.shape;
+    let solid = make_solid(model, std::slice::from_ref(&shell))?.shape;
+    let mut history = History::new();
+    history.generate(compsolid, solid.clone());
+    Ok(Built::new(solid, history))
+}
+
 /// Build a compound from any shapes, with history.
 ///
 /// The grouping container: a compound holds anything, orders nothing, and

@@ -79,8 +79,8 @@ pub use build::{
     make_apex_band, make_band_between, make_band_of_rings, make_compound, make_compsolid,
     make_edge, make_edge_between, make_face, make_face_on, make_face_with_pcurves,
     make_natural_face, make_polygon, make_profile_revolution_band, make_revolution_band,
-    make_shell, make_solid, make_vertex, make_wire, placed_edge_curve, rings_are_parallels,
-    split_ring_on_column, surface_iso_u_curve, trimmed_or_fitted_where_bare,
+    make_shell, make_solid, make_vertex, make_wire, outer_solid, placed_edge_curve,
+    rings_are_parallels, split_ring_on_column, surface_iso_u_curve, trimmed_or_fitted_where_bare,
 };
 pub use certify::{HalfSpaces, Uncertified, certify_face_within};
 pub use chart_cross::{ChartCrossing, chart_crossings};

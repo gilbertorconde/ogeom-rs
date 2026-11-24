@@ -1,0 +1,5 @@
+- **Added: prisms and revolutions of a profile of several faces sharing edges** (#1255).
+  - `make_prism` and `make_revolution` take a shell or compound of planar faces in one plane, a sketch's adjacent regions. Each face sweeps a solid of its own; an edge two faces share sweeps one wall, held by both solids from opposite sides; the solids come back as a compsolid (a compound where some share no wall).
+  - History: each profile edge generates its wall (a shared edge its one wall), each face its top cap and its solid, the profile the result. Caps carry `SWEEP_BOTTOM` / `SWEEP_TOP` from their own face.
+  - New `outer_solid`: a compsolid as one solid, the faces two members share dropped.
+  - Refused by name: faces out of one plane, boundaries crossing or running along each other without shared edges and vertices, one face holding part of another, a revolution's faces on both sides of the axis.

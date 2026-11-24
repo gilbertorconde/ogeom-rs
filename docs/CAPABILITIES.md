@@ -13,10 +13,10 @@ per module. Each verdict cites the symbols and tests that back it, and
 | verdict | capabilities |
 |---|---|
 | `covered` | 109 |
-| `partial` | 18 |
+| `partial` | 19 |
 | `divergent` | 6 |
 
-133 capabilities. Ratchet: `unreviewed_max = 0`.
+134 capabilities. Ratchet: `unreviewed_max = 0`.
 
 ## Capabilities
 
@@ -35,6 +35,8 @@ per module. Each verdict cites the symbols and tests that back it, and
 - **algo.history**: Every operation emits history: what was generated, modified, deleted · `covered`
 - **algo.medial-axis**: The medial axis of a planar region · `covered`
 - **algo.mesh-orientation**: Face directions, axes of revolution, principal frames and open rims of a mesh · `covered`
+- **algo.multiface-sweeps**: Prisms and revolutions of a profile of several faces sharing edges, a solid per face glued on shared walls · `partial`
+  - *restriction:* `make_prism` and `make_revolution` take a shell or compound of planar faces in one plane (for a revolution, a plane through the axis with every face on one side): each face sweeps a solid of its own, an edge two faces share sweeps one wall held by both solids from opposite sides, and the solids glued that way come back as a compsolid (side by side in a compound where some share no wall). `outer_solid` makes the compsolid one solid without its inner walls. Refused: faces out of one plane, boundaries that cross or run along each other without sharing their edges and vertices (an edge not split where another ends on it), one face holding part of another, a revolution's faces on both sides of the axis. Not yet taken by `make_revolution_until`, `make_helical_sweep` or `make_pipe_shell_with`, which sweep one face.
 - **algo.nurbs-conversion**: Converting a shape's geometry to NURBS form · `covered`
 - **algo.patch-network**: A network of B-spline patches fitted to a scan in one sparse least-squares system: shared curves one set of poles, curves that are not creases held tangent pole by pole, sides that may be chains of curves meeting at T-junctions, corners of other than four patches held tangent where the tolerance allows, spans raised per strip where a patch misses, optional parameter correction, built into a shell of faces sharing their edges · `partial`
   - *restriction:* Patches are four-sided, or three-sided with one side shrunk to a point. A side may be a chain of curves (a T-junction), but the side opposite must cross as many strips, split or as one curve; a curve of a split side may itself be crossed by junctions elsewhere (nested junctions), unless the junctions are carried round a loop. A curve between two patches is held exactly tangent where both its ends are on the border, at corners of four patches or at T-junctions; a curve between two junctions whose knot ratios differ is left near tangent. A corner of other than four patches is held exactly tangent only where every curve into it runs on to the border, to a corner of four patches, to a T-junction (the line across the patch through the junction then held tangent at the corner's ratio, not `C¹`) or to other such corners (an even corner, or a corner whose curves all end at others, as on a ball covered as a cube, settled with the rest where the ratios asked round every cycle of its scales close), and the fit with it meets the tolerance; where it does not, a corner of an odd number of patches, or an even number above four, whose curves each run on to the border or to another such corner has its gluing spread along its curves, every knot inside their strips doubled and the patches only `C¹` across those knots, which meets 0.001 on clean caps of five, six and seven patches. Where the fit near tangent misses too, each held fit that missed is finished from its spans: the points re-taken at their nearest points on it (by the patch across a shared side where a point lies past its own patch's side) while that comes nearer them and the worst distance grows no worse, the fit refined on after each step with points past their cells' spread counted as misses, for at most eight steps, the noise read once from the fit at the seed's parameters; this meets 0.001 on the clean ball covered as a cube and the clean filleted box corner. A clean cap of eight patches at 0.001 still misses (two points on its rim end refinement as strays); there, the curves are fitted near tangent from the points, their angle measured into `worst_tangent` and the corner's angle reported. A fan, a point every patch there is three-sided at, is held exactly tangent along its curves and at the point where that meets the tolerance (fans of three to six patches meet 0.001 clean); a point where a three-sided patch meets four-sided ones is fitted near tangent. Parameter correction otherwise runs only after refinement, at the final spans, and only through `fit_network_chained`; the points are those of the region the network covers.
@@ -350,4 +352,4 @@ than a plane or a B-spline over its patch's parameters.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, surface parameters and normals per triangle corner · `covered`
 
-<!-- ledger-checksum: 3eb2a8010df89aa8 -->
+<!-- ledger-checksum: ac256e68566e86b2 -->
